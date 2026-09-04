@@ -23,53 +23,19 @@ import type { ProgressInfo, UpdateInfo } from 'electron-updater';
 import type { DownloadedUpdateAttestationVerifier } from './app-update-attestation.js';
 import type { DesktopUpdateChannel } from './app-update-attestation.js';
 import { resolveUpdateFeedOverride } from './app-update-test-context.js';
+import type {
+  AppUpdateInstallRequest,
+  AppUpdateInstallResult,
+  AppUpdateProgress as SharedAppUpdateProgress,
+  AppUpdateStatus,
+} from '../shared/app-update.js';
 
-export type AppUpdateProgress = {
-  percent: number;
-  bytesPerSecond?: number;
-  transferred?: number;
-  total?: number;
-};
-
-export type AppUpdateStatus =
-  | { state: 'idle'; currentVersion: string }
-  | { state: 'checking'; currentVersion: string }
-  | { state: 'not-available'; currentVersion: string; latestVersion?: string }
-  | {
-      state: 'available';
-      currentVersion: string;
-      latestVersion: string;
-    }
-  | {
-      state: 'downloading';
-      currentVersion: string;
-      latestVersion: string;
-      progress: AppUpdateProgress;
-    }
-  | { state: 'verifying'; currentVersion: string; latestVersion: string }
-  | {
-      state: 'downloaded';
-      currentVersion: string;
-      latestVersion: string;
-    }
-  | { state: 'installing'; currentVersion: string; latestVersion: string }
-  | {
-      state: 'error';
-      currentVersion: string;
-      message: string;
-      operation: 'check' | 'download' | 'install';
-      latestVersion?: string;
-    };
-
-export type AppUpdateInstallRequest = {
-  /** User consent from the trusted desktop renderer; this is a UX boundary, not a security boundary. */
-  allowInterruptActiveTasks: boolean;
-};
-
-export type AppUpdateInstallResult =
-  | { ok: true }
-  | { ok: false; reason: 'active_tasks' }
-  | { ok: false; reason: 'not_downloaded' | 'install_failed' };
+export type {
+  AppUpdateInstallRequest,
+  AppUpdateInstallResult,
+  AppUpdateStatus,
+} from '../shared/app-update.js';
+export type AppUpdateProgress = SharedAppUpdateProgress;
 
 export interface AppUpdateService {
   start(): void;

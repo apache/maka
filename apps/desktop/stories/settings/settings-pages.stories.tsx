@@ -58,6 +58,11 @@ import { createDefaultSettings, mergeSettings } from '@maka/core/settings';
 import { DEFAULT_DAILY_REVIEW_CONFIG } from '@maka/core/daily-review';
 import { SettingsSurface } from '../../src/renderer/settings/settings-surface';
 import { ConnectionSettingsServicesProvider } from '../../src/renderer/features/connection-settings';
+import {
+  AppUpdateProvider,
+  AppUpdateServicesProvider,
+  type AppUpdateServices,
+} from '../../src/renderer/features/app-update/index.js';
 import { RuntimeHostManagementServicesProvider } from '../../src/renderer/features/runtime-host-management';
 import { createDesktopConnectionSettingsServices } from '../../src/renderer/platform/desktop/create-connection-settings-services';
 import { createDesktopRuntimeHostManagementServices } from '../../src/renderer/platform/desktop/create-runtime-host-management-services';
@@ -892,10 +897,12 @@ const makaBridge = {
     }),
     importIcon: async () => ({ ok: false as const, reason: 'cancelled' as const }),
     removeIcon: async () => ({ ok: true as const, selection: 'default' as const }),
-    // About mounts update status + subscribe on open (Settings → 关于).
+    // The production App Update provider owns status + subscribe above About.
     updateStatus: async () => ({ state: 'idle' as const, currentVersion: '0.9.0-dev' }),
     subscribeUpdateStatus: () => () => undefined,
     checkForUpdates: async () => ({ state: 'not-available' as const, currentVersion: '0.9.0-dev' }),
+    retryUpdateDownload: async () => ({ state: 'not-available' as const, currentVersion: '0.9.0-dev' }),
+    installUpdate: async () => ({ ok: false as const, reason: 'not_downloaded' as const }),
   },
   ...makeMemoryBridgeChannels(emptyMemoryState),
   webSearch: {
@@ -969,6 +976,23 @@ const makaBridge = {
 } satisfies Record<string, unknown>;
 
 const withSettingsBridge = withScopedMakaBridge(makaBridge);
+/**
+ * What the production App Update provider reads inside `SettingsStory`. Each
+ * call goes to `window.maka.app` at call time rather than capturing the shared
+ * fixture: a story's decorator installs its scoped bridge in a layout effect,
+ * after this module evaluated, and the channel stories below override
+ * `updateStatus` there. Capturing `makaBridge.app` here would show every About
+ * story the shared idle status.
+ */
+const settingsAppUpdateServices: AppUpdateServices = {
+  appUpdate: {
+    updateStatus: () => window.maka.app.updateStatus(),
+    checkForUpdates: () => window.maka.app.checkForUpdates(),
+    retryUpdateDownload: () => window.maka.app.retryUpdateDownload(),
+    installUpdate: (input) => window.maka.app.installUpdate(input),
+    subscribeUpdateStatus: (handler) => window.maka.app.subscribeUpdateStatus(handler),
+  },
+};
 
 /**
  * A PACKAGED install, which the shared fixture cannot be: it is a dev checkout,
@@ -1653,7 +1677,11 @@ type SettingsStoryProps = {
 function SettingsStory(props: SettingsStoryProps) {
   return (
     <ToastProvider>
-      <SettingsStoryFrame {...props} />
+      <AppUpdateServicesProvider services={settingsAppUpdateServices}>
+        <AppUpdateProvider>
+          <SettingsStoryFrame {...props} />
+        </AppUpdateProvider>
+      </AppUpdateServicesProvider>
     </ToastProvider>
   );
 }
@@ -2671,6 +2699,31 @@ export const AboutRelease: Story = {
     }),
   ],
   render: () => <SettingsStory section="about" />,
+};
+
+// Interaction: 检查更新 on a packaged release that has not checked yet. The
+// button issues the App Update feature's guarded command — the page itself
+// never touches the bridge — and the status line moves from 尚未检查更新 to
+// 已是最新版本 once the check returns `not-available`. A dev checkout has no
+// row to click, which is why this is not the `About` story's play.
+export const AboutCheckForUpdates: Story = {
+  decorators: [
+    withPackagedChannelBridge({
+      updateChannel: 'release',
+      appVersion: '0.2.0',
+      updateStatus: { state: 'idle', currentVersion: '0.2.0' },
+    }),
+  ],
+  render: () => <SettingsStory section="about" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const check = await canvas.findByRole('button', { name: '检查更新' });
+    expect(check).toBeEnabled();
+    await userEvent.click(check);
+    await waitFor(() => {
+      expect(canvas.getByText('已是最新版本。')).toBeInTheDocument();
+    });
+  },
 };
 
 // Real path: 设置 → 已归档任务, after archiving tasks from the rail's row menu.

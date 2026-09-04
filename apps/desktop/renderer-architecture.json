@@ -4,7 +4,6 @@
     "src/renderer/agent-graph-panel-visibility.ts",
     "src/renderer/agent-graph-panel.tsx",
     "src/renderer/agent-graph-refresh.ts",
-    "src/renderer/app-shell-app-update.ts",
     "src/renderer/app-shell-chat-actions.ts",
     "src/renderer/app-shell-chrome-actions.tsx",
     "src/renderer/app-shell-command-actions.ts",
@@ -23,7 +22,6 @@
     "src/renderer/app-shell-turn-actions.ts",
     "src/renderer/app-shell-turn-view-model.ts",
     "src/renderer/app-shell.tsx",
-    "src/renderer/app-update-install.ts",
     "src/renderer/app.tsx",
     "src/renderer/astryx-theme-mode.ts",
     "src/renderer/astryx-theme/maka.js",
@@ -289,6 +287,13 @@
   ],
   "controllerOwners": [
     {
+      "implementation": "src/renderer/features/app-update/controller/use-app-update-controller.ts",
+      "symbol": "useAppUpdateController",
+      "owner": "src/renderer/features/app-update/ui/app-update-provider.tsx",
+      "ownerSymbol": "AppUpdateProvider",
+      "count": 1
+    },
+    {
       "implementation": "src/renderer/features/module-hub/controller/use-module-hub-controller.ts",
       "symbol": "useModuleHubController",
       "owner": "src/renderer/features/module-hub/ui/module-hub-provider.tsx",
@@ -298,18 +303,6 @@
   ],
   "legacyAppShell": {
     "files": {
-      "src/renderer/app-shell-app-update.ts": {
-        "importDeclarations": 0,
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {},
-        "importSpecifiers": 0,
-        "nonTriviaTokens": 92
-      },
       "src/renderer/app-shell-chat-actions.ts": {
         "importDeclarations": 8,
         "bridgePaths": {
@@ -713,12 +706,8 @@
         "nonTriviaTokens": 1408
       },
       "src/renderer/app-shell.tsx": {
-        "importDeclarations": 81,
+        "importDeclarations": 79,
         "bridgePaths": {
-          "window.maka.app.installUpdate": 1,
-          "window.maka.app.retryUpdateDownload": 1,
-          "window.maka.app.subscribeUpdateStatus": 1,
-          "window.maka.app.updateStatus": 1,
           "window.maka.attachments": 1,
           "window.maka.attachments.readBytes": 1,
           "window.maka.connections.subscribeEvents": 1,
@@ -769,13 +758,13 @@
           "useAppShellTurnPresentation": 1,
           "useCommandPalette": 1,
           "useComposerAttachments": 1,
-          "useEffect": 14,
+          "useEffect": 12,
           "useKeyboardHelp": 1,
           "useLayoutEffect": 2,
           "useNewTaskChoice": 1,
           "useOnboardingSnapshot": 1,
           "usePlanModeState": 1,
-          "useRef": 23,
+          "useRef": 21,
           "useSessionCollaborationDialog": 1,
           "useSessionEventHealthPolling": 1,
           "useSessionNavigationReads": 1,
@@ -790,7 +779,7 @@
           "useShellRunUpdates": 1,
           "useShellSearch": 1,
           "useStableActions": 6,
-          "useState": 17,
+          "useState": 16,
           "useSystemUiLocale": 1,
           "useTaskEntryController": 1,
           "useTaskSubmissionReadiness": 1,
@@ -804,7 +793,6 @@
         "dependencyPaths": {
           "../preload/transcript-contract.js": 1,
           "./agent-graph-panel": 1,
-          "./app-shell-app-update": 1,
           "./app-shell-chat-actions": 1,
           "./app-shell-chrome-actions": 1,
           "./app-shell-context-compaction": 1,
@@ -818,7 +806,6 @@
           "./app-shell-stop-action": 1,
           "./app-shell-turn-actions": 1,
           "./app-shell-turn-view-model": 1,
-          "./app-update-install": 1,
           "./chat-composer-region": 1,
           "./chat-message-surface": 1,
           "./command-palette": 1,
@@ -830,6 +817,7 @@
           "./desktop-execution-boundary-surface": 1,
           "./desktop-slash-command": 1,
           "./error-boundary": 1,
+          "./features/app-update/index.js": 1,
           "./features/conversation": 1,
           "./features/goals": 1,
           "./features/module-hub": 1,
@@ -895,8 +883,8 @@
           "@maka/ui/icons": 1,
           "react": 1
         },
-        "importSpecifiers": 124,
-        "nonTriviaTokens": 15588
+        "importSpecifiers": 121,
+        "nonTriviaTokens": 15057
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 2,
@@ -1077,15 +1065,6 @@
         }
       },
       "src/renderer/agent-graph-refresh.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {}
-      },
-      "src/renderer/app-update-install.ts": {
         "bridgePaths": {},
         "environmentCapabilities": {},
         "hookCalls": {},
@@ -2250,18 +2229,15 @@
       },
       "src/renderer/settings/about-settings-page.tsx": {
         "bridgePaths": {
-          "window.maka.app.checkForUpdates": 1,
           "window.maka.app.info": 1,
-          "window.maka.app.subscribeUpdateStatus": 1,
-          "window.maka.app.updateStatus": 1,
           "window.maka.diagnostics.copyReport": 1
         },
         "environmentCapabilities": {},
         "hookCalls": {
           "useActionGuard": 2,
-          "useEffect": 2,
+          "useEffect": 1,
           "useMountedRef": 1,
-          "useState": 5,
+          "useState": 3,
           "useToast": 1,
           "useUiLocale": 1
         },
@@ -2270,6 +2246,7 @@
         "actionFactories": [],
         "dependencyPaths": {
           "../default-runtime-host-operation.js": 1,
+          "../features/app-update/index.js": 1,
           "../locales/settings-preferences-copy.js": 1,
           "./about-update-status.js": 1,
           "./settings-error-copy.js": 1,
@@ -4841,13 +4818,6 @@
       "targetZone": "split-by-capability",
       "legacyPaths": [
         "src/renderer/app-shell.tsx"
-      ]
-    },
-    {
-      "capability": "app-lifecycle",
-      "targetZone": "application/app-lifecycle",
-      "legacyPaths": [
-        "src/renderer/app-shell-app-update.ts"
       ]
     },
     {

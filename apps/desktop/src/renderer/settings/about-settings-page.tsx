@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode, type RefObject } from 'react';
 import {
   Heading,
   HStack,
@@ -29,22 +29,99 @@ import {
   VStack,
 } from '@astryxdesign/core';
 import { Kbd } from '@astryxdesign/core/Kbd';
-import { Banner, Button, useMountedRef, useToast, useUiLocale } from '@maka/ui';
-import type { AppUpdateStatus } from '../../preload/bridge-contract.js';
+import {
+  Banner,
+  Button,
+  useMountedRef,
+  useToast,
+  useUiLocale,
+  type ToastApi,
+} from '@maka/ui';
+import {
+  AppUpdateAboutProjectionConsumer,
+  aboutUpdateStatusDetail,
+  type AppUpdateAboutProjection,
+} from '../features/app-update/index.js';
 import { SettingsPage, SettingsRow, SettingsSection } from './settings-section.js';
 import { settingsActionErrorMessage } from './settings-error-copy.js';
 import { SettingsSkeletonStack } from './settings-skeleton.js';
 import { useActionGuard } from './use-action-guard.js';
-import { aboutChannelFacts, aboutUpdateStatusDetail } from './about-update-status.js';
-import { getSettingsPreferencesCopy } from '../locales/settings-preferences-copy.js';
+import { aboutChannelFacts } from './about-update-status.js';
+import {
+  getSettingsPreferencesCopy,
+  type SettingsPreferencesCopy,
+} from '../locales/settings-preferences-copy.js';
 import {
   defaultRuntimeHostDiagnosticTarget,
   runOnDefaultRuntimeHost,
 } from '../default-runtime-host-operation.js';
 
 type AppInfo = Awaited<ReturnType<typeof window.maka.app.info>>;
+type AboutCopy = SettingsPreferencesCopy['about'];
 
 const ISSUE_TRACKER_URL = 'https://github.com/apache/maka/issues';
+
+/**
+ * The status line and its manual check, rendered only for a packaged install.
+ *
+ * Update state is not this page's to own: the App Update feature holds the
+ * renderer's sole updater subscription above AppShell and publishes About's
+ * projection, so the row reads status from the consumer and issues the
+ * feature's guarded check command instead of touching the bridge. It is a
+ * component rather than the consumer's render callback because the action
+ * guard is a hook.
+ */
+function AboutUpdateRow(props: {
+  readonly update: AppUpdateAboutProjection;
+  readonly copy: AboutCopy;
+  readonly locale: ReturnType<typeof useUiLocale>;
+  readonly toast: ToastApi;
+  readonly mountedRef: RefObject<boolean>;
+  readonly isDevBuild: boolean;
+}) {
+  const { update, copy, locale, toast, mountedRef, isDevBuild } = props;
+  const checkUpdateGuard = useActionGuard<'check'>();
+
+  async function checkForUpdates() {
+    if (!checkUpdateGuard.begin('check')) return;
+    try {
+      const status = await update.checkForUpdates();
+      if (status.state === 'error') {
+        toast.error(
+          copy.updateCheckFailed,
+          copy.updateCheckFailedDetail(settingsActionErrorMessage(status.message, locale)),
+        );
+      }
+    } catch (error) {
+      if (mountedRef.current) {
+        toast.error(copy.updateCheckFailed, settingsActionErrorMessage(error, locale));
+      }
+    } finally {
+      checkUpdateGuard.finish();
+    }
+  }
+
+  /* The status line says what the button would tell you, so it carries no
+     label of its own. It wraps rather than crushes: at the 480px window floor
+     the sentence needs the full width. */
+  return (
+    <HStack gap={3} justify="between" wrap="wrap">
+      <Text type="body">{aboutUpdateStatusDetail(update.status, copy, {
+        isDevBuild,
+        errorDetail: (message) => settingsActionErrorMessage(message, locale),
+      })}</Text>
+      <Button
+        variant="secondary"
+        size="sm"
+        isDisabled={update.checking}
+        onClick={() => void checkForUpdates()}
+        label={update.checking || update.status?.state === 'checking'
+          ? copy.checkingForUpdates
+          : copy.checkForUpdates}
+      />
+    </HStack>
+  );
+}
 
 export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
   const locale = useUiLocale();
@@ -52,10 +129,7 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [infoError, setInfoError] = useState<string | null>(null);
   const [copyingDiagnostics, setCopyingDiagnostics] = useState(false);
-  const [updateStatus, setUpdateStatus] = useState<AppUpdateStatus | null>(null);
-  const [checkingUpdate, setCheckingUpdate] = useState(false);
   const diagnosticCopyGuard = useActionGuard<'copy'>();
-  const checkUpdateGuard = useActionGuard<'check'>();
   const aboutPageMountedRef = useMountedRef();
   const toast = useToast();
 
@@ -85,23 +159,6 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
     };
   }, [copy.loadFailed, locale, toast]);
 
-  useEffect(() => {
-    let cancelled = false;
-    window.maka.app
-      .updateStatus()
-      .then((status) => {
-        if (!cancelled) setUpdateStatus(status);
-      })
-      .catch(() => undefined);
-    const unsubscribe = window.maka.app.subscribeUpdateStatus((status) => {
-      if (!cancelled) setUpdateStatus(status);
-    });
-    return () => {
-      cancelled = true;
-      unsubscribe();
-    };
-  }, []);
-
   async function copyDiagnostics() {
     if (!diagnosticCopyGuard.begin('copy')) return;
     setCopyingDiagnostics(true);
@@ -115,28 +172,6 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
     } finally {
       diagnosticCopyGuard.finish();
       if (aboutPageMountedRef.current) setCopyingDiagnostics(false);
-    }
-  }
-
-  async function checkForUpdates() {
-    if (!checkUpdateGuard.begin('check')) return;
-    setCheckingUpdate(true);
-    try {
-      const status = await window.maka.app.checkForUpdates();
-      if (aboutPageMountedRef.current) setUpdateStatus(status);
-      if (status.state === 'error') {
-        toast.error(
-          copy.updateCheckFailed,
-          copy.updateCheckFailedDetail(settingsActionErrorMessage(status.message, locale)),
-        );
-      }
-    } catch (error) {
-      if (aboutPageMountedRef.current) {
-        toast.error(copy.updateCheckFailed, settingsActionErrorMessage(error, locale));
-      }
-    } finally {
-      checkUpdateGuard.finish();
-      if (aboutPageMountedRef.current) setCheckingUpdate(false);
     }
   }
 
@@ -194,27 +229,22 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
           {/* A dev checkout follows no feed, so it gets no status line at all:
               its channel sentence above already says it does not update, and
               the updater's own dev copy said the same thing a second time in
-              the next paragraph. The row exists only where it can act.
-
-              The status line says what the button would tell you, so it carries
-              no label of its own. It wraps rather than crushes: at the 480px
-              window floor the sentence needs the full width. */}
+              the next paragraph. The row exists only where it can act — and
+              the page decides that here, so the feature's projection is read
+              only when there is a row to read it. */}
           {isDevBuild ? null : (
-            <HStack gap={3} justify="between" wrap="wrap">
-              <Text type="body">{aboutUpdateStatusDetail(updateStatus, copy, {
-                isDevBuild,
-                errorDetail: (message) => settingsActionErrorMessage(message, locale),
-              })}</Text>
-              <Button
-                variant="secondary"
-                size="sm"
-                isDisabled={checkingUpdate}
-                onClick={() => void checkForUpdates()}
-                label={checkingUpdate || updateStatus?.state === 'checking'
-                  ? copy.checkingForUpdates
-                  : copy.checkForUpdates}
-              />
-            </HStack>
+            <AppUpdateAboutProjectionConsumer>
+              {(update) => (
+                <AboutUpdateRow
+                  update={update}
+                  copy={copy}
+                  locale={locale}
+                  toast={toast}
+                  mountedRef={aboutPageMountedRef}
+                  isDevBuild={isDevBuild}
+                />
+              )}
+            </AppUpdateAboutProjectionConsumer>
           )}
         </VStack>
       </SettingsSection>

@@ -89,6 +89,7 @@ import {
   WorkbarTitlebarActions,
   useWorkbarController,
 } from './features/workbar';
+import { AppUpdateProvider } from './features/app-update/index.js';
 import * as Goals from './features/goals';
 import * as ModuleHub from './features/module-hub';
 import {
@@ -121,15 +122,10 @@ import {
 } from './plan-mode-panel';
 import { getOnboardingActivationCandidate, useOnboardingSnapshot } from './use-onboarding-snapshot';
 import type {
-  AppUpdateStatus,
   DesktopSessionSummary,
   OnboardingSnapshot,
 } from '../preload/bridge-contract.js';
 import { DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES } from '../preload/transcript-contract.js';
-import {
-  isAppUpdateInstallFailure,
-  requestDownloadedAppUpdate,
-} from './app-update-install';
 import { ProviderLogo } from './settings/provider-display';
 import { ProviderBrandMark } from './settings/provider-brand-marks';
 import { RuntimeHostSshTerminalDialog } from './settings/runtime-host-ssh-terminal-dialog.js';
@@ -165,7 +161,6 @@ import {
   presentContextCompactionResult,
 } from './app-shell-context-compaction';
 import { AppShellTopbarActions } from './app-shell-chrome-actions';
-import { updateReminderFromStatus } from './app-shell-app-update';
 import { AppShellDetailPanel } from './app-shell-detail-panel';
 import { AppShellOverlays } from './app-shell-overlays';
 import type { ArchivedTasksBridge } from './settings/tasks-settings-page';
@@ -287,13 +282,15 @@ export function AppShell({ initialOnboardingSnapshot = null }: AppShellProps = {
       <AstryxLocaleProvider>
         <ToastProvider errorAction={errorToastAction}>
           <ErrorBoundary locale={uiLocale}>
-            <AppShellContent
-              initialOnboardingSnapshot={initialOnboardingSnapshot}
-              uiLocale={uiLocale}
-              uiLocaleOverride={uiLocaleOverride}
-              setUiLocaleOverride={setUiLocaleOverride}
-              setUiLocalePreference={setUiLocalePreference}
-            />
+            <AppUpdateProvider>
+              <AppShellContent
+                initialOnboardingSnapshot={initialOnboardingSnapshot}
+                uiLocale={uiLocale}
+                uiLocaleOverride={uiLocaleOverride}
+                setUiLocaleOverride={setUiLocaleOverride}
+                setUiLocalePreference={setUiLocalePreference}
+              />
+            </AppUpdateProvider>
           </ErrorBoundary>
         </ToastProvider>
       </AstryxLocaleProvider>
@@ -326,10 +323,7 @@ function AppShellContent({
   setUiLocalePreference: Dispatch<SetStateAction<UiLocalePreference>>;
 }) {
   const toastApi = useToast();
-  const [appUpdateStatus, setAppUpdateStatus] = useState<AppUpdateStatus | null>(null);
   const sharedSessionDialog = useSessionCollaborationDialog();
-  const updateInstallInFlightRef = useRef(false);
-  const notifiedInstallErrorRef = useRef<string | null>(null);
   const previousInterruptionShownRef = useRef(false);
   const {
     sessions,
@@ -684,92 +678,6 @@ function AppShellContent({
       cancelled = true;
     };
   }, [appearanceHydrated, previousInterruptionCopy, toastApi]);
-  useEffect(() => {
-    if (!isAppUpdateInstallFailure(appUpdateStatus)) {
-      notifiedInstallErrorRef.current = null;
-      return;
-    }
-    if (notifiedInstallErrorRef.current === appUpdateStatus.message) return;
-    notifiedInstallErrorRef.current = appUpdateStatus.message;
-    toastApi.error(
-      shellCopy.updateInstallFailedTitle,
-      shellCopy.updateInstallManualFallback,
-    );
-  }, [appUpdateStatus, shellCopy, toastApi]);
-  useEffect(() => {
-    let cancelled = false;
-    let receivedPush = false;
-    const unsubscribeUpdateStatus = window.maka.app.subscribeUpdateStatus((next) => {
-      receivedPush = true;
-      if (!cancelled) setAppUpdateStatus(next);
-    });
-    void window.maka.app
-      .updateStatus()
-      .then((next) => {
-        if (!cancelled && !receivedPush) setAppUpdateStatus(next);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-      unsubscribeUpdateStatus();
-    };
-  }, []);
-
-  const updateReminder = updateReminderFromStatus(appUpdateStatus);
-  // Dispatches on the task, not on the raw status: the footer is this
-  // callback's only caller and it only renders for the two states above, so
-  // reading the status again here would be the same "who needs the user" list
-  // maintained twice.
-  const openUpdateDownload = useCallback(() => {
-    if (updateReminder?.state === 'downloaded') {
-      if (updateInstallInFlightRef.current) return;
-      updateInstallInFlightRef.current = true;
-      void requestDownloadedAppUpdate({
-        installUpdate: (input) => window.maka.app.installUpdate(input),
-        confirmActiveTasks: () => toastApi.confirm({
-          title: shellCopy.updateActiveTasksTitle,
-          description: shellCopy.updateActiveTasksDescription,
-          confirmLabel: shellCopy.updateActiveTasksConfirm,
-          cancelLabel: shellCopy.updateActiveTasksCancel,
-          destructive: true,
-        }),
-      })
-        .then((outcome) => {
-          if (outcome.kind !== 'failed') return;
-          if (outcome.reason === 'install_failed') return;
-          toastApi.error(
-            shellCopy.updateInstallFailedTitle,
-            shellCopy.updateInstallManualFallback,
-          );
-        })
-        .catch((error) => {
-          toastApi.error(
-            shellCopy.updateInstallFailedTitle,
-            localizedShellErrorMessage(error, shellCopy.updateInstallFailedFallback, uiLocale),
-          );
-        })
-        .finally(() => {
-          updateInstallInFlightRef.current = false;
-        });
-      return;
-    }
-    if (!updateReminder) return;
-    void window.maka.app
-      .retryUpdateDownload()
-      .then((next) => {
-        if (next.state !== 'error') return;
-        toastApi.error(
-          shellCopy.updateRetryFailedTitle,
-          shellCopy.updateRetryFailedFallback,
-        );
-      })
-      .catch((error) => {
-        toastApi.error(
-          shellCopy.updateRetryFailedTitle,
-          localizedShellErrorMessage(error, shellCopy.updateRetryFailedFallback, uiLocale),
-        );
-      });
-  }, [updateReminder, shellCopy, toastApi, uiLocale]);
   // Persisted composer defaults seed the empty-state model, project path, and
   // recent workspace history so the home view is populated before the async
   // `app:info` round-trip completes on mount.
@@ -2793,8 +2701,6 @@ function AppShellContent({
                 moduleMemory={navigationState.moduleMemory}
                 onSelect={setNavSelection}
                 onOpenSettings={openSettings}
-                updateReminder={updateReminder}
-                onOpenUpdate={openUpdateDownload}
                 onNew={() => void createSession()}
                 workHubEntry={workHubEnabled ? {
                   active: workHubActive,
