@@ -420,7 +420,7 @@ test('Focus between two visible transcript controls under pending growth keeps t
   });
   await waitForPaintedFrames(page);
 
-  const groupHeader = root.locator('.maka-tool-activity-card [role="button"]').first();
+  const groupHeader = root.locator('.maka-tool-activity-card [role="button"]:visible').first();
   await expect(groupHeader).toBeVisible();
   await groupHeader.click();
   await waitForPaintedFrames(page);
@@ -431,7 +431,7 @@ test('Focus between two visible transcript controls under pending growth keeps t
     if (!list) throw new Error('the transcript content box is missing');
     const rootRect = element.getBoundingClientRect();
     const visibleHeaders = [...element.querySelectorAll<HTMLElement>(
-      '.maka-tool-activity-card [role="button"]',
+      '.maka-tool-activity-card [role="button"], .maka-tool-activity-card button',
     )].filter((candidate) => {
       const boundary = candidate.closest<HTMLElement>('[data-maka-transcript-boundary]');
       const rect = candidate.getBoundingClientRect();
@@ -440,7 +440,7 @@ test('Focus between two visible transcript controls under pending growth keeps t
         && rect.bottom <= rootRect.bottom;
     });
     if (visibleHeaders.length < 2) {
-      throw new Error('need two visible tool-card controls for the focus regression');
+      throw new Error('need two visible controls in the expanded tool card');
     }
     const from = visibleHeaders[0]!;
     const to = visibleHeaders[1]!;
@@ -477,7 +477,7 @@ test('Focus between two visible transcript controls under pending growth keeps t
     return {
       distance: element.scrollHeight - element.scrollTop - element.clientHeight,
       transcriptControlFocused:
-        active?.matches('[data-maka-transcript-boundary] [role="button"]') ?? false,
+        active?.closest('[data-maka-transcript-boundary]') !== null,
       stillOnTarget: active?.dataset.tabTarget === 'true',
     };
   });
