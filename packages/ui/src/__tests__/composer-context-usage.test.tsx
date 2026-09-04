@@ -68,6 +68,7 @@ test('the context usage action opens its host trace surface', async () => {
       true,
       'context usage must use Astryx Button; do not hand-write this control with raw JSX or custom control CSS',
     );
+    assert.equal(action.textContent?.trim(), 'Usage');
 
     await act(() => action.dispatchEvent(new window.Event('click', { bubbles: true })));
     assert.equal(opened, true);

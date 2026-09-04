@@ -2258,17 +2258,15 @@ function ContextUsageAction(props: {
   // usage stands on its own.
   const window = props.declaredContextWindow ?? props.metadataContextWindow;
   const label =
-    props.usageTokens === undefined
-      ? '—'
-      : window !== undefined && window > 0
-        ? `${Math.round((props.usageTokens / window) * 100)}%`
-        : `${props.usageTokens} tok`;
+    props.usageTokens !== undefined && window !== undefined && window > 0
+      ? `${Math.round((props.usageTokens / window) * 100)}%`
+      : copy.systemNotes.contextUsageLabel;
   const tooltip =
     props.usageTokens === undefined
       ? copy.systemNotes.contextUsageUnavailable
       : window !== undefined && window > 0
         ? copy.systemNotes.contextUsageShare(props.usageTokens, window)
-        : copy.systemNotes.contextUsageNoWindow;
+        : copy.systemNotes.contextUsageNoWindow(props.usageTokens);
   return (
     <UiButton
       variant="ghost"
