@@ -20,7 +20,7 @@
 import { deferred } from '@maka/core/test-only/async-primitives';
 import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
-import { act, createElement, StrictMode, useLayoutEffect } from 'react';
+import { act, createElement, StrictMode } from 'react';
 import type { ShellRunUpdate } from '@maka/core/events';
 import type { SessionSummary } from '@maka/core/session';
 import type { WorkBoardActiveItem, WorkBoardItem, WorkBoardLinkedSession } from '@maka/core/work-board';
@@ -34,14 +34,6 @@ import {
   type WorkbarController,
   type WorkbarServices,
 } from '../../renderer/features/workbar/testing.js';
-import {
-  createFakeTaskEntryServices,
-  TaskEntryServicesProvider,
-  useTaskEntryController,
-  type TaskEntryController,
-  type TaskEntryHost,
-  type TaskEntryServices,
-} from '../../renderer/features/task-entry/testing.js';
 
 function session(id: string): SessionSummary {
   return {
@@ -70,20 +62,13 @@ function shellUpdate(sessionId: string, ref: string): ShellRunUpdate {
   } as ShellRunUpdate;
 }
 let latestController: WorkbarController | undefined;
-let latestTaskEntryController: TaskEntryController | undefined;
 let controllerRenderSnapshots: Array<{
   activeId: string | undefined;
   terminalOwnerIds: Array<string | undefined>;
 }> = [];
 
-type ControllerProbeInput = UseWorkbarControllerInput & { openOnActivation?: boolean };
-
-function ControllerProbe(props: ControllerProbeInput) {
-  const workbar = useWorkbarController(props);
-  latestController = workbar;
-  useLayoutEffect(() => {
-    if (props.openOnActivation) workbar.host.onOpenLauncher('right');
-  }, [props.activeSession?.id, props.openOnActivation]);
+function ControllerProbe(props: UseWorkbarControllerInput) {
+  latestController = useWorkbarController(props);
   controllerRenderSnapshots.push({
     activeId: latestController.host.activeId,
     terminalOwnerIds: [
@@ -99,7 +84,7 @@ function ControllerProbe(props: ControllerProbeInput) {
 function renderController(
   root: ReturnType<typeof installReactRenderer>['root'],
   services: WorkbarServices,
-  input: ControllerProbeInput,
+  input: UseWorkbarControllerInput,
   strictMode = false,
 ) {
   const probe = createElement(
@@ -123,11 +108,6 @@ function renderController(
 function controller(): WorkbarController {
   assert.ok(latestController);
   return latestController;
-}
-
-function taskEntryController(): TaskEntryController {
-  assert.ok(latestTaskEntryController);
-  return latestTaskEntryController;
 }
 
 function createFakeToastApi(errors: string[] = []): ToastApi {
@@ -185,19 +165,10 @@ function workBoardDraftKey(target: {
   return `draft:${target.profileId}:${target.hostId}:${target.projectId}`;
 }
 
-function workBoardItemDraftKey(itemId: string): string {
-  return workBoardDraftKey({
-    profileId: 'profile-1',
-    hostId: 'host-1',
-    projectId: `project-${itemId}`,
-  });
-}
-
 function workBoardInput(
   activeSession: SessionSummary | undefined,
   toastApi: ToastApi = createFakeToastApi(),
   overrides: Partial<UseWorkbarControllerInput> = {},
-  ownerRef: { current: number } = { current: 0 },
 ): UseWorkbarControllerInput {
   return {
     ...input(activeSession, toastApi),
@@ -210,160 +181,18 @@ function workBoardInput(
       },
     }),
     prepareWorkBoardDraft: (target, draft) => workBoardDraftKey(target),
-    openNewTaskSurface: () => {
-      ownerRef.current += 1;
-      return ownerRef.current;
-    },
+    openNewTaskSurface: () => undefined,
     composerRef: { current: { setDraft: () => undefined, focus: () => undefined } },
     ...overrides,
   };
 }
 
-function taskEntryProject(id: string) {
-  return {
-    id,
-    name: id,
-    locations: [{ path: `/tmp/${id}`, isWorktree: false }],
-    available: true,
-    preferredPath: `/tmp/${id}`,
-  };
-}
-
-function taskEntryHost(): Extract<TaskEntryHost, { state: 'available' }> {
-  return {
-    profile: { id: 'profile-1', name: 'Local', kind: 'local' },
-    hostId: 'host-1',
-    readiness: 'ready',
-    state: 'available',
-    projects: [taskEntryProject('project-A'), taskEntryProject('project-B')],
-    capabilities: {
-      chooseClientDirectory: true,
-      chooseHostDirectory: false,
-      selectNoProject: false,
-    },
-    selectedProjectId: 'project-A',
-    chatDefaults: { permissionMode: 'ask', thinkingLevel: 'high' },
-  };
-}
-
-function WorkBoardCompositionProbe(props: { ownerRef: { current: number } }) {
-  const taskEntry = useTaskEntryController({
-    reportError() {},
-    manageProjects() {},
-  });
-  latestTaskEntryController = taskEntry;
-  latestController = useWorkbarController(workBoardInput(
-    session('active'),
-    createFakeToastApi(),
-    {
-      resolveWorkBoardTarget: taskEntry.commands.resolveWorkBoardTarget,
-      prepareWorkBoardDraft: taskEntry.commands.prepareWorkBoardDraft,
-      openNewTaskSurface: () => {
-        props.ownerRef.current += 1;
-        return props.ownerRef.current;
-      },
-    },
-    props.ownerRef,
-  ));
-  return null;
-}
-
-function renderWorkBoardComposition(
-  root: ReturnType<typeof installReactRenderer>['root'],
-  taskEntryServices: TaskEntryServices,
-  workbarServices: WorkbarServices,
-  ownerRef: { current: number },
-) {
-  root.render(
-    createElement(LocaleProvider, {
-      locale: 'en',
-      children: createElement(
-        TaskEntryServicesProvider,
-        { services: taskEntryServices },
-        createElement(
-          WorkbarServicesProvider,
-          { services: workbarServices },
-          createElement(WorkBoardCompositionProbe, { ownerRef }),
-        ),
-      ),
-    }),
-  );
-}
-
 describe('useWorkbarController', () => {
   afterEach(() => {
     latestController = undefined;
-    latestTaskEntryController = undefined;
     controllerRenderSnapshots = [];
     cleanupFakeDom();
     delete (globalThis as { window?: unknown }).window;
-  });
-
-  it('keeps right-panel visibility independent across Session navigation', async () => {
-    const { root } = installReactRenderer();
-    const services = createFakeWorkbarServices();
-    const authoritativeSessionIds = new Set(['a', 'b']);
-    const show = (id: string | undefined) => renderController(root, services, {
-      ...input(id ? session(id) : undefined),
-      authoritativeSessionIds,
-    });
-
-    await act(async () => show('a'));
-    await act(async () => controller().commands.toggleRight());
-    assert.equal(controller().host.rightCollapsed, false);
-    await act(async () => show(undefined));
-    await act(async () => show('b'));
-    assert.equal(controller().host.rightCollapsed, true);
-    await act(async () => show('a'));
-    assert.equal(controller().host.rightCollapsed, false);
-  });
-
-  it('keeps an open requested in the activation commit bound to the new Session', async () => {
-    const { root } = installReactRenderer();
-    const services = createFakeWorkbarServices();
-    const authoritativeSessionIds = new Set(['a', 'b']);
-    await act(async () => renderController(root, services, {
-      ...input(session('a')), authoritativeSessionIds,
-    }, true));
-    await act(async () => renderController(root, services, {
-      ...input(session('b')), authoritativeSessionIds, openOnActivation: true,
-    }, true));
-    assert.equal(controller().host.rightCollapsed, false);
-    await act(async () => renderController(root, services, {
-      ...input(session('a')), authoritativeSessionIds,
-    }, true));
-    assert.equal(controller().host.rightCollapsed, true);
-    await act(async () => renderController(root, services, {
-      ...input(session('b')), authoritativeSessionIds,
-    }, true));
-    assert.equal(controller().host.rightCollapsed, false);
-  });
-
-  it("preserves the active Session's visibility while removing the previous Session's Terminal", async () => {
-    const { root } = installReactRenderer();
-    const defaults = createFakeWorkbarServices();
-    const services = createFakeWorkbarServices({
-      terminal: {
-        ...defaults.terminal,
-        start: async (sessionId) => shellUpdate(sessionId, 'terminal-a'),
-      },
-    });
-    const authoritativeSessionIds = new Set(['a', 'b']);
-    const show = (id: string) => renderController(root, services, {
-      ...input(session(id)),
-      authoritativeSessionIds,
-    });
-
-    await act(async () => show('b'));
-    await act(async () => controller().commands.toggleRight());
-    assert.equal(controller().host.rightCollapsed, false);
-    await act(async () => show('a'));
-    await act(async () => controller().commands.openTool('terminal'));
-    assert.equal(controller().host.panelsState.right.tabs.length, 1);
-    await act(async () => show('b'));
-
-    assert.equal(controller().host.panelsState.right.tabs.length, 0);
-    assert.equal(controller().host.rightCollapsed, false);
   });
 
   it('projects the canonical project and absorbed aliases into the host model', async () => {
@@ -785,7 +614,7 @@ describe('useWorkbarController', () => {
     assert.deepEqual(activeSessions, ['a', 'b']);
   });
 
-  it('links a Session produced on the surface that owns the claim', async () => {
+  it('links only the Session produced on the claimed new-task surface', async () => {
     const { root } = installReactRenderer();
     const links: Array<{ id: string; sessionId: string }> = [];
     const defaults = createFakeWorkbarServices();
@@ -797,128 +626,44 @@ describe('useWorkbarController', () => {
         },
       },
     });
-    const ownerRef = { current: 0 };
     const opened: number[] = [];
     const controllerInput = workBoardInput(session('a'), createFakeToastApi(), {
-      openNewTaskSurface: () => {
-        ownerRef.current += 1;
-        opened.push(1);
-        return ownerRef.current;
-      },
-    }, ownerRef);
+      openNewTaskSurface: () => opened.push(1),
+      newTaskDraftKey: 'draft:profile-1:host-1:project-A',
+    });
 
     await act(async () => renderController(root, services, controllerInput));
     await act(async () =>
       controller().host.onStartWorkBoardTask?.(workBoardItem('A')),
     );
     assert.equal(opened.length, 1);
-    assert.equal(ownerRef.current, 1);
 
-    // The synchronous owner handoff links without an intervening render.
+    // The user moves to a different new-task surface and sends there first:
+    // the surface identity no longer matches the claim, so the send must not
+    // consume the claim or link item A to that Session.
     await act(async () =>
-      controller().commands.bindNewTaskSessionResolver(ownerRef.current)(
-        JSON.stringify(['host-1', 'session-1']),
-        workBoardItemDraftKey('A'),
+      renderController(
+        root,
+        services,
+        workBoardInput(session('a'), createFakeToastApi(), {
+          newTaskDraftKey: 'draft:profile-1:host-1:project-B',
+        }),
       ),
     );
-    assert.deepEqual(links, [{ id: 'A', sessionId: 'session-1' }]);
-  });
-
-  it('does not let a New Task reopened on the same Host/project consume the claim', async () => {
-    // Regression for the review: the draft key is derived only from
-    // (profileId, hostId, projectId), so two surfaces on the same target share
-    // a draft key. The claim must be bound to the surface owner token instead.
-    const { root } = installReactRenderer();
-    const links: Array<{ id: string; sessionId: string }> = [];
-    const defaults = createFakeWorkbarServices();
-    const services = createFakeWorkbarServices({
-      workBoard: {
-        linkSession: async (id, link) => {
-          links.push({ id, sessionId: link.sessionId });
-          return { ok: true, value: workBoardItem(id) };
-        },
-      },
-    });
-    const ownerRef = { current: 0 };
-    const opened: number[] = [];
-    const controllerInput = workBoardInput(session('a'), createFakeToastApi(), {
-      openNewTaskSurface: () => {
-        ownerRef.current += 1;
-        opened.push(1);
-        return ownerRef.current;
-      },
-    }, ownerRef);
-
-    await act(async () => renderController(root, services, controllerInput));
     await act(async () =>
-      controller().host.onStartWorkBoardTask?.(workBoardItem('A')),
-    );
-    assert.equal(ownerRef.current, 1);
-
-    // The user abandons that surface and opens a fresh New Task on the SAME
-    // Host/project (a new owner token, identical draft key).
-    ownerRef.current += 1;
-    // A first send there must not consume the claim or link item A.
-    await act(async () =>
-      controller().commands.bindNewTaskSessionResolver(ownerRef.current)(
-        'session-B',
-        workBoardItemDraftKey('A'),
-      ),
+      controller().commands.onNewTaskSessionResolved('session-B'),
     );
     assert.deepEqual(links, []);
 
     // The mismatched send abandoned the claim, so a later send on the
     // original surface must not resurrect it either.
     await act(async () =>
-      controller().commands.bindNewTaskSessionResolver(1)(
-        'session-A',
-        workBoardItemDraftKey('A'),
-      ),
+      controller().commands.onNewTaskSessionResolved('session-A'),
     );
     assert.deepEqual(links, []);
   });
 
-  it('ignores an older surface callback without clearing a newer claim', async () => {
-    const { root } = installReactRenderer();
-    const links: Array<{ id: string; sessionId: string }> = [];
-    const services = createFakeWorkbarServices({
-      workBoard: {
-        linkSession: async (id, link) => {
-          links.push({ id, sessionId: link.sessionId });
-          return { ok: true, value: workBoardItem(id) };
-        },
-      },
-    });
-    const ownerRef = { current: 0 };
-
-    await act(async () =>
-      renderController(root, services, workBoardInput(session('a'), createFakeToastApi(), {}, ownerRef)),
-    );
-    await act(async () => controller().host.onStartWorkBoardTask?.(workBoardItem('A')));
-    const olderOwner = ownerRef.current;
-    await act(async () => controller().host.onStartWorkBoardTask?.(workBoardItem('A')));
-    const currentOwner = ownerRef.current;
-    assert.equal(olderOwner, 1);
-    assert.equal(currentOwner, 2);
-
-    await act(async () =>
-      controller().commands.bindNewTaskSessionResolver(olderOwner)(
-        'session-old',
-        workBoardItemDraftKey('A'),
-      ),
-    );
-    assert.deepEqual(links, []);
-
-    await act(async () =>
-      controller().commands.bindNewTaskSessionResolver(currentOwner)(
-        'session-current',
-        workBoardItemDraftKey('A'),
-      ),
-    );
-    assert.deepEqual(links, [{ id: 'A', sessionId: 'session-current' }]);
-  });
-
-  it('does not link a first send from a different project surface', async () => {
+  it('links a Session produced on the claimed surface', async () => {
     const { root } = installReactRenderer();
     const links: Array<{ id: string; sessionId: string }> = [];
     const defaults = createFakeWorkbarServices();
@@ -930,83 +675,26 @@ describe('useWorkbarController', () => {
         },
       },
     });
-    const ownerRef = { current: 0 };
-    const controllerInput = workBoardInput(session('a'), createFakeToastApi(), {
-      openNewTaskSurface: () => {
-        ownerRef.current += 1;
-        return ownerRef.current;
-      },
-    }, ownerRef);
 
-    await act(async () => renderController(root, services, controllerInput));
     await act(async () =>
-      controller().host.onStartWorkBoardTask?.(workBoardItem('A')),
-    );
-    // A different New Task surface (project B) is opened and sends first.
-    ownerRef.current += 1;
-    await act(async () =>
-      controller().commands.bindNewTaskSessionResolver(ownerRef.current)(
-        'session-B',
-        workBoardItemDraftKey('B'),
-      ),
-    );
-    assert.deepEqual(links, []);
-  });
-
-  it('drops a claim when Task Entry changes project within the same surface', async () => {
-    const { root } = installReactRenderer();
-    const ownerRef = { current: 0 };
-    const links: Array<{ id: string; sessionId: string }> = [];
-    const workbarServices = createFakeWorkbarServices({
-      workBoard: {
-        linkSession: async (id, link) => {
-          links.push({ id, sessionId: link.sessionId });
-          return { ok: true, value: workBoardItem(id) };
-        },
-      },
-    });
-    const taskEntryServices = createFakeTaskEntryServices({
-      catalog: {
-        ...createFakeTaskEntryServices().catalog,
-        getCatalog: async () => ({
-          defaultProfileId: 'profile-1',
-          hosts: [taskEntryHost()],
+      renderController(
+        root,
+        services,
+        workBoardInput(session('a'), createFakeToastApi(), {
+          newTaskDraftKey: 'draft:profile-1:host-1:project-A',
         }),
-      },
-    });
-
-    await act(async () =>
-      renderWorkBoardComposition(root, taskEntryServices, workbarServices, ownerRef),
+      ),
     );
-    assert.equal(taskEntryController().selectors.target?.projectId, 'project-A');
-
     await act(async () =>
       controller().host.onStartWorkBoardTask?.(workBoardItem('A')),
     );
-    const surfaceOwnerToken = ownerRef.current;
-    assert.equal(surfaceOwnerToken, 1);
-
     await act(async () =>
-      taskEntryController().selectors.workspacePicker.groups[0]?.onSelectProject?.(
-        'project-B',
+      controller().commands.onNewTaskSessionResolved(
+        JSON.stringify(['host-1', 'session-1']),
       ),
     );
-    assert.equal(taskEntryController().selectors.target?.projectId, 'project-B');
-    const projectBDraftKey = taskEntryController().selectors.draftKey;
 
-    await act(async () =>
-      controller().commands.bindNewTaskSessionResolver(surfaceOwnerToken)(
-        'session-B',
-        projectBDraftKey,
-      ),
-    );
-    assert.deepEqual(links, []);
-
-    await act(async () =>
-      controller().host.onStartWorkBoardTask?.(workBoardItem('A')),
-    );
-    assert.equal(ownerRef.current, 2);
-    assert.equal(taskEntryController().selectors.target?.projectId, 'project-A');
+    assert.deepEqual(links, [{ id: 'A', sessionId: 'session-1' }]);
   });
 
   it('retries a failed link against the same Session instead of creating a duplicate', async () => {
@@ -1025,24 +713,19 @@ describe('useWorkbarController', () => {
         },
       },
     });
-    const ownerRef = { current: 0 };
     const opened: number[] = [];
     const controllerInput = workBoardInput(session('a'), createFakeToastApi(errors), {
-      openNewTaskSurface: () => {
-        ownerRef.current += 1;
-        opened.push(1);
-        return ownerRef.current;
-      },
-    }, ownerRef);
+      openNewTaskSurface: () => opened.push(1),
+      newTaskDraftKey: 'draft:profile-1:host-1:project-A',
+    });
 
     await act(async () => renderController(root, services, controllerInput));
     await act(async () =>
       controller().host.onStartWorkBoardTask?.(workBoardItem('A')),
     );
     await act(async () =>
-      controller().commands.bindNewTaskSessionResolver(ownerRef.current)(
+      controller().commands.onNewTaskSessionResolved(
         JSON.stringify(['host-1', 'session-1']),
-        workBoardItemDraftKey('A'),
       ),
     );
     // First attempt fails; the claim (with its Session id) must be retained.
@@ -1060,168 +743,6 @@ describe('useWorkbarController', () => {
       linkCalls.map((call) => call.sessionId),
       ['session-1', 'session-1'],
     );
-  });
-
-  it('keeps a failed Session retryable after starting another board item', async () => {
-    const { root } = installReactRenderer();
-    let attempts = 0;
-    const linkCalls: Array<{ id: string; sessionId: string }> = [];
-    const opened: number[] = [];
-    const defaults = createFakeWorkbarServices();
-    const services = createFakeWorkbarServices({
-      workBoard: {
-        linkSession: async (id, link) => {
-          attempts += 1;
-          linkCalls.push({ id, sessionId: link.sessionId });
-          return attempts === 1
-            ? { ok: false, message: 'transient SQLite busy' }
-            : { ok: true, value: workBoardItem(id) };
-        },
-      },
-    });
-    const ownerRef = { current: 0 };
-    const controllerInput = workBoardInput(session('a'), createFakeToastApi(), {
-      openNewTaskSurface: () => {
-        ownerRef.current += 1;
-        opened.push(ownerRef.current);
-        return ownerRef.current;
-      },
-    }, ownerRef);
-
-    await act(async () => renderController(root, services, controllerInput));
-    await act(async () => controller().host.onStartWorkBoardTask?.(workBoardItem('A')));
-    await act(async () =>
-      controller().commands.bindNewTaskSessionResolver(ownerRef.current)(
-        'session-A',
-        workBoardItemDraftKey('A'),
-      ),
-    );
-
-    await act(async () => controller().host.onStartWorkBoardTask?.(workBoardItem('B')));
-    assert.deepEqual(opened, [1, 2]);
-
-    await act(async () => controller().host.onStartWorkBoardTask?.(workBoardItem('A')));
-    assert.deepEqual(linkCalls, [
-      { id: 'A', sessionId: 'session-A' },
-      { id: 'A', sessionId: 'session-A' },
-    ]);
-    assert.deepEqual(opened, [1, 2]);
-  });
-
-  it('does not issue concurrent link retries for the same pending Session', async () => {
-    const { root } = installReactRenderer();
-    const firstLink = deferred<{ readonly ok: false; readonly message: string }>();
-    const linkCalls: string[] = [];
-    const services = createFakeWorkbarServices({
-      workBoard: {
-        linkSession: async (_id, link) => {
-          linkCalls.push(link.sessionId);
-          return firstLink.promise;
-        },
-      },
-    });
-    const ownerRef = { current: 0 };
-    const controllerInput = workBoardInput(session('a'), createFakeToastApi(), {
-      openNewTaskSurface: () => {
-        ownerRef.current += 1;
-        return ownerRef.current;
-      },
-    }, ownerRef);
-
-    await act(async () => renderController(root, services, controllerInput));
-    await act(async () => controller().host.onStartWorkBoardTask?.(workBoardItem('A')));
-    await act(async () =>
-      controller().commands.bindNewTaskSessionResolver(ownerRef.current)(
-        'session-1',
-        workBoardItemDraftKey('A'),
-      ),
-    );
-    assert.deepEqual(linkCalls, ['session-1']);
-
-    // A repeated click while the first IPC call is still pending must not
-    // create a second concurrent mutation for the same Session.
-    await act(async () => controller().host.onStartWorkBoardTask?.(workBoardItem('A')));
-    assert.deepEqual(linkCalls, ['session-1']);
-    firstLink.resolve({ ok: false, message: 'transient SQLite busy' });
-    await new Promise((resolve) => setImmediate(resolve));
-
-    await act(async () => controller().host.onStartWorkBoardTask?.(workBoardItem('A')));
-    assert.deepEqual(linkCalls, ['session-1', 'session-1']);
-  });
-
-  it('starts a new Session when an item target changes after link failure', async () => {
-    const { root } = installReactRenderer();
-    let attempts = 0;
-    const linkCalls: Array<{ id: string; sessionId: string }> = [];
-    const resolvedProjectIds: string[] = [];
-    const services = createFakeWorkbarServices({
-      workBoard: {
-        linkSession: async (id, link) => {
-          attempts += 1;
-          linkCalls.push({ id, sessionId: link.sessionId });
-          if (attempts === 1) return { ok: false, message: 'transient SQLite busy' };
-          return { ok: true, value: workBoardItem(id) };
-        },
-      },
-    });
-    const ownerRef = { current: 0 };
-    const opened: number[] = [];
-    const resolveWorkBoardTarget: NonNullable<UseWorkbarControllerInput['resolveWorkBoardTarget']> =
-      (item) => {
-        const projectId = item.scope.kind === 'project' ? item.scope.projectId : 'unavailable';
-        resolvedProjectIds.push(projectId);
-        return {
-          ok: true,
-          target: {
-            profileId: 'profile-1',
-            hostId: 'host-1',
-            projectId,
-          },
-        };
-      };
-    const controllerInput = workBoardInput(session('a'), createFakeToastApi(), {
-      resolveWorkBoardTarget,
-      openNewTaskSurface: () => {
-        ownerRef.current += 1;
-        opened.push(ownerRef.current);
-        return ownerRef.current;
-      },
-    }, ownerRef);
-
-    await act(async () => renderController(root, services, controllerInput));
-    await act(async () => controller().host.onStartWorkBoardTask?.(workBoardItem('A')));
-    await act(async () =>
-      controller().commands.bindNewTaskSessionResolver(ownerRef.current)(
-        'session-1',
-        workBoardItemDraftKey('A'),
-      ),
-    );
-    assert.equal(linkCalls.length, 1);
-
-    const movedItem: WorkBoardActiveItem = {
-      ...workBoardItem('A'),
-      revision: 2,
-      scope: { kind: 'project', projectId: 'project-B' },
-    };
-    await act(async () => controller().host.onStartWorkBoardTask?.(movedItem));
-    assert.deepEqual(opened, [1, 2]);
-    assert.equal(linkCalls.length, 1);
-
-    await act(async () =>
-      controller().commands.bindNewTaskSessionResolver(ownerRef.current)(
-        'session-2',
-        workBoardDraftKey({
-          profileId: 'profile-1',
-          hostId: 'host-1',
-          projectId: 'project-B',
-        }),
-      ),
-    );
-    assert.deepEqual(linkCalls, [
-      { id: 'A', sessionId: 'session-1' },
-      { id: 'A', sessionId: 'session-2' },
-    ]);
-    assert.deepEqual(resolvedProjectIds, ['project-A', 'project-B']);
   });
 
   it('opens a previously linked Session from a board item', async () => {

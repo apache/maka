@@ -84,14 +84,12 @@ export interface WorkbarControllerCommands {
   toggleRight(): void;
   /**
    * Accepts the Session produced by a projected first send that belongs to the
-   * pending Work Board start claim. The claim is owned by one specific
-   * new-task surface instance (its owner token), so a first send from any
-   * other surface—even one reopened on the same Host/project—must not consume
-   * it.
+   * pending Work Board start claim. The claim is bound to the new-task surface
+   * it opened (via the controller input's `newTaskDraftKey`), so a first send
+   * from any other surface must not consume it.
    */
-  bindNewTaskSessionResolver(
-    surfaceOwnerToken: number,
-  ): (sessionId: string, draftKey?: string) => void;
+  onNewTaskSessionResolved(sessionId: string): void;
+  onNewTaskSessionNotProjected(): void;
 }
 
 export interface WorkbarControllerSelectors {
@@ -111,8 +109,14 @@ export interface UseWorkbarControllerInput {
   /** Toast surface owned by the shell composition zone. */
   toastApi: ToastApi;
   composerRef?: { current: Pick<ComposerHandle, 'focus' | 'setDraft'> | null };
-  openNewTaskSurface?(): number;
+  openNewTaskSurface?(): void;
   openSessionInChat?(sessionId: string): void;
+  /**
+   * The draft key of the currently projected new-task surface. Work Board
+   * start claims are bound to this identity so a first send from any other
+   * surface cannot consume them.
+   */
+  newTaskDraftKey?: string;
   resolveWorkBoardTarget?(item: WorkBoardItem):
     | { ok: true; target: { profileId: string; hostId: string; projectId: string } }
     | { ok: false; message: string };
@@ -199,8 +203,7 @@ export function useWorkbarController(
     viteEnv?.VITE_MAKA_WORK_BOARD_START_TASK === '1';
   const terminalCopy = getDesktopConversationCopy(locale).terminalPanel;
   const { browser, sideChat, terminal, workBoard } = useWorkbarServices();
-  const activeSessionId = input.activeSession?.id;
-  const layout = useWorkbarLayoutState(activeSessionId, input.authoritativeSessionIds);
+  const layout = useWorkbarLayoutState();
   const sideConversations = useSideConversationWorkspace();
   const [pendingSideChatClose, setPendingSideChatClose] = useState<
     Array<{ placement: SessionWorkbarPlacement; tab: SessionWorkbarTab }>
@@ -215,24 +218,20 @@ export function useWorkbarController(
   >(() => new Set());
   const [, setLiveBrowserSessionIds] = useState<readonly string[]>([]);
 
+  const activeSessionId = input.activeSession?.id;
   const activeSessionIdRef = useRef<string | undefined>(undefined);
   /**
-   * The in-flight Work Board start claim. The surface token and target-scoped
-   * draft key jointly own it; `sessionId` is filled once the first send from
-   * that owner is projected, and is retained across a failed link so a retry
+   * The in-flight Work Board start claim. `draftKey` binds the claim to the
+   * new-task surface it opened; `sessionId` is filled once the first send on
+   * that surface is projected, and is retained across a failed link so a retry
    * can reuse the same Session instead of creating a duplicate.
    */
   const pendingWorkBoardStartRef = useRef<{
     itemId: string;
     target: { profileId: string; hostId: string; projectId: string };
-    surfaceOwnerToken: number;
     draftKey: string;
     sessionId?: string;
-    linkInFlight: boolean;
   } | undefined>(undefined);
-  const retryableWorkBoardLinksRef = useRef(
-    new Map<string, NonNullable<typeof pendingWorkBoardStartRef.current>>(),
-  );
   const resourceGenerationRef = useRef(0);
   useLayoutEffect(() => {
     resourceGenerationRef.current += 1;
@@ -253,17 +252,13 @@ export function useWorkbarController(
         return Promise.resolve(false);
       }
       if (pending.sessionId === undefined) return Promise.resolve(false);
-      if (pending.linkInFlight) return Promise.resolve(false);
-      pending.linkInFlight = true;
-      return Promise.resolve()
-        .then(() =>
-          workBoard.linkSession(pending.itemId, {
-            profileId: pending.target.profileId,
-            hostId: pending.target.hostId,
-            sessionId: pending.sessionId!,
-            linkedAt: Date.now(),
-          }),
-        )
+      return workBoard
+        .linkSession(pending.itemId, {
+          profileId: pending.target.profileId,
+          hostId: pending.target.hostId,
+          sessionId: pending.sessionId,
+          linkedAt: Date.now(),
+        })
         .then((result) => {
           if (result.ok) return true;
           input.toastApi.error(
@@ -278,9 +273,6 @@ export function useWorkbarController(
             error instanceof Error ? error.message : String(error),
           );
           return false;
-        })
-        .finally(() => {
-          pending.linkInFlight = false;
         });
     },
     [input, locale, workBoard],
@@ -294,26 +286,46 @@ export function useWorkbarController(
   const settlePendingWorkBoardLink = useCallback(
     (pending: NonNullable<typeof pendingWorkBoardStartRef.current>): void => {
       void linkPendingWorkBoardSession(pending).then((ok) => {
-        if (ok) {
-          if (pendingWorkBoardStartRef.current === pending) {
-            pendingWorkBoardStartRef.current = undefined;
-          }
-          if (retryableWorkBoardLinksRef.current.get(pending.itemId) === pending) {
-            retryableWorkBoardLinksRef.current.delete(pending.itemId);
-          }
+        if (ok && pendingWorkBoardStartRef.current === pending) {
+          pendingWorkBoardStartRef.current = undefined;
         }
       });
     },
     [linkPendingWorkBoardSession],
   );
-=======
+
   const onNewTaskSessionNotProjected = useCallback(() => {
-    pendingWorkBoardStartRef.current = undefined;
+    const pending = pendingWorkBoardStartRef.current;
+    // Only drop a claim that never produced a Session. A claim that already
+    // has a Session id may still have a link in flight or a retryable link
+    // failure, so it must survive until the link settles.
+    if (pending && pending.sessionId === undefined) {
+      pendingWorkBoardStartRef.current = undefined;
+    }
   }, []);
->>>>>>> c6a05bd08 (refactor(desktop): 简化 Work Board start-task 解析链路)
 
   const startWorkBoardTask = useCallback(
     (item: WorkBoardItem) => {
+      const pending = pendingWorkBoardStartRef.current;
+      if (pending) {
+        if (pending.itemId === item.id) {
+          if (pending.sessionId !== undefined) {
+            // A previous link attempt failed for this same item: retry the
+            // link against the already-created Session instead of opening a
+            // new surface and creating a duplicate.
+            settlePendingWorkBoardLink(pending);
+          } else {
+            input.toastApi.info(
+              getDesktopConversationCopy(locale).workBoardPanel.actionFailed,
+              'Finish sending the current Work Board task before starting another one.',
+            );
+          }
+          return;
+        }
+        // A different item was started: the previous claim's surface was
+        // abandoned, so its claim is no longer bound and is dropped.
+        pendingWorkBoardStartRef.current = undefined;
+      }
       const result = input.resolveWorkBoardTarget?.(item);
       if (!result) {
         input.toastApi.info(
@@ -326,39 +338,6 @@ export function useWorkbarController(
         input.toastApi.info(getDesktopConversationCopy(locale).workBoardPanel.actionFailed, result.message);
         return;
       }
-      const pending = pendingWorkBoardStartRef.current;
-      const retryable = retryableWorkBoardLinksRef.current.get(item.id);
-      if (retryable && retryable.sessionId !== undefined) {
-        if (
-          retryable.target.profileId === result.target.profileId &&
-          retryable.target.hostId === result.target.hostId &&
-          retryable.target.projectId === result.target.projectId
-        ) {
-          settlePendingWorkBoardLink(retryable);
-          return;
-        }
-        retryableWorkBoardLinksRef.current.delete(item.id);
-      }
-      if (pending) {
-        if (pending.itemId === item.id && pending.sessionId !== undefined) {
-          if (
-            pending.target.profileId === result.target.profileId &&
-            pending.target.hostId === result.target.hostId &&
-            pending.target.projectId === result.target.projectId
-          ) {
-            // A previous link attempt failed for this same item and target:
-            // retry the already-created Session rather than create a duplicate.
-            settlePendingWorkBoardLink(pending);
-            return;
-          }
-        }
-        // Keep a created Session available for a later retry even if the user
-        // starts another item before returning to this one.
-        if (pending.sessionId !== undefined) {
-          retryableWorkBoardLinksRef.current.set(pending.itemId, pending);
-        }
-        pendingWorkBoardStartRef.current = undefined;
-      }
       const draft = [item.title, item.notes?.trim()].filter(Boolean).join('\n\n');
       const draftKey = input.prepareWorkBoardDraft?.(result.target, draft);
       if (!draftKey) {
@@ -368,20 +347,11 @@ export function useWorkbarController(
         );
         return;
       }
-      const surfaceOwnerToken = input.openNewTaskSurface?.();
-      if (surfaceOwnerToken === undefined) {
-        input.toastApi.info(
-          getDesktopConversationCopy(locale).workBoardPanel.actionFailed,
-          'Work Board task start is unavailable.',
-        );
-        return;
-      }
+      input.openNewTaskSurface?.();
       pendingWorkBoardStartRef.current = {
         itemId: item.id,
         target: result.target,
-        surfaceOwnerToken,
         draftKey,
-        linkInFlight: false,
       };
       globalThis.requestAnimationFrame(() => {
         input.composerRef?.current?.setDraft(draftKey, draft);
@@ -401,22 +371,16 @@ export function useWorkbarController(
   );
 
   const onNewTaskSessionResolved = useCallback(
-    (
-      sessionId: string,
-      surfaceOwnerToken: number,
-      draftKey: string | undefined,
-    ) => {
+    (sessionId: string) => {
       const pending = pendingWorkBoardStartRef.current;
       if (!pending) return;
-      // An older surface can resolve after a later Start has installed a new
-      // claim. Its callback is stale and must not mutate that newer claim.
-      if (surfaceOwnerToken < pending.surfaceOwnerToken) return;
-      // A newer surface abandons the old claim; a Workspace Picker change on
-      // the owning surface does the same. Neither may attach its Session.
-      if (surfaceOwnerToken !== pending.surfaceOwnerToken || draftKey !== pending.draftKey) {
-        if (pending.sessionId !== undefined) {
-          retryableWorkBoardLinksRef.current.set(pending.itemId, pending);
-        }
+      // The claim is bound to the new-task surface it opened. A first send
+      // from any other surface must not consume it: drop the abandoned claim
+      // and refuse to link the wrong Session.
+      if (
+        input.newTaskDraftKey !== undefined &&
+        input.newTaskDraftKey !== pending.draftKey
+      ) {
         pendingWorkBoardStartRef.current = undefined;
         return;
       }
@@ -432,13 +396,7 @@ export function useWorkbarController(
       }
       settlePendingWorkBoardLink(pending);
     },
-    [settlePendingWorkBoardLink],
-  );
-  const bindNewTaskSessionResolver = useCallback(
-    (surfaceOwnerToken: number) =>
-      (sessionId: string, draftKey?: string) =>
-        onNewTaskSessionResolved(sessionId, surfaceOwnerToken, draftKey),
-    [onNewTaskSessionResolved],
+    [input.newTaskDraftKey, settlePendingWorkBoardLink],
   );
   const respondToClientCapability = useCallback<
     WorkbarControllerCommands['respondToClientCapability']
@@ -697,7 +655,6 @@ export function useWorkbarController(
     (
       placement: SessionWorkbarPlacement,
       tabs: readonly SessionWorkbarTab[],
-      options?: { preserveVisibility?: boolean },
     ) => {
       if (tabs.length === 0) return;
       for (const tab of tabs) {
@@ -707,7 +664,6 @@ export function useWorkbarController(
       layout.closeWorkbarTabs(
         placement,
         tabs.map((tab) => tab.id),
-        options,
       );
       const panelIds = new Set(
         tabs
@@ -790,7 +746,6 @@ export function useWorkbarController(
         stale
           .filter((candidate) => candidate.placement === placement)
           .map((candidate) => candidate.tab),
-        { preserveVisibility: true },
       );
     }
   }, [
@@ -817,14 +772,12 @@ export function useWorkbarController(
       )
         ? 'right'
         : 'bottom';
-      layout.closeWorkbarTabs(placement, [tabId], {
-        preserveVisibility: true,
-      });
+      layout.closeWorkbarTab(placement, tabId);
     }
     sideConversations.removePanels(staleIds);
   }, [
     activeSessionId,
-    layout.closeWorkbarTabs,
+    layout.closeWorkbarTab,
     layout.workbarPanelsState,
     sideConversations.panels,
     sideConversations.removePanels,
@@ -925,10 +878,12 @@ export function useWorkbarController(
       respondToClientCapability,
       respondToUserForm: sideChat.respondToUserForm,
       toggleRight,
-      bindNewTaskSessionResolver,
+      onNewTaskSessionResolved,
+      onNewTaskSessionNotProjected,
     }),
     [
-      bindNewTaskSessionResolver,
+      onNewTaskSessionNotProjected,
+      onNewTaskSessionResolved,
       openSideChatWithQuote,
       openTool,
       respondToClientCapability,

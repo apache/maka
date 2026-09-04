@@ -47,8 +47,14 @@ export function registerWorkBoardIpc(input: {
   readonly workspaceRoot: string;
   readonly mainWindowController: MainWindowController;
   readonly store?: WorkBoardStore;
-  /** Proves that a linked Session belongs to the live Host target. */
-  readonly validateLinkedSession: (link: unknown) => Promise<boolean>;
+  /**
+   * Proves that a linked Session belongs to the live Host target and, when
+   * the board item is project-scoped, to that item's project.
+   */
+  readonly validateLinkedSession: (
+    link: unknown,
+    expectedProjectId?: string,
+  ) => Promise<boolean>;
   readonly now?: () => number;
 }): WorkBoardIpcRegistration {
   const store = input.store ?? createWorkBoardStore(input.workspaceRoot);
@@ -159,18 +165,18 @@ export function registerWorkBoardIpc(input: {
     'workBoard:linkSession',
     async (_event, id: unknown, link: unknown, options?: unknown): Promise<WorkBoardIpcResult<WorkBoardItem>> => {
       try {
-        if (!(await input.validateLinkedSession(link))) {
-          throw new WorkBoardStoreError(
-            'invalid_input',
-            'Work Board linked Session does not belong to an available Runtime Host',
-          );
-        }
         const itemId = requireWorkBoardId(id);
         const item = await store.get(itemId);
         if (!item || item.scope.kind !== 'project') {
           throw new WorkBoardStoreError(
             'invalid_input',
             'Only project-scoped Work Board items can link a Session',
+          );
+        }
+        if (!(await input.validateLinkedSession(link, item.scope.projectId))) {
+          throw new WorkBoardStoreError(
+            'invalid_input',
+            'Work Board linked Session does not belong to an available Runtime Host project',
           );
         }
         const linked = await store.linkSession(
