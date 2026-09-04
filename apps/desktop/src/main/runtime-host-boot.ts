@@ -183,6 +183,7 @@ import type {
   DesktopRuntimeHostTargetPolicy,
 } from "./runtime-host-desktop-candidate.js";
 import {
+  DesktopLocalHostRetirementError,
   RuntimeHostUpgradeCancelledError,
   startRuntimeHostDesktopManager,
   type RuntimeHostDesktopManager,
@@ -192,7 +193,11 @@ import {
   DesktopRuntimeHostStartupRecoveryCancelledError,
   startDesktopRuntimeHostWithRecovery,
 } from "./runtime-host-startup-recovery.js";
-import { buildRuntimeHostQuitFailureDialog } from "./runtime-host-quit-copy.js";
+import {
+  buildRuntimeHostActiveQuitDialog,
+  buildRuntimeHostQuitFailureDialog,
+} from "./runtime-host-quit-copy.js";
+import { prepareRuntimeHostQuit } from "./runtime-host-quit.js";
 import { createRuntimeHostUpgradePrompts } from "./runtime-host-upgrade-dialog.js";
 import { registerRuntimeHostMemoryIpc } from "./runtime-host-memory-ipc-main.js";
 import {
@@ -1929,19 +1934,54 @@ function wireLifecycle(): void {
   quitCoordinator.focusOrCreateWindow();
 }
 
-async function prepareRuntimeHostDesktopQuit(): Promise<void> {
-  mainWindowController.browserWindow()?.destroy();
-  const retirement = await runtimeHostManager?.retireOwnedLocalHost(
-    "interrupt_active_work",
-  );
-  if (retirement?.kind === "active_tasks") {
-    throw new Error("Runtime Host refused authorized quit retirement");
-  }
+async function prepareRuntimeHostDesktopQuit(): Promise<'ready' | 'cancelled'> {
+  const preparation = await prepareRuntimeHostQuit(runtimeHostManager, async () => {
+    const locale = await desktopLocale.resolve();
+    const dialog = buildRuntimeHostActiveQuitDialog(locale);
+    const { response } = await showDesktopMessageBox(dialog.options, { locale });
+    return dialog.decisions[response] === 'quit';
+  });
+  if (preparation === 'ready') mainWindowController.browserWindow()?.destroy();
+  return preparation;
 }
 
 async function showRuntimeHostQuitFailure(error: unknown): Promise<void> {
-  const locale = await desktopLocale.resolve();
-  await showDesktopMessageBox(buildRuntimeHostQuitFailureDialog(error, locale), { locale });
+  let currentError = error;
+  let canForceTerminate =
+    runtimeHostManager !== undefined &&
+    currentError instanceof DesktopLocalHostRetirementError &&
+    currentError.facts.pid !== undefined;
+  for (;;) {
+    const locale = await desktopLocale.resolve();
+    const dialog = buildRuntimeHostQuitFailureDialog(
+      currentError,
+      locale,
+      canForceTerminate,
+    );
+    const { response } = await showDesktopMessageBox(dialog.options, { locale });
+    const decision = dialog.decisions[response] ?? 'cancel';
+    if (decision === 'cancel') return;
+    if (decision === 'retry') {
+      app.quit();
+      return;
+    }
+    const retirement = currentError instanceof DesktopLocalHostRetirementError
+      ? currentError
+      : undefined;
+    if (
+      retirement &&
+      await runtimeHostManager?.forceTerminateOwnedLocalHost(retirement.facts)
+    ) {
+      app.quit();
+      return;
+    }
+    canForceTerminate = false;
+    currentError = retirement
+      ? new DesktopLocalHostRetirementError(retirement.facts, {
+          cause: new Error('The Runtime Host identity changed or forced termination failed'),
+        })
+      : currentError;
+  }
 }
 
 async function closeRuntimeHostDesktop(): Promise<void> {

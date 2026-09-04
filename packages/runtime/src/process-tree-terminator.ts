@@ -32,7 +32,7 @@ interface ProcessTreeTerminationOptions {
   fallback?: () => boolean | void;
   hasExited?: () => boolean;
   /** Runs after asynchronous topology discovery and before the first OS action. */
-  beforeSignal?: () => boolean;
+  beforeSignal?: () => boolean | Promise<boolean>;
 }
 
 interface PosixProcess {
@@ -69,7 +69,7 @@ export async function terminateProcessTree(
   const { pid, signal, fallback, hasExited, beforeSignal } = options;
   if (hasExited?.()) return false;
   if (process.platform === 'win32') {
-    if (beforeSignal && !beforeSignal()) return false;
+    if (beforeSignal && !(await beforeSignal())) return false;
     if (await killWindowsTree(pid)) return true;
     if (hasExited?.()) return false;
     return invokeFallback(fallback);
@@ -77,7 +77,7 @@ export async function terminateProcessTree(
 
   const processes = await readPosixProcesses();
   if (hasExited?.()) return false;
-  if (beforeSignal && !beforeSignal()) return false;
+  if (beforeSignal && !(await beforeSignal())) return false;
 
   const escapedDescendantSignaled = forceKillEscapedDescendants(pid, processes);
   if (hasExited?.()) return escapedDescendantSignaled;

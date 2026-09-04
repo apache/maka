@@ -452,6 +452,50 @@ test('preserves Host facts when authorized retirement is refused', async () => {
   await owner.close();
 });
 
+test('fences replacement launches while force-terminating the exact failed retirement', async () => {
+  const events: string[] = [];
+  const current = candidateHarness();
+  const owner = await startRuntimeHostDesktopManager({
+    rootPath: '/test-root',
+    candidateLaunchBarrier: {
+      connect: async () => assert.fail('mocked candidate startup bypasses the barrier'),
+      pause: () => events.push('pause'),
+      retireExcept: async (pid: number) => {
+        events.push(`retire:${pid}`);
+      },
+      resume: () => events.push('resume'),
+      release: () => events.push('release'),
+    },
+  } as unknown as DesktopRuntimeHostCandidateStartInput, {
+    startCandidate: async () => ready(current.candidate),
+    forceTerminateHost: async (identity) => {
+      assert.deepEqual(identity, {
+        rootPath: '/test-root',
+        rootId: 'test-host',
+        hostEpoch: 'test-host-epoch',
+        pid: 42,
+      });
+      events.push('terminate');
+      return true;
+    },
+  });
+
+  assert.equal(
+    await owner.forceTerminateOwnedLocalHost({
+      hostId: 'test-host',
+      hostEpoch: 'test-host-epoch',
+      lifecycleMode: 'ephemeral',
+      rootPath: '/test-root',
+      pid: 42,
+    }),
+    true,
+  );
+  assert.deepEqual(events, ['pause', 'retire:42', 'terminate']);
+  assert.equal((await owner.retireOwnedLocalHost('refuse_active_work')).kind, 'retired');
+  await owner.close();
+  assert.equal(events.at(-1), 'release');
+});
+
 test('resumes candidate launches when candidate retirement fails', async () => {
   const events: string[] = [];
   const current = candidateHarness();

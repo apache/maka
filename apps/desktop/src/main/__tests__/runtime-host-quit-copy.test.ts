@@ -20,7 +20,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { DesktopLocalHostRetirementError } from '../runtime-host-desktop-manager.js';
-import { buildRuntimeHostQuitFailureDialog } from '../runtime-host-quit-copy.js';
+import {
+  buildRuntimeHostActiveQuitDialog,
+  buildRuntimeHostQuitFailureDialog,
+} from '../runtime-host-quit-copy.js';
 
 const failure = new DesktopLocalHostRetirementError(
   {
@@ -35,20 +38,29 @@ const failure = new DesktopLocalHostRetirementError(
 
 for (const locale of ['en', 'zh'] as const) {
   test(`quit failure copy exposes actionable Host facts in ${locale}`, () => {
-    const dialog = buildRuntimeHostQuitFailureDialog(failure, locale);
+    const dialog = buildRuntimeHostQuitFailureDialog(failure, locale, false);
 
-    assert.match(dialog.detail ?? '', /4242/);
-    assert.match(dialog.detail ?? '', /host-epoch/);
-    assert.match(dialog.detail ?? '', /\/state\/root/);
-    assert.match(dialog.detail ?? '', /writer release timed out/);
+    assert.match(dialog.options.detail ?? '', /4242/);
+    assert.match(dialog.options.detail ?? '', /host-epoch/);
+    assert.match(dialog.options.detail ?? '', /\/state\/root/);
+    assert.match(dialog.options.detail ?? '', /writer release timed out/);
   });
 }
 
 test('manual recovery copy names a cross-platform process-management concept', () => {
-  const english = buildRuntimeHostQuitFailureDialog(failure, 'en').detail ?? '';
-  const chinese = buildRuntimeHostQuitFailureDialog(failure, 'zh').detail ?? '';
+  const english = buildRuntimeHostQuitFailureDialog(failure, 'en', false).options.detail ?? '';
+  const chinese = buildRuntimeHostQuitFailureDialog(failure, 'zh', false).options.detail ?? '';
 
   assert.match(english, /operating system's process-management tool/);
   assert.match(chinese, /操作系统的进程管理工具/);
   assert.doesNotMatch(`${english}\n${chinese}`, /Activity Monitor|Task Manager|活动监视器|任务管理器/);
+});
+
+test('quit dialogs default to preserving background work', () => {
+  const active = buildRuntimeHostActiveQuitDialog('en');
+  const recovery = buildRuntimeHostQuitFailureDialog(failure, 'en', true);
+
+  assert.equal(active.decisions[active.options.defaultId ?? -1], 'cancel');
+  assert.equal(recovery.decisions[recovery.options.defaultId ?? -1], 'cancel');
+  assert.deepEqual(recovery.decisions, ['retry', 'force', 'cancel']);
 });
