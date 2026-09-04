@@ -21,6 +21,7 @@ export { useModuleHubController } from './controller/use-module-hub-controller.j
 export { ModuleHubServicesProvider } from './services-context.js';
 export type {
   ModuleHubClipboardService,
+  ModuleHubMcpEditorService,
   ModuleHubServices,
 } from './ports.js';
 export { ModuleHubHost } from './ui/module-hub-host.js';

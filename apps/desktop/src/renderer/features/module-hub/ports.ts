@@ -23,6 +23,11 @@ import type {
   DailyReviewRange,
   DailyReviewSummary,
 } from '@maka/core/daily-review';
+import type {
+  McpConfigAddResult,
+  McpServerConfig,
+  McpServerStatus,
+} from '@maka/core/mcp';
 import type { Result } from '@maka/core/result';
 import type {
   CreateScheduledTaskInput,
@@ -235,6 +240,22 @@ export interface ModuleHubClipboardService {
   writeText(text: string): Promise<void>;
 }
 
+/** The MCP editor/inspector mutations the hub's MCP page performs beyond
+ * the page's base bridge surface: creating a server, and the OAuth login
+ * lifecycle. A port rather than direct bridge access — only the platform
+ * zone may touch the global bridge, and the page receives this service
+ * through the feature seam. */
+export interface ModuleHubMcpEditorService {
+  add(
+    serverId: string,
+    config: McpServerConfig,
+    host: ModuleHubRuntimeHostRef,
+  ): Promise<McpConfigAddResult>;
+  login(serverId: string, host: ModuleHubRuntimeHostRef): Promise<McpServerStatus>;
+  logout(serverId: string, host: ModuleHubRuntimeHostRef): Promise<McpServerStatus>;
+  cancelLogin(serverId: string, host: ModuleHubRuntimeHostRef): Promise<boolean>;
+}
+
 /** Environment capabilities owned by the Module Hub feature slice. */
 export interface ModuleHubServices {
   runtimeHosts: ModuleHubRuntimeHostsService;
@@ -243,4 +264,5 @@ export interface ModuleHubServices {
   clientSettings: ModuleHubClientSettingsService;
   dailyReview: ModuleHubDailyReviewService;
   clipboard: ModuleHubClipboardService;
+  mcpEditor: ModuleHubMcpEditorService;
 }

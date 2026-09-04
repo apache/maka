@@ -29,10 +29,12 @@ import {
 import { McpPage } from '../../../mcp-page.js';
 import type { ModuleHubHostModel } from '../controller/use-module-hub-controller.js';
 import { resolveModuleHubHostRoute } from '../controller/module-hub-route.js';
+import { useModuleHubServices } from '../services-context.js';
 
 /** Selects and mounts exactly one Module Hub leaf for the Shell selection. */
 export function ModuleHubHost(props: { model: ModuleHubHostModel }) {
   const { model } = props;
+  const services = useModuleHubServices();
   const copy = getSharedUiCopy(useUiLocale()).moduleHubs;
   const selection = model.selection;
   const route = resolveModuleHubHostRoute(selection);
@@ -53,8 +55,10 @@ export function ModuleHubHost(props: { model: ModuleHubHostModel }) {
     };
     if (route === 'mcp') {
       // Explicit leaf-owner exception: MCP keeps its existing page-owned
-      // controller and direct bridge; Module Hub only selects and mounts it.
-      return <McpPage hubHeader={header} />;
+      // controller and direct bridge; Module Hub selects and mounts it, and
+      // hands it the editor-operations port (the page's bridge surface is
+      // frozen at its base footprint, so new mutations arrive as services).
+      return <McpPage hubHeader={header} mcpEditor={services.mcpEditor} />;
     }
     return (
       <SkillsPage

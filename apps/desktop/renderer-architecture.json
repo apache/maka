@@ -92,7 +92,6 @@
     "src/renderer/mcp-brand-marks.tsx",
     "src/renderer/mcp-catalog.ts",
     "src/renderer/mcp-command-line.ts",
-    "src/renderer/mcp-editor-validation.ts",
     "src/renderer/mcp-page-model.ts",
     "src/renderer/mcp-page.tsx",
     "src/renderer/model-catalog-choices.ts",
@@ -2027,17 +2026,6 @@
         "actionFactories": [],
         "dependencyPaths": {}
       },
-      "src/renderer/mcp-editor-validation.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "./mcp-command-line.js": 1
-        }
-      },
       "src/renderer/mcp-page-model.ts": {
         "bridgePaths": {},
         "environmentCapabilities": {},
@@ -2083,11 +2071,10 @@
         "actionFactories": [],
         "dependencyPaths": {
           "./default-runtime-host-operation.js": 1,
+          "./features/module-hub/index.js": 1,
           "./locales/mcp-copy": 1,
           "./mcp-brand-marks": 1,
           "./mcp-catalog": 1,
-          "./mcp-command-line": 1,
-          "./mcp-editor-validation": 1,
           "./mcp-page-model": 1,
           "./settings/settings-error-copy": 1,
           "@astryxdesign/core": 1,

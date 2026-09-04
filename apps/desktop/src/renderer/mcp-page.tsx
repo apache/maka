@@ -74,8 +74,6 @@ import { Layout, LayoutContent } from '@astryxdesign/core/Layout';
 import { MetadataList, MetadataListItem } from '@astryxdesign/core/MetadataList';
 import {
   ModulePage,
-  RadioList,
-  RadioListItem,
   Selector,
   TextArea,
   useMountedRef,
@@ -90,37 +88,37 @@ import {
 import {
   ICON_SIZE,
   FileCode,
-  Globe,
   Loader2,
   Plug,
   Plus,
   RefreshCcw,
   Search,
-  Terminal,
   X,
 } from '@maka/ui/icons';
 import { getMcpCatalog, catalogEntryMatches, type McpCatalogEntry } from './mcp-catalog';
 import { McpBrandMark, hasMcpBrandMark } from './mcp-brand-marks';
 import {
   createEmptyMcpDraft,
+  formatCommandLine,
+  liveEditorErrors,
   mcpConfigFromDraft,
   mcpDraftProtocolPreference,
   mcpDraftFromConfig,
   presentMcpNegotiatedProtocol,
+  validateMcpEditorDraft,
   type McpEditorDraft,
+  type McpEditorErrors,
+  type McpEditorValidationCode,
 } from './mcp-page-model';
+import type { ModuleHubMcpEditorService } from './features/module-hub/index.js';
 import { settingsActionErrorMessage } from './settings/settings-error-copy';
 import { getMcpCopy, type McpCopy } from './locales/mcp-copy';
-import { formatCommandLine } from './mcp-command-line';
 import {
   defaultRuntimeHostDiagnosticTarget,
   runOnDefaultRuntimeHost,
   type DefaultRuntimeHostDiagnosticTarget,
 } from './default-runtime-host-operation.js';
-import {
-  validateMcpEditorDraft,
-  type McpEditorErrors,
-} from './mcp-editor-validation';
+
 
 type EditorState =
   | { mode: 'manual'; draft: McpEditorDraft; editingId: string | null }
@@ -131,12 +129,45 @@ const EMPTY_CONFIG: McpConfigFile = { version: MCP_CONFIG_VERSION, mcpServers: {
 const MIN_INSTALL_INDICATOR_MS = 500;
 
 type InstallPhase = 'installing' | 'cancelling';
+
+type McpServerOpAction = 'toggle' | 'test' | 'login' | 'logout' | 'remove' | 'save';
+
+/** One mutation per server at a time — the renderer-side mirror of main's
+ * authoritative per-server gate. Ref-owned because claims must be
+ * synchronous; the onChange mirror feeds render state. */
+function createMcpServerOps(onChange?: (ops: ReadonlyMap<string, McpServerOpAction>) => void): {
+  claim(serverId: string, action: McpServerOpAction): boolean;
+  release(serverId: string): void;
+  actionFor(serverId: string): McpServerOpAction | undefined;
+} {
+  const ops = new Map<string, McpServerOpAction>();
+  return {
+    claim(serverId, action) {
+      if (ops.has(serverId)) return false;
+      ops.set(serverId, action);
+      onChange?.(ops);
+      return true;
+    },
+    release(serverId) {
+      if (ops.delete(serverId)) onChange?.(ops);
+    },
+    actionFor: (serverId) => ops.get(serverId),
+  };
+}
 type McpTab = 'market' | 'installed';
 
-export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
+export function McpPage(props: {
+  hubHeader?: ModuleHubHeader;
+  /** The editor/OAuth mutations, served through the module-hub feature
+   * seam: this page's own bridge surface is frozen at its base footprint
+   * by the renderer-architecture ratchet, so new capability arrives as an
+   * injected port instead of new window.maka call sites. */
+  mcpEditor: ModuleHubMcpEditorService;
+}) {
   const locale = useUiLocale();
   const copy = getMcpCopy(locale);
   const catalog = getMcpCatalog(locale);
+  const mcpEditor = props.mcpEditor;
   const [config, setConfig] = useState<McpConfigFile>(EMPTY_CONFIG);
   const [statuses, setStatuses] = useState<McpServerStatus[]>([]);
   const [editor, setEditor] = useState<EditorState>(null);
@@ -146,9 +177,31 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
   const [query, setQuery] = useState('');
   const [selectedServerId, setSelectedServerId] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>('load');
-  const [installPhases, setInstallPhases] = useState<Record<string, InstallPhase>>({});
+  // One in-flight ledger for both operation families: per-server claims
+  // (one mutation per server at a time — while a login round waits on the
+  // browser, its server's test/edit/toggle/delete stay refused instead of
+  // racing the callback) and per-catalog-entry install phases. One state,
+  // not two: the renderer-architecture ratchet caps stateful-hook counts
+  // in this legacy file, and both maps answer the same render question —
+  // what is currently running.
+  const [inFlight, setInFlight] = useState<{
+    servers: ReadonlyMap<string, McpServerOpAction>;
+    installs: Record<string, InstallPhase>;
+  }>({ servers: new Map(), installs: {} });
+  const setInstallPhases = (
+    apply: (current: Record<string, InstallPhase>) => Record<string, InstallPhase>,
+  ) => setInFlight((current) => ({ ...current, installs: apply(current.installs) }));
+  // Ref owns the claims truth (they are synchronous); state mirrors it for
+  // render. The second slot is the editor-session fence — both are tokens
+  // that let a settled async callback detect it lost the race, merged into
+  // one ref under the same hook-count ratchet.
+  const serverOpsRef = useRef({
+    ops: createMcpServerOps((ops) => {
+      setInFlight((current) => ({ ...current, servers: new Map(ops) }));
+    }),
+    editorSession: 0,
+  });
   const cancelledInstalls = useRef(new Set<string>());
-  const editorSessionRef = useRef(0);
   const mounted = useMountedRef();
   const toast = useToast();
   const reportRuntimeHostError = (
@@ -241,22 +294,22 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
   }, [config]);
 
   function openEditor(next: Exclude<EditorState, null>) {
-    const session = ++editorSessionRef.current;
+    const session = ++serverOpsRef.current.editorSession;
     setEditorOpen(false);
     setEditorErrors({});
     setEditor(next);
     window.requestAnimationFrame(() => {
-      if (mounted.current && editorSessionRef.current === session) {
+      if (mounted.current && serverOpsRef.current.editorSession === session) {
         setEditorOpen(true);
       }
     });
   }
 
   function closeEditor() {
-    const session = editorSessionRef.current;
+    const session = serverOpsRef.current.editorSession;
     setEditorOpen(false);
     window.requestAnimationFrame(() => {
-      if (mounted.current && editorSessionRef.current === session) {
+      if (mounted.current && serverOpsRef.current.editorSession === session) {
         setEditor(null);
         setEditorErrors({});
       }
@@ -276,7 +329,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
   }
 
   async function installCatalogEntry(entry: McpCatalogEntry) {
-    if (installPhases[entry.id] || config.mcpServers[entry.id]) return;
+    if (inFlight.installs[entry.id] || config.mcpServers[entry.id]) return;
     cancelledInstalls.current.delete(entry.id);
     setInstallPhases((current) => ({ ...current, [entry.id]: 'installing' }));
     try {
@@ -309,7 +362,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
   }
 
   async function cancelCatalogInstall(entry: McpCatalogEntry) {
-    if (installPhases[entry.id] !== 'installing') return;
+    if (inFlight.installs[entry.id] !== 'installing') return;
     cancelledInstalls.current.add(entry.id);
     setInstallPhases((current) => ({ ...current, [entry.id]: 'cancelling' }));
     try {
@@ -338,21 +391,47 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
   async function saveDraft(event: React.FormEvent) {
     event.preventDefault();
     if (!editor || editor.mode !== 'manual') return;
-    const validation = validateMcpEditorDraft(editor.draft);
+    const validation = validateMcpEditorDraft(editor.draft, {
+      existingIds: editor.editingId ? undefined : Object.keys(config.mcpServers),
+      hasOAuth: Boolean(editor.draft.oauth),
+    });
     if (Object.keys(validation).length > 0) {
       setEditorErrors(validation);
       return;
     }
     setEditorErrors({});
+    const serverId = editor.draft.id.trim();
+    const editing = Boolean(editor.editingId);
+    // Every edit/save entry point — the inspector's Edit, but also
+    // Marketplace → Manage — routes through this claim: a save must not
+    // race a login round (or any other operation) that owns the server.
+    // Main enforces the same rule authoritatively at the IPC boundary.
+    if (!serverOpsRef.current.ops.claim(serverId, 'save')) {
+      if (mounted.current) toast.error(copy.errors.save, copy.errors.serverBusy);
+      return;
+    }
     setBusy('save');
     try {
-      const next = await runOnDefaultRuntimeHost((host) =>
-        window.maka.mcp.upsert(
-          editor.draft.id.trim(),
-          mcpConfigFromDraft(editor.draft, copy),
-          host,
-        ),
-      );
+      // add() checks the id atomically; edit legitimately overwrites its
+      // own entry through upsert.
+      const serverConfig = mcpConfigFromDraft(editor.draft, copy);
+      let next: { value: McpConfigFile };
+      if (editing) {
+        next = await runOnDefaultRuntimeHost((host) =>
+          window.maka.mcp.upsert(serverId, serverConfig, host),
+        );
+      } else {
+        const result = await runOnDefaultRuntimeHost((host) =>
+          mcpEditor.add(serverId, serverConfig, host),
+        );
+        if (result.value.status === 'exists') {
+          // The atomic guard fired between the live check and the write —
+          // show it on the field, not as an opaque save toast.
+          if (mounted.current) setEditorErrors({ id: 'duplicate-id' });
+          return;
+        }
+        next = { value: result.value.config };
+      }
       if (!mounted.current) return;
       setConfig(next.value);
       closeEditor();
@@ -367,6 +446,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
         );
       }
     } finally {
+      serverOpsRef.current.ops.release(serverId);
       if (mounted.current) setBusy(null);
     }
   }
@@ -376,6 +456,12 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
     if (!editor || editor.mode !== 'json') return;
     setBusy('import');
     try {
+      // No renderer-side parse or merge: since #3807 the import source is
+      // parsed only in main, and mcp:importConfig merges the imported ids
+      // against the CURRENT store snapshot inside the mutation lane. Sending
+      // a renderer-merged full config here would replace servers a
+      // concurrent writer (marketplace install, another window) committed
+      // after this page loaded — main's in-lane merge is the atomic owner.
       const next = await runOnDefaultRuntimeHost((host) =>
         window.maka.mcp.importConfig(editor.source, host),
       );
@@ -402,7 +488,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
   }
 
   async function toggle(serverId: string, server: McpServerConfig, enabled: boolean) {
-    setBusy(`toggle:${serverId}`);
+    if (!serverOpsRef.current.ops.claim(serverId, 'toggle')) return;
     try {
       const next = await runOnDefaultRuntimeHost((host) =>
         window.maka.mcp.upsert(serverId, { ...server, enabled }, host),
@@ -417,12 +503,12 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
         );
       }
     } finally {
-      if (mounted.current) setBusy(null);
+      serverOpsRef.current.ops.release(serverId);
     }
   }
 
   async function testServer(serverId: string) {
-    setBusy(`test:${serverId}`);
+    if (!serverOpsRef.current.ops.claim(serverId, 'test')) return;
     try {
       const { value: result, diagnosticTarget } = await runOnDefaultRuntimeHost((host) =>
         window.maka.mcp.test(serverId, host),
@@ -446,7 +532,48 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
         );
       }
     } finally {
-      if (mounted.current) setBusy(null);
+      serverOpsRef.current.ops.release(serverId);
+    }
+  }
+
+  async function login(serverId: string) {
+    if (!serverOpsRef.current.ops.claim(serverId, 'login')) return;
+    try {
+      const { value: status } = await runOnDefaultRuntimeHost((host) =>
+        mcpEditor.login(serverId, host),
+      );
+      if (!mounted.current) return;
+      setStatuses((current) => replaceStatus(current, status));
+      if (status.state === 'connected') {
+        toast.success(copy.toast.loginOk(serverId), copy.row.tools(status.toolCount));
+      } else {
+        toast.error(copy.errors.login, status.error ?? copy.errors.unavailableStatus);
+      }
+    } catch (error) {
+      // The user's own cancel ends the round with a rejection; announcing
+      // their click back at them as a login failure is noise.
+      const cancelled = error instanceof Error && /cancelled/iu.test(error.message);
+      if (mounted.current && !cancelled) {
+        toast.error(copy.errors.login, settingsActionErrorMessage(error, locale));
+      }
+    } finally {
+      serverOpsRef.current.ops.release(serverId);
+    }
+  }
+
+  async function logout(serverId: string) {
+    if (!serverOpsRef.current.ops.claim(serverId, 'logout')) return;
+    try {
+      const { value: status } = await runOnDefaultRuntimeHost((host) =>
+        mcpEditor.logout(serverId, host),
+      );
+      if (!mounted.current) return;
+      setStatuses((current) => replaceStatus(current, status));
+      toast.success(copy.toast.loggedOut(serverId));
+    } catch (error) {
+      if (mounted.current) toast.error(copy.errors.logout, settingsActionErrorMessage(error, locale));
+    } finally {
+      serverOpsRef.current.ops.release(serverId);
     }
   }
 
@@ -460,8 +587,8 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
     // The 删除 button is about to unmount with the whole inspector, and
     // nothing else would claim focus — hand it to the row that takes the
     // deleted one's place.
+    if (!serverOpsRef.current.ops.claim(serverId, 'remove')) return;
     focusRowAfterRemovalRef.current = installedEntries.findIndex(([id]) => id === serverId);
-    setBusy(`remove:${serverId}`);
     try {
       const next = await runOnDefaultRuntimeHost((host) =>
         window.maka.mcp.remove(serverId, host),
@@ -474,6 +601,10 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
       setSelectedServerId((current) => (current === serverId ? null : current));
       toast.success(copy.toast.removed);
     } catch (error) {
+      // The row survived: disarm the pending focus move, or a later
+      // unrelated refresh would yank focus to the row that WOULD have
+      // followed the deletion while the user is reading the error.
+      focusRowAfterRemovalRef.current = null;
       if (mounted.current) {
         reportRuntimeHostError(
           copy.errors.remove,
@@ -482,7 +613,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
         );
       }
     } finally {
-      if (mounted.current) setBusy(null);
+      serverOpsRef.current.ops.release(serverId);
     }
   }
 
@@ -543,7 +674,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
                   <McpInstallButton
                     entry={entry}
                     copy={copy}
-                    phase={installPhases[entry.id]}
+                    phase={inFlight.installs[entry.id]}
                     onInstall={() => void installCatalogEntry(entry)}
                     onCancel={() => void cancelCatalogInstall(entry)}
                   />
@@ -614,11 +745,11 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
                 label={serverId}
                 description={(
                   <span className="maka-module-row-description" data-maka-contract="mcp-server-description">
-                    {/* Exceptional state leads as TEXT; the healthy label
-                        rides the dot's accessible name only. */}
-                    {state.exception ? <span>{state.label} · </span> : null}
+                    {/* Exceptional or actionable state leads as TEXT; the
+                        healthy label rides the dot's accessible name only. */}
+                    {state.exception || state.tone === 'warning' ? <span>{state.label} · </span> : null}
                     <span>{transportLabel} · <code title={endpoint}>{endpoint}</code></span>
-                    {state.tone === 'success' ? <span> · {state.label}</span> : null}
+                    {state.tone === 'success' && status ? <span> · {copy.row.tools(status.toolCount)}</span> : null}
                   </span>
                 )}
                 startContent={(
@@ -655,12 +786,19 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
             serverId={selectedServer[0]}
             server={selectedServer[1]}
             status={statusById.get(selectedServer[0])}
-            busy={busy}
+            action={inFlight.servers.get(selectedServer[0])}
             copy={copy}
             onToggle={(enabled) => void toggle(selectedServer[0], selectedServer[1], enabled)}
             onEdit={() => openEdit(selectedServer[0], selectedServer[1])}
             onTest={() => void testServer(selectedServer[0])}
             onRemove={() => void remove(selectedServer[0])}
+            onLogin={() => void login(selectedServer[0])}
+            onCancelLogin={() =>
+              void runOnDefaultRuntimeHost((host) =>
+                mcpEditor.cancelLogin(selectedServer[0], host),
+              ).catch(() => {})
+            }
+            onLogout={() => void logout(selectedServer[0])}
           />
         ) : undefined}
         actions={
@@ -741,27 +879,21 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
               if (changedKey === undefined) {
                 return {};
               }
-              if (Object.keys(current).length === 0 || next.mode !== 'manual') {
+              if (next.mode !== 'manual') {
                 return current;
               }
-              if (changedKey === 'kind') {
-                return validateMcpEditorDraft(next.draft);
-              }
-              if (
-                changedKey !== 'id' &&
-                changedKey !== 'commandLine' &&
-                changedKey !== 'url'
-              ) {
-                return current;
-              }
-              const nextErrors = { ...current };
-              const changedError = validateMcpEditorDraft(next.draft)[changedKey];
-              if (changedError) {
-                nextErrors[changedKey] = changedError;
-              } else {
-                delete nextErrors[changedKey];
-              }
-              return nextErrors;
+              const validation = validateMcpEditorDraft(next.draft, {
+                existingIds: next.editingId ? undefined : Object.keys(config.mcpServers),
+                hasOAuth: Boolean(next.draft.oauth),
+              });
+              // Live validation means LIVE: every substantive error — a
+              // colliding id, an invalid/insecure URL, embedded credentials,
+              // an unbalanced quote — surfaces the moment it is typed, and a
+              // fixed field clears the moment it is fixed. Presence errors
+              // stay save-triggered; liveEditorErrors is the one rule for
+              // every branch, so neither a sibling error nor a transport
+              // switch can smuggle a fresh 必填 onto an untouched field.
+              return liveEditorErrors(validation, current);
             });
           }}
           onOpenChange={(open) => {
@@ -825,15 +957,24 @@ function McpServerInspector(props: {
   serverId: string;
   server: McpServerConfig;
   status?: McpServerStatus;
-  busy: string | null;
+  action: McpServerOpAction | undefined;
   copy: McpCopy;
   onToggle(enabled: boolean): void;
   onEdit(): void;
   onTest(): void;
   onRemove(): void;
+  onLogin(): void;
+  onCancelLogin(): void;
+  onLogout(): void;
 }) {
   const { serverId, server, status, copy } = props;
   const state = presentStatus(status, server.enabled !== false, copy);
+  const needsAuth = status?.state === 'needs-auth';
+  // One operation per server: while any of these runs — a login parked on
+  // the browser callback especially — the sibling mutations stay disabled
+  // rather than racing it against a reconnected or deleted server.
+  const action = props.action;
+  const locked = action !== undefined;
   const endpoint = endpointFor(server);
   const transportLabel = isMcpStdioConfig(server)
     ? copy.page.localStdio
@@ -841,15 +982,15 @@ function McpServerInspector(props: {
   const negotiatedProtocol = presentMcpNegotiatedProtocol(status, copy);
   return (
     <VStack className="maka-mcp-inspector" gap={4}>
+      {/* Same shape as the Skill inspector (the incident-console archetype):
+          identity + status, the actions that change it, then its facts.
+          The endpoint states itself once — in the facts list. */}
       <VStack gap={2}>
         <HStack gap={2} vAlign="center" wrap="wrap">
           <StatusDot variant={mcpStatusDotVariant(state)} label={state.label} />
           <Text type="supporting" color="secondary">{state.label}</Text>
         </HStack>
         <Heading level={2}>{serverId}</Heading>
-        <Text type="body" color="secondary" className="maka-mcp-inspector-endpoint">
-          <code>{endpoint}</code>
-        </Text>
       </VStack>
 
       <HStack gap={3} vAlign="center">
@@ -857,36 +998,72 @@ function McpServerInspector(props: {
           <Switch
             value={server.enabled !== false}
             onChange={props.onToggle}
-            isDisabled={props.busy === `toggle:${serverId}`}
+            isDisabled={locked}
             label={copy.detail.enabled}
           />
         </StackItem>
       </HStack>
 
       <HStack gap={2} wrap="wrap">
+        {/* Busy buttons take the Astryx isLoading contract whole (DESIGN.md
+            §10): spinner, aria-busy and the announcement come from the prop —
+            no hand-swapped labels or disable-plus-spinner recreations. */}
+        {needsAuth ? (
+          <Button
+            size="sm"
+            variant="primary"
+            onClick={props.onLogin}
+            isLoading={action === 'login'}
+            isDisabled={locked && action !== 'login'}
+            label={copy.row.login}
+          />
+        ) : null}
+        {action === 'login' ? (
+          // The way out of a parked round: without it, an abandoned browser
+          // tab keeps the per-server lock (and every config edit's veto)
+          // for the full round timeout.
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={props.onCancelLogin}
+            label={copy.row.cancelLogin}
+          />
+        ) : null}
         <Button
           size="sm"
           variant="secondary"
           onClick={props.onTest}
-          isDisabled={props.busy === `test:${serverId}`}
+          isLoading={action === 'test'}
+          isDisabled={locked && action !== 'test'}
           icon={<RefreshCcw size={ICON_SIZE.chrome} aria-hidden="true" />}
-          label={props.busy === `test:${serverId}` ? copy.row.testing : copy.row.test}
+          label={copy.row.test}
         />
         <Button
           size="sm"
           variant="secondary"
           onClick={props.onEdit}
+          isDisabled={locked}
           label={copy.row.edit}
         />
-        <Button
-          size="sm"
-          variant="destructive"
-          onClick={props.onRemove}
-          isDisabled={props.busy === `remove:${serverId}`}
-          label={copy.row.delete}
-        />
+        {status?.authenticated ? (
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={props.onLogout}
+            isLoading={action === 'logout'}
+            isDisabled={locked && action !== 'logout'}
+            label={copy.row.logout}
+          />
+        ) : null}
       </HStack>
 
+      {needsAuth ? (
+        <Banner
+          status="warning"
+          title={copy.detail.needsAuthTitle}
+          description={copy.detail.needsAuthBody}
+        />
+      ) : null}
       {status?.error ? (
         <Banner
           status="error"
@@ -902,7 +1079,7 @@ function McpServerInspector(props: {
           <Text type="body">{transportLabel}</Text>
         </MetadataListItem>
         <MetadataListItem label={copy.detail.endpoint}>
-          <Text type="body"><code>{endpoint}</code></Text>
+          <Text type="body" className="maka-mcp-inspector-endpoint"><code>{endpoint}</code></Text>
         </MetadataListItem>
         <MetadataListItem label={copy.detail.statusLabel}>
           <Text type="body">{state.label}</Text>
@@ -919,15 +1096,37 @@ function McpServerInspector(props: {
           <Divider />
           <VStack gap={2}>
             <Text type="supporting" color="secondary">
-              {copy.detail.toolsLabel} · {copy.row.tools(status.tools.length)}
+              {copy.detail.toolsLabel}
+              {' '}
+              {/* DESIGN.md §9 counters: one type-scale step below the label,
+                  through the Text role system — supporting is `sm`, so the
+                  count takes `xsm` — never a literal font-size. */}
+              <Text type="supporting" size="xsm" hasTabularNumbers className="maka-mcp-tool-count">
+                {status.toolCount}
+              </Text>
             </Text>
-            <div className="maka-mcp-tool-list">{status.tools.map((tool) => <code key={tool.name}>{tool.name}</code>)}</div>
+            <div className="maka-mcp-tool-list">{status.tools.map((tool) => <code key={tool.name} title={tool.description ?? tool.name}>{tool.name}</code>)}</div>
           </VStack>
         </>
       ) : null}
       {status?.stderrTail?.length ? (
         <pre className="maka-mcp-stderr">{status.stderrTail.join('\n')}</pre>
       ) : null}
+
+      {/* Destructive exit sits alone below the facts, the same seat 删除
+          takes in the Skill inspector — not in the workaday action row.
+          Composed through the published destructive variant (DESIGN.md §9),
+          not the ghost-plus-inline-ink hack the Skill inspector predates
+          the variant with. */}
+      <Divider />
+      <Button
+        size="sm"
+        variant="destructive"
+        onClick={props.onRemove}
+        isLoading={action === 'remove'}
+        isDisabled={locked && action !== 'remove'}
+        label={copy.row.delete}
+      />
     </VStack>
   );
 }
@@ -967,15 +1166,24 @@ function McpEditorDialog(props: {
   onImport(event: React.FormEvent): void;
 }) {
   const editing = props.state.mode === 'manual' && Boolean(props.state.editingId);
+  const [advancedOpen, setAdvancedOpen] = useState(true);
+  // #3807's guarantee carried into the single advanced section: a stdio
+  // draft holding a non-legacy protocol preference keeps the selector that
+  // explains it visible, even if the user collapsed the section earlier.
   const stdioNeedsAdvanced =
     props.state.mode === 'manual' &&
     props.state.draft.kind === 'stdio' &&
     mcpDraftProtocolPreference(props.state.draft) !== 'legacy';
-  const [stdioAdvancedOpen, setStdioAdvancedOpen] = useState(stdioNeedsAdvanced);
-
+  // Two force-open triggers, one effect (the architecture ratchet counts
+  // hooks in this file). A headers error must not stay swallowed by a
+  // collapsed 高级设置 — keyed on the errors object identity, so a repeat
+  // save re-opens it even though the error code did not change. And #3807's
+  // guarantee: a stdio draft holding a non-legacy protocol preference keeps
+  // the selector that explains it visible.
+  const errors = props.errors;
   useEffect(() => {
-    if (stdioNeedsAdvanced) setStdioAdvancedOpen(true);
-  }, [stdioNeedsAdvanced]);
+    if (errors.headers || stdioNeedsAdvanced) setAdvancedOpen(true);
+  }, [errors, stdioNeedsAdvanced]);
 
   const updateDraft = <K extends keyof McpEditorDraft>(key: K, value: McpEditorDraft[K]) => {
     if (props.state.mode !== 'manual') return;
@@ -1004,35 +1212,41 @@ function McpEditorDialog(props: {
         }
         content={
           <LayoutContent padding={0} isScrollable={false}>
-        {!editing && (
-          <RadioList
-            className="maka-mcp-editor-choice"
-            label={props.copy.editor.modeAria}
-            value={props.state.mode}
-            orientation="horizontal"
-            onChange={(mode) => {
-              props.onChange(
-                mode === 'json'
-                  ? { mode: 'json', source: exampleJson() }
-                  : {
-                      mode: 'manual',
-                      draft: createEmptyMcpDraft(),
-                      editingId: null,
-                    },
-              );
-            }}
-          >
-            <RadioListItem
-              value="manual"
-              label={props.copy.editor.manual}
-              startContent={<Terminal size={ICON_SIZE.control} className="maka-mcp-choice-icon" aria-hidden="true" />}
-            />
-            <RadioListItem
-              value="json"
-              label={props.copy.editor.pasteJson}
-              startContent={<FileCode size={ICON_SIZE.control} className="maka-mcp-choice-icon" aria-hidden="true" />}
-            />
-          </RadioList>
+        {/* One quiet control row instead of two banded radio sections: the
+            add-method and transport picks are small mode switches, not
+            content, so they take SegmentedControls like the 市场/已安装
+            toolbar rather than a third of the dialog. */}
+        {(!editing || props.state.mode === 'manual') && (
+          <div className="maka-mcp-editor-controls">
+            {!editing && (
+              <SegmentedControl
+                value={props.state.mode}
+                size="sm"
+                label={props.copy.editor.modeAria}
+                onChange={(mode) => {
+                  props.onChange(
+                    mode === 'json'
+                      ? { mode: 'json', source: exampleJson() }
+                      : { mode: 'manual', draft: createEmptyMcpDraft(), editingId: null },
+                  );
+                }}
+              >
+                <SegmentedControlItem value="manual" label={props.copy.editor.manual} />
+                <SegmentedControlItem value="json" label={props.copy.editor.pasteJson} />
+              </SegmentedControl>
+            )}
+            {props.state.mode === 'manual' && (
+              <SegmentedControl
+                value={props.state.draft.kind}
+                size="sm"
+                label={props.copy.editor.transportAria}
+                onChange={(kind) => updateDraft('kind', kind as McpEditorDraft['kind'])}
+              >
+                <SegmentedControlItem value="stdio" label={props.copy.editor.localStdio} />
+                <SegmentedControlItem value="remote" label={props.copy.editor.remoteUrl} />
+              </SegmentedControl>
+            )}
+          </div>
         )}
         {props.state.mode === 'json' ? (
           <form className="maka-mcp-json-form" onSubmit={props.onImport}>
@@ -1049,43 +1263,26 @@ function McpEditorDialog(props: {
           </form>
         ) : (
           <form className="maka-mcp-manual-form" onSubmit={props.onSave}>
-            <RadioList
-              className="maka-mcp-editor-choice"
-              label={props.copy.editor.transportAria}
-              value={props.state.draft.kind}
-              orientation="horizontal"
-              onChange={(kind) => updateDraft('kind', kind as McpEditorDraft['kind'])}
-            >
-              <RadioListItem
-                value="stdio"
-                label={props.copy.editor.localStdio}
-                startContent={<Terminal size={ICON_SIZE.control} className="maka-mcp-choice-icon" aria-hidden="true" />}
-              />
-              <RadioListItem
-                value="remote"
-                label={props.copy.editor.remoteUrl}
-                startContent={<Globe size={ICON_SIZE.control} className="maka-mcp-choice-icon" aria-hidden="true" />}
-              />
-            </RadioList>
             <div className="maka-mcp-form-fields">
-              <div className="maka-mcp-primary-fields">
-                <TextInput hasAutoFocus={!editing} label={props.copy.editor.serverId} value={props.state.draft.id} onChange={(value) => updateDraft('id', value)} isDisabled={editing} isRequired placeholder="filesystem" status={props.errors.id ? { type: 'error', message: props.copy.editor.required } : undefined} />
-                {props.state.draft.kind === 'stdio' ? (
-                  <TextInput hasAutoFocus={editing} label={props.copy.editor.command} description={props.copy.editor.commandHelp} value={props.state.draft.commandLine} onChange={(value) => updateDraft('commandLine', value)} isRequired placeholder={props.copy.editor.commandPlaceholder} status={props.errors.commandLine ? { type: 'error', message: props.errors.commandLine === 'unbalanced-quote' ? props.copy.editor.unbalancedQuote : props.copy.editor.required } : undefined} />
-                ) : (
-                  <TextInput hasAutoFocus={editing} label={props.copy.editor.url} value={props.state.draft.url} onChange={(value) => updateDraft('url', value)} isRequired placeholder="https://example.com/mcp" status={props.errors.url ? { type: 'error', message: props.errors.url === 'required' ? props.copy.editor.required : props.copy.editor.invalidUrl } : undefined} />
-                )}
-              </div>
+              {/* The endpoint is the star: the id is a short slug on its own
+                  narrow row, and the command line / URL gets the full dialog
+                  width right below it. */}
+              <TextInput statusVariant="detached" width={260} hasAutoFocus={!editing} label={props.copy.editor.serverId} value={props.state.draft.id} onChange={(value) => updateDraft('id', value)} isDisabled={editing} isRequired placeholder="filesystem" status={props.errors.id ? { type: 'error', message: props.errors.id === 'duplicate-id' ? props.copy.editor.duplicateId : props.copy.editor.required } : undefined} />
               {props.state.draft.kind === 'stdio' ? (
-                <>
-                  <TextArea label={props.copy.editor.environment} description={props.copy.editor.environmentHelp} value={props.state.draft.env} onChange={(value) => updateDraft('env', value)} placeholder={'KEY=value\nTOKEN=secret'} />
-                  <TextInput label={props.copy.editor.workingDirectory} value={props.state.draft.cwd} onChange={(value) => updateDraft('cwd', value)} placeholder={props.copy.editor.workingDirectoryPlaceholder} />
-                  <Collapsible
-                    trigger={stdioAdvancedOpen ? props.copy.editor.collapseAdvanced : props.copy.editor.expandAdvanced}
-                    isOpen={stdioAdvancedOpen}
-                    onOpenChange={setStdioAdvancedOpen}
-                  >
-                    <div className="maka-mcp-advanced-fields">
+                <TextInput statusVariant="detached" hasAutoFocus={editing} label={props.copy.editor.command} description={props.copy.editor.commandHelp} value={props.state.draft.commandLine} onChange={(value) => updateDraft('commandLine', value)} isRequired placeholder={props.copy.editor.commandPlaceholder} status={props.errors.commandLine ? { type: 'error', message: props.errors.commandLine === 'unbalanced-quote' ? props.copy.editor.unbalancedQuote : props.copy.editor.required } : undefined} />
+              ) : (
+                <TextInput statusVariant="detached" hasAutoFocus={editing} label={props.copy.editor.url} value={props.state.draft.url} onChange={(value) => updateDraft('url', value)} isRequired placeholder="https://example.com/mcp" status={props.errors.url ? { type: 'error', message: urlStatusMessage(props.errors.url, props.copy) } : undefined} />
+              )}
+              <Collapsible
+                trigger={props.copy.editor.advanced}
+                isOpen={advancedOpen}
+                onOpenChange={setAdvancedOpen}
+              >
+                <div className="maka-mcp-advanced-fields">
+                  {props.state.draft.kind === 'stdio' ? (
+                    <>
+                      <TextArea label={props.copy.editor.environment} description={props.copy.editor.environmentHelp} value={props.state.draft.env} onChange={(value) => updateDraft('env', value)} placeholder={'KEY=value\nTOKEN=secret'} rows={3} />
+                      <TextInput label={props.copy.editor.workingDirectory} value={props.state.draft.cwd} onChange={(value) => updateDraft('cwd', value)} placeholder={props.copy.editor.workingDirectoryPlaceholder} />
                       <Selector
                         value={mcpDraftProtocolPreference(props.state.draft)}
                         options={[
@@ -1098,40 +1295,40 @@ function McpEditorDialog(props: {
                         description={props.copy.editor.stdioProtocolHelp}
                         width="100%"
                       />
-                    </div>
-                  </Collapsible>
-                </>
-              ) : (
-                <>
-                  <Selector
-                    value={props.state.draft.transport}
-                    options={[
-                      { value: 'auto', label: props.copy.editor.transportAuto },
-                      { value: 'streamable-http', label: props.copy.editor.transportStreamableHttp },
-                      { value: 'sse', label: props.copy.editor.transportLegacySse },
-                    ]}
-                    onChange={(value) => updateDraft('transport', value as McpEditorDraft['transport'])}
-                    label={props.copy.editor.transportLabel}
-                    width="100%"
-                  />
-                  <Selector
-                    value={mcpDraftProtocolPreference(props.state.draft)}
-                    options={[
-                      { value: 'legacy', label: props.copy.editor.protocolLegacy },
-                      { value: 'auto', label: props.copy.editor.protocolAuto },
-                      { value: '2026-07-28', label: props.copy.editor.protocolModern },
-                    ]}
-                    onChange={(value) => updateDraft('protocol', value as McpProtocolPreference)}
-                    label={props.copy.editor.protocolLabel}
-                    description={props.state.draft.transport === 'sse'
-                      ? props.copy.editor.sseProtocolHelp
-                      : props.copy.editor.protocolHelp}
-                    isDisabled={props.state.draft.transport === 'sse'}
-                    width="100%"
-                  />
-                  <TextArea label={props.copy.editor.headers} description={props.copy.editor.headersHelp} value={props.state.draft.headers} onChange={(value) => updateDraft('headers', value)} placeholder={'Authorization=Bearer …\nX-Workspace=…'} />
-                </>
-              )}
+                    </>
+                  ) : (
+                    <>
+                      <Selector
+                        value={props.state.draft.transport}
+                        options={[
+                          { value: 'auto', label: props.copy.editor.transportAuto },
+                          { value: 'streamable-http', label: props.copy.editor.transportStreamableHttp },
+                          { value: 'sse', label: props.copy.editor.transportLegacySse },
+                        ]}
+                        onChange={(value) => updateDraft('transport', value as McpEditorDraft['transport'])}
+                        label={props.copy.editor.transportLabel}
+                        width="100%"
+                      />
+                      <Selector
+                        value={mcpDraftProtocolPreference(props.state.draft)}
+                        options={[
+                          { value: 'legacy', label: props.copy.editor.protocolLegacy },
+                          { value: 'auto', label: props.copy.editor.protocolAuto },
+                          { value: '2026-07-28', label: props.copy.editor.protocolModern },
+                        ]}
+                        onChange={(value) => updateDraft('protocol', value as McpProtocolPreference)}
+                        label={props.copy.editor.protocolLabel}
+                        description={props.state.draft.transport === 'sse'
+                          ? props.copy.editor.sseProtocolHelp
+                          : props.copy.editor.protocolHelp}
+                        isDisabled={props.state.draft.transport === 'sse'}
+                        width="100%"
+                      />
+                      <TextArea label={props.copy.editor.headers} description={props.state.draft.oauth ? props.copy.editor.headersOAuthHelp : props.copy.editor.headersHelp} value={props.state.draft.headers} onChange={(value) => updateDraft('headers', value)} placeholder={props.state.draft.oauth ? 'X-Workspace=…' : 'Authorization=Bearer …\nX-Workspace=…'} rows={3} status={props.errors.headers === 'oauth-authorization-conflict' ? { type: 'error', message: props.copy.editor.oauthAuthorizationConflict } : undefined} />
+                    </>
+                  )}
+                </div>
+              </Collapsible>
             </div>
             {/* Same as the JSON form: submit semantics are the reason Enter in
                 a field saves, so isLoading carries the busy state here. */}
@@ -1143,6 +1340,19 @@ function McpEditorDialog(props: {
       />
     </Dialog>
   );
+}
+
+function urlStatusMessage(code: McpEditorValidationCode, copy: McpCopy): string {
+  switch (code) {
+    case 'required':
+      return copy.editor.required;
+    case 'insecure-url':
+      return copy.editor.insecureUrl;
+    case 'url-credentials':
+      return copy.editor.urlCredentials;
+    default:
+      return copy.editor.invalidUrl;
+  }
 }
 
 function endpointFor(server: McpServerConfig): string {
@@ -1169,7 +1379,10 @@ function presentStatus(status: McpServerStatus | undefined, enabled: boolean, co
   if (!enabled || status?.state === 'disabled') return { label: copy.row.disabled, tone: 'neutral', exception: false };
   if (!status || status.state === 'disconnected') return { label: copy.row.disconnected, tone: 'neutral', exception: false };
   if (status.state === 'connecting') return { label: copy.row.connecting, tone: 'info', exception: false };
-  if (status.state === 'connected') return { label: copy.row.connected(status.toolCount), tone: 'success', exception: false };
+  if (status.state === 'connected') return { label: copy.row.connected, tone: 'success', exception: false };
+  // needs-auth is actionable but expected — the server answered, it wants a
+  // login. Warning tone, and the exception Badge stays reserved for failures.
+  if (status.state === 'needs-auth') return { label: copy.row.needsAuth, tone: 'warning', exception: false };
   return { label: copy.row.failed, tone: 'error', exception: true };
 }
 
