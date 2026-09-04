@@ -34,11 +34,10 @@ const WAITING_HOLD_TTL_SECONDS = 60 * 60;
  * They exercise the real main-owned session, IPC, persistence, runtime-effect,
  * and renderer polling paths without contacting an external IM platform.
  *
- * Scenario-aware: the `settings-bots-onboarding` fixture needs the modal frozen
- * in its 'waiting' state so the QR-onboarding capture is stable, so every
- * provider holds a fixed QR + long TTL + never-confirming poll. All other
- * scenarios keep the scanned → confirmed happy-path adapters the E2E
- * onboarding specs rely on.
+ * Scenario-aware: the `settings-bots-onboarding` fixture holds a fixed QR and
+ * long TTL while deterministic HTTP 503 poll failures exercise the retry-health
+ * presentation. All other scenarios keep the scanned → confirmed happy-path
+ * adapters the E2E onboarding specs rely on.
  */
 export function createE2eFixtureBotOnboardingAdapters(): AdapterMap {
   if (process.env.MAKA_E2E_FIXTURE === 'settings-bots-onboarding') {
@@ -158,11 +157,10 @@ export function createE2eFixtureBotOnboardingAdapters(): AdapterMap {
 
 /**
  * #1233 deferral (settings-bots-onboarding): adapters that hold the modal in
- * its 'waiting' state. Every value is FIXED (no Date.now / random) so the
- * rendered QR image is byte-identical across runs, the TTL is long
- * enough to outlast the fixture settle window, and `poll` never leaves
- * 'pending' — so the main service keeps the session 'waiting' and the modal's
- * waiting layout stays put for a deterministic fixture state.
+ * its waiting/backoff state. Every value is FIXED (no Date.now / random) so the
+ * rendered QR image is byte-identical across runs, the TTL outlasts the fixture
+ * settle window, and a finite HTTP 503 category exercises the renderer without
+ * leaking provider text.
  */
 function createWaitingHoldBotOnboardingAdapters(): AdapterMap {
   function waitingHold(provider: BotOnboardingProvider): BotOnboardingProviderAdapter {
@@ -177,7 +175,7 @@ function createWaitingHoldBotOnboardingAdapters(): AdapterMap {
         };
       },
       async poll() {
-        return { status: 'pending' };
+        throw new Error('HTTP 503 e2e fixture provider detail must stay in main');
       },
     };
   }
