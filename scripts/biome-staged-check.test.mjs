@@ -73,6 +73,44 @@ test('skips a staged binary larger than the default child-process buffer', () =>
   }
 });
 
+test('checks a staged source file that holds a NUL byte', () => {
+  const root = fixture();
+  try {
+    writeFileSync(join(root, 'valid.js'), Buffer.from('const value={answer:"\0"};\n', 'utf8'));
+    execFileSync('git', ['add', 'valid.js'], { cwd: root });
+
+    assert.equal(checkStagedWithBiome({ root, biomePath }), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('checks a staged source file larger than the default child-process buffer', () => {
+  const root = fixture();
+  try {
+    const padding = `// ${'a'.repeat(2 * 1024 * 1024)}\n`;
+    writeFileSync(join(root, 'large.js'), `${padding}const value={answer:42};\n`);
+    execFileSync('git', ['add', 'large.js'], { cwd: root });
+
+    assert.equal(checkStagedWithBiome({ root, biomePath }), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('skips a small staged binary Biome cannot decode', () => {
+  const root = fixture();
+  try {
+    const binary = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0xd8, 0xff]);
+    writeFileSync(join(root, 'icon.png'), binary);
+    execFileSync('git', ['add', 'icon.png'], { cwd: root });
+
+    assert.equal(checkStagedWithBiome({ root, biomePath }), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('passes a language Biome parses but does not format', () => {
   const root = fixture();
   try {
