@@ -22,6 +22,7 @@ import { ConversationServicesProvider } from '../features/conversation';
 import { createDesktopConversationServices } from '../platform/desktop/create-conversation-services';
 import { AppUpdateServicesProvider } from '../features/app-update/index.js';
 import { ConnectionSettingsServicesProvider } from '../features/connection-settings';
+import { ConversationServicesProvider } from '../features/conversation';
 import { GoalServicesProvider } from '../features/goals';
 import { ModuleHubServicesProvider } from '../features/module-hub';
 import { RuntimeHostManagementServicesProvider } from '../features/runtime-host-management';
@@ -34,6 +35,7 @@ import { WorkbarServicesProvider } from '../features/workbar';
 import { createDesktopAppUpdateServices } from '../platform/desktop/create-app-update-services';
 import { createDesktopGoalServices } from '../platform/desktop/create-goal-services';
 import { createDesktopConnectionSettingsServices } from '../platform/desktop/create-connection-settings-services';
+import { createDesktopConversationServices } from '../platform/desktop/create-conversation-services';
 import { createDesktopModuleHubServices } from '../platform/desktop/create-module-hub-services';
 import { createDesktopRuntimeHostManagementServices } from '../platform/desktop/create-runtime-host-management-services';
 import { createDesktopSessionCollaborationServices } from '../platform/desktop/create-session-collaboration-services';
@@ -48,6 +50,7 @@ export function createDesktopFeatureServices() {
     appUpdate: createDesktopAppUpdateServices(),
     conversation: createDesktopConversationServices(),
     connectionSettings: createDesktopConnectionSettingsServices(),
+    conversation: createDesktopConversationServices(),
     goal: createDesktopGoalServices(),
     moduleHub: createDesktopModuleHubServices(),
     runtimeHostManagement: createDesktopRuntimeHostManagementServices(),
