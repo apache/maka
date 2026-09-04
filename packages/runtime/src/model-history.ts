@@ -23,11 +23,10 @@
  *
  * Architecture: docs/architecture/llm-compaction-events-log-projection-draft.md
  *
- * Phase 1 scope: pure, synchronous projection. Replaces the ad-hoc
- * StoredMessage filtering in AiSdkBackend.materializePriorMessages with an
- * explicit, policy-driven filter over canonical events. The output is a
- * neutral `ModelHistoryEntry[]` that callers (ai-sdk backend, flow runner)
- * translate into provider-specific message shapes.
+ * RuntimeEvents are the semantic authority. This module owns both admission
+ * into replay and the chronological assistant-step timeline consumed by the
+ * AI SDK request path, text summarizer, and Codex compactor. StoredMessage is
+ * a UI/import projection and is never a provider-history fallback.
  *
  * Policy (why an event is KEPT):
  *   - non-partial (final content, not a transient streaming chunk)
@@ -44,12 +43,9 @@
  *   - system-role events by default (UI-only notes; system instructions
  *     are injected fresh by the runner, not replayed from history)
  *
- * Thinking and tool events are opt-in/opt-out so callers can match the
- * replay contract of their provider (V0.1 text-only replay cannot use
- * them; Anthropic replay can re-use signed thinking, etc.).
- *
- * NOTE: imports the new `@maka/core/runtime-event` subpath. The steward
- * node re-exports it from the core barrel.
+ * Thinking and tool events are opt-in/opt-out so callers can match the replay
+ * contract of their provider; unsupported provider-native parts degrade per
+ * item without reviving the retired 0.1.x StoredMessage history path.
  */
 
 import {
