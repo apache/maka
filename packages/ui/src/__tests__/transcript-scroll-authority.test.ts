@@ -231,57 +231,56 @@ test('a scroll event that arrives late is still this authority\'s own write', ()
   });
 });
 
-test('a moved event past the threshold releases, resolving the race toward the reader', () => {
+test('growth that outruns the write does not read as the reader scrolling up', () => {
   withObservers((resize) => {
     const root = fakeRoot();
     const authority = createTranscriptScrollAuthority();
     authority.attach(root as unknown as HTMLElement);
     assert.equal(root.scrollTop, 2_400);
 
-    // The transcript grew and a scroll event lands before this authority has
-    // followed it, at an offset 300px from the tail that moved. As a position
-    // this is identical to a reader who scrolled up 300px. Refusing to act on
-    // it — because the geometry also changed — is #4269: once content-visibility
-    // placeholders expand on the way up, every reader scroll also moves
-    // `scrollHeight`, so a guard that stays pinned here re-pins the reader every
-    // frame. Release is monotonic and this authority owns no write that put them
-    // here, so the ambiguity resolves toward the reader and the pin lets go.
-    //
-    // In a real browser the benign side of this race does not reach this branch
-    // past the threshold: growth below the tail moves no offset and echoes, and
-    // growth above is absorbed by anchoring that holds the distance at ~0 — the
-    // case the next test pins down.
+    // The transcript grew, and the scroll event for it arrives before this
+    // authority has been told to follow it. The offset is 302px from a tail
+    // that moved — identical, as a distance, to a reader who scrolled up 300px.
+    // But the reader would have moved the offset *up*, below this authority's
+    // last write; this one sits at or past that write, so it is growth and the
+    // pin must hold or the follow releases itself.
     root.grow(302);
     root.scrollTop = 2_402;
+    root.emitScroll();
+    assert.equal(authority.getSnapshot().pinned, true);
+
+    // The affordance still knows how far the tail now is, and the next growth
+    // signal takes the reader back to it.
+    assert.equal(authority.getSnapshot().awayFromTail, true);
+    resize();
+    assert.equal(root.scrollTop, 2_702);
+  });
+});
+
+test('a reader scroll under changing geometry still releases the tail', () => {
+  withObservers((resize) => {
+    const root = fakeRoot();
+    const authority = createTranscriptScrollAuthority();
+    authority.attach(root as unknown as HTMLElement);
+    assert.equal(root.scrollTop, 2_400);
+
+    // #4269: the reader scrolls up while the turn is still streaming, so the
+    // very gesture that moves the offset up also grows `scrollHeight` as
+    // content-visibility placeholders expand. The event is `moved`, yet the
+    // offset is now above this authority's last write — the one thing growth
+    // alone never produces — so it is the reader, and the pin releases even
+    // though the geometry changed in the same frame.
+    root.grow(500);
+    root.scrollTop = 1_000;
     root.emitScroll();
     assert.equal(authority.getSnapshot().pinned, false);
     assert.equal(authority.getSnapshot().awayFromTail, true);
 
-    // With the pin released this authority writes nothing, so the reader keeps
-    // the offset they were left on rather than being taken to the new tail.
+    // Released, this authority writes nothing more; the reader keeps their
+    // place as the turn keeps growing.
+    root.grow(4_000);
     resize();
-    assert.equal(root.scrollTop, 2_402);
-  });
-});
-
-test('a moved event anchoring holds within the threshold keeps the pin', () => {
-  withObservers((resize) => {
-    const root = fakeRoot();
-    const authority = createTranscriptScrollAuthority();
-    authority.attach(root as unknown as HTMLElement);
-    assert.equal(root.scrollTop, 2_400);
-
-    // Content grew and native anchoring moved the offset with the tail, so the
-    // distance stays within PIN_THRESHOLD_PX. This is the benign geometry change
-    // the release must not fire on: the reader never left, and the next growth
-    // signal follows the tail exactly as before.
-    root.grow(302);
-    root.scrollTop = 2_702;
-    root.emitScroll();
-    assert.equal(authority.getSnapshot().pinned, true);
-
-    resize();
-    assert.equal(root.scrollTop, 2_702);
+    assert.equal(root.scrollTop, 1_000);
   });
 });
 

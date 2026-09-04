@@ -152,22 +152,24 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
           lastClientHeight = target.clientHeight;
           return;
         }
-        // An event that arrives with the scroll geometry changed cannot say who
-        // moved the offset: anchoring holding the reader still as turns land
-        // above, growth that outran this authority's own write, or a resize the
-        // browser answered by clamping the offset all shift it without the
-        // reader asking. So this branch never *re-pins* from position — that
-        // would follow the tail on the strength of a content jump, which is the
-        // #4269 regression: once content-visibility placeholders expand on the
-        // way up, every upward scroll also changes `scrollHeight`, and a pin
-        // re-derived here would snap the reader back to the tail every frame.
-        // Releasing, though, is monotonic and safe to read from position alone.
-        // Leaving the tail only ever moves the reader farther from the bottom,
-        // and no benign geometry change parks a tail-following reader past
-        // PIN_THRESHOLD_PX — growth appends below their unchanged offset and
-        // fires no `scroll`. So a moved event that finds them beyond the
-        // threshold is the reader having left, and the pin releases. Re-pinning
-        // still needs the stable-geometry path below or an explicit
+        // An event that arrives with the scroll geometry changed cannot be read
+        // as the reader from distance alone: anchoring holding them still as
+        // turns land above, growth that outran this authority's own write, or a
+        // resize the browser answered by clamping the offset all enlarge the
+        // distance to the tail without the reader asking. So this branch never
+        // *re-pins* from position — that would follow the tail on the strength
+        // of a content jump. #4269 is the mirror of the same ambiguity: once
+        // #4206 put `content-visibility` on every turn, scrolling up itself
+        // expands placeholders, so the reader's own gesture changes
+        // `scrollHeight` too, and a guard that refused to act on any moved event
+        // left the pin set and let the ResizeObserver snap them back every
+        // frame. What still separates growth from the reader is direction: this
+        // authority only ever wrote the offset toward the tail, so an offset now
+        // *above* its last write is the reader having moved up — monotonic, and
+        // owned by no write here. Release the pin for that, and only that; a
+        // moved event that finds the offset at or past the last write is growth
+        // outrunning the follow, and must keep the pin so the follow survives.
+        // Re-pinning still needs the stable-geometry path below or an explicit
         // pinToTail(). The affordance follows the new distance either way,
         // because that is a fact about the viewport rather than about them.
         const moved =
@@ -177,7 +179,13 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
         const distance = distanceToTail();
         awayFromTail = distance > BUTTON_THRESHOLD_PX;
         if (moved) {
-          if (distance > PIN_THRESHOLD_PX) pinned = false;
+          if (
+            lastWrittenTop !== undefined
+            && target.scrollTop < lastWrittenTop
+            && distance > PIN_THRESHOLD_PX
+          ) {
+            pinned = false;
+          }
           publish();
           return;
         }
