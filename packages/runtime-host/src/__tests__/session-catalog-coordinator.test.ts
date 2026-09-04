@@ -981,6 +981,55 @@ test('configuration update admits Plan mode through Runtime authority', async ()
   assert.equal(fixture.drainRequests(), 0);
 });
 
+test('permission-only Host updates select the live boundary transition path', async () => {
+  const observed: boolean[] = [];
+  const fixture = createFixture({
+    manager: {
+      transitionSessionConfiguration: async (_sessionId, input) => {
+        observed.push(input.permissionModeOnly);
+        if (!input.permissionModeOnly) {
+          throw new SessionConfigurationTransitionError(
+            'session_busy',
+            'Session configuration cannot change while a linked Turn is active',
+          );
+        }
+        return headerSnapshot(
+          { ...fixture.header(), permissionMode: input.configuration.permissionMode },
+          fixture.revision() + 1,
+        );
+      },
+    },
+  });
+
+  const widening = await fixture.coordinator.handlers['session.configuration.update'](
+    {
+      sessionId: fixture.sessionId,
+      expectedRevision: fixture.revision(),
+      patch: { permissionMode: 'bypass' },
+    },
+    context,
+  );
+  const mixed = await fixture.coordinator.handlers['session.configuration.update'](
+    {
+      sessionId: fixture.sessionId,
+      expectedRevision: fixture.revision(),
+      patch: { permissionMode: 'bypass', collaborationMode: 'plan' },
+    },
+    context,
+  );
+
+  assert.equal(widening.ok, true);
+  assert.deepEqual(mixed, {
+    ok: false,
+    error: {
+      code: 'session_busy',
+      message: 'Session configuration cannot change while a linked Turn is active',
+    },
+  });
+  assert.deepEqual(observed, [true, false]);
+  assert.equal(fixture.drainRequests(), 0);
+});
+
 test('configuration update never rebinds a bound Session through a reused slug', async () => {
   let observedRef: unknown;
   const fixture = createFixture({

@@ -68,6 +68,7 @@ import type {
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { PermissionMode } from '@maka/core/permission';
+import { isReadOnlyPermissionProfile } from '@maka/core/permission-profile';
 import { DEFAULT_TOOL_MODE } from '@maka/core/tool-mode';
 import type {
   CreateSandboxBoundaryRequest,
@@ -540,6 +541,7 @@ export interface SessionConfigurationStoreUpdate {
 export interface SessionConfigurationTransitionRequest {
   readonly expectedRevision: number;
   readonly clearConnectionBlock: boolean;
+  readonly permissionModeOnly: boolean;
   readonly configuration: Omit<SessionConfigurationStoreUpdate['configuration'], 'labels'>;
 }
 
@@ -1125,56 +1127,80 @@ export class SessionManager {
     input: SessionConfigurationTransitionRequest,
   ): Promise<VersionedSessionHeader> {
     const store = this.requireSessionConfigurationStore();
-    const next = await this.commitExecutionResourceTransition(
-      sessionId,
-      input.configuration.permissionMode,
-      async () => {
-        const current = await store.readHeaderRecordSnapshot(sessionId);
-        if (current.revision !== input.expectedRevision) {
-          throw new SessionConfigurationRevisionConflictError(
-            input.expectedRevision,
-            current.revision,
-          );
-        }
-        if (current.header.isArchived) {
-          throw new SessionConfigurationTransitionError(
-            'operation_conflict',
-            'Archived Session configuration cannot be changed',
-          );
-        }
-        if (current.header.status === 'waiting_for_user') {
-          throw new SessionConfigurationTransitionError(
-            'session_busy',
-            'Session has a pending Interaction',
-          );
-        }
-        await this.assertCollaborationTransition(
-          current.header,
-          input.configuration.collaborationMode,
+    const observed = await store.readHeaderRecordSnapshot(sessionId);
+    if (observed.revision !== input.expectedRevision) {
+      throw new SessionConfigurationRevisionConflictError(
+        input.expectedRevision,
+        observed.revision,
+      );
+    }
+    if (
+      !input.clearConnectionBlock &&
+      sessionConfigurationMatches(observed.header, input.configuration)
+    ) {
+      return observed;
+    }
+    const permissionModeOnly =
+      input.permissionModeOnly &&
+      sessionConfigurationMatchesExceptPermissionMode(observed.header, input.configuration);
+    const prepareCommit = async (): Promise<() => Promise<VersionedSessionHeader>> => {
+      const current = await store.readHeaderRecordSnapshot(sessionId);
+      if (current.revision !== input.expectedRevision) {
+        throw new SessionConfigurationRevisionConflictError(
+          input.expectedRevision,
+          current.revision,
         );
-        const leavingDeepResearch =
-          isDeepResearchSession(current.header.labels) &&
-          input.configuration.permissionMode !== 'explore';
-        const labels = leavingDeepResearch
-          ? current.header.labels.filter((label) => label !== DEEP_RESEARCH_SESSION_LABEL)
-          : current.header.labels;
-        return () =>
-          store.updateSessionConfiguration(sessionId, {
-            expectedVersion: input.expectedRevision,
-            configuration: {
-              ...input.configuration,
-              labels,
-            },
-            lifecycle:
-              input.clearConnectionBlock && current.header.blockedReason === 'NO_REAL_CONNECTION'
-                ? {
-                    kind: 'clear_connection_block',
-                    statusUpdatedAt: this.deps.now(),
-                  }
-                : { kind: 'preserve' },
-          });
-      },
-    );
+      }
+      if (current.header.isArchived) {
+        throw new SessionConfigurationTransitionError(
+          'operation_conflict',
+          'Archived Session configuration cannot be changed',
+        );
+      }
+      if (current.header.status === 'waiting_for_user') {
+        throw new SessionConfigurationTransitionError(
+          'session_busy',
+          'Session has a pending Interaction',
+        );
+      }
+      await this.assertCollaborationTransition(
+        current.header,
+        input.configuration.collaborationMode,
+      );
+      const leavingDeepResearch =
+        isDeepResearchSession(current.header.labels) &&
+        input.configuration.permissionMode !== 'explore';
+      const labels = leavingDeepResearch
+        ? current.header.labels.filter((label) => label !== DEEP_RESEARCH_SESSION_LABEL)
+        : current.header.labels;
+      return () =>
+        store.updateSessionConfiguration(sessionId, {
+          expectedVersion: input.expectedRevision,
+          configuration: {
+            ...input.configuration,
+            labels,
+          },
+          lifecycle:
+            input.clearConnectionBlock && current.header.blockedReason === 'NO_REAL_CONNECTION'
+              ? {
+                  kind: 'clear_connection_block',
+                  statusUpdatedAt: this.deps.now(),
+                }
+              : { kind: 'preserve' },
+        });
+    };
+    const next = permissionModeOnly
+      ? await this.commitExecutionBoundaryTransition(
+          sessionId,
+          await this.deps.store.readExecutionBoundary(sessionId),
+          input.configuration.permissionMode,
+          prepareCommit,
+        )
+      : await this.commitExecutionResourceTransition(
+          sessionId,
+          input.configuration.permissionMode,
+          prepareCommit,
+        );
     this.runtimeKernel.updateCachedHeader(sessionId, next.header);
     return next;
   }
@@ -1609,44 +1635,15 @@ export class SessionManager {
   }
 
   async setPermissionMode(sessionId: string, mode: PermissionMode): Promise<SessionSummary> {
-    const previous = await this.deps.store.readHeader(sessionId);
-    const boundary = await this.deps.store.readExecutionBoundary(sessionId);
-    const leavingDeepResearch = isDeepResearchSession(previous.labels) && mode !== 'explore';
-    if (
-      previous.permissionMode === mode &&
-      executionBoundaryMatchesPermissionMode(boundary, mode) &&
-      !leavingDeepResearch
-    ) {
-      return headerToSummary(previous);
-    }
-
-    if (narrowsExecutionAuthority(boundary, mode) && this.runtimeKernel.hasActiveRuns(sessionId)) {
-      throw new Error('当前任务正在运行，等结束后再切换权限模式。');
-    }
-    if (previous.status === 'waiting_for_user') {
-      throw new Error('当前有工具调用正在等待确认，处理后再切换权限模式。');
-    }
-
-    const labels = leavingDeepResearch
-      ? previous.labels.filter((label) => label !== DEEP_RESEARCH_SESSION_LABEL)
-      : previous.labels;
-    const nextKind = mode === 'bypass' ? 'bypass' : 'managed';
-    await this.commitExecutionBoundaryTransition(sessionId, boundary, nextKind, {
-      permissionMode: mode,
-      labels,
+    const store = this.requireSessionConfigurationStore();
+    const current = await store.readHeaderRecordSnapshot(sessionId);
+    const next = await this.transitionSessionConfiguration(sessionId, {
+      expectedRevision: current.revision,
+      clearConnectionBlock: false,
+      permissionModeOnly: true,
+      configuration: sessionConfigurationWithPermissionMode(current.header, mode),
     });
-    const next = await this.deps.store.readHeader(sessionId);
-    this.runtimeKernel.updateCachedHeader(sessionId, next);
-    await this.deps.store
-      .appendMessage(sessionId, {
-        type: 'system_note',
-        id: this.deps.newId(),
-        ts: this.deps.now(),
-        kind: 'mode_change',
-        data: { from: previous.permissionMode, to: mode },
-      } satisfies SystemNoteMessage)
-      .catch(() => undefined);
-    return headerToSummary(next);
+    return headerToSummary(next.header);
   }
 
   async setExecutionBoundaryKind(
@@ -1662,21 +1659,22 @@ export class SessionManager {
     if (header.status === 'waiting_for_user') {
       throw new Error('当前有沙箱边界请求正在等待确认，处理后再切换。');
     }
-    const boundary = await this.commitExecutionBoundaryTransition(sessionId, current, kind);
+    const boundary = await this.commitExecutionBoundaryTransition(
+      sessionId,
+      current,
+      kind === 'bypass' ? 'bypass' : 'ask',
+      async () => () => this.deps.store.setExecutionBoundaryKind(sessionId, kind),
+    );
     return boundary;
   }
 
-  private async commitExecutionBoundaryTransition(
+  private async commitExecutionBoundaryTransition<T>(
     sessionId: string,
     current: ExecutionBoundary,
-    kind: 'managed' | 'bypass',
-    projection?: {
-      permissionMode: SessionHeader['permissionMode'];
-      labels?: readonly string[];
-    },
-  ): Promise<ExecutionBoundary> {
-    const nextPermissionMode = projection?.permissionMode ?? (kind === 'bypass' ? 'bypass' : 'ask');
-    const prepareCommit = async (): Promise<() => Promise<ExecutionBoundary>> => {
+    nextPermissionMode: PermissionMode,
+    prepareCommit: () => Promise<() => Promise<T>>,
+  ): Promise<T> {
+    const prepareBoundaryCommit = async (): Promise<() => Promise<T>> => {
       const latest = await this.deps.store.readExecutionBoundary(sessionId);
       if (latest.revision !== current.revision) {
         throw new SessionConfigurationTransitionError(
@@ -1684,7 +1682,7 @@ export class SessionManager {
           'Session execution boundary changed before the transition',
         );
       }
-      return () => this.deps.store.setExecutionBoundaryKind(sessionId, kind, projection);
+      return prepareCommit();
     };
     if (!narrowsExecutionAuthority(current, nextPermissionMode)) {
       // Widening needs no quiescence. Every consumer that froze the old, tighter
@@ -1692,15 +1690,19 @@ export class SessionManager {
       // check only gets easier — so the grant is just written. Waiting for the
       // Session to go idle is what let a running Turn, or a Goal's continuation
       // holding a claim near-continuously, keep the user's own grant out.
-      const commit = await prepareCommit();
-      const boundary = await commit();
+      const commit = await prepareBoundaryCommit();
+      const result = await commit();
       // Not `disposeBackend`: disposing a live Turn's backend stops that Turn.
       // Invalidation refreshes it now when the Session is idle, and otherwise
       // defers to the next activation, which disposes before it starts.
       await this.runtimeKernel.invalidateBackend(sessionId);
-      return boundary;
+      return result;
     }
-    return this.commitExecutionResourceTransition(sessionId, nextPermissionMode, prepareCommit);
+    return this.commitExecutionResourceTransition(
+      sessionId,
+      nextPermissionMode,
+      prepareBoundaryCommit,
+    );
   }
 
   private async commitExecutionResourceTransition<T>(
@@ -5100,15 +5102,47 @@ function claimedAgentGraphIntentResult(
   };
 }
 
-function executionBoundaryMatchesPermissionMode(
-  boundary: ExecutionBoundary,
-  mode: PermissionMode,
+function sessionConfigurationWithPermissionMode(
+  header: SessionHeader,
+  permissionMode: PermissionMode,
+): SessionConfigurationTransitionRequest['configuration'] {
+  return {
+    backend: header.backend,
+    ...(header.llmConnectionId === undefined ? {} : { llmConnectionId: header.llmConnectionId }),
+    llmConnectionSlug: header.llmConnectionSlug,
+    connectionLocked: header.connectionLocked,
+    model: header.model,
+    thinkingLevel: header.thinkingLevel,
+    permissionMode,
+    collaborationMode: header.collaborationMode ?? 'agent',
+    orchestrationMode: header.orchestrationMode ?? 'default',
+  };
+}
+
+function sessionConfigurationMatchesExceptPermissionMode(
+  header: SessionHeader,
+  configuration: SessionConfigurationTransitionRequest['configuration'],
 ): boolean {
-  if (mode === 'bypass') return boundary.kind === 'bypass';
-  if (boundary.kind !== 'managed') return false;
-  return mode === 'explore'
-    ? boundary.profile.name === 'read-only'
-    : boundary.profile.name !== 'read-only';
+  return (
+    header.backend === configuration.backend &&
+    header.llmConnectionId === configuration.llmConnectionId &&
+    header.llmConnectionSlug === configuration.llmConnectionSlug &&
+    header.connectionLocked === configuration.connectionLocked &&
+    header.model === configuration.model &&
+    header.thinkingLevel === configuration.thinkingLevel &&
+    (header.collaborationMode ?? 'agent') === configuration.collaborationMode &&
+    (header.orchestrationMode ?? 'default') === configuration.orchestrationMode
+  );
+}
+
+function sessionConfigurationMatches(
+  header: SessionHeader,
+  configuration: SessionConfigurationTransitionRequest['configuration'],
+): boolean {
+  return (
+    header.permissionMode === configuration.permissionMode &&
+    sessionConfigurationMatchesExceptPermissionMode(header, configuration)
+  );
 }
 
 function narrowsExecutionAuthority(
@@ -5117,7 +5151,7 @@ function narrowsExecutionAuthority(
 ): boolean {
   if (nextPermissionMode === 'bypass') return false;
   if (boundary.kind !== 'managed') return true;
-  return nextPermissionMode === 'explore' && boundary.profile.name !== 'read-only';
+  return nextPermissionMode === 'explore' && !isReadOnlyPermissionProfile(boundary.profile);
 }
 
 function agentRunStatusForSpawnResult(
