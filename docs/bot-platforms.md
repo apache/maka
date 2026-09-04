@@ -264,7 +264,7 @@ traffic.
 
 ## Setup
 
-> **Status: Feishu/Lark and WeCom are verified end-to-end. The rest are
+> **Status: Feishu/Lark, WeCom and QQ are verified end-to-end. The rest are
 > placeholders.** Each remaining section must be walked against a real
 > developer account before it lands — the acceptance criteria require tested
 > instructions, and untested setup steps are worse than none.
@@ -436,7 +436,75 @@ _TODO — iLink bot plus the local companion bridge on 127.0.0.1._
 
 ### QQ
 
-_TODO — QQ open platform app, App ID and App Secret._
+The QQ bridge speaks the gateway protocol directly — no vendor SDK — and
+shares its opcode lifecycle with Discord through `GatewayBridgeBase`.
+
+**1. Create the bot** on the QQ open platform and open its credentials page.
+
+| Console field | Maka setting |
+| --- | --- |
+| AppID | `appId` |
+| AppSecret | `appSecret` |
+| Token | *unused* |
+
+The console also issues a **Token**. Maka never reads it: that value belongs to
+the webhook callback mode, and this bridge authenticates by exchanging AppID
+and AppSecret for an app access token instead.
+
+**2. Configure the channel in Maka.** `appId` and `appSecret` are the only
+inputs. Startup then runs three steps, and the status reason names whichever
+one fails:
+
+1. `POST bots.qq.com/app/getAppAccessToken` → app access token, cached and
+   refreshed 5 minutes before expiry. Failure reason: `getAppAccessToken-<status>`.
+2. `GET api.sgroup.qq.com/gateway/bot` → the gateway URL. Failure reason:
+   `gateway-bot-<status>`.
+3. WebSocket connect, then IDENTIFY. Success arrives as a `READY` dispatch
+   carrying the bot's ID and username, which promotes the channel to
+   `operational`.
+
+**3. Grant the intents.** The bridge requests a fixed mask of `1107300353` —
+`GUILDS | DIRECT_MESSAGE | PUBLIC_GUILD_MESSAGES | PUBLIC_MESSAGES`. This is
+not configurable. Two close codes are treated as **fatal**, meaning the bridge
+stops rather than retrying:
+
+- **4014** — disallowed intent: the console has not granted something in that
+  mask.
+- **4004** — authentication failed: AppID/AppSecret rejected.
+
+Any other close code reconnects with backoff, so a channel that dies
+immediately and stays dead is almost always one of these two.
+
+**Conversation addressing.** QQ is the only platform whose chat IDs carry a
+prefix, because its four conversation kinds route to four different REST
+endpoints:
+
+| Inbound dispatch | `chatId` stamped | Send route |
+| --- | --- | --- |
+| `AT_MESSAGE_CREATE` | `channel:<channel_id>` | `/channels/{id}/messages` |
+| `DIRECT_MESSAGE_CREATE` | `dm:channel:<channel_id>` | `/channels/{id}/messages` |
+| `GROUP_AT_MESSAGE_CREATE` | `group:<group_openid>` | `/v2/groups/{id}/messages` |
+| `C2C_MESSAGE_CREATE` | `c2c:<user_openid>` | `/v2/users/{id}/messages` |
+
+A chat ID without one of those prefixes cannot be routed and the send returns
+`null` without any network call.
+
+**Guild and group messages require an @-mention.** Only `AT_MESSAGE_CREATE` and
+`GROUP_AT_MESSAGE_CREATE` are delivered, so the bot never sees ordinary group
+chatter. Direct conversations arrive unprompted.
+
+**Identity is an opaque, bot-scoped openid.** Group and C2C payloads carry no
+display name at all, so the bridge falls back to using the openid as the user
+name. Expect user IDs like `404C6F91…` rather than anything human-readable, and
+note that the same person has a different openid under a different bot.
+
+Typing indicators work **only** for `channel:` chat IDs. Groups and C2C run on
+a different messaging stack with no typing endpoint, so the bridge gates on the
+prefix and returns `false` rather than emitting a confusing 404.
+
+> **There is no sandbox switch.** The API host is hardcoded to production
+> (`api.sgroup.qq.com`). A bot still confined to the sandbox environment cannot
+> be exercised through this channel.
 
 ## Verifying a channel
 
