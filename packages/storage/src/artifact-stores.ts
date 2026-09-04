@@ -87,6 +87,7 @@ export interface InteractiveArtifactStoreWriter extends DurableArtifactAttachmen
     input: ConversationArtifactCopyInput,
   ): Promise<ConversationArtifactCopyResult>;
   purgeSessionArtifacts(sessionId: string): Promise<void>;
+  purgeRetiredCaptures: ArtifactAuthorityStore['purgeRetiredCaptures'];
   listPage: ArtifactAuthorityStore['listPage'];
   listTurnArtifacts: ArtifactAuthorityStore['listTurnArtifacts'];
   getInSession: ArtifactAuthorityStore['getInSession'];
@@ -210,6 +211,7 @@ function createWriterFacade(
       return run(() => store.copyConversationArtifacts(acceptedInput));
     },
     purgeSessionArtifacts: (sessionId) => run(() => store.purgeSessionArtifacts(sessionId)),
+    purgeRetiredCaptures: (limit) => run(() => store.purgeRetiredCaptures(limit)),
     deleteUserArtifactInSession: (sessionId, artifactId) =>
       run(() => store.deleteUserArtifactInSession(sessionId, artifactId)),
     close: () => {
@@ -218,6 +220,45 @@ function createWriterFacade(
     },
   };
   return Object.freeze(facade);
+}
+
+/**
+ * Small enough that a live turn never queues behind a long purge, large enough
+ * that a store holding tens of thousands of captures drains within a session.
+ */
+const RETIRED_CAPTURE_SWEEP_BATCH = 256;
+const RETIRED_CAPTURE_SWEEP_PAUSE_MS = 250;
+
+/**
+ * Drains the prepared-request captures the retired capture sink left behind.
+ *
+ * The sweep shares one mutation queue with live turns, so it takes bounded
+ * batches and waits between them rather than holding the queue for the whole
+ * residue. Stopping only means the next batch does not start: each batch is
+ * already durable on its own, and a later run continues from what is left.
+ */
+export function startRetiredCaptureSweep(
+  artifacts: Pick<InteractiveArtifactStoreWriter, 'purgeRetiredCaptures'>,
+  options: { readonly onError?: (error: unknown) => void } = {},
+): () => void {
+  let stopped = false;
+  void (async () => {
+    while (!stopped) {
+      try {
+        const { remaining } = await artifacts.purgeRetiredCaptures(RETIRED_CAPTURE_SWEEP_BATCH);
+        if (remaining === 0) return;
+      } catch (error) {
+        options.onError?.(error);
+        return;
+      }
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, RETIRED_CAPTURE_SWEEP_PAUSE_MS).unref();
+      });
+    }
+  })();
+  return () => {
+    stopped = true;
+  };
 }
 
 function snapshotCreateInput(input: CreateArtifactInput): CreateArtifactInput {

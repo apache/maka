@@ -322,6 +322,37 @@ describe('SQLite Artifact store', () => {
     });
   });
 
+  test('reclaims retired request captures in bounded batches and leaves everything else', async () => {
+    await withWorkspace(async (root) => {
+      const authority = createArtifactStoreWriteAuthority(root);
+      await authority.recover();
+      const { store } = authority;
+      for (let index = 0; index < 3; index += 1) {
+        await store.create({
+          ...artifactInput(`capture-${index}`, `request-${index}`, 10 + index),
+          source: 'provider_request_capture',
+        });
+      }
+      await store.create(artifactInput('kept-artifact', 'kept', 20));
+
+      assert.deepEqual(await store.purgeRetiredCaptures(2), { purged: 2, remaining: 1 });
+      assert.deepEqual(await store.purgeRetiredCaptures(2), { purged: 1, remaining: 0 });
+      // The sweep stops on its own rather than spinning once the residue is gone.
+      assert.deepEqual(await store.purgeRetiredCaptures(2), { purged: 0, remaining: 0 });
+
+      assert.deepEqual(
+        (await store.list('session-1', { includeDeleted: true })).map((record) => record.id),
+        ['kept-artifact'],
+      );
+      // Purge, not a tombstone: the bytes are what this reclaims.
+      const kept = await store.getInSession('session-1', 'kept-artifact');
+      assert.ok(kept.record);
+      assert.deepEqual(await readdir(join(root, 'artifacts', 'session-1')), [
+        basename(kept.record.relativePath),
+      ]);
+    });
+  });
+
   test('excludes selected Artifacts from a conversation snapshot', async () => {
     await withWorkspace(async (root) => {
       const authority = createArtifactStoreWriteAuthority(root);

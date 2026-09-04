@@ -80,7 +80,10 @@ import { type MakaTool } from '@maka/runtime/tool-runtime';
 import { type RuntimeHostedRootAuthority } from '@maka/runtime/message-authority';
 import { isHostedExecutionTerminal } from './hosted-execution-authority.js';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
-import { createArtifactAttachmentResourceReader } from '@maka/storage/artifact-stores';
+import {
+  createArtifactAttachmentResourceReader,
+  startRetiredCaptureSweep,
+} from '@maka/storage/artifact-stores';
 import { createReadImageSnapshotStore } from '@maka/storage/read-image-snapshot-store';
 import { isSessionNotFoundError } from '@maka/storage/execution-stores';
 import { createExternalSessionAdapterRegistry } from '@maka/storage/external-sessions';
@@ -263,6 +266,16 @@ export async function createExecutionRuntimeHostComposition(
       `[runtime-host] optional context-offload Store could not be opened: ${generalizedErrorMessage(storage.contextOffloadUnavailable.cause)}`,
     );
   }
+  let stopRetiredCaptureSweep: (() => void) | undefined;
+  // Reclaims what the retired prepared-request capture sink left on disk. It
+  // paces itself behind live turns and stops when the residue is gone, so a
+  // store that never held captures does one empty pass and finishes.
+  stopRetiredCaptureSweep = startRetiredCaptureSweep(storage.artifacts, {
+    onError: (error) =>
+      console.error(
+        `[runtime-host] retired provider-request captures could not be reclaimed: ${generalizedErrorMessage(error)}`,
+      ),
+  });
   const stores = storage.execution;
   let graphControlStore: ReturnType<typeof createAgentGraphControlStore> | undefined;
   let graphClient: HostAgentGraphCoordinator | undefined;
@@ -1775,6 +1788,7 @@ export async function createExecutionRuntimeHostComposition(
           () => {
             unsubscribeTranscriptChanges?.();
             unsubscribeUsageChanges?.();
+            stopRetiredCaptureSweep?.();
           },
         ],
         releaseConnection: [(connectionId) => artifacts.releaseConnection(connectionId)],
@@ -2001,6 +2015,7 @@ export async function createExecutionRuntimeHostComposition(
     try {
       unsubscribeTranscriptChanges?.();
       unsubscribeUsageChanges?.();
+      stopRetiredCaptureSweep?.();
     } catch (closeError) {
       errors.push(closeError);
     }

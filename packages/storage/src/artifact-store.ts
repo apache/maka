@@ -85,6 +85,11 @@ const PURGE_INTENT_SCHEMA_VERSION = 1 as const;
 
 const MAX_PURGE_INTENT_BYTES = 64 * 1024 * 1024;
 const ARTIFACT_PURGE_RESOLVE_CONCURRENCY = 8;
+/**
+ * The source of the artifacts the retired capture sink wrote. The value stays
+ * a valid source so the records still decode; nothing produces new ones.
+ */
+const RETIRED_CAPTURE_ARTIFACT_SOURCE: ArtifactSource = 'provider_request_capture';
 
 interface ArtifactSessionSnapshot {
   readonly records: readonly ArtifactRecord[];
@@ -219,6 +224,8 @@ export interface ArtifactAuthorityStore extends ArtifactStore {
     input: ConversationArtifactCopyInput,
   ): Promise<ConversationArtifactCopyResult>;
   purgeSessionArtifacts(sessionId: string): Promise<void>;
+  /** Drops up to `limit` retired prepared-request captures; reports what remains. */
+  purgeRetiredCaptures(limit: number): Promise<{ purged: number; remaining: number }>;
   deleteUserArtifactInSession(
     sessionId: string,
     artifactId: string,
@@ -882,17 +889,47 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     await this.enqueueMutation(async () => {
       await this.prepareMutationUnlocked({ kind: 'purge' });
       const ids = new Set(acceptedArtifactIds);
-      const records = this.records.filter((record) => ids.has(record.id));
-      if (records.length === 0) return;
-      const paths = await this.preparePurgePathsUnlocked(records);
-      try {
-        await this.publishPurgeIntentUnlocked(records.map((record) => record.id));
-        await this.completePurgeUnlocked(ids, paths);
-      } catch (error) {
-        this.invalidateWriterState();
-        throw error;
-      }
+      await this.purgeRecordsUnlocked(this.records.filter((record) => ids.has(record.id)));
     });
+  }
+
+  /**
+   * Drops a bounded batch of the prepared-request captures left behind by the
+   * retired capture sink, and reports what is still there.
+   *
+   * These are not the user's to clean up: they never appear in the UI, and the
+   * only thing that ever reclaimed one was purging its whole conversation. The
+   * store made them, so the store disposes of them.
+   *
+   * Bounded so a large residue cannot monopolise the mutation queue, and safe
+   * to stop at any point: purge publishes its intent before touching a file,
+   * and the next call reads whatever is left.
+   */
+  async purgeRetiredCaptures(limit: number): Promise<{ purged: number; remaining: number }> {
+    let outcome = { purged: 0, remaining: 0 };
+    await this.enqueueMutation(async () => {
+      await this.prepareMutationUnlocked({ kind: 'purge' });
+      const retired = this.records.filter(
+        (record) => record.source === RETIRED_CAPTURE_ARTIFACT_SOURCE,
+      );
+      const batch = retired.slice(0, Math.max(0, limit));
+      await this.purgeRecordsUnlocked(batch);
+      outcome = { purged: batch.length, remaining: retired.length - batch.length };
+    });
+    return outcome;
+  }
+
+  private async purgeRecordsUnlocked(records: readonly ArtifactRecord[]): Promise<void> {
+    if (records.length === 0) return;
+    const ids = new Set(records.map((record) => record.id));
+    const paths = await this.preparePurgePathsUnlocked(records);
+    try {
+      await this.publishPurgeIntentUnlocked([...ids]);
+      await this.completePurgeUnlocked(ids, paths);
+    } catch (error) {
+      this.invalidateWriterState();
+      throw error;
+    }
   }
 
   private async preparePurgePathsUnlocked(
