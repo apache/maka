@@ -78,7 +78,7 @@ test('backs up and restores runtime.sqlite plus artifact bytes', async () => {
       name: 'note.txt',
       kind: 'file',
       content: 'artifact',
-      source: 'fixture',
+      source: 'tool_result',
       now: 2,
     });
     artifacts.close?.();
@@ -131,7 +131,7 @@ test('rejects a backup whose SQLite Artifact metadata has no matching payload', 
       name: 'note.txt',
       kind: 'file',
       content: 'artifact',
-      source: 'fixture',
+      source: 'tool_result',
       now: 2,
     });
     artifacts.close?.();

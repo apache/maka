@@ -897,7 +897,7 @@ async function seedAuthority(
         kind: 'file',
         content: 'remove me',
         mimeType: 'text/plain',
-        source: 'fixture',
+        source: 'tool_result',
         now: 1,
       }),
       artifacts.create({
@@ -908,7 +908,7 @@ async function seedAuthority(
         kind: 'file',
         content: 'recover cleanup',
         mimeType: 'text/plain',
-        source: 'fixture',
+        source: 'tool_result',
         now: 2,
       }),
       todos.replaceAll(retirement.id, [{ content: 'Remove retirement task', status: 'pending' }]),

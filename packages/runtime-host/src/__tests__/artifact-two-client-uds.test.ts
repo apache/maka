@@ -318,7 +318,7 @@ async function seedExecutionRoot(
           kind: 'file',
           content: `content ${index}`,
           mimeType: 'text/plain',
-          source: 'fixture',
+          source: 'tool_result',
           now: 10_000 - index,
         }),
       ),
@@ -330,7 +330,7 @@ async function seedExecutionRoot(
         kind: 'file',
         content: 'small text preview',
         mimeType: 'text/plain',
-        source: 'fixture',
+        source: 'tool_result',
         now: 20_000,
       }),
       openedArtifacts.create({
@@ -341,7 +341,7 @@ async function seedExecutionRoot(
         kind: 'image',
         content: tinyPng(),
         mimeType: 'image/png',
-        source: 'fixture',
+        source: 'tool_result',
         now: 19_999,
       }),
       openedArtifacts.create({
@@ -352,7 +352,7 @@ async function seedExecutionRoot(
         kind: 'file',
         content: Buffer.alloc(12 * 1024, 0xff),
         mimeType: 'text/plain',
-        source: 'fixture',
+        source: 'tool_result',
         now: 9_000,
       }),
       ...PROTECTED_ARTIFACTS.map((artifact, index) =>
@@ -378,7 +378,7 @@ async function seedExecutionRoot(
           kind: 'file',
           content: `bulk artifact payload ${index}`,
           mimeType: 'text/plain',
-          source: 'fixture',
+          source: 'tool_result',
           summary: BULK_ARTIFACT_SUMMARY,
           now: 19_000 - index,
         });

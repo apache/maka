@@ -347,7 +347,7 @@ describe('SQLite Artifact store', () => {
       assert.ok(copied.artifactIds.get(kept.id));
       assert.deepEqual(
         (await store.list('session-copy', { includeDeleted: true })).map((record) => record.source),
-        ['fixture'],
+        ['tool_result'],
       );
       // And the source keeps its own until the sweep takes them.
       assert.deepEqual(await store.purgeRetiredCaptures(8), { purged: 1, remaining: 0 });
@@ -389,7 +389,7 @@ describe('SQLite Artifact store', () => {
       assert.equal(copied.artifactIds.get('upload-capture'), undefined);
       assert.deepEqual(
         (await store.list('session-copy', { includeDeleted: true })).map((record) => record.source),
-        ['fixture'],
+        ['tool_result'],
       );
 
       // A child result lists every Artifact its turn held, captures included,
@@ -817,7 +817,7 @@ describe('SQLite Artifact store', () => {
         kind: 'file',
         content: bytes,
         mimeType: 'application/octet-stream',
-        source: 'fixture',
+        source: 'tool_result',
         summary: 'accepted summary',
         now: 7,
       };
@@ -848,7 +848,7 @@ describe('SQLite Artifact store', () => {
         relativePath: 'session-1/accepted-id-accepted.bin',
         sizeBytes: 4,
         mimeType: 'application/octet-stream',
-        source: 'fixture',
+        source: 'tool_result',
         summary: 'accepted summary',
         status: 'live',
       });
@@ -1657,7 +1657,7 @@ function artifactInput(id: string, content: string | Uint8Array, now: number) {
     name: `${id}.txt`,
     kind: 'file' as const,
     content,
-    source: 'fixture' as const,
+    source: 'tool_result' as const,
     now,
   };
 }
@@ -1692,7 +1692,7 @@ function canonicalRecord(input: {
     kind: 'file',
     relativePath: `${input.sessionId}/${input.id}-${input.name}`,
     sizeBytes: input.sizeBytes,
-    source: 'fixture',
+    source: 'tool_result',
     status: 'live',
   };
 }

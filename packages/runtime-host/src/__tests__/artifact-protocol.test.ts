@@ -413,7 +413,7 @@ function validArtifact() {
     kind: 'file' as const,
     sizeBytes: 4,
     mimeType: 'text/plain',
-    source: 'fixture' as const,
+    source: 'tool_result' as const,
     summary: 'bounded',
     status: 'live' as const,
   };

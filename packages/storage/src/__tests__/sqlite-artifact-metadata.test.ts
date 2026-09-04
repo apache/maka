@@ -141,7 +141,7 @@ function artifactRecord(id: string): ArtifactRecord {
     kind: 'file',
     sizeBytes: id.length,
     relativePath: `session-1/${id}-${id}.txt`,
-    source: 'fixture',
+    source: 'tool_result',
     status: 'live',
   };
 }

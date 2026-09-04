@@ -90,17 +90,11 @@ export const ARTIFACT_SOURCES = [
   'tool_result',
   'tool_result_projection',
   'tool_result_archive',
-  'synthesis_cache_block',
-  'history_compact_block',
-  'history_compact_source',
   'provider_request_capture',
   'subagent_writeback',
   'deep_research',
   'user_upload',
-  'export',
-  'snapshot',
   'session_effect',
-  'fixture',
 ] as const;
 
 export type ArtifactSource = (typeof ARTIFACT_SOURCES)[number];
@@ -163,19 +157,13 @@ const ARTIFACT_SOURCE_POLICIES = {
   tool_result: { userDeletable: true, userVisible: false, sharedReadable: true },
   tool_result_projection: { userDeletable: false, userVisible: false, sharedReadable: true },
   tool_result_archive: { userDeletable: false, userVisible: false, sharedReadable: false },
-  synthesis_cache_block: { userDeletable: true, userVisible: false, sharedReadable: false },
-  history_compact_block: { userDeletable: true, userVisible: false, sharedReadable: false },
-  history_compact_source: { userDeletable: true, userVisible: false, sharedReadable: false },
   // Historical only: nothing produces these any more. The policy stays so the
   // records already on disk keep decoding and stay deletable.
   provider_request_capture: { userDeletable: true, userVisible: false, sharedReadable: false },
   subagent_writeback: { userDeletable: false, userVisible: true, sharedReadable: false },
   deep_research: { userDeletable: false, userVisible: true, sharedReadable: false },
   user_upload: { userDeletable: true, userVisible: false, sharedReadable: true },
-  export: { userDeletable: true, userVisible: true, sharedReadable: false },
-  snapshot: { userDeletable: true, userVisible: true, sharedReadable: false },
   session_effect: { userDeletable: false, userVisible: false, sharedReadable: false },
-  fixture: { userDeletable: true, userVisible: true, sharedReadable: false },
 } as const satisfies Record<ArtifactSource, ArtifactSourcePolicy>;
 
 const CHILD_RESULT_OUTPUT_SOURCES = new Set<ArtifactSource>([
