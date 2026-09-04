@@ -34,8 +34,8 @@
 </p>
 
 <p align="center">
-  <a href="https://maka.apache.org/zh-CN/"><img src="https://img.shields.io/badge/%E5%AE%98%E7%BD%91-maka.apache.org-1F6FEB?style=for-the-badge" alt="官网：maka.apache.org" /></a>
-  <a href="https://maka.apache.org/zh-CN/downloads/"><img src="https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD-1F6FEB?style=for-the-badge" alt="下载" /></a>
+  <a href="https://maka.apache.org/zh-CN/"><img src="https://img.shields.io/badge/%E5%AE%98%E7%BD%91-maka.apache.org-4C8DFF?style=flat" alt="官网：maka.apache.org" /></a>
+  <a href="https://maka.apache.org/zh-CN/downloads/"><img src="https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD-4C8DFF?style=flat" alt="下载" /></a>
 </p>
 
 <picture>

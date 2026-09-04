@@ -34,8 +34,8 @@
 </p>
 
 <p align="center">
-  <a href="https://maka.apache.org/en/"><img src="https://img.shields.io/badge/Website-maka.apache.org-1F6FEB?style=for-the-badge" alt="Website: maka.apache.org" /></a>
-  <a href="https://maka.apache.org/en/downloads/"><img src="https://img.shields.io/badge/Downloads-1F6FEB?style=for-the-badge" alt="Downloads" /></a>
+  <a href="https://maka.apache.org/en/"><img src="https://img.shields.io/badge/Website-maka.apache.org-4C8DFF?style=flat" alt="Website: maka.apache.org" /></a>
+  <a href="https://maka.apache.org/en/downloads/"><img src="https://img.shields.io/badge/Downloads-4C8DFF?style=flat" alt="Downloads" /></a>
 </p>
 
 <picture>
