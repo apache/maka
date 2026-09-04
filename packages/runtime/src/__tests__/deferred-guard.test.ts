@@ -138,7 +138,31 @@ describe('tool-availability execute-boundary guard', () => {
   test('keeps WriteStdin args exact across canonical ledgers and projects telemetry', async () => {
     const h = makeHarness();
     const implCalls: string[] = [];
-    const t = tool('WriteStdin', implCalls);
+    // The real WriteStdin tool (shell-tools.ts, buildWriteStdinTool) declares
+    // a heavyweight z.preprocess/refine schema enforcing PTY-specific business
+    // rules (ref format, input byte length, well-formed Unicode, ...) that
+    // this test has nothing to do with. `tool()`'s shared z.object({}) is
+    // wrong here for a different reason: ToolRuntime now executes the
+    // schema's own parsed value (see tool-runtime.ts), and an empty schema
+    // strips every key, which used to be masked only because the pre-fix
+    // ToolRuntime discarded that parsed value and executed the raw input
+    // instead. A schema matching WriteStdin's real field names, with no
+    // business-rule refinements, is what this test actually needs: proof
+    // that already-valid args pass through Runtime's plumbing unchanged, not
+    // a reproduction of WriteStdin's own validation.
+    const t: MakaTool = {
+      name: 'WriteStdin',
+      description: 'WriteStdin',
+      parameters: z.object({
+        ref: z.string(),
+        input: z.string(),
+        size: z.object({ cols: z.number(), rows: z.number() }),
+      }),
+      impl: () => {
+        implCalls.push('WriteStdin');
+        return { ok: true };
+      },
+    };
     const args = {
       ref: 'maka://runtime/background-tasks/pty-1',
       input: 'password=ordinary-audited-input\r',

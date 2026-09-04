@@ -445,8 +445,73 @@ export type ModelStepOutcome =
       continuation: 'none';
     };
 
+/**
+ * One tool call's positive completion proof from
+ * `tool-call-execution-guard.ts`'s raw-byte verification, keyed by
+ * `toolCallId` in `ToolCallExecutionSafety.proofs`. `name`/`value` are the
+ * guard's own proof — the tool name and parsed argument value it verified
+ * from the raw stream — and are authoritative over whatever the AI SDK's
+ * post-hoc `tool-call` chunk claims for that same id. See
+ * `tool-call-execution-guard.ts` for the full contract, including why an
+ * absent entry (no proof) is the only negative representation: there is no
+ * separate rejected/retry state to consult.
+ */
+export interface ToolCallSafetyProof {
+  readonly name: string;
+  readonly value: unknown;
+}
+
+/**
+ * One tool call's positive proof of an atomic, zero-delta-byte delivery:
+ * its own `tool-input-start`/`tool-input-end` lifecycle matched (same id,
+ * no contradictory evidence), it received zero raw `tool-input-delta`
+ * chunks, and the request terminated safely — see
+ * `tool-call-execution-guard.ts`. There is no `value` here (unlike
+ * `ToolCallSafetyProof`): this tracker never observes the resolved
+ * `tool-call` chunk, so it has no opinion on what the AI SDK's own
+ * projected input for this id contains — only that no argument bytes
+ * streamed for it.
+ *
+ * The name is an identity check only. `ai-sdk-backend.ts`'s dispatch is
+ * what turns this into an execution value: only when `hadRawArgumentEvidence`
+ * is true (a genuinely mixed-delivery request, e.g. the installed Google
+ * adapter's `isNoArgsCompleteCall` shape next to an argument-bearing
+ * sibling) does it consult this proof at all, and when it does, it executes
+ * the canonical empty object — never the SDK's projected `toolCall.input` —
+ * since the installed adapter's own source confirms a real zero-delta id and
+ * a real non-empty id are never the same wire shape, making that projection
+ * both untrustworthy and unnecessary here. A genuinely whole-request-atomic
+ * delivery (`hadRawArgumentEvidence` false) is a separate, pre-existing
+ * policy that still trusts `toolCall.input` verbatim and does not consult
+ * this map at all.
+ */
+export interface ToolCallAtomicProof {
+  readonly name: string;
+}
+
+/**
+ * The full per-physical-request result of `tool-call-execution-guard.ts`'s
+ * raw-byte verification. See that file's header for the complete contract:
+ * `proofs` (non-empty raw-byte proofs, value included), `atomicProofs`
+ * (per-id zero-delta lifecycle proofs, value deliberately excluded — see
+ * `ToolCallAtomicProof`), and why a call with neither — falling back to
+ * `hadRawArgumentEvidence` being false for the whole request plus a safe
+ * step outcome — is the only remaining, narrowly-scoped fallback.
+ */
+export interface ToolCallExecutionSafety {
+  readonly hadRawArgumentEvidence: boolean;
+  readonly proofs: ReadonlyMap<string, ToolCallSafetyProof>;
+  readonly atomicProofs: ReadonlyMap<string, ToolCallAtomicProof>;
+}
+
 /** One physical provider request: live output plus one authoritative settlement. */
 export interface ModelStreamResult {
   events: AsyncIterable<ModelStreamEvent>;
   outcome: Promise<ModelStepOutcome>;
+  /**
+   * Per-tool-call positive-completion proof for this same physical provider
+   * request — see `tool-call-execution-guard.ts` and `ToolCallExecutionSafety`
+   * above.
+   */
+  toolCallSafety: Promise<ToolCallExecutionSafety>;
 }

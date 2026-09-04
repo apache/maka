@@ -10689,6 +10689,11 @@ describe('AiSdkBackend RunTrace', () => {
           request: { messages: [] },
           continuation: 'none',
         }),
+        toolCallSafety: Promise.resolve({
+          hadRawArgumentEvidence: false,
+          proofs: new Map(),
+          atomicProofs: new Map(),
+        }),
       };
     };
 
@@ -14122,6 +14127,11 @@ describe('AiSdkBackend thinking persistence', () => {
         },
         request: { messages: [] },
         continuation: 'none',
+      }),
+      toolCallSafety: Promise.resolve({
+        hadRawArgumentEvidence: false,
+        proofs: new Map(),
+        atomicProofs: new Map(),
       }),
     });
 

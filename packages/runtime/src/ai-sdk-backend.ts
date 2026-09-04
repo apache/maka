@@ -119,6 +119,7 @@ import type {
   NormalizedUsage,
   ModelFailureKind,
   ToolCallPart,
+  ToolCallExecutionSafety,
   ToolResultOutput,
   UserContent,
 } from './model-protocol.js';
@@ -280,6 +281,7 @@ import {
   type HistoryCompactCheckpoint,
 } from './history-compact-checkpoint.js';
 import { resolveSelectedModelContextWindow } from './context-budget-policy.js';
+import { isSafeToolExecutionStepOutcome } from './tool-call-execution-guard.js';
 export {
   DEFAULT_PERMISSION_TIMEOUT_MS,
   MAX_ACTIVE_CHILD_AGENT_RUNS_PER_TURN,
@@ -2022,6 +2024,14 @@ export class AiSdkBackend implements AgentBackend {
         let overflowRetryUsed = false;
         let result: ModelStreamResult;
         let providerOutcome: ModelStepOutcome;
+        // Positive execution proof for the physical provider request that
+        // produced returnedToolCalls. It is replaced after every request
+        // and never carried across provider steps.
+        let toolCallSafety: ToolCallExecutionSafety = {
+          hadRawArgumentEvidence: false,
+          proofs: new Map(),
+          atomicProofs: new Map(),
+        };
         let finishReason: ModelFinishReason = 'stop';
         let terminalProviderError: unknown;
         agentLoop: for (;;) {
@@ -2584,6 +2594,7 @@ export class AiSdkBackend implements AgentBackend {
             // must not be reported as the already-handled watchdog timeout.
             const settledWatchdogTimeout = consumeWatchdogTimeout();
             providerOutcome = await result.outcome;
+            toolCallSafety = await result.toolCallSafety;
             const incompleteStreamTerminal = providerOutcome.kind === 'truncated';
             const incompleteStreamHasNoObservableOutput =
               incompleteStreamTerminal &&
@@ -2836,6 +2847,36 @@ export class AiSdkBackend implements AgentBackend {
                     `Provider-executed tool call "${toolCall.toolName}" is outside the main-agent tool loop`,
                   );
                 }
+                // Complete/valid projected JSON is not enough to authorize a side effect.
+                // The guard owns the positive proof: raw streamed bytes and identity
+                // when available, a per-id zero-delta atomic proof for the mixed
+                // Google delivery shape, or the narrowly-scoped all-atomic fallback.
+                const proof = toolCallSafety.proofs.get(toolCall.toolCallId);
+                const atomicProof = toolCallSafety.hadRawArgumentEvidence
+                  ? toolCallSafety.atomicProofs.get(toolCall.toolCallId)
+                  : undefined;
+                const provedNameMatches =
+                  proof !== undefined &&
+                  proof.name.toLowerCase() === toolCall.toolName.toLowerCase();
+                const atomicNameMatches =
+                  atomicProof !== undefined &&
+                  atomicProof.name.toLowerCase() === toolCall.toolName.toLowerCase();
+                const confirmedSafe =
+                  proof !== undefined
+                    ? toolCall.toolName === INVALID_TOOL_NAME || provedNameMatches
+                    : atomicProof !== undefined
+                      ? toolCall.toolName === INVALID_TOOL_NAME || atomicNameMatches
+                      : !toolCallSafety.hadRawArgumentEvidence &&
+                        isSafeToolExecutionStepOutcome(providerOutcome);
+
+                // For an incrementally streamed call, the guard-proved value is the
+                // sole payload authority. For a mixed-delivery zero-argument call,
+                // its own proof establishes the canonical empty object. The SDK
+                // projection is used only by the pre-existing whole-request atomic
+                // fallback (or the deliberately non-side-effecting invalid-tool path).
+                const provedValue = provedNameMatches ? proof.value : undefined;
+                const atomicValue = atomicNameMatches ? {} : undefined;
+
                 const sandboxBoundaryAttempt = isProviderSandboxBoundaryAttempt(toolCall);
                 const deniedBoundaryRequest =
                   toolRuntime.hasSandboxBoundaryDenial() &&
@@ -2844,7 +2885,7 @@ export class AiSdkBackend implements AgentBackend {
                   toolRuntime.forceSandboxBoundaryFinalization();
                 }
                 const blockedToolCall = sandboxBoundaryFinalizationStep || deniedBoundaryRequest;
-                const requestedTool = blockedToolCall
+                const requestedTool = blockedToolCall || !confirmedSafe
                   ? undefined
                   : toolsByName.get(toolCall.toolName);
                 const tool = requestedTool ?? toolsByName.get(INVALID_TOOL_NAME);
@@ -2853,7 +2894,9 @@ export class AiSdkBackend implements AgentBackend {
                   ? 'Sandbox boundary finalization does not permit tool execution.'
                   : deniedBoundaryRequest
                     ? SANDBOX_BOUNDARY_DENIED_FOR_TURN
-                    : 'returned tool is unavailable';
+                    : !confirmedSafe
+                      ? 'the stream that produced this call was not confirmed to complete safely'
+                      : 'returned tool is unavailable';
                 return await toolRuntime.settleToolCall({
                   tool,
                   turnId,
@@ -2872,7 +2915,11 @@ export class AiSdkBackend implements AgentBackend {
                     : {}),
                   input:
                     requestedTool !== undefined
-                      ? toolCall.input
+                      ? provedValue !== undefined
+                        ? provedValue
+                        : atomicValue !== undefined
+                          ? atomicValue
+                          : toolCall.input
                       : {
                           tool: toolCall.toolName,
                           error: unavailableError,

@@ -1128,7 +1128,13 @@ export class ToolRuntime {
         ? `Tool ${tool.name} is direct-only and cannot run inside exec.`
         : undefined;
     const admissionFailure = directOnlyFailure ?? this.admitToolForStep(tool, stepId);
-    const executionArgs = rawExecutionArgs;
+    // Reassigned below to the schema's own parsed/projected value (defaults
+    // filled in, transforms applied) once validation succeeds — everything
+    // downstream (permission check, persisted tool_start/tool_call args,
+    // loop-gate signature, and `tool.impl` itself) reads this one variable,
+    // so that reassignment is the single point that makes schema semantics
+    // reach execution instead of being discarded after a validate-only check.
+    let executionArgs = rawExecutionArgs;
     let permissionArgs = executionArgs;
     let permissionArgsError: unknown;
     if (directOnlyFailure === undefined) {
@@ -1141,7 +1147,9 @@ export class ToolRuntime {
           !this.interactionRun() &&
           (!this.input.createSandboxBoundaryRequest || !this.input.settleSandboxBoundaryRequest);
         if (!sandboxBoundaryUnavailable) {
-          await validateDeclaredToolArgs(tool.parameters, rawExecutionArgs);
+          executionArgs = snapshotToolArgs(
+            await validateDeclaredToolArgs(tool.parameters, rawExecutionArgs),
+          );
         }
         permissionArgs = tool.permissionArgs
           ? snapshotToolArgs(
@@ -3266,9 +3274,20 @@ export class ToolRuntime {
   }
 }
 
-async function validateDeclaredToolArgs(parameters: unknown, args: unknown): Promise<void> {
+/**
+ * Validates `args` against the tool's declared schema and returns the
+ * schema's own output — defaults filled in, `transform`/`preprocess`
+ * applied — rather than the pre-validation input. The caller (`executeTool`)
+ * uses this returned value, not `args`, as the execution/persisted/
+ * permission-check arguments from this point on: a schema that validates but
+ * discards its own parsed result silently drops `z.default()`/`.transform()`
+ * output before it ever reaches `tool.impl`. Schemas exposing none of the
+ * recognized validator interfaces (or no schema at all) return `args`
+ * unchanged, matching the pre-existing no-op behavior for those tools.
+ */
+async function validateDeclaredToolArgs(parameters: unknown, args: unknown): Promise<unknown> {
   if (!parameters || (typeof parameters !== 'object' && typeof parameters !== 'function')) {
-    return;
+    return args;
   }
   const schema = parameters as {
     safeParseAsync?: (
@@ -3295,24 +3314,25 @@ async function validateDeclaredToolArgs(parameters: unknown, args: unknown): Pro
 
   if (typeof schema.safeParseAsync === 'function') {
     const parsed = await schema.safeParseAsync(args);
-    if (parsed.success) return;
+    if (parsed.success) return parsed.data;
     throw parsed.error;
   }
   if (typeof schema.safeParse === 'function') {
     const parsed = schema.safeParse(args);
-    if (parsed.success) return;
+    if (parsed.success) return parsed.data;
     throw parsed.error;
   }
   if (typeof schema.validate === 'function') {
     const parsed = await schema.validate(args);
-    if (parsed.success) return;
+    if (parsed.success) return parsed.value;
     throw parsed.error;
   }
   if (typeof schema['~standard']?.validate === 'function') {
     const parsed = await schema['~standard'].validate(args);
-    if ('value' in parsed) return;
+    if ('value' in parsed) return parsed.value;
     throw new Error('Tool arguments failed declared schema validation', { cause: parsed.issues });
   }
+  return args;
 }
 
 function isInteractionControlError(error: unknown): boolean {

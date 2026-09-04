@@ -28,6 +28,11 @@ import { lookupModelMetadata } from '@maka/core/model-metadata';
 import { generalizedErrorMessage } from '@maka/core/redaction';
 import type { CacheMissInputSource } from '@maka/core/usage-stats/types';
 import { rawFinishReasonString } from './model-protocol.js';
+import {
+  createToolCallSafetyTracker,
+  observeRawChunk,
+  resolveToolCallSafety,
+} from './tool-call-execution-guard.js';
 import type {
   ModelMessage,
   NormalizedUsage,
@@ -41,6 +46,7 @@ import type {
   ModelRequestMetadata,
   ModelToolSet,
   ToolCallPart,
+  ToolCallExecutionSafety,
 } from './model-protocol.js';
 export type {
   NormalizedUsage,
@@ -377,6 +383,13 @@ export class ModelAdapter {
     const outcome = new Promise<ModelStepOutcome>((resolve) => {
       settleOutcome = resolve;
     });
+    let settleToolCallSafety!: (safety: ToolCallExecutionSafety) => void;
+    const toolCallSafety = new Promise<ToolCallExecutionSafety>((resolve) => {
+      settleToolCallSafety = resolve;
+    });
+    // One tracker per physical provider request, so concurrent requests
+    // can safely reuse provider-issued toolCallIds without sharing proof.
+    const toolCallGuard = createToolCallSafetyTracker();
     const request = { messages: continuation.requestMessages };
     const events: AsyncIterable<ModelStreamEvent> = {
       async *[Symbol.asyncIterator]() {
@@ -388,6 +401,10 @@ export class ModelAdapter {
         try {
           for await (const chunk of sdk.stream as AsyncIterable<AiSdkStreamChunk>) {
             onStreamActivity();
+            // Observe the raw SDK chunk before semantic translation. The guard
+            // must prove tool argument completion from provider stream evidence,
+            // not from the SDK's already-parsed final tool-call projection.
+            observeRawChunk(toolCallGuard, chunk);
             if (
               chunk.type === 'finish' ||
               chunk.type === 'finish-step' ||
@@ -492,6 +509,9 @@ export class ModelAdapter {
               }
             }
           } finally {
+            settleToolCallSafety(
+              resolveToolCallSafety(toolCallGuard, { providerReason: finishReason }),
+            );
             settleOutcome(settled);
           }
           if (deferredFailure) {
@@ -503,7 +523,7 @@ export class ModelAdapter {
         }
       },
     };
-    return { events, outcome };
+    return { events, outcome, toolCallSafety };
   }
 
   endContinuation(lane: string): void {

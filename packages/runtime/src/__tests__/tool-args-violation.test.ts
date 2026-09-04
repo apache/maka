@@ -231,7 +231,7 @@ test('ToolRuntime enforces the declared schema before impl without a permissionA
   assert.match(said, /Read takes `file_path`, `offset`, `limit`\./);
 });
 
-test('ToolRuntime validates without rewriting arguments at permission and implementation boundaries', async () => {
+test('ToolRuntime uses the schema-derived value (defaults filled in, transforms applied) at permission and implementation boundaries', async () => {
   const observed: unknown[] = [];
   const runtime = createTestToolRuntime({
     sessionId: 'session-1',
@@ -273,8 +273,53 @@ test('ToolRuntime validates without rewriting arguments at permission and implem
     },
   });
 
-  const expected = { file_path: '  /workspace/a.ts  ' };
+  // The raw call omitted `limit` and padded `file_path` with whitespace; the
+  // schema's `default()`/`transform()` output — not the literal input — is
+  // what reaches both the permission check and the implementation.
+  const expected = { file_path: '/workspace/a.ts', limit: 25 };
   assert.deepEqual(observed, [expected, expected]);
+  assert.deepEqual(result, expected);
+});
+
+test('ToolRuntime applies z.preprocess output the same way as transform/default output', async () => {
+  const observed: unknown[] = [];
+  const runtime = createTestToolRuntime({
+    sessionId: 'session-1',
+    header: header(),
+    connection: connection(),
+    modelId: 'mock-model',
+    appendMessage: async () => {},
+    newId: nextId(),
+    now: () => 1,
+    getPermissionPauseTarget: () => null,
+  });
+  const parameters = z.object({
+    limit: z.preprocess((value) => (value === undefined ? '10' : value), z.coerce.number()),
+  });
+  const tool: MakaTool = {
+    name: 'List',
+    description: 'test',
+    parameters,
+    impl: async (args) => {
+      observed.push(structuredClone(args));
+      return args;
+    },
+  };
+
+  const { result } = await runtime.settleToolCall({
+    tool,
+    turnId: 'turn-1',
+    toolCallId: 'tool-preprocess',
+    input: {},
+    abortSignal: new AbortController().signal,
+    eventSink: {
+      push: () => {},
+      pushAndWaitUntilConsumed: async () => {},
+    },
+  });
+
+  const expected = { limit: 10 };
+  assert.deepEqual(observed, [expected]);
   assert.deepEqual(result, expected);
 });
 
