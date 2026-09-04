@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -200,10 +200,46 @@ test('a full Git exclude does not grow when resolving workspace identity', async
   }
 });
 
+test('a malformed ancestor .git directory does not block a workspace marker', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-workspace-git-malformed-ancestor-'));
+  try {
+    const workspace = join(base, 'workspace');
+    await mkdir(join(base, '.git', 'gk'), { recursive: true });
+    await mkdir(workspace);
+
+    await resolveWorkspaceIdentityWithoutGit(workspace);
+
+    await access(join(workspace, WORKSPACE_MARKER_FILE));
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
 test('a malformed enclosing Git repository prevents publishing a new marker', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'maka-workspace-git-malformed-'));
   try {
     await writeFile(join(workspace, '.git'), 'gitdir: /missing/maka-git-dir\n', 'utf8');
+
+    await assert.rejects(
+      () => resolveWorkspaceIdentity({ path: workspace }),
+      (error: unknown) =>
+        error instanceof WorkspaceIdentityError && error.code === 'workspace_io_failed',
+    );
+    await assert.rejects(access(join(workspace, WORKSPACE_MARKER_FILE)), { code: 'ENOENT' });
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test('a dangling .git symlink in the workspace itself blocks marker publication', {
+  skip:
+    process.platform === 'win32'
+      ? 'Windows symlink creation requires elevated privileges or Developer Mode'
+      : false,
+}, async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'maka-workspace-git-dangling-'));
+  try {
+    await symlink(join(workspace, 'missing-target'), join(workspace, '.git'));
 
     await assert.rejects(
       () => resolveWorkspaceIdentity({ path: workspace }),
