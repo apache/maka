@@ -80,7 +80,9 @@ describe('writeAtomicFile', () => {
     });
   }
 
-  test('removes its temp file and rethrows after a chmod failure', { skip: !isPosix }, async () => {
+  test('removes its temp file and rethrows after a chmod failure', {
+    skip: process.platform === 'win32',
+  }, async () => {
     await withTempDir(async (dir) => {
       const path = join(dir, 'settings.json');
       const temporaryPath = `${path}.fault.tmp`;
@@ -156,7 +158,7 @@ describe('writeAtomicFile', () => {
     });
   });
 
-  test('creates the target 0600 on POSIX', { skip: !isPosix }, async () => {
+  test('creates the target 0600 on POSIX', { skip: process.platform === 'win32' }, async () => {
     await withTempDir(async (dir) => {
       const path = join(dir, 'settings.json');
       await writeAtomicFile(path, '{}\n');
@@ -165,7 +167,7 @@ describe('writeAtomicFile', () => {
   });
 
   test('re-chmods a pre-existing world-readable target to 0600 on the next write', {
-    skip: !isPosix,
+    skip: process.platform === 'win32',
   }, async () => {
     await withTempDir(async (dir) => {
       const path = join(dir, 'settings.json');
@@ -178,7 +180,7 @@ describe('writeAtomicFile', () => {
   });
 
   test("dir 'harden' creates a 0700 directory chain for a nested target", {
-    skip: !isPosix,
+    skip: process.platform === 'win32',
   }, async () => {
     await withTempDir(async (dir) => {
       const path = join(dir, 'secrets', 'sub', 'credentials.json');
@@ -190,7 +192,7 @@ describe('writeAtomicFile', () => {
   });
 
   test("dir 'harden' re-chmods a pre-existing world-accessible directory to 0700", {
-    skip: !isPosix,
+    skip: process.platform === 'win32',
   }, async () => {
     await withTempDir(async (dir) => {
       const loose = join(dir, 'loose');
@@ -204,7 +206,7 @@ describe('writeAtomicFile', () => {
   });
 
   test('refuses to write through a pre-planted symlink at the temp path', {
-    skip: !isPosix,
+    skip: process.platform === 'win32',
   }, async () => {
     await withTempDir(async (dir) => {
       const path = join(dir, 'credentials.json');
