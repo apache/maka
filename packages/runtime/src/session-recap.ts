@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { RuntimeEvent } from '@maka/core/runtime-event';
+import { runtimeEventHasModelVisibleContent, type RuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import type { DurableToolResultProjection } from '@maka/core/durable-tool-result-projection';
 import { resolveSelectedModelContextWindow } from './context-budget-policy.js';
@@ -112,7 +112,7 @@ function boundedOversizedTurnMessages(
 function projectSessionRecapMessages(events: readonly RuntimeEvent[]): ModelMessage[] {
   const messages: ModelMessage[] = [];
   for (const event of events) {
-    if (event.partial === true) continue;
+    if (event.partial === true || !runtimeEventHasModelVisibleContent(event)) continue;
     const content = event.content;
     if (content?.kind === 'text' && (event.role === 'user' || event.role === 'model')) {
       const text = content.text.trim();

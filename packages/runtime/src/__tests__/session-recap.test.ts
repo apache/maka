@@ -95,6 +95,36 @@ test('session recap includes a concise durable outcome without tool protocol or 
   assert.ok(serialized.length <= 13_000);
 });
 
+test('session recap excludes model-hidden tool outcomes', () => {
+  const messages = buildSessionRecapMessages({
+    events: [
+      {
+        ...toolResultEvent(
+          'hidden-result',
+          'nested-call',
+          'turn-1',
+          'raw nested output',
+          'internal nested outcome',
+        ),
+        modelVisibility: 'hidden',
+      },
+    ],
+    connection: {
+      ...connection(),
+      defaultModel: 'declared-4k-model',
+      relayModelProfiles: { 'declared-4k-model': { contextWindow: 4_096 } },
+    },
+    modelId: 'declared-4k-model',
+  });
+
+  assert.deepEqual(messages, [
+    {
+      role: 'user',
+      content: SESSION_RECAP_INSTRUCTION,
+    },
+  ]);
+});
+
 test('session recap treats a zero evidence budget as no evidence, not unbounded input', () => {
   const sentinel = 'ZERO-BUDGET-SENTINEL';
   const messages = buildSessionRecapMessages({
