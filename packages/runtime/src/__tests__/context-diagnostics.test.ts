@@ -23,15 +23,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
-import type {
-  AgentRunEvent,
-  AgentRunHeader,
-  AgentRunStore,
-  EmittedAgentRunEvent,
-} from '@maka/core/agent-run';
+import type { AgentRunEvent, AgentRunStore, EmittedAgentRunEvent } from '@maka/core/agent-run';
+import type { RuntimeEventInvocationOpenedContent } from '@maka/core/runtime-event';
 import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
+import { createWorkspaceRuntimeStore } from '@maka/storage/runtime-event-persistence';
 import { readLatestContextDiagnostics } from '../context-diagnostics.js';
 import { readLatestContextSnapshot } from '../latest-context-snapshot.js';
+import { seedInvocation } from './invocation-fixture.js';
 
 test('rejects v2 snapshots that the canonical writer cannot produce', () => {
   const base = {
@@ -78,8 +76,8 @@ test('rejects v2 snapshots that the canonical writer cannot produce', () => {
 test('serves the sealed snapshot without reading a single run', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-context-diagnostics-'));
   try {
+    await openRun(root, 'session-1', 'run-1');
     const writer = createSqliteAgentRunStore(root);
-    await writer.createRun(runHeader('run-1', 1));
     await writer.appendEvent(
       'session-1',
       'run-1',
@@ -93,7 +91,7 @@ test('serves the sealed snapshot without reading a single run', async () => {
       scanned += 1;
     });
 
-    const diagnostics = await readLatestContextDiagnostics(counted, 'session-1');
+    const diagnostics = await readLatestContextDiagnostics(counted, 'session-1', ['run-1']);
 
     assert.equal(diagnostics.status, 'available');
     if (diagnostics.status !== 'available') return;
@@ -107,8 +105,8 @@ test('serves the sealed snapshot without reading a single run', async () => {
 test('does not trust a pre-observation projection over its canonical attempt', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-context-diagnostics-'));
   try {
+    await openRun(root, 'session-1', 'run-1');
     const writer = createSqliteAgentRunStore(root);
-    await writer.createRun(runHeader('run-1', 1));
     const oldProjection = latestContext('attempt-1', 10);
     oldProjection.snapshot.schemaVersion = 1;
     oldProjection.snapshot.composition = {
@@ -123,13 +121,11 @@ test('does not trust a pre-observation projection over its canonical attempt', a
     );
 
     const reader = createSqliteAgentRunStore(root);
-    const warm = await readLatestContextDiagnostics(reader, 'session-1');
+    const warm = await readLatestContextDiagnostics(reader, 'session-1', ['run-1']);
     const cold = await readLatestContextDiagnostics(
-      {
-        listSessionRuns: (sessionId) => reader.listSessionRuns(sessionId),
-        readEvents: (sessionId, runId) => reader.readEvents(sessionId, runId),
-      },
+      { readEvents: (sessionId, runId) => reader.readEvents(sessionId, runId) },
       'session-1',
+      ['run-1'],
     );
 
     assert.equal(warm.status, 'available');
@@ -145,8 +141,8 @@ test('does not trust a pre-observation projection over its canonical attempt', a
 test('upgrades exact-matched mixed-era composition into the current projection', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-context-diagnostics-'));
   try {
+    await openRun(root, 'session-1', 'run-1');
     const writer = createSqliteAgentRunStore(root);
-    await writer.createRun(runHeader('run-1', 1));
     const oldProjection = latestContext('attempt-1', 10);
     oldProjection.snapshot.schemaVersion = 1;
     await writer.appendEvent(
@@ -175,14 +171,14 @@ test('upgrades exact-matched mixed-era composition into the current projection',
     const counted = countingStore(reader, () => {
       scanned += 1;
     });
-    const upgraded = await readLatestContextDiagnostics(counted, 'session-1');
+    const upgraded = await readLatestContextDiagnostics(counted, 'session-1', ['run-1']);
 
     assert.equal(upgraded.status, 'available');
     if (upgraded.status !== 'available') return;
     assert.deepEqual(upgraded.composition?.tools, [{ name: 'HistoricalTool', bytes: 700 }]);
 
     scanned = 0;
-    const warm = await readLatestContextDiagnostics(counted, 'session-1');
+    const warm = await readLatestContextDiagnostics(counted, 'session-1', ['run-1']);
     assert.equal(warm.status, 'available');
     if (warm.status !== 'available') return;
     assert.deepEqual(warm.composition, upgraded.composition);
@@ -195,8 +191,8 @@ test('upgrades exact-matched mixed-era composition into the current projection',
 test('a failed call does not replace the last good snapshot', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-context-diagnostics-'));
   try {
+    await openRun(root, 'session-1', 'run-1');
     const writer = createSqliteAgentRunStore(root);
-    await writer.createRun(runHeader('run-1', 1));
     await writer.appendEvent(
       'session-1',
       'run-1',
@@ -218,7 +214,7 @@ test('a failed call does not replace the last good snapshot', async () => {
     const counted = countingStore(createSqliteAgentRunStore(root), () => {
       scanned += 1;
     });
-    const diagnostics = await readLatestContextDiagnostics(counted, 'session-1');
+    const diagnostics = await readLatestContextDiagnostics(counted, 'session-1', ['run-1']);
 
     assert.equal(diagnostics.status, 'available');
     if (diagnostics.status !== 'available') return;
@@ -232,13 +228,11 @@ test('a failed call does not replace the last good snapshot', async () => {
 test("a subagent's run never becomes the session's context", async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-context-diagnostics-'));
   try {
-    const writer = createSqliteAgentRunStore(root);
-    await writer.createRun(runHeader('run-parent', 1));
-    await writer.createRun({
-      ...runHeader('run-child', 2),
-      parentRunId: 'run-parent',
-      agentId: 'sub',
+    await openRun(root, 'session-1', 'run-parent');
+    await openRun(root, 'session-1', 'run-child', {
+      lineage: { parentRunId: 'run-parent', agentId: 'reviewer' },
     });
+    const writer = createSqliteAgentRunStore(root);
     await writer.appendEvent(
       'session-1',
       'run-parent',
@@ -252,9 +246,11 @@ test("a subagent's run never becomes the session's context", async () => {
       { durable: true, latestContext: latestContext('a-child', 20, 'model-child') },
     );
 
+    // The caller names the session-inline runs, so the child is never scanned.
     const diagnostics = await readLatestContextDiagnostics(
       createSqliteAgentRunStore(root),
       'session-1',
+      ['run-parent'],
     );
 
     assert.equal(diagnostics.status, 'available');
@@ -271,8 +267,8 @@ test('rebuilds a canonical observation, then repairs it so the next read scans n
   // two reads.
   const root = await mkdtemp(join(tmpdir(), 'maka-context-diagnostics-'));
   try {
+    await openRun(root, 'session-1', 'run-1');
     const writer = createSqliteAgentRunStore(root);
-    await writer.createRun(runHeader('run-1', 1));
     await writer.appendEvent(
       'session-1',
       'run-1',
@@ -303,7 +299,7 @@ test('rebuilds a canonical observation, then repairs it so the next read scans n
       scanned += 1;
     });
 
-    const cold = await readLatestContextDiagnostics(counted, 'session-1');
+    const cold = await readLatestContextDiagnostics(counted, 'session-1', ['run-1']);
     assert.equal(cold.status, 'available');
     if (cold.status !== 'available') return;
     assert.equal(cold.modelId, 'model-new');
@@ -311,7 +307,7 @@ test('rebuilds a canonical observation, then repairs it so the next read scans n
     assert.ok(scanned > 0, 'the first read falls back to the ledger');
 
     scanned = 0;
-    const warm = await readLatestContextDiagnostics(counted, 'session-1');
+    const warm = await readLatestContextDiagnostics(counted, 'session-1', ['run-1']);
     assert.equal(warm.status, 'available');
     if (warm.status !== 'available') return;
     assert.deepEqual(warm.composition?.tools, [{ name: 'Bash', bytes: 800 }]);
@@ -324,7 +320,7 @@ test('rebuilds a canonical observation, then repairs it so the next read scans n
 test('rebuilds without repairing when the store lacks a ledger revision capability', async () => {
   const base = runStore([
     {
-      header: runHeader('run-1', 1),
+      runId: 'run-1',
       events: [meteringEvent('run-1', 'attempt-1', 20, 'model', 40, 200)],
     },
   ]);
@@ -336,7 +332,7 @@ test('rebuilds without repairing when the store lacks a ledger revision capabili
     },
   };
 
-  const diagnostics = await readLatestContextDiagnostics(store, 'session-1');
+  const diagnostics = await readLatestContextDiagnostics(store, 'session-1', ['run-1']);
 
   assert.equal(diagnostics.status, 'available');
   assert.equal(repaired, false);
@@ -348,7 +344,7 @@ test('reads a provider-only ledger that predates canonical metering', async () =
   // lose an answer the ledger still holds.
   const store = runStore([
     {
-      header: runHeader('run-1', 1),
+      runId: 'run-1',
       events: [
         attemptEvent('run-1', 'attempt-1', 20, 'completed', 'model-old', 40, 200, [
           { kind: 'tool_schema', index: 0, cacheable: true, hash: 't', bytes: 800, label: 'Bash' },
@@ -357,7 +353,7 @@ test('reads a provider-only ledger that predates canonical metering', async () =
     },
   ]);
 
-  const diagnostics = await readLatestContextDiagnostics(store, 'session-1');
+  const diagnostics = await readLatestContextDiagnostics(store, 'session-1', ['run-1']);
 
   assert.equal(diagnostics.status, 'available');
   if (diagnostics.status !== 'available') return;
@@ -370,7 +366,7 @@ test('a canonical record on the ledger keeps the legacy path out of it', async (
   // attempt exists, a newer provider-only attempt is not promoted over it.
   const store = runStore([
     {
-      header: runHeader('run-1', 1),
+      runId: 'run-1',
       events: [
         meteringEvent('run-1', 'attempt-1', 10, 'model-canonical', 40, 200),
         attemptEvent('run-1', 'attempt-2', 30, 'completed', 'model-provider-only', 50, 200),
@@ -378,7 +374,7 @@ test('a canonical record on the ledger keeps the legacy path out of it', async (
     },
   ]);
 
-  const diagnostics = await readLatestContextDiagnostics(store, 'session-1');
+  const diagnostics = await readLatestContextDiagnostics(store, 'session-1', ['run-1']);
 
   assert.equal(diagnostics.status, 'available');
   if (diagnostics.status !== 'available') return;
@@ -388,7 +384,7 @@ test('a canonical record on the ledger keeps the legacy path out of it', async (
 test('cold rebuild takes composition from the canonical attempt observation', async () => {
   const store = runStore([
     {
-      header: runHeader('run-1', 1),
+      runId: 'run-1',
       events: [
         meteringEvent('run-1', 'attempt-1', 10, 'model-canonical', 40, 200, {
           requestObservation: requestObservation([
@@ -417,7 +413,7 @@ test('cold rebuild takes composition from the canonical attempt observation', as
     },
   ]);
 
-  const diagnostics = await readLatestContextDiagnostics(store, 'session-1');
+  const diagnostics = await readLatestContextDiagnostics(store, 'session-1', ['run-1']);
 
   assert.equal(diagnostics.status, 'available');
   if (diagnostics.status !== 'available') return;
@@ -427,7 +423,7 @@ test('cold rebuild takes composition from the canonical attempt observation', as
 test('does not enrich a canonical attempt from an identity-mismatched provider row', async () => {
   const store = runStore([
     {
-      header: runHeader('run-1', 1),
+      runId: 'run-1',
       events: [
         meteringEvent('run-1', 'attempt-1', 10, 'model-canonical', 40, 200),
         attemptEvent('run-1', 'attempt-1', 11, 'completed', 'model-other', 40, 200, [
@@ -444,7 +440,7 @@ test('does not enrich a canonical attempt from an identity-mismatched provider r
     },
   ]);
 
-  const diagnostics = await readLatestContextDiagnostics(store, 'session-1');
+  const diagnostics = await readLatestContextDiagnostics(store, 'session-1', ['run-1']);
 
   assert.equal(diagnostics.status, 'available');
   if (diagnostics.status !== 'available') return;
@@ -455,7 +451,7 @@ test('does not enrich a canonical attempt from an identity-mismatched provider r
 test('a legacy request whose capture is missing reports no composition, not an older one', async () => {
   const store = runStore([
     {
-      header: runHeader('run-1', 1),
+      runId: 'run-1',
       events: [
         meteringEvent('run-1', 'attempt-1', 10, 'model-old', 10, 100),
         attemptEvent('run-1', 'attempt-1', 10, 'completed', 'model-old', 10, 100, [
@@ -466,7 +462,7 @@ test('a legacy request whose capture is missing reports no composition, not an o
     },
   ]);
 
-  const diagnostics = await readLatestContextDiagnostics(store, 'session-1');
+  const diagnostics = await readLatestContextDiagnostics(store, 'session-1', ['run-1']);
 
   assert.equal(diagnostics.status, 'available');
   if (diagnostics.status !== 'available') return;
@@ -477,7 +473,7 @@ test('a legacy request whose capture is missing reports no composition, not an o
 test('a compaction call never becomes the reported context', async () => {
   const store = runStore([
     {
-      header: runHeader('run-1', 1),
+      runId: 'run-1',
       events: [
         meteringEvent('run-1', 'attempt-1', 10, 'model-main', 40, 200),
         meteringEvent('run-1', 'attempt-2', 20, 'model-compact', 5, 200, {
@@ -487,7 +483,7 @@ test('a compaction call never becomes the reported context', async () => {
     },
   ]);
 
-  const diagnostics = await readLatestContextDiagnostics(store, 'session-1');
+  const diagnostics = await readLatestContextDiagnostics(store, 'session-1', ['run-1']);
 
   assert.equal(diagnostics.status, 'available');
   if (diagnostics.status !== 'available') return;
@@ -496,8 +492,9 @@ test('a compaction call never becomes the reported context', async () => {
 
 test('reports that no completed request exists instead of inferring session values', async () => {
   const diagnostics = await readLatestContextDiagnostics(
-    runStore([{ header: runHeader('run-1', 1), events: [] }]),
+    runStore([{ runId: 'run-1', events: [] }]),
     'session-1',
+    ['run-1'],
   );
 
   assert.deepEqual(diagnostics, { status: 'unavailable', reason: 'no_completed_request' });
@@ -511,7 +508,7 @@ test('a rebuilt session reports the fold that was in place when its request star
   // here describes a different request" rule the sealed row enforces.
   const store = runStore([
     {
-      header: runHeader('run-1', 1),
+      runId: 'run-1',
       events: [
         checkpointEvent('run-1', 5, 12, 3, 900),
         meteringEvent('run-1', 'attempt-1', 20, 'model-new', 40, 200),
@@ -520,7 +517,7 @@ test('a rebuilt session reports the fold that was in place when its request star
     },
   ]);
 
-  const diagnostics = await readLatestContextDiagnostics(store, 'session-1');
+  const diagnostics = await readLatestContextDiagnostics(store, 'session-1', ['run-1']);
 
   assert.equal(diagnostics.status, 'available');
   if (diagnostics.status !== 'available') return;
@@ -541,7 +538,7 @@ test('a canonical ledger with nothing reportable does not fall back to a provide
   // resurrect exactly the request the canonical rule declined to report.
   const store = runStore([
     {
-      header: runHeader('run-1', 1),
+      runId: 'run-1',
       events: [
         meteringEvent('run-1', 'attempt-1', 10, 'model-failed', 40, 200, { status: 'failed' }),
         meteringEvent('run-1', 'attempt-2', 15, 'model-compact', 5, 200, {
@@ -561,7 +558,7 @@ test('a canonical ledger with nothing reportable does not fall back to a provide
     },
   ]);
 
-  const diagnostics = await readLatestContextDiagnostics(store, 'session-1');
+  const diagnostics = await readLatestContextDiagnostics(store, 'session-1', ['run-1']);
 
   assert.deepEqual(diagnostics, { status: 'unavailable', reason: 'no_completed_request' });
 });
@@ -574,8 +571,8 @@ test('warm and cold agree on which of two requests that finished together is the
   // request the panel is describing.
   const root = await mkdtemp(join(tmpdir(), 'maka-context-diagnostics-'));
   try {
+    await openRun(root, 'session-1', 'run-1');
     const writer = createSqliteAgentRunStore(root);
-    await writer.createRun(runHeader('run-1', 1));
     // Appended greater-id first, so a rule that simply kept the last write
     // would answer 'model-a' here and disagree with the scan below.
     await writer.appendEvent(
@@ -592,15 +589,13 @@ test('warm and cold agree on which of two requests that finished together is the
     );
 
     const reader = createSqliteAgentRunStore(root);
-    const warm = await readLatestContextDiagnostics(reader, 'session-1');
+    const warm = await readLatestContextDiagnostics(reader, 'session-1', ['run-1']);
     // The same ledger read by a session whose projection was never
     // initialized: the answer has to come out identical.
     const cold = await readLatestContextDiagnostics(
-      {
-        listSessionRuns: (sessionId) => reader.listSessionRuns(sessionId),
-        readEvents: (sessionId, runId) => reader.readEvents(sessionId, runId),
-      },
+      { readEvents: (sessionId, runId) => reader.readEvents(sessionId, runId) },
       'session-1',
+      ['run-1'],
     );
 
     assert.equal(warm.status, 'available');
@@ -620,19 +615,18 @@ test('a session confirmed to have nothing is answered from the projection, not r
   const root = await mkdtemp(join(tmpdir(), 'maka-context-diagnostics-'));
   try {
     const writer = createSqliteAgentRunStore(root);
-    await writer.createRun(runHeader('run-1', 1));
 
     let scanned = 0;
     const counted = countingStore(createSqliteAgentRunStore(root), () => {
       scanned += 1;
     });
 
-    const cold = await readLatestContextDiagnostics(counted, 'session-1');
+    const cold = await readLatestContextDiagnostics(counted, 'session-1', ['run-1']);
     assert.deepEqual(cold, { status: 'unavailable', reason: 'no_completed_request' });
     assert.ok(scanned > 0, 'an uninitialized projection is not an answer');
 
     scanned = 0;
-    const warm = await readLatestContextDiagnostics(counted, 'session-1');
+    const warm = await readLatestContextDiagnostics(counted, 'session-1', ['run-1']);
     assert.deepEqual(warm, { status: 'unavailable', reason: 'no_completed_request' });
     assert.equal(scanned, 0, 'the initialized-empty projection answers on its own');
   } finally {
@@ -653,12 +647,12 @@ test('names at most the bounded number of tools, and accounts for the rest', asy
   }));
   const store = runStore([
     {
-      header: runHeader('run-1', 1),
+      runId: 'run-1',
       events: [attemptEvent('run-1', 'attempt-1', 10, 'completed', 'model', 40, 200, segments)],
     },
   ]);
 
-  const diagnostics = await readLatestContextDiagnostics(store, 'session-1');
+  const diagnostics = await readLatestContextDiagnostics(store, 'session-1', ['run-1']);
 
   assert.equal(diagnostics.status, 'available');
   if (diagnostics.status !== 'available') return;
@@ -679,8 +673,8 @@ test('a request that finished earlier cannot move the answer backwards', async (
   // completion, or a late arrival would permanently rewind the panel.
   const root = await mkdtemp(join(tmpdir(), 'maka-context-diagnostics-'));
   try {
+    await openRun(root, 'session-1', 'run-1');
     const writer = createSqliteAgentRunStore(root);
-    await writer.createRun(runHeader('run-1', 1));
     await writer.appendEvent(
       'session-1',
       'run-1',
@@ -698,6 +692,7 @@ test('a request that finished earlier cannot move the answer backwards', async (
     const diagnostics = await readLatestContextDiagnostics(
       createSqliteAgentRunStore(root),
       'session-1',
+      ['run-1'],
     );
 
     assert.equal(diagnostics.status, 'available');
@@ -715,8 +710,8 @@ test('a damaged projection is repaired, not preserved forever', async () => {
   // refresh rescanned the whole session (#2323).
   const root = await mkdtemp(join(tmpdir(), 'maka-context-diagnostics-'));
   try {
+    await openRun(root, 'session-1', 'run-1');
     const writer = createSqliteAgentRunStore(root);
-    await writer.createRun(runHeader('run-1', 1));
     await writer.appendEvent(
       'session-1',
       'run-1',
@@ -750,14 +745,14 @@ test('a damaged projection is repaired, not preserved forever', async () => {
       scanned += 1;
     });
 
-    const first = await readLatestContextDiagnostics(counted, 'session-1');
+    const first = await readLatestContextDiagnostics(counted, 'session-1', ['run-1']);
     assert.equal(first.status, 'available');
     if (first.status !== 'available') return;
     assert.equal(first.modelId, 'model', 'the damaged row does not answer');
     assert.ok(scanned > 0, 'the first read rebuilds from the ledger');
 
     scanned = 0;
-    const second = await readLatestContextDiagnostics(counted, 'session-1');
+    const second = await readLatestContextDiagnostics(counted, 'session-1', ['run-1']);
     assert.equal(second.status, 'available');
     assert.equal(scanned, 0, 'and the rebuild replaced the damaged row');
   } finally {
@@ -768,8 +763,8 @@ test('a damaged projection is repaired, not preserved forever', async () => {
 test('repairs malformed projection bytes from the canonical ledger', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-context-diagnostics-'));
   try {
+    await openRun(root, 'session-1', 'run-1');
     const writer = createSqliteAgentRunStore(root);
-    await writer.createRun(runHeader('run-1', 1));
     await writer.appendEvent(
       'session-1',
       'run-1',
@@ -807,14 +802,14 @@ test('repairs malformed projection bytes from the canonical ledger', async () =>
     const counted = countingStore(createSqliteAgentRunStore(root), () => {
       scanned += 1;
     });
-    const first = await readLatestContextDiagnostics(counted, 'session-1');
+    const first = await readLatestContextDiagnostics(counted, 'session-1', ['run-1']);
     assert.equal(first.status, 'available');
     if (first.status !== 'available') return;
     assert.deepEqual(first.composition?.tools, [{ name: 'Bash', bytes: 800 }]);
     assert.ok(scanned > 0, 'the malformed bytes force a canonical rebuild');
 
     scanned = 0;
-    const second = await readLatestContextDiagnostics(counted, 'session-1');
+    const second = await readLatestContextDiagnostics(counted, 'session-1', ['run-1']);
     assert.equal(second.status, 'available');
     assert.equal(scanned, 0, 'the authority-derived candidate replaced the malformed row');
   } finally {
@@ -825,8 +820,8 @@ test('repairs malformed projection bytes from the canonical ledger', async () =>
 test('does not persist a cold answer after canonical authority advances', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-context-diagnostics-'));
   try {
+    await openRun(root, 'session-1', 'run-1');
     const store = createSqliteAgentRunStore(root);
-    await store.createRun(runHeader('run-1', 1));
     await store.appendEvent(
       'session-1',
       'run-1',
@@ -849,7 +844,6 @@ test('does not persist a cold answer after canonical authority advances', async 
 
     let advanced = false;
     const racing: Parameters<typeof readLatestContextDiagnostics>[0] = {
-      listSessionRuns: (sessionId) => store.listSessionRuns(sessionId),
       readEvents: async (sessionId, runId) => {
         const events = await store.readEvents(sessionId, runId);
         if (!advanced) {
@@ -869,12 +863,12 @@ test('does not persist a cold answer after canonical authority advances', async 
         store.repairEventProjection(sessionId, type, event, options),
     };
 
-    const cold = await readLatestContextDiagnostics(racing, 'session-1');
+    const cold = await readLatestContextDiagnostics(racing, 'session-1', ['run-1']);
     assert.equal(cold.status, 'available');
     if (cold.status !== 'available') return;
     assert.equal(cold.modelId, 'model-1', 'the in-flight read remains a valid earlier snapshot');
 
-    const next = await readLatestContextDiagnostics(store, 'session-1');
+    const next = await readLatestContextDiagnostics(store, 'session-1', ['run-1']);
     assert.equal(next.status, 'available');
     if (next.status !== 'available') return;
     assert.equal(next.modelId, 'model-2', 'the stale scan never becomes the warm projection');
@@ -886,8 +880,8 @@ test('does not persist a cold answer after canonical authority advances', async 
 test('rebuilds a nested-malformed v2 projection from the canonical ledger', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-context-diagnostics-'));
   try {
+    await openRun(root, 'session-1', 'run-1');
     const writer = createSqliteAgentRunStore(root);
-    await writer.createRun(runHeader('run-1', 1));
     await writer.appendEvent(
       'session-1',
       'run-1',
@@ -931,14 +925,14 @@ test('rebuilds a nested-malformed v2 projection from the canonical ledger', asyn
     const counted = countingStore(createSqliteAgentRunStore(root), () => {
       scanned += 1;
     });
-    const first = await readLatestContextDiagnostics(counted, 'session-1');
+    const first = await readLatestContextDiagnostics(counted, 'session-1', ['run-1']);
     assert.equal(first.status, 'available');
     if (first.status !== 'available') return;
     assert.deepEqual(first.composition?.tools, [{ name: 'Bash', bytes: 800 }]);
     assert.ok(scanned > 0, 'the malformed nested value cannot answer the warm read');
 
     scanned = 0;
-    const second = await readLatestContextDiagnostics(counted, 'session-1');
+    const second = await readLatestContextDiagnostics(counted, 'session-1', ['run-1']);
     assert.equal(second.status, 'available');
     assert.equal(scanned, 0, 'the canonical rebuild repaired the rejected projection');
   } finally {
@@ -949,8 +943,8 @@ test('rebuilds a nested-malformed v2 projection from the canonical ledger', asyn
 test('an old readable-order projection is upgraded after one cold rebuild', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-context-diagnostics-'));
   try {
+    await openRun(root, 'session-1', 'run-1');
     const writer = createSqliteAgentRunStore(root);
-    await writer.createRun(runHeader('run-1', 1));
     await writer.appendEvent(
       'session-1',
       'run-1',
@@ -983,12 +977,12 @@ test('an old readable-order projection is upgraded after one cold rebuild', asyn
     const counted = countingStore(createSqliteAgentRunStore(root), () => {
       scanned += 1;
     });
-    const first = await readLatestContextDiagnostics(counted, 'session-1');
+    const first = await readLatestContextDiagnostics(counted, 'session-1', ['run-1']);
     assert.equal(first.status, 'available');
     assert.ok(scanned > 0, 'the old schema requires one canonical rebuild');
 
     scanned = 0;
-    const second = await readLatestContextDiagnostics(counted, 'session-1');
+    const second = await readLatestContextDiagnostics(counted, 'session-1', ['run-1']);
     assert.equal(second.status, 'available');
     assert.equal(scanned, 0, 'the rebuilt current schema replaces the old row');
   } finally {
@@ -996,12 +990,37 @@ test('an old readable-order projection is upgraded after one cold rebuild', asyn
   }
 });
 
+/**
+ * Open the invocation these ledger writes belong to.
+ *
+ * The operational ledger anchors every run on its opening fact, so a test that
+ * writes rows for a run has to say that the run began — and the opening is also
+ * where a run says it belongs to a subagent rather than to the session.
+ */
+async function openRun(
+  root: string,
+  sessionId: string,
+  runId: string,
+  opening?: Partial<RuntimeEventInvocationOpenedContent>,
+): Promise<void> {
+  const runtimeStore = createWorkspaceRuntimeStore(root);
+  try {
+    await seedInvocation(runtimeStore, {
+      sessionId,
+      runId,
+      turnId: `turn-${runId}`,
+      ...(opening ? { opening } : {}),
+    });
+  } finally {
+    runtimeStore.close();
+  }
+}
+
 function countingStore(
   reader: ReturnType<typeof createSqliteAgentRunStore>,
   onScan: () => void,
 ): Parameters<typeof readLatestContextDiagnostics>[0] {
   return {
-    listSessionRuns: (sessionId) => reader.listSessionRuns(sessionId),
     readEvents: async (sessionId, runId) => {
       onScan();
       return reader.readEvents(sessionId, runId);
@@ -1038,28 +1057,10 @@ function latestContext(attemptId: string, completedAt: number, modelId = 'model'
 }
 
 function runStore(
-  runs: Array<{ header: AgentRunHeader; events: AgentRunEvent[] }>,
-): Pick<AgentRunStore, 'listSessionRuns' | 'readEvents'> {
+  runs: Array<{ runId: string; events: AgentRunEvent[] }>,
+): Pick<AgentRunStore, 'readEvents'> {
   return {
-    listSessionRuns: async () => runs.map((run) => run.header),
-    readEvents: async (_sessionId, runId) =>
-      runs.find((run) => run.header.runId === runId)?.events ?? [],
-  };
-}
-
-function runHeader(runId: string, createdAt: number): AgentRunHeader {
-  return {
-    runId,
-    sessionId: 'session-1',
-    turnId: `turn-${runId}`,
-    status: 'completed',
-    backendKind: 'ai-sdk',
-    llmConnectionSlug: 'anthropic-main',
-    modelId: 'model',
-    cwd: '/repo',
-    permissionMode: 'ask',
-    createdAt,
-    updatedAt: createdAt,
+    readEvents: async (_sessionId, runId) => runs.find((run) => run.runId === runId)?.events ?? [],
   };
 }
 
@@ -1074,6 +1075,8 @@ function attemptEvent(
   segments: Array<Record<string, unknown>> = [],
 ): EmittedAgentRunEvent {
   const turnId = `turn-${runId}`;
+  // A row from a retired writer. This build cannot emit the type; the diagnostic
+  // reader still has to read what older builds persisted.
   return {
     type: 'provider_request_attempt_recorded',
     id: attemptId,
@@ -1101,7 +1104,7 @@ function attemptEvent(
       latencyMs: 1,
       ...(inputTokens === undefined ? {} : { inputTokens }),
     },
-  };
+  } as unknown as EmittedAgentRunEvent;
 }
 
 /**

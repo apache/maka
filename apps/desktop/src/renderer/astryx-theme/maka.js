@@ -8,7 +8,7 @@
 
 import { neutralIconRegistry } from '@astryxdesign/theme-neutral';
 /**
- * maka theme — built by `npx astryx theme build`
+ * maka theme — built by `astryx theme build`
  * Import the CSS file alongside this module:
  *
  *   import { makaTheme } from './maka';

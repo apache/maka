@@ -24,6 +24,7 @@
     "./session-todo-tools": "./dist/session-todo-tools.js",
     "./test-only/fake-backend": "./dist/test-only/fake-backend.js",
     "./test-only/observation-text-reader": "./dist/__tests__/observation-text-reader.js",
+    "./test-only/invocation-fixture": "./dist/__tests__/invocation-fixture.js",
     "./filesystem-worker": "./dist/filesystem-worker/index.js",
     "./sandbox": "./dist/sandbox/index.js",
     "./network/proxy-test": "./dist/network/proxy-test.js",

@@ -35,6 +35,13 @@ import {
   runtimeHostLocalSetupCommand,
 } from '../runtime-host-local-operator.js';
 
+const OPERATOR = {
+  kind: 'node' as const,
+  platform: 'posix' as const,
+  nodePath: '/usr/bin/node',
+  modulePath: '/tmp/maka/operator.mjs',
+};
+
 test('local setup installs one managed service for the Desktop root with Direct peer enabled', () => {
   assert.deepEqual(
     runtimeHostLocalSetupCommand({
@@ -90,7 +97,7 @@ test('local setup forwards the exact development archive evidence', async (t) =>
         version: '0.2.0-development',
         serviceId: 'b'.repeat(64),
         deploymentId: '00000000-0000-4000-8000-000000000001',
-        operatorPath: '/tmp/maka/operator',
+        operator: OPERATOR,
         rootPath: '/tmp/maka/root',
         rootId: 'a'.repeat(64),
         endpoint: 'ws://127.0.0.1:7443/runtime-host',
@@ -308,7 +315,7 @@ test('local Peer Mesh join keeps invitations off argv and accepts bounded large 
   const invitation = JSON.stringify({ secret: 'one-time-mesh-secret' });
 
   const result = await operator.runPeerMesh({
-    operatorPath: '/tmp/maka/operator',
+    operator: OPERATOR,
     action: 'join',
     target: {
       serviceId: 'b'.repeat(64),
@@ -320,6 +327,7 @@ test('local Peer Mesh join keeps invitations off argv and accepts bounded large 
   });
 
   assert.deepEqual(args, [
+    OPERATOR.modulePath,
     'mesh', 'join', '--framed',
     '--expected-service-id', 'b'.repeat(64),
     '--expected-root-path', '/tmp/maka/root',

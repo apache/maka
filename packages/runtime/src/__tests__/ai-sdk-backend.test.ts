@@ -26,7 +26,8 @@ import { describe, test } from 'node:test';
 import type { ModelMessage, ModelStreamResult } from '../model-protocol.js';
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 import { APICallError, type LanguageModelV4StreamPart } from '@ai-sdk/provider';
-import type { AgentRunHeader } from '@maka/core/agent-run';
+import type { RuntimeInvocationRootAuthority } from '@maka/core/runtime-event';
+import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type { AttachmentByteReader } from '@maka/core/attachments';
 import type { BackendSendInput } from '@maka/core/backend-types';
 import type { LlmConnection } from '@maka/core/llm-connections';
@@ -94,6 +95,7 @@ import type { OpenAiResponsesSemanticBaseline } from '../openai-responses-contin
 import type { OpenAiResponsesTransportState } from '../openai-responses-websocket.js';
 import { getAIModel } from '../model-factory.js';
 import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
+import { testInvocationOpening } from './invocation-fixture.js';
 
 describe('AiSdkBackend ApplyPatch routing', () => {
   test('advertises apply_patch only to supported native OpenAI models', async () => {
@@ -623,97 +625,6 @@ function memoryFinishTextChunks(delta: string): LanguageModelV4StreamPart[] {
 }
 
 describe('AiSdkBackend Memory Extraction triggers', () => {
-  test('dispatches a pre-turn Compaction recipe without projecting history or awaiting it', async () => {
-    const model = completionModel();
-    const recorded: HistoryCompactCheckpoint[] = [];
-    let snapshot: MemoryExtractionSourceSnapshot | undefined;
-    let systemPromptResolutions = 0;
-    const backend = createTestAiSdkBackend({
-      sessionId: 'session-1',
-      header: header(),
-      appendMessage: async () => {},
-      connection: connection(),
-      apiKey: 'sk-test',
-      modelId: 'mock-model-id',
-      modelFactory: () => model,
-      systemPrompt: async () => {
-        systemPromptResolutions += 1;
-        return 'CURRENT_MEMORY_SYSTEM_PROMPT';
-      },
-      tools: [],
-      contextBudget: {
-        maxHistoryEstimatedTokens: 1_500,
-        charsPerToken: 1,
-        historyCompact: {
-          enabled: true,
-        },
-      },
-      summarizeHistoryCompact: async () => structuredSummary('AUTOMATIC_MEMORY_SUMMARY'),
-      recordHistoryCompactCheckpoint: (checkpoint) => {
-        recorded.push(checkpoint);
-      },
-      memoryExtraction: {
-        gate: () => new Promise(() => {}),
-        automaticGate: () => ({ allowed: true }),
-        remember: async () => ({ status: 'unavailable', requestedItems: [] }),
-        extract: (value) => {
-          snapshot = value;
-          return new Promise<void>(() => {});
-        },
-      },
-      newId: idGenerator(),
-      now: monotonicClock(),
-    });
-    const runtimeContext = [
-      runtimeTextEvent({
-        id: 'memory-compact-old-user',
-        turnId: 'memory-compact-turn-1',
-        role: 'user',
-        author: 'user',
-        text: 'The project uses SQLite. '.repeat(40),
-      }),
-      runtimeTextEvent({
-        id: 'memory-compact-old-model',
-        turnId: 'memory-compact-turn-2',
-        role: 'model',
-        author: 'agent',
-        text: 'Acknowledged. '.repeat(70),
-      }),
-      runtimeTextEvent({
-        id: 'memory-compact-boundary',
-        turnId: 'memory-compact-turn-3',
-        role: 'user',
-        author: 'user',
-        text: 'Keep this retained context.',
-      }),
-    ];
-
-    await drain(
-      backend.send({
-        turnId: 'memory-compact-current',
-        runId: 'memory-compact-current-run',
-        text: 'continue',
-        context: [],
-        runtimeContext,
-      }),
-    );
-
-    assert.equal(recorded.length, 1);
-    assert.equal(recorded[0]?.memoryExtractionBoundary?.runtimeEventId, 'memory-compact-boundary');
-    assert.equal(snapshot?.trigger, 'compaction');
-    assert.equal(snapshot?.compactionCheckpointId, recorded[0]?.checkpointId);
-    assert.equal(snapshot?.compactionBoundaryEventId, 'memory-compact-boundary');
-    assert.equal(snapshot?.sourceSystemPrompt, undefined);
-    assert.deepEqual(snapshot?.sourceMessages, []);
-    assert.deepEqual(snapshot?.sourceTools, {});
-    assert.deepEqual(snapshot?.sourceActiveTools, []);
-    assert.equal(snapshot?.sourceProviderOptions, undefined);
-    assert.equal(snapshot?.rebuildSourceContextFromCompactionCheckpoint, true);
-    assert.equal(systemPromptResolutions, 1);
-    assert.match(JSON.stringify(model.doStreamCalls[0]), /CURRENT_MEMORY_SYSTEM_PROMPT/);
-    assert.equal(model.doStreamCalls.length, 1, 'the unresolved extraction must not block Agent');
-  });
-
   test('terminates cleanly when the dynamic system prompt rejects before Compaction', async () => {
     const model = completionModel();
     const recorded: HistoryCompactCheckpoint[] = [];
@@ -731,7 +642,6 @@ describe('AiSdkBackend Memory Extraction triggers', () => {
       },
       tools: [],
       contextBudget: {
-        maxHistoryEstimatedTokens: 1_500,
         charsPerToken: 1,
         historyCompact: { enabled: true },
       },
@@ -773,154 +683,6 @@ describe('AiSdkBackend Memory Extraction triggers', () => {
       events.some((event) => event.type === 'complete' && event.stopReason === 'error'),
       true,
     );
-  });
-
-  for (const gate of [
-    { allowed: false as const, reason: 'disabled' as const },
-    { allowed: false as const, reason: 'incognito' as const },
-  ]) {
-    test(`persists a denied marker and does not dispatch when automatic Compaction is ${gate.reason}`, async () => {
-      const recorded: HistoryCompactCheckpoint[] = [];
-      let dispatches = 0;
-      const backend = createTestAiSdkBackend({
-        sessionId: 'session-1',
-        header: header(),
-        appendMessage: async () => {},
-        connection: connection(),
-        apiKey: 'sk-test',
-        modelId: 'mock-model-id',
-        modelFactory: () => completionModel(),
-        tools: [],
-        contextBudget: {
-          maxHistoryEstimatedTokens: 1_500,
-          charsPerToken: 1,
-          historyCompact: {
-            enabled: true,
-          },
-        },
-        summarizeHistoryCompact: async () => structuredSummary('DENIED_MEMORY_SUMMARY'),
-        recordHistoryCompactCheckpoint: (checkpoint) => {
-          recorded.push(checkpoint);
-        },
-        memoryExtraction: {
-          gate: async () => gate,
-          automaticGate: () => gate,
-          remember: async () => ({ status: 'unavailable', requestedItems: [] }),
-          extract: () => {
-            dispatches += 1;
-          },
-        },
-        newId: idGenerator(),
-        now: monotonicClock(),
-      });
-
-      await drain(
-        backend.send({
-          turnId: `denied-${gate.reason}-current`,
-          runId: `denied-${gate.reason}-run`,
-          text: 'continue',
-          context: [],
-          runtimeContext: [
-            runtimeTextEvent({
-              id: `denied-${gate.reason}-old-user`,
-              turnId: 'denied-old-1',
-              role: 'user',
-              author: 'user',
-              text: 'Private disabled-period context. '.repeat(50),
-            }),
-            runtimeTextEvent({
-              id: `denied-${gate.reason}-old-model`,
-              turnId: 'denied-old-2',
-              role: 'model',
-              author: 'agent',
-              text: 'Acknowledged. '.repeat(70),
-            }),
-            runtimeTextEvent({
-              id: `denied-${gate.reason}-boundary`,
-              turnId: 'denied-old-3',
-              role: 'user',
-              author: 'user',
-              text: 'Retained tail.',
-            }),
-          ],
-        }),
-      );
-
-      assert.equal(recorded.length, 1);
-      assert.equal(recorded[0]?.memoryExtractionBoundary?.disposition, 'policy_denied');
-      assert.equal(dispatches, 0);
-    });
-  }
-
-  test('keeps a transiently unavailable automatic Compaction checkpoint recoverable', async () => {
-    const recorded: HistoryCompactCheckpoint[] = [];
-    let dispatches = 0;
-    const backend = createTestAiSdkBackend({
-      sessionId: 'session-1',
-      header: header(),
-      appendMessage: async () => {},
-      connection: connection(),
-      apiKey: 'sk-test',
-      modelId: 'mock-model-id',
-      modelFactory: () => completionModel(),
-      tools: [],
-      contextBudget: {
-        maxHistoryEstimatedTokens: 1_500,
-        charsPerToken: 1,
-        historyCompact: {
-          enabled: true,
-        },
-      },
-      summarizeHistoryCompact: async () => structuredSummary('UNAVAILABLE_MEMORY_SUMMARY'),
-      recordHistoryCompactCheckpoint: (checkpoint) => {
-        recorded.push(checkpoint);
-      },
-      memoryExtraction: {
-        gate: async () => ({ allowed: false, reason: 'unavailable' }),
-        automaticGate: () => ({ allowed: false, reason: 'unavailable' }),
-        remember: async () => ({ status: 'unavailable', requestedItems: [] }),
-        extract: () => {
-          dispatches += 1;
-        },
-      },
-      newId: idGenerator(),
-      now: monotonicClock(),
-    });
-
-    await drain(
-      backend.send({
-        turnId: 'unavailable-current',
-        runId: 'unavailable-run',
-        text: 'continue',
-        context: [],
-        runtimeContext: [
-          runtimeTextEvent({
-            id: 'unavailable-old-user',
-            turnId: 'unavailable-old-1',
-            role: 'user',
-            author: 'user',
-            text: 'Recoverable context. '.repeat(50),
-          }),
-          runtimeTextEvent({
-            id: 'unavailable-old-model',
-            turnId: 'unavailable-old-2',
-            role: 'model',
-            author: 'agent',
-            text: 'Acknowledged. '.repeat(70),
-          }),
-          runtimeTextEvent({
-            id: 'unavailable-boundary',
-            turnId: 'unavailable-old-3',
-            role: 'user',
-            author: 'user',
-            text: 'Retained tail.',
-          }),
-        ],
-      }),
-    );
-
-    assert.equal(recorded[0]?.memoryExtractionBoundary?.disposition, 'eligible');
-    assert.equal(dispatches, 0);
   });
 
   test('exposes explicitly unsupported Memory triggers on the native OpenAI Responses lane', async () => {
@@ -3573,6 +3335,133 @@ describe('AiSdkBackend model history', () => {
     assert.match(JSON.stringify(assistant), /Maka shipped the feature/);
   });
 
+  test('preserves pending assistant steps before a following client tool step', async () => {
+    const prompt = await replayPrompt([
+      runtimeTextEvent({
+        id: 'rt-user',
+        turnId: 'turn-prev',
+        role: 'user',
+        author: 'user',
+        text: 'inspect the workspace',
+      }),
+      runtimeEvent({
+        id: 'rt-progress-a',
+        turnId: 'turn-prev',
+        role: 'model',
+        author: 'agent',
+        refs: { providerEventId: 'progress-step-a' },
+        content: { kind: 'text', text: 'I found the relevant package.' },
+      }),
+      runtimeEvent({
+        id: 'rt-progress-b',
+        turnId: 'turn-prev',
+        role: 'model',
+        author: 'agent',
+        refs: { providerEventId: 'progress-step-b' },
+        content: { kind: 'text', text: 'I will inspect its configuration.' },
+      }),
+      clientToolCallEvent('rt-read-call', 'tool-step'),
+      clientToolResultEvent('rt-read-result'),
+    ]);
+
+    assert.deepEqual(
+      prompt.slice(0, 5).map((message) => ({
+        role: message.role,
+        types: message.content.map((part) => part.type),
+        text: message.content.find((part) => part.type === 'text')?.text,
+      })),
+      [
+        { role: 'user', types: ['text'], text: 'inspect the workspace' },
+        {
+          role: 'assistant',
+          types: ['text'],
+          text: 'I found the relevant package.',
+        },
+        {
+          role: 'assistant',
+          types: ['text'],
+          text: 'I will inspect its configuration.',
+        },
+        { role: 'assistant', types: ['tool-call'], text: undefined },
+        { role: 'tool', types: ['tool-result'], text: undefined },
+      ],
+    );
+  });
+
+  test('groups a client tool only with the immediately pending matching step', async () => {
+    const contiguousPrompt = await replayPrompt([
+      runtimeTextEvent({
+        id: 'rt-user',
+        turnId: 'turn-prev',
+        role: 'user',
+        author: 'user',
+        text: 'read the file',
+      }),
+      runtimeEvent({
+        id: 'rt-progress',
+        turnId: 'turn-prev',
+        role: 'model',
+        author: 'agent',
+        refs: { providerEventId: 'shared-step' },
+        content: { kind: 'text', text: 'I will read the file now.' },
+      }),
+      clientToolCallEvent('rt-read-call', 'shared-step'),
+      clientToolResultEvent('rt-read-result'),
+    ]);
+    assert.deepEqual(
+      contiguousPrompt.slice(0, 3).map((message) => ({
+        role: message.role,
+        types: message.content.map((part) => part.type),
+      })),
+      [
+        { role: 'user', types: ['text'] },
+        { role: 'assistant', types: ['text', 'tool-call'] },
+        { role: 'tool', types: ['tool-result'] },
+      ],
+    );
+
+    const interruptedPrompt = await replayPrompt([
+      runtimeTextEvent({
+        id: 'rt-user',
+        turnId: 'turn-prev',
+        role: 'user',
+        author: 'user',
+        text: 'read the file',
+      }),
+      runtimeEvent({
+        id: 'rt-progress-a',
+        turnId: 'turn-prev',
+        role: 'model',
+        author: 'agent',
+        refs: { providerEventId: 'shared-step' },
+        content: { kind: 'text', text: 'I will read the file now.' },
+      }),
+      runtimeEvent({
+        id: 'rt-progress-b',
+        turnId: 'turn-prev',
+        role: 'model',
+        author: 'agent',
+        refs: { providerEventId: 'intervening-step' },
+        content: { kind: 'text', text: 'Another step was persisted.' },
+      }),
+      clientToolCallEvent('rt-read-call', 'shared-step'),
+      clientToolResultEvent('rt-read-result'),
+    ]);
+    assert.deepEqual(
+      interruptedPrompt.slice(0, 5).map((message) => ({
+        role: message.role,
+        types: message.content.map((part) => part.type),
+      })),
+      [
+        { role: 'user', types: ['text'] },
+        { role: 'assistant', types: ['text'] },
+        { role: 'assistant', types: ['text'] },
+        { role: 'assistant', types: ['tool-call'] },
+        { role: 'tool', types: ['tool-result'] },
+      ],
+    );
+  });
+
   test('falls back to grounded text when Open Responses cannot replay a hosted tool pair', async () => {
     const model = completionModel();
     const backend = createTestAiSdkBackend({
@@ -4618,6 +4507,82 @@ describe('AiSdkBackend model history', () => {
     assert.equal(prompt.includes(oldResult.body), false);
   });
 
+  test('manual compactHistory retreats to a span this route has accepted', async () => {
+    // The retreat needs the run headers and the route to find the newest reply
+    // this model produced. The planner tests hand those in directly, so they
+    // would stay green if the call site stopped passing them; this drives the
+    // entry `/compact` actually uses.
+    const attemptedCoverage: string[][] = [];
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: { ...header(), llmConnectionId: 'test-connection-id', model: 'mock-model-id' },
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => completionModel(),
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      contextBudget: { name: 'standalone-retreat-test', charsPerToken: 1 },
+      summarizeHistoryCompact: async ({ source }) => {
+        attemptedCoverage.push(source.foldedRuntimeEvents.map((event) => event.id));
+        if (attemptedCoverage.length === 1) {
+          throw new HistoryCompactSummarizerError('input_too_large');
+        }
+        return structuredSummary('STANDALONE_RETREAT_SENTINEL');
+      },
+      recordHistoryCompactCheckpoint: () => {},
+    });
+
+    const result = await backend.compactHistory({
+      turnId: 'turn-compact',
+      runId: 'run-1',
+      runtimeContextInvocations: [
+        priorModelInvocation({ connectionId: 'test-connection-id', modelId: 'mock-model-id' }),
+      ],
+      runtimeContext: [
+        runtimeTextEvent({
+          id: 'old-user',
+          turnId: 'turn-old',
+          role: 'user',
+          author: 'user',
+          text: 'old alpha '.repeat(100),
+        }),
+        runtimeTextEvent({
+          id: 'old-model',
+          turnId: 'turn-old',
+          role: 'model',
+          author: 'agent',
+          text: 'old beta '.repeat(100),
+        }),
+        runtimeTextEvent({
+          id: 'recent-user',
+          turnId: 'turn-recent',
+          role: 'user',
+          author: 'user',
+          text: 'recent alpha '.repeat(100),
+        }),
+        runtimeTextEvent({
+          id: 'recent-model',
+          turnId: 'turn-recent',
+          role: 'model',
+          author: 'agent',
+          text: 'recent beta '.repeat(100),
+        }),
+      ],
+    });
+
+    assert.equal(result.outcome.kind, 'compacted');
+    // The first attempt covers everything; the retreat stops where the newest
+    // reply this route produced begins. Without the route reaching the planner
+    // there is no second attempt at all.
+    assert.deepEqual(attemptedCoverage, [
+      ['old-user', 'old-model', 'recent-user', 'recent-model'],
+      ['old-user', 'old-model', 'recent-user'],
+    ]);
+  });
+
   test('manual compactHistory writes a V2 checkpoint without the legacy artifact writer', async () => {
     const recorded: HistoryCompactCheckpoint[] = [];
     let memoryDispatches = 0;
@@ -4634,7 +4599,6 @@ describe('AiSdkBackend model history', () => {
       now: monotonicClock(),
       contextBudget: {
         name: 'manual-v2-compact-test',
-        maxHistoryEstimatedTokens: 10_000,
         charsPerToken: 1,
       },
       summarizeHistoryCompact: async () => structuredSummary('MANUAL_V2_HISTORY_COMPACT_SENTINEL'),
@@ -4705,7 +4669,6 @@ describe('AiSdkBackend model history', () => {
       now: monotonicClock(),
       contextBudget: {
         name: 'manual-single-turn-compact-test',
-        maxHistoryEstimatedTokens: 10_000,
         charsPerToken: 1,
       },
       summarizeHistoryCompact: async () => structuredSummary('MANUAL_SINGLE_TURN_SENTINEL'),
@@ -4787,7 +4750,6 @@ describe('AiSdkBackend model history', () => {
       now: monotonicClock(),
       contextBudget: {
         name: 'manual-v2-roll-test',
-        maxHistoryEstimatedTokens: 10_000,
         charsPerToken: 1,
       },
       loadHistoryCompactCheckpoint: () => previous,
@@ -4875,7 +4837,6 @@ describe('AiSdkBackend model history', () => {
       now: monotonicClock(),
       contextBudget: {
         name: 'manual-v2-reuse-test',
-        maxHistoryEstimatedTokens: 10_000,
         charsPerToken: 1,
       },
       loadHistoryCompactCheckpoint: () => previous,
@@ -4902,203 +4863,6 @@ describe('AiSdkBackend model history', () => {
     assert.equal(result.contextBudget?.compactionDecisions?.[0]?.reason, 'already_compacted');
   });
 
-  test('manual compactHistory rewrites a fully covered checkpoint that exceeds current limits', async () => {
-    const oldEvents = [
-      runtimeTextEvent({
-        id: 'manual-v2-refit-old-1',
-        turnId: 'manual-v2-refit-turn-1',
-        role: 'user',
-        author: 'user',
-        text: 'manual v2 refit old alpha '.repeat(12),
-      }),
-      runtimeTextEvent({
-        id: 'manual-v2-refit-old-2',
-        turnId: 'manual-v2-refit-turn-2',
-        role: 'model',
-        author: 'agent',
-        text: 'manual v2 refit old beta '.repeat(12),
-      }),
-    ];
-    const previous = buildHistoryCompactCheckpoint({
-      sessionId: 'session-1',
-      coveredRuntimeEvents: oldEvents,
-      summary: 'OVERSIZED_PREVIOUS_SUMMARY '.repeat(100),
-      summaryFormat: 'legacy_freeform',
-      charsPerToken: 1,
-    });
-
-    for (const limits of [
-      { maxHistoryEstimatedTokens: 10_000 },
-      { maxHistoryEstimatedTokens: 1_400 },
-    ]) {
-      let summarizeCalls = 0;
-      const recorded: HistoryCompactCheckpoint[] = [];
-      const backend = createTestAiSdkBackend({
-        sessionId: 'session-1',
-        header: header(),
-        appendMessage: async () => {},
-        connection: connection(),
-        apiKey: 'sk-test',
-        modelId: 'mock-model-id',
-        modelFactory: () => completionModel(),
-        tools: [],
-        newId: idGenerator(),
-        now: monotonicClock(),
-        contextBudget: {
-          name: 'manual-v2-refit-test',
-          maxHistoryEstimatedTokens: limits.maxHistoryEstimatedTokens,
-          charsPerToken: 1,
-          historyCompact: { enabled: true },
-        },
-        loadHistoryCompactCheckpoint: () => previous,
-        summarizeHistoryCompact: async () => {
-          summarizeCalls += 1;
-          return structuredSummary('REFITTED_SUMMARY');
-        },
-        recordHistoryCompactCheckpoint: (checkpoint) => {
-          recorded.push(checkpoint);
-        },
-      });
-
-      const result = await backend.compactHistory({
-        turnId: 'turn-compact',
-        runId: 'run-1',
-        runtimeContext: [
-          ...oldEvents,
-          runtimeTextEvent({
-            id: 'manual-v2-refit-recent',
-            turnId: 'manual-v2-refit-recent-turn',
-            role: 'user',
-            author: 'user',
-            text: 'manual v2 refit retained context',
-          }),
-        ],
-      });
-
-      assert.equal(summarizeCalls, 1);
-      assert.equal(recorded.length, 1);
-      assert.equal(result.contextBudget?.compactionDecisions?.[0]?.decision, 'replaced');
-    }
-  });
-
-  test('manual compactHistory does not record a rebuilt checkpoint whose envelope exceeds current limits', async () => {
-    let recordCalls = 0;
-    const backend = createTestAiSdkBackend({
-      sessionId: 'session-1',
-      header: header(),
-      appendMessage: async () => {},
-      connection: connection(),
-      apiKey: 'sk-test',
-      modelId: 'mock-model-id',
-      modelFactory: () => completionModel(),
-      tools: [],
-      newId: idGenerator(),
-      now: monotonicClock(),
-      contextBudget: {
-        name: 'manual-v2-envelope-budget-test',
-        maxHistoryEstimatedTokens: 100,
-        charsPerToken: 1,
-        historyCompact: { enabled: true },
-      },
-      summarizeHistoryCompact: async () => structuredSummary('TINY_SUMMARY'),
-      recordHistoryCompactCheckpoint: () => {
-        recordCalls += 1;
-      },
-    });
-
-    const result = await backend.compactHistory({
-      turnId: 'turn-compact',
-      runId: 'run-1',
-      runtimeContext: [
-        runtimeTextEvent({
-          id: 'manual-v2-envelope-old-1',
-          turnId: 'manual-v2-envelope-turn-1',
-          role: 'user',
-          author: 'user',
-          text: 'old alpha '.repeat(20),
-        }),
-        runtimeTextEvent({
-          id: 'manual-v2-envelope-old-2',
-          turnId: 'manual-v2-envelope-turn-2',
-          role: 'model',
-          author: 'agent',
-          text: 'old beta '.repeat(20),
-        }),
-        runtimeTextEvent({
-          id: 'manual-v2-envelope-recent',
-          turnId: 'manual-v2-envelope-recent-turn',
-          role: 'user',
-          author: 'user',
-          text: 'recent tail',
-        }),
-      ],
-    });
-
-    assert.equal(recordCalls, 0);
-    assert.deepEqual(result.outcome, { kind: 'failed', reason: 'prefix_over_budget' });
-  });
-
-  test('manual compactHistory rejects a complete summary that makes the full replay larger', async () => {
-    let recordCalls = 0;
-    const backend = createTestAiSdkBackend({
-      sessionId: 'session-1',
-      header: header(),
-      appendMessage: async () => {},
-      connection: connection(),
-      apiKey: 'sk-test',
-      modelId: 'mock-model-id',
-      modelFactory: () => completionModel(),
-      tools: [],
-      newId: idGenerator(),
-      now: monotonicClock(),
-      contextBudget: {
-        name: 'manual-v2-larger-replacement-test',
-        maxHistoryEstimatedTokens: 10_000,
-        charsPerToken: 1,
-        historyCompact: { enabled: true },
-      },
-      summarizeHistoryCompact: async () => structuredSummary('LARGER_SUMMARY '.repeat(100)),
-      recordHistoryCompactCheckpoint: () => {
-        recordCalls += 1;
-      },
-    });
-
-    const result = await backend.compactHistory({
-      turnId: 'turn-compact',
-      runId: 'run-1',
-      runtimeContext: [
-        runtimeTextEvent({
-          id: 'manual-v2-larger-old-1',
-          turnId: 'manual-v2-larger-turn-1',
-          role: 'user',
-          author: 'user',
-          text: 'old alpha',
-        }),
-        runtimeTextEvent({
-          id: 'manual-v2-larger-old-2',
-          turnId: 'manual-v2-larger-turn-2',
-          role: 'model',
-          author: 'agent',
-          text: 'old beta',
-        }),
-        runtimeTextEvent({
-          id: 'manual-v2-larger-recent',
-          turnId: 'manual-v2-larger-recent-turn',
-          role: 'user',
-          author: 'user',
-          text: 'recent tail',
-        }),
-      ],
-    });
-
-    assert.equal(recordCalls, 0);
-    assert.deepEqual(result.outcome, { kind: 'failed', reason: 'replacement_not_smaller' });
-    assert.equal(
-      result.contextBudget?.compactionDecisions?.[0]?.failOpenReason,
-      'replacement_not_smaller',
-    );
-  });
-
   test('manual compactHistory reports output-length exhaustion instead of empty_summary', async () => {
     const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
@@ -5113,7 +4877,6 @@ describe('AiSdkBackend model history', () => {
       now: monotonicClock(),
       contextBudget: {
         name: 'manual-v2-output-length-test',
-        maxHistoryEstimatedTokens: 10_000,
         charsPerToken: 1,
         historyCompact: { enabled: true },
       },
@@ -5167,7 +4930,6 @@ describe('AiSdkBackend model history', () => {
       now: monotonicClock(),
       contextBudget: {
         name: 'manual-v2-write-gate-test',
-        maxHistoryEstimatedTokens: 10_000,
         charsPerToken: 1,
         historyCompact: { enabled: true },
       },
@@ -5225,7 +4987,6 @@ describe('AiSdkBackend model history', () => {
       now: monotonicClock(),
       contextBudget: {
         name: 'malformed-summary-circuit-test',
-        maxHistoryEstimatedTokens: 10_000,
         charsPerToken: 1,
         historyCompact: { enabled: true },
       },
@@ -5253,31 +5014,29 @@ describe('AiSdkBackend model history', () => {
         text: 'recent',
       }),
     ];
-    const sourceRunHeader = priorModelRunHeader({
+    const sourceRunHeader = priorModelInvocation({
       connectionId: 'test-connection-id',
       modelId: 'mock-model-id',
     });
-    const priorCompactionRunHeader: AgentRunHeader = {
-      ...priorModelRunHeader({
-        connectionId: 'test-connection-id',
-        modelId: 'mock-model-id',
-        runId: 'run-1',
-      }),
+    const priorCompactionRunHeader = priorModelInvocation({
+      connectionId: 'test-connection-id',
+      modelId: 'mock-model-id',
+      runId: 'run-1',
       turnId: 'turn-compact-1',
-      rootExecutionKind: 'context_compact',
-    };
+      root: { kind: 'context_compact' },
+    });
 
     const first = await backend.compactHistory({
       turnId: 'turn-compact-1',
       runId: 'run-1',
       runtimeContext: history,
-      runtimeContextRunHeaders: [sourceRunHeader],
+      runtimeContextInvocations: [sourceRunHeader],
     });
     const repeated = await backend.compactHistory({
       turnId: 'turn-compact-2',
       runId: 'run-2',
       runtimeContext: history,
-      runtimeContextRunHeaders: [sourceRunHeader, priorCompactionRunHeader],
+      runtimeContextInvocations: [sourceRunHeader, priorCompactionRunHeader],
     });
 
     assert.equal(calls, 1);
@@ -5300,7 +5059,7 @@ describe('AiSdkBackend model history', () => {
           text: 'new source history',
         }),
       ],
-      runtimeContextRunHeaders: [sourceRunHeader, priorCompactionRunHeader],
+      runtimeContextInvocations: [sourceRunHeader, priorCompactionRunHeader],
     });
     assert.equal(calls, 2, 'changed source fingerprint is eligible again');
   });
@@ -5329,7 +5088,6 @@ describe('AiSdkBackend model history', () => {
       now: monotonicClock(),
       contextBudget: {
         name: 'malformed-summary-repair-circuit-test',
-        maxHistoryEstimatedTokens: 10_000,
         charsPerToken: 1,
         historyCompact: { enabled: true },
       },
@@ -5415,7 +5173,6 @@ describe('AiSdkBackend model history', () => {
       now: monotonicClock(),
       contextBudget: {
         name: 'malformed-summary-cancel-circuit-test',
-        maxHistoryEstimatedTokens: 10_000,
         charsPerToken: 1,
         historyCompact: { enabled: true },
       },
@@ -5499,7 +5256,7 @@ describe('AiSdkBackend model history', () => {
         change: (input) => {
           input.contextBudget = {
             ...input.contextBudget,
-            maxHistoryEstimatedTokens: 12_000,
+            name: 'malformed-summary-config-circuit-changed',
           };
         },
       },
@@ -5529,7 +5286,6 @@ describe('AiSdkBackend model history', () => {
           readExecutionBoundary: readExternalExecutionBoundary,
           contextBudget: {
             name: 'malformed-summary-config-circuit-test',
-            maxHistoryEstimatedTokens: 10_000,
             charsPerToken: 1,
             historyCompact: { enabled: true },
           },
@@ -5632,7 +5388,6 @@ describe('AiSdkBackend model history', () => {
       now: monotonicClock(),
       contextBudget: {
         name: 'manual-compact-test',
-        maxHistoryEstimatedTokens: 10_000,
         charsPerToken: 1,
       },
     });
@@ -5698,7 +5453,6 @@ describe('AiSdkBackend model history', () => {
       now: monotonicClock(),
       contextBudget: {
         name: 'manual-compact-test',
-        maxHistoryEstimatedTokens: 10_000,
         charsPerToken: 1,
       },
       summarizeHistoryCompact: async () => structuredSummary('WRITE_FAILURE_SUMMARY'),
@@ -5740,7 +5494,6 @@ describe('AiSdkBackend model history', () => {
       now: monotonicClock(),
       contextBudget: {
         name: 'manual-compact-abort-test',
-        maxHistoryEstimatedTokens: 10_000,
         charsPerToken: 1,
       },
       summarizeHistoryCompact: ({ abortSignal }) =>
@@ -6025,7 +5778,6 @@ describe('AiSdkBackend model history', () => {
       newId: idGenerator(),
       now: monotonicClock(),
       contextBudget: {
-        maxHistoryEstimatedTokens: 1_500,
         charsPerToken: 1,
         historyCompact: {
           enabled: true,
@@ -6121,7 +5873,6 @@ describe('AiSdkBackend model history', () => {
       modelFactory: () => model,
       tools: [],
       contextBudget: {
-        maxHistoryEstimatedTokens: 100_000,
         historyCompact: { enabled: true },
       },
       loadHistoryCompactCheckpoint: () => checkpoint,
@@ -6190,7 +5941,6 @@ describe('AiSdkBackend model history', () => {
       modelFactory: () => model,
       tools: [],
       contextBudget: {
-        maxHistoryEstimatedTokens: 100_000,
         historyCompact: { enabled: true },
       },
       loadHistoryCompactCheckpoint: () => checkpoint,
@@ -6283,7 +6033,6 @@ describe('AiSdkBackend model history', () => {
       modelFactory: () => model,
       tools: [],
       contextBudget: {
-        maxHistoryEstimatedTokens: 100_000,
         historyCompact: { enabled: true },
       },
       loadHistoryCompactCheckpoint: () => checkpoint,
@@ -6377,7 +6126,6 @@ describe('AiSdkBackend model history', () => {
       modelFactory: () => model,
       tools: [],
       contextBudget: {
-        maxHistoryEstimatedTokens: 100_000,
         historyCompact: { enabled: true },
       },
       loadHistoryCompactCheckpoint: () => checkpoint,
@@ -6619,8 +6367,8 @@ describe('AiSdkBackend model history', () => {
         turnId: 'turn-current',
         text: 'continue',
         context: [],
-        runtimeContextRunHeaders: [
-          priorModelRunHeader({ connectionId: 'connection-a', modelId: 'claude-a' }),
+        runtimeContextInvocations: [
+          priorModelInvocation({ connectionId: 'connection-a', modelId: 'claude-a' }),
         ],
         runtimeContext: [
           runtimeTextEvent({
@@ -6704,8 +6452,8 @@ describe('AiSdkBackend model history', () => {
         turnId: 'turn-current',
         text: 'continue',
         context: [],
-        runtimeContextRunHeaders: [
-          priorModelRunHeader({
+        runtimeContextInvocations: [
+          priorModelInvocation({
             connectionId: 'connection-a',
             modelId: 'claude-a',
             providerStateIdentity: `sha256:${'a'.repeat(64)}`,
@@ -6817,8 +6565,8 @@ describe('AiSdkBackend model history', () => {
         turnId: 'turn-current',
         text: 'continue',
         context: [],
-        runtimeContextRunHeaders: [
-          priorModelRunHeader({
+        runtimeContextInvocations: [
+          priorModelInvocation({
             connectionId: 'connection-copilot',
             connectionSlug: 'github-copilot',
             modelId: 'gpt-5.5',
@@ -6911,8 +6659,8 @@ describe('AiSdkBackend model history', () => {
         turnId: 'turn-current',
         text: 'continue',
         context: [],
-        runtimeContextRunHeaders: [
-          priorModelRunHeader({
+        runtimeContextInvocations: [
+          priorModelInvocation({
             connectionId: 'connection-openai',
             connectionSlug: 'openai-main',
             modelId: 'gpt-5.4',
@@ -9283,8 +9031,8 @@ describe('AiSdkBackend context budget and prompt attribution', () => {
       systemPrompt: 'durable system',
       contextBudget: {
         name: 'test-budget',
-        maxHistoryEstimatedTokens: 1_000,
         charsPerToken: 1,
+        historyCompact: { enabled: true },
       },
     });
 
@@ -9920,6 +9668,322 @@ describe('AiSdkBackend RunTrace', () => {
     assert.notEqual(assistants[0]?.id, assistants[1]?.id);
   });
 
+  test('retries a retryable network failure after partial thinking by sealing it', async () => {
+    // Incident shape: the provider streamed thinking deltas, then the
+    // connection reset mid-step (ECONNRESET after ~120s). Recovery safety
+    // depends on what the attempt emitted, not on which side detected the
+    // cut: thinking is sealable, so the fragment is flushed under its own
+    // message id and the retry streams into a fresh id — the same contract
+    // as an idle-watchdog recovery.
+    const durable = durableTurnHarness('turn-econnreset-thinking', 'review the commits');
+    const assistants: AssistantMessage[] = [];
+    let failCurrentStream: (() => void) | undefined;
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        if (calls > 1) {
+          return {
+            stream: simulateReadableStream({
+              chunks: [
+                { type: 'stream-start', warnings: [] },
+                { type: 'text-start', id: 'text-1' },
+                { type: 'text-delta', id: 'text-1', delta: 'recovered' },
+                { type: 'text-end', id: 'text-1' },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'stop', raw: 'stop' },
+                  usage: emptyUsage(),
+                },
+              ],
+              initialDelayInMs: null,
+              chunkDelayInMs: null,
+            }),
+          };
+        }
+        const failing = midStreamFailureStream(
+          [
+            { type: 'stream-start', warnings: [] },
+            { type: 'reasoning-start', id: 'reasoning-1' },
+            { type: 'reasoning-delta', id: 'reasoning-1', delta: 'partial thought' },
+          ],
+          connectionResetFailure(),
+        );
+        failCurrentStream = failing.fail;
+        return { stream: failing.stream };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async (message) => {
+        if (message.type === 'assistant') assistants.push(message);
+      },
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+      providerRetrySleep: async () => {},
+    });
+
+    const events: SessionEvent[] = [];
+    for await (const event of backend.send(durable.input())) {
+      durable.record(event);
+      events.push(event);
+      if (event.type === 'thinking_delta' && event.text === 'partial thought') {
+        failCurrentStream?.();
+      }
+    }
+
+    assert.equal(calls, 2);
+    assert.deepEqual(
+      events
+        .filter((event) => event.type === 'provider_retry')
+        .map(({ phase, attempt, maxAttempts, reason }) => ({
+          phase,
+          attempt,
+          maxAttempts,
+          reason,
+        })),
+      [
+        { phase: 'scheduled', attempt: 2, maxAttempts: 2, reason: 'network' },
+        { phase: 'started', attempt: 2, maxAttempts: 2, reason: 'network' },
+      ],
+    );
+    assert.equal(
+      events.some((event) => event.type === 'error'),
+      false,
+    );
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+    assert.equal(assistants.length, 2);
+    assert.equal(assistants[0]?.thinking?.text, 'partial thought');
+    assert.equal(assistants[0]?.text, '');
+    assert.equal(assistants[1]?.text, 'recovered');
+    assert.notEqual(assistants[0]?.id, assistants[1]?.id);
+    // The sealed fragment stays in the transcript but out of the retried
+    // provider request: the retry replays the failed attempt's projection,
+    // so the model never re-reads its own severed thinking.
+    const retryPrompt = JSON.stringify(model.doStreamCalls[1]?.prompt);
+    assert.equal(retryPrompt.includes('partial thought'), false);
+    assert.match(retryPrompt, /review the commits/);
+  });
+
+  test('retries a retryable network failure before any observable output', async () => {
+    const durable = durableTurnHarness('turn-econnreset-no-output', 'review the commits');
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        if (calls > 1) {
+          return {
+            stream: simulateReadableStream({
+              chunks: [
+                { type: 'stream-start', warnings: [] },
+                { type: 'text-start', id: 'text-1' },
+                { type: 'text-delta', id: 'text-1', delta: 'recovered' },
+                { type: 'text-end', id: 'text-1' },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'stop', raw: 'stop' },
+                  usage: emptyUsage(),
+                },
+              ],
+              initialDelayInMs: null,
+              chunkDelayInMs: null,
+            }),
+          };
+        }
+        return {
+          stream: new ReadableStream<LanguageModelV4StreamPart>({
+            start(controller) {
+              controller.enqueue({ type: 'stream-start', warnings: [] });
+              controller.error(connectionResetFailure());
+            },
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+      providerRetrySleep: async () => {},
+    });
+
+    const events = await drainDurably(backend.send(durable.input()), durable);
+
+    assert.equal(calls, 2);
+    assert.deepEqual(
+      events
+        .filter((event) => event.type === 'provider_retry')
+        .map(({ phase, reason }) => ({ phase, reason })),
+      [
+        { phase: 'scheduled', reason: 'network' },
+        { phase: 'started', reason: 'network' },
+      ],
+    );
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+  });
+
+  test('stops after one sealed-thinking network recovery in the same provider step', async () => {
+    // Every attempt streams thinking and is cut mid-stream. The first cut
+    // seals and retries; the second is terminal, so one recovery per step
+    // bounds how many severed-thinking fragments a systematically cutting
+    // gateway can leave in the transcript.
+    const durable = durableTurnHarness('turn-econnreset-thinking-budget', 'review the commits');
+    const assistants: AssistantMessage[] = [];
+    let failCurrentStream: (() => void) | undefined;
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        const failing = midStreamFailureStream(
+          [
+            { type: 'stream-start', warnings: [] },
+            { type: 'reasoning-start', id: `reasoning-${calls}` },
+            {
+              type: 'reasoning-delta',
+              id: `reasoning-${calls}`,
+              delta: `partial thought ${calls}`,
+            },
+          ],
+          connectionResetFailure(),
+        );
+        failCurrentStream = failing.fail;
+        return { stream: failing.stream };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async (message) => {
+        if (message.type === 'assistant') assistants.push(message);
+      },
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+      providerRetrySleep: async () => {},
+    });
+
+    const events: SessionEvent[] = [];
+    for await (const event of backend.send(durable.input())) {
+      durable.record(event);
+      events.push(event);
+      if (event.type === 'thinking_delta' && event.text.startsWith('partial thought ')) {
+        failCurrentStream?.();
+      }
+    }
+
+    assert.equal(calls, 2);
+    assert.equal(
+      events.filter(
+        (event): event is Extract<SessionEvent, { type: 'provider_retry' }> =>
+          event.type === 'provider_retry' && event.phase === 'scheduled',
+      ).length,
+      1,
+    );
+    const error = events.find(
+      (event): event is Extract<SessionEvent, { type: 'error' }> => event.type === 'error',
+    );
+    assert.equal(error?.reason, 'network');
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+    assert.equal(assistants.length, 2);
+    assert.equal(assistants[0]?.thinking?.text, 'partial thought 1');
+    assert.equal(assistants[1]?.thinking?.text, 'partial thought 2');
+    assert.notEqual(assistants[0]?.id, assistants[1]?.id);
+  });
+
+  test('does not retry a network failure after provider continuation metadata on thinking', async () => {
+    // Continuation identity (Responses reasoning item ids, encrypted
+    // content) cannot be replayed into a fresh request, so thinking that
+    // carries it stays non-recoverable even though the failure itself is
+    // retryable. The second reasoning part's delta is the fail trigger:
+    // stream ordering guarantees the metadata on the first part's
+    // reasoning-end was already consumed when it arrives.
+    const durable = durableTurnHarness('turn-econnreset-metadata', 'review the commits');
+    let failCurrentStream: (() => void) | undefined;
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        const failing = midStreamFailureStream(
+          [
+            { type: 'stream-start', warnings: [] },
+            { type: 'reasoning-start', id: 'reasoning-1' },
+            {
+              type: 'reasoning-delta',
+              id: 'reasoning-1',
+              delta: 'completed provider reasoning',
+            },
+            {
+              type: 'reasoning-end',
+              id: 'reasoning-1',
+              providerMetadata: {
+                openai: {
+                  itemId: 'reasoning-item-1',
+                  reasoningEncryptedContent: 'encrypted-reasoning',
+                },
+              },
+            },
+            { type: 'reasoning-start', id: 'reasoning-2' },
+            { type: 'reasoning-delta', id: 'reasoning-2', delta: 'second thought' },
+          ],
+          connectionResetFailure(),
+        );
+        failCurrentStream = failing.fail;
+        return { stream: failing.stream };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+      providerRetrySleep: async () => {},
+    });
+
+    const events: SessionEvent[] = [];
+    for await (const event of backend.send(durable.input())) {
+      durable.record(event);
+      events.push(event);
+      if (event.type === 'thinking_delta' && event.text === 'second thought') {
+        failCurrentStream?.();
+      }
+    }
+
+    assert.equal(calls, 1);
+    assert.equal(
+      events.some((event) => event.type === 'provider_retry'),
+      false,
+    );
+    assert.equal(events.find((event) => event.type === 'error')?.reason, 'network');
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+  });
+
   test('retries DeepSeek OpenAI Chat reasoning marked only for field replay', async () => {
     const timers = manualWatchdogTimer();
     let calls = 0;
@@ -10434,6 +10498,97 @@ describe('AiSdkBackend RunTrace', () => {
     assert.equal(failureTrace?.data?.rawErrorName, 'Error');
     assert.match(String(failureTrace?.data?.redactedErrorMessage), /stream idle timeout/);
     assert.equal(typeof failureTrace?.data?.redactedErrorStackSha256, 'string');
+  });
+
+  test('retries an idle watchdog timeout after an unstarted Responses text item', async () => {
+    const timers = manualWatchdogTimer();
+    let calls = 0;
+    const appended: StoredMessage[] = [];
+    const model = new MockLanguageModelV4({
+      doStream: async (options) => {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            stream: hangingProviderStream(
+              [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'text-start',
+                  id: 'text-1',
+                  providerMetadata: {
+                    openai: { itemId: 'message-item-1', phase: 'commentary' },
+                  },
+                },
+              ],
+              options.abortSignal,
+            ),
+          };
+        }
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: 'stream-start', warnings: [] },
+              { type: 'text-start', id: 'text-2' },
+              { type: 'text-delta', id: 'text-2', delta: 'recovered' },
+              { type: 'text-end', id: 'text-2' },
+              {
+                type: 'finish',
+                finishReason: { unified: 'stop', raw: 'stop' },
+                usage: emptyUsage(),
+              },
+            ],
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async (message) => {
+        appended.push(message);
+      },
+      connection: {
+        ...connection(),
+        slug: 'openai',
+        providerType: 'openai',
+        models: [{ id: 'gpt-5.6', apiProtocol: 'openai-responses' }],
+      },
+      apiKey: 'sk-test',
+      modelId: 'gpt-5.6',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      streamWatchdogTimer: timers.clock,
+      providerRetrySleep: async () => {},
+    });
+
+    const events: SessionEvent[] = [];
+    const eventsPromise = collectEvents(
+      backend.send({ turnId: 'turn-1', text: 'hi', context: [] }),
+      events,
+    );
+    await waitFor(() => calls === 1 && timers.armCount() >= 3);
+    timers.fire();
+    await eventsPromise;
+
+    assert.equal(calls, 2);
+    assert.equal(
+      events.some((event) => event.type === 'provider_retry' && event.phase === 'started'),
+      true,
+    );
+    assert.equal(
+      events.some((event) => event.type === 'error'),
+      false,
+    );
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+    const recovered = appended.find(
+      (message): message is AssistantMessage => message.type === 'assistant',
+    );
+    assert.equal(recovered?.text, 'recovered');
+    assert.equal(recovered?.providerOptions, undefined);
   });
 
   test('does not retry an idle watchdog timeout after provider continuation metadata', async () => {
@@ -11907,21 +12062,13 @@ describe('AiSdkBackend thinking persistence', () => {
     } as unknown as RuntimeEventMapContext;
     const memory = createSessionEventMapMemory();
     const runtimeEvents = events.map((event) => mapSessionEventToRuntimeEvent(event, ctx, memory));
-    const runHeader: AgentRunHeader = {
-      runId: 'run-1',
-      sessionId: 'session-1',
-      turnId: 'turn-1',
-      status: 'completed',
-      backendKind: 'ai-sdk',
-      llmConnectionSlug: 'anthropic-main',
+    const runHeader = priorModelInvocation({
       modelId: 'mock-model-id',
-      cwd: '/tmp/maka',
-      permissionMode: 'ask',
-      createdAt: 1,
-      updatedAt: 2,
-    };
+      runId: 'run-1',
+      turnId: 'turn-1',
+    });
     const projection = projectRuntimeEventsToStoredMessages(runtimeEvents, {
-      runHeaders: [runHeader],
+      invocations: [runHeader],
     });
     const assistant = projection.messages.find((message) => message.type === 'assistant');
     assert.ok(assistant && assistant.type === 'assistant');
@@ -12001,21 +12148,13 @@ describe('AiSdkBackend thinking persistence', () => {
     } as unknown as RuntimeEventMapContext;
     const memory = createSessionEventMapMemory();
     const runtimeEvents = events.map((event) => mapSessionEventToRuntimeEvent(event, ctx, memory));
-    const runHeader: AgentRunHeader = {
-      runId: 'run-1',
-      sessionId: 'session-1',
-      turnId: 'turn-1',
-      status: 'completed',
-      backendKind: 'ai-sdk',
-      llmConnectionSlug: 'anthropic-main',
+    const runHeader = priorModelInvocation({
       modelId: 'mock-model-id',
-      cwd: '/tmp/maka',
-      permissionMode: 'ask',
-      createdAt: 1,
-      updatedAt: 2,
-    };
+      runId: 'run-1',
+      turnId: 'turn-1',
+    });
     const projection = projectRuntimeEventsToStoredMessages(runtimeEvents, {
-      runHeaders: [runHeader],
+      invocations: [runHeader],
     });
     const assistant = projection.messages.find((message) => message.type === 'assistant');
     assert.ok(assistant && assistant.type === 'assistant');
@@ -13683,20 +13822,8 @@ describe('AiSdkBackend thinking persistence', () => {
     const memory = createSessionEventMapMemory();
     const runtimeContext = events.map((event) => mapSessionEventToRuntimeEvent(event, ctx, memory));
     const projection = projectRuntimeEventsToStoredMessages(runtimeContext, {
-      runHeaders: [
-        {
-          runId: 'run-prev',
-          sessionId: 'session-1',
-          turnId: 'turn-prev',
-          status: 'completed',
-          backendKind: 'ai-sdk',
-          llmConnectionSlug: planConnection.slug,
-          modelId: 'ark-code-latest',
-          cwd: '/tmp/maka',
-          permissionMode: 'ask',
-          createdAt: 1,
-          updatedAt: 2,
-        },
+      invocations: [
+        priorModelInvocation({ modelId: 'ark-code-latest', connectionSlug: planConnection.slug }),
       ],
     });
     const projectedAssistant = projection.messages.find(
@@ -15283,6 +15410,7 @@ describe('AiSdkBackend steering durability and identity', () => {
       (message): message is AssistantMessage => message.type === 'assistant',
     );
     assert.equal(assistant?.text, 'OneTwo');
+    assert.equal(assistant?.contentOrder, undefined);
     assert.deepEqual(assistant?.providerOptions, {
       openai: {
         annotations: [
@@ -15291,6 +15419,187 @@ describe('AiSdkBackend steering durability and identity', () => {
         ],
       },
     });
+  });
+
+  test('preserves native Responses text item boundaries as separate assistant messages', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: async () => ({
+        stream: simulateReadableStream({
+          chunks: [
+            { type: 'stream-start', warnings: [] },
+            {
+              type: 'text-start',
+              id: 'text-1',
+              providerMetadata: {
+                openai: { itemId: 'message-1', phase: 'commentary' },
+              },
+            },
+            { type: 'text-delta', id: 'text-1', delta: 'I am checking it.' },
+            {
+              type: 'text-end',
+              id: 'text-1',
+              providerMetadata: {
+                openai: { itemId: 'message-1', phase: 'commentary' },
+              },
+            },
+            {
+              type: 'text-start',
+              id: 'text-2',
+              providerMetadata: {
+                openai: { itemId: 'message-2', phase: 'final_answer' },
+              },
+            },
+            { type: 'text-delta', id: 'text-2', delta: 'It is ready.' },
+            {
+              type: 'text-end',
+              id: 'text-2',
+              providerMetadata: {
+                openai: { itemId: 'message-2', phase: 'final_answer' },
+              },
+            },
+            {
+              type: 'finish',
+              finishReason: { unified: 'stop', raw: 'stop' },
+              usage: emptyUsage(),
+            },
+          ] as LanguageModelV4StreamPart[],
+          initialDelayInMs: null,
+          chunkDelayInMs: null,
+        }),
+      }),
+    });
+    const appended: StoredMessage[] = [];
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async (message) => {
+        appended.push(message);
+      },
+      connection: {
+        ...connection(),
+        slug: 'openai',
+        providerType: 'openai',
+        defaultModel: 'gpt-5',
+      },
+      apiKey: 'sk-test',
+      modelId: 'gpt-5',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drain(backend.send({ turnId: 'turn-1', text: 'inspect it', context: [] }));
+
+    assert.deepEqual(
+      appended
+        .filter((message): message is AssistantMessage => message.type === 'assistant')
+        .map((message) => ({
+          text: message.text,
+          providerOptions: message.providerOptions,
+        })),
+      [
+        {
+          text: 'I am checking it.',
+          providerOptions: {
+            openai: { itemId: 'message-1', phase: 'commentary' },
+          },
+        },
+        {
+          text: 'It is ready.',
+          providerOptions: {
+            openai: { itemId: 'message-2', phase: 'final_answer' },
+          },
+        },
+      ],
+    );
+  });
+
+  test('does not carry metadata from an empty Responses text item into the next item', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: async () => ({
+        stream: simulateReadableStream({
+          chunks: [
+            { type: 'stream-start', warnings: [] },
+            {
+              type: 'text-start',
+              id: 'text-empty',
+              providerMetadata: {
+                openai: { itemId: 'message-empty', phase: 'commentary' },
+              },
+            },
+            {
+              type: 'text-end',
+              id: 'text-empty',
+              providerMetadata: {
+                openai: { itemId: 'message-empty', phase: 'commentary' },
+              },
+            },
+            {
+              type: 'text-start',
+              id: 'text-final',
+              providerMetadata: {
+                openai: { itemId: 'message-final', phase: 'final_answer' },
+              },
+            },
+            { type: 'text-delta', id: 'text-final', delta: 'Done.' },
+            {
+              type: 'text-end',
+              id: 'text-final',
+              providerMetadata: {
+                openai: { itemId: 'message-final', phase: 'final_answer' },
+              },
+            },
+            {
+              type: 'finish',
+              finishReason: { unified: 'stop', raw: 'stop' },
+              usage: emptyUsage(),
+            },
+          ] as LanguageModelV4StreamPart[],
+          initialDelayInMs: null,
+          chunkDelayInMs: null,
+        }),
+      }),
+    });
+    const appended: StoredMessage[] = [];
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async (message) => {
+        appended.push(message);
+      },
+      connection: {
+        ...connection(),
+        slug: 'openai',
+        providerType: 'openai',
+        defaultModel: 'gpt-5',
+      },
+      apiKey: 'sk-test',
+      modelId: 'gpt-5',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drain(backend.send({ turnId: 'turn-1', text: 'finish it', context: [] }));
+
+    assert.deepEqual(
+      appended
+        .filter((message): message is AssistantMessage => message.type === 'assistant')
+        .map((message) => ({
+          text: message.text,
+          providerOptions: message.providerOptions,
+        })),
+      [
+        {
+          text: 'Done.',
+          providerOptions: {
+            openai: { itemId: 'message-final', phase: 'final_answer' },
+          },
+        },
+      ],
+    );
   });
 
   test('executes native WebSearch inside the primary provider stream', async () => {
@@ -15396,6 +15705,7 @@ describe('AiSdkBackend steering durability and identity', () => {
     const assistant = appended.find(
       (message): message is AssistantMessage => message.type === 'assistant',
     );
+    assert.deepEqual(assistant?.contentOrder, ['tools', 'text']);
     assert.deepEqual(assistant?.providerOptions, {
       openai: {
         itemId: 'message-1',
@@ -15857,6 +16167,65 @@ function runtimeEvent(input: {
   };
 }
 
+function clientToolCallEvent(id: string, stepId: string): RuntimeEvent {
+  return runtimeEvent({
+    id,
+    turnId: 'turn-prev',
+    role: 'model',
+    author: 'agent',
+    refs: { stepId },
+    content: {
+      kind: 'function_call',
+      id: 'read-1',
+      name: 'Read',
+      args: { path: 'notes.md' },
+    },
+  });
+}
+
+function clientToolResultEvent(id: string): RuntimeEvent {
+  return runtimeEvent({
+    id,
+    turnId: 'turn-prev',
+    role: 'tool',
+    author: 'tool',
+    content: {
+      kind: 'function_response',
+      id: 'read-1',
+      name: 'Read',
+      result: { kind: 'text', text: 'file contents' },
+      isError: false,
+    },
+  });
+}
+
+async function replayPrompt(
+  runtimeContext: RuntimeEvent[],
+): Promise<Array<{ role: string; content: any[] }>> {
+  const model = completionModel();
+  const backend = createTestAiSdkBackend({
+    sessionId: 'session-1',
+    header: header(),
+    appendMessage: async () => {},
+    connection: connection(),
+    apiKey: 'sk-test',
+    modelId: 'mock-model-id',
+    modelFactory: () => model,
+    tools: [],
+    newId: idGenerator(),
+    now: monotonicClock(),
+  });
+  await drain(
+    backend.send({
+      turnId: 'turn-current',
+      text: 'continue',
+      context: [],
+      runtimeContext,
+    }),
+  );
+  return compactPrompt(model) as Array<{ role: string; content: any[] }>;
+}
+
 function compactPrompt(model: MockLanguageModelV4): unknown {
   return model.doStreamCalls[0]?.prompt.map((message) => ({
     role: message.role,
@@ -16040,6 +16409,34 @@ function manualWatchdogTimer(): {
   };
 }
 
+function connectionResetFailure(): Error {
+  // Transport reset identified only by the cause code, the same evidence
+  // shape provider-error-classification tests classify as retryable Network.
+  return Object.assign(new Error('Operation failed'), {
+    cause: { code: 'ECONNRESET' },
+  });
+}
+
+/**
+ * Streams `chunks`, then hangs until `fail()` — mirroring a provider that
+ * streams part of a step and then drops the connection mid-stream. The chunks
+ * must already be consumed when the failure lands (controller.error() discards
+ * queued-but-unread chunks), so the test triggers `fail` from a streamed event.
+ */
+function midStreamFailureStream(
+  chunks: readonly LanguageModelV4StreamPart[],
+  failure: Error,
+): { stream: ReadableStream<LanguageModelV4StreamPart>; fail: () => void } {
+  let fail: () => void = () => {};
+  const stream = new ReadableStream<LanguageModelV4StreamPart>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(chunk);
+      fail = () => controller.error(failure);
+    },
+  });
+  return { stream, fail: () => fail() };
+}
+
 function hangingProviderStream(
   chunks: readonly LanguageModelV4StreamPart[],
   signal: AbortSignal | undefined,
@@ -16082,38 +16479,55 @@ function header(permissionMode: SessionHeader['permissionMode'] = 'ask'): Sessio
   };
 }
 
-function priorModelRunHeader(input: {
+function priorModelInvocation(input: {
   connectionId?: string;
   modelId: string;
   connectionSlug?: string;
   runId?: string;
+  turnId?: string;
+  root?: RuntimeInvocationRootAuthority;
   providerStateIdentity?: `sha256:${string}`;
-}): AgentRunHeader {
-  return {
-    runId: input.runId ?? 'run-prev',
+}): RuntimeInvocationRecord {
+  const identity = {
     sessionId: 'session-1',
-    turnId: 'turn-prev',
-    status: 'completed',
-    backendKind: 'ai-sdk',
-    ...(input.connectionId ? { llmConnectionId: input.connectionId } : {}),
-    providerStateIdentity: input.providerStateIdentity ?? `sha256:${'1'.repeat(64)}`,
-    llmConnectionSlug: input.connectionSlug ?? 'anthropic-main',
-    modelId: input.modelId,
-    cwd: '/tmp/maka',
-    permissionMode: 'ask',
-    createdAt: 1,
-    updatedAt: 2,
-    completedAt: 2,
+    invocationId: input.runId ?? 'run-prev',
+    runId: input.runId ?? 'run-prev',
+    turnId: input.turnId ?? 'turn-prev',
+  };
+  return {
+    ...identity,
+    openedAt: 1,
+    opening: testInvocationOpening({
+      route: {
+        provenance: 'runtime',
+        backendKind: 'ai-sdk',
+        llmConnectionId: input.connectionId ?? 'anthropic-main-connection',
+        llmConnectionSlug: input.connectionSlug ?? 'anthropic-main',
+        modelId: input.modelId,
+        providerStateIdentity: input.providerStateIdentity ?? `sha256:${'1'.repeat(64)}`,
+      },
+      configuration: { cwd: '/tmp/maka' },
+      root: input.root ?? { kind: 'user' },
+    }),
+    terminalEvent: {
+      id: `${identity.runId}-terminal`,
+      ...identity,
+      ts: 2,
+      partial: false,
+      role: 'system',
+      author: 'system',
+      status: 'completed',
+    },
   };
 }
 
 function sameRouteReplayProvenance(
   modelId: string,
   runId = 'run-prev',
-): Pick<BackendSendInput, 'runtimeContextRunHeaders'> {
+): Pick<BackendSendInput, 'runtimeContextInvocations'> {
   return {
-    runtimeContextRunHeaders: [
-      priorModelRunHeader({ connectionId: 'test-connection-id', modelId, runId }),
+    runtimeContextInvocations: [
+      priorModelInvocation({ connectionId: 'test-connection-id', modelId, runId }),
     ],
   };
 }

@@ -342,7 +342,7 @@ describe('continuation replay segment', () => {
       prefixes: [ancestor, source],
       providerProjectionVersion: PROVIDER_REPLAY_PROJECTION_VERSION,
       admissionRoute: {
-        runHeaders: [],
+        invocations: [],
         targetProviderStateIdentity: undefined,
         targetModelId: 'test-model',
       },

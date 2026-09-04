@@ -26,6 +26,7 @@ import {
   openRuntimeHostPackageDeployment,
   prepareRuntimeHostPackageDeployment,
   pruneRuntimeHostPackageDeployments,
+  removeDeploymentDirectory,
   resolveRuntimeHostPackageCliPath,
   RuntimeHostPackageDeploymentError as RuntimeHostManagedDeploymentError,
   type RuntimeHostPackageDeployment,
@@ -36,6 +37,7 @@ import {
   resolveRuntimeHostManagedDeploymentAuthorityRoot,
   resolveRuntimeHostManagedDeploymentAuthority,
   resolveRuntimeHostNpmDeploymentLayout,
+  runtimeHostManagedOperatorModulePath,
   type RuntimeHostManagedDeploymentAuthorityOptions,
   type RuntimeHostManagedDeploymentConfig,
 } from '@maka/runtime-host/operator';
@@ -46,7 +48,6 @@ export interface RuntimeHostManagedPackageDeployment {
   readonly version: string;
   readonly root: string;
   readonly cliPath: string;
-  readonly operatorPath: string;
   /** Legacy service replacement only; canonical deployments project the operator transactionally. */
   activate(): Promise<void>;
   cleanup(): Promise<void>;
@@ -429,11 +430,16 @@ function resolveRuntimeHostManagedDataHome(
 ): string {
   const env = options.env ?? process.env;
   const homeDir = options.homeDir ?? homedir();
-  return (options.platform ?? process.platform) === 'darwin'
+  const platform = options.platform ?? process.platform;
+  return platform === 'darwin'
     ? join(homeDir, 'Library', 'Application Support')
-    : env.XDG_DATA_HOME && isAbsolute(env.XDG_DATA_HOME)
-      ? env.XDG_DATA_HOME
-      : join(homeDir, '.local', 'share');
+    : platform === 'win32'
+      ? env.LOCALAPPDATA && isAbsolute(env.LOCALAPPDATA)
+        ? env.LOCALAPPDATA
+        : join(homeDir, 'AppData', 'Local')
+      : env.XDG_DATA_HOME && isAbsolute(env.XDG_DATA_HOME)
+        ? env.XDG_DATA_HOME
+        : join(homeDir, '.local', 'share');
 }
 
 export function resolveRuntimeHostManagedControlRoot(serviceId: string): string {
@@ -588,7 +594,7 @@ export async function removeRuntimeHostManagedDeployment(
     // recognized as already complete and reclaimed by the next deployment.
     await syncDirectory(parent);
   }
-  await rm(retiredRoot, { recursive: true, force: true });
+  await removeDeploymentDirectory(retiredRoot);
   await syncDirectory(parent);
 }
 
@@ -597,20 +603,24 @@ function managedDeployment(
   clientDataRoot: string,
   managedRootId: string,
 ): RuntimeHostManagedPackageDeployment {
-  const operatorPath = join(staged.root, 'operator');
+  const modulePath = runtimeHostManagedOperatorModulePath(
+    staged.root,
+    process.platform === 'win32' ? 'win32' : 'posix',
+  );
   return {
     version: staged.version,
     root: staged.root,
     cliPath: staged.cliPath,
-    operatorPath,
-    activate: () =>
-      writeOperatorLauncher(
-        operatorPath,
+    activate: async () => {
+      await writeOperatorLauncher(
+        modulePath,
         process.execPath,
         staged.cliPath,
         clientDataRoot,
         managedRootId,
-      ),
+      );
+      await forwardLegacyOperatorIfPresent(staged.root, process.execPath, modulePath);
+    },
     cleanup: staged.cleanup,
     rollback: staged.rollback,
   };
@@ -624,7 +634,6 @@ async function writeOperatorLauncher(
   managedRootId: string,
   deploymentId?: string,
 ): Promise<void> {
-  const temporaryPath = `${path}.${randomUUID()}.tmp`;
   const contents = operatorLauncherContents(
     nodePath,
     cliPath,
@@ -632,6 +641,11 @@ async function writeOperatorLauncher(
     managedRootId,
     deploymentId,
   );
+  await writeStableOperator(path, contents);
+}
+
+async function writeStableOperator(path: string, contents: string): Promise<void> {
+  const temporaryPath = `${path}.${randomUUID()}.tmp`;
   try {
     const file = await open(temporaryPath, 'wx', 0o700);
     try {
@@ -641,12 +655,7 @@ async function writeOperatorLauncher(
       await file.close();
     }
     await rename(temporaryPath, path);
-    const parent = await open(dirname(path), 'r');
-    try {
-      await parent.sync();
-    } finally {
-      await parent.close();
-    }
+    await syncDirectory(dirname(path));
   } finally {
     await rm(temporaryPath, { force: true });
   }
@@ -659,31 +668,46 @@ function operatorLauncherContents(
   managedRootId: string,
   deploymentId?: string,
 ): string {
-  return [
-    '#!/bin/sh',
-    'if [ "$#" -ge 1 ] && [ "$1" = "__cleanup-managed-deployment" ]; then',
-    '  shift',
-    `  exec ${quotePosix(nodePath)} ${quotePosix(cliPath)} runtime-host service cleanup-deployment "$@" --client-data-root ${quotePosix(clientDataRoot)} --managed-root-id ${quotePosix(managedRootId)}${deploymentId ? ` --operator-deployment-id ${quotePosix(deploymentId)}` : ''}`,
-    'fi',
-    'if [ "$#" -ge 1 ] && [ "$1" = "access" ]; then',
-    '  shift',
-    `  exec ${quotePosix(nodePath)} ${quotePosix(cliPath)} runtime-host access "$@"`,
-    'fi',
-    'if [ "$#" -ge 1 ] && [ "$1" = "activate" ]; then',
-    '  shift',
-    `  exec ${quotePosix(nodePath)} ${quotePosix(cliPath)} runtime-host activate "$@"`,
-    'fi',
-    'if [ "$#" -ge 1 ] && [ "$1" = "connect" ]; then',
-    '  shift',
-    `  exec ${quotePosix(nodePath)} ${quotePosix(cliPath)} runtime-host connect "$@"`,
-    'fi',
-    'if [ "$#" -ge 1 ] && [ "$1" = "serve" ]; then',
-    '  shift',
-    `  exec ${quotePosix(nodePath)} ${quotePosix(cliPath)} runtime-host serve "$@"`,
-    'fi',
-    `exec ${quotePosix(nodePath)} ${quotePosix(cliPath)} runtime-host service "$@" --client-data-root ${quotePosix(clientDataRoot)} --managed-root-id ${quotePosix(managedRootId)}${deploymentId ? ` --operator-deployment-id ${quotePosix(deploymentId)}` : ''}`,
-    '',
-  ].join('\n');
+  const fixedServiceArguments = [
+    '--client-data-root',
+    clientDataRoot,
+    '--managed-root-id',
+    managedRootId,
+    ...(deploymentId ? ['--operator-deployment-id', deploymentId] : []),
+  ];
+  return `import { spawn } from 'node:child_process';
+
+const [action, ...args] = process.argv.slice(2);
+const direct = new Set(['access', 'activate', 'connect', 'serve']);
+const cliArgs = action === '__cleanup-managed-deployment'
+  ? ['runtime-host', 'service', 'cleanup-deployment', ...args, ...${JSON.stringify(fixedServiceArguments)}]
+  : direct.has(action)
+    ? ['runtime-host', action, ...args]
+    : ['runtime-host', 'service', ...(action === undefined ? [] : [action]), ...args, ...${JSON.stringify(fixedServiceArguments)}];
+const child = spawn(${JSON.stringify(nodePath)}, [${JSON.stringify(cliPath)}, ...cliArgs], {
+  stdio: 'inherit',
+  windowsHide: true,
+});
+const signalForwarders = new Map();
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  const forward = () => child.kill(signal);
+  signalForwarders.set(signal, forward);
+  process.on(signal, forward);
+}
+const stopForwardingSignals = () => {
+  for (const [signal, forward] of signalForwarders) process.off(signal, forward);
+};
+child.once('error', (error) => {
+  stopForwardingSignals();
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exitCode = 1;
+});
+child.once('exit', (code, signal) => {
+  stopForwardingSignals();
+  if (signal) process.kill(process.pid, signal);
+  else process.exitCode = code ?? 1;
+});
+`;
 }
 
 export async function convergeRuntimeHostManagedOperator(
@@ -695,7 +719,10 @@ export async function convergeRuntimeHostManagedOperator(
   // The stable operator is the bounded cleanup and recovery route after authority
   // is removed. Package cleanup removes it with the deployment root.
   if (!desired) return;
-  const operatorPath = join(deployment.deploymentRoot, 'operator');
+  const operatorPath = runtimeHostManagedOperatorModulePath(
+    deployment.deploymentRoot,
+    process.platform === 'win32' ? 'win32' : 'posix',
+  );
   const layout = resolveRuntimeHostNpmDeploymentLayout(
     desired.deploymentRoot,
     desired.launch.package.integrity,
@@ -708,6 +735,34 @@ export async function convergeRuntimeHostManagedOperator(
     desired.root.id,
     desired.deploymentId,
   );
+  await forwardLegacyOperatorIfPresent(
+    deployment.deploymentRoot,
+    desired.launch.nodePath,
+    operatorPath,
+  );
+}
+
+function legacyOperatorLauncherContents(nodePath: string, modulePath: string): string {
+  return `#!/bin/sh\nexec ${quotePosix(nodePath)} ${quotePosix(modulePath)} "$@"\n`;
+}
+
+async function forwardLegacyOperatorIfPresent(
+  deploymentRoot: string,
+  nodePath: string,
+  modulePath: string,
+): Promise<void> {
+  if (process.platform === 'win32') return;
+  const path = join(deploymentRoot, 'operator');
+  const exists = await access(path, constants.F_OK).then(
+    () => true,
+    (error: unknown) => {
+      if (isNodeError(error, 'ENOENT')) return false;
+      throw error;
+    },
+  );
+  if (exists) {
+    await writeStableOperator(path, legacyOperatorLauncherContents(nodePath, modulePath));
+  }
 }
 
 export async function restoreRuntimeHostLegacyManagedOperator(input: {
@@ -718,7 +773,7 @@ export async function restoreRuntimeHostLegacyManagedOperator(input: {
   readonly serviceId: string;
 }): Promise<void> {
   await writeOperatorLauncher(
-    join(input.deploymentRoot, 'operator'),
+    runtimeHostManagedOperatorModulePath(input.deploymentRoot, 'posix'),
     input.nodePath,
     input.cliPath,
     input.clientDataRoot,
@@ -740,26 +795,56 @@ export async function verifyRuntimeHostManagedOperator(
     config.root.id,
     config.deploymentId,
   );
+  const operatorPath = runtimeHostManagedOperatorModulePath(
+    config.deploymentRoot,
+    process.platform === 'win32' ? 'win32' : 'posix',
+  );
   const observed = await readStableBoundedFile({
-    path: join(config.deploymentRoot, 'operator'),
+    path: operatorPath,
     maxBytes: Buffer.byteLength(expected),
     invalidFile: () => new Error('The managed Runtime Host operator is not a stable regular file'),
   }).then((contents) => new TextDecoder('utf-8', { fatal: true }).decode(contents));
   if (observed !== expected)
     throw new Error('The managed Runtime Host operator does not match its deployment');
-  await access(join(config.deploymentRoot, 'operator'), constants.X_OK).catch((error: unknown) => {
-    throw new Error('The managed Runtime Host operator is not executable', {
+  await access(operatorPath, constants.R_OK).catch((error: unknown) => {
+    throw new Error('The managed Runtime Host operator is not readable', {
       cause: error,
     });
   });
-}
-
-function quotePosix(value: string): string {
-  return `'${value.replaceAll("'", `'"'"'`)}'`;
+  const legacyOperatorPath = join(config.deploymentRoot, 'operator');
+  const legacyExpected = legacyOperatorLauncherContents(config.launch.nodePath, operatorPath);
+  const legacyExists = await access(legacyOperatorPath, constants.F_OK).then(
+    () => true,
+    (error: unknown) => {
+      if (isNodeError(error, 'ENOENT')) return false;
+      throw error;
+    },
+  );
+  const legacyObserved = legacyExists
+    ? await readStableBoundedFile({
+        path: legacyOperatorPath,
+        maxBytes: Buffer.byteLength(legacyExpected),
+        invalidFile: () => new Error('The legacy managed Runtime Host operator is invalid'),
+      }).then((contents) => new TextDecoder('utf-8', { fatal: true }).decode(contents))
+    : null;
+  if (legacyObserved !== null && legacyObserved !== legacyExpected) {
+    throw new Error('The legacy managed Runtime Host operator does not match its deployment');
+  }
+  if (legacyObserved !== null) {
+    await access(legacyOperatorPath, constants.X_OK).catch((error: unknown) => {
+      throw new Error('The legacy managed Runtime Host operator is not executable', {
+        cause: error,
+      });
+    });
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function quotePosix(value: string): string {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
 function isNodeError(error: unknown, code: string): error is NodeJS.ErrnoException {

@@ -1,0 +1,19 @@
+{
+  "name": "@maka/website",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "test:dist": "astro build && node --test test/site.test.mjs",
+    "readme-hero": "astro build && node scripts/readme-hero.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "@fontsource-variable/geist": "^5.3.0",
+    "@fontsource-variable/geist-mono": "^5.3.0",
+    "astro": "^7.2.10"
+  }
+}

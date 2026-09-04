@@ -182,6 +182,7 @@ describe('createDesktopWorkbarServices', () => {
     await services.sideChat.respondToSandboxBoundary('fork', {} as never);
     await services.sideChat.respondToClientCapability('fork', {} as never);
     await services.sideChat.respondToUserQuestion('fork', {} as never);
+    await services.sideChat.respondToUserForm('fork', {} as never);
     services.sideChat.subscribeEvents('fork', eventHandler)();
 
     assert.deepEqual(
@@ -237,6 +238,7 @@ describe('createDesktopWorkbarServices', () => {
         'sessions.respondToSandboxBoundary',
         'sessions.respondToClientCapability',
         'sessions.respondToUserQuestion',
+        'sessions.respondToUserForm',
         'sessions.subscribeEvents',
       ],
     );

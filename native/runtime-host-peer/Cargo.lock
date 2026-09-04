@@ -1950,6 +1950,7 @@ dependencies = [
  "tokio-util",
  "unsigned-varint 0.8.0",
  "webrtc",
+ "windows",
 ]
 
 [[package]]

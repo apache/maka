@@ -19,6 +19,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { ToolOutcomeUnknownError } from '@maka/core/events';
+import type { InteractionFormInput, InteractionFormResult } from '@maka/core/interaction';
 import {
   CLIENT_CAPABILITY_MAX_RESULT_BYTES,
   CLIENT_CAPABILITY_RESULT_CHUNK_MAX_BYTES,
@@ -81,11 +82,19 @@ interface InvocationState<Registration extends ClientCapabilityInvocationRegistr
   readonly signal?: AbortSignal;
   readonly onAbort?: () => void;
   onProgress?: (current: number, total: number) => void;
+  requestInteraction?: ClientCapabilityInteractionHandler;
   readonly timeoutMs: number;
   readonly providerAvailability: AbortController;
-  timer: NodeJS.Timeout | undefined;
+  cancelTimer?: () => void;
+  interaction?: InvocationInteraction;
   acceptedSettled: boolean;
-  phase: 'dispatched' | 'accepted' | 'admitted' | 'chunks';
+  phase:
+    | 'dispatched'
+    | 'accepted'
+    | 'admitted'
+    | 'awaiting_interaction'
+    | 'delivering_interaction_result'
+    | 'chunks';
   progress?: { current: number; total: number };
   chunks?: {
     readonly byteLength: number;
@@ -95,12 +104,28 @@ interface InvocationState<Registration extends ClientCapabilityInvocationRegistr
   };
 }
 
+interface InvocationInteraction {
+  readonly interactionId: string;
+  readonly controller: AbortController;
+  readonly done: Promise<void>;
+  readonly resolveDone: () => void;
+  terminal?: { readonly error: Error; readonly releaseRemote: boolean };
+}
+
+type ClientCapabilityInteractionHandler = (
+  form: InteractionFormInput,
+  options?: { readonly cancellationSignal?: AbortSignal },
+) => Promise<InteractionFormResult>;
+
 export interface PreparedClientCapabilityInvocation {
   readonly invocationId: string;
   /** Resolves once the provider has parsed the call and is waiting at its admission cut. */
   waitUntilAccepted(): Promise<ClientCapabilityAdmissionEvidence>;
   /** Crosses the admission cut and returns the provider result. */
-  admit(onProgress?: (current: number, total: number) => void): Promise<ClientCapabilityCallResult>;
+  admit(
+    onProgress?: (current: number, total: number) => void,
+    requestInteraction?: ClientCapabilityInteractionHandler,
+  ): Promise<ClientCapabilityCallResult>;
   /** Cancels an accepted call that will not cross the admission cut. */
   cancel(): void;
   /** Aborts when the provider connection disappears before this call is admitted. */
@@ -112,6 +137,7 @@ export interface ClientCapabilityInvocationBrokerOptions<
 > {
   readonly senderFor: (connectionId: string) => ClientCapabilityConnectionSender | undefined;
   readonly onRegistrationIdle: (registration: Registration) => void;
+  readonly scheduleTimeout?: (callback: () => void, timeoutMs: number) => () => void;
 }
 
 export class ClientCapabilityInvocationBroker<
@@ -119,12 +145,21 @@ export class ClientCapabilityInvocationBroker<
 > {
   readonly #senderFor: ClientCapabilityInvocationBrokerOptions<Registration>['senderFor'];
   readonly #onRegistrationIdle: ClientCapabilityInvocationBrokerOptions<Registration>['onRegistrationIdle'];
+  readonly #scheduleTimeout: NonNullable<
+    ClientCapabilityInvocationBrokerOptions<Registration>['scheduleTimeout']
+  >;
   readonly #invocations = new Map<string, InvocationState<Registration>>();
   readonly #retiredInvocationIds = new Set<string>();
 
   constructor(options: ClientCapabilityInvocationBrokerOptions<Registration>) {
     this.#senderFor = options.senderFor;
     this.#onRegistrationIdle = options.onRegistrationIdle;
+    this.#scheduleTimeout =
+      options.scheduleTimeout ??
+      ((callback, timeoutMs) => {
+        const timer = setTimeout(callback, timeoutMs);
+        return () => clearTimeout(timer);
+      });
   }
 
   async invoke(
@@ -135,6 +170,7 @@ export class ClientCapabilityInvocationBroker<
     signal: AbortSignal | undefined,
     timeoutMs: number,
     onProgress?: (current: number, total: number) => void,
+    requestInteraction?: ClientCapabilityInteractionHandler,
   ): Promise<ClientCapabilityCallResult> {
     const prepared = this.prepare(
       registration,
@@ -144,6 +180,7 @@ export class ClientCapabilityInvocationBroker<
       signal,
       timeoutMs,
       onProgress,
+      requestInteraction,
     );
     await prepared.waitUntilAccepted();
     return prepared.admit();
@@ -157,20 +194,28 @@ export class ClientCapabilityInvocationBroker<
     signal: AbortSignal | undefined,
     timeoutMs: number,
     onProgress?: (current: number, total: number) => void,
+    requestInteraction?: ClientCapabilityInteractionHandler,
   ): PreparedClientCapabilityInvocation {
-    return this.#prepare(registration, signal, timeoutMs, onProgress, (invocationId) => ({
-      kind: 'client.capability.call',
-      invocationId,
-      registrationId: registration.registrationId,
-      offerId: binding.offerId,
-      serverId: binding.descriptor.serverId,
-      toolName: binding.descriptor.name,
-      arguments: args,
-      sessionId: context.sessionId,
-      turnId: context.turnId,
-      toolCallId: context.toolCallId,
-      ...(binding.hostPathAccess === 'cwd' ? { cwd: context.cwd } : {}),
-    }));
+    return this.#prepare(
+      registration,
+      signal,
+      timeoutMs,
+      onProgress,
+      requestInteraction,
+      (invocationId) => ({
+        kind: 'client.capability.call',
+        invocationId,
+        registrationId: registration.registrationId,
+        offerId: binding.offerId,
+        serverId: binding.descriptor.serverId,
+        toolName: binding.descriptor.name,
+        arguments: args,
+        sessionId: context.sessionId,
+        turnId: context.turnId,
+        toolCallId: context.toolCallId,
+        ...(binding.hostPathAccess === 'cwd' ? { cwd: context.cwd } : {}),
+      }),
+    );
   }
 
   async invokeService(
@@ -204,7 +249,7 @@ export class ClientCapabilityInvocationBroker<
     signal: AbortSignal | undefined,
     timeoutMs: number,
   ): PreparedClientCapabilityInvocation {
-    return this.#prepare(registration, signal, timeoutMs, undefined, (invocationId) => ({
+    return this.#prepare(registration, signal, timeoutMs, undefined, undefined, (invocationId) => ({
       kind: 'client.capability.service_call',
       invocationId,
       registrationId: registration.registrationId,
@@ -220,6 +265,7 @@ export class ClientCapabilityInvocationBroker<
     signal: AbortSignal | undefined,
     timeoutMs: number,
     onProgress: ((current: number, total: number) => void) | undefined,
+    requestInteraction: ClientCapabilityInteractionHandler | undefined,
     frameFor: (invocationId: string) => ClientCapabilityHostFrame,
   ): PreparedClientCapabilityInvocation {
     const sender = this.#senderFor(registration.connectionId);
@@ -253,16 +299,17 @@ export class ClientCapabilityInvocationBroker<
             const invocation = this.#invocations.get(invocationId);
             if (!invocation) return;
             void sender.send({ kind: 'client.capability.cancel', invocationId }).catch(() => {});
-            this.#settle(
-              invocation,
-              undefined,
+            const error =
               invocation.phase === 'dispatched' || invocation.phase === 'accepted'
                 ? asError(abortReason(signal))
                 : new ToolOutcomeUnknownError(
                     'Client Capability invocation was cancelled after admission',
-                  ),
-              true,
-            );
+                  );
+            if (invocation.interaction) {
+              this.#terminateInteraction(invocation, error, true, true);
+            } else {
+              this.#settle(invocation, undefined, error, true);
+            }
           }
         : undefined;
       const invocation: InvocationState<Registration> = {
@@ -275,14 +322,14 @@ export class ClientCapabilityInvocationBroker<
         signal,
         onAbort,
         onProgress,
+        requestInteraction,
         timeoutMs,
         providerAvailability: new AbortController(),
-        timer: undefined,
         acceptedSettled: false,
         phase: 'dispatched',
       };
       this.#invocations.set(invocationId, invocation);
-      this.#startTimeout(invocation);
+      this.#armTimer(invocation);
       if (onAbort) signal?.addEventListener('abort', onAbort, { once: true });
       void sender.send(frameFor(invocationId)).catch(() => {
         const current = this.#invocations.get(invocationId);
@@ -307,14 +354,15 @@ export class ClientCapabilityInvocationBroker<
       providerSignal:
         this.#invocations.get(invocationId)?.providerAvailability.signal ?? AbortSignal.abort(),
       waitUntilAccepted: () => accepted,
-      admit: async (onProgress) => {
+      admit: async (onProgress, requestInteraction) => {
         await accepted;
         const invocation = this.#invocations.get(invocationId);
         if (!invocation) return result;
         if (invocation.phase === 'accepted') {
           invocation.onProgress = onProgress ?? invocation.onProgress;
+          invocation.requestInteraction = requestInteraction ?? invocation.requestInteraction;
           invocation.phase = 'admitted';
-          this.#startTimeout(invocation);
+          this.#armTimer(invocation);
           const currentSender = this.#senderFor(invocation.registration.connectionId);
           if (!currentSender) {
             this.#settle(
@@ -380,8 +428,7 @@ export class ClientCapabilityInvocationBroker<
           throw new Error('Client Capability invocation was accepted more than once');
         }
         invocation.phase = 'accepted';
-        if (invocation.timer) clearTimeout(invocation.timer);
-        invocation.timer = undefined;
+        this.#clearTimer(invocation);
         invocation.acceptedSettled = true;
         invocation.resolveAccepted(frame.admissionEvidence);
         return;
@@ -398,18 +445,31 @@ export class ClientCapabilityInvocationBroker<
         );
         return;
       case 'client.capability.failed':
-        if (invocation.phase !== 'admitted' && invocation.phase !== 'chunks') {
+        if (invocation.phase === 'dispatched' || invocation.phase === 'accepted') {
           throw new Error('Client Capability failure arrived before admission');
         }
-        this.#settle(
-          invocation,
-          undefined,
-          new ClientCapabilityInvocationError('provider_failed', frame.message),
-          true,
-        );
+        if (invocation.interaction) {
+          this.#terminateInteraction(
+            invocation,
+            new ClientCapabilityInvocationError('provider_failed', frame.message),
+            true,
+            true,
+          );
+        } else {
+          this.#settle(
+            invocation,
+            undefined,
+            new ClientCapabilityInvocationError('provider_failed', frame.message),
+            true,
+          );
+        }
         return;
       case 'client.capability.progress':
-        if (invocation.phase !== 'admitted' && invocation.phase !== 'chunks') {
+        if (
+          invocation.phase !== 'admitted' &&
+          invocation.phase !== 'delivering_interaction_result' &&
+          invocation.phase !== 'chunks'
+        ) {
           throw new Error('Client Capability progress arrived before admission');
         }
         if (
@@ -422,14 +482,47 @@ export class ClientCapabilityInvocationBroker<
         invocation.progress = { current: frame.current, total: frame.total };
         invocation.onProgress?.(frame.current, frame.total);
         return;
+      case 'client.capability.interaction_request':
+        this.#acceptInteraction(invocation, frame.interactionId, frame.request);
+        return;
       case 'client.capability.result':
-        if (invocation.phase !== 'admitted') {
+        if (invocation.phase === 'awaiting_interaction') {
+          this.#terminateInteraction(
+            invocation,
+            new ClientCapabilityInvocationError(
+              'provider_failed',
+              'Client Capability provider returned before its interaction completed',
+            ),
+            true,
+            true,
+          );
+          return;
+        }
+        if (
+          invocation.phase !== 'admitted' &&
+          invocation.phase !== 'delivering_interaction_result'
+        ) {
           throw new Error('Client Capability result arrived outside the admitted phase');
         }
         this.#settle(invocation, frame.result, undefined, true);
         return;
       case 'client.capability.result_start':
-        if (invocation.phase !== 'admitted') {
+        if (invocation.phase === 'awaiting_interaction') {
+          this.#terminateInteraction(
+            invocation,
+            new ClientCapabilityInvocationError(
+              'provider_failed',
+              'Client Capability provider returned before its interaction completed',
+            ),
+            true,
+            true,
+          );
+          return;
+        }
+        if (
+          invocation.phase !== 'admitted' &&
+          invocation.phase !== 'delivering_interaction_result'
+        ) {
           throw new Error('Client Capability result chunks started outside the admitted phase');
         }
         invocation.phase = 'chunks';
@@ -445,7 +538,8 @@ export class ClientCapabilityInvocationBroker<
     }
   }
 
-  releaseConnection(connectionId: string): void {
+  async releaseConnection(connectionId: string): Promise<void> {
+    const interactions: Promise<void>[] = [];
     for (const invocation of [...this.#invocations.values()]) {
       if (invocation.registration.connectionId !== connectionId) continue;
       if (invocation.phase === 'dispatched' || invocation.phase === 'accepted') {
@@ -456,9 +550,7 @@ export class ClientCapabilityInvocationBroker<
           ),
         );
       }
-      this.#settle(
-        invocation,
-        undefined,
+      const error =
         invocation.phase === 'dispatched' || invocation.phase === 'accepted'
           ? new ClientCapabilityInvocationError(
               'capability_lost',
@@ -466,10 +558,15 @@ export class ClientCapabilityInvocationBroker<
             )
           : new ToolOutcomeUnknownError(
               'Client Capability provider disconnected after accepting the call',
-            ),
-        false,
-      );
+            );
+      if (invocation.interaction) {
+        interactions.push(invocation.interaction.done);
+        this.#terminateInteraction(invocation, error, false, true);
+      } else {
+        this.#settle(invocation, undefined, error, false);
+      }
     }
+    await Promise.all(interactions);
   }
 
   holdsRegistration(registration: Registration): boolean {
@@ -514,11 +611,156 @@ export class ClientCapabilityInvocationBroker<
     this.#settle(invocation, decodeClientCapabilityResult(decoded), undefined, true);
   }
 
-  #startTimeout(invocation: InvocationState<Registration>): void {
-    if (invocation.timer) clearTimeout(invocation.timer);
-    invocation.timer = setTimeout(() => {
+  #acceptInteraction(
+    invocation: InvocationState<Registration>,
+    interactionId: string,
+    request: InteractionFormInput,
+  ): void {
+    if (
+      (invocation.phase !== 'admitted' && invocation.phase !== 'delivering_interaction_result') ||
+      invocation.interaction
+    ) {
+      if (invocation.interaction) {
+        this.#terminateInteraction(
+          invocation,
+          new ClientCapabilityInvocationError(
+            'provider_failed',
+            'Client Capability provider requested overlapping interactions',
+          ),
+          true,
+          true,
+        );
+        return;
+      }
+      throw new Error('Client Capability interaction arrived outside the admitted phase');
+    }
+    if (!invocation.requestInteraction) {
+      this.#settle(
+        invocation,
+        undefined,
+        new ClientCapabilityInvocationError(
+          'provider_failed',
+          'Client Capability interaction is unavailable for this invocation',
+        ),
+        true,
+      );
+      return;
+    }
+    this.#clearTimer(invocation);
+    invocation.phase = 'awaiting_interaction';
+    let resolveDone!: () => void;
+    const interaction: InvocationInteraction = {
+      interactionId,
+      controller: new AbortController(),
+      done: new Promise<void>((resolve) => {
+        resolveDone = resolve;
+      }),
+      resolveDone: () => resolveDone(),
+    };
+    invocation.interaction = interaction;
+    void this.#runInteraction(invocation, interaction, request);
+  }
+
+  async #runInteraction(
+    invocation: InvocationState<Registration>,
+    interaction: InvocationInteraction,
+    request: InteractionFormInput,
+  ): Promise<void> {
+    try {
+      const signal = invocation.signal
+        ? AbortSignal.any([invocation.signal, interaction.controller.signal])
+        : interaction.controller.signal;
+      const result = await invocation.requestInteraction!(request, {
+        cancellationSignal: signal,
+      });
+      if (!this.#isCurrentInteraction(invocation, interaction)) return;
+      const terminalBeforeSend = interaction.terminal;
+      if (terminalBeforeSend) {
+        this.#settle(
+          invocation,
+          undefined,
+          terminalBeforeSend.error,
+          terminalBeforeSend.releaseRemote,
+        );
+        return;
+      }
+      const sender = this.#senderFor(invocation.registration.connectionId);
+      if (!sender) {
+        this.#settle(
+          invocation,
+          undefined,
+          new ToolOutcomeUnknownError(
+            'Client Capability provider disappeared before receiving an interaction result',
+          ),
+          false,
+        );
+        return;
+      }
+      invocation.interaction = undefined;
+      invocation.phase = 'delivering_interaction_result';
+      this.#armTimer(invocation);
+      await sender.send({
+        kind: 'client.capability.interaction_result',
+        invocationId: invocation.invocationId,
+        interactionId: interaction.interactionId,
+        result,
+      });
+      if (this.#invocations.get(invocation.invocationId) !== invocation) return;
+      if (invocation.phase !== 'delivering_interaction_result') return;
+      invocation.phase = 'admitted';
+      this.#armTimer(invocation);
+    } catch (error) {
+      if (this.#invocations.get(invocation.invocationId) !== invocation) return;
+      if (invocation.interaction !== interaction) {
+        if (invocation.phase !== 'delivering_interaction_result') return;
+        this.#settle(
+          invocation,
+          undefined,
+          new ToolOutcomeUnknownError(
+            `Client Capability interaction result could not be delivered: ${asError(error).message}`,
+          ),
+          false,
+        );
+        return;
+      }
+      this.#settle(
+        invocation,
+        undefined,
+        interaction.terminal?.error ?? asError(error),
+        interaction.terminal?.releaseRemote ?? true,
+      );
+    } finally {
+      interaction.resolveDone();
+    }
+  }
+
+  #terminateInteraction(
+    invocation: InvocationState<Registration>,
+    error: Error,
+    releaseRemote: boolean,
+    cancelProducer: boolean,
+  ): void {
+    const interaction = invocation.interaction;
+    if (!interaction || interaction.terminal) return;
+    interaction.terminal = { error, releaseRemote };
+    if (cancelProducer) interaction.controller.abort(error);
+  }
+
+  #isCurrentInteraction(
+    invocation: InvocationState<Registration>,
+    interaction: InvocationInteraction,
+  ): boolean {
+    return (
+      this.#invocations.get(invocation.invocationId) === invocation &&
+      invocation.interaction === interaction
+    );
+  }
+
+  #armTimer(invocation: InvocationState<Registration>): void {
+    this.#clearTimer(invocation);
+    invocation.cancelTimer = this.#scheduleTimeout(() => {
       const current = this.#invocations.get(invocation.invocationId);
-      if (!current) return;
+      if (current !== invocation) return;
       const sender = this.#senderFor(current.registration.connectionId);
       void sender
         ?.send({ kind: 'client.capability.cancel', invocationId: current.invocationId })
@@ -537,6 +779,11 @@ export class ClientCapabilityInvocationBroker<
     }, invocation.timeoutMs);
   }
 
+  #clearTimer(invocation: InvocationState<Registration>): void {
+    invocation.cancelTimer?.();
+    invocation.cancelTimer = undefined;
+  }
+
   #settle(
     invocation: InvocationState<Registration>,
     result: ClientCapabilityCallResult | undefined,
@@ -545,7 +792,7 @@ export class ClientCapabilityInvocationBroker<
   ): void {
     if (this.#invocations.get(invocation.invocationId) !== invocation) return;
     this.#invocations.delete(invocation.invocationId);
-    if (invocation.timer) clearTimeout(invocation.timer);
+    this.#clearTimer(invocation);
     if (invocation.onAbort && invocation.signal) {
       invocation.signal.removeEventListener('abort', invocation.onAbort);
     }

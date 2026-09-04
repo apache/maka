@@ -749,8 +749,9 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
       await use({ app, page, viewport });
     });
   }, { scope: 'worker' }],
-  // A multi-prompt transcript for the prompt anchor rail. Shown, because every
-  // assertion in prompt-rail.spec.ts is geometry the compositor has to settle.
+  // A multi-prompt transcript. Shown, because the perf suite that measures it
+  // reads real frame pacing, and a throttled compositor paces nothing a user
+  // would see.
   promptRailWindow: async ({ promptRailWorker }, use) => {
     await setPromptRailWindowVisible(promptRailWorker, true);
     try {

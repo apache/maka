@@ -1375,6 +1375,7 @@ function useArchivedTasksStoryBridge(seed: readonly SessionSummary[]): ArchivedT
   const [sessions, setSessions] = useState<DesktopSessionSummary[]>(() =>
     seed.map((session) => ({
       ...session,
+      revision: 1,
       runtimeHostId: 'storybook-local',
       profileId: 'local',
       profileName: 'Local',

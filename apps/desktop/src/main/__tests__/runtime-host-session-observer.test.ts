@@ -2672,6 +2672,57 @@ test("rehydrates pending interactions and publishes answer acknowledgements", as
   await observer.close();
 });
 
+test("publishes form answer acknowledgements for renderer queue retirement", async () => {
+  const pending = {
+    schemaVersion: 1 as const,
+    interactionId: "form-1",
+    sessionId: "session-1",
+    turnId: "turn-1",
+    runId: "run-1",
+    revision: 1 as const,
+    status: "pending" as const,
+    outcome: null,
+    request: {
+      kind: "form" as const,
+      toolUseId: "tool-1",
+      message: "Configure deployment",
+      requester: { name: "deploy" },
+      fields: [{ kind: "boolean" as const, name: "confirm", label: "Confirm", required: true }],
+    },
+  };
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      openSession: async () => runtimeHostSessionFixture({
+        snapshot: continuitySnapshot({ interactions: { pending: [pending] } }),
+        activeAssistantStreams: [],
+        transcript: Promise.resolve([]),
+        events: new AsyncFrameQueue(),
+        async close() {},
+      }),
+    },
+    emitSessionsChanged() {},
+    now: () => 80,
+  });
+  const target = eventTarget(2);
+  await observer.observe("session-1", "observer-1", target);
+  observer.publishInteractionAnswer({
+    ...pending,
+    revision: 2,
+    status: "answered",
+    outcome: { kind: "form_answer", action: "accept", values: { confirm: true }, committedAt: 80 },
+  }, pending);
+
+  assert.deepEqual(target.events.at(-1), {
+    type: "form_answer_ack",
+    id: "host-interaction:form-1:2",
+    turnId: "turn-1",
+    ts: 80,
+    requestId: "form-1",
+    toolUseId: "tool-1",
+  });
+  await observer.close();
+});
+
 test("projects Host queue revisions and newly delivered steering messages", async () => {
   const events = new AsyncFrameQueue();
   const observer = new RuntimeHostSessionObserver({

@@ -35,13 +35,14 @@ import type {
   QuoteRef,
   SessionEvent,
   SandboxBoundaryRequestEvent,
+  FormRequestEvent,
   UserQuestionRequestEvent,
 } from './events.js';
-import type { InteractionClosureReason } from './interaction.js';
+import type { InteractionClosureReason, InteractionFormResult } from './interaction.js';
 import type { RuntimeEvent } from './runtime-event.js';
 import type { SandboxBoundaryResponse, SandboxBoundarySettlement } from './sandbox-boundary.js';
 import type { StoredMessage, PersistedBackendKind } from './session.js';
-import type { AgentRunHeader } from './agent-run.js';
+import type { RuntimeInvocationRecord } from './runtime-invocation.js';
 import type { UserQuestionResponse } from './user-question.js';
 import type { ContextBudgetDiagnostic } from './usage-stats/types.js';
 import type { EffectiveOrchestration } from './orchestration.js';
@@ -93,11 +94,11 @@ export interface BackendSendInput {
    */
   runtimeContext?: RuntimeEvent[];
   /**
-   * Existing durable run headers for `runtimeContext`, used only to verify
+   * The invocations `runtimeContext` came from, used only to verify
    * provider-owned replay against the current model route. RuntimeEvents stay
-   * the transcript authority; route provenance remains owned by AgentRun.
+   * the transcript authority; route provenance is read off each opening fact.
    */
-  runtimeContextRunHeaders?: readonly AgentRunHeader[];
+  runtimeContextInvocations?: readonly RuntimeInvocationRecord[];
   /** Continue from an already committed RuntimeEvent boundary without adding another user turn. */
   continuation?: RuntimeContinuationMetadata;
   /**
@@ -132,6 +133,11 @@ export interface HostedUserQuestionSettlement {
   applyClosure(reason: Exclude<InteractionClosureReason, 'timed_out'>): Promise<void>;
 }
 
+export interface HostedFormSettlement {
+  applyAnswer(answer: InteractionFormResult): Promise<void>;
+  applyClosure(reason: Exclude<InteractionClosureReason, 'timed_out'>): Promise<void>;
+}
+
 export interface HostedSandboxBoundarySettlement {
   applyDecision(settlement: SandboxBoundarySettlement): Promise<void>;
   applyClosure(reason: Exclude<InteractionClosureReason, 'timed_out'>): Promise<void>;
@@ -150,6 +156,12 @@ export interface HostedInteractionBridge {
     request: UserQuestionRequestEvent;
     settlement: HostedUserQuestionSettlement;
   }): Promise<void>;
+  admitFormRequest(input: {
+    request: FormRequestEvent;
+    settlement: HostedFormSettlement;
+  }): Promise<void>;
+  /** Withdraw one exact producer-owned form without closing the surrounding Run. */
+  withdrawFormRequest(requestId: string): Promise<void>;
   admitSandboxBoundaryRequest(input: {
     request: SandboxBoundaryRequestEvent;
     settlement: HostedSandboxBoundarySettlement;
@@ -177,8 +189,8 @@ export interface BackendCompactHistoryInput {
    */
   runId: string;
   runtimeContext: readonly RuntimeEvent[];
-  /** Source-run route authority for provider-owned history projected into the compaction call. */
-  runtimeContextRunHeaders?: readonly AgentRunHeader[];
+  /** Source-invocation route authority for provider-owned history projected into the compaction call. */
+  runtimeContextInvocations?: readonly RuntimeInvocationRecord[];
 }
 
 export interface BackendCompactHistoryResult {

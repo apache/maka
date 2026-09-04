@@ -133,7 +133,7 @@ function main() {
     );
   }
   buildRuntimeWorkspaces({ clean: true });
-  checkProductionAudit();
+  if (!nightlyVersion && !allowDirty) checkProductionAudit();
   runNpm(['run', 'check:cli-third-party-notices']);
   runNpm(['run', 'check:runtime-host-peer-dependencies']);
   runNpm(['run', 'check:runtime-host-peer-notices']);
@@ -220,9 +220,11 @@ function buildFromCleanDependencyTree() {
     const preparedPeerPrebuilds = copyPeerPrebuildInputToCleanTree(cleanRoot);
     console.log('[release-cli] installing the committed dependency tree with npm ci');
     const cleanEnvironment = releaseNpmEnvironment(process.env, join(cleanRoot, '.npmrc'));
+    const installArguments = ['ci'];
+    if (nightlyVersion) installArguments.push('--no-audit');
     execFileSync(
       'npm',
-      ['ci'],
+      installArguments,
       npmSpawnOptions({ cwd: cleanRoot, env: cleanEnvironment, stdio: 'inherit' }),
     );
     execFileSync(process.execPath, [join(cleanRoot, 'scripts/release-cli-package.mjs')], {

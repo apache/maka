@@ -47,6 +47,7 @@ export interface SessionCollaborationServices {
   cancelImport(operationId: string): Promise<SessionCollaborationCancelResult>;
   readInvitationClipboard(): Promise<string>;
   listMounts(): Promise<readonly SessionCollaborationMountSummary[]>;
+  subscribeMountChanges(handler: () => void): () => void;
   removeMount(mountId: string): Promise<void>;
   requestTurn(
     sessionId: string,

@@ -27,7 +27,12 @@ import type {
   McpToolBinding,
   McpToolDescriptor,
 } from '@maka/core/mcp';
-import { buildMcpTools, mcpProxyToolName, type McpToolProvider } from '../mcp-tools.js';
+import {
+  buildMcpTools,
+  buildMcpToolsWithIdentities,
+  mcpProxyToolName,
+  type McpToolProvider,
+} from '../mcp-tools.js';
 import { selectCollaborationTools } from '../plan-mode.js';
 
 test('buildMcpTools projects discovery, abort, and rich model output', async () => {
@@ -95,6 +100,94 @@ test('buildMcpTools projects discovery, abort, and rich model output', async () 
     },
   ]);
   assert.match(model?.value[2]?.type === 'text' ? model.value[2].text : '', /structuredContent/u);
+});
+
+test('buildMcpTools carries the Runtime-owned form callback to the provider', async () => {
+  const cancellation = new AbortController();
+  const provider = fakeProvider(
+    [boundTool(descriptor('client', 'deploy'), binding('nested-form-binding'))],
+    async (_binding, _args, options) => {
+      assert.ok(options.requestInteraction);
+      const answer = await options.requestInteraction(
+        {
+          message: 'Choose a target',
+          requester: { name: 'deploy' },
+          fields: [
+            { kind: 'string', name: 'target', label: 'Target', required: true, maxLength: 256 },
+          ],
+        },
+        { cancellationSignal: cancellation.signal },
+      );
+      assert.deepEqual(answer, { action: 'accept', values: { target: 'staging' } });
+      return { content: [] };
+    },
+  );
+  const [tool] = buildMcpTools(provider);
+
+  await tool?.impl(
+    {},
+    {
+      sessionId: 'session',
+      turnId: 'turn',
+      cwd: '/workspace',
+      toolCallId: 'tool-call',
+      abortSignal: new AbortController().signal,
+      emitOutput() {},
+      requestUserForm: async (form, options) => {
+        assert.equal(form.message, 'Choose a target');
+        assert.equal(options?.cancellationSignal, cancellation.signal);
+        return { action: 'accept', values: { target: 'staging' } };
+      },
+    },
+  );
+});
+
+test('prepared MCP execution receives the Runtime-owned form callback after admission', async () => {
+  const toolBinding = binding('prepared-form-binding');
+  const provider: McpToolProvider = {
+    toolSnapshot: () => ({
+      revision: 1,
+      tools: [boundTool(descriptor('client', 'deploy'), toolBinding)],
+    }),
+    prepareTool: async () => ({
+      execute: async (options) => {
+        assert.ok(options?.requestInteraction);
+        const answer = await options.requestInteraction({
+          message: 'Choose a target',
+          requester: { name: 'deploy' },
+          fields: [
+            { kind: 'string', name: 'target', label: 'Target', required: true, maxLength: 256 },
+          ],
+        });
+        assert.deepEqual(answer, { action: 'accept', values: { target: 'staging' } });
+        return { content: [] };
+      },
+      cancel: () => undefined,
+    }),
+    callTool: async () => assert.fail('Prepared provider must not use direct callTool'),
+  };
+  const [tool] = buildMcpTools(provider);
+  assert.ok(tool?.prepareExecution);
+  const controller = new AbortController();
+  const prepared = await tool.prepareExecution(
+    {},
+    {
+      sessionId: 'session',
+      turnId: 'turn',
+      cwd: '/workspace',
+      toolCallId: 'tool-call',
+      abortSignal: controller.signal,
+    },
+  );
+  await prepared.execute({
+    sessionId: 'session',
+    turnId: 'turn',
+    cwd: '/workspace',
+    toolCallId: 'tool-call',
+    abortSignal: controller.signal,
+    emitOutput: () => undefined,
+    requestUserForm: async () => ({ action: 'accept', values: { target: 'staging' } }),
+  });
 });
 
 test('Direct-mode MCP calls request managed network expansion before provider dispatch', async () => {
@@ -188,6 +281,42 @@ test('MCP annotations cannot lower permissions and model output has aggregate bo
   assert.doesNotMatch(text, /secretBlob/u);
 });
 
+test('MCP text clipping never leaves an unpaired surrogate at the boundary', async () => {
+  const provider = fakeProvider(
+    [boundTool(descriptor('untrusted', 'claims-read-only', true), binding('surrogate-binding'))],
+    async () => ({
+      // Every code point is astral, so a clip boundary inside any pair would
+      // surface as an unpaired surrogate ahead of the truncation marker.
+      content: [{ type: 'text', text: '🦊'.repeat(120_000) }],
+    }),
+  );
+  const [tool] = buildMcpTools(provider);
+  const output = await tool?.impl(
+    {},
+    {
+      sessionId: 's',
+      turnId: 't',
+      cwd: '/tmp',
+      toolCallId: 'call',
+      abortSignal: new AbortController().signal,
+      emitOutput() {},
+    },
+  );
+  const model = await tool?.toModelOutput?.({ toolCallId: 'call', input: {}, output });
+  assert.equal(model?.type, 'content');
+  if (model?.type !== 'content') throw new Error('expected content tool output');
+  const text = model.value
+    .filter((item) => item.type === 'text')
+    .map((item) => (item.type === 'text' ? item.text : ''))
+    .join('');
+  assert.ok(text.length <= 200_000);
+  assert.match(text, /…\[truncated by Maka\]/u);
+  assert.doesNotMatch(
+    text,
+    /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u,
+  );
+});
+
 test('MCP tools stay network sends and are excluded from Plan mode', () => {
   const tools = buildMcpTools(
     fakeProvider(
@@ -268,6 +397,28 @@ test('mcpProxyToolName is stable, provider-safe, and bounded to 64 chars', () =>
   assert.notEqual(
     first,
     mcpProxyToolName('服 务/'.repeat(20), 'tool.with punctuation '.repeat(20) + 'different'),
+  );
+});
+
+test('buildMcpToolsWithIdentities pairs each proxy tool with its source identity', () => {
+  const provider = fakeProvider(
+    [
+      boundTool(descriptor('read server', 'read.item', true), binding('read-binding')),
+      boundTool(descriptor('write', 'mutate-item', undefined), binding('write-binding')),
+    ],
+    async () => ({ content: [] }),
+  );
+  const identified = buildMcpToolsWithIdentities(provider);
+  assert.deepEqual(
+    identified.map(({ tool, serverId, toolName }) => [tool.name, serverId, toolName]),
+    [
+      ['mcp__read_server__read_item', 'read server', 'read.item'],
+      ['mcp__write__mutate-item', 'write', 'mutate-item'],
+    ],
+  );
+  assert.deepEqual(
+    buildMcpTools(provider).map((tool) => tool.name),
+    identified.map(({ tool }) => tool.name),
   );
 });
 

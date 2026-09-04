@@ -225,18 +225,10 @@ search-heavy workflows that value source visibility over cache economics.
 
 ## Follow-up adapters
 
-Add adapters in this order:
-
-1. Add an opt-in `web_search_20260209` capability for Anthropic deployments
-   that support dynamic filtering; retain `20250305` as the compatibility
-   baseline used by Claude Code and third-party Anthropic-compatible services.
-2. Gemini grounding with Google Search.
-3. Z.AI native model tool. Keep its standalone Search API outside the
-   provider-native path.
-4. OpenRouter web plugin.
-5. Mistral Agents and Groq Compound, after defining their cost and result-row
-   projection contracts.
-
 Every adapter must execute in the primary model request, preserve provider tool
 events and citation metadata, keep credential isolation, and retain explicit
 no-fallback behavior.
+
+Adapter status and ordering live in the tracker rather than a duplicate list in this design.
+
+Tracking: [Provider-native web search #4330](https://github.com/apache/maka/issues/4330)

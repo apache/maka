@@ -58,6 +58,19 @@ unsigned-varint = "0.8"
 # Keep this immutable until an official release contains those fixes.
 webrtc = { git = "https://github.com/webrtc-rs/webrtc", rev = "e132552fc67b84c30e63c5ce916a9a63e2484b6f" }
 
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_System_Com",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_JobObjects",
+  "Win32_System_Ole",
+  "Win32_System_TaskScheduler",
+  "Win32_System_Threading",
+  "Win32_System_Variant",
+] }
+
 [build-dependencies]
 napi-build = "2.4"
 

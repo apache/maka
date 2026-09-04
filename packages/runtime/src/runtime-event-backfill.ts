@@ -17,7 +17,8 @@
  * under the License.
  */
 
-import type { AgentRunHeader } from '@maka/core/agent-run';
+import type { RuntimeInvocationOutcome } from '@maka/core/runtime-invocation';
+import type { RunIdentity } from './terminal-run-commit.js';
 import type {
   PermissionDecisionMessage,
   StoredMessage,
@@ -44,8 +45,22 @@ export interface RuntimeEventBackfillDiagnostic {
   detail?: unknown;
 }
 
+/**
+ * How the imported turn ended, as the importer read it off the transcript.
+ *
+ * Without one there is no terminal RuntimeEvent to write: nothing else in a
+ * StoredMessage transcript states an outcome the ledger can be held to.
+ */
+export interface RuntimeEventBackfillOutcome {
+  status: RuntimeInvocationOutcome;
+  ts: number;
+  failureClass?: string;
+  abortSource?: string;
+}
+
 export interface RuntimeEventBackfillInput {
-  run: AgentRunHeader;
+  run: RunIdentity & { invocationId?: string };
+  outcome?: RuntimeEventBackfillOutcome;
   messages: readonly StoredMessage[];
   invocationId?: string;
   modelHistory?: 'full' | 'conversation_text';
@@ -358,7 +373,14 @@ export function backfillRuntimeEventsFromStoredMessages(
     }
   }
 
-  const terminal = terminalRuntimeEvent({ run: input.run, turnMessages, invocationId, newId, now });
+  const terminal = terminalRuntimeEvent({
+    run: input.run,
+    outcome: input.outcome,
+    turnMessages,
+    invocationId,
+    newId,
+    now,
+  });
   if (terminal.event) {
     events.push(terminal.event);
   } else if (terminal.diagnostic) {
@@ -418,14 +440,15 @@ function terminalRecoveryState(
 }
 
 function terminalRuntimeEvent(input: {
-  run: AgentRunHeader;
+  run: RunIdentity;
+  outcome: RuntimeEventBackfillOutcome | undefined;
   turnMessages: readonly StoredMessage[];
   invocationId: string;
   newId: () => string;
   now: () => number;
 }): { event?: RuntimeEvent; diagnostic?: RuntimeEventBackfillDiagnostic } {
   const turnState = latestTurnState(input.turnMessages);
-  const status = terminalStatus(input.run, turnState);
+  const status = terminalStatus(input.outcome, turnState);
   if (!status) {
     return {
       diagnostic: {
@@ -435,19 +458,19 @@ function terminalRuntimeEvent(input: {
         detail: {
           runId: input.run.runId,
           turnId: input.run.turnId,
-          runStatus: input.run.status,
+          declaredStatus: input.outcome?.status,
           turnStatus: turnState?.status,
         },
       },
     };
   }
-  const ts = turnState?.ts ?? input.run.completedAt ?? input.run.updatedAt;
+  const ts = turnState?.ts ?? input.outcome?.ts ?? input.now();
   const failureClass =
-    status === 'failed' ? (turnState?.errorClass ?? input.run.failureClass) : undefined;
+    status === 'failed' ? (turnState?.errorClass ?? input.outcome?.failureClass) : undefined;
   const abortSource =
     status === 'aborted'
       ? (turnState?.abortSource ??
-        input.run.abortSource ??
+        input.outcome?.abortSource ??
         (turnState?.status === 'aborted' ? 'unknown' : undefined))
       : undefined;
   return {
@@ -476,19 +499,20 @@ function terminalRuntimeEvent(input: {
 }
 
 function terminalStatus(
-  run: AgentRunHeader,
+  outcome: RuntimeEventBackfillOutcome | undefined,
   turnState: TurnStateMessage | undefined,
 ): RuntimeEventStatus | undefined {
   const legacyStatus = turnState?.status;
-  if (legacyStatus === 'completed' || run.status === 'completed') return 'completed';
-  if (legacyStatus === 'failed' && run.status === 'failed') return 'failed';
+  const declared = outcome?.status;
+  if (legacyStatus === 'completed' || declared === 'completed') return 'completed';
+  if (legacyStatus === 'failed' && declared === 'failed') return 'failed';
   if (
-    (legacyStatus === 'failed' || run.status === 'failed') &&
-    (run.failureClass || turnState?.errorClass)
+    (legacyStatus === 'failed' || declared === 'failed') &&
+    (outcome?.failureClass || turnState?.errorClass)
   )
     return 'failed';
-  if (legacyStatus === 'aborted' && run.status === 'cancelled') return 'aborted';
-  if ((legacyStatus === 'aborted' || run.status === 'cancelled') && turnState?.abortSource)
+  if (legacyStatus === 'aborted' && declared === 'cancelled') return 'aborted';
+  if ((legacyStatus === 'aborted' || declared === 'cancelled') && turnState?.abortSource)
     return 'aborted';
   return undefined;
 }

@@ -22,17 +22,14 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import type {
-  AgentRunEvent,
-  AgentRunEventType,
-  AgentRunHeader,
-  EmittedAgentRunEvent,
-} from '@maka/core/agent-run';
+import type { AgentRunEvent, AgentRunEventType, EmittedAgentRunEvent } from '@maka/core/agent-run';
+import { buildInvocationOpenedEvent } from '@maka/core/runtime-invocation';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { createSessionStore } from '@maka/storage/session-store';
 import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
 import { createWorkspaceRuntimeStore } from '@maka/storage/runtime-event-persistence';
 import { inspectAgentRunDocument, renderAgentRunInspectTree } from '../execution-inspect.js';
+import { testInvocationOpening } from './invocation-fixture.js';
 
 describe('versioned execution inspect documents', () => {
   test('reports unknown tool outcomes without copying Runtime payloads', async () => {
@@ -46,9 +43,12 @@ describe('versioned execution inspect documents', () => {
         model: 'fake-model',
         permissionMode: 'ask',
       });
-      const header = runHeader(session.id);
-      await runStore.createRun(header);
-      await runStore.appendEvent(session.id, RUN_ID, runEvent(session.id, 'run_completed'));
+      await runtimeStore.appendRuntimeEvent(session.id, RUN_ID, openingEvent(session.id));
+      await runStore.appendEvent(
+        session.id,
+        RUN_ID,
+        runEvent(session.id, 'model_stream_completed'),
+      );
       await runtimeStore.appendRuntimeEvent(
         session.id,
         RUN_ID,
@@ -87,7 +87,9 @@ describe('versioned execution inspect documents', () => {
           eventId: 'call',
         },
       ]);
-      assert.equal(document.sources.runtimeCoverage?.highWater.sequence, 1);
+      // The opening fact is the run's first runtime event, so the call and the
+      // terminal event that follow it sit at sequences 1 and 2.
+      assert.equal(document.sources.runtimeCoverage?.highWater.sequence, 2);
       assert.equal(
         document.diagnostics.some((item) => item.code === 'tool_response_missing'),
         true,
@@ -107,22 +109,22 @@ const RUN_ID = 'run-1';
 const TURN_ID = 'turn-1';
 const TS = 1_800_000_000_000;
 
-function runHeader(sessionId: string): AgentRunHeader {
-  return {
-    runId: RUN_ID,
-    invocationId: 'invocation-1',
-    sessionId,
-    turnId: TURN_ID,
-    status: 'completed',
-    backendKind: 'fake',
-    llmConnectionSlug: 'fake',
-    modelId: 'fake-model',
-    cwd: '/tmp/workspace',
-    permissionMode: 'ask',
-    createdAt: TS,
-    updatedAt: TS + 1,
-    completedAt: TS + 1,
-  };
+function openingEvent(sessionId: string) {
+  return buildInvocationOpenedEvent({
+    id: 'rt-open',
+    run: { sessionId, invocationId: 'invocation-1', runId: RUN_ID, turnId: TURN_ID },
+    openedAt: TS,
+    opening: testInvocationOpening({
+      route: {
+        provenance: 'runtime',
+        backendKind: 'fake',
+        llmConnectionId: 'fake-connection',
+        llmConnectionSlug: 'fake',
+        modelId: 'fake-model',
+      },
+      configuration: { cwd: '/tmp/workspace' },
+    }),
+  });
 }
 
 function runEvent(sessionId: string, type: AgentRunEventType): EmittedAgentRunEvent {

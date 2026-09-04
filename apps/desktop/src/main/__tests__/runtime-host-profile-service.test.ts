@@ -45,6 +45,7 @@ import {
   createDesktopRuntimeHostManagedServiceStore,
   findDesktopRuntimeHostManagedServiceBinding,
   isDesktopRuntimeHostManagedSshServiceBinding,
+  type DesktopRuntimeHostManagedServiceStore,
 } from "../runtime-host-managed-services.js";
 import {
   createDesktopRuntimeHostPairingIntent,
@@ -56,6 +57,12 @@ import {
 } from "../runtime-host-profile-service.js";
 
 const ROOT_ID = "a".repeat(64);
+const OPERATOR = {
+  kind: "node" as const,
+  platform: "posix" as const,
+  nodePath: "/usr/bin/node",
+  modulePath: "/home/operator/.local/share/Maka/runtime-host-services/operator.mjs",
+};
 const PROFILE = {
   id: "office",
   name: "Office",
@@ -81,7 +88,7 @@ const MANAGED_SERVICE = {
   },
   control: {
     kind: "ssh_operator" as const,
-    operatorPath: "/home/operator/.local/share/maka/operator",
+    operator: OPERATOR,
   },
 };
 const READY_PROFILE = {
@@ -289,7 +296,10 @@ test("reuses the existing WSL profile when the same managed Host is added again"
     kind: "environment" as const,
     provider: { kind: "wsl" as const, distribution: "Ubuntu-24.04" },
     rootId: ROOT_ID,
-    operatorPath: "/home/operator/.local/share/Maka/runtime-host-services/operator",
+    operator: {
+      kind: "legacy_posix_executable" as const,
+      executablePath: "/home/operator/.local/share/Maka/runtime-host-services/operator",
+    },
   };
   await catalog.create(existing);
   const enabled: string[] = [];
@@ -315,20 +325,63 @@ test("reuses the existing WSL profile when the same managed Host is added again"
   };
 
   const result = await service.addManagedEnvironmentAndEnable({
-    profile: { ...existing, id: "replacement", name: "Replacement" },
+    profile: { ...existing, id: "replacement", name: "Replacement", operator: OPERATOR },
     managedService,
   });
 
+  const upgraded = { ...existing, operator: OPERATOR };
   assert.equal(result.profileId, existing.id);
-  assert.deepEqual((await catalog.read()).profiles, [existing]);
+  assert.deepEqual((await catalog.read()).profiles, [upgraded]);
   assert.deepEqual(enabled, [existing.id]);
   assert.deepEqual(
     findDesktopRuntimeHostManagedServiceBinding(
       await managedServices.read(),
-      existing,
+      upgraded,
     ),
-    { profile: existing, ...managedService, state: "active" },
+    { profile: upgraded, ...managedService, state: "active" },
   );
+});
+
+test("rolls back a new WSL profile when its managed binding cannot be saved", async () => {
+  const root = await clientRoot();
+  const catalog = createClientRuntimeHostProfileCatalog(root);
+  const service = createDesktopRuntimeHostProfileService({
+    clientDataRoot: root,
+    startup: await resolveDesktopRuntimeHostStartup(root, { catalog }),
+    catalog,
+    managedServices: {
+      async save() {
+        throw new Error("binding rejected");
+      },
+    } as unknown as DesktopRuntimeHostManagedServiceStore,
+    states: () => [connectingLocal()],
+    enable: async () => assert.fail("an unbound profile must not be enabled"),
+    disable: async () => undefined,
+    setDefault: () => undefined,
+    finalizePairing: async () => undefined,
+  });
+
+  await assert.rejects(
+    service.addManagedEnvironmentAndEnable({
+      profile: {
+        id: "ubuntu",
+        name: "Ubuntu",
+        kind: "environment",
+        provider: { kind: "wsl", distribution: "Ubuntu-24.04" },
+        rootId: ROOT_ID,
+        operator: OPERATOR,
+      },
+      managedService: {
+        deployment: {
+          id: ROOT_ID,
+          rootPath: "/home/operator/.config/Maka/workspaces/default",
+          deploymentId: "11111111-1111-4111-8111-111111111111",
+        },
+      },
+    }),
+    /binding rejected/u,
+  );
+  assert.deepEqual((await catalog.read()).profiles, []);
 });
 
 test("reconnects an enabled remote Host with interactive SSH", async () => {
@@ -1464,6 +1517,52 @@ test("keeps existing Hosts available while corrupt pairing recovery awaits resol
   );
   assert.equal((await service.resolvePairingRecovery()).pairingRecoveryBlocked, undefined);
   assert.equal((await service.setEnabled(PROFILE.id, false)).entries[1]?.enabled, false);
+});
+
+test("migrates an interrupted SSH pairing from the released operator path", async () => {
+  const root = await clientRoot();
+  const credentialStore = createClientRuntimeHostCredentialStore(root);
+  await credentialStore.setSecret(
+    "runtime-host-pairing-recovery",
+    "runtime_host_access",
+    JSON.stringify({
+      schemaVersion: 1,
+      intents: [
+        {
+          target: {
+            profile: {
+              ...MANAGED_PROFILE,
+              transport: {
+                kind: "ssh",
+                destination: "operator@example.com",
+                activation: {
+                  kind: "ssh_operator",
+                  operatorPath: "/home/operator/.local/share/maka/operator",
+                },
+              },
+            },
+            credential: "new-token",
+          },
+          wasEnabled: true,
+        },
+      ],
+    }),
+  );
+
+  const startup = await resolveDesktopRuntimeHostStartup(root, { credentialStore });
+
+  assert.equal(startup.pairingReadFailure, undefined);
+  assert.deepEqual(startup.pairingIntents[0]?.target.profile.transport, {
+    kind: "ssh",
+    destination: "operator@example.com",
+    activation: {
+      kind: "ssh_operator",
+      operator: {
+        kind: "legacy_posix_executable",
+        executablePath: "/home/operator/.local/share/maka/operator",
+      },
+    },
+  });
 });
 
 test("retries pairing recovery before discarding it", async () => {

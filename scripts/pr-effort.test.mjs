@@ -48,6 +48,8 @@ describe('tier boundaries', () => {
     assert.equal(tier([file('a.ts', 501)]), 'effort/L');
     assert.equal(tier([file('a.ts', 1000)]), 'effort/L');
     assert.equal(tier([file('a.ts', 1001)]), 'effort/XL');
+    assert.equal(tier([file('a.ts', 2500)]), 'effort/XL');
+    assert.equal(tier([file('a.ts', 2501)]), 'effort/XXL');
   });
 
   it('counts additions and deletions together', () => {

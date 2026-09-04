@@ -203,6 +203,7 @@ async function buildHostAiSdkBackend(
     });
   const resolveHistoryCompactModel = () =>
     getAIModel({
+      sessionId: input.context.sessionId,
       connection: target.connection,
       apiKey,
       modelId: target.model,
@@ -392,7 +393,7 @@ async function buildHostAiSdkBackend(
           : {}),
         ...(!input.context.tools && input.childAgents ? input.childAgents : {}),
         providerOptions,
-        contextBudget: buildDefaultContextBudgetPolicy(target.connection, {
+        contextBudget: buildDefaultContextBudgetPolicy({
           name: 'runtime-host-default-history-budget',
           modelId: target.model,
         }),

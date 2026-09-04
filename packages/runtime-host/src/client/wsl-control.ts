@@ -90,17 +90,6 @@ export function normalizeRuntimeHostWslDistribution(value: string): string {
   return distribution;
 }
 
-export function normalizeRuntimeHostWslOperatorPath(value: string): string {
-  if (
-    !value.startsWith('/') ||
-    Buffer.byteLength(value, 'utf8') > 4_096 ||
-    /[\u0000-\u001f\u007f]/u.test(value)
-  ) {
-    throw new Error('WSL operator path must be an absolute Linux path');
-  }
-  return value;
-}
-
 export function spawnRuntimeHostWslProcess(executable: string, args: readonly string[]) {
   return spawn(executable, args, {
     shell: false,

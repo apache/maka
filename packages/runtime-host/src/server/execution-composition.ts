@@ -27,6 +27,10 @@ import { generalizedErrorMessage } from '@maka/core/redaction';
 import { emptyPlanSessionState } from '@maka/core/plan';
 import type { PermissionMode } from '@maka/core/permission';
 import {
+  runtimeInvocationOutcome,
+  type RuntimeInvocationRecord,
+} from '@maka/core/runtime-invocation';
+import {
   isDeepResearchSession,
   type SessionHeader,
   WORKHUB_COORDINATION_SESSION_ID,
@@ -701,10 +705,18 @@ export async function createExecutionRuntimeHostComposition(
           stores.runtimeEventStore.readSessionRuntimeEventEntries(sessionId),
       },
       historyCompaction: {
-        readLatestCheckpoint: (sessionId) =>
-          loadLatestHistoryCompactCheckpointFromRunLedger(stores.agentRunStore, sessionId),
-        readCheckpoints: (sessionId) =>
-          loadHistoryCompactCheckpointsFromRunLedger(stores.agentRunStore, sessionId),
+        readLatestCheckpoint: async (sessionId) =>
+          loadLatestHistoryCompactCheckpointFromRunLedger(
+            stores.agentRunStore,
+            sessionId,
+            await sessionRunIds(stores.runtimeEventStore, sessionId),
+          ),
+        readCheckpoints: async (sessionId) =>
+          loadHistoryCompactCheckpointsFromRunLedger(
+            stores.agentRunStore,
+            sessionId,
+            await sessionRunIds(stores.runtimeEventStore, sessionId),
+          ),
       },
       model: createHostMemoryExtractionModel({
         runtimePolicy: runtimePolicyStores,
@@ -951,7 +963,6 @@ export async function createExecutionRuntimeHostComposition(
         requestDrain: context.requestDrain,
       }),
       readModel: new RuntimeReadModel({
-        runStore: stores.agentRunStore,
         runtimeEventStore: stores.runtimeEventStore,
         projectionCache: stores.sessionStore,
         canonicalPermissionOutcomes,
@@ -1016,7 +1027,7 @@ export async function createExecutionRuntimeHostComposition(
             graph.hasLiveSessionState(sessionId),
             hasLiveLinkedDescendantState(
               requireSessionManager(manager),
-              stores.agentRunStore,
+              stores.runtimeEventStore,
               sessionId,
               async (descendantSessionId) =>
                 (await runtimeResources!.hasLiveSessionResources(descendantSessionId)) ||
@@ -1071,7 +1082,6 @@ export async function createExecutionRuntimeHostComposition(
     });
     graphCoordinator = new AgentGraphCoordinator({
       sessionStore: stores.sessionStore,
-      runStore: stores.agentRunStore,
       runtimeEventStore: stores.runtimeEventStore,
       controlStore: openedGraphControlStore,
       epochStore: openedGraphControlStore,
@@ -1263,15 +1273,24 @@ export async function createExecutionRuntimeHostComposition(
       startTurn: (sessionId, input, _activity, abortSignal, isCurrent) =>
         graphExecutions.run(sessionId, input, abortSignal, isCurrent),
       inspectAttempt: async (rootSessionId, attemptId, turnId) => {
-        const runs = (await stores.agentRunStore.listSessionRuns(rootSessionId)).filter(
-          (run) => run.agentGraphWakeAttemptId === attemptId && run.turnId === turnId,
+        const runs = (await stores.runtimeEventStore.listSessionInvocations(rootSessionId)).filter(
+          (run) => {
+            const root = run.opening.root;
+            return (
+              root.kind === 'agent_graph_supervisor_wake' &&
+              root.attemptId === attemptId &&
+              run.turnId === turnId
+            );
+          },
         );
         if (runs.length > 1) {
           throw new Error(
             `Agent graph supervisor wake attempt ${attemptId} has multiple AgentRuns`,
           );
         }
-        return runs[0]?.status ?? 'missing';
+        const attempt = runs[0];
+        if (!attempt) return 'missing';
+        return runtimeInvocationOutcome(attempt) ?? 'running';
       },
       recoverContextOverflow: (rootSessionId, { abortSignal }) =>
         graphExecutions.recoverContextOverflow(rootSessionId, randomUUID(), abortSignal),
@@ -2236,11 +2255,23 @@ function requireGoal(coordinator: HostGoalCoordinator | undefined): HostGoalCoor
   return coordinator;
 }
 
+/** Every run this Session has opened, named by the event spine that defines it. */
+async function sessionRunIds(
+  runtimeEventStore: SessionInvocationLister,
+  sessionId: string,
+): Promise<string[]> {
+  return (await runtimeEventStore.listSessionInvocations(sessionId)).map(
+    (invocation) => invocation.runId,
+  );
+}
+
+interface SessionInvocationLister {
+  listSessionInvocations(sessionId: string): Promise<readonly RuntimeInvocationRecord[]>;
+}
+
 async function hasLiveLinkedDescendantState(
   manager: SessionManager,
-  runStore: {
-    listSessionRuns(sessionId: string): Promise<readonly { status: string }[]>;
-  },
+  runtimeEventStore: SessionInvocationLister,
   rootSessionId: string,
   hasLiveSessionState: (sessionId: string) => Promise<boolean>,
 ): Promise<boolean> {
@@ -2254,20 +2285,12 @@ async function hasLiveLinkedDescendantState(
       seen.add(child.id);
       pending.push(child.id);
       const [runs, liveState] = await Promise.all([
-        runStore.listSessionRuns(child.id),
+        runtimeEventStore.listSessionInvocations(child.id),
         hasLiveSessionState(child.id),
       ]);
       if (liveState) return true;
-      if (
-        runs.some(
-          (run) =>
-            run.status === 'created' ||
-            run.status === 'running' ||
-            run.status === 'waiting_for_user',
-        )
-      ) {
-        return true;
-      }
+      // A run whose events never closed it is still live.
+      if (runs.some((run) => runtimeInvocationOutcome(run) === undefined)) return true;
     }
   }
   return false;

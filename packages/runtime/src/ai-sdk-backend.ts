@@ -61,6 +61,7 @@ import type {
 import type {
   StoredMessage,
   AssistantMessage,
+  AssistantStepContentKind,
   AssistantThinkingPart,
   ToolCallMessage,
   ToolResultMessage,
@@ -164,6 +165,7 @@ import {
 import { buildProviderOptions } from './model-factory.js';
 import { persistedOpenAiResponsesStepMessages } from './openai-responses-continuation.js';
 import type { OpenAiResponsesTransportState } from './openai-responses-websocket.js';
+import { nonCanonicalContentOrder } from './runtime-event-read-model.js';
 import {
   composeRequestProjection,
   type DispatchRequestShape,
@@ -266,10 +268,7 @@ import {
   shouldAppendContextCompactionFailedOpenNote,
   type ContextBudgetPolicy,
 } from './context-budget.js';
-import {
-  evaluateHistoryCompactCheckpointReplay,
-  isHistoryCompactContentEvent,
-} from './history-compaction.js';
+import { isHistoryCompactContentEvent } from './history-compaction.js';
 import {
   canContinueHistoryCompactCheckpointForModel,
   historyCompactCheckpointToModelMessage,
@@ -893,6 +892,11 @@ const MAX_WAITING_CODE_MODE_CELLS = 1;
 const MAX_PROVIDER_ATTEMPTS_PER_STEP = 10;
 const MAX_IDLE_WATCHDOG_RETRIES_PER_STEP = 1;
 const MAX_INCOMPLETE_STREAM_RETRIES_PER_STEP = 1;
+// A mid-stream cut after partial thinking seals one transcript fragment per
+// retry. A gateway that systematically kills long thinking streams (the
+// 2026-08-28 incident shape) would otherwise spend the full attempt budget
+// accumulating fragments before failing anyway, so fail fast after one.
+const MAX_SEALED_THINKING_RETRIES_PER_STEP = 1;
 const PROVIDER_RETRY_BASE_DELAY_MS = 1_000;
 const PROVIDER_RETRY_MAX_DELAY_MS = 32_000;
 const PROVIDER_RETRY_JITTER_FACTOR = 0.25;
@@ -1075,6 +1079,15 @@ export class AiSdkBackend implements AgentBackend {
    */
   private readonly activeTurns = new Set<TurnScope>();
   private readonly compaction: AiSdkCompaction;
+  /**
+   * The provider has been reported dropping context, for this backend.
+   *
+   * Not per send: the condition persists once a provider starts truncating, so
+   * a note on every later turn would repeat one fact the user has already been
+   * told. The scope is this backend's lifetime rather than the Session's, so a
+   * backend that is disposed and rebuilt may say it once more.
+   */
+  private contextProviderDroppingReported = false;
   /** Session-scoped running total, deliberately accumulated across turns. */
   private cumulativeUsageCheckpoint: NormalizedAiSdkUsage | undefined;
   private readonly memoryReplayMessageEvents = new WeakMap<ModelMessage, readonly string[]>();
@@ -1456,8 +1469,12 @@ export class AiSdkBackend implements AgentBackend {
     let stepTextPartStartOffset = 0;
     let stepThinkingParts: AssistantThinkingPart[] = [];
     let stepThinkingPartsById = new Map<string, AssistantThinkingPart>();
+    let stepContentOrder: AssistantStepContentKind[] = [];
     const startedAt = this.now();
 
+    const recordStepContent = (kind: AssistantStepContentKind): void => {
+      if (!stepContentOrder.includes(kind)) stepContentOrder.push(kind);
+    };
     // Flush the current step's AssistantMessage (text + thinking) and the paired
     // terminal thinking/text events, then clear the per-step accumulators.
     // Persist when the step produced text OR reasoning — a thinking-only step
@@ -1467,11 +1484,23 @@ export class AiSdkBackend implements AgentBackend {
     // precedes text_complete so the read-model attaches this step's reasoning to
     // this step's assistant row. Hoisted to send() scope so both the streaming
     // path and the abort/error handler can flush a partial step.
+    const resetStep = (): void => {
+      stepText = '';
+      stepTextProviderOptions = undefined;
+      stepTextPartStartOffset = 0;
+      stepThinkingParts = [];
+      stepThinkingPartsById = new Map();
+      stepContentOrder = [];
+    };
     const flushStep = async (): Promise<void> => {
       const hasThinking = stepThinkingParts.length > 0;
-      if (stepText.length === 0 && !hasThinking) return;
+      if (stepText.length === 0 && !hasThinking) {
+        resetStep();
+        return;
+      }
       const stepId = currentStepMessageId;
       const thinkingText = stepThinkingParts.map((part) => part.text).join('');
+      const contentOrder = nonCanonicalContentOrder(stepContentOrder);
       const msg: AssistantMessage = {
         type: 'assistant',
         id: stepId,
@@ -1481,6 +1510,7 @@ export class AiSdkBackend implements AgentBackend {
         ...(stepTextProviderOptions !== undefined
           ? { providerOptions: stepTextProviderOptions }
           : {}),
+        ...(contentOrder ? { contentOrder } : {}),
         modelId: this.input.modelId,
         ...(hasThinking
           ? {
@@ -1533,11 +1563,7 @@ export class AiSdkBackend implements AgentBackend {
           : {}),
       } satisfies TextCompleteEvent);
       scope.finalAssistantText = stepText.length > 0 ? stepText : undefined;
-      stepText = '';
-      stepTextProviderOptions = undefined;
-      stepTextPartStartOffset = 0;
-      stepThinkingParts = [];
-      stepThinkingPartsById = new Map();
+      resetStep();
     };
     let tokenUsage: NormalizedAiSdkUsage | undefined;
     let tokenUsageCostUsd: number | undefined;
@@ -1556,6 +1582,11 @@ export class AiSdkBackend implements AgentBackend {
     // result.usage.inputTokens is cumulative across steps and would produce
     // misleading >100% percentages, so the per-step value is captured here.
     let lastStepInputTokens: number | undefined;
+    /** Tool count of the request that produced `lastStepInputTokens`. */
+    let lastStepActiveToolCount: number | undefined;
+    // Output tokens of the same step: with the input they are the baseline the
+    // next request is judged from (everything the model produced is re-sent).
+    let lastStepOutputTokens: number | undefined;
     let streamStatus: LlmCallRecord['status'] = 'success';
     let streamErrorClass: string | undefined;
     let runtimeSteps = 0;
@@ -1563,6 +1594,14 @@ export class AiSdkBackend implements AgentBackend {
     let contextBudgetForTelemetry: ContextBudgetDiagnostic | undefined;
     let contextCompactedNoteWritten = false;
     let contextCompactionFailedOpenNoteWritten = false;
+    let contextWindowOverrunNoteWritten = false;
+    let contextReportedWindowNoteWritten = false;
+    let contextOverflowAfterCompactionNoteWritten = false;
+    let contextWindowSuggestionNoteWritten = false;
+    // Request index (0-based) at which the active prune last rewrote the
+    // request. A step Maka pruned is not append-only, so usage may legitimately
+    // shrink.
+    let pruneAppliedAtStep: number | undefined;
     const trace = new RunTrace({
       sessionId: this.sessionId,
       turnId,
@@ -1904,7 +1943,7 @@ export class AiSdkBackend implements AgentBackend {
             projectionCheckpoint,
             compatibleProviderReasoningReplayEventIds(
               replayEvents,
-              input.runtimeContextRunHeaders,
+              input.runtimeContextInvocations,
               this.input.providerStateIdentity,
               this.input.modelId,
               scope.runId,
@@ -1958,6 +1997,7 @@ export class AiSdkBackend implements AgentBackend {
           turnId,
           activeToolResultPruneIncludesNewestStep,
           (patch) => {
+            pruneAppliedAtStep = runtimeSteps;
             activeToolResultPruneDiagnosticPatch = mergeActiveToolResultPruneDiagnosticPatches(
               activeToolResultPruneDiagnosticPatch,
               patch,
@@ -1969,25 +2009,16 @@ export class AiSdkBackend implements AgentBackend {
           midTurnCapacityHook,
           activeToolResultPruneHook,
         );
-        // The verdict owner wraps the WHOLE shaping pipeline: hooks shape, one
-        // owner measures the final payload and decides pass/terminate.
-        const requestProjection =
-          midTurnState && midTurnCapacityHook && shapedProjection
-            ? this.compaction.buildMidTurnFinalRequestRescue({
-                shaped: shapedProjection,
-                reentry: composeRequestProjection(
-                  undefined,
-                  midTurnCapacityHook,
-                  activeToolResultPruneHook,
-                )!,
-                state: midTurnState,
-                providerTools,
-                charsPerToken: this.input.contextBudget?.charsPerToken ?? 4,
-              })
-            : shapedProjection;
+        // Hooks shape; nothing measures the final payload. Whether it fits is
+        // the provider's answer (#4559).
+        const requestProjection = shapedProjection;
 
         const completedProviderSteps: RequestProjectionContext['completedSteps'][number][] = [];
         let requestMessages: ModelMessage[] = messages;
+        // The compaction module runs at most once per send. This tracks the
+        // reactive entry; the proactive one sets the same flag on the mid-turn
+        // state, and each consults the other, so a send that already folded
+        // reports the oversized message instead of folding again (#4559).
         let overflowRetryUsed = false;
         let result: ModelStreamResult;
         let providerOutcome: ModelStepOutcome;
@@ -2054,6 +2085,7 @@ export class AiSdkBackend implements AgentBackend {
           let providerAttempt = 1;
           let idleWatchdogRetryCount = 0;
           let incompleteStreamRetryCount = 0;
+          let sealedThinkingRetryCount = 0;
           const returnedToolCalls: ToolCallPart[] = [];
           let providerToolActivityCount = 0;
           const providerToolInputs = new Map<string, unknown>();
@@ -2076,7 +2108,13 @@ export class AiSdkBackend implements AgentBackend {
               !attemptSawToolActivity &&
               !attemptSawContinuationMetadata &&
               !attemptReachedStepBoundary;
-            const attemptCanRecoverFromIdleTimeout = () =>
+            // Thinking is the only output that can be sealed into its own
+            // message before a retry: flushStep() closes the fragment under
+            // the current message id and the retry streams into a fresh one,
+            // so the user never sees spliced or duplicated content. Text,
+            // tool activity, continuation metadata, and step boundaries stay
+            // non-recoverable for the reasons each of them is tracked.
+            const attemptCanRecoverWithSealedThinking = () =>
               !attemptSawText &&
               !attemptSawToolActivity &&
               !attemptSawContinuationMetadata &&
@@ -2166,9 +2204,170 @@ export class AiSdkBackend implements AgentBackend {
                   const stepUsage = event.usage;
                   providerStepUsage = stepUsage;
                   if (!stepUsage) sawUnusableStepUsage = true;
+                  // Silent eviction / rewrite check (#4559): this step only
+                  // appended (no fold, no prune, no image omission) yet the
+                  // provider counted no more input tokens than for the previous
+                  // request. Not-greater, not strictly-fewer: a provider that
+                  // truncates to a fixed window (Ollama's `num_ctx`) reports the
+                  // same total on every later request while Maka keeps
+                  // appending, so a plateau is the signal, and an equal count
+                  // after an append is already impossible without provider-side
+                  // eviction or rewriting. Input against input: the previous
+                  // reply's reasoning may not be resent, so input + output is
+                  // not the floor of the next input on every wire.
+                  const completedRequestIndex = runtimeSteps - 1;
+                  // A finalization step resolves an empty tool set, so its
+                  // request legitimately drops several thousand schema tokens
+                  // with no fold, prune or image omission. Maka shaped that
+                  // request; the provider did not drop anything.
+                  const toolSchemaShrank =
+                    lastStepActiveToolCount !== undefined &&
+                    activeToolsForRequest.length < lastStepActiveToolCount;
+                  // Across the send boundary the comparison is the same one,
+                  // against the last request a provider accepted before this
+                  // send. A provider that truncates to a fixed window reports
+                  // the same input on every later request while the user keeps
+                  // adding turns, and a send of one or two steps never sees
+                  // that from the inside: the live evidence plateaus at 3,716
+                  // input tokens across eight turns with nothing reported
+                  // (#4623). The first request of a send therefore compares
+                  // against the persisted anchor, which is route-validated
+                  // where it is read; a fold before that request would explain
+                  // a smaller input by itself, so it disables the comparison.
+                  const acrossSends = completedRequestIndex === 0;
+                  const priorInput = acrossSends
+                    ? midTurnState?.compactionAppliedThisSend === true
+                      ? undefined
+                      : midTurnState?.priorAcceptedInputTokens
+                    : lastStepInputTokens;
+                  if (
+                    !this.contextProviderDroppingReported &&
+                    !toolSchemaShrank &&
+                    midTurnState &&
+                    priorInput !== undefined &&
+                    midTurnState.replacedStepNumber !== completedRequestIndex &&
+                    pruneAppliedAtStep !== completedRequestIndex &&
+                    midTurnState.omittedImageToolResults.size === 0 &&
+                    stepUsage !== undefined &&
+                    Number.isFinite(stepUsage.inputTokens) &&
+                    stepUsage.inputTokens > 0 &&
+                    // Across sends the test is equality, not "did not grow".
+                    // Inside a send Maka knows it only appended, so any
+                    // shortfall is the provider's. Across the boundary it does
+                    // not: a manual compaction leaves the pre-compaction anchor
+                    // behind, a turn can carry a smaller tool set, and a user
+                    // can edit or branch history. All three shrink the input
+                    // legitimately, and none of them lands on exactly the same
+                    // count. A provider truncating to a fixed window does, on
+                    // every later request.
+                    (acrossSends
+                      ? stepUsage.inputTokens === priorInput
+                      : stepUsage.inputTokens <= priorInput)
+                  ) {
+                    this.contextProviderDroppingReported = true;
+                    const note: SystemNoteMessage = {
+                      type: 'system_note',
+                      id: this.newId(),
+                      turnId,
+                      ts: this.now(),
+                      kind: 'context_provider_dropping',
+                      data: { inputTokens: stepUsage.inputTokens, priorInputTokens: priorInput },
+                    };
+                    await this.input.appendMessage(note).catch(() => {});
+                  }
                   // Fail closed: reset on every step boundary so a missing final
                   // step's usage does not leave a stale value from an earlier step.
+                  // The reply needed more room than the declared window had
+                  // left after this request's own input. Both halves are the
+                  // provider's numbers, read after the fact: the reserve that
+                  // should have kept them apart was measured from a smaller
+                  // previous reply. Say so once per send; the next request
+                  // folds anyway because the baseline now exceeds the window.
+                  if (
+                    !contextWindowOverrunNoteWritten &&
+                    midTurnState?.capacity !== undefined &&
+                    stepUsage !== undefined &&
+                    Number.isFinite(stepUsage.inputTokens) &&
+                    stepUsage.inputTokens > 0 &&
+                    Number.isFinite(stepUsage.outputTokens) &&
+                    stepUsage.outputTokens > 0 &&
+                    stepUsage.inputTokens + stepUsage.outputTokens > midTurnState.capacity
+                  ) {
+                    contextWindowOverrunNoteWritten = true;
+                    const note: SystemNoteMessage = {
+                      type: 'system_note',
+                      id: this.newId(),
+                      turnId,
+                      ts: this.now(),
+                      kind: 'context_window_overrun',
+                      data: {
+                        usedTokens: stepUsage.inputTokens + stepUsage.outputTokens,
+                        declaredContextWindow: midTurnState.capacity,
+                      },
+                    };
+                    await this.input.appendMessage(note).catch(() => {});
+                  }
+                  // Nothing declared, and the provider accepted a request past
+                  // the window this model reports. Every other signal in this
+                  // design stays dark there: no rejection to recover from, no
+                  // plateau to read, and no declaration to arm the proactive
+                  // threshold, so the session degrades quietly and
+                  // indefinitely (#4634). Report the two real numbers and
+                  // leave the decision with the user: a reported window is a
+                  // hint, and Maka still declares nothing on their behalf.
+                  //
+                  // Once per crossing, not once per send. On these providers
+                  // usage keeps growing past the line (305K → 322K observed),
+                  // so the note fires on the transition: the previous accepted
+                  // total was still inside the reported window and this one is
+                  // not. The baseline carries that previous total across
+                  // sessions through the persisted anchor, so a resumed
+                  // session does not repeat a crossing it already reported.
+                  if (
+                    !contextReportedWindowNoteWritten &&
+                    midTurnState !== undefined &&
+                    midTurnState.capacity === undefined &&
+                    stepUsage !== undefined &&
+                    Number.isFinite(stepUsage.inputTokens) &&
+                    stepUsage.inputTokens > 0 &&
+                    Number.isFinite(stepUsage.outputTokens)
+                  ) {
+                    const reported = resolveSelectedModelContextWindow(
+                      this.input.connection,
+                      this.input.modelId,
+                    );
+                    const used = stepUsage.inputTokens + Math.max(0, stepUsage.outputTokens);
+                    // `baselineTokens` still describes the request before this
+                    // one: the capacity hook sets it from the previous step, or
+                    // from the persisted anchor on a send's first request.
+                    const previousTotal = midTurnState.baselineTokens;
+                    const crossedNow =
+                      reported !== undefined &&
+                      used > reported &&
+                      (previousTotal === undefined || previousTotal <= reported);
+                    if (reported !== undefined && crossedNow) {
+                      contextReportedWindowNoteWritten = true;
+                      const note: SystemNoteMessage = {
+                        type: 'system_note',
+                        id: this.newId(),
+                        turnId,
+                        ts: this.now(),
+                        kind: 'context_reported_window_exceeded',
+                        data: { usedTokens: used, reportedContextWindow: reported },
+                      };
+                      await this.input.appendMessage(note).catch(() => {});
+                    }
+                  }
                   lastStepInputTokens = stepUsage?.inputTokens;
+                  lastStepOutputTokens = stepUsage?.outputTokens;
+                  lastStepActiveToolCount = activeToolsForRequest.length;
+                  // A `finishReason: length` is deliberately not a trigger. The
+                  // reply may have been cut because the provider ran out of
+                  // window room, or because the provider's own output cap is
+                  // lower than the one Maka sends. Those are indistinguishable
+                  // from outside, and an indistinguishable signal must not
+                  // drive an action; the cut reply is visible to the user
+                  // either way (#4559).
                   if (stepUsage) {
                     completedStepUsage = mergeNormalizedUsage(completedStepUsage, stepUsage);
                     this.cumulativeUsageCheckpoint = mergeNormalizedUsage(
@@ -2183,8 +2382,13 @@ export class AiSdkBackend implements AgentBackend {
                 }
               }
               if (event.kind === 'text-start') {
+                if (stepText.length > 0 && event.providerItemBoundary === true) {
+                  await flushStep();
+                  currentStepMessageId = this.newId();
+                }
                 stepTextPartStartOffset = stepText.length;
               } else if (event.kind === 'text') {
+                if (event.text.length > 0) recordStepContent('text');
                 stepText += event.text;
                 if (event.text.length > 0) attemptSawText = true;
                 queue.push({
@@ -2195,15 +2399,21 @@ export class AiSdkBackend implements AgentBackend {
                   messageId: currentStepMessageId,
                   text: event.text,
                 } satisfies TextDeltaEvent);
-              } else if (event.kind === 'text-metadata') {
-                attemptSawContinuationMetadata = true;
-                stepTextProviderOptions = mergeTextProviderOptions(
-                  stepTextProviderOptions,
-                  stripUndefinedDeep(event.providerOptions) as NonNullable<
-                    ModelMessage['providerOptions']
-                  >,
-                  stepTextPartStartOffset,
-                );
+              } else if (event.kind === 'text-end') {
+                if (event.providerOptions !== undefined) {
+                  attemptSawContinuationMetadata = true;
+                  stepTextProviderOptions = mergeTextProviderOptions(
+                    stepTextProviderOptions,
+                    stripUndefinedDeep(event.providerOptions) as NonNullable<
+                      ModelMessage['providerOptions']
+                    >,
+                    stepTextPartStartOffset,
+                  );
+                }
+                if (event.providerItemBoundary === true) {
+                  await flushStep();
+                  currentStepMessageId = this.newId();
+                }
               } else if (event.kind === 'thinking-start') {
                 if (event.providerOptions !== undefined) {
                   attemptSawContinuationMetadata = true;
@@ -2219,6 +2429,7 @@ export class AiSdkBackend implements AgentBackend {
                   stepThinkingPartsById.set(event.reasoningPartId, part);
                 }
               } else if (event.kind === 'thinking') {
+                if (event.text.length > 0) recordStepContent('thinking');
                 if (event.text.length > 0) attemptSawThinking = true;
                 if (event.providerOptions !== undefined) {
                   if (event.providerOptionsOrigin !== 'maka_transport') {
@@ -2304,6 +2515,7 @@ export class AiSdkBackend implements AgentBackend {
                 attemptSawToolActivity = true;
               } else if (event.kind === 'tool-call') {
                 attemptSawToolActivity = true;
+                recordStepContent('tools');
                 if (event.toolCall.providerExecuted) {
                   providerToolActivityCount += 1;
                   providerToolInputs.set(event.toolCall.toolCallId, event.toolCall.input);
@@ -2404,14 +2616,13 @@ export class AiSdkBackend implements AgentBackend {
                 stepBudgetRemains && attemptHasNoObservableOutput()
                   ? await this.compaction.recoverFromOverflowError({
                       error: attemptFailure,
-                      retryAlreadyUsed: overflowRetryUsed,
+                      retryAlreadyUsed:
+                        overflowRetryUsed || (midTurnState?.compactionAttemptedThisSend ?? false),
                       midTurnState,
                       turnId,
                       stepNumber: runtimeSteps,
                       currentMessages: attemptMessages,
-                      providerTools,
                       activeTools: activeToolsForRequest,
-                      systemPromptChars: requestSystemPrompt?.length ?? 0,
                       queue,
                       onDiagnosticPatch: onMidTurnDiagnosticPatch,
                       origin: scope,
@@ -2445,36 +2656,107 @@ export class AiSdkBackend implements AgentBackend {
                 attemptMessages = recoveredProjection?.messages ?? recovered.messages;
                 continue;
               }
+              // Window suggestion (#4559): the provider rejected a request and
+              // no recovery is left — the one fold is spent, or there was no
+              // seam. The baseline is a proven-fit total (input + output of an
+              // accepted request), so it is a number the user can declare; the
+              // trigger is `>=`, so declaring exactly it folds before this
+              // point next time. Once per send, and only when the turn is
+              // about to surface the error rather than continue.
+              const acceptedTotal = midTurnState?.lastAcceptedTotalTokens;
+              if (
+                !contextWindowSuggestionNoteWritten &&
+                failure.kind === 'context_overflow' &&
+                midTurnState &&
+                acceptedTotal !== undefined &&
+                (midTurnState.capacity === undefined || acceptedTotal < midTurnState.capacity)
+              ) {
+                contextWindowSuggestionNoteWritten = true;
+                const note: SystemNoteMessage = {
+                  type: 'system_note',
+                  id: this.newId(),
+                  turnId,
+                  ts: this.now(),
+                  kind: 'context_window_suggestion',
+                  data: {
+                    suggestedContextWindow: acceptedTotal,
+                    ...(midTurnState.capacity !== undefined
+                      ? { declaredContextWindow: midTurnState.capacity }
+                      : {}),
+                  },
+                };
+                await this.input.appendMessage(note).catch(() => {});
+              }
+              // A folded projection was selected in this send and the provider
+              // still rejects the request. That is worth saying, because the
+              // usual remedy has already been applied; it is NOT proof that the
+              // new message alone is the cause, since what remains also carries
+              // the system prompt, the tool schemas, the summary and the recent
+              // tail. A fold that failed open is deliberately excluded: that
+              // request went out with its full raw history, so nothing about
+              // its size can be concluded (#4559).
+              if (
+                !contextOverflowAfterCompactionNoteWritten &&
+                failure.kind === 'context_overflow' &&
+                midTurnState?.compactionAppliedThisSend === true
+              ) {
+                contextOverflowAfterCompactionNoteWritten = true;
+                const note: SystemNoteMessage = {
+                  type: 'system_note',
+                  id: this.newId(),
+                  turnId,
+                  ts: this.now(),
+                  kind: 'context_overflow_after_compaction',
+                };
+                await this.input.appendMessage(note).catch(() => {});
+              }
               const idleWatchdogRecovery =
                 settledWatchdogTimeout?.phase === 'idle' &&
                 idleWatchdogRetryCount < MAX_IDLE_WATCHDOG_RETRIES_PER_STEP &&
-                attemptCanRecoverFromIdleTimeout();
+                attemptCanRecoverWithSealedThinking();
               const incompleteStreamRecovery =
                 incompleteStreamTerminal &&
                 incompleteStreamRetryCount < MAX_INCOMPLETE_STREAM_RETRIES_PER_STEP &&
                 incompleteStreamHasNoObservableOutput;
+              // Same seal-and-retry contract as the watchdog path, entered when
+              // the failure arrives as a retryable provider/network error
+              // instead of a local idle timeout. `!idleWatchdogRecovery` keeps
+              // every watchdog-shaped outcome on its existing path, and
+              // `!attemptHasNoObservableOutput()` keeps no-output retries on
+              // the plain budget so this one is spent only on sealed fragments.
+              const sealedThinkingRecovery =
+                !idleWatchdogRecovery &&
+                failure.retryable &&
+                sealedThinkingRetryCount < MAX_SEALED_THINKING_RETRIES_PER_STEP &&
+                attemptCanRecoverWithSealedThinking() &&
+                !attemptHasNoObservableOutput();
               if (
                 (failure.retryable || idleWatchdogRecovery || incompleteStreamRecovery) &&
                 failure.kind !== 'context_overflow' &&
                 providerAttempt < MAX_PROVIDER_ATTEMPTS_PER_STEP &&
                 stepBudgetRemains &&
-                (attemptHasNoObservableOutput() || idleWatchdogRecovery || incompleteStreamRecovery)
+                (attemptHasNoObservableOutput() ||
+                  idleWatchdogRecovery ||
+                  incompleteStreamRecovery ||
+                  sealedThinkingRecovery)
               ) {
-                if (idleWatchdogRecovery) {
-                  idleWatchdogRetryCount += 1;
-                  if (stepThinkingParts.length > 0) {
-                    await flushStep();
-                    currentStepMessageId = this.newId();
-                  }
-                }
+                if (idleWatchdogRecovery) idleWatchdogRetryCount += 1;
+                if (sealedThinkingRecovery) sealedThinkingRetryCount += 1;
                 if (incompleteStreamRecovery) incompleteStreamRetryCount += 1;
+                if (
+                  (idleWatchdogRecovery || sealedThinkingRecovery) &&
+                  stepThinkingParts.length > 0
+                ) {
+                  await flushStep();
+                  currentStepMessageId = this.newId();
+                }
                 // The failed request did not return authoritative usage. Keep
                 // effectiveness recoverable, but fail final metering closed.
                 sawUnusableStepUsage = true;
                 const delayMs = providerRetryDelayMs(providerAttempt, failure.retryAfterMs);
                 const nextAttempt = providerAttempt + 1;
                 const maxAttempts =
-                  idleWatchdogRecovery || incompleteStreamRecovery
+                  idleWatchdogRecovery || incompleteStreamRecovery || sealedThinkingRecovery
                     ? nextAttempt
                     : MAX_PROVIDER_ATTEMPTS_PER_STEP;
                 const reason = providerRetryReason(failure.kind);
@@ -2740,13 +3022,17 @@ export class AiSdkBackend implements AgentBackend {
               }
               return undefined;
             })();
-            // The anchor the NEXT turn estimates its first request from — see
+            // The anchor the NEXT turn judges its first request from — see
             // `LastRequestAnchor`. `input` below is the sum across this send's
-            // steps and anchors nothing. Either half missing (no usable usage
-            // sample, or no mid-turn seam to measure the payload) drops the
-            // whole pair and the next turn cold starts.
+            // steps and anchors nothing; the LAST step's real input and output
+            // are what the next request re-sends. No usable input count, no
+            // anchor: the next turn then has no proactive fold until its first
+            // accepted request.
             const anchorInputTokens = finitePositive(lastStepInputTokens);
-            const anchorPayloadChars = finitePositive(midTurnState?.lastRequestPayloadChars);
+            const anchorOutputTokens =
+              lastStepOutputTokens !== undefined && Number.isFinite(lastStepOutputTokens)
+                ? Math.max(0, lastStepOutputTokens)
+                : undefined;
             // One shared usage payload for the durable message and the live
             // event: twin per-field literals drifted before (#4019), so a field
             // now has exactly one definition site.
@@ -2775,11 +3061,17 @@ export class AiSdkBackend implements AgentBackend {
                 ? { contextRemaining: contextRemainingForUsage }
                 : {}),
               ...(providerRequestTraceId ? { providerRequestTraceId } : {}),
-              ...(anchorInputTokens !== undefined && anchorPayloadChars !== undefined
+              ...(anchorInputTokens !== undefined
                 ? {
                     lastRequestAnchor: {
                       inputTokens: anchorInputTokens,
-                      payloadChars: anchorPayloadChars,
+                      ...(anchorOutputTokens !== undefined
+                        ? { outputTokens: anchorOutputTokens }
+                        : {}),
+                      modelId: this.input.modelId,
+                      ...(this.input.header.llmConnectionId !== undefined
+                        ? { connectionId: this.input.header.llmConnectionId }
+                        : {}),
                     },
                   }
                 : {}),
@@ -3378,7 +3670,7 @@ export class AiSdkBackend implements AgentBackend {
     const priorRuntimeContext = preparedContextBudget.events;
     const providerReasoningReplayEventIds = compatibleProviderReasoningReplayEventIds(
       priorRuntimeContext,
-      input.runtimeContextRunHeaders,
+      input.runtimeContextInvocations,
       this.input.providerStateIdentity,
       this.input.modelId,
     );
@@ -3400,81 +3692,9 @@ export class AiSdkBackend implements AgentBackend {
       );
     }
 
-    const maxHistoryTokens = contextBudget?.maxHistoryEstimatedTokens;
-    // FALLBACK, not a second authority: step 0's anchored estimate measures the
-    // whole outgoing payload against the real window, where this gate only
-    // weighs prior history events at chars/4. It stands in only where that
-    // estimate cannot reach — no anchor, no mid-turn seam, or no declared
-    // window — so an oversized history never goes out unshaped.
-    const needsCompaction =
-      !(
-        midTurnState?.capacity !== undefined && midTurnState.lastRequestInputTokens !== undefined
-      ) &&
-      maxHistoryTokens !== undefined &&
-      estimateRuntimeEventsTokens(runtimeContext, contextBudget?.charsPerToken) > maxHistoryTokens;
-    if (
-      needsCompaction &&
-      contextBudget?.historyCompact?.enabled === true &&
-      this.compaction.hasHistoryCompactCheckpointWriter()
-    ) {
-      const automaticMemoryDecision = automaticMemory
-        ? this.automaticMemoryCompactionDecision()
-        : undefined;
-      const automaticMemorySource = automaticMemoryDecision
-        ? lastNonCompactRuntimeEvent(priorRuntimeContext)
-        : undefined;
-      const compactResult = await this.compaction.compactHistory(
-        {
-          turnId: input.turnId,
-          runId: scope.runId,
-          runtimeContext: priorRuntimeContext,
-          runtimeContextRunHeaders: input.runtimeContextRunHeaders,
-        },
-        automaticMemorySource
-          ? {
-              runId: automaticMemorySource.runId,
-              turnId: automaticMemorySource.turnId,
-              runtimeEventId: automaticMemorySource.id,
-              disposition: automaticMemoryDecision!.disposition,
-            }
-          : undefined,
-      );
-      let durableCheckpoint = compactResult.checkpoint;
-      if (!durableCheckpoint && compactResult.outcome.kind === 'unchanged') {
-        try {
-          durableCheckpoint = await Promise.resolve(this.input.loadHistoryCompactCheckpoint?.());
-        } catch {
-          durableCheckpoint = undefined;
-        }
-      }
-      if (durableCheckpoint) {
-        const replay = buildHistoryCompactCheckpointFailOpenContext(
-          durableCheckpoint,
-          priorRuntimeContext,
-          contextBudget!,
-          priorRuntimeContext,
-        );
-        runtimeContext = replay.events;
-        projectedHistoryCompactCheckpoint = replay.checkpoint;
-        if (
-          replay.checkpoint &&
-          compactResult.outcome.kind === 'compacted' &&
-          automaticMemoryDecision?.dispatch &&
-          automaticMemory
-        ) {
-          this.dispatchAutomaticMemoryCompaction(scope, {
-            checkpoint: replay.checkpoint,
-            activeTools: [],
-          });
-        }
-      }
-      contextBudgetDiagnostic = mergeContextBudgetDiagnostic(
-        contextBudgetDiagnostic ??
-          buildContextBudgetDiagnosticShell(priorRuntimeContext, runtimeContext, contextBudget),
-        compactResult.contextBudget ?? {},
-      );
-    }
-
+    // No pre-turn estimate gate: the turn's first request is judged by the
+    // request-projection hook from the previous request's real usage, and by
+    // the provider when it goes out (#4559).
     // The boundary belongs to the runtime-event projection above. A gate that
     // falls back to the stored-message projection returns a prompt no
     // checkpoint shaped, so it reports none rather than one the request never
@@ -3679,6 +3899,10 @@ export class AiSdkBackend implements AgentBackend {
     >();
     const reasoningByStep = new Map<string, ThinkingItem[]>();
     const textByStep = new Map<string, TextItem>();
+    const pendingStepOrder = new Set<string>();
+    const rememberPendingStep = (stepId: string) => {
+      pendingStepOrder.add(stepId);
+    };
 
     const replaySupport = this.modelAdapter.runtimeEventReplaySupport();
     const reasoningReplay = (item: ThinkingItem): ReplayReasoning | undefined => {
@@ -3937,6 +4161,7 @@ export class AiSdkBackend implements AgentBackend {
         if (stepId !== undefined) {
           reasoningByStep.delete(stepId);
           textByStep.delete(stepId);
+          pendingStepOrder.delete(stepId);
         }
         await emitStep(reasoning, text, group);
         group = [];
@@ -3953,18 +4178,28 @@ export class AiSdkBackend implements AgentBackend {
       bufferedCalls = [];
       await emitGroupedCalls(calls);
     };
+    const flushPendingStep = async (stepId: string) => {
+      const text = textByStep.get(stepId);
+      const reasoning = reasoningByStep.get(stepId);
+      textByStep.delete(stepId);
+      reasoningByStep.delete(stepId);
+      pendingStepOrder.delete(stepId);
+      await emitStep(reasoning, text, []);
+    };
+    const flushPendingStepsBefore = async (stepId: string | undefined) => {
+      const pendingStepIds = [...pendingStepOrder];
+      const lastPendingStepId = pendingStepIds.at(-1);
+      const earlierStepIds =
+        stepId !== undefined && lastPendingStepId === stepId
+          ? pendingStepIds.slice(0, -1)
+          : pendingStepIds;
+      if (earlierStepIds.length === 0) return;
+      await flushLooseCalls();
+      for (const pendingStepId of earlierStepIds) await flushPendingStep(pendingStepId);
+    };
     const flushPendingSteps = async () => {
       await flushLooseCalls();
-      for (const [stepId, text] of textByStep) {
-        textByStep.delete(stepId);
-        const reasoning = reasoningByStep.get(stepId);
-        reasoningByStep.delete(stepId);
-        await emitStep(reasoning, text, []);
-      }
-      for (const [stepId, reasoning] of reasoningByStep) {
-        reasoningByStep.delete(stepId);
-        await emitStep(reasoning, undefined, []);
-      }
+      for (const stepId of [...pendingStepOrder]) await flushPendingStep(stepId);
     };
 
     for (const item of admitProviderReasoningReplayItems(
@@ -3973,6 +4208,7 @@ export class AiSdkBackend implements AgentBackend {
     )) {
       switch (item.kind) {
         case 'tool_call':
+          await flushPendingStepsBefore(item.stepId);
           if (item.toolName !== 'apply_patch') {
             bufferedCalls.push(item);
             break;
@@ -4028,6 +4264,7 @@ export class AiSdkBackend implements AgentBackend {
                 ts: downgradedCall.ts,
               });
             }
+            rememberPendingStep(downgradedCall.stepId);
           } else {
             await flushPendingSteps();
             push({ role: 'assistant', content: [{ type: 'text', text: replayFact }] }, [
@@ -4042,6 +4279,7 @@ export class AiSdkBackend implements AgentBackend {
             const stepReasoning = reasoningByStep.get(item.stepId) ?? [];
             stepReasoning.push(item);
             reasoningByStep.set(item.stepId, stepReasoning);
+            rememberPendingStep(item.stepId);
           } else {
             // Legacy standalone reasoning (pure-reasoning turn): emit on its own.
             await flushPendingSteps();
@@ -4077,11 +4315,13 @@ export class AiSdkBackend implements AgentBackend {
             if (thisCalls.length > 0) {
               await emitStep(reasoningByStep.get(stepId), item, thisCalls);
               reasoningByStep.delete(stepId);
+              pendingStepOrder.delete(stepId);
             } else {
               // Runtime-owned settlement persists assistant facts before the
               // matching tool calls. Hold the step closer until those calls
               // arrive; a terminal text-only step flushes below.
               textByStep.set(stepId, item);
+              rememberPendingStep(stepId);
             }
           } else {
             // Legacy per-turn assistant text: standalone after any tool block.
@@ -4855,42 +5095,17 @@ function buildHistoryCompactCheckpointFailOpenContext(
       byTurn.set(event.turnId, [event]);
     }
   }
-  const maxTokens = policy.maxHistoryEstimatedTokens ?? Number.POSITIVE_INFINITY;
-  const replayPrefix = projectHistoryCompactCheckpointReplay(
-    checkpoint,
-    match.coveredRuntimeEvents,
-    [],
-  );
-  let selectedTokens =
-    checkpoint.version === 3
-      ? checkpoint.estimatedTokens
-      : estimateRuntimeEventsTokens(replayPrefix, charsPerToken);
-  const selectedGroups: RuntimeEvent[][] = [];
-  for (let index = turnOrder.length - 1; index >= 0; index -= 1) {
-    const group = byTurn.get(turnOrder[index]!) ?? [];
-    const groupTokens = estimateRuntimeEventsTokens(group, charsPerToken);
-    if (selectedTokens + groupTokens > maxTokens) break;
-    selectedGroups.unshift(group);
-    selectedTokens += groupTokens;
-  }
+  // Replay is structural: the checkpoint plus everything after its boundary.
+  // No size-based selection stands between them and dispatch; whether the
+  // result fits is the provider's answer (#4559).
+  const selectedGroups: RuntimeEvent[][] = turnOrder.map((turnId) => byTurn.get(turnId) ?? []);
   const replayTail = selectedGroups.flat();
   const replayEvents = projectHistoryCompactCheckpointReplay(
     checkpoint,
     match.coveredRuntimeEvents,
     replayTail,
   );
-  const replayTailForFit = checkpoint.version === 3 ? replayEvents : replayEvents.slice(1);
-  return evaluateHistoryCompactCheckpointReplay(
-    checkpoint,
-    replayTailForFit,
-    policy?.charsPerToken,
-    policy?.maxHistoryEstimatedTokens,
-    {
-      sourceReplayEvents: [...match.coveredRuntimeEvents, ...replayTail],
-    },
-  ).fits
-    ? { events: replayEvents, checkpoint }
-    : { events: [...retainedCandidates] };
+  return { events: replayEvents, checkpoint };
 }
 
 function projectMemoryConversationPrefix(

@@ -23,7 +23,9 @@ import {
   Button,
   ClientCapabilityPrompt,
   Composer,
+  type ComposerInteraction,
   ComposerGoalProjectionConsumer,
+  FormInteractionPrompt,
   SandboxBoundaryPrompt,
   UserQuestionPrompt,
 } from '@maka/ui';
@@ -61,14 +63,9 @@ interface BoundaryUnreadableNotice {
   onRetry(): void;
 }
 
-type ComposerInteraction =
-  | ComponentProps<typeof SandboxBoundaryPrompt>['request']
-  | ComponentProps<typeof ClientCapabilityPrompt>['request']
-  | ComponentProps<typeof UserQuestionPrompt>['request'];
-
 /**
  * The composer region of the chat surface (issue #1043): the composer
- * interaction slot (permission / user-question prompts) plus the always-mounted
+ * interaction slot (boundary / question / form prompts) plus the always-mounted
  * Composer itself.
  *
  * AppShell renders this as a stable sibling of the section switch, so it is
@@ -112,13 +109,72 @@ interface ChatComposerRegionProps
   respondToSandboxBoundary: ComponentProps<typeof SandboxBoundaryPrompt>['onRespond'];
   respondToClientCapability: ComponentProps<typeof ClientCapabilityPrompt>['onRespond'];
   respondToUserQuestion: ComponentProps<typeof UserQuestionPrompt>['onRespond'];
+  respondToUserForm: ComponentProps<typeof FormInteractionPrompt>['onRespond'];
   stop: ComponentProps<typeof UserQuestionPrompt>['onStop'];
   boundaryUnreadableNotice?: BoundaryUnreadableNotice;
+  /**
+   * Tokens the provider counted for the session's latest request on the active
+   * route, or nothing when that cannot be established. Resolved by the owner,
+   * which knows the transcript range and the route; this control never derives
+   * it from the rendered slice.
+   */
+  latestRequestUsageTokens?: number;
+  onOpenContextUsage(): void;
   directoryComposerProps: Pick<
     ComponentProps<typeof Composer>,
     'pendingDirectories' | 'onRemoveDirectory' | 'onPickDirectory'
   >;
   directoryPickerEnabled: boolean;
+}
+
+/**
+ * The session's latest provider-counted request, or nothing.
+ *
+ * A token count belongs to one request on one route: it is a number in that
+ * model's tokenizer, and it is only the session's latest if nothing newer
+ * exists. The runtime enforces both when it reads an anchor back, refusing one
+ * whose run header names another model or connection. A control that shows the
+ * number has to enforce the same two facts or it will display a precise-looking
+ * figure about a request the user is not making — model A's tokens against
+ * model B's window, or a historical range's usage presented as current.
+ *
+ * So this refuses rather than approximates, and the three refusals are the
+ * three normal states that break the pairing:
+ *
+ * - the loaded transcript range is not the session tail, so a newer request may
+ *   exist that this range cannot see;
+ * - the newest usage row carries no anchor, which is what manual `/compact`
+ *   writes, so the scan continues past it exactly as the runtime's does;
+ * - the anchor names a different route than the active one, or names none at
+ *   all because it was written before anchors carried their route.
+ */
+export interface LatestRequestUsageAnchor {
+  inputTokens: number;
+  outputTokens?: number;
+  modelId?: string;
+  connectionId?: string;
+}
+
+export function selectLatestRequestUsage(
+  messages: readonly { type: string; lastRequestAnchor?: LatestRequestUsageAnchor }[],
+  /** `hasNewer` means the loaded range is not the session tail. */
+  range: { hasNewer?: boolean } | undefined,
+  model: string | undefined,
+  route: { llmConnectionId?: string } | undefined,
+): number | undefined {
+  const connectionId = route?.llmConnectionId;
+  if (range?.hasNewer || model === undefined || connectionId === undefined) return undefined;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.type !== 'token_usage') continue;
+    const anchor = message.lastRequestAnchor;
+    if (!anchor) continue;
+    if (anchor.modelId !== model || anchor.connectionId !== connectionId) return undefined;
+    if (!Number.isFinite(anchor.inputTokens) || anchor.inputTokens <= 0) return undefined;
+    const output = Number.isFinite(anchor.outputTokens ?? 0) ? Math.max(0, anchor.outputTokens ?? 0) : 0;
+    return anchor.inputTokens + output;
+  }
+  return undefined;
 }
 
 export function ChatComposerRegion({
@@ -133,8 +189,11 @@ export function ChatComposerRegion({
   respondToSandboxBoundary,
   respondToClientCapability,
   respondToUserQuestion,
+  respondToUserForm,
   stop,
   boundaryUnreadableNotice,
+  latestRequestUsageTokens,
+  onOpenContextUsage,
   directoryComposerProps,
   directoryPickerEnabled,
   ...composerRest
@@ -145,6 +204,22 @@ export function ChatComposerRegion({
   const activeClientCapability =
     activeInteraction?.type === 'client_capability_request' ? activeInteraction : undefined;
   const activeQuestion = activeInteraction?.type === 'user_question_request' ? activeInteraction : undefined;
+  const activeForm = activeInteraction?.type === 'form_request' ? activeInteraction : undefined;
+  const activeModelChoice = composerRest.activeModel
+    ? composerRest.modelChoices?.find(
+        (choice) =>
+          choice.connectionId === composerRest.activeModelConnectionId &&
+          choice.model === composerRest.activeModel,
+      )
+    : undefined;
+  const contextUsage = activeId
+    ? {
+        usageTokens: latestRequestUsageTokens,
+        declaredContextWindow: activeModelChoice?.declaredContextWindow,
+        metadataContextWindow: activeModelChoice?.contextWindow,
+        onOpen: onOpenContextUsage,
+      }
+    : undefined;
   const previousNewTaskDraftKey = useRef(newTaskDraftKey);
   useLayoutEffect(() => {
     const previous = previousNewTaskDraftKey.current;
@@ -248,12 +323,19 @@ export function ChatComposerRegion({
             stopPending={activeId ? stopPendingBySession[activeId] === true : false}
           />
         )}
+        {activeForm && (
+          <FormInteractionPrompt
+            request={activeForm}
+            onRespond={respondToUserForm}
+          />
+        )}
       </div>
       <ComposerGoalProjectionConsumer>
         {(goalProjection) => (
           <Composer
             ref={composerRef}
             {...composerRest}
+            contextUsage={contextUsage}
             // AppShell carries staged attachments into both queued and steering
             // follow-ups. Other Composer hosts remain gated by default because a
             // text-only running-turn submission would leave attachments behind.

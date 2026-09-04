@@ -39,7 +39,6 @@ import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import { TOOL_BOUNDARY_PROTOCOL_V1 } from '@maka/core/runtime-event';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
-import type { AgentRunHeader } from '@maka/core/agent-run';
 import type { MessageContent } from '@maka/core/events';
 import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
 import {
@@ -920,8 +919,8 @@ test('regenerate replays the durable source content with one recoverable root id
     const ledger = await fixture.readTurn(regeneratedTurnId);
     assert.equal(ledger.runs.length, 1);
     assert.equal(ledger.userMessages.length, 1);
-    assert.equal(ledger.runs[0]?.parentTurnId, sourceTurnId);
-    assert.equal(ledger.runs[0]?.regeneratedFromTurnId, sourceTurnId);
+    assert.equal(ledger.runs[0]?.opening.lineage?.parentTurnId, sourceTurnId);
+    assert.equal(ledger.runs[0]?.opening.lineage?.regeneratedFromTurnId, sourceTurnId);
     assert.deepEqual(
       {
         text: ledger.userMessages[0]?.text,

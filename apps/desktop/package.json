@@ -20,6 +20,7 @@
     "dev:hmr": "node scripts/dev.mjs",
     "storybook": "storybook dev -p 6006 -c .storybook",
     "build-storybook": "storybook build -c .storybook --output-dir storybook-static",
+    "presmoke:storybook": "npm --workspace @maka/core run build",
     "smoke:storybook": "node ../../scripts/storybook-visual-smoke.mjs",
     "check:architecture": "node --test scripts/check-renderer-architecture.test.mjs && node scripts/check-renderer-architecture.mjs",
     "build": "npm run build:resources && npm run build:main && npm run build:preload && npm run build:overlay && npm run build:renderer",

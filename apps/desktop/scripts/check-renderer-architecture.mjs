@@ -434,6 +434,26 @@ function bridgePath(node, windowAliases, bridgeAliases = new Map()) {
   return `${base}.${property}`;
 }
 
+function typeOnlySourceDependency(node) {
+  if (node.type === 'ImportDeclaration') {
+    return (
+      node.importKind === 'type' ||
+      (node.specifiers.length > 0 &&
+        node.specifiers.every((specifier) => specifier.importKind === 'type'))
+    );
+  }
+  if (node.type === 'ExportNamedDeclaration') {
+    return (
+      node.exportKind === 'type' ||
+      (node.specifiers.length > 0 &&
+        node.specifiers.every((specifier) => specifier.exportKind === 'type'))
+    );
+  }
+  if (node.type === 'ExportAllDeclaration') return node.exportKind === 'type';
+  if (node.type === 'TSImportType') return true;
+  return false;
+}
+
 function sourceDependency(node) {
   if (
     (node.type === 'ImportDeclaration' ||
@@ -1083,9 +1103,9 @@ export function analyzeRendererSource(source, file = 'fixture.ts') {
   }
 
   function visit(node, parent) {
-    if (node.type === 'ImportDeclaration') {
+    if (node.type === 'ImportDeclaration' && !typeOnlySourceDependency(node)) {
       importDeclarations += 1;
-      importSpecifiers += node.specifiers.length;
+      importSpecifiers += node.specifiers.filter((specifier) => specifier.importKind !== 'type').length;
     }
     if (node.type === 'TSImportEqualsDeclaration') {
       importDeclarations += 1;
@@ -1094,7 +1114,11 @@ export function analyzeRendererSource(source, file = 'fixture.ts') {
     const dependency = sourceDependency(node);
     if (dependency !== undefined) {
       dependencies.push(dependency);
-      dependencyPaths[dependency] = (dependencyPaths[dependency] ?? 0) + 1;
+      // Type-only imports are erased at compile time: they stay in `dependencies`
+      // for closure reachability but record no debt.
+      if (!typeOnlySourceDependency(node)) {
+        dependencyPaths[dependency] = (dependencyPaths[dependency] ?? 0) + 1;
+      }
     }
     if (
       (node.type === 'ImportExpression' && staticString(node.source) === undefined) ||
@@ -1570,6 +1594,14 @@ function validateDependencies({
       if (['bootstrap', 'composition', 'main', 'shell'].includes(targetZone.kind)) {
         violations.push(`${fileRelative}: Desktop adapter imports an outer or legacy implementation: ${dependency}`);
       }
+    }
+
+    if (
+      sourceZone.kind === 'legacy' &&
+      targetZone.kind === 'application' &&
+      !isPublicApplicationPath(targetRelative)
+    ) {
+      violations.push(`${fileRelative}: legacy renderer code imports application implementation instead of a public entry: ${dependency}`);
     }
   }
 }
@@ -2249,21 +2281,14 @@ function inspectCopyCatalog(source, file) {
           }
         }
       }
-      const typeOnly =
-        statement.importKind === 'type' ||
-        (statement.specifiers.length > 0 &&
-          statement.specifiers.every((specifier) => specifier.importKind === 'type'));
-      if (!typeOnly) runtimeDependencies.push(statement.source.value);
+      if (!typeOnlySourceDependency(statement)) runtimeDependencies.push(statement.source.value);
     }
     if (
       (statement.type === 'ExportNamedDeclaration' || statement.type === 'ExportAllDeclaration') &&
-      statement.source
+      statement.source &&
+      !typeOnlySourceDependency(statement)
     ) {
-      const typeOnly =
-        statement.exportKind === 'type' ||
-        (statement.specifiers?.length > 0 &&
-          statement.specifiers.every((specifier) => specifier.exportKind === 'type'));
-      if (!typeOnly) runtimeDependencies.push(statement.source.value);
+      runtimeDependencies.push(statement.source.value);
     }
     if (
       statement.type === 'TSImportEqualsDeclaration' &&
@@ -2391,29 +2416,39 @@ function validateCopyCatalogFiles(desktopRoot, violations) {
   }
 }
 
-function withoutValidatedCatalogDependencies(desktopRoot, importerPath, dependencyPaths) {
+function withoutSanctionedDependencies(desktopRoot, section, importerPath, dependencyPaths) {
   const filtered = {};
   for (const [dependency, count] of Object.entries(dependencyPaths)) {
-    const target = resolveDependency(desktopRoot, resolve(desktopRoot, importerPath), dependency);
-    if (target && isValidatedCopyCatalog(desktopRoot, normalizePath(relative(desktopRoot, target)))) continue;
+    if (isSanctionedDependencyTarget(desktopRoot, section, importerPath, dependency)) continue;
     filtered[dependency] = count;
   }
   return filtered;
 }
 
+function isSanctionedDependencyTarget(desktopRoot, section, importerPath, dependency) {
+  const target = resolveDependency(desktopRoot, resolve(desktopRoot, importerPath), dependency);
+  if (!target) return false;
+  const targetRelative = normalizePath(relative(desktopRoot, target));
+  if (isValidatedCopyCatalog(desktopRoot, targetRelative)) return true;
+  // Root entries are meant to become thin mounts; only catalogs are free for them.
+  if (section === 'rootDebt') return false;
+  if (zoneFor(targetRelative).kind === 'shell' || isPublicApplicationPath(targetRelative)) return true;
+  const targetFeature = featureForAbsolutePath(desktopRoot, target);
+  return Boolean(targetFeature && isPublicFeaturePath(targetFeature.subpath));
+}
+
+const MIGRATION_SWAP_ZONES = {
+  rootDebt: ['bootstrap', 'composition'],
+  rootDebtClosure: ['application', 'bootstrap', 'composition', 'platform'],
+};
+
 function allowsMigrationDependency({ base, current, dependency, desktopRoot, path, section }) {
+  const swapZones = MIGRATION_SWAP_ZONES[section];
+  if (!swapZones) return false;
   if (metricTotal(current.dependencyPaths) > metricTotal(base.dependencyPaths)) return false;
   const target = resolveDependency(desktopRoot, resolve(desktopRoot, path), dependency);
   if (!target) return false;
-  const targetRelative = normalizePath(relative(desktopRoot, target));
-  const targetZone = zoneFor(targetRelative);
-  if (section === 'legacyAppShell' || section === 'legacyAppShellClosure') {
-    if (targetZone.kind === 'shell' || isPublicApplicationPath(targetRelative)) return true;
-    const targetFeature = featureForAbsolutePath(desktopRoot, target);
-    return Boolean(targetFeature && isPublicFeaturePath(targetFeature.subpath));
-  }
-  if (section === 'rootDebt') return ['bootstrap', 'composition'].includes(targetZone.kind);
-  return ['application', 'bootstrap', 'composition', 'platform'].includes(targetZone.kind);
+  return swapZones.includes(zoneFor(normalizePath(relative(desktopRoot, target))).kind);
 }
 
 function debtForPath(desktopRoot, path) {
@@ -2538,11 +2573,11 @@ function validateMonotonicDebt(config, baseConfig, desktopRoot, violations) {
       if (!base) continue;
       const currentView = {
         ...current,
-        dependencyPaths: withoutValidatedCatalogDependencies(desktopRoot, path, current.dependencyPaths),
+        dependencyPaths: withoutSanctionedDependencies(desktopRoot, section, path, current.dependencyPaths),
       };
       const baseView = {
         ...base,
-        dependencyPaths: withoutValidatedCatalogDependencies(desktopRoot, path, base.dependencyPaths),
+        dependencyPaths: withoutSanctionedDependencies(desktopRoot, section, path, base.dependencyPaths),
       };
       const metrics = section.endsWith('Closure') ? CAPABILITY_DEBT_METRICS : ROOT_DEBT_METRICS;
       for (const metric of metrics) {

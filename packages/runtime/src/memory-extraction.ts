@@ -1397,20 +1397,6 @@ function preparedMemoryRangeFits(
   );
 }
 
-function memoryRangeEventWeight({ event }: MemoryExtractionEventEntry): number {
-  if (
-    !event.partial &&
-    event.content?.kind === 'text' &&
-    ((event.role === 'user' && event.author === 'user') ||
-      (event.role === 'model' && event.author === 'agent'))
-  ) {
-    // Text appears once in the interpretation messages and, for user text, once
-    // more in the bounded evidence index when it cannot be referenced by position.
-    return Math.max(1, event.content.text.length * (event.role === 'user' ? 2 : 1));
-  }
-  return 1;
-}
-
 function memoryRequestFits(
   snapshot: MemoryExtractionSourceSnapshot,
   prompt: string,
@@ -1484,6 +1470,20 @@ function safeJsonLength(value: unknown): number {
   } catch {
     return Number.MAX_SAFE_INTEGER;
   }
+}
+
+function memoryRangeEventWeight({ event }: MemoryExtractionEventEntry): number {
+  if (
+    !event.partial &&
+    event.content?.kind === 'text' &&
+    ((event.role === 'user' && event.author === 'user') ||
+      (event.role === 'model' && event.author === 'agent'))
+  ) {
+    // Text appears once in the interpretation messages and, for user text, once
+    // more in the bounded evidence index when it cannot be referenced by position.
+    return Math.max(1, event.content.text.length * (event.role === 'user' ? 2 : 1));
+  }
+  return 1;
 }
 
 function memoryEvidenceContainsSensitiveText(

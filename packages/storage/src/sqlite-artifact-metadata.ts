@@ -20,7 +20,10 @@
 import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import type { ArtifactRecord } from '@maka/core/artifacts';
-import type { ArtifactMetadataRepository } from './artifact-metadata-repository.js';
+import type {
+  ArtifactMetadataChanges,
+  ArtifactMetadataRepository,
+} from './artifact-metadata-repository.js';
 import { decodeArtifactRecordJsons } from './artifact-metadata-codec.js';
 import {
   acquireOperationalStateDatabase,
@@ -58,11 +61,15 @@ class SqliteArtifactMetadataRepository implements ArtifactMetadataRepository {
     return decodeRows(rows);
   }
 
-  replaceAll(records: readonly ArtifactRecord[]): void {
+  applyChanges(changes: ArtifactMetadataChanges): void {
     this.assertOpen();
     this.#lease.transaction('write', () => {
-      this.#lease.database.prepare('DELETE FROM artifact_records').run();
-      const insert = this.#lease.database.prepare(`
+      const remove = this.#lease.database.prepare(
+        'DELETE FROM artifact_records WHERE storage_key = ?',
+      );
+      for (const id of changes.deleteIds ?? []) remove.run(artifactIdentityKey(id));
+
+      const upsert = this.#lease.database.prepare(`
         INSERT INTO artifact_records(
           storage_key,
           artifact_id,
@@ -72,9 +79,22 @@ class SqliteArtifactMetadataRepository implements ArtifactMetadataRepository {
           relative_path,
           record_json
         ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(storage_key) DO UPDATE SET
+          artifact_id = excluded.artifact_id,
+          session_id = excluded.session_id,
+          created_at = excluded.created_at,
+          status = excluded.status,
+          relative_path = excluded.relative_path,
+          record_json = excluded.record_json
+        WHERE artifact_id IS NOT excluded.artifact_id
+           OR session_id IS NOT excluded.session_id
+           OR created_at IS NOT excluded.created_at
+           OR status IS NOT excluded.status
+           OR relative_path IS NOT excluded.relative_path
+           OR record_json IS NOT excluded.record_json
       `);
-      for (const record of records) {
-        insert.run(
+      for (const record of changes.upserts ?? []) {
+        upsert.run(
           artifactIdentityKey(record.id),
           record.id,
           record.sessionId,

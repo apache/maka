@@ -227,11 +227,12 @@ export function createHostDailyReviewModel(
         const header = await readAuxiliaryPreflight(authority, effectiveAbortSignal, () =>
           resolveDailyReviewHeader(authority.runtimePolicy, modelKey),
         );
+        const callId = authority.newId();
         const result = await runHostAuxiliaryModelCall(authority, {
-          transportContextId: 'daily-review',
+          transportContextId: callId,
           header,
           callKind: 'daily_review',
-          callId: `daily_review_${authority.newId()}`,
+          callId: `daily_review_${callId}`,
           abortSignal: effectiveAbortSignal,
           buildRequest: () => ({ prompt, maxOutputTokens: 2_048 }),
         });
@@ -513,6 +514,7 @@ async function runHostAuxiliaryModelCall(
           input.header.thinkingLevel,
         );
         const model = getAIModel({
+          sessionId: input.transportContextId,
           connection: target.connection,
           apiKey,
           modelId: target.model,

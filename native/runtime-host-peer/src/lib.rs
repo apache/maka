@@ -20,10 +20,18 @@
 mod bindings;
 mod engine;
 mod webrtc_direct;
+#[cfg(target_os = "windows")]
+mod windows_lifecycle;
 
 pub use bindings::{
     ConfigurePeerTransitOptions, ConnectPeerOptions, PeerConnectivitySnapshot, PeerEndpoint,
     PeerIdentitySignature, PeerReachabilitySnapshot, PeerStream, PeerTransitRelayCandidate,
     PeerTransitSnapshot, StartPeerEndpointOptions, ensure_peer_identity, sign_peer_identity,
     start_peer_endpoint, verify_peer_identity,
+};
+#[cfg(target_os = "windows")]
+pub use windows_lifecycle::{
+    WindowsTaskStatus, own_current_process_tree, windows_task_activate, windows_task_converge,
+    windows_task_probe, windows_task_retire, windows_task_status, windows_task_uninstall,
+    windows_task_verify,
 };

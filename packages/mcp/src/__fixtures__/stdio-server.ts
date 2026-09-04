@@ -132,6 +132,7 @@ server.setRequestHandler(ListToolsRequestSchema, async ({ params }) => {
             },
           },
         },
+        tool('echo', 'Echo text', true),
       ],
     };
   }

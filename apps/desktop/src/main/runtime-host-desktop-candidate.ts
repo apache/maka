@@ -75,9 +75,7 @@ import {
   type DesktopNativeCapabilityProviderInput,
 } from "./runtime-host-native-capabilities.js";
 import {
-  registerRuntimeHostSharedSessionCatalogIpc,
   registerRuntimeHostSessionCatalogIpc,
-  toDesktopHostSharedSessionSummary,
 } from "./runtime-host-session-catalog-ipc-main.js";
 import { registerRuntimeHostWorkHubIpc } from "./runtime-host-workhub-ipc-main.js";
 import { registerRuntimeHostExternalSessionsIpc } from "./runtime-host-external-sessions-ipc-main.js";
@@ -147,6 +145,7 @@ export interface DesktopRuntimeHostCandidateDeps {
   readonly onError?: RuntimeHostSessionDomainsIpcDeps["onError"];
   readonly isTargetActive?: () => boolean;
   readonly isTargetValid?: () => boolean;
+  readonly onGuestSessionCatalogChanged?: () => void;
   readonly newId?: () => string;
   readonly now?: () => number;
   readonly openSshTunnel?: (
@@ -593,6 +592,12 @@ export async function createDesktopRuntimeHostCandidate(
   let observationsAttached = false;
   let capabilitiesRegistered = false;
   try {
+    const onGuestSessionCatalogChanged = target.access === 'session_guest'
+      ? deps.onGuestSessionCatalogChanged
+      : undefined;
+    if (target.access === 'session_guest' && !onGuestSessionCatalogChanged) {
+      throw new Error('A Session Guest candidate requires a catalog-change authority');
+    }
     let domains: RuntimeHostSessionDomainsIpcHandle | undefined;
     const emitActiveInteractionsChanged = (
       sessionId: string,
@@ -739,6 +744,7 @@ export async function createDesktopRuntimeHostCandidate(
           onComputerUseTurnUsed: watchComputerUseTurn,
           isTargetValid: deps.isTargetValid,
           onClosed: () => providers.delete(provider),
+          onDiagnostic: logLocalRuntimeHostProcessDiagnostic,
         },
       );
       providers.add(provider);
@@ -800,23 +806,12 @@ export async function createDesktopRuntimeHostCandidate(
         )
       : undefined;
     disposeClientIpc = target.access === 'session_guest'
-      ? client.subscribeSessionCatalogChanges(({ sessionId }) =>
-          emitSessionsChanged('updated', sessionId),
-        )
+      ? client.subscribeSessionCatalogChanges(() => onGuestSessionCatalogChanged!())
       : typeof registeredClientIpc === 'function'
         ? registeredClientIpc
         : undefined;
     if (target.access === 'session_guest') {
       registerRuntimeHostAttachmentPreviewIpc({ ipcMain: ipc, client });
-      registerRuntimeHostSharedSessionCatalogIpc(
-        {
-          getSession: async () => {
-            const session = await client.getSharedSession();
-            return session ? toDesktopHostSharedSessionSummary(session) : null;
-          },
-        },
-        ipc,
-      );
     } else {
       if (!sessionCopyCleanup) throw new Error('Owner Session copy authority is unavailable');
       registerRuntimeHostSessionCatalogIpc(

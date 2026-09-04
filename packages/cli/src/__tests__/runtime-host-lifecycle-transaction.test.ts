@@ -43,6 +43,7 @@ import type {
 import { assertRuntimeHostManagedOperatorConfig } from '../runtime-host-managed-deployment.js';
 import {
   applyRuntimeHostLifecycleTransition,
+  convergeRuntimeHostLifecycleControlProjection,
   recoverRuntimeHostLifecycleTransition,
   replaceRuntimeHostLifecycle,
   resolveRecoverableRuntimeHostManagedDeployment,
@@ -55,6 +56,42 @@ import {
 
 const INTEGRITY = `sha512-${Buffer.alloc(64, 7).toString('base64')}`;
 const UPDATED_INTEGRITY = `sha512-${Buffer.alloc(64, 8).toString('base64')}`;
+
+test('control projection repair leaves the running Host supervisor untouched', async () => {
+  const current = config('/workspace', 'a'.repeat(64), 1, 'launch_agent');
+  const calls: string[] = [];
+  const provider = new FakeLifecycleProvider('launch_agent', 'launch_agent_timer');
+  const originalActivate = provider.reconciliationTrigger.activate;
+  provider.reconciliationTrigger.activate = async () => {
+    calls.push('scheduler.activate');
+    await originalActivate();
+  };
+
+  await convergeRuntimeHostLifecycleControlProjection(current, {
+    convergeOperator: async (from, to) => {
+      assert.deepEqual(from, current);
+      assert.deepEqual(to, current);
+      calls.push('operator.converge');
+    },
+    verifyOperator: async () => undefined,
+    resolveProvider: () => ({
+      ...provider,
+      supervisor: {
+        ...provider.supervisor,
+        converge: async () => assert.fail('the running supervisor must not be replaced'),
+      },
+      reconciliationTrigger: {
+        ...provider.reconciliationTrigger,
+        converge: async (definition) => {
+          calls.push('scheduler.converge');
+          await provider.reconciliationTrigger.converge(definition);
+        },
+      },
+    }),
+  });
+
+  assert.deepEqual(calls, ['operator.converge', 'scheduler.converge', 'scheduler.activate']);
+});
 
 test('one authority record recovers provider cutover failures without a journal', async (t) => {
   const stateRoot = await mkdtemp(join(tmpdir(), 'maka-lifecycle-root-'));
@@ -97,7 +134,10 @@ test('one authority record recovers provider cutover failures without a journal'
     verifyOperator: async (expected: RuntimeHostManagedDeploymentConfig) => {
       assert.deepEqual(operatorProjection.launch, expected.launch);
     },
-    resolveProvider: (provider: RuntimeHostSupervisorProvider) => providers.get(provider)!,
+    resolveProvider: (deployment: RuntimeHostManagedDeploymentConfig) => {
+      assert.equal(deployment.lifecycle.mode, 'supervised');
+      return providers.get(deployment.lifecycle.provider)!;
+    },
   };
   const firstOwner = await tryAcquireStateRootOwner(capability);
   assert.ok(firstOwner);

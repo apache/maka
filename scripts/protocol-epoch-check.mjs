@@ -140,6 +140,56 @@ export function epochAtRevision(revision, exec = execFileSync) {
   return extractCompatibilityEpoch(git(['show', `${revision}:${EPOCH_FILE}`], exec));
 }
 
+function stagedFile(file, exec = execFileSync) {
+  return git(['show', `:${file}`], exec);
+}
+
+export function evaluateStagedEpochCheck(exec = execFileSync) {
+  const changedProtocolFiles = git(
+    ['diff', '--cached', '--no-renames', '--name-only', 'HEAD', '--', PROTOCOL_DIR],
+    exec,
+  )
+    .split('\n')
+    .filter(Boolean)
+    .filter((file) => !isStagedHeaderOnlyChange(file, exec));
+  const declarations = git(
+    ['diff', '--cached', '--diff-filter=A', '--name-only', 'HEAD', '--', COMPATIBLE_CHANGE_DIR],
+    exec,
+  )
+    .split('\n')
+    .filter(Boolean);
+  const compatibleProtocolFiles = [];
+  const headEpoch = extractCompatibilityEpoch(stagedFile(EPOCH_FILE, exec));
+  for (const declaration of declarations) {
+    const value = JSON.parse(stagedFile(declaration, exec));
+    if (
+      !value ||
+      typeof value !== 'object' ||
+      Array.isArray(value) ||
+      value.epoch !== headEpoch ||
+      !Array.isArray(value.files) ||
+      value.files.length === 0 ||
+      typeof value.reason !== 'string' ||
+      value.reason.trim().length === 0 ||
+      Object.keys(value).some((key) => !['epoch', 'files', 'reason'].includes(key))
+    ) {
+      throw new Error(`Invalid compatible protocol change declaration: ${declaration}`);
+    }
+    for (const file of value.files) {
+      if (typeof file !== 'string' || !file.startsWith(PROTOCOL_DIR)) {
+        throw new Error(`Invalid protocol file in compatible change declaration: ${declaration}`);
+      }
+      compatibleProtocolFiles.push(file);
+    }
+  }
+  return evaluateEpochCheck({
+    baseEpoch: epochAtRevision('HEAD', exec),
+    headEpoch,
+    changedProtocolFiles,
+    compatibleProtocolFiles,
+  });
+}
+
 /**
  * Whether a file changed only by gaining the ASF license header.
  *
@@ -174,19 +224,39 @@ export function isHeaderOnlyChange(file, base, head, exec = execFileSync) {
   }
 }
 
+export function isStagedHeaderOnlyChange(file, exec = execFileSync) {
+  const style = classifyPath(file).style;
+  if (!style) return false;
+  try {
+    const before = git(['show', `HEAD:${file}`], exec);
+    const after = stagedFile(file, exec);
+    return applyHeader(before, style) === after;
+  } catch {
+    return false;
+  }
+}
+
 function parseArgs(args) {
-  const parsed = { base: undefined, head: 'HEAD' };
+  const parsed = { base: undefined, head: 'HEAD', staged: false };
   for (let index = 0; index < args.length; index += 1) {
     if (args[index] === '--base') parsed.base = args[++index];
     else if (args[index] === '--head') parsed.head = args[++index];
+    else if (args[index] === '--staged') parsed.staged = true;
     else throw new Error(`Unknown argument: ${args[index]}`);
   }
+  if (parsed.staged) return parsed;
   if (!parsed.base) throw new Error('Expected --base <rev> (and optionally --head <rev>)');
   return parsed;
 }
 
 function main(args) {
-  const { base, head } = parseArgs(args);
+  const { base, head, staged } = parseArgs(args);
+  if (staged) {
+    const verdict = evaluateStagedEpochCheck();
+    process.stderr.write(`Protocol epoch guard: ${verdict.reason}\n`);
+    if (!verdict.ok) process.exitCode = 1;
+    return;
+  }
   const headEpoch = epochAtRevision(head);
   const verdict = evaluateEpochCheck({
     baseEpoch: epochAtRevision(base),

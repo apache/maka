@@ -80,7 +80,7 @@ module.exports = {
       reachabilitySnapshot: { generation: 0, listenAddresses: [], activeCoordinationRelays: [] },
       get connectivitySnapshot() { return connectivity; },
       transitSnapshot: { allowedPeerCount: 0, activeReservationCount: 0, activeCircuitCount: 0, maxReservationCount: 32, maxCircuitCount: 8, maxCircuitsPerPeer: 2, maxCircuitDurationSeconds: 7_200, maxCircuitBytes: 256 * 1024 * 1024 },
-      watchReachability: async () => ({ generation: 0, listenAddresses: [], activeCoordinationRelays: [] }),
+      watchReachability: async () => 0,
       watchConnectivity: async (afterGeneration) => connectivity.generation === afterGeneration
         ? new Promise((resolve) => { finishConnectivity = resolve; })
         : connectivity,
@@ -375,7 +375,7 @@ module.exports = {
 	    reachabilitySnapshot: { generation: 0, listenAddresses: [], activeCoordinationRelays: [] },
 	    connectivitySnapshot: { generation: 0, connectedPeerIds: [] },
     transitSnapshot: { allowedPeerCount: 0, activeReservationCount: 0, activeCircuitCount: 0, maxReservationCount: 32, maxCircuitCount: 8, maxCircuitsPerPeer: 2, maxCircuitDurationSeconds: 7_200, maxCircuitBytes: 256 * 1024 * 1024 },
-	    watchReachability: async () => ({ generation: 0, listenAddresses: [], activeCoordinationRelays: [] }),
+	    watchReachability: async () => 0,
 	    watchConnectivity: async () => ({ generation: 0, connectedPeerIds: [] }),
     connect: async () => stream,
     connectMeshControl: async () => stream,

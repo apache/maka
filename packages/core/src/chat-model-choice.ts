@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { type ThinkingLevel } from './model-thinking.js';
+import { declaredContextWindow, type ThinkingLevel } from './model-thinking.js';
 import {
   offerableCatalogEntries,
   providerDefaultsOf,
@@ -40,6 +40,10 @@ export interface ChatModelChoice {
   thinkingLevels: readonly ThinkingLevel[];
   /** Exact capability projection used by model-facing attachment composition. */
   supportsVision?: boolean;
+  /** Provider/model metadata shown beside the user-declared context setting. */
+  contextWindow?: number;
+  /** User-declared context target, if this model has one. */
+  declaredContextWindow?: number;
 }
 
 export function buildChatModelChoices(
@@ -50,6 +54,7 @@ export function buildChatModelChoices(
     const provider = providerDefaultsOf(connection.providerType);
     if (!provider) continue;
     for (const entry of offerableCatalogEntries(connection)) {
+      const declaredWindow = declaredContextWindow(connection, entry.id);
       choices.push({
         connectionId: connection.connectionId,
         connectionSlug: connection.slug,
@@ -63,6 +68,8 @@ export function buildChatModelChoices(
         isDefault: entry.isDefault,
         thinkingLevels: entry.thinkingLevels,
         supportsVision: entry.supportsVision,
+        ...(entry.contextWindow !== undefined ? { contextWindow: entry.contextWindow } : {}),
+        ...(declaredWindow !== undefined ? { declaredContextWindow: declaredWindow } : {}),
       });
     }
   }

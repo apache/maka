@@ -76,10 +76,7 @@ export interface RuntimeHostPeerNativeEndpoint {
   readonly reachabilitySnapshot: RuntimeHostPeerNativeReachabilitySnapshot;
   readonly connectivitySnapshot: RuntimeHostPeerNativeConnectivitySnapshot;
   readonly transitSnapshot: RuntimeHostPeerTransitSnapshot;
-  watchReachability(
-    afterGeneration: number,
-    timeoutMs: number,
-  ): Promise<RuntimeHostPeerNativeReachabilitySnapshot>;
+  watchReachability(afterGeneration: number, timeoutMs: number): Promise<number>;
   watchConnectivity(
     afterGeneration: number,
     timeoutMs: number,

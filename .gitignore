@@ -44,3 +44,6 @@ apps/desktop/release-sources/
 packages/cli/release/
 packages/cli/.development/
 release/asf/
+
+# Astro type generation
+.astro

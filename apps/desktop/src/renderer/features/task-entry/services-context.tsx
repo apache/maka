@@ -17,24 +17,13 @@
  * under the License.
  */
 
-import { createContext, useContext, type ReactNode } from 'react';
+import { createServicesContext } from '../../application/contracts/feature-services.js';
 import type { TaskEntryServices } from './ports.js';
 
-const TaskEntryServicesContext = createContext<TaskEntryServices | null>(null);
+const { Provider, useServices } = createServicesContext<TaskEntryServices>('TaskEntryServicesProvider');
 
-export function TaskEntryServicesProvider(props: {
-  services: TaskEntryServices;
-  children?: ReactNode;
-}) {
-  return (
-    <TaskEntryServicesContext.Provider value={props.services}>
-      {props.children}
-    </TaskEntryServicesContext.Provider>
-  );
-}
+export const TaskEntryServicesProvider = Provider;
 
 export function useTaskEntryServices(): TaskEntryServices {
-  const services = useContext(TaskEntryServicesContext);
-  if (!services) throw new Error('TaskEntryServicesProvider is missing');
-  return services;
+  return useServices();
 }

@@ -142,11 +142,7 @@ impl PeerEndpoint {
     }
 
     #[napi]
-    pub async fn watch_reachability(
-        &self,
-        after_generation: u32,
-        timeout_ms: u32,
-    ) -> Result<PeerReachabilitySnapshot> {
+    pub async fn watch_reachability(&self, after_generation: u32, timeout_ms: u32) -> Result<u32> {
         if !(1..=300_000).contains(&timeout_ms) {
             return Err(Error::new(
                 Status::InvalidArg,
@@ -154,18 +150,17 @@ impl PeerEndpoint {
             ));
         }
         let mut receiver = self.reachability.clone();
-        if receiver.borrow().generation == after_generation {
-            match tokio::time::timeout(
-                Duration::from_millis(u64::from(timeout_ms)),
-                receiver.changed(),
-            )
-            .await
-            {
-                Ok(Ok(())) | Err(_) => {}
-                Ok(Err(_)) => return Err(native_closed_error()),
-            }
+        match tokio::time::timeout(
+            Duration::from_millis(u64::from(timeout_ms)),
+            receiver.wait_for(|snapshot| snapshot.generation != after_generation),
+        )
+        .await
+        {
+            Ok(Ok(snapshot)) => return Ok(snapshot.generation),
+            Ok(Err(_)) => return Err(native_closed_error()),
+            Err(_) => {}
         }
-        Ok(reachability_snapshot(&receiver.borrow()))
+        Ok(receiver.borrow().generation)
     }
 
     #[napi(getter)]
@@ -186,16 +181,15 @@ impl PeerEndpoint {
             ));
         }
         let mut receiver = self.connectivity.clone();
-        if receiver.borrow().generation == after_generation {
-            match tokio::time::timeout(
-                Duration::from_millis(u64::from(timeout_ms)),
-                receiver.changed(),
-            )
-            .await
-            {
-                Ok(Ok(())) | Err(_) => {}
-                Ok(Err(_)) => return Err(native_closed_error()),
-            }
+        match tokio::time::timeout(
+            Duration::from_millis(u64::from(timeout_ms)),
+            receiver.wait_for(|snapshot| snapshot.generation != after_generation),
+        )
+        .await
+        {
+            Ok(Ok(snapshot)) => return Ok(connectivity_snapshot(&snapshot)),
+            Ok(Err(_)) => return Err(native_closed_error()),
+            Err(_) => {}
         }
         Ok(connectivity_snapshot(&receiver.borrow()))
     }
@@ -773,6 +767,78 @@ fn native_closed_error() -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn endpoint_for_watch_tests() -> (
+        PeerEndpoint,
+        watch::Sender<engine::ReachabilitySnapshot>,
+        watch::Sender<engine::ConnectivitySnapshot>,
+    ) {
+        let (reachability_tx, reachability) = watch::channel(Default::default());
+        let (connectivity_tx, connectivity) = watch::channel(Default::default());
+        let (commands, _command_rx) = mpsc::channel(1);
+        let (_incoming_tx, incoming) = mpsc::channel(1);
+        let (_mesh_incoming_tx, mesh_incoming) = mpsc::channel(1);
+        let (_terminal_tx, terminal) = mpsc::channel(1);
+        (
+            PeerEndpoint {
+                peer_id: PeerId::random().to_string(),
+                reachability,
+                connectivity,
+                transit_snapshot: Arc::new(RwLock::new(Default::default())),
+                commands,
+                incoming: Arc::new(AsyncMutex::new(incoming)),
+                mesh_incoming: Arc::new(AsyncMutex::new(mesh_incoming)),
+                terminal: Arc::new(AsyncMutex::new(terminal)),
+                thread: Arc::new(Mutex::new(None)),
+            },
+            reachability_tx,
+            connectivity_tx,
+        )
+    }
+
+    #[tokio::test]
+    async fn reachability_watch_waits_for_a_newer_generation() {
+        let (endpoint, reachability, _) = endpoint_for_watch_tests();
+        reachability.send_replace(engine::ReachabilitySnapshot {
+            generation: 1,
+            ..Default::default()
+        });
+        let watched = endpoint.watch_reachability(1, 1_000);
+        tokio::pin!(watched);
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut watched)
+                .await
+                .is_err()
+        );
+        reachability.send_replace(engine::ReachabilitySnapshot {
+            generation: 2,
+            ..Default::default()
+        });
+        assert_eq!(watched.await.expect("reachability watch"), 2);
+    }
+
+    #[tokio::test]
+    async fn connectivity_watch_waits_for_a_newer_generation() {
+        let (endpoint, _, connectivity) = endpoint_for_watch_tests();
+        connectivity.send_replace(engine::ConnectivitySnapshot {
+            generation: 1,
+            ..Default::default()
+        });
+        let watched = endpoint.watch_connectivity(1, 1_000);
+        tokio::pin!(watched);
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut watched)
+                .await
+                .is_err()
+        );
+        connectivity.send_replace(engine::ConnectivitySnapshot {
+            generation: 2,
+            ..Default::default()
+        });
+        assert_eq!(watched.await.expect("connectivity watch").generation, 2);
+    }
 
     #[test]
     fn transit_relay_addresses_are_bound_to_the_declared_peer() {

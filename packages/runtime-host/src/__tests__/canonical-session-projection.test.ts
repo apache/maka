@@ -22,7 +22,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import type { AgentRunHeader } from '@maka/core/agent-run';
+import { seedInvocation } from '@maka/runtime/test-only/invocation-fixture';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import {
   openInteractiveExecutionStoresForWrite,
@@ -90,18 +90,28 @@ test('projects the canonical root lifecycle and the attachment queue from real S
     assert.ok(admittedProjection);
     assert.equal(admittedProjection.rootTurn?.status, 'admitted');
 
-    await stores.agentRunStore.createRun(runHeader(session.id));
-    await stores.agentRunStore.appendEvent(session.id, 'run-1', {
-      type: 'run_started',
-      id: 'run-started-1',
+    await seedInvocation(stores.runtimeEventStore, {
       sessionId: session.id,
-      turnId: 'turn-1',
       runId: 'run-1',
-      ts: 11,
-    });
-    await stores.agentRunStore.updateRun(session.id, 'run-1', {
-      status: 'running',
-      updatedAt: 11,
+      turnId: 'turn-1',
+      openedAt: 10,
+      opening: {
+        route: {
+          provenance: 'runtime',
+          backendKind: 'fake',
+          llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+          llmConnectionSlug: 'fake',
+          modelId: 'fake-model',
+        },
+        configuration: {
+          cwd: '/private/runtime-cwd',
+          permissionMode: 'ask',
+          collaborationMode: 'agent',
+          orchestrationMode: 'default',
+          orchestrationSource: 'session',
+          toolMode: 'direct',
+        },
+      },
     });
 
     messages.reserveRootTurn({ sessionId: session.id, turnId: 'turn-1', runId: 'run-1' });
@@ -130,11 +140,6 @@ test('projects the canonical root lifecycle and the attachment queue from real S
 
     const terminal = terminalEvent(session.id);
     await stores.runtimeEventStore.appendRuntimeEvent(session.id, 'run-1', terminal);
-    await stores.agentRunStore.updateRun(session.id, 'run-1', {
-      status: 'completed',
-      updatedAt: 12,
-      completedAt: 12,
-    });
     const completed = await reader.read(session.id);
     assert.ok(completed);
     assert.deepEqual(completed.rootTurn, {
@@ -397,13 +402,6 @@ test('projects a failed Turn message from the canonical terminal event', async (
     );
     await stores.runtimeEventStore.appendRuntimeEvent(sessionId, 'run-1', errorEvent);
     await stores.runtimeEventStore.appendRuntimeEvent(sessionId, 'run-1', terminalEvent);
-    await stores.agentRunStore.updateRun(sessionId, 'run-1', {
-      status: 'failed',
-      updatedAt: 13,
-      completedAt: 13,
-      failureClass: 'provider_error',
-      failureMessage: 'stale Run header failure',
-    });
 
     const reader = new CanonicalSessionProjectionReader({
       stores,
@@ -469,12 +467,6 @@ test('a legacy context_budget_exhausted terminal event still projects, as a cont
       },
     };
     await stores.runtimeEventStore.appendRuntimeEvent(sessionId, 'run-1', terminalEvent);
-    await stores.agentRunStore.updateRun(sessionId, 'run-1', {
-      status: 'failed',
-      updatedAt: 13,
-      completedAt: 13,
-      failureClass: 'context_budget_exhausted',
-    });
 
     const reader = new CanonicalSessionProjectionReader({
       stores,
@@ -637,24 +629,6 @@ function sessionInput(root: string) {
   };
 }
 
-function runHeader(sessionId: string): AgentRunHeader {
-  return {
-    runId: 'run-1',
-    invocationId: 'run-1',
-    sessionId,
-    turnId: 'turn-1',
-    status: 'created',
-    backendKind: 'fake',
-    llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
-    llmConnectionSlug: 'fake',
-    modelId: 'fake-model',
-    cwd: '/private/runtime-cwd',
-    permissionMode: 'ask',
-    createdAt: 10,
-    updatedAt: 10,
-  };
-}
-
 async function createRunningRoot(
   root: string,
   stores: ExecutionStoresWriter<'interactive'>,
@@ -672,18 +646,28 @@ async function createRunningRoot(
     sourceMessages: [],
     admittedAt: 10,
   });
-  await stores.agentRunStore.createRun(runHeader(session.id));
-  await stores.agentRunStore.appendEvent(session.id, 'run-1', {
-    type: 'run_started',
-    id: 'run-started-1',
+  await seedInvocation(stores.runtimeEventStore, {
     sessionId: session.id,
-    turnId: 'turn-1',
     runId: 'run-1',
-    ts: 11,
-  });
-  await stores.agentRunStore.updateRun(session.id, 'run-1', {
-    status: 'running',
-    updatedAt: 11,
+    turnId: 'turn-1',
+    openedAt: 10,
+    opening: {
+      route: {
+        provenance: 'runtime',
+        backendKind: 'fake',
+        llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        llmConnectionSlug: 'fake',
+        modelId: 'fake-model',
+      },
+      configuration: {
+        cwd: '/private/runtime-cwd',
+        permissionMode: 'ask',
+        collaborationMode: 'agent',
+        orchestrationMode: 'default',
+        orchestrationSource: 'session',
+        toolMode: 'direct',
+      },
+    },
   });
   return { sessionId: session.id, rootAdmissions };
 }

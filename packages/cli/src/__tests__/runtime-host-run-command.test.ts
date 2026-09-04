@@ -748,6 +748,33 @@ describe('Runtime Host maka run adapter', () => {
     ]);
   });
 
+  test('fails and stops instead of dropping an interactive form', async () => {
+    const fixture = runFixture({
+      turnEvents: formEvents('turn-1'),
+      pendingInteractions: [pendingForm('turn-1')],
+      pendingAfterTurnStarts: true,
+    });
+    const session = await fixture.context.runtime.createSession({
+      cwd: '/workspace',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      permissionMode: 'ask',
+    });
+
+    await assert.rejects(
+      collect(
+        fixture.context.runtime.sendMessage(session.id, {
+          turnId: 'turn-1',
+          text: 'configure deployment',
+        }),
+      ),
+      new Error('interactive user forms are unavailable in non-interactive mode'),
+    );
+    assert.deepEqual(fixture.exactTurnStops, [
+      { sessionId: session.id, turnId: 'turn-1', runId: 'run-1' },
+    ]);
+  });
+
   test('stops Graph Mode when a successor waits for an interactive question', async () => {
     const fixture = runFixture({
       graph: true,
@@ -1268,6 +1295,20 @@ async function* questionEvents(turnId: string): AsyncIterable<SessionEvent> {
     ],
   };
 }
+
+async function* formEvents(turnId: string): AsyncIterable<SessionEvent> {
+  yield {
+    type: 'form_request',
+    id: `${turnId}-form`,
+    turnId,
+    ts: 1,
+    requestId: 'form-1',
+    toolUseId: 'tool-1',
+    message: 'Configure deployment',
+    requester: { name: 'deploy', source: 'Acme MCP' },
+    fields: [{ kind: 'string', name: 'version', label: 'Version', required: true }],
+  };
+}
 function pendingQuestion(turnId: string): InteractionPendingSnapshot {
   return {
     schemaVersion: 1,
@@ -1282,6 +1323,26 @@ function pendingQuestion(turnId: string): InteractionPendingSnapshot {
       kind: 'question',
       toolUseId: 'tool-question',
       questions: [{ question: 'Continue?', options: [{ label: 'Yes' }] }],
+    },
+  };
+}
+
+function pendingForm(turnId: string): InteractionPendingSnapshot {
+  return {
+    schemaVersion: 1,
+    interactionId: 'form-1',
+    sessionId: 'session-created',
+    turnId,
+    runId: turnId === 'turn-1' ? 'run-1' : 'run-2',
+    revision: 1,
+    status: 'pending',
+    outcome: null,
+    request: {
+      kind: 'form',
+      toolUseId: 'tool-form',
+      message: 'Configure deployment',
+      requester: { name: 'deploy', source: 'Acme MCP' },
+      fields: [{ kind: 'string', name: 'version', label: 'Version', required: true }],
     },
   };
 }

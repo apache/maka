@@ -2218,9 +2218,9 @@ describe('renderer architecture checker fixtures', () => {
     const appShellPath = 'src/renderer/app-shell.tsx';
     const appShellSource = `
       import { AlphaHost } from './features/alpha/index.js';
-      import type { SessionScope } from './application/contracts/session-scope.js';
-      export function AppShell(props: { readonly scope: SessionScope }) {
-        return <AlphaHost scope={props.scope} />;
+      import { defaultSessionScope } from './application/contracts/session-scope.js';
+      export function AppShell() {
+        return <AlphaHost scope={defaultSessionScope} />;
       }
     `;
     const currentDebt = debtForSource(appShellSource, appShellPath);
@@ -2256,7 +2256,7 @@ describe('renderer architecture checker fixtures', () => {
           export function AlphaHost(_props: unknown) { return null; }
         `,
         'src/renderer/application/contracts/session-scope.ts': `
-          export interface SessionScope { readonly sessionId?: string }
+          export const defaultSessionScope = { sessionId: undefined };
         `,
       },
       (desktopRoot) => {
@@ -2469,6 +2469,195 @@ describe('validated copy catalog dependencies', () => {
           violationsFor(desktopRoot, currentConfig, baseWithoutCatalog(currentConfig)),
           [],
         );
+      },
+    );
+  });
+
+  it('exempts a validated catalog\'s own type-only contract imports from dependency debt', async () => {
+    await withDesktopFixture(
+      transitiveAppShellFiles(
+        `
+          import { FIXTURE_COPY } from './locales/fixture-copy.js';
+          export const legacySessionHelper = FIXTURE_COPY.en.byCode.missing;
+        `,
+        {
+          [CATALOG_PATH]: `
+            import type { UiCatalog } from '@maka/core/ui-locale';
+            import type { FixtureErrorCode } from '../fixture-contract.js';
+            export interface FixtureCopy { readonly byCode: Record<FixtureErrorCode, string>; }
+            export const FIXTURE_COPY = {
+              en: { byCode: { missing: 'Missing' } },
+              zh: { byCode: { missing: '缺失' } },
+            } satisfies UiCatalog<FixtureCopy>;
+          `,
+          'src/renderer/fixture-contract.ts': `export type FixtureErrorCode = 'missing';`,
+        },
+      ),
+      (desktopRoot) => {
+        const currentConfig = generateArchitectureConfig(desktopRoot, catalogSeedConfig());
+        const baseConfig = baseWithoutCatalog(currentConfig);
+        delete baseConfig.legacyAppShell.closure['src/renderer/fixture-contract.ts'];
+        baseConfig.legacyRendererFiles = baseConfig.legacyRendererFiles.filter(
+          (path) => path !== 'src/renderer/fixture-contract.ts',
+        );
+        const violations = violationsFor(desktopRoot, currentConfig, baseConfig);
+        assert.ok(
+          !violations.some((violation) => violation.includes('fixture-copy')),
+          `type-only contract import must carry no debt, received:\n${violations.join('\n')}`,
+        );
+      },
+    );
+  });
+
+  const IMPORT_FORMS = [
+    [`import type { A } from './x.js'; export type B = A;`, 0, 0, {}],
+    [`import { type A } from './x.js'; export type B = A;`, 0, 0, {}],
+    [`export type { A } from './x.js';`, 0, 0, {}],
+    [`export type * from './x.js';`, 0, 0, {}],
+    [`export type B = import('./x.js').A;`, 0, 0, {}],
+    [`import { a, type A } from './x.js'; export const b: A = a;`, 1, 1, { './x.js': 1 }],
+    [`import './x.js';`, 1, 0, { './x.js': 1 }],
+    [`export * from './x.js';`, 0, 0, { './x.js': 1 }],
+  ];
+
+  for (const [source, importDeclarations, importSpecifiers, dependencyPaths] of IMPORT_FORMS) {
+    it(`prices only the runtime part of \`${source.split(';')[0]}\``, () => {
+      const debt = debtForSource(source, 'src/renderer/fixture.ts');
+      assert.deepEqual(
+        { importDeclarations: debt.importDeclarations, importSpecifiers: debt.importSpecifiers, dependencyPaths: debt.dependencyPaths },
+        { importDeclarations, importSpecifiers, dependencyPaths },
+      );
+    });
+  }
+
+  it('records no dependency debt for a new type-only import anywhere in the closure', async () => {
+    await withDesktopFixture(
+      transitiveAppShellFiles(
+        `
+          import type { LegacyShape } from './legacy-session-store.js';
+          export const legacySessionHelper: LegacyShape = { kind: 'legacy' };
+        `,
+        {
+          'src/renderer/legacy-session-store.ts': `export interface LegacyShape { kind: string }`,
+        },
+      ),
+      (desktopRoot) => {
+        const currentConfig = generateArchitectureConfig(desktopRoot, catalogSeedConfig());
+        const baseConfig = structuredClone(currentConfig);
+        baseConfig.legacyAppShell.closure[TRANSITIVE_LEGACY_HELPER_PATH].dependencyPaths = {};
+        delete baseConfig.legacyAppShell.closure['src/renderer/legacy-session-store.ts'];
+        baseConfig.legacyRendererFiles = baseConfig.legacyRendererFiles.filter(
+          (path) => path !== 'src/renderer/legacy-session-store.ts',
+        );
+        const violations = violationsFor(desktopRoot, currentConfig, baseConfig);
+        assert.ok(
+          !violations.some((violation) => violation.includes('dependency debt')),
+          `type-only edge must carry no debt, received:\n${violations.join('\n')}`,
+        );
+      },
+    );
+  });
+
+  it('starts counting the moment a type-only edge turns into a runtime import', async () => {
+    await withDesktopFixture(
+      transitiveAppShellFiles(
+        `
+          import { legacySessionStore } from './legacy-session-store.js';
+          export const legacySessionHelper = legacySessionStore;
+        `,
+        {
+          'src/renderer/legacy-session-store.ts': `export const legacySessionStore = 'legacy';`,
+        },
+      ),
+      (desktopRoot) => {
+        const currentConfig = generateArchitectureConfig(desktopRoot, catalogSeedConfig());
+        const baseConfig = structuredClone(currentConfig);
+        // The base recorded the same edge as type-only: no debt entry.
+        baseConfig.legacyAppShell.closure[TRANSITIVE_LEGACY_HELPER_PATH].dependencyPaths = {};
+        const violations = violationsFor(desktopRoot, currentConfig, baseConfig);
+        assertHasViolation(
+          violations,
+          /^src\/renderer\/legacy-session-helper\.ts: new dependency debt \.\/legacy-session-store\.js$/u,
+        );
+      },
+    );
+  });
+
+  const NEW_EDGE_TARGETS = [
+    ['src/renderer/application/contracts/fixture-diagnostics.ts', 'free'],
+    ['src/renderer/shell/fixture-shell.ts', 'free'],
+    ['src/renderer/features/alpha/index.ts', 'free'],
+    ['src/renderer/application/sessions/fixture-service.ts', 'priced'],
+    ['src/renderer/features/alpha/fixture-internal.ts', 'priced'],
+  ];
+
+  for (const [targetPath, pricing] of NEW_EDGE_TARGETS) {
+    it(`${pricing === 'free' ? 'exempts' : 'prices'} a new legacy edge to ${targetPath}`, async () => {
+      const specifier = `./${targetPath.slice('src/renderer/'.length).replace(/\.ts$/u, '.js')}`;
+      await withDesktopFixture(
+        transitiveAppShellFiles(
+          `
+            import { reportFixture } from '${specifier}';
+            export const legacySessionHelper = reportFixture('legacy');
+          `,
+          { [targetPath]: `export function reportFixture(scope: string): string { return scope; }` },
+        ),
+        (desktopRoot) => {
+          const currentConfig = generateArchitectureConfig(desktopRoot, catalogSeedConfig());
+          const baseConfig = structuredClone(currentConfig);
+          baseConfig.legacyAppShell.closure[TRANSITIVE_LEGACY_HELPER_PATH].dependencyPaths = {};
+          const violations = violationsFor(desktopRoot, currentConfig, baseConfig);
+          const priced = violations.some((violation) =>
+            violation.startsWith(`${TRANSITIVE_LEGACY_HELPER_PATH}: new dependency debt`),
+          );
+          assert.equal(priced, pricing === 'priced', violations.join('\n'));
+        },
+      );
+    });
+  }
+
+  it('rejects a legacy type-only edge into an application implementation as a hard violation', async () => {
+    await withDesktopFixture(
+      transitiveAppShellFiles(
+        `
+          import type { FixtureService } from './application/sessions/fixture-service.js';
+          export const legacySessionHelper: FixtureService = { kind: 'legacy' };
+        `,
+        { 'src/renderer/application/sessions/fixture-service.ts': `export interface FixtureService { kind: string }` },
+      ),
+      (desktopRoot) => {
+        const currentConfig = generateArchitectureConfig(desktopRoot, catalogSeedConfig());
+        const violations = violationsFor(desktopRoot, currentConfig, structuredClone(currentConfig));
+        assertHasViolation(
+          violations,
+          /^src\/renderer\/legacy-session-helper\.ts: legacy renderer code imports application implementation instead of a public entry: \.\/application\/sessions\/fixture-service\.js$/u,
+        );
+        assert.ok(!violations.some((violation) => violation.includes('dependency debt')), violations.join('\n'));
+      },
+    );
+  });
+
+  it('keeps pricing every non-catalog edge for a root entry', async () => {
+    const source = `
+      import { AlphaFeature } from './features/alpha/index.js';
+      import { FIXTURE_COPY } from './locales/fixture-copy.js';
+      export const main = [AlphaFeature, FIXTURE_COPY];
+    `;
+    await withDesktopFixture(
+      {
+        [RENDERER_ENTRY_PATH]: source,
+        'src/renderer/features/alpha/index.ts': `export const AlphaFeature = 'alpha';`,
+        [CATALOG_PATH]: catalogSource(),
+      },
+      (desktopRoot) => {
+        const seedConfig = rendererEntrySeedConfig();
+        seedConfig.legacyGrowthDirectories = ['src/renderer/locales'];
+        const currentConfig = generateArchitectureConfig(desktopRoot, seedConfig);
+        const baseConfig = structuredClone(currentConfig);
+        baseConfig.rootDebt[RENDERER_ENTRY_PATH].dependencyPaths = {};
+        const violations = violationsFor(desktopRoot, currentConfig, baseConfig);
+        assertHasViolation(violations, /^src\/renderer\/main\.tsx: new dependency debt \.\/features\/alpha\/index\.js$/u);
+        assert.ok(!violations.some((violation) => violation.includes('fixture-copy')), violations.join('\n'));
       },
     );
   });

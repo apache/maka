@@ -191,7 +191,7 @@ function peerWith(streams: RuntimeHostPeerNativeStream[]): RuntimeHostPeerClient
   } as const;
   return {
     reachability: () => reachability,
-    watchReachability: async () => reachability,
+    watchReachability: async () => reachability.generation,
     identity: () => ({ peerId: 'peer', listenAddresses: [], coordinationRelays: [] }),
     signIdentity: async () => {
       throw new Error('not used');

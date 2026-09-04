@@ -36,6 +36,7 @@ import {
   bindRuntimeInteractionRun,
   type RuntimeInteractionAuthority,
   type RuntimeInteractionRunOwner,
+  type RuntimeFormContinuation,
   type RuntimeSandboxBoundaryContinuation,
   type RuntimeUserQuestionContinuation,
 } from '../interaction-authority.js';
@@ -89,6 +90,8 @@ describe('Runtime Interaction authority seam', () => {
             runId: 'wrong-run',
             acceptSandboxBoundaryRequest: async () => {},
             acceptUserQuestionRequest: async () => {},
+            acceptFormRequest: async () => {},
+            withdrawFormRequest: async () => {},
             close: async (reason) => {
               log.push(`close:${reason}`);
             },
@@ -199,6 +202,72 @@ describe('Runtime Interaction authority seam', () => {
     });
 
     runtime.endTurn();
+    await binding.close('turn_terminal');
+    await binding.settleLocalClosures();
+    binding.release();
+  });
+
+  test('publishes a hosted form and resumes only after its exact canonical continuation settles', async () => {
+    let form: RuntimeFormContinuation | undefined;
+    const events: SessionEvent[] = [];
+    const binding = await bindRuntimeInteractionRun(
+      authority({
+        acceptFormRequest: async ({ continuation }) => {
+          form = continuation;
+        },
+      }),
+      RUN,
+    );
+    const runtime = toolRuntime(events, binding);
+    const tool: MakaTool<Record<string, never>> = {
+      name: 'SyntheticForm',
+      description: 'Exercise the form Interaction seam.',
+      parameters: {},
+      nesting: 'direct_only',
+      impl: (_input, context) =>
+        context.requestUserForm!({
+          message: 'Choose settings',
+          requester: { name: 'deploy' },
+          fields: [
+            {
+              kind: 'integer',
+              name: 'replicas',
+              label: 'Replicas',
+              required: true,
+              minimum: 1,
+            },
+          ],
+        }),
+    };
+    const pending = settleTool(
+      runtime,
+      tool,
+      RUN.turnId,
+      durableEventSink(events),
+    )({}, { toolCallId: 'tool-form', abortSignal: new AbortController().signal });
+
+    await waitFor(() => events.some((event) => event.type === 'form_request'));
+    assert.ok(form);
+    assert.throws(
+      () =>
+        runtime.respondToUserForm({
+          requestId: form!.requestId,
+          action: 'accept',
+          values: { replicas: 2 },
+        }),
+      RuntimeInteractionInvariantError,
+    );
+    await form!.applyAnswer({ action: 'accept', values: { replicas: 2 } });
+    assert.deepEqual(await pending, { action: 'accept', values: { replicas: 2 } });
+    await waitFor(() => events.some((event) => event.type === 'form_answer_ack'));
+    assert.equal(
+      await binding.canResumeAfterSettlementAck(
+        events.find((event) => event.type === 'form_answer_ack')!,
+      ),
+      true,
+    );
+
+    await runtime.endTurn();
     await binding.close('turn_terminal');
     await binding.settleLocalClosures();
     binding.release();
@@ -534,6 +603,8 @@ function authority(
       close: async () => {},
       release: () => {},
       ...overrides,
+      acceptFormRequest: overrides.acceptFormRequest ?? (async () => {}),
+      withdrawFormRequest: overrides.withdrawFormRequest ?? (async () => {}),
     }),
   };
 }

@@ -27,7 +27,6 @@ import { spawn } from 'node:child_process';
 import { describe, test } from 'node:test';
 
 import type { RuntimeEvent } from '@maka/core/runtime-event';
-import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
 import { createWorkspaceRuntimeStore } from '@maka/storage/runtime-event-persistence';
 
 import {
@@ -59,26 +58,6 @@ if (process.env[CRASH_CHILD_ENV] === '1') {
             0,
             committedEventCount(failpoint.committedPrefix),
           );
-
-          // Production creates the run header before any RuntimeEvent append. Keep the
-          // crash boundary focused on the child event writer while preserving the
-          // storage identity contract used when the ledger is reopened.
-          const runStore = createSqliteAgentRunStore(workspaceRoot);
-          await runStore.createRun({
-            runId,
-            invocationId: `invocation-${runId}`,
-            sessionId,
-            turnId: `turn-${runId}`,
-            status: 'running',
-            backendKind: 'fake',
-            llmConnectionSlug: 'fake',
-            modelId: 'fake-model',
-            cwd: workspaceRoot,
-            permissionMode: 'ask',
-            createdAt: 1,
-            updatedAt: 1,
-          });
-          runStore.close?.();
 
           await crashWriterAfterCommit({
             workspaceRoot,

@@ -32,6 +32,7 @@ import type {
   SandboxBoundaryRequestEvent,
   ClientCapabilityRequestEvent,
   ContextCompactionOutcome,
+  FormRequestEvent,
   QuoteRef,
   SessionEvent,
   UserQuestionRequestEvent,
@@ -43,6 +44,7 @@ import type { SessionSummary, StoredMessage } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { UserQuestionResponse } from '@maka/core/user-question';
+import type { InteractionFormResponse } from '@maka/core/interaction';
 import type { ContextCompactResult } from '@maka/runtime-host/protocol';
 import { useWorkbarServices } from '../../services-context.js';
 import type { WorkbarIngestInput } from '../../ports.js';
@@ -169,10 +171,11 @@ export interface UseQuoteCompanionResult {
   error: string | null;
   /** The model the companion inherited from the source (shown read-only). */
   activeModel: { llmConnectionSlug: string; model: string } | undefined;
-  /** Pending sandbox-boundary / user-question prompt raised by the companion's run. */
+  /** Pending sandbox-boundary / question / form prompt raised by the companion's run. */
   activeSandboxBoundary: SandboxBoundaryRequestEvent | undefined;
   activeClientCapability: ClientCapabilityRequestEvent | undefined;
   activeQuestion: UserQuestionRequestEvent | undefined;
+  activeForm: FormRequestEvent | undefined;
   /** Runs `/compact` against the committed companion fork when it is idle. */
   compact: () => Promise<boolean>;
   /** Returns whether the send was accepted; false leaves the draft + staged
@@ -186,6 +189,7 @@ export interface UseQuoteCompanionResult {
   respondToSandboxBoundary: (response: SandboxBoundaryResponse) => Promise<void>;
   respondToClientCapability: (response: ClientCapabilityResponse) => Promise<void>;
   respondToUserQuestion: (response: UserQuestionResponse) => Promise<void>;
+  respondToUserForm: (response: InteractionFormResponse) => Promise<void>;
 }
 
 /** The last streamed assistant message id of a turn — the settlement anchor. */
@@ -1197,6 +1201,19 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     [mountedRef, sideChat],
   );
 
+  const respondToUserForm = useCallback(
+    async (response: InteractionFormResponse): Promise<void> => {
+      const id = companionIdRef.current;
+      if (!mountedRef.current || !id) return;
+      try {
+        await sideChat.respondToUserForm(id, response);
+      } catch {
+        if (mountedRef.current) setError(copyRef.current.errors.respondFailed);
+      }
+    },
+    [mountedRef, sideChat],
+  );
+
   // Only the companion's own turns render; the forked parent history stays as
   // hidden model context.
   const messages = allMessages.filter(
@@ -1226,6 +1243,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     activeInteraction?.type === 'client_capability_request' ? activeInteraction : undefined;
   const activeQuestion =
     activeInteraction?.type === 'user_question_request' ? activeInteraction : undefined;
+  const activeForm = activeInteraction?.type === 'form_request' ? activeInteraction : undefined;
 
   return {
     companionSession: companion,
@@ -1242,6 +1260,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     activeSandboxBoundary,
     activeClientCapability,
     activeQuestion,
+    activeForm,
     compact,
     send,
     steer,
@@ -1251,5 +1270,6 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     respondToSandboxBoundary,
     respondToClientCapability,
     respondToUserQuestion,
+    respondToUserForm,
   };
 }

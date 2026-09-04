@@ -67,6 +67,7 @@ test('keeps loading progress visible while an irreversible import settles', asyn
     cancelImport: async () => 'settling',
     readInvitationClipboard: async () => '',
     listMounts: async () => [],
+    subscribeMountChanges: () => () => undefined,
     removeMount: async () => undefined,
     requestTurn: async () => {
       throw new Error('unused');
@@ -124,6 +125,7 @@ test('closes as a retained background recovery instead of reporting a failed joi
     cancelImport: async () => 'settling',
     readInvitationClipboard: async () => '',
     listMounts: async () => [],
+    subscribeMountChanges: () => () => undefined,
     removeMount: async () => undefined,
     requestTurn: async () => {
       throw new Error('unused');
@@ -171,6 +173,73 @@ test('closes as a retained background recovery instead of reporting a failed joi
   assert.equal(imported, 1);
   assert.equal(closed, 1);
   assert.doesNotMatch(document.body.textContent, /connectionFailed/u);
+});
+
+test('identifies a retained shared task and its selected peer transport', async () => {
+  const services: SessionCollaborationServices = {
+    importInvitation: async () => {
+      throw new Error('unused');
+    },
+    cancelImport: async () => 'settling',
+    readInvitationClipboard: async () => '',
+    listMounts: async () => [{
+      mountId: 'shared-1',
+      name: 'Shared Host',
+      hostId: 'a'.repeat(64),
+      readiness: 'ready',
+      peerPath: { kind: 'direct', transport: 'webrtc' },
+      session: {
+        kind: 'shared_session',
+        id: 'session-1',
+        revision: 1,
+        createdAt: 1,
+        activityAt: 2,
+        name: 'Shared task',
+        status: 'active',
+      },
+    }],
+    subscribeMountChanges: () => () => undefined,
+    removeMount: async () => undefined,
+    requestTurn: async () => {
+      throw new Error('unused');
+    },
+    getTurnRequests: async () => ({ canRequestTurns: false, requests: [] }),
+    acknowledgeTurnRequest: async () => ({ acknowledged: false }),
+    withdrawTurnRequest: async () => ({ withdrawn: false }),
+    getPendingTurnRequests: async () => [],
+    decideTurnRequest: async () => {
+      throw new Error('unused');
+    },
+    createOperationId: () => 'operation-1',
+  };
+  const { document } = installDom();
+  const container = document.querySelector('#root');
+  assert.ok(container);
+  mountedRoot = createRoot(container);
+  await act(async () => {
+    mountedRoot?.render(
+      createElement(LocaleProvider, {
+        locale: 'en',
+        children: createElement(AstryxLocaleProvider, {
+          children: createElement(ToastProvider, {
+            children: createElement(SessionCollaborationServicesProvider, {
+              services,
+              children: createElement(SessionCollaborationJoinDialog, {
+                copy: testCopy(),
+                onImported: assert.fail,
+                onClose: assert.fail,
+              }),
+            }),
+          }),
+        }),
+      }),
+    );
+    await Promise.resolve();
+  });
+
+  assert.match(document.body.textContent, /Shared task/u);
+  assert.match(document.body.textContent, /Shared Host · mountConnected/u);
+  assert.match(document.body.textContent, /WebRTC/u);
 });
 
 function installDom(): { document: Document } {

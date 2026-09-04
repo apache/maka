@@ -655,6 +655,48 @@ describe('single live-turn handoff', () => {
     assert.equal(interactions.get()['session-1']?.[0]?.requestId, 'request-1');
   });
 
+  it('queues and retires a form at the Host answer acknowledgement', () => {
+    const liveTurns = createStateSetter<Record<string, LiveTurnProjection>>({
+      'session-1': armLiveTurn('turn-1'),
+    });
+    const ref = { current: liveTurns.get() };
+    const interactions = createStateSetter<InteractionQueues>({});
+    const handlers = createAppShellSessionEventHandlers({
+      uiLocale: 'en',
+      activeIdRef: { current: 'session-1' },
+      liveTurnBySessionRef: ref,
+      refreshMessages: async () => true,
+      refreshSessions: async () => [],
+      setLiveTurnBySession: liveTurns.set,
+      setInteractionBySession: interactions.set,
+      showModelSetupToast: () => {},
+      toastApi: { error: () => {} },
+    });
+    handlers.handleEvent('session-1', {
+      type: 'form_request',
+      id: 'form-event',
+      turnId: 'turn-1',
+      ts: 1,
+      requestId: 'form-1',
+      toolUseId: 'tool-1',
+      message: 'Configure deployment',
+      requester: { name: 'deploy' },
+      fields: [{ kind: 'boolean', name: 'confirm', label: 'Confirm', required: true }],
+    });
+    assert.equal(interactions.get()['session-1']?.[0]?.requestId, 'form-1');
+
+    handlers.handleEvent('session-1', {
+      type: 'form_answer_ack',
+      id: 'form-ack',
+      turnId: 'turn-1',
+      ts: 2,
+      requestId: 'form-1',
+      toolUseId: 'tool-1',
+    });
+    assert.deepEqual(interactions.get()['session-1'], []);
+    assert.equal(liveTurns.get()['session-1']?.terminal, undefined);
+  });
+
   it('hands an aborted projection over only after persisted messages cover it', async () => {
     const liveTurns = createStateSetter<Record<string, LiveTurnProjection>>({
       'session-1': {

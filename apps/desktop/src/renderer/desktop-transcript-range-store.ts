@@ -98,6 +98,101 @@ export function createDesktopTranscriptRangeController(
   };
 }
 
+export interface DesktopTranscriptReconnectRecovery {
+  transcriptFailed(error: unknown): void;
+  observationChanged(phase: 'pending' | 'ready'): void;
+  close(): void;
+}
+
+export function createDesktopTranscriptReconnectRecovery(options: {
+  reload(): Promise<void>;
+  onError(error: unknown): void;
+}): DesktopTranscriptReconnectRecovery {
+  let closed = false;
+  let observationReady = false;
+  let readinessGeneration = 0;
+  let needsRecovery = false;
+  let recoveryTask: Promise<void> | undefined;
+
+  const recover = () => {
+    if (closed || !observationReady || !needsRecovery || recoveryTask) return;
+    const admittedReadinessGeneration = readinessGeneration;
+    needsRecovery = false;
+    const task = Promise.resolve().then(async () => {
+      try {
+        if (closed) return;
+        await options.reload();
+      } catch (error) {
+        if (closed) return;
+        needsRecovery = true;
+        options.onError(error);
+      }
+    });
+    recoveryTask = task;
+    const settle = () => {
+      if (recoveryTask !== task) return;
+      recoveryTask = undefined;
+      if (
+        needsRecovery
+        && observationReady
+        && readinessGeneration > admittedReadinessGeneration
+      ) recover();
+    };
+    void task.then(settle, settle);
+  };
+
+  return {
+    transcriptFailed(error) {
+      if (closed) return;
+      needsRecovery = true;
+      options.onError(error);
+      recover();
+    },
+    observationChanged(phase) {
+      if (closed) return;
+      if (phase === 'pending') {
+        observationReady = false;
+        return;
+      }
+      if (!observationReady) readinessGeneration += 1;
+      observationReady = true;
+      recover();
+    },
+    close() {
+      closed = true;
+      observationReady = false;
+    },
+  };
+}
+
+export interface RecoveringDesktopTranscriptRangeController
+  extends DesktopTranscriptRangeController {
+  observationChanged(phase: 'pending' | 'ready'): void;
+}
+
+export function createRecoveringDesktopTranscriptRangeController(
+  store: DesktopTranscriptRangeStore,
+  open: (signal: AbortSignal) => Promise<DesktopTranscriptHandle>,
+  options: {
+    onError(error: unknown): void;
+  },
+): RecoveringDesktopTranscriptRangeController {
+  const controller = createDesktopTranscriptRangeController(store, open);
+  const recovery = createDesktopTranscriptReconnectRecovery({
+    reload: controller.reload,
+    ...options,
+  });
+  void controller.ready().catch(recovery.transcriptFailed);
+  return {
+    ...controller,
+    observationChanged: recovery.observationChanged,
+    async close() {
+      recovery.close();
+      await controller.close();
+    },
+  };
+}
+
 interface PendingRecord {
   readonly source: 'durable' | 'overlay';
   readonly identity: number | string;

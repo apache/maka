@@ -164,8 +164,11 @@ describe('responses wire contract', () => {
 
   test('routes OpenCode Go Muse Spark through the Responses endpoint', async () => {
     const urls: string[] = [];
-    const fetch = (async (url: string | URL | Request) => {
-      urls.push(String(url));
+    const sessionHeaders: Array<string | null> = [];
+    const fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(url, init);
+      urls.push(request.url);
+      sessionHeaders.push(request.headers.get('x-opencode-session'));
       return Response.json({
         id: 'r',
         object: 'response',
@@ -179,13 +182,76 @@ describe('responses wire contract', () => {
       apiKey: '[redacted]',
       modelId: 'muse-spark-1.2-contributor',
       fetch,
-    });
+      sessionId: 'session-opencode-go',
+    } as Parameters<typeof getAIModel>[0]);
 
     await model.doGenerate({
       prompt: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
     });
 
     assert.deepEqual(urls, ['https://opencode.ai/zen/go/v1/responses']);
+    assert.deepEqual(sessionHeaders, ['session-opencode-go']);
+  });
+
+  test('sends the OpenCode Go session identity through Chat and Messages adapters', async () => {
+    const requests: Array<{ url: string; sessionHeader: string | null }> = [];
+    const fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(url, init);
+      requests.push({
+        url: request.url,
+        sessionHeader: request.headers.get('x-opencode-session'),
+      });
+      if (request.url.endsWith('/messages')) {
+        return Response.json({
+          id: 'msg-opencode-go',
+          type: 'message',
+          role: 'assistant',
+          model: 'minimax-m3',
+          content: [{ type: 'text', text: 'ok' }],
+          stop_reason: 'end_turn',
+          stop_sequence: null,
+          usage: { input_tokens: 1, output_tokens: 1 },
+        });
+      }
+      return Response.json({
+        id: 'chatcmpl-opencode-go',
+        object: 'chat.completion',
+        created: 1,
+        model: 'kimi-k2.7-code',
+        choices: [
+          {
+            index: 0,
+            message: { role: 'assistant', content: 'ok' },
+            finish_reason: 'stop',
+          },
+        ],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      });
+    }) as typeof globalThis.fetch;
+
+    for (const modelId of ['kimi-k2.7-code', 'minimax-m3']) {
+      const model = getAIModel({
+        connection: conn('opencode-go'),
+        apiKey: '[redacted]',
+        modelId,
+        fetch,
+        sessionId: 'session-opencode-go',
+      });
+      await model.doGenerate({
+        prompt: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
+      });
+    }
+
+    assert.deepEqual(requests, [
+      {
+        url: 'https://opencode.ai/zen/go/v1/chat/completions',
+        sessionHeader: 'session-opencode-go',
+      },
+      {
+        url: 'https://opencode.ai/zen/go/v1/messages',
+        sessionHeader: 'session-opencode-go',
+      },
+    ]);
   });
 
   test('normalizes the upstream Open Responses endpoint exactly once', () => {

@@ -42,7 +42,7 @@ const MAX_STATE_BYTES = 64 * 1_024;
 export interface PeerReachabilityPublisher {
   current(): SignedPeerReachabilityLeaseV1;
   refresh(): Promise<SignedPeerReachabilityLeaseV1>;
-  subscribe(listener: (lease: SignedPeerReachabilityLeaseV1) => void): () => void;
+  subscribe(listener: () => void): () => void;
   close(): Promise<void>;
 }
 
@@ -75,7 +75,7 @@ class PeerReachabilityPublisherImpl implements PeerReachabilityPublisher {
   #failure: Error | undefined;
   #closed = false;
   #closeTask: Promise<void> | undefined;
-  readonly #listeners = new Set<(lease: SignedPeerReachabilityLeaseV1) => void>();
+  readonly #listeners = new Set<() => void>();
 
   constructor(
     private readonly path: string,
@@ -100,7 +100,7 @@ class PeerReachabilityPublisherImpl implements PeerReachabilityPublisher {
     return this.#current;
   }
 
-  subscribe(listener: (lease: SignedPeerReachabilityLeaseV1) => void): () => void {
+  subscribe(listener: () => void): () => void {
     this.#assertOpen();
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
@@ -156,13 +156,13 @@ class PeerReachabilityPublisherImpl implements PeerReachabilityPublisher {
       } catch (error) {
         if (error instanceof PeerReachabilityPostCommitError) {
           this.#adopt(signed, now, monotonicNow);
-          this.#notify(signed);
+          this.#notify();
           this.#failure = error;
           throw error;
         }
         throw new PeerReachabilityPersistenceError(error);
       }
-      this.#notify(signed);
+      this.#notify();
       return signed;
     });
     this.#tail = task.then(
@@ -183,10 +183,10 @@ class PeerReachabilityPublisherImpl implements PeerReachabilityPublisher {
     this.#listeners.clear();
   }
 
-  #notify(lease: SignedPeerReachabilityLeaseV1): void {
+  #notify(): void {
     for (const listener of this.#listeners) {
       try {
-        listener(lease);
+        listener();
       } catch {
         // Reachability publication remains authoritative even if an observer fails.
       }
