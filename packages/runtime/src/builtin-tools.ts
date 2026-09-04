@@ -45,7 +45,6 @@ import { bashToolResultToModelOutput } from './bash-model-output.js';
 import { fileWriteToolResultToModelOutput } from './file-tool-model-output.js';
 import { openAiApplyPatchInputSchema } from './openai-apply-patch.js';
 import { parseCodexV4aPatch } from './codex-v4a-patch.js';
-import { executeApplyPatchOperations } from './apply-patch-batch.js';
 import {
   buildManagedBashTool,
   buildStopBackgroundTaskTool,
@@ -66,15 +65,13 @@ import {
   type WorkspaceExecutor,
 } from './workspace-executor.js';
 import {
-  createBoundaryFilesystemExecutor,
-  createFilesystemResourceAuthority,
+  createFilesystemResourceOwner,
   type FilesystemExecuteInput,
+  type FilesystemResourceAuthority,
   type FilesystemResult,
 } from './filesystem-executor.js';
-import {
-  allResourceAuthority,
-  noneOperation,
-} from './preparation/placeholder-authorities.js';
+import type { FilesystemLeaseCoordinator } from './filesystem-lease-coordinator.js';
+import { noneOperation } from './preparation/placeholder-authorities.js';
 import { defaultToolAuthorityRegistrations } from './preparation/default-tool-authorities.js';
 import {
   ToolAuthorityRegistry,
@@ -197,6 +194,8 @@ export interface BuildBuiltinToolsOptions {
   sandboxManager?: SandboxManager;
   /** Sandboxed worker used for all local filesystem tools. */
   filesystemWorker?: Pick<FilesystemWorkerClient, 'execute'>;
+  /** Process-wide correctness owner shared by direct and prepared file tools. */
+  filesystemLeaseCoordinator?: FilesystemLeaseCoordinator;
   /** Test/embedding override. Production callers use the current process platform. */
   sandboxPlatform?: SandboxPlatform;
   snapshotImage?: (input: {
@@ -222,18 +221,16 @@ function buildBuiltinToolDefinitions(
   includeAuthorities: boolean,
 ): AuthorityBoundMakaTool[] {
   const executor = options.executor ?? createLocalWorkspaceExecutor();
-  const filesystem = createBoundaryFilesystemExecutor({
+  const filesystemOwner = createFilesystemResourceOwner({
     workspace: executor,
     ...(options.filesystemWorker ? { worker: options.filesystemWorker } : {}),
     ...(options.permissionProfile ? { permissionProfile: options.permissionProfile } : {}),
+    ...(options.filesystemLeaseCoordinator
+      ? { filesystemLeaseCoordinator: options.filesystemLeaseCoordinator }
+      : {}),
   });
-  const filesystemAuthority = includeAuthorities
-    ? createFilesystemResourceAuthority({
-        workspace: executor,
-        ...(options.filesystemWorker ? { worker: options.filesystemWorker } : {}),
-        ...(options.permissionProfile ? { permissionProfile: options.permissionProfile } : {}),
-      })
-    : undefined;
+  const filesystem = filesystemOwner.executor;
+  const filesystemAuthority = includeAuthorities ? filesystemOwner.authority : undefined;
   const executionFacts = executor.facts;
   const acceptsResourceRefs = Boolean(options.runtimeResources || options.attachmentResources);
   const readDescription = `Read a text file${options.snapshotImage ? ' or supported image' : ''} from disk${acceptsResourceRefs ? ', or read a whole runtime resource using ref' : ''}.`;
@@ -376,10 +373,7 @@ function buildBuiltinToolDefinitions(
           ) =>
             | { success: true; value: unknown }
             | { success: false; error: unknown }
-            | Promise<
-                | { success: true; value: unknown }
-                | { success: false; error: unknown }
-              >;
+            | Promise<{ success: true; value: unknown } | { success: false; error: unknown }>;
         }
       ).validate;
       if (!validate) return { success: true as const, value };
@@ -397,17 +391,14 @@ function buildBuiltinToolDefinitions(
     resourceAuthority: filesystemAuthority
       ? {
           prepare: async (input, ctx) => {
+            if (typeof input === 'string') {
+              return await filesystemAuthority.preparePatchBatch(parseCodexV4aPatch(input), ctx);
+            }
             const operation =
-              typeof input === 'string'
-                ? undefined
-                : input && typeof input === 'object' && 'operation' in input
-                  ? (input as { operation: { type: string; path: string; diff?: string } })
-                      .operation
-                  : undefined;
-            // The string protocol may contain multiple filesystem operations.
-            // Until its parser is safely reusable during prepare, conservatively
-            // claim all modelled resources and execute the live tool impl once.
-            if (!operation) return allResourceAuthority().prepare(input, ctx);
+              input && typeof input === 'object' && 'operation' in input
+                ? (input as { operation: { type: string; path: string; diff?: string } }).operation
+                : undefined;
+            if (!operation) throw new Error('ApplyPatch input did not contain an operation.');
             const raw = await filesystemAuthority.prepare(
               { operation, ...filesystemCall(ctx) } as never,
               ctx,
@@ -429,14 +420,10 @@ function buildBuiltinToolDefinitions(
       if (typeof input !== 'string') {
         return await filesystem.applyPatch({ operation: input.operation, ...filesystemCall(ctx) });
       }
-      const operations = parseCodexV4aPatch(input);
-      return await executeApplyPatchOperations(
-        operations,
-        async (operation) => {
-          await filesystem.applyPatch({ operation, ...filesystemCall(ctx) });
-        },
-        ctx.abortSignal,
-      );
+      return await filesystem.applyPatchBatch({
+        operations: parseCodexV4aPatch(input),
+        ...filesystemCall(ctx),
+      });
     },
   } satisfies AuthorityBoundMakaTool;
   const tools: AuthorityBoundMakaTool[] = [
@@ -916,7 +903,7 @@ function filesystemCall(
  * MakaTool exposed to a backend.
  */
 function filesystemToolAuthority<Args>(
-  authority: ReturnType<typeof createFilesystemResourceAuthority> | undefined,
+  authority: FilesystemResourceAuthority | undefined,
   buildInput: (args: Args, ctx: AuthorityContext) => unknown,
   reshape: (
     result: unknown,

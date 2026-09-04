@@ -191,7 +191,10 @@ export interface WorkspaceWriteLockKeyInput {
 }
 
 export interface WorkspaceWriteLockKeyResult {
+  /** Canonical coordination identity retained for compatibility. */
   key: string;
+  /** Canonical path that may be passed back to this workspace executor. */
+  canonicalPath: string;
 }
 
 export interface WorkspaceGlobInput {
@@ -436,7 +439,7 @@ export class LocalWorkspaceExecutor implements WorkspaceExecutor {
       input.semantics === 'entry'
         ? (await resolveCanonicalDirectoryEntryTarget(input.cwd, input.path)).path
         : (await canonicalPathUnderCwd(input.cwd, input.path)).path;
-    return { key: path };
+    return { key: path, canonicalPath: path };
   }
 
   async globFiles(input: WorkspaceGlobInput): Promise<WorkspaceGlobResult> {

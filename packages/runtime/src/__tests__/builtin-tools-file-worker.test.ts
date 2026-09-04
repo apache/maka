@@ -299,13 +299,21 @@ describe('builtin file tools use the sandboxed worker', () => {
     );
   });
 
-  test('serializes writes through real and symlinked cwd paths', async () => {
+  test('serializes writes through real and symlinked cwd paths', async (t) => {
     const root = await temporaryDirectory('maka-file-lock-alias-');
     const workspace = join(root, 'workspace');
     const alias = join(root, 'workspace-alias');
     await mkdir(workspace);
     await writeFile(join(workspace, 'shared.txt'), 'before', 'utf8');
-    await symlink(workspace, alias, 'dir');
+    try {
+      await symlink(workspace, alias, 'dir');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EPERM') {
+        t.skip('Creating directory symlinks requires an elevated Windows token.');
+        return;
+      }
+      throw error;
+    }
     let active = 0;
     let maxActive = 0;
     const calls: FilesystemWorkerExecuteInput[] = [];

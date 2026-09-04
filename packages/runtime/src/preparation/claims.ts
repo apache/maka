@@ -69,15 +69,23 @@ function keyedClaimsConflict(a: KeyedResourceClaim, b: KeyedResourceClaim): bool
 }
 
 function keyedKeysOverlap(a: KeyedResourceClaim, b: KeyedResourceClaim): boolean {
-  if (a.key === b.key) return true;
-  const aTree = a.scope === 'tree';
-  const bTree = b.scope === 'tree';
-  if (aTree && isWithin(a.key, b.key)) return true;
-  if (bTree && isWithin(b.key, a.key)) return true;
+  return scopedKeysOverlap(a.key, a.scope ?? 'exact', b.key, b.scope ?? 'exact');
+}
+
+export function scopedKeysOverlap(
+  aKey: string,
+  aScope: 'exact' | 'tree',
+  bKey: string,
+  bScope: 'exact' | 'tree',
+): boolean {
+  if (aKey === bKey) return true;
+  if (aScope === 'tree' && containsPath(aKey, bKey)) return true;
+  if (bScope === 'tree' && containsPath(bKey, aKey)) return true;
   return false;
 }
 
-function isWithin(parent: string, candidate: string): boolean {
+export function containsPath(parent: string, candidate: string): boolean {
+  if (parent === candidate) return true;
   if (parent.length === 0 || !candidate.startsWith(parent)) return false;
   // Claim keys are canonical strings produced by their authority. Filesystem
   // authorities retain the host separator, so a domain-agnostic Scheduler must

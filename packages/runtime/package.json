@@ -10,6 +10,7 @@
     "./ai-sdk-backend": "./dist/ai-sdk-backend.js",
     "./mcp-tools": "./dist/mcp-tools.js",
     "./builtin-tools": "./dist/builtin-tools.js",
+    "./filesystem-lease-coordinator": "./dist/filesystem-lease-coordinator.js",
     "./shell-tools": "./dist/shell-tools.js",
     "./shell-run-manager": "./dist/shell-run-manager.js",
     "./deep-research-tools": "./dist/deep-research-tools.js",

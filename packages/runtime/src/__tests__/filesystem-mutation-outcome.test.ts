@@ -212,15 +212,7 @@ describe('filesystem mutation unknown-outcome classification', () => {
 });
 
 describe('filesystem mutation T0 identity capture (queue-window closure)', () => {
-  // This is the red-line test for issue #2600 concern #1. The identity must be
-  // captured at lock acquisition (T0), BEFORE waiting for the write lock — not
-  // re-derived after the lock is granted (T1). To prove that, the test must
-  // exercise a REAL lock wait: a first mutation blocks inside the worker while
-  // holding the path's lock, a second mutation queues behind it, and the path
-  // is replaced while the second one waits. A regression that captures the
-  // identity at T1 (after the lock is granted) then samples the replacement's
-  // inode and this test fails; a T0 capture still sees the original inode.
-  test('a queued mutation receives the pre-replacement identity captured at lock acquisition', async () => {
+  test('a queued mutation rejects a replacement before dispatching its effect', async () => {
     const cwd = await realpath(await mkdtemp(join(tmpdir(), 'maka-t0-lockwait-')));
     cleanup.push(cwd);
     const target = join(cwd, 'file.txt');
@@ -228,15 +220,12 @@ describe('filesystem mutation T0 identity capture (queue-window closure)', () =>
     await writeFile(target, 'original', 'utf8');
     await writeFile(replacement, 'replacement-body', 'utf8');
 
-    const original = await stat(target, { bigint: true });
-
     // The first mutation blocks inside the worker, holding the write lock.
     let releaseFirst!: () => void;
     const firstGate = new Promise<void>((resolve) => {
       releaseFirst = resolve;
     });
     let calls = 0;
-    let queuedIdentity: FilesystemWorkerExpectedIdentity | undefined;
     const gatedWorker: {
       execute: (input: FilesystemWorkerExecuteInput) => Promise<FilesystemWorkerResult>;
     } = {
@@ -246,8 +235,6 @@ describe('filesystem mutation T0 identity capture (queue-window closure)', () =>
           await firstGate; // hold the path's lock until the swap has happened
           return { kind: 'write', ok: true, path: target, bytes: 5 };
         }
-        // The queued (second) call: record the identity it was handed.
-        queuedIdentity = input.expectedIdentity;
         return { kind: 'write', ok: true, path: target, bytes: 6 };
       },
     };
@@ -270,20 +257,14 @@ describe('filesystem mutation T0 identity capture (queue-window closure)', () =>
     // Replace the path WHILE the second mutation is still waiting for the lock.
     await rename(replacement, target);
 
-    // Release the first mutation; the second acquires the lock and dispatches
-    // with whatever identity its capture step sampled.
+    // Release the first mutation; the second acquires the prepared key, detects
+    // the identity drift inside the lease, and must not dispatch.
     releaseFirst();
-    await Promise.all([first, second]);
-
-    assert.ok(
-      queuedIdentity && typeof queuedIdentity !== 'string',
-      'the queued mutation should have dispatched with the captured identity',
-    );
-    assert.equal(
-      (queuedIdentity as { dev: string; ino: string }).ino,
-      String(original.ino),
-      'identity must be the inode captured at lock acquisition (before the replacement); a T1 capture would sample the replacement',
-    );
+    await Promise.all([
+      first,
+      assert.rejects(second, { code: 'filesystem_prepared_target_changed' }),
+    ]);
+    assert.equal(calls, 1, 'the changed queued target must never reach the raw worker');
   });
 
   test('an apply_patch mutation forwards its captured identity, not unchecked (#3484 regression)', async () => {

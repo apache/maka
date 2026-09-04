@@ -43,7 +43,14 @@ import {
 } from './filesystem-authority.js';
 import { StableWriteFailure } from './file-stable-write.js';
 import { applyUpdateToContent } from './apply-patch-file.js';
-import { withFileWriteLock } from './file-write-lock.js';
+import { executeApplyPatchOperations, type ApplyPatchBatchResult } from './apply-patch-batch.js';
+import {
+  normalizeFilesystemLeaseRequests,
+  processFilesystemLeases,
+  type FilesystemLeaseCoordinator,
+  type FilesystemLeaseRequest,
+} from './filesystem-lease-coordinator.js';
+import { hostFilesystemLeaseKey } from './filesystem-lease-key.js';
 import {
   identityChanged,
   type ResolvedTarget,
@@ -113,6 +120,10 @@ export interface FilesystemApplyPatchInput extends Omit<FilesystemExecuteInput, 
   operation: ApplyPatchOperation;
 }
 
+export interface FilesystemApplyPatchBatchInput extends Omit<FilesystemExecuteInput, 'operation'> {
+  operations: readonly ApplyPatchOperation[];
+}
+
 export interface ApplyPatchResult {
   status: 'completed';
 }
@@ -125,6 +136,7 @@ export interface FilesystemExecutor {
    */
   execute(input: FilesystemExecuteInput): Promise<FilesystemResult>;
   applyPatch(input: FilesystemApplyPatchInput): Promise<ApplyPatchResult>;
+  applyPatchBatch(input: FilesystemApplyPatchBatchInput): Promise<ApplyPatchBatchResult>;
 }
 
 /** The workspace primitives the host-local backend drives. */
@@ -139,6 +151,7 @@ export interface BoundaryFilesystemExecutorInput {
   worker?: Pick<FilesystemWorkerClient, 'execute'>;
   /** Explicit embedding policy handed to the worker instead of a mode default. */
   permissionProfile?: PermissionProfile;
+  filesystemLeaseCoordinator?: FilesystemLeaseCoordinator;
 }
 
 /**
@@ -154,23 +167,16 @@ function pathScopeForBoundary(boundary: ExecutionBoundary | undefined): Workspac
 }
 
 /**
- * Operations that read, modify and write back, and so must hold the target's lock.
- * The single authority on which kinds are writes is `operationAccess` in the
- * worker protocol; `mutates` was a second, narrower list that drifted.
- */
-
-/**
- * Capture the target's stable identity at lock acquisition (T0) — *before*
- * waiting for the write lock. This is the inode the worker compare-and-swaps
- * against, so a path replaced while the call is queued for the lock is detected
- * rather than silently written. Returns undefined when the target does not yet
- * exist (a create), since there is no inode to pin.
+ * Capture the target's stable identity at prepare/direct-call T0, before lease
+ * admission. This is the inode the owner rechecks inside the lease and the
+ * worker compare-and-swaps against. Returns undefined when the target does not
+ * yet exist (a create), since there is no inode to pin.
  *
  * `follow` must match how the worker derives the targetType: content operations
  * follow the final symlink (stat), create/delete pin the directory entry (lstat)
  * so a swapped link is detected against the entry's own inode.
  */
-async function captureIdentityAtLockAcquisition(
+async function captureFilesystemTargetIdentity(
   canonicalPath: string,
   follow: boolean,
 ): Promise<FilesystemTargetIdentity | undefined> {
@@ -198,8 +204,6 @@ async function captureIdentityAtLockAcquisition(
  *   execution. This is the embedding default and deliberately the narrow one.
  */
 interface FilesystemBackend {
-  execute(input: FilesystemExecuteInput): Promise<FilesystemResult>;
-  applyPatch(input: FilesystemApplyPatchInput): Promise<ApplyPatchResult>;
   run(
     call: FilesystemBackendExecuteInput,
     expectedIdentity?: FilesystemTargetIdentity,
@@ -289,14 +293,11 @@ function buildFilesystemBackend(input: BoundaryFilesystemExecutorInput): Filesys
   ): Promise<{ key: string; canonicalPath: string }> {
     const worker = workerFor(call.executionBoundary);
     if (!worker) {
-      const key = (
-        await input.workspace.writeLockKey({
-          cwd: call.cwd,
-          path,
-          semantics,
-        })
-      ).key;
-      return { key, canonicalPath: key };
+      return await input.workspace.writeLockKey({
+        cwd: call.cwd,
+        path,
+        semantics,
+      });
     }
     if (semantics === 'entry') {
       const resolved = await resolveCanonicalDirectoryEntryTarget(call.cwd, path);
@@ -328,88 +329,25 @@ function buildFilesystemBackend(input: BoundaryFilesystemExecutorInput): Filesys
       inputArg.path,
       inputArg.semantics,
     );
-    // Capture the target's stable identity at T0, BEFORE waiting for the lock.
+    // Capture the target's stable identity at T0, before entering the lease
+    // queue. Execute re-resolves it only after admission on this prepared key.
     // Content operations follow the final symlink (stat); create/delete pin the
     // directory entry (lstat) so a swapped link is caught against the entry's
-    // own inode. This is the resolver the Scheduler's claim.key is derived from,
-    // so claim key === lock key === canonical path by construction.
-    const identity = await captureIdentityAtLockAcquisition(
+    // own inode. canonicalPath remains executable while leaseKey is used for
+    // both the Scheduler claim and coordinator admission.
+    const identity = await captureFilesystemTargetIdentity(
       canonicalPath,
       inputArg.semantics === 'target',
     );
     return {
-      canonicalPath: key ?? canonicalPath,
+      canonicalPath,
+      leaseKey: hostFilesystemLeaseKey(key),
       identity: toTargetIdentity(identity, inputArg.semantics),
     };
   }
   return {
     resolveTarget,
     run,
-    async execute(call) {
-      if (operationAccess(call.operation.kind) !== 'write') return await run(call);
-      // Canonicalisation without any containment check, so a target the policy
-      // goes on to reject still takes the same lock as its other spellings. The
-      // key is derived from the same canonicalisation the backend will resolve
-      // with, or the lock-key space and the resolved-path space drift apart.
-      const { key, canonicalPath } = await writeLockTarget(call, call.operation.path);
-      // Capture the target identity at lock acquisition (T0), BEFORE waiting
-      // for the lock, for BOTH backends — the worker CAS and the local pinned
-      // read-modify-write compare against this inode. Content operations follow
-      // the final symlink (stat); apply_patch create/delete use 'entry'
-      // semantics but execute() only handles write/edit/format_json here.
-      const expectedIdentity = await captureIdentityAtLockAcquisition(canonicalPath, true);
-      try {
-        return await withFileWriteLock(key, () => run(call, expectedIdentity));
-      } catch (error) {
-        throw settleMutationFailure(error);
-      }
-    },
-    async applyPatch(call) {
-      const { operation, ...common } = call;
-      const semantics = operation.type === 'update_file' ? 'target' : 'entry';
-      const { key, canonicalPath } = await writeLockTarget(common, operation.path, semantics);
-      // Capture identity at T0 (before the lock wait), for both backends.
-      // update_file follows the target (stat); create/delete pin the directory
-      // entry (lstat).
-      const expectedIdentity = await captureIdentityAtLockAcquisition(
-        canonicalPath,
-        semantics === 'target',
-      );
-      try {
-        return await withFileWriteLock(key, async () => {
-          const backendOperation: FilesystemWorkerClientOperation =
-            operation.type === 'delete_file'
-              ? { kind: 'apply_patch', path: operation.path, action: 'delete' }
-              : {
-                  kind: 'apply_patch',
-                  path: operation.path,
-                  action: operation.type === 'create_file' ? 'create' : 'update',
-                  diff: operation.diff,
-                };
-          const result = await run({ ...common, operation: backendOperation }, expectedIdentity);
-          if (result.kind !== 'apply_patch') {
-            throw new Error(`ApplyPatch backend returned ${JSON.stringify(result.kind)}.`);
-          }
-          return { status: 'completed' };
-        });
-      } catch (error) {
-        throw settleMutationFailure(error);
-      }
-    },
-  };
-}
-
-export function createBoundaryFilesystemExecutor(
-  input: BoundaryFilesystemExecutorInput,
-): FilesystemExecutor {
-  const backend = buildFilesystemBackend(input);
-  return {
-    async execute(call) {
-      return await backend.execute(call);
-    },
-    async applyPatch(call) {
-      return await backend.applyPatch(call);
-    },
   };
 }
 
@@ -489,25 +427,30 @@ function toBackendOperation(target: FilesystemAuthorityInput): {
   return { path: operation.path, operation };
 }
 
-function toAuthorityClaims(
-  operation: { path: string },
-  canonicalPath: string,
+export function claimFromFilesystemLease(request: FilesystemLeaseRequest): KeyedResourceClaim {
+  return {
+    kind: 'keyed',
+    authority: 'filesystem:workspace',
+    key: request.key,
+    mode: request.mode,
+    scope: request.scope,
+  };
+}
+
+function filesystemLeaseFor(
   target: FilesystemAuthorityInput,
-): KeyedResourceClaim[] {
-  const authority = 'filesystem:workspace';
-  if (isSearchOperation(target)) {
-    // Tree read: conflicts with any in-tree write (Grep(src) vs Write(src/a.ts)).
-    return [{ kind: 'keyed', authority, key: canonicalPath, mode: 'read', scope: 'tree' }];
-  }
-  if (!isWriteOperation(target)) {
-    return [{ kind: 'keyed', authority, key: canonicalPath, mode: 'read' }];
-  }
-  return [{ kind: 'keyed', authority, key: canonicalPath, mode: 'write' }];
+  leaseKey: string,
+): FilesystemLeaseRequest {
+  return {
+    key: leaseKey,
+    mode: isWriteOperation(target) ? 'write' : 'read',
+    scope: isSearchOperation(target) ? 'tree' : 'exact',
+  };
 }
 
 function toBackendCall(
   target: FilesystemAuthorityInput,
-  context: AuthorityContext,
+  context: Pick<AuthorityContext, 'cwd' | 'executionBoundary' | 'permissionMode' | 'abortSignal'>,
   signal?: AbortSignal,
 ): FilesystemBackendExecuteInput {
   const { operation } = toBackendOperation(target);
@@ -520,56 +463,244 @@ function toBackendCall(
   };
 }
 
-/**
- * The filesystem domain authority. `prepare` captures the canonical identity
- * (claim key == lock key == canonical path), and `execute` re-resolves that
- * identity, compares it, takes the write lock, runs the effect, and settles the
- * failure (path_changed / outcome_unknown). Reads and searches run unlocked.
- */
-export function createFilesystemResourceAuthority(
-  input: BoundaryFilesystemExecutorInput,
-): ResourceAuthority<FilesystemAuthorityInput, unknown> {
-  const backend = buildFilesystemBackend(input);
-  return {
-    async prepare(target, context): Promise<PreparedOperation<unknown>> {
-      const semantics = filesystemSemantics(target);
-      const { path } = toBackendOperation(target);
-      const resourceArgs = {
-        cwd: context.cwd,
-        path,
-        semantics,
-        executionBoundary: context.executionBoundary,
-        permissionMode: context.permissionMode,
-        abortSignal: context.abortSignal,
-      };
-      const resolved = await backend.resolveTarget(resourceArgs);
-      const claims = toAuthorityClaims({ path }, resolved.canonicalPath, target);
-      const writes = isWriteOperation(target);
+function replaceOperationPath(
+  call: FilesystemBackendExecuteInput,
+  canonicalPath: string,
+): FilesystemBackendExecuteInput {
+  return { ...call, operation: { ...call.operation, path: canonicalPath } };
+}
 
-      const execute = async (signal?: AbortSignal): Promise<unknown> => {
-        if (!writes) {
-          return await backend.run(toBackendCall(target, context, signal));
-        }
-        const now = await backend.resolveTarget({
-          ...resourceArgs,
-          abortSignal: signal ?? context.abortSignal,
-        });
-        if (identityChanged(resolved.identity, now.identity)) {
-          // business failure -> fulfilled error result, not a fatal rejection.
-          throw new Error('The approved filesystem target changed before execution.');
-        }
-        const expectedIdentity = toExpectedIdentity(now.identity);
+interface PreparedFilesystemAccess {
+  readonly target: FilesystemAuthorityInput;
+  readonly semantics: 'target' | 'entry';
+  readonly resolved: ResolvedTarget;
+  readonly lease: FilesystemLeaseRequest;
+}
+
+export class FilesystemPreparedTargetChangedError extends Error {
+  override readonly name = 'FilesystemPreparedTargetChangedError';
+  readonly code = 'filesystem_prepared_target_changed';
+
+  constructor() {
+    super('The approved filesystem target changed before execution.');
+  }
+}
+
+function assertSamePreparedTarget(prepared: ResolvedTarget, now: ResolvedTarget): void {
+  if (
+    prepared.canonicalPath !== now.canonicalPath ||
+    prepared.leaseKey !== now.leaseKey ||
+    identityChanged(prepared.identity, now.identity)
+  ) {
+    throw new FilesystemPreparedTargetChangedError();
+  }
+}
+
+function resourceArgsFor(
+  target: FilesystemAuthorityInput,
+  context: Pick<AuthorityContext, 'cwd' | 'executionBoundary' | 'permissionMode' | 'abortSignal'>,
+  signal?: AbortSignal,
+): Parameters<FilesystemBackend['resolveTarget']>[0] {
+  const { path } = toBackendOperation(target);
+  return {
+    cwd: context.cwd,
+    path,
+    semantics: filesystemSemantics(target),
+    ...(context.executionBoundary ? { executionBoundary: context.executionBoundary } : {}),
+    ...(context.permissionMode ? { permissionMode: context.permissionMode } : {}),
+    ...((signal ?? context.abortSignal) ? { abortSignal: signal ?? context.abortSignal } : {}),
+  };
+}
+
+async function prepareFilesystemAccess(
+  backend: FilesystemBackend,
+  target: FilesystemAuthorityInput,
+  context: Pick<AuthorityContext, 'cwd' | 'executionBoundary' | 'permissionMode' | 'abortSignal'>,
+): Promise<PreparedFilesystemAccess> {
+  const semantics = filesystemSemantics(target);
+  const resolved = await backend.resolveTarget(resourceArgsFor(target, context));
+  return {
+    target,
+    semantics,
+    resolved,
+    lease: filesystemLeaseFor(target, resolved.leaseKey),
+  };
+}
+
+function directContext(
+  input: Pick<
+    FilesystemExecuteInput,
+    'cwd' | 'executionBoundary' | 'permissionMode' | 'abortSignal'
+  >,
+): Pick<AuthorityContext, 'cwd' | 'executionBoundary' | 'permissionMode' | 'abortSignal'> {
+  return input;
+}
+
+export interface FilesystemResourceAuthority
+  extends ResourceAuthority<FilesystemAuthorityInput, unknown> {
+  preparePatchBatch(
+    operations: readonly ApplyPatchOperation[],
+    context: AuthorityContext,
+  ): Promise<PreparedOperation<ApplyPatchBatchResult>>;
+}
+
+export interface FilesystemResourceOwner {
+  readonly executor: FilesystemExecutor;
+  readonly authority: FilesystemResourceAuthority;
+}
+
+export function createFilesystemResourceOwner(
+  input: BoundaryFilesystemExecutorInput,
+): FilesystemResourceOwner {
+  const backend = buildFilesystemBackend(input);
+  const coordinator = input.filesystemLeaseCoordinator ?? processFilesystemLeases;
+
+  const executeAccess = async (
+    access: PreparedFilesystemAccess,
+    context: Pick<AuthorityContext, 'cwd' | 'executionBoundary' | 'permissionMode' | 'abortSignal'>,
+    signal?: AbortSignal,
+  ): Promise<FilesystemResult> => {
+    const abortSignal = signal ?? context.abortSignal;
+    return await coordinator.withLease(access.lease, abortSignal, async () => {
+      const now = await backend.resolveTarget(resourceArgsFor(access.target, context, signal));
+      assertSamePreparedTarget(access.resolved, now);
+      const call = replaceOperationPath(
+        toBackendCall(access.target, context, signal),
+        now.canonicalPath,
+      );
+      try {
+        return await backend.run(
+          call,
+          access.lease.mode === 'write' ? toExpectedIdentity(now.identity) : undefined,
+        );
+      } catch (error) {
+        throw access.lease.mode === 'write' ? settleMutationFailure(error) : error;
+      }
+    });
+  };
+
+  const preparePatchAccesses = async (
+    operations: readonly ApplyPatchOperation[],
+    context: Pick<AuthorityContext, 'cwd' | 'executionBoundary' | 'permissionMode' | 'abortSignal'>,
+  ): Promise<readonly PreparedFilesystemAccess[]> =>
+    await Promise.all(
+      operations.map((operation) =>
+        prepareFilesystemAccess(backend, { operation, ...context }, context),
+      ),
+    );
+
+  const executePatchBatch = async (
+    accesses: readonly PreparedFilesystemAccess[],
+    context: Pick<AuthorityContext, 'cwd' | 'executionBoundary' | 'permissionMode' | 'abortSignal'>,
+    signal?: AbortSignal,
+  ): Promise<ApplyPatchBatchResult> => {
+    const requests = normalizeFilesystemLeaseRequests(accesses.map((access) => access.lease));
+    const abortSignal = signal ?? context.abortSignal;
+    return await coordinator.withLeases(requests, abortSignal, async () => {
+      const preflight: ResolvedTarget[] = [];
+      for (let index = 0; index < accesses.length; index += 1) {
+        const access = accesses[index]!;
         try {
-          return await withFileWriteLock(now.canonicalPath, () =>
-            backend.run(toBackendCall(target, context, signal), expectedIdentity),
-          );
+          const now = await backend.resolveTarget(resourceArgsFor(access.target, context, signal));
+          assertSamePreparedTarget(access.resolved, now);
+          preflight.push(now);
         } catch (error) {
-          throw settleMutationFailure(error);
+          const operation = (access.target as FilesystemApplyPatchInput).operation;
+          return {
+            status: 'failed',
+            applied: [],
+            failed: { type: operation.type, path: operation.path },
+            error: `ApplyPatch preflight failed for ${operation.type} ${operation.path}: ${error instanceof Error ? error.message : String(error)}`,
+          };
         }
-      };
-      return oneShotOperation({ claims, execute });
+      }
+
+      let operationIndex = 0;
+      const seenLeaseKeys = new Set<string>();
+      const operations = accesses.map(
+        (access) => (access.target as FilesystemApplyPatchInput).operation,
+      );
+      return await executeApplyPatchOperations(
+        operations,
+        async (operation) => {
+          const index = operationIndex++;
+          const access = accesses[index]!;
+          let now = preflight[index]!;
+          if (seenLeaseKeys.has(access.lease.key)) {
+            now = await backend.resolveTarget(resourceArgsFor(access.target, context, signal));
+          }
+          seenLeaseKeys.add(access.lease.key);
+          const call = replaceOperationPath(
+            toBackendCall({ operation, ...context }, context, signal),
+            now.canonicalPath,
+          );
+          try {
+            const result = await backend.run(call, toExpectedIdentity(now.identity));
+            if (result.kind !== 'apply_patch') {
+              throw new Error(`ApplyPatch backend returned ${JSON.stringify(result.kind)}.`);
+            }
+          } catch (error) {
+            throw settleMutationFailure(error);
+          }
+        },
+        abortSignal,
+      );
+    });
+  };
+
+  const authority: FilesystemResourceAuthority = {
+    async prepare(target, context): Promise<PreparedOperation<unknown>> {
+      const access = await prepareFilesystemAccess(backend, target, context);
+      return oneShotOperation({
+        claims: [claimFromFilesystemLease(access.lease)],
+        execute: async (signal) => await executeAccess(access, context, signal),
+      });
+    },
+    async preparePatchBatch(operations, context) {
+      const accesses = await preparePatchAccesses(operations, context);
+      const requests = normalizeFilesystemLeaseRequests(accesses.map((access) => access.lease));
+      return oneShotOperation({
+        claims: requests.map(claimFromFilesystemLease),
+        execute: async (signal) => await executePatchBatch(accesses, context, signal),
+      });
     },
   };
+
+  const executor: FilesystemExecutor = {
+    async execute(call) {
+      const context = directContext(call);
+      const access = await prepareFilesystemAccess(backend, call, context);
+      return await executeAccess(access, context, call.abortSignal);
+    },
+    async applyPatch(call) {
+      const context = directContext(call);
+      const access = await prepareFilesystemAccess(backend, call, context);
+      const result = await executeAccess(access, context, call.abortSignal);
+      if (result.kind !== 'apply_patch') {
+        throw new Error(`ApplyPatch backend returned ${JSON.stringify(result.kind)}.`);
+      }
+      return { status: 'completed' };
+    },
+    async applyPatchBatch(call) {
+      const context = directContext(call);
+      const accesses = await preparePatchAccesses(call.operations, context);
+      return await executePatchBatch(accesses, context, call.abortSignal);
+    },
+  };
+
+  return { executor, authority };
+}
+
+export function createBoundaryFilesystemExecutor(
+  input: BoundaryFilesystemExecutorInput,
+): FilesystemExecutor {
+  return createFilesystemResourceOwner(input).executor;
+}
+
+export function createFilesystemResourceAuthority(
+  input: BoundaryFilesystemExecutorInput,
+): FilesystemResourceAuthority {
+  return createFilesystemResourceOwner(input).authority;
 }
 
 /**

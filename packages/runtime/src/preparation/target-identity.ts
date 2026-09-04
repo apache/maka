@@ -31,8 +31,10 @@ export type TargetIdentity =
   | { readonly kind: 'missing' };
 
 export interface ResolvedTarget {
-  /** The canonical identity string == claim.key == lock key. */
+  /** Backend-executable canonical path. */
   readonly canonicalPath: string;
+  /** Platform-normalized Scheduler/coordinator key. Never send to a backend. */
+  readonly leaseKey: string;
   readonly identity: TargetIdentity;
 }
 

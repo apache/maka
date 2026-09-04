@@ -78,6 +78,7 @@ import {
 } from '@maka/runtime/shell-detect';
 import { type MakaTool } from '@maka/runtime/tool-runtime';
 import { buildBuiltinToolComposition } from '@maka/runtime/builtin-tools';
+import { processFilesystemLeases } from '@maka/runtime/filesystem-lease-coordinator';
 import { ToolPreparationService } from '@maka/runtime/tool-preparation';
 import { type RuntimeHostedRootAuthority } from '@maka/runtime/message-authority';
 import { isHostedExecutionTerminal } from './hosted-execution-authority.js';
@@ -451,6 +452,7 @@ export async function createExecutionRuntimeHostComposition(
             },
           }
         : {}),
+      filesystemLeaseCoordinator: processFilesystemLeases,
       ...(sandboxManager ? { sandboxManager } : {}),
       ...(filesystemWorker ? { filesystemWorker } : {}),
     };

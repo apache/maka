@@ -178,20 +178,26 @@ describe('file tools follow the execution boundary', () => {
     }
   });
 
-  test('a symlink out of the cwd stays an escape under a workspace boundary', async () => {
+  test('a symlink or junction out of the cwd stays an escape under a workspace boundary', async () => {
     const { cwd, outside, cleanup } = await makeDirs();
     try {
       const tools = toolsFor();
       await writeFile(join(outside, 'secret.txt'), 'secret', 'utf8');
-      await symlink(join(outside, 'secret.txt'), join(cwd, 'link.txt'));
+      const link = process.platform === 'win32' ? 'outside-link' : 'link.txt';
+      const target = process.platform === 'win32' ? `${link}/secret.txt` : link;
+      await symlink(
+        process.platform === 'win32' ? outside : join(outside, 'secret.txt'),
+        join(cwd, link),
+        process.platform === 'win32' ? 'junction' : 'file',
+      );
 
       await assert.rejects(
-        runTool(toolNamed(tools, 'Read'), { path: 'link.txt' }, cwd),
+        runTool(toolNamed(tools, 'Read'), { path: target }, cwd),
         /Read path must stay inside session cwd/,
       );
       // Under bypass the same link resolves, because nothing is being escaped.
       assert.deepStrictEqual(
-        await runTool(toolNamed(tools, 'Read'), { path: 'link.txt' }, cwd, BYPASS),
+        await runTool(toolNamed(tools, 'Read'), { path: target }, cwd, BYPASS),
         {
           content: 'secret',
         },

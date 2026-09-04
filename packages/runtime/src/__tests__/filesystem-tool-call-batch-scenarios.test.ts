@@ -40,6 +40,90 @@ afterEach(async () => {
 });
 
 describe('filesystem ToolCallBatch scenarios', () => {
+  test('independent batches: Read holds a same-file Edit until the first batch settles', async () => {
+    const cwd = await scenarioWorkspace();
+    const observer = new ControlledFilesystemWorker();
+    const readCalls: ScenarioCall[] = [
+      { id: 'read-a', toolName: 'Read', input: { path: 'a.txt' } },
+    ];
+    const editCalls: ScenarioCall[] = [
+      {
+        id: 'edit-a',
+        toolName: 'Edit',
+        input: { path: 'a.txt', old_string: 'before', new_string: 'after' },
+      },
+    ];
+    const readBatch = startBatch(cwd, observer, readCalls);
+    let editBatch: ReturnType<typeof startBatch> | undefined;
+    let readOutcomes: Awaited<typeof readBatch.outcomes> | undefined;
+    let editOutcomes: Awaited<ReturnType<typeof startBatch>['outcomes']> | undefined;
+
+    try {
+      await observer.waitForStarted(['read:a.txt#1']);
+      editBatch = startBatch(cwd, observer, editCalls);
+      await Promise.resolve();
+      await Promise.resolve();
+      observer.assertActive(['read:a.txt#1']);
+      assert.deepEqual(observer.started, ['read:a.txt#1']);
+
+      observer.release('read:a.txt#1');
+      await observer.waitForStarted(['edit:a.txt#1']);
+      observer.assertActive(['edit:a.txt#1']);
+    } finally {
+      observer.releaseAll();
+      [readOutcomes, editOutcomes] = await Promise.all([
+        readBatch.outcomes,
+        editBatch?.outcomes ?? Promise.resolve([]),
+      ]);
+    }
+
+    assert.equal(observer.maxActive, 1);
+    assertFulfilledInModelOrder(readOutcomes, readCalls);
+    assertFulfilledInModelOrder(editOutcomes, editCalls);
+  });
+
+  test('independent batches: Grep tree lease holds an in-tree Write', async () => {
+    const cwd = await scenarioWorkspace();
+    const observer = new ControlledFilesystemWorker();
+    const grepCalls: ScenarioCall[] = [
+      { id: 'grep-src', toolName: 'Grep', input: { pattern: 'needle', path: 'src' } },
+    ];
+    const writeCalls: ScenarioCall[] = [
+      {
+        id: 'write-src-a',
+        toolName: 'Write',
+        input: { path: 'src/a.ts', content: 'export const a = 1;' },
+      },
+    ];
+    const grepBatch = startBatch(cwd, observer, grepCalls);
+    let writeBatch: ReturnType<typeof startBatch> | undefined;
+    let grepOutcomes: Awaited<typeof grepBatch.outcomes> | undefined;
+    let writeOutcomes: Awaited<ReturnType<typeof startBatch>['outcomes']> | undefined;
+
+    try {
+      await observer.waitForStarted(['grep:src#1']);
+      writeBatch = startBatch(cwd, observer, writeCalls);
+      await Promise.resolve();
+      await Promise.resolve();
+      observer.assertActive(['grep:src#1']);
+      assert.deepEqual(observer.started, ['grep:src#1']);
+
+      observer.release('grep:src#1');
+      await observer.waitForStarted(['write:src/a.ts#1']);
+      observer.assertActive(['write:src/a.ts#1']);
+    } finally {
+      observer.releaseAll();
+      [grepOutcomes, writeOutcomes] = await Promise.all([
+        grepBatch.outcomes,
+        writeBatch?.outcomes ?? Promise.resolve([]),
+      ]);
+    }
+
+    assert.equal(observer.maxActive, 1);
+    assertFulfilledInModelOrder(grepOutcomes, grepCalls);
+    assertFulfilledInModelOrder(writeOutcomes, writeCalls);
+  });
+
   test('2 calls: same-file read then write serialize', async () => {
     const cwd = await scenarioWorkspace();
     const observer = new ControlledFilesystemWorker();
@@ -159,17 +243,9 @@ describe('filesystem ToolCallBatch scenarios', () => {
 
     let outcomes: Awaited<typeof run.outcomes> | undefined;
     try {
-      await observer.waitForStarted([
-        'grep:src#1',
-        'write:other/b.ts#1',
-        'read:src/c.ts#1',
-      ]);
+      await observer.waitForStarted(['grep:src#1', 'write:other/b.ts#1', 'read:src/c.ts#1']);
       observer.assertActive(['grep:src#1', 'write:other/b.ts#1', 'read:src/c.ts#1']);
-      observer.assertStarted([
-        'grep:src#1',
-        'write:other/b.ts#1',
-        'read:src/c.ts#1',
-      ]);
+      observer.assertStarted(['grep:src#1', 'write:other/b.ts#1', 'read:src/c.ts#1']);
 
       observer.release('grep:src#1');
       await observer.waitForStarted(['write:src/a.ts#1']);
@@ -224,11 +300,7 @@ describe('filesystem ToolCallBatch scenarios', () => {
       observer.release('grep:src#1');
       await observer.waitForStarted(['write:src/a.ts#1']);
       observer.assertActive(['write:src2/a.ts#1', 'write:src/a.ts#1']);
-      observer.assertStarted([
-        'grep:src#1',
-        'write:src2/a.ts#1',
-        'write:src/a.ts#1',
-      ]);
+      observer.assertStarted(['grep:src#1', 'write:src2/a.ts#1', 'write:src/a.ts#1']);
 
       observer.release('write:src/a.ts#1');
       await observer.waitForStarted(['read:src/a.ts#1', 'glob:src#1']);
@@ -334,7 +406,8 @@ class ControlledFilesystemWorker {
   maxActive = 0;
 
   async execute(input: FilesystemWorkerExecuteInput): Promise<FilesystemWorkerResult> {
-    const base = `${input.operation.kind}:${input.operation.path.replaceAll('\\', '/')}`;
+    const observedPath = relative(input.cwd, input.operation.path) || '.';
+    const base = `${input.operation.kind}:${observedPath.replaceAll('\\', '/')}`;
     const ordinal = (this.counts.get(base) ?? 0) + 1;
     this.counts.set(base, ordinal);
     const label = `${base}#${ordinal}`;
@@ -431,10 +504,7 @@ function assertClaims(
   expected: Readonly<Record<string, readonly string[]>>,
 ): void {
   const normalized = Object.fromEntries(
-    [...actual].map(([id, claims]) => [
-      id,
-      claims.map((claim) => claimSignature(claim, cwd)),
-    ]),
+    [...actual].map(([id, claims]) => [id, claims.map((claim) => claimSignature(claim, cwd))]),
   );
   assert.deepEqual(normalized, expected);
 }
@@ -442,7 +512,8 @@ function assertClaims(
 function claimSignature(claim: ResourceClaim, cwd: string): string {
   if (claim.kind === 'all') return 'all';
   if (claim.kind !== 'keyed') return `${claim.kind}|${claim.authority}|${claim.key}`;
-  const key = relative(cwd, claim.key).replaceAll('\\', '/') || '.';
+  const relativeKey = relative(cwd, claim.key).replaceAll('\\', '/') || '.';
+  const key = process.platform === 'win32' ? relativeKey.toLowerCase() : relativeKey;
   return `${claim.authority}|${claim.mode}|${claim.scope ?? 'exact'}|${key}`;
 }
 

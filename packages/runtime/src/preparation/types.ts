@@ -40,16 +40,15 @@ export type KeyedClaimMode = 'read' | 'write' | 'exclusive';
 export type KeyedClaimScope = 'exact' | 'tree';
 
 /**
- * A claim on one canonical resource key (realpath'd path, session id, ...).
- * `key` is exactly the string the authority's `PreparedOperation.execute` uses
- * as its lock key — the invariant that makes claim/lock key equality hold by
- * construction.
+ * A claim on one canonical coordination key (platform-normalized filesystem
+ * lease key, session id, ...). `key` is exactly the string the authority's
+ * `PreparedOperation.execute` uses for admission.
  */
 export interface KeyedResourceClaim {
   readonly kind: 'keyed';
   /** Domain namespace, e.g. 'filesystem:workspace-1' | 'session-todo'. */
   readonly authority: string;
-  /** Canonical identity string. For filesystem this is the canonical path. */
+  /** Canonical coordination identity. It need not be a backend-executable path. */
   readonly key: string;
   readonly mode: KeyedClaimMode;
   readonly scope?: KeyedClaimScope;
