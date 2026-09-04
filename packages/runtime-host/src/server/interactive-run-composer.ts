@@ -17,10 +17,6 @@
  * under the License.
  */
 
-import {
-  buildSideConversationSystemPromptFragment,
-  isSideConversationSession,
-} from '@maka/core/side-conversation';
 import { type RunCompositionSourceRevision } from '@maka/core/run-composition';
 import {
   buildDeepResearchSystemPromptFragment,
@@ -95,7 +91,6 @@ export interface InteractiveRunComposerInput {
   readonly memory: HostMemoryCoordinator;
   readonly sessionTodo: SessionTodoToolStore;
   readonly childInstruction?: string;
-  readonly sideConversation?: boolean;
   readonly boundTools?: readonly MakaTool[];
   readonly toolProfile?: SessionToolProfile;
   readonly skillBudget?: SkillCatalogBudgetOptions;
@@ -229,7 +224,6 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
                 ? renderPlanModePrompt({ fullAccess: input.plan.permissionMode === 'bypass' })
                 : undefined,
               input.deepResearch ? buildDeepResearchSystemPromptFragment() : undefined,
-              input.sideConversation ? buildSideConversationSystemPromptFragment() : undefined,
             ]);
         return Object.freeze({
           text,
@@ -384,9 +378,6 @@ export function createInteractiveRunComposerFactory(
         memory: input.memory,
         sessionTodo: input.sessionTodo,
         ...(backendContext.systemPrompt ? { childInstruction: backendContext.systemPrompt } : {}),
-        ...(isSideConversationSession(backendContext.header.labels)
-          ? { sideConversation: true }
-          : {}),
         ...(boundTools ? { boundTools } : {}),
         ...(!boundTools && backendContext.header.toolProfile
           ? { toolProfile: backendContext.header.toolProfile }
