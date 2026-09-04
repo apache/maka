@@ -102,6 +102,19 @@
   color: var(--muted-foreground);
 }
 
+/* Both halves of the header line can hold still for a whole fan-out — the
+   status word stays "Running" and the settled counter stays `0/7` — so the
+   heading carries one element that is always moving while the graph is alive.
+   The status text beside it names the state, so the ring is decoration. */
+.maka-agent-graph-heartbeat {
+  flex: 0 0 auto;
+}
+
+/* Tabular figures keep the ticking clock from reflowing the counter beside it. */
+.maka-agent-graph-elapsed {
+  font-variant-numeric: tabular-nums;
+}
+
 .maka-agent-graph-empty {
   margin: var(--space-2) 0 0;
 }
@@ -143,9 +156,23 @@
   background: var(--muted-foreground);
 }
 
+/* A homogeneous fan-out settles all at once: seven `local-read` operators hold
+   at `running` for tens of seconds and the rows change nothing on screen, which
+   reads as a frozen list. Motion is the row's liveness signal; the hue stays
+   `--status-running` so colour keeps meaning status and only movement means
+   "still working". Reduced motion is handled by the global cap in
+   maka-tokens.css, which runs a single iteration back to the resting dot. */
+@keyframes maka-agent-graph-status-pulse {
+  50% {
+    opacity: 0.4;
+    transform: scale(1.5);
+  }
+}
+
 .maka-agent-graph-operators li[data-status="running"] .maka-agent-graph-status-dot,
 .maka-agent-graph-operators li[data-status="runnable"] .maka-agent-graph-status-dot {
   background: var(--status-running);
+  animation: maka-agent-graph-status-pulse 1.5s ease-in-out infinite;
 }
 
 .maka-agent-graph-operators li[data-status="completed"] .maka-agent-graph-status-dot {
