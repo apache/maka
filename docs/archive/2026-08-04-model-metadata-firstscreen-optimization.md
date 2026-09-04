@@ -17,6 +17,8 @@
   under the License.
 -->
 
+> Archived: this optimization has been implemented. The renderer startup path no longer statically imports `model-metadata`, `OnboardingHero` no longer imports `RECOMMENDED_PROVIDER_TYPES` at runtime, and `PROVIDER_REGISTRY` is now reached only from lazy Settings paths — matching the desired outcome below. This document is retained only as the historical design record.
+
 # perf(desktop): remove models.dev metadata from the renderer startup path
 
 <details open>
