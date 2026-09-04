@@ -156,12 +156,19 @@ async function moveToTail(page: Page): Promise<void> {
   ));
 }
 
+/**
+ * The affordance a reader who has paged away uses to come back. Waited for
+ * rather than probed: `isVisible()` answers about this instant, so a probe on
+ * a loaded runner falls through to whatever the else branch was before the
+ * button has rendered — which is how the suite this replaces carried an
+ * untested fallback through a prompt-rail tick that no run ever reached.
+ */
 async function returnToLatest(page: Page): Promise<void> {
   const returnLatest = page.getByRole('button', {
     name: /^(?:返回最新消息|Return to latest)$/,
   });
-  if (await returnLatest.isVisible()) await returnLatest.click();
-  else await page.locator('.maka-prompt-rail-tick').last().click({ force: true });
+  await expect(returnLatest).toBeVisible();
+  await returnLatest.click();
 }
 
 /**
@@ -258,8 +265,12 @@ test('paging back through the whole history keeps the mounted range bounded', as
   await expect(turns.first()).toHaveAttribute('data-turn-id', 'turn-prompt-rail-1');
   expect(mountedMax).toBeLessThanOrEqual(DESKTOP_TRANSCRIPT_ACTIVE_RANGE_MAX_TURNS);
 
+  // Coming back from the far end is a range reload, not a scroll: the Host
+  // resolves a new window around the tail and the renderer mounts it. The
+  // suite's 10s expect timeout is sized for UI that is already on screen, and
+  // this step measured past it on a CI runner with four workers competing.
   await returnToLatest(page);
   await expect(page.locator(`[data-turn-id="turn-prompt-rail-${PROMPT_RAIL_PROMPT_COUNT}"]`))
-    .toHaveCount(1);
+    .toHaveCount(1, { timeout: 30_000 });
   expect(await turns.count()).toBeLessThanOrEqual(DESKTOP_TRANSCRIPT_ACTIVE_RANGE_MAX_TURNS);
 });
