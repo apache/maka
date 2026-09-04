@@ -756,6 +756,8 @@ const COPY = {
       unarchive: '恢復',
       delete: '刪除',
       archived: '已歸檔',
+      startTask: '開始任務',
+      openSession: '開啟工作階段',
     },
     reviewPanel: {
       ariaLabel: 'Git 變更',
