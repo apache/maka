@@ -163,7 +163,7 @@ export function registerWorkBoardIpc(input: {
 
   input.ipcMain.handle(
     'workBoard:linkSession',
-    async (_event, id: unknown, link: unknown, options?: unknown): Promise<WorkBoardIpcResult<WorkBoardItem>> => {
+    async (_event, id: unknown, link: unknown, _options?: unknown): Promise<WorkBoardIpcResult<WorkBoardItem>> => {
       try {
         const itemId = requireWorkBoardId(id);
         const item = await store.get(itemId);
@@ -179,10 +179,14 @@ export function registerWorkBoardIpc(input: {
             'Work Board linked Session does not belong to an available Runtime Host project',
           );
         }
+        // CAS on the revision read above: the async Host validation must not
+        // race a concurrent mutation (e.g. the item being moved to another
+        // project), or a Session validated for project A could be written into
+        // the now-B item. The store enforces this inside its write transaction.
         const linked = await store.linkSession(
           itemId,
           link,
-          options as WorkBoardMutationOptions | undefined,
+          { expectedRevision: item.revision } as WorkBoardMutationOptions | undefined,
         );
         emitChanged();
         return { ok: true, value: linked };

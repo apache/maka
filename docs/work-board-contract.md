@@ -163,9 +163,8 @@ establishes a deliberately small link contract while it stays experimental:
 - **Single-link bound** (`WORK_BOARD_MAX_LINKED_SESSIONS = 1`): a project-scoped
   item owns at most one started Session at a time. Linking a freshly started
   Session replaces any previous link, so `linkedSessions` stays bounded instead
-  of growing on repeated starts. The stored-item decoder tolerates legacy arrays
-  by preserving valid distinct entries while dropping malformed or duplicate
-  ones; the strict mutation normalizer rejects arrays with more than one entry.
+  of growing on repeated starts. Read paths stay tolerant of legacy arrays with
+  more than one entry (they fail normalization rather than silently truncating).
 - **Project ownership**: `workBoard:linkSession` is the single main-process
   mutation boundary. It resolves the item, requires a project scope, passes the
   canonical board `projectId` into the Host validator, and requires the Session's
@@ -173,18 +172,14 @@ establishes a deliberately small link contract while it stays experimental:
   with `expectedRevision` CAS on the revision read before the (asynchronous)
   Host validation, so a concurrent scope/revision change cannot write a Session
   validated for one project into an item that has moved to another.
-- **Surface ownership**: a pending start claim is jointly owned by one specific
-  New Task surface instance (its Session selection revision) and its
-  target-scoped draft key. A first send from a newer surface, or from the same
-  surface after its Host/project changes, clears rather than consumes the claim;
-  a late callback from an older surface is ignored so it cannot clear a newer
-  claim.
+- **Surface ownership**: a pending start claim is owned by one specific New Task
+  surface instance (its owner nonce), not by the target-scoped draft key. A
+  first send from any other surface—including a New Task reopened on the same
+  Host/project—cannot consume the claim.
 - **Retry durability (spike limitation)**: the pending-link claim lives in the
   renderer for the lifetime of the current controller. If the Session is
   created and `linkSession` fails, the claim (with its Session id) is retained
-  in memory so retrying `Start task` on the same item and unchanged target
-  reuses that Session. If the item moved to a different target, retry discards
-  the old claim and starts a new Session against the current target.
+  in memory so retrying `Start task` on the same item reuses that Session.
   A renderer reload or app restart before the retry drops the claim; restarting
   the item then creates a second Session and leaves the first unlinked. This is
   an accepted, documented limitation of the spike (persisting a pending-link
