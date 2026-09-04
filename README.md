@@ -28,10 +28,10 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/apache/maka/stargazers"><img src="https://img.shields.io/github/stars/apache/maka?style=flat&label=%E2%98%85&color=9BB8F0" alt="GitHub stars" /></a>
-  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-9BB8F0?style=flat" alt="License: Apache 2.0" /></a>
-  <img src="https://img.shields.io/badge/platforms-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-9BB8F0?style=flat" alt="Platforms: macOS, Windows, Linux" />
-  <a href="https://deepwiki.com/apache/maka"><img src="https://img.shields.io/badge/DeepWiki-third--party%20AI%20docs-9BB8F0?style=flat" alt="DeepWiki: third-party AI-generated docs" /></a>
+  <a href="https://github.com/apache/maka/stargazers"><img src="https://img.shields.io/github/stars/apache/maka?style=flat&label=%E2%98%85&color=6E7781" alt="GitHub stars" /></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-6E7781?style=flat" alt="License: Apache 2.0" /></a>
+  <img src="https://img.shields.io/badge/platforms-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-6E7781?style=flat" alt="Platforms: macOS, Windows, Linux" />
+  <a href="https://deepwiki.com/apache/maka"><img src="https://img.shields.io/badge/DeepWiki-third--party%20AI%20docs-6E7781?style=flat" alt="DeepWiki: third-party AI-generated docs" /></a>
 </p>
 
 <picture>
