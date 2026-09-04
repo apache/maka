@@ -522,8 +522,61 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
     CREATE INDEX runtime_legacy_invocation_openings_by_session
       ON runtime_legacy_invocation_openings(session_id, opened_at, invocation_id);
 
-    ALTER TABLE runtime_continuation_claims
-      RENAME COLUMN target_run_header_json TO target_opening_json;
+    -- Rebuilt rather than renamed in place, because the column rename is not
+    -- the only thing this claim needs. Its start event belongs to the target
+    -- Session, and the foreign key had no ON DELETE clause, so purging that
+    -- Session was refused outright by the constraint and the whole purge rolled
+    -- back. A continuation whose target has been deleted no longer names
+    -- anything, so the claim goes with it and the source boundary it held is
+    -- free again.
+    CREATE TABLE runtime_continuation_claims_v16 (
+      claim_id TEXT PRIMARY KEY,
+      source_session_id TEXT NOT NULL,
+      source_invocation_id TEXT NOT NULL,
+      source_run_id TEXT NOT NULL,
+      source_turn_id TEXT NOT NULL,
+      source_event_high_water INTEGER NOT NULL CHECK (source_event_high_water > 0),
+      source_prefix_digest TEXT NOT NULL,
+      boundary_digest TEXT NOT NULL UNIQUE,
+      boundary_json TEXT NOT NULL,
+      provider_projection_version INTEGER NOT NULL CHECK (provider_projection_version IN (1, 2)),
+      provider_replay_digest TEXT NOT NULL,
+      target_session_id TEXT NOT NULL,
+      target_invocation_id TEXT NOT NULL UNIQUE,
+      target_run_id TEXT NOT NULL UNIQUE,
+      target_turn_id TEXT NOT NULL,
+      target_opening_json TEXT NOT NULL,
+      claimed_at INTEGER NOT NULL,
+      start_event_id TEXT UNIQUE REFERENCES runtime_events(event_id) ON DELETE CASCADE,
+      start_kind TEXT CHECK (
+        start_kind IS NULL OR start_kind IN ('runtime_admission', 'claim_repair')
+      ),
+      protocol_version INTEGER NOT NULL CHECK (protocol_version = 1),
+      UNIQUE (
+        source_session_id,
+        source_run_id,
+        source_event_high_water,
+        source_prefix_digest
+      ),
+      UNIQUE (target_session_id, target_turn_id)
+    );
+
+    INSERT INTO runtime_continuation_claims_v16 (
+      claim_id, source_session_id, source_invocation_id, source_run_id, source_turn_id,
+      source_event_high_water, source_prefix_digest, boundary_digest, boundary_json,
+      provider_projection_version, provider_replay_digest, target_session_id,
+      target_invocation_id, target_run_id, target_turn_id, target_opening_json,
+      claimed_at, start_event_id, start_kind, protocol_version
+    )
+    SELECT
+      claim_id, source_session_id, source_invocation_id, source_run_id, source_turn_id,
+      source_event_high_water, source_prefix_digest, boundary_digest, boundary_json,
+      provider_projection_version, provider_replay_digest, target_session_id,
+      target_invocation_id, target_run_id, target_turn_id, target_run_header_json,
+      claimed_at, start_event_id, start_kind, protocol_version
+    FROM runtime_continuation_claims;
+    DROP TABLE runtime_continuation_claims;
+    ALTER TABLE runtime_continuation_claims_v16 RENAME TO runtime_continuation_claims;
     `,
   ],
 ]);

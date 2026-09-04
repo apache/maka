@@ -1087,6 +1087,47 @@ describe('SqliteRuntimeStore', () => {
     });
   });
 
+  it('lets a started continuation target be purged instead of refusing the delete', async () => {
+    await withStore(async (store, dbPath) => {
+      const claim = continuationClaim();
+      await persistImmutablePrefix(store, continuationSourcePrefix());
+      assert.equal((await store.claimContinuation({ claim })).kind, 'acquired');
+
+      const db = new DatabaseSync(dbPath);
+      try {
+        db.exec('PRAGMA foreign_keys = ON');
+        // Stand the claim up the way starting a continuation does: its start
+        // event is event one of the target Session's run.
+        const start = db
+          .prepare('SELECT event_id, session_id FROM runtime_events ORDER BY event_seq ASC LIMIT 1')
+          .get() as { event_id: string; session_id: string };
+        db.prepare(
+          "UPDATE runtime_continuation_claims SET start_event_id = ?, start_kind = 'runtime_admission' WHERE claim_id = ?",
+        ).run(start.event_id, claim.claimId);
+
+        // Purging a conversation deletes its events. The claim used to have no
+        // ON DELETE clause, so the constraint refused this and rolled the whole
+        // purge back — for the user's delete, a copy rollback, an import
+        // discard and Session retirement alike.
+        db.prepare('DELETE FROM runtime_events WHERE session_id = ?').run(start.session_id);
+
+        assert.equal(
+          (
+            db
+              .prepare(
+                'SELECT COUNT(*) AS count FROM runtime_continuation_claims WHERE claim_id = ?',
+              )
+              .get(claim.claimId) as { count: number }
+          ).count,
+          0,
+          'a continuation whose target was deleted no longer names anything, so it goes too',
+        );
+      } finally {
+        db.close();
+      }
+    });
+  });
+
   it('fails closed when continuation claim columns disagree with canonical payload', async () => {
     await withStore(async (store, dbPath) => {
       const claim = continuationClaim();
