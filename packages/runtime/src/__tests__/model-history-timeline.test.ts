@@ -97,6 +97,21 @@ test('model history pairs reused tool call ids by durable occurrence', () => {
   );
 });
 
+test('model history does not pair an orphan result with a later reused call id', () => {
+  const items = buildRuntimeEventModelReplayPlan([
+    toolResult('orphan-result', 'read-1', 'orphan'),
+    toolCall('call', 'step-1'),
+    toolResult('matching-result', 'read-1', 'matching'),
+  ]).items;
+
+  assert.deepEqual(
+    buildRuntimeEventReplayTimeline(items).flatMap((entry) =>
+      entry.kind === 'assistant_step' ? entry.calls.map(({ result }) => result?.output) : [],
+    ),
+    ['matching'],
+  );
+});
+
 function assistantText(id: string, stepId: string, text: string): RuntimeEvent {
   return event({
     id,

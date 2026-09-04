@@ -449,7 +449,9 @@ export function buildRuntimeEventReplayTimeline(
       const step =
         (item.stepId === undefined ? adjacentLegacyStepIsOpen(index) : adjacentStep(item.stepId)) ??
         appendStep(item.stepId);
-      const matchedResult = results.get(item.toolCallId)?.shift();
+      const matches = results.get(item.toolCallId);
+      while (matches?.[0] && matches[0].index <= index) matches.shift();
+      const matchedResult = matches?.shift();
       const exchange: RuntimeEventReplayToolExchange = {
         call: item,
         ...(matchedResult ? { result: matchedResult.item } : {}),
