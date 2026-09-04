@@ -87,7 +87,11 @@ test('renderer-facing Runtime Host protocol does not load Node crypto', async (t
     configFile: false,
     root,
     logLevel: 'silent',
-    server: { host: '127.0.0.1', port: 0 },
+    // One request, one assertion — nothing here reacts to a file changing. A
+    // watcher would, and this root is the real repository: `close()` returns
+    // before its recursive scan finishes, and the unfinished fs requests keep
+    // the process alive until the workspace suite hits its own timeout.
+    server: { host: '127.0.0.1', port: 0, watch: null },
     optimizeDeps: { noDiscovery: true, include: [] },
     plugins: [workspacePackagesPlugin(repoRoot)],
   });
