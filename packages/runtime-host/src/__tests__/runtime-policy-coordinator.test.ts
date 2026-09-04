@@ -369,16 +369,26 @@ test('production policy mutation drains and poisons activation when cached backe
     assert.equal(started.result.kind, 'started');
     if (started.result.kind !== 'started') return;
     let snapshot = started.result.turn;
-    for (let attempt = 0; attempt < 100 && !isTerminalTurnStatus(snapshot.status); attempt += 1) {
-      await new Promise<void>((resolve) => setTimeout(resolve, 20));
-      const queried = await composition.handlers['turn.query'](
-        { sessionId: session.id, turnId: firstTurnId },
-        context,
-      );
-      assert.equal(queried.ok, true);
-      if (!queried.ok) return;
-      snapshot = queried.result;
-    }
+    const activeComposition = composition;
+    assert.ok(activeComposition);
+    await pollFor(
+      async () => {
+        if (isTerminalTurnStatus(snapshot.status)) return true;
+        const queried = await activeComposition.handlers['turn.query'](
+          { sessionId: session.id, turnId: firstTurnId },
+          context,
+        );
+        assert.equal(queried.ok, true);
+        if (!queried.ok) return true;
+        snapshot = queried.result;
+        return false;
+      },
+      {
+        timeoutMs: 5_000,
+        pollMs: 10,
+        message: 'Cached-backend Turn did not reach a terminal status',
+      },
+    );
     assert.equal(isTerminalTurnStatus(snapshot.status), true);
 
     disposalSpy = mock.method(FakeBackend.prototype, 'dispose', async () => {

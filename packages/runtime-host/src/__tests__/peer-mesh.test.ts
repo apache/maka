@@ -22,7 +22,8 @@ import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { setImmediate as waitForImmediate, setTimeout as delay } from 'node:timers/promises';
+import { setImmediate as waitForImmediate } from 'node:timers/promises';
+import { waitFor } from '@maka/core/test-only/async-primitives';
 import { test } from 'node:test';
 import type { RuntimeHostPeerNativeStream } from '../transport/peer-native.js';
 import {
@@ -275,11 +276,11 @@ test('announces authority commits without coupling success to delivery', async (
     await member.join(await authority.invite(mesh.roster.roster.meshId));
 
     await authority.setMeshDisplayName(mesh.roster.roster.meshId, 'Online');
-    for (let attempt = 0; attempt < 20; attempt += 1) {
-      if (member.status()[0]?.roster.roster.displayName === 'Online') break;
-      await delay(10);
-    }
-    assert.equal(member.status()[0]?.roster.roster.displayName, 'Online');
+    await waitFor(() => member.status()[0]?.roster.roster.displayName === 'Online', {
+      timeoutMs: 5_000,
+      pollMs: 10,
+      message: 'Mesh display name did not propagate to the member',
+    });
 
     memberPeer.stallNextControl();
     await authority.setMeshDisplayName(mesh.roster.roster.meshId, 'Recovered');

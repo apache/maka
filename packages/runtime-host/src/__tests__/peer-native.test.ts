@@ -22,6 +22,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { setImmediate as waitForImmediate } from 'node:timers/promises';
+import { waitFor } from '@maka/core/test-only/async-primitives';
 import { test } from 'node:test';
 import {
   createRuntimeHostPeerClient,
@@ -437,9 +438,11 @@ async function waitForRequestCount(
   stats: { readonly requests: readonly unknown[] },
   expected: number,
 ): Promise<void> {
-  for (let attempt = 0; attempt < 10 && stats.requests.length < expected; attempt += 1) {
-    await waitForImmediate();
-  }
+  await waitFor(() => stats.requests.length >= expected, {
+    timeoutMs: 5_000,
+    pollMs: 10,
+    message: `Peer did not receive ${expected} request(s)`,
+  });
   assert.equal(stats.requests.length, expected);
 }
 
