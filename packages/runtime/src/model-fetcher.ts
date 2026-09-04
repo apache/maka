@@ -519,11 +519,13 @@ function contextWindowOfOpenAiCodexModel(model: RawOpenAiCodexModel): number | u
 }
 
 function toGitHubCopilotModelInfo(model: RawGitHubCopilotModel): ModelInfo[] {
+  if (model.policy !== undefined) {
+    if (model.policy.state !== 'enabled') return [];
+  }
   if (
     typeof model.id !== 'string' ||
     !model.id ||
     model.model_picker_enabled !== true ||
-    model.policy?.state === 'disabled' ||
     model.capabilities?.supports?.tool_calls !== true
   )
     return [];
