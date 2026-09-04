@@ -548,10 +548,10 @@ const CONVERSATION_COPY = {
           '已经压缩过历史，供应商仍然说这次请求太大。剩下的部分还包含系统提示、工具定义、摘要和最近的原文，缩短这条消息是你能控制的那一半。',
         contextUsageLabel: '用量',
         contextUsageShare: (used, window) =>
-          `本次请求已使用 ${used.toLocaleString('zh-CN')} / ${window.toLocaleString('zh-CN')} 个 token（${Math.round((used / window) * 100)}%）。`,
+          `已用 ${used.toLocaleString('zh-CN')} / ${window.toLocaleString('zh-CN')} token（${Math.round((used / window) * 100)}%）`,
         contextUsageNoWindow: (used) =>
-          `本次请求已使用 ${used.toLocaleString('zh-CN')} 个 token；当前模型没有可用的上下文上限。`,
-        contextUsageUnavailable: '本次请求暂无可用的用量数据。',
+          `已用 ${used.toLocaleString('zh-CN')} token；上下文上限未知`,
+        contextUsageUnavailable: '暂无用量数据',
         contextUsageOpen: '打开用量追踪',
         stepLimit: '已达到本轮工具步骤上限，任务可能尚未完成。发送“继续”即可接着处理。',
       },

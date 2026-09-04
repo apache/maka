@@ -39,7 +39,7 @@ test('explains why folder-reference messages cannot be edited and resent', () =>
 test('context usage explains missing data without exposing provider internals', () => {
   assert.equal(
     getConversationCopy('zh').messages.systemNotes.contextUsageUnavailable,
-    '本次请求暂无可用的用量数据。',
+    '暂无用量数据',
   );
   assert.equal(
     getConversationCopy('en').messages.systemNotes.contextUsageUnavailable,
@@ -50,7 +50,7 @@ test('context usage explains missing data without exposing provider internals', 
 test('context usage tooltip leads with the measured share', () => {
   assert.equal(
     getConversationCopy('zh').messages.systemNotes.contextUsageShare(12_345, 128_000),
-    '本次请求已使用 12,345 / 128,000 个 token（10%）。',
+    '已用 12,345 / 128,000 token（10%）',
   );
   assert.equal(
     getConversationCopy('en').messages.systemNotes.contextUsageShare(12_345, 128_000),
@@ -61,7 +61,7 @@ test('context usage tooltip leads with the measured share', () => {
 test('context usage tooltip keeps measured usage when the limit is unknown', () => {
   assert.equal(
     getConversationCopy('zh').messages.systemNotes.contextUsageNoWindow(12_345),
-    '本次请求已使用 12,345 个 token；当前模型没有可用的上下文上限。',
+    '已用 12,345 token；上下文上限未知',
   );
   assert.equal(
     getConversationCopy('en').messages.systemNotes.contextUsageNoWindow(12_345),
