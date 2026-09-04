@@ -19,9 +19,9 @@
 
 /**
  * The state machine only. Whether the reader ends up looking at the right
- * pixels is `apps/desktop/e2e/transcript-scroll.spec.ts`, in a real Chromium
- * with a real scroller — a harness that fakes layout can only report the
- * ordering the harness itself chose.
+ * pixels needs a real layout engine and currently has no test at all — a
+ * harness that fakes layout can only report the ordering the harness itself
+ * chose, so do not add that claim here.
  *
  * What is worth asserting here is the one property the whole design rests on:
  * a scroll event that this authority did not cause is the reader, exactly, with
