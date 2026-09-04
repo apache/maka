@@ -273,7 +273,6 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
   private artifactRoot: string;
   private purgeIntentPath: string;
   private records: ArtifactRecord[] = [];
-  private metadataReady = false;
   private recoveryRequired = true;
   private recoverableOrphans = new Map<string, RecoverableOrphan>();
   private queue: Promise<void> = Promise.resolve();
@@ -983,12 +982,10 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
   }
 
   private async load(): Promise<void> {
-    this.metadataReady = true;
     this.records = this.metadataRepository.readAll();
   }
 
   private async writeMetadataUnlocked(changes: ArtifactMetadataChanges): Promise<void> {
-    this.metadataReady = true;
     this.metadataRepository.applyChanges(changes);
   }
 
@@ -1001,7 +998,6 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
   }
 
   private async reloadForMutationUnlocked(): Promise<void> {
-    this.metadataReady = true;
     this.records = this.metadataRepository.readAll();
   }
 
@@ -1404,13 +1400,6 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
 
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {
     return this.enqueueSerialized(async () => {
-      if (!this.metadataReady) {
-        return this.runWithWriterLock(async () => {
-          await this.assertAuthority?.();
-          this.metadataReady = true;
-          return operation();
-        });
-      }
       await this.assertAuthority?.();
       return operation();
     });
