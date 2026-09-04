@@ -4687,6 +4687,23 @@ describe('SessionManager permission mode updates', () => {
     assert.deepStrictEqual((await store.readHeader(session.id)).labels, ['kept']);
   });
 
+  test('temporarily preserves setPermissionMode for legacy SessionStore implementations', async () => {
+    const store = new MemorySessionStore();
+    const manager = new SessionManager({
+      store,
+      backends: new BackendRegistry(),
+      newId: nextId(),
+      now: nextNow(6_100),
+    });
+    const session = await manager.createSession(makeInput({ permissionMode: 'ask' }));
+
+    const summary = await manager.setPermissionMode(session.id, 'bypass');
+
+    assert.strictEqual(summary.permissionMode, 'bypass');
+    assert.strictEqual((await store.readHeader(session.id)).permissionMode, 'bypass');
+    assert.strictEqual((await store.readExecutionBoundary(session.id)).kind, 'bypass');
+  });
+
   test('starts a new turn without workspace identity when safety inspection fails', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();

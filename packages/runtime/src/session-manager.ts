@@ -1635,8 +1635,16 @@ export class SessionManager {
   }
 
   async setPermissionMode(sessionId: string, mode: PermissionMode): Promise<SessionSummary> {
-    const store = this.requireSessionConfigurationStore();
-    const current = await store.readHeaderRecordSnapshot(sessionId);
+    const readHeaderRecordSnapshot = this.deps.store.readHeaderRecordSnapshot?.bind(
+      this.deps.store,
+    );
+    if (!readHeaderRecordSnapshot || !this.deps.store.updateSessionConfiguration) {
+      // Temporary compatibility bridge for SessionStore embeddings that predate
+      // versioned configuration authority. A follow-up PR will shortly remove
+      // setPermissionMode and this redundant fallback after callers migrate.
+      return this.setPermissionModeWithLegacyStore(sessionId, mode);
+    }
+    const current = await readHeaderRecordSnapshot(sessionId);
     const next = await this.transitionSessionConfiguration(sessionId, {
       expectedRevision: current.revision,
       clearConnectionBlock: false,
@@ -1644,6 +1652,44 @@ export class SessionManager {
       configuration: sessionConfigurationWithPermissionMode(current.header, mode),
     });
     return headerToSummary(next.header);
+  }
+
+  private async setPermissionModeWithLegacyStore(
+    sessionId: string,
+    mode: PermissionMode,
+  ): Promise<SessionSummary> {
+    const previous = await this.deps.store.readHeader(sessionId);
+    const boundary = await this.deps.store.readExecutionBoundary(sessionId);
+    const leavingDeepResearch = isDeepResearchSession(previous.labels) && mode !== 'explore';
+    if (
+      previous.permissionMode === mode &&
+      executionBoundaryMatchesPermissionMode(boundary, mode) &&
+      !leavingDeepResearch
+    ) {
+      return headerToSummary(previous);
+    }
+
+    const labels = leavingDeepResearch
+      ? previous.labels.filter((label) => label !== DEEP_RESEARCH_SESSION_LABEL)
+      : previous.labels;
+    const kind = mode === 'bypass' ? 'bypass' : 'managed';
+    await this.commitExecutionBoundaryTransition(sessionId, boundary, mode, async () => {
+      const current = await this.deps.store.readHeader(sessionId);
+      if (current.status === 'waiting_for_user') {
+        throw new SessionConfigurationTransitionError(
+          'session_busy',
+          'Session has a pending Interaction',
+        );
+      }
+      return () =>
+        this.deps.store.setExecutionBoundaryKind(sessionId, kind, {
+          permissionMode: mode,
+          labels,
+        });
+    });
+    const next = await this.deps.store.readHeader(sessionId);
+    this.runtimeKernel.updateCachedHeader(sessionId, next);
+    return headerToSummary(next);
   }
 
   async setExecutionBoundaryKind(
@@ -5143,6 +5189,17 @@ function sessionConfigurationMatches(
     header.permissionMode === configuration.permissionMode &&
     sessionConfigurationMatchesExceptPermissionMode(header, configuration)
   );
+}
+
+function executionBoundaryMatchesPermissionMode(
+  boundary: ExecutionBoundary,
+  mode: PermissionMode,
+): boolean {
+  if (mode === 'bypass') return boundary.kind === 'bypass';
+  if (boundary.kind !== 'managed') return false;
+  return mode === 'explore'
+    ? boundary.profile.name === 'read-only'
+    : boundary.profile.name !== 'read-only';
 }
 
 function narrowsExecutionAuthority(
