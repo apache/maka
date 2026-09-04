@@ -39,12 +39,6 @@
   <img alt="A high-performance agent workspace that keeps a complete record of everything it did. One turn of RuntimeEvents: the model speaks, runs a command, asks permission, you approve, it gets the result, edits a file, the turn ends." src="./.github/assets/readme-hero.en.light.png" />
 </picture>
 
-> [!NOTE]
-> Apache Maka (Incubating) is an effort undergoing incubation at The Apache Software Foundation (ASF), sponsored by the Apache Incubator PMC. Incubation is required of all newly accepted projects until a further review indicates that the infrastructure, communications, and decision-making process have stabilized in a manner consistent with other successful ASF projects. While incubation status is not necessarily a reflection of the completeness or stability of the code, it does indicate that the project has yet to be fully endorsed by the ASF. [DISCLAIMER-WIP](./DISCLAIMER-WIP) records the issues the project is currently aware of.
-
-> [!IMPORTANT]
-> Maka is under active development. Data formats, CLI commands, and experimental capabilities may still change.
-
 ## What Maka is
 
 Apache Maka (Incubating) is a high-performance agent workspace that keeps a complete record of everything it did. An agent harness exists to finish tasks. We hold it to one measure: how many it completes and at what cost. We publish every run: same model, same official verifier, full per-task record.
@@ -258,3 +252,9 @@ Maka is licensed under the [Apache License 2.0](./LICENSE). See
 subject to their respective licenses and notices.
 
 Apache Maka, Maka, Apache, the Apache feather, and the Apache Maka project logo are either registered trademarks or trademarks of The Apache Software Foundation.
+
+> [!NOTE]
+> Apache Maka (Incubating) is an effort undergoing incubation at The Apache Software Foundation (ASF), sponsored by the Apache Incubator PMC. Incubation is required of all newly accepted projects until a further review indicates that the infrastructure, communications, and decision-making process have stabilized in a manner consistent with other successful ASF projects. While incubation status is not necessarily a reflection of the completeness or stability of the code, it does indicate that the project has yet to be fully endorsed by the ASF. [DISCLAIMER-WIP](./DISCLAIMER-WIP) records the issues the project is currently aware of.
+
+> [!IMPORTANT]
+> Maka is under active development. Data formats, CLI commands, and experimental capabilities may still change.
