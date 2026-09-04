@@ -4547,7 +4547,6 @@ describe('AiSdkBackend model history', () => {
       now: monotonicClock(),
       contextBudget: {
         name: 'in-flight-dedup-test',
-        maxHistoryEstimatedTokens: 10_000,
         charsPerToken: 1,
       },
       summarizeHistoryCompact: async () => {
