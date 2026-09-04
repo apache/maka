@@ -36,10 +36,12 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 import type { LanguageModelV4StreamPart } from '@ai-sdk/provider';
+import { z } from 'zod';
 import {
   decodeModelCallAttempt,
   PROMPT_COMPOSITION_MAX_TOOLS,
   type ModelCallAttempt,
+  type PromptComposition,
 } from '@maka/core/model-call-attempt';
 import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
 import { createWorkspaceRuntimeStore } from '@maka/storage/runtime-event-persistence';
@@ -78,7 +80,11 @@ test('a real send seals its observation into SQLite and reconstructs it after re
         apiKey: 'sk-test',
         modelId: 'mock-model-id',
         modelFactory: () => answeringModel(),
-        tools: [],
+        // More tools than the composition names, because the cap is only a
+        // real cap when something is actually over it: with an empty list the
+        // row that crosses the chain has no tool rows at all, and every
+        // assertion about them holds for free.
+        tools: overflowingToolset(),
         // The seams the kernel hands a real backend, forwarded exactly as the
         // production composition forwards them — this is the hop that broke.
         ...(ctx.recordModelCallAttempt
@@ -137,6 +143,7 @@ test('a real send seals its observation into SQLite and reconstructs it after re
       'and the request describes what it was made of',
     );
     assert.equal(scanned, 0, 'the row was committed by the send, not rebuilt by the read');
+    assertToolsAccountedFor(diagnostics.composition);
 
     await manager.stopSession(session.id, { source: 'stop_button' });
     runStore.close?.();
@@ -157,7 +164,7 @@ test('a real send seals its observation into SQLite and reconstructs it after re
       const composition = canonicalAttempts[0]?.promptComposition;
       assert.ok(composition);
       assert.ok(composition.segments.length > 0);
-      assert.ok((composition.tools?.length ?? 0) <= PROMPT_COMPOSITION_MAX_TOOLS);
+      assertToolsAccountedFor(composition);
 
       let coldScans = 0;
       const cold = await readLatestContextDiagnostics(
@@ -267,6 +274,51 @@ test('a turn aborted before dispatch does not create a canonical sent attempt', 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+const TOOLS_OVER_THE_CAP = 5;
+
+/** More tools than the composition names, each a different size. */
+function overflowingToolset() {
+  return Array.from({ length: PROMPT_COMPOSITION_MAX_TOOLS + TOOLS_OVER_THE_CAP }, (_, index) => ({
+    name: `tool-${String(index).padStart(3, '0')}`,
+    description: `probe ${'d'.repeat(index * 8)}`,
+    parameters: z.object({ q: z.string() }),
+    impl: async () => ({ ok: true }),
+  }));
+}
+
+/**
+ * The tool rows, checked the way the panel has to be able to trust them.
+ *
+ * The cap is what keeps one MCP server's 1000 tools out of every attempt, so
+ * the row a reader gets is by design not the whole toolset. What it must still
+ * be is honest about that: the named ones are the largest, the rest are
+ * counted, and the two together account for every tool byte the segment claims.
+ */
+function assertToolsAccountedFor(composition: PromptComposition | undefined): void {
+  assert.ok(composition);
+  const tools = composition.tools ?? [];
+  assert.equal(tools.length, PROMPT_COMPOSITION_MAX_TOOLS);
+  assert.equal(composition.remainingTools?.count, TOOLS_OVER_THE_CAP);
+
+  const namedBytes = tools.reduce((total, tool) => total + tool.bytes, 0);
+  assert.equal(
+    namedBytes + (composition.remainingTools?.bytes ?? 0),
+    composition.segments.find((segment) => segment.kind === 'tool_definitions')?.bytes,
+    'the named tools and the remainder add up to the tool bytes the segment reports',
+  );
+
+  // Largest first, so the top of the list is what a reader could remove.
+  const largest = Array.from(
+    { length: PROMPT_COMPOSITION_MAX_TOOLS },
+    (_, index) =>
+      `tool-${String(PROMPT_COMPOSITION_MAX_TOOLS + TOOLS_OVER_THE_CAP - 1 - index).padStart(3, '0')}`,
+  );
+  assert.deepEqual(
+    tools.map((tool) => tool.name),
+    largest,
+  );
+}
 
 function answeringModel(): MockLanguageModelV4 {
   return new MockLanguageModelV4({
