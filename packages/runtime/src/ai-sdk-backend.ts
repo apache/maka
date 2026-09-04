@@ -209,7 +209,6 @@ import {
   SANDBOX_BOUNDARY_DENIED_FOR_TURN,
   SANDBOX_BOUNDARY_FINALIZATION_PROMPT,
 } from './sandbox-boundary-tool.js';
-import { computeCost } from './telemetry/cost.js';
 import { getBuiltinPricing } from './telemetry/builtin-pricing.js';
 import {
   admitProviderReasoningReplayItems,
@@ -230,13 +229,8 @@ import {
   type RuntimeEventReplayToolResultItem,
 } from './model-history.js';
 import { toolSchemaCharsForDiagnostics } from './request-shape.js';
-import type { ModelCallAttempt, ModelCallKind } from '@maka/core/model-call-attempt';
-import {
-  ProviderRequestTracker,
-  type ModelCallAccountingInput,
-  type ProviderRequestUsage,
-  type ResolvedModelCallCost,
-} from './provider-request-telemetry.js';
+import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
+import { ProviderRequestTelemetry } from './provider-request-telemetry.js';
 import { AiSdkMessageProjection } from './ai-sdk-message-projection.js';
 import {
   ToolAvailabilityRuntime,
@@ -989,6 +983,7 @@ export class AiSdkBackend implements AgentBackend {
   private readonly providerRetrySleep: (delayMs: number, signal: AbortSignal) => Promise<void>;
   private readonly modelAdapter: ModelAdapter;
   private readonly messageProjection: AiSdkMessageProjection;
+  private readonly providerTelemetry: ProviderRequestTelemetry;
   private readonly resolvedProviderOptions: Record<string, unknown>;
   private readonly toolAvailabilityRuntime: ToolAvailabilityRuntime;
 
@@ -1052,6 +1047,23 @@ export class AiSdkBackend implements AgentBackend {
         ? { openAiResponsesTransportState: input.openAiResponsesTransportState }
         : {}),
     });
+    this.providerTelemetry = new ProviderRequestTelemetry({
+      sessionId: this.sessionId,
+      connectionSlug: input.connection.slug,
+      providerId: input.connection.providerType,
+      defaultModelId: input.modelId,
+      now: this.now,
+      newId: this.newId,
+      resolveContextWindow: (modelId) =>
+        resolveSelectedModelContextWindow(input.connection, modelId),
+      resolvePricing: (modelId) =>
+        (input.lookupPricing ?? getBuiltinPricing)(
+          pricingModelKey(input.connection.providerType, modelId),
+        ),
+      recordModelCallAttempt: input.recordModelCallAttempt,
+      assertModelCallAccountingReady: input.assertModelCallAccountingReady,
+      beforeRunProviderDispatch: input.beforeRunProviderDispatch,
+    });
     const runtime = resolveModelRuntime(input.connection, input.modelId);
     const applyPatchProfile = runtime.applyPatchProfile;
     this.messageProjection = new AiSdkMessageProjection({
@@ -1069,7 +1081,7 @@ export class AiSdkBackend implements AgentBackend {
       now: this.now,
       modelAdapter: this.modelAdapter,
       createProviderRequestTracker: (trackerInput) =>
-        this.createProviderRequestTracker(trackerInput),
+        this.providerTelemetry.createTracker(trackerInput),
       materializeRuntimeReplayPlan: (
         plan,
         imageBudget,
@@ -1566,7 +1578,7 @@ export class AiSdkBackend implements AgentBackend {
         });
       }
     }
-    const providerRequestTracker = this.createProviderRequestTracker({
+    const providerRequestTracker = this.providerTelemetry.createTracker({
       turnId,
       callKind: 'main',
       modelId: this.input.modelId,
@@ -2315,7 +2327,9 @@ export class AiSdkBackend implements AgentBackend {
                     );
                     await this.input.recordUsageCheckpoint?.({
                       ...this.cumulativeUsageCheckpoint,
-                      costUsd: this.computeTokenUsageCostUsd(this.cumulativeUsageCheckpoint),
+                      costUsd: this.providerTelemetry.normalizedUsageCostUsd(
+                        this.cumulativeUsageCheckpoint,
+                      ),
                     });
                   }
                 }
@@ -2942,7 +2956,7 @@ export class AiSdkBackend implements AgentBackend {
           const attemptTotalUsage = providerOutcome.usage;
           tokenUsage = sawUnusableStepUsage ? undefined : (completedStepUsage ?? attemptTotalUsage);
           if (tokenUsage) {
-            tokenUsageCostUsd = this.computeTokenUsageCostUsd(tokenUsage);
+            tokenUsageCostUsd = this.providerTelemetry.normalizedUsageCostUsd(tokenUsage);
             const contextBudgetForUsage = contextBudgetWithRequestProjectionDiagnostics(
               contextBudgetForTelemetry,
               activeToolResultPruneDiagnosticPatch,
@@ -3160,7 +3174,7 @@ export class AiSdkBackend implements AgentBackend {
         // the run trace, which carries no cost and meters nothing.
         if (!tokenUsage && completedStepUsage && !sawUnusableStepUsage) {
           tokenUsage = completedStepUsage;
-          tokenUsageCostUsd = this.computeTokenUsageCostUsd(tokenUsage);
+          tokenUsageCostUsd = this.providerTelemetry.normalizedUsageCostUsd(tokenUsage);
         }
         trace.sendDiagnostics({
           status: streamStatus,
@@ -3417,158 +3431,6 @@ export class AiSdkBackend implements AgentBackend {
 
   private makeErrorEvent(turnId: string, err: unknown, reasonOverride?: string): ErrorEvent {
     return this.modelAdapter.makeErrorEvent(turnId, err, reasonOverride);
-  }
-
-  private computeTokenUsageCostUsd(usage: NormalizedAiSdkUsage): number | undefined {
-    try {
-      const pricing = (this.input.lookupPricing ?? getBuiltinPricing)(
-        pricingModelKey(this.input.connection.providerType, this.input.modelId),
-      );
-      if (pricing === null) return undefined;
-      return computeCost(
-        {
-          inputTokens: usage.inputTokens,
-          outputTokens: usage.outputTokens,
-          cacheHitInputTokens: usage.cacheHitInputTokens,
-          cacheMissInputTokens: usage.cacheMissInputTokens,
-          cacheWriteInputTokens: usage.cacheWriteInputTokens,
-        },
-        pricing,
-      ).totalCost;
-    } catch {
-      return undefined;
-    }
-  }
-
-  /**
-   * One tracker for one physical provider call kind (#1679).
-   *
-   * Auxiliary calls get the same observation, attempt, and accounting plumbing the
-   * main send uses, built here because the sinks and the current run live on
-   * this backend. Callers receive a ready tracker rather than the ingredients:
-   * a half-wired tracker is what produces records nothing can attribute.
-   *
-   * Absent only when there is nothing to feed: no canonical sink and no
-   * dispatch gate.
-   */
-  private createProviderRequestTracker(input: {
-    turnId: string;
-    callKind: ModelCallKind;
-    modelId: string;
-    historyCompactRoute?: ModelCallAttempt['historyCompactRoute'];
-    /**
-     * Stated by every caller, never defaulted: an unattributed provider request
-     * is silently dropped by usage accounting, so the compiler has to be the
-     * thing that catches a missing run id (#1990).
-     */
-    runId: string | undefined;
-  }): ProviderRequestTracker | undefined {
-    const accounting = this.modelCallAccounting(input.callKind, {
-      modelId: input.modelId,
-      ...(input.runId ? { runId: input.runId } : {}),
-      ...(input.historyCompactRoute ? { historyCompactRoute: input.historyCompactRoute } : {}),
-    });
-    const runId = input.runId;
-    const beforeRunProviderDispatch = this.input.beforeRunProviderDispatch;
-    const beforeDispatch =
-      runId && beforeRunProviderDispatch
-        ? () =>
-            beforeRunProviderDispatch({
-              sessionId: this.sessionId,
-              turnId: input.turnId,
-              runId,
-            })
-        : undefined;
-    if (!accounting && !beforeDispatch) return undefined;
-    return new ProviderRequestTracker({
-      traceId: this.newId(),
-      turnId: input.turnId,
-      contextWindow: resolveSelectedModelContextWindow(this.input.connection, input.modelId),
-      now: this.now,
-      newId: this.newId,
-      ...(beforeDispatch ? { beforeDispatch } : {}),
-      ...(accounting ? { accounting } : {}),
-    });
-  }
-
-  /**
-   * Accounting identity for one call kind (#1679).
-   *
-   * The run is always supplied by the caller. It cannot be read back off this
-   * backend: one instance serves several concurrent runs, so whichever turn
-   * touched it last would speak for all of them (#1990).
-   *
-   * Absent when there is no canonical sink, which leaves the corresponding
-   * tracker purely diagnostic.
-   */
-  private modelCallAccounting(
-    callKind: ModelCallKind,
-    identity?: {
-      /** The run this call is billed to; absent only when there is none. */
-      runId?: string;
-      /** The model this call actually runs against; priced as that model. */
-      modelId?: string;
-      historyCompactRoute?: ModelCallAttempt['historyCompactRoute'];
-    },
-  ): ModelCallAccountingInput | undefined {
-    const record = this.input.recordModelCallAttempt;
-    if (!record) return undefined;
-    const modelId = identity?.modelId ?? this.input.modelId;
-    return {
-      sessionId: this.sessionId,
-      resolveRunId: () => identity?.runId,
-      connectionSlug: this.input.connection.slug,
-      providerId: this.input.connection.providerType,
-      callKind,
-      ...(identity?.historyCompactRoute
-        ? { historyCompactRoute: identity.historyCompactRoute }
-        : {}),
-      record,
-      resolveCost: (usage: ProviderRequestUsage) => this.resolveModelCallCost(usage, modelId),
-      ...(this.input.assertModelCallAccountingReady
-        ? { assertReady: this.input.assertModelCallAccountingReady }
-        : {}),
-    };
-  }
-
-  /**
-   * Resolves cost for a canonical accounting record at settlement time, together
-   * with the rates it was computed against.
-   *
-   * The basis travels with the amount because a figure recomputed later from
-   * whatever pricing is current would silently drift from what the call actually
-   * cost. An unresolvable price returns `undefined` rather than zero — the
-   * record then carries `costBasis: 'unpriced'`, which is not the same claim as
-   * a call that was free.
-   *
-   * Priced against the model that actually served the request. Recording one
-   * model's id beside another model's rates would make the stored amount
-   * unauditable in exactly the way `pricingRates` exists to prevent.
-   */
-  private resolveModelCallCost(
-    usage: ProviderRequestUsage,
-    modelId: string,
-  ): ResolvedModelCallCost | undefined {
-    try {
-      const pricing = (this.input.lookupPricing ?? getBuiltinPricing)(
-        pricingModelKey(this.input.connection.providerType, modelId),
-      );
-      if (pricing === null) return undefined;
-      const costUsd = computeCost(
-        {
-          inputTokens: usage.inputTokens ?? 0,
-          outputTokens: usage.outputTokens ?? 0,
-          cacheHitInputTokens: usage.cacheReadInputTokens ?? 0,
-          cacheMissInputTokens: usage.cacheMissInputTokens ?? 0,
-          cacheWriteInputTokens: usage.cacheWriteInputTokens ?? 0,
-        },
-        pricing,
-      ).totalCost;
-      if (costUsd === undefined || !Number.isFinite(costUsd)) return undefined;
-      return { costUsd, pricingRates: pricing };
-    } catch {
-      return undefined;
-    }
   }
 
   /** Materialize canonical RuntimeEvent history into ai-sdk's message format. */
