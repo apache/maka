@@ -1,3 +1,15 @@
+---
+doc_id: settings-astryx-deep-review.zh-CN
+title: "Maka 设置页深度 Review——以 Astryx 设计语言为基准"
+language: zh-CN
+source_language: zh-CN
+implementation_status: current
+document_status: current
+translation_status: source-only
+last_verified: 2026-09-04
+owners:
+  - maka-backend
+---
 <!--
   Licensed to the Apache Software Foundation (ASF) under one
   or more contributor license agreements.  See the NOTICE file
