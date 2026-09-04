@@ -98,6 +98,13 @@ needs to branch on platform.
 | User allowlist enforced | ✅ | — | — | — | ✅ | ✅ | — | — |
 | Scheduled-task delivery | ✅ | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
 
+**An empty cell means Maka does not implement the capability on that platform.
+It does not mean the platform cannot do it.** The WeCom AI Bot SDK, for
+instance, ships streaming replies (`replyStream`), media upload
+(`uploadMedia`) and template cards; the bridge wires up none of them and sends
+plain markdown only. Treat the blanks as a map of unwired surface area, not as
+a statement about the vendors.
+
 Notes on individual rows:
 
 - **Streaming reply** is Telegram-only. `BotRegistry.startReplyStream` returns
@@ -257,12 +264,12 @@ traffic.
 
 ## Setup
 
-> **Status: Feishu/Lark is verified end-to-end. The rest are placeholders.**
-> Each remaining section must be walked against a real developer account before
-> it lands — the acceptance criteria require tested instructions, and untested
-> setup steps are worse than none.
+> **Status: Feishu/Lark and WeCom are verified end-to-end. The rest are
+> placeholders.** Each remaining section must be walked against a real
+> developer account before it lands — the acceptance criteria require tested
+> instructions, and untested setup steps are worse than none.
 >
-> For DingTalk, WeCom and WeChat, check
+> For DingTalk and WeChat, check
 > [the onboarding architecture doc](architecture/bot-onboarding-runtime.zh-CN.md)
 > first: QR-code onboarding may make most manual steps unnecessary.
 
@@ -361,7 +368,67 @@ error as the reason.
 
 ### WeCom 企业微信
 
-_TODO — AI bot, Bot ID and Secret; note the unverifiable credential test._
+Maka's WeCom channel is the **智能机器人 / AI Bot**, driven through the official
+`@wecom/aibot-node-sdk` over a WebSocket long connection. It is **not** a
+自建应用 (custom app) and **not** a 群机器人 webhook. The distinction decides
+every step below: a custom app would need a corp ID and agent ID, and
+`BotChannelSettings` has no field for either.
+
+**1. Create the bot in API mode.** In the WeCom admin console, create a
+智能机器人 and choose **API 模式** — *"连接企业自有系统或智能体"*. Do **not**
+choose 普通模式 (*"使用企业微信提供的模型与数据"*), and do not use the
+one-sentence AI-assisted creation flow, which produces a 普通模式 bot.
+
+In 普通模式 the conversation is answered by WeCom's own hosted models, so
+messages are consumed on their side and never reach the long connection. Maka
+is the "企业自有系统" that API 模式 exists to connect.
+
+**2. Set 可见范围 / Visibility.** Add the users who will talk to the bot. A
+newly created bot has an empty visibility range and cannot be found in the
+client.
+
+**3. Copy the credentials.**
+
+| Console field | Maka setting |
+| --- | --- |
+| Bot ID | `appId` |
+| Secret | `appSecret` |
+
+**4. Configure the channel in Maka.** There is nothing else to fill in — no
+callback URL, no token, no encoding key. The SDK dials
+`wss://openws.work.weixin.qq.com` and authenticates by sending Bot ID and
+Secret once the socket is open.
+
+**5. Verify.** A successful handshake moves the channel to
+`credentials_valid`. Note that it does **not** go straight to `operational` —
+WeCom only reaches `operational` after the first message is actually sent or
+received.
+
+Failure reasons distinguish the cases: `no-credentials` means `appId` or
+`appSecret` is empty, and an authentication failure leaves readiness at
+`configured`. The handshake has a 15-second timeout.
+
+**Addressing replies.** WeCom has no stable per-chat identifier for direct
+messages. An inbound single-chat frame carries `chattype: "single"` and **no**
+`chatid` at all, so the bridge falls back to the sender's `userid` as the chat
+ID; group frames carry a real `chatid`. Consequently a WeCom conversation
+cannot be addressed until the bot has received a message in it — there is no
+way to open a chat proactively the way Feishu allows.
+
+`allowedUserIds` for this channel holds WeCom user IDs, which are ordinarily
+human-readable account names rather than opaque tokens.
+
+Sends return a `req_id`, not a message ID. Nothing in the API accepts that
+value as a reply target, which is why this channel has no reply threading.
+
+> **Private deployments are not supported.** The SDK's built-in endpoint is
+> fixed, and privately deployed WeCom organizations must use their own
+> long-connection address. The bridge exposes no way to override it.
+
+> **The credential test cannot prove WeCom credentials.** Maka's in-app probe
+> checks shape only and reports `verified: false`. The sole real check is
+> completing the WebSocket handshake, so treat a "passing" WeCom credential
+> test as unproven until the channel actually connects.
 
 ### WeChat 微信
 
