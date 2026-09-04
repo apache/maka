@@ -812,6 +812,7 @@ async function runFramedProcess<Frame, Result>(input: {
 }): Promise<Result> {
   input.signal?.throwIfAborted();
   const command = await resolveLocalNpmCommand(input.command, input.environment);
+  input.signal?.throwIfAborted();
   return new Promise((resolve, reject) => {
     const child = input.spawnProcess(command.executable, [...command.args], {
       ...(input.cwd ? { cwd: input.cwd } : {}),

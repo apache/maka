@@ -32,6 +32,6 @@ pub use bindings::{
 #[cfg(target_os = "windows")]
 pub use windows_lifecycle::{
     WindowsTaskStatus, own_current_process_tree, windows_task_activate, windows_task_converge,
-    windows_task_probe, windows_task_retire, windows_task_status, windows_task_uninstall,
-    windows_task_verify,
+    windows_task_converge_launcher, windows_task_probe, windows_task_retire, windows_task_status,
+    windows_task_uninstall, windows_task_verify, windows_task_verify_launcher,
 };

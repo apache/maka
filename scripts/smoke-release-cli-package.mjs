@@ -263,6 +263,7 @@ async function smokeRuntimeHostPeerProtocol({ packageRoot, cliEntrypoint, root }
     if (!nativePath) throw new Error('Installed CLI did not configure its direct-peer artifact');
     const addon = require(nativePath);
     await smokeWindowsTaskScheduler(
+      addon,
       windowsLifecycle.createWindowsRuntimeHostLifecycleProvider,
       cliEntrypoint,
       join(root, 'windows task & % 生命周期'),
@@ -413,7 +414,7 @@ async function smokeRuntimeHostPeerProtocol({ packageRoot, cliEntrypoint, root }
   }
 }
 
-async function smokeWindowsTaskScheduler(createProvider, cliEntrypoint, root) {
+async function smokeWindowsTaskScheduler(addon, createProvider, cliEntrypoint, root) {
   if (process.platform !== 'win32') return;
   mkdirSync(root, { recursive: true });
   const rootId = createHash('sha256').update(root).digest('hex');
@@ -458,6 +459,10 @@ async function smokeWindowsTaskScheduler(createProvider, cliEntrypoint, root) {
     'utf8',
   );
   const provider = createProvider(rootId, { cliPath: managedCliEntrypoint });
+  const legacyRunnerPath = join(
+    dirname(managedCliEntrypoint),
+    'runtime-host-windows-task-runner.js',
+  );
   const hostCommand = [
     process.execPath,
     scriptPath,
@@ -470,7 +475,8 @@ async function smokeWindowsTaskScheduler(createProvider, cliEntrypoint, root) {
   const reconciliationCommand = [process.execPath, '-e', 'process.exit(0)'];
   try {
     await provider.supervisor.preflight();
-    await provider.supervisor.converge({ command: hostCommand });
+    addon.windowsTaskConverge(rootId, 'host', legacyRunnerPath, hostCommand);
+    addon.windowsTaskVerify(rootId, 'host', legacyRunnerPath, hostCommand);
     await provider.supervisor.verify({ command: hostCommand });
     await provider.reconciliationTrigger.converge({ command: reconciliationCommand });
     await provider.reconciliationTrigger.verify({ command: reconciliationCommand });

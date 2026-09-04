@@ -26,6 +26,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use napi::bindgen_prelude::{Error as NapiError, Result, Status};
 use napi_derive::napi;
 use windows::{
@@ -90,6 +91,26 @@ pub fn windows_task_probe() -> Result<()> {
 pub fn windows_task_converge(
     root_id: String,
     target: String,
+    runner_path: String,
+    command: Vec<String>,
+) -> Result<()> {
+    let launcher_path = launcher_for_legacy_runner(&runner_path).map_err(native_error)?;
+    converge_launcher_task(root_id, target, launcher_path, command)
+}
+
+#[napi]
+pub fn windows_task_converge_launcher(
+    root_id: String,
+    target: String,
+    launcher_path: String,
+    command: Vec<String>,
+) -> Result<()> {
+    converge_launcher_task(root_id, target, launcher_path, command)
+}
+
+fn converge_launcher_task(
+    root_id: String,
+    target: String,
     launcher_path: String,
     command: Vec<String>,
 ) -> Result<()> {
@@ -107,6 +128,26 @@ pub fn windows_task_converge(
 
 #[napi]
 pub fn windows_task_verify(
+    root_id: String,
+    target: String,
+    runner_path: String,
+    command: Vec<String>,
+) -> Result<()> {
+    let launcher_path = launcher_for_legacy_runner(&runner_path).map_err(native_error)?;
+    verify_launcher_task(root_id, target, launcher_path, command)
+}
+
+#[napi]
+pub fn windows_task_verify_launcher(
+    root_id: String,
+    target: String,
+    launcher_path: String,
+    command: Vec<String>,
+) -> Result<()> {
+    verify_launcher_task(root_id, target, launcher_path, command)
+}
+
+fn verify_launcher_task(
     root_id: String,
     target: String,
     launcher_path: String,
@@ -753,7 +794,7 @@ fn task_action_command(
     projected.extend(
         command
             .iter()
-            .map(|argument| base64_url(argument.as_bytes())),
+            .map(|argument| URL_SAFE_NO_PAD.encode(argument.as_bytes())),
     );
     if command_line(&projected[1..]).encode_utf16().count() >= 32_767 {
         return Err(invalid_windows_request());
@@ -761,23 +802,33 @@ fn task_action_command(
     Ok(projected)
 }
 
-fn base64_url(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let first = chunk[0];
-        let second = chunk.get(1).copied().unwrap_or(0);
-        let third = chunk.get(2).copied().unwrap_or(0);
-        encoded.push(ALPHABET[(first >> 2) as usize] as char);
-        encoded.push(ALPHABET[(((first & 0x03) << 4) | (second >> 4)) as usize] as char);
-        if chunk.len() > 1 {
-            encoded.push(ALPHABET[(((second & 0x0f) << 2) | (third >> 6)) as usize] as char);
-        }
-        if chunk.len() > 2 {
-            encoded.push(ALPHABET[(third & 0x3f) as usize] as char);
-        }
+fn launcher_for_legacy_runner(runner_path: &str) -> windows::core::Result<String> {
+    let runner = Path::new(runner_path);
+    let valid_runner = runner.is_absolute()
+        && runner
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.eq_ignore_ascii_case("runtime-host-windows-task-runner.js"))
+        && runner
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.eq_ignore_ascii_case("dist"));
+    let package_root = valid_runner
+        .then_some(runner)
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .ok_or_else(invalid_windows_request)?;
+    let launcher = package_root.join(
+        "native/runtime-host-windows-task-launcher/prebuilds/win32-x64/maka-runtime-host-task-launcher.exe",
+    );
+    if !launcher.is_file() {
+        return Err(invalid_windows_request());
     }
-    encoded
+    launcher
+        .to_str()
+        .map(str::to_owned)
+        .ok_or_else(invalid_windows_request)
 }
 
 fn ownership_marker(root_id: &str, target: Target) -> String {
