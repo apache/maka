@@ -40,6 +40,13 @@ export const WORK_BOARD_PROFILE_ID_MAX_CHARS = 160;
 export const WORK_BOARD_DEFAULT_PAGE_SIZE = 50;
 export const WORK_BOARD_PAGE_SIZE_MAX = 100;
 export const WORK_BOARD_CURSOR_MAX_CHARS = 1024;
+/**
+ * Single-link contract: a project-scoped item owns at most one started
+ * Session at a time. Linking a freshly started Session replaces any previous
+ * link, keeping `linkedSessions` bounded instead of growing on repeated
+ * starts. Read paths stay tolerant of legacy arrays with more entries.
+ */
+export const WORK_BOARD_MAX_LINKED_SESSIONS = 1;
 
 export const WORK_BOARD_ITEM_STATES = ['todo', 'in_progress', 'done'] as const;
 export type WorkBoardItemState = (typeof WORK_BOARD_ITEM_STATES)[number];
@@ -438,6 +445,11 @@ export function normalizeWorkBoardLinkedSessions(
     if (seen.has(key)) return fail('linkedSessions contains duplicates');
     seen.add(key);
     result.push(normalized.value);
+  }
+  if (result.length > WORK_BOARD_MAX_LINKED_SESSIONS) {
+    return fail(
+      `linkedSessions must hold at most ${WORK_BOARD_MAX_LINKED_SESSIONS} entry (single-link contract)`,
+    );
   }
   return { ok: true, value: result };
 }

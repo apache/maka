@@ -21,6 +21,7 @@ import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import {
   WORK_BOARD_DEFAULT_PAGE_SIZE,
+  WORK_BOARD_MAX_LINKED_SESSIONS,
   applyWorkBoardItemPatch,
   archiveWorkBoardItem,
   decodeWorkBoardItem,
@@ -281,9 +282,14 @@ class SqliteWorkBoardStore implements WorkBoardStore {
           return;
         }
         const effectiveNow = Math.max(now, current.updatedAt);
+        // Single-link contract ({@link WORK_BOARD_MAX_LINKED_SESSIONS}): a
+        // board item owns at most one started Session at a time, so a freshly
+        // started Session replaces any previous link. This keeps
+        // `linkedSessions` bounded instead of growing without limit on
+        // repeated starts.
         const next: WorkBoardItem = {
           ...current,
-          linkedSessions: [...linkedSessions, normalized.value],
+          linkedSessions: [normalized.value],
           updatedAt: effectiveNow,
           revision: current.revision + 1,
         };

@@ -1602,6 +1602,7 @@ function AppShellContent({
     openSessionInChat,
     resolveWorkBoardTarget: taskEntry.commands.resolveWorkBoardTarget,
     prepareWorkBoardDraft: taskEntry.commands.prepareWorkBoardDraft,
+    newTaskDraftKey: currentNewTaskDraftKey,
   });
 
   const exitWorkHub = useCallback(() => setWorkHubActive(false), []);

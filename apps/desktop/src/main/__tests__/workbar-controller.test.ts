@@ -23,6 +23,7 @@ import { afterEach, describe, it } from 'node:test';
 import { act, createElement, StrictMode } from 'react';
 import type { ShellRunUpdate } from '@maka/core/events';
 import type { SessionSummary } from '@maka/core/session';
+import type { WorkBoardActiveItem, WorkBoardItem, WorkBoardLinkedSession } from '@maka/core/work-board';
 import { LocaleProvider, type ToastApi } from '@maka/ui';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 import {
@@ -137,6 +138,52 @@ function input(
     shellObscured: false,
     modelChoices: [],
     toastApi,
+  };
+}
+
+function workBoardItem(id: string): WorkBoardActiveItem {
+  return {
+    schemaVersion: 1,
+    id,
+    revision: 1,
+    scope: { kind: 'project', projectId: `project-${id}` },
+    title: id,
+    state: 'todo',
+    archived: false,
+    creator: { kind: 'user' },
+    provenance: { kind: 'manual' },
+    createdAt: 1,
+    updatedAt: 1,
+  };
+}
+
+function workBoardDraftKey(target: {
+  profileId: string;
+  hostId: string;
+  projectId: string;
+}): string {
+  return `draft:${target.profileId}:${target.hostId}:${target.projectId}`;
+}
+
+function workBoardInput(
+  activeSession: SessionSummary | undefined,
+  toastApi: ToastApi = createFakeToastApi(),
+  overrides: Partial<UseWorkbarControllerInput> = {},
+): UseWorkbarControllerInput {
+  return {
+    ...input(activeSession, toastApi),
+    resolveWorkBoardTarget: (item) => ({
+      ok: true as const,
+      target: {
+        profileId: 'profile-1',
+        hostId: 'host-1',
+        projectId: `project-${item.id}`,
+      },
+    }),
+    prepareWorkBoardDraft: (target, draft) => workBoardDraftKey(target),
+    openNewTaskSurface: () => undefined,
+    composerRef: { current: { setDraft: () => undefined, focus: () => undefined } },
+    ...overrides,
   };
 }
 
@@ -565,5 +612,159 @@ describe('useWorkbarController', () => {
     assert.equal(subscriptions, 1);
     assert.equal(disposals, 1);
     assert.deepEqual(activeSessions, ['a', 'b']);
+  });
+
+  it('links only the Session produced on the claimed new-task surface', async () => {
+    const { root } = installReactRenderer();
+    const links: Array<{ id: string; sessionId: string }> = [];
+    const defaults = createFakeWorkbarServices();
+    const services = createFakeWorkbarServices({
+      workBoard: {
+        linkSession: async (id, link) => {
+          links.push({ id, sessionId: link.sessionId });
+          return { ok: true, value: workBoardItem(id) };
+        },
+      },
+    });
+    const opened: number[] = [];
+    const controllerInput = workBoardInput(session('a'), createFakeToastApi(), {
+      openNewTaskSurface: () => opened.push(1),
+      newTaskDraftKey: 'draft:profile-1:host-1:project-A',
+    });
+
+    await act(async () => renderController(root, services, controllerInput));
+    await act(async () =>
+      controller().host.onStartWorkBoardTask?.(workBoardItem('A')),
+    );
+    assert.equal(opened.length, 1);
+
+    // The user moves to a different new-task surface and sends there first:
+    // the surface identity no longer matches the claim, so the send must not
+    // consume the claim or link item A to that Session.
+    await act(async () =>
+      renderController(
+        root,
+        services,
+        workBoardInput(session('a'), createFakeToastApi(), {
+          newTaskDraftKey: 'draft:profile-1:host-1:project-B',
+        }),
+      ),
+    );
+    await act(async () =>
+      controller().commands.onNewTaskSessionResolved('session-B'),
+    );
+    assert.deepEqual(links, []);
+
+    // The mismatched send abandoned the claim, so a later send on the
+    // original surface must not resurrect it either.
+    await act(async () =>
+      controller().commands.onNewTaskSessionResolved('session-A'),
+    );
+    assert.deepEqual(links, []);
+  });
+
+  it('links a Session produced on the claimed surface', async () => {
+    const { root } = installReactRenderer();
+    const links: Array<{ id: string; sessionId: string }> = [];
+    const defaults = createFakeWorkbarServices();
+    const services = createFakeWorkbarServices({
+      workBoard: {
+        linkSession: async (id, link) => {
+          links.push({ id, sessionId: link.sessionId });
+          return { ok: true, value: workBoardItem(id) };
+        },
+      },
+    });
+
+    await act(async () =>
+      renderController(
+        root,
+        services,
+        workBoardInput(session('a'), createFakeToastApi(), {
+          newTaskDraftKey: 'draft:profile-1:host-1:project-A',
+        }),
+      ),
+    );
+    await act(async () =>
+      controller().host.onStartWorkBoardTask?.(workBoardItem('A')),
+    );
+    await act(async () =>
+      controller().commands.onNewTaskSessionResolved(
+        JSON.stringify(['host-1', 'session-1']),
+      ),
+    );
+
+    assert.deepEqual(links, [{ id: 'A', sessionId: 'session-1' }]);
+  });
+
+  it('retries a failed link against the same Session instead of creating a duplicate', async () => {
+    const { root } = installReactRenderer();
+    let attempts = 0;
+    const linkCalls: Array<{ id: string; sessionId: string }> = [];
+    const errors: string[] = [];
+    const defaults = createFakeWorkbarServices();
+    const services = createFakeWorkbarServices({
+      workBoard: {
+        linkSession: async (id, link) => {
+          attempts += 1;
+          linkCalls.push({ id, sessionId: link.sessionId });
+          if (attempts === 1) return { ok: false, message: 'transient SQLite busy' };
+          return { ok: true, value: workBoardItem(id) };
+        },
+      },
+    });
+    const opened: number[] = [];
+    const controllerInput = workBoardInput(session('a'), createFakeToastApi(errors), {
+      openNewTaskSurface: () => opened.push(1),
+      newTaskDraftKey: 'draft:profile-1:host-1:project-A',
+    });
+
+    await act(async () => renderController(root, services, controllerInput));
+    await act(async () =>
+      controller().host.onStartWorkBoardTask?.(workBoardItem('A')),
+    );
+    await act(async () =>
+      controller().commands.onNewTaskSessionResolved(
+        JSON.stringify(['host-1', 'session-1']),
+      ),
+    );
+    // First attempt fails; the claim (with its Session id) must be retained.
+    assert.equal(linkCalls.length, 1);
+    assert.ok(errors.some((message) => message.includes('SQLite')));
+
+    // Retry by pressing Start on the same item: reuse the same Session and do
+    // not open a new surface (which would create a duplicate Session).
+    await act(async () =>
+      controller().host.onStartWorkBoardTask?.(workBoardItem('A')),
+    );
+    assert.equal(linkCalls.length, 2);
+    assert.equal(opened.length, 1);
+    assert.deepEqual(
+      linkCalls.map((call) => call.sessionId),
+      ['session-1', 'session-1'],
+    );
+  });
+
+  it('opens a previously linked Session from a board item', async () => {
+    const { root } = installReactRenderer();
+    const opened: string[] = [];
+    const controllerInput = workBoardInput(session('a'), createFakeToastApi(), {
+      openSessionInChat: (key) => opened.push(key),
+    });
+
+    await act(async () =>
+      renderController(root, createFakeWorkbarServices(), controllerInput),
+    );
+    const link: WorkBoardLinkedSession = {
+      profileId: 'profile-1',
+      hostId: 'host-1',
+      sessionId: 'session-1',
+      linkedAt: 1,
+    };
+    await act(async () =>
+      controller().host.onOpenWorkBoardSession?.(link),
+    );
+
+    assert.deepEqual(opened, [JSON.stringify(['host-1', 'session-1'])]);
   });
 });

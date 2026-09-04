@@ -1292,14 +1292,22 @@ const workBoardIpc = registerWorkBoardIpc({
   workspaceRoot,
   mainWindowController,
   store: createWorkBoardStore(workspaceRoot, { schemaMigration: 'require_current' }),
-  validateLinkedSession: async (value) => {
+  validateLinkedSession: async (value, expectedProjectId) => {
     const normalized = normalizeWorkBoardLinkedSession(value);
     if (!normalized.ok) return false;
     try {
       const current = runtimeHostManager?.current(normalized.value.profileId);
       if (!current?.candidate || current.hostId !== normalized.value.hostId) return false;
       const sessions = await current.candidate.client.listSessions();
-      return sessions.some((session) => session.id === normalized.value.sessionId);
+      const session = sessions.find((candidate) => candidate.id === normalized.value.sessionId);
+      if (!session) return false;
+      if (expectedProjectId !== undefined) {
+        return (
+          session.workspace.target.kind === 'project' &&
+          session.workspace.target.projectId === expectedProjectId
+        );
+      }
+      return true;
     } catch {
       return false;
     }

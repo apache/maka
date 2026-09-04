@@ -119,7 +119,7 @@ function WorkBoardRow(props: {
               isDisabled={!actions.canStart}
               tooltip={actions.canStart ? undefined : actions.startReason}
             />}
-            {item.linkedSessions?.map((link) => (
+            {actions.startTaskEnabled && item.linkedSessions?.map((link) => (
               <Button
                 key={`${link.profileId}:${link.hostId}:${link.sessionId}`}
                 size="sm"
