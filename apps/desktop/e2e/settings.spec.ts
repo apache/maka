@@ -180,6 +180,28 @@ test('wide settings gutters scroll the whole main pane', async ({ window: page }
   await expect(content).toBeVisible();
 });
 
+test('temporary subagent policy can be enabled and persisted', async ({ window: page }) => {
+  await ensureSidebarExpanded(page);
+  await page.getByRole('button', { name: '设置', exact: true }).click();
+  await page.getByRole('button', { name: '子 Agent', exact: true }).click();
+
+  const main = page.getByRole('main', { name: '设置内容' });
+  await expect(main.getByRole('heading', { name: '临时子 Agent' })).toBeVisible();
+  const enabled = main.getByRole('switch', { name: '允许临时子 Agent' });
+  await enabled.click();
+  await main.getByRole('button', { name: '保存临时策略' }).click();
+
+  await expect
+    .poll(async () => (await page.evaluate(() => window.maka.settings.get())).subagents.adHoc)
+    .toMatchObject({
+      enabled: true,
+      maxProfile: 'local_read',
+      connectionSlug: 'e2e',
+      model: 'claude-sonnet-4-5-20250929',
+    });
+  await expect(enabled).toBeChecked();
+});
+
 test('appearance choice content stays vertically centered in stretched grid rows', async ({ window: page }) => {
   await page.evaluate(async () => {
     await window.maka.settings.update({ personalization: { uiLocale: 'en' } });

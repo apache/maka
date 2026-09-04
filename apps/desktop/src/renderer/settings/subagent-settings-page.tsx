@@ -99,6 +99,24 @@ type AdHocSubagentPolicyDraft = Omit<AdHocSubagentPolicy, 'thinkingLevel'> & {
   thinkingLevel: ThinkingLevel | '';
 };
 
+function initialAdHocPolicyDraft(
+  policy: AdHocSubagentPolicy | undefined,
+  connections: readonly (LlmConnection & HostResolvedConnectionCatalog)[],
+): AdHocSubagentPolicyDraft {
+  const usableConnections = connections.filter(isSelectableSubagentConnection);
+  const initialConnection = policy
+    ? connections.find((connection) => connection.slug === policy.connectionSlug)
+    : usableConnections[0];
+  const initialModels = initialConnection ? offerableCatalogEntries(initialConnection) : [];
+  return {
+    enabled: policy?.enabled ?? false,
+    maxProfile: policy?.maxProfile ?? 'local_read',
+    connectionSlug: policy?.connectionSlug ?? usableConnections[0]?.slug ?? '',
+    model: policy?.model ?? initialModels[0]?.id ?? '',
+    thinkingLevel: policy?.thinkingLevel ?? '',
+  };
+}
+
 export function SubagentSettingsPage(props: {
   settings: AppSettings;
   connections: readonly (LlmConnection & HostResolvedConnectionCatalog)[];
@@ -110,7 +128,16 @@ export function SubagentSettingsPage(props: {
   const locale = useUiLocale();
   const copy = getSubagentSettingsCopy(locale);
   const toast = useToast();
-  const [route, setRoute] = useState<SubagentPageRoute>({ kind: 'list' });
+  const [pageState, setPageState] = useState(() => ({
+    route: { kind: 'list' } as SubagentPageRoute,
+    adHocDraft: initialAdHocPolicyDraft(
+      props.settings.subagents.adHoc,
+      props.connections,
+    ),
+  }));
+  const route = pageState.route;
+  const setRoute = (nextRoute: SubagentPageRoute): void =>
+    setPageState((current) => ({ ...current, route: nextRoute }));
   const [saving, setSaving] = useState(false);
   const presets = props.settings.subagents.presets;
   const { level, preset: editorPreset } = resolveSubagentRoute(route, presets);
@@ -249,10 +276,17 @@ export function SubagentSettingsPage(props: {
   return (
     <SettingsPage>
       <AdHocSubagentPolicySection
-        key={JSON.stringify(props.settings.subagents.adHoc ?? null)}
         policy={props.settings.subagents.adHoc}
+        draft={pageState.adHocDraft}
+        copy={copy}
         connections={props.connections}
         isSaving={saving}
+        onDraftChange={(update) =>
+          setPageState((current) => ({
+            ...current,
+            adHocDraft: update(current.adHocDraft),
+          }))
+        }
         onSave={async (adHoc) => {
           setSaving(true);
           try {
@@ -361,28 +395,20 @@ export function SubagentSettingsPage(props: {
 
 function AdHocSubagentPolicySection(props: {
   policy: AdHocSubagentPolicy | undefined;
+  draft: AdHocSubagentPolicyDraft;
+  copy: ReturnType<typeof getSubagentSettingsCopy>;
   connections: readonly (LlmConnection & HostResolvedConnectionCatalog)[];
   isSaving: boolean;
+  onDraftChange(update: (current: AdHocSubagentPolicyDraft) => AdHocSubagentPolicyDraft): void;
   onSave(policy: AdHocSubagentPolicy): Promise<void>;
 }) {
-  const locale = useUiLocale();
-  const copy = getSubagentSettingsCopy(locale);
+  const copy = props.copy;
   const usableConnections = useMemo(
     () => props.connections.filter(isSelectableSubagentConnection),
     [props.connections],
   );
-  const policy = props.policy;
-  const initialConnection = policy
-    ? props.connections.find((connection) => connection.slug === policy.connectionSlug)
-    : usableConnections[0];
-  const initialModels = initialConnection ? offerableCatalogEntries(initialConnection) : [];
-  const [draft, setDraft] = useState<AdHocSubagentPolicyDraft>(() => ({
-    enabled: props.policy?.enabled ?? false,
-    maxProfile: props.policy?.maxProfile ?? 'local_read',
-    connectionSlug: props.policy?.connectionSlug ?? usableConnections[0]?.slug ?? '',
-    model: props.policy?.model ?? initialModels[0]?.id ?? '',
-    thinkingLevel: props.policy?.thinkingLevel ?? '',
-  }));
+  const draft = props.draft;
+  const setDraft = props.onDraftChange;
   const selectedConnection = props.connections.find(
     (connection) => connection.slug === draft.connectionSlug,
   );
