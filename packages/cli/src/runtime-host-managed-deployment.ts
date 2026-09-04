@@ -42,6 +42,7 @@ import {
   type RuntimeHostManagedDeploymentConfig,
 } from '@maka/runtime-host/operator';
 import {
+  readRuntimeHostWindowsTaskLauncher,
   resolvePackagedRuntimeHostWindowsTaskLauncherPath,
   runtimeHostManagedWindowsTaskLauncherPath,
 } from './runtime-host-windows-task-launcher-artifact.js';
@@ -67,8 +68,6 @@ interface RuntimeHostManagedDeploymentCleanupReceipt {
 }
 
 const CLEANUP_RECEIPT_FILE = 'cleanup-approved.json';
-const WINDOWS_TASK_LAUNCHER_MAX_BYTES = 1024 * 1024;
-
 export function resolveRuntimeHostManagedPackageCliPath(
   deploymentRoot: string,
   version: string,
@@ -858,17 +857,8 @@ export async function convergeRuntimeHostManagedWindowsTaskLauncher(
     config.launch.package.integrity,
   );
   const sourcePath = await resolvePackagedRuntimeHostWindowsTaskLauncherPath(layout.cliPath);
-  await writeStableArtifact(
-    runtimeHostManagedWindowsTaskLauncherPath(config.deploymentRoot),
-    await readWindowsTaskLauncher(sourcePath),
-  );
-}
-
-export async function verifyRuntimeHostManagedWindowsTaskLauncher(
-  config: RuntimeHostManagedDeploymentConfig,
-  options: { readonly allowAbsent?: boolean } = {},
-): Promise<void> {
-  const projectedPath = runtimeHostManagedWindowsTaskLauncherPath(config.deploymentRoot);
+  const expected = await readRuntimeHostWindowsTaskLauncher(sourcePath);
+  const projectedPath = runtimeHostManagedWindowsTaskLauncherPath(config.deploymentRoot, expected);
   const projectedExists = await access(projectedPath, constants.F_OK).then(
     () => true,
     (error: unknown) => {
@@ -876,28 +866,42 @@ export async function verifyRuntimeHostManagedWindowsTaskLauncher(
       throw error;
     },
   );
-  if (!projectedExists && options.allowAbsent) return;
+  if (projectedExists) {
+    const observed = await readRuntimeHostWindowsTaskLauncher(projectedPath);
+    if (!observed.equals(expected)) {
+      throw new Error('The managed Runtime Host Windows task launcher is invalid');
+    }
+    return;
+  }
+  await writeStableArtifact(projectedPath, expected);
+}
 
+export async function verifyRuntimeHostManagedWindowsTaskLauncher(
+  config: RuntimeHostManagedDeploymentConfig,
+  options: { readonly allowAbsent?: boolean } = {},
+): Promise<void> {
   const layout = resolveRuntimeHostNpmDeploymentLayout(
     config.deploymentRoot,
     config.launch.package.integrity,
   );
   const sourcePath = await resolvePackagedRuntimeHostWindowsTaskLauncherPath(layout.cliPath);
-  const [expected, observed] = await Promise.all([
-    readWindowsTaskLauncher(sourcePath),
-    readWindowsTaskLauncher(projectedPath),
-  ]);
+  const expected = await readRuntimeHostWindowsTaskLauncher(sourcePath);
+  const projectedPath = runtimeHostManagedWindowsTaskLauncherPath(config.deploymentRoot, expected);
+  const projectedExists = await access(projectedPath, constants.F_OK).then(
+    () => true,
+    (error: unknown) => {
+      if (isNodeError(error, 'ENOENT')) return false;
+      throw error;
+    },
+  );
+  if (!projectedExists) {
+    if (options.allowAbsent) return;
+    throw new Error('The managed Runtime Host Windows task launcher does not match its deployment');
+  }
+  const observed = await readRuntimeHostWindowsTaskLauncher(projectedPath);
   if (!observed.equals(expected)) {
     throw new Error('The managed Runtime Host Windows task launcher does not match its deployment');
   }
-}
-
-function readWindowsTaskLauncher(path: string): Promise<Buffer> {
-  return readStableBoundedFile({
-    path,
-    maxBytes: WINDOWS_TASK_LAUNCHER_MAX_BYTES,
-    invalidFile: () => new Error('The managed Runtime Host Windows task launcher is invalid'),
-  });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -1032,7 +1032,10 @@ test('managed Windows task launcher is projected to a stable deployment path', a
   };
 
   await convergeRuntimeHostManagedWindowsTaskLauncher(config);
-  const projected = runtimeHostManagedWindowsTaskLauncherPath(deployment.root);
+  const projected = runtimeHostManagedWindowsTaskLauncherPath(
+    deployment.root,
+    Buffer.from('launcher-v1'),
+  );
   assert.equal(await readFile(projected, 'utf8'), 'launcher-v1');
   assert.equal(await resolveRuntimeHostWindowsTaskLauncherPath(deployment.cliPath), projected);
 
@@ -1044,6 +1047,10 @@ test('managed Windows task launcher is projected to a stable deployment path', a
   );
   await convergeRuntimeHostManagedWindowsTaskLauncher(config);
   await verifyRuntimeHostManagedWindowsTaskLauncher(config);
+  assert.notEqual(
+    runtimeHostManagedWindowsTaskLauncherPath(deployment.root, Buffer.from('launcher-v2')),
+    projected,
+  );
 });
 
 async function createReleasePackage(base: string, version: string): Promise<string> {
