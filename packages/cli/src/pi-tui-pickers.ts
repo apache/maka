@@ -58,6 +58,8 @@ import type {
   OnboardingFailure,
   OnboardingFailureClass,
   OnboardingIdentityChoice,
+  OnboardingOAuthFailureReason,
+  OnboardingOAuthPresentation,
   OnboardingProviderEntry,
   OnboardingRejectionReason,
 } from './pi-tui-contracts.js';
@@ -90,6 +92,7 @@ interface TuiPickerCopy {
   readonly onboardingRequestFailed: string;
   readonly onboardingRejections: Readonly<Record<OnboardingRejectionReason, string>>;
   readonly onboardingFailures: Readonly<Record<OnboardingFailureClass, string>>;
+  readonly oauthFailures: Readonly<Record<OnboardingOAuthFailureReason, string>>;
   readonly accountSavedRefreshFailed: string;
   readonly listProvidersFailed: string;
   readonly noConfigurableProviders: string;
@@ -110,6 +113,15 @@ interface TuiPickerCopy {
   >;
   readonly submitAction: string;
   readonly verifyingKey: string;
+  readonly oauthHint: string;
+  readonly oauthCodeLabel: string;
+  readonly oauthStarting: string;
+  readonly oauthWaiting: string;
+  readonly oauthCancelling: string;
+  readonly oauthLoadingModels: string;
+  readonly oauthContinueToModels: string;
+  readonly oauthRetryAction: string;
+  readonly oauthRetryModelsAction: string;
   readonly modelSelectionHint: string;
   readonly selectedModels: string;
   readonly selectedModelsAndSave: string;
@@ -134,6 +146,13 @@ export function onboardingFailureMessage(failure: OnboardingFailure, locale: UiL
     case 'unavailable':
       return copy.onboardingRequestFailed;
   }
+}
+
+export function onboardingOAuthFailureMessage(
+  reason: OnboardingOAuthFailureReason,
+  locale: UiLocale,
+): string {
+  return TUI_PICKER_COPY[locale].oauthFailures[reason];
 }
 
 export class MakaAutocompleteProvider implements AutocompleteProvider {
@@ -1083,6 +1102,7 @@ export type OnboardingWizardPhase =
   | 'identity'
   | 'baseUrl'
   | 'key'
+  | 'oauth'
   | 'models'
   | 'success';
 
@@ -1103,9 +1123,9 @@ export type OnboardingWizardStatus =
 export interface OnboardingWizardInput {
   locale: UiLocale;
   providers: readonly OnboardingProviderEntry[];
-  /** search→key: the user picked a provider. The runner records it — and the
-   *   existing connection's identity, when the catalog resolved one — for
-   *   verify/save, so saving edits that connection in place. */
+  /** The user picked a provider. The runner records it — and the existing
+   *   connection's identity, when the catalog resolved one — for the remaining
+   *   setup steps, so saving edits that connection in place. */
   onPickProvider: (provider: OnboardingProviderEntry) => void;
   /** identity submit (create targets only). `null` halves mean "keep the
    *  Host-derived default", so a user who accepts the prefills sends a target
@@ -1118,11 +1138,19 @@ export interface OnboardingWizardInput {
   /** key submit. The value may be empty — an existing connection reuses the stored
    *   secret, while a new required-key provider is rejected by verify. */
   onSubmitKey: (apiKey: string) => void;
+  /** Entering the OAuth phase starts one complete Host-owned login attempt. */
+  onStartOAuth: () => void;
+  /** Esc during an active OAuth attempt requests cancellation and waits for the
+   *   Host's authoritative terminal result before moving back. */
+  onCancelOAuth: () => void;
+  /** Models may return to an already-authenticated OAuth step; Enter retries
+   *   model discovery without authenticating or creating again. */
+  onContinueOAuth: () => void;
   /** models submit: save the curated enabled set (≥1 model). */
   onSubmitModels: (enabledModelIds: readonly string[]) => void;
   /** search Esc / Ctrl+C: close (first-run closes the TUI). */
   onCancel: () => void;
-  /** key Esc → search; models Esc → key. The runner invalidates in-flight work. */
+  /** Moving back invalidates in-flight verification or model discovery. */
   onBack: () => void;
   /** success Enter/Esc: close. */
   onClose: () => void;
@@ -1131,13 +1159,10 @@ export interface OnboardingWizardInput {
 const ONBOARDING_MODELS_MAX_VISIBLE = 10;
 
 /**
- * One input field, four phases. The same overlay is the provider search, the
- * API-key field, the searchable model multi-select, and the in-frame success —
- * so onboarding never pushes its prompt/verifying/failure/saving/success notices
- * into the transcript. Status lives in a single status line beside the field
- * instead of the top entry flow (#1098 UX). `Esc` always moves back exactly one
- * level (models → key → provider → close); late async results are ignored after
- * back/close/retry because the runner bumps its attempt id on every transition.
+ * One overlay owns the provider, credentials or OAuth, models, and success
+ * phases, so onboarding never pushes progress or failures into the transcript.
+ * Late async results are ignored after back, close, or retry because the runner
+ * bumps its attempt id on every transition.
  */
 export class OnboardingWizard implements Component {
   private phase: OnboardingWizardPhase = 'search';
@@ -1163,6 +1188,17 @@ export class OnboardingWizard implements Component {
   private modelScroll = 0;
   private successCount = 0;
   private successWarning: string | undefined;
+  private oauthPresentation: OnboardingOAuthPresentation | undefined;
+  private oauthStatus:
+    | { readonly kind: 'starting' }
+    | { readonly kind: 'waiting' }
+    | { readonly kind: 'cancelling' }
+    | {
+        readonly kind: 'authenticated';
+        readonly loadingModels: boolean;
+        readonly modelError?: string;
+      }
+    | { readonly kind: 'error'; readonly text: string } = { kind: 'starting' };
   private readonly copy: TuiPickerCopy;
 
   constructor(
@@ -1220,12 +1256,12 @@ export class OnboardingWizard implements Component {
         (candidate) => onboardingProviderKey(candidate) === item.value,
       );
       if (!provider) return;
-      this.enterKeyPhase(provider);
+      this.enterProvider(provider);
     };
     return list;
   }
 
-  private enterKeyPhase(provider: OnboardingProviderEntry): void {
+  private enterProvider(provider: OnboardingProviderEntry): void {
     this.picked = provider;
     // A create target stops at the identity step first: name and slug come
     // prefilled with the Host-derived defaults, and accepting them verbatim
@@ -1233,7 +1269,13 @@ export class OnboardingWizard implements Component {
     // A relay has no registry endpoint, so the wizard must still collect one
     // before the key — the deferred phase-2 step from #1254 (#3405).
     const create = isCreateEntry(provider);
-    this.phase = create ? 'identity' : provider.requiresBaseUrl ? 'baseUrl' : 'key';
+    this.phase = create
+      ? 'identity'
+      : provider.setupMethod === 'oauth'
+        ? 'oauth'
+        : provider.requiresBaseUrl
+          ? 'baseUrl'
+          : 'key';
     if (create) {
       this.identityFocus = 'name';
       this.nameEditor.setText(provider.label);
@@ -1254,6 +1296,7 @@ export class OnboardingWizard implements Component {
     this.modelScroll = 0;
     this.modelsSearchEditor.setText('');
     this.input.onPickProvider(provider);
+    if (!create && provider.setupMethod === 'oauth') this.startOAuth();
   }
 
   /**
@@ -1288,7 +1331,9 @@ export class OnboardingWizard implements Component {
       name: name.length > 0 && name !== defaultName ? name : null,
     });
     this.status = { kind: 'prompt' };
-    this.phase = picked.requiresBaseUrl ? 'baseUrl' : 'key';
+    this.phase =
+      picked.setupMethod === 'oauth' ? 'oauth' : picked.requiresBaseUrl ? 'baseUrl' : 'key';
+    if (picked.setupMethod === 'oauth') this.startOAuth();
   }
 
   private submitBaseUrl(value: string): void {
@@ -1382,12 +1427,57 @@ export class OnboardingWizard implements Component {
     this.keyEditor.setText('');
   }
 
+  private startOAuth(): void {
+    this.oauthPresentation = undefined;
+    this.oauthStatus = { kind: 'starting' };
+    this.input.onStartOAuth();
+  }
+
+  setOAuthPresentation(presentation: OnboardingOAuthPresentation): void {
+    if (this.phase !== 'oauth') return;
+    this.oauthPresentation = presentation;
+    this.oauthStatus = { kind: 'waiting' };
+  }
+
+  setOAuthCancelling(): void {
+    if (this.phase !== 'oauth') return;
+    this.oauthStatus = { kind: 'cancelling' };
+  }
+
+  setOAuthAuthenticated(loadingModels = true): void {
+    if (this.phase !== 'oauth') return;
+    this.oauthStatus = { kind: 'authenticated', loadingModels };
+  }
+
+  setOAuthError(text: string): void {
+    if (this.phase !== 'oauth') return;
+    this.oauthStatus = { kind: 'error', text };
+  }
+
+  setOAuthModelError(text: string): void {
+    if (this.phase !== 'oauth') return;
+    this.oauthStatus = { kind: 'authenticated', loadingModels: false, modelError: text };
+  }
+
+  setOAuthCancelled(): void {
+    if (this.phase !== 'oauth') return;
+    if (this.picked?.target.kind === 'create') {
+      this.phase = 'identity';
+      this.identityFocus = 'slug';
+    } else {
+      this.phase = 'search';
+      this.picked = undefined;
+    }
+    this.status = { kind: 'prompt' };
+    this.oauthPresentation = undefined;
+  }
+
   /** Runner hook: verify succeeded — advance to the models step with fresh
    *  discovered models. Selection seeds from the picked provider's enabled set
    *  on first entry (existing connections preserve it; new ones start empty);
    *  a re-verify preserves the user's toggles, dropping ids no longer discovered. */
   setModels(models: ModelInfo[]): void {
-    if (this.phase !== 'key') return;
+    if (this.phase !== 'key' && this.phase !== 'oauth') return;
     this.models = models;
     if (!this.modelsInitialized) {
       this.selectedIds = new Set(
@@ -1434,11 +1524,19 @@ export class OnboardingWizard implements Component {
     this.list.invalidate();
   }
 
-  /** Step label: relays add a base-URL step, create targets an identity one. */
-  private stepFor(phase: 'search' | 'identity' | 'baseUrl' | 'key' | 'models'): string {
-    const create = this.picked?.target.kind === 'create';
-    const relay = this.picked?.requiresBaseUrl === true;
-    const total = 3 + (create ? 1 : 0) + (relay ? 1 : 0);
+  /** Step label: create targets add identity; relays add Base URL. */
+  private stepFor(phase: 'search' | 'identity' | 'baseUrl' | 'key' | 'oauth' | 'models'): string {
+    const selectedItem = this.list.getSelectedItem();
+    const entry =
+      this.picked ??
+      this.filtered.find(
+        (candidate) =>
+          selectedItem !== null && onboardingProviderKey(candidate) === selectedItem.value,
+      );
+    const create = entry?.target.kind === 'create';
+    const oauth = entry?.setupMethod === 'oauth';
+    const relay = entry?.requiresBaseUrl === true;
+    const total = oauth ? 3 + (create ? 1 : 0) : 3 + (create ? 1 : 0) + (relay ? 1 : 0);
     let position = 1;
     if (phase === 'search') return `1/${total}`;
     if (create) {
@@ -1450,7 +1548,7 @@ export class OnboardingWizard implements Component {
       if (phase === 'baseUrl') return `${position}/${total}`;
     }
     position += 1;
-    if (phase === 'key') return `${position}/${total}`;
+    if (phase === 'key' || phase === 'oauth') return `${position}/${total}`;
     return `${total}/${total}`;
   }
 
@@ -1464,6 +1562,8 @@ export class OnboardingWizard implements Component {
         return this.handleBaseUrlInput(data);
       case 'key':
         return this.handleKeyInput(data);
+      case 'oauth':
+        return this.handleOAuthInput(data);
       case 'models':
         return this.handleModelsInput(data);
       case 'success':
@@ -1565,17 +1665,48 @@ export class OnboardingWizard implements Component {
     this.keyEditor.handleInput(data);
   }
 
+  private handleOAuthInput(data: string): void {
+    if (matchesKey(data, Key.ctrl('c'))) {
+      this.input.onCancel();
+      return;
+    }
+    if (matchesKey(data, Key.escape)) {
+      if (this.oauthStatus.kind === 'starting' || this.oauthStatus.kind === 'waiting') {
+        this.oauthStatus = { kind: 'cancelling' };
+        this.input.onCancelOAuth();
+        return;
+      }
+      if (this.oauthStatus.kind === 'error') {
+        this.setOAuthCancelled();
+        this.input.onBack();
+      }
+      return;
+    }
+    if ((matchesKey(data, Key.enter) || matchesKey(data, Key.return)) && !isKeyRepeat(data)) {
+      if (this.oauthStatus.kind === 'error') this.startOAuth();
+      else if (this.oauthStatus.kind === 'authenticated' && !this.oauthStatus.loadingModels) {
+        this.oauthStatus = { kind: 'authenticated', loadingModels: true };
+        this.input.onContinueOAuth();
+      }
+    }
+  }
+
   private handleModelsInput(data: string): void {
     if (matchesKey(data, Key.ctrl('c'))) {
       this.input.onCancel();
       return;
     }
     if (matchesKey(data, Key.escape)) {
-      // models → key (one level back); query/selection state survives.
-      this.phase = 'key';
+      // An OAuth login is already durable here: return to its signed-in screen
+      // instead of implying identity/authentication can be rolled back.
+      this.phase = this.picked?.setupMethod === 'oauth' ? 'oauth' : 'key';
       this.status = { kind: 'prompt' };
-      this.keyEditor.setText('');
-      this.keyEditor.disableSubmit = false;
+      if (this.phase === 'oauth') {
+        this.oauthStatus = { kind: 'authenticated', loadingModels: false };
+      } else {
+        this.keyEditor.setText('');
+        this.keyEditor.disableSubmit = false;
+      }
       this.input.onBack();
       return;
     }
@@ -1653,6 +1784,8 @@ export class OnboardingWizard implements Component {
         return this.renderBaseUrl(safeWidth);
       case 'key':
         return this.renderKey(safeWidth);
+      case 'oauth':
+        return this.renderOAuth(safeWidth);
       case 'models':
         return this.renderModels(safeWidth);
       case 'success':
@@ -1779,6 +1912,55 @@ export class OnboardingWizard implements Component {
         return ansi.red(`✗ ${this.status.text}`);
       case 'saving':
         return ansi.dim(this.copy.submitAction);
+    }
+  }
+
+  private renderOAuth(width: number): string[] {
+    this.focusOnly(null);
+    const label = this.picked?.label ?? '';
+    const lines = [
+      padLine(
+        `${this.copy.setupTitle} ${ansi.dim(`· ${this.stepFor('oauth')}`)} ${ansi.accent(label)}`,
+        width,
+      ),
+      padLine(
+        this.oauthStatus.kind === 'authenticated' ? '' : ansi.dim(this.copy.oauthHint),
+        width,
+      ),
+      padLine('', width),
+    ];
+    if (this.oauthPresentation) {
+      lines.push(padLine(this.oauthPresentation.url, width));
+      lines.push(padLine('', width));
+      if (this.oauthPresentation.stateHint) {
+        lines.push(
+          padLine(`${this.copy.oauthCodeLabel}: ${this.oauthPresentation.stateHint}`, width),
+        );
+        lines.push(padLine('', width));
+      }
+    }
+    lines.push(padLine(this.renderOAuthStatusLine(), width));
+    lines.push(padLine(ansi.accent('-'.repeat(width)), width));
+    return lines;
+  }
+
+  private renderOAuthStatusLine(): string {
+    switch (this.oauthStatus.kind) {
+      case 'starting':
+        return `${ansi.yellow('⠋')} ${this.copy.oauthStarting}`;
+      case 'waiting':
+        return `${ansi.yellow('⠋')} ${this.copy.oauthWaiting}`;
+      case 'cancelling':
+        return `${ansi.yellow('⠋')} ${this.copy.oauthCancelling}`;
+      case 'authenticated':
+        if (this.oauthStatus.loadingModels) {
+          return `${ansi.yellow('⠋')} ${this.copy.oauthLoadingModels}`;
+        }
+        return this.oauthStatus.modelError
+          ? ansi.red(`✗ ${this.copy.oauthRetryModelsAction} · ${this.oauthStatus.modelError}`)
+          : ansi.green(`✓ ${this.copy.oauthContinueToModels}`);
+      case 'error':
+        return ansi.red(`✗ ${this.oauthStatus.text} · ${this.copy.oauthRetryAction}`);
     }
   }
 

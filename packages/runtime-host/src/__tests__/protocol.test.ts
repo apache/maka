@@ -259,6 +259,13 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 102);
   });
 
+  test('publishes a new compatibility epoch for named OAuth identity and slug failures', () => {
+    // Epoch 109 is the current main boundary. Named create inputs and the
+    // slug_taken output extend closed wire shapes, so older peers must be
+    // rejected during handshake rather than failing midway through setup.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 109);
+  });
+
   test('publishes a new compatibility epoch for context-budget failure detail', () => {
     // Epoch 50 is already used by WorkHub coordination summaries on main.
     // The context-budget detail therefore needs its own strictly newer

@@ -49,6 +49,7 @@ import { runtimeHostProfileUsesHostWorkspace } from '@maka/runtime-host/profile-
 import type { AgentGraphClientSnapshot, WorkspaceTarget } from '@maka/runtime-host/protocol';
 import {
   connectRuntimeHostCli,
+  connectRuntimeHostCliConnection,
   readHostChatDefaultPermissionMode,
   resolveRuntimeHostCliTarget,
 } from './runtime-host-cli-context.js';
@@ -207,6 +208,15 @@ export async function createRuntimeHostTuiContext(
         choice.connectionSlug === selectedTarget.connectionSlug &&
         choice.model === selectedTarget.model,
     )?.contextWindow;
+    const onboarding = createRuntimeHostOnboardingSurface(connection, {
+      connectOAuth: (signal) =>
+        connectRuntimeHostCliConnection({
+          clientDataRoot: input.clientDataRoot,
+          rootPath: input.rootPath,
+          profileId: connected.profile.id,
+          signal,
+        }),
+    });
     return {
       connection,
       driver,
@@ -247,25 +257,34 @@ export async function createRuntimeHostTuiContext(
         ),
       agentGraphHistory: createRuntimeHostAgentGraphHistory(connection),
       recap: createRuntimeHostRecapGenerator(connection),
-      onboarding: createRuntimeHostOnboardingSurface(connection),
+      onboarding,
       ...(mcp ? { mcp } : {}),
       profile: connected.profile,
-      close: () => closeRuntimeHostTuiContext(mcp, owner, connected.close),
+      close: () => closeRuntimeHostTuiContext(onboarding, mcp, owner, connected.close),
     };
   } catch (error) {
-    await closeRuntimeHostTuiContext(mcp, sessionCopyCleanupOwner, connected.close).catch(
-      () => undefined,
-    );
+    await closeRuntimeHostTuiContext(
+      undefined,
+      mcp,
+      sessionCopyCleanupOwner,
+      connected.close,
+    ).catch(() => undefined);
     throw error;
   }
 }
 
 async function closeRuntimeHostTuiContext(
+  onboarding: ReturnType<typeof createRuntimeHostOnboardingSurface> | undefined,
   mcp: TuiMcpController | undefined,
   sessionCopyCleanupOwner: ProcessLifetimeOwner | undefined,
   closeConnection: () => Promise<void>,
 ): Promise<void> {
   const errors: unknown[] = [];
+  try {
+    await onboarding?.close();
+  } catch (error) {
+    errors.push(error);
+  }
   try {
     await mcp?.close();
   } catch (error) {

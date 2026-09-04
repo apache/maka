@@ -630,17 +630,26 @@ export class RuntimePolicyCoordinator {
         readonly providerType: InteractiveOAuthLoginProvider;
       };
       if (input.target.kind === 'create') {
+        const requestedSlug = input.target.slug;
         if (catalog.connections.length >= CONNECTION_CATALOG_MAX_CONNECTIONS) {
           return deepFreeze({ kind: 'catalog_full' as const });
+        }
+        if (
+          requestedSlug !== undefined &&
+          catalog.connections.some(({ slug }) => slug === requestedSlug)
+        ) {
+          return deepFreeze({ kind: 'slug_taken' as const });
         }
         connectionBefore = null;
         connectionAfter = newInteractiveOAuthConnection(
           randomUUID(),
-          deriveInteractiveOAuthConnectionSlug(
-            input.target.providerType,
-            catalog.connections.map(({ slug }) => slug),
-          ),
+          requestedSlug ??
+            deriveInteractiveOAuthConnectionSlug(
+              input.target.providerType,
+              catalog.connections.map(({ slug }) => slug),
+            ),
           input.target.providerType,
+          input.target.name,
         );
       } else {
         const existing = findConnection(catalog, { connectionId: input.target.connectionId });
@@ -731,6 +740,20 @@ export class RuntimePolicyCoordinator {
           claimed.connectionBefore,
           claimed.connectionAfter,
         );
+        const requestedSlug = claimed.target.kind === 'create' ? claimed.target.slug : undefined;
+        if (
+          preparedCatalog.kind === 'connection_conflict' &&
+          requestedSlug !== undefined &&
+          catalog.connections.some(
+            ({ connectionId, slug }) =>
+              slug === requestedSlug && connectionId !== claimed.connectionAfter.connectionId,
+          )
+        ) {
+          // A caller-selected identity has one stable, actionable outcome even
+          // when another writer claims it after OAuth admission but before the
+          // token commit. No credential or Connection has been written yet.
+          return deepFreeze({ kind: 'slug_taken' as const });
+        }
         if (preparedCatalog.kind !== 'ready') {
           changed.push('connection');
         }
@@ -2534,7 +2557,31 @@ function normalizeInteractiveOAuthLoginInput(
     if (!isInteractiveOAuthLoginProvider(providerType)) {
       throw codecError('invalid_connection_input', 'OAuth create target provider is unsupported');
     }
-    return { attemptId, target: { kind: 'create', providerType } };
+    if (
+      providerType !== 'openai-codex' &&
+      (target.slug !== undefined || target.name !== undefined)
+    ) {
+      throw codecError(
+        'invalid_connection_input',
+        'Custom OAuth Connection identity is only supported for openai-codex',
+      );
+    }
+    if (providerType !== 'openai-codex') {
+      return { attemptId, target: { kind: 'create', providerType } };
+    }
+    return {
+      attemptId,
+      target: {
+        kind: 'create',
+        providerType,
+        ...(target.slug === undefined
+          ? {}
+          : { slug: decodeConnectionInput(() => decodeConnectionSlug(target.slug)) }),
+        ...(target.name === undefined
+          ? {}
+          : { name: decodeConnectionInput(() => decodeConnectionName(target.name)) }),
+      },
+    };
   }
   if (target?.kind === 'existing') {
     return {
@@ -2552,13 +2599,14 @@ function newInteractiveOAuthConnection(
   connectionId: string,
   slug: string,
   providerType: InteractiveOAuthLoginProvider,
+  name?: string,
 ): ConnectionCatalogEntry & { readonly providerType: InteractiveOAuthLoginProvider } {
   const defaults = PROVIDER_REGISTRY[providerType];
   return {
     connectionId,
     revision: 1,
     slug,
-    name: defaults.label,
+    name: name ?? defaults.label,
     providerType,
     enabled: true,
     enabledModelIds: providerFallbackModelIds(defaults),

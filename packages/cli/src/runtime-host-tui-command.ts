@@ -27,6 +27,7 @@ import { createForeignSessionStore } from '@maka/storage/foreign-session-store';
 import { formatMakaResumeHint } from './cli-invocation.js';
 import {
   connectRuntimeHostCli,
+  connectRuntimeHostCliConnection,
   resolveRuntimeHostCliConflictDecision,
   RuntimeHostCliConflictError,
 } from './runtime-host-cli-context.js';
@@ -216,6 +217,15 @@ async function runFirstRunOnboarding(
     interactiveSsh: true,
     ...(hostProfileId ? { profileId: hostProfileId } : {}),
   });
+  const onboarding = createRuntimeHostOnboardingSurface(connected.connection, {
+    connectOAuth: (signal) =>
+      connectRuntimeHostCliConnection({
+        clientDataRoot,
+        rootPath,
+        profileId: connected.profile.id,
+        signal,
+      }),
+  });
   try {
     await runMakaPiTui({
       driver: createFirstRunSessionDriver(),
@@ -229,11 +239,15 @@ async function runFirstRunOnboarding(
       turnActivity: {
         activities: new SessionActivityRegistry(),
       } satisfies MakaPiTuiTurnActivitySurface,
-      onboarding: createRuntimeHostOnboardingSurface(connected.connection),
+      onboarding,
     });
     return (await readRuntimeHostConnectionCatalog(connected.connection)).defaultTarget !== null;
   } finally {
-    await connected.close();
+    try {
+      await onboarding.close();
+    } finally {
+      await connected.close();
+    }
   }
 }
 

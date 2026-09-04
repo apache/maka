@@ -19,14 +19,21 @@
 
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { deferred } from '@maka/core/test-only/async-primitives';
 import type { RuntimeHostConnectionCatalogSnapshot as ConnectionCatalogSnapshot } from '@maka/runtime-host/client';
-import type { RuntimeHostConnection } from '@maka/runtime-host/client';
+import {
+  RuntimeHostOperationError,
+  RuntimeHostRequestInterruptedError,
+  type ClientCapabilityProvider,
+  type RuntimeHostConnection,
+} from '@maka/runtime-host/client';
 import { resolveConnectionModelCatalog } from '@maka/core/model-catalog';
 import {
   createRuntimeHostOnboardingSurface,
   projectProviders,
   projectRuntimeHostModelChoices,
 } from '../runtime-host-onboarding.js';
+import type { OnboardingOAuthInput } from '../pi-tui-contracts.js';
 
 type StoredConnection = Omit<ConnectionCatalogSnapshot['connections'][number], 'catalogEntries'>;
 
@@ -61,7 +68,431 @@ const live = {
   models: [{ id: 'gpt-5-mini', displayName: 'GPT-5 Mini' }],
 } as const;
 
+const oauthConnectionIdentity = {
+  connectionId: 'codex-id',
+  slug: 'codex-subscription',
+  providerType: 'openai-codex',
+} as const;
+
+function oauthProjection(
+  attemptId: string,
+  phase: 'awaiting_authorization' | 'authenticated' | 'committing' | 'cancelled',
+) {
+  return { attemptId, connection: oauthConnectionIdentity, phase };
+}
+
+function interruptedOAuthRequest(operation: 'oauth.login.start' | 'oauth.login.cancel') {
+  return new RuntimeHostRequestInterruptedError(
+    operation,
+    operation === 'oauth.login.start' ? 'command' : 'control',
+    'dispatched',
+    'connection_lost',
+  );
+}
+
+function oauthTestSurface(
+  attemptId: string,
+  request: (operation: string, input: unknown) => unknown | Promise<unknown>,
+  options: { readonly pollIntervalMs?: number; readonly onClose?: () => void } = {},
+) {
+  const requests: string[] = [];
+  const connection = {
+    replaceClientCapabilities: async () => ({
+      registrationId: 'oauth-registration',
+      revision: 1,
+    }),
+    request: async (operation: string, input: unknown) => {
+      requests.push(operation);
+      return request(operation, input);
+    },
+  } as unknown as RuntimeHostConnection;
+  const surface = createRuntimeHostOnboardingSurface({} as RuntimeHostConnection, {
+    connectOAuth: async () => ({
+      connection,
+      close: async () => options.onClose?.(),
+    }),
+    ...(options.pollIntervalMs === undefined ? {} : { pollIntervalMs: options.pollIntervalMs }),
+    createAttemptId: () => attemptId,
+  });
+  return { requests, surface };
+}
+
+function loginWithOAuth(
+  surface: ReturnType<typeof oauthTestSurface>['surface'],
+  options: {
+    readonly signal?: AbortSignal;
+    readonly target?: OnboardingOAuthInput['target'];
+  } = {},
+) {
+  return surface.loginOAuth!({
+    target: options.target ?? { kind: 'create', providerType: 'openai-codex' },
+    signal: options.signal ?? new AbortController().signal,
+    onPresentation: () => undefined,
+  });
+}
+
 describe('createRuntimeHostOnboardingSurface', () => {
+  test('asks the Host enrollment gate before offering Codex OAuth', async () => {
+    const operations: string[] = [];
+    const connection = {
+      request: async (operation: string) => {
+        operations.push(operation);
+        if (operation === 'connection.catalog.query') {
+          return {
+            kind: 'page',
+            revision: 1,
+            defaultTarget: null,
+            connectionCount: 0,
+            items: [],
+            nextCursor: null,
+          };
+        }
+        if (operation === 'oauth.enrollment.query') {
+          return { provider: 'openai-codex', enabled: true };
+        }
+        throw new Error(`Unexpected operation ${operation}`);
+      },
+    } as unknown as RuntimeHostConnection;
+
+    const providers = await createRuntimeHostOnboardingSurface(connection).listProviders();
+
+    assert.deepEqual(operations, ['connection.catalog.query', 'oauth.enrollment.query']);
+    assert.equal(
+      providers.some(
+        ({ providerType, target }) => providerType === 'openai-codex' && target.kind === 'create',
+      ),
+      true,
+    );
+  });
+
+  test('runs presentation and polling behind one OAuth login call', async () => {
+    const requests: string[] = [];
+    const presentations: Array<{ readonly url: string; readonly stateHint?: string }> = [];
+    let provider: ClientCapabilityProvider | undefined;
+    let closeCalls = 0;
+    const oauthConnection = {
+      replaceClientCapabilities: async (next: ClientCapabilityProvider) => {
+        provider = next;
+        return { registrationId: 'oauth-registration', revision: 1 };
+      },
+      request: async (operation: string) => {
+        requests.push(operation);
+        const connection = {
+          connectionId: 'codex-id',
+          slug: 'codex-subscription',
+          providerType: 'openai-codex' as const,
+        };
+        if (operation === 'oauth.login.start') {
+          assert.ok(provider?.callService);
+          await provider.callService(
+            {
+              kind: 'client.capability.service_call',
+              invocationId: 'presentation-1',
+              registrationId: 'oauth-registration',
+              serviceId: 'oauth_presentation',
+              version: '1',
+              method: 'open_external',
+              input: {
+                url: 'https://auth.openai.com/codex/device',
+                stateHint: 'ABCD-EFGH',
+              },
+            },
+            {
+              signal: new AbortController().signal,
+              accept: async () => undefined,
+            },
+          );
+          return {
+            attemptId: 'setup-oauth-1',
+            connection,
+            phase: 'awaiting_authorization',
+          };
+        }
+        if (operation === 'oauth.login.query') {
+          return { attemptId: 'setup-oauth-1', connection, phase: 'authenticated' };
+        }
+        throw new Error(`Unexpected operation ${operation}`);
+      },
+    } as unknown as RuntimeHostConnection;
+    const surface = createRuntimeHostOnboardingSurface({} as RuntimeHostConnection, {
+      connectOAuth: async () => ({
+        connection: oauthConnection,
+        close: async () => {
+          closeCalls += 1;
+        },
+      }),
+      pollIntervalMs: 0,
+      createAttemptId: () => 'setup-oauth-1',
+    });
+
+    const result = await surface.loginOAuth?.({
+      target: { kind: 'create', providerType: 'openai-codex' },
+      signal: new AbortController().signal,
+      onPresentation: (presentation) => presentations.push(presentation),
+    });
+
+    assert.deepEqual(result, {
+      kind: 'authenticated',
+      connection: {
+        connectionId: 'codex-id',
+        slug: 'codex-subscription',
+        providerType: 'openai-codex',
+      },
+    });
+    assert.deepEqual(presentations, [
+      { url: 'https://auth.openai.com/codex/device', stateHint: 'ABCD-EFGH' },
+    ]);
+    assert.deepEqual(requests, ['oauth.login.start', 'oauth.login.query']);
+    assert.equal(closeCalls, 1);
+  });
+
+  test('reconciles a dispatched OAuth start after its response is lost', async () => {
+    const attemptId = 'setup-oauth-dispatched-start';
+    const { requests, surface } = oauthTestSurface(attemptId, (operation) => {
+      if (operation === 'oauth.login.start') throw interruptedOAuthRequest(operation);
+      if (operation === 'oauth.login.query') return oauthProjection(attemptId, 'authenticated');
+      throw new Error(`Unexpected operation ${operation}`);
+    });
+
+    const result = await loginWithOAuth(surface);
+
+    assert.deepEqual(result, {
+      kind: 'authenticated',
+      connection: oauthConnectionIdentity,
+    });
+    assert.deepEqual(requests, ['oauth.login.start', 'oauth.login.query']);
+  });
+
+  test('retries the same OAuth start when reconciliation proves it was not admitted', async () => {
+    const attemptId = 'setup-oauth-retried-start';
+    let startCalls = 0;
+    const { requests, surface } = oauthTestSurface(attemptId, (operation) => {
+      if (operation === 'oauth.login.start') {
+        startCalls += 1;
+        if (startCalls === 1) {
+          throw interruptedOAuthRequest(operation);
+        }
+        return oauthProjection(attemptId, 'authenticated');
+      }
+      if (operation === 'oauth.login.query') {
+        throw new RuntimeHostOperationError(
+          'oauth.login.query',
+          'not_found',
+          'OAuth login was not found',
+        );
+      }
+      throw new Error(`Unexpected operation ${operation}`);
+    });
+
+    assert.equal((await loginWithOAuth(surface)).kind, 'authenticated');
+    assert.deepEqual(requests, ['oauth.login.start', 'oauth.login.query', 'oauth.login.start']);
+  });
+
+  test('reconciles a dispatched OAuth cancellation instead of trusting the local signal', async () => {
+    const attemptId = 'setup-oauth-dispatched-cancel';
+    const started = deferred<void>();
+    const controller = new AbortController();
+    const { requests, surface } = oauthTestSurface(
+      attemptId,
+      (operation) => {
+        if (operation === 'oauth.login.start') {
+          started.resolve();
+          return oauthProjection(attemptId, 'awaiting_authorization');
+        }
+        if (operation === 'oauth.login.cancel') throw interruptedOAuthRequest(operation);
+        if (operation === 'oauth.login.query') return oauthProjection(attemptId, 'authenticated');
+        throw new Error(`Unexpected operation ${operation}`);
+      },
+      { pollIntervalMs: 60_000 },
+    );
+
+    const login = loginWithOAuth(surface, { signal: controller.signal });
+    await started.promise;
+    controller.abort();
+
+    assert.deepEqual(await login, {
+      kind: 'authenticated',
+      connection: oauthConnectionIdentity,
+    });
+    assert.deepEqual(requests, ['oauth.login.start', 'oauth.login.cancel', 'oauth.login.query']);
+  });
+
+  test('retries cancellation when reconciliation still finds an active OAuth attempt', async () => {
+    const attemptId = 'setup-oauth-retried-cancel';
+    const started = deferred<void>();
+    const controller = new AbortController();
+    let cancelCalls = 0;
+    const { requests, surface } = oauthTestSurface(
+      attemptId,
+      (operation) => {
+        if (operation === 'oauth.login.start') {
+          started.resolve();
+          return oauthProjection(attemptId, 'awaiting_authorization');
+        }
+        if (operation === 'oauth.login.cancel') {
+          cancelCalls += 1;
+          if (cancelCalls === 1) throw interruptedOAuthRequest(operation);
+          return oauthProjection(attemptId, 'cancelled');
+        }
+        if (operation === 'oauth.login.query') {
+          return oauthProjection(attemptId, 'awaiting_authorization');
+        }
+        throw new Error(`Unexpected operation ${operation}`);
+      },
+      { pollIntervalMs: 60_000 },
+    );
+
+    const login = loginWithOAuth(surface, { signal: controller.signal });
+    await started.promise;
+    controller.abort();
+
+    assert.deepEqual(await login, { kind: 'cancelled' });
+    assert.deepEqual(requests, [
+      'oauth.login.start',
+      'oauth.login.cancel',
+      'oauth.login.query',
+      'oauth.login.cancel',
+    ]);
+  });
+
+  test('does not mistake a Host cancellation failure for local cancellation', async () => {
+    const attemptId = 'setup-oauth-cancel-failed';
+    const started = deferred<void>();
+    const controller = new AbortController();
+    const { surface } = oauthTestSurface(
+      attemptId,
+      (operation) => {
+        if (operation === 'oauth.login.start') {
+          started.resolve();
+          return oauthProjection(attemptId, 'awaiting_authorization');
+        }
+        throw new RuntimeHostOperationError(
+          'oauth.login.cancel',
+          'persistence_failed',
+          'OAuth cancellation could not be reconciled',
+        );
+      },
+      { pollIntervalMs: 60_000 },
+    );
+
+    const login = loginWithOAuth(surface, { signal: controller.signal });
+    await started.promise;
+    controller.abort();
+
+    assert.deepEqual(await login, { kind: 'failed', reason: 'persistence_failed' });
+  });
+
+  test('preserves a Host slug_taken error as an OAuth failure reason', async () => {
+    const { surface } = oauthTestSurface('setup-oauth-slug-taken', () => {
+      throw new RuntimeHostOperationError(
+        'oauth.login.start',
+        'slug_taken',
+        'Connection slug is already in use',
+      );
+    });
+
+    assert.deepEqual(
+      await surface.loginOAuth!({
+        target: {
+          kind: 'create',
+          providerType: 'openai-codex',
+          slug: 'codex-work',
+          name: 'Work Codex',
+        },
+        signal: new AbortController().signal,
+        onPresentation: () => undefined,
+      }),
+      { kind: 'failed', reason: 'slug_taken' },
+    );
+  });
+
+  test('forwards the requested Connection identity to OAuth start', async () => {
+    const attemptId = 'setup-oauth-custom';
+    const target = {
+      kind: 'create',
+      providerType: 'openai-codex',
+      slug: 'codex-work',
+      name: 'Work Codex',
+    } as const;
+    const starts: unknown[] = [];
+    const { surface } = oauthTestSurface(attemptId, (operation, input) => {
+      assert.equal(operation, 'oauth.login.start');
+      starts.push(input);
+      return {
+        ...oauthProjection(attemptId, 'authenticated'),
+        connection: { ...oauthConnectionIdentity, slug: 'codex-work' },
+      };
+    });
+
+    await loginWithOAuth(surface, { target });
+
+    assert.deepEqual(starts, [{ attemptId, target }]);
+  });
+
+  test('closing the onboarding surface cancels and settles its active OAuth attempt', async () => {
+    const attemptId = 'setup-oauth-close';
+    const started = deferred<void>();
+    let closeCalls = 0;
+    const { requests, surface } = oauthTestSurface(
+      attemptId,
+      (operation) => {
+        if (operation === 'oauth.login.start') {
+          started.resolve();
+          return oauthProjection(attemptId, 'awaiting_authorization');
+        }
+        if (operation === 'oauth.login.cancel') return oauthProjection(attemptId, 'cancelled');
+        throw new Error(`Unexpected operation ${operation}`);
+      },
+      {
+        pollIntervalMs: 60_000,
+        onClose: () => {
+          closeCalls += 1;
+        },
+      },
+    );
+    const login = loginWithOAuth(surface);
+    await started.promise;
+
+    await surface.close();
+
+    assert.deepEqual(await login, { kind: 'cancelled' });
+    assert.deepEqual(requests, ['oauth.login.start', 'oauth.login.cancel']);
+    assert.equal(closeCalls, 1);
+  });
+
+  test('accepts authentication when cancellation loses the Host commit race', async () => {
+    const attemptId = 'setup-oauth-race';
+    const started = deferred<void>();
+    const abort = new AbortController();
+    const { requests, surface } = oauthTestSurface(
+      attemptId,
+      (operation) => {
+        if (operation === 'oauth.login.start') {
+          started.resolve();
+          return oauthProjection(attemptId, 'awaiting_authorization');
+        }
+        if (operation === 'oauth.login.cancel') return oauthProjection(attemptId, 'committing');
+        if (operation === 'oauth.login.query') return oauthProjection(attemptId, 'authenticated');
+        throw new Error(`Unexpected operation ${operation}`);
+      },
+      { pollIntervalMs: 20 },
+    );
+    const login = loginWithOAuth(surface, { signal: abort.signal });
+    await started.promise;
+
+    abort.abort();
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(requests, ['oauth.login.start', 'oauth.login.cancel']);
+
+    assert.deepEqual(await login, {
+      kind: 'authenticated',
+      connection: oauthConnectionIdentity,
+    });
+    assert.deepEqual(requests, ['oauth.login.start', 'oauth.login.cancel', 'oauth.login.query']);
+    await surface.close();
+  });
+
   test('preserves Host failure codes without projecting backend text', async () => {
     const connection = {
       request: async (operation: string) => {
@@ -230,6 +661,50 @@ describe('projectProviders', () => {
     enabledModelIds: ['relay/model'],
     models: [{ id: 'relay/model' }],
   } as const;
+
+  test('enabled Codex OAuth projects existing accounts and one add-account row', () => {
+    const codex = {
+      connectionId: 'codex-id',
+      revision: 1,
+      slug: 'codex-subscription',
+      name: 'Work Codex',
+      providerType: 'openai-codex',
+      enabled: true,
+      enabledModelIds: ['gpt-5.5'],
+      models: [],
+    } as const;
+
+    const entries = projectProviders(catalog([codex]), true).filter(
+      ({ providerType }) => providerType === 'openai-codex',
+    );
+
+    assert.deepEqual(entries, [
+      {
+        providerType: 'openai-codex',
+        label: 'Work Codex · codex-subscription',
+        requiresBaseUrl: false,
+        setupMethod: 'oauth',
+        target: { kind: 'existing', connectionId: 'codex-id' },
+        connectionSlug: 'codex-subscription',
+        enabledModelIds: ['gpt-5.5'],
+      },
+      {
+        providerType: 'openai-codex',
+        label: 'OpenAI OAuth (ChatGPT / Codex)',
+        requiresBaseUrl: false,
+        setupMethod: 'oauth',
+        target: { kind: 'create', providerType: 'openai-codex' },
+        suggestedSlug: 'codex-subscription-2',
+        enabledModelIds: [
+          'gpt-5.6-sol',
+          'gpt-5.5',
+          'gpt-5.4',
+          'gpt-5.4-mini',
+          'gpt-5.3-codex-spark',
+        ],
+      },
+    ]);
+  });
 
   test('a Desktop-created relay and add-account action are both explicit', () => {
     const entries = projectProviders(catalog([relay])).filter(

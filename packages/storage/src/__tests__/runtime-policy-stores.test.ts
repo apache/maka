@@ -4221,6 +4221,115 @@ describe('runtime policy stores', () => {
     });
   });
 
+  test('interactive OAuth create commits the requested Connection name and slug', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const target = {
+        kind: 'create' as const,
+        providerType: 'openai-codex' as const,
+        slug: 'codex-work',
+        name: 'Work Codex',
+      };
+      const admitted = await stores.operations.beginInteractiveOAuthLogin({
+        attemptId: 'oauth-custom-identity',
+        target,
+      });
+      assert.equal(admitted.kind, 'ready');
+      if (admitted.kind !== 'ready') return;
+      assert.deepEqual(admitted.identity, {
+        connectionId: admitted.identity.connectionId,
+        slug: 'codex-work',
+        providerType: 'openai-codex',
+      });
+      assert.equal(admitted.connection.name, 'Work Codex');
+
+      const completed = await stores.operations.completeInteractiveOAuthLogin(
+        admitted.ticket,
+        'oauth-custom-secret',
+      );
+      assert.equal(completed.kind, 'committed');
+      const saved = (await stores.connectionCatalog.getSnapshot()).connections[0];
+      assert.equal(saved?.connectionId, admitted.identity.connectionId);
+      assert.equal(saved?.slug, 'codex-work');
+      assert.equal(saved?.name, 'Work Codex');
+      assert.deepEqual(
+        await stores.operations.queryInteractiveOAuthLogin('oauth-custom-identity'),
+        {
+          kind: 'authenticated',
+          target,
+          connection: admitted.identity,
+        },
+      );
+
+      assert.deepEqual(
+        await stores.operations.beginInteractiveOAuthLogin({
+          attemptId: 'oauth-custom-identity-collision',
+          target: { ...target, name: 'Other Codex' },
+        }),
+        { kind: 'slug_taken' },
+      );
+    });
+  });
+
+  test('interactive OAuth custom identity is limited to OpenAI Codex', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      await assert.rejects(
+        stores.operations.beginInteractiveOAuthLogin({
+          attemptId: 'oauth-xai-custom-identity',
+          target: {
+            kind: 'create',
+            providerType: 'xai-oauth',
+            slug: 'xai-work',
+          } as never,
+        }),
+        isStoreError('invalid_connection_input'),
+      );
+    });
+  });
+
+  test('interactive OAuth create reports a slug collision that wins the commit race', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const target = {
+        kind: 'create' as const,
+        providerType: 'openai-codex' as const,
+        slug: 'codex-work',
+        name: 'Work Codex',
+      };
+      const admitted = await stores.operations.beginInteractiveOAuthLogin({
+        attemptId: 'oauth-custom-identity-race',
+        target,
+      });
+      assert.equal(admitted.kind, 'ready');
+      if (admitted.kind !== 'ready') return;
+
+      const concurrent = await createConnection(
+        stores,
+        0,
+        connectionDraft('codex-work', 'openai', 'Concurrent Connection'),
+      );
+      assert.deepEqual(
+        await stores.operations.completeInteractiveOAuthLogin(
+          admitted.ticket,
+          'oauth-custom-secret',
+        ),
+        { kind: 'slug_taken' },
+      );
+      assert.deepEqual(
+        (await stores.connectionCatalog.getSnapshot()).connections.map(
+          ({ connectionId, slug }) => ({ connectionId, slug }),
+        ),
+        [{ connectionId: concurrent.connectionId, slug: 'codex-work' }],
+      );
+      assert.equal(
+        await stores.operations.exportCredentialMaterial({
+          scope: 'connection',
+          connectionId: admitted.identity.connectionId,
+          kind: 'oauth_token',
+        }),
+        null,
+      );
+    });
+  });
+
   test('interactive OAuth existing login re-enables only its frozen entity', async () => {
     await withInteractiveOwner(async ({ stores }) => {
       const original = await createConnection(stores, 0, {

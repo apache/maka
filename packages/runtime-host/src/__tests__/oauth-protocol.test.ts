@@ -33,6 +33,50 @@ import {
 test('OAuth login protocol binds attempt identity and closes terminal projections', () => {
   assert.deepEqual(
     decodeClientFrame({
+      requestId: 'create-request',
+      operation: 'oauth.login.start',
+      input: {
+        attemptId: 'create-attempt',
+        target: {
+          kind: 'create',
+          providerType: 'openai-codex',
+          slug: 'codex-work',
+          name: 'Work Codex',
+        },
+      },
+    }),
+    {
+      requestId: 'create-request',
+      operation: 'oauth.login.start',
+      input: {
+        attemptId: 'create-attempt',
+        target: {
+          kind: 'create',
+          providerType: 'openai-codex',
+          slug: 'codex-work',
+          name: 'Work Codex',
+        },
+      },
+    },
+  );
+  assert.throws(
+    () =>
+      decodeClientFrame({
+        requestId: 'unnamed-provider-request',
+        operation: 'oauth.login.start',
+        input: {
+          attemptId: 'unnamed-provider-attempt',
+          target: {
+            kind: 'create',
+            providerType: 'xai-oauth',
+            slug: 'xai-work',
+          },
+        },
+      }),
+    RuntimeHostProtocolError,
+  );
+  assert.deepEqual(
+    decodeClientFrame({
       requestId: 'request',
       operation: 'oauth.login.start',
       input: {
@@ -119,6 +163,22 @@ test('OAuth login protocol binds attempt identity and closes terminal projection
       }),
     RuntimeHostProtocolError,
   );
+});
+
+test('OAuth slug collisions stay typed in operation errors and terminal projections', () => {
+  const projection = {
+    attemptId: 'attempt-slug-collision',
+    connection: {
+      connectionId: 'connection-id',
+      slug: 'codex-work',
+      providerType: 'openai-codex',
+    },
+    phase: 'failed',
+    failure: 'slug_taken',
+  } as const;
+
+  assert.ok(OAUTH_OPERATION_SPECS['oauth.login.start'].errors.includes('slug_taken' as never));
+  assert.deepEqual(decodeOAuthLoginProjection(projection), projection);
 });
 
 test('OAuth enrollment query carries the provider and its Host gate answer', () => {
