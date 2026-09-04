@@ -62,7 +62,6 @@ function trackArtifactStoreCloser(root: string, close: () => void): void {
 
 function createArtifactStore(root: string): ArtifactAuthorityStore {
   const authority = createSqliteArtifactStoreWriteAuthority(root);
-  void authority.recover().catch(() => undefined);
   trackArtifactStoreCloser(root, () => authority.close());
   return authority.store;
 }
@@ -164,7 +163,6 @@ describe('SQLite Artifact store', () => {
   test('lists only live Artifacts committed by one exact Turn', async () => {
     await withWorkspace(async (root) => {
       const authority = createArtifactStoreWriteAuthority(root);
-      await authority.recover();
       const { store } = authority;
       await store.create({ ...artifactInput('turn-a-new', 'new', 30), turnId: 'turn-a' });
       await store.create({ ...artifactInput('turn-b', 'other turn', 20), turnId: 'turn-b' });
@@ -226,7 +224,6 @@ describe('SQLite Artifact store', () => {
   test('owns stable session revisions across paging, reopen, mutations, and no-ops', async () => {
     await withWorkspace(async (root) => {
       const authority = createArtifactStoreWriteAuthority(root);
-      await authority.recover();
       const { store } = authority;
       const empty = await store.listPage('session-1', { offset: 0, limit: 2 });
       assert.equal(empty.total, 0);
@@ -249,7 +246,6 @@ describe('SQLite Artifact store', () => {
       assert.equal((await store.getInSession('session-1', 'first')).revision, created.revision);
 
       const reopenedAuthority = createArtifactStoreWriteAuthority(root);
-      await reopenedAuthority.recover();
       const reopenedPage = await reopenedAuthority.store.listPage('session-1', {
         offset: 0,
         limit: 2,
@@ -307,7 +303,6 @@ describe('SQLite Artifact store', () => {
   test('copies an exact turn-scoped Artifact snapshot and purges only the target Session', async () => {
     await withWorkspace(async (root) => {
       const authority = createArtifactStoreWriteAuthority(root);
-      await authority.recover();
       const { store } = authority;
       const retained = await store.create({
         ...artifactInput('retained-artifact', 'retained', 10),
@@ -357,7 +352,6 @@ describe('SQLite Artifact store', () => {
   test('excludes selected Artifacts from a conversation snapshot', async () => {
     await withWorkspace(async (root) => {
       const authority = createArtifactStoreWriteAuthority(root);
-      await authority.recover();
       const { store } = authority;
       await store.create({
         ...artifactInput('retained-artifact', 'retained', 10),
@@ -388,7 +382,6 @@ describe('SQLite Artifact store', () => {
   test('copies explicit linked child Artifacts into a conversation snapshot', async () => {
     await withWorkspace(async (root) => {
       const authority = createArtifactStoreWriteAuthority(root);
-      await authority.recover();
       const { store } = authority;
       await store.create({
         ...artifactInput('child-artifact', 'child result', 10),
@@ -420,7 +413,6 @@ describe('SQLite Artifact store', () => {
   test('includes explicit same-Session Artifacts outside the copied turns', async () => {
     await withWorkspace(async (root) => {
       const authority = createArtifactStoreWriteAuthority(root);
-      await authority.recover();
       const { store } = authority;
       await store.create({
         ...artifactInput('retained-artifact', 'retained', 10),
@@ -471,7 +463,6 @@ describe('SQLite Artifact store', () => {
   test('user delete physically removes every artifact source within its Session', async () => {
     await withWorkspace(async (root) => {
       const authority = createArtifactStoreWriteAuthority(root);
-      await authority.recover();
       const { store } = authority;
       const input = artifactInput('current-policy', 'replaceable', 1);
       await store.create(input);
@@ -569,7 +560,6 @@ describe('SQLite Artifact store', () => {
       assert.equal(created.name, 'a'.repeat(119));
       const authority = createArtifactStoreWriteAuthority(root);
       const reopened = authority.store;
-      await authority.recover();
       assert.deepEqual(await reopened.create(input), created);
       assert.deepEqual(await readArtifactText(reopened, created.id), {
         ok: true,
@@ -821,7 +811,6 @@ describe('SQLite Artifact store', () => {
       const residue = await createPublicationResidue(root, 'stable-retry', 'retry.txt', 'old');
       const authority = createArtifactStoreWriteAuthority(root);
       const { store } = authority;
-      await authority.recover();
       const retried = await store.create({
         ...artifactInput('stable-retry', 'new', 1),
         name: 'retry.txt',
@@ -875,14 +864,13 @@ describe('SQLite Artifact store', () => {
     }
   });
 
-  test('legacy purge-intent residue cannot block recovery or later writes', async () => {
+  test('legacy purge-intent residue cannot block later writes', async () => {
     await withWorkspace(async (root) => {
       const intentPath = join(root, 'artifacts', '.artifact-purge-intent.json');
       await mkdir(dirname(intentPath), { recursive: true });
       await writeFile(intentPath, 'not valid json', 'utf8');
 
       const authority = createArtifactStoreWriteAuthority(root);
-      await authority.recover();
       const record = await authority.store.create(artifactInput('after-retired-purge', 'kept', 1));
 
       assert.equal(record.id, 'after-retired-purge');

@@ -106,7 +106,6 @@ async function runAuthorityLockHolder(workspaceRoot: string, rootId: string): Pr
 
 async function runPublicWriter(workspaceRoot: string, sessionId: string): Promise<void> {
   const authority = createSqliteArtifactStoreWriteAuthority(workspaceRoot);
-  await authority.recover();
   const store = authority.store;
   try {
     await listArtifacts(store, sessionId);

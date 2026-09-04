@@ -284,7 +284,6 @@ async function seedExecutionRoot(
     });
     const openedArtifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
     artifacts = openedArtifacts;
-    await openedArtifacts.recover();
     await Promise.all([
       ...Array.from({ length: 130 }, (_, index) =>
         openedArtifacts.create({

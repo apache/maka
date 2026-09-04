@@ -432,7 +432,6 @@ async function withHarness(
   assert.ok(owner);
   try {
     const store = await openInteractiveArtifactStoreForWrite(owner.lease);
-    await store.recover();
     const modelCalls = { count: 0 };
     const model: HostSessionEffectModel =
       overrideModel ??

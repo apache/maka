@@ -42,7 +42,6 @@ test('Hosted execution publishes contained Tool Artifacts and durable result arc
   assert.ok(owner);
   try {
     const store = await openInteractiveArtifactStoreForWrite(owner.lease);
-    await store.recover();
     const services = createHostExecutionArtifactServices({
       artifacts: store,
       requestDrain: () => assert.fail('successful Artifact writes must not request Host drain'),

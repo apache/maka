@@ -810,7 +810,6 @@ async function seedSource(
     const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
     const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
     const todos = await openInteractiveSessionTodoStoreForWrite(owner.lease);
-    await artifacts.recover();
     const source = await execution.sessionStore.create({
       cwd: root,
       name: 'Source Session',
@@ -1689,7 +1688,6 @@ async function verifyDurableBranch(
     const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
     const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
     const todos = await openInteractiveSessionTodoStoreForWrite(owner.lease);
-    await artifacts.recover();
     // Every copy kind that retains the upload turn must carry a rewritten,
     // readable copy of the user-uploaded attachment (regression guard for the
     // turn-scoped-only artifact selection that dropped user uploads).

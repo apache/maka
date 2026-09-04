@@ -56,7 +56,6 @@ export interface InteractiveArtifactStoreWriter extends DurableArtifactAttachmen
   readonly kind: 'interactive';
   readonly access: 'write';
   readonly [writerBrand]: true;
-  recover(): Promise<void>;
   create(input: CreateArtifactInput): Promise<ArtifactRecord>;
   /**
    * Create, reporting whether THIS call is the one that published the artifact.
@@ -158,7 +157,6 @@ function createWriterFacade(
     readChunkInSession: (sessionId, artifactId, options) =>
       run(() => store.readChunkInSession(sessionId, artifactId, options)),
     readDurableAttachmentBinary: (input) => run(() => store.readDurableAttachmentBinary(input)),
-    recover: () => run(() => authority.recover()),
     create: (input) => {
       const acceptedInput = snapshotCreateInput(input);
       return run(() => store.create(acceptedInput));

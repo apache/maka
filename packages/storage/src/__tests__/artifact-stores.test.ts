@@ -71,7 +71,6 @@ describe('interactive artifact store authority', () => {
 
       assert.strictEqual(first, second);
       assert.strictEqual(authenticateInteractiveArtifactStoreWriter(first), first);
-      await first.recover();
       await first.create(artifactInput('deleted', 'delete me'));
       const deleted = await first.deleteUserArtifactInSession('session-1', 'deleted');
 
@@ -108,7 +107,6 @@ describe('interactive artifact store authority', () => {
       const owner = await tryAcquireInteractiveRootOwner(capability);
       assert.ok(owner);
       const writer = track(await openInteractiveArtifactStoreForWrite(owner.lease));
-      await writer.recover();
       const accepted = writer.create(
         artifactInput('accepted', new Uint8Array(8 * 1024 * 1024).fill(0x62)),
       );
@@ -125,7 +123,6 @@ describe('interactive artifact store authority', () => {
   test('snapshots create inputs and makes user deletion idempotent', async () => {
     await withInteractiveOwner(async (owner, _root, track) => {
       const writer = track(await openInteractiveArtifactStoreForWrite(owner.lease));
-      await writer.recover();
       const bytes = Uint8Array.from([0x73, 0x61, 0x66, 0x65]);
       const createInput = artifactInput('accepted', bytes);
       const created = writer.create(createInput);

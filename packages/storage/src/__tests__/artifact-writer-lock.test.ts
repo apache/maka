@@ -74,7 +74,6 @@ const artifactStoreClosersByRoot = new Map<string, Set<() => void>>();
 
 function createArtifactStore(root: string): ArtifactAuthorityStore {
   const authority = createSqliteArtifactStoreWriteAuthority(root);
-  void authority.recover().catch(() => undefined);
   const closers = artifactStoreClosersByRoot.get(root) ?? new Set<() => void>();
   closers.add(() => authority.close());
   artifactStoreClosersByRoot.set(root, closers);

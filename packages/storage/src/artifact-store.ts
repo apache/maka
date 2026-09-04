@@ -214,7 +214,6 @@ export interface ArtifactAuthorityStore extends DurableArtifactAttachmentReader 
 
 export interface ArtifactStoreWriteAuthority {
   readonly store: ArtifactAuthorityStore;
-  recover(): Promise<void>;
   close(): void;
 }
 
@@ -233,7 +232,6 @@ export function createSqliteArtifactStoreWriteAuthority(
   );
   return Object.freeze({
     store,
-    recover: () => store.recoverForWriteWithAuthority(),
     close: () => store.close(),
   });
 }
@@ -511,12 +509,6 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     }
 
     return { ...existing };
-  }
-
-  recoverForWriteWithAuthority(): Promise<void> {
-    return this.enqueueMutation(async () => {
-      await this.reloadForMutationUnlocked();
-    });
   }
 
   private async listSessionRecords(sessionId: string): Promise<ArtifactRecord[]> {

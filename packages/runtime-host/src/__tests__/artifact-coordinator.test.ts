@@ -44,7 +44,6 @@ test('Artifact ingest is connection-bound, replay-safe, and commits one durable 
   assert.ok(owner);
   try {
     const store = await openInteractiveArtifactStoreForWrite(owner.lease);
-    await store.recover();
     let now = 0;
     const coordinator = new HostArtifactCoordinator(
       store,
@@ -271,7 +270,6 @@ test('Artifact mutation failure requests Host drain and fails closed', async () 
   assert.ok(owner);
   try {
     const store = await openInteractiveArtifactStoreForWrite(owner.lease);
-    await store.recover();
     await store.create({
       id: 'artifact-1',
       sessionId: 'session-1',
@@ -346,7 +344,6 @@ test('Artifact query streams complete content in bounded ordered chunks', async 
   assert.ok(owner);
   try {
     const store = await openInteractiveArtifactStoreForWrite(owner.lease);
-    await store.recover();
     const content = Buffer.alloc(ARTIFACT_READ_CHUNK_MAX_BYTES + 17, 7);
     await store.create({
       id: 'artifact-large',
@@ -410,7 +407,6 @@ test('Session Guests can read only shared attachment Artifacts from their grante
   assert.ok(owner);
   try {
     const store = await openInteractiveArtifactStoreForWrite(owner.lease);
-    await store.recover();
     await store.create({
       id: 'shared-image',
       sessionId: 'session-1',

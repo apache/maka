@@ -1758,7 +1758,6 @@ export async function createExecutionRuntimeHostComposition(
         recovery: {
           state: async () => {
             await skills.recover();
-            await openedArtifactStore.recover();
           },
         },
         drain: [

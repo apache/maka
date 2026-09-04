@@ -364,7 +364,6 @@ async function withStore(run: (store: ArtifactAuthorityStore) => Promise<void>):
   const root = await mkdtemp(join(tmpdir(), 'maka-artifact-attachment-'));
   const authority = createSqliteArtifactStoreWriteAuthority(root);
   try {
-    await authority.recover();
     const { store } = authority;
     await run(store);
   } finally {

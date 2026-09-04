@@ -71,7 +71,6 @@ test('backs up and restores runtime.sqlite plus artifact bytes', async () => {
     await sessions.appendMessage(session.id, message);
     await sessions.close?.();
     const artifactAuthority = createSqliteArtifactStoreWriteAuthority(stateRoot);
-    await artifactAuthority.recover();
     const artifacts = artifactAuthority.store;
     const artifact = await artifacts.create({
       id: 'artifact-1',
@@ -126,7 +125,6 @@ test('rejects a backup whose SQLite Artifact metadata has no matching payload', 
   const stateRoot = join(base, 'state');
   try {
     const artifactAuthority = createSqliteArtifactStoreWriteAuthority(stateRoot);
-    await artifactAuthority.recover();
     const artifacts = artifactAuthority.store;
     const artifact = await artifacts.create({
       id: 'artifact-1',
