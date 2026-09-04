@@ -370,6 +370,8 @@ async function buildHostAiSdkBackend(
           ((message) => input.context.store.appendMessage(input.context.sessionId, message)),
         readExecutionBoundary: () =>
           input.context.store.readExecutionBoundary(input.context.sessionId),
+        readPermissionMode: async () =>
+          (await input.context.store.readHeader(input.context.sessionId)).permissionMode,
         ...(input.context.store.createSandboxBoundaryRequest
           ? {
               createSandboxBoundaryRequest: (request) =>

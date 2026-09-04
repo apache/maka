@@ -703,6 +703,8 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   appendMessage: AppendMessageFn;
   /** Reads the authoritative session boundary immediately before every local tool invocation. */
   readExecutionBoundary: ToolRuntimeInput['readExecutionBoundary'];
+  /** Reads the user's current Session permission selection for each local tool invocation. */
+  readPermissionMode: ToolRuntimeInput['readPermissionMode'];
   createSandboxBoundaryRequest?: ToolRuntimeInput['createSandboxBoundaryRequest'];
   settleSandboxBoundaryRequest?: ToolRuntimeInput['settleSandboxBoundaryRequest'];
 
@@ -1348,6 +1350,7 @@ export class AiSdkBackend implements AgentBackend {
       modelId: input.modelId,
       appendMessage: input.appendMessage,
       readExecutionBoundary: input.readExecutionBoundary,
+      readPermissionMode: input.readPermissionMode,
       createSandboxBoundaryRequest: input.createSandboxBoundaryRequest,
       settleSandboxBoundaryRequest: input.settleSandboxBoundaryRequest,
       newId: this.newId,

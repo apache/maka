@@ -31,8 +31,11 @@ import type { ModelProjectionTransition } from '@maka/core/model-projection-tran
 export const readExternalExecutionBoundary: AiSdkBackendInput['readExecutionBoundary'] = async () =>
   createExternalExecutionBoundary();
 
-type TestAiSdkBackendInput = Omit<AiSdkBackendInput, 'readExecutionBoundary'> &
-  Partial<Pick<AiSdkBackendInput, 'readExecutionBoundary'>> & {
+type TestAiSdkBackendInput = Omit<
+  AiSdkBackendInput,
+  'readExecutionBoundary' | 'readPermissionMode'
+> &
+  Partial<Pick<AiSdkBackendInput, 'readExecutionBoundary' | 'readPermissionMode'>> & {
     testProjectionArtifacts?: boolean;
   };
 
@@ -47,6 +50,7 @@ export function createTestAiSdkBackend(input: TestAiSdkBackendInput): AiSdkBacke
   const transitions: ModelProjectionTransition[] = [];
   return new AiSdkBackend({
     readExecutionBoundary: readExternalExecutionBoundary,
+    readPermissionMode: async () => input.header.permissionMode,
     loadModelProjectionTransitions: async () => ({
       transitions: [...transitions],
       unreadableTargets: new Set<string>(),
@@ -104,13 +108,17 @@ export function testToolResultArchive(
   });
 }
 
-type TestToolRuntimeInput = Omit<ToolRuntimeInput, 'readExecutionBoundary' | 'turnId'> &
-  Partial<Pick<ToolRuntimeInput, 'readExecutionBoundary' | 'turnId'>>;
+type TestToolRuntimeInput = Omit<
+  ToolRuntimeInput,
+  'readExecutionBoundary' | 'readPermissionMode' | 'turnId'
+> &
+  Partial<Pick<ToolRuntimeInput, 'readExecutionBoundary' | 'readPermissionMode' | 'turnId'>>;
 
 /** Defaults to the turn id nearly every ToolRuntime test already uses. */
 export function createTestToolRuntime(input: TestToolRuntimeInput): ToolRuntime {
   return new ToolRuntime({
     readExecutionBoundary: readExternalExecutionBoundary,
+    readPermissionMode: async () => input.header.permissionMode,
     turnId: 'turn-1',
     ...input,
   });
