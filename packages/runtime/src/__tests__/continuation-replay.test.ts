@@ -370,7 +370,7 @@ describe('continuation replay segment', () => {
 });
 
 describe('continuation replay digest', () => {
-  it('keeps internal invocation identity outside the projection v2 digest', () => {
+  it('keeps the projection v2 digest compatible while excluding internal invocation identity', () => {
     const digest = (invocationId: string) =>
       digestProviderReplayAdmission({
         providerProjectionVersion: PROVIDER_REPLAY_PROJECTION_VERSION,
@@ -390,6 +390,10 @@ describe('continuation replay digest', () => {
       });
 
     assert.equal(digest('invocation-a'), digest('invocation-b'));
+    assert.equal(
+      digest('invocation-a'),
+      'sha256:775dac9a0959d888541d9e4930431b60dee89e4f28b62238ddde64dfd5f542ee',
+    );
   });
 });
 
