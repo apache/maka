@@ -19,23 +19,22 @@
 
 import { resolve } from 'node:path';
 import type { ArtifactRecord } from '@maka/core/artifacts';
-import type {
-  ArtifactMetadataChanges,
-  ArtifactMetadataRepository,
-} from './artifact-metadata-repository.js';
 import { decodeArtifactRecordJsons } from './artifact-metadata-codec.js';
 import {
   acquireOperationalStateDatabase,
   type OperationalStateDatabaseLease,
 } from './operational-state-store.js';
 
-export function createSqliteArtifactMetadataRepository(
-  workspaceRoot: string,
-): ArtifactMetadataRepository {
+export interface ArtifactMetadataChanges {
+  readonly upserts?: readonly ArtifactRecord[];
+  readonly deleteIds?: readonly string[];
+}
+
+export function createSqliteArtifactMetadataRepository(workspaceRoot: string) {
   return new SqliteArtifactMetadataRepository(workspaceRoot);
 }
 
-class SqliteArtifactMetadataRepository implements ArtifactMetadataRepository {
+class SqliteArtifactMetadataRepository {
   readonly #lease: OperationalStateDatabaseLease;
   #closed = false;
 

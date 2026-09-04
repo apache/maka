@@ -69,11 +69,10 @@ import {
 } from './artifact-writer-lock.js';
 import type { ArtifactWriterLockAuthority } from './root-authority.js';
 import { syncDirectory, syncDirectoryChain, syncFile } from './stable-storage.js';
-import type {
-  ArtifactMetadataChanges,
-  ArtifactMetadataRepository,
-} from './artifact-metadata-repository.js';
-import { createSqliteArtifactMetadataRepository } from './sqlite-artifact-metadata.js';
+import {
+  createSqliteArtifactMetadataRepository,
+  type ArtifactMetadataChanges,
+} from './sqlite-artifact-metadata.js';
 
 export { isSafeRelativeArtifactPath } from './artifact-metadata-codec.js';
 
@@ -279,7 +278,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
 
   constructor(
     private workspaceRoot: string,
-    private readonly metadataRepository: ArtifactMetadataRepository,
+    private readonly metadataRepository: ReturnType<typeof createSqliteArtifactMetadataRepository>,
     private readonly assertAuthority?: () => Promise<void>,
     private readonly leaseBoundWriterLockAuthority?: ArtifactWriterLockAuthority,
   ) {
