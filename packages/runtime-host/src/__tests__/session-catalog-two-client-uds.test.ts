@@ -1010,14 +1010,6 @@ async function assertRetirementCleanup(
             .get(sessionId)!.count,
           0,
         );
-        assert.equal(
-          database
-            .prepare(
-              'SELECT COUNT(*) AS count FROM workflow_task_ledger_events WHERE session_id = ?',
-            )
-            .get(sessionId)!.count,
-          0,
-        );
       } finally {
         database.close();
       }

@@ -74,6 +74,7 @@ const writerOpeningByLease = new WeakMap<object, Promise<InteractiveUsageStoresW
 
 export interface TelemetryIndexReader {
   summary(query: UsageQuery): Promise<UsageSummaryV2>;
+  toolSummary(query: UsageQuery): Promise<{ requests: number; durationMs: number }>;
   buckets(query: UsageQuery, groupBy: UsageGroupBy): Promise<UsageBucket[]>;
   logs(
     query: UsageQuery,
@@ -454,6 +455,7 @@ function createWriterFacade(
     [writerBrand]: true,
     telemetry: {
       summary: (query) => read(() => telemetry.summary(query)),
+      toolSummary: (query) => read(() => telemetry.toolSummary(query)),
       buckets: (query, groupBy) => read(() => telemetry.buckets(query, groupBy)),
       logs: (query, offset, limit) => read(() => telemetry.logs(query, offset, limit)),
       toolLogs: (query, offset, limit) => read(() => telemetry.toolLogs(query, offset, limit)),
@@ -462,7 +464,7 @@ function createWriterFacade(
       recordLlmCall: (record) =>
         admitSessionUsageMutation(record.sessionId, () => telemetry.insertLlmCall(record)),
       recordToolInvocation: (record) =>
-        admit(() => run(() => telemetry.insertToolInvocation(record))),
+        admitSessionUsageMutation(record.sessionId, () => telemetry.insertToolInvocation(record)),
     },
     modelCalls: {
       modelCallAttempts: (range, sessionId) => read(() => modelCalls.read(range, sessionId)),
@@ -497,6 +499,7 @@ function telemetryReader(
 ): Readonly<TelemetryIndexReader> {
   return Object.freeze({
     summary: (query: UsageQuery) => run(() => repo.summary(query)),
+    toolSummary: (query: UsageQuery) => run(() => repo.toolSummary(query)),
     buckets: (query: UsageQuery, groupBy: UsageGroupBy) => run(() => repo.buckets(query, groupBy)),
     logs: (query: UsageQuery, offset?: number, limit?: number) =>
       run(() => repo.logs(query, offset, limit)),

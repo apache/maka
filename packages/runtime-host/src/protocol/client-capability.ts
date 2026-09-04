@@ -17,7 +17,14 @@
  * under the License.
  */
 
+import { createHash } from 'node:crypto';
 import { TOOL_ACTIVITY_KINDS, type ToolActivityKind } from '@maka/core/events';
+import {
+  decodeInteractionAnswer,
+  projectInteractionFormRequest,
+  type InteractionFormInput,
+  type InteractionFormResult,
+} from '@maka/core/interaction';
 import {
   assertExactKeys,
   requireCount,
@@ -77,6 +84,19 @@ export type ClientCapabilityHostPathAccess = 'none' | 'cwd';
 export const CLIENT_CAPABILITY_MAX_OFFERS = 32;
 export const CLIENT_CAPABILITY_MAX_SERVICES = 32;
 export const CLIENT_CAPABILITY_MAX_TOOLS_PER_OFFER = 64;
+
+/**
+ * Normalize an arbitrary Client Capability identity (an MCP server id or tool
+ * name from user configuration) into a wire-safe entity id: identities that
+ * already fit pass through unchanged, anything else becomes a readable label
+ * plus a collision-proof digest of the original value.
+ */
+export function clientCapabilityEntityId(value: string, maxLength = 128): string {
+  if (/^[A-Za-z0-9_-]+$/u.test(value) && value.length <= maxLength) return value;
+  const label = value.replace(/[^A-Za-z0-9_-]+/gu, '_').slice(0, maxLength - 25) || 'mcp';
+  const digest = createHash('sha256').update(value).digest('hex').slice(0, 24);
+  return `${label}_${digest}`;
+}
 export const CLIENT_CAPABILITY_MAX_TOOLS = 256;
 export const CLIENT_CAPABILITY_MAX_MANIFEST_BYTES = 56 * 1024;
 export const CLIENT_CAPABILITY_MAX_RESULT_BYTES = 24 * 1024 * 1024;
@@ -177,18 +197,31 @@ export interface ClientCapabilityAdmittedFrame {
   readonly invocationId: string;
 }
 
+export interface ClientCapabilityInteractionResultFrame {
+  readonly kind: 'client.capability.interaction_result';
+  readonly invocationId: string;
+  readonly interactionId: string;
+  readonly result: InteractionFormResult;
+}
+
 export type ClientCapabilityHostFrame =
   | ClientCapabilityCallFrame
   | ClientCapabilityServiceCallFrame
   | ClientCapabilityCancelFrame
   | ClientCapabilityReleaseFrame
   | ClientCapabilityRegistrationReleaseFrame
-  | ClientCapabilityAdmittedFrame;
+  | ClientCapabilityAdmittedFrame
+  | ClientCapabilityInteractionResultFrame;
 
 export interface ClientCapabilityAcceptedFrame {
   readonly kind: 'client.capability.accepted';
   readonly invocationId: string;
+  readonly admissionEvidence: ClientCapabilityAdmissionEvidence;
 }
+
+export type ClientCapabilityAdmissionEvidence =
+  | { readonly kind: 'none' }
+  | { readonly kind: 'browser_url'; readonly url: string };
 
 export interface ClientCapabilityRejectedFrame {
   readonly kind: 'client.capability.rejected';
@@ -229,6 +262,13 @@ export interface ClientCapabilityResultChunkFrame {
   readonly data: string;
 }
 
+export interface ClientCapabilityInteractionRequestFrame {
+  readonly kind: 'client.capability.interaction_request';
+  readonly invocationId: string;
+  readonly interactionId: string;
+  readonly request: InteractionFormInput;
+}
+
 export type ClientCapabilityClientFrame =
   | ClientCapabilityAcceptedFrame
   | ClientCapabilityRejectedFrame
@@ -236,7 +276,8 @@ export type ClientCapabilityClientFrame =
   | ClientCapabilityProgressFrame
   | ClientCapabilityResultFrame
   | ClientCapabilityResultStartFrame
-  | ClientCapabilityResultChunkFrame;
+  | ClientCapabilityResultChunkFrame
+  | ClientCapabilityInteractionRequestFrame;
 
 export const CLIENT_CAPABILITY_OPERATION_SPECS = {
   'client.capability.replace': defineHostPathOperation<
@@ -382,10 +423,15 @@ export function decodeClientCapabilityClientFrame(value: unknown): ClientCapabil
   const frame = requireRecord(value, 'Client Capability client frame');
   switch (frame.kind) {
     case 'client.capability.accepted':
-      assertExactKeys(frame, 'Client Capability accepted frame', ['kind', 'invocationId']);
+      assertExactKeys(frame, 'Client Capability accepted frame', [
+        'kind',
+        'invocationId',
+        'admissionEvidence',
+      ]);
       return {
         kind: frame.kind,
         invocationId: requireEntityId(frame.invocationId, 'invocationId'),
+        admissionEvidence: decodeClientCapabilityAdmissionEvidence(frame.admissionEvidence),
       };
     case 'client.capability.rejected':
     case 'client.capability.failed':
@@ -475,8 +521,40 @@ export function decodeClientCapabilityClientFrame(value: unknown): ClientCapabil
         data,
       };
     }
+    case 'client.capability.interaction_request':
+      assertExactKeys(frame, 'Client Capability interaction request frame', [
+        'kind',
+        'invocationId',
+        'interactionId',
+        'request',
+      ]);
+      return {
+        kind: frame.kind,
+        invocationId: requireEntityId(frame.invocationId, 'invocationId'),
+        interactionId: requireEntityId(frame.interactionId, 'interactionId'),
+        request: decodeClientCapabilityFormRequest(frame.request),
+      };
     default:
       throw invalidProtocolFrame('Invalid Client Capability client frame kind');
+  }
+}
+
+function decodeClientCapabilityAdmissionEvidence(
+  value: unknown,
+): ClientCapabilityAdmissionEvidence {
+  const evidence = requireRecord(value, 'Client Capability admission evidence');
+  switch (evidence.kind) {
+    case 'none':
+      assertExactKeys(evidence, 'Client Capability admission evidence', ['kind']);
+      return { kind: evidence.kind };
+    case 'browser_url':
+      assertExactKeys(evidence, 'Client Capability admission evidence', ['kind', 'url']);
+      return {
+        kind: evidence.kind,
+        url: requireString(evidence.url, 'url', 16_384),
+      };
+    default:
+      throw invalidProtocolFrame('Unknown Client Capability admission evidence kind');
   }
 }
 
@@ -554,6 +632,19 @@ export function decodeClientCapabilityHostFrame(value: unknown): ClientCapabilit
         kind: frame.kind,
         invocationId: requireEntityId(frame.invocationId, 'invocationId'),
       };
+    case 'client.capability.interaction_result':
+      assertExactKeys(frame, 'Client Capability interaction result frame', [
+        'kind',
+        'invocationId',
+        'interactionId',
+        'result',
+      ]);
+      return {
+        kind: frame.kind,
+        invocationId: requireEntityId(frame.invocationId, 'invocationId'),
+        interactionId: requireEntityId(frame.interactionId, 'interactionId'),
+        result: decodeClientCapabilityFormResult(frame.result),
+      };
     case 'client.capability.registration_release':
       assertExactKeys(frame, 'Client Capability registration release frame', [
         'kind',
@@ -585,6 +676,44 @@ export function decodeClientCapabilityResult(value: unknown): ClientCapabilityCa
   };
 }
 
+function decodeClientCapabilityFormRequest(value: unknown): InteractionFormInput {
+  const record = requireExactRecord(value, 'Client Capability form request', [
+    'message',
+    'requester',
+    'fields',
+  ]);
+  let request: ReturnType<typeof projectInteractionFormRequest>;
+  try {
+    request = projectInteractionFormRequest({
+      toolUseId: 'client-capability-interaction',
+      message: record.message as string,
+      requester: record.requester as InteractionFormInput['requester'],
+      fields: record.fields as InteractionFormInput['fields'],
+    });
+  } catch {
+    throw invalidProtocolFrame('Invalid Client Capability form request');
+  }
+  return {
+    message: request.message,
+    requester: request.requester,
+    fields: request.fields,
+  };
+}
+
+function decodeClientCapabilityFormResult(value: unknown): InteractionFormResult {
+  const record = requireRecord(value, 'Client Capability form result');
+  let answer: ReturnType<typeof decodeInteractionAnswer>;
+  try {
+    answer = decodeInteractionAnswer({ kind: 'form', ...record });
+  } catch {
+    throw invalidProtocolFrame('Invalid Client Capability form result');
+  }
+  if (answer.kind !== 'form') throw invalidProtocolFrame('Invalid Client Capability form result');
+  return answer.action === 'accept'
+    ? { action: 'accept', values: answer.values }
+    : { action: answer.action };
+}
+
 function decodeClientCapabilityOffer(value: unknown): ClientCapabilityOffer {
   const record = requireRecord(value, 'Client Capability offer');
   assertOptionalExactKeys(
@@ -611,7 +740,7 @@ function decodeClientCapabilityOffer(value: unknown): ClientCapabilityOffer {
       : {
           description: requireString(record.description, 'description', 1_024),
         }),
-    tools: record.tools.map(decodeToolDescriptor),
+    tools: record.tools.map(decodeClientCapabilityToolDescriptor),
   };
 }
 
@@ -636,7 +765,9 @@ function decodeClientCapabilityHostPathAccess(value: unknown): ClientCapabilityH
   throw invalidProtocolFrame('Invalid Client Capability Host path access');
 }
 
-function decodeToolDescriptor(value: unknown): ClientCapabilityToolDescriptor {
+export function decodeClientCapabilityToolDescriptor(
+  value: unknown,
+): ClientCapabilityToolDescriptor {
   const record = requireRecord(value, 'Client Capability tool');
   assertOptionalExactKeys(
     record,
@@ -644,11 +775,7 @@ function decodeToolDescriptor(value: unknown): ClientCapabilityToolDescriptor {
     ['serverId', 'name', 'inputSchema'],
     ['description', 'annotations', 'activityKind'],
   );
-  const inputSchema = decodeJsonRecord(record.inputSchema, 'inputSchema');
-  if (jsonByteLength(inputSchema) > 32 * 1024) {
-    throw invalidProtocolFrame('Client Capability tool schema is too large');
-  }
-  validateToolInputSchema(inputSchema);
+  const inputSchema = decodeClientCapabilityToolInputSchema(record.inputSchema);
   return {
     serverId: requireString(record.serverId, 'serverId', 128),
     name: requireString(record.name, 'name', 128),
@@ -669,6 +796,15 @@ function decodeToolDescriptor(value: unknown): ClientCapabilityToolDescriptor {
       ? {}
       : { annotations: decodeToolAnnotations(record.annotations) }),
   };
+}
+
+function decodeClientCapabilityToolInputSchema(value: unknown): Record<string, unknown> {
+  const inputSchema = decodeJsonRecord(value, 'inputSchema');
+  if (jsonByteLength(inputSchema) > 32 * 1024) {
+    throw invalidProtocolFrame('Client Capability tool schema is too large');
+  }
+  validateToolInputSchema(inputSchema);
+  return inputSchema;
 }
 
 function decodeToolActivityKind(value: unknown): ToolActivityKind {
@@ -1102,6 +1238,7 @@ const CLIENT_CAPABILITY_CLIENT_FRAME_KINDS = new Set<ClientCapabilityClientFrame
   'client.capability.result',
   'client.capability.result_start',
   'client.capability.result_chunk',
+  'client.capability.interaction_request',
 ]);
 
 const CLIENT_CAPABILITY_HOST_FRAME_KINDS = new Set<ClientCapabilityHostFrame['kind']>([
@@ -1111,4 +1248,5 @@ const CLIENT_CAPABILITY_HOST_FRAME_KINDS = new Set<ClientCapabilityHostFrame['ki
   'client.capability.release',
   'client.capability.registration_release',
   'client.capability.admitted',
+  'client.capability.interaction_result',
 ]);

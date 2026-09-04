@@ -24,21 +24,28 @@ import {
   armLiveTurn,
   reconcileTerminalLiveTurn,
   useMountedRef,
+  useSessionSettingIntent,
   type InteractionQueues,
   type LiveTurnProjection,
 } from '@maka/ui';
 import type {
   SandboxBoundaryRequestEvent,
+  ClientCapabilityRequestEvent,
+  ContextCompactionOutcome,
+  FormRequestEvent,
   QuoteRef,
   SessionEvent,
   UserQuestionRequestEvent,
 } from '@maka/core/events';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
+import type { ClientCapabilityResponse } from '@maka/core/client-capability-grant';
 import type { PermissionMode } from '@maka/core/permission';
 import type { SessionSummary, StoredMessage } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { UserQuestionResponse } from '@maka/core/user-question';
+import type { InteractionFormResponse } from '@maka/core/interaction';
+import type { ContextCompactResult } from '@maka/runtime-host/protocol';
 import { useWorkbarServices } from '../../services-context.js';
 import type { WorkbarIngestInput } from '../../ports.js';
 import {
@@ -54,6 +61,7 @@ import {
   type CompanionErrorCode,
   type EnsureCompanionForkResult,
 } from './quote-companion-core.js';
+import { isExactCompactCommand } from './quote-companion-context-compaction.js';
 import { mergeSettledMessages } from '../../../../settled-message-merge.js';
 import { getDesktopConversationCopy } from '../../../../locales/conversation-copy.js';
 import {
@@ -63,12 +71,22 @@ import {
 } from './quote-companion-panel-state.js';
 import type { CompanionForkVisibilityEvent } from './quote-companion-visibility.js';
 
+type QuoteCompanionSettingValues = { permissionMode: PermissionMode };
+
 type PendingAdmission = {
   messageId: string;
   events: SessionEvent[];
   consumeOnAdmission?: () => void;
   stopPromise?: Promise<'confirmed' | 'unknown'>;
 };
+
+type PendingCompactionTerminal =
+  | { kind: 'outcome'; turnId: string; outcome: ContextCompactionOutcome }
+  | { kind: 'error'; turnId: string; error: unknown };
+
+function readMutableRef<T>(ref: { current: T }): T {
+  return ref.current;
+}
 
 type AdmissionOutcome =
   | { kind: 'admitted'; turnId: string }
@@ -109,9 +127,29 @@ export interface UseQuoteCompanionInput {
   locale: UiLocale;
   /** Called once a send has consumed the staged quotes, so the host clears them. */
   onQuotesConsumed: (snapshot: CompanionQuoteSnapshot) => void;
+  /** Confirms the destructive Full access permission mode before it is written. */
+  confirmBypass: () => Promise<boolean>;
   /** Reports creation and authoritative cleanup so the host can keep every
    *  ephemeral fork hidden for its complete lifetime. */
   onForkVisibilityChange?: (event: CompanionForkVisibilityEvent) => void;
+  /** Presents the immediate result of an explicit companion compaction. */
+  onContextCompactionResult?: (sessionId: string, result: ContextCompactResult) => void;
+  /** Presents the terminal event for an asynchronous companion compaction. */
+  onContextCompactionOutcome?: (
+    sessionId: string,
+    turnId: string,
+    outcome: ContextCompactionOutcome,
+  ) => void;
+  onContextCompactionError?: (sessionId: string, error: unknown) => void;
+}
+
+export async function requestPermissionModeWithConfirmation(
+  mode: PermissionMode,
+  confirmBypass: () => Promise<boolean>,
+  write: () => Promise<boolean>,
+): Promise<boolean> {
+  if (mode === 'bypass' && !(await confirmBypass())) return false;
+  return write();
 }
 
 export interface UseQuoteCompanionResult {
@@ -125,19 +163,21 @@ export interface UseQuoteCompanionResult {
   liveTurn: LiveTurnProjection | undefined;
   streaming: boolean;
   processing: boolean;
-  preparing: boolean;
   /** Whether the source and any committed companion can execute their exact model. */
   modelReady: boolean;
   permissionMode: PermissionMode | undefined;
-  permissionModePending: boolean;
   regeneratePendingTurnId: string | null;
   /** A localized, retryable error (fork setup, run error, or a rejected send). */
   error: string | null;
   /** The model the companion inherited from the source (shown read-only). */
   activeModel: { llmConnectionSlug: string; model: string } | undefined;
-  /** Pending sandbox-boundary / user-question prompt raised by the companion's run. */
+  /** Pending sandbox-boundary / question / form prompt raised by the companion's run. */
   activeSandboxBoundary: SandboxBoundaryRequestEvent | undefined;
+  activeClientCapability: ClientCapabilityRequestEvent | undefined;
   activeQuestion: UserQuestionRequestEvent | undefined;
+  activeForm: FormRequestEvent | undefined;
+  /** Runs `/compact` against the committed companion fork when it is idle. */
+  compact: () => Promise<boolean>;
   /** Returns whether the send was accepted; false leaves the draft + staged
    *  quotes in place so the user can retry. */
   send: (text: string, attachmentItems?: WorkbarIngestInput[]) => Promise<boolean>;
@@ -147,7 +187,9 @@ export interface UseQuoteCompanionResult {
   regenerate: (turnId: string) => Promise<boolean>;
   stop: () => Promise<void>;
   respondToSandboxBoundary: (response: SandboxBoundaryResponse) => Promise<void>;
+  respondToClientCapability: (response: ClientCapabilityResponse) => Promise<void>;
   respondToUserQuestion: (response: UserQuestionResponse) => Promise<void>;
+  respondToUserForm: (response: InteractionFormResponse) => Promise<void>;
 }
 
 /** The last streamed assistant message id of a turn — the settlement anchor. */
@@ -181,6 +223,9 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     pendingQuotes,
     onQuotesConsumed,
     onForkVisibilityChange,
+    onContextCompactionResult,
+    onContextCompactionOutcome,
+    onContextCompactionError,
   } = input;
   const copy = getDesktopConversationCopy(locale).quoteCompanion;
   const [companion, setCompanion] = useState<SessionSummary | undefined>(undefined);
@@ -193,6 +238,8 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   sourceSessionRef.current = sourceSession;
   const modelChoicesRef = useRef(modelChoices);
   modelChoicesRef.current = modelChoices;
+  const confirmBypassRef = useRef(input.confirmBypass);
+  confirmBypassRef.current = input.confirmBypass;
   const sourceModelReady = sessionHasExactModelChoice(sourceSession, modelChoices);
   const sourceSessionId = sourceSession?.id;
   const sourceSessionIdRef = useRef(sourceSession?.id);
@@ -204,15 +251,23 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const reconcilingAdmissionRef = useRef<PendingAdmission | null>(null);
   const subscriptionReadyRef = useRef<Promise<void>>(Promise.resolve());
   const submitLockRef = useRef(false);
-  const [submitLocked, setSubmitLockedState] = useState(false);
   const settlingTurnIdsRef = useRef<Set<string>>(new Set());
   const onForkVisibilityChangeRef = useRef(onForkVisibilityChange);
   onForkVisibilityChangeRef.current = onForkVisibilityChange;
+  const onContextCompactionResultRef = useRef(onContextCompactionResult);
+  onContextCompactionResultRef.current = onContextCompactionResult;
+  const onContextCompactionOutcomeRef = useRef(onContextCompactionOutcome);
+  onContextCompactionOutcomeRef.current = onContextCompactionOutcome;
+  const onContextCompactionErrorRef = useRef(onContextCompactionError);
+  onContextCompactionErrorRef.current = onContextCompactionError;
   const localeRef = useRef(locale);
   localeRef.current = locale;
   const copyRef = useRef(copy);
   copyRef.current = copy;
   const ownTurnIdsRef = useRef<Set<string>>(new Set());
+  const compactionRequestInFlightRef = useRef(false);
+  const compactionTurnIdRef = useRef<string | null>(null);
+  const pendingCompactionTerminalRef = useRef<PendingCompactionTerminal | null>(null);
   const [allMessages, setAllMessages] = useState<StoredMessage[]>([]);
   const [liveTurn, setLiveTurn] = useState<LiveTurnProjection | undefined>(undefined);
   const liveTurnRef = useRef(liveTurn);
@@ -225,8 +280,6 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     liveTurn,
   );
   const turnInFlight = streaming;
-  const [preparing, setPreparing] = useState(Boolean(sourceSession));
-  const [permissionModePending, setPermissionModePending] = useState(false);
   const [regeneratePendingTurnId, setRegeneratePendingTurnId] = useState<string | null>(
     null,
   );
@@ -234,7 +287,12 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const hasContentRef = useRef(hasContent);
   hasContentRef.current = hasContent;
   const [error, setError] = useState<string | null>(null);
-  const [forkRetryPending, setForkRetryPending] = useState(false);
+  // A permission mode the user picked before the fork exists. Applied to the
+  // fork once the first send creates it; until then it drives the read-only chip.
+  const [stagedPermissionMode, setStagedPermissionMode] = useState<PermissionMode | undefined>(
+    undefined,
+  );
+  const pendingPermissionModeRef = useRef<PermissionMode | undefined>(undefined);
   // Bumped whenever the own-turn set changes so the render picks up the new
   // filter result (the set lives in a ref to stay stable for the event handler).
   const [, setOwnTurnTick] = useState(0);
@@ -244,18 +302,76 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   // double-invoke; a hand-rolled disposed flag would stay tripped after replay).
   const mountedRef = useMountedRef();
   const dismissalGuardRef = useRef(createCompanionDismissalGuard());
+  const [permissionCatalogRevision, setPermissionCatalogRevision] = useState(0);
+  const permissionModeIntent = useSessionSettingIntent<QuoteCompanionSettingValues>({
+    catalogRevision: permissionCatalogRevision,
+    refreshCatalog: async () => {
+      const sessionId = companionIdRef.current;
+      if (!sessionId) return;
+      const sessions = await sideChat.listSessions();
+      const next = sessions.find((session) => session.id === sessionId);
+      if (!mountedRef.current || companionIdRef.current !== sessionId || !next) return;
+      companionRef.current = next;
+      setCompanion(next);
+      setPermissionCatalogRevision((revision) => revision + 1);
+    },
+    channels: {
+      permissionMode: {
+        write: async (sessionId, mode) => {
+          const next = await sideChat.setPermissionMode(sessionId, mode);
+          if (mountedRef.current && companionIdRef.current === sessionId) {
+            companionRef.current = next;
+            setCompanion(next);
+          }
+          return next.permissionMode === mode;
+        },
+        onWriteError: () => {
+          if (mountedRef.current) setError(copyRef.current.errors.respondFailed);
+        },
+      },
+    },
+  });
+  const requestPermissionMode = useCallback(
+    (sessionId: string, mode: PermissionMode) =>
+      permissionModeIntent.request('permissionMode', sessionId, mode),
+    [permissionModeIntent.request],
+  );
+  const clearPermissionModeIntent = permissionModeIntent.clear;
 
   const setPendingAdmission = useCallback((admission: PendingAdmission | null) => {
     pendingAdmissionRef.current = admission;
     setPendingAdmissionState(admission);
   }, []);
+  // Reentrancy is guarded by the ref alone; no render depends on the lock, so
+  // there is no state to keep in sync.
   const setSubmitLocked = useCallback((locked: boolean) => {
     submitLockRef.current = locked;
-    setSubmitLockedState(locked);
   }, []);
 
   const applyOwnedEvent = useCallback(
     (forkId: string, event: SessionEvent) => {
+      const terminal: PendingCompactionTerminal | undefined =
+        event.type === 'complete' && event.contextCompactionOutcome
+          ? { kind: 'outcome', turnId: event.turnId, outcome: event.contextCompactionOutcome }
+          : event.type === 'abort' || (event.type === 'error' && !event.recoverable)
+            ? { kind: 'error', turnId: event.turnId, error: event }
+            : undefined;
+      if (terminal) {
+        if (compactionTurnIdRef.current === terminal.turnId) {
+          compactionTurnIdRef.current = null;
+          compactionRequestInFlightRef.current = false;
+          if (terminal.kind === 'outcome') {
+            onContextCompactionOutcomeRef.current?.(forkId, terminal.turnId, terminal.outcome);
+          } else {
+            onContextCompactionErrorRef.current?.(forkId, terminal.error);
+          }
+        } else if (compactionRequestInFlightRef.current) {
+          // The Host can publish the terminal event before the compact RPC
+          // returns its turn identity. Keep it fenced until the response
+          // proves that this event belongs to the pending compaction.
+          pendingCompactionTerminalRef.current = terminal;
+        }
+      }
       const effect = companionRunEventEffect(
         event,
         activeTurnIdRef.current,
@@ -483,10 +599,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   );
 
   const ensureFork = useCallback(
-    (
-      name: string,
-      options: { readonly showPreparing?: boolean } = {},
-    ): Promise<EnsureCompanionForkResult> => {
+    (name: string): Promise<EnsureCompanionForkResult> => {
       if (forkSetupPromiseRef.current) return forkSetupPromiseRef.current;
       const currentSourceSession = sourceSessionRef.current;
       if (
@@ -501,19 +614,18 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       }
       // Never discard an accepted side conversation implicitly. An unavailable
       // empty fork can be recreated from the repaired source; a fork with its
-      // own content stays inspectable until the user closes the panel.
+      // own content stays inspectable until the user closes the panel. (The
+      // submit lock is held by the send that drives this call, so it is not a
+      // reason to refuse replacing an idle empty fork.)
       if (
         existing &&
         (hasContentRef.current ||
-          submitLockRef.current ||
           pendingAdmissionRef.current !== null ||
           activeTurnIdRef.current !== null)
       ) {
         return Promise.resolve({ status: 'error', code: 'fork_setup_failed' });
       }
 
-      const showPreparing = options.showPreparing ?? true;
-      if (showPreparing) setPreparing(true);
       const promise = (async (): Promise<EnsureCompanionForkResult> => {
         if (existing) {
           const sourceId = sourceSessionIdRef.current;
@@ -525,6 +637,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
           subscriptionReadyRef.current = Promise.resolve();
           companionIdRef.current = null;
           companionRef.current = undefined;
+          clearPermissionModeIntent(existing.id);
           setCompanion(undefined);
           setAllMessages([]);
           onForkVisibilityChangeRef.current?.({
@@ -585,11 +698,9 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
             return { status: 'error', code: 'fork_setup_failed' };
           }
           if (result.status === 'ready' && mountedRef.current) {
-            setForkRetryPending(false);
             setError(null);
             commitFork(result.session);
           } else if (result.status === 'error' && mountedRef.current) {
-            setForkRetryPending(result.code === 'fork_source_busy');
             const errors = copyRef.current.errors;
             setError(
               result.code === 'fork_source_busy'
@@ -603,65 +714,22 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         })
         .finally(() => {
           forkSetupPromiseRef.current = null;
-          if (showPreparing && mountedRef.current) setPreparing(false);
         });
       forkSetupPromiseRef.current = promise;
       return promise;
     },
-    [commitFork, mountedRef, panelId, sideChat],
+    [clearPermissionModeIntent, commitFork, mountedRef, panelId, sideChat],
   );
 
+  // A committed side conversation with its own content is blocked when its
+  // inherited model is no longer available (the read-only model can't be sent
+  // to). An EMPTY fork (e.g. a first send that failed after commit) must not
+  // wedge the composer: the next send discards it and re-forks from the current
+  // source model, so treat it as ready regardless of its stale inherited model.
   const companionModelReady =
-    companion === undefined || sessionHasExactModelChoice(companion, modelChoices);
-  useEffect(() => {
-    if (!sourceSessionId) return;
-    if (!sourceModelReady) {
-      setPreparing(false);
-      return;
-    }
-    void ensureFork(copyRef.current.defaultName);
-  }, [
-    companionModelReady,
-    ensureFork,
-    hasContent,
-    pendingAdmission,
-    sourceModelReady,
-    sourceSessionId,
-    streaming,
-    submitLocked,
-  ]);
-
-  useEffect(() => {
-    if (!sourceSessionId || !forkRetryPending) return;
-    let retrying = false;
-    const retry = () => {
-      if (retrying || !mountedRef.current || companionRef.current) return;
-      retrying = true;
-      const currentSetup = forkSetupPromiseRef.current;
-      void (async () => {
-        if (currentSetup) await currentSetup;
-        if (!mountedRef.current || companionRef.current) return;
-        await ensureFork(copyRef.current.defaultName, { showPreparing: false });
-      })().finally(() => {
-        retrying = false;
-      });
-    };
-    const unsubscribe = sideChat.subscribeSessionChanges((event) => {
-      if (
-        event.sessionId === sourceSessionId &&
-        (event.reason === 'turn-status-change' ||
-          event.reason === 'status-change' ||
-          event.reason === 'message-appended')
-      ) {
-        retry();
-      }
-    });
-    const retryTimer = globalThis.setInterval(retry, 2_000);
-    return () => {
-      globalThis.clearInterval(retryTimer);
-      unsubscribe();
-    };
-  }, [ensureFork, forkRetryPending, mountedRef, sideChat, sourceSessionId]);
+    companion === undefined ||
+    !hasContent ||
+    sessionHasExactModelChoice(companion, modelChoices);
 
   // The fork is ephemeral (用完即弃): when the panel is dismissed — 退出,
   // switching source session — unsubscribe and remove the fork so it never
@@ -694,16 +762,75 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     };
   }, [panelId, sideChat]);
 
+  const compact = useCallback(async (): Promise<boolean> => {
+    const fork = companionRef.current;
+    if (
+      !mountedRef.current ||
+      !fork ||
+      fork.isArchived ||
+      !sessionHasExactModelChoice(fork, modelChoicesRef.current) ||
+      compactionRequestInFlightRef.current ||
+      submitLockRef.current ||
+      pendingAdmissionRef.current ||
+      activeTurnIdRef.current ||
+      (fork.runningTurnIds?.length ?? 0) > 0
+    ) {
+      return false;
+    }
+    compactionRequestInFlightRef.current = true;
+    pendingCompactionTerminalRef.current = null;
+    let awaitingTerminal = false;
+    try {
+      const result = await sideChat.compact(fork.id);
+      if (!mountedRef.current) return false;
+      awaitingTerminal = result.kind === 'started';
+      compactionTurnIdRef.current = result.turn.turnId;
+      onContextCompactionResultRef.current?.(fork.id, result);
+      const pendingTerminal = readMutableRef(pendingCompactionTerminalRef);
+      if (pendingTerminal?.turnId === result.turn.turnId) {
+        pendingCompactionTerminalRef.current = null;
+        compactionRequestInFlightRef.current = false;
+        compactionTurnIdRef.current = null;
+        if (result.kind === 'started') {
+          if (pendingTerminal.kind === 'outcome') {
+            onContextCompactionOutcomeRef.current?.(
+              fork.id,
+              pendingTerminal.turnId,
+              pendingTerminal.outcome,
+            );
+          } else {
+            onContextCompactionErrorRef.current?.(fork.id, pendingTerminal.error);
+          }
+        }
+      } else if (result.kind === 'finished') {
+        pendingCompactionTerminalRef.current = null;
+        compactionRequestInFlightRef.current = false;
+        compactionTurnIdRef.current = null;
+      }
+      return result.kind === 'started' || result.outcome.kind !== 'failed';
+    } catch (error) {
+      onContextCompactionErrorRef.current?.(fork.id, error);
+      return false;
+    } finally {
+      if (!mountedRef.current || !awaitingTerminal) {
+        compactionRequestInFlightRef.current = false;
+        if (!awaitingTerminal) compactionTurnIdRef.current = null;
+      }
+    }
+  }, [mountedRef, sideChat]);
+
   const send = useCallback(
     async (
       text: string,
       attachmentItems?: WorkbarIngestInput[],
     ): Promise<boolean> => {
       const trimmed = text.trim();
+      if (isExactCompactCommand(trimmed)) return compact();
       if (
         !mountedRef.current ||
         !trimmed ||
         submitLockRef.current ||
+        compactionRequestInFlightRef.current ||
         activeTurnIdRef.current ||
         pendingAdmissionRef.current ||
         !sourceSession
@@ -721,6 +848,35 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         setSubmitLocked(false);
         return false;
       }
+      // A permission mode picked before the fork existed is applied now, before
+      // the turn runs, so the run honors the user's choice. Fail CLOSED: if the
+      // write fails, abort the send rather than run under the (possibly wider)
+      // inherited mode; keep the staged mode and draft so the user can retry.
+      if (
+        pendingPermissionModeRef.current &&
+        pendingPermissionModeRef.current !== fork.session.permissionMode
+      ) {
+        let applied = false;
+        try {
+          applied = await requestPermissionMode(
+            fork.session.id,
+            pendingPermissionModeRef.current,
+          );
+        } catch {
+          applied = false;
+        }
+        if (!mountedRef.current) {
+          setSubmitLocked(false);
+          return false;
+        }
+        if (!applied) {
+          setError(copyRef.current.errors.respondFailed);
+          setSubmitLocked(false);
+          return false;
+        }
+      }
+      pendingPermissionModeRef.current = undefined;
+      setStagedPermissionMode(undefined);
       try {
         await subscriptionReadyRef.current;
       } catch {
@@ -835,10 +991,12 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       mountedRef,
       sideChat,
       bindAdmittedTurn,
+      compact,
       releaseAdmission,
       resolveAdmission,
       setPendingAdmission,
       setSubmitLocked,
+      requestPermissionMode,
     ],
   );
 
@@ -946,25 +1104,30 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   ]);
 
   const setPermissionMode = useCallback(
-    async (mode: PermissionMode): Promise<boolean> => {
+    (mode: PermissionMode): Promise<boolean> => {
       const id = companionIdRef.current;
-      if (!id || turnInFlight || permissionModePending) return false;
-      setPermissionModePending(true);
-      try {
-        const next = await sideChat.setPermissionMode(id, mode);
-        if (!mountedRef.current) return false;
-        companionRef.current = next;
-        setCompanion(next);
-        setError(null);
-        return true;
-      } catch {
-        if (mountedRef.current) setError(copyRef.current.errors.respondFailed);
-        return false;
-      } finally {
-        if (mountedRef.current) setPermissionModePending(false);
+      if (turnInFlight) return Promise.resolve(false);
+      setError(null);
+      if (!id) {
+        // No fork yet — confirm the destructive mode, then stage it so the
+        // first send applies it instead of silently inheriting the source mode.
+        return requestPermissionModeWithConfirmation(
+          mode,
+          () => confirmBypassRef.current(),
+          () => {
+            pendingPermissionModeRef.current = mode;
+            setStagedPermissionMode(mode);
+            return Promise.resolve(true);
+          },
+        );
       }
+      return requestPermissionModeWithConfirmation(
+        mode,
+        () => confirmBypassRef.current(),
+        () => requestPermissionMode(id, mode),
+      );
     },
-    [mountedRef, permissionModePending, sideChat, turnInFlight],
+    [requestPermissionMode, turnInFlight],
   );
 
   const regenerate = useCallback(
@@ -1025,6 +1188,32 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     [mountedRef, sideChat],
   );
 
+  const respondToClientCapability = useCallback(
+    async (response: ClientCapabilityResponse): Promise<void> => {
+      const id = companionIdRef.current;
+      if (!mountedRef.current || !id) return;
+      try {
+        await sideChat.respondToClientCapability(id, response);
+      } catch {
+        if (mountedRef.current) setError(copyRef.current.errors.respondFailed);
+      }
+    },
+    [mountedRef, sideChat],
+  );
+
+  const respondToUserForm = useCallback(
+    async (response: InteractionFormResponse): Promise<void> => {
+      const id = companionIdRef.current;
+      if (!mountedRef.current || !id) return;
+      try {
+        await sideChat.respondToUserForm(id, response);
+      } catch {
+        if (mountedRef.current) setError(copyRef.current.errors.respondFailed);
+      }
+    },
+    [mountedRef, sideChat],
+  );
+
   // Only the companion's own turns render; the forked parent history stays as
   // hidden model context.
   const messages = allMessages.filter(
@@ -1036,15 +1225,25 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     : sourceSession
       ? { llmConnectionSlug: sourceSession.llmConnectionSlug, model: sourceSession.model }
       : undefined;
-  const permissionMode = (companion?.permissionMode ??
+  const companionPermissionOverlay = companion?.id
+    ? permissionModeIntent.overlayByChannel.permissionMode[companion.id]
+    : undefined;
+  // A staged mode (chosen before the fork, not yet applied) outranks the fork's
+  // inherited mode so a fail-closed first send still shows the user's choice.
+  const permissionMode = (companionPermissionOverlay ??
+    stagedPermissionMode ??
+    companion?.permissionMode ??
     sourceSession?.permissionMode) as PermissionMode | undefined;
   const activeInteraction = companionIdRef.current
     ? activeInteractionFor(interactions, companionIdRef.current)
     : undefined;
   const activeSandboxBoundary =
     activeInteraction?.type === 'sandbox_boundary_request' ? activeInteraction : undefined;
+  const activeClientCapability =
+    activeInteraction?.type === 'client_capability_request' ? activeInteraction : undefined;
   const activeQuestion =
     activeInteraction?.type === 'user_question_request' ? activeInteraction : undefined;
+  const activeForm = activeInteraction?.type === 'form_request' ? activeInteraction : undefined;
 
   return {
     companionSession: companion,
@@ -1053,21 +1252,24 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     liveTurn,
     streaming,
     processing,
-    preparing,
     modelReady: sourceModelReady && companionModelReady,
     permissionMode,
-    permissionModePending,
     regeneratePendingTurnId,
     error,
     activeModel,
     activeSandboxBoundary,
+    activeClientCapability,
     activeQuestion,
+    activeForm,
+    compact,
     send,
     steer,
     setPermissionMode,
     regenerate,
     stop,
     respondToSandboxBoundary,
+    respondToClientCapability,
     respondToUserQuestion,
+    respondToUserForm,
   };
 }

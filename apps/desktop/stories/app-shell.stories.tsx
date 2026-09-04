@@ -157,7 +157,6 @@ const sidebarRowActions: NonNullable<SessionListPanelProps['rowActions']> = {
   onArchive: noop,
   onUnarchive: noop,
   onRename: noop,
-  onDelete: noop,
 };
 const projectRowActions: NonNullable<SessionListPanelProps['projectActions']> = {
   onNew: noop,
@@ -372,7 +371,6 @@ function ComposedShell(props: {
       activeId: active?.id,
       pendingTurnActions: new Set<string>(),
       uiLocale: 'zh',
-      pendingKeyOf: (sessionId, turnId, actionId) => `${sessionId}:${turnId}:${actionId}`,
     });
   const projectGroups: SessionGroup[] = catalogProjects.map((item) => ({
     id: `project:${item.id}`,

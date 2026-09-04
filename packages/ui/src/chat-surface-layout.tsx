@@ -28,7 +28,7 @@ import { cn } from './utils.js';
 
 /**
  * Stock ChatLayoutProps, minus `autoScroll`. That prop is the patch-package
- * seam (`patches/@astryxdesign+core+0.5.0.patch`) forwarding Astryx's own
+ * seam (`patches/@astryxdesign+core+0.5.2.patch`) forwarding Astryx's own
  * published `enabled` option to `useChatStreamScroll`, and `scrollOwner`
  * decides it — a caller-supplied value would be silently overwritten.
  */
@@ -57,12 +57,13 @@ export type ChatSurfaceLayoutProps = Omit<ComponentProps<typeof ChatLayout>, 'au
  * (`balanced`) stand. Compact spends spacing-2 on the dock's gutters — 8px
  * between the composer card's rounded bottom edge and the window edge, at every
  * window height — and the card read as pushed against the frame rather than
- * resting above it. Balanced spends spacing-3 there and lengthens the fade over
- * the transcript to match (blur layer 80px → 100px, mask ramp 24px → 36px). The
- * message-area and dock-inner styles resolve to literally the same StyleX atoms
- * in both tiers, so this moves the dock and nothing else. It stays written out
- * rather than dropped entirely so an upstream default change cannot silently
- * retune the composer's gutters.
+ * resting above it. Balanced spends spacing-3 there and lengthens the fade's
+ * mask ramp to match (24px → 36px); the blur layer itself fills the dock at
+ * every tier, so density tunes only the ramp. The message-area and dock-inner
+ * styles resolve to literally the same StyleX atoms in both tiers, so this
+ * moves the dock and nothing else. It stays written out rather than dropped
+ * entirely so an upstream default change cannot silently retune the composer's
+ * gutters.
  */
 export function ChatSurfaceLayout({
   className,

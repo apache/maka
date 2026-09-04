@@ -489,15 +489,54 @@ test('exact pending cancellation removes only the linked Message', async () => {
   await submit(fixture, 'unrelated-message', 'keep this queued', 'next_turn');
 
   assert.deepEqual(
-    await fixture.coordinator.cancelMessageIfPending(ROOT.sessionId, 'linked-message'),
-    { kind: 'cancelled' },
+    await fixture.coordinator.cancelMessageIfPending(
+      ROOT.sessionId,
+      'linked-message',
+      'first-claim',
+    ),
+    { kind: 'cancelled_pending' },
   );
   assert.deepEqual(
     fixture.coordinator.projection(ROOT.sessionId).followup.map((entry) => entry.messageId),
     ['unrelated-message'],
   );
   assert.deepEqual(
-    await fixture.coordinator.cancelMessageIfPending(ROOT.sessionId, 'linked-message'),
+    await fixture.coordinator.cancelMessageIfPending(
+      ROOT.sessionId,
+      'linked-message',
+      'second-claim',
+    ),
+    { kind: 'cancelled' },
+  );
+});
+
+test('a durable cancellation claim preserves cancelled_pending across restart-style replay', async () => {
+  const fixture = createFixture();
+  fixture.coordinator.reserveRootTurn(ROOT);
+  await submit(fixture, 'linked-message', 'wrong delegation', 'next_turn');
+
+  assert.deepEqual(
+    await fixture.coordinator.cancelMessageIfPending(
+      ROOT.sessionId,
+      'linked-message',
+      'stop-claim',
+    ),
+    { kind: 'cancelled_pending' },
+  );
+  assert.deepEqual(
+    await fixture.coordinator.cancelMessageIfPending(
+      ROOT.sessionId,
+      'linked-message',
+      'stop-claim',
+    ),
+    { kind: 'cancelled_pending' },
+  );
+  assert.deepEqual(
+    await fixture.coordinator.cancelMessageIfPending(
+      ROOT.sessionId,
+      'linked-message',
+      'different-claim',
+    ),
     { kind: 'cancelled' },
   );
 });
@@ -507,7 +546,11 @@ test('a consumed steering Message cannot claim ownership of its pre-existing roo
   fixture.events.push(steeringEvent('linked-message', 'wrong delegation'));
 
   assert.deepEqual(
-    await fixture.coordinator.cancelMessageIfPending(ROOT.sessionId, 'linked-message'),
+    await fixture.coordinator.cancelMessageIfPending(
+      ROOT.sessionId,
+      'linked-message',
+      'stop-claim',
+    ),
     {
       kind: 'shared_turn',
       turnId: ROOT.turnId,
@@ -524,7 +567,11 @@ test('a root source Message owns only the root Turn it created', async () => {
   );
 
   assert.deepEqual(
-    await fixture.coordinator.cancelMessageIfPending(ROOT.sessionId, 'linked-message'),
+    await fixture.coordinator.cancelMessageIfPending(
+      ROOT.sessionId,
+      'linked-message',
+      'stop-claim',
+    ),
     {
       kind: 'owned_root',
       turnId: 'durable-turn',
@@ -548,11 +595,14 @@ test('a recovered multi-source successor remains shared by every source Message'
   });
 
   for (const messageId of ['linked-message', 'other-message']) {
-    assert.deepEqual(await fixture.coordinator.cancelMessageIfPending(ROOT.sessionId, messageId), {
-      kind: 'shared_turn',
-      turnId: 'durable-turn',
-      runId: 'durable-run',
-    });
+    assert.deepEqual(
+      await fixture.coordinator.cancelMessageIfPending(ROOT.sessionId, messageId, 'stop-claim'),
+      {
+        kind: 'shared_turn',
+        turnId: 'durable-turn',
+        runId: 'durable-run',
+      },
+    );
   }
 });
 
@@ -3804,6 +3854,7 @@ function memoryMessageAdmissionStore(
   >,
   onMessagesHandedOff?: (input: MarkMessagesHandedOffInput) => void,
 ): MessageAdmissionStore {
+  const cancellationClaims = new Map<string, string>();
   return {
     commitMessageAdmission: async (admission) => {
       const existing = admissions.get(admission.messageId);
@@ -3814,6 +3865,16 @@ function memoryMessageAdmissionStore(
     readMessageAdmission: async (_sessionId, messageId) => admissions.get(messageId)?.admission,
     hasCancelledMessageAdmission: async (_sessionId, messageId) =>
       admissions.get(messageId)?.state === 'cancelled',
+    claimMessageAdmissionCancellation: async (_sessionId, messageId, claimId) => {
+      const existing = admissions.get(messageId);
+      if (existing?.state === 'cancelled') {
+        return cancellationClaims.get(messageId) === claimId ? 'same_claim' : 'already_cancelled';
+      }
+      if (!existing) throw new Error(`Missing admission ${messageId}`);
+      existing.state = 'cancelled';
+      cancellationClaims.set(messageId, claimId);
+      return 'cancelled_by_claim';
+    },
     listMessageAdmissions: async (sessionId) =>
       [...admissions.values()]
         .filter(({ admission, state }) => admission.sessionId === sessionId && state === 'accepted')

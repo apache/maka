@@ -84,6 +84,141 @@ test('verifies a first-run API key without persisting a connection or credential
   });
 });
 
+test('adopts serialized OAuth material with every model the Host verifies', async () => {
+  await withFixture(async ({ stores }) => {
+    const importedSecret = serializeOAuthSubscriptionTokens({
+      access_token: 'gho_import_a',
+      refresh_token: 'gho_import_a',
+      expires_at: Number.MAX_SAFE_INTEGER,
+      token_type: 'Bearer',
+      base_url: 'https://api.githubcopilot.com',
+    });
+    let discoverySecret = '';
+    const coordinator = new HostConnectionEffectCoordinator({
+      stores,
+      activation: new RuntimePolicyActivationGate(),
+      oauthCredentials: new HostOAuthExecutionAuthority(stores),
+      createTransport: () => recordingTransport(() => undefined),
+      runModelDiscovery: async (_connection, secret) => {
+        discoverySecret = secret;
+        return { ok: true, models: [{ id: 'copilot-a' }, { id: 'copilot-b' }] };
+      },
+    });
+
+    const adopted = await coordinator.handlers['connection.onboarding.save'](
+      {
+        target: { kind: 'create', providerType: 'github-copilot' },
+        apiKey: importedSecret,
+        baseUrl: null,
+        enabledModelIds: [],
+      },
+      context,
+    );
+
+    assertSaved(adopted);
+    assert.equal(discoverySecret, 'gho_import_a');
+    const updated = (await stores.connectionCatalog.getSnapshot()).connections.find(
+      ({ providerType }) => providerType === 'github-copilot',
+    );
+    assert.ok(updated);
+    assert.deepEqual(updated.enabledModelIds, ['copilot-a', 'copilot-b']);
+    assert.equal(
+      (
+        await stores.operations.exportCredentialMaterial({
+          scope: 'connection',
+          connectionId: updated.connectionId,
+          kind: 'oauth_token',
+        })
+      )?.secret,
+      importedSecret,
+    );
+  });
+});
+
+test('a blocked local adoption cannot overwrite a newer interactive OAuth login', async () => {
+  await withFixture(async ({ stores }) => {
+    const connection = await createConnection(
+      stores,
+      0,
+      connectionDraft('copilot-race', 'github-copilot'),
+    );
+    const importA = serializeOAuthSubscriptionTokens({
+      access_token: 'gho_import_a',
+      refresh_token: 'gho_import_a',
+      expires_at: Number.MAX_SAFE_INTEGER,
+      token_type: 'Bearer',
+      base_url: 'https://api.githubcopilot.com',
+    });
+    const loginB = serializeOAuthSubscriptionTokens({
+      access_token: 'gho_login_b',
+      refresh_token: 'gho_login_b',
+      expires_at: Number.MAX_SAFE_INTEGER,
+      token_type: 'Bearer',
+      base_url: 'https://api.githubcopilot.com',
+    });
+    const discoveryStarted = deferred<void>();
+    const releaseDiscovery = deferred<void>();
+    const coordinator = new HostConnectionEffectCoordinator({
+      stores,
+      activation: new RuntimePolicyActivationGate(),
+      oauthCredentials: new HostOAuthExecutionAuthority(stores),
+      createTransport: () => recordingTransport(() => undefined),
+      runModelDiscovery: async (_connection, secret) => {
+        assert.equal(secret, 'gho_import_a');
+        discoveryStarted.resolve();
+        await releaseDiscovery.promise;
+        return { ok: true, models: [{ id: 'copilot-import-model' }] };
+      },
+    });
+
+    const adoption = coordinator.handlers['connection.onboarding.save'](
+      {
+        target: { kind: 'existing', connectionId: connection.connectionId },
+        apiKey: importA,
+        baseUrl: null,
+        enabledModelIds: [],
+      },
+      context,
+    );
+    await discoveryStarted.promise;
+
+    const interactive = await stores.operations.beginInteractiveOAuthLogin({
+      attemptId: 'interactive-login-b',
+      target: { kind: 'existing', connectionId: connection.connectionId },
+    });
+    assert.equal(interactive.kind, 'ready');
+    if (interactive.kind !== 'ready') throw new Error('Interactive login did not start');
+    const committed = await stores.operations.completeInteractiveOAuthLogin(
+      interactive.ticket,
+      loginB,
+    );
+    assert.equal(committed.kind, 'committed');
+
+    releaseDiscovery.resolve();
+    assert.deepEqual(await adoption, {
+      ok: true,
+      result: { kind: 'rejected', reason: 'superseded' },
+    });
+    assert.equal(
+      (
+        await stores.operations.exportCredentialMaterial({
+          scope: 'connection',
+          connectionId: connection.connectionId,
+          kind: 'oauth_token',
+        })
+      )?.secret,
+      loginB,
+    );
+    const after = (await stores.connectionCatalog.getSnapshot()).connections.find(
+      ({ connectionId }) => connectionId === connection.connectionId,
+    );
+    assert.equal(
+      after?.models.some(({ id }) => id === 'copilot-import-model'),
+      false,
+    );
+  });
+});
+
 test('rejects a semantically invalid onboarding endpoint in Storage before discovery', async () => {
   await withFixture(async ({ stores }) => {
     let discoveryRuns = 0;
@@ -184,6 +319,118 @@ test('two create tickets cannot commit the same planned slug', async () => {
       completion,
     );
     assert.deepEqual(superseded, { kind: 'superseded', changed: ['connection'] });
+  });
+});
+
+test('onboards a caller-named connection with the requested slug and display name', async () => {
+  await withFixture(async ({ stores }) => {
+    const coordinator = onboardingCoordinator(stores, () => undefined, 'gpt-5');
+    const saved = await coordinator.handlers['connection.onboarding.save'](
+      {
+        target: {
+          kind: 'create',
+          providerType: 'openai',
+          slug: 'openai-work',
+          name: 'Work OpenAI',
+        },
+        apiKey: 'sk-live',
+        baseUrl: null,
+        enabledModelIds: ['gpt-5'],
+      },
+      context,
+    );
+    assertSaved(saved);
+    assert.equal(saved.result.connection.slug, 'openai-work');
+    const catalog = await stores.connectionCatalog.getSnapshot();
+    const created = catalog.connections.find(({ slug }) => slug === 'openai-work');
+    assert.equal(created?.name, 'Work OpenAI');
+
+    // An unnamed follow-up still derives its identity from the catalog — the
+    // requested slug never collides with it because the catalog did take it.
+    const derived = await coordinator.handlers['connection.onboarding.save'](
+      {
+        target: { kind: 'create', providerType: 'openai' },
+        apiKey: 'sk-live-2',
+        baseUrl: null,
+        enabledModelIds: ['gpt-5'],
+      },
+      context,
+    );
+    assertSaved(derived);
+    assert.equal(derived.result.connection.slug, 'openai');
+  });
+});
+
+test('rejects a requested slug that is already taken, before any discovery runs', async () => {
+  await withFixture(async ({ stores }) => {
+    const coordinator = onboardingCoordinator(stores, () => undefined, 'gpt-5');
+    const saved = await coordinator.handlers['connection.onboarding.save'](
+      {
+        target: { kind: 'create', providerType: 'openai', slug: 'openai-work' },
+        apiKey: 'sk-live',
+        baseUrl: null,
+        enabledModelIds: ['gpt-5'],
+      },
+      context,
+    );
+    assertSaved(saved);
+
+    const verify = await coordinator.handlers['connection.onboarding.verify'](
+      {
+        target: { kind: 'create', providerType: 'openai', slug: 'openai-work' },
+        apiKey: 'sk-live-2',
+        baseUrl: null,
+      },
+      context,
+    );
+    assert.equal(verify.ok, true);
+    if (!verify.ok) return;
+    assert.deepEqual(verify.result, { kind: 'rejected', reason: 'slug_taken' });
+
+    const save = await coordinator.handlers['connection.onboarding.save'](
+      {
+        target: { kind: 'create', providerType: 'openai', slug: 'openai-work' },
+        apiKey: 'sk-live-2',
+        baseUrl: null,
+        enabledModelIds: ['gpt-5'],
+      },
+      context,
+    );
+    assert.equal(save.ok, true);
+    if (!save.ok) return;
+    assert.deepEqual(save.result, { kind: 'rejected', reason: 'slug_taken' });
+    // Nothing was created: the taken slug still names exactly one connection.
+    const catalog = await stores.connectionCatalog.getSnapshot();
+    assert.equal(catalog.connections.filter(({ slug }) => slug === 'openai-work').length, 1);
+  });
+});
+
+test('a requested slug lost mid-flight reports slug_taken, never a silent rename', async () => {
+  await withFixture(async ({ stores }) => {
+    const requested = {
+      target: { kind: 'create', providerType: 'openai', slug: 'openai-work' } as const,
+      baseUrl: null,
+    };
+    const first = await stores.operations.beginConnectionOnboarding(requested);
+    const second = await stores.operations.beginConnectionOnboarding(requested);
+    assert.equal(first.kind, 'ready');
+    assert.equal(second.kind, 'ready');
+    if (first.kind !== 'ready' || second.kind !== 'ready') return;
+    assert.equal(first.candidate.slug, 'openai-work');
+    assert.equal(second.candidate.slug, 'openai-work');
+
+    const completion = {
+      suppliedSecret: 'sk-live',
+      enabledModelIds: ['gpt-5'],
+      discovery: { models: [{ id: 'gpt-5' }], source: 'fetched' as const, fetchedAt: 1 },
+    };
+    const committed = await stores.operations.completeConnectionOnboarding(
+      first.ticket,
+      completion,
+    );
+    assert.equal(committed.kind, 'committed');
+    const lost = await stores.operations.completeConnectionOnboarding(second.ticket, completion);
+    assert.deepEqual(lost, { kind: 'slug_taken' });
   });
 });
 

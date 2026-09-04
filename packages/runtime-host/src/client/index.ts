@@ -53,10 +53,12 @@ export {
   createRuntimeHostCapabilityProviderCredentialStore,
   createRuntimeHostProfileCredentialStore,
   connectRuntimeHostProfile,
+  sameEnvironmentRuntimeHostDeployment,
   connectRemoteRuntimeHostProfile,
   decodeEnvironmentRuntimeHostProfile,
   decodePersistedRuntimeHostProfile,
   decodeRemoteRuntimeHostProfile,
+  migrateRuntimeHostProfileOperatorCommand,
   remoteRuntimeHostUnavailableError,
   runtimeHostProfileAccess,
   runtimeHostProfileTargetFingerprint,
@@ -87,6 +89,7 @@ export {
 export {
   RuntimeHostSshOperatorActivationError,
   activateRuntimeHostSshOperator,
+  runtimeHostSshOperatorRemoteCommand,
   type RuntimeHostSshOperatorActivationInput,
 } from './ssh-operator-activation.js';
 export {
@@ -122,20 +125,25 @@ export {
   connectRuntimeHostWslEnvironment,
   listRuntimeHostWslDistributions,
   normalizeRuntimeHostWslDistribution,
-  normalizeRuntimeHostWslOperatorPath,
   resolveSystemRuntimeHostWslExecutable,
   type RuntimeHostWslEnvironmentInput,
   type RuntimeHostWslProcessFactory,
 } from './wsl-environment.js';
 export {
   RuntimeHostCatalogReadError,
+  RuntimeHostSessionCatalogRevisionChangedError,
   readRuntimeHostConnectionCatalog,
   readRuntimeHostInvocableSkills,
   readRuntimeHostProjectDetails,
   readRuntimeHostResources,
   readRuntimeHostProjects,
+  readRuntimeHostSessionCatalogPage,
   readRuntimeHostSessions,
   readRuntimeHostSkillCatalog,
+  type RuntimeHostSessionCatalogPage,
+  type RuntimeHostSessionCatalogPageCursor,
+  type RuntimeHostConnectionCatalogEntry,
+  type RuntimeHostConnectionCatalogSnapshot,
 } from './catalog-reader.js';
 export {
   connectOrSpawnRuntimeHost,
@@ -166,12 +174,16 @@ export { consumeAccessCredentialDelivery } from '../control/access-credential-de
 export {
   decodeRuntimeHostOwnerConnectionCode,
   encodeRuntimeHostOwnerConnectionCode,
+  issueRuntimeHostOwnerConnectionCode,
+  REMOTE_DESKTOP_OWNER_ACCESS_POLICY,
+  type IssueRuntimeHostOwnerConnectionCodeInput,
   type RuntimeHostOwnerConnectionCode,
 } from './owner-connection-code.js';
 export { ensureRuntimeHostPeerIdentity } from '../transport/peer-native.js';
 export {
   createRuntimeHostPeerClient,
   createRuntimeHostPeerClientFromEnvironment,
+  RuntimeHostPeerReachabilityUnavailableError,
   type RuntimeHostPeerClient,
   type RuntimeHostPeerConnectInput,
 } from './peer-client.js';

@@ -1593,6 +1593,7 @@ describe('ToolRuntime durable boundary', () => {
 
   it('does not publish an implementation result when T2 fails', async () => {
     let implementationCalls = 0;
+    const compensations: unknown[] = [];
     const harness = makeHarness({
       commitToolPrepared: async () => ({ created: true, runtimeEventSeq: 1 }),
       commitToolOutcome: async () => {
@@ -1600,15 +1601,15 @@ describe('ToolRuntime durable boundary', () => {
       },
     });
 
-    await assert.rejects(
-      harness.execute(
-        tool(() => {
-          implementationCalls += 1;
-          return { ok: true };
-        }),
-      ),
-      /T2 unavailable/,
-    );
+    const target = tool(() => {
+      implementationCalls += 1;
+      return { ok: true };
+    });
+    target.compensateDurableOutcomeCommitFailure = async (input) => {
+      compensations.push(input);
+    };
+
+    await assert.rejects(harness.execute(target), /T2 unavailable/);
 
     assert.equal(implementationCalls, 1);
     assert.equal(
@@ -1619,6 +1620,38 @@ describe('ToolRuntime durable boundary', () => {
       harness.messages.some((message) => message.type === 'tool_result'),
       false,
     );
+    assert.equal(compensations.length, 1);
+    const compensation = compensations[0] as {
+      result: unknown;
+      isError: boolean;
+      sessionId: string;
+      operationId: string;
+    };
+    assert.deepEqual(
+      { ...compensation, operationId: '<runtime-owned>' },
+      {
+        result: { kind: 'json', value: { ok: true } },
+        isError: false,
+        sessionId: 'session-1',
+        operationId: '<runtime-owned>',
+      },
+    );
+    assert.match(compensation.operationId, /^toolop_/);
+  });
+
+  it('keeps the T2 persistence error authoritative when compensation also fails', async () => {
+    const harness = makeHarness({
+      commitToolPrepared: async () => ({ created: true, runtimeEventSeq: 1 }),
+      commitToolOutcome: async () => {
+        throw new Error('T2 unavailable');
+      },
+    });
+    const target = tool(() => ({ ok: true }));
+    target.compensateDurableOutcomeCommitFailure = async () => {
+      throw new Error('compensation unavailable');
+    };
+
+    await assert.rejects(harness.execute(target), /T2 unavailable/);
   });
 
   it('commits a normalized error outcome before returning a thrown tool failure to the model', async () => {

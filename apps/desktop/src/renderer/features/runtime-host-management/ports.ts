@@ -84,7 +84,28 @@ export interface RuntimeHostProfilePairingServices {
   discard(profileId: string): Promise<void>;
 }
 
+export type RuntimeHostConnectionCodeImportResult =
+  | { readonly kind: 'connected'; readonly profileId: string }
+  | {
+      readonly kind: 'error';
+      readonly reason:
+        | 'invalid_code'
+        | 'code_unavailable'
+        | 'host_unreachable'
+        | 'host_mismatch'
+        | 'unknown';
+    };
+
+export interface RuntimeHostConnectionCodeServices {
+  create(profileId: string): Promise<string>;
+  importCode(code: string): Promise<RuntimeHostConnectionCodeImportResult>;
+  readClipboardText(): Promise<string>;
+  writeClipboardText(value: string): Promise<void>;
+}
+
 export interface RuntimeHostManagementServices {
   readonly peerMesh: PeerMeshServices;
   readonly profilePairing: RuntimeHostProfilePairingServices;
+  readonly connectionCodes: RuntimeHostConnectionCodeServices;
+  readonly supportsWsl: boolean;
 }

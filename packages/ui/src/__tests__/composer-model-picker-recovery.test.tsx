@@ -123,7 +123,7 @@ test('the recovery handle opens the existing exact account-and-model picker', as
 
     assert.match(document.documentElement.innerHTML, /aria-expanded="true"[^>]*aria-haspopup="menu"/);
     assert.match(document.documentElement.innerHTML, /GPT-5/);
-    const items = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')];
+    const items = [...document.querySelectorAll<HTMLElement>('[role="menuitemradio"]')];
     assert.equal(items.length, 1, 'the stale legacy target is not a selectable current row');
 
     await act(() => items[0]?.dispatchEvent(new window.Event('click', { bubbles: true })));
@@ -134,6 +134,37 @@ test('the recovery handle opens the existing exact account-and-model picker', as
       model: 'openai/gpt-5',
     });
     assert.match(document.documentElement.innerHTML, /aria-expanded="false"[^>]*aria-haspopup="menu"/);
+
+    await act(() => root.render(
+      <LocaleProvider locale="en">
+        <Composer
+          ref={composer}
+          activeSession={{
+            id: 'legacy-session',
+            llmConnectionSlug: 'legacy-openrouter',
+            model: 'legacy-model',
+          } as SessionSummary}
+          activeModelConnectionId={choice.connectionId}
+          activeModelConnectionSlug={choice.connectionSlug}
+          activeModel={choice.model}
+          activeModelLabel={choice.label}
+          modelChoices={[choice]}
+          onModelChange={() => undefined}
+          onSend={() => undefined}
+          onStop={() => undefined}
+        />
+      </LocaleProvider>,
+    ));
+    await act(() => composer.current?.openModelPicker());
+
+    const selectedRadio = document.querySelector<HTMLElement>(
+      '[role="menuitemradio"][aria-checked="true"]',
+    );
+    assert.equal(selectedRadio?.textContent?.includes('GPT-5'), true);
+    assert.match(
+      document.querySelector<HTMLElement>('.maka-model-switcher-trigger')?.getAttribute('aria-label') ?? '',
+      /GPT-5/,
+    );
   } finally {
     await act(() => root.unmount());
     Object.assign(globalThis, original);

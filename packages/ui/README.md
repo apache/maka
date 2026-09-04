@@ -40,7 +40,7 @@ Four export surfaces, in the order to look:
 ## Consuming
 
 ```ts
-import { Badge, Button, ChatView, Composer, PageHeader, useToast } from '@maka/ui';
+import { Badge, Button, ChatView, Composer, useToast } from '@maka/ui';
 ```
 
 Sub-path exports (declared in `package.json` `exports`): `@maka/ui/artifact-preview-registry`, `@maka/ui/assistant-stream`, `@maka/ui/icons`, and `@maka/ui/maka-uri`. (`@maka/ui/icons` re-exports Lucide symbols; model-provider brand logos live in the renderer's `settings/provider-*`, not here — bot-provider logos are in `@maka/ui`'s `bot-brand-logo`.)

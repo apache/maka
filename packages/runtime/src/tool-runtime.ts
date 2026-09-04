@@ -32,6 +32,8 @@ import {
 import { serializedByteLength } from '@maka/core/serialized-byte-length';
 import { encodeToolStepProgress, ToolOutcomeUnknownError } from '@maka/core/events';
 import type {
+  FormAnswerAckEvent,
+  FormRequestEvent,
   SandboxBoundaryDecisionAckEvent,
   SandboxBoundaryRequestEvent,
   SessionEvent,
@@ -47,11 +49,20 @@ import type {
 } from '@maka/core/events';
 import type { ToolCallMessage, ToolResultMessage } from '@maka/core/session';
 import type {
+  HostedFormSettlement,
   HostedInteractionBridge,
   HostedSandboxBoundarySettlement,
   HostedUserQuestionAnswer,
   HostedUserQuestionSettlement,
 } from '@maka/core/backend-types';
+import {
+  isInteractionAnswerValidForRequest,
+  projectInteractionFormRequest,
+  type InteractionFormInput,
+  type InteractionFormRequest,
+  type InteractionFormResponse,
+  type InteractionFormResult,
+} from '@maka/core/interaction';
 import type { PermissionMode, ToolCategory, ToolExecutionFacts } from '@maka/core/permission';
 import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import type { OrchestrationMode } from '@maka/core/orchestration';
@@ -151,6 +162,23 @@ export interface ToolSettlement {
   providerError?: string;
 }
 
+export type MakaToolPreparationContext = Pick<
+  MakaToolContext,
+  | 'sessionId'
+  | 'runId'
+  | 'turnId'
+  | 'cwd'
+  | 'executionBoundary'
+  | 'permissionMode'
+  | 'toolCallId'
+  | 'abortSignal'
+>;
+
+export interface PreparedMakaToolExecution<R = unknown> {
+  execute(context: MakaToolContext): Promise<R> | R;
+  cancel(): Promise<void> | void;
+}
+
 export interface MakaTool<P = any, R = unknown> {
   /** Canonical (Claude-SDK-style) name. Pi adapter translates to canonical. */
   name: string;
@@ -164,6 +192,8 @@ export interface MakaTool<P = any, R = unknown> {
   activityKind?: ToolActivityKind;
   /** Optional trusted category override for custom tools. */
   categoryHint?: ToolCategory;
+  /** Host-owned admission contract, independent of model/UI tool categorization. */
+  hostAdmission?: 'client_capability';
   /** Optional trusted facts about the executor that runs this tool. */
   executionFacts?: ToolExecutionFacts;
   /**
@@ -193,12 +223,24 @@ export interface MakaTool<P = any, R = unknown> {
     args: P,
     context: Pick<MakaToolContext, 'sessionId' | 'turnId' | 'toolCallId'>,
   ) => unknown;
+  /** Optional preparation that settles before ToolRuntime crosses its durable T1 cut. */
+  prepareExecution?: (
+    args: P,
+    context: MakaToolPreparationContext,
+  ) => Promise<PreparedMakaToolExecution<R>>;
   /**
    * Real tool implementation. Implementations must observe `ctx.abortSignal` and
    * settle promptly after it aborts. Runtime-owned nested calls await this
    * settlement instead of detaching, so late side effects cannot outlive `exec`.
    */
   impl: (args: P, ctx: MakaToolContext) => Promise<R> | R;
+  /** Best-effort compensation after T2 rejects a result that already produced side effects. */
+  compensateDurableOutcomeCommitFailure?: (input: {
+    readonly result: unknown;
+    readonly isError: boolean;
+    readonly sessionId: string;
+    readonly operationId: string;
+  }) => Promise<void> | void;
   /** Optional synchronous provider-visible content mapping, used for screenshot image parts. */
   toModelOutput?: (options: {
     toolCallId: string;
@@ -268,6 +310,10 @@ export interface MakaToolContext {
     view?: 'result' | 'events' | 'runtime_events' | 'all';
   }) => Promise<unknown>;
   askUserQuestion?: (questions: UserQuestion[]) => Promise<UserQuestionResult>;
+  requestUserForm?: (
+    form: InteractionFormInput,
+    options?: { readonly cancellationSignal?: AbortSignal },
+  ) => Promise<InteractionFormResult>;
   requestSandboxBoundary?: (
     expansion: SandboxBoundaryExpansion,
     justification: string,
@@ -311,6 +357,8 @@ const SUBAGENT_TOOL_LIMIT_MESSAGE =
   '子代理并发过多：同一轮最多 5 个子代理。请等待已有任务完成后再继续。';
 const CLIENT_CAPABILITY_BOUNDARY_MESSAGE =
   'Client Capability tools require the Bypass execution boundary because their client-side effects cannot be sandboxed by the Host. Switch this Session to Bypass and retry.';
+const CLIENT_CAPABILITY_PREPARATION_MESSAGE =
+  'Client Capability tool is missing its Host admission preparation contract.';
 
 function composeChildAbortSignal(
   invocationSignal: AbortSignal,
@@ -512,10 +560,15 @@ export class ToolRuntime {
     UserQuestionResponse,
     { toolUseId: string; questions: UserQuestion[]; hosted: boolean }
   >();
+  private readonly userForms = new AwaitRegistry<
+    InteractionFormResponse,
+    { toolUseId: string; request: InteractionFormRequest; hosted: boolean }
+  >();
   private readonly turnId: string;
   private readonly hostedInteraction: HostedInteractionBridge | undefined;
   private sandboxBoundaryClosureDeferred = false;
   private questionClosureDeferred = false;
+  private formClosureDeferred = false;
   private activeSubagentToolCount = 0;
   private childAgentRunLimiter = new AdmissionLimiter(MAX_ACTIVE_CHILD_AGENT_RUNS_PER_TURN);
   /**
@@ -599,6 +652,7 @@ export class ToolRuntime {
     }
 
     const hasHostedPending = this.userQuestions.entries().some(([, question]) => question.hosted);
+    const hasHostedFormPending = this.userForms.entries().some(([, form]) => form.hosted);
     if (hasHostedBoundaryPending) {
       this.sandboxBoundaryClosureDeferred = true;
       this.finishDeferredSandboxBoundaryTurnClosure();
@@ -618,6 +672,16 @@ export class ToolRuntime {
           new Error(`Turn ${turnId} ${reason} before user question ${requestId} was answered`),
       );
       this.questionClosureDeferred = false;
+    }
+    if (hasHostedFormPending) {
+      this.formClosureDeferred = true;
+      this.finishDeferredFormTurnClosure();
+    } else {
+      this.userForms.close(
+        (requestId) =>
+          new Error(`Turn ${turnId} ${reason} before user form ${requestId} was answered`),
+      );
+      this.formClosureDeferred = false;
     }
     this.resetTurnState();
     // The stop path settles the run's terminal fact right after the
@@ -651,6 +715,22 @@ export class ToolRuntime {
       );
     }
     return this.settleUserQuestionAnswer(turnId, response, pending);
+  }
+
+  respondToUserForm(response: InteractionFormResponse): boolean {
+    if (!response || typeof response.requestId !== 'string') {
+      throw new Error('Invalid user form response');
+    }
+    const pending = this.userForms
+      .entries()
+      .find(([requestId]) => requestId === response.requestId)?.[1];
+    if (!pending) return false;
+    if (pending.hosted) {
+      throw new RuntimeInteractionInvariantError(
+        `Hosted form ${response.requestId} must settle through its captured continuation`,
+      );
+    }
+    return this.settleUserFormAnswer(response, pending);
   }
 
   async respondToSandboxBoundaryResponse(response: {
@@ -703,6 +783,22 @@ export class ToolRuntime {
     return resolved;
   }
 
+  private settleUserFormAnswer(
+    response: InteractionFormResponse,
+    pending: { toolUseId: string; request: InteractionFormRequest; hosted: boolean },
+  ): boolean {
+    const answer =
+      response.action === 'accept'
+        ? { kind: 'form' as const, action: 'accept' as const, values: response.values }
+        : { kind: 'form' as const, action: response.action };
+    if (!isInteractionAnswerValidForRequest(pending.request, answer)) {
+      throw new Error('Invalid user form response');
+    }
+    const resolved = this.userForms.resolve(response.requestId, response) !== null;
+    this.finishDeferredFormTurnClosure();
+    return resolved;
+  }
+
   closeUserQuestion(
     turnId: string,
     requestId: string,
@@ -715,8 +811,20 @@ export class ToolRuntime {
     return closed;
   }
 
+  closeUserForm(requestId: string, reason: RuntimeInteractionClosureReason): boolean {
+    const closed =
+      this.userForms.reject(requestId, new RuntimeInteractionClosedError(requestId, reason)) !==
+      null;
+    this.finishDeferredFormTurnClosure();
+    return closed;
+  }
+
   pendingUserQuestionCount(): number {
     return this.userQuestions.pendingCount();
+  }
+
+  pendingUserFormCount(): number {
+    return this.userForms.pendingCount();
   }
 
   /**
@@ -1383,7 +1491,8 @@ export class ToolRuntime {
     }
 
     let clientCapabilityBoundary: ExecutionBoundary | undefined;
-    if (tool.categoryHint === 'client_capability') {
+    let preparedExecution: PreparedMakaToolExecution | undefined;
+    if (tool.hostAdmission === 'client_capability') {
       try {
         clientCapabilityBoundary = await this.readExecutionBoundary();
       } catch (error) {
@@ -1398,8 +1507,13 @@ export class ToolRuntime {
         this.recordLoopGateOutcome(callSignature, true);
         return this.errorReturn(reason);
       }
-      if (clientCapabilityBoundary.kind !== 'bypass') {
-        await refuseBeforeDispatch(CLIENT_CAPABILITY_BOUNDARY_MESSAGE, {
+      const admissionFailure = !tool.prepareExecution
+        ? CLIENT_CAPABILITY_PREPARATION_MESSAGE
+        : clientCapabilityBoundary.kind !== 'bypass' && this.input.header.permissionMode !== 'ask'
+          ? CLIENT_CAPABILITY_BOUNDARY_MESSAGE
+          : undefined;
+      if (admissionFailure) {
+        await refuseBeforeDispatch(admissionFailure, {
           reason: 'requires_bypass',
           source: 'client_capability',
         });
@@ -1410,7 +1524,37 @@ export class ToolRuntime {
           errorClass: 'ClientCapabilityBoundary',
         });
         this.recordLoopGateOutcome(callSignature, true);
-        return this.errorReturn(CLIENT_CAPABILITY_BOUNDARY_MESSAGE);
+        return this.errorReturn(admissionFailure);
+      }
+      // Narrowed by admissionFailure above; Bypass still prepares so the
+      // provider cannot regain a direct pre-T1 dispatch path.
+      const prepareExecution = tool.prepareExecution!;
+      const pauseTarget = this.input.getPermissionPauseTarget();
+      pauseTarget?.pause();
+      try {
+        preparedExecution = await prepareExecution(structuredClone(executionArgs) as never, {
+          sessionId: this.input.sessionId,
+          turnId,
+          ...(runId ? { runId } : {}),
+          cwd: this.input.header.cwd,
+          executionBoundary: clientCapabilityBoundary,
+          permissionMode: this.input.header.permissionMode,
+          toolCallId: toolUseId,
+          abortSignal: ctx.abortSignal,
+        });
+      } catch (error) {
+        const reason = formatSyntheticToolErrorText(error);
+        await refuseBeforeDispatch(reason);
+        trace?.emit('tool', 'tool_failed', 'Client Capability preparation failed', {
+          toolUseId,
+          toolName: tool.name,
+          status: 'error',
+          errorClass: 'ClientCapabilityPreparation',
+        });
+        this.recordLoopGateOutcome(callSignature, true);
+        return this.errorReturn(reason);
+      } finally {
+        pauseTarget?.resume();
       }
     }
 
@@ -1446,6 +1590,7 @@ export class ToolRuntime {
 
     const reservedSubagentSlot = this.reserveSubagentSlot(tool);
     if (!reservedSubagentSlot) {
+      await preparedExecution?.cancel();
       await disposeManagedMutationAdmission(managedMutationAdmission);
       trace?.emit('tool', 'tool_failed', 'Tool execution rejected by runtime limit', {
         toolUseId,
@@ -1473,6 +1618,7 @@ export class ToolRuntime {
         ...(runId ? { runId } : {}),
       });
     } catch (error) {
+      await preparedExecution?.cancel();
       if (reservedSubagentSlot) this.releaseSubagentSlot(tool);
       await disposeManagedMutationAdmission(managedMutationAdmission);
       throw error;
@@ -1514,82 +1660,94 @@ export class ToolRuntime {
       try {
         const runId = this.input.runId;
         const executionBoundary = clientCapabilityBoundary ?? (await this.readExecutionBoundary());
-        const invokeTool = () =>
-          tool.impl(structuredClone(executionArgs) as never, {
-            sessionId: this.input.sessionId,
-            turnId,
-            ...(runId ? { runId } : {}),
-            ...(this.input.orchestrationMode
-              ? { orchestrationMode: this.input.orchestrationMode }
-              : {}),
-            cwd: this.input.header.cwd,
-            executionBoundary,
-            permissionMode: this.input.header.permissionMode,
-            toolCallId: toolUseId,
-            // The id the call event actually carries, not the candidate: by here
-            // `prepareDurableToolAttempt` has pushed it on the dispatch lane.
-            ...(callEvent?.operationId ? { operationId: callEvent.operationId } : {}),
-            abortSignal: ctx.abortSignal,
-            emitOutput: output.emit,
-            emitProgress: (current, total) => {
-              const chunk = encodeToolStepProgress({ current, total });
-              if (!chunk) return;
-              queue.push({
-                type: 'tool_progress',
-                id: this.input.newId(),
-                turnId,
-                ts: this.input.now(),
-                toolUseId,
-                chunk,
-                ...activityIdentity,
-              });
-            },
-            ...(trace
-              ? {
-                  emitRunTrace: (
-                    type:
-                      | 'tool_started'
-                      | 'tool_searched'
-                      | 'tool_completed'
-                      | 'tool_failed'
-                      | 'skill_searched'
-                      | 'skill_loaded'
-                      | 'skill_load_failed',
-                    message: string,
-                    data?: Record<string, unknown>,
-                  ) =>
-                    trace.emit(type.startsWith('skill_') ? 'skill' : 'tool', type, message, {
-                      toolUseId,
-                      toolName: tool.name,
-                      ...(data ?? {}),
-                    }),
-                }
-              : {}),
-            ...(this.input.listChildAgents ? { listChildAgents: this.input.listChildAgents } : {}),
-            ...(this.input.readChildAgentOutput
-              ? { readChildAgentOutput: this.input.readChildAgentOutput }
-              : {}),
-            ...this.buildChildAgentContext({
+        const toolContext: MakaToolContext = {
+          sessionId: this.input.sessionId,
+          turnId,
+          ...(runId ? { runId } : {}),
+          ...(this.input.orchestrationMode
+            ? { orchestrationMode: this.input.orchestrationMode }
+            : {}),
+          cwd: this.input.header.cwd,
+          executionBoundary,
+          permissionMode: this.input.header.permissionMode,
+          toolCallId: toolUseId,
+          // The id the call event actually carries, not the candidate: by here
+          // `prepareDurableToolAttempt` has pushed it on the dispatch lane.
+          ...(callEvent?.operationId ? { operationId: callEvent.operationId } : {}),
+          abortSignal: ctx.abortSignal,
+          emitOutput: output.emit,
+          emitProgress: (current, total) => {
+            const chunk = encodeToolStepProgress({ current, total });
+            if (!chunk) return;
+            queue.push({
+              type: 'tool_progress',
+              id: this.input.newId(),
               turnId,
-              abortSignal: ctx.abortSignal,
-              trace,
+              ts: this.input.now(),
               toolUseId,
-              toolName: tool.name,
+              chunk,
+              ...activityIdentity,
+            });
+          },
+          ...(trace
+            ? {
+                emitRunTrace: (
+                  type:
+                    | 'tool_started'
+                    | 'tool_searched'
+                    | 'tool_completed'
+                    | 'tool_failed'
+                    | 'skill_searched'
+                    | 'skill_loaded'
+                    | 'skill_load_failed',
+                  message: string,
+                  data?: Record<string, unknown>,
+                ) =>
+                  trace.emit(type.startsWith('skill_') ? 'skill' : 'tool', type, message, {
+                    toolUseId,
+                    toolName: tool.name,
+                    ...(data ?? {}),
+                  }),
+              }
+            : {}),
+          ...(this.input.listChildAgents ? { listChildAgents: this.input.listChildAgents } : {}),
+          ...(this.input.readChildAgentOutput
+            ? { readChildAgentOutput: this.input.readChildAgentOutput }
+            : {}),
+          ...this.buildChildAgentContext({
+            turnId,
+            abortSignal: ctx.abortSignal,
+            trace,
+            toolUseId,
+            toolName: tool.name,
+            queue,
+            activityIdentity,
+          }),
+          askUserQuestion: (questions) =>
+            this.askUserQuestion(turnId, toolUseId, questions, ctx.abortSignal, queue),
+          requestUserForm: (form, options) =>
+            this.requestUserForm(
+              turnId,
+              toolUseId,
+              form,
+              ctx.abortSignal,
               queue,
-              activityIdentity,
-            }),
-            askUserQuestion: (questions) =>
-              this.askUserQuestion(turnId, toolUseId, questions, ctx.abortSignal, queue),
-            requestSandboxBoundary: (expansion, justification) =>
-              this.requestSandboxBoundary(
-                turnId,
-                toolUseId,
-                expansion,
-                justification,
-                ctx.abortSignal,
-                queue,
-              ),
-          });
+              options?.cancellationSignal,
+            ),
+          requestSandboxBoundary: (expansion, justification) =>
+            this.requestSandboxBoundary(
+              turnId,
+              toolUseId,
+              expansion,
+              justification,
+              ctx.abortSignal,
+              queue,
+            ),
+        };
+        const invokeTool = () =>
+          preparedExecution
+            ? preparedExecution.execute(toolContext)
+            : tool.impl(structuredClone(executionArgs) as never, toolContext);
         const invokeManagedTransform = () =>
           tool.managedMutationTransform!(structuredClone(executionArgs) as never);
         const prepareOperationValue = async (
@@ -2245,6 +2403,17 @@ export class ToolRuntime {
             committedAt: responseEvent.ts,
           });
         } catch (error) {
+          try {
+            await input.tool.compensateDurableOutcomeCommitFailure?.({
+              result,
+              isError,
+              sessionId: this.input.sessionId,
+              operationId,
+            });
+          } catch {
+            // T2 remains authoritative. Compensation is deliberately best-effort
+            // and must never replace the persistence failure that triggered it.
+          }
           throw new RuntimeCommitBoundaryError('T2', error);
         }
         committedOutcome = {
@@ -2467,6 +2636,127 @@ export class ToolRuntime {
           }
         : {}),
     };
+  }
+
+  private async requestUserForm(
+    turnId: string,
+    toolUseId: string,
+    form: InteractionFormInput,
+    abortSignal: AbortSignal,
+    queue: DurableSessionEventSink,
+    producerCancellationSignal?: AbortSignal,
+  ): Promise<InteractionFormResult> {
+    const interactionSignal = composeChildAbortSignal(abortSignal, producerCancellationSignal);
+    throwIfAborted(interactionSignal);
+    const hostedRun = this.interactionRun();
+    const requestId = this.input.newId();
+    const request = projectInteractionFormRequest({ toolUseId, ...form });
+    const parked = this.userForms.park(requestId, {
+      toolUseId,
+      request,
+      hosted: hostedRun !== undefined,
+    });
+    const onAbort = (): void => {
+      if (hostedRun) return;
+      this.userForms.reject(requestId, abortErrorFromSignal(abortSignal));
+      this.finishDeferredFormTurnClosure();
+    };
+    let hostedAdmission: Promise<void> | undefined;
+    let producerWithdrawal: Promise<void> | undefined;
+    const onProducerCancellation = (): void => {
+      if (abortSignal.aborted) return;
+      if (hostedRun) {
+        producerWithdrawal ??= Promise.resolve().then(async () => {
+          try {
+            await hostedAdmission;
+          } catch {
+            return;
+          }
+          await hostedRun.withdrawFormRequest(requestId);
+        });
+      } else if (producerCancellationSignal) {
+        this.userForms.reject(requestId, abortErrorFromSignal(producerCancellationSignal));
+        this.finishDeferredFormTurnClosure();
+      }
+    };
+    abortSignal.addEventListener('abort', onAbort, { once: true });
+    producerCancellationSignal?.addEventListener('abort', onProducerCancellation, { once: true });
+    if (hostedRun) void parked.catch(() => undefined);
+    try {
+      const requestEvent: FormRequestEvent = {
+        type: 'form_request',
+        id: this.input.newId(),
+        turnId,
+        ts: this.input.now(),
+        requestId,
+        toolUseId,
+        message: request.message,
+        requester: request.requester,
+        fields: request.fields,
+      };
+      if (hostedRun) {
+        const settlement = this.createFormSettlement(turnId, requestId);
+        const admission = Promise.resolve().then(() =>
+          hostedRun.admitFormRequest({ request: requestEvent, settlement }),
+        );
+        hostedAdmission = admission;
+        try {
+          await racePromiseWithAbort(admission, interactionSignal);
+        } catch (error) {
+          if (interactionSignal.aborted) {
+            void admission.catch((admissionError) => {
+              this.userForms.reject(
+                requestId,
+                admissionError instanceof Error
+                  ? admissionError
+                  : new RuntimeInteractionFailStopError(
+                      `Could not confirm admission for form ${requestId}`,
+                      admissionError,
+                    ),
+              );
+              this.finishDeferredFormTurnClosure();
+            });
+            throw abortErrorFromSignal(interactionSignal);
+          }
+          this.userForms.reject(
+            requestId,
+            error instanceof Error
+              ? error
+              : new RuntimeInteractionFailStopError(
+                  `Could not confirm admission for form ${requestId}`,
+                  error,
+                ),
+          );
+          this.finishDeferredFormTurnClosure();
+          await parked.catch(() => undefined);
+          throw interactionAuthorityError(
+            `Could not confirm admission for form ${requestId}`,
+            error,
+          );
+        }
+      }
+      throwIfAborted(interactionSignal);
+      queue.push(requestEvent);
+      const response = await racePromiseWithAbort(parked, interactionSignal);
+      throwIfAborted(interactionSignal);
+      const answerAck: FormAnswerAckEvent = {
+        type: 'form_answer_ack',
+        id: this.input.newId(),
+        turnId,
+        ts: this.input.now(),
+        requestId,
+        toolUseId,
+      };
+      if (hostedRun) await this.publishHostedSettlementAck(queue, answerAck);
+      else queue.push(answerAck);
+      return response.action === 'accept'
+        ? { action: 'accept', values: response.values }
+        : { action: response.action };
+    } finally {
+      abortSignal.removeEventListener('abort', onAbort);
+      producerCancellationSignal?.removeEventListener('abort', onProducerCancellation);
+      if (producerWithdrawal) await producerWithdrawal;
+    }
   }
 
   private async askUserQuestion(
@@ -2844,6 +3134,18 @@ export class ToolRuntime {
     );
   }
 
+  private finishDeferredFormTurnClosure(): void {
+    const turnId = this.turnId;
+    if (!this.formClosureDeferred || this.userForms.pendingCount() !== 0) return;
+    this.formClosureDeferred = false;
+    this.userForms.close(
+      (requestId) =>
+        new RuntimeInteractionInvariantError(
+          `Hosted form ${requestId} escaped exact Run closure for turn ${turnId}`,
+        ),
+    );
+  }
+
   private finishDeferredSandboxBoundaryTurnClosure(): void {
     const turnId = this.turnId;
     if (!this.sandboxBoundaryClosureDeferred || this.sandboxBoundaryRequests.pendingCount() !== 0) {
@@ -2926,6 +3228,37 @@ export class ToolRuntime {
         if (!this.closeUserQuestion(turnId, requestId, reason)) {
           throw new RuntimeInteractionInvariantError(
             `Question closure did not take ${requestId} from turn ${turnId}`,
+          );
+        }
+      },
+    });
+  }
+
+  private createFormSettlement(turnId: string, requestId: string): HostedFormSettlement {
+    return Object.freeze({
+      applyAnswer: async (answer: InteractionFormResult): Promise<void> => {
+        if (Object.hasOwn(answer, 'requestId')) {
+          throw new RuntimeInteractionInvariantError(
+            `Form settlement ${requestId} received a routed answer`,
+          );
+        }
+        const pending = this.userForms
+          .entries()
+          .find(([candidateId]) => candidateId === requestId)?.[1];
+        const response: InteractionFormResponse =
+          answer.action === 'accept'
+            ? { requestId, action: 'accept', values: answer.values }
+            : { requestId, action: answer.action };
+        if (!pending || !this.settleUserFormAnswer(response, pending)) {
+          throw new RuntimeInteractionInvariantError(
+            `Form settlement did not take ${requestId} from turn ${turnId}`,
+          );
+        }
+      },
+      applyClosure: async (reason: RuntimeUserQuestionClosureReason): Promise<void> => {
+        if (!this.closeUserForm(requestId, reason)) {
+          throw new RuntimeInteractionInvariantError(
+            `Form closure did not take ${requestId} from turn ${turnId}`,
           );
         }
       },

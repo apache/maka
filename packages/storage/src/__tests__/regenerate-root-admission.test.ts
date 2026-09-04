@@ -36,6 +36,7 @@ test('regenerate admission durably binds the immutable source Turn', async () =>
       kind: 'regenerate',
       sourceTurnId: 'source-turn',
     });
+    assert.deepEqual(admitted.admission.authorization, input.authorization);
     store.close?.();
 
     const reopened = createSqliteAgentRunStore(root);
@@ -116,6 +117,14 @@ function admissionInput(overrides: Partial<AdmitRootTurnInput> = {}): AdmitRootT
     previousRootTurnId: null,
     normalizedInput: { text: 'Original request' },
     sourceMessages: [],
+    authorization: {
+      kind: 'session_turn_access_request',
+      requestId: 'request-regenerate',
+      principalId: 'session_guest:guest-1',
+      grantId: 'grant-1',
+      approvedAt: 45,
+      approvedBy: 'local_owner',
+    },
     admittedAt: 50,
     ...overrides,
   };

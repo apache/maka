@@ -24,14 +24,17 @@ import {
   SUMMARY_FORMAT_TEMPLATE,
 } from './history-compact-summary-validation.js';
 import { effectiveReplayToolResultOutput } from './durable-tool-result-projection.js';
-import type { HistoryCompactSummaryInput } from './ai-sdk-compaction-contract.js';
+import {
+  DEFAULT_HISTORY_COMPACT_MAX_OUTPUT_TOKENS,
+  type HistoryCompactSummaryInput,
+} from './ai-sdk-compaction-contract.js';
 import {
   HistoryCompactSummarizerError,
   isMalformedHistoryCompactSummaryReason,
 } from './history-compact-error.js';
 import { isTextHistoryCompactCheckpoint } from './history-compact-checkpoint.js';
-import { fitHistoryCompactMessages } from './history-compact-input-fit.js';
-import type { AiSdkUsageLike } from './model-adapter.js';
+import { normalizeAiSdkUsage, type AiSdkUsageLike } from './model-adapter.js';
+import { classifyError } from './provider-error-classification.js';
 import { withProviderGenerateTracking } from './provider-request-telemetry.js';
 
 export { HistoryCompactSummarizerError } from './history-compact-error.js';
@@ -78,6 +81,17 @@ const SUMMARIZATION_SYSTEM_PROMPT = [
   'Keep each section concise. Preserve exact file paths, function names, commands, and error messages.',
 ].join('\n');
 
+const SUMMARY_REQUEST_INSTRUCTION =
+  'Now write the structured summary of the conversation above. Output only the summary.';
+
+function shortenSummarizationSystemPrompt(): string {
+  return [
+    SUMMARIZATION_SYSTEM_PROMPT,
+    '',
+    'Your previous attempt was cut off at the output limit. Produce the same summary in well under half the length: keep every section, drop detail rather than sections.',
+  ].join('\n');
+}
+
 function repairSummarizationSystemPrompt(reason: string): string {
   return [
     SUMMARIZATION_SYSTEM_PROMPT,
@@ -113,11 +127,20 @@ export function buildLlmHistorySummarizer(options: BuildLlmHistorySummarizerOpti
           ],
         });
       }
-      const initialMessages = fitHistoryCompactMessages(projectedMessages, {
-        maxInputEstimatedTokens: input.inputBudget?.maxEstimatedTokens,
-        charsPerToken: input.inputBudget?.charsPerToken,
-        fixedInputChars: SUMMARIZATION_SYSTEM_PROMPT.length,
+      // The folded span usually ends on an assistant message. A chat-template
+      // model handed a conversation that already ends with its own turn emits
+      // an end-of-sequence token and nothing else (Ollama qwen2.5: finish
+      // `stop`, one output token, empty text), so the request must end with
+      // an instruction the model can answer. Hosted providers do not need the
+      // nudge and are not disturbed by it (#4559).
+      projectedMessages.push({
+        role: 'user',
+        content: [{ type: 'text', text: SUMMARY_REQUEST_INSTRUCTION }],
       });
+      // Nothing is trimmed on a local estimate: whether this input fits the
+      // summarizer's window is its provider's answer (`input_too_large`, which
+      // the planner retreats on), and the output is capped outright (#4559).
+      const maxOutputTokens = input.maxOutputTokens ?? DEFAULT_HISTORY_COMPACT_MAX_OUTPUT_TOKENS;
       // Handed over whole by the backend, which owns every input a tracker
       // needs — including the run, which no summarizer wiring can know (#1679).
       const providerRequestTracker = input.providerRequestTracker;
@@ -133,34 +156,48 @@ export function buildLlmHistorySummarizer(options: BuildLlmHistorySummarizerOpti
             ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
           })
         : options.resolveModel();
-      const generateSummary = async (
-        step: number,
-        instructions: string,
-        messages: ModelMessage[],
-      ) => {
+      let step = 0;
+      const generateSummary = async (instructions: string, messages: ModelMessage[]) => {
         providerRequestTracker?.setStep(step);
+        step += 1;
         const result = await generateText({
           model,
           instructions,
           messages,
+          maxOutputTokens,
           ...(options.providerOptions !== undefined
             ? { providerOptions: options.providerOptions }
             : {}),
           ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
         });
-        if (rawFinishReasonString(result.finishReason) === 'length') {
-          throw new HistoryCompactSummarizerError('output_length');
-        }
-        const defect = findCheckpointSummaryDefect(result.text, {
-          coveredRuntimeEvents: input.source.foldedRuntimeEvents,
-          ...(input.inputBudget?.charsPerToken !== undefined
-            ? { charsPerToken: input.inputBudget.charsPerToken }
-            : {}),
-        });
-        return { text: result.text, defect };
+        const usage = normalizeAiSdkUsage(result.usage);
+        const truncated = rawFinishReasonString(result.finishReason) === 'length';
+        // The size floor compares the summary with what it replaces. On a
+        // roll-forward the request carries the previous summary plus the new
+        // increment, so its input tokens are not the covered span and the
+        // floor would judge the wrong number; it applies to the initial fold
+        // only (#4559).
+        const spanUsage =
+          previousCheckpoint === undefined && usage !== undefined && usage.inputTokens > 0
+            ? { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens }
+            : undefined;
+        const defect = truncated
+          ? undefined
+          : findCheckpointSummaryDefect(
+              result.text,
+              spanUsage ? { summarizerUsage: spanUsage } : undefined,
+            );
+        return { text: result.text, defect, truncated };
       };
 
-      const initial = await generateSummary(0, SUMMARIZATION_SYSTEM_PROMPT, initialMessages);
+      let initial = await generateSummary(SUMMARIZATION_SYSTEM_PROMPT, projectedMessages);
+      if (initial.truncated) {
+        // The provider cut the summary at the output cap. One shorter attempt;
+        // a second cut is the provider saying this span will not summarize
+        // inside the cap, and the fold fails open.
+        initial = await generateSummary(shortenSummarizationSystemPrompt(), projectedMessages);
+        if (initial.truncated) throw new HistoryCompactSummarizerError('output_length');
+      }
       if (!initial.defect) return initial.text;
       if (!isMalformedHistoryCompactSummaryReason(initial.defect)) {
         throw new HistoryCompactSummarizerError(initial.defect);
@@ -170,16 +207,19 @@ export function buildLlmHistorySummarizer(options: BuildLlmHistorySummarizerOpti
       // be bounded: one stricter attempt, then the caller's failure circuit
       // records the stable defect for this compaction input.
       const repairInstructions = repairSummarizationSystemPrompt(initial.defect);
-      const repairMessages = fitHistoryCompactMessages(projectedMessages, {
-        maxInputEstimatedTokens: input.inputBudget?.maxEstimatedTokens,
-        charsPerToken: input.inputBudget?.charsPerToken,
-        fixedInputChars: repairInstructions.length,
-      });
       let repaired: Awaited<ReturnType<typeof generateSummary>>;
       try {
-        repaired = await generateSummary(1, repairInstructions, repairMessages);
+        repaired = await generateSummary(repairInstructions, projectedMessages);
+        if (repaired.truncated) throw new HistoryCompactSummarizerError('output_length');
       } catch (error) {
         if (isAbortError(error)) throw error;
+        // The repair prompt is longer than the first one. If that is what pushed
+        // the fold past the summarizer provider's window, the rejection is the
+        // planner's retreat signal, not a repair failure to file under the
+        // initial defect (#4559).
+        if (classifyError(error) === 'ContextLength') {
+          throw new HistoryCompactSummarizerError('input_too_large', { cause: error });
+        }
         throw new HistoryCompactSummarizerError(initial.defect, {
           cause:
             error instanceof HistoryCompactSummarizerError
@@ -201,6 +241,12 @@ export function buildLlmHistorySummarizer(options: BuildLlmHistorySummarizerOpti
     } catch (error) {
       if (isAbortError(error)) throw error;
       if (error instanceof HistoryCompactSummarizerError) throw error;
+      // The summarizer's provider is the one judge of whether this fold fits
+      // its own window: a context-length rejection is the signal the planner
+      // retreats on, so it must keep its name here (#4559).
+      if (classifyError(error) === 'ContextLength') {
+        throw new HistoryCompactSummarizerError('input_too_large', { cause: error });
+      }
       throw new HistoryCompactSummarizerError('provider_error', { cause: error });
     }
   };

@@ -28,13 +28,16 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { test } from 'node:test';
 import { z } from 'zod';
-import { clientCapabilityConnectionIdentity } from './fixtures/client-capability.js';
+import {
+  clientCapabilityConnectionIdentity,
+  clientCapabilityCoordinatorTestAdmission,
+} from './fixtures/client-capability.js';
 import {
   createBypassExecutionBoundary,
   createManagedExecutionBoundary,
   type ExecutionBoundary,
 } from '@maka/core/sandbox-boundary';
-import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
+import { PROVIDER_REGISTRY } from '@maka/core/llm-connections';
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import { decodeRunCompositionSnapshot } from '@maka/core/run-composition';
 import type { AgentRunHeader } from '@maka/core/agent-run';
@@ -140,7 +143,7 @@ const MAX_IMPLEMENTATION_CHILD_REQUESTS =
 const HEADLESS_CODING_V1_PROMPT_HASH =
   'sha256:b2773282ac4755dc8d8a663eafdec68c3fa6f5680ec8557d261b5f723672b467';
 const HEADLESS_CODING_V1_TOOLS_HASH =
-  'sha256:c062194603f93b568da5ca59b865b316156b5f218ba854c291aa9582859b3de4';
+  'sha256:aa3ab56a7b67dde133fffe885f4def81735c93015202e31ecb339a84863f6d03';
 const execFileAsync = promisify(execFile);
 test('backend creation resolves a bound Session by immutable Connection identity', async () => {
   let observedRef: unknown;
@@ -1144,7 +1147,7 @@ test('backend abort cannot cancel the authority-owned OAuth refresh used by its 
   let transports: ReturnType<typeof controlledOAuthTransports> | undefined;
   try {
     const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
-    const subscriptionModelId = PROVIDER_DEFAULTS['openai-codex'].fallbackModels[0] ?? '';
+    const subscriptionModelId = PROVIDER_REGISTRY['openai-codex'].fallbackModels[0] ?? '';
     assert.ok(subscriptionModelId);
     const created = await policy.connectionCatalog.create({
       expectedCatalogRevision: 0,
@@ -1306,6 +1309,7 @@ test('backend creation does not acquire Client Capabilities beyond a bound tool 
 
 test('production backend creation continues after a Session Client Capability is lost', async () => {
   const coordinator = new HostClientCapabilityCoordinator({
+    ...clientCapabilityCoordinatorTestAdmission(),
     activation: new RuntimePolicyActivationGate(),
     onModelToolsChanged: () => undefined,
   });
@@ -1371,6 +1375,7 @@ test('production backend preserves coordinator Client Capability semantics acros
   const trace: RunTraceEvent[] = [];
   const calls: Array<Extract<ClientCapabilityHostFrame, { kind: 'client.capability.call' }>> = [];
   const coordinator = new HostClientCapabilityCoordinator({
+    ...clientCapabilityCoordinatorTestAdmission(),
     activation: new RuntimePolicyActivationGate(),
     onModelToolsChanged: () => undefined,
   });
@@ -1381,21 +1386,26 @@ test('production backend preserves coordinator Client Capability semantics acros
       clientCapabilityConnectionIdentity('client-capability-provider'),
       {
         send: async (frame) => {
-          if (frame.kind !== 'client.capability.call') return;
-          calls.push(frame);
-          queueMicrotask(() => {
-            connection?.accept({
-              kind: 'client.capability.accepted',
-              invocationId: frame.invocationId,
+          if (frame.kind === 'client.capability.call') {
+            calls.push(frame);
+            queueMicrotask(() => {
+              connection?.accept({
+                kind: 'client.capability.accepted',
+                invocationId: frame.invocationId,
+                admissionEvidence: { kind: 'none' },
+              });
             });
-            connection?.accept({
-              kind: 'client.capability.result',
-              invocationId: frame.invocationId,
-              result: {
-                content: [{ type: 'text', text: CLIENT_CAPABILITY_RESULT_TEXT }],
-              },
+          } else if (frame.kind === 'client.capability.admitted') {
+            queueMicrotask(() => {
+              connection?.accept({
+                kind: 'client.capability.result',
+                invocationId: frame.invocationId,
+                result: {
+                  content: [{ type: 'text', text: CLIENT_CAPABILITY_RESULT_TEXT }],
+                },
+              });
             });
-          });
+          }
         },
       },
     );
@@ -1509,7 +1519,7 @@ test('production backend preserves coordinator Client Capability semantics acros
         (event) =>
           event.type === 'tool_started' &&
           event.data?.toolName === tool.name &&
-          event.data?.categoryHint === 'client_capability',
+          event.data?.categoryHint === 'custom_tool',
       ),
     );
     const runtimeEvents = await store.readImmutableRuntimeEvents(sessionId, runId);
@@ -1706,6 +1716,9 @@ test('production Host executes a canonical ai-sdk Session against a real provide
   const root = join(base, 'interactive');
   const home = join(base, 'home');
   const provider = await startProvider();
+  // This turn's compaction trigger is anchored on the input tokens the provider
+  // reports, so the stub must report a number that grows with the request.
+  provider.configurePayloadProportionalUsage();
   const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
   const owner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(owner);
@@ -1766,6 +1779,16 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     });
     assert.equal(configured.kind, 'committed');
     await publishConnectionModel(policy, connection.connectionId, MODEL_ID);
+    // The fetched /models value is metadata only. This explicit model-facts
+    // declaration is the Maka compaction target used by the long-session flow.
+    await writeFile(
+      join(root, 'model-facts.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        overrides: { [`moonshot:${MODEL_ID}`]: { contextWindow: 3_072 } },
+      }),
+      'utf8',
+    );
     let policySnapshot = await policy.runtimePolicy.getSnapshot();
     const personalized = await policy.runtimePolicy.mutate({
       expectedRevision: policySnapshot.revision,
@@ -1847,8 +1870,8 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     assert.equal(remembered.result.kind, 'committed');
 
     const turnIds: string[] = [];
-    // Cross the history high-water without making the text-only compact input
-    // exceed this fixture's 2,304-token summarizer budget.
+    // Cross the explicitly declared Maka window without making the text-only
+    // compact input exceed this fixture's 2,304-token summarizer budget.
     for (let index = 0; index < 5; index += 1) {
       const turnId = randomUUID();
       turnIds.push(turnId);
@@ -1964,7 +1987,9 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     );
     assert.equal(usage.providerId, 'moonshot');
     assert.equal(usage.modelId, MODEL_ID);
-    assert.equal(usage.inputTokens, 11);
+    // The stub reports input tokens proportional to the request, so this only
+    // asserts the reported number reached the meter, not a fixed constant.
+    assert.equal(usage.inputTokens > 11, true);
     assert.equal(usage.outputTokens, 5);
     assert.equal(usage.status, 'success');
 
@@ -2013,7 +2038,9 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     }
     assert.equal(summaryCaptureFound, true);
 
-    const requestsBeforeArtifactFailure = provider.requests.length;
+    const streamRequestsBeforeArtifactFailure = provider.requests.filter(
+      (request) => request.body.stream === true,
+    ).length;
     artifacts.close();
     const failedTurnId = randomUUID();
     const failedStart = await startTurn(
@@ -2031,7 +2058,14 @@ test('production Host executes a canonical ai-sdk Session against a real provide
       connectionContext,
     );
     assert.equal(failedTerminal.status, 'completed');
-    assert.equal(provider.requests.length, requestsBeforeArtifactFailure + 1);
+    // A closed artifact store must not stop the turn from reaching the model.
+    // Counted on the streamed turn requests alone: whether this turn also
+    // spends an auxiliary compaction or memory call is the context budget's
+    // business, not this assertion's.
+    assert.equal(
+      provider.requests.filter((request) => request.body.stream === true).length,
+      streamRequestsBeforeArtifactFailure + 1,
+    );
     assert.equal(drainRequests, 0);
   } finally {
     try {
@@ -2818,7 +2852,7 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
       connection: {
         slug: 'goal-evaluator-provider',
         name: 'Goal evaluator provider',
-        providerType: 'moonshot',
+        providerType: 'opencode-go',
         baseUrl: provider.baseUrl,
         enabled: true,
         enabledModelIds: [MODEL_ID],
@@ -2923,6 +2957,7 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
       requestDrain: () => assert.fail('Daily Review telemetry must not drain the Host'),
       newId: () => 'daily-review-call-1',
     });
+    const dailyReviewRequestsBefore = provider.requests.length;
     assert.deepEqual(
       await dailyReview.generate({
         modelKey: `goal-evaluator-provider::${MODEL_ID}`,
@@ -2940,6 +2975,9 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
     assert.ok(dailyReviewLog);
     assert.equal(dailyReviewLog.callId, 'daily_review_daily-review-call-1');
     assert.equal(dailyReviewLog.sessionId, undefined);
+    const dailyReviewRequest = provider.requests[dailyReviewRequestsBefore];
+    assert.ok(dailyReviewRequest);
+    assert.equal(dailyReviewRequest.sessionHeader, 'daily-review-call-1');
 
     const memoryModel = createHostMemoryExtractionModel({
       runtimePolicy: policy,
@@ -2987,6 +3025,8 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
     const [proposalRequest, canonicalizeRequest] = provider.requests.slice(memoryRequestsBefore);
     assert.ok(proposalRequest);
     assert.ok(canonicalizeRequest);
+    assert.equal(proposalRequest.sessionHeader, session.id);
+    assert.equal(canonicalizeRequest.sessionHeader, session.id);
     assert.deepEqual(toolNames(proposalRequest.body), ['memory_remember']);
     assert.match(JSON.stringify(proposalRequest.body), /SOURCE_SYSTEM_SENTINEL/);
     assert.match(JSON.stringify(proposalRequest.body), /SOURCE_USER_SENTINEL/);
@@ -4302,6 +4342,7 @@ interface ProviderRequest {
   readonly url: string;
   readonly authorization: string | undefined;
   readonly customHeader: string | undefined;
+  readonly sessionHeader: string | undefined;
   readonly body: Record<string, unknown>;
 }
 
@@ -4341,14 +4382,22 @@ async function startProvider(): Promise<{
   configureChildAgentFlow(): void;
   configureImplementationChildAgentFlow(): void;
   configureAgentGraphFlow(): void;
+  configurePayloadProportionalUsage(): void;
   close(): Promise<void>;
 }> {
   const requests: ProviderRequest[] = [];
   let flow: ProviderFlow = { kind: 'default' };
+  // A real provider's reported input tokens grow with the request. The default
+  // constant is fine for tests that only read the number back; a test whose
+  // subject is the context-budget estimate needs usage that tracks the payload,
+  // because that estimate is anchored on exactly this number.
+  let usageTracksPayload = false;
   const server = createServer((request, response) => {
-    void handleProviderRequest(request, response, requests, flow).catch((error) => {
-      response.destroy(error as Error);
-    });
+    void handleProviderRequest(request, response, requests, flow, usageTracksPayload).catch(
+      (error) => {
+        response.destroy(error as Error);
+      },
+    );
   });
   await listen(server);
   const address = server.address();
@@ -4386,6 +4435,9 @@ async function startProvider(): Promise<{
         scenario: new AgentGraphProviderScenario(CHILD_AGENT_RESULT_TEXT),
       };
     },
+    configurePayloadProportionalUsage: () => {
+      usageTracksPayload = true;
+    },
     close: () => closeServer(server),
   };
 }
@@ -4395,6 +4447,7 @@ async function handleProviderRequest(
   response: ServerResponse,
   requests: ProviderRequest[],
   flow: ProviderFlow,
+  usageTracksPayload = false,
 ): Promise<void> {
   assert.equal(request.method, 'POST');
   const body = JSON.parse(await readBody(request)) as Record<string, unknown>;
@@ -4402,6 +4455,7 @@ async function handleProviderRequest(
     url: request.url ?? '',
     authorization: request.headers.authorization,
     customHeader: request.headers['x-maka-test'] as string | undefined,
+    sessionHeader: request.headers['x-opencode-session'] as string | undefined,
     body,
   });
   if (request.url === '/v1/responses') {
@@ -4634,7 +4688,11 @@ async function handleProviderRequest(
     });
     return;
   }
-  respondProviderText(response, RESPONSE_TEXT);
+  respondProviderText(
+    response,
+    RESPONSE_TEXT,
+    usageTracksPayload ? Math.max(11, Math.ceil(JSON.stringify(body).length / 4)) : 11,
+  );
 }
 
 function respondProviderResponsesText(response: ServerResponse, text: string): void {
@@ -4698,7 +4756,7 @@ function respondProviderResponsesText(response: ServerResponse, text: string): v
   response.end(`${events.map((event) => `data: ${JSON.stringify(event)}`).join('\n\n')}\n\n`);
 }
 
-function respondProviderText(response: ServerResponse, text: string): void {
+function respondProviderText(response: ServerResponse, text: string, promptTokens = 11): void {
   response.writeHead(200, { 'content-type': 'text/event-stream' });
   response.write(
     `data: ${JSON.stringify({
@@ -4722,7 +4780,11 @@ function respondProviderText(response: ServerResponse, text: string): void {
       created: 1,
       model: MODEL_ID,
       choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-      usage: { prompt_tokens: 11, completion_tokens: 5, total_tokens: 16 },
+      usage: {
+        prompt_tokens: promptTokens,
+        completion_tokens: 5,
+        total_tokens: promptTokens + 5,
+      },
     })}\n\n`,
   );
   response.end('data: [DONE]\n\n');

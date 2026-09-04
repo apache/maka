@@ -18,6 +18,7 @@
  */
 
 import type { IpcMain } from 'electron';
+import { decodeRuntimeHostOwnerConnectionCode } from '@maka/runtime-host/client';
 import {
   RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
   RUNTIME_HOST_OPERATOR_PEER_RELAY_DISCOVERY_CAPABILITY,
@@ -48,17 +49,19 @@ import {
   type DesktopRuntimeHostManagedSshServiceBinding,
 } from './runtime-host-managed-services.js';
 import { requireProjectDirectoryRoots } from '../shared/runtime-host-project-directory-policy.js';
-import type {
-  DesktopRuntimeHostSshCleanupInput,
-  DesktopRuntimeHostSshAccessInput,
-  DesktopRuntimeHostSshManagementInput,
-  DesktopRuntimeHostSshPeerManagementInput,
-  DesktopRuntimeHostSshUpdateInput,
-  DesktopRuntimeHostSshUpdatePolicyInput,
-  DesktopRuntimeHostSshUpdateReconciliationInput,
-  RuntimeHostServiceUpdatePolicyTerminalFrame,
-  RuntimeHostServiceUpdateReconciliationTerminalFrame,
-  RuntimeHostServiceUpdateTerminalFrame,
+import {
+  runtimeHostPeerTargetFromNode,
+  type DesktopRuntimeHostSshCleanupInput,
+  type DesktopRuntimeHostSshAccessInput,
+  type DesktopRuntimeHostSshManagementInput,
+  type DesktopRuntimeHostSshNodeIdentity,
+  type DesktopRuntimeHostSshPeerManagementInput,
+  type DesktopRuntimeHostSshUpdateInput,
+  type DesktopRuntimeHostSshUpdatePolicyInput,
+  type DesktopRuntimeHostSshUpdateReconciliationInput,
+  type RuntimeHostServiceUpdatePolicyTerminalFrame,
+  type RuntimeHostServiceUpdateReconciliationTerminalFrame,
+  type RuntimeHostServiceUpdateTerminalFrame,
 } from './runtime-host-ssh-terminal.js';
 import type {
   DesktopRuntimeHostDevelopmentPeerTarget,
@@ -124,11 +127,11 @@ export function createDesktopRuntimeHostManagement(input: {
     onProgress: (phase: DesktopRuntimeHostManagementProgress['phase']) => void,
   ) => Promise<RuntimeHostServiceUpdateReconciliationTerminalFrame>;
   readonly setupPackageMode: 'published' | 'development';
-  readonly resolveSshDevelopmentPeerTarget: (input: {
+  readonly resolveSshNodeIdentity: (input: {
     readonly destination: string;
     readonly sshPort?: number;
     readonly signal?: AbortSignal;
-  }) => Promise<Exclude<DesktopRuntimeHostDevelopmentPeerTarget, 'none'>>;
+  }) => Promise<DesktopRuntimeHostSshNodeIdentity>;
   readonly resolveUpdatePackage: (
     peerTarget: DesktopRuntimeHostDevelopmentPeerTarget,
   ) =>
@@ -212,7 +215,7 @@ export function createDesktopRuntimeHostManagement(input: {
       }
       const response = await input.runWslManagement({
         distribution: managed.profile.provider.distribution,
-        operatorPath: managed.profile.operatorPath,
+        operator: managed.profile.operator,
         action: managementAction,
         expectedTarget,
       });
@@ -223,7 +226,7 @@ export function createDesktopRuntimeHostManagement(input: {
       ...(managed.profile.transport.sshPort === undefined
         ? {}
         : { sshPort: managed.profile.transport.sshPort }),
-      operatorPath: managed.control.operatorPath,
+      operator: managed.control.operator,
       action: managementAction,
       expectedTarget,
       ...(managementAction === 'install'
@@ -271,7 +274,7 @@ export function createDesktopRuntimeHostManagement(input: {
       ...(managementInput.sshPort === undefined
         ? {}
         : { sshPort: managementInput.sshPort }),
-      operatorPath: managementInput.operatorPath,
+      operator: managementInput.operator,
       expectedTarget: managementInput.expectedTarget,
     });
     await input.cleanupManagedDeployment({
@@ -279,7 +282,7 @@ export function createDesktopRuntimeHostManagement(input: {
       ...(managementInput.sshPort === undefined
         ? {}
         : { sshPort: managementInput.sshPort }),
-      operatorPath: managementInput.operatorPath,
+      operator: managementInput.operator,
       expectedTarget: managementInput.expectedTarget,
       finalize: true,
     });
@@ -356,7 +359,7 @@ export function createDesktopRuntimeHostManagement(input: {
         ...(managed.profile.transport.sshPort === undefined
           ? {}
           : { sshPort: managed.profile.transport.sshPort }),
-        operatorPath: managed.control.operatorPath,
+        operator: managed.control.operator,
         rootPath: managed.deployment.rootPath,
         expectedRootId: managed.profile.rootId,
       },
@@ -442,7 +445,7 @@ export function createDesktopRuntimeHostManagement(input: {
       ...(target.transport.sshPort === undefined
         ? {}
         : { sshPort: target.transport.sshPort }),
-      operatorPath: target.managed.control.operatorPath,
+      operator: target.managed.control.operator,
       action: 'status',
       expectedTarget: target.expectedTarget,
       capabilityRequest: RUNTIME_HOST_OPERATOR_PEER_WEBRTC_STUN_CAPABILITY,
@@ -461,7 +464,7 @@ export function createDesktopRuntimeHostManagement(input: {
           ...(target.transport.sshPort === undefined
             ? {}
             : { sshPort: target.transport.sshPort }),
-          operatorPath: target.managed.control.operatorPath,
+          operator: target.managed.control.operator,
           action: 'status',
           expectedTarget: target.expectedTarget,
           capabilityRequest: RUNTIME_HOST_OPERATOR_PEER_RELAY_DISCOVERY_CAPABILITY,
@@ -504,7 +507,7 @@ export function createDesktopRuntimeHostManagement(input: {
     const response = await input.runPeerManagement({
       destination: transport.destination,
       ...(transport.sshPort === undefined ? {} : { sshPort: transport.sshPort }),
-      operatorPath: managed.control.operatorPath,
+      operator: managed.control.operator,
       action: 'status',
       ...(webRtcStunAvailable ? { webRtcStunStatus: true } : {}),
       expectedTarget,
@@ -555,10 +558,11 @@ export function createDesktopRuntimeHostManagement(input: {
     if (peerProfile.enabled) {
       throw new Error('Disable the Direct peer profile before changing its listener');
     }
+    const previousHostEpoch = input.currentHostEpoch(profileId);
     const response = await input.runPeerManagement({
       destination: transport.destination,
       ...(transport.sshPort === undefined ? {} : { sshPort: transport.sshPort }),
-      operatorPath: managed.control.operatorPath,
+      operator: managed.control.operator,
       action: enabledValue ? 'enable' : 'disable',
       ...(enabledValue ? { coordinationRelays } : {}),
       ...(enabledValue ? { automaticRelayDiscovery: automaticRelayDiscoveryValue } : {}),
@@ -573,6 +577,9 @@ export function createDesktopRuntimeHostManagement(input: {
           : 'Runtime Host returned an unrelated direct-peer result',
       );
     }
+    if (response.action !== (enabledValue ? 'enable' : 'disable')) {
+      throw new Error('Runtime Host returned an unrelated direct-peer result');
+    }
     const status = response.status;
     if (enabledValue) {
       try {
@@ -583,17 +590,19 @@ export function createDesktopRuntimeHostManagement(input: {
         ) {
           throw new Error('Runtime Host did not return a usable direct-peer descriptor');
         }
-        await input.profiles.upsertManagedDirectPeerProfile(profileId, {
-          peerId: status.peerId,
-          routeHints: status.routeHints,
-          coordinationRelays: status.coordinationRelays,
-        });
+        await input.awaitUpdatedConnection(
+          profileId,
+          managed.profile.rootId,
+          previousHostEpoch,
+          response.restarted,
+        );
+        await input.profiles.upsertManagedDirectPeerProfile(profileId, status.peerId);
       } catch (failure) {
         try {
           const rollback = await input.runPeerManagement({
             destination: transport.destination,
             ...(transport.sshPort === undefined ? {} : { sshPort: transport.sshPort }),
-            operatorPath: managed.control.operatorPath,
+            operator: managed.control.operator,
             action: 'disable',
             expectedTarget,
           });
@@ -642,18 +651,21 @@ export function createDesktopRuntimeHostManagement(input: {
       const { managed, transport, expectedTarget } = await managedMutationTarget(profileId);
       const previousHostEpoch = input.currentHostEpoch(profileId);
       input.sendProgress({ profileId, phase: 'preparing_cli' });
-      const peerTarget = input.setupPackageMode === 'development'
-        ? await input.resolveSshDevelopmentPeerTarget({
+      let peerTarget: DesktopRuntimeHostDevelopmentPeerTarget = 'none';
+      if (input.setupPackageMode === 'development') {
+        const identity = await input.resolveSshNodeIdentity({
           destination: transport.destination,
           ...(transport.sshPort === undefined ? {} : { sshPort: transport.sshPort }),
-        })
-        : 'none';
+        });
+        peerTarget = runtimeHostPeerTargetFromNode(identity.platform, identity.architecture);
+      }
       const setupPackage = await input.resolveUpdatePackage(peerTarget);
       execute = () => input.runUpdate(
         {
           destination: transport.destination,
           ...(transport.sshPort === undefined ? {} : { sshPort: transport.sshPort }),
           setupPackage,
+          operator: managed.control.operator,
           expectedTarget,
           ...(allowInterruptActiveTasksValue ? { allowInterruptActiveTasks: true } : {}),
         },
@@ -716,7 +728,7 @@ export function createDesktopRuntimeHostManagement(input: {
       if (!isDesktopRuntimeHostManagedSshServiceBinding(managed)) {
         execute = () => input.runWslManagement({
           distribution: managed.profile.provider.distribution,
-          operatorPath: managed.profile.operatorPath,
+          operator: managed.profile.operator,
           action: 'configure',
           expectedTarget,
           projectDirectoryRoots: roots,
@@ -728,7 +740,7 @@ export function createDesktopRuntimeHostManagement(input: {
         execute = () => input.runServiceManagement({
           destination: transport.destination,
           ...(transport.sshPort === undefined ? {} : { sshPort: transport.sshPort }),
-          operatorPath: managed.control.operatorPath,
+          operator: managed.control.operator,
           action: 'configure',
           expectedTarget,
           projectDirectoryRoots: roots,
@@ -793,7 +805,7 @@ export function createDesktopRuntimeHostManagement(input: {
             ...(transport.sshPort === undefined
               ? {}
               : { sshPort: transport.sshPort }),
-            operatorPath: managed.control.operatorPath,
+            operator: managed.control.operator,
             expectedTarget,
           };
           return async (next?: RuntimeHostManagedUpdatePolicy) =>
@@ -836,7 +848,7 @@ export function createDesktopRuntimeHostManagement(input: {
         {
           destination: transport.destination,
           ...(transport.sshPort === undefined ? {} : { sshPort: transport.sshPort }),
-          operatorPath: managed.control.operatorPath,
+          operator: managed.control.operator,
           expectedTarget,
         },
         (phase) => input.sendProgress({ profileId, phase }),
@@ -898,6 +910,33 @@ export function createDesktopRuntimeHostManagement(input: {
       access.currentCredentialFingerprint,
       access.canRotate,
     );
+  };
+
+  const createConnectionCode = async (profileId: unknown): Promise<string> => {
+    const access = await resolveAccess(profileId);
+    const response = await input.runAccessManagement({
+      ...access.target,
+      action: 'connection-code',
+      name: access.managed.profile.name,
+    });
+    if (response.kind === 'error') throw new Error(response.error.message);
+    if (response.action !== 'connection-code') {
+      throw new Error('Remote Runtime Host did not return a connection code');
+    }
+    const decoded = decodeRuntimeHostOwnerConnectionCode(response.connectionCode);
+    if (decoded.rootId !== access.managed.profile.rootId) {
+      throw new Error('Remote Runtime Host returned a connection code for a different Host');
+    }
+    const peerProfile = await input.profiles.resolveManagedDirectPeerProfile(
+      access.managed.profile.id,
+    );
+    if (
+      peerProfile.peerId &&
+      decoded.transport.reachability.lease.peerId !== peerProfile.peerId
+    ) {
+      throw new Error('Remote Runtime Host returned a connection code for a different Direct peer');
+    }
+    return response.connectionCode;
   };
 
   const rotateCredential = async (
@@ -980,6 +1019,7 @@ export function createDesktopRuntimeHostManagement(input: {
     run: 'runtime-host-management:run',
     update: 'runtime-host-management:update',
     configureProjectDirectories: 'runtime-host-management:configure-project-directories',
+    createConnectionCode: 'runtime-host-management:create-connection-code',
     listCredentials: 'runtime-host-management:list-credentials',
     rotateCredential: 'runtime-host-management:rotate-credential',
     revokeCredential: 'runtime-host-management:revoke-credential',
@@ -1019,6 +1059,8 @@ export function createDesktopRuntimeHostManagement(input: {
         allowInterruptActiveTasks,
       ),
   );
+  input.ipcMain.handle(channels.createConnectionCode, (_event, profileId: unknown) =>
+    createConnectionCode(profileId));
   input.ipcMain.handle(channels.listCredentials, (_event, profileId: unknown) =>
     listCredentials(profileId));
   input.ipcMain.handle(channels.rotateCredential, (_event, profileId: unknown) =>

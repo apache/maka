@@ -79,6 +79,47 @@ export interface TranscriptHistoryNoticeProps {
   onReturnToLatest(): Promise<void> | void;
 }
 
+export interface ChatViewGoalIndicatorProps {
+  /**
+   * Active autonomous-goal indicator for the session, or undefined when no
+   * goal is running. Surfaces the loop (turn counter, elapsed, tokens) with
+   * pause/resume/clear affordances so a token-burning goal is never invisible
+   * or uncontrollable — this IS the desktop kill switch. `onClear` stops
+   * autonomous continuation; `onPause`/`onResume` control it without a model
+   * turn.
+   */
+  goalIndicator?: SessionContextGoal;
+}
+
+/** A rail click's outstanding request that the reveal for its Turn agree with it. */
+export type RailAlignmentClaim = { turnId: string; nonce?: number };
+
+/**
+ * Which edge the transcript's reveal should use for the target the shell is
+ * publishing, and what is left of the rail's claim afterwards.
+ *
+ * A claim belongs to the one navigation its click asked for, not to the Turn:
+ * it binds to the first target that arrives for that Turn and is spent on
+ * anything else. A later search for the same Turn is a different command with
+ * its own nonce, and gets the search contract back.
+ */
+export function resolveRailAlignedTarget<T extends { turnId: string; nonce: number }>(
+  claim: RailAlignmentClaim | undefined,
+  target: T | undefined,
+): {
+  claim: RailAlignmentClaim | undefined;
+  target: (T & { align: 'start' | 'center' }) | undefined;
+} {
+  if (!target) return { claim, target: undefined };
+  const aimedByRail = claim !== undefined
+    && claim.turnId === target.turnId
+    && (claim.nonce === undefined || claim.nonce === target.nonce);
+  return {
+    claim: aimedByRail ? { turnId: target.turnId, nonce: target.nonce } : undefined,
+    target: { ...target, align: aimedByRail ? 'start' : 'center' },
+  };
+}
+
 /** Persistent navigation position with a direct path back to the transcript tail. */
 export function TranscriptHistoryNotice({
   title,
@@ -149,7 +190,7 @@ export function ChatView(props: {
   /** Called once the streaming bubble has displayed the final text and can hand off to history. */
   onStreamingSettled?(messageId?: string): void;
   /**
-   * True while the live turn's running status line (spinner · working phrase ·
+   * True while the live turn's running status line (spinner · status label ·
    * elapsed clock) should show, as the trailing entry of the tail turn.
    *
    * One flag for the whole turn, replacing the #646 pair that split the wait
@@ -173,7 +214,6 @@ export function ChatView(props: {
    *  avoid bringing the full provider SVG library into @maka/ui. */
   renderProviderMark?(type: ProviderType): ReactNode;
   modelChoices?: ChatModelChoice[];
-  modelChangePending?: boolean;
   onModelChange?(input: {
     llmConnectionId: string;
     llmConnectionSlug: string;
@@ -205,15 +245,6 @@ export function ChatView(props: {
     renderWhenAnchorMissing?: boolean;
     content: ReactNode;
   }>;
-  /**
-   * Active autonomous-goal indicator for the session, or undefined when no
-   * goal is running. Surfaces the loop (turn counter, elapsed, tokens) with
-   * pause/resume/clear affordances so a token-burning goal is never invisible
-   * or uncontrollable — this IS the desktop kill switch. `onClear` stops
-   * autonomous continuation; `onPause`/`onResume` control it without a model
-   * turn.
-   */
-  goalIndicator?: SessionContextGoal;
   /** Error from loading the active session's persisted message log. */
   messageLoadError?: string;
   messageLoadRetryPending?: boolean;
@@ -262,6 +293,9 @@ export function ChatView(props: {
    * chat view only scrolls/highlights the already-rendered turn.
    */
   scrollTargetTurn?: { turnId: string; nonce: number };
+  /** Runtime-only reading position restored without search focus or highlight. */
+  restoreTargetTurn?: { turnId: string; unavailable?: boolean };
+  onReadingAnchorChange?(turnId?: string): void;
   scrollBehavior: ScrollBehavior;
   hasOlderHistory?: boolean;
   onLoadEarlierHistory?(anchorTurnId?: string): Promise<void> | void;
@@ -333,7 +367,7 @@ export function ChatView(props: {
    * seeded with the quote. Omitted by hosts that don't support the side panel.
    */
   onAskAboutSelection?(input: { text: string; turnId: string }): void;
-}) {
+} & ChatViewGoalIndicatorProps) {
   const locale = useUiLocale();
   const conversationCopy = getConversationCopy(locale);
   const copy = conversationCopy.chat;
@@ -505,11 +539,24 @@ export function ChatView(props: {
   }
   const scrollRef = chatLayout.scrollContainerRef;
   const scrollAuthority = useTranscriptScrollAuthority();
+  // A rail click aims itself: it puts the prompt at the top of the scrollport
+  // and holds it there while the loaded range settles. Asking the shell to load
+  // an unloaded prompt also publishes a scroll target, and that reveal centres
+  // the turn with the app's scroll motion — a second answer to "where should
+  // this turn sit", and an animated one, which walks the prompt back off the
+  // top for a second after the rail has landed it. The reveal keeps its other
+  // job of recording the reading position; it just has to agree with the rail
+  // about the edge.
+  const railClaimRef = useRef<RailAlignmentClaim | undefined>(undefined);
   const navigatePromptRailFallback = useCallback((turn: PromptAnchorRailTurn) => {
     if (!turnIdsRef.current.has(turn.turnId) && turn.sequence !== undefined) {
+      railClaimRef.current = { turnId: turn.turnId };
       loadTranscriptTurnRef.current?.({ turnId: turn.turnId, sequence: turn.sequence });
     }
   }, []);
+  const railAlignment = resolveRailAlignedTarget(railClaimRef.current, props.scrollTargetTurn);
+  railClaimRef.current = railAlignment.claim;
+  const scrollTargetTurn = railAlignment.target;
   const inlineTransientMessages = tailTurnId
     ? transientMessages.filter((message) => {
         const turn = turns.find((candidate) => candidate.turnId === tailTurnId);
@@ -535,7 +582,9 @@ export function ChatView(props: {
     scrollRef,
     sessionId: props.activeSession?.id,
     messages: props.messages,
-    target: props.scrollTargetTurn,
+    target: scrollTargetTurn,
+    restoreTarget: props.restoreTargetTurn,
+    onReadingAnchorChange: props.onReadingAnchorChange,
     behavior: props.scrollBehavior,
     hasOlderHistory: props.hasOlderHistory,
     onLoadEarlierHistory: props.onLoadEarlierHistory,
@@ -799,7 +848,7 @@ export function ChatView(props: {
                         <ModelProviderRetryIndicator retry={props.liveTurn.providerRetry} />
                       ) : (
                         /* No turn here means no `startedAt`, so this one shows
-                           the working phrase without a clock. */
+                           the status label without a clock. */
                         (props.runningStatus && <TurnRunningStatus />)
                       )}
                     </div>

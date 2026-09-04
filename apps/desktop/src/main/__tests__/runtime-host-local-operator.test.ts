@@ -35,6 +35,13 @@ import {
   runtimeHostLocalSetupCommand,
 } from '../runtime-host-local-operator.js';
 
+const OPERATOR = {
+  kind: 'node' as const,
+  platform: 'posix' as const,
+  nodePath: '/usr/bin/node',
+  modulePath: '/tmp/maka/operator.mjs',
+};
+
 test('local setup installs one managed service for the Desktop root with Direct peer enabled', () => {
   assert.deepEqual(
     runtimeHostLocalSetupCommand({
@@ -90,7 +97,7 @@ test('local setup forwards the exact development archive evidence', async (t) =>
         version: '0.2.0-development',
         serviceId: 'b'.repeat(64),
         deploymentId: '00000000-0000-4000-8000-000000000001',
-        operatorPath: '/tmp/maka/operator',
+        operator: OPERATOR,
         rootPath: '/tmp/maka/root',
         rootId: 'a'.repeat(64),
         endpoint: 'ws://127.0.0.1:7443/runtime-host',
@@ -185,6 +192,7 @@ test('local update runs the selected package against the exact managed deploymen
         deploymentId,
       },
       expectedHost: { hostEpoch: 'older-host', pid: 42 },
+      allowManualUpdate: true,
     },
     (phase) => phases.push(phase),
   );
@@ -200,12 +208,48 @@ test('local update runs the selected package against the exact managed deploymen
     '--expected-root-path', '/tmp/maka/root',
     '--expected-root-id', 'a'.repeat(64),
     '--expected-deployment-id', deploymentId,
+    '--allow-manual-update',
   ]);
   assert.equal(
     environment?.[RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST_ENV],
     '1',
   );
   assert.deepEqual(phases, ['staging']);
+
+  const developmentIntegrity = `sha512-${Buffer.alloc(64, 9).toString('base64')}`;
+  await operator.runUpdate(
+    {
+      setupPackage: {
+        kind: 'development_archive',
+        path: '/tmp/maka-agent-development.tgz',
+        integrity: developmentIntegrity,
+      },
+      target: {
+        serviceId: 'a'.repeat(64),
+        rootPath: '/tmp/maka/root',
+        rootId: 'a'.repeat(64),
+        deploymentId,
+      },
+      allowManualUpdate: true,
+      allowInterruptActiveTasks: true,
+    },
+    () => undefined,
+  );
+
+  assert.deepEqual(args, [
+    'exec', '--yes', '--package', '/tmp/maka-agent-development.tgz', '--',
+    'maka', 'runtime-host', 'service', 'update', '--framed',
+    '--managed-root-id', 'a'.repeat(64),
+    '--expected-service-id', 'a'.repeat(64),
+    '--expected-root-path', '/tmp/maka/root',
+    '--expected-root-id', 'a'.repeat(64),
+    '--expected-deployment-id', deploymentId,
+    '--allow-interrupt-active-tasks',
+  ]);
+  assert.equal(
+    environment?.[RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY_ENV],
+    developmentIntegrity,
+  );
 });
 
 test('local Peer Mesh join keeps invitations off argv and accepts bounded large results', async (t) => {
@@ -224,7 +268,7 @@ test('local Peer Mesh join keeps invitations off argv and accepts bounded large 
         peerId: `peer-${meshIndex}-${memberIndex}-${'x'.repeat(48)}`,
         endpointKind: 'client' as const,
         displayName: `Member ${meshIndex}-${memberIndex} ${'x'.repeat(60)}`,
-        state: 'route_available' as const,
+        state: 'reachable' as const,
         expiresAt: 4_000_000_000_000,
       })),
       pendingInvitationCount: 0,
@@ -271,7 +315,7 @@ test('local Peer Mesh join keeps invitations off argv and accepts bounded large 
   const invitation = JSON.stringify({ secret: 'one-time-mesh-secret' });
 
   const result = await operator.runPeerMesh({
-    operatorPath: '/tmp/maka/operator',
+    operator: OPERATOR,
     action: 'join',
     target: {
       serviceId: 'b'.repeat(64),
@@ -283,6 +327,7 @@ test('local Peer Mesh join keeps invitations off argv and accepts bounded large 
   });
 
   assert.deepEqual(args, [
+    OPERATOR.modulePath,
     'mesh', 'join', '--framed',
     '--expected-service-id', 'b'.repeat(64),
     '--expected-root-path', '/tmp/maka/root',

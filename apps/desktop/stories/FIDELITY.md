@@ -19,7 +19,7 @@
 
 # Storybook fidelity convention
 
-Applies to every `Product/*` story in `apps/desktop/stories` and `packages/ui/stories`. `Primitives/*` and `Design System/*` are exempt: they demonstrate a component's states, not a product surface, and there is no user path to a StatTile emphasis.
+Applies to every `Product/*` story in `apps/desktop/stories` and `packages/ui/stories`. `Primitives/*` and `Design System/*` are exempt: they demonstrate a component's states, not a product surface.
 
 ## Every product story maps to a state a real user can reach
 

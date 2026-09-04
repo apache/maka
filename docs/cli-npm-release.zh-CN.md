@@ -117,7 +117,8 @@ authentication and disallow tokens**，然后撤销不再使用的 publish token
 2. 使用 provenance 将精确 npm tarball 发布到 `nightly`；
 3. 要求公共 registry 中的精确版本和 `nightly` tag 都已可读；
 4. 构建、验证并 attest 精确的 Desktop 安装包和 GitHub `dev` metadata；
-5. 将受保护的 `v<version>` tag 绑定到精确 source commit，并验证 Draft 中全部九项资产；
+5. 将受保护的 `v<version>` tag 绑定到精确 source commit，并验证 Draft 中恰好是
+   `desktopNightlyReleaseAssetNames` 定义的那些资产；
 6. 仅在 Draft 完整后发布 Latest 关闭的 GitHub prerelease。
 
 这个顺序既避免 Desktop 指向 npm 中不存在的 Runtime Host，也让 npm Nightly 与 Desktop 打包彼此

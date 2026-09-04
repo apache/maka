@@ -19,7 +19,7 @@
 
 import { FAKE_HOLD_OPEN_PROMPT } from '@maka/runtime/test-only/fake-backend';
 import type { CDPSession, Locator, Page } from '@playwright/test';
-import { expect, test, COMPOSER_INPUT } from './fixtures';
+import { awaitSendReady, ensureSidebarExpanded, expect, test, COMPOSER_INPUT } from './fixtures';
 import { auditAxTree } from '../../../scripts/ax-tree-audit.mjs';
 import { groupedNav } from '../src/renderer/settings/settings-nav';
 
@@ -171,9 +171,9 @@ test('data-backed conversation exposes ordered todos and keyboard access to tool
   const modelSwitcher = page.getByRole('button', { name: '切换当前任务模型' });
   await tabTo(page, modelSwitcher, 'model picker');
   await page.keyboard.press('Enter');
-  await expect(page.getByRole('menuitem', { name: /glm-5\.1/ })).toBeVisible();
+  await expect(page.getByRole('menuitemradio', { name: /glm-5\.1/ })).toBeVisible();
   await assertAxHealth(cdp, 'conversation/model-picker');
-  const availableModel = page.getByRole('menuitem', { name: 'glm-4.5', exact: true });
+  const availableModel = page.getByRole('menuitemradio', { name: 'glm-4.5', exact: true });
   await expect(availableModel).toBeFocused();
   await page.keyboard.press('Enter');
   await expect(modelSwitcher).toContainText('glm-4.5');
@@ -183,6 +183,7 @@ test('data-backed conversation exposes ordered todos and keyboard access to tool
   await page.keyboard.insertText('/graph on');
   const send = page.getByRole('button', { name: '发送' });
   await tabTo(page, send, 'Send button', 20);
+  await awaitSendReady(page);
   await page.keyboard.press('Enter');
   await expect(page.getByText('Graph Mode 已开启', { exact: true })).toBeVisible();
   await assertAxHealth(cdp, 'overlay/graph-mode-toast');
@@ -203,6 +204,7 @@ test('toast and error states expose healthy live regions', async ({ window: page
   const cdp = await page.context().newCDPSession(page);
   const composer = page.locator(COMPOSER_INPUT);
   await composer.fill('/graph history');
+  await awaitSendReady(page);
   await composer.press('Enter');
   await expect(page.getByText('Graph 历史', { exact: true })).toBeVisible();
   await assertAxHealth(cdp, 'overlay/graph-history-toast');
@@ -224,10 +226,17 @@ test('a streaming answer exposes a healthy live conversation state', async ({ wi
   await tabTo(page, composer, 'streaming composer', 60);
   await page.keyboard.insertText(FAKE_HOLD_OPEN_PROMPT);
   const send = page.getByRole('button', { name: '发送' });
+  // After the Tab walk, not before it: a tooltip-carrying Astryx Button is
+  // disabled via `aria-disabled`, so it stays focusable and `tabTo` would
+  // reach it either way.
   await tabTo(page, send, 'streaming Send button', 20);
+  await awaitSendReady(page);
   await page.keyboard.press('Enter');
 
-  await expect(page.locator('.maka-bubble-streaming')).toContainText('Fake backend waiting');
+  await expect(page.locator('.maka-bubble-streaming')).toContainText(
+    'Fake backend waiting',
+    { timeout: 20_000 },
+  );
   await expect(page.getByRole('button', { name: '停止' })).toBeEnabled();
   await assertAxHealth(cdp, 'conversation/streaming');
 
@@ -254,8 +263,8 @@ test('composer and workbar entry points expose named actionable controls', async
   await tabTo(page, composer, 'new-task composer', 60);
   await page.keyboard.insertText(prompt);
   const send = page.getByRole('button', { name: '发送' });
-  await expect(send).toBeEnabled();
   await tabTo(page, send, 'new-task Send button', 20);
+  await awaitSendReady(page);
   await page.keyboard.press('Enter');
   await expect(page.getByText(`Fake backend received: ${prompt}`)).toBeVisible({
     timeout: 30_000,
@@ -298,4 +307,42 @@ test('composer and workbar entry points expose named actionable controls', async
       await expect(page.getByRole('list', { name: '打开工具' })).toBeVisible();
     }
   }
+});
+
+/**
+ * Restoring a draft is not a reason to move focus. The composer places the
+ * restored caret with a selection, and a selection inside a `contenteditable`
+ * focuses it whatever held focus before — so before the caret was held back,
+ * activating a session row took focus out from under the keyboard user who
+ * activated it. Asserted in a real browser because that is where the focus
+ * side effect lives; the unit harness models it and cannot observe it.
+ */
+test('activating a session row with an unsent draft keeps focus on the row', async ({
+  window: page,
+}) => {
+  const composer = page.locator(COMPOSER_INPUT);
+  const prompt = 'session for the draft focus contract';
+  await composer.fill(prompt);
+  await awaitSendReady(page);
+  await composer.press('Enter');
+  await expect(page.getByText(`Fake backend received: ${prompt}`)).toBeVisible({
+    timeout: 30_000,
+  });
+
+  await composer.click();
+  // Plain text, no Skill token: this contract is about the caret restore, and a
+  // token redraw writes the same selection for a reason of its own.
+  await page.keyboard.insertText('an unsent draft');
+  await expect(composer).toHaveText('an unsent draft');
+
+  await ensureSidebarExpanded(page);
+  const sidebar = page.getByRole('navigation', { name: '任务列表' });
+  await sidebar.getByRole('button', { name: '新任务', exact: true }).click();
+  await expect(composer).toHaveText('');
+
+  const sessionRow = sidebar.locator('[data-session-id]').first();
+  await sessionRow.click();
+  await expect(composer).toHaveText('an unsent draft');
+  await expect(composer).not.toBeFocused();
+  await expect(sessionRow.locator(':focus')).toHaveCount(1);
 });

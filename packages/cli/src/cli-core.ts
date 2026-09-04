@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url';
 import { deriveMakaDataRoots, resolveMakaDataRoots } from './workspace-root.js';
 import {
   configureRuntimeHostPeerClient,
-  resolveRuntimeHostPeerNativePath,
+  resolveRuntimeHostNativePath,
 } from './runtime-host-peer-artifact.js';
 import {
   parseRuntimeHostCommand,
@@ -133,7 +133,7 @@ function helpText(cliCommand: string): string {
     '',
     'Commands:',
     `  ${cliCommand}              Start the TUI`,
-    `  ${cliCommand} --acp      Serve ACP v1 over stdio (initialize only; session support in progress)`,
+    `  ${cliCommand} --acp      Serve ACP v1 over stdio (initialize, session/new, session/list)`,
     `  ${cliCommand} run ...      Run one non-interactive model turn`,
     `  ${cliCommand} activate ... Run one Cloud Session activation and emit JSONL`,
     `  ${cliCommand} -p ...       Alias for ${cliCommand} run`,
@@ -155,16 +155,21 @@ function helpText(cliCommand: string): string {
     `  ${cliCommand} runtime-host service reconcile-update [--json]`,
     `  ${cliCommand} runtime-host access issue --principal <id> --grant <operation>`,
     `  ${cliCommand} runtime-host access issue --principal <id> --preset <desktop-client|terminal-client>`,
+    `  ${cliCommand} runtime-host access connection-code [--name <name>] [--root <path>]`,
     `  ${cliCommand} runtime-host access list`,
     `  ${cliCommand} runtime-host access issue --kind capability-provider --principal <id>`,
     `  ${cliCommand} runtime-host access revoke --credential <id>`,
     `  ${cliCommand} runtime-host project list [--root <path>]`,
     `  ${cliCommand} runtime-host project add <path> [--prefer] [--root <path>]`,
+    `  ${cliCommand} runtime-host plugin status|list|inspect|failures [--root <path>]`,
+    `  ${cliCommand} runtime-host plugin install|uninstall|reload <target> [--root <path>]`,
+    `  ${cliCommand} runtime-host plugin export <extension-id> <bundle-path> [--root <path>]`,
+    `  ${cliCommand} runtime-host plugin apply <operations.json> [--root <path>]`,
+    `  ${cliCommand} runtime-host plugin reconcile [--root <path>]`,
     `  ${cliCommand} runtime-host profile list`,
     `  ${cliCommand} runtime-host profile set --id <id> --name <name> --tls-url <wss-url> --expected-root <root-id> [--credential-env <name>]`,
     `  ${cliCommand} runtime-host profile set --id <id> --name <name> --ssh-destination <user@host> --ssh-remote-port <port> --expected-root <root-id> [--ssh-port <port>] [--credential-env <name>]`,
     `  ${cliCommand} runtime-host profile set --id <id> --name <name> --plaintext-url <ws-url> --acknowledge-plaintext --expected-root <root-id> [--credential-env <name>]`,
-    `  ${cliCommand} runtime-host profile set --id <id> --name <name> --peer-id <peer-id> --peer-route <multiaddr> --expected-root <root-id> [--credential-env <name>]`,
     `  ${cliCommand} runtime-host profile remove --id <id>`,
     `  ${cliCommand} runtime-host capability-provider serve --url <ws-url> --mcp-config <path> --expected-root <root-id>`,
     '',
@@ -296,7 +301,11 @@ export async function runMakaCli(
     }
     case 'acp': {
       const { runMakaAcpStdioServer } = await import('./acp/stdio-server.js');
-      return runMakaAcpStdioServer({ version });
+      return runMakaAcpStdioServer({
+        workspaceRoot: dataRoots.workspaceRoot,
+        clientDataRoot: dataRoots.clientDataRoot,
+        version,
+      });
     }
     case 'runtime-host-serve': {
       const { runRuntimeHostServiceCli } = await import('./runtime-host-service-command.js');
@@ -314,6 +323,12 @@ export async function runMakaCli(
           config.deploymentRoot,
           config.launch.package.integrity,
         );
+        if (process.platform === 'win32') {
+          const { ownWindowsRuntimeHostProcessTree } = await import(
+            './runtime-host-windows-service.js'
+          );
+          await ownWindowsRuntimeHostProcessTree(packageLayout.cliPath);
+        }
         return runRuntimeHostServiceCli({
           rootPath: config.root.path,
           json: command.json,
@@ -326,7 +341,7 @@ export async function runMakaCli(
           ...(peer
             ? {
                 peer: {
-                  nativePath: await resolveRuntimeHostPeerNativePath(packageLayout.cliPath),
+                  nativePath: await resolveRuntimeHostNativePath(packageLayout.cliPath),
                   keyPath: peer.keyPath,
                   expectedPeerId: peer.peerId,
                   listenAddresses: peer.listenAddresses,
@@ -554,6 +569,7 @@ export async function runMakaCli(
           ...(command.operatorDeploymentId
             ? { operatorDeploymentId: command.operatorDeploymentId }
             : {}),
+          ...(command.allowManualUpdate ? { allowManualUpdate: true } : {}),
           ...(command.allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
         });
       }
@@ -669,6 +685,19 @@ export async function runMakaCli(
         currentCredentialFingerprint: command.currentCredentialFingerprint,
       });
     }
+    case 'runtime-host-access-connection-code': {
+      const { runRuntimeHostAccessConnectionCodeCli } = await import(
+        './runtime-host-access-command.js'
+      );
+      return runRuntimeHostAccessConnectionCodeCli(
+        {
+          rootPath: command.rootPath ?? dataRoots.workspaceRoot,
+          ...(command.expectedRootId ? { expectedRootId: command.expectedRootId } : {}),
+          ...(command.name ? { name: command.name } : {}),
+        },
+        command.framed,
+      );
+    }
     case 'runtime-host-access-list': {
       const { runRuntimeHostAccessListCli } = await import('./runtime-host-access-command.js');
       return runRuntimeHostAccessListCli(
@@ -707,6 +736,18 @@ export async function runMakaCli(
             path: command.path,
             prefer: command.prefer,
           });
+    }
+    case 'runtime-host-plugin': {
+      const { runRuntimeHostPluginCli } = await import('./runtime-host-plugin-command.js');
+      return runRuntimeHostPluginCli({
+        rootPath: command.rootPath ?? dataRoots.workspaceRoot,
+        action: command.action,
+        ...(command.subject ? { subject: command.subject } : {}),
+        ...(command.targetPath ? { targetPath: command.targetPath } : {}),
+        ...(command.rootId ? { rootId: command.rootId } : {}),
+        ...(command.cursor === undefined ? {} : { cursor: command.cursor }),
+        ...(command.limit === undefined ? {} : { limit: command.limit }),
+      });
     }
     case 'runtime-host-capability-provider-serve': {
       const { runRuntimeHostCapabilityProviderCli } = await import(
@@ -747,7 +788,7 @@ export async function runMakaCli(
             id: command.id,
             name: command.name,
             distribution: command.distribution,
-            operatorPath: command.operatorPath,
+            operator: command.operator,
             expectedRootId: command.expectedRootId,
           },
           {},

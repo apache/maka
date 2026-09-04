@@ -21,7 +21,7 @@ import { randomUUID } from 'node:crypto';
 import {
   authorizeConnectionModel,
   effectiveBaseUrl,
-  PROVIDER_DEFAULTS,
+  PROVIDER_REGISTRY,
   type RuntimeExecutionConnection,
 } from '@maka/core/llm-connections';
 import { isModelExplicitlyUnsupportedForChat } from '@maka/core/model-catalog';
@@ -227,11 +227,12 @@ export function createHostDailyReviewModel(
         const header = await readAuxiliaryPreflight(authority, effectiveAbortSignal, () =>
           resolveDailyReviewHeader(authority.runtimePolicy, modelKey),
         );
+        const callId = authority.newId();
         const result = await runHostAuxiliaryModelCall(authority, {
-          transportContextId: 'daily-review',
+          transportContextId: callId,
           header,
           callKind: 'daily_review',
-          callId: `daily_review_${authority.newId()}`,
+          callId: `daily_review_${callId}`,
           abortSignal: effectiveAbortSignal,
           buildRequest: () => ({ prompt, maxOutputTokens: 2_048 }),
         });
@@ -513,6 +514,7 @@ async function runHostAuxiliaryModelCall(
           input.header.thinkingLevel,
         );
         const model = getAIModel({
+          sessionId: input.transportContextId,
           connection: target.connection,
           apiKey,
           modelId: target.model,
@@ -844,7 +846,7 @@ export async function resolveExecutionTarget(
       `Runtime Host model connection is not ready: ${resolved.kind}`,
     );
   }
-  const provider = PROVIDER_DEFAULTS[resolved.connection.providerType];
+  const provider = PROVIDER_REGISTRY[resolved.connection.providerType];
   if (!provider) {
     throw new AuxiliaryModelCallConfigurationError('Runtime Host model provider is not executable');
   }

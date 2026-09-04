@@ -37,10 +37,12 @@ import {
 } from '@maka/runtime/test-only/fake-backend';
 import { LOCAL_READ_AGENT_DEFINITION } from '@maka/runtime/agent-catalog';
 import { SessionManager } from '@maka/runtime/session-manager';
+import { workHubDirectStopAbortSource } from '@maka/runtime/session-manager';
 import { fingerprintAgentGraphRunnableIntent } from '@maka/runtime/stream-graph-admission';
 import type { AgentGraphRunnableIntent } from '@maka/runtime/stream-graph-readiness';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
+import { createSessionStore } from '@maka/storage/session-store';
 import {
   LONG_TERM_MEMORY_DATABASE_NAME,
   openInteractiveLongTermMemoryStoreForWrite,
@@ -57,6 +59,8 @@ import { HostResidencyRegistry } from '../server/host-residency-registry.js';
 import {
   createExecutionRuntimeHostComposition,
   runtimeHostFilesystemWorkerRuntime,
+  stopOwnedWorkHubRoot,
+  stopReplacedWorkHubRoot,
 } from '../server/execution-composition.js';
 import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
@@ -67,6 +71,176 @@ const CONTEXT_OFFLOAD_DATABASE_NAME = 'context-offload.sqlite';
 test('filesystem worker follows the candidate executable runtime', () => {
   assert.equal(runtimeHostFilesystemWorkerRuntime({ electron: '43.1.1' }), 'electron');
   assert.equal(runtimeHostFilesystemWorkerRuntime({}), 'node');
+});
+
+test('WorkHub recovers a delivered root Stop from its durable cancelled Turn', async () => {
+  let stopCalls = 0;
+  const outcome = await stopOwnedWorkHubRoot(
+    {
+      readRootState: () => ({ kind: 'idle' }),
+      read: async (identity: { sessionId: string; turnId: string; runId: string }) => ({
+        ...identity,
+        status: 'cancelled',
+        terminalEventId: 'terminal-workhub-stop',
+        abortSource: workHubDirectStopAbortSource('workhub-stop-action'),
+      }),
+      stopRoot: async () => {
+        stopCalls += 1;
+      },
+    } as unknown as Parameters<typeof stopOwnedWorkHubRoot>[0],
+    { sessionId: 'target-session', turnId: 'target-turn', runId: 'target-run' },
+    'workhub-stop-action',
+  );
+
+  assert.deepEqual(outcome, {
+    outcome: 'stop_delivered',
+    targetTurnId: 'target-turn',
+  });
+  assert.equal(stopCalls, 0);
+});
+
+test('WorkHub never reports a still-running root as already terminal', async () => {
+  // The restart window: the execution is not registered in memory yet, so the
+  // root looks inactive while its durable snapshot is still running.
+  const outcome = await stopOwnedWorkHubRoot(
+    {
+      readRootState: () => ({ kind: 'idle' }),
+      read: async (identity: { sessionId: string; turnId: string; runId: string }) => ({
+        ...identity,
+        status: 'running',
+      }),
+      stopRoot: async () => assert.fail('an unregistered root cannot be stopped'),
+    } as unknown as Parameters<typeof stopOwnedWorkHubRoot>[0],
+    { sessionId: 'target-session', turnId: 'target-turn', runId: 'target-run' },
+    'workhub-stop-action',
+  );
+
+  assert.deepEqual(outcome, { outcome: 'recovering', targetTurnId: 'target-turn' });
+
+  // A durably terminal snapshot is still the proof `already_terminal` needs.
+  const settled = await stopOwnedWorkHubRoot(
+    {
+      readRootState: () => ({ kind: 'idle' }),
+      read: async (identity: { sessionId: string; turnId: string; runId: string }) => ({
+        ...identity,
+        status: 'completed',
+        terminalEventId: 'terminal-complete',
+      }),
+      stopRoot: async () => assert.fail('a completed root cannot be stopped'),
+    } as unknown as Parameters<typeof stopOwnedWorkHubRoot>[0],
+    { sessionId: 'target-session', turnId: 'target-turn', runId: 'target-run' },
+    'workhub-stop-action',
+  );
+
+  assert.deepEqual(settled, { outcome: 'already_terminal', targetTurnId: 'target-turn' });
+});
+
+test('WorkHub binds a fresh owning-root Stop to its action identity', async () => {
+  let source: string | undefined;
+  let actionId: string | undefined;
+  const outcome = await stopOwnedWorkHubRoot(
+    {
+      readRootState: () => ({
+        kind: 'active',
+        sessionId: 'target-session',
+        turnId: 'target-turn',
+        runId: 'target-run',
+      }),
+      read: async (identity: { sessionId: string; turnId: string; runId: string }) => ({
+        ...identity,
+        status: 'cancelled',
+        terminalEventId: 'terminal-workhub-stop',
+        abortSource: workHubDirectStopAbortSource('workhub-stop-action'),
+      }),
+      stopRoot: async (
+        _identity: { sessionId: string; turnId: string; runId: string },
+        input: {
+          source?: 'stop_button' | 'graph_supervisor' | 'workhub_direct_stop';
+          workHubActionId?: string;
+        },
+      ) => {
+        source = input.source;
+        actionId = input.workHubActionId;
+      },
+    } as unknown as Parameters<typeof stopOwnedWorkHubRoot>[0],
+    { sessionId: 'target-session', turnId: 'target-turn', runId: 'target-run' },
+    'workhub-stop-action',
+  );
+
+  assert.equal(source, 'workhub_direct_stop');
+  assert.equal(actionId, 'workhub-stop-action');
+  assert.equal(outcome.outcome, 'stop_delivered');
+});
+
+test('WorkHub detects a manual Stop that wins after its active-root check', async () => {
+  let stopCalls = 0;
+  const outcome = await stopOwnedWorkHubRoot(
+    {
+      readRootState: () => ({
+        kind: 'active',
+        sessionId: 'target-session',
+        turnId: 'target-turn',
+        runId: 'target-run',
+      }),
+      read: async (identity: { sessionId: string; turnId: string; runId: string }) => ({
+        ...identity,
+        status: 'cancelled',
+        terminalEventId: 'concurrent-manual-stop',
+        abortSource: 'renderer.stop_button',
+      }),
+      stopRoot: async () => {
+        stopCalls += 1;
+      },
+    } as unknown as Parameters<typeof stopOwnedWorkHubRoot>[0],
+    { sessionId: 'target-session', turnId: 'target-turn', runId: 'target-run' },
+    'workhub-stop-action',
+  );
+
+  assert.equal(stopCalls, 1);
+  assert.equal(outcome.outcome, 'already_terminal');
+});
+
+test('a replacement retirement never records direct-stop provenance', async () => {
+  const stops: Array<Record<string, unknown> | undefined> = [];
+  const outcome = await stopReplacedWorkHubRoot(
+    {
+      readRootState: () => ({
+        kind: 'active',
+        sessionId: 'target-session',
+        turnId: 'target-turn',
+        runId: 'target-run',
+      }),
+      read: async () => assert.fail('replacement retirement must not re-read stop provenance'),
+      stopRoot: async (
+        _identity: { sessionId: string; turnId: string; runId: string },
+        input?: Record<string, unknown>,
+      ) => {
+        stops.push(input);
+      },
+    } as unknown as Parameters<typeof stopReplacedWorkHubRoot>[0],
+    { sessionId: 'target-session', turnId: 'target-turn', runId: 'target-run' },
+  );
+
+  assert.deepEqual(stops, [undefined]);
+  assert.deepEqual(outcome, { outcome: 'stop_delivered', targetTurnId: 'target-turn' });
+});
+
+test('a replacement leaves a root it no longer owns alone', async () => {
+  const outcome = await stopReplacedWorkHubRoot(
+    {
+      readRootState: () => ({
+        kind: 'active',
+        sessionId: 'target-session',
+        turnId: 'other-turn',
+        runId: 'other-run',
+      }),
+      read: async () => assert.fail('replacement retirement must not re-read stop provenance'),
+      stopRoot: async () => assert.fail('a root owned by another Turn must not be stopped'),
+    } as unknown as Parameters<typeof stopReplacedWorkHubRoot>[0],
+    { sessionId: 'target-session', turnId: 'target-turn', runId: 'target-run' },
+  );
+
+  assert.deepEqual(outcome, { outcome: 'already_terminal', targetTurnId: 'target-turn' });
 });
 
 test('production composition owns the long-term memory database lifecycle', async () => {
@@ -103,8 +277,34 @@ test('production composition owns the long-term memory database lifecycle', asyn
   });
 });
 
-test('production composition reaches Ready when the optional context reader cannot open', async () => {
+test('production composition reaches Ready when the optional context Store cannot open', async () => {
   await withCompositionRoot(async ({ root, owner }) => {
+    const requestFingerprint = `sha256:${'a'.repeat(64)}` as const;
+    const preparingSessionId = 'preparing-context-copy';
+    const sessionStore = createSessionStore(root);
+    await sessionStore.createStableSession({
+      sessionId: preparingSessionId,
+      requestFingerprint,
+      input: {
+        cwd: root,
+        llmConnectionId: FAKE_CONNECTION_ID,
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'ask',
+        name: 'Preparing context copy',
+        labels: [],
+        parentSessionId: 'source-session',
+        branchOfTurnId: 'source-turn',
+        conversationCopy: {
+          kind: 'branch',
+          sourceSessionId: 'source-session',
+          sourceTurnId: 'source-turn',
+          requestFingerprint,
+          state: 'preparing',
+        },
+      },
+    });
+    await sessionStore.close?.();
     await mkdir(join(root, CONTEXT_OFFLOAD_DATABASE_NAME));
     const originalConsoleError = console.error;
     const diagnostics: string[] = [];
@@ -114,12 +314,30 @@ test('production composition reaches Ready when the optional context reader cann
       composition = await createExecutionRuntimeHostComposition(compositionContext(owner));
       assert.equal(composition.workspaceExecution.state, 'ready');
       assert.equal(
-        diagnostics.some((message) => message.includes('optional context-offload reader')),
+        diagnostics.some((message) => message.includes('optional context-offload Store')),
+        true,
+      );
+      await composition.recover();
+      assert.equal(
+        diagnostics.some((message) =>
+          message.includes('conversation copy cleanup deferred during recovery'),
+        ),
         true,
       );
     } finally {
       console.error = originalConsoleError;
-      await composition?.close();
+      if (composition) {
+        await composition.close();
+      }
+    }
+    const reopened = createSessionStore(root);
+    try {
+      assert.equal(
+        (await reopened.readHeaderSnapshot(preparingSessionId)).conversationCopy?.state,
+        'preparing',
+      );
+    } finally {
+      await reopened.close?.();
     }
   });
 });
@@ -544,6 +762,32 @@ test('WorkHub correction replaces its link without stopping a shared manual Turn
         );
         return proof.ok && proof.result.resolutions[0]?.state === 'owned';
       });
+
+      const stopped = await composition.handlers['workhub.coordination.act'](
+        {
+          actionId: 'workhub-stop-shared-action',
+          userText: `Stop ${sourceCandidate.sessionName}`,
+          confirmation: { kind: 'user_stop' },
+          proposal: {
+            disposition: 'stop_work',
+            expects: { targetSessionId: source.id },
+          },
+        },
+        context,
+      );
+      assert.deepEqual(stopped, {
+        ok: true,
+        result: {
+          disposition: 'stop_work',
+          outcome: 'not_owned',
+          targetSessionId: source.id,
+          targetTurnId: 'manual-active-turn',
+        },
+      });
+      assert.equal(
+        (await stores.sessionStore.readWorkHubStopResolution(assignment.delegationId))?.outcome,
+        'not_owned',
+      );
 
       const unrelated = await composition.handlers['turn.message.submit'](
         {

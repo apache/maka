@@ -253,6 +253,7 @@ test('rejects a stale Host identity when raw Session IDs collide', async () => {
   const computerReleased: string[] = [];
   const nativeCapabilities: DesktopRuntimeHostCandidateDeps['nativeCapabilities'] = {
     browserTools: [nativeTool()],
+    resolveBrowserUrl: () => 'https://example.com/',
     releaseBrowserSession: (sessionId) => {
       browserReleased.push(sessionId);
     },
@@ -375,6 +376,7 @@ test('starts without registering an empty native capability set', async () => {
     host.connection,
     deps(ipc, {
       browserTools: [],
+      resolveBrowserUrl: () => 'https://example.com/',
       releaseBrowserSession() {},
       computerUseTools: emptyComputerUseTools(),
       releaseComputerUseSession() {},
@@ -394,6 +396,7 @@ test('refreshes native capabilities with a new immutable provider snapshot', asy
   const candidate = await createDesktopRuntimeHostCandidate(host.connection, {
     ...deps(ipc, {
       browserTools: [],
+      resolveBrowserUrl: () => 'https://example.com/',
       releaseBrowserSession() {},
       computerUseTools: emptyComputerUseTools(),
       releaseComputerUseSession() {},
@@ -448,6 +451,7 @@ test('releases all native Session resources on retirement and generation close',
     host.connection,
     deps(ipc, {
       browserTools: [nativeTool()],
+      resolveBrowserUrl: () => 'https://example.com/',
       releaseBrowserSession: async (sessionId) => {
         browserReleased.push(sessionId);
       },
@@ -554,12 +558,15 @@ test('closes the claimed Host connection when native capability construction fai
         host.connection,
         deps(ipc, {
           browserTools: [invalidTool],
+          resolveBrowserUrl: () => 'https://example.com/',
           releaseBrowserSession() {},
           computerUseTools: emptyComputerUseTools(),
           releaseComputerUseSession() {},
         }),
       ),
-    /tool schema must be an object/,
+    // The desktop-local schema check moved into the shared protocol decoder,
+    // which rejects a non-object tool schema root with its own wording.
+    /tool schema root must be an object/,
   );
 
   assert.equal(ipc.size, 0);
@@ -575,6 +582,7 @@ test('does not release or report a Revision the Host retained during cleanup', a
   const candidate = await createDesktopRuntimeHostCandidate(host.connection, {
     ...deps(ipc, {
       browserTools: [],
+      resolveBrowserUrl: () => 'https://example.com/',
       releaseBrowserSession: (sessionId) => {
         released.push(`browser:${sessionId}`);
       },
@@ -950,6 +958,7 @@ function deps(
   ipcMain: ReturnType<typeof ipcHarness>,
   nativeCapabilities: DesktopRuntimeHostCandidateDeps['nativeCapabilities'] = {
     browserTools: [nativeTool()],
+    resolveBrowserUrl: () => 'https://example.com/',
     releaseBrowserSession() {},
     computerUseTools: emptyComputerUseTools(),
     releaseComputerUseSession() {},
@@ -1207,6 +1216,7 @@ function connectionHarness(
       return provider.call(frame, {
         signal: new AbortController().signal,
         accept: async () => undefined,
+        requestInteraction: async () => assert.fail('Unexpected provider interaction'),
       });
     },
     disconnect: () => resolveClosed?.(),

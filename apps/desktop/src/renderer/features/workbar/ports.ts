@@ -34,6 +34,7 @@ import type { GitReviewReadResult, GitReviewSource } from '@maka/core/git-review
 import type { PermissionMode } from '@maka/core/permission';
 import type { RegenerateTurnInput } from '@maka/core/runtime-inputs';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
+import type { ClientCapabilityResponse } from '@maka/core/client-capability-grant';
 import type {
   SessionChangedEvent,
   SessionSummary,
@@ -43,8 +44,12 @@ import type {
 import type { SessionTrace } from '@maka/core/session-trace';
 import type { SessionTodoItem } from '@maka/core/session-todo';
 import type { UserQuestionResponse } from '@maka/core/user-question';
+import type { InteractionFormResponse } from '@maka/core/interaction';
 import type { Result } from '@maka/core/result';
-import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
+import type {
+  ContextCompactResult,
+  ContextDiagnosticsResult,
+} from '@maka/runtime-host/protocol';
 import type { MergedUsageSummary } from '@maka/core/usage-ledger-merge';
 import type {
   ShellRunPtyDataEvent,
@@ -221,7 +226,7 @@ export interface SideChatSessionPort {
   branchFromTurn(
     sessionId: string,
     input: {
-      sourceTurnId: string;
+      sourceTurnId?: string;
       name?: string;
       copyId: string;
       sideConversation: true;
@@ -232,6 +237,7 @@ export interface SideChatSessionPort {
   >;
   cleanupSessionCopy(sessionId: string): Promise<void>;
   abandonSessionCopy(sourceSessionId: string, copyId: string): Promise<void>;
+  compact(sessionId: string): Promise<ContextCompactResult>;
   send(
     sessionId: string,
     command: {
@@ -256,9 +262,17 @@ export interface SideChatSessionPort {
     sessionId: string,
     response: SandboxBoundaryResponse,
   ): Promise<void>;
+  respondToClientCapability(
+    sessionId: string,
+    response: ClientCapabilityResponse,
+  ): Promise<void>;
   respondToUserQuestion(
     sessionId: string,
     response: UserQuestionResponse,
+  ): Promise<void>;
+  respondToUserForm(
+    sessionId: string,
+    response: InteractionFormResponse,
   ): Promise<void>;
   subscribeEvents(
     sessionId: string,

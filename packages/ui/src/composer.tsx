@@ -37,6 +37,7 @@ import { useMountedRef } from './use-mounted-ref.js';
 import {
   ICON_SIZE,
   ArrowUp,
+  CircleGauge,
   FileText,
   ListTodo,
   Network,
@@ -227,6 +228,21 @@ export interface ComposerSendMetadata {
 
 type ComposerImportActionId = 'pick' | 'attach' | 'directory';
 
+export interface ComposerGoalProps {
+  /**
+   * Open the host's Goal dialog. The composer offers the entry and nothing
+   * else: a Goal names a condition and two budgets, which is a form, and the
+   * ＋ menu is a menu. Absent handler, no entry — the same rule the other
+   * ＋ entries follow.
+   */
+  onSetGoal?(): void | Promise<void>;
+  /**
+   * A Goal is already running here. Arming refuses a second one, so the
+   * entry says so up front instead of spending the user's click on an error.
+   */
+  goalActive?: boolean;
+}
+
 export const Composer = forwardRef<
   ComposerHandle,
   {
@@ -325,6 +341,8 @@ export const Composer = forwardRef<
     onPasteAsQuote?(input: { text: string; label?: string }): void;
     modelLabel?: string;
     activeSession?: SessionSummary;
+    activeModelConnectionId?: string;
+    activeModelConnectionSlug?: string;
     activeModel?: string;
     activeModelLabel?: string;
     activeProviderType?: ProviderType;
@@ -380,6 +398,12 @@ export const Composer = forwardRef<
     noModelConnection?: boolean;
     /** Optional Host-aware replacement for the generic no-model hint. */
     noModelHint?: string;
+    /** Read-only usage indicator for the active model's latest request. */
+    contextUsage?: {
+      usageTokens?: number;
+      declaredContextWindow?: number;
+      metadataContextWindow?: number;
+    };
     /**
      * Optional edit-and-resend banner above the composer. Desktop owns the
      * revision draft; Composer only renders the notice + cancel affordance.
@@ -408,7 +432,6 @@ export const Composer = forwardRef<
      * option (#1611).
      */
     permissionMode?: PermissionMode;
-    permissionModePending?: boolean;
     permissionModeDisabledReason?: string;
     onPermissionModeChange?(mode: PermissionMode): void | Promise<void>;
     /**
@@ -440,18 +463,6 @@ export const Composer = forwardRef<
     orchestrationMode?: OrchestrationMode;
     orchestrationModeDisabledReason?: string;
     onOrchestrationModeChange?(mode: OrchestrationMode): void | Promise<void>;
-    /**
-     * Open the host's Goal dialog. The composer offers the entry and nothing
-     * else: a Goal names a condition and two budgets, which is a form, and the
-     * ＋ menu is a menu. Absent handler, no entry — the same rule the other
-     * ＋ entries follow.
-     */
-    onSetGoal?(): void | Promise<void>;
-    /**
-     * A Goal is already running here. Arming refuses a second one, so the
-     * entry says so up front instead of spending the user's click on an error.
-     */
-    goalActive?: boolean;
     /**
      * Why a Goal cannot be set right now — a running Turn, typically. A Goal
      * takes hold on the Turn after it is armed, so arming during one reads as
@@ -494,7 +505,7 @@ export const Composer = forwardRef<
     mentionSkillsLoading?: boolean;
     slashCommands?: ReadonlyArray<ComposerSlashCommandOption>;
     onSearchMentionFiles?(query: string): Promise<ReadonlyArray<{ relativePath: string }>>;
-  }
+  } & ComposerGoalProps
 >(function Composer(props, ref) {
   const formRef = useRef<HTMLFormElement>(null);
   /** Astryx's imperative handle on the contentEditable input. */
@@ -550,6 +561,8 @@ export const Composer = forwardRef<
    * identity so neither hook re-runs an effect when the draft changes.
    */
   const caretToEndRef = useRef(false);
+  /** A caret-to-end owed to an editor that was not focused when it came due. */
+  const caretPendingRef = useRef(false);
   const redrawPendingRef = useRef(false);
   const textPortRef = useRef<ComposerTextPort>(null);
   if (!textPortRef.current) {
@@ -574,10 +587,27 @@ export const Composer = forwardRef<
    * say) then landed the caret at offset 0, so typing prepended to the restored
    * draft. Collapse to the end here when the editor holds no selection of its
    * own, which is what the retired `focusTextInputAtEnd` did unconditionally.
+   *
+   * Only on a focused editor, though. A selection inside a `contenteditable` is
+   * never only a caret: the browser focuses the element to carry it, whatever
+   * held focus before — measured in the shipping runtime, a selection placed
+   * here takes focus from a focused button exactly as it takes it from `body` —
+   * and sequential focus navigation then resumes from the selection rather than
+   * from the top of the document. So a restored draft claimed focus nobody
+   * directed at it: on a cold start, tens of milliseconds in, past the skip link
+   * and with no `focus()` call to explain it; and on a session swap, out from
+   * under the sidebar row the user had just activated. Hold the caret while the
+   * editor is not focused and land it on the editor's next real focus, which is
+   * the first moment the offset is the only thing being decided.
    */
   function caretToContentEnd() {
     const editable = editableNode();
     if (!editable) return;
+    if (document.activeElement !== editable) {
+      caretPendingRef.current = true;
+      return;
+    }
+    caretPendingRef.current = false;
     const selection = document.getSelection();
     const range = document.createRange();
     range.selectNodeContents(editable);
@@ -592,6 +622,30 @@ export const Composer = forwardRef<
     if (!editable || (selection?.anchorNode && editable.contains(selection.anchorNode))) return;
     caretToContentEnd();
   }
+  /**
+   * Settle a held caret when focus reaches the editor for real. On the component
+   * root, like the other native listeners here: `focusin` and `pointerdown`
+   * bubble, and a disabled composer renders no editable to look up at mount.
+   *
+   * A pointer press places the caret itself and is the more specific intent, so
+   * it drops the claim rather than being overruled by it.
+   */
+  useEffect(() => {
+    const root = inputRootRef.current;
+    if (!root) return undefined;
+    const land = () => {
+      if (caretPendingRef.current) caretToContentEnd();
+    };
+    const drop = () => {
+      caretPendingRef.current = false;
+    };
+    root.addEventListener('focusin', land);
+    root.addEventListener('pointerdown', drop);
+    return () => {
+      root.removeEventListener('focusin', land);
+      root.removeEventListener('pointerdown', drop);
+    };
+  }, []);
   /**
    * The ＋ menu's Skills entry opens the same `/` menu the keyboard opens: it
    * types the trigger for the user. There is no second Skill surface to keep in
@@ -723,13 +777,27 @@ export const Composer = forwardRef<
    * The redraw gets the same treatment for the same reason, and can land a
    * render later than the write that owed it: `insertToken` parks the selection
    * after the last chip it wrote, so the caret has to be collected again.
+   *
+   * A held caret is suspended across the redraw rather than left armed. The
+   * redraw drives `insertToken` through the document selection, and its first
+   * range focuses the editor — which would otherwise fire the focus lander onto
+   * the very range the redraw is holding, collapsing it to the end so the chip
+   * landed at the end and its source text stayed in the draft. The redraw ends
+   * by collecting the caret itself, so on success the claim is settled; on a
+   * pass that redrew nothing it is handed back untouched.
    */
   useEffect(() => {
     let restoreCaret = caretToEndRef.current;
     caretToEndRef.current = false;
-    if (redrawPendingRef.current && redrawSkillTokens()) {
-      redrawPendingRef.current = false;
-      restoreCaret = true;
+    if (redrawPendingRef.current) {
+      const heldCaret = caretPendingRef.current;
+      caretPendingRef.current = false;
+      const redrew = redrawSkillTokens();
+      caretPendingRef.current = redrew ? false : heldCaret;
+      if (redrew) {
+        redrawPendingRef.current = false;
+        restoreCaret = true;
+      }
     }
     if (restoreCaret) caretToContentEnd();
   });
@@ -2005,7 +2073,6 @@ export const Composer = forwardRef<
                   }}
                   disabled={
                     props.disabled
-                    || props.permissionModePending === true
                     || Boolean(props.permissionModeDisabledReason)
                   }
                   disabledReason={props.permissionModeDisabledReason}
@@ -2021,6 +2088,8 @@ export const Composer = forwardRef<
                 {props.activeSession ? (
                   <ChatModelSwitcher
                     activeSession={props.activeSession}
+                    activeModelConnectionId={props.activeModelConnectionId}
+                    activeModelConnectionSlug={props.activeModelConnectionSlug}
                     activeModel={props.activeModel}
                     activeModelLabel={props.activeModelLabel}
                     currentProviderType={props.activeProviderType}
@@ -2065,7 +2134,6 @@ export const Composer = forwardRef<
                     onChange={props.onThinkingLevelChange}
                     disabled={!modelSwitchAvailability.available}
                     disabledReason={thinkingSwitcherDisabledReason}
-                    loading={modelSwitchAvailability.pending}
                   />
                 ) : (
                   <ThinkingLevelSelector
@@ -2074,6 +2142,7 @@ export const Composer = forwardRef<
                     onChange={props.onNewChatThinkingLevelChange}
                   />
                 )}
+                {props.contextUsage ? <ContextUsageIndicator {...props.contextUsage} /> : null}
               </div>
               {/* The project decides where a NEW chat starts, which makes it a
                   parameter of this send like the model beside it — so it sits
@@ -2172,5 +2241,38 @@ export const Composer = forwardRef<
     </>
   );
 });
+
+function ContextUsageIndicator(props: {
+  usageTokens?: number;
+  declaredContextWindow?: number;
+  metadataContextWindow?: number;
+}) {
+  const copy = getConversationCopy(useUiLocale()).messages;
+  // A window from either source is enough to show a share: the user's
+  // declaration when there is one, otherwise the model's reported window. The
+  // distinction matters for the compaction threshold, which only a declaration
+  // arms, not for reading a number off the screen. With no window at all the
+  // usage stands on its own.
+  const window = props.declaredContextWindow ?? props.metadataContextWindow;
+  const label =
+    props.usageTokens === undefined
+      ? '—'
+      : window !== undefined && window > 0
+        ? `${Math.round((props.usageTokens / window) * 100)}%`
+        : `${props.usageTokens} tok`;
+  const tooltip =
+    props.usageTokens === undefined
+      ? copy.systemNotes.contextUsageUnavailable
+      : window !== undefined && window > 0
+        ? copy.systemNotes.contextUsageShare(props.usageTokens, window)
+        : copy.systemNotes.contextUsageNoWindow;
+  const indicator = (
+    <span className="maka-context-usage-indicator" aria-label={tooltip ?? label}>
+      <CircleGauge size={ICON_SIZE.meta} aria-hidden="true" />
+      <span>{label}</span>
+    </span>
+  );
+  return tooltip ? <Tooltip content={tooltip}>{indicator}</Tooltip> : indicator;
+}
 
 export type ComposerProps = ComponentProps<typeof Composer>;

@@ -54,6 +54,10 @@ import {
   type ProjectCatalogChangedFrame,
 } from './project-catalog-change.js';
 import {
+  decodeConnectionCatalogChangedFrame,
+  type ConnectionCatalogChangedFrame,
+} from './connection-catalog-change.js';
+import {
   decodeRequestFrame,
   decodeResponseFrame,
   type HostLifecycleState,
@@ -68,6 +72,7 @@ export * from './interaction.js';
 export * from './daily-review.js';
 export * from './client-capability.js';
 export * from './configuration-change.js';
+export * from './connection-catalog-change.js';
 export * from './goal.js';
 export * from './hosted-execution.js';
 export * from './plan.js';
@@ -95,7 +100,91 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 84 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 109 as const;
+// 109: accepted Client Capability invocations may carry one bounded nested form
+// Interaction request/result round trip.
+// 108: Session Interaction snapshots, forwarded Runtime events, and Agent Graph
+// activity may carry the provider-neutral `form` request/answer contract.
+// 107: `token_usage` anchors record the model and connection that produced
+// them. The record decodes against a closed allowlist, so an older client
+// rejects the two new keys and, with them, the Session that carries them.
+// 106: Session transcripts gain five `system_note` kinds
+// (`context_provider_dropping`, `context_window_suggestion`,
+// `context_window_overrun`, `context_reported_window_exceeded`,
+// `context_overflow_after_compaction`) and
+// `token_usage` records reshape `lastRequestAnchor` to
+// `{ inputTokens, outputTokens }`, all behind closed allowlists in
+// @maka/core. An older client that handshakes would fail
+// `decodeStoredMessage` on the first transcript carrying them, so the pair
+// must refuse each other at the handshake instead (#4559).
+// 105: Usage summaries may carry the recorded call-time total and per-Session
+// tool-invocation totals. Older Clients reject the unknown fields, so a newer
+// Host's usage summary is unreadable to them.
+// 104: WorkHub Coordination actions add closed direct-stop proposals,
+// confirmations, expected-state preconditions, and outcomes. Older peers
+// reject these strict shapes.
+// 103: `github-copilot` joins `OAUTH_LOGIN_PROVIDERS`, the Host answers the
+// closed `oauth.enrollment.query`, and `connection.onboarding.save` admits
+// canonical OAuth material with an empty enable-all-discovered selection.
+// Older peers reject these wire values, so incompatible pairs must fail the
+// handshake. Re-derived from current `main`; epoch 102 is claimed by open PRs.
+// 101: Session Turn requests can carry regeneration intents and Guests can
+// atomically withdraw pending requests. Older peers do not share this command
+// vocabulary or the expanded Guest operation grant.
+// 100: `session.branch.create` makes `sourceTurnId` optional, so a side
+// conversation can fork with an empty context (no copied messages, no
+// fabricated `branchOfTurnId`) instead of requiring a settled turn. An older
+// Host's required-field check rejects the request that omits `sourceTurnId`;
+// the handshake keeps mixed-version peers apart. `session.revision.create`
+// still requires `sourceTurnId`, and its wire shape and fingerprint are
+// unchanged.
+// 99: ScheduledTask Agent execution templates carry immutable Connection
+// identity. Older peers cannot preserve the ID/slug/model binding and could
+// silently route a deleted Connection to a same-slug replacement.
+// 98: Peer Mesh invitations carry signed reachability leases and member route
+// projections use the convergent recovery state machine. Older peers decode a
+// different strict wire shape.
+// 97: Host status replaces unsigned route arrays with a self-signed, bounded
+// reachability lease. Older peers cannot validate the locator revision or its
+// target identity before retaining it for reconnect.
+// 96: Read image tool results may carry durable `session_context` refs.
+// 95: Catalog entries carry `describedByMetadata`, so a client asks the
+// Host-resolved entry — not its own bundled table — whether a model needs a
+// hand-written capability declaration. The field is required, so a newer Host's
+// entry fails an older client's strict decoder, and an older Host's entry
+// (lacking it) fails a newer client's.
+// 94: A failed Turn snapshot no longer carries contextBudgetExhaustedDetail; the
+// retired outcome reads as context_overflow at the ledger boundary, and an older
+// Host still sending the field fails a newer client's closed snapshot decode.
+// 93: Configuration credential transfer binds proxy destinations and
+// Connection credentials to exact Host-owned targets before secret access.
+// Proxy policy and credentials commit through one recoverable Host command;
+// older peers can split the writes and violate the shared credential basis.
+// 92: Owners can query their complete pending Session Turn-request inbox.
+// 91: Host status publishes the live Direct peer endpoint so newly issued
+// connection invitations do not preserve stale startup routes.
+// 90: `session.create.mode` accepts the Bot session mode. A Host that predates
+// it rejects the value as an invalid Session start mode.
+// 89: The Host refreshes its models.dev catalog at startup and announces the
+// swap with a `connection.catalog.changed` frame, which an older client's
+// strict frame decoder rejects as an unknown kind.
+// 88: Catalog model modalities admit video on either side and pdf as output.
+// models.dev declares both, and the modality decoder rejects any value it does
+// not name, so a newer Host describing such a model fails an older client's
+// catalog decode outright rather than losing one field. The handshake keeps
+// that pairing from forming; a newer client simply never sees the new values
+// from an older Host.
+// 87: The connection catalog projects each model as the Host resolved it —
+// a `catalog_entry` item per model, counted by the connection header. Clients
+// render those entries instead of merging the stored row against their own
+// bundled model metadata, so a Desktop and a TUI attached to one Host cannot
+// describe the same model differently. An older client ignores the new items
+// but would still resolve locally; an older Host sends none, leaving a newer
+// client with an empty catalog. Both are rejected at the handshake.
+// 86: Client Capability accepted frames carry typed admission evidence used to
+// enforce Session Grant scopes. Older peers cannot preserve that boundary.
+// 85: Plugin package and Entry composition operations become Host-owned protocol
+// surfaces. Older peers cannot safely exchange these strict operation shapes.
 // 84: Message content carries Host-bound directory references. Older peers
 // reject this field and cannot preserve its identity through admission/replay.
 // 83: WorkHub Coordination actions add linked replacement proposals,
@@ -305,6 +394,7 @@ export type HostFrame =
   | SubscriptionFrame
   | ClientCapabilityHostFrame
   | ConfigurationChangedFrame
+  | ConnectionCatalogChangedFrame
   | ProjectCatalogChangedFrame
   | SessionCatalogChangedFrame
   | ScheduledTaskChangedFrame;
@@ -433,6 +523,9 @@ export function decodeHostFrame(value: unknown): HostFrame {
     return decodeClientCapabilityHostFrame(frame);
   }
   if (frame.kind === 'configuration.changed') return decodeConfigurationChangedFrame(frame);
+  if (frame.kind === 'connection.catalog.changed') {
+    return decodeConnectionCatalogChangedFrame(frame);
+  }
   if (frame.kind === 'project.catalog.changed') return decodeProjectCatalogChangedFrame(frame);
   if (frame.kind === 'session.catalog.changed') return decodeSessionCatalogChangedFrame(frame);
   if (frame.kind === 'scheduled-task.changed') return decodeScheduledTaskChangedFrame(frame);

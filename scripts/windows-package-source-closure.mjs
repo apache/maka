@@ -20,7 +20,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { extname, join, relative, resolve, sep } from 'node:path';
 import { build } from 'esbuild';
-import { parse as parseYaml } from 'yaml';
 
 const defaultRepoRoot = resolve(import.meta.dirname, '..');
 const sourceExtensions = ['.ts', '.tsx', '.mts', '.cts', '.js', '.mjs', '.cjs', '.json'];
@@ -31,16 +30,31 @@ export const windowsPackageSourceEntrypoints = [
   'packages/runtime/src/sandbox/index.ts',
 ];
 
-export async function collectWindowsPackageSourceClosure(repoRoot = defaultRepoRoot) {
+/**
+ * Workspace sources `entryPoints` reach, transitively, resolved through the
+ * workspace `exports` map back to `src` rather than to built `dist`. Two lanes
+ * derive a path filter from this instead of maintaining one by hand, so a
+ * dependency added anywhere under an entry point cannot escape the filter that
+ * is supposed to schedule the runner able to observe it.
+ *
+ * Static imports only, which is the limit of what "generated, not curated"
+ * buys here: a process boundary is invisible to it. `root-authority.test.ts`
+ * forks `fixtures/root-initialization-race.js` and
+ * `filesystem-worker/worker-entry.ts` is bundled rather than imported, so
+ * neither appears in a closure that starts from them. Both are free of `win32`
+ * today, which is why the filters derived from this are complete — not because
+ * the derivation guarantees it.
+ */
+export async function collectWorkspaceSourceClosure(entryPoints, repoRoot = defaultRepoRoot) {
   const workspaces = loadWorkspacePackages(repoRoot);
   const result = await build({
     absWorkingDir: repoRoot,
     bundle: true,
-    entryPoints: windowsPackageSourceEntrypoints,
+    entryPoints,
     format: 'esm',
     logLevel: 'silent',
     metafile: true,
-    outdir: 'windows-package-source-closure',
+    outdir: 'workspace-source-closure',
     packages: 'external',
     platform: 'node',
     plugins: [workspaceSourcePlugin(repoRoot, workspaces)],
@@ -51,16 +65,6 @@ export async function collectWindowsPackageSourceClosure(repoRoot = defaultRepoR
     .map(normalize)
     .filter((path) => path.startsWith('packages/'))
     .sort();
-}
-
-export function readWindowsReleasePathPatterns(repoRoot = defaultRepoRoot) {
-  const workflowPath = join(repoRoot, '.github', 'workflows', 'release-windows-check.yml');
-  const workflow = parseYaml(readFileSync(workflowPath, 'utf8'));
-  const paths = workflow?.on?.pull_request?.paths;
-  if (!Array.isArray(paths) || !paths.every((path) => typeof path === 'string')) {
-    throw new Error('Release Windows check must declare pull_request.paths as strings.');
-  }
-  return paths;
 }
 
 export function windowsReleasePatternCoversSource(path, pattern) {

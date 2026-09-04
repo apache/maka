@@ -28,6 +28,7 @@
 import type { BotAttachmentKind } from '@maka/core/bot-events';
 import type { BotChannelSettings } from '@maka/core/bot-chat-settings';
 import { generalizedErrorMessage } from '@maka/core/redaction';
+import { truncateUtf16Safe } from '@maka/core/text-sanitize';
 import { BaseBotAdapter, botReadinessFromSettings } from './base-adapter.js';
 import type {
   BotPlatform,
@@ -64,28 +65,6 @@ function utf16Len(s: string): number {
 }
 
 /**
- * Return the longest prefix of `s` whose UTF-16 length is ≤ `cap`,
- * respecting surrogate-pair boundaries (we never slice a
- * multi-code-unit character in half). We iterate codepoint-by-
- * codepoint instead of binary-searching slices: the cost of
- * mistakenly splitting an emoji is far worse than the O(n) cost.
- */
-function prefixWithinUtf16(s: string, cap: number): string {
-  if (utf16Len(s) <= cap) return s;
-  let used = 0;
-  let end = 0;
-  for (let i = 0; i < s.length; ) {
-    const code = s.codePointAt(i)!;
-    const units = code > 0xffff ? 2 : 1;
-    if (used + units > cap) break;
-    used += units;
-    i += units;
-    end = i;
-  }
-  return s.slice(0, end);
-}
-
-/**
  * Split `text` into UTF-16-bounded chunks for Telegram delivery.
  * Prefers breaking on a newline within the last ~10% of the chunk;
  * falls back to a hard prefix cut when the chunk has no newline.
@@ -100,7 +79,7 @@ function splitForTelegram(text: string): string[] {
   const pieces: string[] = [];
   let remaining = text;
   while (utf16Len(remaining) > cap) {
-    let chunk = prefixWithinUtf16(remaining, cap);
+    let chunk = truncateUtf16Safe(remaining, cap);
     const minBoundary = Math.floor(chunk.length * 0.9);
     const nl = chunk.lastIndexOf('\n');
     if (nl >= minBoundary) chunk = chunk.slice(0, nl);
@@ -264,7 +243,6 @@ function classifyTelegramSendResponse(response: any): TelegramSendClassification
 
 export const __TEST__ = {
   utf16Len,
-  prefixWithinUtf16,
   splitForTelegram,
   buildTelegramSendBody,
   normalizeTelegramReplyToMessageId,
@@ -374,7 +352,7 @@ export class TelegramBotBridge extends BaseBotAdapter implements SendCapable {
     return createTelegramReplyStream({
       chatId,
       streamId: options.streamId,
-      prepareDraftText: (text) => prefixWithinUtf16(text, TELEGRAM_MAX_UTF16_PER_MESSAGE),
+      prepareDraftText: (text) => truncateUtf16Safe(text, TELEGRAM_MAX_UTF16_PER_MESSAGE),
       sendDraft: async (draftId, text) => {
         const response = await telegramApi(token, 'sendMessageDraft', {
           chat_id: privateChatId,

@@ -161,6 +161,59 @@ describe('GitHub Copilot subscription credentials', () => {
     assert.equal(tokens?.refresh_token, 'github-account-token');
     assert.equal(tokens?.base_url, 'https://api.githubcopilot.com');
   });
+
+  test('renews an expiring GitHub account token through the device-flow refresh grant', async () => {
+    let requestUrl = '';
+    let requestBody = '';
+    const tokens = await refreshOAuthSubscriptionTokens({
+      providerType: 'github-copilot',
+      tokens: createGitHubCopilotAccountTokens('gho_expiring', {
+        expiresAt: 5_000,
+        refreshToken: 'ghr_renewal',
+      }),
+      now: () => 10_000,
+      fetchFn: async (url, init) => {
+        requestUrl = String(url);
+        requestBody = String(init?.body ?? '');
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            access_token: 'gho_renewed',
+            refresh_token: 'ghr_rotated',
+            expires_in: 28_800,
+          }),
+        } as unknown as Response;
+      },
+    });
+
+    assert.equal(requestUrl, 'https://github.com/login/oauth/access_token');
+    assert.match(requestBody, /grant_type=refresh_token/);
+    assert.match(requestBody, /refresh_token=ghr_renewal/);
+    assert.equal(tokens.access_token, 'gho_renewed');
+    assert.equal(tokens.refresh_token, 'ghr_rotated');
+    assert.equal(tokens.expires_at, 10_000 + 28_800_000);
+    assert.equal(tokens.base_url, 'https://api.githubcopilot.com');
+  });
+
+  test('refuses a refresh GitHub reported as an error body under HTTP 200', async () => {
+    await assert.rejects(
+      refreshOAuthSubscriptionTokens({
+        providerType: 'github-copilot',
+        tokens: createGitHubCopilotAccountTokens('gho_expiring', {
+          expiresAt: 5_000,
+          refreshToken: 'ghr_renewal',
+        }),
+        now: () => 10_000,
+        fetchFn: async () =>
+          ({
+            ok: true,
+            status: 200,
+            json: async () => ({ error: 'bad_refresh_token' }),
+          }) as unknown as Response,
+      }),
+    );
+  });
 });
 
 describe('OAuth refresh response validation', () => {

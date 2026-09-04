@@ -23,29 +23,10 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { stringify } from 'yaml';
+import { parse, stringify } from 'yaml';
+import { writeDesktopReleaseInput } from './desktop-nightly-fixture.mjs';
 import { addDesktopNightlyAttestation, stageDesktopNightly } from './desktop-nightly.mjs';
 import { verifyDesktopUpdateArtifacts } from './desktop-update-contract.mjs';
-
-async function writeUpdateSet(directory, version, platform) {
-  const isMac = platform === 'mac';
-  const artifact = isMac ? `Maka-${version}-mac-arm64.zip` : `Maka-${version}-win-x64.exe`;
-  const metadata = isMac ? 'dev-mac.yml' : 'dev.yml';
-  const bytes = Buffer.from(`${platform} nightly bytes`);
-  const sha512 = createHash('sha512').update(bytes).digest('base64');
-  await writeFile(join(directory, artifact), bytes);
-  await writeFile(join(directory, `${artifact}.blockmap`), `${platform} blockmap`);
-  await writeFile(
-    join(directory, metadata),
-    stringify({
-      version,
-      files: [{ url: artifact, sha512, size: bytes.byteLength }],
-      path: artifact,
-      sha512,
-      releaseDate: '2026-08-29T18:17:00.000Z',
-    }),
-  );
-}
 
 test('staging creates only the exact GitHub Release assets', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'maka-desktop-nightly-'));
@@ -54,12 +35,7 @@ test('staging creates only the exact GitHub Release assets', async (t) => {
   const output = join(root, 'output');
   const version = '0.2.0-dev.42.20260829';
   await mkdir(input);
-  await Promise.all([
-    writeUpdateSet(input, version, 'mac'),
-    writeUpdateSet(input, version, 'win'),
-    writeFile(join(input, `Maka-${version}-mac-arm64.dmg`), 'dmg'),
-    writeFile(join(input, `Maka-${version}-win-x64.zip`), 'windows zip'),
-  ]);
+  await writeDesktopReleaseInput(input, version, { nightly: true });
 
   await stageDesktopNightly({
     inputDirectory: input,
@@ -71,9 +47,18 @@ test('staging creates only the exact GitHub Release assets', async (t) => {
     `Maka-${version}-mac-arm64.dmg`,
     `Maka-${version}-mac-arm64.zip`,
     `Maka-${version}-mac-arm64.zip.blockmap`,
+    `Maka-${version}-mac-x64.dmg`,
+    `Maka-${version}-mac-x64.zip`,
+    `Maka-${version}-mac-x64.zip.blockmap`,
     `Maka-${version}-win-x64.exe`,
     `Maka-${version}-win-x64.exe.blockmap`,
     `Maka-${version}-win-x64.zip`,
+    // Linux artifact names use the packaging ecosystem's architecture, and
+    // neither distributable has a sidecar blockmap.
+    `Maka-${version}-linux-x86_64.AppImage`,
+    `Maka-${version}-linux-amd64.deb`,
+    `Maka-${version}-linux-arm64.AppImage`,
+    `Maka-${version}-linux-arm64.deb`,
   ];
   const release = join(output, 'release');
   for (const name of payloadNames) {
@@ -84,19 +69,39 @@ test('staging creates only the exact GitHub Release assets', async (t) => {
       directory: release,
       metadataName: 'dev-mac.yml',
       version,
-      artifactName: `Maka-${version}-mac-arm64.zip`,
+      artifactNames: [`Maka-${version}-mac-arm64.zip`, `Maka-${version}-mac-x64.zip`],
     }),
     verifyDesktopUpdateArtifacts({
       directory: release,
       metadataName: 'dev.yml',
       version,
-      artifactName: `Maka-${version}-win-x64.exe`,
+      artifactNames: [`Maka-${version}-win-x64.exe`],
+    }),
+    verifyDesktopUpdateArtifacts({
+      directory: release,
+      metadataName: 'dev-linux.yml',
+      version,
+      artifactNames: [`Maka-${version}-linux-x86_64.AppImage`, `Maka-${version}-linux-amd64.deb`],
+    }),
+    verifyDesktopUpdateArtifacts({
+      directory: release,
+      metadataName: 'dev-linux-arm64.yml',
+      version,
+      artifactNames: [`Maka-${version}-linux-arm64.AppImage`, `Maka-${version}-linux-arm64.deb`],
     }),
   ]);
 
+  // Both macOS architectures reach one feed, and the per-runner feeds do not
+  // reach the release at all.
+  const macFeed = parse(await readFile(join(release, 'dev-mac.yml'), 'utf8'));
+  assert.deepEqual(
+    macFeed.files.map((file) => file.url).sort(),
+    [`Maka-${version}-mac-arm64.zip`, `Maka-${version}-mac-x64.zip`].sort(),
+  );
+
   assert.deepEqual(
     (await readdir(release)).sort(),
-    [...payloadNames, 'dev-mac.yml', 'dev.yml'].sort(),
+    [...payloadNames, 'dev-mac.yml', 'dev.yml', 'dev-linux.yml', 'dev-linux-arm64.yml'].sort(),
   );
   assert.deepEqual(await readdir(output), ['release']);
 });

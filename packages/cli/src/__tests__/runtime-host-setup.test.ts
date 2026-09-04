@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { execFile as execFileCallback } from 'node:child_process';
+import { execFile as execFileCallback, spawn } from 'node:child_process';
 import {
   mkdir,
   mkdtemp,
@@ -39,6 +39,7 @@ import {
   decodeRuntimeHostSetupFrame,
   encodeRuntimeHostSetupFrame,
   resolveRuntimeHostManagedDeploymentConfigPath,
+  runtimeHostManagedOperatorCommand,
   RUNTIME_HOST_SETUP_FRAME_PREFIX,
   type RuntimeHostManagedDeploymentConfig,
 } from '@maka/runtime-host/operator';
@@ -63,13 +64,10 @@ import { runRuntimeHostSetupCli } from '../runtime-host-setup-command.js';
 import { RuntimeHostAccessUnavailableError } from '../runtime-host-access-command.js';
 import { replaceRuntimeHostLifecycle } from '../runtime-host-lifecycle-transaction.js';
 import { manageRuntimeHostManagedLifecycle } from '../runtime-host-managed-lifecycle-manager.js';
-import {
-  resolveRuntimeHostLifecycleProvider,
-  selectRuntimeHostLifecycleProvider,
-} from '../runtime-host-service-management-command.js';
+import { createOpenRcRuntimeHostLifecycleProvider } from '../runtime-host-openrc-service.js';
+import { resolveRuntimeHostLifecycleProvider } from '../runtime-host-service-management-command.js';
 import {
   resolveRuntimeHostManagedServiceId,
-  RuntimeHostServiceManagerError,
   type RuntimeHostServiceBackend,
 } from '../runtime-host-service-manager.js';
 
@@ -129,7 +127,6 @@ test('on-demand setup installs one exact deployment without a service backend', 
     version: '1.2.3',
     root: join(canonicalDataHome, 'Maka', 'runtime-host-services', serviceId),
     cliPath: '/verified/package/dist/cli.js',
-    operatorPath: '/opt/maka/operator',
     activate: async () => undefined,
     cleanup: async () => undefined,
     rollback: async () => undefined,
@@ -203,10 +200,14 @@ test('on-demand setup installs one exact deployment without a service backend', 
     .map(decodeRuntimeHostSetupFrame)
     .find((frame) => frame?.kind === 'complete');
   assert.ok(complete?.kind === 'complete');
+  assert.equal(complete.operator.kind, 'node');
+  if (complete.operator.kind !== 'node') assert.fail('Setup returned a legacy operator');
+  assert.equal(complete.operator.nodePath, process.execPath);
   const persisted = JSON.parse(
     await readFile(resolveRuntimeHostManagedDeploymentConfigPath(rootId), 'utf8'),
   ) as {
     deploymentRoot: string;
+    launch: { nodePath: string };
     lifecycle: { mode: string };
     listeners: { websocket: { port: number } };
     reconciliation: { trigger: string };
@@ -215,12 +216,19 @@ test('on-demand setup installs one exact deployment without a service backend', 
     persisted.deploymentRoot,
     join(canonicalDataHome, 'Maka', 'runtime-host-services', rootId),
   );
+  assert.equal(complete.operator.modulePath, join(persisted.deploymentRoot, 'operator.mjs'));
   assert.equal(projectedOperatorDeploymentRoot, persisted.deploymentRoot);
   assert.equal(persisted.lifecycle.mode, 'on_demand');
   assert.equal(persisted.listeners.websocket.port, 0);
   assert.equal(persisted.reconciliation.trigger, 'activation');
 
   const retryOutputs: string[] = [];
+  persisted.launch.nodePath =
+    process.platform === 'win32' ? 'C:\\Program Files\\nodejs\\node.exe' : '/opt/maka/node';
+  await writeFile(
+    resolveRuntimeHostManagedDeploymentConfigPath(rootId),
+    `${JSON.stringify(persisted)}\n`,
+  );
   projectedOperatorDeploymentRoot = '/stale/operator/projection';
   assert.equal(
     await runRuntimeHostSetupCli(options, {
@@ -236,6 +244,12 @@ test('on-demand setup installs one exact deployment without a service backend', 
   assert.equal(
     retryComplete?.kind === 'complete' ? retryComplete.deploymentId : undefined,
     complete.deploymentId,
+  );
+  assert.equal(
+    retryComplete?.kind === 'complete' && retryComplete.operator.kind === 'node'
+      ? retryComplete.operator.nodePath
+      : undefined,
+    persisted.launch.nodePath,
   );
   assert.deepEqual(
     JSON.parse(await readFile(resolveRuntimeHostManagedDeploymentConfigPath(rootId), 'utf8')),
@@ -337,6 +351,87 @@ test('on-demand setup installs one exact deployment without a service backend', 
   assert.equal(uninstalled.retirement.kind, 'stopped');
 });
 
+test('fresh supervised setup discovers its provider before constructing a legacy backend', async (t) => {
+  const base = await realpath(await mkdtemp(join(tmpdir(), 'maka-runtime-host-supervised-setup-')));
+  const stateRoot = join(base, 'state');
+  const clientDataRoot = join(base, 'client');
+  let rootId = '';
+  t.after(async () => {
+    await Promise.all([
+      rm(base, { recursive: true, force: true }),
+      rootId
+        ? rm(join(resolveRootControlNamespace(), rootId), { recursive: true, force: true })
+        : Promise.resolve(),
+      rootId
+        ? rm(join(resolveRootOwnershipNamespace(), `${rootId}.lock`), { force: true })
+        : Promise.resolve(),
+    ]);
+  });
+
+  const result = await runRuntimeHostSetupCli(
+    {
+      json: true,
+      lifecycle: 'supervised',
+      clientDataRoot,
+      defaultRootPath: stateRoot,
+      sourcePackageRoot: base,
+      version: '1.2.3',
+      principalId: 'desktop:client-1',
+      preset: 'desktop-client',
+    },
+    {
+      createBackend: () => assert.fail('a fresh canonical setup has no legacy backend'),
+      discoverLifecycleProvider: async (discoveredRootId) => {
+        rootId = discoveredRootId;
+        return {
+          provider: createOpenRcRuntimeHostLifecycleProvider(rootId, 'openrc_user'),
+          availability: 'session',
+        };
+      },
+      resolveRegistryCandidate: async () => ({
+        kind: 'npm_registry',
+        version: '1.2.3',
+        integrity: PACKAGE_INTEGRITY,
+      }),
+      withRegistryPackage: async (_candidate, use) => use('/verified/package'),
+      prepareDeployment: async ({ serviceId }) => ({
+        version: '1.2.3',
+        root: join(base, 'deployment'),
+        cliPath: '/verified/package/dist/cli.js',
+        operator: {
+          kind: 'node' as const,
+          platform: 'posix' as const,
+          nodePath: '/usr/bin/node',
+          modulePath: '/opt/maka/operator.mjs',
+        },
+        activate: async () => undefined,
+        cleanup: async () => undefined,
+        rollback: async () => undefined,
+      }),
+      allocateLoopbackPort: async () => 43_210,
+      replaceLifecycle: async ({ desired }) => {
+        assert.equal(desired.lifecycle.mode, 'supervised');
+        assert.equal(desired.lifecycle.provider, 'openrc_user');
+        return { kind: 'replaced', config: desired };
+      },
+      prunePackages: async () => undefined,
+      replaceCredential: async () => ({
+        rootId,
+        credential: 'secret-token',
+        credentialId: 'credential-1',
+        principalKind: 'remote_owner',
+        principalId: 'desktop:client-1',
+        operationGrants: [],
+        canPublishClientCapabilities: false,
+        canUseHostPaths: false,
+      }),
+      verifyCredential: async () => undefined,
+      writeOutput: () => undefined,
+    },
+  );
+  assert.equal(result, 0);
+});
+
 test('managed setup frames reject malformed machine output', () => {
   assert.equal(
     decodeRuntimeHostSetupFrame(
@@ -366,22 +461,53 @@ test('managed setup frames reject malformed machine output', () => {
     ),
     undefined,
   );
+  assert.equal(
+    decodeRuntimeHostSetupFrame(
+      `${RUNTIME_HOST_SETUP_FRAME_PREFIX}${Buffer.from(
+        JSON.stringify({
+          schemaVersion: 1,
+          sequence: 1,
+          kind: 'complete',
+          version: '0.2.0',
+          serviceId: 'a'.repeat(64),
+          deploymentId: '00000000-0000-4000-8000-000000000001',
+          operator: {
+            kind: 'legacy_posix_executable',
+            executablePath: '/opt/maka/operator',
+          },
+          rootPath: '/workspaces/default',
+          rootId: 'a'.repeat(64),
+          endpoint: 'ws://127.0.0.1:4321/runtime-host',
+          credentialId: 'credential',
+          credential: 'secret',
+        }),
+      ).toString('base64url')}\n`,
+    ),
+    undefined,
+  );
 });
 
-test('lifecycle discovery records environment scope and persisted providers are never reselected', () => {
-  assert.deepEqual(
-    selectRuntimeHostLifecycleProvider({
-      platform: 'linux',
-      environment: { WSL_DISTRO_NAME: 'Ubuntu' },
-    }),
-    { provider: 'systemd_user', availability: 'environment' },
-  );
-  assert.throws(
-    () => resolveRuntimeHostLifecycleProvider('a'.repeat(64), 'openrc_user'),
-    (error: unknown) =>
-      error instanceof RuntimeHostServiceManagerError &&
-      error.code === 'service_manager_unavailable',
-  );
+test('persisted OpenRC providers resolve without reselecting the platform default', () => {
+  const rootId = 'a'.repeat(64);
+  const openRc = resolveRuntimeHostLifecycleProvider({
+    schemaVersion: 1,
+    state: 'active',
+    deploymentId: '00000000-0000-4000-8000-000000000001',
+    configRevision: 1,
+    deploymentRoot: '/opt/maka',
+    root: { id: rootId, path: '/srv/maka' },
+    projectDirectoryRoots: [],
+    launch: {
+      kind: 'exact_package',
+      nodePath: '/usr/bin/node',
+      package: { kind: 'npm_registry', version: '0.2.0', integrity: PACKAGE_INTEGRITY },
+    },
+    listeners: { localIpc: true },
+    lifecycle: { mode: 'supervised', provider: 'openrc_user', availability: 'session' },
+    reconciliation: { trigger: 'scheduled', provider: 'openrc_supervised_loop' },
+  });
+  assert.equal(openRc.supervisor.provider, 'openrc_user');
+  assert.equal(openRc.reconciliationTrigger.provider, 'openrc_supervised_loop');
 });
 
 test('registry package identity avoids local content and recovers an interrupted removal', async (t) => {
@@ -653,7 +779,7 @@ test('registry package identity avoids local content and recovers an interrupted
   }
   await convergeRuntimeHostManagedOperator(undefined, currentConfig);
   assert.equal(
-    (await readFile(join(currentDeploymentRoot, 'operator'), 'utf8')).includes(
+    (await readFile(join(currentDeploymentRoot, 'operator.mjs'), 'utf8')).includes(
       join(currentDeploymentRoot, 'versions', basename(registryRoot), 'dist', 'cli.js'),
     ),
     true,
@@ -713,7 +839,12 @@ test('managed operator binds its Client Data Root and routes deployment cleanup'
     lifecycle: { mode: 'on_demand', availability: 'activation' },
     reconciliation: { trigger: 'manual' },
   };
+  const legacyOperatorPath = join(deployment.root, 'operator');
+  await writeFile(legacyOperatorPath, '#!/bin/sh\nexit 99\n');
+  await deployment.activate();
+  assert.match(await readFile(legacyOperatorPath, 'utf8'), /operator\.mjs/u);
   await convergeRuntimeHostManagedOperator(undefined, config);
+  const operator = runtimeHostManagedOperatorCommand(config, 'posix');
   const authorityRoot = join(base, 'authority');
   await mkdir(authorityRoot);
   const authority = { authorityRoot, durabilityBoundary: authorityRoot };
@@ -740,7 +871,7 @@ test('managed operator binds its Client Data Root and routes deployment cleanup'
     deployment.cliPath,
     `require('node:fs').writeFileSync(process.env.MAKA_TEST_OUTPUT, JSON.stringify(process.argv.slice(2)));\n`,
   );
-  await execFile(deployment.operatorPath, ['status'], {
+  await execFile(legacyOperatorPath, ['status'], {
     env: {
       ...process.env,
       XDG_CONFIG_HOME: join(base, 'different-config'),
@@ -760,8 +891,8 @@ test('managed operator binds its Client Data Root and routes deployment cleanup'
   ]);
 
   await execFile(
-    deployment.operatorPath,
-    ['access', 'list', '--root', '/runtime-root', '--framed'],
+    operator.nodePath,
+    [operator.modulePath, 'access', 'list', '--root', '/runtime-root', '--framed'],
     {
       env: { ...process.env, MAKA_TEST_OUTPUT: invocationPath },
     },
@@ -775,9 +906,11 @@ test('managed operator binds its Client Data Root and routes deployment cleanup'
     '--framed',
   ]);
 
-  await execFile(deployment.operatorPath, ['activate', '--framed', '--root-id', 'a'.repeat(64)], {
-    env: { ...process.env, MAKA_TEST_OUTPUT: invocationPath },
-  });
+  await execFile(
+    operator.nodePath,
+    [operator.modulePath, 'activate', '--framed', '--root-id', 'a'.repeat(64)],
+    { env: { ...process.env, MAKA_TEST_OUTPUT: invocationPath } },
+  );
   assert.deepEqual(JSON.parse(await readFile(invocationPath, 'utf8')), [
     'runtime-host',
     'activate',
@@ -786,9 +919,11 @@ test('managed operator binds its Client Data Root and routes deployment cleanup'
     'a'.repeat(64),
   ]);
 
-  await execFile(deployment.operatorPath, ['connect', '--framed', '--root-id', 'a'.repeat(64)], {
-    env: { ...process.env, MAKA_TEST_OUTPUT: invocationPath },
-  });
+  await execFile(
+    operator.nodePath,
+    [operator.modulePath, 'connect', '--framed', '--root-id', 'a'.repeat(64)],
+    { env: { ...process.env, MAKA_TEST_OUTPUT: invocationPath } },
+  );
   assert.deepEqual(JSON.parse(await readFile(invocationPath, 'utf8')), [
     'runtime-host',
     'connect',
@@ -798,8 +933,9 @@ test('managed operator binds its Client Data Root and routes deployment cleanup'
   ]);
 
   await execFile(
-    deployment.operatorPath,
+    operator.nodePath,
     [
+      operator.modulePath,
       '__cleanup-managed-deployment',
       '--expected-service-id',
       serviceId,
@@ -829,6 +965,16 @@ test('managed operator binds its Client Data Root and routes deployment cleanup'
     '--operator-deployment-id',
     '00000000-0000-4000-8000-000000000001',
   ]);
+
+  await writeFile(deployment.cliPath, "process.kill(process.pid, 'SIGTERM');\n");
+  const signalExit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+    (resolve, reject) => {
+      const child = spawn(operator.nodePath, [operator.modulePath, 'status'], { stdio: 'ignore' });
+      child.once('error', reject);
+      child.once('exit', (code, signal) => resolve({ code, signal }));
+    },
+  );
+  assert.deepEqual(signalExit, { code: null, signal: 'SIGTERM' });
 });
 
 async function createReleasePackage(base: string, version: string): Promise<string> {

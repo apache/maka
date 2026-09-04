@@ -21,39 +21,12 @@ import type { SessionSummary } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { getShellCopy, localizedShellErrorMessage } from '../../../locales/shell-copy.js';
 import { revisionFamilySessionIds } from '@maka/core/session-revisions';
-import type { SessionNavigationSessionService } from '../ports.js';
-
-type RefBox<T> = { current: T };
-
-/** What `sessions.remove` settled on. `restored` means the task is still there. */
-type SessionRemoveDisposition = 'removed' | 'restored';
-
-/**
- * How a delete settled together with the count the Host actually archived.
- * `archivedSubtaskCount` is the Host's executed number — 0 when the delete was
- * called off (`restored`) — so the toast reports a fact, not a renderer guess.
- */
-type SessionRemoveOutcome = {
-  disposition: SessionRemoveDisposition;
-  archivedSubtaskCount: number;
-};
-
-type ToastApi = {
-  success(title: string, description?: string): void;
-  error(
-    title: string,
-    description?: string,
-    diagnosticDetails?: string,
-    diagnosticTarget?: { sessionId: string },
-  ): void;
-  confirm(options: {
-    title: string;
-    description: string;
-    confirmLabel: string;
-    cancelLabel: string;
-    destructive?: boolean;
-  }): Promise<boolean>;
-};
+import type { RefObject } from 'react';
+import type {
+  SessionNavigationRemoveOutcome,
+  SessionNavigationSessionService,
+  SessionNavigationToastApi,
+} from '../ports.js';
 
 /**
  * What a sweep can honestly say afterwards. `verified: false` means the catalog
@@ -83,6 +56,24 @@ export interface SessionPurgeOutcome {
   };
 }
 
+/**
+ * What a bulk archive can honestly say afterwards. There is no third
+ * disposition: a task is archived or its call failed.
+ *
+ * Not on `SessionNavigationRowActions`: `archiveSelected` is the rail's whole
+ * bulk archive, and this is what it reads on the way to its own report.
+ */
+interface SessionArchiveOutcome {
+  archived: number;
+  /** Tasks the sweep could not archive, including ones it had to skip. */
+  failed: string[];
+  /** First rejection and the Session whose Host produced it. */
+  firstFailure?: {
+    error: unknown;
+    sessionId: string;
+  };
+}
+
 export interface SessionNavigationRowActions {
   flagSession(sessionId: string, flagged: boolean): Promise<void>;
   archiveSession(sessionId: string): Promise<void>;
@@ -90,19 +81,23 @@ export interface SessionNavigationRowActions {
   renameSession(sessionId: string, name: string): Promise<void>;
   deleteSession(sessionId: string): Promise<void>;
   purgeSessions(sessionIds: readonly string[]): Promise<SessionPurgeOutcome>;
+  /** Sweeps and reports — the rail's own wording. */
+  archiveSelected(sessionIds: readonly string[]): Promise<void>;
+  /** Pins or unpins a picked set in one sweep. */
+  flagSelected(sessionIds: readonly string[], flagged: boolean): Promise<void>;
 }
 
 export function createSessionNavigationRowActions(deps: {
   uiLocale: UiLocale;
-  activeIdRef: RefBox<string | undefined>;
+  activeIdRef: RefObject<string | undefined>;
   clearActiveMessages: () => void;
   clearSessionRendererState: (sessionId: string) => void;
-  pendingSessionRowActionsRef: RefBox<Set<string>>;
+  pendingSessionRowActionsRef: RefObject<Set<string>>;
   refreshSessions: () => Promise<ReadonlyArray<SessionSummary>>;
   service: SessionNavigationSessionService;
-  sessionsRef: RefBox<ReadonlyArray<SessionSummary>>;
+  sessionsRef: RefObject<ReadonlyArray<SessionSummary>>;
   setActiveId: (sessionId: string | undefined) => void;
-  toastApi: ToastApi;
+  toastApi: SessionNavigationToastApi;
 }): SessionNavigationRowActions {
   const {
     uiLocale,
@@ -236,7 +231,7 @@ export function createSessionNavigationRowActions(deps: {
   async function removeSessionFamily(
     sessionId: string,
     options: { requireArchived: boolean },
-  ): Promise<SessionRemoveOutcome> {
+  ): Promise<SessionNavigationRemoveOutcome> {
     // Read before the write: the family comes off the live catalog, which no
     // longer lists it afterwards.
     const familyIds = revisionFamilySessionIds(sessionsRef.current, sessionId);
@@ -254,12 +249,15 @@ export function createSessionNavigationRowActions(deps: {
   }
 
   /**
-   * Deletes a set of archived tasks in one sweep.
+   * Settings › 已归档任务, sweeping a set of archived tasks in one pass. The one
+   * bulk delete the product has: the rail cannot delete at all, so every target
+   * here is archived by definition, and the premise is asserted anyway so a task
+   * restored between the confirm and the write is kept rather than removed.
    *
-   * Every id takes one path and lands in exactly one outcome. A task still
-   * archived is removed; one restored meanwhile answers `restored` and is kept;
-   * one already gone elsewhere rejects and settles as removed against the
-   * catalog; anything else is an error to explain. The archived premise is
+   * Every id takes one path and lands in exactly one outcome. A task whose
+   * premise still holds is removed; one restored meanwhile answers `restored`
+   * and is kept; one already gone elsewhere rejects and settles as removed
+   * against the catalog; anything else is an error to explain. The premise is
    * asserted where it can be held — inside the Host's compare-and-set (#3050) —
    * rather than against a renderer snapshot that a second window can outdate
    * between the check and the write.
@@ -350,6 +348,136 @@ export function createSessionNavigationRowActions(deps: {
     };
   }
 
+  /**
+   * The rail's multi-select archive.
+   *
+   * Archiving has no disposition to report — a task is archived or the call
+   * failed — so this accounts by count and first failure rather than reusing
+   * the delete sweep's shape, which would carry a `restored` field that can
+   * never be anything but empty.
+   *
+   * Like the sweep, it raises no toast per task: one action is one message, and
+   * a run of them is what a sweep exists to avoid.
+   */
+  async function archiveSessions(sessionIds: readonly string[]): Promise<SessionArchiveOutcome> {
+    const failed: string[] = [];
+    let firstFailure: SessionArchiveOutcome['firstFailure'];
+    let archived = 0;
+    for (const sessionId of sessionIds) {
+      const key = `${sessionId}:archive`;
+      if (
+        Array.from(pendingSessionRowActionsRef.current).some((pending) =>
+          pending.startsWith(`${sessionId}:`),
+        )
+      ) {
+        failed.push(sessionId);
+        continue;
+      }
+      pendingSessionRowActionsRef.current.add(key);
+      try {
+        const familyIds = revisionFamilySessionIds(sessionsRef.current, sessionId);
+        await service.archive(sessionId, { revisionFamily: true });
+        if (activeIdRef.current && familyIds.includes(activeIdRef.current)) {
+          setActiveId(undefined);
+          clearActiveMessages();
+        }
+        for (const id of familyIds) clearSessionRendererState(id);
+        archived += 1;
+      } catch (error) {
+        failed.push(sessionId);
+        firstFailure ??= { error, sessionId };
+      } finally {
+        pendingSessionRowActionsRef.current.delete(key);
+      }
+    }
+    // Once, after the whole sweep. Refreshing per task would re-render the rail
+    // under the user's cursor for every id in the selection.
+    await refreshSessions();
+    return { archived, failed, firstFailure };
+  }
+
+  /**
+   * The rail's own bulk archive, wording included.
+   *
+   * `archiveSessions` above it stays silent on purpose: it counts, and the
+   * caller words the count. The rail's phrasing belongs to the rail, and this
+   * module is where the feature already holds its copy. Putting it in the
+   * selection hook instead would have made that hook the feature's second
+   * importer of renderer legacy copy, which the architecture check refuses.
+   *
+   * NO CONFIRM, at one row or twenty. Archiving is reversible, the single-row
+   * ⋯ has never asked, and a dialog in front of one of two identical verbs
+   * teaches that the count is what makes an action dangerous rather than the
+   * action. The dialog's one piece of information — where the tasks went — is
+   * kept, as the success toast's description.
+   */
+  async function archiveSelected(sessionIds: readonly string[]): Promise<void> {
+    if (sessionIds.length === 0) return;
+    const outcome = await archiveSessions(sessionIds);
+    if (outcome.failed.length === 0) {
+      toastApi.success(copy.bulkArchivedTitle(outcome.archived), copy.bulkArchiveDescription);
+      return;
+    }
+    toastApi.error(
+      copy.bulkArchiveFailedTitle,
+      outcome.firstFailure
+        ? localizedShellErrorMessage(outcome.firstFailure.error, copy.actionFallback, uiLocale)
+        : copy.bulkFailedBody(outcome.failed.length),
+      undefined,
+      outcome.firstFailure ? { sessionId: outcome.firstFailure.sessionId } : undefined,
+    );
+  }
+
+  /**
+   * The rail's bulk pin, in one direction for the whole set.
+   *
+   * The direction is the caller's: the menu shows 取消置顶 only when every
+   * picked row is already pinned, so a mixed set pins — which is the one rule
+   * that keeps a set-wide toggle from meaning something different for each row
+   * in it.
+   *
+   * Silent on success. Pinning moves the rows between 置顶 and 最近 in front of
+   * the user, which says it better than a toast, and the single-row pin has
+   * never raised one either.
+   */
+  async function flagSelected(sessionIds: readonly string[], flagged: boolean): Promise<void> {
+    if (sessionIds.length === 0) return;
+    const failed: string[] = [];
+    let firstFailure: { error: unknown; sessionId: string } | undefined;
+    for (const sessionId of sessionIds) {
+      const key = `${sessionId}:flag`;
+      if (
+        Array.from(pendingSessionRowActionsRef.current).some((pending) =>
+          pending.startsWith(`${sessionId}:`),
+        )
+      ) {
+        failed.push(sessionId);
+        continue;
+      }
+      pendingSessionRowActionsRef.current.add(key);
+      try {
+        await service.setFlagged(sessionId, flagged, { revisionFamily: true });
+      } catch (error) {
+        failed.push(sessionId);
+        firstFailure ??= { error, sessionId };
+      } finally {
+        pendingSessionRowActionsRef.current.delete(key);
+      }
+    }
+    // Once, after the whole sweep. Refreshing per task would re-render the rail
+    // under the user's cursor for every id in the set.
+    await refreshSessions();
+    if (failed.length === 0) return;
+    toastApi.error(
+      flagged ? copy.flagFailedTitle : copy.unflagFailedTitle,
+      firstFailure
+        ? localizedShellErrorMessage(firstFailure.error, copy.actionFallback, uiLocale)
+        : copy.bulkFailedBody(failed.length),
+      undefined,
+      firstFailure ? { sessionId: firstFailure.sessionId } : undefined,
+    );
+  }
+
   return {
     flagSession,
     archiveSession,
@@ -357,5 +485,7 @@ export function createSessionNavigationRowActions(deps: {
     renameSession,
     deleteSession,
     purgeSessions,
+    archiveSelected,
+    flagSelected,
   };
 }

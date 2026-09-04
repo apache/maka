@@ -32,11 +32,13 @@ import {
   MAIN_PROCESS_DIAGNOSTIC_LOG_MAX_BYTES,
   mainProcessLogBuffer,
   parseDesktopDiagnosticInput,
+  type DesktopDiagnosticChannel,
 } from '../main-process-diagnostics.js';
 
 const environment = {
   appVersion: '0.1.8',
   buildMode: 'dev' as const,
+  updateChannel: 'dev' as const,
   buildCommit: 'a'.repeat(40),
   electronVersion: '38.0.0',
   nodeVersion: '22.0.0',
@@ -105,6 +107,25 @@ test('formats one redacted Desktop and Runtime Host diagnostic report', () => {
   assert.match(report, /Runtime Host[\s\S]*Recent Runtime Host logs \(1\)\nhost log/);
   assert.match(report, /Workspace: ~\/\.local\/share\/maka\/workspaces\/default/);
   assert.doesNotMatch(report, /sk-secretvalue123|\/home\/tester/);
+});
+
+test('names the update channel, which buildMode alone cannot distinguish', () => {
+  const reportFor = (channel: DesktopDiagnosticChannel, buildMode: 'dev' | 'packaged') =>
+    formatDesktopDiagnosticReport(
+      { surface: 'manual', hostTarget: 'default' },
+      { ...environment, buildMode, updateChannel: channel },
+      [],
+      { ok: false, error: 'not started' },
+      undefined,
+      new Date('2026-08-09T00:00:00Z'),
+    );
+
+  // Both packaged installs report `Build: packaged`; only the channel line
+  // says which feed and which attestation signer they trust.
+  assert.match(reportFor('nightly', 'packaged'), /^Channel: nightly$/mu);
+  assert.match(reportFor('release', 'packaged'), /^Channel: release$/mu);
+  // A checkout follows no feed, so it is neither of them.
+  assert.match(reportFor('dev', 'dev'), /^Channel: dev$/mu);
 });
 
 test('bounds renderer diagnostic text and rejects unknown fields', () => {

@@ -17,26 +17,13 @@
  * under the License.
  */
 
-import { createContext, useContext, type ReactNode } from 'react';
+import { createServicesContext } from '../../application/contracts/feature-services.js';
 import type { WorkbarServices } from './ports.js';
 
-const WorkbarServicesContext = createContext<WorkbarServices | null>(null);
+const { Provider, useServices } = createServicesContext<WorkbarServices>('WorkbarServicesProvider');
 
-export function WorkbarServicesProvider(props: {
-  services: WorkbarServices;
-  children?: ReactNode;
-}) {
-  return (
-    <WorkbarServicesContext.Provider value={props.services}>
-      {props.children}
-    </WorkbarServicesContext.Provider>
-  );
-}
+export const WorkbarServicesProvider = Provider;
 
 export function useWorkbarServices(): WorkbarServices {
-  const services = useContext(WorkbarServicesContext);
-  if (!services) {
-    throw new Error('WorkbarServicesProvider is missing');
-  }
-  return services;
+  return useServices();
 }

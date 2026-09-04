@@ -104,9 +104,7 @@ export interface ThinkingOptions {
  * `ThinkingLevel`) are dropped. Returns `[]` for models with no declared
  * options (miss → no thinking menu, fallback default).
  */
-export function deriveThinkingChoices(
-  options: ThinkingOptions | undefined,
-): readonly ThinkingLevel[] {
+function deriveThinkingChoices(options: ThinkingOptions | undefined): readonly ThinkingLevel[] {
   if (!options) return [];
   const choices = new Set<ThinkingLevel>();
   if (options.offBehavior) choices.add('off');
@@ -268,6 +266,39 @@ export function relayModelProfile(
   modelId: string,
 ): RelayModelProfile | undefined {
   return normalizeRelayModelProfile(connection.relayModelProfiles?.[modelId]);
+}
+
+/** The connection fields the declared-window rule reads; structural so runtime and UI projections both fit. */
+export interface DeclaredContextWindowContext extends ConnectionThinkingContext {
+  readonly models?: readonly {
+    readonly id: string;
+    readonly contextWindow?: number;
+    readonly inputLimit?: number;
+    readonly factOverriddenFields?: readonly string[];
+  }[];
+}
+
+/**
+ * The context window the USER declared for a model — the Maka window: the
+ * proactive compaction target, and nothing else. Exactly two sources count as
+ * a declaration: a model-facts pin (`factOverriddenFields` includes
+ * `contextWindow`, narrowest of window/input limit) and a relay model profile.
+ * A provider's `/models` report and generated metadata describe the model and
+ * are shown as a hint; they never become a threshold on their own. This is the
+ * single owner of that rule for runtime and UI (#4559).
+ */
+export function declaredContextWindow(
+  connection: DeclaredContextWindowContext,
+  modelId: string,
+): number | undefined {
+  const model = connection.models?.find((candidate) => candidate.id === modelId);
+  if (model?.factOverriddenFields?.includes('contextWindow')) {
+    const values = [model.contextWindow, model.inputLimit].filter(
+      (value): value is number => typeof value === 'number' && Number.isFinite(value) && value > 0,
+    );
+    return values.length > 0 ? Math.min(...values) : undefined;
+  }
+  return relayModelProfile(connection, modelId)?.contextWindow;
 }
 
 /**

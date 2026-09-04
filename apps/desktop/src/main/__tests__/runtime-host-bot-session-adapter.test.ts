@@ -36,7 +36,7 @@ import { runtimeHostSessionFixture } from './runtime-host-session-test-fixture.j
 
 type BotClient = RuntimeHostBotSessionAdapterDeps['client'];
 
-test('creates an explore Session through the Host-owned default model route', async () => {
+test('creates a bot-mode Session through the Host-owned default model route', async () => {
   const creates: unknown[] = [];
   const changes: unknown[] = [];
   const client = botClient({
@@ -68,7 +68,7 @@ test('creates an explore Session through the Host-owned default model route', as
       name: 'Telegram conversation',
       labels: ['bot', 'telegram'],
       modelTarget: { kind: 'default' },
-      permissionMode: 'explore',
+      mode: 'bot',
     },
   ]);
   assert.deepEqual(changes, [

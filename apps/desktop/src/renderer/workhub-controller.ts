@@ -26,12 +26,29 @@
 import {
   createWorkHubRoutePolicy,
   type WorkHubRouteEvidence,
+  type WorkHubStopClarificationReason,
 } from './workhub-route-policy.js';
 import type {
+  OperationError,
   WorkHubCoordinationActInput,
   WorkHubCoordinationActResult,
   WorkHubCoordinationCandidatesResult,
 } from '@maka/runtime-host/protocol';
+
+/**
+ * A Host operation the Coordination port could not complete. It lives beside
+ * the port interface rather than beside its Desktop implementation, so a
+ * caller can tell a refusal from a fault without depending on the adapter.
+ */
+export class WorkHubCoordinationFailure extends Error {
+  constructor(
+    readonly code: OperationError<'workhub.coordination.act'>['code'],
+    message: string,
+  ) {
+    super(message);
+    this.name = 'WorkHubCoordinationFailure';
+  }
+}
 
 export interface WorkHubSessionTarget {
   sessionId: string;
@@ -110,10 +127,15 @@ export interface WorkHubCoordinationTurn {
     readonly linkState: WorkHubDelegationLinkState;
     readonly createdNew?: true;
   };
+  stop?: {
+    readonly targetSessionId: string;
+    readonly targetSessionName: string;
+    readonly outcome?: Extract<WorkHubCoordinationActResult, { disposition: 'stop_work' }>['outcome'];
+  };
   updatedAt: number;
 }
 
-export type WorkHubDelegationLinkState = 'active' | 'superseded' | 'aborted';
+export type WorkHubDelegationLinkState = 'active' | 'superseded' | 'aborted' | 'stopped';
 
 /** Unbounded, rebuildable linkage state kept separate from the bounded timeline. */
 export interface WorkHubActiveDelegation {
@@ -172,7 +194,7 @@ export type WorkHubSubmission = (
       requestId: string;
       text: string;
       options: Array<Pick<WorkHubSessionSummary, 'target' | 'projectName' | 'sessionName'>>;
-      reason?: 'ambiguous_command';
+      reason?: 'ambiguous_command' | WorkHubStopClarificationReason;
       correction?: WorkHubCorrectionContext;
     }
   | {
@@ -185,6 +207,13 @@ export type WorkHubSubmission = (
       requestId: string;
       text: string;
       target: WorkHubSessionTarget;
+    }
+  | {
+      kind: 'stop';
+      requestId: string;
+      target: WorkHubSessionTarget;
+      outcome: Extract<WorkHubCoordinationActResult, { disposition: 'stop_work' }>['outcome'];
+      targetTurnId?: string;
     }
 ) & { strategyId: WorkHubRoutingStrategyId };
 
@@ -259,9 +288,25 @@ export function createWorkHubController(deps: {
   let routePolicy = createWorkHubRoutePolicy();
   let focusReadVersion = 0;
   let pendingFocusReadVersion: number | undefined;
-  const activeActionIdBySessionId = new Map<string, string>();
+  const activeActionIdsBySessionId = new Map<string, string[]>();
+  const removeActiveAction = (sessionId: string, actionId: string) => {
+    const remaining = (activeActionIdsBySessionId.get(sessionId) ?? []).filter(
+      (candidate) => candidate !== actionId,
+    );
+    if (remaining.length === 0) {
+      activeActionIdsBySessionId.delete(sessionId);
+      return;
+    }
+    activeActionIdsBySessionId.set(sessionId, remaining);
+  };
+  const addActiveAction = (sessionId: string, actionId: string) => {
+    const active = activeActionIdsBySessionId.get(sessionId) ?? [];
+    if (!active.includes(actionId)) {
+      activeActionIdsBySessionId.set(sessionId, [...active, actionId]);
+    }
+  };
   const correctionFor = (from: WorkHubSessionTarget): WorkHubCorrectionContext => {
-    const sourceActionId = activeActionIdBySessionId.get(from.sessionId);
+    const sourceActionId = activeActionIdsBySessionId.get(from.sessionId)?.at(-1);
     if (!sourceActionId) {
       throw new Error('WorkHub linked correction requires an active durable delegation');
     }
@@ -270,11 +315,11 @@ export function createWorkHubController(deps: {
   const reconcileActiveDelegations = (
     activeDelegations: readonly WorkHubActiveDelegation[],
   ) => {
-    activeActionIdBySessionId.clear();
+    activeActionIdsBySessionId.clear();
     for (const delegation of [...activeDelegations].sort(
       (left, right) => left.sequence - right.sequence,
     )) {
-      activeActionIdBySessionId.set(delegation.targetSessionId, delegation.actionId);
+      addActiveAction(delegation.targetSessionId, delegation.actionId);
     }
   };
   const reconcileFocus = (
@@ -297,13 +342,10 @@ export function createWorkHubController(deps: {
     correction: WorkHubCorrectionContext | undefined,
   ): Extract<WorkHubSubmission, { kind: 'submitted' }> => {
     const target = { sessionId: admitted.targetSessionId };
-    if (
-      correction &&
-      activeActionIdBySessionId.get(correction.from.sessionId) === correction.sourceActionId
-    ) {
-      activeActionIdBySessionId.delete(correction.from.sessionId);
+    if (correction) {
+      removeActiveAction(correction.from.sessionId, correction.sourceActionId);
     }
-    activeActionIdBySessionId.set(target.sessionId, input.requestId);
+    addActiveAction(target.sessionId, input.requestId);
     policy.rememberTarget(target);
     return {
       kind: 'submitted',
@@ -448,6 +490,67 @@ export function createWorkHubController(deps: {
       const sessions = await deps.sessions.list();
       reconcileFocus(submissionPolicy, sessions);
       const ordinary = sessions.filter((session) => session.kind === 'ordinary');
+      const stopDecision = submissionPolicy.resolveStop({
+        text: input.text,
+        sessions: ordinary,
+      });
+      if (stopDecision.kind !== 'not_requested') {
+        if (stopDecision.kind === 'clarification') {
+          return {
+            kind: 'clarification',
+            strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+            requestId: input.requestId,
+            text: input.text,
+            options: [],
+            reason: stopDecision.reason,
+          };
+        }
+        const { target } = stopDecision;
+        let admitted;
+        try {
+          admitted = await coordination.act({
+            actionId: input.requestId,
+            userText: input.text,
+            proposal: {
+              disposition: 'stop_work',
+              // Only the Session the reference resolved to. Which delegation
+              // that Session still owns is the Host's to decide, under the
+              // lease that ends it.
+              expects: { targetSessionId: target.sessionId },
+            },
+            confirmation: { kind: 'user_stop' },
+          });
+        } catch (error) {
+          // The Gate refusing the stop is an answer, not a fault: it is the
+          // only party that can say the Session owns no single stoppable
+          // delegation. Anything else is a real failure and still throws.
+          if (
+            error instanceof WorkHubCoordinationFailure &&
+            error.code === 'operation_conflict'
+          ) {
+            return {
+              kind: 'clarification',
+              strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+              requestId: input.requestId,
+              text: input.text,
+              options: [],
+              reason: 'stop_target_unavailable',
+            };
+          }
+          throw error;
+        }
+        if (admitted.disposition !== 'stop_work') {
+          throw new Error('WorkHub Action Gate returned an unexpected disposition');
+        }
+        return {
+          kind: 'stop',
+          strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+          requestId: input.requestId,
+          target,
+          outcome: admitted.outcome,
+          ...(admitted.targetTurnId ? { targetTurnId: admitted.targetTurnId } : {}),
+        };
+      }
       const candidateSet = await coordination.candidates();
       const candidateBySessionId = new Map(
         candidateSet.candidates.map((candidate) => [candidate.sessionId, candidate]),

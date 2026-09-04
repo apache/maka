@@ -473,6 +473,9 @@ export class RuntimeHostSessionProjector {
         turnId: root.turnId,
         ts: this.#now(),
         stopReason: 'end_turn',
+        ...(root.contextCompactionOutcome
+          ? { contextCompactionOutcome: root.contextCompactionOutcome }
+          : {}),
       });
     } else if (root.status === 'failed') {
       events.push({
@@ -483,9 +486,6 @@ export class RuntimeHostSessionProjector {
         recoverable: false,
         reason: root.failureClass,
         message: root.failureMessage ?? `Turn failed: ${root.failureClass}`,
-        ...(root.contextBudgetExhaustedDetail
-          ? { details: { contextBudgetExhaustedDetail: root.contextBudgetExhaustedDetail } }
-          : {}),
       });
     } else {
       events.push({
@@ -567,6 +567,17 @@ export function projectRuntimeHostInteractionRequest(
       },
     ];
   }
+  if (interaction.request.kind === 'form') {
+    return [
+      {
+        type: 'form_request',
+        ...base,
+        message: interaction.request.message,
+        requester: structuredClone(interaction.request.requester),
+        fields: structuredClone(interaction.request.fields),
+      },
+    ];
+  }
   if (interaction.request.kind === 'sandbox_boundary') {
     return [
       {
@@ -574,6 +585,16 @@ export function projectRuntimeHostInteractionRequest(
         ...base,
         justification: interaction.request.justification,
         expansion: interaction.request.expansion,
+      },
+    ];
+  }
+  if (interaction.request.kind === 'client_capability') {
+    return [
+      {
+        type: 'client_capability_request',
+        ...base,
+        capability: interaction.request.target.capability,
+        scope: structuredClone(interaction.request.target.scope),
       },
     ];
   }

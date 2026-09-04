@@ -37,20 +37,3 @@ describe('provider capacity presentation', () => {
   });
 });
 
-describe('context compaction failure presentation', () => {
-  it('shows actionable malformed-summary guidance', () => {
-    const message = sessionEventErrorMessage({
-      type: 'error',
-      id: 'error-1',
-      turnId: 'turn-1',
-      ts: 1,
-      recoverable: false,
-      reason: 'context_budget_exhausted',
-      message: 'Turn failed: context_budget_exhausted',
-      details: { contextBudgetExhaustedDetail: 'malformed_summary_missing_section' },
-    });
-
-    assert.match(message, /上下文压缩/);
-    assert.match(message, /上下文窗口设置|切换模型|开启新任务/);
-  });
-});

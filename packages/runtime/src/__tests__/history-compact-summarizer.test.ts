@@ -81,7 +81,7 @@ function inputWith(events: RuntimeEvent[], abortSignal?: AbortSignal): HistoryCo
 }
 
 describe('buildLlmHistorySummarizer', () => {
-  test('inherits the session provider options without imposing a compaction-only output cap', async () => {
+  test('inherits the session provider options and applies the default output cap', async () => {
     let seen: Parameters<AiSdkGenerateTextLike>[0] | undefined;
     const providerOptions = { openaiCompatible: { reasoningEffort: 'high' } };
     const summarize = buildLlmHistorySummarizer({
@@ -95,11 +95,10 @@ describe('buildLlmHistorySummarizer', () => {
 
     await summarize({
       ...inputWith([ev({ role: 'user', author: 'user', content: { kind: 'text', text: 'hi' } })]),
-      inputBudget: { maxEstimatedTokens: 10_000, charsPerToken: 1 },
     });
 
     assert.strictEqual(seen?.providerOptions, providerOptions);
-    assert.strictEqual(seen?.maxOutputTokens, undefined);
+    assert.strictEqual(seen?.maxOutputTokens, 8_000);
   });
 
   test('attributes provider-reported usage to one canonical history-compaction record', async () => {
@@ -313,11 +312,14 @@ describe('buildLlmHistorySummarizer', () => {
       ['fc1', 'fc2'],
     );
     const shape = messages.map((m) => `${m.role}:${m.content.map((part) => part.type).join('+')}`);
-    assert.deepEqual(shape.slice(-4), [
+    // The request always ends on the summary instruction; the folded span is
+    // everything before it.
+    assert.deepEqual(shape.slice(-5), [
       'assistant:tool-call+tool-call',
       'tool:tool-result',
       'tool:tool-result',
       'assistant:text',
+      'user:text',
     ]);
   });
 
@@ -379,15 +381,46 @@ describe('buildLlmHistorySummarizer', () => {
       'tool:tool-result',
       'tool:tool-result',
       'tool:tool-result',
+      'user:text',
     ]);
     assert.deepEqual(
       messages[1]!.content.map((part) => part.toolCallId),
       ['fc1', 'fc2', 'fc3'],
     );
     assert.deepEqual(
-      messages.slice(2).map((m) => m.content[0]!.toolCallId),
+      messages.slice(2, -1).map((m) => m.content[0]!.toolCallId),
       ['fc1', 'fc2', 'fc3'],
     );
+  });
+
+  test('ends every summary request with a user instruction the model can answer', async () => {
+    // A chat-template model handed a conversation that ends on its own turn
+    // emits end-of-sequence and nothing else (observed on Ollama qwen2.5:
+    // finish `stop`, one output token, empty text). The request therefore
+    // closes with an instruction, on the first attempt and on the repair.
+    const seen: Array<{ messages: unknown[] }> = [];
+    const generateText: AiSdkGenerateTextLike = async (opts) => {
+      seen.push(opts);
+      return seen.length === 1
+        ? { text: 'not a summary', finishReason: 'stop' }
+        : { text: VALID_SUMMARY, finishReason: 'stop' };
+    };
+    const summarize = buildLlmHistorySummarizer({ resolveModel: () => ({}), generateText });
+    await summarize(
+      inputWith([
+        ev({ role: 'user', author: 'user', content: { kind: 'text', text: 'question' } }),
+        ev({ role: 'model', author: 'agent', content: { kind: 'text', text: 'answer' } }),
+      ]),
+    );
+    assert.equal(seen.length, 2);
+    for (const call of seen) {
+      const last = call.messages.at(-1) as {
+        role: string;
+        content: Array<{ type: string; text?: string }>;
+      };
+      assert.equal(last.role, 'user');
+      assert.match(last.content[0]!.text ?? '', /write the structured summary/i);
+    }
   });
 
   test('does not merge distinct settled steps into one assistant message', async () => {
@@ -435,144 +468,8 @@ describe('buildLlmHistorySummarizer', () => {
       'tool:tool-result',
       'assistant:tool-call',
       'tool:tool-result',
+      'user:text',
     ]);
-  });
-
-  test('bounds the oldest oversized tool result before dispatch while preserving newer context', async () => {
-    let seen: Parameters<AiSdkGenerateTextLike>[0] | undefined;
-    const generateText: AiSdkGenerateTextLike = async (options) => {
-      seen = options;
-      // Proportionate to the large folded span so the size floor passes.
-      return { text: VALID_SUMMARY.replace('- done', `- ${'done '.repeat(200)}`) };
-    };
-    const summarize = buildLlmHistorySummarizer({ resolveModel: () => 'fake-model', generateText });
-    const oldToolOutput = 'OLD_OVERSIZED_TOOL_OUTPUT_'.repeat(1_024);
-    const events: RuntimeEvent[] = [
-      ev({
-        role: 'model',
-        author: 'agent',
-        content: { kind: 'function_call', id: 'old-call', name: 'read', args: { path: 'old.log' } },
-      }),
-      ev({
-        role: 'tool',
-        author: 'tool',
-        content: {
-          kind: 'function_response',
-          id: 'old-call',
-          name: 'read',
-          result: oldToolOutput,
-        },
-      }),
-      ev({
-        role: 'model',
-        author: 'agent',
-        content: {
-          kind: 'function_call',
-          id: 'recent-call',
-          name: 'read',
-          args: { path: 'recent.log' },
-        },
-      }),
-      ev({
-        role: 'tool',
-        author: 'tool',
-        content: {
-          kind: 'function_response',
-          id: 'recent-call',
-          name: 'read',
-          result: 'RECENT_TOOL_RESULT',
-        },
-      }),
-      ev({
-        role: 'model',
-        author: 'agent',
-        content: { kind: 'text', text: 'LATEST_GROUNDED_CONTEXT' },
-      }),
-    ];
-
-    await summarize({
-      ...inputWith(events),
-      inputBudget: { maxEstimatedTokens: 4_000, charsPerToken: 1 },
-    });
-
-    const messages = seen!.messages;
-    const serialized = JSON.stringify(messages);
-    assert.ok(serialized.length <= 4_000);
-    assert.equal(serialized.includes(oldToolOutput), false);
-    assert.match(serialized, /Tool output omitted/);
-    assert.match(serialized, /RECENT_TOOL_RESULT/);
-    assert.match(serialized, /LATEST_GROUNDED_CONTEXT/);
-    assert.match(JSON.stringify(events), /OLD_OVERSIZED_TOOL_OUTPUT/);
-    assert.deepEqual(
-      messages.flatMap((message) =>
-        typeof message.content === 'string'
-          ? []
-          : message.content
-              .filter((part) => part.type === 'tool-call' || part.type === 'tool-result')
-              .map((part) => ({ type: part.type, toolCallId: part.toolCallId })),
-      ),
-      [
-        { type: 'tool-call', toolCallId: 'old-call' },
-        { type: 'tool-result', toolCallId: 'old-call' },
-        { type: 'tool-call', toolCallId: 'recent-call' },
-        { type: 'tool-result', toolCallId: 'recent-call' },
-      ],
-    );
-  });
-
-  test('fails with input_too_large before dispatch when non-tool history cannot fit', async () => {
-    let calls = 0;
-    let modelResolutions = 0;
-    const summarize = buildLlmHistorySummarizer({
-      resolveModel: () => {
-        modelResolutions += 1;
-        return 'fake-model';
-      },
-      generateText: async () => {
-        calls += 1;
-        return { text: 'should not dispatch' };
-      },
-    });
-
-    await assert.rejects(
-      summarize({
-        ...inputWith([
-          ev({
-            role: 'user',
-            author: 'user',
-            content: { kind: 'text', text: 'x'.repeat(1_000) },
-          }),
-        ]),
-        inputBudget: { maxEstimatedTokens: 10, charsPerToken: 1 },
-      }),
-      (error) =>
-        error instanceof HistoryCompactSummarizerError && error.reason === 'input_too_large',
-    );
-    assert.equal(calls, 0);
-    assert.equal(modelResolutions, 0);
-  });
-
-  test('charges the summarization instructions against the input budget before dispatch', async () => {
-    let calls = 0;
-    const summarize = buildLlmHistorySummarizer({
-      resolveModel: () => 'fake-model',
-      generateText: async () => {
-        calls += 1;
-        return { text: 'should not dispatch' };
-      },
-    });
-
-    await assert.rejects(
-      summarize({
-        ...inputWith([
-          ev({ role: 'user', author: 'user', content: { kind: 'text', text: 'small history' } }),
-        ]),
-        inputBudget: { maxEstimatedTokens: 500, charsPerToken: 1 },
-      }),
-      (error) =>
-        error instanceof HistoryCompactSummarizerError && error.reason === 'input_too_large',
-    );
-    assert.equal(calls, 0);
   });
 
   test('stamped step ids decide membership over settledness', async () => {
@@ -634,6 +531,7 @@ describe('buildLlmHistorySummarizer', () => {
       'tool:tool-result',
       'assistant:tool-call',
       'tool:tool-result',
+      'user:text',
     ]);
     assert.deepEqual(
       messages[0]!.content.map((part) => part.toolCallId),
@@ -681,6 +579,29 @@ describe('buildLlmHistorySummarizer', () => {
       ),
       /output_length/,
     );
+  });
+
+  test('shortens the prompt once when the first summary hits the output limit', async () => {
+    const instructions: string[] = [];
+    const summarize = buildLlmHistorySummarizer({
+      resolveModel: () => 'fake-model',
+      generateText: async (options) => {
+        instructions.push(options.instructions);
+        return {
+          text: VALID_SUMMARY,
+          finishReason: instructions.length === 1 ? 'length' : 'stop',
+        };
+      },
+    });
+
+    assert.equal(
+      await summarize(
+        inputWith([ev({ role: 'user', author: 'user', content: { kind: 'text', text: 'hi' } })]),
+      ),
+      VALID_SUMMARY,
+    );
+    assert.equal(instructions.length, 2);
+    assert.match(instructions[1] ?? '', /cut off at the output limit/);
   });
 
   test('rejects the incident fragment: a free-form summary without the mandated sections', async () => {
@@ -767,6 +688,32 @@ describe('buildLlmHistorySummarizer', () => {
         error.cause.reason === 'provider_error' &&
         error.cause.cause instanceof Error &&
         error.cause.cause.message === 'model down during repair',
+    );
+    assert.equal(calls, 2);
+  });
+
+  test('a context-length rejection of the repair request stays the input_too_large signal', async () => {
+    // The initial request fit; the stricter repair prompt is longer and the
+    // provider rejected it. That rejection must reach the planner as
+    // `input_too_large` so it retreats, not be filed under the initial defect.
+    let calls = 0;
+    const summarize = buildLlmHistorySummarizer({
+      resolveModel: () => 'fake-model',
+      generateText: async () => {
+        calls += 1;
+        if (calls === 1) return { text: 'free-form incomplete summary', finishReason: 'stop' };
+        throw new Error(
+          "This model's maximum context length is 1000 tokens. However, your messages exceed the context window.",
+        );
+      },
+    });
+
+    await assert.rejects(
+      summarize(
+        inputWith([ev({ role: 'user', author: 'user', content: { kind: 'text', text: 'hi' } })]),
+      ),
+      (error) =>
+        error instanceof HistoryCompactSummarizerError && error.reason === 'input_too_large',
     );
     assert.equal(calls, 2);
   });
@@ -1223,11 +1170,14 @@ describe('buildLlmHistorySummarizer', () => {
     assert.strictEqual(result, withInlineFence);
   });
 
-  test('rejects a paragraph-sized summary for a large folded span', async () => {
+  test('rejects a paragraph-sized summary for a large folded span when usage says it is too small', async () => {
     const summarize = buildLlmHistorySummarizer({
       resolveModel: () => 'fake-model',
       // Structurally complete, but far below the floor for a large fold.
-      generateText: async () => ({ text: VALID_SUMMARY }),
+      generateText: async () => ({
+        text: VALID_SUMMARY,
+        usage: { inputTokens: 20_000, outputTokens: 50 },
+      }),
     });
 
     await assert.rejects(
@@ -1244,9 +1194,43 @@ describe('buildLlmHistorySummarizer', () => {
     );
   });
 
-  test('the size floor covers the full replaced span, not just the newly folded increment', async () => {
-    // Steady-state roll-forward: the checkpoint replaces everything it covers,
-    // so a small increment must not let a fragment replace a large span.
+  test("a provider's context-length rejection is the fold's input_too_large signal", async () => {
+    // The summarizer's provider is the one judge of whether the fold fits its
+    // window. A fake provider that rejects above N characters must surface as
+    // `input_too_large`, the reason the planner retreats on, not as a generic
+    // provider error that fails the fold open.
+    const generateText: AiSdkGenerateTextLike = async (opts) => {
+      if (JSON.stringify(opts.messages).length > 2_000) {
+        throw new Error(
+          "This model's maximum context length is 1000 tokens. However, your messages exceed the context window.",
+        );
+      }
+      return { text: VALID_SUMMARY, finishReason: 'stop' };
+    };
+    const summarize = buildLlmHistorySummarizer({ resolveModel: () => 'fake-model', generateText });
+    await assert.rejects(
+      summarize(
+        inputWith([
+          ev({ role: 'user', author: 'user', content: { kind: 'text', text: 'x'.repeat(5_000) } }),
+        ]),
+      ),
+      (error: unknown) =>
+        error instanceof HistoryCompactSummarizerError && error.reason === 'input_too_large',
+    );
+    assert.equal(
+      await summarize(
+        inputWith([ev({ role: 'user', author: 'user', content: { kind: 'text', text: 'small' } })]),
+      ),
+      VALID_SUMMARY,
+    );
+  });
+
+  test('the usage floor judges an initial fold and stands down on a roll-forward', async () => {
+    // On an initial fold the summarizer's input IS the covered span, so a
+    // 50-token summary of a 20,000-token span is a fragment. On a roll-forward
+    // the input is the previous summary plus the increment, not the span, so
+    // the same numbers say nothing about the whole and the floor must not
+    // reject the fold on them.
     const old = ev({
       role: 'user',
       author: 'user',
@@ -1265,23 +1249,27 @@ describe('buildLlmHistorySummarizer', () => {
     });
     const summarize = buildLlmHistorySummarizer({
       resolveModel: () => 'fake-model',
-      generateText: async () => ({ text: VALID_SUMMARY }),
+      generateText: async () => ({
+        text: VALID_SUMMARY,
+        usage: { inputTokens: 20_000, outputTokens: 50 },
+      }),
     });
 
     await assert.rejects(
-      summarize({
+      summarize(inputWith([old, newer])),
+      /malformed_summary_too_small_for_fold/,
+    );
+    assert.equal(
+      await summarize({
         ...inputWith([old, newer]),
         previousCheckpoint,
         newlyFoldedRuntimeEvents: [newer],
       }),
-      /malformed_summary_too_small_for_fold/,
+      VALID_SUMMARY,
     );
   });
 
-  test('a summary at exactly the floor is accepted under ceil-based token estimates', async () => {
-    // 799 chars at 4 chars/token is ceil(799/4) = 200 estimated tokens —
-    // exactly the documented floor, so it must pass, not be rejected by a
-    // raw-character comparison.
+  test('a summary without provider usage is not rejected by the size floor', async () => {
     const skeleton = (progress: string) =>
       `## Goal\nX\n\n## Progress\n- ${progress}\n\n## Next Steps\n1. continue\n\n## Critical Context\n- (none)`;
     const exactFloor = skeleton('p'.repeat(799 - skeleton('').length));
@@ -1379,7 +1367,6 @@ describe('buildLlmHistorySummarizer', () => {
       ...input,
       previousCheckpoint,
       newlyFoldedRuntimeEvents: [newer],
-      inputBudget: { maxEstimatedTokens: 10_000, charsPerToken: 1 },
     });
 
     assert.strictEqual(result, VALID_SUMMARY);

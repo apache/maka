@@ -1064,6 +1064,45 @@ describe('non-serving Runtime Host kernel', () => {
     });
   });
 
+  test('safe retirement refuses a second client that connected after discovery', async () => {
+    await withHostPaths(async (paths) => {
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      const host = await RuntimeHostKernel.start({
+        owner,
+        lifecycleMode: 'service',
+        composition: KERNEL_COMPOSITION,
+      });
+      const replacement = await retryConnect(paths, CURRENT_PROTOCOL);
+      assert.equal(replacement.kind, 'connected');
+      if (replacement.kind !== 'connected') return;
+      const lateClient = await retryConnect(paths, CURRENT_PROTOCOL);
+      assert.equal(lateClient.kind, 'connected');
+      if (lateClient.kind !== 'connected') return;
+
+      assert.deepEqual(
+        await replacement.connection.request('host.upgrade.prepare', {
+          expectedHostEpoch: host.hostEpoch,
+          allowInterruptActiveTasks: false,
+        }),
+        { kind: 'active_tasks' },
+      );
+      assert.equal(host.state, 'ready');
+
+      await lateClient.connection.close();
+      assert.deepEqual(
+        await replacement.connection.request('host.upgrade.prepare', {
+          expectedHostEpoch: host.hostEpoch,
+          allowInterruptActiveTasks: false,
+        }),
+        { kind: 'prepared', pid: process.pid },
+      );
+      await host.closed;
+      assert.equal(host.shutdownReason, 'retirement');
+    });
+  });
+
   test('an explicit generation takeover drains only the exact unobserved ephemeral Host', async () => {
     await withHostPaths(async (paths) => {
       const candidate = await startTestRuntimeHostCandidate(paths, {
@@ -2134,8 +2173,11 @@ describe('non-serving Runtime Host kernel', () => {
           { sessionId: 'late-session' },
           50,
         );
-        await lateEntered;
-        await assert.rejects(
+        // Claim the rejection before awaiting anything else. The deadline above
+        // is shorter than the gate below can take to open on a loaded machine,
+        // so attaching the handler later leaves a window where the timeout is
+        // an unhandled rejection and fails the test on timing alone.
+        const locallyTimedRejected = assert.rejects(
           locallyTimed,
           (error: unknown) =>
             error instanceof RuntimeHostRequestInterruptedError &&
@@ -2144,6 +2186,8 @@ describe('non-serving Runtime Host kernel', () => {
             error.cause instanceof RuntimeHostTransportError &&
             error.cause.code === 'read_timeout',
         );
+        await lateEntered;
+        await locallyTimedRejected;
         assert.equal(
           (await connected.connection.status()).hostEpoch,
           connected.connection.hostEpoch,

@@ -34,13 +34,17 @@ import {
   type ProviderCatalogGroup,
   type ProviderType,
 } from '@maka/core/provider-registry';
-import { PROVIDER_DEFAULTS, type LlmConnection } from '@maka/core/llm-connections';
+import { PROVIDER_REGISTRY, type LlmConnection } from '@maka/core/llm-connections';
 import { Button, TextInput, useUiLocale } from '@maka/ui';
 import { AddProviderForm } from './provider-add-form';
 import { ProviderLogo, providerDisplay } from './provider-display';
 import { OAuthLoginPanel, useOAuthCards, type OAuthCardId } from './provider-oauth-section';
-import { type ConnectionsBridge } from './provider-panel-shared';
-import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
+import {
+  getProviderSettingsCopy,
+  type ApiKeyOnboardingBridge,
+  type ConnectionsBridge,
+  type DesktopConnectionOnboardingIdentity,
+} from '../features/connection-settings';
 
 type CatalogCategory = ProviderCatalogGroup | 'all' | 'recommended' | 'accounts';
 
@@ -69,7 +73,7 @@ export const CATALOG_INITIAL_FILTER: CatalogFilter = { query: '', category: 'all
 export interface CreatedOAuthConnectionIdentity {
   connectionId: string;
   slug: string;
-  providerType: 'openai-codex' | 'xai-oauth';
+  providerType: 'openai-codex' | 'xai-oauth' | 'github-copilot';
 }
 
 /**
@@ -172,7 +176,7 @@ export function ProviderCatalogPage(props: {
               data-logged-in={card.isLoggedIn ? 'true' : undefined}
               startContent={<ProviderLogo type={card.providerType} />}
               label={/* a11y-allow: this label names the ROW, not the span. Astryx's Item puts consumer props on its outer wrapper and renders a separate invisible <button> for the click target, so an aria-label on the Item never reaches that button — measured. The button is named from its content, and this span is how the status reaches that name. Removing it drops the runtime error from the row's accessible name (settings.spec:226).*/ <span aria-label={providerCopy.oauthSection.cardAria(
-                card.id === 'github-copilot' ? card.isLoggedIn ? 'manage' : 'import' : 'add',
+                'add',
                 card.name,
                 card.status,
                 card.description,
@@ -225,17 +229,25 @@ export function ProviderCatalogPage(props: {
  */
 export function ProviderSetupPage(props: {
   bridge: ConnectionsBridge;
+  apiKeyOnboardingBridge?: ApiKeyOnboardingBridge;
   target: SetupTarget;
   existingSlugs: string[];
   onCancel(): void;
   onCreated(slug: string, modelDiscoveryError?: unknown): Promise<void>;
+  onOnboarded?(identity: DesktopConnectionOnboardingIdentity): Promise<void>;
+  onOnboardingOutcomeUnknown?(): Promise<void>;
+  hasSaveUncertainty?: boolean;
   onAccountCreated(connection?: CreatedOAuthConnectionIdentity): Promise<void>;
   labelledBy?: string;
 }) {
   if (props.target.method === 'account') {
     return (
       <div tabIndex={-1} role="region" aria-labelledby={props.labelledBy} className="settingsRouteLevel" data-maka-contract="provider-setup">
-        <OAuthLoginPanel cardId={props.target.cardId} onLoginSuccess={props.onAccountCreated} />
+        <OAuthLoginPanel
+          bridge={props.bridge}
+          cardId={props.target.cardId}
+          onLoginSuccess={props.onAccountCreated}
+        />
       </div>
     );
   }
@@ -244,10 +256,14 @@ export function ProviderSetupPage(props: {
       <AddProviderForm
         key={props.target.providerType}
         bridge={props.bridge}
+        apiKeyOnboardingBridge={props.apiKeyOnboardingBridge}
         providerType={props.target.providerType}
         existingSlugs={props.existingSlugs}
         onCancel={props.onCancel}
         onCreated={props.onCreated}
+        onOnboarded={props.onOnboarded}
+        onOnboardingOutcomeUnknown={props.onOnboardingOutcomeUnknown}
+        hasSaveUncertainty={props.hasSaveUncertainty}
       />
     </div>
   );
@@ -261,17 +277,17 @@ function providersForCategory(category: CatalogCategory, query: string, locale: 
   const normalizedQuery = query.trim().toLocaleLowerCase();
   return source.filter((type) => {
     if (!CATALOG_PROVIDER_TYPES.includes(type)) return false;
-    if (PROVIDER_DEFAULTS[type].status !== 'ready') return false;
+    if (PROVIDER_REGISTRY[type].status !== 'ready') return false;
     if (
       category !== 'all' &&
       category !== 'recommended' &&
-      PROVIDER_DEFAULTS[type].catalogGroup !== category
+      PROVIDER_REGISTRY[type].catalogGroup !== category
     ) {
       return false;
     }
     if (!normalizedQuery) return true;
     const display = providerDisplay(type, locale);
-    return [type, display.name, display.description, PROVIDER_DEFAULTS[type].label]
+    return [type, display.name, display.description, PROVIDER_REGISTRY[type].label]
       .some((value) => value.toLocaleLowerCase().includes(normalizedQuery));
   });
 }

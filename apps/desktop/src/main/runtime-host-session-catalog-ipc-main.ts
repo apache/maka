@@ -21,7 +21,7 @@ import { randomUUID } from 'node:crypto';
 import { isCollaborationMode } from '@maka/core/collaboration';
 import { isOrchestrationMode } from '@maka/core/orchestration';
 import { isPermissionMode } from '@maka/core/permission';
-import { isThinkingLevel } from '@maka/core/model-thinking';
+import { isThinkingLevel, type ThinkingLevel } from '@maka/core/model-thinking';
 import { type CreateSessionRequestInput, type SessionListFilter } from '@maka/core/runtime-inputs';
 import { type SessionChangedEvent, type SessionChangedReason, type SessionCatalogSummary } from '@maka/core/session';
 import { projectSessionCatalogSummary } from '@maka/runtime-host/client';
@@ -60,6 +60,7 @@ type RuntimeHostSessionCatalogClient = Pick<
 >;
 
 export interface DesktopHostSessionSummary extends SessionCatalogSummary {
+  revision: number;
   labelsTruncated: boolean;
   shared?: true;
 }
@@ -132,7 +133,8 @@ export function registerRuntimeHostSessionCatalogIpc(
       sessionId: newId(),
       workspace,
       ...(request.mode === undefined ? {} : { mode: request.mode }),
-      ...(request.mode === undefined ? { name: request.name } : {}),
+      // A nameless mode (`bot`) keeps the caller's name, so always forward it.
+      name: request.name,
       ...(request.labels === undefined ? {} : { labels: request.labels }),
       modelTarget: normalizeModelTarget(input),
       ...normalizeCreateThinkingLevel(input?.thinkingLevel),
@@ -205,10 +207,14 @@ export function registerRuntimeHostSessionCatalogIpc(
       return updateConfiguration(deps, sessionId, { orchestrationMode: mode }, 'mode-change');
     },
   );
-  ipcMain.handle('sessions:setModel', async (_event, sessionId: string, input: unknown) => {
-    const modelTarget = normalizeExplicitModel(input);
-    return updateConfiguration(deps, sessionId, { modelTarget, thinkingLevel: null }, 'updated');
-  });
+  ipcMain.handle(
+    'sessions:setModelConfiguration',
+    async (_event, sessionId: string, input: unknown) => {
+      const modelTarget = normalizeExplicitModel(input);
+      const thinkingLevel = normalizeRequiredThinkingLevel(input);
+      return updateConfiguration(deps, sessionId, { modelTarget, thinkingLevel }, 'updated');
+    },
+  );
   ipcMain.handle('sessions:setThinkingLevel', async (_event, sessionId: string, level: unknown) => {
     if (level !== undefined && level !== null && !isThinkingLevel(level)) {
       throw new Error(`Invalid thinking level: ${String(level)}`);
@@ -248,6 +254,7 @@ export function toDesktopHostSharedSessionSummary(
 ): DesktopHostSessionSummary {
   return {
     id: session.id,
+    revision: session.revision,
     name: session.name,
     activityAt: session.activityAt,
     isFlagged: false,
@@ -371,6 +378,14 @@ function normalizeExplicitModel(input: unknown): Extract<SessionModelTarget, { k
   };
 }
 
+function normalizeRequiredThinkingLevel(input: unknown): ThinkingLevel | null {
+  const level = (input as Record<string, unknown> | null)?.thinkingLevel;
+  if (level !== null && !isThinkingLevel(level)) {
+    throw new Error(`Invalid thinking level: ${String(level)}`);
+  }
+  return level;
+}
+
 function normalizeOptionalString(value: unknown, label: string): string | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== 'string' || value.trim().length === 0) {
@@ -392,6 +407,7 @@ export function toDesktopHostSessionSummary(
 ): DesktopHostSessionSummary {
   return {
     ...projectSessionCatalogSummary(session),
+    revision: session.revision,
     labelsTruncated: session.labelsTruncated,
   };
 }

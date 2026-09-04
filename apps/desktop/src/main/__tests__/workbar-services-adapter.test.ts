@@ -166,6 +166,7 @@ describe('createDesktopWorkbarServices', () => {
     });
     await services.sideChat.cleanupSessionCopy('fork');
     await services.sideChat.abandonSessionCopy('s', 'copy');
+    await services.sideChat.compact('fork');
     await services.sideChat.send('fork', {
       type: 'send',
       turnId: 'turn-2',
@@ -179,7 +180,9 @@ describe('createDesktopWorkbarServices', () => {
       turnId: 'turn-3',
     });
     await services.sideChat.respondToSandboxBoundary('fork', {} as never);
+    await services.sideChat.respondToClientCapability('fork', {} as never);
     await services.sideChat.respondToUserQuestion('fork', {} as never);
+    await services.sideChat.respondToUserForm('fork', {} as never);
     services.sideChat.subscribeEvents('fork', eventHandler)();
 
     assert.deepEqual(
@@ -226,13 +229,16 @@ describe('createDesktopWorkbarServices', () => {
         'sessions.branchFromTurn',
         'sessions.cleanupSessionCopy',
         'sessions.abandonSessionCopy',
+        'sessions.compact',
         'sessions.send',
         'sessions.stop',
         'sessions.submitMessage',
         'sessions.setPermissionMode',
         'sessions.regenerateTurn',
         'sessions.respondToSandboxBoundary',
+        'sessions.respondToClientCapability',
         'sessions.respondToUserQuestion',
+        'sessions.respondToUserForm',
         'sessions.subscribeEvents',
       ],
     );

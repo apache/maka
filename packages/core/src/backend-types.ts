@@ -35,9 +35,10 @@ import type {
   QuoteRef,
   SessionEvent,
   SandboxBoundaryRequestEvent,
+  FormRequestEvent,
   UserQuestionRequestEvent,
 } from './events.js';
-import type { InteractionClosureReason } from './interaction.js';
+import type { InteractionClosureReason, InteractionFormResult } from './interaction.js';
 import type { RuntimeEvent } from './runtime-event.js';
 import type { SandboxBoundaryResponse, SandboxBoundarySettlement } from './sandbox-boundary.js';
 import type { StoredMessage, PersistedBackendKind } from './session.js';
@@ -132,6 +133,11 @@ export interface HostedUserQuestionSettlement {
   applyClosure(reason: Exclude<InteractionClosureReason, 'timed_out'>): Promise<void>;
 }
 
+export interface HostedFormSettlement {
+  applyAnswer(answer: InteractionFormResult): Promise<void>;
+  applyClosure(reason: Exclude<InteractionClosureReason, 'timed_out'>): Promise<void>;
+}
+
 export interface HostedSandboxBoundarySettlement {
   applyDecision(settlement: SandboxBoundarySettlement): Promise<void>;
   applyClosure(reason: Exclude<InteractionClosureReason, 'timed_out'>): Promise<void>;
@@ -150,6 +156,12 @@ export interface HostedInteractionBridge {
     request: UserQuestionRequestEvent;
     settlement: HostedUserQuestionSettlement;
   }): Promise<void>;
+  admitFormRequest(input: {
+    request: FormRequestEvent;
+    settlement: HostedFormSettlement;
+  }): Promise<void>;
+  /** Withdraw one exact producer-owned form without closing the surrounding Run. */
+  withdrawFormRequest(requestId: string): Promise<void>;
   admitSandboxBoundaryRequest(input: {
     request: SandboxBoundaryRequestEvent;
     settlement: HostedSandboxBoundarySettlement;
@@ -190,11 +202,12 @@ export type BackendStopMode = 'immediate' | 'after_step';
 
 /**
  * The live session-event vocabulary accepted from a backend. `queue_update`
- * belongs to the runtime kernel, while legacy permission requests and
+ * belongs to the runtime kernel, Client Capability approval events belong to
+ * the Host-owned Interaction projection, and legacy permission requests and
  * acknowledgements were replaced by sandbox-boundary events. `send` stays
  * typed as `SessionEvent` for implementation ergonomics; the flow drops these
- * retired variants at ingress so they are never mapped, observed, or persisted
- * by a new run.
+ * non-backend variants at ingress so they are never mapped or persisted by a
+ * new run.
  */
 export type BackendSessionEvent = Exclude<
   SessionEvent,
@@ -204,6 +217,8 @@ export type BackendSessionEvent = Exclude<
       type:
         | 'queue_update'
         | 'message_admission'
+        | 'client_capability_request'
+        | 'client_capability_decision_ack'
         | 'permission_request'
         | 'permission_answer_ack'
         | 'permission_closure_ack'

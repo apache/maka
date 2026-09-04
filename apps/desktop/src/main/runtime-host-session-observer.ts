@@ -554,6 +554,11 @@ export class RuntimeHostSessionObserver {
         type: "user_question_answer_ack",
         ...base,
       });
+    } else if (answered.outcome.kind === "form_answer") {
+      this.#broadcast(answered.sessionId, {
+        type: "form_answer_ack",
+        ...base,
+      });
     } else if (answered.outcome.kind === "sandbox_boundary_decision") {
       this.#broadcast(answered.sessionId, {
         type: "sandbox_boundary_decision_ack",
@@ -561,6 +566,12 @@ export class RuntimeHostSessionObserver {
         decision: answered.outcome.decision,
         status: answered.outcome.status,
         revision: answered.revision,
+      });
+    } else if (answered.outcome.kind === "client_capability_decision") {
+      this.#broadcast(answered.sessionId, {
+        type: "client_capability_decision_ack",
+        ...base,
+        decision: answered.outcome.decision,
       });
     }
   }

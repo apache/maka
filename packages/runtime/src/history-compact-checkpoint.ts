@@ -217,16 +217,13 @@ export function buildHistoryCompactCheckpoint(
     throw new Error('History compact checkpoint requires valid provider compaction state');
   }
   // The sectioned marker is proof that the complete predicate held, so only
-  // this builder assigns it — and only after re-checking against the covered
-  // span (structure, truncation, AND the size floor, since the covered events
-  // are in hand here at every construction seam, including copy). A caller
-  // with unvalidated free-form text must declare `legacy_freeform` instead of
-  // minting trust it did not earn.
+  // this builder assigns it — and only after re-checking structure and
+  // truncation at every construction seam, including copy. The size floor is
+  // the summarizer's own check: it needs the provider's usage for the call,
+  // which no construction seam has. A caller with unvalidated free-form text
+  // must declare `legacy_freeform` instead of minting trust it did not earn.
   if (!providerState && input.summaryFormat !== 'legacy_freeform') {
-    const defect = findCheckpointSummaryDefect(summary!, {
-      coveredRuntimeEvents: input.coveredRuntimeEvents,
-      ...(input.charsPerToken !== undefined ? { charsPerToken: input.charsPerToken } : {}),
-    });
+    const defect = findCheckpointSummaryDefect(summary!);
     if (defect) {
       throw new Error(`History compact checkpoint summary failed validation: ${defect}`);
     }

@@ -20,7 +20,6 @@
 import {
   resolveRuntimeHostNpmDeploymentLayout,
   type RuntimeHostManagedDeploymentConfig,
-  type RuntimeHostSupervisorProvider,
 } from '@maka/runtime-host/operator';
 import { connectExistingRuntimeHost } from '@maka/runtime-host/client';
 import { RUNTIME_HOST_PROTOCOL_VERSION } from '@maka/runtime-host/protocol';
@@ -56,8 +55,7 @@ import {
 
 export interface RuntimeHostManagedLifecycleManagerDeps {
   readonly resolveProvider: (
-    rootId: string,
-    provider: RuntimeHostSupervisorProvider,
+    config: RuntimeHostManagedDeploymentConfig,
   ) => RuntimeHostLifecycleProvider;
   readonly operatorClaim?: {
     readonly deploymentId?: string;
@@ -74,10 +72,11 @@ export async function manageRuntimeHostManagedLifecycle(
     convergeOperator: (currentConfig, desiredConfig) =>
       convergeRuntimeHostManagedOperator(currentConfig, desiredConfig),
     verifyOperator: verifyRuntimeHostManagedOperator,
-    resolveProvider: (requested) => dependencies.resolveProvider(rootId, requested),
+    resolveProvider: dependencies.resolveProvider,
   };
   const resolved = await resolveRecoverableRuntimeHostManagedDeployment(rootId, lifecycleDeps, {
     ...(input.expectedTarget ? { expectedTarget: input.expectedTarget } : {}),
+    allowInterruptActiveTasks: input.allowInterruptActiveTasks ?? false,
   });
   if (resolved.kind === 'absent') {
     if (input.action === 'uninstall' && input.expectedTarget) {
@@ -99,10 +98,8 @@ export async function manageRuntimeHostManagedLifecycle(
       dependencies.operatorClaim.cliPath,
     );
   }
-  const supervisedLifecycle = config.lifecycle.mode === 'supervised' ? config.lifecycle : undefined;
-  const provider = supervisedLifecycle
-    ? dependencies.resolveProvider(rootId, supervisedLifecycle.provider)
-    : undefined;
+  const provider =
+    config.lifecycle.mode === 'supervised' ? dependencies.resolveProvider(config) : undefined;
   if (input.action === 'install') {
     throw new RuntimeHostServiceManagerError(
       'target_mismatch',
@@ -364,7 +361,7 @@ function presentationManager(
   config: RuntimeHostManagedDeploymentConfig,
 ): Exclude<RuntimeHostManagedServiceStatus['manager'], 'none'> {
   if (config.lifecycle.mode === 'on_demand') return 'on_demand';
-  return config.lifecycle.provider === 'systemd_user' ? 'systemd_user' : 'launch_agent';
+  return config.lifecycle.provider;
 }
 
 function projectLegacyConfig(

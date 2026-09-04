@@ -308,6 +308,9 @@ function catalogPage(admitted: boolean) {
         enabled: true,
         enabledModelIdCount: 1,
         modelCount: admitted ? 1 : 0,
+        // This suite is about which Host an execution reconnects to, not about
+        // what the models are, so the page carries no resolved entries.
+        catalogEntryCount: 0,
       },
       {
         kind: 'enabled_model_id' as const,

@@ -20,12 +20,11 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import {
-  curatedCatalogFallbackModelsForProvider,
   lookupModelMetadata,
   openAiAdapterApiProtocol,
-  resolveModelInputModalities,
   resolveModelVisionSupport,
 } from '../model-metadata.js';
+import { PROVIDER_REGISTRY, providerFallbackModelIds } from '../provider-registry.js';
 import type { ModelInfo, ProviderType } from '../llm-connections.js';
 
 describe('model-metadata vision capability', () => {
@@ -124,19 +123,9 @@ describe('deepseek v4 flash vision exp metadata regression', () => {
     );
   });
 
-  it('accepts both text and image input modalities', () => {
-    const input = resolveModelInputModalities(
-      'deepseek',
-      undefined,
-      'deepseek-v4-flash-vision-exp',
-    );
-    assert.ok(input.includes('text'));
-    assert.ok(input.includes('image'));
-  });
-
-  it('keeps the model present in the deepseek fallback catalog', () => {
+  it('keeps the model present in the deepseek shipped baseline', () => {
     assert.ok(
-      curatedCatalogFallbackModelsForProvider('deepseek')?.includes('deepseek-v4-flash-vision-exp'),
+      providerFallbackModelIds(PROVIDER_REGISTRY.deepseek).includes('deepseek-v4-flash-vision-exp'),
     );
   });
 
@@ -149,7 +138,6 @@ describe('deepseek v4 flash vision exp metadata regression', () => {
       metadata.description,
       'Experimental DeepSeek V4 Flash model for image understanding and multimodal agent tasks',
     );
-    assert.equal(metadata.docsUrl, 'https://api-docs.deepseek.com/guides/vision/');
     assert.equal(metadata.contextWindow, 1_000_000);
     assert.equal(metadata.maxOutputTokens, 384_000);
     assert.equal(metadata.structuredOutput, true);
@@ -169,14 +157,53 @@ describe('deepseek v4 flash vision exp metadata regression', () => {
 
     assert.equal(metadata.displayName, 'DeepSeek-V4-Flash-Vision-Exp');
     assert.equal(metadata.capabilities?.vision, true);
-    assert.deepEqual(resolveModelInputModalities('deepseek', discovered, modelId), [
-      'text',
-      'image',
-    ]);
     assert.equal(resolveModelVisionSupport('deepseek', discovered, modelId), true);
     assert.equal(
       resolveModelVisionSupport('deepseek', [{ id: 'deepseek-v4-flash' }], 'deepseek-v4-flash'),
       false,
     );
+  });
+});
+
+// The Agent Plan gateway has no model-list endpoint its key can reach and has
+// no models.dev snapshot, so its catalog is a hand-maintained mirror of the
+// official plan page (volcengine docs 2366394) and its model release and
+// retirement announcements. These tests pin that mirror to the facts those
+// pages published as of 2026-09.
+describe('Volcengine Agent Plan official catalog mirror', () => {
+  it('offers glm-5.3-flash with the facts the plan page publishes', () => {
+    assert.ok(
+      providerFallbackModelIds(PROVIDER_REGISTRY['volcengine-agent-plan']).includes(
+        'glm-5.3-flash',
+      ),
+    );
+    const metadata = lookupModelMetadata('volcengine-agent-plan', 'glm-5.3-flash');
+    assert.equal(metadata.displayName, 'GLM-5.3-Flash');
+    assert.equal(metadata.contextWindow, 1_024_000);
+    assert.equal(metadata.maxOutputTokens, 128_000);
+    assert.equal(metadata.capabilities?.vision, true);
+  });
+
+  it('pins glm-5.3 to the plan page table literals', () => {
+    const metadata = lookupModelMetadata('volcengine-agent-plan', 'glm-5.3');
+    assert.equal(metadata.contextWindow, 1_024_000);
+    assert.equal(metadata.maxOutputTokens, 128_000);
+  });
+
+  it('carries the official 1M context window for minimax-m3', () => {
+    assert.equal(
+      lookupModelMetadata('volcengine-agent-plan', 'minimax-m3').contextWindow,
+      1_024_000,
+    );
+  });
+
+  it('records the upstream retirement of glm-5.2, kimi-k2.6 and minimax-m2.7', () => {
+    for (const modelId of ['glm-5.2', 'kimi-k2.6', 'minimax-m2.7']) {
+      assert.equal(
+        lookupModelMetadata('volcengine-agent-plan', modelId).lifecycle,
+        'deprecated',
+        modelId,
+      );
+    }
   });
 });

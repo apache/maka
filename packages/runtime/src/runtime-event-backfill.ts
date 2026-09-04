@@ -545,6 +545,9 @@ function tokenUsageFromMessage(
       : {}),
     ...(message.promptSegments !== undefined ? { promptSegments: message.promptSegments } : {}),
     ...(message.contextBudget !== undefined ? { contextBudget: message.contextBudget } : {}),
+    ...(message.lastRequestAnchor !== undefined
+      ? { lastRequestAnchor: message.lastRequestAnchor }
+      : {}),
   };
 }
 

@@ -34,7 +34,7 @@ import type { PermissionMode } from './permission.js';
 import type { ThinkingLevel } from './model-thinking.js';
 import type { CollaborationMode } from './collaboration.js';
 import type { OrchestrationMode, TurnOrchestration } from './orchestration.js';
-import type { SessionStartMode } from './deep-research.js';
+import type { SessionStartMode } from './session-start-mode.js';
 import type { SubagentWorkspaceBinding } from './subagent-workspace.js';
 import type { ToolMode } from './tool-mode.js';
 import type { TurnOrigin } from './turn-origin.js';
@@ -134,7 +134,12 @@ export interface RegenerateTurnInput {
 }
 
 export interface BranchFromTurnInput {
-  sourceTurnId: string;
+  /**
+   * Settled turn to branch through. Absent forks with an empty context — a side
+   * conversation opened before the source has any completed turn (valid only
+   * with `sideConversation: true`).
+   */
+  sourceTurnId?: string;
   name?: string;
   /** Marks a transient read-only fork whose inherited history is reference-only. */
   sideConversation?: boolean;

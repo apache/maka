@@ -115,6 +115,8 @@ function resolveBase(event: SessionEvent, ctx: RuntimeEventMapContext) {
  *   - sandbox_boundary_request     → role 'system',  author 'system'
  *   - sandbox_boundary_decision_ack → role 'system', author 'user'
  *   - user_question_answer_ack     → role 'system',  author 'user'
+ *   - form_request                 → role 'system',  author 'system'
+ *   - form_answer_ack              → role 'system',  author 'user'
  *   - plan_submitted               → role 'system',  author 'agent'
  *   - token_usage                  → role 'system',  author 'system'
  *   - error                        → role 'system',  author 'system'
@@ -130,7 +132,7 @@ export function mapSessionEventToRuntimeEvent(
   ctx: RuntimeEventMapContext,
   memory: SessionEventMapMemory = createSessionEventMapMemory(),
 ): RuntimeEvent {
-  if (event.type === 'queue_update' || event.type === 'message_admission') {
+  if (isHostProjectionSessionEvent(event)) {
     // These are Host/kernel projection facts, not backend events. The live
     // ingress drops them, so reaching this line bypassed that authority boundary.
     throw new Error(`${event.type} is not a backend event`);
@@ -143,10 +145,24 @@ export function mapSessionEventToRuntimeEvent(
 }
 
 export function isLiveBackendSessionEvent(event: SessionEvent): event is BackendSessionEvent {
+  return !isHostProjectionSessionEvent(event) && !isLegacyPermissionSessionEvent(event);
+}
+
+function isHostProjectionSessionEvent(event: SessionEvent): event is Extract<
+  SessionEvent,
+  {
+    type:
+      | 'queue_update'
+      | 'message_admission'
+      | 'client_capability_request'
+      | 'client_capability_decision_ack';
+  }
+> {
   return (
-    event.type !== 'queue_update' &&
-    event.type !== 'message_admission' &&
-    !isLegacyPermissionSessionEvent(event)
+    event.type === 'queue_update' ||
+    event.type === 'message_admission' ||
+    event.type === 'client_capability_request' ||
+    event.type === 'client_capability_decision_ack'
   );
 }
 
@@ -439,6 +455,30 @@ function mapBackendSessionEvent(
         },
         refs: { toolCallId: event.toolUseId },
       };
+    case 'form_request':
+      return {
+        ...base,
+        role: 'system',
+        author: 'system',
+        actions: {
+          formRequest: {
+            requestId: event.requestId,
+            toolUseId: event.toolUseId,
+            message: event.message,
+            requester: event.requester,
+            fields: event.fields,
+          },
+        },
+        refs: { toolCallId: event.toolUseId },
+      };
+    case 'form_answer_ack':
+      return {
+        ...base,
+        role: 'system',
+        author: 'user',
+        actions: { formAnswerAccepted: { requestId: event.requestId } },
+        refs: { toolCallId: event.toolUseId },
+      };
 
     // ── Steering: a user message injected mid-turn at a step boundary ─────
     // Persisted as a first-class user event so the ledger, transcript, and
@@ -549,6 +589,9 @@ function mapBackendSessionEvent(
               : {}),
             ...(event.promptSegments !== undefined ? { promptSegments: event.promptSegments } : {}),
             ...(event.contextBudget !== undefined ? { contextBudget: event.contextBudget } : {}),
+            ...(event.lastRequestAnchor !== undefined
+              ? { lastRequestAnchor: event.lastRequestAnchor }
+              : {}),
           },
         },
         ...(event.providerRequestTraceId !== undefined
@@ -627,12 +670,6 @@ function completeRuntimeEvent(
   if (status === 'failed') {
     stateDelta.failureClass =
       memory.failureClass ?? failureClassFromCompleteStopReason(stopReason) ?? 'runtime_error';
-  }
-  // The context_budget_exhausted outcome carries which invariant made the turn
-  // unrecoverable; the durable terminal state must not collapse it to a bare
-  // failure class.
-  if (event.contextBudgetExhaustedDetail !== undefined) {
-    stateDelta.contextBudgetExhaustedDetail = event.contextBudgetExhaustedDetail;
   }
   if (event.contextCompactionOutcome !== undefined) {
     stateDelta.contextCompactionOutcome = event.contextCompactionOutcome;

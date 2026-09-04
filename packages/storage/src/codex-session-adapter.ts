@@ -327,6 +327,7 @@ function convertCodexRollout(
         if (itemType === 'agentmessage') {
           const text = codexCompletedItemText(item);
           if (text.length === 0) continue;
+          const providerOptions = codexAssistantProviderOptions(item);
           messages.push({
             type: 'assistant',
             id:
@@ -335,6 +336,7 @@ function convertCodexRollout(
             turnId: ensureTurnId(record.line),
             ts: timestampFor(record),
             text,
+            ...(providerOptions !== undefined ? { providerOptions } : {}),
             modelId: activeModel,
             contentOrder: ['text'],
           });
@@ -383,12 +385,14 @@ function convertCodexRollout(
       if (eventType === 'agent_message') {
         const text = stringField(payload, 'message');
         if (!text) continue;
+        const providerOptions = codexAssistantProviderOptions(payload);
         messages.push({
           type: 'assistant',
           id: generatedCodexId(expectedSessionId, 'assistant', record.line),
           turnId: ensureTurnId(record.line),
           ts: timestampFor(record),
           text,
+          ...(providerOptions !== undefined ? { providerOptions } : {}),
           modelId: activeModel,
           contentOrder: ['text'],
         });
@@ -771,6 +775,18 @@ function isRecord(value: unknown): value is JsonRecord {
 function stringField(record: JsonRecord | undefined, field: string): string | undefined {
   const value = record?.[field];
   return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function codexAssistantProviderOptions(
+  record: JsonRecord | undefined,
+): Record<string, unknown> | undefined {
+  const phase = record?.phase;
+  if (phase !== 'commentary' && phase !== 'final_answer') return undefined;
+  return {
+    openai: {
+      phase,
+    },
+  };
 }
 
 function isSafeCodexSessionId(value: unknown): value is string {

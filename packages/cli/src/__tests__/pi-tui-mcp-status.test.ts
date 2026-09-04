@@ -20,8 +20,15 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { TUI } from '@earendil-works/pi-tui';
+import type { McpTestResult } from '@maka/core/mcp';
 import { McpManagementOverlay } from '../pi-tui-mcp-status.js';
-import type { TuiMcpAction, TuiMcpManagement, TuiMcpSnapshot } from '../tui-mcp-control.js';
+import type {
+  TuiMcpAction,
+  TuiMcpActionResult,
+  TuiMcpManagement,
+  TuiMcpSnapshot,
+} from '../tui-mcp-control.js';
+import { TUI_COPY_RESOURCES } from '../tui-copy-catalog.js';
 import { stripAnsi } from '../tui-ansi.js';
 
 describe('MCP management overlay', () => {
@@ -243,7 +250,178 @@ describe('MCP management overlay', () => {
     text = overlay.render(100).map(stripAnsi).join('\n');
     assert.match(text, /› ○ s4/u);
   });
+
+  test('routes the guided add flow through catalog headings, labels, and hints', () => {
+    const locale = 'en';
+    const expected = TUI_COPY_RESOURCES['mcp-status'][locale].editor;
+    const overlay = new McpManagementOverlay({
+      locale,
+      tui: fakeTui(),
+      surface: surface(listSnapshot()),
+      viewportRows: () => 14,
+      onClose: () => undefined,
+      onChange: () => undefined,
+    });
+    const rendered = () => overlay.render(100).map(stripAnsi).join('\n');
+
+    overlay.handleInput('a');
+    assert.ok(rendered().includes(expected.addTitle));
+    overlay.handleInput('g');
+    let text = rendered();
+    assert.ok(text.includes(expected.inputLabels.server_id));
+    assert.ok(text.includes(expected.hints.submit));
+    for (const char of 'demo') overlay.handleInput(char);
+    overlay.handleInput('\r');
+    assert.ok(rendered().includes(expected.transportTitle));
+    overlay.handleInput('1');
+    text = rendered();
+    assert.ok(text.includes(expected.inputLabels.command));
+    for (const char of 'echo') overlay.handleInput(char);
+    overlay.handleInput('\r');
+    text = rendered();
+    assert.ok(text.includes(expected.inputLabels.args));
+    assert.ok(text.includes(expected.hints.args));
+    overlay.handleInput('\r');
+    assert.ok(rendered().includes(expected.protocolTitle));
+    overlay.handleInput('2');
+    text = rendered();
+    assert.ok(text.includes(expected.inputLabels.cwd));
+    assert.ok(text.includes(expected.hints.optional));
+    overlay.handleInput('\r');
+    text = rendered();
+    assert.ok(text.includes(expected.inputLabels.env));
+    assert.ok(text.includes(expected.hints.map));
+    overlay.handleInput('\r');
+    text = rendered();
+    assert.ok(text.includes(expected.confirmAddTitle));
+    assert.ok(text.includes('demo · stdio · auto'));
+    assert.ok(text.includes('echo'));
+    assert.ok(text.includes(expected.confirmHint));
+  });
+
+  test('routes remove confirmation copy and interpolates the server id', () => {
+    const locale = 'en';
+    const expected = TUI_COPY_RESOURCES['mcp-status'][locale].editor;
+    const overlay = new McpManagementOverlay({
+      locale,
+      surface: surface(listSnapshot()),
+      viewportRows: () => 8,
+      onClose: () => undefined,
+      onChange: () => undefined,
+    });
+    overlay.render(100);
+
+    overlay.handleInput('d');
+    const text = overlay.render(100).map(stripAnsi).join('\n');
+    assert.ok(text.includes(expected.confirmRemoveTitle.replace('{serverId}', 'filesystem')));
+    assert.ok(text.includes(expected.confirmHint));
+  });
+
+  for (const locale of ['en', 'zh'] as const) {
+    test(`labels the busy phase per action kind in ${locale}`, () => {
+      const expected = TUI_COPY_RESOURCES['mcp-status'][locale].editor;
+      const mcp = surface(listSnapshot());
+      mcp.execute = () => new Promise(() => undefined);
+      const overlay = new McpManagementOverlay({
+        locale,
+        surface: mcp,
+        viewportRows: () => 8,
+        onClose: () => undefined,
+        onChange: () => undefined,
+      });
+      overlay.render(100);
+
+      const labels: [string, string][] = [
+        ['t', expected.action.test],
+        ['r', expected.action.reconnect],
+        [' ', expected.action.apply],
+      ];
+      for (const [key, label] of labels) {
+        overlay.handleInput(key);
+        assert.ok(overlay.render(100).map(stripAnsi).join('\n').includes(label));
+        overlay.handleInput('\u001b');
+      }
+    });
+  }
+
+  const resultCopy = TUI_COPY_RESOURCES['mcp-status'].en.editor.results;
+  const RESULT_CASES: readonly [TuiMcpActionResult, keyof typeof resultCopy][] = [
+    [{ status: 'conflict', reason: 'exists' }, 'exists'],
+    [{ status: 'conflict', reason: 'stale_config' }, 'stale_config'],
+    [{ status: 'conflict', reason: 'stale_edit' }, 'stale_edit'],
+    [{ status: 'conflict', reason: 'stale_import' }, 'stale_import'],
+    [{ status: 'conflict', reason: 'missing' }, 'missing'],
+    [{ status: 'failed', reason: 'closed' }, 'closed'],
+    [{ status: 'failed', reason: 'invalid-config' }, 'invalid-config'],
+    [{ status: 'failed', reason: 'credential-cleanup-failed' }, 'credential-cleanup-failed'],
+    [{ status: 'failed', reason: 'persist-failed' }, 'persist-failed'],
+    [{ status: 'failed', reason: 'manager-failed' }, 'manager-failed'],
+    [{ status: 'applied', effect: 'published' }, 'published'],
+    [{ status: 'applied', effect: 'pending_host' }, 'pending_host'],
+    [{ status: 'applied', effect: 'sync_failed' }, 'sync_failed'],
+    [{ status: 'applied', effect: 'publication_failed' }, 'publication_failed'],
+    [{ status: 'tested', test: testResult(true), effect: 'published' }, 'test_ok'],
+    [{ status: 'tested', test: testResult(false), effect: 'published' }, 'test_failed'],
+    [
+      { status: 'tested', test: testResult(true), effect: 'publication_failed' },
+      'test_publication_failed',
+    ],
+    [{ status: 'tested', test: testResult(true), effect: 'pending_host' }, 'test_pending_host'],
+  ];
+
+  test('routes every action result to its catalog notice', async () => {
+    for (const [result, code] of RESULT_CASES) {
+      const mcp = surface(listSnapshot());
+      mcp.execute = async () => result;
+      const overlay = new McpManagementOverlay({
+        locale: 'en',
+        surface: mcp,
+        viewportRows: () => 8,
+        onClose: () => undefined,
+        onChange: () => undefined,
+      });
+      overlay.render(100);
+
+      overlay.handleInput(' ');
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const text = overlay.render(100).map(stripAnsi).join('\n');
+      assert.ok(text.includes(resultCopy[code]), code);
+    }
+  });
 });
+
+function testResult(ok: boolean): McpTestResult {
+  return {
+    ok,
+    latencyMs: 1,
+    status: {
+      serverId: 'filesystem',
+      state: ok ? 'connected' : 'error',
+      toolCount: 0,
+      tools: [],
+      updatedAt: 0,
+    },
+  };
+}
+
+function listSnapshot(): TuiMcpSnapshot {
+  return {
+    initialization: 'ready',
+    configuration: 'ready',
+    publication: 'published',
+    toolCount: 0,
+    servers: [
+      { serverId: 'filesystem', configured: true, synchronized: true, enabled: true, toolCount: 0 },
+    ],
+  };
+}
+
+function fakeTui(): TUI {
+  return {
+    requestRender: () => undefined,
+    terminal: { rows: 24, columns: 80 },
+  } as unknown as TUI;
+}
 
 function surface(
   snapshot: TuiMcpSnapshot,

@@ -21,13 +21,13 @@ import { useRef } from 'react';
 import type { UiLocale } from '@maka/core/ui-locale';
 import {
   deriveTurnLineageMap,
+  finalAssistantReplyText,
   formatTurnDuration,
   isSandboxDeniedTool,
   type TurnFooterActionMeta,
   type TurnLineageBadge,
   type TurnLineageTarget,
   type TurnPresentation,
-  type TurnPresentationDeriver,
   type TurnViewModel,
 } from '@maka/ui';
 import {
@@ -45,7 +45,6 @@ export interface AppShellTurnPresentationContext {
   activeId: string | undefined;
   pendingTurnActions: ReadonlySet<string>;
   uiLocale: UiLocale;
-  pendingKeyOf(sessionId: string, turnId: string, actionId: TurnFooterActionMeta['id']): string;
 }
 
 export interface AppShellTurnPresentationDerivation {
@@ -129,7 +128,10 @@ export function createAppShellTurnPresentationDerivation(): AppShellTurnPresenta
       const lineageEntry = lineage.get(turn.turnId);
       const pendingForTurn = new Set<TurnFooterActionMeta['id']>();
       for (const id of PENDING_ACTION_IDS) {
-        if (context.activeId && context.pendingTurnActions.has(context.pendingKeyOf(context.activeId, turn.turnId, id))) {
+        if (
+          context.activeId &&
+          context.pendingTurnActions.has(`${context.activeId}:${turn.turnId}:${id}`)
+        ) {
           pendingForTurn.add(id);
         }
       }
@@ -205,7 +207,7 @@ function deriveTurnPresentationEntry(input: {
   const footerActions = deriveTurnFooterActions({
     status: turn.status,
     locale: uiLocale,
-    hasContent: Boolean(turn.assistant?.text && turn.assistant.text.trim().length > 0),
+    hasContent: finalAssistantReplyText(turn).trim().length > 0,
     // Match the badge lineage rule (regenerate ?? legacy retry) so a turn
     // that already has a parallel answer hints at it in the tooltip too.
     ...((lineageEntry?.regeneratedToTurnId ?? lineageEntry?.retriedToTurnId)
@@ -265,7 +267,7 @@ export function deriveAppShellTurnPresentation(
  */
 export function useAppShellTurnPresentation(
   context: AppShellTurnPresentationContext,
-): TurnPresentationDeriver {
+): (turns: readonly TurnViewModel[]) => TurnPresentation {
   const derivation = useRef<AppShellTurnPresentationDerivation>(undefined);
   derivation.current ??= createAppShellTurnPresentationDerivation();
   return (turns) => derivation.current!.derive(turns, context);

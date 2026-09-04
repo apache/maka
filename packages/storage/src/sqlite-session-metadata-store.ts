@@ -92,6 +92,9 @@ import {
   type SessionHeaderPatch,
   type StoredMessage,
   type SubagentSessionParent,
+  type WorkHubActionClaim,
+  type WorkHubActionClaimOutcome,
+  type WorkHubActionOperation,
   type WorkHubDelegationAssignedMessage,
   type WorkHubDelegationSupersededMessage,
   WORKHUB_COORDINATION_SESSION_ID,
@@ -106,6 +109,7 @@ import {
   normalizeProvenSteeringMessageHandoff,
   samePendingMessageAdmission,
   type MarkMessagesHandedOffInput,
+  type MessageAdmissionCancellationClaimOutcome,
   type PendingMessageAdmission,
   type ProvenRootMessageHandoff,
   type ProvenSteeringMessageHandoff,
@@ -1819,6 +1823,23 @@ export class SqliteSessionMetadataStore {
           .update(assignment.replacesDelegationId)
           .digest('hex')
           .slice(0, 48);
+        const stopRequest = this.readMessageByIdSync(
+          WORKHUB_COORDINATION_SESSION_ID,
+          `whq_${abortSuffix}`,
+        );
+        if (stopRequest) {
+          const stopResolution = this.readMessageByIdSync(
+            WORKHUB_COORDINATION_SESSION_ID,
+            `whz_${abortSuffix}`,
+          );
+          if (
+            stopResolution?.type !== 'workhub_coordination' ||
+            stopResolution.kind !== 'delegation_stop_resolved' ||
+            stopResolution.outcome !== 'not_owned'
+          ) {
+            throw new SessionMetadataConflictError('WorkHub delegation already has a stop claim');
+          }
+        }
         const existingAbort = this.readMessageByIdSync(
           WORKHUB_COORDINATION_SESSION_ID,
           `whb_${abortSuffix}`,
@@ -1952,6 +1973,137 @@ export class SqliteSessionMetadataStore {
         )
         .get(sessionId, messageId);
       return row !== undefined;
+    });
+  }
+
+  /**
+   * Binds one WorkHub action identity to one exact operation, for good.
+   *
+   * Every other durable WorkHub record is keyed by what it is about, so none of
+   * them can see an action id that moved to a second delegation or a second
+   * disposition. This row is the global owner that rejects both, and it is
+   * written before the action's effect so a rejected or recovering attempt can
+   * never leak its identity into a different operation.
+   */
+  async claimWorkHubAction(claim: WorkHubActionClaim): Promise<WorkHubActionClaimOutcome> {
+    this.assertOpen();
+    assertSafeSessionId(claim.actionId);
+    assertSafeSessionId(claim.subject);
+    if (!/^sha256:[a-f0-9]{64}$/u.test(claim.actionFingerprint)) {
+      throw new SessionMetadataConflictError('Invalid WorkHub action fingerprint');
+    }
+    return this.transaction(() => {
+      const existing = this.readWorkHubActionClaimSync(claim.actionId);
+      if (existing) {
+        return existing.operation === claim.operation &&
+          existing.actionFingerprint === claim.actionFingerprint &&
+          existing.subject === claim.subject
+          ? 'same_claim'
+          : 'conflict';
+      }
+      this.db
+        .prepare(
+          `
+          INSERT INTO workhub_action_claims(
+            action_id, operation, action_fingerprint, subject, claimed_at
+          ) VALUES (?, ?, ?, ?, ?)
+        `,
+        )
+        .run(claim.actionId, claim.operation, claim.actionFingerprint, claim.subject, this.now());
+      return 'claimed';
+    });
+  }
+
+  async readWorkHubActionClaim(actionId: string): Promise<WorkHubActionClaim | undefined> {
+    this.assertOpen();
+    assertSafeSessionId(actionId);
+    return this.readTransaction(() => this.readWorkHubActionClaimSync(actionId));
+  }
+
+  private readWorkHubActionClaimSync(actionId: string): WorkHubActionClaim | undefined {
+    const row = this.db
+      .prepare(
+        'SELECT operation, action_fingerprint, subject FROM workhub_action_claims WHERE action_id = ?',
+      )
+      .get(actionId) as
+      | { operation?: unknown; action_fingerprint?: unknown; subject?: unknown }
+      | undefined;
+    if (!row) return undefined;
+    if (
+      !isWorkHubActionOperation(row.operation) ||
+      typeof row.action_fingerprint !== 'string' ||
+      !/^sha256:[a-f0-9]{64}$/u.test(row.action_fingerprint) ||
+      typeof row.subject !== 'string'
+    ) {
+      throw new SessionMetadataConflictError('Invalid WorkHub action claim row');
+    }
+    return {
+      actionId,
+      operation: row.operation,
+      actionFingerprint: row.action_fingerprint as `sha256:${string}`,
+      subject: row.subject,
+    };
+  }
+
+  async claimMessageAdmissionCancellation(
+    sessionId: string,
+    messageId: string,
+    claimId: string,
+  ): Promise<MessageAdmissionCancellationClaimOutcome> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    assertSafeSessionId(messageId);
+    assertSafeSessionId(claimId);
+    return this.transaction(() => {
+      const cancelled = this.db
+        .prepare(
+          'SELECT cancellation_claim_id FROM cancelled_message_admissions WHERE session_id = ? AND message_id = ?',
+        )
+        .get(sessionId, messageId) as { cancellation_claim_id?: unknown } | undefined;
+      if (cancelled) {
+        return cancelled.cancellation_claim_id === claimId ? 'same_claim' : 'already_cancelled';
+      }
+      const admission = this.db
+        .prepare(
+          `
+          SELECT submitted_content_digest, submitted_placement
+          FROM message_admissions
+          WHERE session_id = ? AND message_id = ?
+        `,
+        )
+        .get(sessionId, messageId) as
+        | { submitted_content_digest?: unknown; submitted_placement?: unknown }
+        | undefined;
+      if (
+        typeof admission?.submitted_content_digest !== 'string' ||
+        (admission.submitted_placement !== 'current_turn' &&
+          admission.submitted_placement !== 'next_turn')
+      ) {
+        throw new SessionMetadataConflictError('Message admission cancellation identity conflict');
+      }
+      this.db
+        .prepare(
+          `
+          INSERT INTO cancelled_message_admissions(
+            session_id, message_id, submitted_content_digest, submitted_placement,
+            cancellation_claim_id
+          ) VALUES (?, ?, ?, ?, ?)
+        `,
+        )
+        .run(
+          sessionId,
+          messageId,
+          admission.submitted_content_digest,
+          admission.submitted_placement,
+          claimId,
+        );
+      const deleted = this.db
+        .prepare('DELETE FROM message_admissions WHERE session_id = ? AND message_id = ?')
+        .run(sessionId, messageId);
+      if (deleted.changes !== 1) {
+        throw new SessionMetadataConflictError('Message admission cancellation identity conflict');
+      }
+      return 'cancelled_by_claim';
     });
   }
 
@@ -6898,6 +7050,17 @@ function readStoredMessageRecordJson(
     recordJson = data.toString('utf8');
   }
   return recordJson;
+}
+
+function isWorkHubActionOperation(value: unknown): value is WorkHubActionOperation {
+  return (
+    value === 'answer_here' ||
+    value === 'clarify' ||
+    value === 'delegate_existing' ||
+    value === 'create_new' ||
+    value === 'replace' ||
+    value === 'stop'
+  );
 }
 
 function sameWorkHubAssignmentRequest(

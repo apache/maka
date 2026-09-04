@@ -107,7 +107,7 @@
     font: var(--maka-text-body);
     margin: 0;
     max-width: 54ch;
-    color: var(--foreground-secondary);
+    color: var(--muted-foreground);
     text-wrap: pretty;
   }
 /* #1433: the daily empty chat is a returning user's landing surface, not a

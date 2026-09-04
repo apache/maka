@@ -36,7 +36,12 @@ import type {
   SandboxEscalationRequest,
 } from './permission.js';
 import type { SandboxBoundaryExpansion, SandboxBoundaryRequestStatus } from './sandbox-boundary.js';
+import type { InteractionFormField, InteractionRequesterProjection } from './interaction.js';
 import type { UserQuestionRequest } from './user-question.js';
+import type {
+  ClientCapabilityGrantCapability,
+  ClientCapabilityGrantScope,
+} from './client-capability-grant.js';
 import type {
   PipeShellOutput,
   PtyShellOutput,
@@ -557,11 +562,15 @@ export type SessionEvent =
   | AnyPermissionRequestEvent
   | SandboxBoundaryRequestEvent
   | SandboxBoundaryDecisionAckEvent
+  | ClientCapabilityRequestEvent
+  | ClientCapabilityDecisionAckEvent
   | PermissionAnswerAckEvent
   | PermissionClosureAckEvent
   | PermissionDecisionAckEvent
   | UserQuestionRequestEvent
   | UserQuestionAnswerAckEvent
+  | FormRequestEvent
+  | FormAnswerAckEvent
   | PlanSubmittedEvent
   | TokenUsageEvent
   | SteeringMessageEvent
@@ -1008,6 +1017,15 @@ export interface UserQuestionRequestEvent extends BaseEvent, UserQuestionRequest
   type: 'user_question_request';
 }
 
+export interface FormRequestEvent extends BaseEvent {
+  type: 'form_request';
+  requestId: string;
+  toolUseId: string;
+  message: string;
+  requester: InteractionRequesterProjection;
+  fields: readonly InteractionFormField[];
+}
+
 export interface SandboxBoundaryRequestEvent extends BaseEvent {
   type: 'sandbox_boundary_request';
   requestId: string;
@@ -1016,12 +1034,24 @@ export interface SandboxBoundaryRequestEvent extends BaseEvent {
   expansion: SandboxBoundaryExpansion;
 }
 
+export interface ClientCapabilityRequestEvent extends BaseEvent {
+  type: 'client_capability_request';
+  requestId: string;
+  toolUseId: string;
+  capability: ClientCapabilityGrantCapability;
+  scope: ClientCapabilityGrantScope;
+}
+
 /**
  * The requests a session can park on while it waits for the user. Both are
  * registered by RuntimeKernel while unanswered, so a surface that missed the
  * live event can rehydrate the prompt instead of stranding the run.
  */
-export type ActiveInteractionRequestEvent = SandboxBoundaryRequestEvent | UserQuestionRequestEvent;
+export type ActiveInteractionRequestEvent =
+  | SandboxBoundaryRequestEvent
+  | UserQuestionRequestEvent
+  | FormRequestEvent
+  | ClientCapabilityRequestEvent;
 
 export interface SandboxBoundaryDecisionAckEvent extends BaseEvent {
   type: 'sandbox_boundary_decision_ack';
@@ -1032,12 +1062,26 @@ export interface SandboxBoundaryDecisionAckEvent extends BaseEvent {
   revision: number;
 }
 
+export interface ClientCapabilityDecisionAckEvent extends BaseEvent {
+  type: 'client_capability_decision_ack';
+  requestId: string;
+  toolUseId: string;
+  decision: 'allow' | 'deny';
+}
+
 /**
  * Echo that the backend accepted a user-question answer.
  * The canonical answer remains owned by InteractionStore.
  */
 export interface UserQuestionAnswerAckEvent extends BaseEvent {
   type: 'user_question_answer_ack';
+  requestId: string;
+  toolUseId: string;
+}
+
+/** Echo that the hosted runtime accepted a form answer. */
+export interface FormAnswerAckEvent extends BaseEvent {
+  type: 'form_answer_ack';
   requestId: string;
   toolUseId: string;
 }
@@ -1223,14 +1267,7 @@ export interface CompleteEvent extends BaseEvent {
     | 'graph_yield'
     | 'permission_handoff'
     | 'step_limit'
-    | 'max_tokens'
-    | 'context_budget_exhausted';
-  /**
-   * Detail for `stopReason: 'context_budget_exhausted'` — the runtime could not
-   * produce a provider-safe request even after mid-turn compaction. A first-class
-   * outcome, not a provider context-length error.
-   */
-  contextBudgetExhaustedDetail?: ContextBudgetExhaustedDetail;
+    | 'max_tokens';
   /** Durable result of an explicit context-compaction execution. */
   contextCompactionOutcome?: ContextCompactionOutcome;
 }
@@ -1240,32 +1277,14 @@ export type ContextCompactionOutcome =
   | { kind: 'unchanged'; reason: string }
   | { kind: 'failed'; reason: string };
 
-export const CONTEXT_BUDGET_EXHAUSTED_DETAILS = [
-  'no_safe_completed_span',
-  'summarizer_failed',
-  'malformed_summary_missing_section',
-  'malformed_summary_truncated',
-  'malformed_summary_too_small_for_fold',
-  'head_anchor_exceeds_capacity',
-] as const;
-
-export type ContextBudgetExhaustedDetail = (typeof CONTEXT_BUDGET_EXHAUSTED_DETAILS)[number];
-
-export function isContextBudgetExhaustedDetail(
-  value: unknown,
-): value is ContextBudgetExhaustedDetail {
-  return CONTEXT_BUDGET_EXHAUSTED_DETAILS.includes(value as ContextBudgetExhaustedDetail);
-}
-
 export type CompleteStopReason = CompleteEvent['stopReason'];
 
 /** Stable failure taxonomy for complete events that did not finish the turn. */
 export function failureClassFromCompleteStopReason(
   reason: CompleteStopReason,
-): 'runtime_error' | 'tool_step_cap_reached' | 'context_budget_exhausted' | undefined {
+): 'runtime_error' | 'tool_step_cap_reached' | undefined {
   if (reason === 'error') return 'runtime_error';
   if (reason === 'step_limit') return 'tool_step_cap_reached';
-  if (reason === 'context_budget_exhausted') return 'context_budget_exhausted';
   return undefined;
 }
 

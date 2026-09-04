@@ -1,0 +1,108 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: Website
+
+# Builds website/ and publishes the output as an orphan commit. `.asf.yaml`
+# serves `asf-site` at maka.apache.org and stages `site/<name>-staging` at
+# maka-<name>.staged.apache.org. Pull requests validate the build through the
+# website workspace's test:dist in ci.yml; this lane only publishes.
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths:
+      - 'website/**'
+      - 'apps/desktop/assets/app-icons/sky.png'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'LICENSE'
+      - 'NOTICE'
+      - '.asf.yaml'
+      - '.github/workflows/website.yml'
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: Stage this ref at maka-<stage>.staged.apache.org instead of publishing it
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: website-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    # Release tags publish nothing; only release candidates are staged.
+    if: github.event_name != 'push' || github.ref_type == 'branch' || contains(github.ref_name, '-rc')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build and check the site
+        run: npm --workspace @maka/website run test:dist
+
+      - name: Choose the target branch
+        id: target
+        env:
+          STAGE: ${{ inputs.stage }}
+        run: |
+          if [[ -n "$STAGE" ]]; then
+            branch="site/$(printf '%s' "$STAGE" | tr -c 'a-z0-9' '-')-staging"
+          elif [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            branch="site/$(printf '%s' "$GITHUB_REF_NAME" | tr '._' '--')-staging"
+          elif [[ "$GITHUB_REF" == refs/heads/main ]]; then
+            branch=asf-site
+          else
+            echo "::error::Only main publishes to maka.apache.org; give a stage name to stage $GITHUB_REF_NAME instead."
+            exit 1
+          fi
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+
+      - name: Publish the build
+        env:
+          BRANCH: ${{ steps.target.outputs.branch }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cp LICENSE NOTICE website/dist/
+          cd website/dist
+          # Only the site settings: repository settings in .asf.yaml are read from main alone.
+          printf 'publish:\n  whoami: asf-site\n\nstaging:\n  profile: ~\n  autostage: site/*\n' > .asf.yaml
+          git init -q -b "$BRANCH"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -q -m "Publish website from ${GITHUB_SHA}"
+          auth="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth}" \
+            push --force "https://github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/${BRANCH}"

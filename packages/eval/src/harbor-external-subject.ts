@@ -39,6 +39,7 @@ import {
   type ProviderUsage as Usage,
 } from './provider-metering.js';
 import { removeEvalWebTools } from './provider-web-tool-surface.js';
+import { terminateProcess } from './process-termination.js';
 import { takeRelayResultToken, writeRelayResult } from './relay-result-frame.js';
 
 const resultToken = takeRelayResultToken();
@@ -346,10 +347,10 @@ if (!systemRoot?.startsWith('/')) throw new Error('external subject system root 
 let credentialPath: string | undefined;
 let child: ChildProcess | undefined;
 let stopped = false;
-const stop = (signal: NodeJS.Signals) => {
+const stop = (signal: 'SIGINT' | 'SIGTERM') => {
   stopped = true;
   removeCredential();
-  child?.kill(signal);
+  void terminateProcess(child, signal);
 };
 const terminate = () => stop('SIGTERM');
 const interrupt = () => stop('SIGINT');

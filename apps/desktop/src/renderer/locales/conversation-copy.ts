@@ -77,6 +77,7 @@ export interface DesktopConversationCopy {
     regenerateRunning: string;
     regenerateAgain: string;
     regenerate: string;
+    requestRegenerate: string;
     branchRunning: string;
     branchAborted: string;
     branch: string;
@@ -217,6 +218,28 @@ export interface DesktopConversationCopy {
       cost: string;
     };
     /**
+     * The session-wide metered-token split, read like a bill: what the
+     * provider's cache served, what was paid as uncached input, what was paid
+     * as output. Names the bands of the token track, in the track's order.
+     */
+    tokenUsage: {
+      title: string;
+      segment: { cacheRead: string; cacheMiss: string; output: string };
+    };
+    /**
+     * Where the session's recorded time went. Names the bands of the duration
+     * track; each row also states how many times its kind ran.
+     */
+    durationUsage: {
+      title: string;
+      /** Label under the ring's total figure. */
+      center: string;
+      segment: {
+        model: (count: number) => string;
+        tool: (count: number) => string;
+      };
+    };
+    /**
      * The coverage notice, composed with its own breakdown: the separators
      * belong to the language, not to the layout, so a Chinese sentence gets
      * `：` and `、` where an English one gets `:` and `,`.
@@ -293,14 +316,20 @@ export interface DesktopConversationCopy {
     };
   };
   quoteCompanion: {
-    /** Initial title used while the eager side-conversation fork is empty. */
-    defaultName: string;
     /** Prefix for the companion fork's session name (followed by the excerpt). */
     namePrefix: string;
-    /** Short-lived status while the eager fork is created. */
-    preparing: string;
     permissionStreaming: string;
     scrollToBottom: string;
+    compactSuccessTitle: string;
+    compactSuccessDescription: string;
+    compactStartedTitle: string;
+    compactStartedDescription: string;
+    compactUnchangedTitle: string;
+    compactUnchangedDescription: string;
+    compactErrorTitle: string;
+    compactErrorFallback: string;
+    workspaceUnavailableTitle: string;
+    workspaceUnavailableDescription: string;
     closeConfirmation: {
       title(count: number): string;
       description(count: number): string;
@@ -342,8 +371,6 @@ export interface DesktopConversationCopy {
   turnError: {
     unknown: string;
     contextOverflow: string;
-    contextBudgetExhausted: string;
-    malformedSummary: string;
     timeout: string;
     auth: string;
     providerBilling: string;
@@ -451,7 +478,7 @@ const COPY = {
         provider_retired: '当前任务绑定的连接，其登录方式已从 Maka 移除，无法用于发送。请到 设置 · 模型 改用其他连接后新建任务。',
       },
     },
-    footer: { labels: { regenerate: '重新生成', branch: '分支', copy: '复制', info: '详情' }, pending: '正在处理…', regenerateRunning: '当前回答仍在进行中，结束后再重新生成', regenerateAgain: '已重新生成过，再次点击将创建新的并行回答', regenerate: '让模型重新生成本轮回答', branchRunning: '当前回答仍在进行中，结束后再分支', branchAborted: '从中断前的上下文分支出新任务', branch: '基于此回答的上下文分支出新任务', copy: '复制回答到剪贴板', copyEmpty: '此回答尚无可复制的内容' },
+    footer: { labels: { regenerate: '重新生成', branch: '分支', copy: '复制', info: '详情' }, pending: '正在处理…', regenerateRunning: '当前回答仍在进行中，结束后再重新生成', regenerateAgain: '已重新生成过，再次点击将创建新的并行回答', regenerate: '让模型重新生成本轮回答', requestRegenerate: '请求所有者批准重新生成本轮回答', branchRunning: '当前回答仍在进行中，结束后再分支', branchAborted: '从中断前的上下文分支出新任务', branch: '基于此回答的上下文分支出新任务', copy: '复制回答到剪贴板', copyEmpty: '此回答尚无可复制的内容' },
     lineage: { regeneratedFrom: '重新生成自旧回答', regeneratedFromTooltip: '这是重新生成的并行回答，点击查看被保留的旧回答', regeneratedTo: '已重新生成 → 新回答', regeneratedToTooltip: '点击跳转到重新生成的新回答' },
     workbar: {
       ariaLabel: '任务工作栏',
@@ -574,6 +601,22 @@ const COPY = {
       totals: {
         cost: '估算成本',
       },
+      tokenUsage: {
+        title: 'Token 统计',
+        segment: {
+          cacheRead: '缓存输入',
+          cacheMiss: '未命中输入',
+          output: '输出（含思考）',
+        },
+      },
+      durationUsage: {
+        title: '耗时统计',
+        center: '记录时长',
+        segment: {
+          model: (count) => `LLM 调用 × ${count}`,
+          tool: (count) => `工具执行 × ${count}`,
+        },
+      },
       coveragePartial: (parts) => `部分调用未能完整显示，下面的数字只少不多${zhDetail(parts)}`,
       coverageAbsent: (parts) => `这个后端不记录每次调用的明细${zhDetail(parts)}`,
       unreadable: (count) => `${count} 条记录读不出来`,
@@ -614,11 +657,19 @@ const COPY = {
       },
     },
     quoteCompanion: {
-      defaultName: '侧边对话',
       namePrefix: '侧聊：',
-      preparing: '正在建立侧边对话…',
       permissionStreaming: '侧边对话运行中暂时不能更改权限',
       scrollToBottom: '滚动侧边对话到底部',
+      compactSuccessTitle: '上下文已压缩',
+      compactSuccessDescription: '较早的上下文已替换为检查点摘要。',
+      compactStartedTitle: '正在压缩上下文',
+      compactStartedDescription: '正在将较早的上下文整理为检查点摘要。',
+      compactUnchangedTitle: '无需压缩',
+      compactUnchangedDescription: '任务已使用最新的检查点。',
+      compactErrorTitle: '压缩失败',
+      compactErrorFallback: '任务暂时无法压缩，请稍后重试。',
+      workspaceUnavailableTitle: '工作目录不可用',
+      workspaceUnavailableDescription: '工作目录不存在或无法访问。请选择有效目录创建新任务。',
       closeConfirmation: {
         title: (count) => count > 1 ? `关闭 ${count} 个侧边对话？` : '关闭侧边对话？',
         description: (count) =>
@@ -658,7 +709,7 @@ const COPY = {
       reauth: { label: '上次连接测试鉴权失败', tooltip: '最近一次连接测试返回鉴权失败（401 / 403），密钥可能已过期或被吊销。这不会拦截发送，但若发送失败请到 设置 · 模型 重新登录。' },
       testError: { label: '上次连接测试失败', tooltip: '最近一次连接测试因网络 / 超时 / 5xx 失败。这不会拦截发送，但若问题持续请到 设置 · 模型 检查 Base URL / 代理。' },
     },
-    turnError: { unknown: '出错了，原因不明。重新发消息重试。', contextOverflow: '上下文超出模型窗口限制，减少附件或开启新任务。', contextBudgetExhausted: '上下文已达上限，这个任务无法继续。换模型或开启新任务。', malformedSummary: '上下文压缩未能生成有效摘要。请检查模型的上下文窗口设置、切换模型，或开启新任务。', timeout: '模型请求超时，重新发消息重试。', auth: '模型鉴权失败，请到设置里重新连接或登录。', providerBilling: '模型服务计费受限，请检查账号余额或订阅状态。', providerCapacity: '模型服务暂时满载，等几分钟重试，或换一个模型。', rateLimit: '模型请求太频繁被限流了，等一会儿再发消息重试。', network: '网络连接失败，检查网络后重新发消息。', provider: '模型服务返回错误，稍后重试或换一个模型。', stepCap: '达到工具调用步数上限，任务可能没做完。发消息让它继续。', tool: '工具调用失败，看一下上面的工具结果再决定要不要重试。', permission: '这一轮在等权限确认时结束了，重新发消息会再问一次。', restarted: '本地应用重启，上一轮没有完成', sandboxBoundaryClosed: '本地应用重启时，等待确认的「允许访问工作区以外的内容」请求已按拒绝关闭。重新发消息可以再决定一次。', executionState: { erroredTool: '这一轮有工具执行出错，先看它的结果，再决定要不要重发。', toolRan: '这一轮已经执行过工具，可能已经产生实际改动，重发前先看工具结果。', partialOutput: '这一轮已经产生了部分回答，重发前可以先看看。' } },
+    turnError: { unknown: '出错了，原因不明。重新发消息重试。', contextOverflow: '上下文超出模型窗口限制，减少附件或开启新任务。', timeout: '模型请求超时，重新发消息重试。', auth: '模型鉴权失败，请到设置里重新连接或登录。', providerBilling: '模型服务计费受限，请检查账号余额或订阅状态。', providerCapacity: '模型服务暂时满载，等几分钟重试，或换一个模型。', rateLimit: '模型请求太频繁被限流了，等一会儿再发消息重试。', network: '网络连接失败，检查网络后重新发消息。', provider: '模型服务返回错误，稍后重试或换一个模型。', stepCap: '达到工具调用步数上限，任务可能没做完。发消息让它继续。', tool: '工具调用失败，看一下上面的工具结果再决定要不要重试。', permission: '这一轮在等权限确认时结束了，重新发消息会再问一次。', restarted: '本地应用重启，上一轮没有完成', sandboxBoundaryClosed: '本地应用重启时，等待确认的「允许访问工作区以外的内容」请求已按拒绝关闭。重新发消息可以再决定一次。', executionState: { erroredTool: '这一轮有工具执行出错，先看它的结果，再决定要不要重发。', toolRan: '这一轮已经执行过工具，可能已经产生实际改动，重发前先看工具结果。', partialOutput: '这一轮已经产生了部分回答，重发前可以先看看。' } },
   },
   en: {
     actions: { stopFailedTitle: 'Failed to stop', stopFailedFallback: 'The task action failed. Try again later.', refreshSessionsFailedTitle: 'Failed to refresh tasks', refreshSessionsFailedFallback: 'The task list could not be refreshed. Try again later.', conversationErrorTitle: 'Task error', conversationErrorFallback: 'The task run failed. Try again later.', regenerateStartedTitle: 'Regeneration started', regenerateStartedDescription: 'Generating a new response', branchCreatedTitle: 'Branch created', branchCreatedDescription: (name) => `New task: ${name}`, revisionStartedTitle: 'Edit draft ready', revisionStartedDescription: 'The original task is kept; sending creates a new version', revisionReadyTitle: 'Ready to edit and resend', revisionReadyDescription: 'Rewound to before that message; edit and send when ready', revisionUnavailableTitle: 'This message cannot be edited yet', revisionAttachmentsUnsupported: 'Edit & resend does not yet support historical attachments. Copy the text into a new message instead.', revisionTransformedTextUnsupported: 'Edit & resend does not yet support messages sent with an explicit skill. Copy the text and select the skill again instead.', revisionDraftAttachmentConflict: 'The composer already has pending attachments. Send or remove them before editing a sent message.', revisionCommandUnsupported: 'You cannot run /compact, /side, or orchestration commands while editing a sent message. Cancel the edit first.', revisionAlreadyActive: 'Another message is already being edited. Send or cancel that edit first.', revisionCancelLabel: 'Cancel', revisionBannerTitle: 'Editing sent message', revisionBannerDetail: '· New version on send', revisionUnchanged: 'Nothing changed. Use Regenerate if you only want a new answer.', operationFailedTitle: 'Action failed', operationFailedFallback: 'The task action failed. Try again later.', attachmentFailedTitle: 'Failed to add attachment', imageAttachmentNotDirectTitle: 'Image added as an attachment', imageAttachmentNotDirectDescription: 'The current model does not receive images directly. The image has been provided as an attachment.', tryAgain: 'Try again later.', modelReboundTitle: 'Switched to an available model', modelReboundDescription: (modelId) => `The previous connection is unavailable${modelId ? ` · ${modelId}` : ''}`, messageReadFailedTitle: 'Failed to load task', partialHistoryTitle: 'Viewing earlier messages', returnLatest: 'Return to latest', scrollMainToBottom: 'Scroll main conversation to bottom' },
@@ -681,7 +732,7 @@ const COPY = {
         provider_retired: 'The sign-in this task\u2019s connection uses was removed from Maka, so it cannot send. Switch to another connection in Settings · Models, then start a new task.',
       },
     },
-    footer: { labels: { regenerate: 'Regenerate', branch: 'Branch', copy: 'Copy', info: 'Details' }, pending: 'Working…', regenerateRunning: 'Wait for the current response to finish before regenerating', regenerateAgain: 'A regenerated response already exists; click again to create another parallel response', regenerate: 'Generate another response to this turn', branchRunning: 'Wait for the current response to finish before branching', branchAborted: 'Branch from the context before the interruption', branch: 'Branch a new task from this response', copy: 'Copy response to clipboard', copyEmpty: 'This response has no content to copy' },
+    footer: { labels: { regenerate: 'Regenerate', branch: 'Branch', copy: 'Copy', info: 'Details' }, pending: 'Working…', regenerateRunning: 'Wait for the current response to finish before regenerating', regenerateAgain: 'A regenerated response already exists; click again to create another parallel response', regenerate: 'Generate another response to this turn', requestRegenerate: 'Ask the Owner to approve regenerating this response', branchRunning: 'Wait for the current response to finish before branching', branchAborted: 'Branch from the context before the interruption', branch: 'Branch a new task from this response', copy: 'Copy response to clipboard', copyEmpty: 'This response has no content to copy' },
     lineage: { regeneratedFrom: 'Regenerated from previous response', regeneratedFromTooltip: 'This is a parallel regenerated response; click to view the retained previous response', regeneratedTo: 'Regenerated → New response', regeneratedToTooltip: 'Jump to the regenerated response' },
     workbar: {
       ariaLabel: 'Task workbar',
@@ -806,6 +857,22 @@ const COPY = {
       totals: {
         cost: 'Estimated cost',
       },
+      tokenUsage: {
+        title: 'Token usage',
+        segment: {
+          cacheRead: 'Cached input',
+          cacheMiss: 'Uncached input',
+          output: 'Output (incl. reasoning)',
+        },
+      },
+      durationUsage: {
+        title: 'Time breakdown',
+        center: 'Recorded Time',
+        segment: {
+          model: (count) => `LLM Calls × ${count}`,
+          tool: (count) => `Tool Runs × ${count}`,
+        },
+      },
       coveragePartial: (parts) =>
         `Some calls could not be shown completely, so the numbers below only undercount${enDetail(parts)}`,
       coverageAbsent: (parts) => `This backend does not record per-call detail${enDetail(parts)}`,
@@ -849,11 +916,20 @@ const COPY = {
       },
     },
     quoteCompanion: {
-      defaultName: 'Side chat',
       namePrefix: 'Side: ',
-      preparing: 'Preparing side chat…',
       permissionStreaming: 'Permissions cannot change while the side chat is running',
       scrollToBottom: 'Scroll side conversation to bottom',
+      compactSuccessTitle: 'Context compacted',
+      compactSuccessDescription: 'Older context was replaced with a checkpoint summary.',
+      compactStartedTitle: 'Compacting context',
+      compactStartedDescription: 'Summarizing older context into a checkpoint.',
+      compactUnchangedTitle: 'Nothing to compact',
+      compactUnchangedDescription: 'The task already uses the latest checkpoint.',
+      compactErrorTitle: 'Compaction failed',
+      compactErrorFallback: 'The task could not be compacted. Try again later.',
+      workspaceUnavailableTitle: 'Working directory unavailable',
+      workspaceUnavailableDescription:
+        'The working directory does not exist or cannot be accessed. Select a valid folder for a new task.',
       closeConfirmation: {
         title: (count) => count > 1 ? `Close ${count} side chats?` : 'Close side chat?',
         description: (count) =>
@@ -894,7 +970,7 @@ const COPY = {
       reauth: { label: 'Last connection test failed authentication', tooltip: 'The latest test returned 401 / 403. Sending is not blocked, but sign in again under Settings · Models if it fails.' },
       testError: { label: 'Last connection test failed', tooltip: 'The latest test failed because of a network, timeout, or 5xx error. Sending is not blocked; check Base URL or proxy settings if it persists.' },
     },
-    turnError: { unknown: 'Something went wrong, cause unknown. Send a message to retry.', contextOverflow: 'Context exceeded the model window. Reduce attachments or start a new task.', contextBudgetExhausted: 'The context limit was reached and this task cannot continue. Switch models or start a new task.', malformedSummary: 'Context compaction could not produce a valid summary. Check the model context-window setting, switch models, or start a new task.', timeout: 'The model request timed out. Send a message to retry.', auth: 'Model authentication failed. Reconnect or sign in again from Settings.', providerBilling: 'Model billing is restricted. Check the account balance or subscription.', providerCapacity: 'The model service is temporarily at capacity. Wait a few minutes, or switch models.', rateLimit: 'Requests were rate-limited. Wait a moment, then send a message to retry.', network: 'The network connection failed. Check the network, then send a message again.', provider: 'The model service returned an error. Retry later, or switch models.', stepCap: 'The tool-step limit was reached, so the task may be incomplete. Send a message to continue.', tool: 'A tool call failed. Check the tool result above before deciding whether to retry.', permission: 'This turn ended while waiting for permission. Send a message and it will ask again.', restarted: 'The app restarted before the previous turn completed', sandboxBoundaryClosed: 'The app restarted, so the pending request to reach outside the workspace was closed as denied. Send a message to decide again.', executionState: { erroredTool: 'A tool errored during this turn. Read its result before deciding whether to send another message.', toolRan: 'Tools already ran during this turn and may have made real changes. Read their results before sending another message.', partialOutput: 'This turn produced part of an answer. Worth reading before you send another message.' } },
+    turnError: { unknown: 'Something went wrong, cause unknown. Send a message to retry.', contextOverflow: 'Context exceeded the model window. Reduce attachments or start a new task.', timeout: 'The model request timed out. Send a message to retry.', auth: 'Model authentication failed. Reconnect or sign in again from Settings.', providerBilling: 'Model billing is restricted. Check the account balance or subscription.', providerCapacity: 'The model service is temporarily at capacity. Wait a few minutes, or switch models.', rateLimit: 'Requests were rate-limited. Wait a moment, then send a message to retry.', network: 'The network connection failed. Check the network, then send a message again.', provider: 'The model service returned an error. Retry later, or switch models.', stepCap: 'The tool-step limit was reached, so the task may be incomplete. Send a message to continue.', tool: 'A tool call failed. Check the tool result above before deciding whether to retry.', permission: 'This turn ended while waiting for permission. Send a message and it will ask again.', restarted: 'The app restarted before the previous turn completed', sandboxBoundaryClosed: 'The app restarted, so the pending request to reach outside the workspace was closed as denied. Send a message to decide again.', executionState: { erroredTool: 'A tool errored during this turn. Read its result before deciding whether to send another message.', toolRan: 'Tools already ran during this turn and may have made real changes. Read their results before sending another message.', partialOutput: 'This turn produced part of an answer. Worth reading before you send another message.' } },
   },
 } satisfies UiCatalog<DesktopConversationCopy>;
 

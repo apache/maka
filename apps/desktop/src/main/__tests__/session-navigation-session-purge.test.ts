@@ -50,12 +50,18 @@ function restored(id: string): SessionSummary {
 
 type SweepHarness = {
   removed: string[];
+  /** Each `previewRemoval` call, in order. */
+  previews: string[];
+  /** Each `archive` call, in order. */
+  archived: string[];
   /** Each `remove` call as `[sessionId, requireArchived]`. */
   removeOptions: Array<[string, boolean]>;
   cleared: string[];
   selections: Array<string | undefined>;
   /** Titles of the success toasts a row action raised. */
   toasts: string[];
+  /** Their descriptions, positionally — the half that carries the counts. */
+  toastDescriptions: (string | undefined)[];
   listCalls: number;
 };
 
@@ -68,6 +74,12 @@ function installService(
   harness: SweepHarness,
   options: {
     rejectIds?: readonly string[];
+    rejectArchiveIds?: readonly string[];
+    /** Subtasks the Host says a delete would archive, per source id. */
+    previewSubtasks?: Readonly<Record<string, number>>;
+    /** Ids whose preview rejects, standing in for a Host that cannot answer. */
+    rejectPreviewIds?: readonly string[];
+
     rejectWithUndefinedIds?: readonly string[];
     surviving?: readonly SessionSummary[];
     /** Runs after each accepted removal, to model what another client did meanwhile. */
@@ -89,7 +101,10 @@ function installService(
       return [...options.surviving];
     },
     setFlagged: async () => undefined,
-    archive: async () => undefined,
+    archive: async (id) => {
+      harness.archived.push(id);
+      if (options.rejectArchiveIds?.includes(id)) throw new Error(`archive-busy:${id}`);
+    },
     unarchive: async () => undefined,
     rename: async () => undefined,
     remove: async (id, removeOptions) => {
@@ -106,7 +121,11 @@ function installService(
       options.onRemove?.(id);
       return { disposition: 'removed', archivedSubtaskCount: options.archivedByRemoval?.[id] ?? 0 };
     },
-    previewRemoval: async () => 0,
+    previewRemoval: async (id: string) => {
+      harness.previews.push(id);
+      if (options.rejectPreviewIds?.includes(id)) throw new Error(`preview-unavailable:${id}`);
+      return options.previewSubtasks?.[id] ?? 0;
+    },
   };
 }
 
@@ -117,6 +136,8 @@ function createActions(input: {
   pending?: Set<string>;
   refreshed?: SessionSummary[];
   service: SessionNavigationSessionService;
+  /** Answers the confirm and records what it was asked, for the sweeps. */
+  onConfirm?: (options: { title: string; description: string }) => boolean;
 }) {
   return createSessionNavigationRowActions({
     uiLocale: 'en',
@@ -134,11 +155,12 @@ function createActions(input: {
       input.activeIdRef.current = id;
     },
     toastApi: {
-      success: (title: string) => {
+      success: (title: string, description?: string) => {
         input.harness.toasts.push(title);
+        input.harness.toastDescriptions.push(description);
       },
       error: () => undefined,
-      confirm: async () => true,
+      confirm: async (options) => input.onConfirm?.(options) ?? true,
     },
   });
 }
@@ -146,10 +168,13 @@ function createActions(input: {
 function harness(): SweepHarness {
   return {
     removed: [],
+    previews: [],
+    archived: [],
     removeOptions: [],
     cleared: [],
     selections: [],
     toasts: [],
+    toastDescriptions: [],
     listCalls: 0,
   };
 }

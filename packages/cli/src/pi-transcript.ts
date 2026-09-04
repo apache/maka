@@ -21,6 +21,7 @@ import { Markdown, visibleWidth } from '@earendil-works/pi-tui';
 import type {
   ProviderRetryEvent,
   ProviderRetryScheduledEvent,
+  FormRequestEvent,
   SandboxBoundaryRequestEvent,
   UserQuestionRequestEvent,
   SessionEvent,
@@ -37,7 +38,12 @@ import {
 import type { ContextBudgetDiagnostic } from '@maka/core/usage-stats/types';
 import { providerRetryDisplaySeconds } from '@maka/core/provider-retry-countdown';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
-import type { UiLocale } from '@maka/core/ui-locale';
+import {
+  defineUiMessageCatalog,
+  resolveUiMessageCatalog,
+  type UiLocale,
+} from '@maka/core/ui-locale';
+import { TUI_COPY_RESOURCES } from './tui-copy-catalog.js';
 import { isActiveShellRunStatus } from '@maka/core/shell-run';
 import { mergeShellRunStateWithDiagnostics } from '@maka/core/shell-run-result';
 import { projectToolActivityArgs } from '@maka/core/tool-activity-args';
@@ -48,7 +54,7 @@ import {
 } from '@maka/core/tool-result-status';
 import { type ShellRunUpdate } from '@maka/core/events';
 import { homedir } from 'node:os';
-import { basename } from 'node:path';
+import { basename, isAbsolute, relative, sep } from 'node:path';
 import type { MakaSessionDriver, MakaSideConversationParentStatus } from './session-driver.js';
 import { BoundedChunkBuffer } from './bounded-chunk-buffer.js';
 import { ansi } from './tui-ansi.js';
@@ -117,7 +123,10 @@ export interface MakaPiTranscriptState {
   providerRetry?: ProviderRetryCountdown;
 }
 
-export type MakaPiPendingInteraction = SandboxBoundaryRequestEvent | UserQuestionRequestEvent;
+export type MakaPiPendingInteraction =
+  | SandboxBoundaryRequestEvent
+  | UserQuestionRequestEvent
+  | FormRequestEvent;
 
 /**
  * A provider retry event plus the CLIENT-local time it was applied. Counting
@@ -931,6 +940,9 @@ export function applyMakaSessionEventToTranscript(
     case 'user_question_request':
       enqueuePendingInteraction(state, event);
       break;
+    case 'form_request':
+      enqueuePendingInteraction(state, event);
+      break;
 
     case 'sandbox_boundary_decision_ack':
       {
@@ -947,6 +959,10 @@ export function applyMakaSessionEventToTranscript(
       break;
 
     case 'user_question_answer_ack':
+      completePendingInteraction(state, event.requestId);
+      break;
+
+    case 'form_answer_ack':
       completePendingInteraction(state, event.requestId);
       break;
 
@@ -1340,6 +1356,56 @@ function systemNoteText(message: SystemNoteMessage): string | undefined {
       return 'Context compacted to keep this task within the model window.';
     case 'context_compaction_failed_open':
       return 'Context summary failed; the session continued without a new summary.';
+    case 'context_provider_dropping': {
+      const data = message.data as
+        | { inputTokens?: unknown; priorInputTokens?: unknown }
+        | undefined;
+      const used = typeof data?.inputTokens === 'number' ? data.inputTokens : undefined;
+      const prior = typeof data?.priorInputTokens === 'number' ? data.priorInputTokens : undefined;
+      if (used === undefined || prior === undefined) {
+        return 'The provider is dropping or rewriting context: content was appended but its reported usage did not grow. Declare a context window for this model so Maka compacts first.';
+      }
+      return `The provider is dropping or rewriting context: content was appended, and it counted ${used} input tokens against ${prior} before, which is no growth. Declare a context window for this model so Maka compacts first.`;
+    }
+    case 'context_overflow_after_compaction':
+      return 'History was compacted and the provider still called this request too large. What remains also carries the system prompt, the tool schemas, the summary and the recent tail; shortening this message is the part you control.';
+    case 'context_reported_window_exceeded': {
+      const data = message.data as
+        | { usedTokens?: unknown; reportedContextWindow?: unknown }
+        | undefined;
+      const used = typeof data?.usedTokens === 'number' ? data.usedTokens : undefined;
+      const reported =
+        typeof data?.reportedContextWindow === 'number' ? data.reportedContextWindow : undefined;
+      if (used === undefined || reported === undefined) {
+        return 'This exchange ran past the context window this model reports, and the provider accepted it anyway.';
+      }
+      return `This exchange used about ${used} tokens, past the ${reported} this model reports, and the provider accepted it without complaint. Nothing is declared, so Maka does not compact on its own; declare a context window to have it compact first.`;
+    }
+    case 'context_window_overrun': {
+      const data = message.data as
+        | { usedTokens?: unknown; declaredContextWindow?: unknown }
+        | undefined;
+      const used = typeof data?.usedTokens === 'number' ? data.usedTokens : undefined;
+      const declared =
+        typeof data?.declaredContextWindow === 'number' ? data.declaredContextWindow : undefined;
+      if (used === undefined || declared === undefined) {
+        return 'This exchange ran past the context window declared for this model.';
+      }
+      return `This exchange used about ${used} tokens against the declared window of ${declared}: the reply needed more room than was left. Maka compacts before the next request; raise the window if the replies should stay whole.`;
+    }
+    case 'context_window_suggestion': {
+      const data = message.data as
+        | { suggestedContextWindow?: unknown; declaredContextWindow?: unknown }
+        | undefined;
+      const tokens =
+        typeof data?.suggestedContextWindow === 'number' ? data.suggestedContextWindow : undefined;
+      const declared =
+        typeof data?.declaredContextWindow === 'number' ? data.declaredContextWindow : undefined;
+      if (tokens === undefined) return 'The provider rejected this request as too large.';
+      return declared === undefined
+        ? `The provider rejected this request. No context window is declared for this model; the last accepted request was about ${tokens} tokens — declare that as the window so Maka compacts first.`
+        : `The provider rejected this request at about ${tokens} tokens, below the declared window of ${declared}. The declaration is likely larger than the provider's window; consider lowering it to ${tokens}.`;
+    }
     case 'step_limit':
       return STEP_LIMIT_NOTICE_TEXT;
     case 'error':
@@ -1435,6 +1501,10 @@ export function activeUserQuestionRequest(
   return state.pendingInteraction?.type === 'user_question_request'
     ? state.pendingInteraction
     : undefined;
+}
+
+export function activeFormRequest(state: MakaPiTranscriptState): FormRequestEvent | undefined {
+  return state.pendingInteraction?.type === 'form_request' ? state.pendingInteraction : undefined;
 }
 
 function enqueuePendingInteraction(
@@ -1871,29 +1941,41 @@ function formatElapsedDuration(elapsedMs: number): string {
  * turn). A trailing hint reminds the user that alt+↑ takes them back to edit.
  * Renders nothing when both queues are empty.
  */
+interface TuiPendingQueueCopy {
+  readonly steeringLabel: string;
+  readonly queuedLabel: string;
+  readonly requeueHint: string;
+}
+
+const TUI_PENDING_QUEUE_COPY = resolveUiMessageCatalog(
+  defineUiMessageCatalog<TuiPendingQueueCopy>()(TUI_COPY_RESOURCES['pending-queue']),
+);
+
 export function renderMakaPiPendingQueue(
   state: MakaPiTranscriptState,
   width: number,
-  platform: NodeJS.Platform = process.platform,
+  platform: NodeJS.Platform,
+  locale: UiLocale,
 ): string[] {
   if (state.steering.length === 0 && state.followup.length === 0) {
     return [];
   }
+  const copy = TUI_PENDING_QUEUE_COPY[locale];
   const safeWidth = Math.max(1, width);
   const steering = state.steering;
   const followup = state.followup;
   const lines: string[] = [];
   for (const text of steering) {
     lines.push(
-      fitLine(`${ansi.accent('Steering:')} ${ansi.dim(firstLinePreview(text))}`, safeWidth),
+      fitLine(`${ansi.accent(copy.steeringLabel)} ${ansi.dim(firstLinePreview(text))}`, safeWidth),
     );
   }
   for (const text of followup) {
-    lines.push(fitLine(`${ansi.dim('Queued:')} ${ansi.dim(firstLinePreview(text))}`, safeWidth));
+    lines.push(
+      fitLine(`${ansi.dim(copy.queuedLabel)} ${ansi.dim(firstLinePreview(text))}`, safeWidth),
+    );
   }
-  lines.push(
-    fitLine(ansi.dim(renderTuiShortcutCopy('Alt+↑ 取回队列以重新编辑', platform)), safeWidth),
-  );
+  lines.push(fitLine(ansi.dim(renderTuiShortcutCopy(copy.requeueHint, platform)), safeWidth));
   return lines;
 }
 
@@ -1921,12 +2003,19 @@ function firstLinePreview(text: string): string {
  * Shorten an absolute path to a `~`-relative form for the statusline.
  * `/Users/alice/workspace/project` → `~/workspace/project`.
  * Falls back to the original path if it is not under the home directory.
+ * Comparison runs through `path.relative`, so Windows profile paths and
+ * case-only differences shorten as well; the remainder keeps its native
+ * separators (`~/Videos\Clips` on Windows).
  */
-function shortenCwd(cwd: string, homeDir?: string): string {
+export function shortenCwd(cwd: string, homeDir?: string): string {
   const home = homeDir ?? homedir();
-  if (home && cwd.startsWith(home + '/')) return `~${cwd.slice(home.length)}`;
-  if (home && cwd === home) return '~';
-  return cwd;
+  if (!home) return cwd;
+  const rel = relative(home, cwd);
+  if (rel === '') return '~';
+  if (isAbsolute(rel) || rel === '..' || rel.startsWith(`..${sep}`)) {
+    return cwd;
+  }
+  return `~/${rel}`;
 }
 
 function formatCost(costUsd: number): string {

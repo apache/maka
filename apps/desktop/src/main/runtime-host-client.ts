@@ -32,7 +32,6 @@ import {
 } from "@maka/core/session-todo";
 
 import type {
-  ConnectionCatalogSnapshot,
   ConnectionVersionBasis,
   CredentialLocator,
   CredentialStatus,
@@ -58,6 +57,7 @@ import {
   prepareConnectedRuntimeHostRetirement,
   readRuntimeHostAgentGraphEpochs,
   readRuntimeHostConnectionCatalog,
+  type RuntimeHostConnectionCatalogSnapshot,
   readRuntimeHostInvocableSkills,
   readRuntimeHostResources,
   readRuntimeHostProjectDetails,
@@ -84,6 +84,7 @@ import {
   type MemoryQueryInput,
   type MemoryQueryResult,
   type GoalControlAction,
+  type HostStatusResult,
   type GoalProjection,
   type OperationInput,
   type OperationOutput,
@@ -116,6 +117,7 @@ import {
   type CollaborationTurnRequestAcknowledgeResult,
   type CollaborationTurnRequestDecideResult,
   type CollaborationTurnRequestQueryResult,
+  type CollaborationTurnRequestWithdrawResult,
   type SessionCollaborationGrantKind,
   type SessionTurnAccessRequest,
   type SessionTurnRequestIntent,
@@ -284,6 +286,10 @@ export class DesktopRuntimeHostClient {
   }
 
   get hostId(): string {
+    return this.rootId;
+  }
+
+  get rootId(): string {
     return this.connection.rootId;
   }
 
@@ -293,6 +299,10 @@ export class DesktopRuntimeHostClient {
 
   get lifecycleState(): 'ready' | 'unavailable' {
     return this.#connectionClosed || this.#closeTask ? 'unavailable' : 'ready';
+  }
+
+  status(): Promise<HostStatusResult> {
+    return this.connection.status();
   }
 
   finalizeAccessCredential(
@@ -331,14 +341,23 @@ export class DesktopRuntimeHostClient {
     return this.request('collaboration.turn-request.create', { intent });
   }
 
-  queryCollaborationTurnRequests(sessionId: string): Promise<CollaborationTurnRequestQueryResult> {
-    return this.request('collaboration.turn-request.query', { sessionId });
+  queryCollaborationTurnRequests(sessionId?: string): Promise<CollaborationTurnRequestQueryResult> {
+    return this.request(
+      'collaboration.turn-request.query',
+      sessionId === undefined ? {} : { sessionId },
+    );
   }
 
   acknowledgeCollaborationTurnRequest(
     requestId: string,
   ): Promise<CollaborationTurnRequestAcknowledgeResult> {
     return this.request('collaboration.turn-request.acknowledge', { requestId });
+  }
+
+  withdrawCollaborationTurnRequest(
+    requestId: string,
+  ): Promise<CollaborationTurnRequestWithdrawResult> {
+    return this.request('collaboration.turn-request.withdraw', { requestId });
   }
 
   decideCollaborationTurnRequest(
@@ -354,6 +373,11 @@ export class DesktopRuntimeHostClient {
   subscribeConfigurationChanges(listener: (revision: number) => void): () => void {
     this.#assertOpen();
     return this.connection.subscribeConfigurationChanges(listener);
+  }
+
+  subscribeConnectionCatalogChanges(listener: (revision: number) => void): () => void {
+    this.#assertOpen();
+    return this.connection.subscribeConnectionCatalogChanges(listener);
   }
 
   subscribeProjectCatalogChanges(listener: (revision: number) => void): () => void {
@@ -375,7 +399,7 @@ export class DesktopRuntimeHostClient {
     return this.connection.subscribeScheduledTaskChanges(listener);
   }
 
-  async loadConnectionCatalog(): Promise<ConnectionCatalogSnapshot> {
+  async loadConnectionCatalog(): Promise<RuntimeHostConnectionCatalogSnapshot> {
     this.#assertOpen();
     try {
       return await readRuntimeHostConnectionCatalog(this.connection);
@@ -412,6 +436,12 @@ export class DesktopRuntimeHostClient {
       if (result.kind === "committed") return this.queryRuntimePolicy();
     }
     throw revisionConflict("Runtime Policy update", "workspace");
+  }
+
+  updateNetworkProxy(
+    input: OperationInput<"runtime.policy.network-proxy.update">,
+  ): Promise<OperationOutput<"runtime.policy.network-proxy.update">> {
+    return this.request("runtime.policy.network-proxy.update", input);
   }
 
   queryMemory(input: MemoryQueryInput): Promise<MemoryQueryResult> {
@@ -496,6 +526,18 @@ export class DesktopRuntimeHostClient {
     });
   }
 
+  verifyConnectionOnboarding(
+    input: OperationInput<"connection.onboarding.verify">,
+  ): Promise<OperationOutput<"connection.onboarding.verify">> {
+    return this.request("connection.onboarding.verify", input);
+  }
+
+  saveConnectionOnboarding(
+    input: OperationInput<"connection.onboarding.save">,
+  ): Promise<OperationOutput<"connection.onboarding.save">> {
+    return this.request("connection.onboarding.save", input);
+  }
+
   startOAuthLogin(
     attemptId: string,
     target: OperationInput<"oauth.login.start">["target"],
@@ -513,6 +555,12 @@ export class DesktopRuntimeHostClient {
     attemptId: string,
   ): Promise<OperationOutput<"oauth.login.cancel">> {
     return this.request("oauth.login.cancel", { attemptId });
+  }
+
+  queryOAuthEnrollment(
+    provider: OperationInput<"oauth.enrollment.query">["provider"],
+  ): Promise<OperationOutput<"oauth.enrollment.query">> {
+    return this.request("oauth.enrollment.query", { provider });
   }
 
   async loadSkillCatalog(

@@ -31,6 +31,7 @@ import {
 } from '@maka/core/events';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
+import type { ClientCapabilityResponse } from '@maka/core/client-capability-grant';
 import { MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
 import { isAttachmentRef, isCanonicalStorageRef, type AttachmentRef } from '@maka/core/events';
 
@@ -96,6 +97,24 @@ export function normalizeSandboxBoundaryResponse(input: unknown): SandboxBoundar
   };
 }
 
+export function normalizeClientCapabilityResponse(input: unknown): ClientCapabilityResponse {
+  if (!input || typeof input !== 'object') {
+    throw new Error('Invalid Client Capability response');
+  }
+  const value = input as Record<string, unknown>;
+  if (
+    typeof value.requestId !== 'string' ||
+    value.requestId.length === 0 ||
+    value.requestId.length > MAX_PERMISSION_REQUEST_ID_LENGTH
+  ) {
+    throw new Error('Invalid Client Capability response requestId');
+  }
+  if (value.decision !== 'allow' && value.decision !== 'deny') {
+    throw new Error('Invalid Client Capability response decision');
+  }
+  return { requestId: value.requestId, decision: value.decision };
+}
+
 export function normalizeUserQuestionResponse(input: unknown): UserQuestionResponse {
   const value = requireObject(input, 'Invalid user question response');
   const requestId = normalizeRequiredString(
@@ -135,8 +154,18 @@ export function normalizeBranchFromTurnInput(input: unknown): BranchFromTurnInpu
   if (value.sideConversation !== undefined && typeof value.sideConversation !== 'boolean') {
     throw new Error('Invalid branch sideConversation');
   }
+  // Absent sourceTurnId forks with an empty context (a side conversation opened
+  // before the source has any settled turn).
+  const sourceTurnId =
+    value.sourceTurnId === undefined
+      ? undefined
+      : normalizeRequiredString(
+          value.sourceTurnId,
+          'Invalid branch sourceTurnId',
+          MAX_TURN_ID_LENGTH,
+        );
   return {
-    sourceTurnId: normalizeRequiredString(value.sourceTurnId, 'Invalid branch sourceTurnId', MAX_TURN_ID_LENGTH),
+    ...(sourceTurnId === undefined ? {} : { sourceTurnId }),
     ...(name ? { name } : {}),
     ...(value.sideConversation === true ? { sideConversation: true } : {}),
   };

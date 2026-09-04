@@ -20,6 +20,7 @@
 import type {
   ConnectionCatalogMutationResult,
   ConnectionCatalogSnapshot,
+  ConnectionCredentialTarget,
   CreateCatalogConnectionInput,
   CredentialLocator,
   CredentialMutationResult,
@@ -84,8 +85,7 @@ export type {
   ResolveNetworkProxyExecutionResult,
   ResolveWebSearchExecutionInput,
   ResolveWebSearchExecutionResult,
-  ResolveWebFetchExecutionResult,
-  UnavailableProviderActionAvailability,
+  ResolveHostOutboundExecutionResult,
 } from './runtime-policy/operations.js';
 
 const readerBrand: unique symbol = Symbol('RuntimePolicyStoresReader');
@@ -237,14 +237,23 @@ function createWriterFacade(coordinator: RuntimePolicyCoordinator): RuntimePolic
       delete: (input) => coordinator.deleteCredential(input),
     },
     operations: {
-      exportCredentialMaterial: (locator) => coordinator.exportCredentialMaterial(locator),
+      updateNetworkProxy: (input) => coordinator.updateNetworkProxy(input),
+      exportCredentialMaterial: ((
+        locator: CredentialLocator,
+        expectedConnection?: ConnectionCredentialTarget,
+      ) =>
+        expectedConnection
+          ? coordinator.exportCredentialMaterial(locator, expectedConnection)
+          : coordinator.exportCredentialMaterial(
+              locator,
+            )) as OperationCoordinator['exportCredentialMaterial'],
       getConnectionRequestHeaders: (connectionId) =>
         coordinator.getConnectionRequestHeaders(connectionId),
       replaceConnectionRequestHeaders: (connectionId, updates) =>
         coordinator.replaceConnectionRequestHeaders(connectionId, updates),
       resolveExecutionConnection: (ref) => coordinator.resolveExecutionConnection(ref),
       resolveWebSearchExecution: (input) => coordinator.resolveWebSearchExecution(input),
-      resolveWebFetchExecution: () => coordinator.resolveWebFetchExecution(),
+      resolveHostOutboundExecution: () => coordinator.resolveHostOutboundExecution(),
       resolveNetworkProxyExecution: (input) => coordinator.resolveNetworkProxyExecution(input),
       compareAndSetOAuthCredential: (input) => coordinator.compareAndSetOAuthCredential(input),
       importConnectionCredential: (input) => coordinator.importConnectionCredential(input),

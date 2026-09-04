@@ -25,7 +25,7 @@ import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { setImmediate as delayImmediate } from 'node:timers/promises';
+import { setImmediate as delayImmediate, setTimeout as delay } from 'node:timers/promises';
 import {
   prepareStorageRootControlDirectory,
   resolveStorageRoot,
@@ -55,6 +55,7 @@ import {
   type SessionTranscriptFragment,
   type SessionTranscriptPage,
   type HostFrame,
+  type HostStatusResult,
   type RequestFrame,
   type SubscriptionFrame,
 } from '../protocol/index.js';
@@ -1275,9 +1276,100 @@ test('close stops transcript pagination after the in-flight page', async () => {
   assert.equal(pageRequests, 1);
 });
 
+test('probes an otherwise idle accepted Runtime Host connection', { timeout: 2_000 }, async () => {
+  const probed = deferred<void>();
+  const observed = deferred<HostStatusResult>();
+  await withProtocolPeer(
+    async (transport, hostEpoch, rootId) => {
+      const hello = decodeClientFrame(await transport.read(1_000));
+      assert.ok('kind' in hello && hello.kind === 'hello');
+      await writeProtocolFrame(transport, {
+        kind: 'accepted',
+        rootId,
+        hostEpoch,
+        connectionId: 'connection-idle-liveness',
+        selectedProtocol: RUNTIME_HOST_PROTOCOL_VERSION,
+        compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+        compositionId: 'maka.interactive',
+        compositionRevision: '1',
+        state: 'ready',
+      });
+      await answerStatus(transport, hostEpoch);
+    },
+    async () => {
+      const status = await observed.promise;
+      assert.equal(status.state, 'ready');
+      assert.equal(status.compositionId, 'maka.interactive');
+      await probed.promise;
+    },
+    {
+      livenessIntervalMs: 20,
+      onLivenessProbe: probed.resolve,
+      onHostStatus: observed.resolve,
+    },
+  );
+});
+
+test('accepts Session traffic as liveness while a route status observation is delayed', {
+  timeout: 5_000,
+}, async () => {
+  const observed = deferred<HostStatusResult>();
+  await withProtocolPeer(
+    async (transport, hostEpoch, rootId) => {
+      const hello = decodeClientFrame(await transport.read(1_000));
+      assert.ok('kind' in hello && hello.kind === 'hello');
+      await writeProtocolFrame(transport, {
+        kind: 'accepted',
+        rootId,
+        hostEpoch,
+        connectionId: 'connection-active-liveness',
+        selectedProtocol: RUNTIME_HOST_PROTOCOL_VERSION,
+        compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+        compositionId: 'maka.interactive',
+        compositionRevision: '1',
+        state: 'ready',
+      });
+      const probe = decodeClientFrame(await transport.read(1_000));
+      assert.ok(!('kind' in probe));
+      assert.equal(probe.operation, 'host.status');
+
+      // Keep the status request pending past its original two-second deadline.
+      // A valid Session frame in between proves the same authenticated
+      // transport is alive and must extend that deadline.
+      await delay(1_100);
+      await writeProtocolFrame(transport, {
+        kind: 'session.catalog.changed',
+        revision: 1,
+        sessionId: 'shared-session',
+      });
+      await delay(1_100);
+      await writeProtocolFrame(transport, {
+        requestId: probe.requestId,
+        operation: 'host.status',
+        ok: true,
+        result: hostStatus(hostEpoch),
+      });
+      await answerStatus(transport, hostEpoch);
+    },
+    async (connection) => {
+      await observed.promise;
+      assert.equal((await connection.status()).hostEpoch, connection.hostEpoch);
+    },
+    {
+      livenessIntervalMs: 20,
+      onHostStatus: observed.resolve,
+    },
+  );
+});
+
 async function withProtocolPeer(
   serve: (transport: FramedTransport, hostEpoch: string, rootId: string) => Promise<void>,
   run: (connection: RuntimeHostConnection) => Promise<void>,
+  connectionOptions: {
+    readonly livenessIntervalMs?: number;
+    readonly onLivenessProbe?: () => void;
+    readonly onHostStatus?: (status: HostStatusResult) => void;
+  } = {},
 ): Promise<void> {
   const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-subscription-'));
   const capability = await resolveStorageRoot({
@@ -1318,6 +1410,7 @@ async function withProtocolPeer(
     const connected = await connectRuntimeHost({
       rootPath: join(base, 'root'),
       protocol: PROTOCOL,
+      ...connectionOptions,
     });
     assert.equal(connected.kind, 'connected');
     if (connected.kind !== 'connected') return;
@@ -1385,16 +1478,20 @@ async function answerStatus(transport: FramedTransport, hostEpoch: string): Prom
     requestId: request.requestId,
     operation: 'host.status',
     ok: true,
-    result: {
-      hostEpoch,
-      compositionId: 'maka.interactive',
-      compositionRevision: '1',
-      state: 'ready',
-      connections: 1,
-      activeOperations: 1,
-      activeResidencies: 0,
-    },
+    result: hostStatus(hostEpoch),
   });
+}
+
+function hostStatus(hostEpoch: string): HostStatusResult {
+  return {
+    hostEpoch,
+    compositionId: 'maka.interactive',
+    compositionRevision: '1',
+    state: 'ready',
+    connections: 1,
+    activeOperations: 1,
+    activeResidencies: 0,
+  };
 }
 
 function openResult(

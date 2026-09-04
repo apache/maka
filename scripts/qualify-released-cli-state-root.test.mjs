@@ -20,10 +20,11 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, resolve, sep } from 'node:path';
 import test from 'node:test';
 import {
   assertExpectedEpochRelation,
+  durableStateLocations,
   parseQualificationArgs,
   qualificationSandboxArgs,
   qualificationSandboxInvocation,
@@ -189,4 +190,62 @@ test('computes the exact artifact SHA-256', () => {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('durable state covers the control namespace, not only the State Root', () => {
+  // The access file the Host opens before its Kernel starts lives beside the
+  // State Root, not inside it. A golden copy scoped to the State Root alone
+  // restored a workspace whose control records had already moved on, so the
+  // transition it proved was never the one a user performs.
+  const scope = resolve(tmpdir(), 'qualification-scope');
+  const locations = durableStateLocations(scope);
+  assert.ok(locations.length >= 2);
+  assert.ok(locations.some(({ live }) => live === join(scope, 'state-root')));
+  assert.ok(
+    locations.some(({ live }) => live.endsWith(join('.cache', 'maka', 'runtime-hosts'))),
+    'the account-local control namespace must be captured and restored',
+  );
+  for (const { live, golden } of locations) {
+    assert.ok(isAbsolute(live) && isAbsolute(golden));
+    assert.ok(
+      !golden.startsWith(`${live}${sep}`),
+      'a golden copy must not nest inside its live path',
+    );
+  }
+});
+
+test('a workspace target replaces tarball identity instead of weakening it', () => {
+  const source = resolve(tmpdir(), 'source.tgz');
+  const repo = resolve(tmpdir(), 'checkout');
+  assert.deepEqual(
+    parseQualificationArgs([
+      '--source',
+      source,
+      '--source-sha256',
+      SHA_A,
+      '--target-workspace',
+      repo,
+    ]),
+    { source, sourceSha256: SHA_A, targetWorkspace: repo, expectedEpochRelation: 'any' },
+  );
+  // The source stays an exact published artifact either way: the point of the
+  // run is that state written by a real release still opens.
+  assert.throws(
+    () => parseQualificationArgs(['--target-workspace', repo]),
+    /--source must be an absolute path/u,
+  );
+  assert.throws(
+    () =>
+      parseQualificationArgs([
+        '--source',
+        source,
+        '--source-sha256',
+        SHA_A,
+        '--target-workspace',
+        repo,
+        '--target-sha256',
+        SHA_B,
+      ]),
+    /cannot also name a tarball target/u,
+  );
 });

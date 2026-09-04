@@ -65,6 +65,17 @@ describe('effective model history feeds budgeting and compaction', () => {
     assert.ok(estimateRuntimeEventsTokens([raw], 1) > RAW_SECRET.length);
   });
 
+  test('budgeting prices an artifact by what materialization rehydrates', () => {
+    const text = toolResultEvent('evt-3', RAW_SECRET, textProjection(PROJECTED));
+    const artifact = toolResultEvent('evt-3', RAW_SECRET, artifactProjection(PROJECTED));
+
+    // The two projections serialize to comparable strings, but only one of them
+    // puts image bytes in the request.
+    assert.ok(
+      estimateRuntimeEventsTokens([artifact], 1) - estimateRuntimeEventsTokens([text], 1) >= 1000,
+    );
+  });
+
   test('summarization cannot read raw output the projection replaced', async () => {
     let seen: Parameters<AiSdkGenerateTextLike>[0] | undefined;
     const summarize = buildLlmHistorySummarizer({
@@ -147,6 +158,21 @@ describe('effective model history feeds budgeting and compaction', () => {
 
 function textProjection(text: string): DurableToolResultProjection {
   return { version: 1, kind: 'text', text };
+}
+
+function artifactProjection(text: string): DurableToolResultProjection {
+  return {
+    version: 1,
+    kind: 'content',
+    parts: [
+      { kind: 'text', text },
+      {
+        kind: 'artifact',
+        mediaType: 'image/png',
+        ref: { kind: 'session_file', sessionId: 'session-1', relativePath: 'artifact-1' },
+      },
+    ],
+  };
 }
 
 function userEvent(id: string, text: string): RuntimeEvent {

@@ -260,6 +260,7 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
       resizeImage: async (bytes) => bytes,
       nativeCapabilities: {
         browserTools: [nativeTool()],
+        resolveBrowserUrl: () => 'https://example.com/',
         releaseBrowserSession() {},
         computerUseTools: Object.assign([], {
           clearSession() {},

@@ -18,7 +18,7 @@
  */
 
 import { expect, test } from './fixtures';
-import { getProviderSettingsCopy } from '../src/renderer/locales/settings-provider-copy';
+import { getProviderSettingsCopy } from '../src/renderer/features/connection-settings';
 
 /**
  * The custom request header row's remove button centres on the FIELD, not on

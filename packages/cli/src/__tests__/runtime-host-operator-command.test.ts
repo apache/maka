@@ -34,6 +34,7 @@ import {
   type RuntimeHostAccessIssueOptions,
 } from '../runtime-host-access-command.js';
 import { parseRuntimeHostCommand } from '../runtime-host-cli.js';
+import { runRuntimeHostPluginCli } from '../runtime-host-plugin-command.js';
 import { runRuntimeHostProjectCli } from '../runtime-host-project-command.js';
 import { createRuntimeHostServiceReadyEvent } from '../runtime-host-service-command.js';
 
@@ -155,6 +156,34 @@ describe('Runtime Host operator commands', () => {
         rootPath: '/srv/maka',
         path: '/work/project',
         prefer: false,
+      },
+    );
+    assert.deepEqual(
+      parseRuntimeHostCommand([
+        'plugin',
+        'inspect',
+        '--scope',
+        'profile',
+        '--cursor',
+        'opaque-cursor',
+        '--limit',
+        '16',
+      ]),
+      {
+        kind: 'runtime-host-plugin',
+        action: 'inspect',
+        rootId: 'profile',
+        cursor: 'opaque-cursor',
+        limit: 16,
+      },
+    );
+    assert.deepEqual(
+      parseRuntimeHostCommand(['plugin', 'export', 'fixture-plugin', './fixture.maka-extension']),
+      {
+        kind: 'runtime-host-plugin',
+        action: 'export',
+        subject: 'fixture-plugin',
+        targetPath: './fixture.maka-extension',
       },
     );
     assert.deepEqual(
@@ -301,6 +330,8 @@ describe('Runtime Host operator commands', () => {
       assert.equal(resolved.operationGrants.includes('access.credential.rotation.prepare'), false);
       assert.equal(resolved.operationGrants.includes('access.credential.rotation.revoke'), false);
       assert.equal(resolved.operationGrants.includes('host.upgrade.prepare'), false);
+      assert.equal(resolved.operationGrants.includes('plugin.platform.query'), false);
+      assert.equal(resolved.operationGrants.includes('plugin.package.install'), false);
       assert.equal(resolved.operationGrants.includes('turn.start'), true);
       assert.equal(resolved.operationGrants.includes('project.catalog.query'), true);
     }
@@ -385,6 +416,30 @@ describe('Runtime Host operator commands', () => {
     assert.deepEqual(
       parseRuntimeHostCommand([
         'access',
+        'connection-code',
+        '--name',
+        'Office Host',
+        '--root',
+        '/srv/maka',
+        '--expected-root',
+        'a'.repeat(64),
+        '--framed',
+      ]),
+      {
+        kind: 'runtime-host-access-connection-code',
+        name: 'Office Host',
+        rootPath: '/srv/maka',
+        expectedRootId: 'a'.repeat(64),
+        framed: true,
+      },
+    );
+    assert.equal(
+      parseRuntimeHostCommand(['access', 'connection-code', '--principal', 'unexpected']).kind,
+      'error',
+    );
+    assert.deepEqual(
+      parseRuntimeHostCommand([
+        'access',
         'revoke',
         '--credential',
         'credential-1',
@@ -418,6 +473,7 @@ describe('Runtime Host operator commands', () => {
         'access.principal.revoke',
         'collaboration.turn-request.acknowledge',
         'collaboration.turn-request.create',
+        'collaboration.turn-request.withdraw',
         'host.upgrade.prepare',
         'hosted.execution.cancel',
         'hosted.execution.start',
@@ -432,6 +488,13 @@ describe('Runtime Host operator commands', () => {
         'peer.mesh.remove',
         'peer.mesh.rename',
         'peer.mesh.transit.set',
+        'plugin.composition.apply',
+        'plugin.package.export',
+        'plugin.package.install',
+        'plugin.package.reload',
+        'plugin.package.uninstall',
+        'plugin.platform.query',
+        'plugin.platform.reconcile',
       ],
     );
   });
@@ -444,8 +507,19 @@ describe('Runtime Host operator commands', () => {
       websocketEndpoints: ['wss://runtime.example.com:443/runtime-host'],
       peerListeners: [
         {
-          peerId: '12D3KooWPeer',
-          listenAddresses: ['/ip4/192.0.2.10/udp/4001/quic-v1/p2p/12D3KooWPeer'],
+          reachability: {
+            lease: {
+              version: 1,
+              peerId: '12D3KooWPeer',
+              revision: 1,
+              issuedAt: 1,
+              expiresAt: 2,
+              directRoutes: ['/ip4/192.0.2.10/udp/4001/quic-v1/p2p/12D3KooWPeer'],
+              coordinationRoutes: [],
+            },
+            publicKey: 'cHVibGlj',
+            signature: 'c2lnbmF0dXJl',
+          },
         },
       ],
       compositionDescriptor: { id: 'maka.interactive', revision: '2' },
@@ -532,6 +606,61 @@ describe('Runtime Host operator commands', () => {
       output.map((value) => (JSON.parse(value) as { project: { id: string } }).project.id),
       ['project-1', 'project-1'],
     );
+  });
+
+  test('uses every Plugin Platform surface through the Runtime Host', async () => {
+    const requests: unknown[] = [];
+    let closeCount = 0;
+    const connection = {
+      request: async (operation: string, input: unknown) => {
+        requests.push({ operation, input });
+        return {};
+      },
+      close: async () => {
+        closeCount += 1;
+      },
+    } as unknown as RuntimeHostConnection;
+    const overrides = {
+      connect: async () => connection,
+      readText: async () => '{"operations":[{"type":"remove","entryId":"entry-one"}]}',
+      write: () => undefined,
+    };
+    const commands = [
+      { rootPath: '/srv/maka', action: 'status' as const },
+      { rootPath: '/srv/maka', action: 'list' as const },
+      { rootPath: '/srv/maka', action: 'inspect' as const, rootId: 'profile' },
+      { rootPath: '/srv/maka', action: 'failures' as const },
+      { rootPath: '/srv/maka', action: 'install' as const, subject: './plugin' },
+      { rootPath: '/srv/maka', action: 'uninstall' as const, subject: 'plugin' },
+      { rootPath: '/srv/maka', action: 'reload' as const, subject: 'plugin' },
+      {
+        rootPath: '/srv/maka',
+        action: 'export' as const,
+        subject: 'plugin',
+        targetPath: './plugin.maka-extension',
+      },
+      { rootPath: '/srv/maka', action: 'apply' as const, subject: './operations.json' },
+      { rootPath: '/srv/maka', action: 'reconcile' as const },
+    ];
+    for (const command of commands) {
+      assert.equal(await runRuntimeHostPluginCli(command, overrides), 0);
+    }
+    assert.deepEqual(
+      requests.map((request) => (request as { operation: string }).operation),
+      [
+        'plugin.platform.query',
+        'plugin.platform.query',
+        'plugin.platform.query',
+        'plugin.platform.query',
+        'plugin.package.install',
+        'plugin.package.uninstall',
+        'plugin.package.reload',
+        'plugin.package.export',
+        'plugin.composition.apply',
+        'plugin.platform.reconcile',
+      ],
+    );
+    assert.equal(closeCount, commands.length);
   });
 });
 

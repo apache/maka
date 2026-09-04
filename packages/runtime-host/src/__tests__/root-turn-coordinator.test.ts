@@ -62,7 +62,10 @@ import {
   WORKHUB_COORDINATION_SESSION_ROLE,
 } from '@maka/core/session';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
-import { clientCapabilityConnectionIdentity } from './fixtures/client-capability.js';
+import {
+  clientCapabilityConnectionIdentity,
+  clientCapabilityCoordinatorTestAdmission,
+} from './fixtures/client-capability.js';
 import {
   openInteractiveExecutionStoresForWrite,
   type RootTurnAdmission,
@@ -557,6 +560,7 @@ test('startup recovery closes a ScheduledTask Run after its pending fire was set
 
 test('a failed exact Capability retry does not poison the parked continuation binding', async () => {
   const capabilities = new HostClientCapabilityCoordinator({
+    ...clientCapabilityCoordinatorTestAdmission(),
     activation: new RuntimePolicyActivationGate(),
     onModelToolsChanged: () => undefined,
   });
@@ -700,6 +704,7 @@ test('a failed exact Capability retry does not poison the parked continuation bi
 test('resume query preserves Session-before-activation lock ordering', async () => {
   const activation = new RuntimePolicyActivationGate();
   const capabilities = new HostClientCapabilityCoordinator({
+    ...clientCapabilityCoordinatorTestAdmission(),
     activation,
     onModelToolsChanged: () => undefined,
   });
@@ -870,11 +875,70 @@ test('turn.start durably binds a Guest request approval to the admitted Turn', a
   }
 });
 
+test('turn.regenerate durably binds a Guest request approval to the admitted Turn', async () => {
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', (context) => new FakeBackend(context)),
+  });
+  const authorization = {
+    kind: 'session_turn_access_request' as const,
+    requestId: 'request-regenerate-1',
+    principalId: 'session_guest:guest-1',
+    grantId: 'grant-1',
+    approvedAt: 1_788_000_000_000,
+    approvedBy: 'local_owner',
+  };
+  const input = {
+    sessionId: fixture.sessionId,
+    sourceTurnId: 'turn-regenerate-source',
+    turnId: 'turn-regenerate-approved',
+  };
+  try {
+    assertStartedTurn(
+      await fixture.interactiveTurns.handlers['turn.start'](
+        {
+          sessionId: fixture.sessionId,
+          turnId: input.sourceTurnId,
+          content: { text: 'Regenerate this approved request.' },
+        },
+        operationContext(fixture.hostEpoch, fixture.acquireResidency),
+      ),
+    );
+    await fixture.coordinator.whenIdle(fixture.sessionId);
+
+    const regenerated = await fixture.interactiveTurns.handlers['turn.regenerate'](input, {
+      ...operationContext(fixture.hostEpoch, fixture.acquireResidency),
+      principal: authorization.principalId,
+      turnAdmissionAuthorization: authorization,
+    });
+    assert.equal(regenerated.ok, true, JSON.stringify(regenerated));
+    const admission = await fixture.stores.agentRunStore.readRootTurnAdmission(
+      fixture.sessionId,
+      input.turnId,
+    );
+    assert.deepEqual(admission?.execution, {
+      kind: 'regenerate',
+      sourceTurnId: input.sourceTurnId,
+    });
+    assert.deepEqual(admission?.authorization, authorization);
+
+    const conflictingRetry = await fixture.interactiveTurns.handlers['turn.regenerate'](
+      input,
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assert.equal(conflictingRetry.ok, false);
+    if (!conflictingRetry.ok) assert.equal(conflictingRetry.error.code, 'operation_conflict');
+  } finally {
+    await fixture.dispose();
+  }
+});
+
 test('turn.start resolves explicit Skills once before durable admission and replays the result', async () => {
   let preparationCount = 0;
   let blocked = false;
   let observedCapabilityPreview = false;
   const capabilities = new HostClientCapabilityCoordinator({
+    ...clientCapabilityCoordinatorTestAdmission(),
     activation: new RuntimePolicyActivationGate(),
     onModelToolsChanged: () => undefined,
   });
@@ -2062,10 +2126,7 @@ test('Agent Graph supervisor wake preserves structured context-overflow outcomes
   });
   const graphId = agentGraphIdForRootSession(fixture.sessionId);
   try {
-    for (const [index, text] of [
-      'provider context overflow',
-      'local context budget exhausted',
-    ].entries()) {
+    for (const [index, text] of ['provider context overflow'].entries()) {
       const turnId = `turn-graph-context-${index}`;
       const outcome = await graphExecutions(fixture).run(
         fixture.sessionId,
@@ -2087,7 +2148,7 @@ test('Agent Graph supervisor wake preserves structured context-overflow outcomes
       assert.deepEqual(outcome, {
         kind: 'context_overflow',
         turnId,
-        reason: index === 0 ? 'context_overflow' : 'context_budget_exhausted',
+        reason: 'context_overflow',
       });
     }
     assert.equal(fixture.drainRequested(), false);
@@ -3314,6 +3375,7 @@ test('shutdown contains a successor backend start rejected by Interaction drain'
 
 test('Client Capability ambiguity fails before durable root admission', async () => {
   const clientCapabilities = new HostClientCapabilityCoordinator({
+    ...clientCapabilityCoordinatorTestAdmission(),
     activation: new RuntimePolicyActivationGate(),
     onModelToolsChanged: () => undefined,
   });
@@ -3393,6 +3455,7 @@ test('an exact active retry preserves the Client Capability admission binding', 
   timeout: 20_000,
 }, async () => {
   const clientCapabilities = new HostClientCapabilityCoordinator({
+    ...clientCapabilityCoordinatorTestAdmission(),
     activation: new RuntimePolicyActivationGate(),
     onModelToolsChanged: () => undefined,
   });
@@ -3488,6 +3551,7 @@ test('mixed-Client queued follow-ups use separate Session successors without con
   timeout: 20_000,
 }, async () => {
   const clientCapabilities = new HostClientCapabilityCoordinator({
+    ...clientCapabilityCoordinatorTestAdmission(),
     activation: new RuntimePolicyActivationGate(),
     onModelToolsChanged: () => undefined,
   });
@@ -3632,6 +3696,7 @@ async function assertSessionSuccessorCapabilityDegradation(
   affinity: 'call' | 'turn',
 ): Promise<void> {
   const clientCapabilities = new HostClientCapabilityCoordinator({
+    ...clientCapabilityCoordinatorTestAdmission(),
     activation: new RuntimePolicyActivationGate(),
     onModelToolsChanged: () => undefined,
   });
@@ -3662,6 +3727,7 @@ async function assertSessionSuccessorCapabilityDegradation(
         previousProvider.accept({
           kind: 'client.capability.accepted',
           invocationId: frame.invocationId,
+          admissionEvidence: { kind: 'none' },
         });
         previousProvider.accept({
           kind: 'client.capability.result',
@@ -3681,6 +3747,7 @@ async function assertSessionSuccessorCapabilityDegradation(
         followupProvider.accept({
           kind: 'client.capability.accepted',
           invocationId: frame.invocationId,
+          admissionEvidence: { kind: 'none' },
         });
         followupProvider.accept({
           kind: 'client.capability.result',
@@ -3831,6 +3898,7 @@ test('an exact terminal retry does not require a live Client Capability binding'
   timeout: 20_000,
 }, async () => {
   const clientCapabilities = new HostClientCapabilityCoordinator({
+    ...clientCapabilityCoordinatorTestAdmission(),
     activation: new RuntimePolicyActivationGate(),
     onModelToolsChanged: () => undefined,
   });
@@ -4190,6 +4258,74 @@ test('public turn.interrupt releases the Session lane while a queried Run is sti
     await fixture.messages.close();
     await fixture.interactions?.close();
   } finally {
+    await fixture.dispose();
+  }
+});
+
+test('invalid WorkHub Stop provenance fails before the root fence mutates authority', async () => {
+  let backend: BlockingRootBackend | undefined;
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', (context) => {
+        backend = new BlockingRootBackend(context.sessionId);
+        return backend;
+      }),
+  });
+  try {
+    const started = await fixture.interactiveTurns.handlers['turn.start'](
+      {
+        sessionId: fixture.sessionId,
+        turnId: 'turn-invalid-workhub-stop',
+        content: { text: 'keep this root active' },
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assert.equal(started.ok, true);
+    if (!started.ok) return;
+    assertStartedTurn(started);
+    await backend?.started.promise;
+
+    const queued = await fixture.messages.handlers['turn.message.submit'](
+      {
+        originHostEpoch: fixture.hostEpoch,
+        sessionId: fixture.sessionId,
+        messageId: 'queued-before-invalid-workhub-stop',
+        content: { text: 'preserve this follow-up' },
+        placement: 'next_turn',
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assert.equal(queued.ok, true);
+    const before = fixture.messages.projection(fixture.sessionId);
+
+    const invalidInputs = [
+      { source: 'workhub_direct_stop' },
+      { source: 'workhub_direct_stop', workHubActionId: '' },
+      { source: 'stop_button', workHubActionId: 'wrong-source-action' },
+    ];
+    for (const input of invalidInputs) {
+      await assert.rejects(
+        async () =>
+          fixture.coordinator.stopRoot(
+            {
+              sessionId: fixture.sessionId,
+              turnId: 'turn-invalid-workhub-stop',
+              runId: started.result.turn.runId,
+            },
+            input as never,
+          ),
+        /WorkHub direct-stop/,
+      );
+    }
+
+    assert.deepEqual(fixture.messages.projection(fixture.sessionId), before);
+    assert.equal(fixture.coordinator.readRootState(fixture.sessionId).kind, 'active');
+    assert.equal(fixture.fallbackRunClosureClaims(), 0);
+    assert.equal(backend?.stopCount, 0);
+  } finally {
+    backend?.release();
+    await fixture.coordinator.close();
+    await fixture.messages.close();
     await fixture.dispose();
   }
 });
@@ -5067,6 +5203,7 @@ async function createFailureFixture(options: {
   let canonicalProjection: CanonicalSessionProjectionReader | undefined;
   let messages!: HostMessageCoordinator;
   let interactions: HostInteractionCoordinator | undefined;
+  let fallbackRunClosureClaims = 0;
   const rootPort: HostMessageRootPort = {
     readSessionHeader: (sessionId) => requireCoordinator(coordinator).readSessionHeader(sessionId),
     readRootState: (sessionId) => requireCoordinator(coordinator).readRootState(sessionId),
@@ -5177,7 +5314,9 @@ async function createFailureFixture(options: {
       admissionOwner,
       interactions ?? {
         assertTerminalFence: async () => undefined,
-        claimRunClosure: async () => undefined,
+        claimRunClosure: async () => {
+          fallbackRunClosureClaims += 1;
+        },
       },
       messages,
       requireContinuity(continuity),
@@ -5257,6 +5396,7 @@ async function createFailureFixture(options: {
     },
     liveResidencies: () => liveResidencies,
     drainRequested: () => drainRequested,
+    fallbackRunClosureClaims: () => fallbackRunClosureClaims,
     dispose: async () => {
       requireContinuity(continuity).close();
       artifacts?.close();
@@ -5738,8 +5878,7 @@ class ContextFailureBackend implements AgentBackend {
       id: randomUUID(),
       turnId: input.turnId,
       ts: Date.now(),
-      stopReason: 'context_budget_exhausted',
-      contextBudgetExhaustedDetail: 'head_anchor_exceeds_capacity',
+      stopReason: 'error',
     };
   }
 

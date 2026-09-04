@@ -22,9 +22,11 @@ import { open } from 'node:fs/promises';
 import { basename } from 'node:path';
 import {
   attachmentKindFromMimeType,
-  guessMimeFromName,
   MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENT_COUNT,
+  ATTACHMENT_MIME_SNIFF_BYTES,
+  resolveAttachmentMimeType,
+  sniffAttachmentMimeType,
 } from '@maka/core/attachments';
 import type { ArtifactKind } from '@maka/core/artifacts';
 import type { AttachmentRef } from '@maka/core/events';
@@ -57,12 +59,13 @@ export async function resolveAttachmentRefs(input: {
   const refs: AttachmentRef[] = [];
   for (const file of input.files) {
     const name = attachmentFileName(file);
-    const mimeType = file.mimeType && file.mimeType.length > 0 ? file.mimeType : guessMimeFromName(name);
+    let bytes: Uint8Array = isPathAttachment(file) ? await readFileCapped(file.path, maxBytes) : file.content;
+    let mimeType = resolveAttachmentMimeType(bytes, file.mimeType, name);
     const kind = attachmentKindFromMimeType(mimeType, name);
 
-    let bytes: Uint8Array = isPathAttachment(file) ? await readFileCapped(file.path, maxBytes) : file.content;
     if (kind === 'image' && input.resizeImage) {
       bytes = await input.resizeImage(bytes);
+      mimeType = sniffAttachmentMimeType(bytes) ?? mimeType;
     }
     const artifactKind: ArtifactKind =
       kind === 'image' ? 'image' : kind === 'pdf' ? 'pdf' : 'file';
@@ -77,6 +80,66 @@ export async function resolveAttachmentRefs(input: {
     );
   }
   return refs;
+}
+
+/**
+ * Content type for a user-picked path, read cheaply from a short prefix so the
+ * composer can stage — and later preview — an attachment by its bytes rather
+ * than its extension. Mirrors the send-path precedence in
+ * {@link resolveAttachmentMimeType}: a real image named `report.pdf` resolves
+ * to its image MIME (so the composer shows a thumbnail and the vision notice),
+ * a disguised file loses its spoofed image/PDF claim. A read failure resolves
+ * an empty prefix through the same policy, so staging stays unblocked without
+ * reinstating the name's unverified image/PDF claim (the send path re-reads).
+ */
+export async function sniffPickedAttachmentMimeType(path: string, name: string): Promise<string> {
+  let prefix: Uint8Array = new Uint8Array();
+  try {
+    prefix = await readFilePrefix(path, ATTACHMENT_MIME_SNIFF_BYTES);
+  } catch {
+    // Fall through with the empty prefix: routing it through
+    // resolveAttachmentMimeType downgrades a claimed image/PDF name rather than
+    // trusting it, keeping one owner for the content-first policy.
+  }
+  return resolveAttachmentMimeType(prefix, undefined, name);
+}
+
+/**
+ * Resolve the paths returned by the pick dialog into approval-plan entries,
+ * each staged under its content-sniffed MIME rather than its extension — the
+ * headline behavior of this feature, extracted from the `attachments:pickFiles`
+ * IPC handler so the content decision is testable without a native dialog.
+ * `stat` is injected (the handler passes `node:fs/promises`); sizes come from
+ * main, never the renderer.
+ */
+export async function resolvePickedAttachments(
+  paths: readonly string[],
+  stat: (path: string) => Promise<{ size: number }>,
+): Promise<Array<{ path: string; name: string; mimeType: string; size: number }>> {
+  return Promise.all(
+    paths.map(async (path) => {
+      const name = basename(path);
+      return {
+        path,
+        name,
+        size: (await stat(path)).size,
+        mimeType: await sniffPickedAttachmentMimeType(path, name),
+      };
+    }),
+  );
+}
+
+/** Read up to `byteCount` leading bytes without loading the whole file, for
+ * content sniffing at pick time (a full read waits until send). */
+async function readFilePrefix(path: string, byteCount: number): Promise<Uint8Array> {
+  const fh = await open(path, 'r');
+  try {
+    const buf = Buffer.alloc(byteCount);
+    const { bytesRead } = await fh.read(buf, 0, byteCount, 0);
+    return buf.subarray(0, bytesRead);
+  } finally {
+    await fh.close();
+  }
 }
 
 function isPathAttachment(file: AttachmentIngestFile): file is Extract<AttachmentIngestFile, { path: string }> {

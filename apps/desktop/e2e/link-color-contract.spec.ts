@@ -26,13 +26,30 @@ async function renderedLinkColors(page: Page, dark: boolean) {
     const renderedLink = document.querySelector<HTMLElement>('.settingsBotConfigDocLink')!;
     renderedLink.style.setProperty('transition', 'none', 'important');
     root.setAttribute('data-maka-theme', 'tokyo-night');
+    // Both halves, exactly as theme.ts setDarkClass does it: the class carries
+    // the mode to Astryx, and color-scheme is what resolves the palette's
+    // light-dark() pairs (DESIGN.md §8). Toggling the class alone leaves every
+    // colour on its light value.
     root.classList.toggle('dark', isDark);
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    root.style.colorScheme = isDark ? 'dark' : 'light';
+
+    // Astryx's <Theme> re-declares color-scheme on its own wrapper from React
+    // state that follows the class through a MutationObserver, so the app's
+    // subtree lands a commit after the root does. Wait for the mode to reach
+    // the content rather than for a frame: a rAF is not always enough, and a
+    // fixed delay would be a race with a number on it.
+    const settled = () => getComputedStyle(renderedLink).colorScheme === (isDark ? 'dark' : 'light');
+    for (let attempt = 0; attempt < 120 && !settled(); attempt += 1) {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    }
 
     const resolve = (value: string) => {
       const probe = document.createElement('span');
       probe.style.setProperty('color', value, 'important');
-      document.body.appendChild(probe);
+      // Inside the themed subtree, next to the link it is compared against —
+      // document.body sits OUTSIDE Astryx's wrapper and so resolves its
+      // light-dark() pairs against the root's color-scheme instead.
+      renderedLink.parentElement!.appendChild(probe);
       const color = getComputedStyle(probe).color;
       probe.remove();
       return color;

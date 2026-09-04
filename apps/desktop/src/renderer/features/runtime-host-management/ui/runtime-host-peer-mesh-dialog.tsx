@@ -489,7 +489,8 @@ export function RuntimeHostPeerMeshDialog(props: {
           meshId,
           code: JSON.stringify(result.invitation),
           expiresAt: result.invitation.expiresAt,
-          hasCoordinationRelay: result.invitation.coordinationRelays.length > 0,
+          hasCoordinationRelay:
+            result.invitation.reachability.lease.coordinationRoutes.length > 0,
         });
         setSnapshot(result.snapshot);
       },
@@ -1918,10 +1919,10 @@ function peerMeshCopy(locale: string) {
         circuits: '连接',
         routeState: {
           local: '本机',
-          route_available: '路径可用',
-          coordination_only: '仅协调路径',
-          stale: '路径已过期',
-          unknown: '路径未知',
+          connecting: '正在连接',
+          reachable: '可达',
+          reconnecting: '正在恢复连接',
+          needs_repair: '需要新邀请码修复',
         },
         endpointKind: {
           client: 'Client',
@@ -2078,10 +2079,10 @@ function peerMeshCopy(locale: string) {
         circuits: 'Circuits',
         routeState: {
           local: 'Local',
-          route_available: 'Route known',
-          coordination_only: 'Coordination only',
-          stale: 'Stale route',
-          unknown: 'Route unknown',
+          connecting: 'Connecting',
+          reachable: 'Reachable',
+          reconnecting: 'Reconnecting',
+          needs_repair: 'Needs a new invitation',
         },
         endpointKind: {
           client: 'Client',

@@ -19,8 +19,9 @@
 
 # SessionTodo Lifecycle
 
-Status: **Current**. The former Session Task Ledger is **Deprecated** and is
-retained only as a one-time migration input and rollback-era storage format.
+Status: **Current**. The former Session Task Ledger is **Removed**: its module,
+storage, and `workflow_task_ledger_events` table are gone as of workflow schema
+12. SessionTodo is the only Session task surface.
 
 This document answers one question for Runtime, Runtime Host, CLI, and Desktop
 contributors: who owns a Session's current Todo list, and what must happen to
@@ -70,8 +71,9 @@ model todo_read / todo_write          Desktop read-only panel
 
 `todo_write` is an internal Host tool port rather than a public Client mutation
 operation. Desktop reads through `session.todo.query`. A successful replacement
-commits before the Host publishes a `todo` domain invalidation. Reads and lazy
-bootstrap are silent because they do not change the effective current list.
+commits before the Host publishes a `todo` domain invalidation. Reads and
+first-read initialization are silent because they do not change the effective
+current list.
 
 The stored document is canonical product state. Before model or Desktop
 display, content passes through the shared Unicode sanitization, secret
@@ -90,25 +92,13 @@ These bounds keep the complete snapshot below the Runtime Host frame budget, so
 the operation needs no paging contract.
 
 An initialized empty list is different from no SessionTodo row. That distinction
-is what makes one-time migration and explicit clearing deterministic.
+is what makes explicit clearing deterministic.
 
-## One-time legacy bootstrap
+## First read
 
 The first Host read of an uninitialized Session, through either `todo_read` or
-`session.todo.query`, keeps canonical `pending` and `in_progress` Tasks at their
-current status. A canonical `blocked` Task is imported as `pending` with the
-same subject so unfinished work remains visible for replanning. The Host then
-persists the result even when it is empty. Workflow-only blocked reasons,
-ownership, evidence, hierarchy, and terminal `completed`, `failed`, or
-`cancelled` Tasks are not imported.
-
-The first explicit `todo_write` never reads or merges legacy Tasks. It writes
-the requested complete list directly. Once a SessionTodo row exists, no later
-read consults the legacy Task Ledger again.
-
-Malformed legacy events fail closed without creating the initialized marker.
-An explicit whole-document write can recover from malformed legacy input
-because it does not decode it.
+`session.todo.query`, persists an empty document and returns it. The first
+explicit `todo_write` writes the requested complete list directly.
 
 ## Copy and branch semantics
 
@@ -120,8 +110,9 @@ lifecycle, before the target Session is published:
 - a historical cut, before-revision, or side conversation initializes an
   explicit empty Todo document.
 
-Initialization is one SQLite write transaction. The source is read or lazily
-bootstrapped and the absent target is inserted together. Retrying an identical
+Initialization is one SQLite write transaction. The source's current document
+is read — an uninitialized source reads as empty, without being written — and
+the absent target is inserted in the same transaction. Retrying an identical
 initialization is idempotent; a different or corrupt existing target fails
 closed instead of being overwritten.
 
@@ -132,15 +123,18 @@ the preparing Session.
 ## Archive, removal, backup, and rollback
 
 - Archive retains the current Todo document.
-- Remove and incomplete-copy discard purge both the Todo document and legacy
-  Task rows in one lifecycle operation, so a deleted Session cannot bootstrap
-  stale work if its identifier is observed again.
+- Remove and incomplete-copy discard purge the Todo document, so a deleted
+  Session cannot show stale work if its identifier is observed again.
 - Backup and restore preserve both non-empty and initialized-empty documents.
 
-There is no dual write to the legacy Task Ledger. Rollback across the cutover
-therefore means restoring a database backup taken before the upgrade. That
-loses Todo edits made after the backup; running an old binary directly against
-the upgraded live database is not a supported rollback guarantee.
+Rollback across the cutover means restoring a database backup taken before the
+upgrade. That loses Todo edits made after the backup; running an old binary
+directly against the upgraded live database is not a supported rollback
+guarantee.
+
+Upgrading to workflow schema 12 drops `workflow_task_ledger_events` without
+migrating it. A workspace last opened by v0.2.0-incubating-rc1 or earlier loses
+its unfinished Tasks; they are not imported into SessionTodo.
 
 ## Surface behavior
 
@@ -171,6 +165,6 @@ prompt. The model reads it on demand with `todo_read`.
 - `apps/desktop/src/main/runtime-host-client.ts`: Desktop query adapter and
   display-safe projection.
 
-The legacy Task codecs, replay, and tables remain only for bootstrap and the
-bounded migration/rollback window. Their eventual deletion must not recreate a
-second product surface or change this current-document contract.
+The legacy Task codecs, replay, and tables are deleted. Nothing may recreate a
+second product surface for Session tasks or change this current-document
+contract.

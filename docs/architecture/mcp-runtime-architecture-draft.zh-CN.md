@@ -19,9 +19,9 @@
 
 # Maka MCP runtime architecture
 
-状态：remote 与 stdio dual-era V3 implemented（2026-08-25）
+状态：remote 与 stdio dual-era V3 implemented（2026-08-25，见已完成的 [#1650](https://github.com/apache/maka/issues/1650)）
 
-跟踪：[MCP 2026-07-28 dual-era rollout #1650](https://github.com/apache/maka/issues/1650)
+跟踪：[MCP post-V3 roadmap #4329](https://github.com/apache/maka/issues/4329)
 
 ## 1. 目标与边界
 
@@ -151,10 +151,8 @@ timeout 默认值：remote connect 30s、stdio connect 60s、list 15s、call 10m
 11. SEP-2243 定义 partition、bounded warning、safe integer 和 wire 前失败有自动化覆盖；legacy 路径不误启用 modern header 语义。
 12. stdio 省略 protocol 只启动一个 legacy child；`auto`、legacy/modern exact pin、probe/actual 顺序、probe stderr 隔离，以及 probe 前或进行中的 abort 都有真实 child-process fixture 覆盖。
 
-## 8. 后续 backlog
+## 8. 后续路线
 
-- OAuth 2.1 authorization server metadata、PKCE、dynamic client registration 和 Keychain token persistence。
-- resources/templates browse、read、subscribe/unsubscribe 及 host UI。
-- authenticated loopback MCP proxy，供受控 subprocess client 共享 pool。
-- per-server health/backoff/automatic crash recovery 与 finer-grained permission policy。
-- signed remote catalog、last-known-good cache、guided setup schema、package provenance 与 update permission diff。
+Post-V3 工作继续围绕 credential custody、resources/templates、受控 subprocess 复用、server health 与可信分发推进。具体完成状态和剩余交付只在 tracker 中维护，避免本文形成第二份会漂移的 checklist。
+
+跟踪：[MCP post-V3 roadmap #4329](https://github.com/apache/maka/issues/4329)

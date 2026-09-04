@@ -20,8 +20,10 @@
 import {
   CONNECTION_CATALOG_MAX_CONNECTIONS,
   CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS,
+  CONNECTION_CATALOG_MAX_ENTRIES_PER_CONNECTION,
   CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION,
   decodeCanonicalConnectionBaseUrl,
+  decodeModelCatalogEntry,
   decodeCanonicalRuntimePolicy,
   decodeConnectionModel,
   decodeConnectionModelId,
@@ -39,6 +41,8 @@ import {
   normalizeDeleteCredentialInput,
   normalizeRemoveCatalogConnectionInput,
   normalizeOptionalRequestBodyOverlay,
+  normalizeNetworkProxyUpdate,
+  normalizeNetworkProxyCredentialTarget,
   normalizeRequestHeaderUpdates,
   normalizeRuntimePolicyMutation,
   normalizeSetCredentialInput,
@@ -57,14 +61,18 @@ import {
   type CredentialVersionBasis,
   type DeleteCredentialInput,
   type MutateRuntimePolicyInput,
+  type NetworkProxyCredentialTarget,
   type RemoveCatalogConnectionInput,
   type RequestHeaderUpdate,
   type RevisionConflict,
   type RuntimePolicySnapshot,
+  type UpdateNetworkProxyInput,
   type SetCredentialInput,
   type SetDefaultConnectionTargetInput,
   type UpdateCatalogConnectionInput,
 } from '@maka/core/runtime-policy';
+import type { ModelCatalogEntry } from '@maka/core/model-catalog';
+export type { ModelCatalogEntry } from '@maka/core/model-catalog';
 import { normalizeRelayModelProfiles, type RelayModelProfile } from '@maka/core/model-thinking';
 // The client subgraph cannot import core subpaths directly (dependency
 // boundary); the wire types it needs are re-exported through this file.
@@ -78,33 +86,6 @@ export const CONNECTION_CATALOG_PAGE_MAX_BYTES = 48 * 1024;
 export const RUNTIME_POLICY_SNAPSHOT_MAX_BYTES = 48 * 1024;
 export const CREDENTIAL_SECRET_MAX_BYTES = 10 * 1024;
 
-const CONNECTION_MODEL_FIELDS = [
-  'id',
-  'displayName',
-  'description',
-  'apiProtocol',
-  'contextWindow',
-  'inputLimit',
-  'maxOutputTokens',
-  'knowledgeCutoff',
-  'structuredOutput',
-  'lastUpdated',
-  'capabilities',
-  'modalities',
-] as const;
-const MODEL_FACT_OVERRIDE_FIELDS = [
-  'displayName',
-  'description',
-  'apiProtocol',
-  'contextWindow',
-  'inputLimit',
-  'maxOutputTokens',
-  'knowledgeCutoff',
-  'structuredOutput',
-  'lastUpdated',
-  'capabilities',
-  'modalities',
-] as const;
 const QUERY_ERRORS = [
   'host_not_ready',
   'host_draining',
@@ -130,12 +111,26 @@ export type RuntimePolicyMutateInput = MutateRuntimePolicyInput;
 export type RuntimePolicyMutateResult =
   | { readonly kind: 'committed'; readonly revision: number }
   | RevisionConflict;
+export type RuntimePolicyNetworkProxyUpdateInput = UpdateNetworkProxyInput;
+export type RuntimePolicyNetworkProxyUpdateResult =
+  | {
+      readonly kind: 'committed';
+      readonly revision: number;
+      readonly credentialStatus: CredentialStatus;
+    }
+  | RevisionConflict
+  | {
+      readonly kind: 'proxy_target_mismatch';
+      readonly expected: NetworkProxyCredentialTarget;
+      readonly actual: NetworkProxyCredentialTarget;
+    }
+  | CredentialStale;
 
 export type ConnectionCatalogCursor =
   | { readonly connectionIndex: number; readonly part: 'connection' }
   | {
       readonly connectionIndex: number;
-      readonly part: 'enabled_model_id' | 'model';
+      readonly part: 'enabled_model_id' | 'model' | 'catalog_entry';
       readonly itemIndex: number;
     };
 
@@ -149,14 +144,29 @@ export type ConnectionCatalogQueryInput =
 
 export type ConnectionCatalogHeaderItem = Omit<
   ConnectionCatalogEntry,
-  'enabledModelIds' | 'models' | 'relayModelProfiles'
+  // The three the paginator splits into their own items, plus two the Host
+  // keeps to itself: `modelsFetchedAt` is when the Host last ran discovery —
+  // its own bookkeeping, which no client reads — and
+  // `lastTestModelFactsFingerprint` is durable invalidation metadata.
+  | 'enabledModelIds'
+  | 'models'
+  | 'relayModelProfiles'
+  | 'modelsFetchedAt'
+  | 'lastTestModelFactsFingerprint'
 > & {
   readonly kind: 'connection';
   readonly connectionIndex: number;
   readonly enabledModelIdCount: number;
   readonly modelCount: number;
+  readonly catalogEntryCount: number;
 };
 
+/**
+ * The Host owns the model catalog. Clients show what these items say, and do
+ * not work out model facts from a registry or metadata they bundle.
+ *
+ * Only add a field some client shows. Host bookkeeping stays in the Host.
+ */
 export type ConnectionCatalogPageItem =
   | ConnectionCatalogHeaderItem
   | {
@@ -175,7 +185,25 @@ export type ConnectionCatalogPageItem =
       readonly kind: 'model';
       readonly connectionIndex: number;
       readonly itemIndex: number;
-      readonly model: ConnectionModel;
+      /**
+       * The stored row with the user's `model-facts.json` overrides already
+       * merged in. Which fields an override touched stays with the Host — the
+       * one reader of that provenance is its own context-budget policy, on the
+       * execution connection rather than on this page.
+       */
+      readonly model: Omit<ConnectionModel, 'factOverriddenFields'>;
+    }
+  | {
+      /**
+       * One model as the Host resolved it — the stored row merged with the
+       * model metadata the Host owns. Clients render these instead of merging
+       * against a bundled copy of their own, so two clients of different
+       * versions attached to one Host describe a model identically.
+       */
+      readonly kind: 'catalog_entry';
+      readonly connectionIndex: number;
+      readonly itemIndex: number;
+      readonly entry: ModelCatalogEntry;
     };
 
 export type ConnectionCatalogQueryResult =
@@ -234,6 +262,7 @@ export type CredentialVaultQueryResult =
 export type SetCredentialResult =
   | CredentialCommitted
   | { readonly kind: 'connection_not_found' }
+  | ConnectionStale
   | CredentialStale;
 export type DeleteCredentialResult =
   | CredentialCommitted
@@ -293,6 +322,17 @@ export const RUNTIME_POLICY_OPERATION_SPECS = {
     errors: MUTATION_ERRORS,
     decodeInput: decodeRuntimePolicyMutation,
     decodeOutput: decodeRuntimePolicyMutationResult,
+  }),
+  'runtime.policy.network-proxy.update': defineOperation<
+    RuntimePolicyNetworkProxyUpdateInput,
+    RuntimePolicyNetworkProxyUpdateResult,
+    (typeof MUTATION_ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: MUTATION_ERRORS,
+    decodeInput: decodeRuntimePolicyNetworkProxyUpdate,
+    decodeOutput: decodeRuntimePolicyNetworkProxyUpdateResult,
   }),
   'connection.catalog.query': defineOperation<
     ConnectionCatalogQueryInput,
@@ -439,6 +479,51 @@ function decodeRuntimePolicyMutationResult(value: unknown): RuntimePolicyMutateR
   return revisionConflict(item, 'runtime policy mutation result');
 }
 
+function decodeRuntimePolicyNetworkProxyUpdate(
+  value: unknown,
+): RuntimePolicyNetworkProxyUpdateInput {
+  const input = decodeDomain(() => normalizeNetworkProxyUpdate(value));
+  if (
+    input.credential.kind === 'replace' &&
+    Buffer.byteLength(input.credential.secret, 'utf8') > CREDENTIAL_SECRET_MAX_BYTES
+  ) {
+    throw invalidProtocolFrame('Invalid network proxy credential secret');
+  }
+  return input;
+}
+
+function decodeRuntimePolicyNetworkProxyUpdateResult(
+  value: unknown,
+): RuntimePolicyNetworkProxyUpdateResult {
+  const item = requireRecord(value, 'network proxy update result');
+  if (item.kind === 'committed') {
+    const committed = requireExactRecord(item, 'network proxy update committed result', [
+      'kind',
+      'revision',
+      'credentialStatus',
+    ]);
+    return {
+      kind: 'committed',
+      revision: revision(committed.revision, 'runtime policy revision'),
+      credentialStatus: decodeDomain(() => decodeCredentialStatus(committed.credentialStatus)),
+    };
+  }
+  if (item.kind === 'credential_stale') return credentialStale(item);
+  if (item.kind === 'proxy_target_mismatch') {
+    const mismatch = requireExactRecord(item, 'network proxy target mismatch', [
+      'kind',
+      'expected',
+      'actual',
+    ]);
+    return {
+      kind: 'proxy_target_mismatch',
+      expected: decodeDomain(() => normalizeNetworkProxyCredentialTarget(mismatch.expected)),
+      actual: decodeDomain(() => normalizeNetworkProxyCredentialTarget(mismatch.actual)),
+    };
+  }
+  return revisionConflict(item, 'network proxy update result');
+}
+
 function decodeCatalogQueryInput(value: unknown): ConnectionCatalogQueryInput {
   const item = requireRecord(value, 'connection catalog query input');
   if (item.kind === 'start') {
@@ -527,7 +612,7 @@ function catalogCursor(value: unknown): ConnectionCatalogCursor {
       part: 'connection',
     };
   }
-  if (item.part === 'enabled_model_id' || item.part === 'model') {
+  if (item.part === 'enabled_model_id' || item.part === 'model' || item.part === 'catalog_entry') {
     const cursor = requireExactRecord(item, 'connection catalog cursor', [
       'connectionIndex',
       'part',
@@ -536,7 +621,9 @@ function catalogCursor(value: unknown): ConnectionCatalogCursor {
     const maxItems =
       item.part === 'enabled_model_id'
         ? CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS
-        : CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION;
+        : item.part === 'model'
+          ? CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION
+          : CONNECTION_CATALOG_MAX_ENTRIES_PER_CONNECTION;
     return {
       connectionIndex: integer(
         cursor.connectionIndex,
@@ -615,7 +702,31 @@ function catalogPageItem(value: unknown): ConnectionCatalogPageItem {
         0,
         CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION - 1,
       ),
-      model: decodeProjectedCatalogModel(modelItem.model),
+      model: decodeDomain(() => decodeConnectionModel(modelItem.model)),
+    };
+  }
+  if (item.kind === 'catalog_entry') {
+    const entryItem = requireExactRecord(item, 'connection catalog entry item', [
+      'kind',
+      'connectionIndex',
+      'itemIndex',
+      'entry',
+    ]);
+    return {
+      kind: 'catalog_entry',
+      connectionIndex: integer(
+        entryItem.connectionIndex,
+        'connection index',
+        0,
+        CONNECTION_CATALOG_MAX_CONNECTIONS - 1,
+      ),
+      itemIndex: integer(
+        entryItem.itemIndex,
+        'item index',
+        0,
+        CONNECTION_CATALOG_MAX_ENTRIES_PER_CONNECTION - 1,
+      ),
+      entry: decodeDomain(() => decodeModelCatalogEntry(entryItem.entry)),
     };
   }
   if (item.kind !== 'connection')
@@ -634,11 +745,11 @@ function catalogPageItem(value: unknown): ConnectionCatalogPageItem {
       'baseUrl',
       'enabled',
       'modelSource',
-      'modelsFetchedAt',
       'lastTest',
       'requestBodyOverlay',
       'enabledModelIdCount',
       'modelCount',
+      'catalogEntryCount',
     ],
     [
       'kind',
@@ -651,11 +762,9 @@ function catalogPageItem(value: unknown): ConnectionCatalogPageItem {
       'enabled',
       'enabledModelIdCount',
       'modelCount',
+      'catalogEntryCount',
     ],
   );
-  if ((header.modelSource === undefined) !== (header.modelsFetchedAt === undefined)) {
-    throw invalidProtocolFrame('Invalid connection header model discovery fields');
-  }
   const provider = decodeDomain(() => decodeProviderType(header.providerType));
   const baseUrl =
     header.baseUrl === undefined
@@ -696,16 +805,6 @@ function catalogPageItem(value: unknown): ConnectionCatalogPageItem {
     ...(baseUrl === undefined ? {} : { baseUrl }),
     enabled: boolean(header.enabled, 'connection enabled'),
     ...(header.modelSource === undefined ? {} : { modelSource: modelSource(header.modelSource) }),
-    ...(header.modelsFetchedAt === undefined
-      ? {}
-      : {
-          modelsFetchedAt: integer(
-            header.modelsFetchedAt,
-            'models fetched at',
-            0,
-            Number.MAX_SAFE_INTEGER,
-          ),
-        }),
     ...(header.lastTest === undefined
       ? {}
       : { lastTest: decodeDomain(() => decodeConnectionTestSummary(header.lastTest)) }),
@@ -717,33 +816,13 @@ function catalogPageItem(value: unknown): ConnectionCatalogPageItem {
       CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS,
     ),
     modelCount,
+    catalogEntryCount: integer(
+      header.catalogEntryCount,
+      'catalog entry count',
+      0,
+      CONNECTION_CATALOG_MAX_ENTRIES_PER_CONNECTION,
+    ),
   };
-}
-
-/** Decode catalog-only read-time provenance without admitting it to persisted models. */
-function decodeProjectedCatalogModel(value: unknown): ConnectionModel {
-  const item = requireShapedRecord(
-    value,
-    'projected connection model',
-    ['id'],
-    [...CONNECTION_MODEL_FIELDS.slice(1), 'factOverriddenFields'],
-  );
-  const { factOverriddenFields: rawOverriddenFields, ...persistentModel } = item;
-  const model = decodeDomain(() => decodeConnectionModel(persistentModel));
-  if (rawOverriddenFields === undefined) return model;
-  if (!Array.isArray(rawOverriddenFields) || rawOverriddenFields.length === 0) {
-    throw invalidProtocolFrame('Invalid model fact overridden fields');
-  }
-  const factOverriddenFields = rawOverriddenFields.map((field) => {
-    if (!(MODEL_FACT_OVERRIDE_FIELDS as readonly unknown[]).includes(field)) {
-      throw invalidProtocolFrame('Invalid model fact overridden field');
-    }
-    return field as (typeof MODEL_FACT_OVERRIDE_FIELDS)[number];
-  });
-  if (new Set(factOverriddenFields).size !== factOverriddenFields.length) {
-    throw invalidProtocolFrame('Duplicate model fact overridden field');
-  }
-  return { ...model, factOverriddenFields };
 }
 
 function decodeCreateConnectionInput(value: unknown): CreateCatalogConnectionInput {
@@ -882,6 +961,7 @@ function decodeSetCredentialResult(value: unknown): SetCredentialResult {
     requireExactRecord(item, 'credential connection not found result', ['kind']);
     return { kind: 'connection_not_found' };
   }
+  if (item.kind === 'connection_stale') return connectionStale(item);
   return credentialStale(item);
 }
 
@@ -1035,6 +1115,8 @@ function catalogCursorPartOrder(part: ConnectionCatalogCursor['part']): number {
       return 1;
     case 'model':
       return 2;
+    case 'catalog_entry':
+      return 3;
   }
 }
 

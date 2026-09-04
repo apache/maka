@@ -28,10 +28,12 @@ import {
   RuntimeHostRemoteCompatibilityError,
 } from '../client/index.js';
 import {
+  connectPeerRuntimeHost,
   connectRemoteRuntimeHostProfile,
   createFileRuntimeHostProfileCatalog,
   createRuntimeHostCapabilityProviderCredentialStore,
   createRuntimeHostProfileCredentialStore,
+  decodeEnvironmentRuntimeHostProfile,
   decodeRemoteRuntimeHostProfile,
   decodeRuntimeHostProfileDocument,
   RUNTIME_HOST_PLAINTEXT_ACKNOWLEDGEMENT,
@@ -41,6 +43,7 @@ import {
   type RuntimeHostProfileCredential,
   type RuntimeHostProfileCredentialStore,
 } from '../client/host-profile.js';
+import type { RuntimeHostPeerClient } from '../client/peer-client.js';
 import { RuntimeHostPermanentReconnectError } from '../client/reconnect-lifecycle.js';
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
@@ -48,9 +51,16 @@ import {
   RUNTIME_HOST_PROTOCOL_VERSION,
   type HostIncompatible,
 } from '../protocol/index.js';
+import { RuntimeHostPeerError } from '../transport/peer-native.js';
 
 const ROOT_A = 'a'.repeat(64);
 const ROOT_B = 'b'.repeat(64);
+const OPERATOR = {
+  kind: 'node',
+  platform: 'posix',
+  nodePath: '/usr/bin/node',
+  modulePath: '/opt/maka/operator.mjs',
+} as const;
 const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
@@ -61,14 +71,14 @@ describe('Runtime Host profiles', () => {
   test('persists WSL environments without projecting a remote credential', async () => {
     const path = await profilePath();
     const catalog = createFileRuntimeHostProfileCatalog(path, memoryCredentials());
-    assert.deepEqual(await catalog.read(), { schemaVersion: 3, profiles: [] });
+    assert.deepEqual(await catalog.read(), { schemaVersion: 5, profiles: [] });
     await catalog.create({
       id: 'ubuntu',
       name: 'Ubuntu',
       kind: 'environment',
       provider: { kind: 'wsl', distribution: 'Ubuntu-24.04' },
       rootId: ROOT_A,
-      operatorPath: '/home/operator/.local/share/maka/operator',
+      operator: OPERATOR,
     });
     assert.deepEqual(await catalog.resolve('ubuntu'), {
       profile: {
@@ -77,11 +87,70 @@ describe('Runtime Host profiles', () => {
         kind: 'environment',
         provider: { kind: 'wsl', distribution: 'Ubuntu-24.04' },
         rootId: ROOT_A,
-        operatorPath: '/home/operator/.local/share/maka/operator',
+        operator: OPERATOR,
       },
     });
     assert.doesNotMatch(await readFile(path, 'utf8'), /credential/u);
     await assert.rejects(() => catalog.remove('local'), /cannot be removed/);
+    assert.throws(
+      () =>
+        decodeEnvironmentRuntimeHostProfile({
+          id: 'windows-command',
+          name: 'Invalid WSL',
+          kind: 'environment',
+          provider: { kind: 'wsl', distribution: 'Ubuntu-24.04' },
+          rootId: ROOT_A,
+          operator: {
+            kind: 'node',
+            platform: 'win32',
+            nodePath: 'C:\\Program Files\\nodejs\\node.exe',
+            modulePath: 'C:\\Maka\\operator.mjs',
+          },
+        }),
+      /must target POSIX/u,
+    );
+  });
+
+  test('migrates a released WSL operator path without losing its environment', async () => {
+    const path = await profilePath();
+    await writeFile(
+      path,
+      `${JSON.stringify({
+        schemaVersion: 2,
+        profiles: [
+          {
+            id: 'ubuntu',
+            name: 'Ubuntu',
+            kind: 'environment',
+            provider: { kind: 'wsl', distribution: 'Ubuntu-24.04' },
+            rootId: ROOT_A,
+            operatorPath: '/home/operator/.local/share/maka/operator',
+          },
+        ],
+      })}\n`,
+    );
+
+    const catalog = createFileRuntimeHostProfileCatalog(path, memoryCredentials());
+    const migrated = await catalog.resolve('ubuntu');
+    assert.deepEqual(migrated, {
+      profile: {
+        id: 'ubuntu',
+        name: 'Ubuntu',
+        kind: 'environment',
+        provider: { kind: 'wsl', distribution: 'Ubuntu-24.04' },
+        rootId: ROOT_A,
+        operator: {
+          kind: 'legacy_posix_executable',
+          executablePath: '/home/operator/.local/share/maka/operator',
+        },
+      },
+    });
+    assert.match(await readFile(path, 'utf8'), /operatorPath/u);
+    if (migrated.profile.kind !== 'environment') assert.fail('WSL profile was not migrated');
+    await catalog.save(migrated.profile);
+    const stored = await readFile(path, 'utf8');
+    assert.match(stored, /"schemaVersion": 5/u);
+    assert.doesNotMatch(stored, /operatorPath/u);
   });
 
   test('normalizes, serializes, updates, and removes remote profiles', async () => {
@@ -121,7 +190,7 @@ describe('Runtime Host profiles', () => {
     );
 
     assert.deepEqual(await catalog.read(), {
-      schemaVersion: 3,
+      schemaVersion: 5,
       profiles: [
         {
           id: 'office',
@@ -144,7 +213,7 @@ describe('Runtime Host profiles', () => {
     if (process.platform !== 'win32') assert.equal((await stat(path)).mode & 0o777, 0o600);
 
     assert.deepEqual(await catalog.remove('office'), {
-      schemaVersion: 3,
+      schemaVersion: 5,
       profiles: [
         {
           id: 'backup',
@@ -197,7 +266,7 @@ describe('Runtime Host profiles', () => {
 
     const catalog = createFileRuntimeHostProfileCatalog(path, memoryCredentials());
     const document = await catalog.read();
-    assert.equal(document.schemaVersion, 3);
+    assert.equal(document.schemaVersion, 5);
     assert.equal(
       (JSON.parse(await readFile(path, 'utf8')) as { schemaVersion: number }).schemaVersion,
       1,
@@ -217,7 +286,7 @@ describe('Runtime Host profiles', () => {
         transport: {
           kind: 'ssh',
           destination: 'operator@example.com',
-          activation: { kind: 'ssh_operator', operatorPath: '/opt/maka/bin/operator' },
+          activation: { kind: 'ssh_operator', operator: OPERATOR },
         },
         rootId: ROOT_B,
       },
@@ -225,7 +294,7 @@ describe('Runtime Host profiles', () => {
     );
     assert.equal(
       (JSON.parse(await readFile(path, 'utf8')) as { schemaVersion: number }).schemaVersion,
-      2,
+      5,
     );
   });
 
@@ -278,7 +347,7 @@ describe('Runtime Host profiles', () => {
     assert.deepEqual(await desktop.removeIfCurrent(created), {
       removed: false,
       document: {
-        schemaVersion: 3,
+        schemaVersion: 5,
         profiles: [
           {
             ...profile,
@@ -292,7 +361,7 @@ describe('Runtime Host profiles', () => {
     assert.equal(rotated.credential, 'rotated-token');
     assert.equal(rotated.profileIncarnationId, created.profileIncarnationId);
     assert.equal((await desktop.removeIfCurrent(rotated)).removed, true);
-    assert.deepEqual(await desktop.read(), { schemaVersion: 3, profiles: [] });
+    assert.deepEqual(await desktop.read(), { schemaVersion: 5, profiles: [] });
   });
 
   test('conditionally updates one Host connection and credential', async () => {
@@ -632,17 +701,29 @@ describe('Runtime Host profiles', () => {
       false,
     );
     assert.equal(staleMutationRan, false);
+    let staleUpdateRan = false;
+    assert.equal(
+      await catalog.updateRemoteProfileIfCurrent(firstIncarnation, (current) => {
+        staleUpdateRan = true;
+        return current;
+      }),
+      false,
+    );
+    assert.equal(staleUpdateRan, false);
   });
 
   test('pins a direct-peer profile to its PeerId while allowing route discovery to change', () => {
     const original = directPeerProfile('peer-a', ['/ip4/192.0.2.10/udp/4001/quic-v1']);
     const moved = directPeerProfile('peer-a', ['/ip6/2001:db8::10/udp/4001/quic-v1']);
-    const replacement = directPeerProfile('peer-b', moved.transport.routeHints);
+    const replacement = directPeerProfile(
+      'peer-b',
+      moved.transport.reachability.lease.directRoutes,
+    );
 
     assert.equal(sameRemoteRuntimeHostProfileTarget(original, moved), true);
     assert.equal(sameRemoteRuntimeHostProfileTarget(original, replacement), false);
     assert.deepEqual(
-      decodeRuntimeHostProfileDocument({ schemaVersion: 1, profiles: [moved] }).profiles[0],
+      decodeRuntimeHostProfileDocument({ schemaVersion: 5, profiles: [moved] }).profiles[0],
       moved,
     );
   });
@@ -843,7 +924,7 @@ describe('Runtime Host profiles', () => {
           transport: {
             kind: 'ssh',
             destination: 'operator@example.com',
-            activation: { kind: 'ssh_operator', operatorPath: '/opt/maka/operator' },
+            activation: { kind: 'ssh_operator', operator: OPERATOR },
           },
           rootId: ROOT_A,
         },
@@ -854,7 +935,7 @@ describe('Runtime Host profiles', () => {
       {
         activateSshOperator: async (input) => {
           events.push('activate');
-          assert.equal(input.operatorPath, '/opt/maka/operator');
+          assert.deepEqual(input.operator, OPERATOR);
           assert.equal(input.rootId, ROOT_A);
           assert.equal(input.interaction, 'terminal');
           return {
@@ -1104,6 +1185,70 @@ describe('Runtime Host profiles', () => {
     );
   });
 
+  test('treats missing, immutable, and native Direct capability failures as terminal', async () => {
+    const profile = directPeerProfile('peer-a', ['/memory/peer-a']);
+    const connect = (peerClient: RuntimeHostPeerClient) =>
+      connectPeerRuntimeHost({
+        profileId: profile.id,
+        transport: profile.transport,
+        credential: 'opaque-token',
+        expectedRootId: profile.rootId,
+        clientInstanceId: 'client-1',
+        peerClient,
+      });
+    await assert.rejects(
+      () =>
+        connectRemoteRuntimeHostProfile({
+          profile,
+          credential: 'opaque-token',
+          clientInstanceId: 'client-1',
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof RuntimeHostPermanentReconnectError);
+        assert.ok(error.cause instanceof RuntimeHostPeerError);
+        assert.equal(error.cause.code, 'peer_native_unavailable');
+        return true;
+      },
+    );
+    const invalidEvidence = new Error('signature is invalid');
+    await assert.rejects(
+      () =>
+        connect({
+          observeAuthenticatedReachability: () => {
+            throw invalidEvidence;
+          },
+        } as unknown as RuntimeHostPeerClient),
+      (error: unknown) => {
+        assert.ok(error instanceof RuntimeHostProfileConnectionError);
+        assert.equal(error.reason, 'target_mismatch');
+        assert.equal(error.cause, invalidEvidence);
+        return true;
+      },
+    );
+
+    for (const code of ['peer_identity_mismatch', 'peer_native_unavailable'] as const) {
+      const failure = new RuntimeHostPeerError(code, code);
+      await assert.rejects(
+        () =>
+          connect({
+            observeAuthenticatedReachability: () => profile.transport.reachability,
+            connect: async () => {
+              throw failure;
+            },
+          } as unknown as RuntimeHostPeerClient),
+        (error: unknown) => {
+          assert.ok(error instanceof RuntimeHostPermanentReconnectError);
+          assert.equal(error.cause, failure);
+          if (code === 'peer_identity_mismatch') {
+            assert.ok(error instanceof RuntimeHostProfileConnectionError);
+            assert.equal(error.reason, 'target_mismatch');
+          }
+          return true;
+        },
+      );
+    }
+  });
+
   test('reports retryable remote connection failure categories', async () => {
     const reasons = [
       ['tls_failed', /could not verify the TLS connection/],
@@ -1152,7 +1297,23 @@ function directPeerProfile(
     name: 'Peer',
     kind: 'remote',
     rootId: ROOT_A,
-    transport: { kind: 'libp2p-direct', peerId, routeHints, coordinationRelays: [] },
+    transport: { kind: 'libp2p-direct', reachability: reachability(peerId, routeHints) },
+  };
+}
+
+function reachability(peerId: string, directRoutes: readonly string[]) {
+  return {
+    lease: {
+      version: 1 as const,
+      peerId,
+      revision: 1,
+      issuedAt: 1,
+      expiresAt: 2,
+      directRoutes,
+      coordinationRoutes: [],
+    },
+    publicKey: Buffer.from('public').toString('base64url'),
+    signature: Buffer.from('signature').toString('base64url'),
   };
 }
 

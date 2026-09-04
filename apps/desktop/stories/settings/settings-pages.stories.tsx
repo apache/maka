@@ -23,6 +23,7 @@ import { expect, fn, userEvent, waitFor, within } from 'storybook/test';
 import { ToastProvider, useToast } from '@maka/ui';
 import type {
   AppSettings,
+  RuntimeHostAppSettings,
   SettingsSection,
   ThemePalette,
   ThemePreference,
@@ -40,15 +41,26 @@ import type {
 } from '@maka/core/capabilities';
 import type { HealthSignal, HealthSnapshot } from '@maka/core/health';
 import type { DesktopExternalSessionCatalogItem } from '../../src/preload/external-session-catalog';
+import type { AppUpdateStatus } from '../../src/preload/bridge-contract';
 import type { SessionSummary } from '@maka/core/session';
 import { revisionFamilySessionIds } from '@maka/core/session-revisions';
-import type { IdentifiedLlmConnection, LlmConnection, ProviderType } from '@maka/core/llm-connections';
+import type {
+  IdentifiedLlmConnection,
+  LlmConnection,
+  ProjectedLlmConnection,
+  ProviderType,
+} from '@maka/core/llm-connections';
+import { resolveConnectionModelCatalog } from '@maka/core/model-catalog';
 import { buildChatModelChoices } from '@maka/core/chat-model-choice';
 import type { LocalMemoryBackupInfo, LocalMemoryEntryPreview, LocalMemoryState } from '@maka/core/local-memory';
 import { buildHealthSnapshot } from '@maka/core/health';
 import { createDefaultSettings, mergeSettings } from '@maka/core/settings';
 import { DEFAULT_DAILY_REVIEW_CONFIG } from '@maka/core/daily-review';
 import { SettingsSurface } from '../../src/renderer/settings/settings-surface';
+import { ConnectionSettingsServicesProvider } from '../../src/renderer/features/connection-settings';
+import { RuntimeHostManagementServicesProvider } from '../../src/renderer/features/runtime-host-management';
+import { createDesktopConnectionSettingsServices } from '../../src/renderer/platform/desktop/create-connection-settings-services';
+import { createDesktopRuntimeHostManagementServices } from '../../src/renderer/platform/desktop/create-runtime-host-management-services';
 import { createUiLocaleUpdateGate } from '../../src/renderer/settings/ui-locale-update-gate';
 import {
   createSettingsSnapshotCache,
@@ -102,23 +114,23 @@ function makeConnection(input: {
   name: string;
   providerType: ProviderType;
   enabled?: boolean;
-}): IdentifiedLlmConnection {
-  return {
+}): ProjectedLlmConnection {
+  const stored: IdentifiedLlmConnection = {
     connectionId: `connection-${input.slug}`,
     slug: input.slug,
     name: input.name,
     providerType: input.providerType,
     defaultModel: 'glm-4.7',
     enabled: input.enabled ?? true,
-    modelsFetchedAt: NOW - 18 * 60_000,
     lastTestStatus: 'verified',
     lastTestAt: new Date(NOW - 12 * 60_000).toISOString(),
     createdAt: NOW - 6 * 24 * 60 * 60 * 1000,
     updatedAt: NOW - 12 * 60_000,
   };
+  return { ...stored, catalogEntries: resolveConnectionModelCatalog(stored) };
 }
 
-const connections: IdentifiedLlmConnection[] = [
+const connections: ProjectedLlmConnection[] = [
   makeConnection({ slug: 'zai-live', name: 'Z.AI Live', providerType: 'zai-coding-plan' }),
   makeConnection({ slug: 'openai-review', name: 'OpenAI Review', providerType: 'openai' }),
   makeConnection({ slug: 'ollama-local', name: 'Ollama Local', providerType: 'ollama' }),
@@ -134,7 +146,7 @@ const generationStoryConnections = [
   generationStoryCopilotConnection,
 ];
 
-const connectionsBridge: ConnectionsBridge = {
+const connectionsBridge: Omit<ConnectionsBridge, 'oauth'> = {
   async getSnapshot() {
     return {
       connections,
@@ -701,11 +713,29 @@ const unavailableRuntimeHostProfiles: DesktopRuntimeHostProfileSnapshot = {
 
 const STORY_RUNTIME_HOST_KEY = 'local:storybook-local-host';
 
+function storyRuntimeSettings(
+  settings: AppSettings = createDefaultSettings(),
+  passwordConfigured = false,
+): RuntimeHostAppSettings {
+  return {
+    ...settings,
+    network: {
+      proxy: {
+        ...settings.network.proxy,
+        passwordConfigured,
+      },
+    },
+  };
+}
+
 function seedGeneralSnapshotCache(cache: SettingsSnapshotCache): void {
   const settings = createDefaultSettings();
   cache.commitClientRead(settings);
   cache.commitRuntimeHostCatalogRead(runtimeHostProfiles);
-  cache.commitRuntimeHostSettingsRead(STORY_RUNTIME_HOST_KEY, settings);
+  cache.commitRuntimeHostSettingsRead(
+    STORY_RUNTIME_HOST_KEY,
+    storyRuntimeSettings(settings),
+  );
   cache.commitRuntimeHostConnectionsRead(STORY_RUNTIME_HOST_KEY, {
     connections,
     defaultSlug: 'zai-live',
@@ -726,7 +756,7 @@ function seedGeneralTwoHostSnapshotCache(cache: SettingsSnapshotCache): void {
 }
 
 let storyClientSettings = createDefaultSettings();
-let storyRuntimeHostSettings = createDefaultSettings();
+let storyRuntimeHostSettings = storyRuntimeSettings();
 
 const makaBridge = {
   runtimeHostProfiles: {
@@ -772,7 +802,16 @@ const makaBridge = {
       return { settings: storyClientSettings };
     },
     update: async (patch: Parameters<typeof window.maka.settings.update>[0]): Promise<UpdateAppSettingsResult> => {
-      storyRuntimeHostSettings = mergeSettings(storyRuntimeHostSettings, patch);
+      const merged = mergeSettings(storyRuntimeHostSettings, patch);
+      storyRuntimeHostSettings = storyRuntimeSettings(
+        merged,
+        patch.network?.proxy?.credential?.kind === 'replace'
+          ? true
+          : patch.network?.proxy?.credential?.kind === 'delete' ||
+              patch.network?.proxy?.authEnabled === false
+            ? false
+            : storyRuntimeHostSettings.network.proxy.passwordConfigured,
+      );
       return { settings: storyRuntimeHostSettings };
     },
     subscribeClientChanged: () => () => undefined,
@@ -796,12 +835,15 @@ const makaBridge = {
       email: 'codex@example.com',
       plan: 'Plus',
     }),
+    getEnrollmentState: async () => ({ enabled: true }),
   },
   githubCopilotSubscription: {
     getAccountState: async () => ({ runtimeState: 'not_logged_in' }),
+    getEnrollmentState: async () => ({ enabled: true }),
   },
   xaiOAuth: {
     getAccountState: async () => ({ runtimeState: 'not_logged_in' }),
+    getEnrollmentState: async () => ({ enabled: true }),
   },
   app: {
     info: async () => ({
@@ -809,14 +851,16 @@ const makaBridge = {
       osRelease: '23.4.0',
       arch: 'arm64',
       buildMode: 'dev',
+      // Dev installs report the updater's release fallback, not a real channel.
+      updateChannel: 'release',
       buildCommit: 'a63ae4d',
       appVersion: '0.9.0-dev',
       electronVersion: '33.2.0',
       nodeVersion: '20.18.0',
       chromeVersion: '130.0.6723.59',
-      // #1363: was missing entirely — the About and Data pages' 工作区路径
-      // rows rendered an EMPTY value in every story. Deliberately long and
-      // deep so the mono value exercises its wrap contract.
+      // #1363: was missing entirely — the 数据 page's 工作区路径 row rendered
+      // an EMPTY value in every story. Deliberately long and deep so the mono
+      // value exercises its wrap contract.
       workspacePath:
         '/Users/storybook-fixture-user/Library/Application Support/Maka/workspaces/infra-observability-platform-desktop',
     }),
@@ -926,6 +970,32 @@ const makaBridge = {
 
 const withSettingsBridge = withScopedMakaBridge(makaBridge);
 
+/**
+ * A PACKAGED install, which the shared fixture cannot be: it is a dev checkout,
+ * and `buildMode` short-circuits the About lead before `updateChannel` is ever
+ * read. Only these two facts move — everything else stays the shared bridge, so
+ * the channel stories differ from `About` by exactly what they are about.
+ */
+function withPackagedChannelBridge(channel: {
+  updateChannel: 'nightly' | 'release';
+  appVersion: string;
+  updateStatus: AppUpdateStatus;
+}) {
+  return withScopedMakaBridge({
+    ...makaBridge,
+    app: {
+      ...makaBridge.app,
+      info: async () => ({
+        ...(await makaBridge.app.info()),
+        buildMode: 'packaged' as const,
+        updateChannel: channel.updateChannel,
+        appVersion: channel.appVersion,
+      }),
+      updateStatus: async () => channel.updateStatus,
+    },
+  } satisfies Record<string, unknown>);
+}
+
 function pendingForever<T>(): Promise<T> {
   return new Promise(() => undefined);
 }
@@ -965,13 +1035,13 @@ const withGeneralCachedRevalidationBridge = withScopedMakaBridge({
 let generationStoryCatalogPending = false;
 let generationStoryRuntimeHostProfiles = runtimeHostProfiles;
 let generationStoryConnectionsPending = false;
-let generationStoryCopilotEmail = 'old-generation@example.com';
-let generationStoryCopilotAccountReads = 0;
+let generationStoryCopilotEnrollmentEnabled = true;
+let generationStoryCopilotEnrollmentReads = 0;
 let generationStoryOpenedAuthIds: string[] = [];
 let generationStoryCancelledAuthIds: string[] = [];
-let generationStoryCopilotImportAttempts = 0;
+let generationStoryCopilotLoginAttempts = 0;
 let generationStoryCopilotSecretReads = 0;
-let generationStoryCopilotImportResolve:
+let generationStoryCopilotLoginResolve:
   | ((result: { ok: true }) => void)
   | undefined;
 let generationStoryProfileListener:
@@ -984,13 +1054,13 @@ function resetGenerationStoryBridge(
   generationStoryCatalogPending = false;
   generationStoryRuntimeHostProfiles = snapshot;
   generationStoryConnectionsPending = false;
-  generationStoryCopilotEmail = 'old-generation@example.com';
-  generationStoryCopilotAccountReads = 0;
+  generationStoryCopilotEnrollmentEnabled = true;
+  generationStoryCopilotEnrollmentReads = 0;
   generationStoryOpenedAuthIds = [];
   generationStoryCancelledAuthIds = [];
-  generationStoryCopilotImportAttempts = 0;
+  generationStoryCopilotLoginAttempts = 0;
   generationStoryCopilotSecretReads = 0;
-  generationStoryCopilotImportResolve = undefined;
+  generationStoryCopilotLoginResolve = undefined;
   generationStoryProfileListener = undefined;
 }
 
@@ -1027,13 +1097,9 @@ const withModelsOAuthGenerationRevalidationBridge = withScopedMakaBridge({
   runtimeHostProfiles: generationStoryRuntimeHostProfilesBridge,
   githubCopilotSubscription: {
     ...makaBridge.githubCopilotSubscription,
-    getAccountState: async () => {
-      generationStoryCopilotAccountReads += 1;
-      return {
-        runtimeState: 'authenticated' as const,
-        email: generationStoryCopilotEmail,
-        plan: 'Plus',
-      };
+    getEnrollmentState: async () => {
+      generationStoryCopilotEnrollmentReads += 1;
+      return { enabled: generationStoryCopilotEnrollmentEnabled };
     },
   },
 } satisfies Record<string, unknown>);
@@ -1077,7 +1143,7 @@ const withModelsOAuthAuthorizationGenerationBridge = withScopedMakaBridge({
   },
 } satisfies Record<string, unknown>);
 
-const withModelsCopilotReimportGenerationBridge = withScopedMakaBridge({
+const withModelsCopilotReloginGenerationBridge = withScopedMakaBridge({
   ...makaBridge,
   runtimeHostProfiles: generationStoryRuntimeHostProfilesBridge,
   connections: {
@@ -1094,15 +1160,28 @@ const withModelsCopilotReimportGenerationBridge = withScopedMakaBridge({
   },
   githubCopilotSubscription: {
     ...makaBridge.githubCopilotSubscription,
-    connectExistingLogin: () => {
-      generationStoryCopilotImportAttempts += 1;
-      if (generationStoryCopilotImportAttempts > 1) {
+    getAccountState: async () => ({ runtimeState: 'authenticated' as const }),
+    getAuthUrl: async () => {
+      generationStoryCopilotLoginAttempts += 1;
+      return {
+        authRequestId: `copilot-from-generation-${generationStoryCopilotLoginAttempts}`,
+        stateHint: 'GEN1-CODE',
+      };
+    },
+    openAuthUrl: async () => ({ ok: true as const }),
+    // The Host polls GitHub for the whole device window, so the first attempt
+    // stays unsettled until this story releases it — after the replacement Host
+    // has already taken over.
+    completeAuthorization: () => {
+      if (generationStoryCopilotLoginAttempts > 1) {
         return Promise.resolve({ ok: true as const });
       }
       return new Promise<{ ok: true }>((resolve) => {
-        generationStoryCopilotImportResolve = resolve;
+        generationStoryCopilotLoginResolve = resolve;
       });
     },
+    cancelAuthorization: async () => ({ ok: true as const }),
+    logout: async () => ({ ok: true as const }),
   },
 } satisfies Record<string, unknown>);
 
@@ -1296,6 +1375,7 @@ function useArchivedTasksStoryBridge(seed: readonly SessionSummary[]): ArchivedT
   const [sessions, setSessions] = useState<DesktopSessionSummary[]>(() =>
     seed.map((session) => ({
       ...session,
+      revision: 1,
       runtimeHostId: 'storybook-local',
       profileId: 'local',
       profileName: 'Local',
@@ -1593,6 +1673,12 @@ function SettingsStoryFrame(props: SettingsStoryProps) {
   // holds both in AppShell state and applies them optimistically on click.
   const [themePref, setThemePref] = useState<ThemePreference>('auto');
   const [themePalette, setThemePalette] = useState<ThemePalette>('default');
+  const [connectionSettingsServices] = useState(
+    createDesktopConnectionSettingsServices,
+  );
+  const [runtimeHostManagementServices] = useState(
+    createDesktopRuntimeHostManagementServices,
+  );
 
   return (
     <>
@@ -1610,27 +1696,32 @@ function SettingsStoryFrame(props: SettingsStoryProps) {
           minHeight: 640,
         }}
       >
-        <SettingsSurface
-          onClose={noop}
-          themePref={themePref}
-          onThemeChange={setThemePref}
-          themePalette={themePalette}
-          onThemePaletteChange={setThemePalette}
-          onUiLocalePreferenceChange={noop}
-          uiLocaleUpdateGate={uiLocaleUpdateGate}
-          onDefaultPermissionModeChange={noop}
-          request={{ section: props.section }}
-          openProviderCatalog={props.openProviderCatalog}
-          initialConnectionSlug={props.initialConnectionSlug}
-          initialFocusRef={initialFocusRef}
-          onOpenDailyReview={noop}
-          onOpenSession={noop}
-          archivedTasks={archivedTasks}
-          onTaskImported={noop}
-          onRemoteHostAdded={noop}
-          onSelectedRuntimeHostProfileIdChange={noop}
-          snapshotCache={snapshotCache}
-        />
+        <ConnectionSettingsServicesProvider services={connectionSettingsServices}>
+          <RuntimeHostManagementServicesProvider services={runtimeHostManagementServices}>
+            <SettingsSurface
+              onClose={noop}
+              themePref={themePref}
+              onThemeChange={setThemePref}
+              themePalette={themePalette}
+              onThemePaletteChange={setThemePalette}
+              onUiLocalePreferenceChange={noop}
+              uiLocaleUpdateGate={uiLocaleUpdateGate}
+              onDefaultPermissionModeChange={noop}
+              request={{ section: props.section }}
+              openProviderCatalog={props.openProviderCatalog}
+              initialConnectionSlug={props.initialConnectionSlug}
+              initialFocusRef={initialFocusRef}
+              onOpenDailyReview={noop}
+              onOpenKeyboardHelp={noop}
+              onOpenSession={noop}
+              archivedTasks={archivedTasks}
+              onTaskImported={noop}
+              onRemoteHostAdded={noop}
+              onSelectedRuntimeHostProfileIdChange={noop}
+              snapshotCache={snapshotCache}
+            />
+          </RuntimeHostManagementServicesProvider>
+        </ConnectionSettingsServicesProvider>
       </div>
     </>
   );
@@ -2267,10 +2358,9 @@ export const ModelsConnectionsHostGenerationRevalidation: Story = {
 };
 
 // A ready event can replace the Runtime Host without changing
-// profileId:hostId. The catalog route stays mounted, but Copilot's singleton
-// import state belongs to the Host generation and must be read again before
-// the previous account can be presented as current. Codex and xAI instead
-// project their Connection counts from the connection catalog.
+// profileId:hostId. The active setup route stays mounted, but enrollment
+// availability belongs to the selected Host generation and must be re-read
+// before its sign-in action can remain enabled.
 export const ModelsOAuthHostGenerationRevalidation: Story = {
   decorators: [withModelsOAuthGenerationRevalidationBridge],
   render: () => {
@@ -2285,12 +2375,20 @@ export const ModelsOAuthHostGenerationRevalidation: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await canvas.findByText('old-generation@example.com');
-    const readsBeforeReplacement = generationStoryCopilotAccountReads;
+    await userEvent.click(await canvas.findByRole('button', {
+      name: /添加账号连接：GitHub Copilot/,
+    }));
+    const signIn = await canvas.findByRole('button', { name: '使用 GitHub 登录' });
+    await waitForStoryCondition(
+      () => generationStoryCopilotEnrollmentReads > 0,
+      'Initial Copilot enrollment availability was not read',
+    );
+    await expect(signIn).not.toHaveAttribute('aria-disabled', 'true');
+    const readsBeforeReplacement = generationStoryCopilotEnrollmentReads;
     const listener = generationStoryProfileListener;
     if (!listener) throw new Error('Runtime Host generation listener did not subscribe');
 
-    generationStoryCopilotEmail = 'new-generation@example.com';
+    generationStoryCopilotEnrollmentEnabled = false;
     listener({
       epoch: 'storybook-generation-2',
       profileId: 'local',
@@ -2302,11 +2400,14 @@ export const ModelsOAuthHostGenerationRevalidation: Story = {
       isDefault: true,
     });
 
-    await canvas.findByText('new-generation@example.com');
-    await expect(canvas.queryByText('old-generation@example.com')).not.toBeInTheDocument();
-    await expect(generationStoryCopilotAccountReads).toBeGreaterThan(readsBeforeReplacement);
+    await waitForStoryCondition(
+      () => generationStoryCopilotEnrollmentReads > readsBeforeReplacement,
+      'Replacement Host generation did not re-read Copilot enrollment availability',
+    );
+    await expect(await canvas.findByRole('button', { name: '使用 GitHub 登录' }))
+      .toHaveAttribute('aria-disabled', 'true');
     await expect(
-      canvasElement.querySelector('[data-maka-contract="provider-catalog"]'),
+      canvasElement.querySelector('[data-maka-contract="provider-setup"]'),
     ).toBeInTheDocument();
   },
 };
@@ -2364,12 +2465,14 @@ export const ModelsOAuthAuthorizationHostGenerationRevalidation: Story = {
   },
 };
 
-// The connection-detail Copilot import owns an action guard and a late
+// The connection-detail Copilot sign-in owns an action guard and a late
 // success callback independently of the catalog login panel. A same-key Host
 // replacement retires that controller without throwing away the detail route
-// or its surrounding Settings state.
-export const ModelsCopilotReimportHostGenerationRevalidation: Story = {
-  decorators: [withModelsCopilotReimportGenerationBridge],
+// or its surrounding Settings state. The detail surface offers the device
+// sign-in rather than a local import: the Host owns enrollment, and Desktop
+// discovers an existing credential from the catalog panel instead.
+export const ModelsCopilotReloginHostGenerationRevalidation: Story = {
+  decorators: [withModelsCopilotReloginGenerationBridge],
   render: () => {
     resetGenerationStoryBridge();
     return (
@@ -2382,11 +2485,11 @@ export const ModelsCopilotReimportHostGenerationRevalidation: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const firstImport = await canvas.findByRole('button', { name: '重新导入' });
-    await userEvent.click(firstImport);
+    const firstLogin = await canvas.findByRole('button', { name: '重新登录' });
+    await userEvent.click(firstLogin);
     await waitForStoryCondition(
-      () => generationStoryCopilotImportAttempts === 1,
-      'GitHub Copilot reimport did not start',
+      () => generationStoryCopilotLoginAttempts === 1,
+      'GitHub Copilot sign-in did not start',
     );
 
     const listener = generationStoryProfileListener;
@@ -2403,22 +2506,22 @@ export const ModelsCopilotReimportHostGenerationRevalidation: Story = {
     });
 
     await waitForStoryCondition(
-      () => canvas.queryByRole('button', { name: '重新导入' })?.hasAttribute('disabled') === false,
-      'Replacement Host kept the previous generation import guard',
+      () => canvas.queryByRole('button', { name: '重新登录' })?.hasAttribute('disabled') === false,
+      'Replacement Host kept the previous generation sign-in guard',
     );
     const readsAfterReplacement = generationStoryCopilotSecretReads;
-    generationStoryCopilotImportResolve?.({ ok: true });
+    generationStoryCopilotLoginResolve?.({ ok: true });
     await new Promise((resolve) => globalThis.setTimeout(resolve, 50));
     await expect(generationStoryCopilotSecretReads).toBe(readsAfterReplacement);
 
-    await userEvent.click(canvas.getByRole('button', { name: '重新导入' }));
+    await userEvent.click(canvas.getByRole('button', { name: '重新登录' }));
     await waitForStoryCondition(
-      () => generationStoryCopilotImportAttempts === 2,
-      'Replacement Host could not start a fresh GitHub Copilot reimport',
+      () => generationStoryCopilotLoginAttempts === 2,
+      'Replacement Host could not start a fresh GitHub Copilot sign-in',
     );
     await waitForStoryCondition(
       () => generationStoryCopilotSecretReads > readsAfterReplacement,
-      'Replacement Host reimport did not refresh the current credential state',
+      'Replacement Host sign-in did not refresh the current credential state',
     );
     await expect(
       canvasElement.querySelector('[data-maka-contract="connection-detail"]'),
@@ -2533,6 +2636,38 @@ export const HealthCenter: Story = {
 // Real path: 设置 → 关于 (also reachable from 反馈 in the topbar).
 export const About: Story = {
   decorators: [withSettingsBridge],
+  render: () => <SettingsStory section="about" />,
+};
+
+// Real path: the same page inside a packaged Nightly. Nightly publishes daily
+// and auto-downloads, so `downloaded` — not `not-available` — is what a nightly
+// user actually opens this page to. The version string is the shipped shape:
+// <product>-dev.<run>.<UTC day>.
+export const AboutNightly: Story = {
+  decorators: [
+    withPackagedChannelBridge({
+      updateChannel: 'nightly',
+      appVersion: '0.2.0-dev.12.20260901',
+      updateStatus: {
+        state: 'downloaded',
+        currentVersion: '0.2.0-dev.12.20260901',
+        latestVersion: '0.2.0-dev.13.20260902',
+      },
+    }),
+  ],
+  render: () => <SettingsStory section="about" />,
+};
+
+// Real path: the same page inside a packaged release — the default state, which
+// wears no channel token at all.
+export const AboutRelease: Story = {
+  decorators: [
+    withPackagedChannelBridge({
+      updateChannel: 'release',
+      appVersion: '0.2.0',
+      updateStatus: { state: 'not-available', currentVersion: '0.2.0' },
+    }),
+  ],
   render: () => <SettingsStory section="about" />,
 };
 

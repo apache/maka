@@ -26,20 +26,28 @@ import type {
   UpdateConnectionInput,
 } from '@maka/core/llm-connections';
 import { buildChatModelChoices } from '@maka/core/chat-model-choice';
+import type { ProjectedLlmConnection } from '@maka/core/llm-connections';
 import {
   connectionEnabledModelIds,
   defaultEnabledModelIdsWhenOmitted,
-  PROVIDER_DEFAULTS,
+  PROVIDER_REGISTRY,
   providerAuthRequiresSecret,
 } from '@maka/core/llm-connections';
 import { normalizeRelayModelProfiles } from '@maka/core/model-thinking';
+import type { CredentialLocator } from '@maka/core/runtime-policy';
 import type {
-  ConnectionCatalogEntry,
-  ConnectionCatalogSnapshot,
-  CredentialLocator,
-} from '@maka/core/runtime-policy';
+  RuntimeHostConnectionCatalogEntry as ConnectionCatalogEntry,
+  RuntimeHostConnectionCatalogSnapshot as ConnectionCatalogSnapshot,
+} from '@maka/runtime-host/client';
 import { normalizeRequestHeaderUpdates } from '@maka/core/runtime-policy';
-import type { ConnectionTestRunResult } from '@maka/runtime-host/protocol';
+import {
+  CONNECTION_EFFECT_OPERATION_SPECS,
+  type ConnectionTestRunResult,
+} from '@maka/runtime-host/protocol';
+import {
+  RuntimeHostOperationError,
+  RuntimeHostRequestInterruptedError,
+} from '@maka/runtime-host/client';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 import {
   handleReconnectableRead,
@@ -55,6 +63,7 @@ import type {
   DesktopConnectionIdentity,
   DesktopConnectionSnapshot,
 } from '../shared/desktop-connection-snapshot.js';
+import type { DesktopConnectionOnboardingSaveOutcome } from '../preload/bridge-contract.js';
 
 type HostConnectionsClient = Pick<
   DesktopRuntimeHostClient,
@@ -70,6 +79,8 @@ type HostConnectionsClient = Pick<
   | 'setDefaultConnectionTarget'
   | 'testConnection'
   | 'updateConnection'
+  | 'verifyConnectionOnboarding'
+  | 'saveConnectionOnboarding'
 >;
 
 export interface RuntimeHostConnectionsIpcDeps {
@@ -154,6 +165,37 @@ export function registerRuntimeHostConnectionsIpc(
       'set default model',
     );
     deps.emitConnectionListChanged();
+  });
+  deps.ipcMain.handle('connections:onboardingVerify', async (_event, raw: unknown) => {
+    const input = CONNECTION_EFFECT_OPERATION_SPECS[
+      'connection.onboarding.verify'
+    ].decodeInput(raw);
+    return deps.client.verifyConnectionOnboarding(input);
+  });
+  deps.ipcMain.handle('connections:onboardingSave', async (_event, raw: unknown) => {
+    const input = CONNECTION_EFFECT_OPERATION_SPECS[
+      'connection.onboarding.save'
+    ].decodeInput(raw);
+    try {
+      const result = await deps.client.saveConnectionOnboarding(input);
+      if (result.kind === 'saved') deps.emitConnectionListChanged();
+      return { kind: 'result', result } satisfies DesktopConnectionOnboardingSaveOutcome;
+    } catch (error) {
+      if (error instanceof RuntimeHostOperationError) {
+        return {
+          kind: error.code === 'commit_outcome_unknown' ? 'outcome_unknown' : 'not_saved',
+        } satisfies DesktopConnectionOnboardingSaveOutcome;
+      }
+      if (error instanceof RuntimeHostRequestInterruptedError) {
+        return {
+          kind: error.dispatch === 'not_dispatched' ? 'not_saved' : 'outcome_unknown',
+        } satisfies DesktopConnectionOnboardingSaveOutcome;
+      }
+      // A protocol/decode failure can arrive only after the command response
+      // has started coming back. Without affirmative evidence that the Host
+      // did not commit, allowing another create risks duplicating the account.
+      return { kind: 'outcome_unknown' } satisfies DesktopConnectionOnboardingSaveOutcome;
+    }
   });
   deps.ipcMain.handle('connections:create', async (_event, raw: unknown) => {
     const input = normalizeCreateInput(raw);
@@ -299,11 +341,7 @@ export function registerRuntimeHostConnectionsIpc(
     }
     deps.emitConnectionListChanged();
     const latest = requireConnectionIdentity(await snapshot(), connectionIdentity(current));
-    return {
-      models: [...latest.models],
-      source: result.source,
-      fetchedAt: result.fetchedAt,
-    };
+    return { models: [...latest.models], source: result.source };
   });
   deps.ipcMain.handle(
     'connections:test',
@@ -357,7 +395,7 @@ export function projectHostConnectionTest(result: ConnectionTestRunResult): Conn
 
 export function projectHostConnections(
   catalog: ConnectionCatalogSnapshot,
-): IdentifiedLlmConnection[] {
+): ProjectedLlmConnection[] {
   return catalog.connections.map((connection) => {
     const defaultModel =
       catalog.defaultTarget?.connectionId === connection.connectionId
@@ -373,6 +411,7 @@ export function projectHostConnections(
       defaultModel,
       enabledModelIds: [...connection.enabledModelIds],
       models: [...connection.models],
+      catalogEntries: connection.catalogEntries,
       ...(connection.relayModelProfiles === undefined
         ? {}
         : { relayModelProfiles: connection.relayModelProfiles }),
@@ -380,9 +419,6 @@ export function projectHostConnections(
         ? {}
         : { requestBodyOverlay: connection.requestBodyOverlay }),
       ...(connection.modelSource === undefined ? {} : { modelSource: connection.modelSource }),
-      ...(connection.modelsFetchedAt === undefined
-        ? {}
-        : { modelsFetchedAt: connection.modelsFetchedAt }),
       ...(connection.lastTest === undefined
         ? {}
         : {
@@ -431,7 +467,7 @@ async function updateCredential(
 }
 
 function connectionCredential(connection: ConnectionCatalogEntry): CredentialLocator {
-  const authKind = PROVIDER_DEFAULTS[connection.providerType].authKind;
+  const authKind = PROVIDER_REGISTRY[connection.providerType].authKind;
   return {
     scope: 'connection',
     connectionId: connection.connectionId,
@@ -504,7 +540,7 @@ function requireProjectedConnection(
 function requireProjectedConnectionIdentity(
   catalog: ConnectionCatalogSnapshot,
   identity: DesktopConnectionIdentity,
-): IdentifiedLlmConnection {
+): ProjectedLlmConnection {
   const connection = requireConnectionIdentity(catalog, identity);
   const projected = projectHostConnections(catalog).find(
     (candidate) => candidate.connectionId === connection.connectionId,

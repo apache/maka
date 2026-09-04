@@ -22,9 +22,21 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { stripTypeScriptTypes } from 'node:module';
 import { dirname } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const SOURCE_URL = 'https://models.dev/api.json';
+// The projection lives in @maka/core because the Runtime Host runs it too.
+// `prepare` fires before any workspace builds, so read the TypeScript source
+// rather than a dist build that does not exist yet.
+const projection = await loadTypeScriptModule(
+  await readFile(
+    fileURLToPath(new URL('../packages/core/src/models-dev-projection.ts', import.meta.url)),
+    'utf8',
+  ),
+);
+const { selectModelsDevCatalog, assertModelsDevProvider, collectProjectionRemovals } = projection;
+const SOURCE_URL = projection.MODELS_DEV_SOURCE_URL;
+export const PROVIDERS = projection.MODELS_DEV_PROVIDERS;
+export const toMetadata = projection.projectModelsDevModel;
 const DEFAULT_SNAPSHOT = 'scripts/model-metadata/models-dev-api.snapshot.json';
 const DEFAULT_OUTPUT = 'packages/core/src/model-metadata.generated.ts';
 const DEFAULT_PRICING_OUTPUT = 'packages/runtime/src/telemetry/model-pricing.generated.ts';
@@ -54,55 +66,6 @@ export const PRICING_EXCLUDED_PROVIDER_TYPES = new Set([
   'xiaomi-token-plan-sgp',
   'zai-coding-plan',
 ]);
-export const PROVIDERS = {
-  anthropic: 'anthropic',
-  alibaba: 'alibaba',
-  'alibaba-cn': 'alibaba-cn',
-  'alibaba-coding-plan-cn': 'alibaba-coding-plan-cn',
-  'alibaba-coding-plan': 'alibaba-coding-plan',
-  'alibaba-token-plan-cn': 'alibaba-token-plan-cn',
-  'alibaba-token-plan': 'alibaba-token-plan',
-  cerebras: 'cerebras',
-  cohere: 'cohere',
-  'cloudflare-workers-ai': 'cloudflare-workers-ai',
-  deepinfra: 'deepinfra',
-  deepseek: 'deepseek',
-  'fireworks-ai': 'fireworks-ai',
-  'github-copilot': 'github-copilot',
-  google: 'google',
-  groq: 'groq',
-  huggingface: 'huggingface',
-  'kimi-coding-plan': 'kimi-for-coding',
-  MiniMax: 'minimax',
-  'MiniMax-cn': 'minimax-cn',
-  'minimax-coding-plan': 'minimax-coding-plan',
-  mistral: 'mistral',
-  moonshot: 'moonshotai-cn',
-  nvidia: 'nvidia',
-  'ollama-cloud': 'ollama-cloud',
-  openai: 'openai',
-  opencode: 'opencode',
-  'opencode-go': 'opencode-go',
-  openrouter: 'openrouter',
-  siliconflow: 'siliconflow',
-  stepfun: 'stepfun',
-  'stepfun-ai': 'stepfun-ai',
-  'stepfun-ai-step-plan': 'stepfun-ai-step-plan',
-  'stepfun-step-plan': 'stepfun-step-plan',
-  togetherai: 'togetherai',
-  'tencent-coding-plan': 'tencent-coding-plan',
-  'tencent-token-plan': 'tencent-token-plan',
-  'tencent-tokenhub': 'tencent-tokenhub',
-  vercel: 'vercel',
-  xai: 'xai',
-  xiaomi: 'xiaomi',
-  'xiaomi-token-plan-cn': 'xiaomi-token-plan-cn',
-  'xiaomi-token-plan-sgp': 'xiaomi-token-plan-sgp',
-  'xiaomi-token-plan-ams': 'xiaomi-token-plan-ams',
-  zai: 'zai',
-  'zai-coding-plan': 'zai-coding-plan',
-  zenmux: 'zenmux',
-};
 
 export async function main(argv = process.argv) {
   const refreshInputPath = option('--refresh-input', argv);
@@ -113,10 +76,21 @@ export async function main(argv = process.argv) {
     (outputPath === DEFAULT_OUTPUT ? DEFAULT_PRICING_OUTPUT : undefined);
   const refresh = argv.includes('--refresh');
   const check = argv.includes('--check');
+  const drift = argv.includes('--drift');
   const acceptUpstreamRemovals = argv.includes('--accept-upstream-removals');
-  if (refreshInputPath && !refresh) throw new Error('--refresh-input requires --refresh');
+  if (drift && (refresh || check)) {
+    throw new Error('--drift reports without writing and cannot combine with --refresh or --check');
+  }
+  if (refreshInputPath && !refresh && !drift) {
+    throw new Error('--refresh-input requires --refresh or --drift');
+  }
   if (acceptUpstreamRemovals && !refresh) {
     throw new Error('--accept-upstream-removals requires --refresh');
+  }
+  if (drift) {
+    const report = await collectDrift(await loadSnapshot(snapshotPath), refreshInputPath);
+    process.stdout.write(`${formatDrift(report)}\n`);
+    return report;
   }
 
   const source = refresh
@@ -176,30 +150,25 @@ export async function main(argv = process.argv) {
   await replaceFilesTransactionally(writes);
 }
 
-function buildProjection(catalog) {
+// `options.onReject` decides what an unprojectable provider or model costs. A
+// refresh has none, so the first bad shape aborts the whole snapshot rather
+// than silently committing a catalog with a hole in it. The drift report
+// passes one, because there a bad shape is the finding it exists to print and
+// must not stop it comparing everything else.
+function buildProjection(catalog, options = {}) {
+  const onReject = options.onReject;
   const metadata = {};
   const pricing = [];
   const providerFacts = {};
   const providerOverrides = {};
   for (const [providerType, sourceId] of Object.entries(PROVIDERS)) {
     const provider = catalog[sourceId];
-    if (!provider) {
-      throw new Error(`models.dev provider ${sourceId} is missing`);
-    }
-    if (
-      !provider.models ||
-      typeof provider.models !== 'object' ||
-      Array.isArray(provider.models) ||
-      Object.keys(provider.models).length === 0
-    ) {
-      throw new Error(`models.dev provider ${sourceId} has no non-empty models object`);
-    }
-    if (
-      typeof provider.id !== 'string' ||
-      typeof provider.name !== 'string' ||
-      typeof provider.doc !== 'string'
-    ) {
-      throw new Error(`models.dev provider ${sourceId} has an unsupported shape`);
+    try {
+      assertModelsDevProvider(sourceId, provider);
+    } catch (error) {
+      if (!onReject) throw error;
+      onReject('provider', providerType, error);
+      continue;
     }
     providerFacts[providerType] = {
       id: provider.id,
@@ -207,44 +176,58 @@ function buildProjection(catalog) {
       ...(typeof provider.api === 'string' ? { api: provider.api } : {}),
       doc: provider.doc,
     };
-    metadata[providerType] = Object.fromEntries(
-      Object.entries(provider.models)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([id, model]) => [id, toMetadata(sourceId, id, provider, model)]),
+    metadata[providerType] = {};
+    providerOverrides[providerType] = {};
+    const priced = !PRICING_EXCLUDED_PROVIDER_TYPES.has(providerType);
+    const models = Object.entries(provider.models).sort(([left], [right]) =>
+      left.localeCompare(right),
     );
-    providerOverrides[providerType] = Object.fromEntries(
-      Object.entries(provider.models)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .filter(([, model]) => model.provider !== undefined)
-        .map(([id, model]) => [id, toModelProviderOverride(sourceId, id, model.provider)]),
-    );
-    if (!PRICING_EXCLUDED_PROVIDER_TYPES.has(providerType)) {
-      pricing.push(
-        ...Object.entries(provider.models)
-          .sort(([left], [right]) => left.localeCompare(right))
-          .map(([id, model]) => toPricing(providerType, id, model))
-          .filter((pricing) => pricing !== undefined),
-      );
+    for (const [id, model] of models) {
+      let projected;
+      try {
+        projected = {
+          metadata: toMetadata(sourceId, id, provider, model),
+          override:
+            model.provider === undefined
+              ? undefined
+              : toModelProviderOverride(sourceId, id, model.provider),
+          pricing: priced ? toPricing(providerType, id, model) : undefined,
+        };
+      } catch (error) {
+        if (!onReject) throw error;
+        onReject('model', `${providerType}/${id}`, error);
+        continue;
+      }
+      metadata[providerType][id] = projected.metadata;
+      if (projected.override !== undefined)
+        providerOverrides[providerType][id] = projected.override;
+      if (projected.pricing !== undefined) pricing.push(projected.pricing);
     }
   }
 
   return { metadata, pricing, providerFacts, providerOverrides };
 }
 
-async function refreshSnapshot(snapshotPath, refreshInputPath, options = {}) {
-  let sourceText;
-  let sourceEtag = null;
-  let retrievedAt = new Date().toISOString();
+async function readUpstream(refreshInputPath) {
   if (refreshInputPath) {
-    sourceText = await readFile(refreshInputPath, 'utf8');
-  } else {
-    const response = await fetch(SOURCE_URL, { signal: AbortSignal.timeout(10_000) });
-    if (!response.ok) throw new Error(`models.dev returned HTTP ${response.status}`);
-    sourceText = await response.text();
-    sourceEtag = response.headers.get('etag');
-    retrievedAt = new Date(response.headers.get('date') ?? Date.now()).toISOString();
+    return {
+      text: await readFile(refreshInputPath, 'utf8'),
+      etag: null,
+      retrievedAt: new Date().toISOString(),
+    };
   }
-  const projection = buildProjection(selectCatalog(JSON.parse(sourceText)));
+  const response = await fetch(SOURCE_URL, { signal: AbortSignal.timeout(10_000) });
+  if (!response.ok) throw new Error(`models.dev returned HTTP ${response.status}`);
+  return {
+    text: await response.text(),
+    etag: response.headers.get('etag'),
+    retrievedAt: new Date(response.headers.get('date') ?? Date.now()).toISOString(),
+  };
+}
+
+async function refreshSnapshot(snapshotPath, refreshInputPath, options = {}) {
+  const { text: sourceText, etag: sourceEtag, retrievedAt } = await readUpstream(refreshInputPath);
+  const projection = buildProjection(selectModelsDevCatalog(JSON.parse(sourceText)));
   if (!options.acceptUpstreamRemovals) {
     const previous = await loadSnapshotIfPresent(snapshotPath);
     if (previous) assertProjectionDoesNotShrink(previous.projection, projection);
@@ -272,67 +255,140 @@ async function refreshSnapshot(snapshotPath, refreshInputPath, options = {}) {
 }
 
 function assertProjectionDoesNotShrink(previous, next) {
-  const removals = [];
-  collectProjectionRemovals(previous, next, [], removals);
+  const removals = collectProjectionRemovals(previous, next);
   if (removals.length === 0) return;
 
   throw new Error(
-    `models.dev refresh would remove committed projection paths: ${removals.sort().join(', ')}; inspect the upstream change and rerun with --accept-upstream-removals to acknowledge it`,
+    `models.dev refresh would remove committed projection paths: ${removals.join(', ')}; inspect the upstream change and rerun with --accept-upstream-removals to acknowledge it`,
   );
 }
 
-function collectProjectionRemovals(previous, next, path, removals) {
-  if (Array.isArray(previous)) {
-    if (!Array.isArray(next)) {
-      removals.push(projectionPath(path));
-      return;
-    }
-    if (path.length === 1 && path[0] === 'pricing') {
-      const nextByModelKey = new Map(next.map((entry) => [entry?.modelKey, entry]));
-      for (const entry of previous) {
-        const modelPath = [...path, entry.modelKey];
-        const nextEntry = nextByModelKey.get(entry.modelKey);
-        if (!nextEntry) removals.push(projectionPath(modelPath));
-        else collectProjectionRemovals(entry, nextEntry, modelPath, removals);
-      }
-      return;
-    }
-    for (const value of previous) {
-      if (!next.some((candidate) => Object.is(candidate, value))) {
-        removals.push(`${projectionPath(path)} value ${JSON.stringify(value)}`);
-      }
-    }
-    return;
-  }
+// `--check` only proves the generated modules match the committed snapshot.
+// Nothing compared that snapshot against models.dev, which is how it stayed
+// weeks behind upstream without anything reporting it. This walks the two one
+// model at a time, so a shape the projector rejects becomes its own finding
+// instead of aborting the whole comparison the way a refresh does.
+const DRIFT_LIST_LIMIT = 20;
 
-  if (!previous || typeof previous !== 'object') {
-    if (
-      previous === true &&
-      next === false &&
-      path.length === 5 &&
-      path[0] === 'metadata' &&
-      path[3] === 'capabilities'
-    ) {
-      removals.push(projectionPath(path));
+// Every section of the projection, flattened to one value per entity. The
+// report reads sections through this table instead of naming them itself,
+// which is how it went out comparing only two of the four. A section added to
+// buildProjection is compared here without touching the comparison.
+const PROJECTION_SECTIONS = {
+  metadata: entitiesByProviderAndModel,
+  // modelKey is `${providerType}:${id}`, so replacing the first colon yields
+  // the label every other section already uses.
+  pricing: (section) => new Map(section.map((entry) => [entry.modelKey.replace(':', '/'), entry])),
+  providerFacts: (section) => new Map(Object.entries(section)),
+  providerOverrides: entitiesByProviderAndModel,
+};
+
+async function collectDrift(snapshot, refreshInputPath) {
+  const rejectedProviders = [];
+  const rejectedModels = [];
+  const rejected = new Set();
+  // The raw catalog, not the selected one: a provider that vanished upstream
+  // is the report's most important finding, and selection throws on it.
+  const upstream = buildProjection(JSON.parse((await readUpstream(refreshInputPath)).text), {
+    onReject: (kind, label, error) => {
+      rejected.add(label);
+      (kind === 'provider' ? rejectedProviders : rejectedModels).push(`${label}: ${error.message}`);
+    },
+  });
+  const previous = projectionEntities(snapshot.projection);
+  const next = projectionEntities(upstream);
+  const report = { rejectedProviders, rejectedModels, added: [], removed: [], changed: [] };
+  for (const label of [...new Set([...previous.keys(), ...next.keys()])].sort()) {
+    const before = previous.get(label);
+    const after = next.get(label);
+    if (before === undefined) {
+      report.added.push(label);
+      continue;
     }
-    return;
-  }
-  if (!next || typeof next !== 'object' || Array.isArray(next)) {
-    removals.push(projectionPath(path));
-    return;
-  }
-  for (const [key, value] of Object.entries(previous)) {
-    const childPath = [...path, key];
-    if (!Object.prototype.hasOwnProperty.call(next, key)) {
-      removals.push(projectionPath(childPath));
-    } else {
-      collectProjectionRemovals(value, next[key], childPath, removals);
+    if (after === undefined) {
+      // A shape the projector rejected already has its own finding above. It
+      // is not upstream saying the entity is gone.
+      if (!isRejected(label, rejected)) report.removed.push(label);
+      continue;
     }
+    const fields = driftedFields(before, after);
+    if (fields.length > 0) report.changed.push(`${label}: ${fields.join(', ')}`);
   }
+  const drifted = Object.values(report).some((entries) => entries.length > 0);
+  return { ...report, drifted };
 }
 
-function projectionPath(path) {
-  return `/${path.map((segment) => String(segment).replaceAll('~', '~0').replaceAll('/', '~1')).join('/')}`;
+function entitiesByProviderAndModel(section) {
+  const entities = new Map();
+  for (const [providerType, models] of Object.entries(section)) {
+    for (const [id, value] of Object.entries(models)) entities.set(`${providerType}/${id}`, value);
+  }
+  return entities;
+}
+
+function projectionEntities(projection) {
+  const entities = new Map();
+  for (const [section, flatten] of Object.entries(PROJECTION_SECTIONS)) {
+    for (const [label, value] of flatten(projection[section])) {
+      const entity = entities.get(label);
+      if (entity) entity[section] = value;
+      else entities.set(label, { [section]: value });
+    }
+  }
+  return entities;
+}
+
+function isRejected(label, rejected) {
+  if (rejected.has(label)) return true;
+  const slash = label.indexOf('/');
+  return slash !== -1 && rejected.has(label.slice(0, slash));
+}
+
+function driftedFields(previous, next) {
+  const fields = [];
+  for (const section of Object.keys(PROJECTION_SECTIONS)) {
+    const before = previous[section];
+    const after = next[section];
+    if (sameValue(before, after)) continue;
+    if (isPlainObject(before) && isPlainObject(after)) {
+      const keys = [...new Set([...Object.keys(before), ...Object.keys(after)])].sort();
+      for (const key of keys) {
+        if (!sameValue(before[key], after[key])) fields.push(`${section}.${key}`);
+      }
+      continue;
+    }
+    fields.push(section);
+  }
+  return fields;
+}
+
+function isPlainObject(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+// Both sides are projector output, so their keys are already in one order.
+function sameValue(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function formatDrift(report) {
+  const lines = [];
+  for (const [label, entries] of [
+    ['providers the projector rejects', report.rejectedProviders],
+    ['models the projector rejects', report.rejectedModels],
+    ['entries upstream has and the snapshot does not', report.added],
+    ['entries the snapshot has and upstream does not', report.removed],
+    ['entries whose projection changed', report.changed],
+  ]) {
+    if (entries.length === 0) continue;
+    lines.push(`${label}: ${entries.length}`);
+    for (const entry of entries.slice(0, DRIFT_LIST_LIMIT)) lines.push(`  ${entry}`);
+    if (entries.length > DRIFT_LIST_LIMIT) {
+      lines.push(`  ... and ${entries.length - DRIFT_LIST_LIMIT} more`);
+    }
+  }
+  if (!report.drifted) return `${SOURCE_URL} matches the committed snapshot.`;
+  return [`${SOURCE_URL} has drifted from the committed snapshot.`, ...lines].join('\n');
 }
 
 async function replaceFilesTransactionally(writes) {
@@ -447,15 +503,6 @@ async function loadSnapshotIfPresent(snapshotPath) {
   }
 }
 
-function selectCatalog(catalog) {
-  const selected = {};
-  for (const sourceId of [...new Set(Object.values(PROVIDERS))].sort()) {
-    if (!catalog[sourceId]) throw new Error(`models.dev provider ${sourceId} is missing`);
-    selected[sourceId] = catalog[sourceId];
-  }
-  return selected;
-}
-
 function sha256(value) {
   return createHash('sha256').update(value).digest('hex');
 }
@@ -526,97 +573,6 @@ function toModelProviderOverride(providerId, modelId, override) {
   };
 }
 
-export function toMetadata(providerId, modelId, provider, model) {
-  if (
-    typeof provider.doc !== 'string' ||
-    typeof model?.name !== 'string' ||
-    (model.modalities !== undefined && !Array.isArray(model.modalities?.input)) ||
-    (model.modalities !== undefined && !Array.isArray(model.modalities?.output)) ||
-    typeof model.limit?.context !== 'number' ||
-    typeof model.limit?.output !== 'number' ||
-    typeof model.reasoning !== 'boolean' ||
-    typeof model.tool_call !== 'boolean'
-  ) {
-    throw new Error(`models.dev model ${providerId}/${modelId} has an unsupported shape`);
-  }
-  if (
-    model.modalities?.input.some(
-      (value) => value !== 'text' && value !== 'image' && value !== 'audio' && value !== 'pdf',
-    ) ||
-    model.modalities?.output.some(
-      (value) => value !== 'text' && value !== 'image' && value !== 'audio',
-    )
-  ) {
-    throw new Error(`models.dev model ${providerId}/${modelId} has unsupported modalities`);
-  }
-  if (
-    (model.description !== undefined && typeof model.description !== 'string') ||
-    (model.knowledge !== undefined && typeof model.knowledge !== 'string') ||
-    (model.limit?.input !== undefined &&
-      (typeof model.limit.input !== 'number' || !Number.isFinite(model.limit.input))) ||
-    (model.structured_output !== undefined && typeof model.structured_output !== 'boolean') ||
-    (model.last_updated !== undefined && typeof model.last_updated !== 'string')
-  ) {
-    throw new Error(`models.dev model ${providerId}/${modelId} has an unsupported shape`);
-  }
-  const lifecycle = lifecycleForStatus(providerId, modelId, model.status);
-  const reasoningOptions = model.reasoning_options ?? [];
-  if (!Array.isArray(reasoningOptions)) {
-    throw new Error(`models.dev model ${providerId}/${modelId} has an unsupported shape`);
-  }
-  let efforts;
-  let toggle = false;
-  for (const entry of reasoningOptions) {
-    if (entry?.type === 'effort') {
-      if (!Array.isArray(entry.values) || entry.values.some((value) => typeof value !== 'string')) {
-        throw new Error(`models.dev model ${providerId}/${modelId} has an unsupported shape`);
-      }
-      efforts = entry.values;
-    } else if (entry?.type === 'toggle') {
-      toggle = true;
-    } else if (entry?.type !== 'budget_tokens') {
-      // budget_tokens is a known models.dev option type with no wire consumer
-      // yet; any other unknown type fails loudly so a models.dev schema change
-      // is a conscious decision, not silent drift.
-      throw new Error(`models.dev model ${providerId}/${modelId} has an unsupported shape`);
-    }
-  }
-  return {
-    displayName: model.name,
-    ...(model.description !== undefined ? { description: model.description } : {}),
-    lifecycle,
-    docsUrl: provider.doc,
-    contextWindow: model.limit?.context,
-    ...(model.limit?.input !== undefined ? { inputLimit: model.limit.input } : {}),
-    maxOutputTokens: model.limit?.output,
-    ...(model.knowledge !== undefined ? { knowledgeCutoff: model.knowledge } : {}),
-    ...(model.structured_output !== undefined ? { structuredOutput: model.structured_output } : {}),
-    ...(model.last_updated !== undefined ? { lastUpdated: model.last_updated } : {}),
-    ...(model.cost?.input === 0 ? { isFree: true } : {}),
-    capabilities: {
-      ...(model.modalities ? { vision: model.modalities.input.includes('image') } : {}),
-      reasoning: model.reasoning === true,
-      functionCalling: model.tool_call === true,
-    },
-    ...(efforts?.length || toggle
-      ? {
-          thinkingOptions: {
-            ...(efforts?.length ? { efforts } : {}),
-            ...(toggle ? { toggle: true } : {}),
-          },
-        }
-      : {}),
-    ...(model.modalities
-      ? {
-          modalities: {
-            input: model.modalities.input,
-            output: model.modalities.output,
-          },
-        }
-      : {}),
-  };
-}
-
 export function toPricing(providerType, modelId, model) {
   const cost = model?.cost;
   if (cost === undefined) return undefined;
@@ -654,14 +610,6 @@ export function toPricing(providerType, modelId, model) {
     ...(cacheReadUsdPer1M !== undefined ? { cacheReadUsdPer1M } : {}),
     ...(cacheWriteUsdPer1M !== undefined ? { cacheWriteUsdPer1M } : {}),
   };
-}
-
-function lifecycleForStatus(providerId, modelId, status) {
-  if (status === undefined) return 'active';
-  if (status === 'active' || status === 'beta' || status === 'alpha' || status === 'deprecated') {
-    return status;
-  }
-  throw new Error(`models.dev model ${providerId}/${modelId} has an unsupported status`);
 }
 
 function priceNumber(providerType, modelId, value, field) {
@@ -706,7 +654,10 @@ function buildPricingModule(pricing, source) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  await main();
+  // Drift is a finding, not a crash. Exit 2 so a caller can tell "upstream
+  // moved" from "this command failed"; both reported 1 before, which made the
+  // difference unreadable to the one job that has to act on it.
+  if ((await main())?.drifted) process.exitCode = 2;
 }
 
 function option(name, argv) {

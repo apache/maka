@@ -40,6 +40,7 @@ import { NETWORK_PROXY_OPERATION_SPECS } from './network-proxy.js';
 import { OAUTH_OPERATION_SPECS } from './oauth.js';
 import { PLAN_OPERATION_SPECS } from './plan.js';
 import { PEER_MESH_OPERATION_SPECS } from './peer-mesh.js';
+import { PLUGIN_PLATFORM_OPERATION_SPECS } from './plugin-platform.js';
 import { PROJECT_CATALOG_OPERATION_SPECS } from './project-catalog.js';
 import {
   composeOperationSpecMaps,
@@ -70,11 +71,13 @@ export type {
   HostDiagnosticsResult,
   HostActivitySnapshot,
   HostLifecycleState,
+  HostPeerEndpoint,
   HostStatusInput,
   HostStatusResult,
   HostUpgradePrepareInput,
   HostUpgradePrepareResult,
 } from './host-status.js';
+export { isHostActivityIdle } from './host-status.js';
 export type {
   HostOperationError,
   HostOperationErrorCode,
@@ -162,6 +165,7 @@ export * from './memory.js';
 export * from './network-proxy.js';
 export * from './oauth.js';
 export * from './plan.js';
+export * from './plugin-platform.js';
 export * from './project-catalog.js';
 export * from './runtime-policy.js';
 export * from './runtime-resource.js';
@@ -219,6 +223,7 @@ export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   NETWORK_PROXY_OPERATION_SPECS,
   CONFIGURATION_OPERATION_SPECS,
   WORKHUB_COORDINATION_OPERATION_SPECS,
+  PLUGIN_PLATFORM_OPERATION_SPECS,
 );
 
 export type OperationSpecMap = typeof HOST_OPERATION_SPECS;
@@ -277,6 +282,7 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'memory.mutate',
   'memory.query',
   'network-proxy.test',
+  'oauth.enrollment.query',
   'oauth.login.cancel',
   'oauth.login.query',
   'oauth.login.start',
@@ -293,6 +299,7 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'queue.entry.update',
   'queue.retract',
   'runtime.policy.mutate',
+  'runtime.policy.network-proxy.update',
   'runtime.policy.query',
   'runtime.resource.controller.acquire',
   'runtime.resource.controller.control',

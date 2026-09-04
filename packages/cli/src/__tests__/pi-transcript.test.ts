@@ -42,6 +42,7 @@ import {
   makaPiToolPresentationStatus,
   retireCancelledTransientMessages,
   replaceTranscriptWithStoredMessages,
+  shortenCwd,
   submitCompactToTranscript,
   toggleAllThinkingExpansion,
   toggleAllToolExpansion,
@@ -138,7 +139,7 @@ describe('Maka Pi TUI transcript', () => {
     state.steering = ['s'.repeat(250)];
     state.followup = ['f'.repeat(250)];
 
-    const lines = renderMakaPiPendingQueue(state, 400);
+    const lines = renderMakaPiPendingQueue(state, 400, process.platform, 'en');
     for (const line of lines) {
       assert.doesNotMatch(line, /[\r\n]/, `pending-queue row must be a single row: ${line}`);
     }
@@ -150,10 +151,14 @@ describe('Maka Pi TUI transcript', () => {
     const state = createMakaPiTranscriptState();
     state.steering = ['Keep going'];
     const renderFor = (platform: NodeJS.Platform) =>
-      renderMakaPiPendingQueue(state, 80, platform).map(stripAnsi);
+      renderMakaPiPendingQueue(state, 80, platform, 'en').map(stripAnsi);
 
-    assert.equal(renderFor('darwin').at(-1), '⌥+↑ 取回队列以重新编辑');
-    assert.equal(renderFor('linux').at(-1), 'Alt+↑ 取回队列以重新编辑');
+    assert.equal(renderFor('darwin').at(-1), '⌥+↑ take queued messages back to re-edit');
+    assert.equal(renderFor('linux').at(-1), 'Alt+↑ take queued messages back to re-edit');
+    assert.equal(
+      renderMakaPiPendingQueue(state, 80, 'linux', 'zh').map(stripAnsi).at(-1),
+      'Alt+↑ 取回队列以重新编辑',
+    );
   });
 
   test('renders goal-origin prompts as autonomous provenance, not as user prompts', () => {
@@ -2085,7 +2090,7 @@ describe('Maka Pi TUI transcript', () => {
     assert.ok(visibleLines.every((line) => !line.includes(' a ')));
   });
 
-  test('queues sandbox boundary and user-question requests in arrival order', () => {
+  test('queues sandbox boundary, question, and form requests in arrival order', () => {
     const state = createMakaPiTranscriptState();
     applyMakaSessionEventToTranscript(
       state,
@@ -2104,6 +2109,17 @@ describe('Maka Pi TUI transcript', () => {
     applyMakaSessionEventToTranscript(
       state,
       event({
+        type: 'form_request',
+        requestId: 'form-1',
+        toolUseId: 'tool-3',
+        message: 'Configure deployment',
+        requester: { name: 'deploy', source: 'Acme MCP' },
+        fields: [{ kind: 'boolean', name: 'notify', label: 'Notify', required: false }],
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
         type: 'user_question_request',
         requestId: 'question-1',
         toolUseId: 'tool-2',
@@ -2114,7 +2130,7 @@ describe('Maka Pi TUI transcript', () => {
     assert.equal(state.pendingInteraction?.requestId, 'boundary-1');
     assert.deepEqual(
       state.queuedInteractions.map((item) => item.requestId),
-      ['question-1'],
+      ['form-1', 'question-1'],
     );
 
     applyMakaSessionEventToTranscript(
@@ -2128,7 +2144,25 @@ describe('Maka Pi TUI transcript', () => {
         revision: 1,
       }),
     );
+    assert.equal(state.pendingInteraction?.requestId, 'form-1');
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'form_answer_ack',
+        requestId: 'form-1',
+        toolUseId: 'tool-3',
+      }),
+    );
     assert.equal(state.pendingInteraction?.requestId, 'question-1');
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'user_question_answer_ack',
+        requestId: 'question-1',
+        toolUseId: 'tool-2',
+      }),
+    );
+    assert.equal(state.pendingInteraction, undefined);
     assert.deepEqual(state.queuedInteractions, []);
   });
 
@@ -5137,3 +5171,46 @@ function subagentResult(
 function stripAnsi(text: string): string {
   return text.replace(/\x1b\[[0-9;]*m/g, '');
 }
+
+describe('shortenCwd', () => {
+  test('shortens POSIX paths under the home directory', {
+    skip: process.platform === 'win32',
+  }, () => {
+    assert.equal(shortenCwd('/Users/alice/work/project', '/Users/alice'), '~/work/project');
+    assert.equal(shortenCwd('/Users/alice/..\\notes', '/Users/alice'), '~/..\\notes');
+    assert.equal(shortenCwd('/Users/alice', '/Users/alice'), '~');
+  });
+
+  test('keeps POSIX paths outside the home directory absolute', {
+    skip: process.platform === 'win32',
+  }, () => {
+    assert.equal(shortenCwd('/Users/alice-shared', '/Users/alice'), '/Users/alice-shared');
+    assert.equal(shortenCwd('/Users', '/Users/alice'), '/Users');
+    assert.equal(shortenCwd('/tmp/project', '/Users/alice'), '/tmp/project');
+  });
+
+  test('shortens Windows profile paths (#3825)', { skip: process.platform !== 'win32' }, () => {
+    assert.equal(shortenCwd('C:\\Users\\alice\\Videos', 'C:\\Users\\alice'), '~/Videos');
+    assert.equal(
+      shortenCwd('C:\\Users\\alice\\Videos\\Clips', 'C:\\Users\\alice'),
+      '~/Videos\\Clips',
+    );
+    assert.equal(shortenCwd('C:\\Users\\alice', 'C:\\Users\\alice'), '~');
+  });
+
+  test('shortens Windows profile paths with case-only differences (#3825)', {
+    skip: process.platform !== 'win32',
+  }, () => {
+    assert.equal(shortenCwd('c:\\users\\alice\\videos', 'C:\\Users\\alice'), '~/videos');
+  });
+
+  test('keeps Windows paths outside the profile directory absolute (#3825)', {
+    skip: process.platform !== 'win32',
+  }, () => {
+    assert.equal(
+      shortenCwd('C:\\Users\\alice-shared', 'C:\\Users\\alice'),
+      'C:\\Users\\alice-shared',
+    );
+    assert.equal(shortenCwd('D:\\data\\project', 'C:\\Users\\alice'), 'D:\\data\\project');
+  });
+});

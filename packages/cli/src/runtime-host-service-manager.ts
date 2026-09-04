@@ -49,6 +49,8 @@ import {
 import {
   resolveRuntimeHostManagedServiceId,
   RUNTIME_HOST_SERVICE_LOG_MAX_BYTES,
+  type RuntimeHostReconciliationProvider,
+  type RuntimeHostSupervisorProvider,
 } from '@maka/runtime-host/operator';
 import {
   withLegacyFileUpdateLockLease,
@@ -149,17 +151,24 @@ export interface RuntimeHostServiceDeployment {
 }
 
 export interface RuntimeHostManagedServiceStatus extends RuntimeHostServiceObservedStatus {
-  readonly manager: 'systemd_user' | 'launch_agent' | 'on_demand' | 'none';
+  readonly manager:
+    | 'systemd_user'
+    | 'launch_agent'
+    | 'openrc_user'
+    | 'openrc_system'
+    | 'windows_task'
+    | 'on_demand'
+    | 'none';
   readonly config: RuntimeHostManagedServiceConfig | null;
   readonly installedVersion: string | null;
   readonly lifecycle?: {
     readonly mode: 'on_demand' | 'supervised';
     readonly availability: 'activation' | 'session' | 'environment' | 'machine';
-    readonly provider?: 'systemd_user' | 'launch_agent' | 'openrc_user' | 'openrc_system';
+    readonly provider?: RuntimeHostSupervisorProvider;
   };
   readonly reconciliation?: {
     readonly trigger: 'manual' | 'activation' | 'scheduled';
-    readonly provider?: 'systemd_timer' | 'launch_agent_timer' | 'openrc_supervised_loop';
+    readonly provider?: RuntimeHostReconciliationProvider;
   };
 }
 

@@ -34,15 +34,13 @@ concurrency:
 
 jobs:
   release-identity:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
       version: ${{ steps.identity.outputs.version }}
       tag: ${{ steps.identity.outputs.tag }}
       source_commit: ${{ steps.identity.outputs.source_commit }}
       source_reference_tag: ${{ steps.identity.outputs.source_reference_tag }}
-      dmg: ${{ steps.identity.outputs.dmg }}
-      exe: ${{ steps.identity.outputs.exe }}
       cli_archive: ${{ steps.identity.outputs.cli_archive }}
       node_version: ${{ steps.identity.outputs.node_version }}
       npm_version: ${{ steps.identity.outputs.npm_version }}
@@ -90,15 +88,28 @@ jobs:
   desktop:
     needs: release-identity
     strategy:
-      # Both platforms ship from one dispatch, so a failure on one still leaves
-      # the other artifact available for diagnosis.
+      # Every target ships from one dispatch, so a failure on one still leaves
+      # the other artifacts available for diagnosis. Each architecture builds on
+      # a runner of its own: the native Runtime Host peer and the packaged smoke
+      # probes are host binaries.
       fail-fast: false
       matrix:
         include:
           - platform: macos
+            arch: arm64
             runner: macos-15
+          - platform: macos
+            arch: x64
+            runner: macos-15-intel
           - platform: windows
+            arch: x64
             runner: windows-2025
+          - platform: linux
+            arch: x64
+            runner: ubuntu-24.04
+          - platform: linux
+            arch: arm64
+            runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     environment: release
     timeout-minutes: 75
@@ -156,7 +167,7 @@ jobs:
           APPLE_API_KEY: ${{ runner.temp }}/AuthKey_Maka.p8
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-        run: npm run package:macos-arm64
+        run: npm run package:macos-${{ matrix.arch }}
 
       - name: Notarize and staple the signed final DMG
         if: matrix.platform == 'macos'
@@ -164,8 +175,19 @@ jobs:
           APPLE_API_KEY: ${{ runner.temp }}/AuthKey_Maka.p8
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          DMG_PATH: apps/desktop/release/${{ needs.release-identity.outputs.dmg }}
         run: |
+          # Discovered, not spelled out: this runner builds one architecture, so
+          # exactly one DMG exists, and signing does not need to know its name.
+          # The name itself is the descriptor's to decide and `verify:macos`
+          # below resolves it from there.
+          shopt -s nullglob
+          dmgs=(apps/desktop/release/*.dmg)
+          if [[ ${#dmgs[@]} -ne 1 ]]; then
+            echo "Expected exactly one DMG to sign, found ${#dmgs[@]}" >&2
+            exit 1
+          fi
+          DMG_PATH="${dmgs[0]}"
+
           codesign --verify --verbose=4 "$DMG_PATH"
           xcrun notarytool submit "$DMG_PATH" \
             --key "$APPLE_API_KEY" \
@@ -184,21 +206,21 @@ jobs:
 
       - name: Verify the final DMG
         if: matrix.platform == 'macos'
-        run: npm run verify:macos-arm64 -- "apps/desktop/release/${{ needs.release-identity.outputs.dmg }}"
+        run: npm run verify:macos -- "${{ matrix.arch }}"
 
+      # The updater is one code path across both macOS architectures, so the
+      # end-to-end update proof runs once, on the architecture most installs
+      # use. package-macos-autoupdate-next.mjs enforces the same restriction.
       - name: Build the version-bumped macOS update
-        if: matrix.platform == 'macos'
+        if: matrix.platform == 'macos' && matrix.arch == 'arm64'
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
         run: npm run package:macos-autoupdate-next
 
       - name: Verify macOS automatic update end to end
-        if: matrix.platform == 'macos'
-        run: |
-          npm run verify:macos-autoupdate -- \
-            "apps/desktop/release/Maka-${{ needs.release-identity.outputs.version }}-mac-arm64.zip" \
-            apps/desktop/release-autoupdate-next
+        if: matrix.platform == 'macos' && matrix.arch == 'arm64'
+        run: npm run verify:macos-autoupdate -- apps/desktop/release-autoupdate-next
 
       # Windows has no Authenticode certificate yet, so this build is unsigned
       # and there is nothing to notarize between packaging and verification.
@@ -208,7 +230,23 @@ jobs:
 
       - name: Verify the Windows release
         if: matrix.platform == 'windows'
-        run: npm run verify:windows-x64 -- "apps/desktop/release/${{ needs.release-identity.outputs.exe }}"
+        run: npm run verify:windows-x64 -- "${{ matrix.arch }}"
+
+      # Discovered, not spelled out, for the same reason as the DMG above: this
+      # runner builds one installer, and the name is the descriptor's to decide.
+      # The installer steps below are handed a path rather than a target, so
+      # unlike `verify:windows-x64` they cannot resolve it themselves.
+      - name: Locate the packaged Windows installer
+        id: installer
+        if: matrix.platform == 'windows'
+        run: |
+          shopt -s nullglob
+          exes=(apps/desktop/release/*.exe)
+          if [[ ${#exes[@]} -ne 1 ]]; then
+            echo "Expected exactly one Windows installer, found ${#exes[@]}" >&2
+            exit 1
+          fi
+          echo "exe=${exes[0]}" >> "$GITHUB_OUTPUT"
 
       - name: Download and verify the pinned Windows upgrade baseline
         id: previous
@@ -224,7 +262,7 @@ jobs:
         if: matrix.platform == 'windows'
         run: |
           npm run verify:windows-installer -- \
-            "apps/desktop/release/${{ needs.release-identity.outputs.exe }}" \
+            "${{ steps.installer.outputs.exe }}" \
             "${{ steps.previous.outputs.exe }}"
 
       - name: Build the version-bumped autoupdate installer
@@ -235,27 +273,43 @@ jobs:
         if: matrix.platform == 'windows'
         run: |
           npm run verify:windows-autoupdate -- \
-            "apps/desktop/release/${{ needs.release-identity.outputs.exe }}" \
+            "${{ steps.installer.outputs.exe }}" \
             apps/desktop/release-autoupdate-next
 
       - name: Prove deterministic mid-install failure rollback
         if: matrix.platform == 'windows'
         run: |
           npm run verify:windows-installer-rollback -- \
-            "apps/desktop/release/${{ needs.release-identity.outputs.exe }}" \
+            "${{ steps.installer.outputs.exe }}" \
             apps/desktop/release-autoupdate-next
+
+      # Linux ships unsigned for the same reason Windows does: there is no
+      # certificate yet, so packaging and verification are adjacent.
+      - name: Package the Linux AppImage and deb
+        if: matrix.platform == 'linux'
+        run: npm run package:linux
+
+      - name: Ensure xvfb
+        if: matrix.platform == 'linux'
+        run: command -v xvfb-run >/dev/null 2>&1 || { sudo apt-get update && sudo apt-get install -y xvfb; }
+
+      # `xvfb-run` because the verification launches the extracted AppImage's
+      # renderer over CDP, the way the macOS and Windows verifications do.
+      - name: Verify the Linux release
+        if: matrix.platform == 'linux'
+        run: xvfb-run -a npm run verify:linux -- "${{ matrix.arch }}"
 
       - name: Stage the exact product artifact group
         run: >-
           node scripts/product-release-artifacts.mjs stage
-          "desktop-${{ matrix.platform }}"
+          "desktop-${{ matrix.platform }}-${{ matrix.arch }}"
           apps/desktop/release
           "${{ runner.temp }}/release-assets"
 
       - name: Upload the verified release assets
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: release-desktop-${{ matrix.platform }}-${{ github.run_attempt }}
+          name: release-desktop-${{ matrix.platform }}-${{ matrix.arch }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/release-assets
           if-no-files-found: error
           retention-days: 30
@@ -364,7 +418,7 @@ jobs:
     # One draft release carries both platforms, so it is created once, after
     # every platform has been packaged and verified.
     needs: [release-identity, desktop, cli-macos-arm64]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: write
@@ -401,6 +455,11 @@ jobs:
       - name: Install the release verifier dependencies
         run: npm ci --ignore-scripts --no-audit --no-fund
 
+      # Each macOS runner uploaded a feed naming only its own architecture. The
+      # feed a client reads carries both, so it only exists once they are here.
+      - name: Merge the per-architecture update feeds
+        run: node scripts/product-release-artifacts.mjs merge-feeds release-assets
+
       - name: Verify the exact product artifact manifest
         run: node scripts/product-release-artifacts.mjs verify release-assets
 
@@ -421,6 +480,19 @@ jobs:
         with:
           name: product-release-record-${{ github.run_attempt }}
           path: ${{ runner.temp }}/product-release.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+      # The runner uploads still carry the per-architecture feeds this job
+      # merged away. Finalize must publish and attest the published set, so it
+      # is handed these normalized bytes rather than the raw runner groups. The
+      # name deliberately avoids the `release-*` glob this job downloads.
+      - name: Upload the verified release assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: product-release-assets-${{ github.run_attempt }}
+          path: release-assets
           if-no-files-found: error
           compression-level: 0
           retention-days: 30
@@ -456,9 +528,9 @@ jobs:
         run: |
           notes="Maka Desktop and the required Apple Silicon CLI/TUI artifact built from approved ASF source reference ${SOURCE_REFERENCE_TAG} at commit ${SOURCE_COMMIT}.
 
-          Before publishing, download these draft assets on another Apple Silicon Mac and on a Windows x64 machine, and complete .github/RELEASE_CHECKLIST.md.
+          Before publishing, download these draft assets on an Apple Silicon Mac, an Intel Mac, a Windows x64 machine, and an x64 and an arm64 Linux machine, and complete .github/RELEASE_CHECKLIST.md.
 
-          The Windows build is unsigned: SmartScreen warns on first launch, and the download has to be checked against its .sha256 file.
+          The Windows and Linux builds are unsigned: SmartScreen warns on first launch, no Linux package is signed either, and every download has to be checked against its .sha256 file.
 
           These files are convenience binaries built from the approved ASF source release; they are not ASF release artifacts.
 

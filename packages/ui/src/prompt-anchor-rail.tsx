@@ -45,6 +45,8 @@ const HOVER_FALLOFF_TICKS = 3;
  */
 const PREVIEW_DELAY_MS = 120;
 const MAX_PROMPT_RAIL_TICKS = 64;
+/** Distinguish a positive IO overlap from Chromium's zero-area edge contact. */
+const POSITIVE_INTERSECTION_RATIO = 0.000_001;
 
 /** Quiet frames at the destination that end a jump's hold. */
 const JUMP_SETTLE_QUIET_FRAMES = 3;
@@ -245,38 +247,145 @@ export interface PromptAnchorRailProps {
   onNavigateStart?: (() => void) | undefined;
 }
 
+export function selectPromptRailActiveTurn(input: {
+  atEnd: boolean;
+  mountedTurnIds: Iterable<string>;
+  readingBandTurnIds: Iterable<string>;
+  scrollportTurnIds: Iterable<string>;
+  turnIndexById: ReadonlyMap<string, number>;
+}): string | null {
+  const readingBandTurnIds = [...input.readingBandTurnIds];
+  const candidates = input.atEnd
+    ? input.mountedTurnIds
+    : readingBandTurnIds.length > 0
+      ? readingBandTurnIds
+      : input.scrollportTurnIds;
+  let selected: string | null = null;
+  let selectedIndex = input.atEnd ? -1 : Number.POSITIVE_INFINITY;
+  for (const turnId of candidates) {
+    const index = input.turnIndexById.get(turnId);
+    if (index === undefined) continue;
+    if (
+      (input.atEnd && index > selectedIndex)
+      || (!input.atEnd && index < selectedIndex)
+    ) {
+      selected = turnId;
+      selectedIndex = index;
+    }
+  }
+  return selected;
+}
+
+export function selectPromptRailTickForMountedTurn(input: {
+  activeTurnId: string;
+  mountedTurnIds: readonly string[];
+  railTurns: readonly PromptAnchorRailTurn[];
+  previousRailTurnId: string | null;
+  atEnd: boolean;
+}): string | null {
+  const previousRailTurnId = input.railTurns.some(
+    (turn) => turn.turnId === input.previousRailTurnId,
+  ) ? input.previousRailTurnId : null;
+  const fallbackRailTurnId = input.atEnd
+    ? input.railTurns.at(-1)?.turnId ?? null
+    : previousRailTurnId ?? input.railTurns[0]?.turnId ?? null;
+  const direct = input.railTurns.find((turn) => turn.turnId === input.activeTurnId);
+  if (direct) return direct.turnId;
+  const activeIndex = input.mountedTurnIds.indexOf(input.activeTurnId);
+  if (activeIndex === -1) return fallbackRailTurnId;
+  const mountedRailTurns = input.mountedTurnIds.flatMap((turnId, mountedIndex) => {
+    const railIndex = input.railTurns.findIndex((turn) => turn.turnId === turnId);
+    return railIndex === -1 ? [] : [{ mountedIndex, railIndex }];
+  });
+  const nearestMountedRailTurn = [...mountedRailTurns]
+    .sort((left, right) =>
+      Math.abs(left.mountedIndex - activeIndex) - Math.abs(right.mountedIndex - activeIndex)
+      || left.mountedIndex - right.mountedIndex,
+    )[0];
+  const nearestMountedRailTurnId = nearestMountedRailTurn
+    ? input.railTurns[nearestMountedRailTurn.railIndex]?.turnId ?? null
+    : null;
+  const sequenceAnchors = mountedRailTurns
+    .flatMap(({ mountedIndex, railIndex }) => {
+      const sequence = input.railTurns[railIndex]?.sequence;
+      return sequence === undefined ? [] : [{ mountedIndex, railIndex, sequence }];
+    })
+    .sort((left, right) =>
+      Math.abs(left.mountedIndex - activeIndex) - Math.abs(right.mountedIndex - activeIndex)
+      || left.mountedIndex - right.mountedIndex,
+    )
+    .slice(0, 2)
+    .sort((left, right) => left.mountedIndex - right.mountedIndex);
+  const [firstAnchor, secondAnchor] = sequenceAnchors;
+  if (!firstAnchor || !secondAnchor) {
+    return firstAnchor
+      ? input.railTurns[firstAnchor.railIndex]?.turnId ?? null
+      : nearestMountedRailTurnId ?? fallbackRailTurnId;
+  }
+  const activeSequence = firstAnchor.sequence
+    + (secondAnchor.sequence - firstAnchor.sequence)
+      * (activeIndex - firstAnchor.mountedIndex)
+      / (secondAnchor.mountedIndex - firstAnchor.mountedIndex);
+  const firstSequence = input.railTurns[0]?.sequence;
+  const lastSequence = input.railTurns[input.railTurns.length - 1]?.sequence;
+  const projectedRailIndex = firstSequence !== undefined
+    && lastSequence !== undefined
+    && lastSequence > firstSequence
+    ? Math.round(
+      (activeSequence - firstSequence)
+        * (input.railTurns.length - 1)
+        / (lastSequence - firstSequence),
+    )
+    : firstAnchor.railIndex;
+  let selected: PromptAnchorRailTurn | null = null;
+  let selectedIndex = -1;
+  let selectedDistance = Number.POSITIVE_INFINITY;
+  const candidateRange = activeIndex < firstAnchor.mountedIndex
+    ? [Math.max(0, firstAnchor.railIndex - 1), firstAnchor.railIndex]
+    : activeIndex > secondAnchor.mountedIndex
+      ? [
+          secondAnchor.railIndex,
+          Math.min(input.railTurns.length - 1, secondAnchor.railIndex + 1),
+        ]
+      : [firstAnchor.railIndex, secondAnchor.railIndex];
+  for (let index = 0; input.railTurns.length > index; index += 1) {
+    if (index < candidateRange[0]! || index > candidateRange[1]!) continue;
+    const turn = input.railTurns[index]!;
+    if (turn.sequence === undefined) continue;
+    const distance = Math.abs(turn.sequence - activeSequence);
+    if (
+      distance < selectedDistance
+      || (
+        distance === selectedDistance
+        && Math.abs(index - projectedRailIndex) < Math.abs(selectedIndex - projectedRailIndex)
+      )
+    ) {
+      selected = turn;
+      selectedIndex = index;
+      selectedDistance = distance;
+    }
+  }
+  return selected?.turnId ?? fallbackRailTurnId;
+}
+
 /** Right-edge rail: bounded prompt landmarks that scroll to `[data-turn-id]`. */
 export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRef, onNavigateFallback, onNavigateStart }: PromptAnchorRailProps): React.ReactElement | null {
   const copy = getConversationCopy(useUiLocale()).sessions;
-  const activeTurnIdRef = useRef<string | null>(null);
+  const [activeSelection, setActiveSelection] = useState<{
+    turnId: string;
+    atEnd: boolean;
+  } | null>(null);
+  const activeTurnId = activeSelection?.turnId ?? null;
+  const [mountedTurnIds, setMountedTurnIds] = useState<readonly string[]>([]);
   const [safeArea, setSafeArea] = useState<{ scrollport: number; dock: number } | null>(null);
   const railRef = useRef<HTMLElement | null>(null);
+  const previousActiveRailTurnIdRef = useRef<string | null>(null);
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const activeVisibilityFrame = useRef(0);
-  const markActiveTurn = useCallback((turnId: string) => {
-    if (activeTurnIdRef.current === turnId) return;
-    activeTurnIdRef.current = turnId;
-    const rail = railRef.current;
-    const previous = rail?.querySelector<HTMLElement>('[data-active="true"]');
-    previous?.removeAttribute('data-active');
-    previous?.removeAttribute('aria-current');
-    const target = rail?.querySelector<HTMLElement>(
-      `[data-prompt-turn-id="${CSS.escape(turnId)}"]`,
+  const markActiveTurn = useCallback((turnId: string, atEnd = false) => {
+    setActiveSelection((current) =>
+      current?.turnId === turnId && current.atEnd === atEnd ? current : { turnId, atEnd },
     );
-    target?.setAttribute('data-active', 'true');
-    target?.setAttribute('aria-current', 'true');
-    if (activeVisibilityFrame.current !== 0) cancelAnimationFrame(activeVisibilityFrame.current);
-    activeVisibilityFrame.current = requestAnimationFrame(() => {
-      activeVisibilityFrame.current = requestAnimationFrame(() => {
-        activeVisibilityFrame.current = 0;
-        if (rail) keepActivePromptRailTickVisible(rail);
-      });
-    });
-  }, []);
-  useEffect(() => () => {
-    if (activeVisibilityFrame.current !== 0) {
-      cancelAnimationFrame(activeVisibilityFrame.current);
-    }
   }, []);
   // Identified by a sequence number rather than a boolean so a second click
   // during a jump starts its own claim instead of inheriting what is left of
@@ -290,35 +399,90 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
   const jumpTargetRef = useRef<string | null>(null);
   const onNavigateStartRef = useRef(onNavigateStart);
   onNavigateStartRef.current = onNavigateStart;
-  const turnIndexById = useMemo(
-    () => new Map(turns.map((turn, index) => [turn.turnId, index])),
-    [turns],
-  );
-  const railTurns = useMemo(() => {
-    if (turns.length <= MAX_PROMPT_RAIL_TICKS) return turns;
+  // Prompt/reply text changes while an answer streams, but the scroll spy only
+  // depends on Turn identity and order. Keep that structural value stable so a
+  // text delta does not tear down and rebuild every transcript observer.
+  const orderedTurnIdsRef = useRef<readonly string[]>([]);
+  const nextOrderedTurnIds = turns.map((turn) => turn.turnId);
+  if (
+    orderedTurnIdsRef.current.length !== nextOrderedTurnIds.length
+    || nextOrderedTurnIds.some((turnId, index) => orderedTurnIdsRef.current[index] !== turnId)
+  ) {
+    orderedTurnIdsRef.current = nextOrderedTurnIds;
+  }
+  const orderedTurnIds = orderedTurnIdsRef.current;
+  const railTurnIndexes = useMemo(() => {
+    if (orderedTurnIds.length <= MAX_PROMPT_RAIL_TICKS) {
+      return orderedTurnIds.map((_, index) => index);
+    }
     return Array.from({ length: MAX_PROMPT_RAIL_TICKS }, (_, index) =>
-      turns[Math.round(index * (turns.length - 1) / (MAX_PROMPT_RAIL_TICKS - 1))]!,
+      Math.round(index * (orderedTurnIds.length - 1) / (MAX_PROMPT_RAIL_TICKS - 1)),
     );
-  }, [turns]);
+  }, [orderedTurnIds]);
+  const railTurnIds = useMemo(
+    () => railTurnIndexes.map((turnIndex) => orderedTurnIds[turnIndex]!),
+    [orderedTurnIds, railTurnIndexes],
+  );
+  const railTurns = railTurnIndexes.map((turnIndex) => turns[turnIndex]!);
+  const mappedActiveRailTurnId = (() => {
+    if (activeTurnId === null) return null;
+    if (railTurnIds.includes(activeTurnId)) return activeTurnId;
+    const orderedActiveIndex = orderedTurnIds.indexOf(activeTurnId);
+    if (orderedActiveIndex !== -1 && orderedTurnIds.length > railTurnIds.length) {
+      return railTurnIds[Math.round(
+        orderedActiveIndex * (railTurnIds.length - 1) / (orderedTurnIds.length - 1),
+      )] ?? null;
+    }
+    return selectPromptRailTickForMountedTurn({
+      activeTurnId,
+      mountedTurnIds,
+      railTurns,
+      previousRailTurnId: previousActiveRailTurnIdRef.current,
+      atEnd: activeSelection?.atEnd ?? false,
+    });
+  })();
+  const activeRailTurnId = mappedActiveRailTurnId
+    ?? (railTurnIds.includes(previousActiveRailTurnIdRef.current ?? '')
+      ? previousActiveRailTurnIdRef.current
+      : null);
+  useEffect(() => {
+    if (activeRailTurnId !== null) previousActiveRailTurnIdRef.current = activeRailTurnId;
+  }, [activeRailTurnId]);
 
-  const railTurnIdFor = (turnId: string): string | null => {
-    const turnIndex = turnIndexById.get(turnId);
-    if (turnIndex === undefined) return null;
-    if (turns.length === railTurns.length) return turnId;
-    const railIndex = Math.round(turnIndex * (railTurns.length - 1) / (turns.length - 1));
-    return railTurns[railIndex]?.turnId ?? null;
-  };
+  // React is the only writer of the active attributes. Once that render has
+  // committed, bring the current tick into the rail's own bounded viewport.
+  useEffect(() => {
+    const rail = railRef.current;
+    if (!rail || activeRailTurnId === null) return;
+    if (activeVisibilityFrame.current !== 0) cancelAnimationFrame(activeVisibilityFrame.current);
+    activeVisibilityFrame.current = requestAnimationFrame(() => {
+      activeVisibilityFrame.current = requestAnimationFrame(() => {
+        activeVisibilityFrame.current = 0;
+        keepActivePromptRailTickVisible(rail);
+      });
+    });
+    return () => {
+      if (activeVisibilityFrame.current !== 0) {
+        cancelAnimationFrame(activeVisibilityFrame.current);
+        activeVisibilityFrame.current = 0;
+      }
+    };
+  }, [activeRailTurnId]);
 
   useEffect(() => {
     const root = scrollRef.current;
-    const mountedTurnList = root?.querySelector('[data-virtual-turn-id]')?.parentElement;
-    if (!root || !mountedTurnList || turns.length === 0) return;
+    const messageList = root?.querySelector('.maka-chat-message-list');
+    // Astryx ChatMessageList renders one inner flex column as its first child;
+    // that column is the direct parent of Maka's keyed transcript Turn wrappers.
+    const mountedTurnList = messageList?.firstElementChild;
+    if (!root || !mountedTurnList || orderedTurnIds.length === 0) return;
 
     const idByElement = new Map<Element, string>();
-    const visible = new Set<string>();
+    let mountedTurnIndexById = new Map<string, number>();
+    const readingBandTurnIds = new Set<string>();
     const observeElement = (element: Element): void => {
-      const turnId = element.getAttribute('data-turn-id');
-      if (!turnId || !turnIndexById.has(turnId) || idByElement.has(element)) return;
+      const turnId = element.getAttribute('data-transcript-turn-id');
+      if (!turnId || idByElement.has(element)) return;
       idByElement.set(element, turnId);
       observer.observe(element);
     };
@@ -326,69 +490,118 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
       const turnId = idByElement.get(element);
       if (!turnId) return;
       idByElement.delete(element);
-      visible.delete(turnId);
+      readingBandTurnIds.delete(turnId);
       observer.unobserve(element);
     };
     const visitTurnElements = (node: Node, visit: (element: Element) => void): void => {
       if (!(node instanceof Element)) return;
-      if (node.hasAttribute('data-turn-id')) visit(node);
-      for (const element of node.querySelectorAll('[data-turn-id]')) visit(element);
+      if (node.hasAttribute('data-transcript-turn-id')) visit(node);
+      for (const element of node.querySelectorAll('[data-transcript-turn-id]')) visit(element);
     };
-    const activeFor = (turnId: string | null): void => {
-      if (turnId === null) return;
-      const railTurnId = railTurnIdFor(turnId);
-      if (railTurnId !== null) markActiveTurn(railTurnId);
+    const refreshMountedTurnOrder = (): void => {
+      const nextMountedTurnIds = [...mountedTurnList.querySelectorAll(
+        '[data-transcript-turn-id]',
+      )].flatMap((element) => {
+        const turnId = element.getAttribute('data-transcript-turn-id');
+        return turnId ? [turnId] : [];
+      });
+      mountedTurnIndexById = new Map(
+        nextMountedTurnIds.map((turnId, index) => [turnId, index]),
+      );
+      setMountedTurnIds((current) =>
+        current.length === nextMountedTurnIds.length
+        && nextMountedTurnIds.every((turnId, index) => current[index] === turnId)
+          ? current
+          : nextMountedTurnIds,
+      );
+    };
+    const turnIdsIntersecting = (top: number, bottom: number): string[] => {
+      const turnIds: string[] = [];
+      for (const [element, turnId] of idByElement) {
+        const bounds = element.getBoundingClientRect();
+        if (bounds.bottom > top && bounds.top < bottom) turnIds.push(turnId);
+      }
+      return turnIds;
+    };
+    const seedReadingBandFromGeometry = (): void => {
+      const rootBounds = root.getBoundingClientRect();
+      readingBandTurnIds.clear();
+      for (const turnId of turnIdsIntersecting(
+        rootBounds.top,
+        rootBounds.top + rootBounds.height * 0.34,
+      )) {
+        readingBandTurnIds.add(turnId);
+      }
     };
     const resolveActive = (): void => {
       // A jump owns the highlight until its scroll settles. Without this the
       // observer walks the highlight through every prompt the scroll passes,
       // which is the travelling the click was meant to skip.
       if (jumpTargetRef.current !== null) return;
-      if (root.scrollHeight - root.scrollTop - root.clientHeight <= SCROLL_END_EPSILON_PX) {
-        let latest: string | null = null;
-        let latestIndex = -1;
-        for (const turnId of idByElement.values()) {
-          const index = turnIndexById.get(turnId) ?? -1;
-          if (index > latestIndex) {
-            latest = turnId;
-            latestIndex = index;
-          }
-        }
-        activeFor(latest);
-        return;
-      }
-      let firstVisible: string | null = null;
-      let firstIndex = Number.POSITIVE_INFINITY;
-      for (const turnId of visible) {
-        const index = turnIndexById.get(turnId) ?? Number.POSITIVE_INFINITY;
-        if (index < firstIndex) {
-          firstVisible = turnId;
-          firstIndex = index;
-        }
-      }
-      activeFor(firstVisible);
+      const atEnd =
+        root.scrollHeight - root.scrollTop - root.clientHeight <= SCROLL_END_EPSILON_PX;
+      const rootBounds = !atEnd && readingBandTurnIds.size === 0
+        ? root.getBoundingClientRect()
+        : null;
+      const active = selectPromptRailActiveTurn({
+        atEnd,
+        mountedTurnIds: idByElement.values(),
+        readingBandTurnIds,
+        scrollportTurnIds: rootBounds !== null
+          ? turnIdsIntersecting(rootBounds.top, rootBounds.bottom)
+          : [],
+        turnIndexById: mountedTurnIndexById,
+      });
+      if (active !== null) markActiveTurn(active, atEnd);
     };
 
-    const observer = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          const id = idByElement.get(entry.target);
-          if (!id) continue;
-          if (entry.isIntersecting) visible.add(id);
-          else visible.delete(id);
-        }
-        resolveActive();
-      },
-      { root, rootMargin: '0px 0px -66% 0px', threshold: 0 },
-    );
-    for (const element of mountedTurnList.querySelectorAll('[data-turn-id]')) observeElement(element);
+    const observer = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        const turnId = idByElement.get(entry.target);
+        if (!turnId) continue;
+        if (entry.intersectionRect.height > 0) readingBandTurnIds.add(turnId);
+        else readingBandTurnIds.delete(turnId);
+      }
+      resolveActive();
+    }, {
+      root,
+      rootMargin: '0px 0px -66% 0px',
+      // The positive threshold delivers a callback when an overlap becomes
+      // a zero-area boundary touch, which the strict geometry rule excludes.
+      threshold: [0, POSITIVE_INTERSECTION_RATIO],
+    });
+    for (const element of mountedTurnList.querySelectorAll('[data-transcript-turn-id]')) {
+      observeElement(element);
+    }
+    refreshMountedTurnOrder();
+    seedReadingBandFromGeometry();
+    resolveActive();
 
+    let membershipFrame = 0;
+    let membershipFramesLeft = 0;
+    const settleMembershipGeometry = (): void => {
+      membershipFrame = requestAnimationFrame(() => {
+        membershipFrame = 0;
+        seedReadingBandFromGeometry();
+        resolveActive();
+        membershipFramesLeft -= 1;
+        if (membershipFramesLeft > 0) settleMembershipGeometry();
+      });
+    };
     const mutationObserver = new MutationObserver((records) => {
       for (const record of records) {
         for (const node of record.removedNodes) visitTurnElements(node, unobserveElement);
         for (const node of record.addedNodes) visitTurnElements(node, observeElement);
       }
-      resolveActive();
+      refreshMountedTurnOrder();
+      // Browser scroll anchoring and the paged transcript projection can land
+      // across several frames after the child-list mutation. Follow that short
+      // settle window, or a prepended page can leave its previous boundary
+      // Turn current after the replacement is being read.
+      membershipFramesLeft = 6;
+      if (membershipFrame === 0) {
+        settleMembershipGeometry();
+      }
     });
     mutationObserver.observe(mountedTurnList, { childList: true });
 
@@ -406,9 +619,10 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
       observer.disconnect();
       mutationObserver.disconnect();
       root.removeEventListener('scroll', onScroll);
+      if (membershipFrame !== 0) cancelAnimationFrame(membershipFrame);
       if (frame !== 0) cancelAnimationFrame(frame);
     };
-  }, [markActiveTurn, scrollRef, turnIndexById, railTurns]);
+  }, [markActiveTurn, orderedTurnIds, scrollRef]);
 
   useEffect(() => {
     const root = scrollRef.current;
@@ -448,7 +662,7 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
     const rail = railRef.current;
     if (!rail) return;
     return observeActivePromptRailVisibility(rail);
-  }, [turns]);
+  }, [orderedTurnIds]);
 
   // A click owns the highlight until the destination settles, so the scroll it
   // started cannot walk the active tick through every prompt on the way. Keyed
@@ -525,7 +739,7 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
         onPointerLeave={() => setHoveredIndex(null)}
       >
         {railTurns.map((turn, index) => {
-          const isActive = turn.turnId === activeTurnIdRef.current;
+          const isActive = turn.turnId === activeRailTurnId;
           const preview = turn.label.trim() || copy.emptyPrompt;
           const replyPreview = (turn.reply ?? '').replace(/\s+/g, ' ').trim().slice(0, 140);
           const proximity =
