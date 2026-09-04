@@ -42,9 +42,37 @@ const decodes = (buffer) => {
   }
 };
 
+// git's own text/binary rule, asked for once and only when something is too
+// large to read: it decides which oversized blob is an asset and which is a
+// file the formatter would have owned.
+function binaryStagedPaths(root) {
+  const records = execFileSync(
+    'git',
+    ['diff', '--cached', '--numstat', '--diff-filter=ACMR', '-z'],
+    { cwd: root },
+  )
+    .toString('utf8')
+    .split('\0');
+  const binary = new Set();
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index];
+    if (!record) continue;
+    const [added, deleted, ...rest] = record.split('\t');
+    // A rename writes its counts alone, then the old and the new path.
+    let path = rest.join('\t');
+    if (path === '') {
+      index += 2;
+      path = records[index];
+    }
+    if (added === '-' && deleted === '-') binary.add(path);
+  }
+  return binary;
+}
+
 export function checkStagedWithBiome({
   root = defaultRepoRoot,
   biomePath = defaultBiomePath,
+  maxBytes = maxBlobBytes,
 } = {}) {
   const output = execFileSync(
     'git',
@@ -53,20 +81,29 @@ export function checkStagedWithBiome({
   );
   const paths = output.toString('utf8').split('\0').filter(Boolean);
 
+  let binary;
   for (const path of paths) {
     // Every staged blob passes through here, images included, so ask for the
-    // size before reading it. Node's default 1 MiB buffer used to kill the
-    // commit for anything larger; nothing Biome formats approaches the ceiling
-    // below, and a blob over it is left to the hosted format and lint jobs.
+    // size before reading it: Node's default 1 MiB buffer used to kill the
+    // commit for anything larger. An asset over the ceiling is left alone, but
+    // a text file over it is one the formatter owns and this cannot read, so
+    // it stops the commit rather than passing silently.
     const size = Number(
       execFileSync('git', ['cat-file', '-s', `:${path}`], { cwd: root })
         .toString('utf8')
         .trim(),
     );
-    if (size > maxBlobBytes) continue;
+    if (size > maxBytes) {
+      binary ??= binaryStagedPaths(root);
+      if (binary.has(path)) continue;
+      process.stderr.write(
+        `${path}: staged text is ${size} bytes, over the ${maxBytes} this check reads\n`,
+      );
+      return false;
+    }
     const contents = execFileSync('git', ['show', `:${path}`], {
       cwd: root,
-      maxBuffer: maxBlobBytes,
+      maxBuffer: maxBytes,
     });
     // Biome reads stdin as UTF-8 and errors on anything else, so skip a blob
     // it cannot decode. Deciding on that rather than on a NUL byte keeps a
@@ -82,7 +119,7 @@ export function checkStagedWithBiome({
         '--no-errors-on-unmatched',
       ],
       // Biome echoes the file back, with room for a rewrite that grows it.
-      { cwd: root, input: contents, maxBuffer: 2 * maxBlobBytes },
+      { cwd: root, input: contents, maxBuffer: 2 * maxBytes },
     );
     if (result.error) throw result.error;
     if (result.status !== 0) {

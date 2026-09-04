@@ -98,6 +98,33 @@ test('checks a staged source file larger than the default child-process buffer',
   }
 });
 
+test('refuses a staged source file over the ceiling instead of skipping it', () => {
+  const root = fixture();
+  try {
+    // Formatted, so only the ceiling can reject it.
+    writeFileSync(join(root, 'huge.js'), `// ${'a'.repeat(2048)}\nconst value = { answer: 42 };\n`);
+    execFileSync('git', ['add', 'huge.js'], { cwd: root });
+
+    assert.equal(checkStagedWithBiome({ root, biomePath, maxBytes: 1024 }), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('skips a staged binary over the ceiling', () => {
+  const root = fixture();
+  try {
+    const binary = Buffer.alloc(2048);
+    binary.write('\x89PNG\r\n\x1a\n', 'latin1');
+    writeFileSync(join(root, 'huge.png'), binary);
+    execFileSync('git', ['add', 'huge.png'], { cwd: root });
+
+    assert.equal(checkStagedWithBiome({ root, biomePath, maxBytes: 1024 }), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('skips a small staged binary Biome cannot decode', () => {
   const root = fixture();
   try {
