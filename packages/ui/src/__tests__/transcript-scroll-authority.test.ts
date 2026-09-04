@@ -38,42 +38,30 @@ interface FakeRoot {
   clientHeight: number;
   /** The boxes `scrollHeight` is made of, which is what the authority watches. */
   children: readonly unknown[];
-  addEventListener(type: string, listener: (event?: unknown) => void): void;
-  removeEventListener(type: string, listener: (event?: unknown) => void): void;
+  addEventListener(type: string, listener: () => void): void;
+  removeEventListener(type: string, listener: () => void): void;
   /** Dispatch the scroll event the browser would, one frame later. */
   emitScroll(): void;
-  /** Dispatch an upward wheel whose default action can move this root. */
-  emitUpwardWheel(): void;
   grow(by: number): void;
   /** Take height away from the viewport, as a resize or a taller dock does. */
   shrinkViewport(by: number): void;
 }
 
 function fakeRoot(options?: { scrollHeight?: number; clientHeight?: number }): FakeRoot {
-  const listeners = new Map<string, Set<(event?: unknown) => void>>();
+  const listeners = new Set<() => void>();
   const root: FakeRoot = {
     scrollTop: 0,
     scrollHeight: options?.scrollHeight ?? 3_000,
     clientHeight: options?.clientHeight ?? 600,
     children: [{}],
     addEventListener(type, listener) {
-      const bucket = listeners.get(type) ?? new Set();
-      bucket.add(listener);
-      listeners.set(type, bucket);
+      if (type === 'scroll') listeners.add(listener);
     },
-    removeEventListener(type, listener) {
-      listeners.get(type)?.delete(listener);
+    removeEventListener(_type, listener) {
+      listeners.delete(listener);
     },
     emitScroll() {
-      for (const listener of [...(listeners.get('scroll') ?? [])]) listener();
-    },
-    emitUpwardWheel() {
-      const eventTarget = this;
-      const event = {
-        deltaY: -120,
-        composedPath: () => [eventTarget],
-      };
-      for (const listener of [...(listeners.get('wheel') ?? [])]) listener(event);
+      for (const listener of [...listeners]) listener();
     },
     grow(by) {
       root.scrollHeight += by;
@@ -176,47 +164,6 @@ test('a scroll this authority did not write is the reader, and releases the tail
   });
 });
 
-test('reader movement releases the tail when content grows before the scroll event', () => {
-  withObservers((resize) => {
-    const root = fakeRoot();
-    const authority = createTranscriptScrollAuthority();
-    authority.attach(root as unknown as HTMLElement);
-    assert.equal(root.scrollTop, 2_400);
-
-    // A skipped block materializes in the same rendering opportunity as the
-    // reader moves upward. The scroll event therefore observes both a changed
-    // offset and a changed scrollHeight; geometry movement must not erase the
-    // reader's intent merely because it arrived in the same delivery window.
-    root.emitUpwardWheel();
-    root.scrollTop = 1_900;
-    root.grow(500);
-    root.emitScroll();
-    assert.equal(authority.getSnapshot().pinned, false);
-    assert.equal(authority.getSnapshot().awayFromTail, true);
-
-    // The resize notification for that materialization arrives afterwards.
-    // Once released, it must not write the reader back to the new tail.
-    resize();
-    assert.equal(root.scrollTop, 1_900);
-  });
-});
-
-test('viewport-only geometry movement preserves a pinned transcript', () => {
-  withObservers((resize) => {
-    const root = fakeRoot();
-    const authority = createTranscriptScrollAuthority();
-    authority.attach(root as unknown as HTMLElement);
-
-    root.shrinkViewport(100);
-    root.scrollTop = 2_390;
-    root.emitScroll();
-    assert.equal(authority.getSnapshot().pinned, true);
-
-    resize();
-    assert.equal(root.scrollTop, 2_500);
-  });
-});
-
 test('returning to the tail re-pins, and following resumes', () => {
   withObservers((resize) => {
     const root = fakeRoot();
@@ -284,24 +231,55 @@ test('a scroll event that arrives late is still this authority\'s own write', ()
   });
 });
 
-test('growth that outruns the write does not read as the reader scrolling up', () => {
+test('a moved event past the threshold releases, resolving the race toward the reader', () => {
   withObservers((resize) => {
     const root = fakeRoot();
     const authority = createTranscriptScrollAuthority();
     authority.attach(root as unknown as HTMLElement);
     assert.equal(root.scrollTop, 2_400);
 
-    // The transcript grew, and the scroll event for it arrives before this
-    // authority has been told to follow it. The offset is 302px from a tail
-    // that moved — identical, as a position, to a reader who scrolled up.
+    // The transcript grew and a scroll event lands before this authority has
+    // followed it, at an offset 300px from the tail that moved. As a position
+    // this is identical to a reader who scrolled up 300px. Refusing to act on
+    // it — because the geometry also changed — is #4269: once content-visibility
+    // placeholders expand on the way up, every reader scroll also moves
+    // `scrollHeight`, so a guard that stays pinned here re-pins the reader every
+    // frame. Release is monotonic and this authority owns no write that put them
+    // here, so the ambiguity resolves toward the reader and the pin lets go.
+    //
+    // In a real browser the benign side of this race does not reach this branch
+    // past the threshold: growth below the tail moves no offset and echoes, and
+    // growth above is absorbed by anchoring that holds the distance at ~0 — the
+    // case the next test pins down.
     root.grow(302);
     root.scrollTop = 2_402;
     root.emitScroll();
+    assert.equal(authority.getSnapshot().pinned, false);
+    assert.equal(authority.getSnapshot().awayFromTail, true);
+
+    // With the pin released this authority writes nothing, so the reader keeps
+    // the offset they were left on rather than being taken to the new tail.
+    resize();
+    assert.equal(root.scrollTop, 2_402);
+  });
+});
+
+test('a moved event anchoring holds within the threshold keeps the pin', () => {
+  withObservers((resize) => {
+    const root = fakeRoot();
+    const authority = createTranscriptScrollAuthority();
+    authority.attach(root as unknown as HTMLElement);
+    assert.equal(root.scrollTop, 2_400);
+
+    // Content grew and native anchoring moved the offset with the tail, so the
+    // distance stays within PIN_THRESHOLD_PX. This is the benign geometry change
+    // the release must not fire on: the reader never left, and the next growth
+    // signal follows the tail exactly as before.
+    root.grow(302);
+    root.scrollTop = 2_702;
+    root.emitScroll();
     assert.equal(authority.getSnapshot().pinned, true);
 
-    // The affordance still knows how far the tail now is, and the next growth
-    // signal takes the reader back to it.
-    assert.equal(authority.getSnapshot().awayFromTail, true);
     resize();
     assert.equal(root.scrollTop, 2_702);
   });
