@@ -1,3 +1,13 @@
+---
+doc_id: frontend.settings-astryx-review-2026-08-03
+title: "Maka 设置页 Astryx 深度审计"
+language: zh-CN
+source_language: zh-CN
+implementation_status: historical
+document_status: historical
+translation_status: source-only
+last_verified: 2026-09-05
+---
 <!--
   Licensed to the Apache Software Foundation (ASF) under one
   or more contributor license agreements.  See the NOTICE file
@@ -17,10 +27,11 @@
   under the License.
 -->
 
-# Maka 设置页深度 Review——以 Astryx 设计语言为基准
+# Maka 设置页 Astryx 深度审计（历史记录）
 
-> 2026-08-03,基于 `settings/astryx-refactor` 分支(已 rebase 到最新 main)。
-> 审计方式:Storybook 全页截图(中/英 × 亮/暗)+ Astryx 官方 `settings` / `settings-dialog` 模板与 `astryx docs` 原文精读。
+> **生命周期：历史。** 下文记录的是 2026-08-03、`#1972` 落地前的设置页问题与重构目标，不是当前缺陷清单。该方案已经由 `refactor(desktop): rebuild Settings on the Astryx open-group idiom (#1972)` 落地。当前实现以 `settings/settings-section.tsx`、`settings/settings-rows.tsx` 和 `styles/settings/rows.css` 为准；全量 surface 覆盖以生成的 [astryx-surface-file-inventory.md](./astryx-surface-file-inventory.md) 为准。
+>
+> 原审计基于 `settings/astryx-refactor` 分支，使用 Storybook 全页截图（中/英 × 亮/暗）、Astryx 官方 `settings` / `settings-dialog` 模板和 `astryx docs` 原文。2026-09-05 复核确认：`SettingsSection` 的开放行组、`SettingsRow` / `SettingsField` / `SettingsActions` 三种行语法，以及以 `StatusDot` + 文本为主的状态表达均已进入当前实现；页面数量、按钮数量和 CSS 行数等下文数字只描述当时快照。
 
 ## 一、Astryx 官方设置语言到底是什么
 
