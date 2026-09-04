@@ -99,6 +99,58 @@ test('a plain folder resolves without requiring the Git executable', async () =>
   }
 });
 
+test('an incomplete enclosing .git directory does not turn a nested folder into a repository', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-folder-invalid-git-'));
+  try {
+    const folder = join(base, 'folder');
+    await mkdir(join(base, '.git', 'gk'), { recursive: true });
+    await mkdir(folder);
+
+    assert.deepEqual(await resolveProjectLocationWithoutGit(folder), {
+      canonicalPath: await realpath(folder),
+      identity: `folder:${await realpath(folder)}`,
+      kind: 'folder',
+    });
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('a folder nested inside a repository resolves to that repository', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-nested-in-repo-'));
+  try {
+    const repository = join(base, 'repository');
+    const nested = join(repository, 'sub', 'dir');
+    await mkdir(nested, { recursive: true });
+    await execFileAsync('git', ['init', '--quiet'], { cwd: repository });
+
+    const resolved = await resolveProjectLocation({ path: nested });
+
+    assert.equal(resolved.kind, 'git');
+    assert.equal(resolved.git?.worktreeRoot, await realpath(repository));
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('a folder nested inside a linked worktree resolves to that repository', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-nested-in-worktree-'));
+  try {
+    const repository = join(base, 'repository');
+    const linkedWorktree = join(base, 'linked');
+    await createGitRepositoryWithWorktree(repository, linkedWorktree, 'nested-linked');
+    const nested = join(linkedWorktree, 'nested');
+    await mkdir(nested);
+
+    const resolved = await resolveProjectLocation({ path: nested });
+
+    assert.equal(resolved.kind, 'git');
+    assert.equal(resolved.git?.isWorktree, true);
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
 test('a Git probe failure cannot persistently downgrade a repository to a folder', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-project-repository-no-git-'));
   try {
