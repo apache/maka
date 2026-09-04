@@ -27,6 +27,7 @@ export interface WorkbarToolDefinition {
   readonly labelKey: SessionWorkbarTabKind;
   readonly icon:
     | 'activity'
+    | 'clipboard'
     | 'folder'
     | 'git-branch'
     | 'globe'
@@ -102,7 +103,7 @@ const WORKBAR_TOOL_DEFINITION_BY_KIND = {
   'work-board': {
     kind: 'work-board',
     labelKey: 'work-board',
-    icon: 'list-todo',
+    icon: 'clipboard',
     persisted: true,
     singleton: true,
     defaultPlacement: 'right',

@@ -86,6 +86,11 @@ import {
   sessionWorkbarTabsToRight,
   terminalRefFromWorkbarTab,
 } from '../model/workbar-tabs';
+import {
+  WORKBAR_TOOL_DEFINITIONS,
+  workbarToolDefinition,
+  type WorkbarToolDefinition,
+} from '../model/workbar-tool-definitions';
 import { useSessionTodo } from '../tools/tasks/use-session-todo';
 import { WorkbarToggle } from './workbar-toggle';
 import { WorkBoardPanel } from '../../../work-board-panel.js';
@@ -118,6 +123,104 @@ const SessionTerminalPanel = lazy(() =>
     default: module.SessionTerminalPanel,
   })),
 );
+
+type WorkbarCopy = ReturnType<typeof getDesktopConversationCopy>['workbar'];
+
+export interface WorkbarSurfaceProps {
+  sessionId: string;
+  projectId?: string | null;
+  projectAliases?: readonly string[];
+  hidden: boolean;
+  onDismissPanel: (placement: SessionWorkbarPlacement) => void;
+  panelsState: SessionWorkbarPanelsState;
+  rightCollapsed: boolean;
+  bottomOpen: boolean;
+  onActivateTab: (placement: SessionWorkbarPlacement, tabId: string) => void;
+  onCloseTab: (placement: SessionWorkbarPlacement, tab: SessionWorkbarTab) => void;
+  onCloseTabs: (
+    placement: SessionWorkbarPlacement,
+    tabs: readonly SessionWorkbarTab[],
+  ) => void;
+  onReorderTab: (
+    placement: SessionWorkbarPlacement,
+    tabId: string,
+    targetTabId: string,
+  ) => void;
+  onMoveTab: (
+    placement: SessionWorkbarPlacement,
+    tabId: string,
+    direction: 'left' | 'right',
+  ) => void;
+  onMoveTabToPanel: (tabId: string, target: SessionWorkbarPlacement) => void;
+  onPinTab: (tabId: string) => void;
+  onOpenLauncher: (placement: SessionWorkbarPlacement) => void;
+  onRequestOpenTab: (
+    placement: SessionWorkbarPlacement,
+    kind: SessionWorkbarTabKind,
+  ) => void;
+  quotes?: readonly QuoteCompanionPanelState[];
+  onQuotesConsumed?: (snapshot: CompanionQuoteSnapshot) => void;
+  onRemoveQuote?: (target: CompanionQuoteTarget) => void;
+  onForkVisibilityChange?: (event: CompanionForkVisibilityEvent) => void;
+  onContentStateChange?: (panelId: string, hasContent: boolean) => void;
+  onInitialPromptStarted?: (panelId: string) => void;
+  onPromptAccepted?: (panelId: string, prompt: string) => void;
+  onActivityStateChange?: (panelId: string, active: boolean) => void;
+  activeSideChatPanelIds?: ReadonlySet<string>;
+  sourceSession?: SessionSummary;
+  modelChoices?: readonly ChatModelChoice[];
+  confirmBypass: () => Promise<boolean>;
+}
+
+interface WorkbarSurfaceRenderContext {
+  active: boolean;
+  copy: WorkbarCopy;
+  placement: SessionWorkbarPlacement;
+  props: WorkbarSurfaceProps;
+  sessionTodo: ReturnType<typeof useSessionTodo>;
+  setArtifactCount: (count: number) => void;
+  tab: SessionWorkbarTab;
+}
+
+interface WorkbarSurfaceDescriptor<Kind extends SessionWorkbarTabKind> {
+  readonly kind: Kind;
+  readonly icon: typeof Activity;
+  readonly label: (
+    tab: SessionWorkbarTab,
+    tabs: readonly SessionWorkbarTab[],
+    copy: WorkbarCopy,
+  ) => string;
+  readonly launcherLabel: (copy: WorkbarCopy) => string;
+  readonly launcherDescription: (copy: WorkbarCopy) => string;
+  readonly panelClassName?: string;
+  readonly render: (context: WorkbarSurfaceRenderContext) => ReactNode;
+}
+
+type WorkbarSurfaceDescriptorsByKind = {
+  readonly [Kind in SessionWorkbarTabKind]: WorkbarSurfaceDescriptor<Kind>;
+};
+
+const WORKBAR_ICON_BY_NAME = {
+  activity: Activity,
+  clipboard: Clipboard,
+  folder: FolderOpen,
+  'git-branch': GitBranch,
+  globe: Globe,
+  'list-todo': ListTodo,
+  'message-circle-question': MessageCircleQuestion,
+  terminal: Terminal,
+} satisfies Record<WorkbarToolDefinition['icon'], typeof Activity>;
+
+function defineWorkbarSurfaceDescriptor<Kind extends SessionWorkbarTabKind>(
+  kind: Kind,
+  descriptor: Omit<WorkbarSurfaceDescriptor<Kind>, 'icon' | 'kind'>,
+): WorkbarSurfaceDescriptor<Kind> {
+  return {
+    ...descriptor,
+    kind,
+    icon: WORKBAR_ICON_BY_NAME[workbarToolDefinition(kind).icon],
+  };
+}
 
 function WorkbarPanelLoading(props: { label: string }) {
   return (
@@ -171,39 +274,160 @@ function TabCount(props: { count: number }) {
   return <Badge variant="neutral" label={props.count} data-maka-contract="session-workbar-count" />;
 }
 
+const WORKBAR_SURFACE_DESCRIPTOR_BY_KIND: WorkbarSurfaceDescriptorsByKind = {
+  'side-chat': defineWorkbarSurfaceDescriptor('side-chat', {
+    label: (tab, tabs, copy) => {
+      if (tab.title?.trim()) return tab.title.trim();
+      const index =
+        tab.ordinal ??
+        tabs.filter((candidate) => candidate.kind === 'side-chat').findIndex(
+          (candidate) => candidate.id === tab.id,
+        ) + 1;
+      return index <= 1 ? copy.sideChat : copy.sideChatNumbered(index);
+    },
+    launcherLabel: (copy) => copy.sideChat,
+    launcherDescription: (copy) => copy.launcher.sideChat,
+    panelClassName: 'maka-quote-workbar-panel',
+    render: ({ active, props, tab }) => {
+      const panelId = tab.id.slice('side-chat:'.length);
+      const quote = props.quotes?.find((candidate) => candidate.id === panelId);
+      if (!quote) return null;
+      return (
+        <QuoteCompanionPanel
+          panelId={quote.id}
+          active={!props.hidden && active}
+          quotes={quote.quotes}
+          initialPrompt={quote.initialPrompt}
+          sourceSession={props.sourceSession}
+          modelChoices={props.modelChoices ?? []}
+          confirmBypass={props.confirmBypass}
+          onQuotesConsumed={props.onQuotesConsumed ?? (() => {})}
+          onRemoveQuote={props.onRemoveQuote}
+          onForkVisibilityChange={props.onForkVisibilityChange}
+          onContentStateChange={props.onContentStateChange}
+          onInitialPromptStarted={props.onInitialPromptStarted}
+          onPromptAccepted={props.onPromptAccepted}
+          onActivityStateChange={props.onActivityStateChange}
+        />
+      );
+    },
+  }),
+  review: defineWorkbarSurfaceDescriptor('review', {
+    label: (_tab, _tabs, copy) => copy.review,
+    launcherLabel: (copy) => copy.review,
+    launcherDescription: (copy) => copy.launcher.review,
+    render: ({ active, copy, props }) => (
+      <Suspense fallback={<WorkbarPanelLoading label={copy.review} />}>
+        <SessionReviewPanel
+          sessionId={props.sessionId}
+          active={!props.hidden && active}
+        />
+      </Suspense>
+    ),
+  }),
+  terminal: defineWorkbarSurfaceDescriptor('terminal', {
+    label: (tab, _tabs, copy) =>
+      tab.ordinal && tab.ordinal > 1
+        ? copy.terminalNumbered(tab.ordinal)
+        : copy.terminal,
+    launcherLabel: (copy) => copy.terminal,
+    launcherDescription: (copy) => copy.launcher.terminal,
+    render: ({ active, copy, props, tab }) => (
+      <Suspense fallback={<WorkbarPanelLoading label={copy.terminal} />}>
+        <SessionTerminalPanel
+          sessionId={tab.ownerSessionId ?? props.sessionId}
+          terminalRef={terminalRefFromWorkbarTab(tab)}
+          active={!props.hidden && active}
+        />
+      </Suspense>
+    ),
+  }),
+  browser: defineWorkbarSurfaceDescriptor('browser', {
+    label: (_tab, _tabs, copy) => copy.browser,
+    launcherLabel: (copy) => copy.browser,
+    launcherDescription: (copy) => copy.launcher.browser,
+    render: ({ active, copy, props }) => (
+      <Suspense fallback={<WorkbarPanelLoading label={copy.browser} />}>
+        <BrowserPanel
+          sessionId={props.sessionId}
+          hidden={props.hidden || !active}
+        />
+      </Suspense>
+    ),
+  }),
+  files: defineWorkbarSurfaceDescriptor('files', {
+    label: (_tab, _tabs, copy) => copy.files,
+    launcherLabel: (copy) => copy.files,
+    launcherDescription: (copy) => copy.launcher.files,
+    render: ({ copy, placement, props, setArtifactCount }) => (
+      <Suspense fallback={<WorkbarPanelLoading label={copy.files} />}>
+        <ArtifactPane
+          sessionId={props.sessionId}
+          onCountChange={setArtifactCount}
+          onDismiss={() => props.onDismissPanel(placement)}
+        />
+      </Suspense>
+    ),
+  }),
+  tasks: defineWorkbarSurfaceDescriptor('tasks', {
+    label: (_tab, _tabs, copy) => copy.tasks,
+    launcherLabel: (copy) => copy.tasks,
+    launcherDescription: (copy) => copy.launcher.tasks,
+    render: ({ sessionTodo }) => (
+      <SessionTodoPanel
+        items={sessionTodo.items}
+        loading={sessionTodo.loading}
+        error={sessionTodo.error}
+        onRetry={sessionTodo.retry}
+      />
+    ),
+  }),
+  'work-board': defineWorkbarSurfaceDescriptor('work-board', {
+    label: (_tab, _tabs, copy) => copy.workBoard,
+    launcherLabel: (copy) => copy.workBoard,
+    launcherDescription: (copy) => copy.launcher.workBoard,
+    render: ({ props }) => (
+      <WorkBoardPanel
+        projectId={props.projectId ?? null}
+        projectAliases={props.projectAliases}
+      />
+    ),
+  }),
+  inspector: defineWorkbarSurfaceDescriptor('inspector', {
+    label: (_tab, _tabs, copy) => copy.inspector,
+    launcherLabel: (copy) => copy.inspector,
+    launcherDescription: (copy) => copy.launcher.inspector,
+    render: ({ active, copy, props }) => (
+      <Suspense fallback={<WorkbarPanelLoading label={copy.inspector} />}>
+        <SessionInspectorPanel
+          sessionId={props.sessionId}
+          active={!props.hidden && active}
+        />
+      </Suspense>
+    ),
+  }),
+};
+
+type RegisteredWorkbarSurfaceDescriptor =
+  (typeof WORKBAR_SURFACE_DESCRIPTOR_BY_KIND)[SessionWorkbarTabKind];
+
+const WORKBAR_SURFACE_DESCRIPTORS: readonly RegisteredWorkbarSurfaceDescriptor[] =
+  WORKBAR_TOOL_DEFINITIONS.map(
+    (definition) => WORKBAR_SURFACE_DESCRIPTOR_BY_KIND[definition.kind],
+  );
+
+function workbarSurfaceDescriptor(
+  kind: SessionWorkbarTabKind,
+): RegisteredWorkbarSurfaceDescriptor {
+  return WORKBAR_SURFACE_DESCRIPTOR_BY_KIND[kind];
+}
+
 function tabLabel(
   tab: SessionWorkbarTab,
   tabs: readonly SessionWorkbarTab[],
-  copy: ReturnType<typeof getDesktopConversationCopy>['workbar'],
+  copy: WorkbarCopy,
 ): string {
-  switch (tab.kind) {
-    case 'review':
-      return copy.review;
-    case 'terminal':
-      return tab.ordinal && tab.ordinal > 1
-        ? copy.terminalNumbered(tab.ordinal)
-        : copy.terminal;
-    case 'tasks':
-      return copy.tasks;
-    case 'work-board':
-      return copy.workBoard;
-    case 'browser':
-      return copy.browser;
-    case 'files':
-      return copy.files;
-    case 'inspector':
-      return copy.inspector;
-    case 'side-chat':
-      {
-        if (tab.title?.trim()) return tab.title.trim();
-        const index =
-          tab.ordinal ??
-          tabs.filter((candidate) => candidate.kind === 'side-chat').findIndex(
-            (candidate) => candidate.id === tab.id,
-          ) + 1;
-        return index <= 1 ? copy.sideChat : copy.sideChatNumbered(index);
-      }
-  }
+  return workbarSurfaceDescriptor(tab.kind).label(tab, tabs, copy);
 }
 
 function tabIcon(tab: SessionWorkbarTab, active: boolean): ReactNode {
@@ -216,22 +440,7 @@ function tabIcon(tab: SessionWorkbarTab, active: boolean): ReactNode {
       />
     );
   }
-  const Icon =
-    tab.kind === 'review'
-      ? GitBranch
-      : tab.kind === 'terminal'
-        ? Terminal
-        : tab.kind === 'tasks'
-          ? ListTodo
-          : tab.kind === 'work-board'
-            ? Clipboard
-          : tab.kind === 'browser'
-            ? Globe
-            : tab.kind === 'files'
-              ? FolderOpen
-              : tab.kind === 'inspector'
-                ? Activity
-                : MessageCircleQuestion;
+  const Icon = workbarSurfaceDescriptor(tab.kind).icon;
   return <Icon size={ICON_SIZE.control} aria-hidden="true" className="maka-workbar-tab-icon" />;
 }
 
@@ -557,69 +766,6 @@ function WorkbarLauncher(props: {
   sideChatAvailable: boolean;
 }) {
   const copy = getDesktopConversationCopy(useUiLocale()).workbar;
-  const actions: Array<{
-    kind: SessionWorkbarTabKind;
-    label: string;
-    description: string;
-    icon: typeof Activity;
-    shortcut?: string;
-    disabled?: boolean;
-  }> = [
-    {
-      kind: 'side-chat',
-      label: copy.sideChat,
-      description: copy.launcher.sideChat,
-      icon: MessageCircleQuestion,
-      shortcut: 'mod+alt+s',
-      disabled: !props.sideChatAvailable,
-    },
-    {
-      kind: 'review',
-      label: copy.review,
-      description: copy.launcher.review,
-      icon: GitBranch,
-      shortcut: 'ctrl+shift+g',
-    },
-    {
-      kind: 'terminal',
-      label: copy.terminal,
-      description: copy.launcher.terminal,
-      icon: Terminal,
-      shortcut: 'ctrl+`',
-    },
-    {
-      kind: 'browser',
-      label: copy.browser,
-      description: copy.launcher.browser,
-      icon: Globe,
-      shortcut: 'mod+t',
-    },
-    {
-      kind: 'files',
-      label: copy.files,
-      description: copy.launcher.files,
-      icon: FolderOpen,
-      shortcut: 'mod+p',
-    },
-    {
-      kind: 'tasks',
-      label: copy.tasks,
-      description: copy.launcher.tasks,
-      icon: ListTodo,
-    },
-    {
-      kind: 'work-board',
-      label: copy.workBoard,
-      description: copy.launcher.workBoard,
-      icon: Clipboard,
-    },
-    {
-      kind: 'inspector',
-      label: copy.inspector,
-      description: copy.launcher.inspector,
-      icon: Activity,
-    },
-  ];
   return (
     <div className="maka-workbar-launcher">
       <div className="maka-workbar-launcher-frame">
@@ -628,72 +774,33 @@ function WorkbarLauncher(props: {
           density="compact"
           header={<Heading level={4}>{copy.openTools}</Heading>}
         >
-          {actions.map((action) => (
-            <ListItem
-              key={action.kind}
-              startContent={<Icon icon={action.icon} size="sm" color="secondary" />}
-              label={action.label}
-              description={action.description}
-              endContent={
-                action.shortcut ? (
-                  <Kbd keys={action.shortcut} />
-                ) : undefined
-              }
-              isDisabled={action.disabled}
-              onClick={() => props.onOpen(action.kind)}
-            />
-          ))}
+          {WORKBAR_SURFACE_DESCRIPTORS.map((descriptor) => {
+            const definition = workbarToolDefinition(descriptor.kind);
+            const shortcut =
+              'shortcut' in definition ? definition.shortcut : undefined;
+            return (
+              <ListItem
+                key={descriptor.kind}
+                startContent={<Icon icon={descriptor.icon} size="sm" color="secondary" />}
+                label={descriptor.launcherLabel(copy)}
+                description={descriptor.launcherDescription(copy)}
+                endContent={
+                  shortcut ? (
+                    <Kbd keys={shortcut} />
+                  ) : undefined
+                }
+                isDisabled={descriptor.kind === 'side-chat' && !props.sideChatAvailable}
+                onClick={() => props.onOpen(descriptor.kind)}
+              />
+            );
+          })}
         </List>
       </div>
     </div>
   );
 }
 
-export function WorkbarSurface(props: {
-  sessionId: string;
-  projectId?: string | null;
-  projectAliases?: readonly string[];
-  hidden: boolean;
-  onDismissPanel: (placement: SessionWorkbarPlacement) => void;
-  panelsState: SessionWorkbarPanelsState;
-  rightCollapsed: boolean;
-  bottomOpen: boolean;
-  onActivateTab: (placement: SessionWorkbarPlacement, tabId: string) => void;
-  onCloseTab: (placement: SessionWorkbarPlacement, tab: SessionWorkbarTab) => void;
-  onCloseTabs: (
-    placement: SessionWorkbarPlacement,
-    tabs: readonly SessionWorkbarTab[],
-  ) => void;
-  onReorderTab: (
-    placement: SessionWorkbarPlacement,
-    tabId: string,
-    targetTabId: string,
-  ) => void;
-  onMoveTab: (
-    placement: SessionWorkbarPlacement,
-    tabId: string,
-    direction: 'left' | 'right',
-  ) => void;
-  onMoveTabToPanel: (tabId: string, target: SessionWorkbarPlacement) => void;
-  onPinTab: (tabId: string) => void;
-  onOpenLauncher: (placement: SessionWorkbarPlacement) => void;
-  onRequestOpenTab: (
-    placement: SessionWorkbarPlacement,
-    kind: SessionWorkbarTabKind,
-  ) => void;
-  quotes?: readonly QuoteCompanionPanelState[];
-  onQuotesConsumed?: (snapshot: CompanionQuoteSnapshot) => void;
-  onRemoveQuote?: (target: CompanionQuoteTarget) => void;
-  onForkVisibilityChange?: (event: CompanionForkVisibilityEvent) => void;
-  onContentStateChange?: (panelId: string, hasContent: boolean) => void;
-  onInitialPromptStarted?: (panelId: string) => void;
-  onPromptAccepted?: (panelId: string, prompt: string) => void;
-  onActivityStateChange?: (panelId: string, active: boolean) => void;
-  activeSideChatPanelIds?: ReadonlySet<string>;
-  sourceSession?: SessionSummary;
-  modelChoices?: readonly ChatModelChoice[];
-  confirmBypass: () => Promise<boolean>;
-}) {
+export function WorkbarSurface(props: WorkbarSurfaceProps) {
   const locale = useUiLocale();
   const copy = getDesktopConversationCopy(locale).workbar;
   const sessionTodo = useSessionTodo(props.sessionId, {
@@ -777,95 +884,16 @@ export function WorkbarSurface(props: {
           placement === 'right' ? !props.rightCollapsed : props.bottomOpen;
         const active =
           panelVisible && !showingLauncher && activeTab?.id === tab.id;
-        let content: ReactNode = null;
-        if (tab.kind === 'review') {
-          content = (
-            <Suspense fallback={<WorkbarPanelLoading label={copy.review} />}>
-              <SessionReviewPanel
-                sessionId={props.sessionId}
-                active={!props.hidden && active}
-              />
-            </Suspense>
-          );
-        } else if (tab.kind === 'terminal') {
-          const terminalRef = terminalRefFromWorkbarTab(tab);
-          content = (
-            <Suspense fallback={<WorkbarPanelLoading label={copy.terminal} />}>
-              <SessionTerminalPanel
-                sessionId={tab.ownerSessionId ?? props.sessionId}
-                terminalRef={terminalRef}
-                active={!props.hidden && active}
-              />
-            </Suspense>
-          );
-        } else if (tab.kind === 'tasks') {
-          content = (
-            <SessionTodoPanel
-              items={sessionTodo.items}
-              loading={sessionTodo.loading}
-              error={sessionTodo.error}
-              onRetry={sessionTodo.retry}
-            />
-          );
-        } else if (tab.kind === 'work-board') {
-          content = (
-            <WorkBoardPanel
-              projectId={props.projectId ?? null}
-              projectAliases={props.projectAliases}
-            />
-          );
-        } else if (tab.kind === 'browser') {
-          content = (
-            <Suspense fallback={<WorkbarPanelLoading label={copy.browser} />}>
-              <BrowserPanel
-                sessionId={props.sessionId}
-                hidden={props.hidden || !active}
-              />
-            </Suspense>
-          );
-        } else if (tab.kind === 'files') {
-          content = (
-            <Suspense fallback={<WorkbarPanelLoading label={copy.files} />}>
-              <ArtifactPane
-                sessionId={props.sessionId}
-                onCountChange={setArtifactCount}
-                onDismiss={() => props.onDismissPanel(placement)}
-              />
-            </Suspense>
-          );
-        } else if (tab.kind === 'inspector') {
-          content = (
-            <Suspense fallback={<WorkbarPanelLoading label={copy.inspector} />}>
-              <SessionInspectorPanel
-                sessionId={props.sessionId}
-                active={!props.hidden && active}
-              />
-            </Suspense>
-          );
-        } else {
-          const panelId = tab.id.slice('side-chat:'.length);
-          const quote = props.quotes?.find((candidate) => candidate.id === panelId);
-          if (quote) {
-            content = (
-              <QuoteCompanionPanel
-                panelId={quote.id}
-                active={!props.hidden && active}
-                quotes={quote.quotes}
-                initialPrompt={quote.initialPrompt}
-                sourceSession={props.sourceSession}
-                modelChoices={props.modelChoices ?? []}
-                confirmBypass={props.confirmBypass}
-                onQuotesConsumed={props.onQuotesConsumed ?? (() => {})}
-                onRemoveQuote={props.onRemoveQuote}
-                onForkVisibilityChange={props.onForkVisibilityChange}
-                onContentStateChange={props.onContentStateChange}
-                onInitialPromptStarted={props.onInitialPromptStarted}
-                onPromptAccepted={props.onPromptAccepted}
-                onActivityStateChange={props.onActivityStateChange}
-              />
-            );
-          }
-        }
+        const descriptor = workbarSurfaceDescriptor(tab.kind);
+        const content = descriptor.render({
+          active,
+          copy,
+          placement,
+          props,
+          sessionTodo,
+          setArtifactCount,
+          tab,
+        });
         return content ? (
           <WorkbarPanel
             key={tab.id}
@@ -874,9 +902,7 @@ export function WorkbarSurface(props: {
             overlay
             preview={tab.preview}
             onPin={() => props.onPinTab(tab.id)}
-            className={
-              tab.kind === 'side-chat' ? 'maka-quote-workbar-panel' : undefined
-            }
+            className={descriptor.panelClassName}
           >
             {content}
           </WorkbarPanel>

@@ -349,6 +349,61 @@ test('titlebar workbar action restores an existing tool instead of the picker', 
   expect(Math.abs(restoredToggleBox!.x - safeAreaToggleBox!.x)).toBeLessThanOrEqual(1);
 });
 
+test('registered Workbar descriptors render singleton and dynamic panels', async ({
+  window: page,
+}) => {
+  await createSession(page, 'create descriptor registry session');
+  await page.getByRole('button', { name: '展开任务工作栏' }).click();
+
+  const launcher = page.getByRole('list', { name: '打开工具' });
+  const openLauncher = async () => {
+    await page.getByRole('button', { name: '打开工作栏标签' }).first().click();
+    await expect(launcher).toBeVisible();
+  };
+  const registeredActions = [
+    /侧边对话.*在不打断主任务的情况下追问和只读探索/,
+    /变更.*查看当前 Git 工作区变化/,
+    /终端.*查看当前任务的终端运行和实时输出/,
+    /浏览器.*打开内置浏览器并保留当前页面/,
+    /生成文件.*浏览当前任务生成的文件/,
+    /待办.*查看和维护这个任务的待办台账/,
+    /工作看板.*记录和管理暂缓事项/,
+    /追踪.*检查任务调用、工具与耗时记录/,
+  ] as const;
+  await expect(launcher).toBeVisible();
+  await expect(launcher.getByRole('button')).toHaveCount(registeredActions.length);
+  for (const name of registeredActions) {
+    await expect(launcher.getByRole('button', { name })).toBeVisible();
+  }
+
+  await launcher.getByRole('button', { name: registeredActions[5] }).click();
+  await expect(page.getByRole('region', { name: '任务待办' })).toBeVisible();
+  await openLauncher();
+  await launcher.getByRole('button', { name: registeredActions[5] }).click();
+  await expect(page.getByRole('tab', { name: '待办' })).toHaveCount(1);
+
+  await openLauncher();
+  await launcher.getByRole('button', { name: registeredActions[2] }).click();
+  const firstTerminal = page.getByRole('region', { name: '任务终端' });
+  await expect(firstTerminal).toBeVisible();
+  const firstTerminalRef = await firstTerminal.getAttribute('data-terminal-ref');
+  expect(firstTerminalRef).toBeTruthy();
+  await openLauncher();
+  await launcher.getByRole('button', { name: registeredActions[2] }).click();
+  const secondTerminal = page.locator('.maka-session-terminal-panel:visible');
+  await expect(secondTerminal).toBeVisible();
+  await expect(page.getByRole('tab', { name: /^终端(?: \d+)?$/ })).toHaveCount(2);
+  expect(await secondTerminal.getAttribute('data-terminal-ref')).not.toBe(firstTerminalRef);
+
+  await openLauncher();
+  await launcher.getByRole('button', { name: registeredActions[0] }).click();
+  await expect(page.locator('.maka-quote-companion')).toBeVisible();
+  await openLauncher();
+  await launcher.getByRole('button', { name: registeredActions[0] }).click();
+  await expect(page.getByRole('tab', { name: /^侧边对话(?: \d+)?$/ })).toHaveCount(2);
+  await expect(page.locator('.maka-quote-companion')).toHaveCount(2);
+});
+
 test('Git changes re-read the workspace after the app regains focus', async ({
   gitReviewWindow,
 }) => {

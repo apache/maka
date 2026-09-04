@@ -22,6 +22,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { WORKBAR_TOOL_DEFINITIONS } from '../../renderer/features/workbar/testing.js';
 
 const desktopRoot = resolve(
   fileURLToPath(new URL('../../../', import.meta.url)),
@@ -43,6 +44,37 @@ function sourceFiles(root: string): string[] {
 }
 
 describe('Workbar feature boundary', () => {
+  it('registers one exhaustive surface descriptor for every Workbar tab kind', () => {
+    const surface = readFileSync(
+      join(featureRoot, 'ui', 'workbar-surface.tsx'),
+      'utf8',
+    );
+    const registeredKinds = [...surface.matchAll(
+      /\n  (?:'[^']+'|[a-z]+): defineWorkbarSurfaceDescriptor\(\s*'([^']+)',\s*\{/g,
+    )].map((match) => match[1]);
+
+    assert.deepEqual(
+      registeredKinds,
+      WORKBAR_TOOL_DEFINITIONS.map((definition) => definition.kind),
+    );
+    assert.equal(
+      surface.includes(
+        'const WORKBAR_SURFACE_DESCRIPTOR_BY_KIND: WorkbarSurfaceDescriptorsByKind',
+      ),
+      true,
+    );
+    assert.equal(
+      surface.includes(
+        'WORKBAR_TOOL_DEFINITIONS.map(\n    (definition) => WORKBAR_SURFACE_DESCRIPTOR_BY_KIND[definition.kind]',
+      ),
+      true,
+    );
+    assert.equal(
+      surface.includes('const descriptor = workbarSurfaceDescriptor(tab.kind);'),
+      true,
+    );
+  });
+
   it('contains no Desktop global bridge or shell/process imports', () => {
     const violations: string[] = [];
     for (const path of sourceFiles(featureRoot)) {
