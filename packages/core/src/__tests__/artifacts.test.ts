@@ -23,6 +23,7 @@ import {
   ARTIFACT_ENTITY_ID_MAX_CHARS,
   ARTIFACT_TURN_KEY_MAX_CHARS,
   canUserDeleteArtifact,
+  isArtifactChildResultOutput,
   isArtifactSharedSessionReadable,
   isArtifactUserVisible,
   isArtifactTurnKey,
@@ -65,6 +66,14 @@ describe('Artifact user-delete policy', () => {
 });
 
 describe('Artifact source policy', () => {
+  test('includes produced outputs in child results without leaking internal artifacts', () => {
+    assert.equal(isArtifactChildResultOutput({ source: 'tool_result' }), true);
+    assert.equal(isArtifactChildResultOutput({ source: 'subagent_writeback' }), true);
+    assert.equal(isArtifactChildResultOutput({ source: 'tool_result_archive' }), false);
+    assert.equal(isArtifactChildResultOutput({ source: 'user_upload' }), false);
+    assert.equal(isArtifactChildResultOutput({ source: undefined }), false);
+  });
+
   test('keeps projection artifacts internal, durable, and readable in shared sessions', () => {
     const projection = { source: 'tool_result_projection' as const };
 

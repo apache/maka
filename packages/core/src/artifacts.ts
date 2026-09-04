@@ -178,6 +178,13 @@ const ARTIFACT_SOURCE_POLICIES = {
   fixture: { userDeletable: true, userVisible: true, sharedReadable: false },
 } as const satisfies Record<ArtifactSource, ArtifactSourcePolicy>;
 
+const CHILD_RESULT_OUTPUT_SOURCES = new Set<ArtifactSource>([
+  'tool_result',
+  'tool_result_projection',
+  'subagent_writeback',
+  'deep_research',
+]);
+
 export function canUserDeleteArtifact(record: Pick<ArtifactRecord, 'source'>): boolean {
   return record.source === undefined || ARTIFACT_SOURCE_POLICIES[record.source].userDeletable;
 }
@@ -188,6 +195,10 @@ export function isArtifactUserVisible(record: Pick<ArtifactRecord, 'source'>): b
 
 export function isArtifactSharedSessionReadable(record: Pick<ArtifactRecord, 'source'>): boolean {
   return record.source !== undefined && ARTIFACT_SOURCE_POLICIES[record.source].sharedReadable;
+}
+
+export function isArtifactChildResultOutput(record: Pick<ArtifactRecord, 'source'>): boolean {
+  return record.source !== undefined && CHILD_RESULT_OUTPUT_SOURCES.has(record.source);
 }
 
 export type ArtifactChangedReason = 'created' | 'deleted' | 'purged';

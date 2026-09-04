@@ -1671,6 +1671,32 @@ describe('SessionManager claimed graph intent execution', () => {
       runtimeEventStore: runStore,
       backends,
       childTools: [testTool('Read'), testTool('Glob'), testTool('Grep')],
+      listArtifactsForTurn: async (sessionId, turnId) => [
+        {
+          id: 'child-output',
+          sessionId,
+          turnId,
+          createdAt: 98,
+          name: 'answer.txt',
+          kind: 'file',
+          relativePath: `${sessionId}/child-output-answer.txt`,
+          sizeBytes: 6,
+          source: 'tool_result',
+          status: 'live',
+        },
+        {
+          id: 'child-internal-archive',
+          sessionId,
+          turnId,
+          createdAt: 99,
+          name: 'tool-result.json',
+          kind: 'file',
+          relativePath: `${sessionId}/child-internal-archive-tool-result.json`,
+          sizeBytes: 12,
+          source: 'tool_result_archive',
+          status: 'live',
+        },
+      ],
       newId: nextId(),
       now: nextNow(40),
     });
@@ -1705,6 +1731,7 @@ describe('SessionManager claimed graph intent execution', () => {
       status: 'completed',
       summary: 'ok',
     });
+    assert.deepStrictEqual(result.artifactIds, ['child-output']);
     assert.deepStrictEqual(ready, [
       {
         claimId: claim.claimId,
@@ -9733,6 +9760,7 @@ describe('SessionManager permission mode updates', () => {
                 kind: 'file',
                 relativePath: 'artifacts/notes.md',
                 sizeBytes: 12,
+                source: 'tool_result',
                 status: 'live',
               },
             ]
