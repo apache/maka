@@ -819,9 +819,12 @@ fn launcher_for_legacy_runner(runner_path: &str) -> windows::core::Result<String
         .and_then(Path::parent)
         .and_then(Path::parent)
         .ok_or_else(invalid_windows_request)?;
-    let launcher = package_root.join(
-        "native/runtime-host-windows-task-launcher/prebuilds/win32-x64/maka-runtime-host-task-launcher.exe",
-    );
+    let launcher = package_root
+        .join("native")
+        .join("runtime-host-windows-task-launcher")
+        .join("prebuilds")
+        .join("win32-x64")
+        .join("maka-runtime-host-task-launcher.exe");
     if !launcher.is_file() {
         return Err(invalid_windows_request());
     }
