@@ -19,7 +19,8 @@
 
 import { createHash, randomUUID } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
-import { mkdir, open, readFile, rename, rm } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { mkdir, open, readFile, rename, rm, type FileHandle } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import {
   isNonEmptyUnicodeString,
@@ -41,6 +42,7 @@ import {
   type CreateSessionInput,
   type ForkOperation,
   type ImmutableObjectInput,
+  type ImmutableObjectMaterializationInput,
   type ImmutableObjectRef,
   type ImmutableObjectStore,
   type PendingForkOperation,
@@ -116,10 +118,19 @@ class FileSessionRepositoryAdapter implements FileSessionRepository {
 
   async createSession(input: CreateSessionInput): Promise<CommittedSessionRevision> {
     const admitted = admitCreateSessionInput(input);
+    // Match the contract's linearization/error precedence: an existing Session
+    // is authoritative before an unrelated candidate object is consulted.
+    const beforeVerification = await this.readState();
+    const existing = findSession(beforeVerification, admitted.sessionId);
+    if (existing) {
+      const reconciled = reconcileExistingSessionCreate(existing, admitted);
+      await assertCheckpointReadable(this.objectStore, reconciled.checkpoint);
+      return copyCommittedSessionRevision(reconciled);
+    }
     await assertCheckpointReadable(this.objectStore, admitted.checkpoint);
     const result = await this.mutate((state) => {
-      const existing = findSession(state, admitted.sessionId);
-      if (existing) return reconcileExistingSessionCreate(existing, admitted);
+      const concurrent = findSession(state, admitted.sessionId);
+      if (concurrent) return reconcileExistingSessionCreate(concurrent, admitted);
       if (admitted.createdByForkId !== undefined) assertPendingForkCreate(state, admitted);
       const initial = committedRevision({
         sessionId: admitted.sessionId,
@@ -154,6 +165,11 @@ class FileSessionRepositoryAdapter implements FileSessionRepository {
       assertSameCommitInput(prior.input, admitted);
       await assertCheckpointReadable(this.objectStore, prior.result.checkpoint);
       return copyCommittedSessionRevision(prior.result);
+    }
+    const session = findSession(existing, admitted.sessionId);
+    if (!session) throw repositoryError('session_not_found', 'Cloud Session was not found');
+    if (session.head.ref.revision !== admitted.expectedRevision) {
+      throw repositoryError('revision_conflict', 'Cloud Session head changed before commit');
     }
     await assertCheckpointReadable(this.objectStore, admitted.checkpoint);
     const result = await this.mutate((state) => {
@@ -280,13 +296,6 @@ class FileImmutableObjectStore implements ImmutableObjectStore {
 
   async publish(input: ImmutableObjectInput): Promise<ImmutableObjectRef> {
     const admitted = admitImmutableObjectInput(input);
-    const bytes = await readSourceBytes(admitted);
-    if (bytes.byteLength !== admitted.bytes || digestBytes(bytes) !== admitted.digest) {
-      throw repositoryError(
-        'integrity_mismatch',
-        'Immutable object bytes do not match declared metadata',
-      );
-    }
     const ref = immutableObjectRef({
       objectRef: localObjectRef(admitted.digest, admitted.mediaType),
       digest: admitted.digest,
@@ -297,19 +306,16 @@ class FileImmutableObjectStore implements ImmutableObjectStore {
     await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
     const temporary = `${destination}.${randomUUID()}.tmp`;
     try {
-      const handle = await open(temporary, 'wx', 0o600);
-      try {
-        await handle.writeFile(bytes);
-        await handle.sync();
-      } finally {
-        await handle.close();
-      }
+      await writePublishedObject(admitted, temporary);
       try {
         await linkNoReplace(temporary, destination);
-        await syncDirectoryChain(dirname(destination), this.storageRoot);
       } catch (error) {
         if (!isNodeError(error, 'EEXIST')) throw error;
       }
+      // An EEXIST result means another writer published the same immutable
+      // name. It is not readable until that writer's directory chain has a
+      // durability barrier too, so both paths wait for one before returning.
+      await syncDirectoryChain(dirname(destination), this.storageRoot);
     } catch (error) {
       throw normalizeFileError(error, 'Immutable object publication failed');
     } finally {
@@ -325,19 +331,40 @@ class FileImmutableObjectStore implements ImmutableObjectStore {
       throw repositoryError('integrity_mismatch', 'Immutable object reference is not canonical');
     }
     try {
-      const bytes = await readFile(objectPath(this.objectsRoot, ref));
-      if (bytes.byteLength !== ref.bytes || digestBytes(bytes) !== ref.digest) {
-        throw repositoryError(
-          'integrity_mismatch',
-          'Immutable object bytes no longer match metadata',
-        );
-      }
+      await assertFileMatchesImmutableRef(objectPath(this.objectsRoot, ref), ref);
     } catch (error) {
       if (error instanceof SessionRepositoryError) throw error;
       if (isNodeError(error, 'ENOENT')) {
         throw repositoryError('object_not_found', 'Immutable object was not found');
       }
       throw repositoryError('io_failure', 'Immutable object could not be read', error);
+    }
+  }
+
+  async materialize(input: ImmutableObjectMaterializationInput): Promise<void> {
+    const request = admitImmutableObjectMaterializationInput(input);
+    if (request.ref.objectRef !== localObjectRef(request.ref.digest, request.ref.mediaType)) {
+      throw repositoryError('integrity_mismatch', 'Immutable object reference is not canonical');
+    }
+    if (request.ref.bytes > request.maxBytes) {
+      throw repositoryError(
+        'quota_exceeded',
+        'Immutable object exceeds materialization byte limit',
+      );
+    }
+    try {
+      // Verify the retained object before creating the caller-owned file. The
+      // copy below verifies it again while streaming, so a corrupt object can
+      // never be returned merely because it changed between the two reads.
+      await this.assertReadable(request.ref);
+      await copyImmutableFile(
+        objectPath(this.objectsRoot, request.ref),
+        request.destination,
+        request.ref,
+      );
+    } catch (error) {
+      if (error instanceof SessionRepositoryError) throw error;
+      throw repositoryError('io_failure', 'Immutable object could not be materialized', error);
     }
   }
 }
@@ -641,6 +668,28 @@ function admitImmutableObjectInput(input: ImmutableObjectInput): ImmutableObject
   throw new TypeError('Immutable object source is invalid');
 }
 
+function admitImmutableObjectMaterializationInput(
+  input: ImmutableObjectMaterializationInput,
+): ImmutableObjectMaterializationInput {
+  if (!isRecord(input)) {
+    throw new TypeError('Immutable object materialization input must be an object');
+  }
+  if (!isByteCount(input.maxBytes)) {
+    throw new TypeError(
+      'Immutable object materialization byte limit must be a non-negative safe integer',
+    );
+  }
+  return {
+    ref: admitImmutableObjectRef(input.ref),
+    destination: requireIdentifier(
+      input.destination,
+      'Immutable object materialization destination',
+      MAX_OBJECT_REF_LENGTH,
+    ),
+    maxBytes: input.maxBytes,
+  };
+}
+
 function admitImmutableObjectRef(input: ImmutableObjectRef): ImmutableObjectRef {
   if (!isRecord(input) || !isSha256Digest(input.digest) || !isByteCount(input.bytes)) {
     throw new TypeError('Immutable object reference is invalid');
@@ -765,13 +814,123 @@ function sameOptionalRevisionRef(
   return left === undefined || right === undefined ? left === right : sameRevisionRef(left, right);
 }
 
-async function readSourceBytes(input: ImmutableObjectInput): Promise<Uint8Array> {
+async function writePublishedObject(
+  input: ImmutableObjectInput,
+  destination: string,
+): Promise<void> {
+  if (input.source.kind === 'bytes') {
+    const bytes = Uint8Array.from(input.source.value);
+    assertImmutableBytesMatch(bytes, input.digest, input.bytes);
+    await writeNewFile(destination, async (handle) => writeAll(handle, bytes));
+    return;
+  }
+  await copyImmutableFile(input.source.path, destination, {
+    digest: input.digest,
+    bytes: input.bytes,
+  });
+}
+
+/**
+ * Copies and verifies in chunks. The supplied reference is deliberately the
+ * bound: a malicious or changing source can never make this adapter retain an
+ * unbounded in-memory buffer or publish more bytes than it declared.
+ */
+async function copyImmutableFile(
+  source: string,
+  destination: string,
+  ref: Pick<ImmutableObjectRef, 'digest' | 'bytes'>,
+): Promise<void> {
+  await writeNewFile(destination, async (handle) => {
+    const digest = createHash('sha256');
+    let bytes = 0;
+    for await (const rawChunk of createReadStream(source)) {
+      const chunk = Buffer.from(rawChunk);
+      bytes += chunk.byteLength;
+      if (bytes > ref.bytes) {
+        throw repositoryError(
+          'integrity_mismatch',
+          'Immutable object bytes exceed declared metadata',
+        );
+      }
+      digest.update(chunk);
+      await writeAll(handle, chunk);
+    }
+    assertImmutableDigestMatch(bytes, digest.digest('hex'), ref.bytes, ref.digest);
+  });
+}
+
+async function assertFileMatchesImmutableRef(path: string, ref: ImmutableObjectRef): Promise<void> {
+  const digest = createHash('sha256');
+  let bytes = 0;
+  for await (const rawChunk of createReadStream(path)) {
+    const chunk = Buffer.from(rawChunk);
+    bytes += chunk.byteLength;
+    if (bytes > ref.bytes) {
+      throw repositoryError(
+        'integrity_mismatch',
+        'Immutable object bytes no longer match metadata',
+      );
+    }
+    digest.update(chunk);
+  }
+  assertImmutableDigestMatch(bytes, digest.digest('hex'), ref.bytes, ref.digest);
+}
+
+async function writeNewFile(
+  path: string,
+  writer: (handle: FileHandle) => Promise<void>,
+): Promise<void> {
+  let handle: FileHandle | undefined;
   try {
-    return input.source.kind === 'file'
-      ? await readFile(input.source.path)
-      : Uint8Array.from(input.source.value);
+    handle = await open(path, 'wx', 0o600);
+    await writer(handle);
+    await handle.sync();
   } catch (error) {
-    throw repositoryError('io_failure', 'Immutable object publication could not read bytes', error);
+    if (handle) {
+      await handle.close().catch(() => {});
+      handle = undefined;
+      await rm(path, { force: true }).catch(() => {});
+    }
+    throw error;
+  } finally {
+    if (handle) await handle.close();
+  }
+}
+
+async function writeAll(handle: FileHandle, value: Uint8Array): Promise<void> {
+  const bytes = Buffer.from(value);
+  let offset = 0;
+  while (offset < bytes.byteLength) {
+    const result = await handle.write(bytes, offset, bytes.byteLength - offset, null);
+    if (result.bytesWritten <= 0) {
+      throw repositoryError('io_failure', 'Immutable object write made no progress');
+    }
+    offset += result.bytesWritten;
+  }
+}
+
+function assertImmutableBytesMatch(
+  bytes: Uint8Array,
+  expectedDigest: Sha256Digest,
+  expectedBytes: number,
+): void {
+  if (bytes.byteLength !== expectedBytes || digestBytes(bytes) !== expectedDigest) {
+    throw repositoryError(
+      'integrity_mismatch',
+      'Immutable object bytes do not match declared metadata',
+    );
+  }
+}
+
+function assertImmutableDigestMatch(
+  actualBytes: number,
+  digestHex: string,
+  expectedBytes: number,
+  expectedDigest: Sha256Digest,
+): void {
+  const actualDigest = `sha256:${digestHex}`;
+  if (actualBytes !== expectedBytes || actualDigest !== expectedDigest) {
+    throw repositoryError('integrity_mismatch', 'Immutable object bytes no longer match metadata');
   }
 }
 
@@ -845,6 +1004,7 @@ function decodeState(bytes: Uint8Array): PersistentState {
       'Commit identity',
     );
     assertUnique(state.forks, (entry) => entry.forkId, 'Fork identity');
+    assertPersistentStateConsistency(state);
     return state;
   } catch (error) {
     if (error instanceof SessionRepositoryError) throw error;
@@ -864,6 +1024,9 @@ function decodeSession(value: unknown): PersistentSession {
     value.createdByForkId === undefined
       ? undefined
       : requireIdentifier(value.createdByForkId, 'Fork identity');
+  if ((forkedFrom === undefined) !== (createdByForkId === undefined)) {
+    throw new TypeError('Session Fork lineage and Fork identity must be supplied together');
+  }
   const head = decodeCommitted(value.head);
   const createdRevision = decodeCommitted(value.createdRevision);
   if (
@@ -954,6 +1117,130 @@ function requireRevisionNumber(value: unknown): number {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 2)
     throw new TypeError('Next revision number is invalid');
   return value;
+}
+
+/**
+ * JSON syntax and individual field validation are not sufficient for the
+ * control document: the records must describe one non-contradictory Session
+ * history before any writer derives a new revision from it.
+ */
+function assertPersistentStateConsistency(state: PersistentState): void {
+  for (const session of state.sessions) {
+    assertPersistentSessionConsistency(session);
+    assertPersistentCreatedForkTarget(state, session);
+  }
+
+  const committedRevisions = new Set<string>();
+  for (const commit of state.commits) {
+    const session = findSession(state, commit.sessionId);
+    if (!session) throw new TypeError('Commit receipt references an unknown Session');
+    const expectedRevision = revisionNumber(
+      commit.input.expectedRevision,
+      'Commit expected revision',
+    );
+    const resultRevision = revisionNumber(commit.result.ref.revision, 'Commit result revision');
+    const headRevision = revisionNumber(session.head.ref.revision, 'Session head revision');
+    if (
+      resultRevision < 2 ||
+      resultRevision > headRevision ||
+      expectedRevision + 1 !== resultRevision ||
+      commit.result.agentId !== session.agentId ||
+      !sameStoredCheckpoint(commit.input.checkpoint, commit.result.checkpoint) ||
+      commit.input.lastCommittedActivationId !== commit.result.lastCommittedActivationId ||
+      !sameOptionalRevisionRef(commit.result.forkedFrom, session.forkedFrom) ||
+      (resultRevision === headRevision &&
+        !sameCommittedSessionRevision(commit.result, session.head))
+    ) {
+      throw new TypeError('Commit receipt contradicts Session state');
+    }
+    const key = `${commit.sessionId}\u0000${commit.result.ref.revision}`;
+    if (committedRevisions.has(key)) throw new TypeError('Commit result revision is duplicated');
+    committedRevisions.add(key);
+  }
+
+  for (const fork of state.forks) assertPersistentForkConsistency(state, fork);
+}
+
+function assertPersistentSessionConsistency(session: PersistentSession): void {
+  const createdRevision = revisionNumber(
+    session.createdRevision.ref.revision,
+    'Session creation revision',
+  );
+  const headRevision = revisionNumber(session.head.ref.revision, 'Session head revision');
+  if (
+    createdRevision !== 1 ||
+    headRevision >= Number.MAX_SAFE_INTEGER ||
+    session.nextRevisionNumber !== headRevision + 1 ||
+    !sameOptionalRevisionRef(session.createdRevision.forkedFrom, session.forkedFrom) ||
+    !sameOptionalRevisionRef(session.head.forkedFrom, session.forkedFrom) ||
+    (session.createdByForkId !== undefined &&
+      session.createdRevision.lastCommittedActivationId !== undefined)
+  ) {
+    throw new TypeError('Session revision sequence is inconsistent');
+  }
+  if (headRevision === 1 && !sameCommittedSessionRevision(session.head, session.createdRevision)) {
+    throw new TypeError('Session initial head contradicts creation revision');
+  }
+}
+
+function assertPersistentForkConsistency(state: PersistentState, fork: PersistentFork): void {
+  if (fork.source.sessionId === fork.targetSessionId) {
+    throw new TypeError('Fork target Session must differ from its source Session');
+  }
+  const source = findSession(state, fork.source.sessionId);
+  if (!source || source.agentId !== fork.sourceAgentId) {
+    throw new TypeError('Fork source Agent binding is inconsistent');
+  }
+  const target = findSession(state, fork.targetSessionId);
+  if (fork.state === 'completed') {
+    if (
+      !target ||
+      target.agentId !== fork.sourceAgentId ||
+      target.createdByForkId !== fork.forkId ||
+      !target.forkedFrom ||
+      !sameRevisionRef(target.forkedFrom, fork.source) ||
+      !sameRevisionRef(fork.target, target.createdRevision.ref)
+    ) {
+      throw new TypeError('Completed Fork target is inconsistent');
+    }
+  }
+}
+
+function assertPersistentCreatedForkTarget(
+  state: PersistentState,
+  session: PersistentSession,
+): void {
+  if (session.createdByForkId === undefined || session.forkedFrom === undefined) return;
+  const fork = findFork(state, session.createdByForkId);
+  if (
+    !fork ||
+    fork.targetSessionId !== session.sessionId ||
+    fork.sourceAgentId !== session.agentId ||
+    !sameRevisionRef(fork.source, session.forkedFrom)
+  ) {
+    throw new TypeError('Fork-created Session does not match its claimed operation');
+  }
+}
+
+function revisionNumber(revision: string, label: string): number {
+  const match = /^r([1-9][0-9]*)$/u.exec(revision);
+  if (!match) throw new TypeError(`${label} is not a canonical revision`);
+  const value = Number(match[1]);
+  if (!Number.isSafeInteger(value)) throw new TypeError(`${label} is outside the safe range`);
+  return value;
+}
+
+function sameCommittedSessionRevision(
+  left: CommittedSessionRevision,
+  right: CommittedSessionRevision,
+): boolean {
+  return (
+    sameRevisionRef(left.ref, right.ref) &&
+    left.agentId === right.agentId &&
+    sameStoredCheckpoint(left.checkpoint, right.checkpoint) &&
+    left.lastCommittedActivationId === right.lastCommittedActivationId &&
+    sameOptionalRevisionRef(left.forkedFrom, right.forkedFrom)
+  );
 }
 
 function assertUnique<T>(values: readonly T[], key: (value: T) => string, label: string): void {
