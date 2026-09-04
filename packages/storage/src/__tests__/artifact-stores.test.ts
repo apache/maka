@@ -286,11 +286,12 @@ describe('retired request capture sweep', () => {
     assert.equal(calls, 5, 'a permanent failure does not retry forever');
   });
 
-  test('shrinks the batch when one costs a live turn too much', async () => {
+  test('does not shrink a batch that cost a lot, because the cost is not the batch', async () => {
     const limits: number[] = [];
     let residue = 400;
-    // A batch costs what the whole store costs, not what its own size costs,
-    // so an expensive one has to be answered by asking for less.
+    // A batch costs what the whole store costs, not what its own size costs.
+    // Asking for less would pay that same toll again for fewer records, so an
+    // expensive batch is answered by waiting longer, not by taking less.
     startRetiredCaptureSweep({
       purgeRetiredCaptures: async (limit) => {
         limits.push(limit);
@@ -303,10 +304,7 @@ describe('retired request capture sweep', () => {
     });
 
     await settled(() => limits.length >= 2);
-    assert.ok(
-      limits[1]! <= limits[0]!,
-      `a 400 ms batch must not be followed by a larger one, saw ${limits.join(' then ')}`,
-    );
+    assert.deepEqual(limits.slice(0, 2), [256, 256]);
   });
 
   test('stop keeps the next batch from starting', async () => {

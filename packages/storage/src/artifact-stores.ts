@@ -223,18 +223,19 @@ function createWriterFacade(
 }
 
 /**
- * How long a live turn may be made to wait for one batch.
+ * How much one batch deletes -- as much as it may, not as little.
  *
- * The mutation queue is FIFO with no priority, so a turn arriving while a
- * batch runs waits the whole batch out. The only lever on that wait is how
- * much a batch does -- and its cost is not its own size but the size of the
- * store, because the purge guard resolves the path of every record it is NOT
- * deleting. Measured at roughly 0.04 ms per record held, so 9,000 records
- * cost about 370 ms whether the batch deletes 256 of them or 16.
+ * A batch costs what the store costs, not what its own size costs: the purge
+ * guard resolves the path of every record it is NOT deleting, measured at
+ * roughly 0.04 ms per record held, so 9,000 records cost about 370 ms whether
+ * the batch deletes 256 of them or 16. That fixed cost is per batch, so a
+ * smaller batch cannot shorten the wait a live turn takes -- it only makes the
+ * residue take more batches, each paying the same toll again.
+ *
+ * The lever that does work is the pause below, which keeps the sweep out of the
+ * queue for three times as long as it was in it.
  */
-const RETIRED_CAPTURE_SWEEP_TARGET_BATCH_MS = 100;
-const RETIRED_CAPTURE_SWEEP_MIN_BATCH = 16;
-const RETIRED_CAPTURE_SWEEP_MAX_BATCH = 256;
+const RETIRED_CAPTURE_SWEEP_BATCH = 256;
 const RETIRED_CAPTURE_SWEEP_PAUSE_MS = 250;
 /** Keeps the sweep to a quarter of the time, however long a batch takes. */
 const RETIRED_CAPTURE_SWEEP_DUTY_DIVISOR = 3;
@@ -253,11 +254,11 @@ const RETIRED_CAPTURE_SWEEP_RETRY_MS = 1_000;
 /**
  * Drains the prepared-request captures the retired capture sink left behind.
  *
- * The sweep shares one mutation queue with live turns, so it takes batches
- * sized to what the last one cost and waits between them rather than holding
- * the queue for the whole residue. Stopping only means the next batch does not
- * start: each batch is already durable on its own, and a later run continues
- * from what is left.
+ * The sweep shares one mutation queue with live turns, so it takes bounded
+ * batches and waits between them for as long as the last one cost, rather than
+ * holding the queue for the whole residue. Stopping only means the next batch
+ * does not start: each batch is already durable on its own, and a later run
+ * continues from what is left.
  *
  * `onError` is where the decision to repair belongs -- the sweep knows a batch
  * failed, not what would make the next one succeed.
@@ -268,17 +269,15 @@ export function startRetiredCaptureSweep(
 ): () => void {
   let stopped = false;
   void (async () => {
-    let batch = RETIRED_CAPTURE_SWEEP_MIN_BATCH;
     let failures = 0;
     while (!stopped) {
       let pauseMs: number;
       try {
         const startedAt = Date.now();
-        const { remaining } = await artifacts.purgeRetiredCaptures(batch);
+        const { remaining } = await artifacts.purgeRetiredCaptures(RETIRED_CAPTURE_SWEEP_BATCH);
         const batchMs = Date.now() - startedAt;
         if (remaining === 0) return;
         failures = 0;
-        batch = nextSweepBatch(batch, batchMs);
         pauseMs = Math.max(
           RETIRED_CAPTURE_SWEEP_PAUSE_MS,
           batchMs * RETIRED_CAPTURE_SWEEP_DUTY_DIVISOR,
@@ -302,16 +301,6 @@ export function startRetiredCaptureSweep(
   return () => {
     stopped = true;
   };
-}
-
-/** Steers the next batch toward one that costs about the target. */
-function nextSweepBatch(batch: number, batchMs: number): number {
-  const scaled =
-    batchMs > 0 ? Math.round((batch * RETIRED_CAPTURE_SWEEP_TARGET_BATCH_MS) / batchMs) : batch * 2;
-  return Math.min(
-    RETIRED_CAPTURE_SWEEP_MAX_BATCH,
-    Math.max(RETIRED_CAPTURE_SWEEP_MIN_BATCH, scaled),
-  );
 }
 
 function snapshotCreateInput(input: CreateArtifactInput): CreateArtifactInput {
