@@ -825,13 +825,19 @@ fn launcher_for_legacy_runner(runner_path: &str) -> windows::core::Result<String
         .join("prebuilds")
         .join("win32-x64")
         .join("maka-runtime-host-task-launcher.exe");
+    let launcher = std::fs::canonicalize(launcher).map_err(|_| invalid_windows_request())?;
     if !launcher.is_file() {
         return Err(invalid_windows_request());
     }
-    launcher
-        .to_str()
-        .map(str::to_owned)
-        .ok_or_else(invalid_windows_request)
+    canonical_windows_path(&launcher).ok_or_else(invalid_windows_request)
+}
+
+fn canonical_windows_path(path: &Path) -> Option<String> {
+    let path = path.to_str()?;
+    if let Some(path) = path.strip_prefix(r"\\?\UNC\") {
+        return Some(format!(r"\\{path}"));
+    }
+    Some(path.strip_prefix(r"\\?\").unwrap_or(path).to_owned())
 }
 
 fn ownership_marker(root_id: &str, target: Target) -> String {
