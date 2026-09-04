@@ -22,18 +22,16 @@
 </h1>
 
 <p align="center">
-  <a href="https://github.com/apache/maka/stargazers"><img src="https://img.shields.io/github/stars/apache/maka?style=flat&label=%E2%98%85&color=4C8DFF" alt="GitHub stars" /></a>
-  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-4C8DFF?style=flat" alt="License: Apache 2.0" /></a>
-  <img src="https://img.shields.io/badge/macOS-arm64%20%7C%20x64-4C8DFF?style=flat&logo=apple&logoColor=white" alt="macOS Apple Silicon 与 Intel" />
-  <img src="https://img.shields.io/badge/Windows-preview-9BB8F0?style=flat&logo=windows&logoColor=white" alt="Windows 未签名预览" />
-  <img src="https://img.shields.io/badge/Linux-preview-9BB8F0?style=flat&logo=linux&logoColor=white" alt="Linux 未签名预览" />
-  <a href="https://deepwiki.com/apache/maka"><img src="https://img.shields.io/badge/DeepWiki-%E7%AC%AC%E4%B8%89%E6%96%B9%20AI%20%E6%96%87%E6%A1%A3-9BB8F0?style=flat" alt="DeepWiki：第三方 AI 生成文档" /></a>
+  <a href="https://maka.apache.org/zh-CN/"><img src="https://img.shields.io/badge/%E5%AE%98%E7%BD%91-maka.apache.org-4C8DFF?style=flat" alt="官网：maka.apache.org" /></a>
+  <a href="https://maka.apache.org/zh-CN/downloads/"><img src="https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD-4C8DFF?style=flat" alt="下载" /></a>
   <a href="./README.md"><img src="https://img.shields.io/badge/English-4C8DFF?style=flat" alt="English" /></a>
 </p>
 
 <p align="center">
-  <a href="https://maka.apache.org/zh-CN/"><img src="https://img.shields.io/badge/%E5%AE%98%E7%BD%91-maka.apache.org-4C8DFF?style=flat" alt="官网：maka.apache.org" /></a>
-  <a href="https://maka.apache.org/zh-CN/downloads/"><img src="https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD-4C8DFF?style=flat" alt="下载" /></a>
+  <a href="https://github.com/apache/maka/stargazers"><img src="https://img.shields.io/github/stars/apache/maka?style=flat&label=%E2%98%85&color=9BB8F0" alt="GitHub stars" /></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-9BB8F0?style=flat" alt="License: Apache 2.0" /></a>
+  <img src="https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-9BB8F0?style=flat" alt="平台：macOS、Windows、Linux" />
+  <a href="https://deepwiki.com/apache/maka"><img src="https://img.shields.io/badge/DeepWiki-%E7%AC%AC%E4%B8%89%E6%96%B9%20AI%20%E6%96%87%E6%A1%A3-9BB8F0?style=flat" alt="DeepWiki：第三方 AI 生成文档" /></a>
 </p>
 
 <picture>
