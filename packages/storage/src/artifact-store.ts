@@ -246,16 +246,6 @@ export interface ArtifactStoreWriteAuthority {
   close(): void;
 }
 
-export function createSqliteArtifactStore(workspaceRoot: string): ArtifactStore {
-  return new SqliteArtifactStore(
-    workspaceRoot,
-    'self_managed',
-    createSqliteArtifactMetadataRepository(workspaceRoot),
-    undefined,
-    undefined,
-  );
-}
-
 export function createSqliteArtifactStoreWriteAuthority(
   workspaceRoot: string,
   options: {
@@ -265,7 +255,6 @@ export function createSqliteArtifactStoreWriteAuthority(
 ): ArtifactStoreWriteAuthority {
   const store = new SqliteArtifactStore(
     workspaceRoot,
-    'authority',
     createSqliteArtifactMetadataRepository(workspaceRoot),
     options.assertAuthority,
     options.leaseBoundWriterLockAuthority,
@@ -282,22 +271,18 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
   private purgeIntentPath: string;
   private records: ArtifactRecord[] = [];
   private metadataReady = false;
-  private recoveryRequired: boolean;
-  private selfManagedRecoveryRequired: boolean;
+  private recoveryRequired = true;
   private recoverableOrphans = new Map<string, RecoverableOrphan>();
   private queue: Promise<void> = Promise.resolve();
 
   constructor(
     private workspaceRoot: string,
-    private readonly recoveryMode: 'self_managed' | 'authority',
     private readonly metadataRepository: ArtifactMetadataRepository,
     private readonly assertAuthority?: () => Promise<void>,
     private readonly leaseBoundWriterLockAuthority?: ArtifactWriterLockAuthority,
   ) {
     this.artifactRoot = join(workspaceRoot, 'artifacts');
     this.purgeIntentPath = join(this.artifactRoot, ARTIFACT_PURGE_INTENT_FILE);
-    this.recoveryRequired = recoveryMode === 'authority';
-    this.selfManagedRecoveryRequired = recoveryMode === 'self_managed';
   }
 
   close(): void {
@@ -334,11 +319,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     validateRelativeArtifactPath(relativePath);
     validateCanonicalArtifactTargetName(basename(relativePath));
     return this.enqueueMutation(async () => {
-      await this.prepareMutationUnlocked({
-        kind: 'create',
-        input: acceptedInput,
-        identity: { id, canonicalName: name },
-      });
+      await this.prepareMutationUnlocked();
       const existing = this.records.find((record) => record.id === id);
       if (existing) {
         return this.replayExistingArtifactUnlocked(existing, acceptedInput, {
@@ -481,11 +462,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     validateRelativeArtifactPath(relativePath);
     validateCanonicalArtifactTargetName(basename(relativePath));
     return this.enqueueMutation(async () => {
-      await this.prepareMutationUnlocked({
-        kind: 'copy',
-        input: publicationInput,
-        identity: { id: targetId, canonicalName: name },
-      });
+      await this.prepareMutationUnlocked();
       if (this.records.some((record) => record.id === targetId)) {
         throw new Error(`Artifact target already exists: ${targetId}`);
       }
@@ -817,7 +794,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
 
   async delete(artifactId: string): Promise<void> {
     await this.enqueueMutation(async () => {
-      await this.prepareMutationUnlocked({ kind: 'delete' });
+      await this.prepareMutationUnlocked();
       const existing = this.records.find((record) => record.id === artifactId);
       await this.purgeRecordsUnlocked(existing ? [existing] : []);
     });
@@ -828,7 +805,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     artifactId: string,
   ): Promise<ArtifactUserDeleteResult> {
     return this.enqueueMutation(async () => {
-      await this.prepareMutationUnlocked({ kind: 'delete' });
+      await this.prepareMutationUnlocked();
       const snapshot = this.sessionSnapshot(sessionId);
       const existing = snapshot.records.find((record) => record.id === artifactId);
       if (!existing) return { kind: 'not_found' };
@@ -840,7 +817,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
   async purge(artifactIds: readonly string[]): Promise<void> {
     const acceptedArtifactIds = Object.freeze([...artifactIds]);
     await this.enqueueMutation(async () => {
-      await this.prepareMutationUnlocked({ kind: 'purge' });
+      await this.prepareMutationUnlocked();
       const ids = new Set(acceptedArtifactIds);
       await this.purgeRecordsUnlocked(this.records.filter((record) => ids.has(record.id)));
     });
@@ -1006,40 +983,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     this.metadataRepository.applyChanges(changes);
   }
 
-  private async prepareMutationUnlocked(
-    purpose:
-      | {
-          readonly kind: 'create';
-          readonly input: CreateArtifactInput;
-          readonly identity: { readonly id: string; readonly canonicalName: string };
-        }
-      | {
-          readonly kind: 'copy';
-          readonly input: Pick<CreateArtifactInput, 'sessionId' | 'name'>;
-          readonly identity: { readonly id: string; readonly canonicalName: string };
-        }
-      | { readonly kind: 'delete' | 'purge' },
-  ): Promise<void> {
-    if (this.recoveryMode === 'self_managed') {
-      this.recoverableOrphans.clear();
-      if (this.selfManagedRecoveryRequired) {
-        await this.prepareRecoveryUnlocked();
-        this.selfManagedRecoveryRequired = false;
-      } else {
-        await this.reloadForMutationUnlocked();
-        await this.recoverPurgeIntentUnlocked();
-      }
-      if (purpose.kind === 'create' || purpose.kind === 'copy') {
-        await this.recoverCompatiblePublicationsUnlocked(purpose.input, purpose.identity);
-      }
-      if (purpose.kind === 'create') {
-        this.recoverableOrphans = await this.findCompatibleRecoverableOrphansUnlocked(
-          purpose.input,
-          purpose.identity,
-        );
-      }
-      return;
-    }
+  private async prepareMutationUnlocked(): Promise<void> {
     await this.reloadForMutationUnlocked();
     if (this.recoveryRequired) throw artifactWriteRecoveryRequired();
     if (!(await this.hasCanonicalRecoveryResidueUnlocked())) return;
@@ -1202,71 +1146,6 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     return orphans;
   }
 
-  private async findCompatibleRecoverableOrphansUnlocked(
-    input: CreateArtifactInput,
-    identity: { id: string; canonicalName: string },
-  ): Promise<Map<string, RecoverableOrphan>> {
-    const orphans = new Map<string, RecoverableOrphan>();
-    const sessionDirectory = join(this.artifactRoot, input.sessionId);
-    try {
-      await assertArtifactDirectory(this.artifactRoot, sessionDirectory);
-    } catch (error) {
-      if (isNotFound(error)) return orphans;
-      throw error;
-    }
-    const referencedPaths = new Set(
-      this.records.map((record) => filesystemPathKey(record.relativePath)),
-    );
-    for (const name of [identity.canonicalName]) {
-      const relativePath = `${input.sessionId}/${identity.id}-${name}`;
-      if (referencedPaths.has(filesystemPathKey(relativePath))) continue;
-      const path = join(this.artifactRoot, relativePath);
-      let pathStat;
-      try {
-        pathStat = await lstat(path);
-      } catch (error) {
-        if (isNotFound(error)) continue;
-        throw error;
-      }
-      if (!pathStat.isFile() || pathStat.isSymbolicLink()) continue;
-      orphans.set(filesystemPathKey(relativePath), {
-        canonicalPath: await realpath(path),
-        dev: pathStat.dev,
-        ino: pathStat.ino,
-        size: pathStat.size,
-        digest: await digestFile(path),
-      });
-    }
-    return orphans;
-  }
-
-  private async recoverCompatiblePublicationsUnlocked(
-    input: Pick<CreateArtifactInput, 'sessionId' | 'name'>,
-    identity: { id: string; canonicalName: string },
-  ): Promise<void> {
-    const sessionDirectory = join(this.artifactRoot, input.sessionId);
-    const targetHashes = new Set(
-      [identity.canonicalName].map((name) => artifactTargetHash(`${identity.id}-${name}`)),
-    );
-    let entries: Dirent[];
-    try {
-      entries = await readdir(sessionDirectory, { withFileTypes: true });
-    } catch (error) {
-      if (isNotFound(error)) return;
-      throw error;
-    }
-    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-      const match = ARTIFACT_PUBLICATION_STAGING_PATTERN.exec(entry.name);
-      if (!match || !targetHashes.has(match[1]!)) continue;
-      await this.recoverPublicationUnlocked({
-        sessionId: input.sessionId,
-        sessionDirectory,
-        stagingName: entry.name,
-        targetHash: match[1]!,
-      });
-    }
-  }
-
   private async assertNoCompatiblePayloadExistsUnlocked(
     input: Pick<CreateArtifactInput, 'sessionId' | 'name'>,
     identity: { id: string; canonicalName: string },
@@ -1306,8 +1185,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
   }
 
   private invalidateWriterState(): void {
-    if (this.recoveryMode === 'authority') this.recoveryRequired = true;
-    else this.selfManagedRecoveryRequired = true;
+    this.recoveryRequired = true;
   }
 
   private bindMutationRoot(canonicalRoot: string): void {
@@ -1317,7 +1195,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     this.purgeIntentPath = join(this.artifactRoot, ARTIFACT_PURGE_INTENT_FILE);
     this.records = [];
     this.recoverableOrphans.clear();
-    if (this.recoveryMode === 'self_managed') this.selfManagedRecoveryRequired = true;
+    this.recoveryRequired = true;
   }
 
   /**

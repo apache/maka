@@ -21,7 +21,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
-  createSqliteArtifactStore as createArtifactStore,
+  createSqliteArtifactStoreWriteAuthority,
   type CreateArtifactInput,
 } from '../../artifact-store.js';
 import {
@@ -100,7 +100,9 @@ async function runAuthorityLockHolder(workspaceRoot: string, rootId: string): Pr
 }
 
 async function runPublicWriter(workspaceRoot: string, sessionId: string): Promise<void> {
-  const store = createArtifactStore(workspaceRoot);
+  const authority = createSqliteArtifactStoreWriteAuthority(workspaceRoot);
+  await authority.recover();
+  const store = authority.store;
   try {
     await store.list(sessionId);
     await send({ type: 'ready' });
@@ -113,7 +115,7 @@ async function runPublicWriter(workspaceRoot: string, sessionId: string): Promis
     await send({ type: 'queued' });
     await send({ type: 'created', record: await mutation });
   } finally {
-    store.close?.();
+    authority.close();
   }
 }
 

@@ -44,7 +44,6 @@ import {
   type ArtifactStore,
   type ArtifactStoreWriteAuthority,
   type CreateArtifactInput,
-  createSqliteArtifactStore,
   createSqliteArtifactStoreWriteAuthority,
   isSafeRelativeArtifactPath,
   resolveArtifactPath,
@@ -62,9 +61,10 @@ function trackArtifactStoreCloser(root: string, close: () => void): void {
 }
 
 function createArtifactStore(root: string): ArtifactStore {
-  const store = createSqliteArtifactStore(root);
-  trackArtifactStoreCloser(root, () => store.close?.());
-  return store;
+  const authority = createSqliteArtifactStoreWriteAuthority(root);
+  void authority.recover().catch(() => undefined);
+  trackArtifactStoreCloser(root, () => authority.close());
+  return authority.store;
 }
 
 function createArtifactStoreWriteAuthority(root: string): ArtifactStoreWriteAuthority {
@@ -842,7 +842,7 @@ describe('SQLite Artifact store', () => {
     });
   });
 
-  test('self-managed SQLite mutation adopts an exact stable-id target-only orphan', async () => {
+  test('write authority adopts an exact stable-id orphan', async () => {
     await withWorkspace(async (root) => {
       const input = {
         ...artifactInput('target-orphan', 'orphan bytes', 1),
@@ -860,39 +860,6 @@ describe('SQLite Artifact store', () => {
         ok: true,
         text: input.content,
       });
-    });
-  });
-
-  test('self-managed SQLite mutations recover target-local publications without rescanning unrelated sessions', async () => {
-    await withWorkspace(async (root) => {
-      const store = createArtifactStore(root);
-      await store.create(artifactInput('delete-me', 'delete', 1));
-      await store.create(artifactInput('purge-me', 'purge', 2));
-
-      const unrelated = await createPublicationResidue(
-        root,
-        'unrelated',
-        'unrelated.txt',
-        'publication bytes',
-        'session-2',
-      );
-      await rm(unrelated.targetPath);
-      await writeFile(unrelated.targetPath, 'different bytes');
-
-      const created = await store.create({
-        ...artifactInput('target-only', 'created', 3),
-        sessionId: 'session-1',
-      });
-      assert.equal(created.id, 'target-only');
-      await store.delete('delete-me');
-      await store.purge(['purge-me']);
-      assert.equal(await store.get('delete-me'), null);
-      assert.equal(await store.get('purge-me'), null);
-
-      await assert.rejects(
-        () => createArtifactStoreWriteAuthority(root).recover(),
-        /Artifact publication residue does not match canonical state/,
-      );
     });
   });
 
@@ -1276,7 +1243,7 @@ describe('SQLite Artifact store', () => {
     });
   });
 
-  test('self-managed SQLite stores recover an interrupted purge before the next write', async () => {
+  test('write authority recovers an interrupted purge before the next write', async () => {
     await withWorkspace(async (root) => {
       const store = createArtifactStore(root);
       const record = await store.create(artifactInput('interrupted-purge', 'remove me', 1));

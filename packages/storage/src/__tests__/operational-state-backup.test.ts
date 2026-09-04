@@ -24,7 +24,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
-import { createSqliteArtifactStore } from '../artifact-store.js';
+import { createSqliteArtifactStoreWriteAuthority } from '../artifact-store.js';
 import { createProjectCatalog } from '../project-catalog.js';
 import { createSessionStore } from '../session-store.js';
 import {
@@ -70,7 +70,9 @@ test('backs up and restores runtime.sqlite plus artifact bytes', async () => {
     } as const;
     await sessions.appendMessage(session.id, message);
     await sessions.close?.();
-    const artifacts = createSqliteArtifactStore(stateRoot);
+    const artifactAuthority = createSqliteArtifactStoreWriteAuthority(stateRoot);
+    await artifactAuthority.recover();
+    const artifacts = artifactAuthority.store;
     const artifact = await artifacts.create({
       id: 'artifact-1',
       sessionId: session.id,
@@ -81,7 +83,7 @@ test('backs up and restores runtime.sqlite plus artifact bytes', async () => {
       source: 'tool_result',
       now: 2,
     });
-    artifacts.close?.();
+    artifactAuthority.close();
 
     await createOperationalStateBackup({ stateRoot, destinationRoot: backupRoot, now: () => 10 });
     assert.equal((await validateOperationalStateBackup(backupRoot)).createdAt, 10);
@@ -123,7 +125,9 @@ test('rejects a backup whose SQLite Artifact metadata has no matching payload', 
   const base = await mkdtemp(join(tmpdir(), 'maka-operational-backup-artifact-'));
   const stateRoot = join(base, 'state');
   try {
-    const artifacts = createSqliteArtifactStore(stateRoot);
+    const artifactAuthority = createSqliteArtifactStoreWriteAuthority(stateRoot);
+    await artifactAuthority.recover();
+    const artifacts = artifactAuthority.store;
     const artifact = await artifacts.create({
       id: 'artifact-1',
       sessionId: 'session-1',
@@ -134,7 +138,7 @@ test('rejects a backup whose SQLite Artifact metadata has no matching payload', 
       source: 'tool_result',
       now: 2,
     });
-    artifacts.close?.();
+    artifactAuthority.close();
     await rm(join(stateRoot, 'artifacts', artifact.relativePath));
 
     await assert.rejects(
