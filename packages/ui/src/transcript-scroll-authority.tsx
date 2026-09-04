@@ -158,6 +158,45 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
     publish();
   };
 
+  const recordGeometry = (target: HTMLElement): void => {
+    lastScrollHeight = target.scrollHeight;
+    lastClientHeight = target.clientHeight;
+    lastScrollTop = target.scrollTop;
+  };
+
+  /**
+   * Whether the current offset left the band content can account for.
+   *
+   * Content moves `scrollTop` only by how much the end of the transcript
+   * moved: native anchoring for arrivals and removals above the reader, and
+   * the browser clamping an offset past the new end. Inside that band the
+   * offset changed and intent did not. Outside it, the move is the reader's
+   * — including during growth, which is why a streaming answer cannot hide a
+   * scroll up inside a changed `scrollHeight`.
+   *
+   * Does not consume the geometry. The caller records it after deciding
+   * whether this observation is a scroll echo, a content resize, or the
+   * reader.
+   */
+  const offsetIsTheReader = (target: HTMLElement): boolean => {
+    const contentDelta =
+      target.scrollHeight - target.clientHeight - (lastScrollHeight - lastClientHeight);
+    const explainedLow = Math.min(0, contentDelta);
+    const explainedHigh = Math.max(0, contentDelta);
+    const topDelta = target.scrollTop - lastScrollTop;
+    const unexplained = topDelta - Math.min(explainedHigh, Math.max(explainedLow, topDelta));
+    const slack = contentDelta === 0 ? 0 : GEOMETRY_ROUNDING_PX;
+    return Math.abs(unexplained) > slack;
+  };
+
+  const hearTheReader = (): void => {
+    const distance = distanceToTail();
+    awayFromTail = distance > BUTTON_THRESHOLD_PX;
+    pinned = distance <= PIN_THRESHOLD_PX;
+    publish();
+    for (const listener of [...readerListeners]) listener();
+  };
+
   return {
     attach(next) {
       root = next;
@@ -171,54 +210,19 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
         // `scroll` does not bubble, and there is no `wheel` listener to catch
         // instead.
         if (lastWrittenTop !== undefined && Math.abs(target.scrollTop - lastWrittenTop) < 1) {
-          lastScrollHeight = target.scrollHeight;
-          lastClientHeight = target.clientHeight;
-          lastScrollTop = target.scrollTop;
+          recordGeometry(target);
           return;
         }
-        // Content moves the offset too, and only ever by how much the end of
-        // the transcript moved. Native anchoring answers content landing above
-        // the reader by pushing the offset down by exactly what was inserted,
-        // content leaving from above by pulling it up by exactly what went,
-        // and a transcript that ends before the offset by clamping it to the
-        // new end — every one of them somewhere between nothing and that whole
-        // amount. Inside that band their offset changed and their intent did
-        // not, so the pin must not be re-derived from where they now are, and
-        // nobody may be told the reader asked for anything. The affordance
-        // still follows the new distance, because that is a fact about the
-        // viewport rather than about them.
-        //
-        // Outside it, the move is the reader's, and this may not be decided
-        // from the geometry merely having changed. During growth it always
-        // has, so a reader who scrolled while an answer streamed arrived
-        // carrying a changed `scrollHeight` and was discarded along with it —
-        // the pin stayed, and the next growth wrote the view back to the tail.
-        // Scrolling away from a streaming answer is the one moment a reader
-        // most needs to be believed.
-        const maxScroll = target.scrollHeight - target.clientHeight;
-        const contentDelta = maxScroll - (lastScrollHeight - lastClientHeight);
-        const explainedLow = Math.min(0, contentDelta);
-        const explainedHigh = Math.max(0, contentDelta);
-        const topDelta = target.scrollTop - lastScrollTop;
-        const unexplained = topDelta - Math.min(explainedHigh, Math.max(explainedLow, topDelta));
-        const slack = contentDelta === 0 ? 0 : GEOMETRY_ROUNDING_PX;
-        const readerMoved = Math.abs(unexplained) > slack;
-        lastScrollHeight = target.scrollHeight;
-        lastClientHeight = target.clientHeight;
-        lastScrollTop = target.scrollTop;
-        const distance = distanceToTail();
-        awayFromTail = distance > BUTTON_THRESHOLD_PX;
+        const readerMoved = offsetIsTheReader(target);
+        recordGeometry(target);
         if (!readerMoved) {
+          awayFromTail = distanceToTail() > BUTTON_THRESHOLD_PX;
           publish();
           return;
         }
-        pinned = distance <= PIN_THRESHOLD_PX;
-        publish();
-        for (const listener of [...readerListeners]) listener();
+        hearTheReader();
       };
-      lastScrollHeight = target.scrollHeight;
-      lastClientHeight = target.clientHeight;
-      lastScrollTop = target.scrollTop;
+      recordGeometry(target);
       target.addEventListener('scroll', onScroll, { passive: true });
       // Everything that moves the tail without the reader asking, watched in
       // one place: the scroller's own box, because the tail also moves when the
@@ -232,7 +236,19 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
       // an observer that knows which nodes matter is an observer that can be
       // wrong about it.
       const box = new ResizeObserver(() => {
+        // Pin is only updated on scroll events. ResizeObserver often lands
+        // first — a reader uncovering estimated Turns is itself a layout
+        // change — and writing the tail while the scroll event is still in
+        // flight would put them back where they just left. The classifier
+        // is the same one the event will run; it is not an echo check,
+        // because growth under a pin leaves `scrollTop` on lastWrittenTop
+        // until this write happens.
         if (pinned) {
+          if (offsetIsTheReader(target)) {
+            recordGeometry(target);
+            hearTheReader();
+            return;
+          }
           writeToTail();
           return;
         }

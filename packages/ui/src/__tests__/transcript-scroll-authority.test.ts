@@ -164,6 +164,31 @@ test('a scroll this authority did not write is the reader, and releases the tail
   });
 });
 
+test('a resize that lands before the reader\'s scroll event does not yank them back', () => {
+  withObservers((resize) => {
+    const root = fakeRoot();
+    const authority = createTranscriptScrollAuthority();
+    authority.attach(root as unknown as HTMLElement);
+    assert.equal(root.scrollTop, 2_400);
+
+    // The reader left the tail. The scroll event is still in flight, and a
+    // layout pass (content-visibility resolving a Turn they just uncovered)
+    // delivers ResizeObserver first. Writing the tail now would put them
+    // back where they just left.
+    root.scrollTop = 1_900;
+    resize();
+    assert.equal(root.scrollTop, 1_900);
+    assert.equal(authority.getSnapshot().pinned, false);
+
+    root.emitScroll();
+    assert.equal(authority.getSnapshot().pinned, false);
+
+    root.grow(500);
+    resize();
+    assert.equal(root.scrollTop, 1_900);
+  });
+});
+
 test('returning to the tail re-pins, and following resumes', () => {
   withObservers((resize) => {
     const root = fakeRoot();
