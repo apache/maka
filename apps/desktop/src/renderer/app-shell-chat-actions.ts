@@ -75,6 +75,7 @@ type ComposerImportOwner = {
   sessionId: string | undefined;
   navSection: NavSelection['section'];
   newTaskDraftKey?: string;
+  newTaskSurfaceOwnerToken?: number;
 };
 
 type RefBox<T> = { current: T };
@@ -116,7 +117,7 @@ type MessageContextOptions = {
 type SendOptions = MessageContextOptions & {
   turnOrchestration?: TurnOrchestration;
   displayText?: string;
-  onSessionResolved?: (sessionId: string) => void;
+  onSessionResolved?: (sessionId: string, surfaceOwnerToken: number | undefined) => void;
 };
 
 function copiedArray<K extends string, T>(
@@ -552,7 +553,9 @@ export function createAppShellChatActions(deps: {
         unsentSessionId = undefined;
         // The callback fires only when this send's first message projected;
         // an unreconciled first message stays unreported.
-        if (submitted.kind === 'projected') options.onSessionResolved?.(session.id);
+        if (submitted.kind === 'projected') {
+          options.onSessionResolved?.(session.id, sendOwner.newTaskSurfaceOwnerToken);
+        }
         await refreshSessions();
         return true;
       }

@@ -296,16 +296,16 @@ describe('composer first-send cleanup', () => {
 
     try {
       const actions = createAppShellChatActions(createActionsDeps());
-      let resolved = 0;
+      const resolved: Array<{ sessionId: string; surfaceOwnerToken: number | undefined }> = [];
       assert.equal(
         await actions.send('hello', undefined, {
-          onSessionResolved: () => {
-            resolved += 1;
+          onSessionResolved: (sessionId, surfaceOwnerToken) => {
+            resolved.push({ sessionId, surfaceOwnerToken });
           },
         }),
         true,
       );
-      assert.equal(resolved, 1);
+      assert.deepEqual(resolved, [{ sessionId: 'session-1', surfaceOwnerToken: 7 }]);
     } finally {
       restoreWindow();
     }

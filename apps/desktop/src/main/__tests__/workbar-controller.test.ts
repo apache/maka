@@ -169,7 +169,7 @@ function workBoardInput(
   activeSession: SessionSummary | undefined,
   toastApi: ToastApi = createFakeToastApi(),
   overrides: Partial<UseWorkbarControllerInput> = {},
-  nonceRef: { current: number } = { current: 0 },
+  ownerRef: { current: number } = { current: 0 },
 ): UseWorkbarControllerInput {
   return {
     ...input(activeSession, toastApi),
@@ -183,12 +183,10 @@ function workBoardInput(
     }),
     prepareWorkBoardDraft: (target, draft) => workBoardDraftKey(target),
     openNewTaskSurface: () => {
-      // The real app-shell increments the owner nonce when it opens a fresh
-      // New Task surface.
-      nonceRef.current += 1;
+      ownerRef.current += 1;
+      return ownerRef.current;
     },
     composerRef: { current: { setDraft: () => undefined, focus: () => undefined } },
-    newTaskSurfaceNonce: nonceRef.current,
     ...overrides,
   };
 }
@@ -632,33 +630,28 @@ describe('useWorkbarController', () => {
         },
       },
     });
-    const nonceRef = { current: 0 };
+    const ownerRef = { current: 0 };
     const opened: number[] = [];
     const controllerInput = workBoardInput(session('a'), createFakeToastApi(), {
       openNewTaskSurface: () => {
-        nonceRef.current += 1;
+        ownerRef.current += 1;
         opened.push(1);
+        return ownerRef.current;
       },
-    }, nonceRef);
+    }, ownerRef);
 
     await act(async () => renderController(root, services, controllerInput));
     await act(async () =>
       controller().host.onStartWorkBoardTask?.(workBoardItem('A')),
     );
     assert.equal(opened.length, 1);
-    assert.equal(nonceRef.current, 1);
-    // Re-render so the claim backfills the nonce of the freshly opened surface.
-    await act(async () =>
-      renderController(root, services, {
-        ...controllerInput,
-        newTaskSurfaceNonce: nonceRef.current,
-      }),
-    );
+    assert.equal(ownerRef.current, 1);
 
-    // The first send on the claimed surface links item A.
+    // The synchronous owner handoff links without an intervening render.
     await act(async () =>
       controller().commands.onNewTaskSessionResolved(
         JSON.stringify(['host-1', 'session-1']),
+        ownerRef.current,
       ),
     );
     assert.deepEqual(links, [{ id: 'A', sessionId: 'session-1' }]);
@@ -667,7 +660,7 @@ describe('useWorkbarController', () => {
   it('does not let a New Task reopened on the same Host/project consume the claim', async () => {
     // Regression for the review: the draft key is derived only from
     // (profileId, hostId, projectId), so two surfaces on the same target share
-    // a draft key. The claim must be bound to the surface owner nonce instead.
+    // a draft key. The claim must be bound to the surface owner token instead.
     const { root } = installReactRenderer();
     const links: Array<{ id: string; sessionId: string }> = [];
     const defaults = createFakeWorkbarServices();
@@ -679,47 +672,35 @@ describe('useWorkbarController', () => {
         },
       },
     });
-    const nonceRef = { current: 0 };
+    const ownerRef = { current: 0 };
     const opened: number[] = [];
     const controllerInput = workBoardInput(session('a'), createFakeToastApi(), {
       openNewTaskSurface: () => {
-        nonceRef.current += 1;
+        ownerRef.current += 1;
         opened.push(1);
+        return ownerRef.current;
       },
-    }, nonceRef);
+    }, ownerRef);
 
     await act(async () => renderController(root, services, controllerInput));
     await act(async () =>
       controller().host.onStartWorkBoardTask?.(workBoardItem('A')),
     );
-    assert.equal(nonceRef.current, 1);
-    // Re-render after the open so the claim sees the freshly opened surface.
-    await act(async () =>
-      renderController(root, services, {
-        ...controllerInput,
-        newTaskSurfaceNonce: nonceRef.current,
-      }),
-    );
+    assert.equal(ownerRef.current, 1);
 
     // The user abandons that surface and opens a fresh New Task on the SAME
-    // Host/project (a new owner nonce, identical draft key).
-    nonceRef.current += 1;
-    await act(async () =>
-      renderController(root, services, {
-        ...controllerInput,
-        newTaskSurfaceNonce: nonceRef.current,
-      }),
-    );
+    // Host/project (a new owner token, identical draft key).
+    ownerRef.current += 1;
     // A first send there must not consume the claim or link item A.
     await act(async () =>
-      controller().commands.onNewTaskSessionResolved('session-B'),
+      controller().commands.onNewTaskSessionResolved('session-B', ownerRef.current),
     );
     assert.deepEqual(links, []);
 
     // The mismatched send abandoned the claim, so a later send on the
     // original surface must not resurrect it either.
     await act(async () =>
-      controller().commands.onNewTaskSessionResolved('session-A'),
+      controller().commands.onNewTaskSessionResolved('session-A', 1),
     );
     assert.deepEqual(links, []);
   });
@@ -736,33 +717,22 @@ describe('useWorkbarController', () => {
         },
       },
     });
-    const nonceRef = { current: 0 };
+    const ownerRef = { current: 0 };
     const controllerInput = workBoardInput(session('a'), createFakeToastApi(), {
       openNewTaskSurface: () => {
-        nonceRef.current += 1;
+        ownerRef.current += 1;
+        return ownerRef.current;
       },
-    }, nonceRef);
+    }, ownerRef);
 
     await act(async () => renderController(root, services, controllerInput));
     await act(async () =>
       controller().host.onStartWorkBoardTask?.(workBoardItem('A')),
     );
-    await act(async () =>
-      renderController(root, services, {
-        ...controllerInput,
-        newTaskSurfaceNonce: nonceRef.current,
-      }),
-    );
     // A different New Task surface (project B) is opened and sends first.
-    nonceRef.current += 1;
+    ownerRef.current += 1;
     await act(async () =>
-      renderController(root, services, {
-        ...controllerInput,
-        newTaskSurfaceNonce: nonceRef.current,
-      }),
-    );
-    await act(async () =>
-      controller().commands.onNewTaskSessionResolved('session-B'),
+      controller().commands.onNewTaskSessionResolved('session-B', ownerRef.current),
     );
     assert.deepEqual(links, []);
   });
@@ -783,28 +753,24 @@ describe('useWorkbarController', () => {
         },
       },
     });
-    const nonceRef = { current: 0 };
+    const ownerRef = { current: 0 };
     const opened: number[] = [];
     const controllerInput = workBoardInput(session('a'), createFakeToastApi(errors), {
       openNewTaskSurface: () => {
-        nonceRef.current += 1;
+        ownerRef.current += 1;
         opened.push(1);
+        return ownerRef.current;
       },
-    }, nonceRef);
+    }, ownerRef);
 
     await act(async () => renderController(root, services, controllerInput));
     await act(async () =>
       controller().host.onStartWorkBoardTask?.(workBoardItem('A')),
     );
     await act(async () =>
-      renderController(root, services, {
-        ...controllerInput,
-        newTaskSurfaceNonce: nonceRef.current,
-      }),
-    );
-    await act(async () =>
       controller().commands.onNewTaskSessionResolved(
         JSON.stringify(['host-1', 'session-1']),
+        ownerRef.current,
       ),
     );
     // First attempt fails; the claim (with its Session id) must be retained.

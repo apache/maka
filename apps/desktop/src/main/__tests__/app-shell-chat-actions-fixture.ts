@@ -99,6 +99,7 @@ export function createActionsDeps() {
     captureComposerImportOwner: () => ({
       sessionId: undefined,
       navSection: 'sessions' as const,
+      newTaskSurfaceOwnerToken: 7,
     }),
     checkTaskSubmissionReadiness: async () => true,
     isNewChatSendSurfaceActive: () => true,
