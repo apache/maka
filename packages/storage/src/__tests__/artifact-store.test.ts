@@ -1599,7 +1599,7 @@ async function writeArtifactMetadata(
 ): Promise<string> {
   const repository = createSqliteArtifactMetadataRepository(root);
   try {
-    repository.replaceAll(records);
+    repository.applyChanges({ upserts: records });
   } finally {
     repository.close();
   }

@@ -19,9 +19,14 @@
 
 import type { ArtifactRecord } from '@maka/core/artifacts';
 
+export interface ArtifactMetadataChanges {
+  readonly upserts?: readonly ArtifactRecord[];
+  readonly deleteIds?: readonly string[];
+}
+
 export interface ArtifactMetadataRepository {
   ready(): Promise<void>;
   readAll(): ArtifactRecord[];
-  replaceAll(records: readonly ArtifactRecord[]): void;
+  applyChanges(changes: ArtifactMetadataChanges): void;
   close(): void;
 }
