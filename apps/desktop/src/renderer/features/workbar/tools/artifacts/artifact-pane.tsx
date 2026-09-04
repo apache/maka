@@ -65,7 +65,6 @@ import type { UiLocale } from '@maka/core/ui-locale';
 import { formatRelativeTimestamp } from '@maka/core/relative-time';
 import { generalizedErrorMessageForLocale, redactSecrets } from '@maka/core/redaction';
 import {
-  Badge,
   Banner,
   Button,
   MoreMenu,
@@ -143,9 +142,7 @@ export function ArtifactPane(props: {
       return;
     }
     try {
-      const next = await artifacts.list(sessionId, {
-        includeDeleted: true,
-      });
+      const next = await artifacts.list(sessionId);
       if (artifactPaneMountedRef.current && requestSeq === artifactListRequestSeqRef.current) {
         recordsSessionIdRef.current = sessionId;
         setRecordsSessionId(sessionId);
@@ -169,21 +166,10 @@ export function ArtifactPane(props: {
 
   useEffect(() => {
     void refresh();
-    if (!sessionId) return;
-    // Keep the list in sync without polling. The
-    // backend emits `{ reason: 'created' | 'deleted' | 'purged' }` on the
-    // `artifacts:changed` channel; we just re-list since the list is bounded
-    // (one session's worth) and the metadata is already in memory on main.
-    const unsubscribe = artifacts.subscribeChanges((event) => {
-      if (event.sessionId === sessionId) {
-        void refresh();
-      }
-    });
     return () => {
       artifactListRequestSeqRef.current += 1;
-      unsubscribe();
     };
-  }, [artifacts, sessionId, refresh]);
+  }, [sessionId, refresh]);
 
   const activeRecords = useMemo(
     () => (recordsSessionId === sessionId ? filterUserVisibleArtifacts(records) : []),
@@ -194,7 +180,6 @@ export function ArtifactPane(props: {
     props.onCountChange?.(activeRecords.length);
   }, [activeRecords.length, props.onCountChange]);
 
-  // 已删除墓碑记录保持可选，用于展示明确失败态；只有选中 id 彻底消失时才回退到最新 live artifact。
   useEffect(() => {
     if (activeRecords.length === 0) {
       if (selectedId !== null) setSelectedId(null);
@@ -494,7 +479,6 @@ export function ArtifactPane(props: {
                   // ArrowUp/Down.
                   tabIndex={-1}
                   data-selected={record.id === selectedId ? 'true' : 'false'}
-                  data-deleted={record.status === 'deleted' ? 'true' : 'false'}
                   onClick={() => openPreview(record.id)}
                   label={record.name}
                   icon={(
@@ -508,9 +492,6 @@ export function ArtifactPane(props: {
                       <span className="maka-artifact-row-time">
                         {formatRelativeTimestamp(record.createdAt, Date.now(), locale)}
                       </span>
-                      {record.status === 'deleted' && (
-                        <Badge variant="error" className="maka-artifact-row-badge" label={copy.pane.deletedBadge} />
-                      )}
                     </span>
                   )}
                 />
@@ -619,8 +600,6 @@ function saveArtifactFailureCopy(reason: string, copy: ArtifactCopy): string {
       return copy.pane.saveFailures.not_found;
     case 'not_allowed':
       return copy.pane.saveFailures.not_allowed;
-    case 'deleted':
-      return copy.pane.saveFailures.deleted;
     case 'write_failed':
       return copy.pane.saveFailures.write_failed;
     default:
@@ -661,5 +640,5 @@ function KindIcon(props: { kind: ArtifactKind }) {
    formatter cache. Removed; we import the shared helper. */
 
 function preferredArtifactSelectionId(records: readonly ArtifactDescriptor[]): string | null {
-  return (records.find((record) => record.status !== 'deleted') ?? records[0])?.id ?? null;
+  return records[0]?.id ?? null;
 }

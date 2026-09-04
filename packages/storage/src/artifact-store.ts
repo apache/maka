@@ -44,7 +44,6 @@ import {
   ArtifactRecord,
   ArtifactSource,
   ArtifactTextReadResult,
-  canUserDeleteArtifact,
   isArtifactTurnKey,
   isCanonicalArtifactEntityId,
 } from '@maka/core/artifacts';
@@ -92,7 +91,7 @@ interface ArtifactSessionSnapshot {
 
 type ArtifactReadFailure = {
   readonly ok: false;
-  readonly reason: 'not_found' | 'too_large' | 'read_failed' | 'not_allowed' | 'deleted';
+  readonly reason: 'not_found' | 'too_large' | 'read_failed' | 'not_allowed';
 };
 
 interface PreparedArtifactRead {
@@ -180,12 +179,9 @@ export interface ConversationArtifactCopyResult {
 }
 
 export interface ArtifactStoreReader {
-  list(sessionId: string, opts?: { includeDeleted?: boolean }): Promise<ArtifactRecord[]>;
+  list(sessionId: string): Promise<ArtifactRecord[]>;
   get(artifactId: string): Promise<ArtifactRecord | null>;
-  readText(
-    artifactId: string,
-    opts?: { maxBytes?: number; includeDeleted?: boolean },
-  ): Promise<ArtifactTextReadResult>;
+  readText(artifactId: string, opts?: { maxBytes?: number }): Promise<ArtifactTextReadResult>;
   readBinary(artifactId: string, opts?: { maxBytes?: number }): Promise<ArtifactBinaryReadResult>;
 }
 
@@ -209,9 +205,8 @@ export interface ArtifactStore extends ArtifactStoreReader, DurableArtifactAttac
 }
 
 export type ArtifactUserDeleteResult =
-  | { readonly kind: 'deleted'; readonly record: ArtifactRecord }
-  | { readonly kind: 'not_found' }
-  | { readonly kind: 'protected' };
+  | { readonly kind: 'deleted' }
+  | { readonly kind: 'not_found' };
 
 export interface ArtifactAuthorityStore extends ArtifactStore {
   copyConversationArtifacts(
@@ -380,7 +375,6 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
           ...(acceptedInput.deepResearchRole
             ? { deepResearchRole: acceptedInput.deepResearchRole }
             : {}),
-          status: 'live',
         },
         (tempPath) => writeFile(tempPath, acceptedInput.content, { flag: 'wx' }),
       );
@@ -426,10 +420,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
       for (const [sessionId, artifactIds] of requestedLinkedArtifactIds) {
         for (const artifactId of artifactIds) {
           const record = this.records.find(
-            (candidate) =>
-              candidate.sessionId === sessionId &&
-              candidate.id === artifactId &&
-              candidate.status !== 'deleted',
+            (candidate) => candidate.sessionId === sessionId && candidate.id === artifactId,
           );
           // A linked child result names every Artifact its turn held, and the
           // ledger naming them cannot be rewritten. One that is no longer
@@ -462,9 +453,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
         input.targetSessionId,
         record.id,
       );
-      const prepared = await this.enqueue(() =>
-        this.prepareRecordRead(record, record.sizeBytes, true),
-      );
+      const prepared = await this.enqueue(() => this.prepareRecordRead(record, record.sizeBytes));
       if (!prepared.ok) {
         throw new Error(`Artifact ${record.id} could not be copied: ${prepared.reason}`);
       }
@@ -590,7 +579,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
 
   async purgeSessionArtifacts(sessionId: string): Promise<void> {
     assertCanonicalArtifactEntityId(sessionId, 'sessionId');
-    const records = await this.list(sessionId, { includeDeleted: true });
+    const records = await this.list(sessionId);
     if (records.length > 0) await this.purge(records.map((record) => record.id));
   }
 
@@ -635,14 +624,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
       throw artifactReplayConflict(canonical.id);
     }
 
-    if (existing.status === 'live') return { ...existing };
-    const revived: ArtifactRecord = { ...existing, status: 'live' };
-    const nextRecords = this.records.map((record) =>
-      record.id === canonical.id ? revived : record,
-    );
-    await this.writeMetadataUnlocked({ upserts: [revived] });
-    this.records = nextRecords;
-    return { ...revived };
+    return { ...existing };
   }
 
   recoverForWriteWithAuthority(): Promise<void> {
@@ -655,17 +637,12 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     });
   }
 
-  async list(
-    sessionId: string,
-    opts: { includeDeleted?: boolean } = {},
-  ): Promise<ArtifactRecord[]> {
-    const includeDeleted = opts.includeDeleted ?? false;
+  async list(sessionId: string): Promise<ArtifactRecord[]> {
     return this.enqueue(async () => {
       await this.load();
       return (
         this.records
           .filter((record) => record.sessionId === sessionId)
-          .filter((record) => includeDeleted || record.status !== 'deleted')
           // Secondary `id` sort for determinism when fixture artifacts share
           // a frozen createdAt (PR108k-yj e2e-fixture determinism).
           .sort(compareArtifactRecords)
@@ -707,7 +684,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
       await this.load();
       const snapshot = this.sessionSnapshot(sessionId);
       return snapshot.records
-        .filter((record) => record.turnId === turnId && record.status !== 'deleted')
+        .filter((record) => record.turnId === turnId)
         .map((record) => ({ ...record }));
     });
   }
@@ -726,12 +703,11 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
 
   async readText(
     artifactId: string,
-    opts: { maxBytes?: number; includeDeleted?: boolean } = {},
+    opts: { maxBytes?: number } = {},
   ): Promise<ArtifactTextReadResult> {
     const prepared = await this.prepareRead(
       artifactId,
       opts.maxBytes ?? ARTIFACT_TEXT_PREVIEW_LIMIT_BYTES,
-      opts.includeDeleted ?? false,
     );
     return this.readPreparedText(prepared);
   }
@@ -743,7 +719,6 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     const prepared = await this.prepareRead(
       artifactId,
       opts.maxBytes ?? ARTIFACT_BINARY_PREVIEW_LIMIT_BYTES,
-      false,
     );
     return this.readPreparedBinary(prepared);
   }
@@ -816,7 +791,6 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
       const prepared = await this.prepareRecordRead(
         record,
         input.maxBytes ?? ARTIFACT_BINARY_PREVIEW_LIMIT_BYTES,
-        false,
       );
       return this.readPreparedBinary(prepared);
     });
@@ -844,16 +818,8 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
   async delete(artifactId: string): Promise<void> {
     await this.enqueueMutation(async () => {
       await this.prepareMutationUnlocked({ kind: 'delete' });
-      const existing = this.records.find(
-        (record) => record.id === artifactId && record.status !== 'deleted',
-      );
-      if (!existing) return;
-      const tombstone: ArtifactRecord = { ...existing, status: 'deleted' };
-      const nextRecords: ArtifactRecord[] = this.records.map((record) =>
-        record.id === artifactId ? tombstone : record,
-      );
-      await this.writeMetadataUnlocked({ upserts: [tombstone] });
-      this.records = nextRecords;
+      const existing = this.records.find((record) => record.id === artifactId);
+      await this.purgeRecordsUnlocked(existing ? [existing] : []);
     });
   }
 
@@ -866,17 +832,8 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
       const snapshot = this.sessionSnapshot(sessionId);
       const existing = snapshot.records.find((record) => record.id === artifactId);
       if (!existing) return { kind: 'not_found' };
-      if (!canUserDeleteArtifact(existing)) return { kind: 'protected' };
-      if (existing.status === 'deleted') {
-        return { kind: 'deleted', record: { ...existing } };
-      }
-      const tombstone: ArtifactRecord = { ...existing, status: 'deleted' };
-      const nextRecords = this.records.map((record) =>
-        record.id === existing.id ? tombstone : record,
-      );
-      await this.writeMetadataUnlocked({ upserts: [tombstone] });
-      this.records = nextRecords;
-      return { kind: 'deleted', record: { ...tombstone } };
+      await this.purgeRecordsUnlocked([existing]);
+      return { kind: 'deleted' };
     });
   }
 
@@ -1007,11 +964,10 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
   private async prepareRead(
     artifactId: string,
     maxBytes: number,
-    includeDeleted = false,
   ): Promise<PreparedArtifactRead | ArtifactReadFailure> {
     const record = await this.get(artifactId);
     if (!record) return { ok: false, reason: 'not_found' };
-    return this.prepareRecordRead(record, maxBytes, includeDeleted);
+    return this.prepareRecordRead(record, maxBytes);
   }
 
   private async prepareReadInSessionUnlocked(
@@ -1023,15 +979,13 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     const snapshot = this.sessionSnapshot(sessionId);
     const record = snapshot.records.find((candidate) => candidate.id === artifactId);
     if (!record) return { ok: false, reason: 'not_found' };
-    return this.prepareRecordRead(record, maxBytes, false);
+    return this.prepareRecordRead(record, maxBytes);
   }
 
   private async prepareRecordRead(
     record: ArtifactRecord,
     maxBytes: number,
-    includeDeleted: boolean,
   ): Promise<PreparedArtifactRead | ArtifactReadFailure> {
-    if (record.status === 'deleted' && !includeDeleted) return { ok: false, reason: 'deleted' };
     const resolved = await resolveArtifactPath({
       artifactRoot: this.artifactRoot,
       relativePath: record.relativePath,
@@ -1201,7 +1155,6 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
       ...(input.source ? { source: input.source } : {}),
       ...(input.summary ? { summary: input.summary } : {}),
       ...(input.deepResearchRole ? { deepResearchRole: input.deepResearchRole } : {}),
-      status: 'live',
     };
     const nextRecords = [...this.records, record];
     await this.writeMetadataUnlocked({ upserts: [record] });
@@ -1733,8 +1686,7 @@ function sameArtifactRecord(a: ArtifactRecord, b: ArtifactRecord): boolean {
     a.mimeType === b.mimeType &&
     a.source === b.source &&
     a.summary === b.summary &&
-    a.deepResearchRole === b.deepResearchRole &&
-    a.status === b.status
+    a.deepResearchRole === b.deepResearchRole
   );
 }
 

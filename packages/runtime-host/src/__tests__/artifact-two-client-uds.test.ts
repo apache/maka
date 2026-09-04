@@ -168,11 +168,11 @@ test('production Host recovers Artifact publication and preserves deletes across
         desktop.request('artifact.delete', { sessionId, artifactId: deleteA }),
         tui.request('artifact.delete', { sessionId, artifactId: deleteB }),
       ]);
-      assert.equal(deletedA.artifact.status, 'deleted');
-      assert.equal(deletedB.artifact.status, 'deleted');
-      assert.deepEqual(
-        await desktop.request('artifact.delete', { sessionId, artifactId: deleteA }),
-        deletedA,
+      assert.deepEqual(deletedA, { kind: 'deleted' });
+      assert.deepEqual(deletedB, { kind: 'deleted' });
+      await assert.rejects(
+        desktop.request('artifact.delete', { sessionId, artifactId: deleteA }),
+        operationError('not_found'),
       );
       await assert.rejects(
         tui.request('artifact.delete', {
@@ -182,20 +182,14 @@ test('production Host recovers Artifact publication and preserves deletes across
         operationError('not_found'),
       );
 
-      const protectedBefore = await Promise.all(
-        PROTECTED_ARTIFACTS.map(({ id }) => getArtifact(desktop, sessionId, id)),
-      );
       for (const [index, artifact] of PROTECTED_ARTIFACTS.entries()) {
         const client = index % 2 === 0 ? desktop : tui;
-        await assert.rejects(
-          client.request('artifact.delete', { sessionId, artifactId: artifact.id }),
-          operationError('operation_conflict'),
-        );
+        const deleted = await client.request('artifact.delete', {
+          sessionId,
+          artifactId: artifact.id,
+        });
+        assert.deepEqual(deleted, { kind: 'deleted' });
       }
-      const protectedAfter = await Promise.all(
-        PROTECTED_ARTIFACTS.map(({ id }) => getArtifact(tui, sessionId, id)),
-      );
-      assert.deepEqual(protectedAfter, protectedBefore);
 
       const stale = await tui.request('artifact.query', {
         kind: 'list_continue',
@@ -226,34 +220,17 @@ test('production Host recovers Artifact publication and preserves deletes across
     successor = await startHost(root, capability.rootId);
     const observer = await connectClient(root);
     try {
-      for (const artifactId of [deleteA, deleteB]) {
+      for (const artifactId of [...PROTECTED_ARTIFACTS.map(({ id }) => id), deleteA, deleteB]) {
         const getResult = await getArtifact(observer, sessionId, artifactId);
         const readResult = await observer.request('artifact.query', {
           kind: 'read_text',
           sessionId,
           artifactId,
         });
-        assert.equal(getResult.artifact?.status, 'deleted');
+        assert.equal(getResult.artifact, null);
         assert.equal(readResult.kind, 'text');
         if (readResult.kind === 'text') {
-          assert.deepEqual(readResult.preview, { ok: false, reason: 'deleted' });
-        }
-      }
-      for (const artifact of PROTECTED_ARTIFACTS) {
-        const getResult = await getArtifact(observer, sessionId, artifact.id);
-        assert.equal(getResult.artifact?.status, 'live');
-        assert.equal(getResult.artifact?.source, artifact.source);
-        const readResult = await observer.request('artifact.query', {
-          kind: 'read_text',
-          sessionId,
-          artifactId: artifact.id,
-        });
-        assert.equal(readResult.kind, 'text');
-        if (readResult.kind === 'text') {
-          assert.deepEqual(readResult.preview, {
-            ok: true,
-            text: `protected ${artifact.source}`,
-          });
+          assert.deepEqual(readResult.preview, { ok: false, reason: 'not_found' });
         }
       }
     } finally {

@@ -20,13 +20,11 @@
 import {
   ARTIFACT_KINDS,
   ARTIFACT_SOURCES,
-  ARTIFACT_STATUSES,
   type ArtifactRecord,
   type ArtifactBinaryReadFailureReason,
   type ArtifactKind,
   type ArtifactReadFailureReason,
   type ArtifactSource,
-  type ArtifactStatus,
   isArtifactTurnKey,
   isCanonicalArtifactEntityId,
 } from '@maka/core/artifacts';
@@ -56,7 +54,7 @@ const QUERY_ERRORS = [
   'not_found',
   'persistence_failed',
 ] as const;
-const DELETE_ERRORS = [...QUERY_ERRORS, 'operation_conflict'] as const;
+const DELETE_ERRORS = QUERY_ERRORS;
 const ARTIFACT_REQUIRED_FIELDS = [
   'id',
   'sessionId',
@@ -65,7 +63,6 @@ const ARTIFACT_REQUIRED_FIELDS = [
   'name',
   'kind',
   'sizeBytes',
-  'status',
 ] as const;
 const ARTIFACT_FIELDS = new Set([...ARTIFACT_REQUIRED_FIELDS, 'mimeType', 'source', 'summary']);
 
@@ -82,7 +79,6 @@ export interface ArtifactProjection {
   readonly mimeType?: string;
   readonly source?: ArtifactSource;
   readonly summary?: string;
-  readonly status: ArtifactStatus;
 }
 
 export type ArtifactQueryInput =
@@ -158,7 +154,6 @@ export interface ArtifactDeleteInput {
 
 export interface ArtifactDeleteResult {
   readonly kind: 'deleted';
-  readonly artifact: ArtifactProjection;
 }
 
 export type ArtifactIngestInput =
@@ -549,9 +544,9 @@ export function decodeArtifactQueryResult(value: unknown): ArtifactQueryResult {
 export const encodeArtifactQueryResult = decodeArtifactQueryResult;
 
 export function decodeArtifactDeleteResult(value: unknown): ArtifactDeleteResult {
-  const result = requireExactRecord(value, 'artifact delete result', ['kind', 'artifact']);
+  const result = requireExactRecord(value, 'artifact delete result', ['kind']);
   if (result.kind !== 'deleted') throw invalidProtocolFrame('Invalid artifact delete result kind');
-  const decoded = { kind: 'deleted' as const, artifact: decodeArtifactProjection(result.artifact) };
+  const decoded = { kind: 'deleted' as const };
   assertResultSize(decoded);
   return decoded;
 }
@@ -574,7 +569,6 @@ export function encodeArtifactProjection(record: ArtifactRecord): ArtifactProjec
     ...(record.summary === undefined
       ? {}
       : { summary: projectArtifactText(record.summary, ARTIFACT_SUMMARY_MAX_BYTES) }),
-    status: record.status,
   };
 }
 
@@ -594,7 +588,6 @@ function decodeArtifactProjection(value: unknown): ArtifactProjection {
     name: boundedText(record.name, 'artifact name', ARTIFACT_NAME_MAX_BYTES),
     kind: artifactKind(record.kind),
     sizeBytes: requireCount(record.sizeBytes, 'artifact sizeBytes'),
-    status: artifactStatus(record.status),
     ...(Object.hasOwn(record, 'mimeType')
       ? {
           mimeType: boundedText(record.mimeType, 'artifact mimeType', ARTIFACT_MIME_TYPE_MAX_BYTES),
@@ -678,7 +671,7 @@ function boundedText(value: unknown, label: string, maxBytes: number, allowEmpty
 function boundedIngestText(value: unknown, label: string, maxBytes: number): string {
   const text = boundedText(value, label, maxBytes);
   // eslint-disable-next-line no-control-regex
-  if (/[ -]/.test(text)) throw invalidProtocolFrame(`Invalid ${label}`);
+  if (/[\x00-\x1f\x7f]/.test(text)) throw invalidProtocolFrame(`Invalid ${label}`);
   return text;
 }
 
@@ -728,20 +721,12 @@ function artifactSource(value: unknown): ArtifactSource {
   return value as ArtifactSource;
 }
 
-function artifactStatus(value: unknown): ArtifactStatus {
-  if (typeof value !== 'string' || !ARTIFACT_STATUSES.includes(value as ArtifactStatus)) {
-    throw invalidProtocolFrame('Invalid artifact status');
-  }
-  return value as ArtifactStatus;
-}
-
 function readFailureReason(value: unknown): ArtifactReadFailureReason {
   if (
     value === 'not_found' ||
     value === 'too_large' ||
     value === 'read_failed' ||
-    value === 'not_allowed' ||
-    value === 'deleted'
+    value === 'not_allowed'
   ) {
     return value;
   }

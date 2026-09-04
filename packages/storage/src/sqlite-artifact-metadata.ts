@@ -99,7 +99,7 @@ class SqliteArtifactMetadataRepository implements ArtifactMetadataRepository {
           record.id,
           record.sessionId,
           record.createdAt,
-          record.status,
+          'live',
           record.relativePath,
           JSON.stringify(record),
         );

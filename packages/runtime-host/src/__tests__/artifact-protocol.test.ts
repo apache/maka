@@ -55,6 +55,11 @@ describe('Artifact protocol', () => {
     assert.doesNotThrow(() =>
       request('artifact.delete', { sessionId: 'session-1', artifactId: 'artifact-1' }),
     );
+    assert.doesNotThrow(() => response('artifact.delete', { kind: 'deleted' }));
+    assert.throws(
+      () => response('artifact.delete', { kind: 'deleted', artifact: validArtifact() }),
+      isInvalidFrame,
+    );
 
     for (const input of [
       { kind: 'list_start', sessionId: 'session-1', includeDeleted: false },
@@ -243,18 +248,15 @@ describe('Artifact protocol', () => {
   test('keeps operation failures closed and typed', () => {
     assert.doesNotThrow(() => failure('artifact.delete', 'not_found', 'Artifact was not found'));
     assert.doesNotThrow(() =>
-      failure(
-        'artifact.delete',
-        'operation_conflict',
-        'Protected runtime evidence cannot be deleted through Runtime Host',
-      ),
-    );
-    assert.doesNotThrow(() =>
       failure('artifact.query', 'persistence_failed', 'Artifact projection is unavailable'),
     );
     assert.doesNotThrow(() => failure('artifact.query', 'not_found', 'Session was not found'));
     assert.throws(
       () => failure('artifact.query', 'operation_conflict', 'Protected runtime evidence'),
+      isInvalidFrame,
+    );
+    assert.throws(
+      () => failure('artifact.delete', 'operation_conflict', 'Protected runtime evidence'),
       isInvalidFrame,
     );
     assert.throws(() => failure('artifact.delete', 'outcome_unknown', 'Unknown'), isInvalidFrame);
@@ -415,7 +417,6 @@ function validArtifact() {
     mimeType: 'text/plain',
     source: 'tool_result' as const,
     summary: 'bounded',
-    status: 'live' as const,
   };
 }
 
@@ -426,7 +427,10 @@ function request(
   decodeClientFrame({ requestId: 'request', operation, input });
 }
 
-function response(operation: 'artifact.ingest' | 'artifact.query', result: unknown): void {
+function response(
+  operation: 'artifact.ingest' | 'artifact.query' | 'artifact.delete',
+  result: unknown,
+): void {
   decodeHostFrame({ requestId: 'response', operation, ok: true, result });
 }
 

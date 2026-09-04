@@ -78,15 +78,14 @@ describe('interactive artifact store authority', () => {
       assert.strictEqual(await openInteractiveArtifactStoreForWrite(owner.lease), first);
       assert.equal(deleted.kind, 'deleted');
       const page = await first.listPage('session-1', { offset: 0, limit: 1 });
-      assert.equal(page.total, 1);
-      assert.equal(page.records[0]?.status, 'deleted');
+      assert.equal(page.total, 0);
       assert.deepEqual(await first.getInSession('session-1', 'deleted'), {
         revision: page.revision,
-        record: page.records[0],
+        record: null,
       });
       assert.deepEqual(await first.readTextInSession('session-1', 'deleted'), {
         ok: false,
-        reason: 'deleted',
+        reason: 'not_found',
       });
       assert.deepEqual(await first.readTextInSession('other-session', 'deleted'), {
         ok: false,
@@ -97,7 +96,7 @@ describe('interactive artifact store authority', () => {
       first.close();
       const reopened = track(await openInteractiveArtifactStoreForWrite(owner.lease));
       assert.notStrictEqual(reopened, first);
-      assert.equal((await reopened.getInSession('session-1', 'deleted')).record?.status, 'deleted');
+      assert.equal((await reopened.getInSession('session-1', 'deleted')).record, null);
     });
   });
 
@@ -146,9 +145,9 @@ describe('interactive artifact store authority', () => {
       assert.equal((await deleted).kind, 'deleted');
       assert.equal(
         (await writer.deleteUserArtifactInSession('session-1', record.id)).kind,
-        'deleted',
+        'not_found',
       );
-      assert.equal((await writer.getInSession('session-1', 'accepted')).record?.status, 'deleted');
+      assert.equal((await writer.getInSession('session-1', 'accepted')).record, null);
     });
   });
 });

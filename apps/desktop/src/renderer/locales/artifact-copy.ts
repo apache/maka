@@ -43,7 +43,6 @@ export type ArtifactCopy = {
     retrying: string;
     retry: string;
     listAria: string;
-    deletedBadge: string;
     previewNamed(name: string): string;
     empty: string;
     emptyHint: string;
@@ -52,7 +51,7 @@ export type ArtifactCopy = {
     openInFinder: string;
     saveAs: string;
     copy: string;
-    saveFailures: Record<'not_found' | 'not_allowed' | 'deleted' | 'write_failed' | 'default', string>;
+    saveFailures: Record<'not_found' | 'not_allowed' | 'write_failed' | 'default', string>;
     actionFailed: string;
   };
   preview: {
@@ -72,7 +71,6 @@ export type ArtifactCopy = {
     readFailed: ReasonCopy;
     notAllowed: ReasonCopy;
     tooLarge(bytes: number): ReasonCopy;
-    deleted: ReasonCopy;
     unsupportedMime: ReasonCopy;
   };
   registry: {
@@ -96,13 +94,13 @@ const ARTIFACT_COPY = {
     pane: {
       refreshFailed: '刷新生成文件失败', openFailed: '无法在 Finder 中打开生成文件', copyFailed: '复制失败',
       readTextFailed: '无法读取生成文件文本内容。', copied: '已复制生成文件文本', saved: '已另存生成文件', saveFailed: '另存失败',
-      fallbackName: '生成文件', deleteTitle: (name) => `删除 "${name}"`, deleteDescription: '软删除：在记录中标记为已删除，文件保留 6 小时可恢复。',
+      fallbackName: '生成文件', deleteTitle: (name) => `删除 "${name}"`, deleteDescription: '永久删除此生成文件及其记录，无法恢复。',
       delete: '删除', deleteReadOnly: '删除（只读文件）', cancel: '取消', deleted: (name) => `已删除 ${name}`, deleteFailed: (name) => `删除 ${name} 失败`, panelAria: '生成文件预览面板',
-      listLoadFailed: '生成文件列表载入失败', retrying: '重试中…', retry: '重试', listAria: '生成文件列表', deletedBadge: '已删除',
+      listLoadFailed: '生成文件列表载入失败', retrying: '重试中…', retry: '重试', listAria: '生成文件列表',
       previewNamed: (name) => `预览 ${name}`, empty: '暂无生成文件', emptyHint: '助手生成文件后会显示在这里。',
       back: '返回生成文件列表', moreActions: (name) => `${name} 的更多操作`,
       openInFinder: '在 Finder 中打开', saveAs: '另存为', copy: '复制',
-      saveFailures: { not_found: '生成文件不存在。', not_allowed: '生成文件路径检查未通过。', deleted: '生成文件已删除，不能另存。', write_failed: '目标位置无法写入。', default: '无法保存生成文件。' },
+      saveFailures: { not_found: '生成文件不存在。', not_allowed: '生成文件路径检查未通过。', write_failed: '目标位置无法写入。', default: '无法保存生成文件。' },
       actionFailed: '生成文件操作失败，请稍后重试。',
     },
     preview: {
@@ -116,7 +114,6 @@ const ARTIFACT_COPY = {
       readFailed: { title: '无法读取生成文件', description: '路径可能已被外部删除。请通过更多菜单「在 Finder 中打开」检查文件位置。' },
       notAllowed: { title: '无法读取生成文件', description: '路径检查未通过，文件已不在允许预览的生成文件目录内。' },
       tooLarge: (bytes) => ({ title: '文件超出预览大小', description: `${bytes} 字节超过文本预览阈值，请通过更多菜单打开或另存完整内容。` }),
-      deleted: { title: '此生成文件已删除', description: '预览已停止。如需查看原文件请使用「在 Finder 中打开」。' },
       unsupportedMime: { title: '不支持的文件类型', description: '该生成文件的 MIME 类型不在内联预览允许列表中。请使用工具栏「在 Finder 中打开」或「另存为」。' },
     },
     registry: {
@@ -132,13 +129,13 @@ const ARTIFACT_COPY = {
     pane: {
       refreshFailed: '重新整理生成檔案失敗', openFailed: '無法在 Finder 中開啟生成檔案', copyFailed: '複製失敗',
       readTextFailed: '無法讀取生成檔案文本內容。', copied: '已複製生成檔案文本', saved: '已另存生成檔案', saveFailed: '另存失敗',
-      fallbackName: '生成檔案', deleteTitle: (name) => `刪除 "${name}"`, deleteDescription: '軟刪除：在記錄中標記為已刪除，檔案保留 6 小時可恢復。',
+      fallbackName: '生成檔案', deleteTitle: (name) => `刪除 "${name}"`, deleteDescription: '永久刪除此生成檔案及其記錄，無法復原。',
       delete: '刪除', deleteReadOnly: '刪除（只讀檔案）', cancel: '取消', deleted: (name) => `已刪除 ${name}`, deleteFailed: (name) => `刪除 ${name} 失敗`, panelAria: '生成檔案預覽面板',
-      listLoadFailed: '生成檔案列表載入失敗', retrying: '重試中…', retry: '重試', listAria: '生成檔案列表', deletedBadge: '已刪除',
+      listLoadFailed: '生成檔案列表載入失敗', retrying: '重試中…', retry: '重試', listAria: '生成檔案列表',
       previewNamed: (name) => `預覽 ${name}`, empty: '暫無生成檔案', emptyHint: '助手生成檔案後會顯示在這裡。',
       back: '返回生成檔案列表', moreActions: (name) => `${name} 的更多操作`,
       openInFinder: '在 Finder 中開啟', saveAs: '另存為', copy: '複製',
-      saveFailures: { not_found: '生成檔案不存在。', not_allowed: '生成檔案路徑檢查未透過。', deleted: '生成檔案已刪除，不能另存。', write_failed: '目標位置無法寫入。', default: '無法儲存生成檔案。' },
+      saveFailures: { not_found: '生成檔案不存在。', not_allowed: '生成檔案路徑檢查未透過。', write_failed: '目標位置無法寫入。', default: '無法儲存生成檔案。' },
       actionFailed: '生成檔案操作失敗，請稍後重試。',
     },
     preview: {
@@ -152,7 +149,6 @@ const ARTIFACT_COPY = {
       readFailed: { title: '無法讀取生成檔案', description: '路徑可能已被外部刪除。請透過更多選單「在 Finder 中開啟」檢查檔案位置。' },
       notAllowed: { title: '無法讀取生成檔案', description: '路徑檢查未透過，檔案已不在允許預覽的生成檔案目錄內。' },
       tooLarge: (bytes) => ({ title: '檔案超出預覽大小', description: `${bytes} 位元組超過文本預覽閾值，請透過更多選單開啟或另存完整內容。` }),
-      deleted: { title: '此生成檔案已刪除', description: '預覽已停止。如需檢視原檔案請使用「在 Finder 中開啟」。' },
       unsupportedMime: { title: '不支援的檔案型別', description: '該生成檔案的 MIME 型別不在內聯預覽允許列表中。請使用工具欄「在 Finder 中開啟」或「另存為」。' },
     },
     registry: {
@@ -168,13 +164,13 @@ const ARTIFACT_COPY = {
     pane: {
       refreshFailed: 'Failed to refresh generated files', openFailed: 'Could not show generated file in Finder', copyFailed: 'Copy failed',
       readTextFailed: 'Could not read the generated file as text.', copied: 'Generated file text copied', saved: 'Generated file saved as', saveFailed: 'Save as failed',
-      fallbackName: 'generated file', deleteTitle: (name) => `Delete "${name}"`, deleteDescription: 'Soft delete: mark this record as deleted and keep the file recoverable for 6 hours.',
+      fallbackName: 'generated file', deleteTitle: (name) => `Delete "${name}"`, deleteDescription: 'Permanently delete this generated file and its record. This cannot be undone.',
       delete: 'Delete', deleteReadOnly: 'Delete (read-only file)', cancel: 'Cancel', deleted: (name) => `Deleted ${name}`, deleteFailed: (name) => `Failed to delete ${name}`, panelAria: 'Generated file preview panel',
-      listLoadFailed: 'Failed to load generated files', retrying: 'Retrying…', retry: 'Retry', listAria: 'Generated files', deletedBadge: 'Deleted',
+      listLoadFailed: 'Failed to load generated files', retrying: 'Retrying…', retry: 'Retry', listAria: 'Generated files',
       previewNamed: (name) => `Preview ${name}`, empty: 'No generated files', emptyHint: 'Files generated by the assistant appear here.',
       back: 'Back to generated files', moreActions: (name) => `More actions for ${name}`,
       openInFinder: 'Show in Finder', saveAs: 'Save as', copy: 'Copy',
-      saveFailures: { not_found: 'The generated file does not exist.', not_allowed: 'The generated file failed the path safety check.', deleted: 'Deleted generated files cannot be saved.', write_failed: 'The destination is not writable.', default: 'Could not save the generated file.' },
+      saveFailures: { not_found: 'The generated file does not exist.', not_allowed: 'The generated file failed the path safety check.', write_failed: 'The destination is not writable.', default: 'Could not save the generated file.' },
       actionFailed: 'The generated file action failed. Try again later.',
     },
     preview: {
@@ -188,7 +184,6 @@ const ARTIFACT_COPY = {
       readFailed: { title: 'Could not read generated file', description: 'The file may have been deleted externally. Use “Show in Finder” in the More menu to check its location.' },
       notAllowed: { title: 'Could not read generated file', description: 'The path safety check failed because the file is no longer inside the allowed generated-files directory.' },
       tooLarge: (bytes) => ({ title: 'File exceeds preview size', description: `${bytes} bytes exceeds the text preview limit. Use the More menu to open or save the complete file.` }),
-      deleted: { title: 'This generated file was deleted', description: 'The preview has stopped. Use “Show in Finder” to inspect the original file.' },
       unsupportedMime: { title: 'Unsupported file type', description: 'This generated file’s MIME type is not allowed for inline preview. Use “Show in Finder” or “Save as”.' },
     },
     registry: {

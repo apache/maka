@@ -98,10 +98,6 @@ export const ARTIFACT_SOURCES = [
 
 export type ArtifactSource = (typeof ARTIFACT_SOURCES)[number];
 
-export const ARTIFACT_STATUSES = ['live', 'deleted'] as const;
-
-export type ArtifactStatus = (typeof ARTIFACT_STATUSES)[number];
-
 export const ARTIFACT_ENTITY_ID_MAX_CHARS = 128;
 export const ARTIFACT_TURN_KEY_MAX_CHARS = 512;
 
@@ -133,7 +129,6 @@ export interface ArtifactDescriptor {
   mimeType?: string;
   source?: ArtifactSource;
   summary?: string;
-  status: ArtifactStatus;
 }
 
 export interface ArtifactRecord extends ArtifactDescriptor {
@@ -147,19 +142,18 @@ export interface ArtifactRecord extends ArtifactDescriptor {
 }
 
 interface ArtifactSourcePolicy {
-  readonly userDeletable: boolean;
   readonly userVisible: boolean;
   readonly sharedReadable: boolean;
 }
 
 const ARTIFACT_SOURCE_POLICIES = {
-  tool_result: { userDeletable: true, userVisible: false, sharedReadable: true },
-  tool_result_projection: { userDeletable: false, userVisible: false, sharedReadable: true },
-  tool_result_archive: { userDeletable: false, userVisible: false, sharedReadable: false },
-  subagent_writeback: { userDeletable: false, userVisible: true, sharedReadable: false },
-  deep_research: { userDeletable: false, userVisible: true, sharedReadable: false },
-  user_upload: { userDeletable: true, userVisible: false, sharedReadable: true },
-  session_effect: { userDeletable: false, userVisible: false, sharedReadable: false },
+  tool_result: { userVisible: false, sharedReadable: true },
+  tool_result_projection: { userVisible: false, sharedReadable: true },
+  tool_result_archive: { userVisible: false, sharedReadable: false },
+  subagent_writeback: { userVisible: true, sharedReadable: false },
+  deep_research: { userVisible: true, sharedReadable: false },
+  user_upload: { userVisible: false, sharedReadable: true },
+  session_effect: { userVisible: false, sharedReadable: false },
 } as const satisfies Record<ArtifactSource, ArtifactSourcePolicy>;
 
 const CHILD_RESULT_OUTPUT_SOURCES = new Set<ArtifactSource>([
@@ -168,10 +162,6 @@ const CHILD_RESULT_OUTPUT_SOURCES = new Set<ArtifactSource>([
   'subagent_writeback',
   'deep_research',
 ]);
-
-export function canUserDeleteArtifact(record: Pick<ArtifactRecord, 'source'>): boolean {
-  return record.source === undefined || ARTIFACT_SOURCE_POLICIES[record.source].userDeletable;
-}
 
 export function isArtifactUserVisible(record: Pick<ArtifactRecord, 'source'>): boolean {
   return record.source === undefined || ARTIFACT_SOURCE_POLICIES[record.source].userVisible;
@@ -185,21 +175,7 @@ export function isArtifactChildResultOutput(record: Pick<ArtifactRecord, 'source
   return record.source !== undefined && CHILD_RESULT_OUTPUT_SOURCES.has(record.source);
 }
 
-export type ArtifactChangedReason = 'created' | 'deleted' | 'purged';
-
-export interface ArtifactChangedEvent {
-  reason: ArtifactChangedReason;
-  artifactId: string;
-  sessionId: string;
-  ts: number;
-}
-
-export type ArtifactReadFailureReason =
-  | 'not_found'
-  | 'too_large'
-  | 'read_failed'
-  | 'not_allowed'
-  | 'deleted';
+export type ArtifactReadFailureReason = 'not_found' | 'too_large' | 'read_failed' | 'not_allowed';
 
 export type ArtifactBinaryReadFailureReason = ArtifactReadFailureReason | 'unsupported_mime';
 
@@ -211,12 +187,7 @@ export type ArtifactBinaryReadResult =
   | { ok: true; base64: string; mimeType: string }
   | { ok: false; reason: ArtifactBinaryReadFailureReason };
 
-export type ArtifactSaveFailureReason =
-  | 'canceled'
-  | 'not_found'
-  | 'not_allowed'
-  | 'deleted'
-  | 'write_failed';
+export type ArtifactSaveFailureReason = 'canceled' | 'not_found' | 'not_allowed' | 'write_failed';
 
 export type ArtifactSaveResult =
   | { ok: true; saved: string }

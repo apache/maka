@@ -244,8 +244,7 @@ const htmlArtifact: ArtifactDescriptor = {
   kind: 'html',
   sizeBytes: 256,
   mimeType: 'text/html',
-  source: 'fixture',
-  status: 'live',
+  source: 'tool_result',
 };
 
 function RemoteProjectDirectoryStory() {
@@ -285,7 +284,6 @@ export const HtmlArtifact: Story = {
         }),
         readBinary: async () => ({ ok: false, reason: 'unsupported_mime' }),
         delete: async () => undefined,
-        subscribeChanges: unsubscribe,
         openPath: async () => ({ ok: false, reason: 'missing' }),
         saveAs: async () => ({ ok: false, reason: 'canceled' }),
       },

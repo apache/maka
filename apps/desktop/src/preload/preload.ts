@@ -162,7 +162,6 @@ import type {
 } from '@maka/core/git-review';
 import type {
   ArtifactBinaryReadResult,
-  ArtifactChangedEvent,
   ArtifactDescriptor,
   ArtifactSaveResult,
   ArtifactTextReadResult,
@@ -3598,8 +3597,8 @@ const makaBridge = {
     },
   },
   artifacts: {
-    list(sessionId: string, opts?: { includeDeleted?: boolean }): Promise<ArtifactDescriptor[]> {
-      return invokeProjectedSessionRuntimeHost('artifacts:list', sessionId, opts);
+    list(sessionId: string): Promise<ArtifactDescriptor[]> {
+      return invokeProjectedSessionRuntimeHost('artifacts:list', sessionId);
     },
     readText(sessionId: string, artifactId: string): Promise<ArtifactTextReadResult> {
       return invokeSessionRuntimeHost('artifacts:readText', sessionId, artifactId);
@@ -3609,14 +3608,6 @@ const makaBridge = {
     },
     delete(sessionId: string, artifactId: string): Promise<void> {
       return invokeSessionRuntimeHost('artifacts:delete', sessionId, artifactId);
-    },
-    subscribeChanges(handler: (event: ArtifactChangedEvent) => void): () => void {
-      return subscribeEveryRuntimeHostEvent('artifacts:changed', (scope, event: ArtifactChangedEvent) =>
-        handler({
-          ...event,
-          sessionId: recordRuntimeHostSessionScope(scope, event.sessionId),
-        }),
-      );
     },
   },
   skills: {

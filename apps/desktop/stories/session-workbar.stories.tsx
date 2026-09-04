@@ -159,7 +159,6 @@ const artifacts: ArtifactRecord[] = [
     sizeBytes: 4_812,
     mimeType: 'text/x-diff',
     source: 'tool_result',
-    status: 'live',
   },
   {
     id: 'artifact-notes',
@@ -172,7 +171,6 @@ const artifacts: ArtifactRecord[] = [
     sizeBytes: 1_284,
     mimeType: 'text/markdown',
     source: 'tool_result',
-    status: 'live',
   },
 ];
 
@@ -787,7 +785,6 @@ function bridge(options: {
       readText: async (_sessionId: string, id: string) => ({ ok: true, text: artifactText[id] ?? '' }),
       readBinary: async () => ({ ok: false, reason: 'unsupported_mime' }),
       delete: async () => undefined,
-      subscribeChanges: unsubscribe,
       openPath: async () => ({ ok: true, opened: 'artifact-patch' }),
       saveAs: async () => ({ ok: true, saved: 'slice-9-conversation.diff' }),
     },

@@ -118,7 +118,7 @@ export class HostArtifactCoordinator {
       }
       const entry = await this.#store.getInSession(sessionId, attachment.ref.relativePath);
       const record = entry.record;
-      if (!record || record.status !== 'live') return 'Attachment Artifact was not found';
+      if (!record) return 'Attachment Artifact was not found';
       if (
         record.name !== attachment.name ||
         record.mimeType !== attachment.mimeType ||
@@ -309,7 +309,7 @@ export class HostArtifactCoordinator {
     );
     const record = entry.record;
     if (!record) return { kind: 'missing' };
-    if (record.status !== 'live' || record.source !== 'user_upload' || record.turnId !== uploadId) {
+    if (record.source !== 'user_upload' || record.turnId !== uploadId) {
       return { kind: 'conflict' };
     }
     return { kind: 'committed', record };
@@ -361,7 +361,7 @@ export class HostArtifactCoordinator {
           maxBytes: ARTIFACT_READ_CHUNK_MAX_BYTES,
         });
         if (!chunk.ok) {
-          if (chunk.reason === 'not_found' || chunk.reason === 'deleted') {
+          if (chunk.reason === 'not_found') {
             return notFound('artifact.query', 'Artifact was not found');
           }
           if (chunk.reason === 'out_of_range') {
@@ -441,7 +441,7 @@ export class HostArtifactCoordinator {
     );
     if (!grant) return;
     const entry = await this.#store.getInSession(input.sessionId, input.artifactId);
-    return entry.record?.status === 'live' && isArtifactSharedSessionReadable(entry.record)
+    return entry.record && isArtifactSharedSessionReadable(entry.record)
       ? grant.grantId
       : undefined;
   }
@@ -479,21 +479,9 @@ export class HostArtifactCoordinator {
           error: { code: 'not_found', message: 'Artifact was not found' },
         };
       }
-      if (deleted.kind === 'protected') {
-        return {
-          ok: false,
-          error: {
-            code: 'operation_conflict',
-            message: 'Protected runtime evidence cannot be deleted through Runtime Host',
-          },
-        };
-      }
       return {
         ok: true,
-        result: encodeArtifactDeleteResult({
-          kind: 'deleted',
-          artifact: encodeArtifactProjection(deleted.record),
-        }),
+        result: encodeArtifactDeleteResult({ kind: 'deleted' }),
       };
     } catch {
       this.#requestDrain();

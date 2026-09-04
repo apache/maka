@@ -88,7 +88,7 @@ export function createHostExecutionArtifactServices(input: {
         runWrite(async () => {
           const artifactId = stableToolResultArchiveArtifactId(event);
           const existing = await input.artifacts.getInSession(event.sessionId, artifactId);
-          if (existing.record?.status === 'live') {
+          if (existing.record) {
             const read = await readArchive(input.artifacts, {
               artifactId,
               sessionId: event.sessionId,
@@ -171,7 +171,6 @@ async function readArchive(
   const entry = await artifacts.getInSession(event.sessionId, event.artifactId);
   const record = entry.record;
   if (!record) return { ok: false, reason: 'not_found' };
-  if (record.status === 'deleted') return { ok: false, reason: 'deleted' };
   if (record.source !== 'tool_result_archive') return { ok: false, reason: 'source_mismatch' };
   if (record.sizeBytes !== event.originalBytes) return { ok: false, reason: 'size_mismatch' };
   const read = await artifacts.readTextInSession(event.sessionId, event.artifactId, {

@@ -102,7 +102,6 @@ export function createFakeWorkbarServices(
       readText: async () => ({ ok: false, reason: 'not_found' }),
       readBinary: async () => ({ ok: false, reason: 'not_found' }),
       delete: async () => undefined,
-      subscribeChanges: noopSubscription,
       openPath: async () => ({ ok: false, reason: 'missing' }),
       saveAs: async () => ({ ok: false, reason: 'canceled' }),
     },

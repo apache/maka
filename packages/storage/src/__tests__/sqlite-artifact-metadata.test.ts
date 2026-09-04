@@ -49,7 +49,7 @@ test('Artifact metadata changes only write changed rows', async () => {
     `);
 
     repository.applyChanges({
-      upserts: [unchanged, { ...updated, status: 'deleted' }, artifactRecord('added')],
+      upserts: [unchanged, { ...updated, summary: 'changed' }, artifactRecord('added')],
       deleteIds: [removed.id],
     });
 
@@ -67,12 +67,12 @@ test('Artifact metadata changes only write changed rows', async () => {
     assert.deepEqual(
       repository
         .readAll()
-        .map(({ id, status }) => ({ id, status }))
+        .map(({ id, summary }) => ({ id, summary }))
         .sort((left, right) => left.id.localeCompare(right.id)),
       [
-        { id: 'added', status: 'live' },
-        { id: 'unchanged', status: 'live' },
-        { id: 'updated', status: 'deleted' },
+        { id: 'added', summary: undefined },
+        { id: 'unchanged', summary: undefined },
+        { id: 'updated', summary: 'changed' },
       ],
     );
 
@@ -118,7 +118,7 @@ test('Artifact metadata recovery ignores records from unsupported sources', asyn
       unsupported.id,
       unsupported.sessionId,
       unsupported.createdAt,
-      unsupported.status,
+      'live',
       unsupported.relativePath,
       JSON.stringify(unsupported),
     );
@@ -142,6 +142,5 @@ function artifactRecord(id: string): ArtifactRecord {
     sizeBytes: id.length,
     relativePath: `session-1/${id}-${id}.txt`,
     source: 'tool_result',
-    status: 'live',
   };
 }

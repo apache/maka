@@ -93,7 +93,7 @@ describe('artifact attachment authority', () => {
       await store.delete('image-1');
       assert.deepEqual(await reader(sessionFileRef('image-1')), {
         ok: false,
-        reason: 'deleted',
+        reason: 'not_found',
       });
       assert.deepEqual(await reader(sessionFileRef('image-1', 'other-session')), {
         ok: false,
@@ -244,7 +244,7 @@ describe('artifact attachment authority', () => {
     });
   });
 
-  test('keeps a durable projection image live when a user requests deletion', async () => {
+  test('physically deletes a durable projection image when requested', async () => {
     await withStore(async (store) => {
       const ref = await createReadImageSnapshotter(store)({
         sessionId: 'session-1',
@@ -254,13 +254,13 @@ describe('artifact attachment authority', () => {
         mimeType: 'image/png',
       });
 
-      assert.deepEqual(await store.deleteUserArtifactInSession('session-1', ref.relativePath), {
-        kind: 'protected',
-      });
+      assert.equal(
+        (await store.deleteUserArtifactInSession('session-1', ref.relativePath)).kind,
+        'deleted',
+      );
       assert.deepEqual(await store.readBinary(ref.relativePath), {
-        ok: true,
-        base64: Buffer.from(png).toString('base64'),
-        mimeType: 'image/png',
+        ok: false,
+        reason: 'not_found',
       });
     });
   });

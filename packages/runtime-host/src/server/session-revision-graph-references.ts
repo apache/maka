@@ -252,7 +252,7 @@ export async function prepareAgentGraphRevisionReferences(
       const artifact = await dependencies.artifacts
         .getInSession(childSessionId, artifactId)
         .catch(() => null);
-      if (!artifact?.record || artifact.record.status === 'deleted') continue;
+      if (!artifact?.record) continue;
       if (
         artifact.record.sessionId !== childSessionId ||
         !lineage.turnIds.has(artifact.record.turnId)

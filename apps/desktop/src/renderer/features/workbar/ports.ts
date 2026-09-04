@@ -24,7 +24,6 @@ import type {
 } from '@maka/core/events';
 import type {
   ArtifactBinaryReadResult,
-  ArtifactChangedEvent,
   ArtifactDescriptor,
   ArtifactSaveResult,
   ArtifactTextReadResult,
@@ -126,10 +125,7 @@ export type WorkbarOpenArtifactResult =
     };
 
 export interface WorkbarArtifactsService {
-  list(
-    sessionId: string,
-    options?: { includeDeleted?: boolean },
-  ): Promise<ArtifactDescriptor[]>;
+  list(sessionId: string): Promise<ArtifactDescriptor[]>;
   readText(
     sessionId: string,
     artifactId: string,
@@ -139,9 +135,6 @@ export interface WorkbarArtifactsService {
     artifactId: string,
   ): Promise<ArtifactBinaryReadResult>;
   delete(sessionId: string, artifactId: string): Promise<void>;
-  subscribeChanges(
-    handler: (event: ArtifactChangedEvent) => void,
-  ): WorkbarUnsubscribe;
   openPath(
     sessionId: string,
     artifactId: string,

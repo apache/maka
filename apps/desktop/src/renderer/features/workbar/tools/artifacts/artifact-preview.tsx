@@ -387,11 +387,6 @@ function failureCopyText(record: ArtifactDescriptor, reason: TextFailureReason, 
         status: 'info',
         ...copy.preview.tooLarge(record.sizeBytes),
       };
-    case 'deleted':
-      return {
-        status: 'info',
-        ...copy.preview.deleted,
-      };
   }
 }
 

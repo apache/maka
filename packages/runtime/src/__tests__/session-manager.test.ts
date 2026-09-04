@@ -1121,7 +1121,6 @@ describe('SessionManager graph operator provisioning', () => {
           sizeBytes: patch.byteLength,
           mimeType: 'text/x-diff; charset=utf-8',
           source: 'subagent_writeback',
-          status: 'live',
         };
         artifacts.set(`${sessionId}:${turnId}`, [record]);
         return record;
@@ -1682,7 +1681,6 @@ describe('SessionManager claimed graph intent execution', () => {
           relativePath: `${sessionId}/child-output-answer.txt`,
           sizeBytes: 6,
           source: 'tool_result',
-          status: 'live',
         },
         {
           id: 'child-internal-archive',
@@ -1694,7 +1692,6 @@ describe('SessionManager claimed graph intent execution', () => {
           relativePath: `${sessionId}/child-internal-archive-tool-result.json`,
           sizeBytes: 12,
           source: 'tool_result_archive',
-          status: 'live',
         },
       ],
       newId: nextId(),
@@ -9761,7 +9758,6 @@ describe('SessionManager permission mode updates', () => {
                 relativePath: 'artifacts/notes.md',
                 sizeBytes: 12,
                 source: 'tool_result',
-                status: 'live',
               },
             ]
           : [],

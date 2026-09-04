@@ -38,7 +38,7 @@ const connectionContext: ConnectionContext = {
   acquireResidency: () => ({ release: () => undefined }),
 };
 
-test('Session recap publishes one protected result and exact retries never repeat provider work', async () => {
+test('Session recap publishes one result and exact retries never repeat provider work', async () => {
   await withHarness(async ({ store, coordinator, modelCalls }) => {
     const input = { sessionId: 'session-1', effectId: 'effect-1', reason: 'manual' as const };
     const generated = {
@@ -114,7 +114,7 @@ test('Session recap publishes one protected result and exact retries never repea
       assert.equal(record.source, 'session_effect');
       assert.equal(
         (await store.deleteUserArtifactInSession('session-1', record.id)).kind,
-        'protected',
+        'deleted',
       );
     }
     await successor.close();

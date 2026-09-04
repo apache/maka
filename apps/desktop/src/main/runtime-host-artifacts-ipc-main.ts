@@ -39,7 +39,6 @@ interface RuntimeHostArtifactsIpcDeps {
   readonly ipcMain: ReconnectableReadIpcMain;
   readonly client: DesktopRuntimeHostClient;
   readonly mainWindowController: ReturnType<typeof createMainWindowController>;
-  readonly sendToRenderer: (channel: string, ...args: unknown[]) => void;
   readonly showItemInFolder: (path: string) => void;
   readonly presentationRoot?: string;
 }
@@ -61,16 +60,7 @@ export function registerRuntimeHostArtifactsIpc(
   handleReconnectableRead(
     deps.ipcMain,
     "artifacts:list",
-    async (
-      _event,
-      sessionId: string,
-      options?: { includeDeleted?: boolean },
-    ) => {
-      const artifacts = await deps.client.listArtifacts(sessionId);
-      return options?.includeDeleted
-        ? artifacts
-        : artifacts.filter(({ status }) => status !== "deleted");
-    },
+    (_event, sessionId: string) => deps.client.listArtifacts(sessionId),
   );
   handleReconnectableRead(
     deps.ipcMain,
@@ -86,23 +76,15 @@ export function registerRuntimeHostArtifactsIpc(
   );
   deps.ipcMain.handle(
     "artifacts:delete",
-    async (_event, sessionId: string, artifactId: string) => {
-      const result = await deps.client.deleteArtifact(sessionId, artifactId);
-      deps.sendToRenderer("artifacts:changed", {
-        reason: "deleted",
-        artifactId,
-        sessionId,
-        ts: Date.now(),
-      });
-      return result;
-    },
+    (_event, sessionId: string, artifactId: string) =>
+      deps.client.deleteArtifact(sessionId, artifactId),
   );
   registerRuntimeHostAttachmentPreviewIpc(deps);
   deps.ipcMain.handle(
     "app:openArtifactPath",
     async (_event, sessionId: string, artifactId: string) => {
       const artifact = await deps.client.getArtifact(sessionId, artifactId);
-      if (!artifact || artifact.status === "deleted") {
+      if (!artifact) {
         return { ok: false as const, reason: "missing" as const };
       }
       try {
@@ -128,7 +110,6 @@ export function registerRuntimeHostArtifactsIpc(
     ): Promise<ArtifactSaveResult> => {
       const artifact = await deps.client.getArtifact(sessionId, artifactId);
       if (!artifact) return { ok: false, reason: "not_found" };
-      if (artifact.status === "deleted") return { ok: false, reason: "deleted" };
       const result = await deps.mainWindowController.showSaveDialog({
         title: `另存为 ${artifact.name}`,
         defaultPath: artifact.name,
@@ -161,10 +142,7 @@ export function registerRuntimeHostAttachmentPreviewIpc(
     "attachments:readBytes",
     async (_event, sessionId: string, artifactId: string) => {
       const artifact = await deps.client.getArtifact(sessionId, artifactId);
-      if (
-        !artifact ||
-        artifact.status === "deleted"
-      ) {
+      if (!artifact) {
         return { ok: false as const, reason: "not_found" };
       }
       const preview = resolveArtifactImagePreview(artifact);

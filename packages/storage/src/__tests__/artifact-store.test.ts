@@ -245,8 +245,14 @@ describe('SQLite Artifact store', () => {
       assert.equal(deletedResult.kind, 'deleted');
       const deleted = await store.listPage('session-1', { offset: 0, limit: 3 });
       assert.notEqual(deleted.revision, created.revision);
-      assert.equal(deleted.records.find((record) => record.id === 'first')?.status, 'deleted');
-      assert.equal((await store.deleteUserArtifactInSession('session-1', 'first')).kind, 'deleted');
+      assert.equal(
+        deleted.records.find((record) => record.id === 'first'),
+        undefined,
+      );
+      assert.equal(
+        (await store.deleteUserArtifactInSession('session-1', 'first')).kind,
+        'not_found',
+      );
       assert.equal(
         (await store.listPage('session-1', { offset: 0, limit: 3 })).revision,
         deleted.revision,
@@ -255,7 +261,7 @@ describe('SQLite Artifact store', () => {
       await store.create(firstInput);
       const revived = await store.listPage('session-1', { offset: 0, limit: 3 });
       assert.notEqual(revived.revision, deleted.revision);
-      assert.equal(revived.records.find((record) => record.id === 'first')?.status, 'live');
+      assert.equal(revived.records.find((record) => record.id === 'first')?.id, 'first');
 
       await store.purge(['first', 'second', 'revision-race']);
       const purged = await store.listPage('session-1', { offset: 0, limit: 2 });
@@ -292,7 +298,7 @@ describe('SQLite Artifact store', () => {
       const copiedId = copied.artifactIds.get(retained.id);
       const copiedDeletedId = copied.artifactIds.get(deleted.id);
       assert.ok(copiedId);
-      assert.ok(copiedDeletedId);
+      assert.equal(copiedDeletedId, undefined);
       assert.notEqual(copiedId, retained.id);
       const target = await store.list('session-copy');
       assert.equal(target.length, 1);
@@ -303,15 +309,7 @@ describe('SQLite Artifact store', () => {
         ok: true,
         text: 'retained',
       });
-      const targetWithTombstones = await store.list('session-copy', { includeDeleted: true });
-      assert.equal(targetWithTombstones.find((record) => record.id === copiedId)?.status, 'live');
-      const copiedDeleted = targetWithTombstones.find((record) => record.id === copiedDeletedId);
-      assert.equal(copiedDeleted?.status, 'deleted');
-      assert.equal(copied.relativePaths.get(deleted.relativePath), copiedDeleted?.relativePath);
-      assert.deepEqual(await store.readText(copiedDeletedId!, { includeDeleted: true }), {
-        ok: true,
-        text: 'deleted',
-      });
+      assert.equal(copied.relativePaths.get(deleted.relativePath), undefined);
 
       await store.purgeSessionArtifacts('session-copy');
       assert.deepEqual(await store.list('session-copy'), []);
@@ -427,7 +425,7 @@ describe('SQLite Artifact store', () => {
     });
   });
 
-  test('user delete evaluates current-generation policy before tombstone state', async () => {
+  test('user delete physically removes every artifact source within its Session', async () => {
     await withWorkspace(async (root) => {
       const authority = createArtifactStoreWriteAuthority(root);
       await authority.recover();
@@ -435,23 +433,23 @@ describe('SQLite Artifact store', () => {
       const input = artifactInput('current-policy', 'replaceable', 1);
       await store.create(input);
       await store.purge([input.id]);
-      const protectedRecord = await store.create({
+      await store.create({
         ...input,
         content: 'protected replacement',
         source: 'deep_research',
       });
 
-      assert.deepEqual(await store.deleteUserArtifactInSession(input.sessionId, input.id), {
-        kind: 'protected',
-      });
-      assert.deepEqual(await store.get(input.id), protectedRecord);
+      assert.equal(
+        (await store.deleteUserArtifactInSession(input.sessionId, input.id)).kind,
+        'deleted',
+      );
+      assert.equal(await store.get(input.id), null);
       assert.deepEqual(await store.deleteUserArtifactInSession('different-session', input.id), {
         kind: 'not_found',
       });
 
-      await store.delete(input.id);
       assert.deepEqual(await store.deleteUserArtifactInSession(input.sessionId, input.id), {
-        kind: 'protected',
+        kind: 'not_found',
       });
     });
   });
@@ -505,7 +503,7 @@ describe('SQLite Artifact store', () => {
           canonicalRecord({ id: 'invalid-name', sessionId: 'session-1', name, sizeBytes: 0 }),
         ]);
         await assert.rejects(
-          () => createArtifactStore(root).list('session-1', { includeDeleted: true }),
+          () => createArtifactStore(root).list('session-1'),
           /Invalid artifact metadata record 1/,
         );
       });
@@ -614,31 +612,20 @@ describe('SQLite Artifact store', () => {
     });
   });
 
-  test('exact tombstone replay atomically revives only an unchanged canonical payload', async () => {
+  test('a stable id can be created again after physical deletion', async () => {
     await withWorkspace(async (root) => {
       const input = deepResearchArtifactInput('stable-revive', '# Revivable');
       const store = createArtifactStore(root);
       const first = await store.create(input);
       await store.delete(first.id);
-      const deleted = await store.get(first.id);
-      assert.equal(deleted?.status, 'deleted');
+      assert.equal(await store.get(first.id), null);
 
-      const revived = await createArtifactStore(root).create(input);
-      assert.deepEqual(revived, { ...first, status: 'live' });
+      const recreated = await createArtifactStore(root).create(input);
+      assert.deepEqual({ ...recreated, createdAt: first.createdAt }, first);
       assert.deepEqual(await createArtifactStore(root).readText(first.id), {
         ok: true,
         text: '# Revivable',
       });
-
-      const reopened = createArtifactStore(root);
-      await reopened.delete(first.id);
-      await writeFile(join(root, 'artifacts', first.relativePath), '# Rewritten', 'utf8');
-      assert.equal(Buffer.byteLength(input.content), Buffer.byteLength('# Rewritten'));
-      await assert.rejects(
-        () => createArtifactStore(root).create(input),
-        /already exists with different metadata or content/,
-      );
-      assert.equal((await createArtifactStore(root).get(first.id))?.status, 'deleted');
     });
   });
 
@@ -649,7 +636,7 @@ describe('SQLite Artifact store', () => {
       await Promise.all(ids.map((id, index) => store.create(artifactInput(id, id, index + 1))));
 
       const reopened = createArtifactStore(root);
-      const rows = await reopened.list('session-1', { includeDeleted: true });
+      const rows = await reopened.list('session-1');
       assert.deepEqual(rows.map((record) => record.id).sort(), ids.sort());
       await assert.rejects(() => stat(join(root, 'artifacts', 'metadata.jsonl')), {
         code: 'ENOENT',
@@ -666,7 +653,7 @@ describe('SQLite Artifact store', () => {
         second.create(artifactInput('independent-second', 'second', 2)),
       ]);
 
-      const rows = await createArtifactStore(root).list('session-1', { includeDeleted: true });
+      const rows = await createArtifactStore(root).list('session-1');
       assert.deepEqual(rows.map((record) => record.id).sort(), [
         'independent-first',
         'independent-second',
@@ -732,7 +719,6 @@ describe('SQLite Artifact store', () => {
         mimeType: 'application/octet-stream',
         source: 'tool_result',
         summary: 'accepted summary',
-        status: 'live',
       });
       assert.deepEqual(
         await readFile(join(root, 'artifacts', record.relativePath)),
@@ -782,7 +768,7 @@ describe('SQLite Artifact store', () => {
       await purgeLock.finished;
       await purged;
       assert.equal(await store.get('purge-me'), null);
-      assert.equal((await store.get('keep-me'))?.status, 'live');
+      assert.equal((await store.get('keep-me'))?.id, 'keep-me');
     });
   });
 
@@ -900,7 +886,7 @@ describe('SQLite Artifact store', () => {
       assert.equal(created.id, 'target-only');
       await store.delete('delete-me');
       await store.purge(['purge-me']);
-      assert.equal((await store.get('delete-me'))?.status, 'deleted');
+      assert.equal(await store.get('delete-me'), null);
       assert.equal(await store.get('purge-me'), null);
 
       await assert.rejects(
@@ -1023,7 +1009,7 @@ describe('SQLite Artifact store', () => {
       await withWorkspace(async (root) => {
         await writeArtifactMetadata(root, [recordWithIdentity(field, value)]);
         await assert.rejects(
-          () => createArtifactStore(root).list('session-1', { includeDeleted: true }),
+          () => createArtifactStore(root).list('session-1'),
           /Invalid artifact metadata record 1/,
         );
       });
@@ -1056,7 +1042,7 @@ describe('SQLite Artifact store', () => {
     }
   });
 
-  test('soft delete tombstones bytes until idempotent purge', async () => {
+  test('delete physically removes metadata and bytes idempotently', async () => {
     await withWorkspace(async (root) => {
       const store = createArtifactStore(root);
       const record = await store.create(artifactInput('artifact-1', '<h1>Report</h1>', 1));
@@ -1064,19 +1050,6 @@ describe('SQLite Artifact store', () => {
       await store.delete(record.id);
       await store.delete(record.id);
       assert.deepEqual(await store.list('session-1'), []);
-      assert.equal((await store.get(record.id))?.status, 'deleted');
-      assert.deepEqual(await store.readText(record.id), { ok: false, reason: 'deleted' });
-      assert.deepEqual(await store.readText(record.id, { includeDeleted: true }), {
-        ok: true,
-        text: '<h1>Report</h1>',
-      });
-      assert.equal(
-        await readFile(join(root, 'artifacts', record.relativePath), 'utf8'),
-        '<h1>Report</h1>',
-      );
-
-      await store.purge([record.id]);
-      await store.purge([record.id]);
       assert.equal(await store.get(record.id), null);
       await assert.rejects(() => stat(join(root, 'artifacts', record.relativePath)), {
         code: 'ENOENT',
@@ -1216,7 +1189,7 @@ describe('SQLite Artifact store', () => {
       const store = createArtifactStore(root);
       await assert.rejects(() => store.purge([lower.id]), /path is still referenced/);
       assert.equal(await readFile(upperPath, 'utf8'), 'shared bytes');
-      assert.equal((await store.get(upper.id))?.status, 'live');
+      assert.equal((await store.get(upper.id))?.id, upper.id);
     });
   });
 
@@ -1324,27 +1297,27 @@ describe('SQLite Artifact store', () => {
     });
   });
 
-  test('durable attachment reads authenticate the owning session and reject tombstoned bytes', async () => {
+  test('durable attachment reads report physically deleted bytes as missing', async () => {
     await withWorkspace(async (root) => {
       const store = createArtifactStore(root);
       const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
       await store.create({ ...artifactInput('image', png, 1), name: 'image.png', kind: 'image' });
       await store.delete('image');
 
-      assert.deepEqual(await store.readBinary('image'), { ok: false, reason: 'deleted' });
+      assert.deepEqual(await store.readBinary('image'), { ok: false, reason: 'not_found' });
       assert.deepEqual(
         await store.readDurableAttachmentBinary({
           artifactId: 'image',
           sessionId: 'other-session',
         }),
-        { ok: false, reason: 'session_mismatch' },
+        { ok: false, reason: 'not_found' },
       );
       assert.deepEqual(
         await store.readDurableAttachmentBinary({
           artifactId: 'image',
           sessionId: 'session-1',
         }),
-        { ok: false, reason: 'deleted' },
+        { ok: false, reason: 'not_found' },
       );
     });
   });
@@ -1575,7 +1548,6 @@ function canonicalRecord(input: {
     relativePath: `${input.sessionId}/${input.id}-${input.name}`,
     sizeBytes: input.sizeBytes,
     source: 'tool_result',
-    status: 'live',
   };
 }
 

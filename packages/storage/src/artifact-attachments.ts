@@ -63,7 +63,7 @@ export function createArtifactAttachmentResourceReader(input: {
         'getInSession' in input.artifactStore
           ? (await input.artifactStore.getInSession(sessionId, artifactId)).record
           : await input.artifactStore.get(artifactId);
-      if (!record || record.status !== 'live' || record.source !== 'user_upload') {
+      if (!record || record.source !== 'user_upload') {
         throw new Error('Attachment was not found in this Session');
       }
       if (record.sessionId !== sessionId) {
