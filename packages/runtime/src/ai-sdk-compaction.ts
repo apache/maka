@@ -1742,8 +1742,8 @@ function invocationsForFoldedEvents(
   invocations: readonly RuntimeInvocationRecord[],
   foldedRuntimeEvents: readonly RuntimeEvent[],
 ): RuntimeInvocationRecord[] {
-  const foldedInvocationIds = new Set(foldedRuntimeEvents.map((event) => event.invocationId));
-  return invocations.filter((invocation) => foldedInvocationIds.has(invocation.invocationId));
+  const foldedRunIds = new Set(foldedRuntimeEvents.map((event) => event.runId));
+  return invocations.filter((invocation) => foldedRunIds.has(invocation.runId));
 }
 
 export function hasBlockingReplayDiagnostics(plan: RuntimeEventModelReplayPlan): boolean {
