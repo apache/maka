@@ -214,6 +214,7 @@ import { getBuiltinPricing } from './telemetry/builtin-pricing.js';
 import {
   admitProviderReasoningReplayItems,
   buildRuntimeEventModelReplayPlan,
+  buildRuntimeEventReplayTimeline,
   buildSteeringEnvelope,
   collectToolActivityTurnIds,
   compatibleProviderReasoningReplayEventIds,
@@ -225,6 +226,8 @@ import {
   type RuntimeEventModelReplayItem,
   type RuntimeEventModelReplayPlan,
   type RuntimeEventReplayFallbackGate,
+  type RuntimeEventReplayToolExchange,
+  type RuntimeEventReplayToolResultItem,
 } from './model-history.js';
 import { toolSchemaCharsForDiagnostics } from './request-shape.js';
 import type { ModelCallAttempt, ModelCallKind } from '@maka/core/model-call-attempt';
@@ -3848,8 +3851,6 @@ export class AiSdkBackend implements AgentBackend {
     historyCompactCheckpoint: HistoryCompactCheckpoint | undefined,
     providerReasoningReplayEventIds: ReadonlySet<string>,
   ): Promise<ModelMessage[]> {
-    type ToolCallItem = Extract<RuntimeEventModelReplayItem, { kind: 'tool_call' }>;
-    type ToolResultItem = Extract<RuntimeEventModelReplayItem, { kind: 'tool_result' }>;
     type ThinkingItem = Extract<RuntimeEventModelReplayItem, { kind: 'thinking' }>;
     type TextItem = Extract<RuntimeEventModelReplayItem, { kind: 'text' }>;
     type ReplayReasoning = {
@@ -3861,20 +3862,6 @@ export class AiSdkBackend implements AgentBackend {
       out.push(message);
       this.memoryReplayMessageEvents.set(message, [...new Set(eventIds)]);
     };
-    let bufferedCalls: ToolCallItem[] = [];
-    const results = new Map<string, ToolResultItem>();
-    const downgradedApplyPatchCalls = new Map<string, ToolCallItem>();
-    const replayFactsByStep = new Map<
-      string,
-      Array<{ readonly text: string; readonly eventIds: readonly string[] }>
-    >();
-    const reasoningByStep = new Map<string, ThinkingItem[]>();
-    const textByStep = new Map<string, TextItem>();
-    const pendingStepOrder = new Set<string>();
-    const rememberPendingStep = (stepId: string) => {
-      pendingStepOrder.add(stepId);
-    };
-
     const replaySupport = this.modelAdapter.runtimeEventReplaySupport();
     const reasoningReplay = (item: ThinkingItem): ReplayReasoning | undefined => {
       if (item.signature) {
@@ -3987,7 +3974,7 @@ export class AiSdkBackend implements AgentBackend {
     // diagnostic precisely so this drop path is reachable; see
     // hasBlockingReplayDiagnostics).
     const materializeReplayToolResult = async (
-      result: ToolResultItem,
+      result: RuntimeEventReplayToolResultItem,
       toolName: string,
     ): Promise<ToolResultOutput> => {
       const output = result.modelProjection
@@ -4005,11 +3992,9 @@ export class AiSdkBackend implements AgentBackend {
       if (toolName !== 'apply_patch') return output;
       return result.isError ? nativeApplyPatchFailureOutput(output) : output;
     };
-    const pushClientToolResults = async (calls: readonly ToolCallItem[]) => {
-      for (const call of calls) {
-        const result = results.get(call.toolCallId);
+    const pushClientToolResults = async (exchanges: readonly RuntimeEventReplayToolExchange[]) => {
+      for (const { call, result } of exchanges) {
         if (!result || result.providerExecuted === true) continue;
-        results.delete(call.toolCallId);
         push(
           {
             role: 'tool',
@@ -4031,16 +4016,16 @@ export class AiSdkBackend implements AgentBackend {
     const emitStep = async (
       reasoning: readonly ThinkingItem[] | undefined,
       text: TextItem | undefined,
-      calls: readonly ToolCallItem[],
+      exchanges: readonly RuntimeEventReplayToolExchange[],
+      replayFacts: ReadonlyArray<{ readonly text: string; readonly eventIds: readonly string[] }>,
     ) => {
+      const calls = exchanges.map(({ call }) => call);
       const content: unknown[] = [];
       const eventIds = [
         ...(reasoning ?? []).map((item) => item.eventId),
         ...(text ? [text.eventId] : []),
         ...calls.map((call) => call.eventId),
-        ...(text?.stepId
-          ? (replayFactsByStep.get(text.stepId)?.flatMap((fact) => fact.eventIds) ?? [])
-          : []),
+        ...replayFacts.flatMap((fact) => fact.eventIds),
       ];
       const replayReasoning = reasoning
         ?.map(reasoningReplay)
@@ -4052,7 +4037,7 @@ export class AiSdkBackend implements AgentBackend {
       // same provider step. Preserve that chronology for Responses item
       // references and Anthropic server_tool_use/result replay. Client tools
       // stay after text because their execution begins only after this step.
-      for (const call of calls) {
+      for (const { call, result } of exchanges) {
         if (call.providerExecuted !== true) continue;
         content.push({
           type: 'tool-call',
@@ -4062,9 +4047,7 @@ export class AiSdkBackend implements AgentBackend {
           ...(call.providerOptions !== undefined ? { providerOptions: call.providerOptions } : {}),
           providerExecuted: true,
         });
-        const result = results.get(call.toolCallId);
         if (!result || result.providerExecuted !== true) continue;
-        results.delete(call.toolCallId);
         eventIds.push(result.eventId);
         content.push({
           type: 'tool-result',
@@ -4080,12 +4063,8 @@ export class AiSdkBackend implements AgentBackend {
           ...(text.providerOptions !== undefined ? { providerOptions: text.providerOptions } : {}),
         });
       }
-      const replayFacts = text?.stepId ? replayFactsByStep.get(text.stepId) : undefined;
-      if (replayFacts) {
-        for (const replayFact of replayFacts) {
-          content.push({ type: 'text', text: replayFact.text });
-        }
-        replayFactsByStep.delete(text!.stepId!);
+      for (const replayFact of replayFacts) {
+        content.push({ type: 'text', text: replayFact.text });
       }
       for (const call of calls) {
         if (call.providerExecuted === true) continue;
@@ -4113,205 +4092,67 @@ export class AiSdkBackend implements AgentBackend {
           eventIds,
         );
       }
-      await pushClientToolResults(calls);
+      await pushClientToolResults(exchanges);
     };
-    // Emit tool calls no assistant text closed: a thinking + tool step with no
-    // text (its empty closer is skipped from the plan), a pure-tool step, or a
-    // legacy per-turn tool block. Group consecutive calls by stepId so each step
-    // stays one assistant message, and claim the step's parked reasoning by
-    // stepId — this is how the common Anthropic interleaved-thinking step shape
-    // (reasoning + tool call, no text) gets its reasoning merged ahead of its
-    // calls. Calls without a stepId group together (legacy shape, no reasoning).
-    const emitGroupedCalls = async (calls: readonly ToolCallItem[]) => {
-      let group: ToolCallItem[] = [];
-      const emitGroup = async () => {
-        if (group.length === 0) return;
-        const stepId = group[0]!.stepId;
-        const reasoning = stepId !== undefined ? reasoningByStep.get(stepId) : undefined;
-        const text = stepId !== undefined ? textByStep.get(stepId) : undefined;
-        if (stepId !== undefined) {
-          reasoningByStep.delete(stepId);
-          textByStep.delete(stepId);
-          pendingStepOrder.delete(stepId);
-        }
-        await emitStep(reasoning, text, group);
-        group = [];
-      };
-      for (const call of calls) {
-        if (group.length > 0 && group[0]!.stepId !== call.stepId) await emitGroup();
-        group.push(call);
-      }
-      await emitGroup();
-    };
-    const flushLooseCalls = async () => {
-      if (bufferedCalls.length === 0) return;
-      const calls = bufferedCalls;
-      bufferedCalls = [];
-      await emitGroupedCalls(calls);
-    };
-    const flushPendingStep = async (stepId: string) => {
-      const text = textByStep.get(stepId);
-      const reasoning = reasoningByStep.get(stepId);
-      textByStep.delete(stepId);
-      reasoningByStep.delete(stepId);
-      pendingStepOrder.delete(stepId);
-      await emitStep(reasoning, text, []);
-    };
-    const flushPendingStepsBefore = async (stepId: string | undefined) => {
-      const pendingStepIds = [...pendingStepOrder];
-      const lastPendingStepId = pendingStepIds.at(-1);
-      const earlierStepIds =
-        stepId !== undefined && lastPendingStepId === stepId
-          ? pendingStepIds.slice(0, -1)
-          : pendingStepIds;
-      if (earlierStepIds.length === 0) return;
-      await flushLooseCalls();
-      for (const pendingStepId of earlierStepIds) await flushPendingStep(pendingStepId);
-    };
-    const flushPendingSteps = async () => {
-      await flushLooseCalls();
-      for (const stepId of [...pendingStepOrder]) await flushPendingStep(stepId);
-    };
-
-    for (const item of admitProviderReasoningReplayItems(
+    const admittedItems = admitProviderReasoningReplayItems(
       plan.items,
       providerReasoningReplayEventIds,
-    )) {
-      switch (item.kind) {
-        case 'tool_call':
-          await flushPendingStepsBefore(item.stepId);
-          if (item.toolName !== 'apply_patch') {
-            bufferedCalls.push(item);
-            break;
-          }
-          {
-            const replayInput = normalizeApplyPatchReplayInput(
-              this.applyPatchProfile,
-              item.toolCallId,
-              item.input,
-            );
-            if (replayInput !== null) {
-              bufferedCalls.push({
-                ...item,
-                input: replayInput,
-                ...(replayInput !== item.input ? { providerOptions: undefined } : {}),
-              });
-            } else {
-              downgradedApplyPatchCalls.set(item.toolCallId, item);
-            }
-          }
-          break;
-        case 'tool_result': {
-          const downgradedCall = downgradedApplyPatchCalls.get(item.toolCallId);
-          if (!downgradedCall) {
-            results.set(item.toolCallId, item);
-            break;
-          }
-          downgradedApplyPatchCalls.delete(item.toolCallId);
-          const replayFact = item.modelProjection
-            ? durableApplyPatchReplayFactText(
-                downgradedCall.input,
-                item.modelProjection,
-                item.isError,
-              )
-            : applyPatchReplayFactText(downgradedCall.input, item.output, item.isError);
-          if (!replayFact) break;
-          if (downgradedCall.stepId) {
-            const stepFacts = replayFactsByStep.get(downgradedCall.stepId) ?? [];
-            replayFactsByStep.set(downgradedCall.stepId, [
-              ...stepFacts,
-              {
-                text: replayFact,
-                eventIds: [downgradedCall.eventId, item.eventId],
-              },
-            ]);
-            if (!textByStep.has(downgradedCall.stepId)) {
-              textByStep.set(downgradedCall.stepId, {
-                kind: 'text',
-                role: 'assistant',
-                content: '',
-                stepId: downgradedCall.stepId,
-                eventId: downgradedCall.eventId,
-                ts: downgradedCall.ts,
-              });
-            }
-            rememberPendingStep(downgradedCall.stepId);
-          } else {
-            await flushPendingSteps();
-            push({ role: 'assistant', content: [{ type: 'text', text: replayFact }] }, [
-              downgradedCall.eventId,
-              item.eventId,
-            ]);
-          }
-          break;
+    );
+    for (const entry of buildRuntimeEventReplayTimeline(admittedItems)) {
+      if (entry.kind === 'thinking') {
+        const replayReasoning = reasoningReplay(entry.item);
+        if (replayReasoning) {
+          push(
+            {
+              role: 'assistant',
+              content: replayReasoning.part ? [replayReasoning.part] : [],
+              ...(replayReasoning.providerOptions
+                ? { providerOptions: replayReasoning.providerOptions }
+                : {}),
+            } as ModelMessage,
+            [entry.item.eventId],
+          );
         }
-        case 'thinking':
-          if (item.stepId !== undefined) {
-            const stepReasoning = reasoningByStep.get(item.stepId) ?? [];
-            stepReasoning.push(item);
-            reasoningByStep.set(item.stepId, stepReasoning);
-            rememberPendingStep(item.stepId);
-          } else {
-            // Legacy standalone reasoning (pure-reasoning turn): emit on its own.
-            await flushPendingSteps();
-            const replayReasoning = reasoningReplay(item);
-            if (replayReasoning) {
-              push(
-                {
-                  role: 'assistant',
-                  content: replayReasoning.part ? [replayReasoning.part] : [],
-                  ...(replayReasoning.providerOptions
-                    ? { providerOptions: replayReasoning.providerOptions }
-                    : {}),
-                } as ModelMessage,
-                [item.eventId],
-              );
-            }
-          }
-          break;
-        case 'text':
-          if (item.role !== 'assistant') {
-            await flushPendingSteps();
-            push(await this.materializeRuntimeReplayItem(budget, item), [item.eventId]);
-            break;
-          }
-          if (item.stepId !== undefined) {
-            const stepId = item.stepId;
-            const thisCalls = bufferedCalls.filter((call) => call.stepId === stepId);
-            const otherCalls = bufferedCalls.filter((call) => call.stepId !== stepId);
-            bufferedCalls = [];
-            // Earlier steps' unclosed calls flush first (with their own parked
-            // reasoning, if any) so step order is preserved.
-            if (otherCalls.length > 0) await emitGroupedCalls(otherCalls);
-            if (thisCalls.length > 0) {
-              await emitStep(reasoningByStep.get(stepId), item, thisCalls);
-              reasoningByStep.delete(stepId);
-              pendingStepOrder.delete(stepId);
-            } else {
-              // Runtime-owned settlement persists assistant facts before the
-              // matching tool calls. Hold the step closer until those calls
-              // arrive; a terminal text-only step flushes below.
-              textByStep.set(stepId, item);
-              rememberPendingStep(stepId);
-            }
-          } else {
-            // Legacy per-turn assistant text: standalone after any tool block.
-            await flushPendingSteps();
-            push(
-              {
-                role: 'assistant',
-                content: item.content,
-                ...(item.providerOptions !== undefined
-                  ? { providerOptions: item.providerOptions }
-                  : {}),
-              },
-              [item.eventId],
-            );
-          }
-          break;
+        continue;
       }
+      if (entry.kind === 'text') {
+        push(await this.materializeRuntimeReplayItem(budget, entry.item), [entry.item.eventId]);
+        continue;
+      }
+
+      const exchanges: RuntimeEventReplayToolExchange[] = [];
+      const replayFacts: Array<{ readonly text: string; readonly eventIds: readonly string[] }> =
+        [];
+      for (const { call, result } of entry.calls) {
+        if (call.toolName !== 'apply_patch') {
+          exchanges.push({ call, ...(result ? { result } : {}) });
+          continue;
+        }
+        const replayInput = normalizeApplyPatchReplayInput(
+          this.applyPatchProfile,
+          call.toolCallId,
+          call.input,
+        );
+        if (replayInput !== null) {
+          exchanges.push({
+            call: {
+              ...call,
+              input: replayInput,
+              ...(replayInput !== call.input ? { providerOptions: undefined } : {}),
+            },
+            ...(result ? { result } : {}),
+          });
+          continue;
+        }
+        if (!result) continue;
+        const replayFact = result.modelProjection
+          ? durableApplyPatchReplayFactText(call.input, result.modelProjection, result.isError)
+          : applyPatchReplayFactText(call.input, result.output, result.isError);
+        if (!replayFact) continue;
+        replayFacts.push({ text: replayFact, eventIds: [call.eventId, result.eventId] });
+      }
+      await emitStep(entry.reasoning, entry.text, exchanges, replayFacts);
     }
-    await flushPendingSteps();
     return this.prependProviderHistoryCompactMessage(out, historyCompactCheckpoint);
   }
 

@@ -370,6 +370,117 @@ export type RuntimeEventModelReplayItem =
       ts: number;
     };
 
+export type RuntimeEventReplayTextItem = Extract<RuntimeEventModelReplayItem, { kind: 'text' }>;
+export type RuntimeEventReplayThinkingItem = Extract<
+  RuntimeEventModelReplayItem,
+  { kind: 'thinking' }
+>;
+export type RuntimeEventReplayToolCallItem = Extract<
+  RuntimeEventModelReplayItem,
+  { kind: 'tool_call' }
+>;
+export type RuntimeEventReplayToolResultItem = Extract<
+  RuntimeEventModelReplayItem,
+  { kind: 'tool_result' }
+>;
+
+export interface RuntimeEventReplayToolExchange {
+  call: RuntimeEventReplayToolCallItem;
+  result?: RuntimeEventReplayToolResultItem;
+}
+
+export type RuntimeEventReplayTimelineEntry =
+  | {
+      kind: 'assistant_step';
+      stepId?: string;
+      reasoning: RuntimeEventReplayThinkingItem[];
+      text?: RuntimeEventReplayTextItem;
+      calls: RuntimeEventReplayToolExchange[];
+    }
+  | { kind: 'text'; item: RuntimeEventReplayTextItem }
+  | { kind: 'thinking'; item: RuntimeEventReplayThinkingItem };
+
+/**
+ * The single authority for model-history chronology. Results attach to their
+ * calls, while assistant step parts join only the immediately adjacent segment
+ * with the same step id. Reusing an id later never moves that work backward
+ * across an intervening step.
+ */
+export function buildRuntimeEventReplayTimeline(
+  items: readonly RuntimeEventModelReplayItem[],
+): RuntimeEventReplayTimelineEntry[] {
+  const results = new Map<
+    string,
+    Array<{ item: RuntimeEventReplayToolResultItem; index: number }>
+  >();
+  for (const [index, item] of items.entries()) {
+    if (item.kind !== 'tool_result') continue;
+    const matches = results.get(item.toolCallId) ?? [];
+    matches.push({ item, index });
+    results.set(item.toolCallId, matches);
+  }
+
+  const timeline: RuntimeEventReplayTimelineEntry[] = [];
+  const adjacentStep = (stepId: string | undefined) => {
+    const last = timeline.at(-1);
+    return last?.kind === 'assistant_step' && last.stepId === stepId ? last : undefined;
+  };
+  const appendStep = (stepId: string | undefined) => {
+    const entry: Extract<RuntimeEventReplayTimelineEntry, { kind: 'assistant_step' }> = {
+      kind: 'assistant_step',
+      ...(stepId !== undefined ? { stepId } : {}),
+      reasoning: [],
+      calls: [],
+    };
+    timeline.push(entry);
+    return entry;
+  };
+
+  const resultIndexes = new WeakMap<RuntimeEventReplayToolExchange, number>();
+  const adjacentLegacyStepIsOpen = (currentIndex: number) => {
+    const step = adjacentStep(undefined);
+    return step?.calls.some((exchange) => {
+      const resultIndex = resultIndexes.get(exchange);
+      return resultIndex === undefined || resultIndex > currentIndex;
+    })
+      ? step
+      : undefined;
+  };
+
+  for (const [index, item] of items.entries()) {
+    if (item.kind === 'tool_result') continue;
+    if (item.kind === 'tool_call') {
+      const step =
+        (item.stepId === undefined ? adjacentLegacyStepIsOpen(index) : adjacentStep(item.stepId)) ??
+        appendStep(item.stepId);
+      const matchedResult = results.get(item.toolCallId)?.shift();
+      const exchange: RuntimeEventReplayToolExchange = {
+        call: item,
+        ...(matchedResult ? { result: matchedResult.item } : {}),
+      };
+      if (matchedResult) resultIndexes.set(exchange, matchedResult.index);
+      step.calls.push(exchange);
+      continue;
+    }
+    if (item.kind === 'thinking') {
+      if (item.stepId === undefined) timeline.push({ kind: 'thinking', item });
+      else {
+        const step = adjacentStep(item.stepId) ?? appendStep(item.stepId);
+        step.reasoning.push(item);
+      }
+      continue;
+    }
+    if (item.role === 'assistant' && item.stepId !== undefined) {
+      const adjacent = adjacentStep(item.stepId);
+      const step = adjacent && adjacent.text === undefined ? adjacent : appendStep(item.stepId);
+      step.text = item;
+    } else {
+      timeline.push({ kind: 'text', item });
+    }
+  }
+  return timeline;
+}
+
 export interface RuntimeEventModelReplayPlan {
   items: RuntimeEventModelReplayItem[];
   textMessages: TextModelMessage[];
