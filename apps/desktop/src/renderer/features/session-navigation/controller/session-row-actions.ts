@@ -90,6 +90,7 @@ export interface SessionNavigationRowActions {
 export function createSessionNavigationRowActions(deps: {
   uiLocale: UiLocale;
   activeIdRef: RefObject<string | undefined>;
+  acquireAutomaticQueryBlock(sessionIds: readonly string[]): { release(): void };
   clearActiveMessages: () => void;
   clearSessionRendererState: (sessionId: string) => void;
   pendingSessionRowActionsRef: RefObject<Set<string>>;
@@ -102,6 +103,7 @@ export function createSessionNavigationRowActions(deps: {
   const {
     uiLocale,
     activeIdRef,
+    acquireAutomaticQueryBlock,
     clearActiveMessages,
     clearSessionRendererState,
     pendingSessionRowActionsRef,
@@ -112,6 +114,26 @@ export function createSessionNavigationRowActions(deps: {
     toastApi,
   } = deps;
   const copy = getShellCopy(uiLocale).sessionRowActions;
+
+  async function withAutomaticQueryBlockOn<T>(
+    sessionIds: readonly string[],
+    action: () => Promise<T>,
+  ): Promise<T> {
+    const lease = acquireAutomaticQueryBlock(sessionIds);
+    try {
+      return await action();
+    } finally {
+      lease.release();
+    }
+  }
+
+  async function withAutomaticQueryBlock<T>(
+    sessionId: string,
+    action: (familyIds: readonly string[]) => Promise<T>,
+  ): Promise<T> {
+    const familyIds = revisionFamilySessionIds(sessionsRef.current, sessionId);
+    return withAutomaticQueryBlockOn(familyIds, () => action(familyIds));
+  }
 
   async function runSessionRowAction(
     sessionId: string,
@@ -146,14 +168,15 @@ export function createSessionNavigationRowActions(deps: {
 
   async function archiveSession(sessionId: string) {
     return runSessionRowAction(sessionId, 'archive', copy.archiveFailedTitle, async () => {
-      const familyIds = revisionFamilySessionIds(sessionsRef.current, sessionId);
-      await service.archive(sessionId, { revisionFamily: true });
-      if (activeIdRef.current && familyIds.includes(activeIdRef.current)) {
-        setActiveId(undefined);
-        clearActiveMessages();
-      }
-      for (const id of familyIds) clearSessionRendererState(id);
-      await refreshSessions();
+      await withAutomaticQueryBlock(sessionId, async (familyIds) => {
+        await service.archive(sessionId, { revisionFamily: true });
+        if (activeIdRef.current && familyIds.includes(activeIdRef.current)) {
+          setActiveId(undefined);
+          clearActiveMessages();
+        }
+        for (const id of familyIds) clearSessionRendererState(id);
+        await refreshSessions();
+      });
     });
   }
 
@@ -206,10 +229,16 @@ export function createSessionNavigationRowActions(deps: {
       if (!ok) return;
       // The confirm named an archived task, so a restore revokes it. An active
       // task has no such premise to lose.
-      const { disposition, archivedSubtaskCount } = await removeSessionFamily(sessionId, {
-        requireArchived: session?.isArchived === true,
-      });
-      await refreshSessions();
+      const { disposition, archivedSubtaskCount } = await withAutomaticQueryBlock(
+        sessionId,
+        async () => {
+          const outcome = await removeSessionFamily(sessionId, {
+            requireArchived: session?.isArchived === true,
+          });
+          await refreshSessions();
+          return outcome;
+        },
+      );
       // `restored` means nothing was deleted, so no subtask moved either. On a
       // real delete the count is the Host's executed number, not an estimate.
       if (disposition === 'restored') toastApi.success(copy.deleteRestoredTitle(name));
@@ -360,40 +389,45 @@ export function createSessionNavigationRowActions(deps: {
    * a run of them is what a sweep exists to avoid.
    */
   async function archiveSessions(sessionIds: readonly string[]): Promise<SessionArchiveOutcome> {
-    const failed: string[] = [];
-    let firstFailure: SessionArchiveOutcome['firstFailure'];
-    let archived = 0;
-    for (const sessionId of sessionIds) {
-      const key = `${sessionId}:archive`;
-      if (
-        Array.from(pendingSessionRowActionsRef.current).some((pending) =>
-          pending.startsWith(`${sessionId}:`),
-        )
-      ) {
-        failed.push(sessionId);
-        continue;
-      }
-      pendingSessionRowActionsRef.current.add(key);
-      try {
-        const familyIds = revisionFamilySessionIds(sessionsRef.current, sessionId);
-        await service.archive(sessionId, { revisionFamily: true });
-        if (activeIdRef.current && familyIds.includes(activeIdRef.current)) {
-          setActiveId(undefined);
-          clearActiveMessages();
+    const familyIds = [
+      ...new Set(sessionIds.flatMap((id) => revisionFamilySessionIds(sessionsRef.current, id))),
+    ];
+    return withAutomaticQueryBlockOn(familyIds, async () => {
+      const failed: string[] = [];
+      let firstFailure: SessionArchiveOutcome['firstFailure'];
+      let archived = 0;
+      for (const sessionId of sessionIds) {
+        const key = `${sessionId}:archive`;
+        if (
+          Array.from(pendingSessionRowActionsRef.current).some((pending) =>
+            pending.startsWith(`${sessionId}:`),
+          )
+        ) {
+          failed.push(sessionId);
+          continue;
         }
-        for (const id of familyIds) clearSessionRendererState(id);
-        archived += 1;
-      } catch (error) {
-        failed.push(sessionId);
-        firstFailure ??= { error, sessionId };
-      } finally {
-        pendingSessionRowActionsRef.current.delete(key);
+        pendingSessionRowActionsRef.current.add(key);
+        try {
+          const familyIds = revisionFamilySessionIds(sessionsRef.current, sessionId);
+          await service.archive(sessionId, { revisionFamily: true });
+          if (activeIdRef.current && familyIds.includes(activeIdRef.current)) {
+            setActiveId(undefined);
+            clearActiveMessages();
+          }
+          for (const id of familyIds) clearSessionRendererState(id);
+          archived += 1;
+        } catch (error) {
+          failed.push(sessionId);
+          firstFailure ??= { error, sessionId };
+        } finally {
+          pendingSessionRowActionsRef.current.delete(key);
+        }
       }
-    }
-    // Once, after the whole sweep. Refreshing per task would re-render the rail
-    // under the user's cursor for every id in the selection.
-    await refreshSessions();
-    return { archived, failed, firstFailure };
+      // Once, after the whole sweep. Refreshing per task would re-render the
+      // rail under the user's cursor for every id in the selection.
+      await refreshSessions();
+      return { archived, failed, firstFailure };
+    });
   }
 
   /**

@@ -36,7 +36,13 @@ export interface PlanModeState {
   abandon(executionId: string, title: string): Promise<void>;
 }
 
-export function usePlanModeState(session: SessionSummary | undefined): PlanModeState {
+export function usePlanModeState(
+  session: SessionSummary | undefined,
+  automaticQueryGate: {
+    subscribe(listener: () => void): () => void;
+    isAutomaticQueryBlocked(sessionId: string): boolean;
+  },
+): PlanModeState {
   const toastApi = useToast();
   const copy = getPlanModeCopy(useUiLocale());
   const [state, setState] = useState<PlanSessionState>();
@@ -55,17 +61,41 @@ export function usePlanModeState(session: SessionSummary | undefined): PlanModeS
     turnId: string;
   } | undefined>(undefined);
 
-  const refresh = useCallback(async () => {
-    if (!session) return;
-    setState(await window.maka.sessions.getPlanState(session.id));
-  }, [session?.id]);
+  const refresh = useCallback(async (options: {
+    automatic?: boolean;
+    isCurrent?: () => boolean;
+  } = {}) => {
+    const { automatic = true, isCurrent = () => true } = options;
+    if (!session || (automatic && automaticQueryGate.isAutomaticQueryBlocked(session.id))) return;
+    const next = await window.maka.sessions.getPlanState(session.id);
+    if (isCurrent() && (!automatic || !automaticQueryGate.isAutomaticQueryBlocked(session.id))) {
+      setState(next);
+    }
+  }, [automaticQueryGate, session?.id]);
 
   useEffect(() => {
     setState(undefined);
     setError(undefined);
-    if (!session) return;
-    const refreshOrReport = () => void refresh().catch((cause) => setError(message(cause)));
+    if (!session) {
+      return;
+    }
+    let requestVersion = 0;
+    const blocked = () => automaticQueryGate.isAutomaticQueryBlocked(session.id);
+    let queryBlocked = blocked();
+    const refreshOrReport = () => {
+      const version = ++requestVersion;
+      if (queryBlocked) return;
+      void refresh({ isCurrent: () => version === requestVersion }).catch((cause) => {
+        if (version === requestVersion && !queryBlocked) setError(message(cause));
+      });
+    };
     refreshOrReport();
+    const unsubscribeQueryGate = automaticQueryGate.subscribe(() => {
+      const next = blocked();
+      if (next === queryBlocked) return;
+      queryBlocked = next;
+      refreshOrReport();
+    });
     const unsubscribeEvents = window.maka.sessions.subscribeEvents(session.id, (event: SessionEvent) => {
       if (
         event.type === 'plan_submitted'
@@ -80,17 +110,19 @@ export function usePlanModeState(session: SessionSummary | undefined): PlanModeS
       refreshOrReport,
     );
     return () => {
+      requestVersion += 1;
+      unsubscribeQueryGate();
       unsubscribeEvents();
       unsubscribePlanChanges();
     };
-  }, [session?.id, session?.collaborationMode, refresh]);
+  }, [automaticQueryGate, session?.id, session?.collaborationMode]);
 
   const run = useCallback(async (action: () => Promise<void>): Promise<void> => {
     setPending(true);
     setError(undefined);
     try {
       await action();
-      await refresh();
+      await refresh({ automatic: false });
     } catch (cause) {
       setError(message(cause));
     } finally {

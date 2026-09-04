@@ -90,14 +90,22 @@ describe('revision-family session row actions', () => {
     });
     const branch = summary('branch', { parentSessionId: 'root', branchOfTurnId: 'turn-1' });
     const activeIdRef = { current: 'root' as string | undefined };
+    const service = createService(calls);
     const actions = createSessionNavigationRowActions({
       uiLocale: 'en',
       activeIdRef,
+      acquireAutomaticQueryBlock: (ids) => {
+        calls.push(`acquire:${ids.join(',')}`);
+        return { release: () => calls.push('release') };
+      },
       clearActiveMessages: () => undefined,
       clearSessionRendererState: (id) => { cleared.push(id); },
       pendingSessionRowActionsRef: { current: new Set<string>() },
-      refreshSessions: async () => [root, version, branch],
-      service: createService(calls),
+      refreshSessions: async () => {
+        calls.push('refresh');
+        return [root, version, branch];
+      },
+      service,
       sessionsRef: { current: [root, version, branch] },
       setActiveId: (id) => { selections.push(id); activeIdRef.current = id; },
       toastApi: {
@@ -115,17 +123,84 @@ describe('revision-family session row actions', () => {
 
     assert.deepEqual(calls, [
       'flag:version:true:true',
+      'refresh',
       'rename:branch:Independent branch:true',
+      'refresh',
+      'acquire:root,version',
       'archive:version:true',
+      'refresh',
+      'release',
       // The delete asks the Host how many subtasks it would archive before the
       // confirm, then removes.
       'preview:root',
+      'acquire:root,version',
       // `root` is not archived, so the delete states no archived premise —
       // requiring one would refuse every delete from the rail.
       'remove:root:true:false',
+      'refresh',
+      'release',
     ]);
     assert.deepEqual(selections, [undefined, undefined]);
     assert.deepEqual(cleared, ['root', 'version', 'root', 'version']);
+
+    service.archive = async () => { throw new Error('archive failed'); };
+    await actions.archiveSession('root');
+    assert.deepEqual(calls.slice(-2), ['acquire:root,version', 'release']);
+  });
+
+  it('holds one query block through a bulk archive refresh', async () => {
+    const calls: string[] = [];
+    const root = summary('root');
+    const version = summary('version', {
+      revisionRootSessionId: 'root',
+      revisionParentSessionId: 'root',
+    });
+    const other = summary('other');
+    let rejectRefresh = false;
+    const actions = createSessionNavigationRowActions({
+      uiLocale: 'en',
+      activeIdRef: { current: undefined },
+      acquireAutomaticQueryBlock: (ids) => {
+        calls.push(`acquire:${ids.join(',')}`);
+        return { release: () => calls.push('release') };
+      },
+      clearActiveMessages: () => undefined,
+      clearSessionRendererState: () => undefined,
+      pendingSessionRowActionsRef: { current: new Set<string>() },
+      refreshSessions: async () => {
+        calls.push('refresh');
+        if (rejectRefresh) throw new Error('refresh failed');
+        return [];
+      },
+      service: createService(calls),
+      sessionsRef: { current: [root, version, other] },
+      setActiveId: () => undefined,
+      toastApi: {
+        success: () => undefined,
+        error: () => undefined,
+        confirm: async () => true,
+      },
+    });
+
+    await actions.archiveSelected(['version', 'other']);
+
+    assert.deepEqual(calls, [
+      'acquire:root,version,other',
+      'archive:version:true',
+      'archive:other:true',
+      'refresh',
+      'release',
+    ]);
+
+    calls.length = 0;
+    rejectRefresh = true;
+    await assert.rejects(actions.archiveSelected(['other']), /refresh failed/);
+    assert.deepEqual(calls, [
+      'acquire:other',
+      'archive:other:true',
+      'refresh',
+      'release',
+    ]);
   });
 });
 
@@ -138,9 +213,11 @@ function deleteHarness(
   const calls: string[] = [];
   const confirms: Array<{ title: string; description: string }> = [];
   const successes: Array<{ title: string; description?: string }> = [];
+  let leaseReleased = false;
   const actions = createSessionNavigationRowActions({
     uiLocale: 'en',
     activeIdRef: { current: undefined },
+    acquireAutomaticQueryBlock: () => ({ release: () => { leaseReleased = true; } }),
     clearActiveMessages: () => undefined,
     clearSessionRendererState: () => undefined,
     pendingSessionRowActionsRef: { current: new Set<string>() },
@@ -154,7 +231,7 @@ function deleteHarness(
       confirm: async (options) => { confirms.push({ title: options.title, description: options.description }); return true; },
     },
   });
-  return { actions, calls, confirms, successes };
+  return { actions, calls, confirms, successes, wasLeaseReleased: () => leaseReleased };
 }
 
 describe('delete confirm warns off the Host preview, toast reports the Host count', () => {
@@ -219,7 +296,7 @@ describe('delete confirm warns off the Host preview, toast reports the Host coun
   });
 
   it('stays silent on the toast when a concurrent restore calls the delete off', async () => {
-    const { actions, confirms, successes } = deleteHarness(
+    const { actions, confirms, successes, wasLeaseReleased } = deleteHarness(
       [summary('parent', { name: 'hi' })],
       'restored',
       0,
@@ -232,5 +309,6 @@ describe('delete confirm warns off the Host preview, toast reports the Host coun
     assert.match(confirms[0].description, /kept and moved to Archived/);
     // But nothing was deleted, so nothing moved to the archive.
     assert.deepEqual(successes, [{ title: 'hi was restored, so it was kept', description: undefined }]);
+    assert.equal(wasLeaseReleased(), true);
   });
 });

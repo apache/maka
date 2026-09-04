@@ -17,12 +17,14 @@
  * under the License.
  */
 
-export interface BootstrapSelectionLease<Summary extends { id: string; lastMessageAt?: number }> {
+type BootstrapSelectionSummary = { id: string; lastMessageAt?: number; isArchived: boolean };
+
+export interface BootstrapSelectionLease<Summary extends BootstrapSelectionSummary> {
   reconcile(sessions: readonly Summary[]): boolean;
   release(): void;
 }
 
-export function createBootstrapSelectionLease<Summary extends { id: string; lastMessageAt?: number }>(options: {
+export function createBootstrapSelectionLease<Summary extends BootstrapSelectionSummary>(options: {
   readActiveId: () => string | undefined;
   readSelectionRevision: () => number;
   select: (sessionId: string | undefined) => void;
@@ -37,11 +39,12 @@ export function createBootstrapSelectionLease<Summary extends { id: string; last
         return false;
       }
 
+      const activeSessions = sessions.filter((session) => !session.isArchived);
       const current = options.readActiveId();
-      const next = current && sessions.some((session) => session.id === current)
+      const next = current && activeSessions.some((session) => session.id === current)
         ? current
-        : sessions[0]?.lastMessageAt
-          ? sessions[0].id
+        : activeSessions[0]?.lastMessageAt
+          ? activeSessions[0].id
           : undefined;
       if (next !== current) options.select(next);
       ownedRevision = options.readSelectionRevision();

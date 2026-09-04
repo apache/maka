@@ -108,7 +108,7 @@ function ports(
   return {
     activeIdRef: { current: activeSessionId },
     sessionsRef: { current: sessions },
-    pendingSessionRowActionsRef: { current: new Set<string>() },
+    acquireAutomaticQueryBlock: () => ({ release: () => undefined }),
     activateSession: (sessionId) => calls.push(`activate:${sessionId ?? 'none'}`),
     clearActiveMessages: () => calls.push('clear-messages'),
     clearSessionRendererState: (sessionId) => calls.push(`clear:${sessionId}`),

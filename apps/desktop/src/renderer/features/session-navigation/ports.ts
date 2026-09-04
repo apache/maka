@@ -112,7 +112,7 @@ export interface SessionNavigationServices {
 export interface SessionNavigationPorts {
   activeIdRef: RefObject<string | undefined>;
   sessionsRef: RefObject<ReadonlyArray<SessionSummary>>;
-  pendingSessionRowActionsRef: RefObject<Set<string>>;
+  acquireAutomaticQueryBlock(sessionIds: readonly string[]): { release(): void };
   activateSession(sessionId: string | undefined): void;
   clearActiveMessages(): void;
   clearSessionRendererState(sessionId: string): void;

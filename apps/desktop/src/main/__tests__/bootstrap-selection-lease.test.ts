@@ -30,10 +30,10 @@ import {
   writeNewTaskReloadDraft,
 } from '../../renderer/new-task-reload-intent.js';
 
-type Summary = { id: string; lastMessageAt?: number };
+type Summary = { id: string; lastMessageAt?: number; isArchived: boolean };
 
-function session(id: string, lastMessageAt?: number): Summary {
-  return { id, lastMessageAt };
+function session(id: string, lastMessageAt?: number, isArchived = false): Summary {
+  return { id, lastMessageAt, isArchived };
 }
 
 function harness(activeId?: string) {
@@ -87,6 +87,33 @@ describe('bootstrap selection lease', () => {
     assert.equal(state.lease.reconcile([]), true);
     assert.equal(state.activeId(), undefined);
   });
+
+  for (const { name, initialActiveId, sessions, expected } of [
+    {
+      name: 'the freshest session is archived',
+      initialActiveId: undefined,
+      sessions: [session('archived', 2, true), session('active', 1)],
+      expected: 'active',
+    },
+    {
+      name: 'the bootstrap-owned selection is archived',
+      initialActiveId: 'archived',
+      sessions: [session('archived', 2, true), session('active', 1)],
+      expected: 'active',
+    },
+    {
+      name: 'every session is archived',
+      initialActiveId: 'archived',
+      sessions: [session('archived', 1, true)],
+      expected: undefined,
+    },
+  ] as const) {
+    it(`skips archived sessions when ${name}`, () => {
+      const state = harness(initialActiveId);
+      assert.equal(state.lease.reconcile(sessions), true);
+      assert.equal(state.activeId(), expected);
+    });
+  }
 
   it('does not reconcile after release', () => {
     const state = harness();

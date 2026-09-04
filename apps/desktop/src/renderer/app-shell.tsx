@@ -353,6 +353,7 @@ function AppShellContent({
     transcriptRangeRef,
     messageLoadPending,
     setMessageLoadPending,
+    sessionCatalogController,
     sessionUiController,
   } = useAppShellSessionWorkspace(toastApi);
   const activeCatalogSession = sessions.find((session) => session.id === activeId);
@@ -1226,7 +1227,7 @@ function AppShellContent({
     ? sessionSettingIntent.overlays.permissionMode[activeId]
       ?? activeBoundarySurface.permissionMode
     : activeBoundarySurface.permissionMode;
-  const planMode = usePlanModeState(sharedSessionActive ? undefined : activeSessionForView);
+  const planMode = usePlanModeState(sharedSessionActive ? undefined : activeSessionForView, sessionCatalogController);
   const planConversationItems = (planMode.state?.proposals ?? []).map((proposal) => ({
     id: proposal.proposalId,
     afterTurnId: proposal.turnId,
@@ -1566,6 +1567,7 @@ function AppShellContent({
   const composerMentionsSurface: ComposerMentionsSurface = {
     skillCatalogRevision: moduleHub.selectors.skillCatalogRevision,
     sessionId: ownerActiveId,
+    automaticQueryGate: sessionCatalogController,
     projectPath: activeId
       ? ownerActiveId
         ? projectInfo?.projectPath
@@ -1632,7 +1634,6 @@ function AppShellContent({
   useLayoutEffect(() => {
     openSessionInChatRef.current = openSession;
   }, [openSession]);
-  const pendingSessionRowActionsRef = useRef(new Set<string>());
   const sessionNavigationCommandsRef = useRef<SessionNavigationRowActions | null>(null);
   // Built inline: the rail reads these through a ref published on commit, so
   // their identity carries no information and this object never has to be
@@ -1640,7 +1641,7 @@ function AppShellContent({
   const sessionNavigationPorts: SessionNavigationPorts = {
     activeIdRef,
     sessionsRef,
-    pendingSessionRowActionsRef,
+    acquireAutomaticQueryBlock: sessionCatalogController.acquireAutomaticQueryBlock,
     activateSession: setActiveId,
     clearActiveMessages,
     clearSessionRendererState,
