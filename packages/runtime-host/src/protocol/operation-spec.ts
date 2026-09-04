@@ -30,6 +30,7 @@ export type HostOperationErrorCode =
   | 'session_busy'
   | 'operation_conflict'
   | 'capability_unavailable'
+  | 'slug_taken'
   | 'invalid_request'
   | 'projection_incomplete'
   | 'stale_cursor'

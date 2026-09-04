@@ -42,6 +42,7 @@ export function listApiKeyOnboardableProviders(): OnboardableProvider[] {
       providerType,
       label: definition.label,
       requiresBaseUrl: !definition.baseUrl,
+      setupMethod: 'api_key' as const,
     };
   });
 }
