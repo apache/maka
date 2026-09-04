@@ -106,6 +106,26 @@ const RUNNING_TOOL: TurnTimelineItem = {
   items: [{ toolUseId: 'tool-1', toolName: 'read', status: 'running', args: {} }],
 };
 
+test('does not render an empty user bubble for a quote-only message', async () => {
+  const { container, root } = domRoot();
+  const turn = {
+    ...turnWith([{ ...ANSWER, live: false }]),
+    user: {
+      id: 'quote-only',
+      role: 'user' as const,
+      text: '',
+      ts: 1,
+      quotes: [{ text: 'quoted content', label: 'Pasted text' }],
+    },
+  };
+
+  await renderTurn(root, turn);
+
+  assert.ok(container.querySelector('.maka-user-quotes'));
+  assert.equal(container.querySelector('.maka-chat-message-bubble-user'), null);
+  assert.ok(container.querySelector('.maka-message-meta'));
+});
+
 test('renders an aborted turn outcome as an inline system status notice', async () => {
   const { container, root } = domRoot();
   await renderTurn(root, {

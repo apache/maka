@@ -289,6 +289,25 @@ function equivalentLegacyMessages(): StoredMessage[] {
 }
 
 describe('projectRuntimeEventsToStoredMessages', () => {
+  test('replays quote-only user content instead of classifying it as empty text', () => {
+    const replay = buildRuntimeEventModelReplayPlan([
+      ev({
+        role: 'user',
+        author: 'user',
+        content: {
+          kind: 'text',
+          text: '',
+          quotes: [{ text: 'QUOTE_ONLY_REPLAY_MARKER', label: 'Pasted text' }],
+        },
+      }),
+    ]);
+
+    assert.deepStrictEqual(replay.diagnostics, []);
+    const item = replay.items[0];
+    assert.equal(item?.kind, 'text');
+    assert.match(item?.kind === 'text' ? item.content : '', /QUOTE_ONLY_REPLAY_MARKER/);
+  });
+
   test('exposes a session image ref as a Markdown image source to the model', () => {
     const replay = buildRuntimeEventModelReplayPlan([
       ev({

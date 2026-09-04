@@ -403,7 +403,14 @@ export function decodeMessageContent(value: unknown, allowEmptyText = false): Me
   } catch {
     throw invalidProtocolFrame('Invalid Message content');
   }
-  requireUtf8String(content.text, 'Message text', TURN_MESSAGE_TEXT_MAX_BYTES, allowEmptyText);
+  const hasStructuredContent =
+    (content.quotes?.length ?? 0) > 0 || (content.attachments?.length ?? 0) > 0;
+  requireUtf8String(
+    content.text,
+    'Message text',
+    TURN_MESSAGE_TEXT_MAX_BYTES,
+    allowEmptyText || hasStructuredContent,
+  );
   if (content.displayText !== undefined) {
     requireUtf8String(
       content.displayText,

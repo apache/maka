@@ -830,6 +830,10 @@ describe('runtimeEventHasModelVisibleContent', () => {
   test('classifies model-visible content by semantic kind', () => {
     const visible = [
       baseEvent({ role: 'user', content: { kind: 'text', text: 'hi' } }),
+      baseEvent({
+        role: 'user',
+        content: { kind: 'text', text: '', quotes: [{ text: 'quoted context' }] },
+      }),
       baseEvent({ content: { kind: 'thinking', text: 'r' } }),
       baseEvent({ content: { kind: 'function_call', id: '1', name: 'Read', args: {} } }),
       baseEvent({

@@ -64,6 +64,100 @@ test('a running composer keeps Send alone — no mode switch in the send slot', 
   assert.doesNotMatch(markup, /SegmentedControl/);
 });
 
+test('a pasted-text quote can be sent without additional inline text', async () => {
+  const original = {
+    document: globalThis.document,
+    window: globalThis.window,
+    IS_REACT_ACT_ENVIRONMENT: (globalThis as typeof globalThis & {
+      IS_REACT_ACT_ENVIRONMENT?: boolean;
+    }).IS_REACT_ACT_ENVIRONMENT,
+  };
+  const { document, window } = parseHTML('<div id="root"></div>');
+  window.getComputedStyle = () => ({
+    direction: 'ltr',
+    writingMode: 'horizontal-tb',
+    getPropertyValue: () => '',
+  }) as unknown as CSSStyleDeclaration;
+  Object.assign(globalThis, { document, window, IS_REACT_ACT_ENVIRONMENT: true });
+  const container = document.querySelector('#root');
+  assert.ok(container);
+  const root = createRoot(container);
+  const sent: string[] = [];
+
+  try {
+    await act(() => root.render(
+      <LocaleProvider locale="en">
+        <Composer
+          pendingQuotes={[{ text: 'pasted message', label: 'Pasted text' }]}
+          onSend={(text) => { sent.push(text); }}
+          onStop={() => undefined}
+        />
+      </LocaleProvider>,
+    ));
+    const send = container.querySelector<HTMLButtonElement>('button[aria-label="Send"]');
+    assert.ok(send);
+    assert.equal(send.disabled, false);
+    const form = container.querySelector<HTMLFormElement>('form');
+    assert.ok(form);
+    await act(async () => {
+      form.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+      await Promise.resolve();
+    });
+    assert.deepEqual(sent, ['']);
+  } finally {
+    await act(() => root.unmount());
+    Object.assign(globalThis, original);
+  }
+});
+
+test('an image attachment can be sent without additional inline text', async () => {
+  const original = {
+    document: globalThis.document,
+    window: globalThis.window,
+    IS_REACT_ACT_ENVIRONMENT: (globalThis as typeof globalThis & {
+      IS_REACT_ACT_ENVIRONMENT?: boolean;
+    }).IS_REACT_ACT_ENVIRONMENT,
+  };
+  const { document, window } = parseHTML('<div id="root"></div>');
+  window.getComputedStyle = () => ({
+    direction: 'ltr',
+    writingMode: 'horizontal-tb',
+    getPropertyValue: () => '',
+  }) as unknown as CSSStyleDeclaration;
+  Object.assign(globalThis, { document, window, IS_REACT_ACT_ENVIRONMENT: true });
+  const container = document.querySelector('#root');
+  assert.ok(container);
+  const root = createRoot(container);
+  const sent: string[] = [];
+
+  try {
+    await act(() => root.render(
+      <LocaleProvider locale="en">
+        <Composer
+          pendingAttachments={[
+            { displayName: 'image.png', kind: 'image', mimeType: 'image/png', size: 3 },
+          ]}
+          onSend={(text) => { sent.push(text); }}
+          onStop={() => undefined}
+        />
+      </LocaleProvider>,
+    ));
+    const send = container.querySelector<HTMLButtonElement>('button[aria-label="Send"]');
+    assert.ok(send);
+    assert.equal(send.disabled, false);
+    const form = container.querySelector<HTMLFormElement>('form');
+    assert.ok(form);
+    await act(async () => {
+      form.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+      await Promise.resolve();
+    });
+    assert.deepEqual(sent, ['']);
+  } finally {
+    await act(() => root.unmount());
+    Object.assign(globalThis, original);
+  }
+});
+
 test('keeps Host order visible until the reordered projection arrives', async () => {
   const original = {
     document: globalThis.document,

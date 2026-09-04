@@ -70,3 +70,27 @@ test('Enter mid-IME commits the candidate, then an ordinary send streams a reply
 
   await expect(page.getByRole('log').getByText(/Fake backend received: hello e2e/)).toBeVisible();
 });
+
+test('a reference-sized paste can be sent without typing an extra prompt', async ({
+  window: page,
+}) => {
+  const composer = page.locator(COMPOSER_INPUT);
+  const pasted = ['QUOTE_ONLY_MARKER', ...Array(10).fill('reference material')].join('\n');
+  await composer.evaluate((element, text) => {
+    const clipboardData = new DataTransfer();
+    clipboardData.setData('text/plain', text);
+    element.dispatchEvent(
+      new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData }),
+    );
+  }, pasted);
+
+  await expect(page.getByText('粘贴的文本', { exact: true })).toBeVisible();
+  await expect(composer).toHaveText('');
+  const send = page.getByRole('button', { name: '发送' });
+  await expect(send).toBeEnabled();
+  await send.click();
+
+  await expect(page.getByRole('log').getByText('Fake backend received:', { exact: true }))
+    .toBeVisible();
+  await expect(send).toBeDisabled();
+});

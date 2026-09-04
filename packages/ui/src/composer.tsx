@@ -1192,6 +1192,11 @@ export const Composer = forwardRef<
       return pasteAsInlineToken.onPaste(event, pasted);
     },
   };
+  // Structured context is staged beside the editor instead of being copied
+  // into it. It is still user-authored message content, so a quote or file on
+  // its own must keep the same send affordance as inline text.
+  const hasPendingQuote = (props.pendingQuotes?.length ?? 0) > 0;
+  const hasPendingAttachment = (props.pendingAttachments?.length ?? 0) > 0;
 
   useImperativeHandle(
     ref,
@@ -1255,11 +1260,11 @@ export const Composer = forwardRef<
       || sendPendingRef.current
       || importActionOwnerRef.current?.pending
     ) return;
-    // There is one authoritative draft: staged Skills and files serialize into
-    // `text`. The optional metadata below is a send-time rendering snapshot of
-    // file chips that still exist in the editor, not a second draft state.
+    // Inline text remains the authoritative editable draft. Large pasted text
+    // is deliberately staged beside it as a QuoteRef, and staged files are
+    // likewise independently sufficient to submit.
     const text = composerWireText(textPort.getValue());
-    if (!text) return;
+    if (!text && !hasPendingQuote && !hasPendingAttachment) return;
     const editable = editableNode();
     const workspaceFileReferences = editable ? workspaceFileReferencePositions(editable) : [];
     const submittedDraftKey = activeDraftKey();
@@ -1447,7 +1452,7 @@ export const Composer = forwardRef<
     props.sendBlocked ||
     sendPending ||
     importActionBusy ||
-    !text.trim() ||
+    (!text.trim() && !hasPendingQuote && !hasPendingAttachment) ||
     noModelConnection;
   // The disabled Send is explanatory only in the no-model dead-end; other
   // disabled reasons (empty draft, in-flight import) keep the neutral label.
@@ -1458,7 +1463,8 @@ export const Composer = forwardRef<
   // returns to Send (the host queues it as a follow-up). Stop is not lost in
   // that window: Esc interrupts from the input, which is where the hands already
   // are.
-  const stopShown = props.streaming === true && !text.trim();
+  const stopShown =
+    props.streaming === true && !text.trim() && !hasPendingQuote && !hasPendingAttachment;
   // The pending plate renders the follow-up queue only: steering entries are
   // already handed to the active Turn and leave the plate at that moment.
   const queueCount = props.queuedMessages?.length ?? 0;
