@@ -1916,12 +1916,26 @@ describe('non-serving Runtime Host kernel', () => {
 
       launcher.kill('SIGKILL');
       await waitForExit(launcher);
+      // The process is the only thing that reports the claim. A Client's
+      // `connection.closed` does not: it is that Client's own transport, and
+      // the Client aborts it after its liveness probe goes unanswered for two
+      // seconds. A Host that is merely busy therefore resolves it while still
+      // running, and gating the exit assertion on it starts the exit budget at
+      // a moment that has nothing to do with the Host's shutdown.
+      //
+      // The bound comes from the kernel's contract rather than from an
+      // interval this test could predict. Owner loss cannot close a
+      // composition before its startup settles, and the shutdown that follows
+      // is bounded by `shutdownGraceMs` (10 s), after which the kernel
+      // force-terminates. Twenty seconds therefore sits above every
+      // legitimate exit and below the launcher's 60 s idle grace, so it cannot
+      // be satisfied by a Candidate that merely went idle.
+      await waitForProcessExit(launchedPid, 20_000);
       await withTimeout(
         connected.connection.closed,
         5_000,
-        'authority-supervised Candidate survived its launch owner',
+        'authority-supervised Candidate exited without closing its Client connection',
       );
-      await waitForProcessExit(launchedPid);
       paths.resources.forgetPid(launchedPid);
     });
   });

@@ -32,7 +32,13 @@ const attempt = await launchOwnedRuntimeHostCandidate({
   rootPath,
   expectedRootId,
   entrypoint: new URL('../../execution-candidate-main.js', import.meta.url),
-  idleGraceMs: 10_000,
+  // The idle grace only has to outlast the test, and it has to stay clear of
+  // any bound a test puts on an owner-loss exit: a Candidate that exits
+  // because it went idle must never be mistaken for one that exited because
+  // its launch owner died. The first-connection deadline stays short so a
+  // Candidate no Client ever reaches still exits on its own.
+  idleGraceMs: 60_000,
+  initialConnectionTimeoutMs: 10_000,
   inheritableAuthorityLeaseFd: leaseFd,
   launchOwnerClientInstanceId: clientInstanceId,
 }).spawned;
