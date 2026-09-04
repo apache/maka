@@ -1,3 +1,15 @@
+---
+doc_id: architecture.mcp-runtime-architecture-draft
+title: "Maka MCP runtime architecture"
+language: zh-CN
+source_language: zh-CN
+implementation_status: current
+document_status: current
+translation_status: source-only
+last_verified: 2026-09-04
+owners:
+  - maka-backend
+---
 <!--
   Licensed to the Apache Software Foundation (ASF) under one
   or more contributor license agreements.  See the NOTICE file
