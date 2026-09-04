@@ -100,7 +100,12 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 109 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 110 as const;
+// 110: Runtime Host is the sole schema-migration authority for its State Root.
+// Epoch 109 Desktop builds could migrate the event-only AgentRun schema while
+// an older service Host still held the root, leaving that Host querying a
+// removed column. Reject the affected mixed generation before either process
+// admits domain work; the installation owner can then replace the Host.
 // 109: accepted Client Capability invocations may carry one bounded nested form
 // Interaction request/result round trip.
 // 108: Session Interaction snapshots, forwarded Runtime events, and Agent Graph

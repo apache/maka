@@ -442,7 +442,6 @@ resolveBrowserDialogAppearance = async () => {
   }
 };
 const mcpConfigStore = createMcpConfigStore(workspaceRoot);
-const workBoardStore = createWorkBoardStore(workspaceRoot);
 const mcpManager = new McpClientManager({
   clientName: "maka-desktop",
   clientVersion: app.getVersion(),
@@ -953,12 +952,6 @@ mcpManager.onChange(() => {
 
 registerPersistentClientIpc();
 registerPetPackIpc({ ipcMain, workspaceRoot, mainWindowController, settingsStore });
-const workBoardIpc = registerWorkBoardIpc({
-  ipcMain,
-  workspaceRoot,
-  mainWindowController,
-  store: workBoardStore,
-});
 const browserIpc = registerBrowserIpc({
   mainWindowController,
   isHostActive: (scope) => runtimeHostManager?.ownsScope(scope) === true,
@@ -1112,6 +1105,7 @@ const startLocalRuntimeHostManager = () => startRuntimeHostDesktopManager(
         removeSession,
         resumeSessionCopy,
         processId: sessionCopyOwnerProcessId,
+        databaseOptions: { schemaMigration: 'require_current' },
       }),
     renderer: mainWindowController,
     onError: (error) =>
@@ -1287,6 +1281,15 @@ runtimeHostManager = await startDesktopRuntimeHostWithRecovery({
     return new Promise<never>(() => undefined);
   }
   throw error;
+});
+// Runtime Host is the only schema-migration authority for its State Root.
+// Work Board remains a Desktop-owned table, but it opens only after the Host is
+// ready and verifies the schema instead of changing it behind a resident Host.
+const workBoardIpc = registerWorkBoardIpc({
+  ipcMain,
+  workspaceRoot,
+  mainWindowController,
+  store: createWorkBoardStore(workspaceRoot, { schemaMigration: 'require_current' }),
 });
 wireLifecycle();
 runtimeHostManager.setDefaultProfile(runtimeHostStartup.preferences.defaultProfileId);
