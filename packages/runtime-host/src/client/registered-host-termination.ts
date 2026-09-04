@@ -53,14 +53,21 @@ const defaultDependencies: RegisteredRuntimeHostTerminationDependencies = {
  */
 export function forceTerminateRegisteredRuntimeHost(
   identity: RegisteredRuntimeHostIdentity,
+  stillOwnsProcess: () => boolean,
 ): Promise<boolean> {
-  return forceTerminateRegisteredRuntimeHostWithDependencies(identity, defaultDependencies);
+  return forceTerminateRegisteredRuntimeHostWithDependencies(
+    identity,
+    stillOwnsProcess,
+    defaultDependencies,
+  );
 }
 
 export async function forceTerminateRegisteredRuntimeHostWithDependencies(
   identity: RegisteredRuntimeHostIdentity,
+  stillOwnsProcess: () => boolean,
   dependencies: RegisteredRuntimeHostTerminationDependencies,
 ): Promise<boolean> {
+  if (!stillOwnsProcess()) return false;
   const capability = await resolveStorageRoot({ path: identity.rootPath, kind: 'interactive' });
   if (capability.rootId !== identity.rootId) return false;
   const { controlDirectory } = await prepareStorageRootControlDirectory(capability);
@@ -76,9 +83,10 @@ export async function forceTerminateRegisteredRuntimeHostWithDependencies(
     hasExited: () => !dependencies.isProcessAlive(identity.pid),
     beforeSignal: async () => {
       // This runs after asynchronous process-tree discovery and immediately
-      // before the OS signal, so a successor cannot inherit stale intent.
+      // before the OS signal, so neither a successor nor a reused PID can
+      // inherit stale intent.
       signalTarget = await readHostRegistration(controlDirectory);
-      return matchesIdentity(signalTarget, identity);
+      return matchesIdentity(signalTarget, identity) && stillOwnsProcess();
     },
     fallback: () => {
       try {

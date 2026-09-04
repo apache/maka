@@ -65,6 +65,8 @@ test('forced termination remains bound to the registered Host identity', async (
   let alive = true;
   let terminated = 0;
   let replaceBeforeSignal = false;
+  let stillOwnsProcess = true;
+  let releaseOwnershipBeforeSignal = false;
   const dependencies = {
     isProcessAlive: () => alive,
     settleMs: 0,
@@ -72,6 +74,7 @@ test('forced termination remains bound to the registered Host identity', async (
       if (replaceBeforeSignal) {
         await writeHostRegistration(controlDirectory, { ...registration, hostEpoch: 'successor' });
       }
+      if (releaseOwnershipBeforeSignal) stillOwnsProcess = false;
       if (options.beforeSignal && !(await options.beforeSignal())) return false;
       terminated += 1;
       alive = false;
@@ -82,15 +85,36 @@ test('forced termination remains bound to the registered Host identity', async (
   await writeHostRegistration(controlDirectory, registration);
   replaceBeforeSignal = true;
   assert.equal(
-    await forceTerminateRegisteredRuntimeHostWithDependencies(identity, dependencies),
+    await forceTerminateRegisteredRuntimeHostWithDependencies(
+      identity,
+      () => stillOwnsProcess,
+      dependencies,
+    ),
     false,
   );
   assert.equal(terminated, 0);
 
   await writeHostRegistration(controlDirectory, registration);
   replaceBeforeSignal = false;
+  releaseOwnershipBeforeSignal = true;
   assert.equal(
-    await forceTerminateRegisteredRuntimeHostWithDependencies(identity, dependencies),
+    await forceTerminateRegisteredRuntimeHostWithDependencies(
+      identity,
+      () => stillOwnsProcess,
+      dependencies,
+    ),
+    false,
+  );
+  assert.equal(terminated, 0);
+
+  stillOwnsProcess = true;
+  releaseOwnershipBeforeSignal = false;
+  assert.equal(
+    await forceTerminateRegisteredRuntimeHostWithDependencies(
+      identity,
+      () => stillOwnsProcess,
+      dependencies,
+    ),
     true,
   );
   assert.equal(terminated, 1);

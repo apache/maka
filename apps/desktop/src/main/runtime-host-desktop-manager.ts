@@ -145,6 +145,7 @@ export interface DesktopLocalHostRetirementFacts {
   readonly lifecycleMode: 'ephemeral';
   readonly rootPath: string;
   readonly pid?: number;
+  readonly forceTerminationAvailable: boolean;
 }
 
 export class DesktopLocalHostRetirementError extends Error {
@@ -751,16 +752,25 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     if (this.#localHostRetirement) return true;
     const target = this.#targets.get(LOCAL_RUNTIME_HOST_PROFILE.id);
     const last = target?.lastCandidate;
+    const ownedProcess = last?.ownedProcess;
     if (
+      !facts.forceTerminationAvailable ||
       !last ||
       last.hostId !== facts.hostId ||
       last.hostEpoch !== facts.hostEpoch ||
       last.ownership !== 'owned_ephemeral' ||
       facts.pid === undefined ||
-      (last.ownedProcess && last.ownedProcess.pid !== facts.pid)
+      !ownedProcess ||
+      ownedProcess.pid !== facts.pid ||
+      ownedProcess.state === 'unknown'
     ) {
       return false;
     }
+    const stillOwnsProcess = () =>
+      !this.#closed &&
+      target?.lastCandidate === last &&
+      last.ownedProcess === ownedProcess &&
+      ownedProcess.state === 'running';
     const barrier = this.#baseInput.candidateLaunchBarrier;
     let paused = false;
     let retained = false;
@@ -768,13 +778,20 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       barrier?.pause();
       paused = barrier !== undefined;
       await barrier?.retireExcept(facts.pid);
-      const terminated = await this.forceTerminateHost({
-        rootPath: facts.rootPath,
-        rootId: facts.hostId,
-        hostEpoch: facts.hostEpoch,
-        pid: facts.pid,
-      });
-      if (!terminated) return false;
+      const terminated =
+        ownedProcess.state === 'exited' ||
+        await this.forceTerminateHost(
+          {
+            rootPath: facts.rootPath,
+            rootId: facts.hostId,
+            hostEpoch: facts.hostEpoch,
+            pid: facts.pid,
+          },
+          stillOwnsProcess,
+        );
+      if (!terminated && (target.lastCandidate !== last || ownedProcess.state !== 'exited')) {
+        return false;
+      }
       target.lastCandidate = undefined;
       this.#completeLocalHostRetirement(() => barrier?.resume());
       retained = true;
@@ -834,6 +851,14 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       target.lastCandidate = undefined;
       return this.#completeLocalHostRetirement(resume);
     } catch (error) {
+      const last = target.lastCandidate;
+      const forceTerminationAvailable =
+        hostPid !== undefined &&
+        last?.hostId === quiescence.current.client.hostId &&
+        last.hostEpoch === quiescence.current.client.hostEpoch &&
+        last.ownership === 'owned_ephemeral' &&
+        last.ownedProcess?.pid === hostPid &&
+        last.ownedProcess.state === 'running';
       resume();
       throw new DesktopLocalHostRetirementError(
         {
@@ -842,6 +867,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
           lifecycleMode: 'ephemeral',
           rootPath: this.#baseInput.rootPath,
           ...(hostPid === undefined ? {} : { pid: hostPid }),
+          forceTerminationAvailable,
         },
         { cause: error },
       );
@@ -865,6 +891,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
         ...(last.ownedProcess?.state === 'running'
           ? { pid: last.ownedProcess.pid }
           : {}),
+        forceTerminationAvailable: last.ownedProcess?.state === 'running',
       },
       { cause: cause instanceof Error ? cause : new Error(String(cause)) },
     );

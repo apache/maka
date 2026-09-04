@@ -20,6 +20,7 @@
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { MessageBoxOptions } from 'electron';
 import { DesktopLocalHostRetirementError } from './runtime-host-desktop-manager.js';
+import type { RuntimeHostQuitFailureDecision } from './runtime-host-quit.js';
 
 export interface RuntimeHostQuitDialog<Decision extends string> {
   readonly options: MessageBoxOptions;
@@ -27,7 +28,6 @@ export interface RuntimeHostQuitDialog<Decision extends string> {
 }
 
 export type RuntimeHostActiveQuitDecision = 'quit' | 'cancel';
-export type RuntimeHostQuitFailureDecision = 'retry' | 'force' | 'cancel';
 
 export function buildRuntimeHostActiveQuitDialog(
   locale: UiLocale,
@@ -51,9 +51,9 @@ export function buildRuntimeHostActiveQuitDialog(
 export function buildRuntimeHostQuitFailureDialog(
   error: unknown,
   locale: UiLocale,
-  canForceTerminate: boolean,
 ): RuntimeHostQuitDialog<RuntimeHostQuitFailureDecision> {
   const retirement = error instanceof DesktopLocalHostRetirementError ? error : undefined;
+  const canForceTerminate = retirement?.facts.forceTerminationAvailable === true;
   const copy = COPY[locale];
   const details: string[] = [copy.detail];
   if (retirement) {

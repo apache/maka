@@ -454,7 +454,12 @@ test('preserves Host facts when authorized retirement is refused', async () => {
 
 test('fences replacement launches while force-terminating the exact failed retirement', async () => {
   const events: string[] = [];
-  const current = candidateHarness();
+  const current = candidateHarness({
+    ownedProcess: {
+      pid: 42,
+      exited: new Promise(() => {}),
+    },
+  });
   const owner = await startRuntimeHostDesktopManager({
     rootPath: '/test-root',
     candidateLaunchBarrier: {
@@ -468,13 +473,14 @@ test('fences replacement launches while force-terminating the exact failed retir
     },
   } as unknown as DesktopRuntimeHostCandidateStartInput, {
     startCandidate: async () => ready(current.candidate),
-    forceTerminateHost: async (identity) => {
+    forceTerminateHost: async (identity, stillOwnsProcess) => {
       assert.deepEqual(identity, {
         rootPath: '/test-root',
         rootId: 'test-host',
         hostEpoch: 'test-host-epoch',
         pid: 42,
       });
+      assert.equal(stillOwnsProcess(), true);
       events.push('terminate');
       return true;
     },
@@ -487,6 +493,7 @@ test('fences replacement launches while force-terminating the exact failed retir
       lifecycleMode: 'ephemeral',
       rootPath: '/test-root',
       pid: 42,
+      forceTerminationAvailable: true,
     }),
     true,
   );
