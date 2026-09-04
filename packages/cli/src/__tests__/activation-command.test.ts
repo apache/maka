@@ -462,10 +462,12 @@ describe('maka activate JSONL protocol', () => {
   });
 
   test('blocks a completed invocation whose stream carried a boundary failure', async () => {
-    // Before #4506 the classifier cleared `sandboxBoundary` when a later tool
-    // succeeded, so this activation completed with exit 0. The stream event is
-    // the hard fact; the outcome shape here (`completed`, boundary `none`) is
-    // exactly what that clearing produced.
+    // Guards the current contract: a completed invocation whose stream carried
+    // a boundary failure reports `blocked` / `permission_required` with exit 3.
+    // The `maka activate` transition itself (main completed with exit 0 when
+    // the classifier cleared `recovered`) is not regression-coverable after
+    // the deletion: `recovered` no longer exists in the outcome type, so an
+    // injected `MakaRunOutcome` cannot express the old shape.
     const lines: string[] = [];
     const boundaryFailure = {
       kind: 'text',
