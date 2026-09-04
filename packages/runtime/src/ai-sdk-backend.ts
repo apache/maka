@@ -1033,7 +1033,7 @@ class TurnScope {
 type PriorReplayResult = {
   status: 'ready';
   messages: ModelMessage[];
-  gate: RuntimeEventReplayFallbackGate | 'stored_message_projection';
+  gate: RuntimeEventReplayFallbackGate;
   diagnostics: RuntimeEventModelReplayPlan['diagnostics'];
   runtimeEventCount?: number;
   contextBudget?: ContextBudgetDiagnostic;
@@ -3627,22 +3627,18 @@ export class AiSdkBackend implements AgentBackend {
     }
   }
 
-  /** Materialize RuntimeEvent-derived projections into ai-sdk's message format.
-   *  V0.1: text-only round-tripping. Tool calls / results within projected
-   *  history are deliberately NOT replayed unless RuntimeEvent native replay
-   *  is available for the provider. */
+  /** Materialize canonical RuntimeEvent history into ai-sdk's message format. */
   private async buildPriorMessages(
     scope: TurnScope,
     input: BackendSendInput,
     midTurnState: MidTurnCapacityCompactState | undefined,
     automaticMemory?: true,
   ): Promise<PriorReplayResult> {
-    const priorStored = input.context.filter((message) => message.turnId !== input.turnId);
     if (!input.runtimeContext) {
       return {
         status: 'ready',
-        messages: await this.materializePriorMessages(scope.imageBudget, priorStored),
-        gate: 'stored_message_projection',
+        messages: [],
+        gate: 'runtime_replay_text_only',
         diagnostics: [],
       };
     }
@@ -3652,9 +3648,7 @@ export class AiSdkBackend implements AgentBackend {
     // Everything below reads EFFECTIVE model history: raw events folded through
     // the durable projection-transition reducer (#4283). Replay, budgeting and
     // compaction share one input, so no RuntimeEvent replay path can resurrect
-    // content a committed transition removed. The StoredMessage projection used
-    // by the degraded fallbacks below is a separate representation that the fold
-    // does not reach — see #4283 for that remaining gap.
+    // content a committed transition removed.
     const preparedContextBudget = await this.compaction.prepareContextBudgetPolicy(
       rawPriorRuntimeContext,
       input.turnId,
@@ -3665,11 +3659,6 @@ export class AiSdkBackend implements AgentBackend {
       input.runtimeContextInvocations,
       this.input.providerStateIdentity,
       this.input.modelId,
-    );
-    const projectedMessages = await this.materializePriorMessages(
-      scope.imageBudget,
-      priorStored,
-      buildSteeringSidecar(priorRuntimeContext),
     );
     let contextBudget = preparedContextBudget.policy;
     const budgeted = applyRuntimeEventContextBudget(priorRuntimeContext, contextBudget);
@@ -3687,10 +3676,7 @@ export class AiSdkBackend implements AgentBackend {
     // No pre-turn estimate gate: the turn's first request is judged by the
     // request-projection hook from the previous request's real usage, and by
     // the provider when it goes out (#4559).
-    // The boundary belongs to the runtime-event projection above. A gate that
-    // falls back to the stored-message projection returns a prompt no
-    // checkpoint shaped, so it reports none rather than one the request never
-    // stood on (#2323).
+    // The boundary belongs to the RuntimeEvent projection above.
     const replayBoundary = (fromRuntimeReplay: boolean) =>
       fromRuntimeReplay && projectedHistoryCompactCheckpoint
         ? { latestHistoryCompactCheckpoint: projectedHistoryCompactCheckpoint }
@@ -3706,28 +3692,21 @@ export class AiSdkBackend implements AgentBackend {
     const hasProviderHistoryCompactCheckpoint =
       projectedHistoryCompactCheckpoint !== undefined &&
       isProviderHistoryCompactCheckpoint(projectedHistoryCompactCheckpoint);
-    const fallbackUsesRuntimeReplay =
-      Boolean(input.continuation) || hasProviderHistoryCompactCheckpoint;
-    // StoredMessage projection cannot represent an opaque provider checkpoint.
-    // Once one is selected, every degraded replay path must remain in the
-    // RuntimeEvent materializer so the checkpoint boundary is not bypassed.
     const materializeReplayFallback = (): Promise<ModelMessage[]> =>
-      fallbackUsesRuntimeReplay
-        ? this.materializeRuntimeReplayTextOnly(
-            scope.imageBudget,
-            plan,
-            projectedHistoryCompactCheckpoint,
-          )
-        : Promise.resolve(projectedMessages);
+      this.materializeRuntimeReplayTextOnly(
+        scope.imageBudget,
+        plan,
+        projectedHistoryCompactCheckpoint,
+      );
     if (plan.items.length === 0 && !hasProviderHistoryCompactCheckpoint) {
       return {
         status: 'ready',
         messages: await materializeReplayFallback(),
-        gate: input.continuation ? 'runtime_replay_text_only' : 'stored_message_projection',
+        gate: 'runtime_replay_text_only',
         diagnostics: plan.diagnostics,
         runtimeEventCount: runtimeContext.length,
         ...(contextBudgetDiagnostic ? { contextBudget: contextBudgetDiagnostic } : {}),
-        ...replayBoundary(fallbackUsesRuntimeReplay),
+        ...replayBoundary(true),
       };
     }
 
@@ -3741,7 +3720,7 @@ export class AiSdkBackend implements AgentBackend {
         diagnostics: plan.diagnostics,
         runtimeEventCount: runtimeContext.length,
         ...(contextBudgetDiagnostic ? { contextBudget: contextBudgetDiagnostic } : {}),
-        ...replayBoundary(fallbackUsesRuntimeReplay),
+        ...replayBoundary(true),
       };
     }
 
@@ -3785,7 +3764,7 @@ export class AiSdkBackend implements AgentBackend {
         diagnostics: plan.diagnostics,
         runtimeEventCount: runtimeContext.length,
         ...(contextBudgetDiagnostic ? { contextBudget: contextBudgetDiagnostic } : {}),
-        ...replayBoundary(fallbackUsesRuntimeReplay),
+        ...replayBoundary(true),
       };
     }
 
@@ -4417,60 +4396,6 @@ export class AiSdkBackend implements AgentBackend {
     };
   }
 
-  private async materializePriorMessages(
-    budget: ProviderImageBudget,
-    stored: readonly StoredMessage[],
-    steeringSidecar?: ReadonlyMap<string, { eventId: string }>,
-  ): Promise<ModelMessage[]> {
-    const out: ModelMessage[] = [];
-    for (const m of stored) {
-      if (m.type === 'user') {
-        // Degraded projections lose the RuntimeEvent steering marker; the
-        // sidecar (keyed by the projection's stable message ids) restores the
-        // canonical envelope + structured identity so a fallback-gated turn
-        // still presents steering exactly once, in its one provider form.
-        const sidecar = steeringSidecar?.get(m.id);
-        if (sidecar) {
-          out.push(
-            steeringModelMessage(
-              sidecar.eventId,
-              await this.appendImageParts(
-                budget,
-                buildSteeringEnvelope(formatTextWithInlineRefs(m.text, m)),
-                m.attachments,
-                `steering:${sidecar.eventId}`,
-              ),
-            ),
-          );
-          continue;
-        }
-        out.push({
-          role: 'user',
-          content: await this.appendImageParts(
-            budget,
-            formatTextWithInlineRefs(m.text, m),
-            m.attachments,
-          ),
-        } as ModelMessage);
-      }
-      // A thinking/tool-only step projects an assistant row with empty text;
-      // replaying it as an empty text block is a hard 400 on Anthropic-protocol
-      // providers.
-      else if (m.type === 'assistant' && m.text.length > 0)
-        out.push({
-          role: 'assistant',
-          content: m.text,
-          ...(m.providerOptions !== undefined
-            ? {
-                providerOptions: m.providerOptions as NonNullable<ModelMessage['providerOptions']>,
-              }
-            : {}),
-        } as ModelMessage);
-      // empty assistant / tool_call / tool_result / permission_decision / token_usage / system_note skipped
-    }
-    return out;
-  }
-
   /** A decision key deduplicates re-materialization; no key charges each occurrence. */
   private chargeImageBudget(
     budget: ProviderImageBudget,
@@ -4493,8 +4418,7 @@ export class AiSdkBackend implements AgentBackend {
    * Render provider-visible content for a user message: keep the given
    * (already-formatted) text, and append image attachments as provider image
    * parts only for explicitly vision-capable models. Non-image attachments stay
-   * as placeholder refs in the text. Shared by the current turn, RuntimeEvent
-   * replay, and the stored-message fallback so all paths present images identically.
+   * as placeholder refs in the text. Shared by the current turn and RuntimeEvent replay.
    */
   private async appendImageParts(
     budget: ProviderImageBudget,
@@ -4817,24 +4741,6 @@ export class AiSdkBackend implements AgentBackend {
       throw error;
     }
   }
-}
-
-/**
- * Steering identities for degraded StoredMessage projections, keyed by every
- * stable id the projection may have used for the message (event id,
- * providerEventId, storedMessageId), so the sidecar restore is exact.
- */
-function buildSteeringSidecar(events: readonly RuntimeEvent[]): Map<string, { eventId: string }> {
-  const sidecar = new Map<string, { eventId: string }>();
-  for (const event of events) {
-    if (event.partial === true) continue;
-    if (event.content?.kind !== 'text' || event.content.steering !== true) continue;
-    const identity = { eventId: event.id };
-    sidecar.set(event.id, identity);
-    if (event.refs?.providerEventId) sidecar.set(event.refs.providerEventId, identity);
-    if (event.refs?.storedMessageId) sidecar.set(event.refs.storedMessageId, identity);
-  }
-  return sidecar;
 }
 
 function isPlanToolResult(output: unknown): output is PlanToolResult {

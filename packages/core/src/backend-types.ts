@@ -81,16 +81,13 @@ export interface BackendSendInput {
   /** Inline quoted excerpts folded into the model-facing user content. */
   quotes?: QuoteRef[];
   /**
-   * Prior conversation projected from the RuntimeEvent ledger into the
-   * existing StoredMessage public shape. Adapters materialize this into the
-   * SDK's expected conversation shape when native RuntimeEvent replay is not
-   * available.
+   * Legacy caller projection retained for source compatibility. Runtime
+   * backends must not use it as provider history; RuntimeEvents are the only
+   * model-history authority.
    */
-  context: StoredMessage[];
+  context?: StoredMessage[];
   /**
-   * Optional prior RuntimeEvent ledger for model-history projection. Backends
-   * prefer this when supplied and usable; `context` is the RuntimeEvent-derived
-   * compatibility projection.
+   * Optional prior RuntimeEvent ledger for model-history projection.
    */
   runtimeContext?: RuntimeEvent[];
   /**

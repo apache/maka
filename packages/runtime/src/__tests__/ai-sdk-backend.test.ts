@@ -2134,7 +2134,7 @@ describe('AiSdkBackend model history', () => {
     assert.equal(prompt.at(-1)?.role, 'tool');
   });
 
-  test('uses StoredMessage projection when RuntimeEvent replay is empty', async () => {
+  test('does not recover provider history from StoredMessages when RuntimeEvent replay is empty', async () => {
     const model = completionModel();
     const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
@@ -2183,17 +2183,11 @@ describe('AiSdkBackend model history', () => {
     );
 
     assert.deepEqual(compactPrompt(model), [
-      { role: 'user', content: [{ type: 'text', text: 'projection user' }] },
-      { role: 'assistant', content: [{ type: 'text', text: 'projection assistant' }] },
       { role: 'user', content: [{ type: 'text', text: 'current user' }] },
     ]);
   });
 
-  test('stored-message fallback skips empty assistant texts', async () => {
-    // A thinking/tool-only step projects an assistant row with empty text.
-    // The degraded stored-message path must not replay it: an empty text
-    // content block is a hard 400 on Anthropic-protocol providers, which
-    // permanently blocks every later turn of the session.
+  test('RuntimeEvent replay describes an attachment that is not safely addressable', async () => {
     const model = completionModel();
     const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
@@ -2212,98 +2206,38 @@ describe('AiSdkBackend model history', () => {
       backend.send({
         turnId: 'turn-current',
         text: 'current user',
-        context: [
-          { type: 'user', id: 'projection-u', turnId: 'turn-prev', ts: 1, text: 'projection user' },
-          {
-            type: 'assistant',
-            id: 'projection-empty',
+        context: [],
+        runtimeContext: [
+          runtimeEvent({
+            id: 'rt-u',
             turnId: 'turn-prev',
-            ts: 2,
-            text: '',
-            modelId: 'm',
-          },
-          {
-            type: 'assistant',
-            id: 'projection-a',
-            turnId: 'turn-prev',
-            ts: 3,
-            text: 'projection assistant',
-            modelId: 'm',
-          },
-        ],
-      }),
-    );
-
-    assert.deepEqual(compactPrompt(model), [
-      { role: 'user', content: [{ type: 'text', text: 'projection user' }] },
-      { role: 'assistant', content: [{ type: 'text', text: 'projection assistant' }] },
-      { role: 'user', content: [{ type: 'text', text: 'current user' }] },
-    ]);
-  });
-
-  test('stored-message fallback describes an attachment that is not safely addressable', async () => {
-    const model = completionModel();
-    const backend = createTestAiSdkBackend({
-      sessionId: 'session-1',
-      header: header(),
-      appendMessage: async () => {},
-      connection: connection(),
-      apiKey: 'sk-test',
-      modelId: 'mock-model-id',
-      modelFactory: () => model,
-      tools: [],
-      newId: idGenerator(),
-      now: monotonicClock(),
-    });
-
-    await drain(
-      backend.send({
-        turnId: 'turn-current',
-        text: 'current user',
-        context: [
-          {
-            type: 'user',
-            id: 'projection-u',
-            turnId: 'turn-prev',
-            ts: 1,
-            text: 'see the attached chart',
-            attachments: [
-              {
-                kind: 'image',
-                name: 'chart.png',
-                mimeType: 'image/png',
-                bytes: 123,
-                ref: {
-                  kind: 'session_file',
-                  sessionId: 'sess-1',
-                  relativePath: 'attachments/chart.png',
+            role: 'user',
+            author: 'user',
+            content: {
+              kind: 'text',
+              text: 'see the attached chart',
+              attachments: [
+                {
+                  kind: 'image',
+                  name: 'chart.png',
+                  mimeType: 'image/png',
+                  bytes: 123,
+                  ref: {
+                    kind: 'session_file',
+                    sessionId: 'sess-1',
+                    relativePath: 'attachments/chart.png',
+                  },
                 },
-              },
-            ],
-          },
-          {
-            type: 'assistant',
-            id: 'projection-a',
+              ],
+            },
+          }),
+          runtimeTextEvent({
+            id: 'rt-a',
             turnId: 'turn-prev',
-            ts: 2,
-            text: 'projection assistant',
-            modelId: 'm',
-          },
-        ],
-        runtimeContext: [
-          {
-            id: 'rt-terminal',
-            invocationId: 'inv-1',
-            runId: 'run-prev',
-            sessionId: 'session-1',
-            turnId: 'turn-prev',
-            ts: 1,
-            partial: false,
             role: 'model',
             author: 'agent',
-            status: 'completed',
-            actions: { endInvocation: true },
-          },
+            text: 'projection assistant',
+          }),
         ],
       }),
     );
@@ -2317,11 +2251,11 @@ describe('AiSdkBackend model history', () => {
       text.includes(
         '<attachment>\nThe attachment content is unavailable to Read.\nname: "chart.png"\nmime_type: "image/png"\n</attachment>',
       ),
-      `expected unavailable attachment context in stored-message fallback, got: ${text}`,
+      `expected unavailable attachment context in RuntimeEvent replay, got: ${text}`,
     );
   });
 
-  test('current and stored directory references expose paths without eager listings', async () => {
+  test('current and replayed directory references expose paths without eager listings', async () => {
     const model = completionModel();
     const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
@@ -2343,38 +2277,26 @@ describe('AiSdkBackend model history', () => {
         turnId: 'turn-current',
         text: 'inspect current',
         directoryReferences: [currentReference],
-        context: [
-          {
-            type: 'user',
-            id: 'projection-u',
-            turnId: 'turn-prev',
-            ts: 1,
-            text: 'inspect prior',
-            directoryReferences: [historicalReference],
-          },
-          {
-            type: 'assistant',
-            id: 'projection-a',
-            turnId: 'turn-prev',
-            ts: 2,
-            text: 'projection assistant',
-            modelId: 'm',
-          },
-        ],
+        context: [],
         runtimeContext: [
-          {
-            id: 'rt-terminal',
-            invocationId: 'inv-1',
-            runId: 'run-prev',
-            sessionId: 'session-1',
+          runtimeEvent({
+            id: 'rt-u',
             turnId: 'turn-prev',
-            ts: 1,
-            partial: false,
+            role: 'user',
+            author: 'user',
+            content: {
+              kind: 'text',
+              text: 'inspect prior',
+              directoryReferences: [historicalReference],
+            },
+          }),
+          runtimeTextEvent({
+            id: 'rt-a',
+            turnId: 'turn-prev',
             role: 'model',
             author: 'agent',
-            status: 'completed',
-            actions: { endInvocation: true },
-          },
+            text: 'projection assistant',
+          }),
         ],
       }),
     );
@@ -2396,7 +2318,7 @@ describe('AiSdkBackend model history', () => {
     }
   });
 
-  test('stored-message fallback renders image attachments as image parts when a reader is wired', async () => {
+  test('RuntimeEvent replay renders image attachments as image parts when a reader is wired', async () => {
     const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 4, 5, 6]);
     const model = completionModel();
     const backend = createTestAiSdkBackend({
@@ -2418,50 +2340,38 @@ describe('AiSdkBackend model history', () => {
       backend.send({
         turnId: 'turn-current',
         text: 'current user',
-        context: [
-          {
-            type: 'user',
-            id: 'projection-u',
-            turnId: 'turn-prev',
-            ts: 1,
-            text: 'see the attached chart',
-            attachments: [
-              {
-                kind: 'image',
-                name: 'chart.png',
-                mimeType: 'image/png',
-                bytes: 123,
-                ref: {
-                  kind: 'session_file',
-                  sessionId: 'sess-1',
-                  relativePath: 'attachments/chart.png',
-                },
-              },
-            ],
-          },
-          {
-            type: 'assistant',
-            id: 'projection-a',
-            turnId: 'turn-prev',
-            ts: 2,
-            text: 'projection assistant',
-            modelId: 'm',
-          },
-        ],
+        context: [],
         runtimeContext: [
-          {
-            id: 'rt-terminal',
-            invocationId: 'inv-1',
-            runId: 'run-prev',
-            sessionId: 'session-1',
+          runtimeEvent({
+            id: 'rt-u',
             turnId: 'turn-prev',
-            ts: 1,
-            partial: false,
+            role: 'user',
+            author: 'user',
+            content: {
+              kind: 'text',
+              text: 'see the attached chart',
+              attachments: [
+                {
+                  kind: 'image',
+                  name: 'chart.png',
+                  mimeType: 'image/png',
+                  bytes: 123,
+                  ref: {
+                    kind: 'session_file',
+                    sessionId: 'sess-1',
+                    relativePath: 'attachments/chart.png',
+                  },
+                },
+              ],
+            },
+          }),
+          runtimeTextEvent({
+            id: 'rt-a',
+            turnId: 'turn-prev',
             role: 'model',
             author: 'agent',
-            status: 'completed',
-            actions: { endInvocation: true },
-          },
+            text: 'projection assistant',
+          }),
         ],
       }),
     );
@@ -2472,7 +2382,7 @@ describe('AiSdkBackend model history', () => {
     const imageLike = parts.find((p) => p.type !== 'text' && p.mediaType === 'image/png');
     assert.ok(
       imageLike,
-      `expected a historical image/png part in stored-message fallback, got: ${JSON.stringify(parts)}`,
+      `expected a historical image/png part in RuntimeEvent replay, got: ${JSON.stringify(parts)}`,
     );
   });
 
@@ -6145,9 +6055,8 @@ describe('AiSdkBackend model history', () => {
 
   test('keeps RuntimeEvent replay when a tool result is unmatched (orphan dropped, rest replayed)', async () => {
     // `unmatched_tool_result` is a non-blocking diagnostic: the materializer
-    // drops the orphan itself (a standalone tool message is an Anthropic 400),
-    // so the ledger stays on RuntimeEvent replay instead of falling back to
-    // StoredMessage projection.
+    // drops the orphan itself (a standalone tool message is an Anthropic 400)
+    // while retaining the rest of canonical history.
     const model = completionModel();
     let imageReads = 0;
     const backend = createTestAiSdkBackend({
@@ -6212,7 +6121,7 @@ describe('AiSdkBackend model history', () => {
       }),
     );
 
-    // RuntimeEvent replay (not the StoredMessage projection), orphan gone.
+    // The orphan is gone and the rest of RuntimeEvent replay remains.
     assert.deepEqual(compactPrompt(model), [
       { role: 'user', content: [{ type: 'text', text: 'runtime user' }] },
       { role: 'user', content: [{ type: 'text', text: 'current user' }] },
@@ -6279,7 +6188,7 @@ describe('AiSdkBackend model history', () => {
     ]);
   });
 
-  test('uses StoredMessage projection instead of leaking unsupported thinking text', async () => {
+  test('drops unsupported thinking while preserving RuntimeEvent text', async () => {
     const model = completionModel();
     const openAiConnection = { ...connection(), providerType: 'openai' as const };
     const backend = createTestAiSdkBackend({
@@ -6300,13 +6209,19 @@ describe('AiSdkBackend model history', () => {
         turnId: 'turn-current',
         text: 'current user',
         context: [
-          { type: 'user', id: 'projection-u', turnId: 'turn-prev', ts: 1, text: 'projection user' },
+          {
+            type: 'user',
+            id: 'projection-u',
+            turnId: 'turn-prev',
+            ts: 1,
+            text: 'wrong projection',
+          },
           {
             type: 'assistant',
             id: 'projection-a',
             turnId: 'turn-prev',
             ts: 2,
-            text: 'projection assistant',
+            text: 'wrong projection assistant',
             modelId: 'm',
           },
         ],
@@ -14793,12 +14708,10 @@ describe('AiSdkBackend steering durability and identity', () => {
     ]);
   });
 
-  test('a degraded stored-message projection presents prior steering exactly once, in envelope form', async () => {
+  test('degraded RuntimeEvent replay presents prior steering exactly once, in envelope form', async () => {
     // A blocking replay diagnostic (here: a tool-role text event) degrades the
-    // whole ledger to the StoredMessage projection, which cannot carry the
-    // RuntimeEvent steering marker. The sidecar (keyed by the projection's
-    // stable ids) restores the canonical envelope + structured identity, so
-    // the steering appears exactly once and dedupe still works by id.
+    // provider-native shape to text-only RuntimeEvent replay. The canonical
+    // steering marker still produces one envelope with its structured id.
     const model = textCompletionModel('done');
     const backend = steeringBackend(model);
     const steeredEvent = runtimeTextEvent({
@@ -14821,11 +14734,7 @@ describe('AiSdkBackend steering durability and identity', () => {
       backend.send({
         turnId: 'turn-current',
         text: 'continue',
-        context: [
-          { type: 'user', id: 'rt-u', turnId: 'turn-prev', ts: 1, text: 'original ask' },
-          { type: 'user', id: 'rt-steer', turnId: 'turn-prev', ts: 2, text: 'steered earlier' },
-          { type: 'assistant', id: 'rt-a', turnId: 'turn-prev', ts: 3, text: 'ok', modelId: 'm' },
-        ],
+        context: [],
         runtimeContext: [
           runtimeTextEvent({
             id: 'rt-u',
@@ -14849,108 +14758,6 @@ describe('AiSdkBackend steering durability and identity', () => {
 
     assert.deepEqual(compactPrompt(model), [
       { role: 'user', content: [{ type: 'text', text: 'original ask' }] },
-      { role: 'user', content: [{ type: 'text', text: buildSteeringEnvelope('steered earlier') }] },
-      { role: 'assistant', content: [{ type: 'text', text: 'ok' }] },
-      { role: 'user', content: [{ type: 'text', text: 'continue' }] },
-    ]);
-  });
-
-  test('the degraded-projection sidecar restores steering keyed by providerEventId', async () => {
-    // A StoredMessage projection may carry the provider's event id, not the
-    // runtime event id, as the message's stable id. The sidecar must match on
-    // that key too, or the degraded replay silently loses the steering
-    // identity (bare text, no envelope, no dedupe id).
-    const model = textCompletionModel('done');
-    const backend = steeringBackend(model);
-    const steeredEvent = runtimeTextEvent({
-      id: 'rt-steer',
-      turnId: 'turn-prev',
-      role: 'user',
-      author: 'user',
-      text: 'steered earlier',
-    });
-    (steeredEvent.content as { steering?: true }).steering = true;
-    steeredEvent.refs = { providerEventId: 'prov-steer' };
-    const degradingEvent = runtimeTextEvent({
-      id: 'rt-bad',
-      turnId: 'turn-prev',
-      role: 'user',
-      author: 'user',
-      text: 'boom',
-    });
-    (degradingEvent as { role: string }).role = 'tool';
-    await drain(
-      backend.send({
-        turnId: 'turn-current',
-        text: 'continue',
-        context: [
-          { type: 'user', id: 'prov-steer', turnId: 'turn-prev', ts: 1, text: 'steered earlier' },
-          { type: 'assistant', id: 'prov-a', turnId: 'turn-prev', ts: 2, text: 'ok', modelId: 'm' },
-        ],
-        runtimeContext: [
-          steeredEvent,
-          degradingEvent,
-          runtimeTextEvent({
-            id: 'rt-a',
-            turnId: 'turn-prev',
-            role: 'model',
-            author: 'agent',
-            text: 'ok',
-          }),
-        ],
-      }),
-    );
-
-    assert.deepEqual(compactPrompt(model), [
-      { role: 'user', content: [{ type: 'text', text: buildSteeringEnvelope('steered earlier') }] },
-      { role: 'assistant', content: [{ type: 'text', text: 'ok' }] },
-      { role: 'user', content: [{ type: 'text', text: 'continue' }] },
-    ]);
-  });
-
-  test('the degraded-projection sidecar restores steering keyed by storedMessageId', async () => {
-    const model = textCompletionModel('done');
-    const backend = steeringBackend(model);
-    const steeredEvent = runtimeTextEvent({
-      id: 'rt-steer',
-      turnId: 'turn-prev',
-      role: 'user',
-      author: 'user',
-      text: 'steered earlier',
-    });
-    (steeredEvent.content as { steering?: true }).steering = true;
-    steeredEvent.refs = { storedMessageId: 'sm-steer' };
-    const degradingEvent = runtimeTextEvent({
-      id: 'rt-bad',
-      turnId: 'turn-prev',
-      role: 'user',
-      author: 'user',
-      text: 'boom',
-    });
-    (degradingEvent as { role: string }).role = 'tool';
-    await drain(
-      backend.send({
-        turnId: 'turn-current',
-        text: 'continue',
-        context: [
-          { type: 'user', id: 'sm-steer', turnId: 'turn-prev', ts: 1, text: 'steered earlier' },
-          { type: 'assistant', id: 'sm-a', turnId: 'turn-prev', ts: 2, text: 'ok', modelId: 'm' },
-        ],
-        runtimeContext: [
-          steeredEvent,
-          degradingEvent,
-          runtimeTextEvent({
-            id: 'rt-a',
-            turnId: 'turn-prev',
-            role: 'model',
-            author: 'agent',
-            text: 'ok',
-          }),
-        ],
-      }),
-    );
-
-    assert.deepEqual(compactPrompt(model), [
       { role: 'user', content: [{ type: 'text', text: buildSteeringEnvelope('steered earlier') }] },
       { role: 'assistant', content: [{ type: 'text', text: 'ok' }] },
       { role: 'user', content: [{ type: 'text', text: 'continue' }] },
