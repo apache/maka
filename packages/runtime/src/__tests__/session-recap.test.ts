@@ -66,13 +66,14 @@ test('session recap keeps bounded evidence from one oversized latest turn', () =
   assert.ok(serialized.length <= 13_000);
 });
 
-test('session recap bounds an oversized tool result without splitting its protocol pair', () => {
+test('session recap includes a concise durable outcome without tool protocol or raw output', () => {
   const oversizedOutput = 'tool-output-sentinel '.repeat(2_000);
+  const durableOutcome = 'state.txt says ready=true';
   const messages = buildSessionRecapMessages({
     events: [
       textEvent('latest-user', 'turn-1', 'user', 'Inspect the current state.'),
       toolCallEvent('call-event', 'call-1', 'turn-1'),
-      toolResultEvent('result-event', 'call-1', 'turn-1', oversizedOutput),
+      toolResultEvent('result-event', 'call-1', 'turn-1', oversizedOutput, durableOutcome),
     ],
     connection: connection(),
     modelId: 'gpt-4',
@@ -87,11 +88,9 @@ test('session recap bounds an oversized tool result without splitting its protoc
             .filter((part) => part.type === 'tool-call' || part.type === 'tool-result')
             .map((part) => ({ type: part.type, toolCallId: part.toolCallId })),
     ),
-    [
-      { type: 'tool-call', toolCallId: 'call-1' },
-      { type: 'tool-result', toolCallId: 'call-1' },
-    ],
+    [],
   );
+  assert.equal(serialized.includes(durableOutcome), true);
   assert.equal(serialized.includes(oversizedOutput), false);
   assert.ok(serialized.length <= 13_000);
 });
@@ -153,7 +152,13 @@ function toolCallEvent(id: string, callId: string, turnId: string): RuntimeEvent
   };
 }
 
-function toolResultEvent(id: string, callId: string, turnId: string, result: string): RuntimeEvent {
+function toolResultEvent(
+  id: string,
+  callId: string,
+  turnId: string,
+  result: string,
+  durableOutcome: string,
+): RuntimeEvent {
   return {
     id,
     sessionId: 'session-1',
@@ -164,7 +169,13 @@ function toolResultEvent(id: string, callId: string, turnId: string, result: str
     partial: false,
     role: 'tool',
     author: 'tool',
-    content: { kind: 'function_response', id: callId, name: 'Read', result },
+    content: {
+      kind: 'function_response',
+      id: callId,
+      name: 'Read',
+      result,
+      modelProjection: { version: 1, kind: 'text', text: durableOutcome },
+    },
   };
 }
 
