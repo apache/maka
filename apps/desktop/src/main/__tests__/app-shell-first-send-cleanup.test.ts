@@ -278,6 +278,7 @@ describe('composer first-send cleanup', () => {
 
   it('keeps the session once the first send lands', async () => {
     const removed: string[] = [];
+    let currentDraftKey = 'draft:project-A';
     const restoreWindow = installWindow({
       newTasks: { create: async () => ({ id: 'session-1' }) },
       sessions: {
@@ -295,17 +296,28 @@ describe('composer first-send cleanup', () => {
     });
 
     try {
-      const actions = createAppShellChatActions(createActionsDeps());
-      let resolved = 0;
+      const actions = createAppShellChatActions({
+        ...createActionsDeps(),
+        captureComposerImportOwner: () => ({
+          sessionId: undefined,
+          navSection: 'sessions',
+          newTaskDraftKey: currentDraftKey,
+        }),
+        checkTaskSubmissionReadiness: async () => {
+          currentDraftKey = 'draft:project-B';
+          return true;
+        },
+      });
+      let resolved: [string, string?] | undefined;
       assert.equal(
         await actions.send('hello', undefined, {
-          onSessionResolved: () => {
-            resolved += 1;
+          onSessionResolved: (...args) => {
+            resolved = args;
           },
         }),
         true,
       );
-      assert.equal(resolved, 1);
+      assert.deepEqual(resolved, ['session-1', 'draft:project-A']);
     } finally {
       restoreWindow();
     }

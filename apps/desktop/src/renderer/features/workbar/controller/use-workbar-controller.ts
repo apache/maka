@@ -89,7 +89,9 @@ export interface WorkbarControllerCommands {
    * other surface—even one reopened on the same Host/project—must not consume
    * it.
    */
-  bindNewTaskSessionResolver(surfaceOwnerToken: number): (sessionId: string) => void;
+  bindNewTaskSessionResolver(
+    surfaceOwnerToken: number,
+  ): (sessionId: string, draftKey?: string) => void;
 }
 
 export interface WorkbarControllerSelectors {
@@ -215,15 +217,16 @@ export function useWorkbarController(
   const activeSessionId = input.activeSession?.id;
   const activeSessionIdRef = useRef<string | undefined>(undefined);
   /**
-   * The in-flight Work Board start claim. `surfaceOwnerToken` binds the claim
-   * to the new-task surface it opened; `sessionId` is filled once the first
-   * send on that surface is projected, and is retained across a failed link so
-   * a retry can reuse the same Session instead of creating a duplicate.
+   * The in-flight Work Board start claim. The surface token and target-scoped
+   * draft key jointly own it; `sessionId` is filled once the first send from
+   * that owner is projected, and is retained across a failed link so a retry
+   * can reuse the same Session instead of creating a duplicate.
    */
   const pendingWorkBoardStartRef = useRef<{
     itemId: string;
     target: { profileId: string; hostId: string; projectId: string };
     surfaceOwnerToken: number;
+    draftKey: string;
     sessionId?: string;
   } | undefined>(undefined);
   const resourceGenerationRef = useRef(0);
@@ -336,6 +339,7 @@ export function useWorkbarController(
         itemId: item.id,
         target: result.target,
         surfaceOwnerToken,
+        draftKey,
       };
       globalThis.requestAnimationFrame(() => {
         input.composerRef?.current?.setDraft(draftKey, draft);
@@ -355,14 +359,15 @@ export function useWorkbarController(
   );
 
   const onNewTaskSessionResolved = useCallback(
-    (sessionId: string, surfaceOwnerToken: number) => {
+    (sessionId: string, surfaceOwnerToken: number, draftKey: string | undefined) => {
       const pending = pendingWorkBoardStartRef.current;
       if (!pending) return;
-      // The claim is owned by one specific New Task surface instance. A first
-      // send from any other surface (even one reopened on the same
-      // Host/project, which shares the draft key but has a fresh owner token)
-      // must not consume it: drop the abandoned claim and refuse the link.
-      if (surfaceOwnerToken !== pending.surfaceOwnerToken) {
+      // A surface reopen changes the token; a Workspace Picker change changes
+      // the draft key. Neither may attach its Session to the old claim.
+      if (
+        surfaceOwnerToken !== pending.surfaceOwnerToken ||
+        draftKey !== pending.draftKey
+      ) {
         pendingWorkBoardStartRef.current = undefined;
         return;
       }
@@ -382,7 +387,8 @@ export function useWorkbarController(
   );
   const bindNewTaskSessionResolver = useCallback(
     (surfaceOwnerToken: number) =>
-      (sessionId: string) => onNewTaskSessionResolved(sessionId, surfaceOwnerToken),
+      (sessionId: string, draftKey?: string) =>
+        onNewTaskSessionResolved(sessionId, surfaceOwnerToken, draftKey),
     [onNewTaskSessionResolved],
   );
   const respondToClientCapability = useCallback<
