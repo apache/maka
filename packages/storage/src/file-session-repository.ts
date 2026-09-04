@@ -26,6 +26,7 @@ import {
   isSha256Digest,
   type Sha256Digest,
 } from './session-bundle-contract.js';
+import { syncDirectory, syncDirectoryChain } from './stable-storage.js';
 import {
   createSessionCheckpointManifestV1,
   encodeSessionCheckpointManifestV1,
@@ -75,7 +76,7 @@ export async function openFileSessionRepository(
   if (!isRecord(input)) throw new TypeError('File Session Repository options must be an object');
   const storageRoot = requireIdentifier(input.storageRoot, 'Storage root', MAX_OBJECT_REF_LENGTH);
   await mkdir(storageRoot, { recursive: true, mode: 0o700 });
-  const objectStore = new FileImmutableObjectStore(join(storageRoot, 'objects'));
+  const objectStore = new FileImmutableObjectStore(join(storageRoot, 'objects'), storageRoot);
   return new FileSessionRepositoryAdapter(join(storageRoot, STATE_FILE_NAME), objectStore);
 }
 
@@ -202,7 +203,8 @@ class FileSessionRepositoryAdapter implements FileSessionRepository {
       );
     }
     const source = requireCurrentForkSource(state, admitted.source);
-    await assertCheckpointReadable(this.objectStore, source.head.checkpoint);
+    const sourceCheckpoint = admitStoredCheckpoint(source.head.checkpoint);
+    await assertCheckpointReadable(this.objectStore, sourceCheckpoint);
     return this.mutate((latest) => {
       const raced = findFork(latest, admitted.forkId);
       if (raced) return reconcileForkClaim(raced, admitted);
@@ -212,6 +214,7 @@ class FileSessionRepositoryAdapter implements FileSessionRepository {
         forkId: admitted.forkId,
         source: admitted.source,
         sourceAgentId: stillCurrent.agentId,
+        sourceCheckpoint,
         targetSessionId: admitted.targetSessionId,
       };
       latest.forks.push(pending);
@@ -270,7 +273,10 @@ class FileSessionRepositoryAdapter implements FileSessionRepository {
 }
 
 class FileImmutableObjectStore implements ImmutableObjectStore {
-  constructor(private readonly objectsRoot: string) {}
+  constructor(
+    private readonly objectsRoot: string,
+    private readonly storageRoot: string,
+  ) {}
 
   async publish(input: ImmutableObjectInput): Promise<ImmutableObjectRef> {
     const admitted = admitImmutableObjectInput(input);
@@ -300,7 +306,7 @@ class FileImmutableObjectStore implements ImmutableObjectStore {
       }
       try {
         await linkNoReplace(temporary, destination);
-        await syncDirectory(dirname(destination));
+        await syncDirectoryChain(dirname(destination), this.storageRoot);
       } catch (error) {
         if (!isNodeError(error, 'EEXIST')) throw error;
       }
@@ -561,6 +567,9 @@ function admitCreateSessionInput(input: CreateSessionInput): InternalCreateInput
   if ((forkedFrom === undefined) !== (createdByForkId === undefined)) {
     throw new TypeError('Fork lineage and Fork identity must be supplied together');
   }
+  if (createdByForkId !== undefined && input.lastCommittedActivationId !== undefined) {
+    throw new TypeError('Fork-created Session must not carry an Activation identity');
+  }
   return {
     sessionId: requireIdentifier(input.sessionId, 'Session identity'),
     agentId: requireIdentifier(input.agentId, 'Agent identity'),
@@ -708,6 +717,7 @@ function copyForkOperation(input: PersistentFork): ForkOperation {
         forkId: input.forkId,
         source: copyRevisionRef(input.source),
         sourceAgentId: input.sourceAgentId,
+        sourceCheckpoint: admitStoredCheckpoint(input.sourceCheckpoint),
         targetSessionId: input.targetSessionId,
       }
     : copyCompletedForkOperation(input);
@@ -719,6 +729,7 @@ function copyCompletedForkOperation(input: PersistentCompletedFork): CompletedFo
     forkId: input.forkId,
     source: copyRevisionRef(input.source),
     sourceAgentId: input.sourceAgentId,
+    sourceCheckpoint: admitStoredCheckpoint(input.sourceCheckpoint),
     targetSessionId: input.targetSessionId,
     target: copyRevisionRef(input.target),
   };
@@ -797,16 +808,6 @@ async function writeStateAtomically(path: string, state: PersistentState): Promi
     await syncDirectory(dirname(path));
   } finally {
     await rm(temporary, { force: true }).catch(() => {});
-  }
-}
-
-async function syncDirectory(path: string): Promise<void> {
-  if (process.platform === 'win32') return;
-  const handle = await open(path, 'r');
-  try {
-    await handle.sync();
-  } finally {
-    await handle.close();
   }
 }
 
@@ -912,6 +913,7 @@ function decodeFork(value: unknown): PersistentFork {
     forkId: requireIdentifier(value.forkId, 'Fork identity'),
     source: admitRevisionRef(value.source as SessionRevisionRef, 'Fork source'),
     sourceAgentId: requireIdentifier(value.sourceAgentId, 'Fork source Agent identity'),
+    sourceCheckpoint: admitStoredCheckpoint(value.sourceCheckpoint as StoredSessionCheckpoint),
     targetSessionId: requireIdentifier(value.targetSessionId, 'Fork target Session identity'),
   };
   if (value.state === 'pending') return { state: 'pending', ...base };

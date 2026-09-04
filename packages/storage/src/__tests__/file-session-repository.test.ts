@@ -30,7 +30,7 @@ import {
 import { publishSessionCheckpointV1, SessionRepositoryError } from '../session-repository.js';
 import type { SessionBundleArtifact, Sha256Digest } from '../session-bundle-contract.js';
 
-test('persists a current Manifest head and immutable objects across reopened adapters', async () => {
+test('persists a current Manifest head and first immutable object prefix across reopened adapters', async () => {
   await withTemporaryDirectory(async (root) => {
     const first = await openFileSessionRepository({ storageRoot: root });
     const initial = await publishCheckpoint(
@@ -126,11 +126,43 @@ test('persists Fork source binding and crash recovery across reopened adapters',
     });
     assert.equal(pending.state, 'pending');
     assert.equal(pending.sourceAgentId, 'agent-a');
+    assert.deepEqual(pending.sourceCheckpoint, sourceCheckpoint);
+
+    const advancedCheckpoint = await publishCheckpoint(
+      first,
+      await writeArtifact(root, 'source-advanced.tar.zst', 'source advanced bytes'),
+    );
+    await first.commit({
+      sessionId: source.ref.sessionId,
+      expectedRevision: source.ref.revision,
+      checkpoint: advancedCheckpoint,
+    });
 
     const afterCrash = await openFileSessionRepository({ storageRoot: root });
+    const recovered = await afterCrash.claimFork({
+      forkId: 'fork-a',
+      source: source.ref,
+      targetSessionId: 'session-b',
+    });
+    assert.deepEqual(recovered.sourceCheckpoint, sourceCheckpoint);
+    await afterCrash.objectStore.assertReadable(recovered.sourceCheckpoint.manifest);
+    await afterCrash.objectStore.assertReadable(
+      recovered.sourceCheckpoint.value.compatibilityBundle,
+    );
     const targetCheckpoint = await publishCheckpoint(
       afterCrash,
       await writeArtifact(root, 'target.tar.zst', 'target bytes'),
+    );
+    await assert.rejects(
+      afterCrash.createSession({
+        sessionId: 'session-b',
+        agentId: 'agent-a',
+        checkpoint: targetCheckpoint,
+        lastCommittedActivationId: 'source-activation',
+        forkedFrom: source.ref,
+        createdByForkId: 'fork-a',
+      }),
+      /Fork-created Session must not carry an Activation identity/,
     );
     const target = await afterCrash.createSession({
       sessionId: 'session-b',
