@@ -26,8 +26,9 @@ import { createManagedExecutionBoundary } from '@maka/core/sandbox-boundary';
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import { createReadOnlyPermissionProfile } from '@maka/core/permission-profile';
 
-import { buildBuiltinTools } from '../builtin-tools.js';
+import { buildBuiltinToolComposition, buildBuiltinTools } from '../builtin-tools.js';
 import type { FilesystemWorkerExecuteInput } from '../filesystem-worker/client.js';
+import { ToolPreparationService } from '../preparation/tool-preparation-service.js';
 
 const cleanup: string[] = [];
 
@@ -170,7 +171,7 @@ describe('builtin file tools use the sandboxed worker', () => {
     const cwd = await temporaryDirectory('maka-file-worker-cwd-');
     const calls: FilesystemWorkerExecuteInput[] = [];
     let snapshotOwnerId: string | undefined;
-    const tools = buildBuiltinTools({
+    const composition = buildBuiltinToolComposition({
       filesystemWorker: {
         execute: async (input) => {
           calls.push(input);
@@ -188,11 +189,49 @@ describe('builtin file tools use the sandboxed worker', () => {
       sandboxPlatform: 'darwin',
     });
 
-    await runTool(tools, 'Read', { path: 'image.png', offset: 1, limit: 1 }, cwd);
+    const readTool = composition.tools.find((tool) => tool.name === 'Read');
+    assert.ok(readTool, 'Read tool must be present in the builtin composition');
+    assert.equal('prepare' in readTool, false, 'authority wiring must not leak onto MakaTool');
+    const operation = await new ToolPreparationService(composition.authorityRegistry).prepare({
+      tool: readTool,
+      input: { path: 'image.png', offset: 1, limit: 1 },
+      ctx: {
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        toolCallId: 'tool-Read',
+        cwd,
+        permissionMode: 'ask',
+        executionBoundary: createManagedExecutionBoundary(
+          createWorkspaceWritePermissionProfile(),
+          0,
+        ),
+        abortSignal: new AbortController().signal,
+        emitOutput: () => {},
+      },
+    });
+    assert.equal(operation.claims.length, 1);
+
+    const result = await operation.execute(undefined, undefined, {
+      operationId: 'toolop-Read',
+    });
 
     assert.equal(calls.length, 1);
-    assert.deepEqual(calls[0]?.operation, { kind: 'read', path: 'image.png', offset: 1, limit: 1 });
+    assert.deepEqual(calls[0]?.operation, {
+      kind: 'read',
+      path: join(cwd, 'image.png'),
+      offset: 1,
+      limit: 1,
+    });
     assert.equal(snapshotOwnerId, 'toolop-Read');
+    assert.deepEqual(result, {
+      kind: 'image',
+      mimeType: 'image/png',
+      ref: {
+        kind: 'session_context',
+        sessionId: 'session-1',
+        refId: 'context-1',
+      },
+    });
   });
 
   test('releases a Read image snapshot when durable result commit fails', async () => {

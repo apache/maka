@@ -17,99 +17,61 @@
  * under the License.
  */
 
-import {
-  normalizeToolAccesses,
-  ToolAccesses,
-  type NormalizeToolAccessOptions,
-  type ToolAccesses as ToolAccessSet,
-} from './tool-access.js';
+import type { PreparedOperation } from './preparation/types.js';
 import { ToolScheduler } from './tool-scheduler.js';
 
 export interface ToolCallBatchEntry<Result> {
   readonly id: string;
   readonly signal?: AbortSignal;
-  /** Omission is fail-closed and becomes ToolAccesses.all(). */
-  readonly resolveAccesses?: () => Promise<ToolAccessSet | undefined> | ToolAccessSet | undefined;
-  readonly run: () => Promise<Result> | Result;
+  /**
+   * The synthesis root's single entry point. It validates, canonicalises and
+   * dispatches to the authority, returning a one-shot PreparedOperation. A
+   * reject here is treated as an unclassified real effect and scheduled with
+   * all claims. The caller still owns the fallback effect and settlement.
+   */
+  readonly prepare: () => Promise<PreparedOperation<unknown>>;
+  /**
+   * Execute the prepared operation. Receives `undefined` when preparation
+   * failed, in which case the caller runs its normal effect under all claims.
+   */
+  readonly run: (operation: PreparedOperation<unknown> | undefined) => Promise<Result> | Result;
 }
 
 /**
  * Prepare every call behind one barrier, submit by original array index, and
  * return settled outcomes in that same order regardless of completion order.
+ * Claims are produced by `prepare`. If preparation rejects but the caller will
+ * still run a real effect, the fallback is all() so it cannot fail open.
  */
 export async function settleToolCallBatch<Result>(
   entries: readonly ToolCallBatchEntry<Result>[],
-  normalizeOptions: NormalizeToolAccessOptions = {},
 ): Promise<PromiseSettledResult<Result>[]> {
-  const slots = entries.map((entry, index) => ({ entry, index, sequence: index }));
-  const prepared = await Promise.all(
-    slots.map(async (slot) => ({
-      ...slot,
-      accesses: await resolveEntryAccesses(slot.entry, normalizeOptions),
-    })),
-  );
-
   const scheduler = new ToolScheduler();
-  const resultSlots = prepared.map(({ entry, sequence, accesses }) =>
-    scheduler.add({
-      id: entry.id,
-      sequence,
-      accesses,
-      ...(entry.signal ? { signal: entry.signal } : {}),
-      run: entry.run,
+  const slots = entries.map((entry, index) => ({ entry, sequence: index }));
+  const prepared = await Promise.all(
+    slots.map(async (slot) => {
+      try {
+        return { slot, operation: await slot.entry.prepare() };
+      } catch {
+        // A preparation failure does not prove the fallback effect is harmless.
+        // Synthetic/no-effect calls return noneOperation() before reaching here.
+        return { slot, operation: undefined };
+      }
     }),
   );
-  return await Promise.allSettled(resultSlots);
-}
 
-async function resolveEntryAccesses<Result>(
-  entry: ToolCallBatchEntry<Result>,
-  options: NormalizeToolAccessOptions,
-): Promise<ToolAccessSet> {
-  if (!entry.resolveAccesses) return ToolAccesses.all();
-  try {
-    const declared = await resolveAccessesUntilAbort(entry);
-    return normalizeToolAccesses(declared ?? ToolAccesses.all(), options);
-  } catch {
-    // Access planning is a concurrency optimization and must never widen the
-    // set of operations allowed by ToolRuntime. A bad declaration therefore
-    // fails closed to global serialization while Runtime still owns the actual
-    // validation and model-visible error.
-    return ToolAccesses.all();
-  }
-}
-
-function resolveAccessesUntilAbort<Result>(
-  entry: ToolCallBatchEntry<Result>,
-): Promise<ToolAccessSet | undefined> {
-  const planning = Promise.resolve().then(() => entry.resolveAccesses?.());
-  if (!entry.signal) return planning;
-  if (entry.signal.aborted) return Promise.reject(abortReason(entry.signal, entry.id));
-
-  return new Promise<ToolAccessSet | undefined>((resolve, reject) => {
-    const onAbort = () => {
-      cleanup();
-      reject(abortReason(entry.signal!, entry.id));
+  const resultSlots = prepared.map(({ slot, operation }) => {
+    const runnable: PreparedOperation<unknown> = operation ?? {
+      claims: [{ kind: 'all' }],
+      execute: () => slot.entry.run(undefined) as Promise<Result>,
     };
-    const cleanup = () => entry.signal?.removeEventListener('abort', onAbort);
-    entry.signal!.addEventListener('abort', onAbort, { once: true });
-    planning.then(
-      (accesses) => {
-        cleanup();
-        resolve(accesses);
-      },
-      (error: unknown) => {
-        cleanup();
-        reject(error);
-      },
-    );
-    if (entry.signal!.aborted) onAbort();
+    return scheduler.add({
+      id: slot.entry.id,
+      sequence: slot.sequence,
+      operation: runnable,
+      ...(slot.entry.signal ? { signal: slot.entry.signal } : {}),
+      run: (candidate) => slot.entry.run(candidate === runnable ? operation : undefined),
+    });
   });
-}
-
-function abortReason(signal: AbortSignal, entryId: string): unknown {
-  if (signal.reason !== undefined) return signal.reason;
-  return Object.assign(new Error(`Tool call ${entryId} was cancelled during access planning`), {
-    name: 'AbortError',
-  });
+  return await Promise.allSettled(resultSlots);
 }

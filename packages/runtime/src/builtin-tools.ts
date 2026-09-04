@@ -67,8 +67,25 @@ import {
 } from './workspace-executor.js';
 import {
   createBoundaryFilesystemExecutor,
+  createFilesystemResourceAuthority,
   type FilesystemExecuteInput,
+  type FilesystemResult,
 } from './filesystem-executor.js';
+import {
+  allResourceAuthority,
+  noneOperation,
+} from './preparation/placeholder-authorities.js';
+import { defaultToolAuthorityRegistrations } from './preparation/default-tool-authorities.js';
+import {
+  ToolAuthorityRegistry,
+  type RegisteredToolAuthority,
+  type ToolAuthorityRegistration,
+} from './preparation/tool-authority-registry.js';
+import type {
+  AuthorityContext,
+  PreparedOperationExecutionContext,
+  ResourceAuthority,
+} from './preparation/types.js';
 
 // tool-runtime.ts is the single source of truth for the tool shape; this
 // re-export only keeps back-compat for callers that imported from
@@ -93,7 +110,6 @@ import {
   sandboxBoundaryExpansionSchema,
   selectedBashBoundaryExpansion,
 } from './sandbox-boundary-declaration.js';
-import { ToolAccesses, type ToolResourceAccess } from './tool-access.js';
 
 // Generous wall-clock cap for the ripgrep-backed Grep tool. A search should be
 // near-instant; this only bounds a pathological hang now that the stream
@@ -192,13 +208,32 @@ export interface BuildBuiltinToolsOptions {
   releaseImageSnapshot?: (input: { sessionId: string; refId: string }) => Promise<void>;
 }
 
-export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaTool[] {
+interface AuthorityBoundMakaTool extends MakaTool {
+  readonly resourceAuthority?: RegisteredToolAuthority | undefined;
+}
+
+export interface BuiltinToolComposition {
+  readonly tools: MakaTool[];
+  readonly authorityRegistry: ToolAuthorityRegistry;
+}
+
+function buildBuiltinToolDefinitions(
+  options: BuildBuiltinToolsOptions,
+  includeAuthorities: boolean,
+): AuthorityBoundMakaTool[] {
   const executor = options.executor ?? createLocalWorkspaceExecutor();
   const filesystem = createBoundaryFilesystemExecutor({
     workspace: executor,
     ...(options.filesystemWorker ? { worker: options.filesystemWorker } : {}),
     ...(options.permissionProfile ? { permissionProfile: options.permissionProfile } : {}),
   });
+  const filesystemAuthority = includeAuthorities
+    ? createFilesystemResourceAuthority({
+        workspace: executor,
+        ...(options.filesystemWorker ? { worker: options.filesystemWorker } : {}),
+        ...(options.permissionProfile ? { permissionProfile: options.permissionProfile } : {}),
+      })
+    : undefined;
   const executionFacts = executor.facts;
   const acceptsResourceRefs = Boolean(options.runtimeResources || options.attachmentResources);
   const readDescription = `Read a text file${options.snapshotImage ? ' or supported image' : ''} from disk${acceptsResourceRefs ? ', or read a whole runtime resource using ref' : ''}.`;
@@ -326,27 +361,70 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
     ...(options.backgroundTasks ? [buildStopBackgroundTaskTool(options.backgroundTasks)] : []),
     ...(options.ptyControls ? [buildWriteStdinTool(options.ptyControls)] : []),
   ];
+  // Provider-native ApplyPatch uses `providerTool` for its model-facing schema,
+  // while Runtime must also accept historical/freeform Codex patch strings.
+  // Keep the provider JSON schema for diagnostics and widen only validation at
+  // the execution boundary.
+  const applyPatchRuntimeInputSchema = {
+    jsonSchema: (openAiApplyPatchInputSchema as { readonly jsonSchema?: unknown }).jsonSchema,
+    async validate(value: unknown) {
+      if (typeof value === 'string') return { success: true as const, value };
+      const validate = (
+        openAiApplyPatchInputSchema as {
+          validate?: (
+            candidate: unknown,
+          ) =>
+            | { success: true; value: unknown }
+            | { success: false; error: unknown }
+            | Promise<
+                | { success: true; value: unknown }
+                | { success: false; error: unknown }
+              >;
+        }
+      ).validate;
+      if (!validate) return { success: true as const, value };
+      return await validate(value);
+    },
+  };
   const applyPatchTool = {
     name: 'apply_patch',
     activityKind: 'edit',
     categoryHint: 'file_write',
     description: 'Apply one or more file changes using the selected provider patch protocol.',
-    parameters: openAiApplyPatchInputSchema,
+    parameters: applyPatchRuntimeInputSchema,
     providerTool: { kind: 'openai-apply-patch' },
     executionFacts,
-    resolveAccesses: (input, ctx) => {
-      const operations =
-        typeof input === 'string'
-          ? parseCodexV4aPatch(input)
-          : input && typeof input === 'object' && 'operation' in input
-            ? [input.operation]
-            : undefined;
-      if (!operations) return ToolAccesses.all();
-      return operations.map(
-        (operation): ToolResourceAccess =>
-          ToolAccesses.writeFile(operation.path, { cwd: ctx.cwd })[0]!,
-      );
-    },
+    resourceAuthority: filesystemAuthority
+      ? {
+          prepare: async (input, ctx) => {
+            const operation =
+              typeof input === 'string'
+                ? undefined
+                : input && typeof input === 'object' && 'operation' in input
+                  ? (input as { operation: { type: string; path: string; diff?: string } })
+                      .operation
+                  : undefined;
+            // The string protocol may contain multiple filesystem operations.
+            // Until its parser is safely reusable during prepare, conservatively
+            // claim all modelled resources and execute the live tool impl once.
+            if (!operation) return allResourceAuthority().prepare(input, ctx);
+            const raw = await filesystemAuthority.prepare(
+              { operation, ...filesystemCall(ctx) } as never,
+              ctx,
+            );
+            return {
+              claims: raw.claims,
+              execute: async (signal) => {
+                const result = (await raw.execute(signal)) as FilesystemResult;
+                if (result.kind !== 'apply_patch') {
+                  throw new Error(`ApplyPatch backend returned ${JSON.stringify(result.kind)}.`);
+                }
+                return { status: 'completed' as const };
+              },
+            };
+          },
+        }
+      : undefined,
     impl: async (input, ctx) => {
       if (typeof input !== 'string') {
         return await filesystem.applyPatch({ operation: input.operation, ...filesystemCall(ctx) });
@@ -360,8 +438,8 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
         ctx.abortSignal,
       );
     },
-  } satisfies MakaTool;
-  const tools: MakaTool[] = [
+  } satisfies AuthorityBoundMakaTool;
+  const tools: AuthorityBoundMakaTool[] = [
     ...bashTools,
     ...backgroundTools,
     {
@@ -399,10 +477,45 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
             },
           }
         : {}),
-      resolveAccesses: (input, ctx) =>
-        input && typeof input === 'object' && 'path' in input && typeof input.path === 'string'
-          ? ToolAccesses.readFile(input.path, { cwd: ctx.cwd })
-          : ToolAccesses.all(),
+      resourceAuthority: filesystemToolAuthority(
+        filesystemAuthority,
+        (args: { path: string; offset?: number; limit?: number }, ctx) => ({
+          operation: {
+            kind: 'read',
+            path: args.path,
+            ...(args.offset !== undefined ? { offset: args.offset } : {}),
+            ...(args.limit !== undefined ? { limit: args.limit } : {}),
+          },
+          ...filesystemCall(ctx),
+        }),
+        async (result, _args, ctx, executionContext) => {
+          const r = result as FilesystemResult;
+          if (r.kind === 'read_image') {
+            if (!options.snapshotImage) {
+              throw new Error('Read image snapshots are not available in this toolset.');
+            }
+            if (!executionContext?.operationId) {
+              throw new Error('Read image snapshots require a durable tool operation identity.');
+            }
+            const ref = await options.snapshotImage({
+              sessionId: ctx.sessionId,
+              ownerId: executionContext.operationId,
+              bytes: r.bytes,
+              mimeType: r.mimeType,
+            });
+            return { kind: 'image' as const, mimeType: r.mimeType, ref };
+          }
+          if (r.kind !== 'read') {
+            throw internalFilesystemReadFailure(
+              'Read',
+              'no file content came back',
+              'the file is empty or missing',
+            );
+          }
+          return { content: r.content };
+        },
+        (args) => typeof args === 'object' && args !== null && 'ref' in args,
+      ),
       impl: async (input, ctx) => {
         const { cwd, sessionId, abortSignal } = ctx;
         if ('ref' in input) {
@@ -477,7 +590,22 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
         content: z.string(),
       }),
       executionFacts,
-      resolveAccesses: ({ path }, ctx) => ToolAccesses.writeFile(path, { cwd: ctx.cwd }),
+      resourceAuthority: filesystemToolAuthority(
+        filesystemAuthority,
+        (args: { path: string; content: string }, ctx) => ({
+          operation: { kind: 'write', path: args.path, content: args.content },
+          ...filesystemCall(ctx),
+        }),
+        (result) => {
+          const r = result as Extract<FilesystemResult, { kind: 'write' }>;
+          if (r.kind !== 'write')
+            throw internalFilesystemWriteFailure('Write', 'the file was written');
+          if (r.diff !== undefined) {
+            return { kind: 'file_diff' as const, paths: [r.path], diff: r.diff };
+          }
+          return { kind: 'file_write' as const, path: r.path, bytes: r.bytes };
+        },
+      ),
       impl: async ({ path, content }, ctx) => {
         const result = await filesystem.execute({
           operation: { kind: 'write', path, content },
@@ -506,7 +634,39 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
         new_string: z.string(),
       }),
       executionFacts,
-      resolveAccesses: ({ path }, ctx) => ToolAccesses.readWriteFile(path, { cwd: ctx.cwd }),
+      resourceAuthority: filesystemToolAuthority(
+        filesystemAuthority,
+        (args: { path: string; old_string: string; new_string: string }, ctx) => ({
+          operation: {
+            kind: 'edit',
+            path: args.path,
+            oldString: args.old_string,
+            newString: args.new_string,
+          },
+          ...filesystemCall(ctx),
+        }),
+        (result) => {
+          const r = result as Extract<FilesystemResult, { kind: 'edit' }>;
+          if (r.kind !== 'edit') {
+            throw internalFilesystemWriteFailure(
+              'Edit',
+              'the edit was applied',
+              'a different old_string will not help',
+            );
+          }
+          if (r.diff !== undefined) {
+            return { kind: 'file_diff' as const, paths: [r.path], diff: r.diff };
+          }
+          return {
+            ok: r.ok,
+            path: r.path,
+            replacements: r.replacements,
+            matchedVia: r.matchedVia,
+            startLine: r.startLine,
+            endLine: r.endLine,
+          };
+        },
+      ),
       impl: async ({ path, old_string, new_string }, ctx) => {
         const result = await filesystem.execute({
           operation: {
@@ -558,7 +718,24 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
           .describe('Sort object keys lexicographically; default false.'),
       }),
       executionFacts,
-      resolveAccesses: ({ path }, ctx) => ToolAccesses.readWriteFile(path, { cwd: ctx.cwd }),
+      resourceAuthority: filesystemToolAuthority(
+        filesystemAuthority,
+        (args: { path: string; sort_keys?: boolean }, ctx) => ({
+          operation: { kind: 'format_json', path: args.path, sortKeys: args.sort_keys ?? false },
+          ...filesystemCall(ctx),
+        }),
+        (result) => {
+          const r = result as Extract<FilesystemResult, { kind: 'format_json' }>;
+          if (r.kind !== 'format_json') {
+            throw internalFilesystemWriteFailure('FormatJson', 'the file was rewritten');
+          }
+          if (r.diff !== undefined) {
+            return { kind: 'file_diff' as const, paths: [r.path], diff: r.diff };
+          }
+          const { kind: _kind, ...diagnostic } = r;
+          return diagnostic;
+        },
+      ),
       impl: async ({ path, sort_keys }, ctx) => {
         const result = await filesystem.execute({
           operation: {
@@ -599,7 +776,24 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
           ),
       }),
       executionFacts,
-      resolveAccesses: ({ cwd }, ctx) => ToolAccesses.searchTree(cwd ?? '.', { cwd: ctx.cwd }),
+      resourceAuthority: filesystemToolAuthority(
+        filesystemAuthority,
+        (args: { pattern: string; cwd?: string }, ctx) => ({
+          operation: { kind: 'glob', path: args.cwd ?? '.', pattern: args.pattern, limit: 200 },
+          ...filesystemCall(ctx),
+        }),
+        (result) => {
+          const r = result as Extract<FilesystemResult, { kind: 'glob' }>;
+          if (r.kind !== 'glob') {
+            throw internalFilesystemReadFailure(
+              'Glob',
+              'no file list came back',
+              'no files match the pattern',
+            );
+          }
+          return { files: r.files };
+        },
+      ),
       impl: async ({ pattern, cwd: relCwd }, ctx) => {
         const result = await filesystem.execute({
           operation: { kind: 'glob', path: relCwd ?? '.', pattern, limit: 200 },
@@ -624,7 +818,32 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
         glob: z.string().optional(),
       }),
       executionFacts,
-      resolveAccesses: ({ path }, ctx) => ToolAccesses.searchTree(path ?? '.', { cwd: ctx.cwd }),
+      resourceAuthority: filesystemToolAuthority(
+        filesystemAuthority,
+        (args: { pattern: string; path?: string; glob?: string }, ctx) => ({
+          operation: {
+            kind: 'grep',
+            path: args.path ?? '.',
+            pattern: args.pattern,
+            ...(args.glob ? { glob: args.glob } : {}),
+            maxCountPerFile: 50,
+            limit: 200,
+            timeoutMs: GREP_TIMEOUT_MS,
+          },
+          ...filesystemCall(ctx),
+        }),
+        (result) => {
+          const r = result as Extract<FilesystemResult, { kind: 'grep' }>;
+          if (r.kind !== 'grep') {
+            throw internalFilesystemReadFailure(
+              'Grep',
+              'no search result came back',
+              'the pattern is absent',
+            );
+          }
+          return { matches: r.matches };
+        },
+      ),
       impl: async ({ pattern, path, glob }, ctx) => {
         // Self-bound: ripgrep finishes in well under a second normally, but a
         // pathological tree (network mount, /proc, a FIFO) could hang it. The
@@ -655,9 +874,33 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
   return tools;
 }
 
-/** The per-call context every file tool hands to the filesystem authority. */
+/**
+ * Compose the builtin tool surface and its canonical authority registrations
+ * from the same definitions. The Host retains the registry for the process;
+ * only the stripped tool declarations are exposed to model backends.
+ */
+export function buildBuiltinToolComposition(
+  options: BuildBuiltinToolsOptions = {},
+): BuiltinToolComposition {
+  const tools = buildBuiltinToolDefinitions(options, true);
+  const registrations = tools.flatMap<ToolAuthorityRegistration>((tool) =>
+    tool.resourceAuthority ? [[tool.name, tool.resourceAuthority]] : [],
+  );
+  return {
+    tools: tools.map(stripResourceAuthority),
+    authorityRegistry: new ToolAuthorityRegistry(registrations).withRegistrations(
+      defaultToolAuthorityRegistrations(),
+    ),
+  };
+}
+
+export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaTool[] {
+  return buildBuiltinToolDefinitions(options, false).map(stripResourceAuthority);
+}
+
+/** The per-call context every file authority adapter hands to its domain authority. */
 function filesystemCall(
-  ctx: MakaToolContext,
+  ctx: Pick<AuthorityContext, 'cwd' | 'executionBoundary' | 'permissionMode' | 'abortSignal'>,
 ): Pick<FilesystemExecuteInput, 'cwd' | 'executionBoundary' | 'permissionMode' | 'abortSignal'> {
   return {
     cwd: ctx.cwd,
@@ -665,6 +908,44 @@ function filesystemCall(
     ...(ctx.permissionMode ? { permissionMode: ctx.permissionMode } : {}),
     ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}),
   };
+}
+
+/**
+ * Adapt a tool's public arguments and result shape to the filesystem domain
+ * authority. The adapter lives only in ToolAuthorityRegistry, never on the
+ * MakaTool exposed to a backend.
+ */
+function filesystemToolAuthority<Args>(
+  authority: ReturnType<typeof createFilesystemResourceAuthority> | undefined,
+  buildInput: (args: Args, ctx: AuthorityContext) => unknown,
+  reshape: (
+    result: unknown,
+    args: Args,
+    ctx: AuthorityContext,
+    executionContext?: PreparedOperationExecutionContext,
+  ) => Promise<unknown> | unknown,
+  none?: (args: Args) => boolean,
+): ResourceAuthority<Args, unknown> | undefined {
+  if (!authority) return undefined;
+  return {
+    async prepare(args, ctx) {
+      if (none && none(args as Args)) return noneOperation();
+      const input = buildInput(args as Args, ctx);
+      const raw = await authority.prepare(input as never, ctx);
+      return {
+        claims: raw.claims,
+        execute: async (signal, fallbackEffect, executionContext) => {
+          const result = await raw.execute(signal, fallbackEffect, executionContext);
+          return reshape(result, args as Args, ctx, executionContext);
+        },
+      };
+    },
+  };
+}
+
+function stripResourceAuthority(tool: AuthorityBoundMakaTool): MakaTool {
+  const { resourceAuthority: _resourceAuthority, ...declaration } = tool;
+  return declaration;
 }
 
 interface ExecutorBashSandboxOptions {

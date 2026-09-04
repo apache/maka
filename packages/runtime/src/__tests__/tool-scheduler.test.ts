@@ -19,13 +19,42 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { ToolAccesses } from '../tool-access.js';
+import type { PreparedOperation, ResourceClaim } from '../preparation/types.js';
 import { ToolScheduler } from '../tool-scheduler.js';
 
-const POSIX = { cwd: '/repo', platform: 'linux' as const };
+const FILE = 'filesystem:workspace';
+
+const read = (key: string): ResourceClaim[] => [
+  { kind: 'keyed', authority: FILE, key, mode: 'read' },
+];
+const tree = (key: string): ResourceClaim[] => [
+  { kind: 'keyed', authority: FILE, key, mode: 'read', scope: 'tree' },
+];
+const write = (key: string): ResourceClaim[] => [
+  { kind: 'keyed', authority: FILE, key, mode: 'write' },
+];
+const all = (): ResourceClaim[] => [{ kind: 'all' }];
+const none = (): ResourceClaim[] => [];
+
+function operation<Result = void>(
+  claims: readonly ResourceClaim[],
+  run?: (signal?: AbortSignal) => Promise<Result> | Result,
+): PreparedOperation<Result> {
+  return {
+    claims,
+    execute: (signal) => Promise.resolve(run ? run(signal) : (undefined as Result)),
+  };
+}
+
+// The Scheduler always calls task.run; route that through the op.execute so the
+// test observes the operation's own effects.
+const runThrough =
+  <Result>() =>
+  (execution: PreparedOperation<unknown>, signal?: AbortSignal) =>
+    execution.execute(signal) as Promise<Result>;
 
 describe('ToolScheduler', () => {
-  test('starts non-conflicting tasks immediately', async () => {
+  test('starts non-conflicting (overlapping-reader) tasks immediately', async () => {
     const scheduler = new ToolScheduler();
     const first = deferred<string>();
     const second = deferred<string>();
@@ -34,20 +63,20 @@ describe('ToolScheduler', () => {
     const firstResult = scheduler.add({
       id: 'read-a-1',
       sequence: 0,
-      accesses: ToolAccesses.readFile('/repo/a', POSIX),
-      run: () => {
+      operation: operation(read('/repo/a'), () => {
         started.push('first');
         return first.promise;
-      },
+      }),
+      run: runThrough<string>(),
     });
     const secondResult = scheduler.add({
       id: 'read-a-2',
       sequence: 1,
-      accesses: ToolAccesses.readFile('/repo/a', POSIX),
-      run: () => {
+      operation: operation(read('/repo/a'), () => {
         started.push('second');
         return second.promise;
-      },
+      }),
+      run: runThrough<string>(),
     });
 
     assert.deepEqual(started, ['first', 'second']);
@@ -68,24 +97,24 @@ describe('ToolScheduler', () => {
     const task = (
       id: string,
       sequence: number,
-      accesses: ReturnType<typeof ToolAccesses.readFile>,
+      claims: readonly ResourceClaim[],
       gate: ReturnType<typeof deferred<void>>,
     ) =>
       scheduler.add({
         id,
         sequence,
-        accesses,
-        run: () => {
+        operation: operation(claims, () => {
           started.push(id);
           return gate.promise;
-        },
+        }),
+        run: runThrough<void>(),
       });
 
     const results = [
-      task('reader-1', 0, ToolAccesses.readFile('/repo/a', POSIX), reader),
-      task('writer', 1, ToolAccesses.writeFile('/repo/a', POSIX), writer),
-      task('reader-2', 2, ToolAccesses.readFile('/repo/a', POSIX), laterReader),
-      task('independent', 3, ToolAccesses.writeFile('/repo/b', POSIX), independent),
+      task('reader-1', 0, read('/repo/a'), reader),
+      task('writer', 1, write('/repo/a'), writer),
+      task('reader-2', 2, read('/repo/a'), laterReader),
+      task('independent', 3, write('/repo/b'), independent),
     ];
 
     assert.deepEqual(started, ['reader-1', 'independent']);
@@ -110,29 +139,29 @@ describe('ToolScheduler', () => {
       scheduler.add({
         id: 'all',
         sequence: 0,
-        accesses: ToolAccesses.all(),
-        run: () => {
+        operation: operation(all(), () => {
           started.push('all');
           return blocker.promise;
-        },
+        }),
+        run: runThrough<void>(),
       }),
       scheduler.add({
         id: 'a',
         sequence: 1,
-        accesses: ToolAccesses.writeFile('/repo/a', POSIX),
-        run: () => {
+        operation: operation(write('/repo/a'), () => {
           started.push('a');
           return a.promise;
-        },
+        }),
+        run: runThrough<void>(),
       }),
       scheduler.add({
         id: 'b',
         sequence: 2,
-        accesses: ToolAccesses.writeFile('/repo/b', POSIX),
-        run: () => {
+        operation: operation(write('/repo/b'), () => {
           started.push('b');
           return b.promise;
-        },
+        }),
+        run: runThrough<void>(),
       }),
     ];
 
@@ -145,35 +174,50 @@ describe('ToolScheduler', () => {
     await Promise.all(results);
   });
 
-  test('releases resources after asynchronous rejection and synchronous throw', async () => {
-    for (const firstRun of [
-      () => Promise.reject(new Error('async failure')),
-      () => {
-        throw new Error('sync failure');
-      },
-    ]) {
-      const scheduler = new ToolScheduler();
-      const started: string[] = [];
-      const first = scheduler.add({
-        id: 'first',
-        sequence: 0,
-        accesses: ToolAccesses.writeFile('/repo/a', POSIX),
-        run: firstRun,
-      });
-      const second = scheduler.add({
-        id: 'second',
-        sequence: 1,
-        accesses: ToolAccesses.readFile('/repo/a', POSIX),
-        run: () => {
-          started.push('second');
-          return 'ok';
-        },
-      });
+  test('freezes further dispatch after a fatal rejection (fail-stop)', async () => {
+    const scheduler = new ToolScheduler();
+    const started: string[] = [];
+    const first = scheduler.add({
+      id: 'first',
+      sequence: 0,
+      operation: operation(write('/repo/a'), () => Promise.reject(new Error('async failure'))),
+      run: runThrough<void>(),
+    });
+    const second = scheduler.add({
+      id: 'second',
+      sequence: 1,
+      operation: operation(read('/repo/a'), () => {
+        started.push('second');
+        return 'ok';
+      }),
+      run: runThrough<string>(),
+    });
 
-      await assert.rejects(first, /failure/);
-      assert.equal(await second, 'ok');
-      assert.deepEqual(started, ['second']);
-    }
+    await assert.rejects(first, /async failure/);
+    // The frozen scheduler cancels queued work instead of running it.
+    await assert.rejects(second, /frozen|cancelled before it started/);
+    assert.deepEqual(started, []);
+    assert.equal(scheduler.queuedCount, 0);
+  });
+
+  test('rejects a task submitted after the scheduler is frozen', async () => {
+    const scheduler = new ToolScheduler();
+    const first = scheduler.add({
+      id: 'first',
+      sequence: 0,
+      operation: operation(write('/repo/a'), () => Promise.reject(new Error('boom'))),
+      run: runThrough<void>(),
+    });
+    await assert.rejects(first, /boom/);
+    await assert.rejects(
+      scheduler.add({
+        id: 'late',
+        sequence: 1,
+        operation: operation(none(), () => 'late'),
+        run: runThrough<string>(),
+      }),
+      /frozen/,
+    );
   });
 
   test('cancels queued work without running it', async () => {
@@ -184,17 +228,17 @@ describe('ToolScheduler', () => {
     const activeResult = scheduler.add({
       id: 'active',
       sequence: 0,
-      accesses: ToolAccesses.writeFile('/repo/a', POSIX),
-      run: () => active.promise,
+      operation: operation(write('/repo/a'), () => active.promise),
+      run: runThrough<void>(),
     });
     const queuedResult = scheduler.add({
       id: 'queued',
       sequence: 1,
-      accesses: ToolAccesses.writeFile('/repo/a', POSIX),
-      signal: controller.signal,
-      run: () => {
+      operation: operation(write('/repo/a'), () => {
         queuedStarts += 1;
-      },
+      }),
+      signal: controller.signal,
+      run: runThrough<void>(),
     });
     const queuedOutcome = Promise.allSettled([queuedResult]);
 
@@ -206,36 +250,108 @@ describe('ToolScheduler', () => {
     await activeResult;
   });
 
-  test('releases active work after the tool observes cancellation', async () => {
+  test('a fulfilled (abort-observed) active task releases the queue', async () => {
     const scheduler = new ToolScheduler();
     const controller = new AbortController();
     const started: string[] = [];
     const active = scheduler.add({
       id: 'active',
       sequence: 0,
-      accesses: ToolAccesses.writeFile('/repo/a', POSIX),
+      operation: operation(
+        write('/repo/a'),
+        () =>
+          new Promise<string>((resolve) => {
+            controller.signal.addEventListener('abort', () => resolve('cancelled-but-fulfilled'), {
+              once: true,
+            });
+          }),
+      ),
       signal: controller.signal,
-      run: () =>
-        new Promise<void>((_resolve, reject) => {
-          controller.signal.addEventListener('abort', () => reject(controller.signal.reason), {
-            once: true,
-          });
-        }),
+      run: runThrough<string>(),
     });
     const next = scheduler.add({
       id: 'next',
       sequence: 1,
-      accesses: ToolAccesses.readFile('/repo/a', POSIX),
-      run: () => {
+      operation: operation(read('/repo/a'), () => {
         started.push('next');
         return 'done';
-      },
+      }),
+      run: runThrough<string>(),
     });
 
     controller.abort(new Error('cancel active'));
-    await assert.rejects(active, /cancel active/);
+    assert.equal(await active, 'cancelled-but-fulfilled');
     assert.equal(await next, 'done');
     assert.deepEqual(started, ['next']);
+  });
+
+  test('a tree read conflicts with the in-tree writer but not a sibling tree read', async () => {
+    const scheduler = new ToolScheduler();
+    const reader = deferred<void>();
+    const writer = deferred<void>();
+    const started: string[] = [];
+    const treeRead = scheduler.add({
+      id: 'tree',
+      sequence: 0,
+      operation: operation(tree('/repo/src'), () => reader.promise),
+      run: runThrough<void>(),
+    });
+    const inTreeWrite = scheduler.add({
+      id: 'write-a',
+      sequence: 1,
+      operation: operation(write('/repo/src/a.ts'), () => {
+        started.push('write-a');
+        return writer.promise;
+      }),
+      run: runThrough<void>(),
+    });
+    const siblingRead = scheduler.add({
+      id: 'src2-read',
+      sequence: 2,
+      operation: operation(tree('/repo/src2'), () => {
+        started.push('src2');
+        return undefined;
+      }),
+      run: runThrough<void>(),
+    });
+
+    assert.deepEqual(started, ['src2']);
+    reader.resolve();
+    await flushMicrotasks();
+    assert.deepEqual(started, ['src2', 'write-a']);
+    writer.resolve();
+    await treeRead;
+    await inTreeWrite;
+    await siblingRead;
+  });
+
+  test('a Windows tree key conflicts with an in-tree Windows file key', async () => {
+    const scheduler = new ToolScheduler();
+    const reader = deferred<void>();
+    const writer = deferred<void>();
+    const started: string[] = [];
+    const treeRead = scheduler.add({
+      id: 'windows-tree',
+      sequence: 0,
+      operation: operation(tree('D:\\repo\\src'), () => reader.promise),
+      run: runThrough<void>(),
+    });
+    const inTreeWrite = scheduler.add({
+      id: 'windows-write',
+      sequence: 1,
+      operation: operation(write('D:\\repo\\src\\a.ts'), () => {
+        started.push('windows-write');
+        return writer.promise;
+      }),
+      run: runThrough<void>(),
+    });
+
+    assert.deepEqual(started, []);
+    reader.resolve();
+    await flushMicrotasks();
+    assert.deepEqual(started, ['windows-write']);
+    writer.resolve();
+    await Promise.all([treeRead, inTreeWrite]);
   });
 
   test('rejects duplicate or out-of-order sequence submission', () => {
@@ -243,16 +359,16 @@ describe('ToolScheduler', () => {
     void scheduler.add({
       id: 'first',
       sequence: 1,
-      accesses: ToolAccesses.none(),
-      run: () => undefined,
+      operation: operation(none(), () => undefined),
+      run: runThrough<void>(),
     });
     assert.throws(
       () =>
         scheduler.add({
           id: 'duplicate',
           sequence: 1,
-          accesses: ToolAccesses.none(),
-          run: () => undefined,
+          operation: operation(none(), () => undefined),
+          run: runThrough<void>(),
         }),
       /strictly increasing sequence order/,
     );

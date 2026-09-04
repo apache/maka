@@ -96,6 +96,8 @@ import { getAIModel } from '../model-factory.js';
 import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 import { ToolAccesses } from '../tool-access.js';
 import { testInvocationOpening } from './invocation-fixture.js';
+import { ToolAuthorityRegistry } from '../preparation/tool-authority-registry.js';
+import { ToolPreparationService } from '../preparation/tool-preparation-service.js';
 
 describe('AiSdkBackend ApplyPatch routing', () => {
   test('advertises apply_patch only to supported native OpenAI models', async () => {
@@ -5281,6 +5283,7 @@ describe('AiSdkBackend model history', () => {
           modelId: 'mock-model-id',
           modelFactory: () => completionModel(),
           tools: [],
+          preparationService: new ToolPreparationService(new ToolAuthorityRegistry()),
           newId: idGenerator(),
           now: monotonicClock(),
           readExecutionBoundary: readExternalExecutionBoundary,
@@ -7010,6 +7013,31 @@ describe('AiSdkBackend error surfaces', () => {
           },
         },
       ],
+      preparationService: new ToolPreparationService(
+        new ToolAuthorityRegistry([
+          [
+            'Read',
+            {
+              prepare: async (input, context) => ({
+                claims: [
+                  {
+                    kind: 'keyed' as const,
+                    authority: 'filesystem:test',
+                    key: (input as { path: string }).path,
+                    mode: 'read' as const,
+                  },
+                ],
+                execute: (signal, fallbackEffect) =>
+                  fallbackEffect
+                    ? fallbackEffect()
+                    : context.effect
+                      ? context.effect(signal)
+                      : Promise.resolve(),
+              }),
+            },
+          ],
+        ]),
+      ),
       runtimeCommitSink: {
         commitToolPrepared: async ({ providerToolCallId }) => {
           if (providerToolCallId === 'tool-1') throw new Error('T1 unavailable');
@@ -11144,16 +11172,44 @@ describe('AiSdkBackend tool execution', () => {
         path: z.string(),
         operation: z.enum(['read', 'write']),
       }),
-      resolveAccesses: ({ path, operation }, context) =>
-        operation === 'read'
-          ? ToolAccesses.readFile(path, { cwd: context.cwd })
-          : ToolAccesses.writeFile(path, { cwd: context.cwd }),
       impl: async ({ label }) => {
-        started.push(label);
-        await gates.get(label)!.promise;
-        return { label };
+        throw new Error(`Prepared operation was bypassed for ${label}`);
       },
     };
+    const preparationService = new ToolPreparationService(
+      new ToolAuthorityRegistry([
+        [
+          'ScheduledFile',
+          {
+            prepare: (input) => {
+              const { label, path, operation } = input as {
+                label: string;
+                path: string;
+                operation: 'read' | 'write';
+              };
+              return Promise.resolve({
+                claims:
+                  label === 'independent'
+                    ? []
+                    : [
+                        {
+                          kind: 'keyed' as const,
+                          authority: 'filesystem:workspace',
+                          key: path,
+                          mode: operation === 'read' ? ('read' as const) : ('write' as const),
+                        },
+                      ],
+                execute: async () => {
+                  started.push(label);
+                  await gates.get(label)!.promise;
+                  return { label };
+                },
+              });
+            },
+          },
+        ],
+      ]),
+    );
     const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
@@ -11163,6 +11219,7 @@ describe('AiSdkBackend tool execution', () => {
       modelId: 'mock-model-id',
       modelFactory: () => model,
       tools: [scheduledTool],
+      preparationService,
       maxSteps: 3,
       loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
       newId: idGenerator(),

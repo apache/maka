@@ -17,14 +17,25 @@
  * under the License.
  */
 
-import { toolAccessesConflict, type ToolAccesses } from './tool-access.js';
+import { claimsConflict } from './preparation/claims.js';
+import type { PreparedOperation } from './preparation/types.js';
 
 export interface ToolSchedulerTask<Result> {
   readonly id: string;
   readonly sequence: number;
-  readonly accesses: ToolAccesses;
+  /** The prepared operation whose claims drive ordering and whose run is executed. */
+  readonly operation: PreparedOperation<unknown>;
   readonly signal?: AbortSignal;
-  readonly run: () => Promise<Result> | Result;
+  /**
+   * Execute the prepared operation. Kept on the task (rather than scheduler
+   * calling `operation.execute` directly) so the caller can wrap the one-shot
+   * effect inside `settleToolCall` and keep admission / durable / projection
+   * ownership outside the pure sequencer.
+   */
+  readonly run: (
+    operation: PreparedOperation<unknown>,
+    signal?: AbortSignal,
+  ) => Promise<Result> | Result;
 }
 
 type ScheduledTaskState = 'queued' | 'active' | 'finished';
@@ -40,11 +51,16 @@ interface ScheduledTask<Result> extends ToolSchedulerTask<Result> {
 /**
  * Batch-local, conflict-aware Scheduler. A later task may bypass queued work
  * only when it conflicts with neither active work nor an earlier queued task.
+ * The Scheduler is a pure deterministic sequencer: it reads `claims` to decide
+ * ordering and never resolves an identity or touches a resource. The resource
+ * correctness lives in each `PreparedOperation.execute`.
  */
 export class ToolScheduler {
   private readonly activeTasks: ScheduledTask<unknown>[] = [];
   private queuedTasks: ScheduledTask<unknown>[] = [];
   private lastSequence = -1;
+  /** Fail-stop latch: a rejected task freezes further dispatch. */
+  private frozen = false;
 
   add<Result>(task: ToolSchedulerTask<Result>): Promise<Result> {
     if (!Number.isSafeInteger(task.sequence) || task.sequence <= this.lastSequence) {
@@ -67,6 +83,16 @@ export class ToolScheduler {
       resolve,
       reject,
     };
+
+    if (this.frozen) {
+      scheduled.state = 'finished';
+      scheduled.reject(
+        new Error(
+          `Tool Scheduler is frozen after a prior rejection; task ${task.id} was never started`,
+        ),
+      );
+      return result;
+    }
 
     if (task.signal?.aborted) {
       scheduled.state = 'finished';
@@ -104,10 +130,17 @@ export class ToolScheduler {
     task: ScheduledTask<unknown>,
     candidates: readonly ScheduledTask<unknown>[],
   ): boolean {
-    return candidates.some((candidate) => toolAccessesConflict(task.accesses, candidate.accesses));
+    return candidates.some((candidate) =>
+      claimsConflict(task.operation.claims, candidate.operation.claims),
+    );
   }
 
   private startTask<Result>(task: ScheduledTask<Result>): void {
+    if (this.frozen) {
+      task.state = 'finished';
+      task.reject(new Error(`Tool Scheduler is frozen; task ${task.id} was never started`));
+      return;
+    }
     if (task.state !== 'queued') {
       task.reject(
         new Error(`Tool Scheduler invariant violated: task ${task.id} started from ${task.state}`),
@@ -120,7 +153,7 @@ export class ToolScheduler {
 
     let execution: Promise<Result>;
     try {
-      execution = Promise.resolve(task.run());
+      execution = Promise.resolve(task.run(task.operation, task.signal));
     } catch (error) {
       execution = Promise.reject(error);
     }
@@ -150,12 +183,28 @@ export class ToolScheduler {
     }
     this.activeTasks.splice(index, 1);
     task.state = 'finished';
-    if (outcome.status === 'fulfilled') task.resolve(outcome.value);
-    else task.reject(outcome.reason);
+    if (outcome.status === 'fulfilled') {
+      task.resolve(outcome.value);
+    } else {
+      // §6.2 fail-stop: settleToolCall has already normalised business failures
+      // into fulfilled error results, so a rejection is infrastructure/turn-fatal.
+      this.frozen = true;
+      task.reject(outcome.reason);
+    }
     this.drainQueue();
   }
 
   private drainQueue(): void {
+    if (this.frozen) {
+      const toCancel = this.queuedTasks.filter((task) => task.state === 'queued');
+      this.queuedTasks = [];
+      for (const task of toCancel) {
+        this.removeQueuedAbortListener(task);
+        task.state = 'finished';
+        task.reject(new Error(`Tool Scheduler is frozen; queued task ${task.id} was cancelled`));
+      }
+      return;
+    }
     const waiting: ScheduledTask<unknown>[] = [];
     for (const task of this.queuedTasks) {
       if (task.state !== 'queued') continue;

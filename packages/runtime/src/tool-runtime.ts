@@ -142,6 +142,12 @@ export type ToolStepAdmission =
   | { readonly kind: 'admitted' }
   | { readonly kind: 'rejected'; readonly reason: string };
 
+export type PreparedToolEffect = (
+  signal: AbortSignal,
+  fallbackEffect: () => Promise<unknown>,
+  executionContext: MakaToolContext,
+) => Promise<unknown>;
+
 export interface ResolvedMakaToolCall {
   tool: MakaTool;
   turnId: string;
@@ -157,6 +163,13 @@ export interface ResolvedMakaToolCall {
   maxResultBytes?: number;
   /** Precomputed provider-batch admission; nested/direct calls omit it. */
   stepAdmission?: ToolStepAdmission;
+  /**
+   * Precomputed PreparedOperation.execute (the authority's correctness+effect
+   * shell). It always runs inside the execute boundary, even with zero claims.
+   * Placeholder operations invoke `fallbackEffect`, which preserves the full
+   * live ToolRuntime context for the original `tool.impl`.
+   */
+  effect?: PreparedToolEffect;
 }
 
 export interface DurableSessionEventSink {
@@ -232,6 +245,8 @@ export interface MakaTool<P = any, R = unknown> {
    * Pure, call-level declaration of every Scheduler-managed resource this
    * invocation may access. Omission fails closed to a global access in the
    * batch runner. This hook must not perform the tool's real side effect.
+   * @deprecated Access planning has moved out of the Scheduler into the
+   * resource Authority's PreparedOperation; register an authority instead.
    */
   resolveAccesses?: (
     args: P,
@@ -879,6 +894,7 @@ export class ToolRuntime {
         ...(call.parentOperationId ? { parentOperationId: call.parentOperationId } : {}),
         ...(call.maxResultBytes !== undefined ? { maxResultBytes: call.maxResultBytes } : {}),
         ...(call.providerOptions !== undefined ? { providerOptions: call.providerOptions } : {}),
+        ...(call.effect ? { effect: call.effect } : {}),
       },
       call.stepId,
       call.stepAdmission,
@@ -1137,6 +1153,7 @@ export class ToolRuntime {
       parentToolCallId?: string;
       parentOperationId?: string;
       maxResultBytes?: number;
+      effect?: PreparedToolEffect;
     },
     stepId?: string,
     stepAdmission?: ToolStepAdmission,
@@ -1773,10 +1790,14 @@ export class ToolRuntime {
               queue,
             ),
         };
-        const invokeTool = () =>
-          preparedExecution
+        const invokeFallbackEffect = async () =>
+          await (preparedExecution
             ? preparedExecution.execute(toolContext)
-            : tool.impl(structuredClone(executionArgs) as never, toolContext);
+            : tool.impl(structuredClone(executionArgs) as never, toolContext));
+        const invokeTool = () =>
+          ctx.effect
+            ? ctx.effect(toolContext.abortSignal, invokeFallbackEffect, toolContext)
+            : invokeFallbackEffect();
         const invokeManagedTransform = () =>
           tool.managedMutationTransform!(structuredClone(executionArgs) as never);
         const prepareOperationValue = async (

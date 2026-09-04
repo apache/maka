@@ -44,6 +44,18 @@ import {
 import { StableWriteFailure } from './file-stable-write.js';
 import { applyUpdateToContent } from './apply-patch-file.js';
 import { withFileWriteLock } from './file-write-lock.js';
+import {
+  identityChanged,
+  type ResolvedTarget,
+  type TargetIdentity,
+} from './preparation/target-identity.js';
+import type {
+  AuthorityContext,
+  KeyedResourceClaim,
+  PreparedOperation,
+  ResourceAuthority,
+} from './preparation/types.js';
+import { oneShotOperation } from './preparation/one-shot-operation.js';
 import type {
   FilesystemWorkerClient,
   FilesystemWorkerClientOperation,
@@ -185,9 +197,24 @@ async function captureIdentityAtLockAcquisition(
  * - absent → the worker when one is wired, otherwise workspace-scoped local
  *   execution. This is the embedding default and deliberately the narrow one.
  */
-export function createBoundaryFilesystemExecutor(
-  input: BoundaryFilesystemExecutorInput,
-): FilesystemExecutor {
+interface FilesystemBackend {
+  execute(input: FilesystemExecuteInput): Promise<FilesystemResult>;
+  applyPatch(input: FilesystemApplyPatchInput): Promise<ApplyPatchResult>;
+  run(
+    call: FilesystemBackendExecuteInput,
+    expectedIdentity?: FilesystemTargetIdentity,
+  ): Promise<FilesystemResult>;
+  resolveTarget(input: {
+    cwd: string;
+    path: string;
+    semantics: 'target' | 'entry';
+    executionBoundary?: ExecutionBoundary;
+    permissionMode?: PermissionMode;
+    abortSignal?: AbortSignal;
+  }): Promise<ResolvedTarget>;
+}
+
+function buildFilesystemBackend(input: BoundaryFilesystemExecutorInput): FilesystemBackend {
   const local = createWorkspaceFilesystemExecutor(input.workspace);
   /** The worker that owns this boundary, or undefined when the workspace backend does. */
   const workerFor = (
@@ -283,7 +310,41 @@ export function createBoundaryFilesystemExecutor(
     });
     return { key: normalized.enforcementPath, canonicalPath: normalized.enforcementPath };
   }
+  async function resolveTarget(inputArg: {
+    cwd: string;
+    path: string;
+    semantics: 'target' | 'entry';
+    executionBoundary?: ExecutionBoundary;
+    permissionMode?: PermissionMode;
+    abortSignal?: AbortSignal;
+  }): Promise<ResolvedTarget> {
+    const { key, canonicalPath } = await writeLockTarget(
+      {
+        cwd: inputArg.cwd,
+        ...(inputArg.executionBoundary ? { executionBoundary: inputArg.executionBoundary } : {}),
+        ...(inputArg.permissionMode ? { permissionMode: inputArg.permissionMode } : {}),
+        ...(inputArg.abortSignal ? { abortSignal: inputArg.abortSignal } : {}),
+      },
+      inputArg.path,
+      inputArg.semantics,
+    );
+    // Capture the target's stable identity at T0, BEFORE waiting for the lock.
+    // Content operations follow the final symlink (stat); create/delete pin the
+    // directory entry (lstat) so a swapped link is caught against the entry's
+    // own inode. This is the resolver the Scheduler's claim.key is derived from,
+    // so claim key === lock key === canonical path by construction.
+    const identity = await captureIdentityAtLockAcquisition(
+      canonicalPath,
+      inputArg.semantics === 'target',
+    );
+    return {
+      canonicalPath: key ?? canonicalPath,
+      identity: toTargetIdentity(identity, inputArg.semantics),
+    };
+  }
   return {
+    resolveTarget,
+    run,
     async execute(call) {
       if (operationAccess(call.operation.kind) !== 'write') return await run(call);
       // Canonicalisation without any containment check, so a target the policy
@@ -334,6 +395,179 @@ export function createBoundaryFilesystemExecutor(
       } catch (error) {
         throw settleMutationFailure(error);
       }
+    },
+  };
+}
+
+export function createBoundaryFilesystemExecutor(
+  input: BoundaryFilesystemExecutorInput,
+): FilesystemExecutor {
+  const backend = buildFilesystemBackend(input);
+  return {
+    async execute(call) {
+      return await backend.execute(call);
+    },
+    async applyPatch(call) {
+      return await backend.applyPatch(call);
+    },
+  };
+}
+
+/**
+ * The union of inputs the filesystem authority can prepare: an `execute`-style
+ * operation (read/write/edit/format_json/glob/grep) or an `apply_patch` op.
+ * The path is read from `operation.path` in both cases.
+ */
+export type FilesystemAuthorityInput = FilesystemExecuteInput | FilesystemApplyPatchInput;
+
+/**
+ * The process-visible identity captured at prepare-time (T0), expressed in the
+ * authority's vocabulary. A create target with no on-disk inode is `missing`.
+ */
+function toTargetIdentity(
+  identity: FilesystemTargetIdentity | undefined,
+  semantics: 'target' | 'entry',
+): TargetIdentity {
+  if (!identity) return { kind: 'missing' };
+  return semantics === 'target'
+    ? { kind: 'file', dev: identity.dev, ino: identity.ino }
+    : { kind: 'entry', dev: identity.dev, ino: identity.ino };
+}
+
+function toExpectedIdentity(identity: TargetIdentity): FilesystemTargetIdentity | undefined {
+  if (identity.kind === 'missing') return undefined;
+  return { dev: identity.dev, ino: identity.ino };
+}
+
+function filesystemSemantics(target: FilesystemAuthorityInput): 'target' | 'entry' {
+  if (isApplyPatchInput(target)) {
+    const operation = target.operation as ApplyPatchOperation;
+    return operation.type === 'update_file' ? 'target' : 'entry';
+  }
+  return 'target';
+}
+
+function isApplyPatchInput(target: FilesystemAuthorityInput): boolean {
+  const operation = (target as FilesystemApplyPatchInput).operation as unknown;
+  return (
+    typeof operation === 'object' &&
+    operation !== null &&
+    'type' in operation &&
+    (operation as { type?: unknown }).type !== undefined
+  );
+}
+
+function isWriteOperation(target: FilesystemAuthorityInput): boolean {
+  if (isApplyPatchInput(target)) return true;
+  return operationAccess((target as FilesystemExecuteInput).operation.kind) === 'write';
+}
+
+function isSearchOperation(target: FilesystemAuthorityInput): boolean {
+  if (isApplyPatchInput(target)) return false;
+  const kind = (target as FilesystemExecuteInput).operation.kind;
+  return kind === 'glob' || kind === 'grep';
+}
+
+function toBackendOperation(target: FilesystemAuthorityInput): {
+  path: string;
+  operation: FilesystemWorkerClientOperation;
+} {
+  if (isApplyPatchInput(target)) {
+    const operation = (target as FilesystemApplyPatchInput).operation as ApplyPatchOperation;
+    const backend: FilesystemWorkerClientOperation =
+      operation.type === 'delete_file'
+        ? { kind: 'apply_patch', path: operation.path, action: 'delete' }
+        : {
+            kind: 'apply_patch',
+            path: operation.path,
+            action: operation.type === 'create_file' ? 'create' : 'update',
+            diff: operation.diff,
+          };
+    return { path: operation.path, operation: backend };
+  }
+  const operation = (target as FilesystemExecuteInput).operation as FilesystemOperation;
+  return { path: operation.path, operation };
+}
+
+function toAuthorityClaims(
+  operation: { path: string },
+  canonicalPath: string,
+  target: FilesystemAuthorityInput,
+): KeyedResourceClaim[] {
+  const authority = 'filesystem:workspace';
+  if (isSearchOperation(target)) {
+    // Tree read: conflicts with any in-tree write (Grep(src) vs Write(src/a.ts)).
+    return [{ kind: 'keyed', authority, key: canonicalPath, mode: 'read', scope: 'tree' }];
+  }
+  if (!isWriteOperation(target)) {
+    return [{ kind: 'keyed', authority, key: canonicalPath, mode: 'read' }];
+  }
+  return [{ kind: 'keyed', authority, key: canonicalPath, mode: 'write' }];
+}
+
+function toBackendCall(
+  target: FilesystemAuthorityInput,
+  context: AuthorityContext,
+  signal?: AbortSignal,
+): FilesystemBackendExecuteInput {
+  const { operation } = toBackendOperation(target);
+  return {
+    operation,
+    cwd: context.cwd,
+    ...(context.executionBoundary ? { executionBoundary: context.executionBoundary } : {}),
+    ...(context.permissionMode ? { permissionMode: context.permissionMode } : {}),
+    ...((signal ?? context.abortSignal) ? { abortSignal: signal ?? context.abortSignal } : {}),
+  };
+}
+
+/**
+ * The filesystem domain authority. `prepare` captures the canonical identity
+ * (claim key == lock key == canonical path), and `execute` re-resolves that
+ * identity, compares it, takes the write lock, runs the effect, and settles the
+ * failure (path_changed / outcome_unknown). Reads and searches run unlocked.
+ */
+export function createFilesystemResourceAuthority(
+  input: BoundaryFilesystemExecutorInput,
+): ResourceAuthority<FilesystemAuthorityInput, unknown> {
+  const backend = buildFilesystemBackend(input);
+  return {
+    async prepare(target, context): Promise<PreparedOperation<unknown>> {
+      const semantics = filesystemSemantics(target);
+      const { path } = toBackendOperation(target);
+      const resourceArgs = {
+        cwd: context.cwd,
+        path,
+        semantics,
+        executionBoundary: context.executionBoundary,
+        permissionMode: context.permissionMode,
+        abortSignal: context.abortSignal,
+      };
+      const resolved = await backend.resolveTarget(resourceArgs);
+      const claims = toAuthorityClaims({ path }, resolved.canonicalPath, target);
+      const writes = isWriteOperation(target);
+
+      const execute = async (signal?: AbortSignal): Promise<unknown> => {
+        if (!writes) {
+          return await backend.run(toBackendCall(target, context, signal));
+        }
+        const now = await backend.resolveTarget({
+          ...resourceArgs,
+          abortSignal: signal ?? context.abortSignal,
+        });
+        if (identityChanged(resolved.identity, now.identity)) {
+          // business failure -> fulfilled error result, not a fatal rejection.
+          throw new Error('The approved filesystem target changed before execution.');
+        }
+        const expectedIdentity = toExpectedIdentity(now.identity);
+        try {
+          return await withFileWriteLock(now.canonicalPath, () =>
+            backend.run(toBackendCall(target, context, signal), expectedIdentity),
+          );
+        } catch (error) {
+          throw settleMutationFailure(error);
+        }
+      };
+      return oneShotOperation({ claims, execute });
     },
   };
 }

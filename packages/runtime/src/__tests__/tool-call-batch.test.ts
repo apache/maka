@@ -19,43 +19,60 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { ToolAccesses } from '../tool-access.js';
-import { settleToolCallBatch } from '../tool-call-batch.js';
+import { settleToolCallBatch, type ToolCallBatchEntry } from '../tool-call-batch.js';
+import type { PreparedOperation, ResourceClaim } from '../preparation/types.js';
 
-const POSIX = { cwd: '/repo', platform: 'linux' as const };
+const FILE = 'filesystem:workspace';
+const write = (key: string): ResourceClaim[] => [
+  { kind: 'keyed', authority: FILE, key, mode: 'write' },
+];
+const none = (): ResourceClaim[] => [];
+
+function prepared(claims: readonly ResourceClaim[]): PreparedOperation<unknown> {
+  return { claims, execute: () => Promise.resolve(undefined) };
+}
+
+function entry<Result>(
+  id: string,
+  prepare: () => Promise<PreparedOperation<unknown>>,
+  run: () => Promise<Result> | Result,
+  signal?: AbortSignal,
+): ToolCallBatchEntry<Result> {
+  return { id, ...(signal ? { signal } : {}), prepare, run };
+}
 
 describe('settleToolCallBatch', () => {
-  test('waits for every access plan before submitting tasks in model order', async () => {
+  test('waits for every prepare before submitting tasks in model order', async () => {
     const preparation = deferred<void>();
     const first = deferred<string>();
     const second = deferred<string>();
     const bothStarted = deferred<void>();
     const starts: string[] = [];
-    const batch = settleToolCallBatch(
-      [
-        {
-          id: 'first',
-          resolveAccesses: async () => {
-            await preparation.promise;
-            return ToolAccesses.writeFile('/repo/a', POSIX);
-          },
-          run: () => {
-            starts.push('first');
-            return first.promise;
-          },
+    const batch = settleToolCallBatch([
+      entry(
+        'first',
+        async () => {
+          await preparation.promise;
+          return prepared(write('/repo/a'));
         },
-        {
-          id: 'second',
-          resolveAccesses: () => ToolAccesses.writeFile('/repo/b', POSIX),
-          run: () => {
-            starts.push('second');
-            bothStarted.resolve();
-            return second.promise;
-          },
+        () => {
+          starts.push('first');
+          return first.promise;
         },
-      ],
-      POSIX,
-    );
+      ),
+      entry(
+        'second',
+        async () => {
+          await preparation.promise;
+          return prepared(write('/repo/b'));
+        },
+        () => {
+          starts.push('second');
+          bothStarted.resolve();
+          return second.promise;
+        },
+      ),
+    ]);
 
     await flushMicrotasks();
     assert.deepEqual(starts, []);
@@ -73,12 +90,13 @@ describe('settleToolCallBatch', () => {
   test('keeps result slots ordered when tasks complete B, C, A and one fails', async () => {
     const gates = [deferred<string>(), deferred<string>(), deferred<string>()];
     const batch = settleToolCallBatch(
-      gates.map((gate, index) => ({
-        id: String(index),
-        resolveAccesses: () => ToolAccesses.none(),
-        run: () => gate.promise,
-      })),
-      POSIX,
+      gates.map((gate, index) =>
+        entry(
+          String(index),
+          async () => prepared(none()),
+          () => gate.promise,
+        ),
+      ),
     );
 
     gates[1]!.resolve('B');
@@ -96,103 +114,89 @@ describe('settleToolCallBatch', () => {
     );
   });
 
-  test('fails closed to all when an access declaration is absent or throws', async () => {
-    for (const resolveAccesses of [
-      undefined,
-      () => {
-        throw new Error('bad declaration');
-      },
-    ]) {
-      const first = deferred<void>();
-      const unknownStarted = deferred<void>();
-      const starts: string[] = [];
-      const batch = settleToolCallBatch(
-        [
-          {
-            id: 'unknown',
-            ...(resolveAccesses ? { resolveAccesses } : {}),
-            run: () => {
-              starts.push('unknown');
-              unknownStarted.resolve();
-              return first.promise;
-            },
-          },
-          {
-            id: 'writer',
-            resolveAccesses: () => ToolAccesses.writeFile('/repo/a', POSIX),
-            run: () => {
-              starts.push('writer');
-              return undefined;
-            },
-          },
-        ],
-        POSIX,
-      );
+  test('uses all claims when prepare throws but the real fallback effect still runs', async () => {
+    const reader = deferred<void>();
+    const broken = deferred<void>();
+    const readerStarted = deferred<void>();
+    const brokenStarted = deferred<void>();
+    const starts: string[] = [];
+    const batch = settleToolCallBatch([
+      entry(
+        'reader',
+        async () => prepared([{ kind: 'keyed', authority: FILE, key: '/repo/a', mode: 'read' }]),
+        () => {
+          starts.push('reader');
+          readerStarted.resolve();
+          return reader.promise;
+        },
+      ),
+      entry(
+        'broken',
+        async () => {
+          throw new Error('bad declaration');
+        },
+        () => {
+          starts.push('broken');
+          brokenStarted.resolve();
+          return broken.promise;
+        },
+      ),
+      entry(
+        'writer',
+        async () => prepared(write('/repo/b')),
+        () => {
+          starts.push('writer');
+          return undefined;
+        },
+      ),
+    ]);
 
-      await unknownStarted.promise;
-      assert.deepEqual(starts, ['unknown']);
-      first.resolve();
-      await batch;
-      assert.deepEqual(starts, ['unknown', 'writer']);
-    }
+    await readerStarted.promise;
+    assert.deepEqual(starts, ['reader']);
+    reader.resolve();
+    await brokenStarted.promise;
+    assert.deepEqual(starts, ['reader', 'broken']);
+    broken.resolve();
+    await batch;
+    assert.deepEqual(starts, ['reader', 'broken', 'writer']);
   });
 
-  test('does not start a queued task cancelled during preparation', async () => {
+  test('does not start a task cancelled before it is submitted', async () => {
     const preparation = deferred<void>();
     const controller = new AbortController();
     let starts = 0;
-    const batch = settleToolCallBatch(
-      [
-        {
-          id: 'preparing',
-          resolveAccesses: async () => {
-            await preparation.promise;
-            return ToolAccesses.none();
-          },
-          run: () => 'ok',
+    const batch = settleToolCallBatch([
+      entry(
+        'preparing',
+        async () => {
+          await preparation.promise;
+          return prepared(none());
         },
-        {
-          id: 'cancelled',
-          signal: controller.signal,
-          resolveAccesses: () => ToolAccesses.none(),
-          run: () => {
-            starts += 1;
-            return 'should not run';
-          },
+        () => 'ok',
+      ),
+      entry(
+        'cancelled',
+        async () => {
+          await preparation.promise;
+          return prepared(none());
         },
-      ],
-      POSIX,
-    );
+        () => {
+          starts += 1;
+          return 'should not run';
+        },
+        controller.signal,
+      ),
+    ]);
 
+    // Abort synchronously (before any prepare settles) so the cancelled entry
+    // is submitted with an already-aborted signal and rejected by the
+    // Scheduler before it runs.
     controller.abort(new Error('turn cancelled'));
     preparation.resolve();
     const outcomes = await batch;
     assert.equal(starts, 0);
     assert.equal(outcomes[0]?.status, 'fulfilled');
     assert.equal(outcomes[1]?.status, 'rejected');
-  });
-
-  test('abort releases a batch whose access planner never settles', async () => {
-    const controller = new AbortController();
-    let starts = 0;
-    const batch = settleToolCallBatch(
-      [
-        {
-          id: 'hung-planner',
-          signal: controller.signal,
-          resolveAccesses: () => new Promise(() => {}),
-          run: () => {
-            starts += 1;
-          },
-        },
-      ],
-      POSIX,
-    );
-
-    controller.abort(new Error('stop planning'));
-    const outcomes = await batch;
-    assert.equal(starts, 0);
-    assert.equal(outcomes[0]?.status, 'rejected');
   });
 });
 
