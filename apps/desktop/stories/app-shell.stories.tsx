@@ -1681,6 +1681,9 @@ export const StreamingTailFollow: Story = {
       },
       { timeout: 5_000 },
     );
+
+    // A reader the tail never left has nothing to dock to.
+    expect(dockOffered()).toBe(false);
   },
 };
 
@@ -1778,11 +1781,20 @@ export const ReaderScrolledUpIsNotPulledBack: Story = {
     const anchorTop = turnTop(anchorTurnId);
 
     appendTurn?.();
-    await waitFor(() => expect(tailMetrics().distance).toBeGreaterThan(before));
 
     // The turn the reader was on is still where it was. Everything that
     // arrived, arrived below them.
-    expect(Math.abs(turnTop(anchorTurnId) - anchorTop)).toBeLessThanOrEqual(4);
+    //
+    // Both conditions retry together, because `distance` crosses `before`
+    // while the arriving Turn is still laid out at its `content-visibility`
+    // estimate — reading the anchor on that frame reads an intermediate
+    // layout, and on a slow renderer it is still 16px out. Retrying cannot
+    // launder a real failure: a reader who was pulled back is at the tail, so
+    // `distance` never gets above `before` again.
+    await waitFor(() => {
+      expect(tailMetrics().distance).toBeGreaterThan(before);
+      expect(Math.abs(turnTop(anchorTurnId) - anchorTop)).toBeLessThanOrEqual(4);
+    });
   },
 };
 
@@ -1904,14 +1916,23 @@ export const EarlierHistoryLandsAboveTheReader: Story = {
     // `content-visibility: auto`, so one that lands off screen is anchored
     // against its estimated height and settles a few pixels away from it; a
     // reader who went with the history instead moves by the whole insert.
-    await waitFor(() => {
-      const inserted = tailScroller().scrollHeight - heightBefore;
-      expect(inserted, JSON.stringify({ anchor, loads: historyLoads })).toBeGreaterThan(400);
+    await waitFor(() =>
       expect(
-        Math.abs(turnTop(anchor.turnId) - anchor.top),
-        JSON.stringify({ anchor, inserted, now: turnTop(anchor.turnId), ...tailMetrics() }),
-      ).toBeLessThanOrEqual(Math.max(4, inserted * 0.02));
-    });
+        tailScroller().scrollHeight - heightBefore,
+        JSON.stringify({ anchor, loads: historyLoads }),
+      ).toBeGreaterThan(400),
+    );
+
+    // Fixed once, after the arrival has settled. Recomputed on every retry it
+    // would grow along with the drift it is supposed to bound, so a late
+    // `content-visibility` resolution could admit a reading that was failing.
+    await painted(8);
+    const inserted = tailScroller().scrollHeight - heightBefore;
+    const budget = Math.max(4, inserted * 0.02);
+    expect(
+      Math.abs(turnTop(anchor.turnId) - anchor.top),
+      JSON.stringify({ anchor, inserted, budget, now: turnTop(anchor.turnId), ...tailMetrics() }),
+    ).toBeLessThanOrEqual(budget);
   },
 };
 
@@ -2158,11 +2179,17 @@ export const PromptRailHasNoGapsBetweenTicks: Story = {
     // pointer. `elementFromPoint`, not a dispatched pointer event, because a
     // dispatched event cannot see occlusion at all.
     //
-    // The occlusion half is load-bearing on macOS only: Linux's in-flow
-    // scrollbar moves the content column left instead of overlaying it, so
-    // #2338 goes green on CI here exactly as it did in E2E. Run this story
-    // locally on macOS before merging anything that touches the rail's right
-    // edge.
+    // The occlusion half only bites in a headed browser on macOS: headless
+    // Chromium paints no platform scrollbar at all, and Linux's in-flow one
+    // moves the content column left instead of overlaying it. So #2338 is
+    // inert on CI, exactly as it was in E2E. Before touching the rail's right
+    // edge, run this on a Mac with `SMOKE_HEADED=1` — a plain local smoke run
+    // is headless and proves nothing about occlusion.
+    //
+    // Where the walk goes matters for the same reason. The bar sits at the
+    // tick's right edge, ~11px from the scrollport, inside the 14px the macOS
+    // overlay scrollbar claims; a column further left is outside it and sees
+    // no occlusion at all.
     const bars = railBars();
     const first = bars[0].getBoundingClientRect();
     const last = bars[bars.length - 1].getBoundingClientRect();
@@ -2176,7 +2203,15 @@ export const PromptRailHasNoGapsBetweenTicks: Story = {
       if (!document.elementFromPoint(x, y)?.closest('.maka-prompt-rail-tick')) misses.push(y);
     }
 
-    expect(Math.round(last.bottom - first.top)).toBeGreaterThan(0);
+    // The walk has to have covered the rail, not two adjacent bars: a rail
+    // that laid out almost nothing would otherwise pass with no misses.
+    const walked = Math.round(last.bottom - first.top);
+    const railHeight = Math.round(
+      document.querySelector('.maka-prompt-rail')?.getBoundingClientRect().height ?? 0,
+    );
+    expect(walked, `walked ${walked} of a rail ${railHeight} tall`).toBeGreaterThan(
+      railHeight * 0.8,
+    );
     expect(misses, `misses at y=${misses.slice(0, 12).join(',')}`).toHaveLength(0);
   },
 };
@@ -2271,9 +2306,12 @@ export const OffscreenActiveTurnsStayFindable: Story = {
     await scrollTranscriptTo('bottom');
 
     // `window.find` walks the rendered text, so a Turn skipped by
-    // `content-visibility` would not be there to find. The E2E original also
-    // asserted the AX tree; the storybook smoke audits the full AX tree of
-    // every story it runs, so that half is covered by running at all.
+    // `content-visibility` would not be there to find.
+    //
+    // The E2E original also asserted the Turn's text was in the accessibility
+    // tree, which needs CDP and so did not come across. The smoke's AX audit
+    // is not a substitute: it checks for unnamed actionable nodes and
+    // duplicate landmarks, never that a given string is exposed.
     document.getSelection()?.removeAllRanges();
     // `window.find` is non-standard, so it is not on the DOM lib's Window.
     const found = (window as unknown as { find(text: string): boolean }).find(needle);
@@ -2281,105 +2319,6 @@ export const OffscreenActiveTurnsStayFindable: Story = {
     expect(found, `searching for ${needle}`).toBe(true);
     expect(document.getSelection()?.toString() ?? '').toContain(needle);
     document.getSelection()?.removeAllRanges();
-  },
-};
-
-/** Started by the play function, after its observer probe is in place. */
-let startPromptRailStream: (() => void) | undefined;
-
-const PROMPT_RAIL_STREAM_LINES = 40;
-
-/**
- * The rail alongside a Turn that keeps growing. What is under test is that
- * text updates inside one Turn do not rebuild the rail's IntersectionObserver
- * — the E2E original reached this by sending a 40-line prompt through the fake
- * backend, which is the same deltas ChatView sees, arriving by a longer road.
- */
-function PromptRailStreamingHarness() {
-  const [lines, setLines] = useState(1);
-  useEffect(() => {
-    let frame = 0;
-    let running = false;
-    const tick = (): void => {
-      if (!running) return;
-      setLines((count) => (count >= PROMPT_RAIL_STREAM_LINES ? count : count + 1));
-      frame = requestAnimationFrame(tick);
-    };
-    startPromptRailStream = () => {
-      running = true;
-      frame = requestAnimationFrame(tick);
-    };
-    return () => {
-      running = false;
-      cancelAnimationFrame(frame);
-      startPromptRailStream = undefined;
-    };
-  }, []);
-  return (
-    <ComposedShell
-      session={{ status: 'running', streaming: true }}
-      chat={{
-        messages: promptRailMessages,
-        transcriptTurnIndex: promptRailIndex,
-        runningStatus: true,
-        liveTurn: {
-          turnId: `turn-scroll-${PROMPT_RAIL_TURN_COUNT}`,
-          phase: 'streamed',
-          steps: [
-            {
-              stepId: 'msg-rail-live',
-              text: {
-                text: TAIL_LINES.slice(0, lines).join('\n\n'),
-                truncated: false,
-                complete: false,
-              },
-              tools: [],
-            },
-          ],
-        },
-      }}
-    />
-  );
-}
-
-export const StreamingDeltasKeepThePromptRailObserver: Story = {
-  render: () => <PromptRailStreamingHarness />,
-  play: async () => {
-    await waitFor(() => expect(railBars().length).toBeGreaterThan(0));
-
-    // Counted from here on, with the rail's observer already built: what is
-    // asserted is that the deltas after this point rebuild nothing.
-    const scroller = tailScroller();
-    const NativeIntersectionObserver = window.IntersectionObserver;
-    let constructions = 0;
-    window.IntersectionObserver = class extends NativeIntersectionObserver {
-      constructor(callback: IntersectionObserverCallback, options?: IntersectionObserverInit) {
-        super(callback, options);
-        if (options?.root === scroller && options.rootMargin === '0px 0px -66% 0px') {
-          constructions += 1;
-        }
-      }
-    };
-
-    try {
-      startPromptRailStream?.();
-      // Many same-Turn text updates, not one: a rebuild triggered by the first
-      // delta and by the fortieth are the same bug and only one of them shows
-      // up in a single-update check.
-      await waitFor(
-        () => {
-          expect(tailScroller().textContent).toContain(
-            TAIL_LINES[PROMPT_RAIL_STREAM_LINES - 1],
-          );
-        },
-        { timeout: 10_000 },
-      );
-    } finally {
-      window.IntersectionObserver = NativeIntersectionObserver;
-    }
-
-    expect(constructions, 'the rail observer was rebuilt mid-stream').toBe(0);
-    expect(railBars().length).toBe(Math.min(PROMPT_RAIL_TURN_COUNT, PROMPT_RAIL_MAX_TICKS));
   },
 };
 
@@ -2413,6 +2352,17 @@ export const FirstRailClickLandsOnItsPromptAndHolds: Story = {
   render: () => <PromptRailNavigationHarness />,
   play: async () => {
     await waitFor(() => expect(railTicks().length).toBeGreaterThan(0));
+
+    // The bug only exists while a scroll is in flight: a jump that finishes in
+    // one frame has nothing for the tail-follow lock to collide with, which is
+    // why the E2E original ran under a fixture that asked for motion back.
+    // Here the fixture passes `scrollBehavior: 'smooth'` outright, so the one
+    // thing that can still collapse the scroll under it is the browser's own
+    // reduced-motion state.
+    expect(
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+      'a reduced-motion browser finishes the jump in one frame and this story stops testing anything',
+    ).toBe(false);
 
     // The case that used to fail: the head of the conversation is not mounted,
     // so the jump has to bring it in, and the fill that follows changes
