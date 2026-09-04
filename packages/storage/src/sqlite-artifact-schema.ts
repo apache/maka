@@ -19,16 +19,21 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_ARTIFACT_SCHEMA_VERSION = 1;
+export const SQLITE_ARTIFACT_SCHEMA_VERSION = 2;
 
 export function migrateSqliteArtifactDatabase(db: DatabaseSync): void {
+  const columns = db.prepare('PRAGMA table_info(artifact_records)').all() as Array<{
+    name?: unknown;
+  }>;
+  if (columns.some(({ name }) => name === 'status')) {
+    db.exec('DROP TABLE artifact_records');
+  }
   db.exec(`
     CREATE TABLE IF NOT EXISTS artifact_records (
       storage_key TEXT PRIMARY KEY,
       artifact_id TEXT NOT NULL,
       session_id TEXT NOT NULL,
       created_at INTEGER NOT NULL CHECK (created_at >= 0),
-      status TEXT NOT NULL CHECK (status IN ('live', 'deleted')),
       relative_path TEXT NOT NULL,
       record_json TEXT NOT NULL
     );

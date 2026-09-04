@@ -45,7 +45,6 @@ const ARTIFACT_RECORD_KEYS = new Set([
   'source',
   'summary',
   'deepResearchRole',
-  'status',
 ]);
 
 export function decodeArtifactRecordJsons(values: readonly unknown[]): ArtifactRecord[] {
@@ -56,7 +55,6 @@ export function decodeArtifactRecordJsons(values: readonly unknown[]): ArtifactR
       if (typeof value !== 'string') throw invalidMetadataRecord(index + 1);
       const parsed = JSON.parse(value);
       if (!hasSupportedArtifactSource(parsed)) continue;
-      if (isRecord(parsed) && parsed.status === 'deleted') continue;
       const record = decodeArtifactRecord(parsed, index + 1);
       if (ids.has(record.id)) throw invalidMetadataRecord(index + 1);
       ids.add(record.id);
@@ -119,7 +117,6 @@ function decodeArtifactRecord(value: unknown, index: number): ArtifactRecord {
     typeof value.sizeBytes !== 'number' ||
     !Number.isSafeInteger(value.sizeBytes) ||
     value.sizeBytes < 0 ||
-    (value.status !== undefined && value.status !== 'live') ||
     !isOptionalNonEmptyString(value.mimeType) ||
     !isOptionalNonEmptyString(value.summary) ||
     (value.deepResearchRole !== undefined && !isDeepResearchArtifactRole(value.deepResearchRole)) ||
@@ -133,8 +130,7 @@ function decodeArtifactRecord(value: unknown, index: number): ArtifactRecord {
   if (value.relativePath !== `${value.sessionId}/${value.id}-${value.name}`) {
     throw invalidMetadataRecord(index);
   }
-  const { status: _legacyStatus, ...record } = value;
-  return record as unknown as ArtifactRecord;
+  return value as unknown as ArtifactRecord;
 }
 
 function isCompatibleArtifactName(name: string): boolean {

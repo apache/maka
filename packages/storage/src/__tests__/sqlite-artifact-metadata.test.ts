@@ -108,17 +108,15 @@ test('Artifact metadata recovery ignores records from unsupported sources', asyn
           artifact_id,
           session_id,
           created_at,
-          status,
           relative_path,
           record_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?)
       `);
     insert.run(
       `${unsupported.id}-storage-key`,
       unsupported.id,
       unsupported.sessionId,
       unsupported.createdAt,
-      'live',
       unsupported.relativePath,
       JSON.stringify(unsupported),
     );

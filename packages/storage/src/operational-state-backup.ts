@@ -365,7 +365,7 @@ function validateSqlite(path: string, files: readonly OperationalBackupFile[]): 
 
       const artifactRows = database
         .prepare(`
-          SELECT artifact_id, session_id, created_at, status, relative_path, record_json
+          SELECT artifact_id, session_id, created_at, relative_path, record_json
           FROM artifact_records
           ORDER BY created_at, storage_key
         `)
@@ -373,7 +373,6 @@ function validateSqlite(path: string, files: readonly OperationalBackupFile[]): 
         artifact_id?: unknown;
         session_id?: unknown;
         created_at?: unknown;
-        status?: unknown;
         relative_path?: unknown;
         record_json?: unknown;
       }>;
@@ -385,7 +384,6 @@ function validateSqlite(path: string, files: readonly OperationalBackupFile[]): 
           row?.artifact_id !== record.id ||
           row.session_id !== record.sessionId ||
           row.created_at !== record.createdAt ||
-          row.status !== 'live' ||
           row.relative_path !== record.relativePath
         ) {
           throw new Error(`artifact indexes do not match record: ${record.id}`);

@@ -75,21 +75,18 @@ class SqliteArtifactMetadataRepository implements ArtifactMetadataRepository {
           artifact_id,
           session_id,
           created_at,
-          status,
           relative_path,
           record_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT(storage_key) DO UPDATE SET
           artifact_id = excluded.artifact_id,
           session_id = excluded.session_id,
           created_at = excluded.created_at,
-          status = excluded.status,
           relative_path = excluded.relative_path,
           record_json = excluded.record_json
         WHERE artifact_id IS NOT excluded.artifact_id
            OR session_id IS NOT excluded.session_id
            OR created_at IS NOT excluded.created_at
-           OR status IS NOT excluded.status
            OR relative_path IS NOT excluded.relative_path
            OR record_json IS NOT excluded.record_json
       `);
@@ -99,7 +96,6 @@ class SqliteArtifactMetadataRepository implements ArtifactMetadataRepository {
           record.id,
           record.sessionId,
           record.createdAt,
-          'live',
           record.relativePath,
           JSON.stringify(record),
         );
