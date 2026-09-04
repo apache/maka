@@ -106,5 +106,12 @@ test('renderer-facing Runtime Host protocol does not load Node crypto', async (t
   const transformed = await response.text();
 
   assert.equal(response.status, 200, transformed);
+  // A missing dist is served as the SPA fallback, and index.html trivially
+  // satisfies the assertion below. Say so instead of passing.
+  assert.doesNotMatch(
+    transformed,
+    /^<!doctype html>/iu,
+    'Vite served the SPA fallback; build @maka/runtime-host first',
+  );
   assert.doesNotMatch(transformed, /vite-browser-external:node:crypto/u);
 });
