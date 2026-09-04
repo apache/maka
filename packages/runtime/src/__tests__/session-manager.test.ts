@@ -4685,6 +4685,15 @@ describe('SessionManager permission mode updates', () => {
     assert.strictEqual(summary.permissionMode, 'ask');
     assert.deepStrictEqual(summary.labels, ['kept']);
     assert.deepStrictEqual((await store.readHeader(session.id)).labels, ['kept']);
+    assert.deepStrictEqual(await store.readMessages(session.id), [
+      {
+        type: 'system_note',
+        id: 'id-1',
+        ts: 6_001,
+        kind: 'mode_change',
+        data: { from: 'explore', to: 'ask' },
+      },
+    ]);
   });
 
   test('temporarily preserves setPermissionMode for legacy SessionStore implementations', async () => {
@@ -4702,6 +4711,30 @@ describe('SessionManager permission mode updates', () => {
     assert.strictEqual(summary.permissionMode, 'bypass');
     assert.strictEqual((await store.readHeader(session.id)).permissionMode, 'bypass');
     assert.strictEqual((await store.readExecutionBoundary(session.id)).kind, 'bypass');
+    assert.deepStrictEqual(await store.readMessages(session.id), [
+      {
+        type: 'system_note',
+        id: 'id-1',
+        ts: 6_101,
+        kind: 'mode_change',
+        data: { from: 'ask', to: 'bypass' },
+      },
+    ]);
+  });
+
+  test('does not append a permission audit note when configuration is unchanged', async () => {
+    const store = new VersionedConfigurationMemorySessionStore();
+    const manager = new SessionManager({
+      store,
+      backends: new BackendRegistry(),
+      newId: nextId(),
+      now: nextNow(6_200),
+    });
+    const session = await manager.createSession(makeInput({ permissionMode: 'ask' }));
+
+    await manager.setPermissionMode(session.id, 'ask');
+
+    assert.deepStrictEqual(await store.readMessages(session.id), []);
   });
 
   test('starts a new turn without workspace identity when safety inspection fails', async () => {

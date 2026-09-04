@@ -1202,6 +1202,11 @@ export class SessionManager {
           prepareCommit,
         );
     this.runtimeKernel.updateCachedHeader(sessionId, next.header);
+    await this.appendPermissionModeChangeNote(
+      sessionId,
+      observed.header.permissionMode,
+      next.header.permissionMode,
+    );
     return next;
   }
 
@@ -1689,7 +1694,29 @@ export class SessionManager {
     });
     const next = await this.deps.store.readHeader(sessionId);
     this.runtimeKernel.updateCachedHeader(sessionId, next);
+    await this.appendPermissionModeChangeNote(
+      sessionId,
+      previous.permissionMode,
+      next.permissionMode,
+    );
     return headerToSummary(next);
+  }
+
+  private async appendPermissionModeChangeNote(
+    sessionId: string,
+    from: PermissionMode,
+    to: PermissionMode,
+  ): Promise<void> {
+    if (from === to) return;
+    await this.deps.store
+      .appendMessage(sessionId, {
+        type: 'system_note',
+        id: this.deps.newId(),
+        ts: this.deps.now(),
+        kind: 'mode_change',
+        data: { from, to },
+      } satisfies SystemNoteMessage)
+      .catch(() => undefined);
   }
 
   async setExecutionBoundaryKind(
