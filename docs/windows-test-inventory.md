@@ -16,10 +16,10 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 | Classification | Count |
 |---|---:|
 | windows-backend-gap | 27 |
-| portable-candidate | 19 |
+| portable-candidate | 25 |
 | platform-contract | 31 |
 
-Total Windows-excluded declarations: **77**
+Total Windows-excluded declarations: **83**
 
 ## Inventory
 
@@ -76,6 +76,12 @@ Total Windows-excluded declarations: **77**
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` settles after root exit when a detached descendant retains inherited stdout | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` keeps the first committed lifecycle cause across Stop and timeout races | `process.platform === 'win32' ? 'Windows tree termination has no graceful SIGTERM phase' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` keeps SIGTERM final output and escalates an ignored SIGTERM without leaking slots | `process.platform === 'win32' ? 'Windows tree termination has no graceful SIGTERM phase' : false` |
+| portable-candidate | `packages/storage/src/__tests__/atomic-file-write.test.ts` removes its temp file and rethrows after a chmod failure | `process.platform === 'win32'` |
+| portable-candidate | `packages/storage/src/__tests__/atomic-file-write.test.ts` creates the target 0600 on POSIX | `process.platform === 'win32'` |
+| portable-candidate | `packages/storage/src/__tests__/atomic-file-write.test.ts` re-chmods a pre-existing world-readable target to 0600 on the next write | `process.platform === 'win32'` |
+| portable-candidate | `packages/storage/src/__tests__/atomic-file-write.test.ts` dir 'harden' creates a 0700 directory chain for a nested target | `process.platform === 'win32'` |
+| portable-candidate | `packages/storage/src/__tests__/atomic-file-write.test.ts` dir 'harden' re-chmods a pre-existing world-accessible directory to 0700 | `process.platform === 'win32'` |
+| portable-candidate | `packages/storage/src/__tests__/atomic-file-write.test.ts` refuses to write through a pre-planted symlink at the temp path | `process.platform === 'win32'` |
 | portable-candidate | `packages/storage/src/__tests__/managed-dependency-environment.test.ts` accepts a POSIX package bin symlink whose target remains inside the dependency root | `process.platform === 'win32'` |
 | portable-candidate | `packages/storage/src/__tests__/managed-dependency-environment.test.ts` isolates published POSIX content from a producer-retained writable handle | `process.platform === 'win32'` |
 | platform-contract | `packages/storage/src/__tests__/operational-state-store.test.ts` does not classify a SQLite write failure as a migration blocker | `process.platform === 'win32' ? 'POSIX permissions are required to make the SQLite database read-only' : false` |
