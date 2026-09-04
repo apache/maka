@@ -26,6 +26,50 @@ import {
 
 type LinkedSession = SessionSummary;
 
+interface SessionFamilyProjection {
+  logicalSessions: readonly LinkedSession[];
+  representativeByFamilyId: ReadonlyMap<string, string>;
+  parentByChildId: ReadonlyMap<string, string>;
+}
+
+// Both the stale-panel effect and the active-tab projection ask the same
+// family questions during a render. Cache the immutable projection by the
+// catalog array and active id so a streaming catalog revision builds the
+// revision-aware maps once, rather than once per panel.
+const sessionFamilyProjectionCache = new WeakMap<
+  readonly LinkedSession[],
+  Map<string, SessionFamilyProjection>
+>();
+
+function projectSessionFamily(
+  sessions: readonly LinkedSession[],
+  activeId: string,
+): SessionFamilyProjection {
+  const cacheKey = activeId;
+  const cachedByActiveId = sessionFamilyProjectionCache.get(sessions);
+  const cached = cachedByActiveId?.get(cacheKey);
+  if (cached) return cached;
+
+  const logicalSessions = collapseSessionRevisions(sessions, activeId);
+  const representativeByFamilyId = new Map(
+    logicalSessions.map((session) => [sessionRevisionFamilyId(session), session.id]),
+  );
+  const tree = projectRevisionLinkedSessionTree(sessions, activeId);
+  const parentByChildId = new Map<string, string>();
+  for (const [parentId, children] of tree.childrenByParentId) {
+    for (const child of children) parentByChildId.set(child.id, parentId);
+  }
+  const projection: SessionFamilyProjection = {
+    logicalSessions,
+    representativeByFamilyId,
+    parentByChildId,
+  };
+  const nextCache = cachedByActiveId ?? new Map<string, SessionFamilyProjection>();
+  nextCache.set(cacheKey, projection);
+  if (!cachedByActiveId) sessionFamilyProjectionCache.set(sessions, nextCache);
+  return projection;
+}
+
 /**
  * Whether the active Session is the source itself or a linked descendant of
  * the source. Ordinary branches deliberately do not participate:
@@ -48,19 +92,14 @@ export function isLinkedSideConversationSessionFamily(
   const sourceSession = sessions.find((session) => session.id === sourceSessionId);
   if (!sourceSession) return false;
 
-  const logicalSessions = collapseSessionRevisions(sessions, activeSession.id);
-  const representativeByFamilyId = new Map(
-    logicalSessions.map((session) => [sessionRevisionFamilyId(session), session.id]),
-  );
+  const {
+    representativeByFamilyId,
+    parentByChildId,
+  } = projectSessionFamily(sessions, activeSession.id);
   const sourceId =
     representativeByFamilyId.get(sessionRevisionFamilyId(sourceSession)) ?? sourceSession.id;
   const activeId =
     representativeByFamilyId.get(sessionRevisionFamilyId(activeSession)) ?? activeSession.id;
-  const tree = projectRevisionLinkedSessionTree(sessions, activeSession.id);
-  const parentByChildId = new Map<string, string>();
-  for (const [parentId, children] of tree.childrenByParentId) {
-    for (const child of children) parentByChildId.set(child.id, parentId);
-  }
   return reachesSession(activeId, sourceId, parentByChildId);
 }
 
@@ -75,16 +114,14 @@ export function linkedSideConversationFamilyRootId(
 ): string | undefined {
   if (!activeSession) return undefined;
   if (!sessions.some((session) => session.id === activeSession.id)) return undefined;
-  const logicalSessions = collapseSessionRevisions(sessions, activeSession.id);
+  const { logicalSessions, parentByChildId } = projectSessionFamily(
+    sessions,
+    activeSession.id,
+  );
   const activeRepresentative =
     logicalSessions.find(
       (session) => sessionRevisionFamilyId(session) === sessionRevisionFamilyId(activeSession),
     ) ?? activeSession;
-  const tree = projectRevisionLinkedSessionTree(sessions, activeSession.id);
-  const parentByChildId = new Map<string, string>();
-  for (const [parentId, children] of tree.childrenByParentId) {
-    for (const child of children) parentByChildId.set(child.id, parentId);
-  }
   const visited = new Set<string>();
   let currentId = activeRepresentative.id;
   while (!visited.has(currentId)) {
