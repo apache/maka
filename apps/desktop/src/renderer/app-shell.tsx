@@ -1919,12 +1919,11 @@ function AppShellContent({
     const runningTurnIds = sessionId
       ? sessionsRef.current.find((session) => session.id === sessionId)?.runningTurnIds
       : undefined;
-    const followUpAtSubmit = !slashCommand
-      ? resolveFollowUpModeAtSubmit({
-          requestedMode: metadata?.followUpMode,
-          hasActiveTurn: hasActiveTurnAtSubmit({ liveTurn, runningTurnIds }),
-        })
-      : undefined;
+    const followUpAtSubmit = resolveFollowUpModeAtSubmit({
+      requestedMode: metadata?.followUpMode,
+      hasActiveTurn: hasActiveTurnAtSubmit({ liveTurn, runningTurnIds }),
+      slashCommand,
+    });
     if (sessionId && followUpAtSubmit) {
       const queued = await enqueueFollowUp(sessionId, text, followUpAtSubmit, {
         ...metadata,
