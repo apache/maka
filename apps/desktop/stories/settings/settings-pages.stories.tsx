@@ -2639,6 +2639,24 @@ export const HealthCenter: Story = {
 export const About: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="about" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.findByText('本地开发版', { exact: true })).resolves.toBeTruthy();
+    await expect(canvas.findByText('本地开发构建，不检查更新。')).resolves.toBeTruthy();
+    await expect(canvas.queryByRole('button', { name: '检查更新' })).not.toBeInTheDocument();
+    await expect(
+      canvas.findByRole('heading', { name: '支持' }),
+    ).resolves.toBeTruthy();
+    await expect(
+      canvas.findByRole('button', { name: '复制诊断信息' }),
+    ).resolves.toBeEnabled();
+    await expect(canvas.findByRole('link', { name: '报告问题' })).resolves.toBeTruthy();
+    await expect(
+      canvas.findByRole('button', { name: '键盘快捷键' }),
+    ).resolves.toBeEnabled();
+    const privacy = await canvas.findByRole('list', { name: '隐私承诺' });
+    await expect(within(privacy).getAllByRole('listitem')).toHaveLength(3);
+  },
 };
 
 // Real path: the same page inside a packaged Nightly. Nightly publishes daily

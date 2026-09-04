@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, waitFor, within } from 'storybook/test';
 import type { ProjectRecord } from '@maka/core/project';
@@ -92,6 +92,7 @@ function panelProps(input: {
   groups?: SessionListPanelProps['groups'];
   projectActions?: SessionListPanelProps['projectActions'];
   worktreeSessionIds?: SessionListPanelProps['worktreeSessionIds'];
+  onSelectSession?: SessionListPanelProps['onSelectSession'];
 }): SessionListPanelProps {
   return {
     selection: input.selection ?? { section: 'sessions' },
@@ -106,7 +107,7 @@ function panelProps(input: {
     ...(input.groups ? { groups: input.groups } : {}),
     ...(input.projectActions ? { projectActions: input.projectActions } : {}),
     ...(input.worktreeSessionIds ? { worktreeSessionIds: input.worktreeSessionIds } : {}),
-    onSelectSession: noop,
+    onSelectSession: input.onSelectSession ?? noop,
     onSelect: noop,
     onOpenSettings: noop,
     onNew: noop,
@@ -237,6 +238,40 @@ const longTitleSessions = [
   }),
 ];
 
+const renderBudgetSessions = Array.from({ length: 32 }, (_, index) =>
+  makeSession({
+    id: `render-budget-${index}`,
+    name: `Rail row ${index}`,
+    status: index % 5 === 0 ? 'running' : 'active',
+    lastMessageAt: NOW - index * 60_000,
+  }),
+);
+
+function RenderBudgetRail() {
+  const [activeId, setActiveId] = useState('render-budget-0');
+  const select = useCallback((sessionId: string) => setActiveId(sessionId), []);
+  return (
+    <StoryFrame height={800}>
+      <SessionRail
+        {...panelProps({
+          sessions: renderBudgetSessions,
+          activeId,
+          onSelectSession: select,
+        })}
+      />
+    </StoryFrame>
+  );
+}
+
+async function waitForRailMutationQuiet(counters: { delta: number }): Promise<void> {
+  let quiet = 0;
+  await waitFor(() => {
+    quiet = counters.delta === 0 ? quiet + 1 : 0;
+    counters.delta = 0;
+    expect(quiet).toBeGreaterThanOrEqual(3);
+  }, { timeout: 10_000, interval: 100 });
+}
+
 const liveRunAuthoritySessions: SessionSummary[] = [
   {
     ...makeSession({
@@ -296,6 +331,93 @@ export const ConversationStates: Story = {
       })} />
     </StoryFrame>
   ),
+};
+
+// Real path: switching between two ordinary Sessions in a populated rail. The
+// controller unit test pins stable command identities; this real-layout story
+// pins the resulting DOM budget, so a different source of whole-rail rewrites
+// still fails without paying Electron startup cost.
+export const SessionSwitchRenderBudget: Story = {
+  render: () => <RenderBudgetRail />,
+  play: async ({ canvasElement }) => {
+    const counters = {
+      styleWrites: 0,
+      rowIds: new Set<string>(),
+      rowRemounts: 0,
+      selectedRowIds: [] as (string | null)[],
+      statusNodeChanges: 0,
+      delta: 0,
+    };
+    const selectedRowId = (): string | null =>
+      canvasElement
+        .querySelector('.maka-session-row button.astryx-side-nav-item.selected')
+        ?.closest('.maka-session-row')
+        ?.getAttribute('data-session-id') ?? null;
+    counters.selectedRowIds.push(selectedRowId());
+    const observer = new MutationObserver((records) => {
+      for (const record of records) {
+        if (record.type === 'childList') {
+          for (const node of record.addedNodes) {
+            const element = node as Element;
+            if (element.nodeType === 1 && element.classList?.contains('maka-session-row')) {
+              counters.rowRemounts += 1;
+            }
+          }
+          for (const node of [...record.addedNodes, ...record.removedNodes]) {
+            const element = node as Element;
+            if (
+              element.nodeType === 1 &&
+              (element.matches?.('[data-session-status]') ||
+                element.querySelector?.('[data-session-status]'))
+            ) {
+              counters.statusNodeChanges += 1;
+            }
+          }
+          continue;
+        }
+        const row = (record.target as Element).closest?.('.maka-session-row');
+        if (!row) continue;
+        counters.styleWrites += 1;
+        counters.delta += 1;
+        const rowId = row.getAttribute('data-session-id');
+        if (rowId) counters.rowIds.add(rowId);
+      }
+      const selected = selectedRowId();
+      if (selected !== counters.selectedRowIds.at(-1)) counters.selectedRowIds.push(selected);
+    });
+    observer.observe(canvasElement, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ['style'],
+    });
+
+    await waitForRailMutationQuiet(counters);
+    counters.styleWrites = 0;
+    counters.rowIds.clear();
+    counters.rowRemounts = 0;
+    counters.selectedRowIds = counters.selectedRowIds.slice(-1);
+    counters.statusNodeChanges = 0;
+
+    const target = canvasElement.querySelector<HTMLButtonElement>(
+      '.maka-session-row[data-session-id="render-budget-3"] button.astryx-side-nav-item',
+    );
+    await expect(target).not.toBeNull();
+    target!.click();
+    await waitFor(() => expect(target!).toHaveClass('selected'));
+    await waitForRailMutationQuiet(counters);
+    observer.disconnect();
+
+    expect(counters.rowIds.size).toBeLessThanOrEqual(2);
+    expect(counters.rowRemounts).toBe(0);
+    expect(counters.styleWrites).toBeGreaterThan(0);
+    // Storybook's focus handoff invokes one extra ref pair compared with the
+    // Electron fixture. The stronger two-row budget above still rejects any
+    // whole-rail rewrite regardless of the fixture size.
+    expect(counters.styleWrites).toBeLessThanOrEqual(10);
+    expect(counters.selectedRowIds.slice(1)).toEqual(['render-budget-3']);
+    expect(counters.statusNodeChanges).toBe(0);
+  },
 };
 
 // Real path: the active task row's overflow menu after its semantic trigger is

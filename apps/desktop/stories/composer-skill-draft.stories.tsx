@@ -148,3 +148,32 @@ export const StagedSkillsSurviveADraftScopeSwitch: Story = {
     await expect(wire).toContain('run it');
   },
 };
+
+// Real path: a CJK IME owns Enter while committing a candidate. The native
+// capture guard must keep that key away from both the composer's send handler
+// and Astryx's trigger menu; the first ordinary Enter afterwards still sends.
+export const ImeCommitDoesNotSend: Story = {
+  play: async ({ canvasElement }) => {
+    const composer = editor(canvasElement);
+    await userEvent.click(composer);
+    await userEvent.keyboard('中文草稿');
+
+    composer.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    composer.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'Enter',
+        bubbles: true,
+        cancelable: true,
+        // Chromium reports false for the observed regression; the component's
+        // own composition lifecycle is the only guard this story credits.
+        isComposing: false,
+      }),
+    );
+    composer.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true }));
+    await expect(sent).not.toHaveBeenCalled();
+
+    await userEvent.keyboard('{Enter}');
+    await waitFor(() => expect(sent).toHaveBeenCalledTimes(1));
+    await expect(sent).toHaveBeenCalledWith('中文草稿');
+  },
+};

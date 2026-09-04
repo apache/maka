@@ -17,27 +17,16 @@
  * under the License.
  */
 
-import {
-  captureTranscriptReadingAnchor,
-  currentTranscriptRange,
-  newestDurablePromptSequence,
-  refreshTranscriptTurnLandmarks,
-  restoreSessionTranscriptRange,
-} from './controller/transcript-reading-position.js';
-
-export const transcriptReadingPosition = {
-  captureAnchor: captureTranscriptReadingAnchor,
-  currentRange: currentTranscriptRange,
-  newestDurablePromptSequence,
-  refreshLandmarks: refreshTranscriptTurnLandmarks,
-  restoreRange: restoreSessionTranscriptRange,
-};
-
-export {
-  deriveTaskReadinessNotice,
-  isTaskSubmissionHardBlocked,
-  resolveTaskReadinessModelTarget,
-  type TaskReadinessNotice,
-} from './model/task-readiness-notice.js';
-export { retireRevisionDraft } from './model/revision-draft-lifecycle.js';
-export * from './model/session-ui-state.js';
+export function retireRevisionDraft(
+  draft: { sourceSessionId: string; draftSessionId: string },
+  clearDraft: (sessionId: string) => void,
+  finishCopy: () => void,
+  clearRevision: () => void,
+): void {
+  finishCopy();
+  clearDraft(draft.draftSessionId);
+  if (draft.sourceSessionId !== draft.draftSessionId) {
+    clearDraft(draft.sourceSessionId);
+  }
+  clearRevision();
+}
