@@ -145,7 +145,8 @@ describe('invocation opening fact backfill', () => {
         // the invocation id its own events already carry.
         const legacyRows = db
           .prepare(`
-            SELECT invocation_id, session_id, run_id, turn_id, opened_at, opening_json
+            SELECT invocation_id, session_id, run_id, turn_id, opened_at, opening_json,
+                   anchor_event_id
             FROM runtime_legacy_invocation_openings
             ORDER BY invocation_id
           `)
@@ -156,6 +157,7 @@ describe('invocation opening fact backfill', () => {
           turn_id: string;
           opened_at: number;
           opening_json: string;
+          anchor_event_id: string;
         }>;
         assert.deepEqual(
           legacyRows.map((row) => row.invocation_id),
@@ -168,6 +170,24 @@ describe('invocation opening fact backfill', () => {
         assert.equal(
           (JSON.parse(legacyRows[0]!.opening_json) as { kind: string }).kind,
           'invocation_opened',
+        );
+        // The shelved opening describes that ledger, so it is anchored to the
+        // ledger's first event and cannot outlive it.
+        assert.equal(
+          legacyRows[0]!.anchor_event_id,
+          'existing-1',
+          'the shelved opening is anchored to the first event of the run it describes',
+        );
+        db.exec('PRAGMA foreign_keys = ON');
+        db.prepare('DELETE FROM runtime_events WHERE event_id = ?').run('existing-1');
+        assert.equal(
+          (
+            db
+              .prepare('SELECT COUNT(*) AS count FROM runtime_legacy_invocation_openings')
+              .get() as { count: number }
+          ).count,
+          0,
+          'deleting the anchor takes the shelved opening with it',
         );
       } finally {
         db.close();
@@ -223,6 +243,75 @@ describe('invocation opening fact backfill', () => {
         assert.equal(migrated?.terminalEvent, undefined);
       } finally {
         store.close();
+      }
+    });
+  });
+
+  test('purging a migrated Session takes its shelved openings with it', async () => {
+    await withHeaderOnlyRuns(async (databasePath) => {
+      const db = new DatabaseSync(databasePath);
+      try {
+        const { json } = encodeCanonicalRuntimeEvent({
+          id: 'existing-1',
+          invocationId: 'run-with-events',
+          runId: 'run-with-events',
+          sessionId: 'session-1',
+          turnId: 'turn-with-events',
+          ts: 1,
+          partial: false,
+          role: 'user',
+          author: 'user',
+          modelVisibility: 'visible',
+          content: { kind: 'text', text: 'already immutable' },
+        });
+        db.prepare(`
+          INSERT INTO runtime_events (
+            event_id, session_id, invocation_id, run_id, turn_id, event_seq,
+            event_kind, payload_json, committed_at
+          ) VALUES ('existing-1', 'session-1', 'run-with-events', 'run-with-events',
+                    'turn-with-events', 1, 'text', ?, 1)
+        `).run(json);
+        migrateSqliteRuntimeDatabase(db);
+      } finally {
+        db.close();
+      }
+
+      // What purging a conversation does to this database: delete the Session's
+      // events. `conversation-operational-state.ts` runs exactly this statement
+      // on a lease that has `PRAGMA foreign_keys = ON`, which is also how
+      // `runtime_session_event_ordinals` is cleaned up today.
+      const purge = new DatabaseSync(databasePath);
+      try {
+        purge.exec('PRAGMA foreign_keys = ON');
+        purge.prepare('DELETE FROM runtime_events WHERE session_id = ?').run('session-1');
+      } finally {
+        purge.close();
+      }
+
+      // The shelved opening is only read when its invocation has no opening
+      // event, so a purge that deleted the events but left the shelf would make
+      // a completed run reappear as an active one.
+      const store = createSqliteRuntimeStore(databasePath);
+      try {
+        assert.deepEqual(await store.listSessionInvocations('session-1'), []);
+        assert.equal(await store.readRunInvocation('session-1', 'run-with-events'), undefined);
+      } finally {
+        store.close();
+      }
+
+      const check = new DatabaseSync(databasePath);
+      try {
+        assert.equal(
+          (
+            check
+              .prepare('SELECT COUNT(*) AS count FROM runtime_legacy_invocation_openings')
+              .get() as { count: number }
+          ).count,
+          0,
+          'the shelf is empty, not merely unreadable',
+        );
+      } finally {
+        check.close();
       }
     });
   });

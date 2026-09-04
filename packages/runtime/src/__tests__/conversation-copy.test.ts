@@ -3236,13 +3236,20 @@ test('conversation copy gives a run whose opening the migration shelved its open
         opening.event_id,
       );
       db.prepare('DELETE FROM runtime_events WHERE event_id = ?').run(opening.event_id);
+      const anchor = db
+        .prepare(
+          "SELECT event_id FROM runtime_events WHERE run_id = 'run-source' ORDER BY event_seq ASC LIMIT 1",
+        )
+        .get() as { event_id: string };
       db.prepare(`
         INSERT INTO runtime_legacy_invocation_openings (
-          invocation_id, session_id, run_id, turn_id, opened_at, opening_json
-        ) VALUES ('run-source', 'session-source', 'run-source', 'turn-1', ?, ?)
+          invocation_id, session_id, run_id, turn_id, opened_at, opening_json,
+          anchor_event_id
+        ) VALUES ('run-source', 'session-source', 'run-source', 'turn-1', ?, ?, ?)
       `).run(
         opening.committed_at,
         JSON.stringify((JSON.parse(opening.payload_json) as { content: unknown }).content),
+        anchor.event_id,
       );
     } finally {
       db.close();

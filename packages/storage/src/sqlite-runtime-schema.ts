@@ -511,7 +511,9 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
       run_id TEXT NOT NULL,
       turn_id TEXT NOT NULL,
       opened_at INTEGER NOT NULL,
-      opening_json TEXT NOT NULL
+      opening_json TEXT NOT NULL,
+      anchor_event_id TEXT NOT NULL UNIQUE
+        REFERENCES runtime_events(event_id) ON DELETE CASCADE
     ) WITHOUT ROWID;
 
     CREATE INDEX runtime_legacy_invocation_openings_by_session
@@ -581,6 +583,12 @@ function projectContinuationClaimOpenings(db: DatabaseSync): void {
  * which only this migration ever writes. Readers merge the two, so nothing
  * downstream has to know which shelf a given opening came off.
  *
+ * A shelved opening describes a ledger that already exists, so it is anchored to
+ * that ledger's first event and dies with it. Without the anchor, deleting a
+ * Session's events would leave the opening behind, and the inventory would
+ * report the run again with no ending — a completed run coming back as an
+ * active one.
+ *
  * A header this cannot project fails closed: it is skipped, and its transcript
  * and tool evidence stay exactly as readable as before.
  */
@@ -601,7 +609,12 @@ function backfillInvocationOpeningFacts(db: DatabaseSync): void {
           SELECT e.invocation_id FROM runtime_events e
           WHERE e.session_id = r.session_id AND e.run_id = r.run_id
           ORDER BY e.event_seq ASC LIMIT 1
-        ) AS existing_invocation_id
+        ) AS existing_invocation_id,
+        (
+          SELECT e.event_id FROM runtime_events e
+          WHERE e.session_id = r.session_id AND e.run_id = r.run_id
+          ORDER BY e.event_seq ASC LIMIT 1
+        ) AS anchor_event_id
       FROM core_agent_runs r
       ORDER BY r.created_at ASC, r.run_id ASC
     `)
@@ -610,6 +623,7 @@ function backfillInvocationOpeningFacts(db: DatabaseSync): void {
     run_id: string;
     record_json: string;
     existing_invocation_id: string | null;
+    anchor_event_id: string | null;
   }>;
   const insertEvent = db.prepare(`
     INSERT INTO runtime_events (
@@ -624,8 +638,9 @@ function backfillInvocationOpeningFacts(db: DatabaseSync): void {
   `);
   const insertLegacyOpening = db.prepare(`
     INSERT OR IGNORE INTO runtime_legacy_invocation_openings (
-      invocation_id, session_id, run_id, turn_id, opened_at, opening_json
-    ) VALUES (?, ?, ?, ?, ?, ?)
+      invocation_id, session_id, run_id, turn_id, opened_at, opening_json,
+      anchor_event_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
   `);
   // The header column is dropped right after this, so a header this cannot read
   // is a run that would silently cease to exist. Refusing the whole migration
@@ -651,6 +666,9 @@ function backfillInvocationOpeningFacts(db: DatabaseSync): void {
       // The invocation id its own events already carry is the one every reader
       // joins on, so the legacy row is keyed by that rather than by the header's
       // copy, which older builds minted independently.
+      if (row.anchor_event_id === null) {
+        throw unreadable(row, new Error('run has events but no first event to anchor its opening'));
+      }
       insertLegacyOpening.run(
         row.existing_invocation_id,
         header.sessionId,
@@ -658,6 +676,7 @@ function backfillInvocationOpeningFacts(db: DatabaseSync): void {
         header.turnId,
         header.createdAt,
         opening,
+        row.anchor_event_id,
       );
       continue;
     }
