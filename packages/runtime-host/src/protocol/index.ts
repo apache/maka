@@ -101,15 +101,10 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 117 as const;
-// 117: WorkHub exposes only one correction linkage per bounded candidate and
-// no longer returns the Host's complete active-link set.
-// 116: User deletion rejects workflow-owned Artifacts with operation_conflict.
-// 115: Artifact creation requires explicit source ownership.
-// 114: Artifacts are physically deleted and no longer expose tombstone status.
-// 113: Client Capability tool schemas add `patternProperties` and draft-07 tuple
-// `additionalItems`; validation and projection share one per-keyword shape table.
-// Older peers reject these keywords and fail the handshake.
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 113 as const;
+// 113: Session Turn projections carry bounded provider failure summaries for
+// live and reloaded failed-turn diagnostics. Older peers cannot preserve or
+// render this additional failure context safely.
 // 112: Owners can query the Host execution environment through an extensible,
 // bounded resource-envelope contract. Older Hosts do not implement the query.
 // 111: Client Capability tool schemas may use draft-07 tuple additionalItems.
@@ -146,9 +141,6 @@ export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 117 as const;
 // canonical OAuth material with an empty enable-all-discovered selection.
 // Older peers reject these wire values, so incompatible pairs must fail the
 // handshake. Re-derived from current `main`; epoch 102 is claimed by open PRs.
-// 110: Session Turn projections carry bounded provider failure summaries for
-// live and reloaded failed-turn diagnostics. Older peers cannot preserve or
-// render this additional failure context safely.
 // 101: Session Turn requests can carry regeneration intents and Guests can
 // atomically withdraw pending requests. Older peers do not share this command
 // vocabulary or the expanded Guest operation grant.
