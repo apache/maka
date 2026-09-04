@@ -57,6 +57,31 @@ test('npm publication owns both npm channels and no Desktop authority', async ()
   assert.doesNotMatch(JSON.stringify(workflow), /NODE_AUTH_TOKEN|NPM_TOKEN/u);
 });
 
+test('Nightly packaging does not depend on the registry audit service', async () => {
+  const formal = await readWorkflow('release-cli-stage.yml');
+  assert.equal(formal.jobs.validate.with.package_version, undefined);
+
+  const nightlyWorkflows = [
+    await readWorkflow('npm-publication.yml'),
+    await readWorkflow('desktop-nightly.yml'),
+  ];
+  const desktop = nightlyWorkflows[1];
+  const commands = desktop.jobs.desktop.steps
+    .map((step) => step.run)
+    .filter((run) => typeof run === 'string')
+    .join('\n');
+  assert.doesNotMatch(commands, /npm audit|audit-shipped-dependencies/u);
+
+  for (const workflow of nightlyWorkflows) {
+    const installs = Object.values(workflow.jobs)
+      .flatMap((job) => job.steps ?? [])
+      .flatMap((step) => (typeof step.run === 'string' ? step.run.split('\n') : []))
+      .filter((command) => command.trimStart().startsWith('npm ci'));
+    assert.ok(installs.length > 0);
+    for (const install of installs) assert.match(install, /--no-audit/u);
+  }
+});
+
 test('Desktop Nightly starts only from a successful published npm identity', async () => {
   const workflow = await readWorkflow('desktop-nightly.yml');
   assert.deepEqual(workflow.on, {
