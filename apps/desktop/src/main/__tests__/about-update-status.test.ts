@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   aboutChannelFacts,
+  aboutUpdateErrorCopy,
   aboutUpdateStatusDetail,
 } from '../../renderer/settings/about-update-status.js';
 import { getSettingsPreferencesCopy } from '../../renderer/locales/settings-preferences-copy.js';
@@ -74,4 +75,41 @@ test('the nightly steady states each read as themselves', () => {
     }),
     'v0.2.0-dev.12.20260901 已下载，可在侧栏选择重启安装。',
   );
+});
+
+test('error copy follows the failing phase instead of always naming a check failure', () => {
+  const check = {
+    state: 'error',
+    currentVersion: '0.2.0-dev.11.20260831',
+    message: 'temporary network failure',
+    operation: 'check',
+  } as const;
+  const download = {
+    state: 'error',
+    currentVersion: '0.2.0-dev.11.20260831',
+    latestVersion: '0.2.0-dev.12.20260901',
+    message: 'root was signed by 0/3 keys',
+    operation: 'download',
+  } as const;
+  const install = {
+    state: 'error',
+    currentVersion: '0.2.0-dev.11.20260831',
+    latestVersion: '0.2.0-dev.12.20260901',
+    message: 'signature rejected',
+    operation: 'install',
+  } as const;
+
+  assert.deepEqual(aboutUpdateErrorCopy(check, copy), {
+    title: copy.updateCheckFailed,
+    detail: 'temporary network failure',
+  });
+  assert.deepEqual(aboutUpdateErrorCopy(download, copy), {
+    title: copy.updateDownloadFailed,
+    detail: '下载或发布来源验证失败：root was signed by 0/3 keys',
+  });
+  assert.deepEqual(aboutUpdateErrorCopy(install, copy), {
+    title: copy.updateInstallFailed,
+    detail: '安装更新失败：signature rejected',
+  });
+  assert.equal(aboutUpdateStatusDetail(download, copy), '下载或发布来源验证失败：root was signed by 0/3 keys');
 });
