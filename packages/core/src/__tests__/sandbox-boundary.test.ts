@@ -26,8 +26,11 @@ import {
   decodeExecutionBoundary,
   executionBoundaryContains,
   executionBoundaryDisplayMode,
+  projectSandboxBoundaryNegotiation as projectSandboxBoundaryNegotiationImpl,
+  type SandboxBoundaryRequest,
   validateSandboxBoundaryExpansion,
 } from '../sandbox-boundary.js';
+import type { RuntimeEvent } from '../runtime-event.js';
 import {
   canReadPath,
   canWritePath,
@@ -36,6 +39,11 @@ import {
   createWorkspaceWritePermissionProfile,
   type PermissionProfileManaged,
 } from '../permission-profile.js';
+
+const projectSandboxBoundaryNegotiation = (
+  events: readonly RuntimeEvent[],
+  durableRequests: readonly SandboxBoundaryRequest[] = [],
+) => projectSandboxBoundaryNegotiationImpl(events, durableRequests);
 
 describe('executionBoundaryDisplayMode', () => {
   test('keeps the read-only/writable distinction the boundary carries (#1611)', () => {
@@ -384,6 +392,490 @@ describe('SandboxBoundaryExpansion', () => {
     });
 
     assert.strictEqual(assessment.outcome, 'noop');
+  });
+});
+
+describe('projectSandboxBoundaryNegotiation', () => {
+  const base = (id: string, partial: Partial<RuntimeEvent>): RuntimeEvent => ({
+    id,
+    invocationId: 'invocation-1',
+    runId: 'run-1',
+    sessionId: 'session-1',
+    turnId: 'turn-1',
+    ts: 1,
+    partial: false,
+    role: 'system',
+    author: 'system',
+    ...partial,
+  });
+
+  const request = (id: string, requestId: string, toolUseId: string): RuntimeEvent =>
+    base(id, {
+      refs: { toolCallId: toolUseId },
+      actions: {
+        stateDelta: {
+          sandboxBoundaryRequest: {
+            requestId,
+            toolUseId,
+            justification: 'Need the smallest boundary expansion.',
+            expansion: { network: { enabled: true } },
+          },
+        },
+      },
+    });
+
+  const decision = (
+    id: string,
+    requestId: string,
+    toolUseId: string,
+    status: 'approved' | 'denied' | 'conflict',
+  ): RuntimeEvent =>
+    base(id, {
+      author: 'user',
+      refs: { toolCallId: toolUseId },
+      actions: {
+        stateDelta: {
+          sandboxBoundaryDecision: {
+            requestId,
+            decision: status === 'denied' ? 'deny' : 'allow',
+            status,
+            revision: status === 'approved' ? 1 : 0,
+          },
+        },
+      },
+    });
+
+  const durableRequest = (
+    requestId: string,
+    status: SandboxBoundaryRequest['status'],
+  ): SandboxBoundaryRequest => ({
+    sessionId: 'session-1',
+    requestId,
+    status,
+    baseRevision: 0,
+    expansion: { network: { enabled: true } },
+    justification: 'Need network access.',
+    createdAt: 1,
+    settledAt: 2,
+    ...(status === 'approved' ? { appliedRevision: 1 } : {}),
+    turnId: 'turn-1',
+    runId: 'run-1',
+  });
+
+  const failurePair = (
+    id: string,
+    toolName: string,
+    toolCallId: string,
+    reason: 'invalid_boundary_declaration' | 'sandbox_boundary_required',
+    hidden = false,
+  ): RuntimeEvent[] => [
+    base(`${id}-call`, {
+      role: 'model',
+      author: 'agent',
+      ...(hidden ? { modelVisibility: 'hidden' as const } : {}),
+      refs: { toolCallId, stepId: `${id}-step` },
+      content: {
+        kind: 'function_call',
+        id: toolCallId,
+        name: toolName,
+        args: toolName === 'Bash' ? { boundary_intent: 'expand' } : {},
+      },
+    }),
+    base(`${id}-response`, {
+      role: 'tool',
+      author: 'tool',
+      ...(hidden ? { modelVisibility: 'hidden' as const } : {}),
+      refs: { toolCallId, stepId: `${id}-step` },
+      content: {
+        kind: 'function_response',
+        id: toolCallId,
+        name: toolName,
+        isError: true,
+        result: {
+          kind: 'text',
+          text: 'Sandbox boundary correction failed.',
+          sandboxFailure: { reason },
+        },
+      },
+    }),
+  ];
+
+  test('restores denial and both correction budgets, including hidden Code Mode calls', () => {
+    const events = [
+      request('request-1', 'boundary-1', 'tool-1'),
+      decision('decision-1', 'boundary-1', 'tool-1', 'denied'),
+      ...failurePair(
+        'invalid-1',
+        'request_sandbox_boundary',
+        'tool-2',
+        'invalid_boundary_declaration',
+      ),
+      ...failurePair('unresolved-1', 'Bash', 'tool-3', 'sandbox_boundary_required', true),
+    ];
+
+    assert.deepEqual(projectSandboxBoundaryNegotiation(events), {
+      kind: 'valid',
+      state: {
+        denied: true,
+        invalidRounds: 0,
+        unresolvedRounds: 0,
+        finalizationRequested: true,
+      },
+    });
+  });
+
+  test('counts nested Code Mode boundary failures once per parent tool step', () => {
+    const events = ['one', 'two', 'three'].flatMap((id) => {
+      const toolCallId = `nested-${id}`;
+      const refs = { toolCallId, parentToolCallId: 'code-cell-1' };
+      return [
+        base(`${id}-call`, {
+          role: 'model',
+          author: 'agent',
+          modelVisibility: 'hidden',
+          refs,
+          content: {
+            kind: 'function_call',
+            id: toolCallId,
+            name: 'Bash',
+            args: { boundary_intent: 'expand' },
+          },
+        }),
+        base(`${id}-response`, {
+          role: 'tool',
+          author: 'tool',
+          modelVisibility: 'hidden',
+          refs,
+          content: {
+            kind: 'function_response',
+            id: toolCallId,
+            name: 'Bash',
+            isError: true,
+            result: {
+              kind: 'text',
+              text: 'Sandbox boundary correction failed.',
+              sandboxFailure: { reason: 'invalid_boundary_declaration' },
+            },
+          },
+        }),
+      ];
+    });
+
+    assert.deepEqual(projectSandboxBoundaryNegotiation(events), {
+      kind: 'valid',
+      state: {
+        denied: false,
+        invalidRounds: 1,
+        unresolvedRounds: 0,
+        finalizationRequested: false,
+      },
+    });
+  });
+
+  test('fails closed when approval reopens a denied or finalized negotiation', () => {
+    const deniedThenApproved = [
+      request('request-1', 'boundary-1', 'tool-1'),
+      decision('decision-1', 'boundary-1', 'tool-1', 'denied'),
+      request('request-2', 'boundary-2', 'tool-2'),
+      decision('decision-2', 'boundary-2', 'tool-2', 'approved'),
+    ];
+    assert.equal(projectSandboxBoundaryNegotiation(deniedThenApproved).kind, 'invalid');
+
+    const finalizedThenApproved = [
+      ...failurePair(
+        'invalid-1',
+        'request_sandbox_boundary',
+        'tool-1',
+        'invalid_boundary_declaration',
+      ),
+      ...failurePair(
+        'invalid-2',
+        'request_sandbox_boundary',
+        'tool-2',
+        'invalid_boundary_declaration',
+      ),
+      ...failurePair(
+        'invalid-3',
+        'request_sandbox_boundary',
+        'tool-3',
+        'invalid_boundary_declaration',
+      ),
+      request('request-1', 'boundary-1', 'tool-4'),
+      decision('decision-1', 'boundary-1', 'tool-4', 'approved'),
+    ];
+    assert.equal(projectSandboxBoundaryNegotiation(finalizedThenApproved).kind, 'invalid');
+  });
+
+  test('approved requests reset prior correction state', () => {
+    const events = [
+      ...failurePair(
+        'invalid-1',
+        'request_sandbox_boundary',
+        'tool-1',
+        'invalid_boundary_declaration',
+      ),
+      request('request-1', 'boundary-1', 'tool-2'),
+      decision('decision-1', 'boundary-1', 'tool-2', 'approved'),
+    ];
+    assert.deepEqual(projectSandboxBoundaryNegotiation(events), {
+      kind: 'valid',
+      state: {
+        denied: false,
+        invalidRounds: 0,
+        unresolvedRounds: 0,
+        finalizationRequested: false,
+      },
+    });
+  });
+
+  test('fails closed for malformed or legacy boundary facts', () => {
+    const malformed = request('request-1', 'boundary-1', 'tool-1');
+    malformed.actions!.stateDelta!.sandboxBoundaryRequest = {
+      requestId: 'boundary-1',
+      toolUseId: 'tool-1',
+      justification: 'missing expansion',
+    };
+    assert.equal(projectSandboxBoundaryNegotiation([malformed]).kind, 'invalid');
+
+    const [call, response] = failurePair(
+      'legacy-1',
+      'request_sandbox_boundary',
+      'tool-1',
+      'invalid_boundary_declaration',
+    );
+    (response.content as Extract<RuntimeEvent['content'], { kind: 'function_response' }>).result = {
+      kind: 'text',
+      text: 'Tool arguments failed validation',
+    };
+    assert.deepEqual(projectSandboxBoundaryNegotiation([call, response]), {
+      kind: 'valid',
+      state: {
+        denied: false,
+        invalidRounds: 0,
+        unresolvedRounds: 0,
+        finalizationRequested: false,
+      },
+    });
+
+    const blankJustification = request('request-2', 'boundary-2', 'tool-2');
+    (
+      blankJustification.actions!.stateDelta!.sandboxBoundaryRequest as { justification: string }
+    ).justification = '   ';
+    assert.equal(projectSandboxBoundaryNegotiation([blankJustification]).kind, 'invalid');
+
+    const validRequest = request('request-3', 'boundary-3', 'tool-3');
+    const malformedRevision = decision('decision-3', 'boundary-3', 'tool-3', 'denied');
+    (
+      malformedRevision.actions!.stateDelta!.sandboxBoundaryDecision as { revision: number }
+    ).revision = 1.5;
+    assert.equal(
+      projectSandboxBoundaryNegotiation([validRequest, malformedRevision]).kind,
+      'invalid',
+    );
+  });
+
+  test('fails closed when boundary facts do not preserve call identity', () => {
+    const mismatchedDecision = decision('decision-1', 'boundary-1', 'other-tool', 'denied');
+    assert.equal(
+      projectSandboxBoundaryNegotiation([
+        request('request-1', 'boundary-1', 'tool-1'),
+        mismatchedDecision,
+      ]).kind,
+      'invalid',
+    );
+
+    const [call, response] = failurePair(
+      'invalid-1',
+      'request_sandbox_boundary',
+      'tool-1',
+      'invalid_boundary_declaration',
+    );
+    (response.content as Extract<RuntimeEvent['content'], { kind: 'function_response' }>).name =
+      'Bash';
+    assert.equal(projectSandboxBoundaryNegotiation([call, response]).kind, 'invalid');
+
+    const originalRequest = request('request-2', 'boundary-2', 'tool-2');
+    const mismatchedIdentityDecision = decision('decision-2', 'boundary-2', 'tool-2', 'denied');
+    mismatchedIdentityDecision.invocationId = 'other-invocation';
+    assert.equal(
+      projectSandboxBoundaryNegotiation([originalRequest, mismatchedIdentityDecision]).kind,
+      'invalid',
+    );
+  });
+
+  test('fails closed when a boundary failure marker is attached to a non-boundary tool', () => {
+    const [call, response] = failurePair(
+      'forged-1',
+      'Read',
+      'tool-1',
+      'invalid_boundary_declaration',
+    );
+    assert.equal(projectSandboxBoundaryNegotiation([call, response]).kind, 'invalid');
+  });
+
+  test('counts internal invalid repair calls as boundary attempts', () => {
+    const events = [
+      base('repair-call', {
+        role: 'model',
+        author: 'agent',
+        refs: { toolCallId: 'repair-tool' },
+        content: {
+          kind: 'function_call',
+          id: 'repair-tool',
+          name: 'invalid',
+          args: {
+            tool: 'request_sandbox_boundary',
+            error: 'boundary was denied',
+            sandboxBoundaryAttempt: true,
+          },
+        },
+      }),
+      base('repair-response', {
+        role: 'tool',
+        author: 'tool',
+        refs: { toolCallId: 'repair-tool' },
+        content: {
+          kind: 'function_response',
+          id: 'repair-tool',
+          name: 'invalid',
+          isError: true,
+          result: {
+            kind: 'text',
+            text: 'Sandbox boundary correction failed.',
+            sandboxFailure: { reason: 'invalid_boundary_declaration' },
+          },
+        },
+      }),
+    ];
+
+    assert.deepEqual(projectSandboxBoundaryNegotiation(events), {
+      kind: 'valid',
+      state: {
+        denied: false,
+        invalidRounds: 1,
+        unresolvedRounds: 0,
+        finalizationRequested: false,
+      },
+    });
+  });
+
+  test('requests finalization after the bounded correction budget', () => {
+    const events = [
+      ...failurePair(
+        'invalid-1',
+        'request_sandbox_boundary',
+        'tool-1',
+        'invalid_boundary_declaration',
+      ),
+      ...failurePair(
+        'invalid-2',
+        'request_sandbox_boundary',
+        'tool-2',
+        'invalid_boundary_declaration',
+      ),
+      ...failurePair(
+        'invalid-3',
+        'request_sandbox_boundary',
+        'tool-3',
+        'invalid_boundary_declaration',
+      ),
+    ];
+    const result = projectSandboxBoundaryNegotiation(events);
+    assert.equal(result.kind, 'valid');
+    if (result.kind === 'valid') assert.equal(result.state.finalizationRequested, true);
+  });
+
+  test('restores a durable denial when the RuntimeEvent ack was lost', () => {
+    const durable = durableRequest('boundary-1', 'denied');
+    assert.deepEqual(
+      projectSandboxBoundaryNegotiation(
+        [base('source-event', { turnId: 'turn-1', runId: 'run-1' })],
+        [durable],
+      ),
+      {
+        kind: 'valid',
+        state: {
+          denied: true,
+          invalidRounds: 0,
+          unresolvedRounds: 0,
+          finalizationRequested: false,
+        },
+      },
+    );
+  });
+
+  test('fails closed when durable settlement order is unavailable', () => {
+    const approved = durableRequest('boundary-1', 'approved');
+    assert.equal(
+      projectSandboxBoundaryNegotiation(
+        [
+          request('request-1', 'boundary-1', 'tool-1'),
+          ...failurePair(
+            'invalid-1',
+            'request_sandbox_boundary',
+            'tool-2',
+            'invalid_boundary_declaration',
+          ),
+        ],
+        [approved],
+      ).kind,
+      'invalid',
+    );
+
+    const denied = durableRequest('boundary-1', 'denied');
+    assert.equal(
+      projectSandboxBoundaryNegotiation(
+        [
+          request('request-1', 'boundary-1', 'tool-1'),
+          request('request-2', 'boundary-2', 'tool-2'),
+          decision('decision-2', 'boundary-2', 'tool-2', 'approved'),
+        ],
+        [denied],
+      ).kind,
+      'invalid',
+    );
+  });
+
+  test('does not treat a host-restart closure as a user denial', () => {
+    const restartClosed = {
+      ...durableRequest('boundary-1', 'denied'),
+      outcomeReason: 'host_restarted',
+    };
+    assert.deepEqual(
+      projectSandboxBoundaryNegotiation(
+        [request('request-1', 'boundary-1', 'tool-1')],
+        [restartClosed],
+      ),
+      {
+        kind: 'valid',
+        state: {
+          denied: false,
+          invalidRounds: 0,
+          unresolvedRounds: 0,
+          finalizationRequested: false,
+        },
+      },
+    );
+
+    assert.deepEqual(
+      projectSandboxBoundaryNegotiation(
+        [
+          request('request-1', 'boundary-1', 'tool-1'),
+          decision('decision-1', 'boundary-1', 'tool-1', 'approved'),
+          request('request-2', 'boundary-2', 'tool-2'),
+        ],
+        [{ ...restartClosed, requestId: 'boundary-2' }],
+      ),
+      {
+        kind: 'valid',
+        state: {
+          denied: false,
+          invalidRounds: 0,
+          unresolvedRounds: 0,
+          finalizationRequested: false,
+        },
+      },
+    );
   });
 });
 

@@ -32,7 +32,10 @@ import type { AttachmentByteReader } from '@maka/core/attachments';
 import type { BackendSendInput } from '@maka/core/backend-types';
 import type { LlmConnection } from '@maka/core/llm-connections';
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
-import { createManagedExecutionBoundary } from '@maka/core/sandbox-boundary';
+import {
+  createManagedExecutionBoundary,
+  type SandboxBoundaryNegotiationState,
+} from '@maka/core/sandbox-boundary';
 import type { SessionHeader } from '@maka/core/session';
 import type { StorageRef } from '@maka/core/events';
 import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
@@ -1003,6 +1006,348 @@ describe('AiSdkBackend Memory Extraction triggers', () => {
 });
 
 describe('AiSdkBackend sandbox boundary convergence', () => {
+  test('restores a denied negotiation on a fresh continuation segment', async () => {
+    let streamCalls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        streamCalls += 1;
+        const chunks: LanguageModelV4StreamPart[] =
+          streamCalls === 1
+            ? [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'continuation-boundary-retry',
+                  toolName: 'request_sandbox_boundary',
+                  input: JSON.stringify({
+                    expansion: { network: { enabled: true } },
+                    justification: 'Try the denied expansion again.',
+                  }),
+                },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                  usage: emptyUsage(),
+                },
+              ]
+            : [
+                { type: 'stream-start', warnings: [] },
+                { type: 'text-start', id: 'continuation-final' },
+                {
+                  type: 'text-delta',
+                  id: 'continuation-final',
+                  delta: 'The prior denial remains in force.',
+                },
+                { type: 'text-end', id: 'continuation-final' },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'stop', raw: 'stop' },
+                  usage: emptyUsage(),
+                },
+              ];
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const sourceTurnId = 'turn-source';
+    const sourceRuntimeContext: RuntimeEvent[] = [
+      runtimeTextEvent({
+        id: 'source-user',
+        turnId: sourceTurnId,
+        role: 'user',
+        author: 'user',
+        text: 'Need network access.',
+      }),
+      runtimeEvent({
+        id: 'source-boundary-request',
+        turnId: sourceTurnId,
+        role: 'system',
+        author: 'system',
+        refs: { toolCallId: 'source-boundary-call' },
+        actions: {
+          stateDelta: {
+            sandboxBoundaryRequest: {
+              requestId: 'source-boundary',
+              toolUseId: 'source-boundary-call',
+              justification: 'Need network access.',
+              expansion: { network: { enabled: true } },
+            },
+          },
+        },
+      }),
+      runtimeEvent({
+        id: 'source-boundary-decision',
+        turnId: sourceTurnId,
+        role: 'system',
+        author: 'user',
+        refs: { toolCallId: 'source-boundary-call' },
+        actions: {
+          stateDelta: {
+            sandboxBoundaryDecision: {
+              requestId: 'source-boundary',
+              decision: 'deny',
+              status: 'denied',
+              revision: 0,
+            },
+          },
+        },
+      }),
+    ];
+    let createCalls = 0;
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [buildRequestSandboxBoundaryTool()],
+      readExecutionBoundary: async () =>
+        createManagedExecutionBoundary(createWorkspaceWritePermissionProfile(), 0),
+      createSandboxBoundaryRequest: async () => {
+        createCalls += 1;
+        throw new Error('a denied continuation must not reopen the request');
+      },
+      settleSandboxBoundaryRequest: async () => {
+        throw new Error('a denied continuation must not settle a new request');
+      },
+      loadTurnRuntimeEvents: async () => [],
+      maxSteps: 3,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const events: SessionEvent[] = [];
+    await collectEvents(
+      backend.send({
+        turnId: 'turn-continuation',
+        text: '',
+        context: [],
+        runtimeContext: sourceRuntimeContext,
+        continuation: {
+          sourceInvocationId: 'inv-1',
+          sourceRunId: 'run-prev',
+          sourceTurnId,
+          sourceRuntimeEventHighWater: sourceRuntimeContext.length,
+          sandboxBoundaryNegotiationState: {
+            denied: true,
+            invalidRounds: 0,
+            unresolvedRounds: 0,
+            finalizationRequested: false,
+          },
+        },
+      }),
+      events,
+    );
+
+    assert.equal(createCalls, 0);
+    assert.equal(streamCalls, 2);
+    assert.equal(events.filter((event) => event.type === 'sandbox_boundary_request').length, 0);
+    assert.equal(
+      events.find((event) => event.type === 'complete')?.stopReason,
+      'permission_handoff',
+    );
+    await backend.dispose();
+  });
+
+  test('rejects a continuation that omits its authenticated negotiation state', async () => {
+    const model = completionModel();
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const incompleteContinuation = {
+      sourceInvocationId: 'invocation-source',
+      sourceRunId: 'run-source',
+      sourceTurnId: 'turn-source',
+      sourceRuntimeEventHighWater: 1,
+    } as unknown as NonNullable<BackendSendInput['continuation']>;
+
+    try {
+      await assert.rejects(
+        collectEvents(
+          backend.send({
+            turnId: 'turn-continuation',
+            text: '',
+            context: [],
+            runtimeContext: [
+              runtimeTextEvent({
+                id: 'source-user',
+                turnId: 'turn-source',
+                role: 'user',
+                author: 'user',
+                text: 'continue',
+              }),
+            ],
+            continuation: incompleteContinuation,
+          }),
+          [],
+        ),
+        /missing authenticated sandbox negotiation state/,
+      );
+      assert.equal(model.doStreamCalls.length, 0);
+    } finally {
+      await backend.dispose();
+    }
+  });
+
+  test('starts a genuinely new user Turn with a clean negotiation state', async () => {
+    let streamCalls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        streamCalls += 1;
+        const chunks: LanguageModelV4StreamPart[] =
+          streamCalls === 1
+            ? [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'new-turn-boundary-request',
+                  toolName: 'request_sandbox_boundary',
+                  input: JSON.stringify({
+                    expansion: { network: { enabled: true } },
+                    justification: 'This is a new user Turn.',
+                  }),
+                },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                  usage: emptyUsage(),
+                },
+              ]
+            : [
+                { type: 'stream-start', warnings: [] },
+                { type: 'text-start', id: 'new-turn-final' },
+                {
+                  type: 'text-delta',
+                  id: 'new-turn-final',
+                  delta: 'The new Turn handled its own boundary decision.',
+                },
+                { type: 'text-end', id: 'new-turn-final' },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'stop', raw: 'stop' },
+                  usage: emptyUsage(),
+                },
+              ];
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const managed = createManagedExecutionBoundary(createWorkspaceWritePermissionProfile(), 0);
+    let pendingRequest:
+      | Awaited<ReturnType<NonNullable<AiSdkBackendInput['createSandboxBoundaryRequest']>>>
+      | undefined;
+    let createCalls = 0;
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [buildRequestSandboxBoundaryTool()],
+      readExecutionBoundary: async () => managed,
+      createSandboxBoundaryRequest: async (input) => {
+        createCalls += 1;
+        pendingRequest = { ...input, status: 'pending', baseRevision: 0, createdAt: 1 };
+        return pendingRequest;
+      },
+      settleSandboxBoundaryRequest: async () => {
+        assert.ok(pendingRequest);
+        pendingRequest = { ...pendingRequest, status: 'denied', settledAt: 2 };
+        return { request: pendingRequest, boundary: managed, changed: false };
+      },
+      loadTurnRuntimeEvents: async () => [],
+      maxSteps: 3,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const priorDeniedRuntimeContext: RuntimeEvent[] = [
+      runtimeTextEvent({
+        id: 'old-user',
+        turnId: 'turn-old',
+        role: 'user',
+        author: 'user',
+        text: 'Old Turn.',
+      }),
+      runtimeEvent({
+        id: 'old-boundary-request',
+        turnId: 'turn-old',
+        role: 'system',
+        author: 'system',
+        refs: { toolCallId: 'old-boundary-call' },
+        actions: {
+          stateDelta: {
+            sandboxBoundaryRequest: {
+              requestId: 'old-boundary',
+              toolUseId: 'old-boundary-call',
+              justification: 'Old request.',
+              expansion: { network: { enabled: true } },
+            },
+          },
+        },
+      }),
+      runtimeEvent({
+        id: 'old-boundary-decision',
+        turnId: 'turn-old',
+        role: 'system',
+        author: 'user',
+        refs: { toolCallId: 'old-boundary-call' },
+        actions: {
+          stateDelta: {
+            sandboxBoundaryDecision: {
+              requestId: 'old-boundary',
+              decision: 'deny',
+              status: 'denied',
+              revision: 0,
+            },
+          },
+        },
+      }),
+    ];
+    const events: SessionEvent[] = [];
+    const consuming = collectEvents(
+      backend.send({
+        turnId: 'turn-new',
+        text: 'Start fresh.',
+        context: [],
+        runtimeContext: priorDeniedRuntimeContext,
+      }),
+      events,
+    );
+
+    await waitFor(() => events.some((event) => event.type === 'sandbox_boundary_request'));
+    const request = events.find((event) => event.type === 'sandbox_boundary_request');
+    assert.ok(request?.type === 'sandbox_boundary_request');
+    await backend.respondToSandboxBoundary({ requestId: request.requestId, decision: 'deny' });
+    await consuming;
+
+    assert.equal(createCalls, 1);
+    assert.equal(streamCalls, 2);
+    assert.equal(events.filter((event) => event.type === 'sandbox_boundary_request').length, 1);
+    await backend.dispose();
+  });
+
   test('bounds an expansion retry after denial with one tool-free final step', async () => {
     const cwd = process.cwd();
     const calls = [
@@ -1749,6 +2094,7 @@ describe('AiSdkBackend model history', () => {
           sourceRunId: 'run-source',
           sourceTurnId: 'turn-source',
           sourceRuntimeEventHighWater: 1,
+          sandboxBoundaryNegotiationState: cleanSandboxBoundaryNegotiationState(),
         },
       }),
     );
@@ -1803,6 +2149,7 @@ describe('AiSdkBackend model history', () => {
           sourceRunId: 'run-source',
           sourceTurnId: 'turn-source',
           sourceRuntimeEventHighWater: 2,
+          sandboxBoundaryNegotiationState: cleanSandboxBoundaryNegotiationState(),
         },
       }),
     );
@@ -1850,6 +2197,7 @@ describe('AiSdkBackend model history', () => {
         sourceRunId: 'run-source',
         sourceTurnId: 'turn-source',
         sourceRuntimeEventHighWater: 1,
+        sandboxBoundaryNegotiationState: cleanSandboxBoundaryNegotiationState(),
       },
     })) {
       events.push(event);
@@ -1914,6 +2262,7 @@ describe('AiSdkBackend model history', () => {
           sourceRunId: 'run-source',
           sourceTurnId: 'turn-source',
           sourceRuntimeEventHighWater: 2,
+          sandboxBoundaryNegotiationState: cleanSandboxBoundaryNegotiationState(),
         },
       }),
     );
@@ -2007,6 +2356,7 @@ describe('AiSdkBackend model history', () => {
           sourceRunId: 'run-source',
           sourceTurnId: 'turn-source',
           sourceRuntimeEventHighWater: 3,
+          sandboxBoundaryNegotiationState: cleanSandboxBoundaryNegotiationState(),
         },
       }),
     );
@@ -2057,6 +2407,7 @@ describe('AiSdkBackend model history', () => {
           sourceRunId: 'run-source',
           sourceTurnId: 'turn-source',
           sourceRuntimeEventHighWater: 2,
+          sandboxBoundaryNegotiationState: cleanSandboxBoundaryNegotiationState(),
         },
       }),
     );
@@ -2125,6 +2476,7 @@ describe('AiSdkBackend model history', () => {
           sourceRunId: 'run-source',
           sourceTurnId: 'turn-source',
           sourceRuntimeEventHighWater: 3,
+          sandboxBoundaryNegotiationState: cleanSandboxBoundaryNegotiationState(),
         },
       }),
     );
@@ -3409,6 +3761,7 @@ describe('AiSdkBackend model history', () => {
           sourceRunId: 'run-source',
           sourceTurnId: 'turn-prev',
           sourceRuntimeEventHighWater: 4,
+          sandboxBoundaryNegotiationState: cleanSandboxBoundaryNegotiationState(),
         },
       }),
     );
@@ -3519,6 +3872,7 @@ describe('AiSdkBackend model history', () => {
           sourceRunId: 'run-source',
           sourceTurnId: 'turn-prev',
           sourceRuntimeEventHighWater: 6,
+          sandboxBoundaryNegotiationState: cleanSandboxBoundaryNegotiationState(),
         },
       }),
     );
@@ -10817,6 +11171,7 @@ describe('AiSdkBackend RunTrace', () => {
           sourceRunId: 'run-source',
           sourceTurnId: 'turn-source',
           sourceRuntimeEventHighWater: 2,
+          sandboxBoundaryNegotiationState: cleanSandboxBoundaryNegotiationState(),
         },
       }),
     );
@@ -16343,6 +16698,15 @@ function sameRouteReplayProvenance(
     runtimeContextInvocations: [
       priorModelInvocation({ connectionId: 'test-connection-id', modelId, runId }),
     ],
+  };
+}
+
+function cleanSandboxBoundaryNegotiationState(): SandboxBoundaryNegotiationState {
+  return {
+    denied: false,
+    invalidRounds: 0,
+    unresolvedRounds: 0,
+    finalizationRequested: false,
   };
 }
 

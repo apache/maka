@@ -598,6 +598,7 @@ export interface SessionStore {
   createSandboxBoundaryRequest?(
     input: CreateSandboxBoundaryRequest,
   ): Promise<SandboxBoundaryRequest>;
+  listSandboxBoundaryRequests?(sessionId: string): Promise<SandboxBoundaryRequest[]>;
   listPendingSandboxBoundaryRequests?(sessionId: string): Promise<SandboxBoundaryRequest[]>;
   listSandboxBoundaryRestartClosures?(sessionId: string): Promise<SandboxBoundaryRequest[]>;
   settleSandboxBoundaryRequest?(
@@ -2103,6 +2104,13 @@ export class SessionManager {
           throw new Error('Immutable RuntimeEvent prefix reader is not configured');
         }
         return authority.readImmutableRuntimePrefix(prefixInput);
+      },
+      readSandboxBoundaryRequests: async (targetSessionId) => {
+        const reader = this.deps.store.listSandboxBoundaryRequests;
+        if (typeof reader !== 'function') {
+          throw new Error('sandbox boundary interaction log is unavailable');
+        }
+        return reader.call(this.deps.store, targetSessionId);
       },
       readContinuationClaimStateByBoundary: async (boundaryDigest) => {
         const authority = runtimeContinuationAuthority(this.deps.runtimeEventStore);

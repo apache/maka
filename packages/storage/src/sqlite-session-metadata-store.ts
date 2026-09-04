@@ -630,6 +630,27 @@ export class SqliteSessionMetadataStore {
     });
   }
 
+  async listSandboxBoundaryRequests(sessionId: string): Promise<SandboxBoundaryRequest[]> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    return this.transaction(() => {
+      const record = this.readRecordSync(sessionId);
+      if (!record) throw new SessionNotFoundError(sessionId);
+      this.ensureGenesisExecutionBoundary(record.header);
+      const rows = this.db
+        .prepare(
+          `
+          SELECT ${SANDBOX_BOUNDARY_REQUEST_COLUMNS}
+          FROM sandbox_boundary_log
+          WHERE session_id = ? AND entry_kind = 'expansion_request'
+          ORDER BY created_at, entry_id
+        `,
+        )
+        .all(sessionId) as unknown as SandboxBoundaryRequestRow[];
+      return rows.map(decodeSandboxBoundaryRequestRow);
+    });
+  }
+
   async listPendingSandboxBoundaryRequests(sessionId: string): Promise<SandboxBoundaryRequest[]> {
     this.assertOpen();
     assertSafeSessionId(sessionId);

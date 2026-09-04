@@ -310,6 +310,7 @@ describe('runtime resume phase 1 safe-boundary continuation', () => {
         const events = runId === 'run-2' ? childEvents : rootEvents;
         return immutablePrefix(upToEventSeq === undefined ? events : events.slice(0, upToEventSeq));
       },
+      readSandboxBoundaryRequests: async () => [],
       newId: (() => {
         let next = 2;
         return () => `generated-${++next}`;

@@ -394,6 +394,7 @@ export interface SessionAuthorityStore extends SessionStore, MessageAdmissionSto
   createSandboxBoundaryRequest(
     input: CreateSandboxBoundaryRequest,
   ): Promise<SandboxBoundaryRequest>;
+  listSandboxBoundaryRequests(sessionId: string): Promise<SandboxBoundaryRequest[]>;
   readSandboxBoundaryRequest(
     sessionId: string,
     requestId: string,
@@ -859,6 +860,11 @@ class SqliteSessionStore implements SessionAuthorityStore {
   ): Promise<SandboxBoundaryRequest | undefined> {
     await this.ensureReady();
     return this.metadata.readSandboxBoundaryRequest(sessionId, requestId);
+  }
+
+  async listSandboxBoundaryRequests(sessionId: string): Promise<SandboxBoundaryRequest[]> {
+    await this.ensureReady();
+    return this.metadata.listSandboxBoundaryRequests(sessionId);
   }
 
   async listPendingSandboxBoundaryRequests(sessionId: string): Promise<SandboxBoundaryRequest[]> {

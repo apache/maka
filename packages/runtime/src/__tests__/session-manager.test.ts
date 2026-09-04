@@ -12842,6 +12842,12 @@ class MemorySessionStore implements SessionStore {
     return request;
   }
 
+  async listSandboxBoundaryRequests(sessionId: string): Promise<SandboxBoundaryRequest[]> {
+    return [...this.sandboxBoundaryRequests.values()].filter(
+      (request) => request.sessionId === sessionId,
+    );
+  }
+
   async listPendingSandboxBoundaryRequests(sessionId: string): Promise<SandboxBoundaryRequest[]> {
     return [...this.sandboxBoundaryRequests.values()].filter(
       (request) => request.sessionId === sessionId && request.status === 'pending',

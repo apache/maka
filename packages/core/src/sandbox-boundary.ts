@@ -18,6 +18,7 @@
  */
 
 import type { PermissionMode } from './permission.js';
+import type { RuntimeEvent } from './runtime-event.js';
 import {
   isNormalizedAbsolutePath,
   pathWithinRoot,
@@ -44,6 +45,38 @@ export type SandboxBoundaryAccess = (typeof SANDBOX_BOUNDARY_ACCESS_MODES)[numbe
 
 export const SANDBOX_BOUNDARY_SCOPES = ['exact', 'subtree'] as const;
 export type SandboxBoundaryScope = (typeof SANDBOX_BOUNDARY_SCOPES)[number];
+
+/** Maximum number of distinct correction rounds allowed for one negotiation kind. */
+export const SANDBOX_BOUNDARY_FAILURE_ROUND_LIMIT = 3;
+
+/**
+ * The small amount of sandbox negotiation state that may cross a safe
+ * continuation boundary. It is deliberately not an execution authority: the
+ * live ExecutionBoundary remains the only source that can grant capability.
+ */
+export interface SandboxBoundaryNegotiationState {
+  readonly denied: boolean;
+  readonly invalidRounds: number;
+  readonly unresolvedRounds: number;
+  readonly finalizationRequested: boolean;
+}
+
+/**
+ * State used when a continuation's boundary projection cannot be trusted.
+ * Callers may report the blocked Turn, but must not reopen negotiation.
+ */
+export function createSandboxBoundaryFinalizationState(): SandboxBoundaryNegotiationState {
+  return {
+    denied: false,
+    invalidRounds: 0,
+    unresolvedRounds: 0,
+    finalizationRequested: true,
+  };
+}
+
+export type SandboxBoundaryNegotiationProjection =
+  | { readonly kind: 'valid'; readonly state: SandboxBoundaryNegotiationState }
+  | { readonly kind: 'invalid'; readonly reason: string };
 
 export const MAX_SANDBOX_BOUNDARY_FILESYSTEM_ENTRIES = 32;
 export const MAX_SANDBOX_BOUNDARY_PATH_CHARS = 4096;
@@ -155,6 +188,379 @@ export interface SandboxBoundarySettlement {
   readonly request: SandboxBoundaryRequest;
   readonly boundary: ExecutionBoundary;
   readonly changed: boolean;
+}
+
+/**
+ * Rebuild negotiation control state from an authenticated RuntimeEvent
+ * projection. Only canonical sandbox request/decision events and structured
+ * boundary failures participate; prompt text and unstructured error strings do
+ * not. A malformed or incomplete relevant fact returns `invalid`, allowing a
+ * caller to fail closed without guessing state.
+ */
+export function projectSandboxBoundaryNegotiation(
+  events: readonly RuntimeEvent[],
+  durableRequests: readonly SandboxBoundaryRequest[],
+): SandboxBoundaryNegotiationProjection {
+  let denied = false;
+  let invalidRounds = 0;
+  let unresolvedRounds = 0;
+  let finalizationRequested = false;
+  // RuntimeEvent order is authoritative inside the immutable ledger, but the
+  // durable interaction rows live in a separate append/settlement path. When
+  // a settlement has no matching decision ack, there is no shared sequence
+  // number that can place it relative to later failures or decisions.
+  let hasStatefulEvent = false;
+  const invalidSteps = new Set<string>();
+  const unresolvedSteps = new Set<string>();
+  const requests = new Set<string>();
+  const requestToolUseIds = new Map<string, string>();
+  const requestIdentityKeys = new Map<string, string>();
+  const settledRequests = new Set<string>();
+  const requestEvents = new Set<string>();
+  const decisionEvents = new Map<string, { status: SandboxBoundaryRequestStatus }>();
+  const eventTurnIds = new Set<string>();
+  const eventRunIds = new Set<string>();
+  const eventIdentityPairs = new Set<string>();
+  const toolCalls = new Map<string, { name: string; step: string }>();
+  const boundaryCalls = new Map<string, { step: string }>();
+  const boundaryResponses = new Set<string>();
+
+  const invalid = (reason: string): SandboxBoundaryNegotiationProjection => ({
+    kind: 'invalid',
+    reason,
+  });
+  const applyApproval = (requestId: string): SandboxBoundaryNegotiationProjection | undefined => {
+    if (denied || finalizationRequested) {
+      return invalid(`sandbox boundary approval ${requestId} reopens a closed negotiation`);
+    }
+    denied = false;
+    invalidRounds = 0;
+    unresolvedRounds = 0;
+    invalidSteps.clear();
+    unresolvedSteps.clear();
+    finalizationRequested = false;
+    return undefined;
+  };
+  const addFailure = (kind: 'invalid' | 'unresolved', step: string): void => {
+    hasStatefulEvent = true;
+    if (denied) {
+      finalizationRequested = true;
+      return;
+    }
+    if (finalizationRequested) return;
+    const steps = kind === 'invalid' ? invalidSteps : unresolvedSteps;
+    if (steps.has(step)) return;
+    steps.add(step);
+    if (kind === 'invalid') invalidRounds += 1;
+    else unresolvedRounds += 1;
+    if (
+      invalidRounds >= SANDBOX_BOUNDARY_FAILURE_ROUND_LIMIT ||
+      unresolvedRounds >= SANDBOX_BOUNDARY_FAILURE_ROUND_LIMIT
+    ) {
+      finalizationRequested = true;
+    }
+  };
+
+  for (const event of events) {
+    eventTurnIds.add(event.turnId);
+    eventRunIds.add(event.runId);
+    eventIdentityPairs.add(`${event.runId}\u0000${event.turnId}`);
+    const delta = event.actions?.stateDelta;
+    const request = delta?.sandboxBoundaryRequest;
+    const decision = delta?.sandboxBoundaryDecision;
+    if (request !== undefined || decision !== undefined) {
+      if (request !== undefined && decision !== undefined) {
+        return invalid(`sandbox boundary event ${event.id} contains request and decision facts`);
+      }
+      if (
+        event.role !== 'system' ||
+        typeof event.refs?.toolCallId !== 'string' ||
+        event.refs.toolCallId.length === 0
+      ) {
+        return invalid(`sandbox boundary event ${event.id} has non-canonical identity`);
+      }
+      if (request !== undefined) {
+        if (
+          event.author !== 'system' ||
+          !isRecord(request) ||
+          !hasExactKeys(request, ['requestId', 'toolUseId', 'justification', 'expansion']) ||
+          !nonEmptyString(request.requestId) ||
+          !nonEmptyString(request.toolUseId) ||
+          typeof request.justification !== 'string' ||
+          request.justification.trim().length === 0 ||
+          !validateSandboxBoundaryExpansion(request.expansion).ok ||
+          request.toolUseId !== event.refs.toolCallId
+        ) {
+          return invalid(`sandbox boundary request ${event.id} is incomplete`);
+        }
+        if (requests.has(request.requestId) || settledRequests.has(request.requestId)) {
+          return invalid(`sandbox boundary request ${request.requestId} is duplicated`);
+        }
+        requests.add(request.requestId);
+        requestToolUseIds.set(request.requestId, request.toolUseId);
+        requestIdentityKeys.set(
+          request.requestId,
+          `${event.sessionId}\u0000${event.invocationId}\u0000${event.runId}\u0000${event.turnId}`,
+        );
+        requestEvents.add(request.requestId);
+        continue;
+      }
+      const requestToolUseId =
+        isRecord(decision) && nonEmptyString(decision.requestId)
+          ? requestToolUseIds.get(decision.requestId)
+          : undefined;
+      const requestIdentityKey =
+        isRecord(decision) && nonEmptyString(decision.requestId)
+          ? requestIdentityKeys.get(decision.requestId)
+          : undefined;
+      const decisionIdentityKey = `${event.sessionId}\u0000${event.invocationId}\u0000${event.runId}\u0000${event.turnId}`;
+      if (
+        event.author !== 'user' ||
+        !isRecord(decision) ||
+        !hasExactKeys(decision, ['requestId', 'decision', 'status', 'revision']) ||
+        !nonEmptyString(decision.requestId) ||
+        (decision.decision !== 'allow' && decision.decision !== 'deny') ||
+        (decision.status !== 'approved' &&
+          decision.status !== 'denied' &&
+          decision.status !== 'conflict') ||
+        typeof decision.revision !== 'number' ||
+        !Number.isSafeInteger(decision.revision) ||
+        decision.revision < 0 ||
+        requestToolUseId === undefined ||
+        requestIdentityKey !== decisionIdentityKey ||
+        event.refs.toolCallId !== requestToolUseId ||
+        settledRequests.has(decision.requestId) ||
+        (decision.status === 'approved' && decision.decision !== 'allow') ||
+        (decision.status === 'denied' && decision.decision !== 'deny') ||
+        (decision.status === 'conflict' && decision.decision !== 'allow')
+      ) {
+        return invalid(`sandbox boundary decision ${event.id} is incomplete`);
+      }
+      settledRequests.add(decision.requestId);
+      decisionEvents.set(decision.requestId, { status: decision.status });
+      hasStatefulEvent = true;
+      if (decision.status === 'denied') {
+        denied = true;
+      } else if (decision.status === 'approved') {
+        const approvalError = applyApproval(decision.requestId);
+        if (approvalError) return approvalError;
+      } else {
+        addFailure('unresolved', `request:${decision.requestId}`);
+      }
+      continue;
+    }
+
+    const content = event.content;
+    if (content?.kind === 'function_call') {
+      const isBoundaryCall = isBoundaryAuthorityCall(content.name, content.args);
+      if (
+        isBoundaryCall &&
+        (event.role !== 'model' ||
+          event.author !== 'agent' ||
+          event.refs?.toolCallId !== content.id ||
+          !nonEmptyString(content.name))
+      ) {
+        return invalid(`sandbox boundary call ${event.id} has non-canonical identity`);
+      }
+      const call = {
+        name: content.name,
+        step:
+          event.refs?.stepId ??
+          event.refs?.parentToolCallId ??
+          event.refs?.parentOperationId ??
+          event.refs?.toolCallId ??
+          content.id,
+      };
+      if (toolCalls.has(content.id)) {
+        return invalid(`tool call ${content.id} is duplicated`);
+      }
+      toolCalls.set(content.id, call);
+      if (isBoundaryCall) {
+        if (boundaryCalls.has(content.id)) {
+          return invalid(`sandbox boundary call ${content.id} is duplicated`);
+        }
+        boundaryCalls.set(content.id, { step: call.step });
+      }
+      continue;
+    }
+    if (content?.kind !== 'function_response') continue;
+    const call = toolCalls.get(content.id);
+    const boundaryCall = boundaryCalls.get(content.id);
+    const result = content.result;
+    if (
+      boundaryCall &&
+      (event.role !== 'tool' ||
+        event.author !== 'tool' ||
+        event.refs?.toolCallId !== content.id ||
+        content.name !== call?.name)
+    ) {
+      return invalid(`sandbox boundary response ${event.id} has non-canonical identity`);
+    }
+    const failure = readBoundaryFailure(result);
+    if (failure === 'malformed') {
+      return invalid(`sandbox boundary failure on ${event.id} is malformed`);
+    }
+    if (failure !== undefined) {
+      if (!boundaryCall || !call || content.isError !== true) {
+        return invalid(`sandbox boundary failure on ${event.id} has no canonical call`);
+      }
+      const step = event.refs?.stepId ?? boundaryCall?.step ?? call.step;
+      addFailure(failure, step);
+    }
+    if (boundaryCall) {
+      if (boundaryResponses.has(content.id)) {
+        return invalid(`sandbox boundary response ${content.id} is duplicated`);
+      }
+      boundaryResponses.add(content.id);
+    }
+    continue;
+  }
+
+  for (const callId of boundaryCalls.keys()) {
+    if (!boundaryResponses.has(callId)) {
+      return invalid(`sandbox boundary call ${callId} has no durable response`);
+    }
+  }
+
+  const durableById = new Map<string, SandboxBoundaryRequest>();
+  const durableSettlementsWithoutDecision: SandboxBoundaryRequest[] = [];
+  for (const request of durableRequests) {
+    const hasProvenance = request.turnId !== undefined || request.runId !== undefined;
+    const attributable = hasProvenance
+      ? request.turnId !== undefined && request.runId !== undefined
+        ? eventIdentityPairs.has(`${request.runId}\u0000${request.turnId}`)
+        : (request.turnId === undefined || eventTurnIds.has(request.turnId)) &&
+          (request.runId === undefined || eventRunIds.has(request.runId))
+      : requestEvents.has(request.requestId) || decisionEvents.has(request.requestId);
+    if (!attributable) continue;
+    if (
+      !nonEmptyString(request.requestId) ||
+      !SANDBOX_BOUNDARY_REQUEST_STATUSES.includes(request.status) ||
+      !validateSandboxBoundaryExpansion(request.expansion).ok ||
+      typeof request.justification !== 'string' ||
+      request.justification.trim().length === 0 ||
+      !Number.isSafeInteger(request.createdAt) ||
+      request.createdAt < 0 ||
+      (request.turnId !== undefined && !nonEmptyString(request.turnId)) ||
+      (request.runId !== undefined && !nonEmptyString(request.runId))
+    ) {
+      return invalid(`sandbox boundary durable request ${String(request.requestId)} is malformed`);
+    }
+    if (durableById.has(request.requestId)) {
+      return invalid(`sandbox boundary durable request ${request.requestId} is duplicated`);
+    }
+    durableById.set(request.requestId, request);
+    const eventDecision = decisionEvents.get(request.requestId);
+    if (eventDecision && eventDecision.status !== request.status) {
+      return invalid(
+        `sandbox boundary durable request ${request.requestId} changed decision status`,
+      );
+    }
+    if (request.status === 'pending') {
+      return invalid(`sandbox boundary durable request ${request.requestId} is unresolved`);
+    }
+    if (!eventDecision) {
+      // A host-restart closure is a lifecycle cleanup, not a user decision.
+      // It closes the old request id, but must not turn a request the user
+      // never saw into a permanent denial or participate in the ordering
+      // guard as if it were an approval/denial transition.
+      settledRequests.add(request.requestId);
+      if (isSandboxBoundaryRestartClosure(request)) {
+        continue;
+      }
+      durableSettlementsWithoutDecision.push(request);
+      if (request.status === 'denied') {
+        denied = true;
+      } else if (request.status === 'approved') {
+        const approvalError = applyApproval(request.requestId);
+        if (approvalError) return approvalError;
+      } else {
+        addFailure('unresolved', `request:${request.requestId}`);
+      }
+    }
+  }
+
+  // Do not guess at the order between an interaction-row settlement and
+  // RuntimeEvent facts from the same source run. An approved durable row
+  // applied after the event projection could erase later failure budget, and
+  // a denied row could overwrite a later approval. The only safe exception is
+  // the ack-loss recovery case where the durable row is the sole stateful fact
+  // and can be applied without crossing another state transition.
+  if (
+    durableSettlementsWithoutDecision.length > 1 ||
+    (durableSettlementsWithoutDecision.length > 0 && hasStatefulEvent)
+  ) {
+    return invalid('sandbox boundary durable settlement ordering is unavailable');
+  }
+
+  for (const requestId of requests) {
+    if (!settledRequests.has(requestId)) {
+      return invalid(`sandbox boundary request ${requestId} has no durable decision`);
+    }
+  }
+  return {
+    kind: 'valid',
+    state: {
+      denied,
+      invalidRounds,
+      unresolvedRounds,
+      finalizationRequested,
+    },
+  };
+}
+
+function isBoundaryAuthorityCall(toolName: string, args: unknown): boolean {
+  if (toolName === 'request_sandbox_boundary') return true;
+  if (toolName === 'invalid' && isRecord(args) && args.sandboxBoundaryAttempt === true) {
+    return true;
+  }
+  if (toolName !== 'Bash' || !isRecord(args)) return false;
+  return args.boundary_intent !== undefined && args.boundary_intent !== 'current';
+}
+
+function readBoundaryFailure(result: unknown): 'invalid' | 'unresolved' | 'malformed' | undefined {
+  if (!isRecord(result) || result.kind !== 'text') return undefined;
+  const failure = result.sandboxFailure;
+  if (failure === undefined) return undefined;
+  if (!isRecord(failure) || !hasOnlyKeys(failure, ['reason', 'requiredExpansion', 'source'])) {
+    return 'malformed';
+  }
+  if (
+    failure.reason === 'invalid_boundary_declaration' &&
+    (failure.source !== undefined || failure.requiredExpansion !== undefined)
+  ) {
+    return 'malformed';
+  }
+  if (failure.reason === 'sandbox_boundary_required' || failure.reason === 'requires_bypass') {
+    if (
+      failure.source !== undefined &&
+      !(failure.reason === 'requires_bypass' && failure.source === 'client_capability')
+    ) {
+      return 'malformed';
+    }
+    if (
+      failure.requiredExpansion !== undefined &&
+      !validateSandboxBoundaryExpansion(failure.requiredExpansion).ok
+    ) {
+      return 'malformed';
+    }
+    return 'unresolved';
+  }
+  if (failure.reason === 'invalid_boundary_declaration') return 'invalid';
+  return 'malformed';
+}
+
+function hasExactKeys(value: Record<string, unknown>, required: readonly string[]): boolean {
+  const keys = Object.keys(value).sort();
+  return keys.length === required.length && required.every((key) => keys.includes(key));
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
+  return Object.keys(value).every((key) => allowed.includes(key));
+}
+
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0;
 }
 
 export type SandboxProfile = PermissionProfileManaged;

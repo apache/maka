@@ -39,6 +39,7 @@ import type {
 import type { RuntimeEventInvocationOpenedContent } from '@maka/core/runtime-event';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type { ContinuationClaimStateV1 } from '@maka/core/runtime-event-store';
+import { type SandboxBoundaryRequest } from '@maka/core/sandbox-boundary';
 import { isDeepStrictEqual } from 'node:util';
 import {
   buildContinuationReplayPlan,
@@ -380,6 +381,8 @@ export interface RuntimeContinuationPlannerDeps {
     runId: string;
     upToEventSeq?: number;
   }): Promise<ImmutableRuntimePrefixV1>;
+  /** Authoritative interaction log used to cover event/row crash gaps; absence parks admission. */
+  readSandboxBoundaryRequests?(sessionId: string): Promise<readonly SandboxBoundaryRequest[]>;
   readContinuationClaimStateByBoundary?(
     boundaryDigest: RuntimeBoundaryDigest,
   ): Promise<ContinuationClaimStateV1 | undefined>;
@@ -445,6 +448,12 @@ export class RuntimeContinuationPlanner {
       return parkedPlan(
         reason,
         `continuation replay segment ${replay.segmentIndex} is not replayable: ${replay.reason}`,
+      );
+    }
+    if (!this.deps.readSandboxBoundaryRequests) {
+      return parkedPlan(
+        'continuation_authority_unavailable',
+        'sandbox boundary interaction log is unavailable',
       );
     }
     let durableClaimState: ContinuationClaimStateV1 | undefined;

@@ -79,6 +79,7 @@ import type {
   HostedInteractionBridge,
 } from '@maka/core/backend-types';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { SandboxBoundaryNegotiationState } from '@maka/core/sandbox-boundary';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import { DEFAULT_TOOL_MODE, isToolMode, type ToolMode } from '@maka/core/tool-mode';
@@ -1338,6 +1339,7 @@ export class AiSdkBackend implements AgentBackend {
     invocationId: string | undefined;
     hostedInteraction: HostedInteractionBridge | undefined;
     orchestrationMode: EffectiveOrchestration['mode'];
+    sandboxBoundaryNegotiationState?: SandboxBoundaryNegotiationState;
     scope: () => TurnScope;
   }): ToolRuntime {
     const input = this.input;
@@ -1358,6 +1360,9 @@ export class AiSdkBackend implements AgentBackend {
       ...(identity.runId ? { runId: identity.runId } : {}),
       orchestrationMode: identity.orchestrationMode,
       ...(identity.invocationId ? { invocationId: identity.invocationId } : {}),
+      ...(identity.sandboxBoundaryNegotiationState
+        ? { sandboxBoundaryNegotiationState: identity.sandboxBoundaryNegotiationState }
+        : {}),
       prepareDurableProjectionArtifact: input.prepareDurableProjectionArtifact,
       spawnChildSession: input.spawnChildSession,
       listChildAgents: input.listChildAgents,
@@ -1413,7 +1418,11 @@ export class AiSdkBackend implements AgentBackend {
     const orchestration =
       input.orchestration ??
       resolveEffectiveOrchestration(this.input.header.orchestrationMode, undefined);
+    if (input.continuation && input.continuation.sandboxBoundaryNegotiationState === undefined) {
+      throw new Error('Runtime continuation is missing authenticated sandbox negotiation state');
+    }
     let scope: TurnScope;
+    const sandboxBoundaryNegotiationState = input.continuation?.sandboxBoundaryNegotiationState;
     scope = new TurnScope(
       input.turnId,
       input.runId,
@@ -1424,6 +1433,7 @@ export class AiSdkBackend implements AgentBackend {
         invocationId: input.invocationId ?? input.runId,
         hostedInteraction: input.hostedInteraction,
         orchestrationMode: orchestration.mode,
+        ...(sandboxBoundaryNegotiationState ? { sandboxBoundaryNegotiationState } : {}),
         scope: () => scope,
       }),
     );

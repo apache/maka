@@ -40,7 +40,11 @@ import type {
 } from './events.js';
 import type { InteractionClosureReason, InteractionFormResult } from './interaction.js';
 import type { RuntimeEvent } from './runtime-event.js';
-import type { SandboxBoundaryResponse, SandboxBoundarySettlement } from './sandbox-boundary.js';
+import type {
+  SandboxBoundaryNegotiationState,
+  SandboxBoundaryResponse,
+  SandboxBoundarySettlement,
+} from './sandbox-boundary.js';
 import type { StoredMessage, PersistedBackendKind } from './session.js';
 import type { RuntimeInvocationRecord } from './runtime-invocation.js';
 import type { UserQuestionResponse } from './user-question.js';
@@ -53,6 +57,8 @@ export interface RuntimeContinuationMetadata {
   sourceRunId: string;
   sourceTurnId: string;
   sourceRuntimeEventHighWater: number;
+  /** Authenticated negotiation projection; never grants execution authority. */
+  sandboxBoundaryNegotiationState: SandboxBoundaryNegotiationState;
 }
 
 export interface BackendSendInput {
