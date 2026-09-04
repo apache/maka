@@ -367,7 +367,7 @@ function validateSqlite(path: string, files: readonly OperationalBackupFile[]): 
         .prepare(`
           SELECT artifact_id, session_id, created_at, relative_path, record_json
           FROM artifact_records
-          ORDER BY created_at, storage_key
+          ORDER BY created_at, artifact_id
         `)
         .all() as Array<{
         artifact_id?: unknown;

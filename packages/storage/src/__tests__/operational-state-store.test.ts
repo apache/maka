@@ -1057,8 +1057,7 @@ for (const { name, mutation } of [
       database.exec(`
         DROP TABLE artifact_records;
         CREATE TABLE artifact_records (
-          storage_key TEXT PRIMARY KEY,
-          artifact_id TEXT NOT NULL,
+          artifact_id TEXT PRIMARY KEY,
           session_id TEXT NOT NULL,
           created_at INTEGER NOT NULL CHECK (created_at >= 0),
           relative_path TEXT NOT NULL CHECK (relative_path <> ''),

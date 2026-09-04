@@ -104,16 +104,14 @@ test('Artifact metadata recovery ignores records from unsupported sources', asyn
     inspector = new DatabaseSync(join(root, OPERATIONAL_STATE_DATABASE_NAME));
     const insert = inspector.prepare(`
         INSERT INTO artifact_records(
-          storage_key,
           artifact_id,
           session_id,
           created_at,
           relative_path,
           record_json
-        ) VALUES (?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?)
       `);
     insert.run(
-      `${unsupported.id}-storage-key`,
       unsupported.id,
       unsupported.sessionId,
       unsupported.createdAt,

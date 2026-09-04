@@ -17,7 +17,6 @@
  * under the License.
  */
 
-import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import type { ArtifactRecord } from '@maka/core/artifacts';
 import type {
@@ -55,7 +54,7 @@ class SqliteArtifactMetadataRepository implements ArtifactMetadataRepository {
       .prepare(`
         SELECT record_json
         FROM artifact_records
-        ORDER BY created_at, storage_key
+        ORDER BY created_at, artifact_id
       `)
       .all() as Array<{ record_json: string }>;
     return decodeRows(rows);
@@ -65,34 +64,30 @@ class SqliteArtifactMetadataRepository implements ArtifactMetadataRepository {
     this.assertOpen();
     this.#lease.transaction('write', () => {
       const remove = this.#lease.database.prepare(
-        'DELETE FROM artifact_records WHERE storage_key = ?',
+        'DELETE FROM artifact_records WHERE artifact_id = ?',
       );
-      for (const id of changes.deleteIds ?? []) remove.run(artifactIdentityKey(id));
+      for (const id of changes.deleteIds ?? []) remove.run(id);
 
       const upsert = this.#lease.database.prepare(`
         INSERT INTO artifact_records(
-          storage_key,
           artifact_id,
           session_id,
           created_at,
           relative_path,
           record_json
-        ) VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT(storage_key) DO UPDATE SET
-          artifact_id = excluded.artifact_id,
+        ) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(artifact_id) DO UPDATE SET
           session_id = excluded.session_id,
           created_at = excluded.created_at,
           relative_path = excluded.relative_path,
           record_json = excluded.record_json
-        WHERE artifact_id IS NOT excluded.artifact_id
-           OR session_id IS NOT excluded.session_id
+        WHERE session_id IS NOT excluded.session_id
            OR created_at IS NOT excluded.created_at
            OR relative_path IS NOT excluded.relative_path
            OR record_json IS NOT excluded.record_json
       `);
       for (const record of changes.upserts ?? []) {
         upsert.run(
-          artifactIdentityKey(record.id),
           record.id,
           record.sessionId,
           record.createdAt,
@@ -116,8 +111,4 @@ class SqliteArtifactMetadataRepository implements ArtifactMetadataRepository {
 
 function decodeRows(rows: readonly { record_json: string }[]): ArtifactRecord[] {
   return decodeArtifactRecordJsons(rows.map((row) => row.record_json));
-}
-
-function artifactIdentityKey(id: string): string {
-  return createHash('sha256').update(JSON.stringify(id)).digest('hex');
 }
