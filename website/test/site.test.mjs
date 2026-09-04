@@ -32,8 +32,12 @@ const pages = ['index.html', 'downloads/index.html'];
 
 const positioning =
   'Apache Maka (Incubating) is a high-performance agent workspace that keeps a complete record of everything it did.';
-const disclaimer =
-  'Apache Maka is an effort undergoing incubation at The Apache Software Foundation (ASF), sponsored by the Apache Incubator.';
+// DISCLAIMER-WIP is the project's copy of the Incubator disclaimer, so the
+// site has to carry that paragraph rather than a wording of its own.
+const disclaimer = readFileSync(new URL('../../DISCLAIMER-WIP', import.meta.url), 'utf8')
+  .split('\n\n')[0]
+  .replace(/\s+/gu, ' ')
+  .trim();
 // The copyright and trademark line stays in English on every page, like the disclaimer.
 const trademark =
   'Copyright © 2026 The Apache Software Foundation, licensed under the Apache License, Version 2.0. Apache Maka, Apache Incubator, Apache and the Apache feather logo are trademarks of The Apache Software Foundation.';

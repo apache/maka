@@ -19,10 +19,11 @@
 
 import type { Copy } from './types';
 
-// The Incubator disclaimer is quoted verbatim from the Incubator branding
-// guide and appears in English on every page, whatever the page language.
+// The disclaimer is the first paragraph of DISCLAIMER-WIP word for word, so
+// the site, the READMEs and the release file all state it the same way. It
+// appears in English on every page, whatever the page language.
 export const incubatorDisclaimer =
-  'Apache Maka is an effort undergoing incubation at The Apache Software Foundation (ASF), sponsored by the Apache Incubator. Incubation is required of all newly accepted projects until a further review indicates that the infrastructure, communications, and decision making process have stabilized in a manner consistent with other successful ASF projects. While incubation status is not necessarily a reflection of the completeness or stability of the code, it does indicate that the project has yet to be fully endorsed by the ASF.';
+  'Apache Maka is an effort undergoing incubation at The Apache Software Foundation (ASF), sponsored by the Apache Incubator PMC. Incubation is required of all newly accepted projects until a further review indicates that the infrastructure, communications, and decision-making process have stabilized in a manner consistent with other successful ASF projects. While incubation status is not necessarily a reflection of the completeness or stability of the code, it does indicate that the project has yet to be fully endorsed by the ASF.';
 
 export const en: Copy = {
   locale: 'en',
