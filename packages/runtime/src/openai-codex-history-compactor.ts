@@ -78,7 +78,7 @@ export function buildOpenAiCodexHistoryCompactor(options: BuildOpenAiCodexHistor
         : input.source.foldedRuntimeEvents;
       const providerReasoningReplayEventIds = compatibleProviderReasoningReplayEventIds(
         events,
-        input.source.runHeaders,
+        input.source.invocations,
         options.providerStateIdentity,
         options.modelId,
         input.runId,

@@ -129,6 +129,71 @@
   grid-column: 4;
 }
 
+.maka-form-interaction-header p,
+.maka-form-interaction-field p {
+  margin: 0;
+}
+
+.maka-form-interaction-header p {
+  font: var(--maka-text-supporting);
+  color: var(--text-secondary);
+}
+
+.maka-form-interaction-fields {
+  display: grid;
+  gap: var(--space-2);
+  max-height: min(420px, 50vh);
+  padding-right: var(--space-1);
+  overflow-y: auto;
+}
+
+.maka-form-interaction-field {
+  display: grid;
+  gap: var(--space-1);
+  padding: var(--space-2);
+  border: var(--border-width-hairline) solid var(--border);
+  border-radius: var(--radius-control);
+}
+
+.maka-form-interaction-field-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+  color: var(--text-primary);
+}
+
+.maka-form-interaction-field-heading > :first-child {
+  font: var(--maka-text-body-medium);
+}
+
+.maka-form-interaction-field-heading > :last-child,
+.maka-form-interaction-field-description {
+  font: var(--maka-text-supporting);
+  color: var(--text-secondary);
+}
+
+.maka-form-interaction-checkboxes {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.maka-form-interaction-error {
+  font: var(--maka-text-supporting);
+  color: var(--destructive-text);
+}
+
+.maka-form-interaction-actions,
+.maka-form-interaction-primary-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.maka-form-interaction-actions {
+  justify-content: space-between;
+}
+
 .maka-interaction-header {
   min-width: 0;
 }
@@ -174,5 +239,14 @@
 
   .maka-question-submit {
     grid-column: auto;
+  }
+
+  .maka-form-interaction-actions,
+  .maka-form-interaction-primary-actions {
+    width: 100%;
+  }
+
+  .maka-form-interaction-primary-actions {
+    justify-content: flex-end;
   }
 }

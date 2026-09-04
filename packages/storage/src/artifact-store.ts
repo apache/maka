@@ -70,7 +70,10 @@ import {
 } from './artifact-writer-lock.js';
 import type { ArtifactWriterLockAuthority } from './root-authority.js';
 import { syncDirectory, syncDirectoryChain, syncFile } from './stable-storage.js';
-import type { ArtifactMetadataRepository } from './artifact-metadata-repository.js';
+import type {
+  ArtifactMetadataChanges,
+  ArtifactMetadataRepository,
+} from './artifact-metadata-repository.js';
 import { createSqliteArtifactMetadataRepository } from './sqlite-artifact-metadata.js';
 
 export { isSafeRelativeArtifactPath } from './artifact-metadata-codec.js';
@@ -557,7 +560,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
           throw error;
         }
         await syncDirectory(targetDirectory);
-        await this.writeMetadataUnlocked(nextRecords);
+        await this.writeMetadataUnlocked({ upserts: [record] });
       } catch (error) {
         if (targetLinked) {
           try {
@@ -639,7 +642,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     const nextRecords = this.records.map((record) =>
       record.id === canonical.id ? revived : record,
     );
-    await this.writeMetadataUnlocked(nextRecords);
+    await this.writeMetadataUnlocked({ upserts: [revived] });
     this.replaceRecords(nextRecords);
     return { ...revived };
   }
@@ -843,13 +846,15 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
   async delete(artifactId: string): Promise<void> {
     await this.enqueueMutation(async () => {
       await this.prepareMutationUnlocked({ kind: 'delete' });
-      const nextRecords: ArtifactRecord[] = this.records.map((record) =>
-        record.id === artifactId && record.status !== 'deleted'
-          ? { ...record, status: 'deleted' }
-          : record,
+      const existing = this.records.find(
+        (record) => record.id === artifactId && record.status !== 'deleted',
       );
-      if (nextRecords.every((record, index) => record === this.records[index])) return;
-      await this.writeMetadataUnlocked(nextRecords);
+      if (!existing) return;
+      const tombstone: ArtifactRecord = { ...existing, status: 'deleted' };
+      const nextRecords: ArtifactRecord[] = this.records.map((record) =>
+        record.id === artifactId ? tombstone : record,
+      );
+      await this.writeMetadataUnlocked({ upserts: [tombstone] });
       this.replaceRecords(nextRecords);
     });
   }
@@ -871,7 +876,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
       const nextRecords = this.records.map((record) =>
         record.id === existing.id ? tombstone : record,
       );
-      await this.writeMetadataUnlocked(nextRecords);
+      await this.writeMetadataUnlocked({ upserts: [tombstone] });
       this.replaceRecords(nextRecords);
       return { kind: 'deleted', record: { ...tombstone } };
     });
@@ -992,7 +997,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
       for (const directory of changedDirectories) await syncDirectory(directory);
     }
     const nextRecords = this.records.filter((record) => !ids.has(record.id));
-    await this.writeMetadataUnlocked(nextRecords);
+    await this.writeMetadataUnlocked({ deleteIds: [...ids] });
     this.replaceRecords(nextRecords);
     await this.removePurgeIntentUnlocked();
   }
@@ -1039,10 +1044,10 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     this.replaceRecords(this.metadataRepository.readAll());
   }
 
-  private async writeMetadataUnlocked(records: readonly ArtifactRecord[]): Promise<void> {
+  private async writeMetadataUnlocked(changes: ArtifactMetadataChanges): Promise<void> {
     await this.metadataRepository.ready();
     this.metadataReady = true;
-    this.metadataRepository.replaceAll(records);
+    this.metadataRepository.applyChanges(changes);
   }
 
   private async prepareMutationUnlocked(
@@ -1197,7 +1202,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
       status: 'live',
     };
     const nextRecords = [...this.records, record];
-    await this.writeMetadataUnlocked(nextRecords);
+    await this.writeMetadataUnlocked({ upserts: [record] });
     this.replaceRecords(nextRecords);
     this.recoverableOrphans.delete(filesystemPathKey(candidate.relativePath));
     return { ...record };

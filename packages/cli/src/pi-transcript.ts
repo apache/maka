@@ -21,6 +21,7 @@ import { Markdown, visibleWidth } from '@earendil-works/pi-tui';
 import type {
   ProviderRetryEvent,
   ProviderRetryScheduledEvent,
+  FormRequestEvent,
   SandboxBoundaryRequestEvent,
   UserQuestionRequestEvent,
   SessionEvent,
@@ -122,7 +123,10 @@ export interface MakaPiTranscriptState {
   providerRetry?: ProviderRetryCountdown;
 }
 
-export type MakaPiPendingInteraction = SandboxBoundaryRequestEvent | UserQuestionRequestEvent;
+export type MakaPiPendingInteraction =
+  | SandboxBoundaryRequestEvent
+  | UserQuestionRequestEvent
+  | FormRequestEvent;
 
 /**
  * A provider retry event plus the CLIENT-local time it was applied. Counting
@@ -936,6 +940,9 @@ export function applyMakaSessionEventToTranscript(
     case 'user_question_request':
       enqueuePendingInteraction(state, event);
       break;
+    case 'form_request':
+      enqueuePendingInteraction(state, event);
+      break;
 
     case 'sandbox_boundary_decision_ack':
       {
@@ -952,6 +959,10 @@ export function applyMakaSessionEventToTranscript(
       break;
 
     case 'user_question_answer_ack':
+      completePendingInteraction(state, event.requestId);
+      break;
+
+    case 'form_answer_ack':
       completePendingInteraction(state, event.requestId);
       break;
 
@@ -1345,8 +1356,17 @@ function systemNoteText(message: SystemNoteMessage): string | undefined {
       return 'Context compacted to keep this task within the model window.';
     case 'context_compaction_failed_open':
       return 'Context summary failed; the session continued without a new summary.';
-    case 'context_provider_dropping':
-      return 'The provider is dropping or rewriting context: content was appended but its reported usage did not grow. Declare a context window for this model so Maka compacts first.';
+    case 'context_provider_dropping': {
+      const data = message.data as
+        | { inputTokens?: unknown; priorInputTokens?: unknown }
+        | undefined;
+      const used = typeof data?.inputTokens === 'number' ? data.inputTokens : undefined;
+      const prior = typeof data?.priorInputTokens === 'number' ? data.priorInputTokens : undefined;
+      if (used === undefined || prior === undefined) {
+        return 'The provider is dropping or rewriting context: content was appended but its reported usage did not grow. Declare a context window for this model so Maka compacts first.';
+      }
+      return `The provider is dropping or rewriting context: content was appended, and it counted ${used} input tokens against ${prior} before, which is no growth. Declare a context window for this model so Maka compacts first.`;
+    }
     case 'context_overflow_after_compaction':
       return 'History was compacted and the provider still called this request too large. What remains also carries the system prompt, the tool schemas, the summary and the recent tail; shortening this message is the part you control.';
     case 'context_reported_window_exceeded': {
@@ -1481,6 +1501,10 @@ export function activeUserQuestionRequest(
   return state.pendingInteraction?.type === 'user_question_request'
     ? state.pendingInteraction
     : undefined;
+}
+
+export function activeFormRequest(state: MakaPiTranscriptState): FormRequestEvent | undefined {
+  return state.pendingInteraction?.type === 'form_request' ? state.pendingInteraction : undefined;
 }
 
 function enqueuePendingInteraction(

@@ -108,7 +108,17 @@ describe('SQLite runtime schema migration', () => {
     try {
       db.exec('PRAGMA foreign_keys = ON');
       db.exec(`
-        CREATE TABLE runtime_events (event_id TEXT PRIMARY KEY);
+        CREATE TABLE runtime_events (
+          event_id TEXT PRIMARY KEY,
+          session_id TEXT NOT NULL,
+          invocation_id TEXT NOT NULL,
+          run_id TEXT NOT NULL,
+          turn_id TEXT NOT NULL,
+          event_seq INTEGER NOT NULL,
+          event_kind TEXT NOT NULL,
+          payload_json TEXT NOT NULL,
+          committed_at INTEGER NOT NULL
+        );
         CREATE TABLE runtime_continuation_claims (
           claim_id TEXT PRIMARY KEY,
           source_session_id TEXT NOT NULL,
@@ -136,7 +146,8 @@ describe('SQLite runtime schema migration', () => {
         INSERT INTO runtime_continuation_claims VALUES (
           'claim-v1', 'session', 'source-invocation', 'source-run', 'source-turn', 1,
           'sha256:source', 'sha256:boundary-v1', '{}', 1, 'sha256:replay-v1',
-          'session', 'target-invocation-v1', 'target-run-v1', 'target-turn-v1', '{}',
+          'session', 'target-invocation-v1', 'target-run-v1', 'target-turn-v1',
+          '{"runId": "target-run-v1", "invocationId": "target-invocation-v1", "sessionId": "session", "turnId": "target-turn-v1", "status": "created", "backendKind": "fake", "llmConnectionSlug": "connection-1", "modelId": "model-1", "cwd": "/workspace", "permissionMode": "ask", "createdAt": 1, "updatedAt": 1}',
           1, NULL, NULL, 1
         );
         PRAGMA user_version = 14;
@@ -144,7 +155,7 @@ describe('SQLite runtime schema migration', () => {
 
       migrateSqliteRuntimeDatabase(db);
 
-      assert.equal(SQLITE_RUNTIME_SCHEMA_VERSION, 15);
+      assert.equal(SQLITE_RUNTIME_SCHEMA_VERSION, 16);
       assert.equal(
         (
           db
@@ -154,6 +165,19 @@ describe('SQLite runtime schema migration', () => {
             .get() as { version: number }
         ).version,
         1,
+      );
+      assert.equal(
+        JSON.parse(
+          (
+            db
+              .prepare(
+                "SELECT target_opening_json AS opening FROM runtime_continuation_claims WHERE claim_id = 'claim-v1'",
+              )
+              .get() as { opening: string }
+          ).opening,
+        ).kind,
+        'invocation_opened',
+        'an open claim carries the opening it always implied, not a copy of the Run header',
       );
       db.exec(`
         INSERT INTO runtime_continuation_claims VALUES (

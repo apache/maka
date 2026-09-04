@@ -9,6 +9,7 @@
     "./adapter": "./dist/adapter/index.js",
     "./protocol": "./dist/protocol/index.js",
     "./client": "./dist/client/index.js",
+    "./client-capability-entity-id": "./dist/client-capability-entity-id.js",
     "./webrtc-stun-policy": "./dist/webrtc-stun-policy.js",
     "./peer-reachability": "./dist/peer-reachability/index.js",
     "./peer-mesh": "./dist/peer-mesh/index.js",

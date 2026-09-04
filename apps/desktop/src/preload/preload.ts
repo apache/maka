@@ -123,7 +123,11 @@ import type { BotOnboardingSnapshot, BotOnboardingStartInput } from '@maka/core/
 import type { HealthSnapshot } from '@maka/core/health';
 import {
   collectRuntimeHostSessionCatalogsWithCoverage,
+  createRuntimeHostSessionCatalogRefresher,
+  recordObservedRuntimeHostSessionAuthority,
+  reconcileRuntimeHostSessionCatalog,
   resolveRuntimeHostSessionCatalog,
+  type RuntimeHostSessionCatalogCoverage,
 } from './runtime-host-session-catalog.js';
 import { collectAvailablePendingTurnRequests } from './runtime-host-turn-request-inbox.js';
 import type { ExecutionBoundaryReadModel, SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
@@ -136,6 +140,7 @@ import type {
   ShellRunUpdate,
 } from '@maka/core/events';
 import type { UserQuestionResponse } from '@maka/core/user-question';
+import type { InteractionFormResponse } from '@maka/core/interaction';
 import type { PermissionMode } from '@maka/core/permission';
 import type { CollaborationMode } from '@maka/core/collaboration';
 import type { OrchestrationMode } from '@maka/core/orchestration';
@@ -220,6 +225,7 @@ import type {
 import type { AttachmentRef, InlineReference, QuoteRef } from '@maka/core/events';
 import type { OnboardingMilestoneId } from '@maka/core/onboarding';
 import {
+  decodeSharedSessionCatalogProjection,
   SCHEDULED_TASK_CATALOG_MAX_ITEMS,
   type OperationInput,
   type OperationOutcome,
@@ -248,7 +254,9 @@ import {
   projectDesktopTurnRecord,
   projectDesktopUsageStats,
   type DesktopSessionSummary,
+  type DesktopSessionSummaryInput,
 } from '../shared/desktop-session-projection.js';
+import { projectDesktopSharedSessionSummary } from '../shared/shared-session-catalog-projection.js';
 
 let activeRuntimeHost: DesktopTargetScope | undefined;
 let activeRuntimeHostGeneration = 0;
@@ -264,8 +272,11 @@ const runtimeHostMetadata = new Map<
     readonly profileAccess: 'owner' | 'session_guest';
   }
 >();
-const runtimeHostSessionScopes = new Map<string, RuntimeHostScopeKey>();
-let lastDesktopSessionCatalog: DesktopSessionSummary[] = [];
+const runtimeHostSessionProfiles = new Map<string, string>();
+let lastDesktopSessionCatalog: RuntimeHostSessionCatalogCoverage = {
+  sessions: [],
+  completeHostIds: [],
+};
 const newTaskChangeListeners = new Set<() => void>();
 let previousMainProcessInterruptionRead: Promise<boolean> | undefined;
 
@@ -277,10 +288,25 @@ function runtimeHostMetadataFor(scope: DesktopTargetScope) {
   return runtimeHostMetadata.get(runtimeHostScopeKey(scope));
 }
 
-function recordRuntimeHostSessionScope(scope: DesktopTargetScope, sessionId: string): string {
+function observeRuntimeHostSessionScope(scope: DesktopTargetScope, sessionId: string): {
+  readonly sessionId: string;
+  readonly authorityAccepted: boolean;
+} {
   const projected = desktopSessionKey({ hostId: scope.hostId, sessionId });
-  runtimeHostSessionScopes.set(projected, runtimeHostScopeKey(scope));
-  return projected;
+  const profileId = runtimeHostMetadataFor(scope)?.profileId;
+  if (!profileId) throw new Error('Desktop Runtime Host metadata is unavailable');
+  return {
+    sessionId: projected,
+    authorityAccepted: recordObservedRuntimeHostSessionAuthority(
+      runtimeHostSessionProfiles,
+      projected,
+      profileId,
+    ),
+  };
+}
+
+function recordRuntimeHostSessionScope(scope: DesktopTargetScope, sessionId: string): string {
+  return observeRuntimeHostSessionScope(scope, sessionId).sessionId;
 }
 
 type RuntimeHostProfileWireEvent = DesktopRuntimeHostProfileChangedEvent;
@@ -297,11 +323,6 @@ ipcRenderer.on(
       previousScopeKey &&
       (change.removed || (nextScopeKey !== undefined && previousScopeKey !== nextScopeKey))
     ) {
-      for (const [sessionId, scopeKey] of runtimeHostSessionScopes) {
-        if (scopeKey !== previousScopeKey) continue;
-        if (nextScopeKey) runtimeHostSessionScopes.set(sessionId, nextScopeKey);
-        else runtimeHostSessionScopes.delete(sessionId);
-      }
       runtimeHostScopes.delete(previousScopeKey);
       runtimeHostMetadata.delete(previousScopeKey);
       if (change.removed) {
@@ -396,9 +417,15 @@ async function runtimeHostSessionRef(sessionId: string): Promise<{
 }> {
   const ref = parseDesktopSessionKey(sessionId);
   await runtimeHostScopeList();
-  const recordedScopeKey = runtimeHostSessionScopes.get(sessionId);
-  let scope = recordedScopeKey ? runtimeHostScopes.get(recordedScopeKey) : undefined;
-  if (!scope) {
+  const recordedProfileId = runtimeHostSessionProfiles.get(sessionId);
+  let scope: DesktopTargetScope | undefined;
+  if (recordedProfileId) {
+    const scopeKey = runtimeHostProfiles.get(recordedProfileId);
+    scope = scopeKey ? runtimeHostScopes.get(scopeKey) : undefined;
+    if (!scope || scope.hostId !== ref.hostId) {
+      throw new Error('The Runtime Host for this task is unavailable');
+    }
+  } else {
     const candidates = [...runtimeHostScopes.values()].filter(({ hostId }) => hostId === ref.hostId);
     if (candidates.length === 1) scope = candidates[0];
   }
@@ -680,7 +707,7 @@ async function invokeSessionSummary(
     session.scope,
     session.sessionId,
     ...args,
-  ) as SessionSummary;
+  ) as DesktopSessionSummaryInput;
   return projectSessionSummary(session.scope, summary);
 }
 
@@ -702,14 +729,14 @@ async function invokeBranchFromTurn(
     ref.scope,
     ref.sessionId,
     input,
-  ) as SessionSummary | { ok: true; session: SessionSummary } | { ok: false; reason: string };
+  ) as DesktopSessionSummaryInput | { ok: true; session: DesktopSessionSummaryInput } | { ok: false; reason: string };
   if (input.sideConversation) {
     if (!('ok' in result) || result.ok === false) {
       return result as DesktopSideConversationBranchResult;
     }
-    return { ok: true, session: projectSessionSummary(ref.scope, result.session) };
+    return { ok: true, session: projectCreatedSessionSummary(ref.scope, result.session) };
   }
-  return projectSessionSummary(ref.scope, result as SessionSummary);
+  return projectCreatedSessionSummary(ref.scope, result as DesktopSessionSummaryInput);
 }
 
 async function invokeSessionInput<T, I extends { readonly sessionId: string }>(
@@ -728,16 +755,16 @@ async function invokeSessionInput<T, I extends { readonly sessionId: string }>(
 
 function projectSessionSummary(
   scope: DesktopTargetScope,
-  session: SessionSummary,
+  session: DesktopSessionSummaryInput,
 ): DesktopSessionSummary {
   const projected = projectSessionCatalogSummary(scope, session);
-  runtimeHostSessionScopes.set(projected.id, runtimeHostScopeKey(scope));
+  runtimeHostSessionProfiles.set(projected.id, projected.profileId);
   return projected;
 }
 
 function projectSessionCatalogSummary(
   scope: DesktopTargetScope,
-  session: SessionSummary,
+  session: DesktopSessionSummaryInput,
 ): DesktopSessionSummary {
   const metadata = runtimeHostMetadataFor(scope);
   if (!metadata) throw new Error('Desktop Runtime Host metadata is unavailable');
@@ -747,15 +774,15 @@ function projectSessionCatalogSummary(
   );
 }
 
-function recordSessionCatalogScopes(sessions: readonly DesktopSessionSummary[]): void {
+function recordSessionCatalogAuthorities(sessions: readonly DesktopSessionSummary[]): void {
   for (const session of sessions) {
-    const scopeKey = runtimeHostProfiles.get(session.profileId);
-    const scope = scopeKey ? runtimeHostScopes.get(scopeKey) : undefined;
-    if (!scopeKey || !scope || scope.hostId !== session.runtimeHostId) {
-      throw new Error('Desktop Runtime Host Session scope is unavailable');
-    }
-    runtimeHostSessionScopes.set(session.id, scopeKey);
+    runtimeHostSessionProfiles.set(session.id, session.profileId);
   }
+}
+
+function commitDesktopSessionCatalog(catalog: RuntimeHostSessionCatalogCoverage): void {
+  recordSessionCatalogAuthorities(catalog.sessions);
+  lastDesktopSessionCatalog = catalog;
 }
 
 function projectOnboardingSnapshot(
@@ -765,16 +792,24 @@ function projectOnboardingSnapshot(
   return {
     ...snapshot,
     sessions: snapshot.sessions.map((session) => projectSessionSummary(scope, session)),
-    sessionSendOutcomes: Object.fromEntries(
-      Object.entries(snapshot.sessionSendOutcomes).map(([sessionId, outcome]) => [
-        recordRuntimeHostSessionScope(scope, sessionId),
-        outcome,
-      ]),
-    ),
+    sessionSendOutcomes: projectOnboardingSendOutcomes(scope, snapshot.sessionSendOutcomes),
   };
 }
 
+function projectOnboardingSendOutcomes(
+  scope: DesktopTargetScope,
+  outcomes: OnboardingSnapshot['sessionSendOutcomes'],
+): OnboardingSnapshot['sessionSendOutcomes'] {
+  return Object.fromEntries(
+    Object.entries(outcomes).map(([sessionId, outcome]) => [
+      recordRuntimeHostSessionScope(scope, sessionId),
+      outcome,
+    ]),
+  );
+}
+
 async function loadDesktopOnboardingSnapshot(): Promise<OnboardingSnapshot> {
+  const catalogSeed = desktopSessionCatalogRefresher.beginSeed();
   const defaultScope = await activeRuntimeHostRef();
   const readyScopes = await runtimeHostScopeList();
   const scopes = [
@@ -796,15 +831,35 @@ async function loadDesktopOnboardingSnapshot(): Promise<OnboardingSnapshot> {
   }
   const snapshots = results.flatMap((result) =>
     result.status === 'fulfilled'
-      ? [projectOnboardingSnapshot(result.value.scope, result.value.snapshot)]
+      ? [result.value]
       : [],
   );
+  // A successful Owner onboarding snapshot is already an authenticated,
+  // complete catalog. Seed it before the independent catalog refresh so a
+  // transient sessions:list failure cannot blank the first renderer commit.
+  const ownerSnapshots = snapshots.filter(
+    ({ scope }) => runtimeHostMetadataFor(scope)?.profileAccess === 'owner',
+  );
+  const completeHostIds = [...new Set(ownerSnapshots.map(({ scope }) => scope.hostId))];
+  catalogSeed.commit({
+    sessions: reconcileRuntimeHostSessionCatalog(lastDesktopSessionCatalog.sessions, {
+      sessions: ownerSnapshots.flatMap(({ scope, snapshot }) =>
+        snapshot.sessions.map((session) => projectSessionCatalogSummary(scope, session))),
+      completeHostIds,
+      knownOwnerProfileIds: [...runtimeHostMetadata.values()].flatMap(
+        ({ profileId, profileAccess }) => profileAccess === 'owner' ? [profileId] : [],
+      ),
+    }),
+    completeHostIds,
+  });
+  const sessions = await listDesktopSessions();
   return {
-    ...snapshots[0],
-    sessions: snapshots.flatMap((snapshot) => snapshot.sessions),
+    ...snapshots[0]!.snapshot,
+    sessions,
     sessionSendOutcomes: Object.assign(
       {},
-      ...snapshots.map((snapshot) => snapshot.sessionSendOutcomes),
+      ...snapshots.map(({ scope, snapshot }) =>
+        projectOnboardingSendOutcomes(scope, snapshot.sessionSendOutcomes)),
     ),
   };
 }
@@ -888,6 +943,43 @@ function subscribeEveryRuntimeHostEvent<T extends readonly unknown[]>(
   };
 }
 
+function subscribeGuestSessionMountChanges(
+  handler: () => void,
+): () => void {
+  const listener = (): void => handler();
+  ipcRenderer.on('session-collaboration:mounts:changed', listener);
+  return () => ipcRenderer.off('session-collaboration:mounts:changed', listener);
+}
+
+const desktopSessionCatalogRefresher = createRuntimeHostSessionCatalogRefresher({
+  currentCatalog: () => lastDesktopSessionCatalog,
+  listCatalog: async () => {
+    const owners = listDesktopOwnerSessionsWithCoverage();
+    return resolveRuntimeHostSessionCatalog(
+      lastDesktopSessionCatalog.sessions,
+      owners,
+      () => [...runtimeHostMetadata.values()].flatMap(({ profileId, profileAccess }) =>
+        profileAccess === 'owner' ? [profileId] : []),
+      listGuestSessionMountCatalog(),
+    );
+  },
+  commitCatalog: commitDesktopSessionCatalog,
+});
+
+function projectCreatedSessionSummary(
+  scope: DesktopTargetScope,
+  session: DesktopSessionSummaryInput,
+): DesktopSessionSummary {
+  const projected = projectSessionSummary(scope, session);
+  // Guest catalog membership belongs exclusively to the retained mount
+  // service. A newly created Owner Session, however, must be visible before
+  // an older catalog read can settle.
+  if (runtimeHostMetadataFor(scope)?.profileAccess === 'owner') {
+    desktopSessionCatalogRefresher.admit(projected);
+  }
+  return projected;
+}
+
 async function listDesktopSessions(
   filter?: SessionListFilter,
 ): Promise<DesktopSessionSummary[]> {
@@ -897,66 +989,74 @@ async function listDesktopSessions(
       'sessions:list',
       parent.scope,
       { ...filter, subagentParentSessionId: parent.sessionId },
-    ) as SessionCatalogSummary[];
+    ) as DesktopSessionSummaryInput[];
     return sessions.map((session) => projectSessionSummary(parent.scope, session));
   }
-  lastDesktopSessionCatalog = await resolveRuntimeHostSessionCatalog(
-    lastDesktopSessionCatalog,
-    listDesktopSessionsWithCoverage(),
-    () => [...runtimeHostMetadata.values()].map(({ profileId }) => profileId),
-    // Unknown Guest coverage cannot suppress healthy Owner catalogs or prove
-    // that a previously observed Guest mount was removed.
-    listKnownGuestMountProfileIds(),
-  );
-  return lastDesktopSessionCatalog;
+  return (await desktopSessionCatalogRefresher.refresh()).sessions;
 }
 
-async function listDesktopSessionsWithCoverage(): Promise<{
+async function listDesktopOwnerSessionsWithCoverage(): Promise<{
   sessions: DesktopSessionSummary[];
   completeHostIds: string[];
 }> {
   const scopes = await runtimeHostScopeList();
-  const catalog = await collectRuntimeHostSessionCatalogsWithCoverage(
-    scopes.map((scope) => {
+  return collectRuntimeHostSessionCatalogsWithCoverage(
+    scopes.flatMap((scope) => {
       const metadata = runtimeHostMetadataFor(scope);
       if (!metadata) throw new Error('Desktop Runtime Host metadata is unavailable');
-      return {
+      if (metadata.profileAccess !== 'owner') return [];
+      return [{
         hostId: scope.hostId,
-        access: metadata.profileAccess,
         sessions: ipcRenderer.invoke('sessions:list', scope)
-          .then((sessions: SessionCatalogSummary[]) =>
+          .then((sessions: DesktopSessionSummaryInput[]) =>
             sessions.map((session) => projectSessionCatalogSummary(scope, session))),
-      };
+      }];
     }),
   );
-  recordSessionCatalogScopes(catalog.sessions);
-  return catalog;
 }
 
-async function listKnownGuestMountProfileIds(): Promise<string[]> {
+async function listGuestSessionMountCatalog(): Promise<DesktopSessionSummary[]> {
   const mounts: unknown = await ipcRenderer.invoke('session-collaboration:mount:list');
   if (!Array.isArray(mounts)) {
     throw new Error('Desktop shared Session mounts are unavailable');
   }
-  return mounts.map((mount) => {
+  const sessions: DesktopSessionSummary[] = [];
+  for (const mount of mounts) {
     if (
       !mount ||
       typeof mount !== 'object' ||
       !('mountId' in mount) ||
-      typeof mount.mountId !== 'string'
+      typeof mount.mountId !== 'string' ||
+      !('name' in mount) ||
+      typeof mount.name !== 'string' ||
+      !('hostId' in mount) ||
+      typeof mount.hostId !== 'string'
     ) {
       throw new Error('Desktop shared Session mount is invalid');
     }
-    return mount.mountId;
-  });
+    if (!('session' in mount) || mount.session === undefined) continue;
+    const session = decodeSharedSessionCatalogProjection(mount.session);
+    const summary = projectDesktopSharedSessionSummary(session);
+    const projected = projectDesktopSessionSummary(
+      {
+        hostId: mount.hostId,
+        profileId: mount.mountId,
+        profileName: mount.name,
+        profileKind: 'remote',
+      },
+      summary,
+    );
+    sessions.push(projected);
+  }
+  return sessions;
 }
 
 async function createDesktopSessionOnScope(
   scope: DesktopTargetScope,
   input?: CreateSessionRequestInput,
 ): Promise<DesktopSessionSummary> {
-  const session = await ipcRenderer.invoke('sessions:create', scope, input) as SessionSummary;
-  return projectSessionSummary(scope, session);
+  const session = await ipcRenderer.invoke('sessions:create', scope, input) as DesktopSessionSummaryInput;
+  return projectCreatedSessionSummary(scope, session);
 }
 
 function sendActiveRuntimeHost(channel: string, ...args: unknown[]): void {
@@ -1330,6 +1430,9 @@ const makaBridge = {
     },
     listMounts() {
       return ipcRenderer.invoke('session-collaboration:mount:list');
+    },
+    subscribeMountChanges(handler) {
+      return subscribeGuestSessionMountChanges(() => handler());
     },
     removeMount(mountId) {
       return ipcRenderer.invoke('session-collaboration:mount:remove', mountId);
@@ -1895,16 +1998,6 @@ const makaBridge = {
         (scope) => ipcRenderer.invoke('workhub:resolveCoordinationSession', scope),
       );
     },
-    async answer(
-      coordinationSessionId: string,
-      input: { turnId: string; text: string },
-    ): Promise<{ turnId: string }> {
-      const scope = await resolveDesktopWorkHubCoordinationCreateScope(
-        coordinationSessionId,
-        runtimeHostSessionRef,
-      );
-      return ipcRenderer.invoke('workhub:answer', scope, input) as Promise<{ turnId: string }>;
-    },
     async record(
       coordinationSessionId: string,
       input: { turnId: string; userText: string; assistantText: string },
@@ -1960,23 +2053,13 @@ const makaBridge = {
         },
       };
     },
-    async createSession(
-      coordinationSessionId: string,
-      input: { name: string },
-    ): Promise<DesktopSessionSummary> {
-      const scope = await resolveDesktopWorkHubCoordinationCreateScope(
-        coordinationSessionId,
-        runtimeHostSessionRef,
-      );
-      return createDesktopSessionOnScope(scope, input);
-    },
   },
   sessions: {
     list(filter?: SessionListFilter): Promise<DesktopSessionSummary[]> {
       return listDesktopSessions(filter);
     },
     listWithCoverage() {
-      return listDesktopSessionsWithCoverage();
+      return desktopSessionCatalogRefresher.refresh();
     },
     /**
      * The single session-creation channel (#1433). `mode` names a
@@ -2118,8 +2201,8 @@ const makaBridge = {
       const ref = await runtimeHostSessionRef(sessionId);
       const summary = await ipcRenderer.invoke(
         'sessions:reviseBeforeTurn', ref.scope, ref.sessionId, input,
-      ) as SessionSummary;
-      return projectSessionSummary(ref.scope, summary);
+      ) as DesktopSessionSummaryInput;
+      return projectCreatedSessionSummary(ref.scope, summary);
     },
     respondToSandboxBoundary(sessionId: string, response: SandboxBoundaryResponse): Promise<void> {
       return invokeSessionRuntimeHost('sessions:respondToSandboxBoundary', sessionId, response);
@@ -2136,6 +2219,9 @@ const makaBridge = {
     },
     respondToUserQuestion(sessionId: string, response: UserQuestionResponse): Promise<void> {
       return invokeSessionRuntimeHost('sessions:respondToUserQuestion', sessionId, response);
+    },
+    respondToUserForm(sessionId: string, response: InteractionFormResponse): Promise<void> {
+      return invokeSessionRuntimeHost('sessions:respondToUserForm', sessionId, response);
     },
     /**
      * PR-CMD-PALETTE-SAVE-CONVERSATION-FILE-0: write the renderer-formatted
@@ -2215,18 +2301,26 @@ const makaBridge = {
       };
     },
     subscribeChanges(handler: (event: SessionChangedEvent) => void): () => void {
-      return subscribeEveryRuntimeHostEvent(
+      const unsubscribeRuntimeHosts = subscribeEveryRuntimeHostEvent(
         'sessions:changed',
-        (scope, event: SessionChangedEvent) =>
-          handler({
-            ...event,
-            ...(event.sessionId
-              ? {
-                  sessionId: recordRuntimeHostSessionScope(scope, event.sessionId),
-                }
-              : {}),
-          }),
+        (scope, event: SessionChangedEvent) => {
+          if (!event.sessionId) {
+            handler(event);
+            return;
+          }
+          const observed = observeRuntimeHostSessionScope(scope, event.sessionId);
+          handler(observed.authorityAccepted
+            ? { ...event, sessionId: observed.sessionId }
+            : { reason: 'updated', ts: event.ts });
+        },
       );
+      const unsubscribeMounts = subscribeGuestSessionMountChanges(() => {
+        handler({ reason: 'updated', ts: Date.now() });
+      });
+      return () => {
+        unsubscribeRuntimeHosts();
+        unsubscribeMounts();
+      };
     },
     archive(sessionId: string, options?: { revisionFamily?: boolean }): Promise<void> {
       return invokeSessionRuntimeHost('sessions:archive', sessionId, options);
@@ -2474,7 +2568,7 @@ const makaBridge = {
         'external-sessions:import', scope, input,
       ) as ExternalSessionImportIpcResult;
       return result.ok
-        ? { ...result, session: projectSessionSummary(scope, result.session) }
+        ? { ...result, session: projectCreatedSessionSummary(scope, result.session as DesktopSessionSummaryInput) }
         : result;
     },
   },
@@ -3677,6 +3771,7 @@ if (process.env.MAKA_E2E === '1' && process.env.MAKA_E2E_USER_DATA_DIR) {
   const gates = new Map<LatchKey, { promise: Promise<void>; oneShot: boolean }>();
   const releases = new Map<LatchKey, { resolve: () => void; reject: (error: Error) => void }>();
   let nextSessionObservationError: Error | undefined;
+  let nextTranscriptOpenError: Error | undefined;
   const invocableSkillsWaiters = new Map<string, Array<() => void>>();
   const waitForLatch = async (key: LatchKey): Promise<void> => {
     const gate = gates.get(key);
@@ -3726,6 +3821,12 @@ if (process.env.MAKA_E2E === '1' && process.env.MAKA_E2E_USER_DATA_DIR) {
       disposed = true;
     };
   };
+  const openTranscript = makaBridge.transcripts.open.bind(makaBridge.transcripts);
+  makaBridge.transcripts.open = (...args) => {
+    const nextError = nextTranscriptOpenError;
+    nextTranscriptOpenError = undefined;
+    return nextError ? Promise.reject(nextError) : openTranscript(...args);
+  };
   const listInvocableSkills = makaBridge.skills.listInvocable.bind(makaBridge.skills);
   makaBridge.skills.listInvocable = async (...args) => {
     try {
@@ -3770,6 +3871,9 @@ if (process.env.MAKA_E2E === '1' && process.env.MAKA_E2E_USER_DATA_DIR) {
     },
     rejectNextSessionObservation(message: string) {
       nextSessionObservationError = new Error(message);
+    },
+    rejectNextTranscriptOpen(message: string) {
+      nextTranscriptOpenError = new Error(message);
     },
     release(key: LatchKey) {
       releases.get(key)?.resolve();

@@ -53,7 +53,7 @@ import { SettingsField, SettingsRow } from './settings-section';
  * permanently-open input would use.
  */
 export function SettingsExpandableRow(props: {
-  label: string;
+  label: ReactNode;
   /** The settled value, shown while collapsed. */
   value: ReactNode;
   /** Label for the affordance that opens the editor (更改 / 设置 / 编辑).
@@ -70,6 +70,12 @@ export function SettingsExpandableRow(props: {
    * this lives here instead of being hand-rolled per page.
    */
   end?: ReactNode;
+  /**
+   * Content that sits beside the built-in trigger while collapsed — a model
+   * row's enable switch, say. Unlike `end`, this keeps the trigger and the
+   * focus return that goes with it.
+   */
+  beforeAction?: ReactNode;
   isEditing: boolean;
   isDisabled?: boolean;
   /** Save stays disabled until the draft actually differs from the value. */
@@ -117,15 +123,18 @@ export function SettingsExpandableRow(props: {
         description={props.value}
         align="start"
         end={props.end ?? (
-          <Button
-            ref={triggerRef}
-            variant="ghost"
-            size="sm"
-            isDisabled={props.isDisabled}
-            onClick={props.onEdit}
-            label={props.actionLabel ?? ''}
-            aria-label={props.actionAriaLabel}
-          />
+          <>
+            {props.beforeAction}
+            <Button
+              ref={triggerRef}
+              variant="ghost"
+              size="sm"
+              isDisabled={props.isDisabled}
+              onClick={props.onEdit}
+              label={props.actionLabel ?? ''}
+              aria-label={props.actionAriaLabel}
+            />
+          </>
         )}
       />
     );

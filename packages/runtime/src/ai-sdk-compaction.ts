@@ -29,7 +29,7 @@
  */
 
 import type { RuntimeEvent } from '@maka/core/runtime-event';
-import type { AgentRunHeader } from '@maka/core/agent-run';
+import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type {
   BackendCompactHistoryInput,
   BackendCompactHistoryResult,
@@ -366,6 +366,15 @@ export class AiSdkCompaction {
         sessionId: this.sessionId,
         phase: 'standalone',
         orderedEvents: runtimeContext,
+        ...(input.runtimeContextInvocations
+          ? { invocations: input.runtimeContextInvocations }
+          : {}),
+        acceptedRoute: {
+          modelId: this.input.modelId,
+          ...(this.targetConnectionId !== undefined
+            ? { connectionId: this.targetConnectionId }
+            : {}),
+        },
         reserveTailEvents: 0,
         charsPerToken,
         now: this.now(),
@@ -381,8 +390,8 @@ export class AiSdkCompaction {
             runId: input.runId,
             source: {
               foldedRuntimeEvents: [...coveredRuntimeEvents],
-              ...(input.runtimeContextRunHeaders
-                ? { runHeaders: input.runtimeContextRunHeaders }
+              ...(input.runtimeContextInvocations
+                ? { invocations: input.runtimeContextInvocations }
                 : {}),
             },
             newlyFoldedRuntimeEvents: [...newlyFoldedRuntimeEvents],
@@ -472,13 +481,16 @@ export class AiSdkCompaction {
     input: HistoryCompactSummaryInput,
   ): Promise<string | HistoryCompactProviderState | undefined> {
     const foldedRunIds = new Set(input.source.foldedRuntimeEvents.map((event) => event.runId));
-    const sourceRunRoutes = input.source.runHeaders
-      ?.filter((run) => foldedRunIds.has(run.runId))
-      .map((run) => ({
-        runId: run.runId,
-        connectionId: run.llmConnectionId,
-        modelId: run.modelId,
-      }))
+    const sourceRunRoutes = input.source.invocations
+      ?.filter((invocation) => foldedRunIds.has(invocation.runId))
+      .map((invocation) => {
+        const route = invocation.opening.route;
+        return {
+          runId: invocation.runId,
+          ...(route.provenance === 'runtime' ? { connectionId: route.llmConnectionId } : {}),
+          modelId: route.modelId,
+        };
+      })
       .sort((left, right) => left.runId.localeCompare(right.runId));
     const fingerprint = sha256(
       stableStringifyForSignature({
@@ -798,7 +810,7 @@ export class AiSdkCompaction {
     const state = new MidTurnCapacityCompactState(
       headAnchor,
       priorContentEvents,
-      input.runtimeContextRunHeaders ?? [],
+      input.runtimeContextInvocations ?? [],
       resolveDeclaredContextWindow(this.input.connection, this.input.modelId),
     );
     // Seed the turn's FIRST request with the last request the provider
@@ -807,13 +819,14 @@ export class AiSdkCompaction {
     // decides, and its rejection is recovered from.
     const persisted = persistedRequestAnchor(
       input.runtimeContext ?? [],
-      state.priorRunHeaders,
+      state.priorInvocations,
       this.input.modelId,
       this.targetConnectionId,
     );
     if (persisted) {
       state.baselineTokens = persisted.inputTokens + (persisted.outputTokens ?? 0);
       state.lastAcceptedTotalTokens = state.baselineTokens;
+      state.priorAcceptedInputTokens = persisted.inputTokens;
     }
     if (persisted) state.replyReserveTokens = replyReserveTokens(persisted.outputTokens);
     return state;
@@ -1069,6 +1082,11 @@ export class AiSdkCompaction {
       phase: input.phase ?? 'mid_turn',
       orderedEvents,
       headAnchor: { runtimeEventId: state.headAnchor.id, turnId },
+      invocations: state.priorInvocations,
+      acceptedRoute: {
+        modelId: this.input.modelId,
+        ...(this.targetConnectionId !== undefined ? { connectionId: this.targetConnectionId } : {}),
+      },
       reserveTailEvents: 1,
       charsPerToken,
       now: this.now(),
@@ -1093,7 +1111,7 @@ export class AiSdkCompaction {
           ...(input.origin.runId ? { runId: input.origin.runId } : {}),
           source: {
             foldedRuntimeEvents: [...coveredRuntimeEvents],
-            runHeaders: state.priorRunHeaders,
+            invocations: state.priorInvocations,
           },
           ...(previousCheckpoint ? { previousCheckpoint } : {}),
           newlyFoldedRuntimeEvents: [...newlyFoldedRuntimeEvents],
@@ -1141,7 +1159,7 @@ export class AiSdkCompaction {
       plan.checkpoint,
       compatibleProviderReasoningReplayEventIds(
         plan.replacementEvents,
-        state.priorRunHeaders,
+        state.priorInvocations,
         this.targetProviderStateIdentity,
         this.input.modelId,
         input.origin.runId,
@@ -1459,11 +1477,19 @@ export class MidTurnCapacityCompactState {
    * rejection about what remains in it.
    */
   compactionAppliedThisSend = false;
+  /**
+   * Input tokens of the last request a provider accepted before this send.
+   *
+   * Input against input, across the send boundary: the first request of a send
+   * has no earlier step to compare with, and `baselineTokens` counts the reply
+   * too, which the next request does not always carry.
+   */
+  priorAcceptedInputTokens: number | undefined;
 
   constructor(
     readonly headAnchor: RuntimeEvent,
     readonly priorContentEvents: readonly RuntimeEvent[],
-    readonly priorRunHeaders: readonly AgentRunHeader[],
+    readonly priorInvocations: readonly RuntimeInvocationRecord[],
     /**
      * The Maka window: the context window the USER declared for this model,
      * a compaction target and nothing else. Absent when none is declared,
@@ -1517,7 +1543,7 @@ function usageBaselineTokens(usage: NormalizedUsage | undefined): number | undef
  */
 function persistedRequestAnchor(
   events: readonly RuntimeEvent[],
-  runHeaders: readonly AgentRunHeader[],
+  invocations: readonly RuntimeInvocationRecord[],
   modelId: string,
   connectionId: string | undefined,
 ): LastRequestAnchor | undefined {
@@ -1525,8 +1551,12 @@ function persistedRequestAnchor(
     const event = events[index];
     const anchor = event?.actions?.tokenUsage?.lastRequestAnchor;
     if (!anchor) continue;
-    const header = runHeaders.find((candidate) => candidate.runId === event?.runId);
-    if (!header || header.modelId !== modelId || header.llmConnectionId !== connectionId) {
+    const route = invocations.find((candidate) => candidate.runId === event?.runId)?.opening.route;
+    if (
+      route?.provenance !== 'runtime' ||
+      route.modelId !== modelId ||
+      route.llmConnectionId !== connectionId
+    ) {
       return undefined;
     }
     return anchor;

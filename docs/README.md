@@ -43,6 +43,7 @@ This page is the authority map for Maka documentation. Code and contract tests r
 ## Blogs
 
 - [Log Is the Runtime: How Maka Uses an Append-Only Log to Manage Agent State and Context](./blogs/log-is-the-runtime.md) ([中文](./blogs/log-is-the-runtime.zh-CN.md))
+- [From Copy-on-Write to Mailboxes: Two Paths for Multi-Agent Scheduling](./blogs/multi-agent-scheduling.md) ([中文](./blogs/multi-agent-scheduling.zh-CN.md))
 
 ## Current contracts
 

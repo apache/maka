@@ -17,18 +17,25 @@
  * under the License.
  */
 
+import type { AgentRunEvent, AgentRunStore, EmittedAgentRunEvent } from '@maka/core/agent-run';
+import { RUN_COMPOSITION_RECORDED_EVENT_TYPE } from '@maka/core/agent-run';
 import type {
-  AgentRunEvent,
-  AgentRunHeader,
-  AgentRunStore,
-  EmittedAgentRunEvent,
-} from '@maka/core/agent-run';
-import type { RuntimeEvent, ToolBoundaryProtocol } from '@maka/core/runtime-event';
+  RuntimeEvent,
+  RuntimeEventInvocationOpenedContent,
+  RuntimeInvocationRootAuthority,
+  ToolBoundaryProtocol,
+} from '@maka/core/runtime-event';
 import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
 import type { RunCompositionSnapshot } from '@maka/core/run-composition';
 import { decodeRunCompositionSnapshot } from '@maka/core/run-composition';
 import { DurableStoreWriteError, RunSealedError } from '@maka/core/runtime-event-store';
-import { isSessionInlineRun } from '@maka/core/agent-run';
+import {
+  buildInvocationOpenedEvent,
+  buildSyntheticTerminalRuntimeEvent,
+  isSessionInlineInvocation,
+} from '@maka/core/runtime-invocation';
+import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
+import type { RuntimeInvocationLineage } from '@maka/core/runtime-event';
 import {
   MODEL_PROJECTION_TRANSITION_EVENT_TYPE,
   type ModelProjectionTransition,
@@ -79,10 +86,7 @@ import {
   statusFromEvent,
   turnStatusFromEvent,
 } from './session-projection-helpers.js';
-import {
-  buildSyntheticTerminalRuntimeEvent,
-  commitOrCreateTerminalRunFact,
-} from './terminal-run-commit.js';
+import { commitOrCreateTerminalRunFact } from './terminal-run-commit.js';
 import type { RuntimeContinuation } from './runtime-resume.js';
 import {
   createRuntimeContinuationStartAdmissionProof,
@@ -124,7 +128,7 @@ export interface AgentRunHooks {
 }
 
 export type AgentRunLineage = Partial<
-  Pick<AgentRunHeader, 'parentRunId' | 'resumedFromRunId' | 'retriedFromRunId'> &
+  Pick<RuntimeInvocationLineage, 'parentRunId' | 'resumedFromRunId' | 'retriedFromRunId'> &
     Pick<
       UserMessageInput,
       | 'parentTurnId'
@@ -143,20 +147,21 @@ export interface AgentRunInput {
   userInput: UserMessageInput;
   /** Internal lineage for runtime-owned continuations; never accepted by live turn input. */
   runLineage?: Pick<AgentRunLineage, 'parentRunId'>;
-  rootExecutionKind?: AgentRunHeader['rootExecutionKind'];
+  rootExecutionKind?: 'context_compact';
   runId?: string;
   userMessageId?: string | null;
   durability?: AgentRunDurability;
   store: AgentRunSessionStore;
   runStore?: AgentRunStore;
   runtimeEventStore?: RuntimeEventStore;
-  repairRunRuntimeLedger?: (sessionId: string, runId: string) => Promise<boolean>;
   newId: () => string;
   now: () => number;
   workspaceIdentity?: string;
   continuationFailpoint?: (point: RuntimeContinuationFailpoint) => Promise<void>;
-  /** Exact target header already committed inside the durable continuation claim. */
-  claimedRunHeader?: AgentRunHeader;
+  /** Exact target opening fact already committed inside the durable continuation claim. */
+  claimedOpening?: RuntimeEventInvocationOpenedContent;
+  /** The moment that claim was taken; the target invocation opens at it. */
+  claimedOpenedAt?: number;
   /** Commits the claimed continuation provider-call T1 after Run creation. */
   commitContinuationStart?: (startedAt: number) => Promise<{ startEventId: string; created: true }>;
   hooks: AgentRunHooks;
@@ -176,10 +181,8 @@ export interface AgentRunSessionStore {
 
 export type RuntimeContinuationFailpoint =
   | 'after_continuation_claim_committed'
-  | 'after_run_created'
   | 'after_continuation_start_committed'
-  | 'after_terminal_event_committed'
-  | 'after_terminal_header_committed';
+  | 'after_terminal_event_committed';
 
 export class ContinuationStartCommitError extends Error {
   readonly name = 'ContinuationStartCommitError';
@@ -202,7 +205,7 @@ export interface AgentRunBeginResult {
 export interface AgentRunOperationBeginResult {
   backend: AgentBackend;
   runtimeContext: RuntimeEvent[];
-  runtimeContextRunHeaders: AgentRunHeader[];
+  runtimeContextInvocations: RuntimeInvocationRecord[];
   startedAt: number;
 }
 
@@ -249,9 +252,11 @@ export class AgentRun {
   private finalStatus: { status: SessionStatus; blockedReason?: SessionBlockedReason } | undefined;
   private turnFailed = false;
   private finalized = false;
-  private terminalRunHeaderCommitted = false;
+  private terminalRunFactCommitted = false;
   private continuationActive = false;
   private providerStateIdentity: `sha256:${string}` | undefined;
+  private invocationOpening: RuntimeEventInvocationOpenedContent | undefined;
+  private invocationOpeningCommitted = false;
   private terminalClaim:
     | {
         owner: 'event' | 'stop';
@@ -338,7 +343,7 @@ export class AgentRun {
   }
 
   bindProviderStateIdentity(identity: `sha256:${string}` | undefined): void {
-    const claimed = this.input.claimedRunHeader?.providerStateIdentity;
+    const claimed = claimedProviderStateIdentity(this.input.claimedOpening);
     const expected = claimed ?? this.providerStateIdentity;
     if (expected !== undefined && expected !== identity) {
       throw new Error('Prepared backend provider state does not match the AgentRun admission');
@@ -347,10 +352,11 @@ export class AgentRun {
   }
 
   isSessionInline(): boolean {
-    return isSessionInlineRun({
-      ...(this.lineage.parentRunId ? { parentRunId: this.lineage.parentRunId } : {}),
-      ...(this.continuationActive ? { continuationSource: true } : {}),
-    });
+    const opening = this.invocationOpening;
+    if (opening) return isSessionInlineInvocation(opening);
+    // Before the opening fact exists there is only the lineage the turn was
+    // admitted with, which decides the same question the same way.
+    return this.lineage.parentRunId === undefined;
   }
 
   hasPendingStop(): boolean {
@@ -373,7 +379,7 @@ export class AgentRun {
    * produces its own terminal event finds the claim taken and writes nothing.
    */
   async settleStopTerminal(): Promise<void> {
-    if (this.terminalClaim?.owner !== 'stop' || this.terminalRunHeaderCommitted) return;
+    if (this.terminalClaim?.owner !== 'stop' || this.terminalRunFactCommitted) return;
     // Nothing durable is configured, so there is no fact to land. Every other
     // failure below is real and must reach the stop's caller: a stop that
     // reports success while the run stays non-terminal is the silent loss this
@@ -399,7 +405,7 @@ export class AgentRun {
       // the latch, one that cannot fails the settlement loudly so the stop
       // stays retryable.
       try {
-        await runStore.readRun(this.sessionId, this.runId);
+        await runStore.readEvents(this.sessionId, this.runId);
         this.runStoreAvailable = true;
       } catch (error) {
         throw new Error('AgentRun store is unavailable for stop settlement', { cause: error });
@@ -446,10 +452,18 @@ export class AgentRun {
     this.runComposition ??= normalized;
     if (this.runCompositionWrite) return this.runCompositionWrite;
     const write = this.enqueueRequiredRunStoreWrite('commit Run Composition', async () => {
-      await this.input.runStore?.updateRun(
+      await this.input.runStore?.appendEvent(
         this.sessionId,
         this.runId,
-        { runComposition: normalized },
+        {
+          type: RUN_COMPOSITION_RECORDED_EVENT_TYPE,
+          id: this.input.newId(),
+          runId: this.runId,
+          sessionId: this.sessionId,
+          turnId: this.turnId,
+          ts: this.input.now(),
+          data: { runComposition: normalized },
+        },
         { durable: this.requiresDurablePersistence() },
       );
     });
@@ -608,8 +622,8 @@ export class AgentRun {
     }
     if (this.requiresDurablePersistence() && isInteractionResumeAck(sessionEvent)) {
       // A hosted continuation may resume execution only after its identity-only
-      // settlement fact is durable. Run status advances next, then Session
-      // status; the queue consumer acknowledges the event only after all three.
+      // settlement fact is durable. Session status advances next, and the queue
+      // consumer acknowledges the event only after both.
       await this.recordRuntimeEvents([runtimeEvent], { requireDurableWrite: true });
       await this.recordSessionEvent(sessionEvent, options);
       return;
@@ -642,7 +656,7 @@ export class AgentRun {
   }
 
   async begin(): Promise<AgentRunBeginResult> {
-    await this.createRunRecord();
+    await this.openInvocation();
 
     let initialRuntimeEventId: string;
 
@@ -686,14 +700,13 @@ export class AgentRun {
     });
 
     this.active = await this.input.hooks.reserveRun(this.sessionId, this.header, this);
-    await this.markRunStarted(this.lastTs);
 
     await this.input.hooks.updateStatus(this.sessionId, 'running', undefined, this.lastTs);
 
     const priorRuntimeContext = await this.buildPriorRuntimeContext();
     const projectionContext = priorRuntimeContext
       ? projectRuntimeEventsToStoredMessages(priorRuntimeContext.events, {
-          runHeaders: priorRuntimeContext.runs,
+          invocations: priorRuntimeContext.invocations,
         }).messages
       : [];
 
@@ -718,7 +731,7 @@ export class AgentRun {
         ...(priorRuntimeContext
           ? {
               runtimeContext: priorRuntimeContext.events,
-              runtimeContextRunHeaders: priorRuntimeContext.runs,
+              runtimeContextInvocations: priorRuntimeContext.invocations,
             }
           : {}),
       }),
@@ -727,7 +740,7 @@ export class AgentRun {
   }
 
   async beginOperation(): Promise<AgentRunOperationBeginResult> {
-    await this.createRunRecord();
+    await this.openInvocation();
 
     const startedAt = this.input.now();
     this.lastTs = startedAt;
@@ -737,7 +750,6 @@ export class AgentRun {
     });
 
     this.active = await this.input.hooks.reserveRun(this.sessionId, this.header, this);
-    await this.markRunStarted(startedAt);
 
     await this.input.hooks.updateStatus(this.sessionId, 'running', undefined, startedAt);
 
@@ -745,7 +757,7 @@ export class AgentRun {
     return {
       backend: this.active.backend,
       runtimeContext: priorRuntimeContext?.events ?? [],
-      runtimeContextRunHeaders: priorRuntimeContext?.runs ?? [],
+      runtimeContextInvocations: priorRuntimeContext?.invocations ?? [],
       startedAt,
     };
   }
@@ -762,8 +774,7 @@ export class AgentRun {
     }
 
     this.continuationActive = true;
-    await this.createRunRecord(continuation);
-    await this.input.continuationFailpoint?.('after_run_created');
+    await this.openInvocation(continuation);
     const startedAt = this.input.now();
     this.lastTs = startedAt;
     if (!this.input.commitContinuationStart) {
@@ -782,7 +793,6 @@ export class AgentRun {
     });
 
     this.active = await this.input.hooks.reserveRun(this.sessionId, this.header, this);
-    await this.markRunStarted(startedAt);
     await this.input.hooks.updateStatus(this.sessionId, 'running', undefined, startedAt);
 
     return {
@@ -831,7 +841,10 @@ export class AgentRun {
           ? { inlineReferences: input.inlineReferences }
           : {}),
       },
-      ...(this.toolBoundaryProtocol
+      // The marker belongs to the invocation's first event. Once an opening
+      // fact exists it holds the marker, and a second copy here would read as
+      // a stray marker to RecoveryResolver.
+      ...(this.toolBoundaryProtocol && !this.invocationOpeningCommitted
         ? { actions: { runtimeProtocol: { toolBoundary: this.toolBoundaryProtocol } } }
         : {}),
     };
@@ -871,7 +884,6 @@ export class AgentRun {
         this.markRunFailed(
           turnStatus.errorClass,
           `turn ended with stopReason=${ev.type === 'complete' ? ev.stopReason : 'unknown'}`,
-          ev.ts,
         );
       }
     }
@@ -890,15 +902,7 @@ export class AgentRun {
           ev.ts,
         );
       };
-      // On resume, advance the Run before the Session so an interrupted pair
-      // remains conservatively waiting rather than advertising false readiness.
-      if (this.requiresDurablePersistence() && isInteractionResumeAck(ev)) {
-        await this.recordStatusFromTransition(ev, transition, ev.ts);
-        await updateSessionStatus();
-      } else {
-        await updateSessionStatus();
-        await this.recordStatusFromTransition(ev, transition, ev.ts);
-      }
+      await updateSessionStatus();
     }
     if (turnStatus && !this.stopped) {
       const appendTurnState = this.input.hooks.appendTurnState(
@@ -936,7 +940,7 @@ export class AgentRun {
           })
           .catch((error) => this.enqueueTraceWriteFailure(error, 'terminal session projection'));
 
-        this.markRunFailed(ev.reason ?? ev.code ?? 'unknown', ev.message, ev.ts);
+        this.markRunFailed(ev.reason ?? ev.code ?? 'unknown', ev.message);
       }
     }
   }
@@ -1051,26 +1055,24 @@ export class AgentRun {
       })
       .catch(() => {});
 
-    this.markRunFailed(
-      error instanceof Error ? error.name : 'unknown',
-      errorMessage(error),
-      this.input.now(),
-    );
+    this.markRunFailed(error instanceof Error ? error.name : 'unknown', errorMessage(error));
   }
 
   async finalize(): Promise<void> {
     if (this.finalized) return;
     this.finalized = true;
+    // A run cannot end without having begun. Finalizing one that never reached
+    // its start would otherwise leave a terminal event on an invocation the
+    // inventory cannot see, because nothing opened it. A continuation is the
+    // exception at both ends: its opening rides the continuation-start event,
+    // and a continuation that never committed one has no invocation to end.
+    if (!this.input.commitContinuationStart) await this.openInvocation().catch(() => {});
     await this.flushRuntimePartialBuffer(true);
     const lastTs = this.lastTs || this.input.now();
     if (this.stopped) this.finalStatus = { status: 'aborted' };
     if (!this.finalStatus) {
       this.finalStatus = { status: 'blocked', blockedReason: 'unknown' };
-      this.markRunFailed(
-        'missing_terminal_event',
-        'run finalized without a terminal SessionEvent',
-        lastTs,
-      );
+      this.markRunFailed('missing_terminal_event', 'run finalized without a terminal SessionEvent');
     }
     this.reserveFinalizationTerminal(this.finalStatus, lastTs);
     if (this.active) {
@@ -1103,120 +1105,153 @@ export class AgentRun {
     await this.finishRun(this.finalStatus, lastTs);
   }
 
-  private async createRunRecord(continuation?: RuntimeContinuation): Promise<void> {
-    if (!this.input.runStore) {
-      if (continuation) throw new Error('Runtime continuation requires a durable run store');
-      return;
+  private async openInvocation(continuation?: RuntimeContinuation): Promise<void> {
+    if (!this.input.runStore && continuation) {
+      throw new Error('Runtime continuation requires a durable run store');
     }
+    // The opening fact is a RuntimeEvent, so it opens whenever this run has a
+    // spine to open on. The operational ledger is a separate store with its own
+    // availability, and a run without one still exists.
+    if (!this.input.runtimeEventStore) return;
     const createdAt =
-      continuation && this.input.claimedRunHeader
-        ? this.input.claimedRunHeader.createdAt
+      continuation && this.input.claimedOpenedAt !== undefined
+        ? this.input.claimedOpenedAt
         : this.input.now();
     const providerStateIdentity =
-      this.input.claimedRunHeader?.providerStateIdentity ?? this.providerStateIdentity;
+      claimedProviderStateIdentity(this.input.claimedOpening) ?? this.providerStateIdentity;
     this.providerStateIdentity = providerStateIdentity;
-    const computedHeader: AgentRunHeader = {
-      runId: this.runId,
-      invocationId: this.invocationId,
-      sessionId: this.sessionId,
-      turnId: this.turnId,
-      status: 'created',
-      backendKind: this.header.backend,
-      ...(this.header.llmConnectionId === undefined
-        ? {}
-        : { llmConnectionId: this.header.llmConnectionId }),
-      ...(providerStateIdentity ? { providerStateIdentity } : {}),
-      llmConnectionSlug: this.header.llmConnectionSlug,
-      modelId: this.header.model,
-      cwd: this.header.cwd,
-      ...(this.input.workspaceIdentity ? { workspaceIdentity: this.input.workspaceIdentity } : {}),
-      permissionMode: this.header.permissionMode,
-      collaborationMode: this.header.collaborationMode ?? 'agent',
-      orchestrationMode: this.effectiveOrchestration.mode,
-      orchestrationSource: this.effectiveOrchestration.source,
-      agentSwarmAuthorization: this.effectiveOrchestration.agentSwarmAuthorization,
-      toolMode: this.toolMode,
-      createdAt,
-      updatedAt: createdAt,
-      ...this.lineage,
-      ...(continuation
-        ? {
-            continuationSource:
-              continuation.claimId && continuation.boundary
-                ? {
-                    protocol: 'continuation_source_v2' as const,
-                    claimId: continuation.claimId,
-                    boundaryDigest: continuation.boundary.manifestDigest,
-                    sourceInvocationId: continuation.sourceInvocationId,
-                    sourceRunId: continuation.sourceRunId,
-                    sourceTurnId: continuation.sourceTurnId,
-                    sourceRuntimeEventHighWater: continuation.sourceRuntimeEventHighWater,
-                    sourcePrefixDigest: continuation.boundary.segments.at(-1)!.prefixDigest,
-                    replayManifestDigest: continuation.boundary.manifestDigest,
-                  }
-                : {
-                    sourceInvocationId: continuation.sourceInvocationId,
-                    sourceRunId: continuation.sourceRunId,
-                    sourceTurnId: continuation.sourceTurnId,
-                    sourceRuntimeEventHighWater: continuation.sourceRuntimeEventHighWater,
-                  },
-          }
-        : {}),
-      ...(this.input.userInput.agentId ? { agentId: this.input.userInput.agentId } : {}),
-      ...(this.input.userInput.agentName ? { agentName: this.input.userInput.agentName } : {}),
-      ...(this.input.userInput.origin?.kind === 'scheduled_task'
-        ? { scheduledTaskId: this.input.userInput.origin.scheduledTaskId }
-        : {}),
-      ...(this.input.userInput.origin?.kind === 'goal'
-        ? { goalId: this.input.userInput.origin.goalId }
-        : {}),
-      ...(this.input.userInput.origin?.kind === 'agent_graph'
-        ? {
-            agentGraphWakeId: this.input.userInput.origin.wakeId,
-            agentGraphWakeAttemptId: this.input.userInput.origin.attemptId,
-          }
-        : {}),
-      ...(this.input.rootExecutionKind ? { rootExecutionKind: this.input.rootExecutionKind } : {}),
-    };
-    const header =
-      continuation && this.input.claimedRunHeader ? this.input.claimedRunHeader : computedHeader;
+    const computedOpening = this.buildInvocationOpening(continuation, providerStateIdentity);
     if (
       continuation &&
-      this.input.claimedRunHeader &&
-      !isDeepStrictEqual(this.input.claimedRunHeader, computedHeader)
+      this.input.claimedOpening &&
+      !isDeepStrictEqual(this.input.claimedOpening, computedOpening)
     ) {
-      throw new Error('Claimed continuation target Run header no longer matches execution');
+      throw new Error('Claimed continuation target opening no longer matches execution');
     }
-    try {
-      const durable = this.requiresDurablePersistence();
-      await this.input.runStore.createRun(header, { durable });
-      await this.input.runStore.appendEvent(
-        this.sessionId,
-        this.runId,
+    this.invocationOpening = this.input.claimedOpening ?? computedOpening;
+    // A continuation's opening fact rides its continuation-start event, which
+    // the store requires to be event 1 of the target invocation. Every other
+    // invocation opens with its own event, committed before any provider or
+    // tool dispatch.
+    if (!continuation) await this.commitInvocationOpening(createdAt);
+  }
+
+  /**
+   * The one immutable statement of how this invocation was opened.
+   *
+   * Everything a later reader needs to know about the run's route,
+   * configuration, root authority and lineage is decided here, once, and never
+   * restated anywhere else.
+   */
+  private buildInvocationOpening(
+    continuation: RuntimeContinuation | undefined,
+    providerStateIdentity: `sha256:${string}` | undefined,
+  ): RuntimeEventInvocationOpenedContent {
+    const lineage = {
+      ...this.lineage,
+      ...(this.input.userInput.agentId ? { agentId: this.input.userInput.agentId } : {}),
+      ...(this.input.userInput.agentName ? { agentName: this.input.userInput.agentName } : {}),
+      ...(continuation ? { parentRunId: continuation.sourceRunId } : {}),
+    };
+    return {
+      kind: 'invocation_opened',
+      protocol: 'invocation_opened_v1',
+      route:
+        this.header.llmConnectionId === undefined
+          ? {
+              provenance: 'unknown',
+              backendKind: this.header.backend,
+              llmConnectionSlug: this.header.llmConnectionSlug,
+              modelId: this.header.model,
+            }
+          : {
+              provenance: 'runtime',
+              backendKind: this.header.backend,
+              llmConnectionId: this.header.llmConnectionId,
+              llmConnectionSlug: this.header.llmConnectionSlug,
+              modelId: this.header.model,
+              ...(providerStateIdentity ? { providerStateIdentity } : {}),
+            },
+      configuration: {
+        cwd: this.header.cwd,
+        permissionMode: this.header.permissionMode,
+        collaborationMode: this.header.collaborationMode ?? 'agent',
+        orchestrationMode: this.effectiveOrchestration.mode,
+        orchestrationSource: this.effectiveOrchestration.source,
+        toolMode: this.toolMode,
+        ...(this.effectiveOrchestration.agentSwarmAuthorization !== undefined
+          ? { agentSwarmAuthorization: this.effectiveOrchestration.agentSwarmAuthorization }
+          : {}),
+        ...(this.input.workspaceIdentity
+          ? { workspaceIdentity: this.input.workspaceIdentity }
+          : {}),
+      },
+      root: this.invocationRootAuthority(),
+      source: continuation
+        ? {
+            kind: 'continuation',
+            sourceInvocationId: continuation.sourceInvocationId,
+            sourceRunId: continuation.sourceRunId,
+            sourceTurnId: continuation.sourceTurnId,
+            sourceRuntimeEventHighWater: continuation.sourceRuntimeEventHighWater,
+            ...(continuation.claimId ? { claimId: continuation.claimId } : {}),
+            ...(continuation.boundary
+              ? { boundaryDigest: continuation.boundary.manifestDigest }
+              : {}),
+          }
+        : { kind: 'fresh' },
+      ...(Object.keys(lineage).length > 0 ? { lineage } : {}),
+    };
+  }
+
+  private invocationRootAuthority(): RuntimeInvocationRootAuthority {
+    const origin = this.input.userInput.origin;
+    if (origin?.kind === 'scheduled_task') {
+      return { kind: 'scheduled_task', scheduledTaskId: origin.scheduledTaskId };
+    }
+    if (origin?.kind === 'goal') return { kind: 'goal', goalId: origin.goalId };
+    if (origin?.kind === 'agent_graph') {
+      return {
+        kind: 'agent_graph_supervisor_wake',
+        wakeId: origin.wakeId,
+        attemptId: origin.attemptId,
+      };
+    }
+    if (this.input.rootExecutionKind === 'context_compact') return { kind: 'context_compact' };
+    return { kind: 'user' };
+  }
+
+  /**
+   * Make the invocation's opening fact durable before anything can dispatch.
+   *
+   * It is the invocation's first event, so it also carries the protocol marker
+   * RecoveryResolver reads off event one.
+   */
+  private async commitInvocationOpening(ts: number): Promise<void> {
+    const opening = this.invocationOpening;
+    if (!opening || this.invocationOpeningCommitted) return;
+    await this.recordRuntimeEvents(
+      [
         {
-          type: 'run_created',
-          id: this.input.newId(),
-          runId: this.runId,
-          sessionId: this.sessionId,
-          turnId: this.turnId,
-          ts: createdAt,
-          data: {
-            textLength: this.input.userInput.text.length,
-            attachmentCount: this.input.userInput.attachments?.length ?? 0,
-            orchestrationMode: this.effectiveOrchestration.mode,
-            orchestrationSource: this.effectiveOrchestration.source,
-            agentSwarmAuthorization: this.effectiveOrchestration.agentSwarmAuthorization,
-            toolMode: this.toolMode,
-          },
+          ...buildInvocationOpenedEvent({
+            id: this.input.newId(),
+            run: {
+              sessionId: this.sessionId,
+              invocationId: this.invocationId,
+              runId: this.runId,
+              turnId: this.turnId,
+            },
+            openedAt: ts,
+            opening,
+          }),
+          ...(this.toolBoundaryProtocol
+            ? { actions: { runtimeProtocol: { toolBoundary: this.toolBoundaryProtocol } } }
+            : {}),
         },
-        { durable },
-      );
-    } catch (error) {
-      this.runStoreAvailable = false;
-      if (this.requiresDurablePersistence()) throw error;
-      this.enqueueTraceWriteFailure(error);
-      if (continuation) throw error;
-    }
+      ],
+      { requireDurableWrite: this.requiresDurablePersistence() },
+    );
+    this.invocationOpeningCommitted = true;
   }
 
   private requiresDurablePersistence(): boolean {
@@ -1228,215 +1263,41 @@ export class AgentRun {
       sessionId: this.sessionId,
       currentRunId: this.runId,
       currentTurnId: this.turnId,
-      runStore: this.input.runStore,
       runtimeEventStore: this.input.runtimeEventStore,
-      runStoreAvailable: this.runStoreAvailable,
       runtimeEventStoreAvailable: this.runtimeEventStoreAvailable,
-      repairRunRuntimeLedger: this.input.repairRunRuntimeLedger,
-      readMessages: () => this.input.store.readMessages(this.sessionId),
     });
   }
 
-  private async markRunStarted(ts: number): Promise<void> {
-    if (!this.input.runStore || !this.runStoreAvailable) return;
-    const durable = this.requiresDurablePersistence();
-    const write = this.enqueueRunStore(
-      'mark run started',
-      async () => {
-        await this.input.runStore?.appendEvent(
-          this.sessionId,
-          this.runId,
-          {
-            type: 'run_started',
-            id: this.input.newId(),
-            runId: this.runId,
-            sessionId: this.sessionId,
-            turnId: this.turnId,
-            ts,
-          },
-          { durable },
-        );
-        await this.input.runStore?.updateRun(
-          this.sessionId,
-          this.runId,
-          { status: 'running', updatedAt: ts },
-          { durable },
-        );
-      },
-      { rethrow: durable },
-    );
-    if (durable) await write;
-  }
-
-  private async recordStatusFromTransition(
-    ev: SessionEvent,
-    transition: { status: SessionStatus; blockedReason?: SessionBlockedReason },
-    ts: number,
-  ): Promise<void> {
-    const durable = this.requiresDurablePersistence();
-    const runStore = this.input.runStore;
-    if (!runStore) {
-      if (durable) {
-        throw new Error('AgentRun store is unavailable for a required status transition');
-      }
-      return;
-    }
-    const status =
-      transition.status === 'waiting_for_user'
-        ? 'waiting_for_user'
-        : transition.status === 'aborted'
-          ? 'cancelled'
-          : transition.status === 'blocked'
-            ? 'failed'
-            : transition.status === 'active'
-              ? 'completed'
-              : 'running';
-    if (isTerminalRunStatus(status)) return;
-    const appendAudit = async (): Promise<void> => {
-      await runStore.appendEvent(
-        this.sessionId,
-        this.runId,
-        {
-          type: 'run_status_changed',
-          id: this.input.newId(),
-          runId: this.runId,
-          sessionId: this.sessionId,
-          turnId: this.turnId,
-          ts,
-          data: {
-            sessionStatus: transition.status,
-            ...(transition.blockedReason ? { blockedReason: transition.blockedReason } : {}),
-          },
-        },
-        { durable },
-      );
-    };
-    if (durable) {
-      await this.enqueueRequiredRunStoreWrite('record required run status', async () => {
-        await runStore.updateRun(
-          this.sessionId,
-          this.runId,
-          { status, updatedAt: ts },
-          { durable: true },
-        );
-      });
-      // The audit remains best-effort, but its physical write belongs to this
-      // required transition and must settle before the resume acknowledgement.
-      await this.enqueueRunStore('append run status audit', appendAudit);
-    } else {
-      this.enqueueRunStore('record run status', async () => {
-        await runStore.updateRun(this.sessionId, this.runId, { status, updatedAt: ts });
-        await appendAudit();
-      });
-    }
-    if (ev.type === 'abort') {
-      this.markRunCancelled(ev.reason, ts);
-    }
-  }
-
-  private markRunFailed(failureClass: string, message: string, ts: number): void {
-    if (!this.input.runStore || !this.runStoreAvailable) return;
+  /**
+   * Remember why this run is going to fail.
+   *
+   * Nothing is written here: the terminal RuntimeEvent carries the failure, and
+   * it is committed once, at the end, by `commitTerminalRun`.
+   */
+  private markRunFailed(failureClass: string, message: string): void {
     this.failureClass = failureClass;
     this.failureMessage = redactTraceString(message);
-    if (this.input.runtimeEventStore) return;
-    this.enqueueRunStore('mark run failed', async () => {
-      await this.input.runStore?.updateRun(this.sessionId, this.runId, {
-        status: 'failed',
-        updatedAt: ts,
-        completedAt: ts,
-        failureClass,
-        failureMessage: this.failureMessage,
-      });
-      await this.input.runStore?.appendEvent(this.sessionId, this.runId, {
-        type: 'run_failed',
-        id: this.input.newId(),
-        runId: this.runId,
-        sessionId: this.sessionId,
-        turnId: this.turnId,
-        ts,
-        message: redactTraceString(message),
-        data: { failureClass },
-      });
-    });
   }
 
-  private markRunCancelled(reason: string | undefined, ts: number): void {
-    if (!this.input.runStore || !this.runStoreAvailable) return;
-    if (this.input.runtimeEventStore) return;
-    this.enqueueRunStore('mark run cancelled', async () => {
-      await this.input.runStore?.updateRun(this.sessionId, this.runId, {
-        status: 'cancelled',
-        updatedAt: ts,
-        completedAt: ts,
-      });
-      await this.input.runStore?.appendEvent(this.sessionId, this.runId, {
-        type: 'run_cancelled',
-        id: this.input.newId(),
-        runId: this.runId,
-        sessionId: this.sessionId,
-        turnId: this.turnId,
-        ts,
-        ...(reason ? { message: redactTraceString(reason) } : {}),
-      });
-    });
-  }
-
+  /**
+   * End the run by committing its terminal RuntimeEvent, and nothing else.
+   *
+   * A turn that parks on an interaction has not ended, so it commits nothing:
+   * the absence of a terminal event is exactly what "still open" means.
+   */
   private async finishRun(
     finalStatus: { status: SessionStatus; blockedReason?: SessionBlockedReason } | undefined,
     ts: number,
   ): Promise<void> {
     await this.traceQueue.catch(() => {});
-    if (!this.input.runStore || !this.runStoreAvailable) return;
-    const status = this.runStatusForFinalStatus(finalStatus);
-    const isTerminal = status === 'completed' || status === 'failed' || status === 'cancelled';
-    if (isTerminal && this.input.runtimeEventStore) {
-      await this.commitTerminalRun(finalStatus, ts);
-      return;
-    }
-    await this.enqueueRunStore('finish run', async () => {
-      await this.input.runStore?.updateRun(this.sessionId, this.runId, {
-        status,
-        updatedAt: ts,
-        ...(isTerminal ? { completedAt: ts } : {}),
-        ...(status === 'failed'
-          ? {
-              failureClass: this.failureClass ?? finalStatus?.blockedReason ?? 'unknown',
-              ...(this.failureMessage ? { failureMessage: this.failureMessage } : {}),
-            }
-          : {}),
-      });
-      await this.input.runStore?.appendEvent(this.sessionId, this.runId, {
-        type:
-          status === 'cancelled'
-            ? 'run_cancelled'
-            : status === 'failed'
-              ? 'run_failed'
-              : status === 'completed'
-                ? 'run_completed'
-                : 'run_status_changed',
-        id: this.input.newId(),
-        runId: this.runId,
-        sessionId: this.sessionId,
-        turnId: this.turnId,
-        ts,
-        ...(status === 'failed'
-          ? { data: { failureClass: this.failureClass ?? finalStatus?.blockedReason ?? 'unknown' } }
-          : status === 'waiting_for_user'
-            ? {
-                data: {
-                  sessionStatus: 'waiting_for_user',
-                  blockedReason: finalStatus?.blockedReason ?? 'permission_required',
-                },
-              }
-            : {}),
-      });
-    });
-    await this.traceQueue.catch(() => {});
+    if (!this.input.runtimeEventStore) return;
+    if (this.runStatusForFinalStatus(finalStatus) === 'waiting_for_user') return;
+    await this.commitTerminalRun(finalStatus, ts);
   }
 
   private runStatusForFinalStatus(
     finalStatus: { status: SessionStatus; blockedReason?: SessionBlockedReason } | undefined,
-  ): AgentRunHeader['status'] {
+  ): 'completed' | 'failed' | 'cancelled' | 'waiting_for_user' {
     if (this.stopped || finalStatus?.status === 'aborted') return 'cancelled';
     if (this.failureClass || finalStatus?.status === 'blocked') return 'failed';
     if (finalStatus?.status === 'waiting_for_user') return 'waiting_for_user';
@@ -1447,10 +1308,9 @@ export class AgentRun {
     finalStatus: { status: SessionStatus; blockedReason?: SessionBlockedReason } | undefined,
     ts: number,
   ): Promise<void> {
-    if (this.terminalRunHeaderCommitted) return;
-    const runStore = this.input.runStore;
+    if (this.terminalRunFactCommitted) return;
     const runtimeEventStore = this.input.runtimeEventStore;
-    if (!runStore || !runtimeEventStore) return;
+    if (!runtimeEventStore) return;
     // A latched RuntimeEvent store normally keeps the skip below: the latch
     // marks a write failure, and a transient one leaves the run non-terminal
     // on purpose so startup recovery repairs it with its own bookkeeping.
@@ -1466,7 +1326,6 @@ export class AgentRun {
       if (!(this.runtimeEventStoreFailure instanceof ToolLedgerCorruptionError)) return;
       corruptionRecovery = true;
     }
-    if (!this.runStoreAvailable) return;
     const fallbackStatus =
       this.stopped || finalStatus?.status === 'aborted' ? 'cancelled' : 'failed';
     const fallbackFailureClass = 'missing_terminal_event';
@@ -1490,9 +1349,8 @@ export class AgentRun {
       // Re-check after the await, not only at entry. Two callers — a stop
       // settling the claim and the stream's own finalize — can both pass the
       // entry guard and then queue behind the same write. The claim slot
-      // dedupes the RuntimeEvent, but the run-store projection would append a
-      // second terminal AgentRunEvent for the one run.
-      if (this.terminalRunHeaderCommitted) return;
+      // dedupes the RuntimeEvent, so a second pass has nothing left to do.
+      if (this.terminalRunFactCommitted) return;
       // On the recovery path the claimed event's write never committed, so
       // the boundary named after that commit must wait for the durability
       // barrier inside commitOrCreateTerminalRunFact; firing it here would
@@ -1503,7 +1361,6 @@ export class AgentRun {
         await this.input.continuationFailpoint?.('after_terminal_event_committed');
       }
       const commit = commitOrCreateTerminalRunFact({
-        runStore,
         runtimeEventStore,
         ...(this.continuationActive && deferContinuationBoundary
           ? {
@@ -1522,38 +1379,30 @@ export class AgentRun {
           ? { failureClass: this.failureClass ?? finalStatus?.blockedReason }
           : {}),
         ...(this.failureMessage ? { failureMessage: this.failureMessage } : {}),
-        ...(this.traceWriteError ? { traceWriteError: this.traceWriteError } : {}),
         ...(this.abortSource || fallbackStatus === 'cancelled'
           ? { abortSource: this.abortSource ?? 'user_stop' }
           : {}),
         fallbackStatus,
         fallbackInvocationId: this.runId,
         ...(fallbackStatus === 'failed' ? { fallbackFailureClass, fallbackFailureMessage } : {}),
-        allowHeaderCommitFailure: true,
       });
       if (!terminalClaim.write) {
         terminalClaim.write = commit.then(() => undefined);
         void terminalClaim.write.catch(() => {});
       }
-      const result = await commit;
-      this.terminalRunHeaderCommitted = result.headerCommitted;
-      if (result.headerCommitted && this.continuationActive) {
-        await this.input.continuationFailpoint?.('after_terminal_header_committed');
-      }
-      if (result.headerCommitError !== undefined) {
-        await this.enqueueTraceWriteFailure(result.headerCommitError, 'commit terminal run header');
-      }
+      await commit;
+      this.terminalRunFactCommitted = true;
     } catch (error) {
       if (corruptionRecovery) {
         // The scoped barrier lost its bet: the ledger refused even the
         // terminal fact. The latch never lifted, so there is nothing to
         // restore; record the failure and keep the finalize path's
         // historical silence for a store that stays broken.
-        await this.enqueueTraceWriteFailure(error, 'commit terminal run header');
+        await this.enqueueTraceWriteFailure(error, 'commit terminal run fact');
         return;
       }
       this.runStoreAvailable = false;
-      await this.enqueueTraceWriteFailure(error, 'commit terminal run header');
+      await this.enqueueTraceWriteFailure(error, 'commit terminal run fact');
       throw error;
     }
     await this.traceQueue.catch(() => {});
@@ -1782,14 +1631,6 @@ export class AgentRun {
     const message = errorMessage(error);
     this.traceWriteError ??= `${label}: ${message}`;
     try {
-      await this.input.runStore?.updateRun(this.sessionId, this.runId, {
-        traceWriteError: this.traceWriteError,
-        updatedAt: this.input.now(),
-      });
-    } catch {
-      // The terminal header commit retries the in-memory latch.
-    }
-    try {
       await this.input.runStore?.appendEvent(this.sessionId, this.runId, {
         type: 'trace_write_failed',
         id: this.input.newId(),
@@ -1904,7 +1745,9 @@ async function appendUserMessageOnce(
 
 function isInteractionResumeAck(event: SessionEvent): boolean {
   return (
-    event.type === 'sandbox_boundary_decision_ack' || event.type === 'user_question_answer_ack'
+    event.type === 'sandbox_boundary_decision_ack' ||
+    event.type === 'user_question_answer_ack' ||
+    event.type === 'form_answer_ack'
   );
 }
 
@@ -1923,4 +1766,12 @@ function isAtomicToolBoundaryProjection(
 ): boolean {
   if (!protocol || event.refs?.operationId === undefined) return false;
   return event.content?.kind === 'function_call' || event.content?.kind === 'function_response';
+}
+
+/** The provider endpoint identity a continuation claim froze, if it named one. */
+function claimedProviderStateIdentity(
+  opening: RuntimeEventInvocationOpenedContent | undefined,
+): `sha256:${string}` | undefined {
+  const route = opening?.route;
+  return route?.provenance === 'runtime' ? route.providerStateIdentity : undefined;
 }

@@ -26,6 +26,8 @@ import { auditAxTree } from './ax-tree-audit.mjs';
 
 const RENDER_VIEWPORT = Object.freeze({ width: 1280, height: 900 });
 const NARROW_RENDER_VIEWPORT = Object.freeze({ width: 720, height: 900 });
+const COLOR_SCHEMES = Object.freeze(['light', 'dark']);
+const FULL_PALETTE_STORY_IDS = new Set(['product-shell-official-appshell--native-conversation']);
 const REQUIRED_COMPUTER_USE_STORY_IDS = new Set([
   'product-accessibility-dialogs--create-scheduled-task',
   'product-accessibility-dialogs--mermaid-fullscreen',
@@ -131,28 +133,47 @@ function installStorybookRenderProbe({ storyId }) {
   connect();
 }
 
-export function catalogJobs(storyIndex) {
+export function catalogJobs(
+  storyIndex,
+  { themePalettes = ['default'], fullPaletteStoryIds = FULL_PALETTE_STORY_IDS } = {},
+) {
   const entries = storyIndex?.entries;
   if (!entries || typeof entries !== 'object' || Array.isArray(entries)) {
     throw new Error('Built Storybook index has no entries');
   }
+  if (!Array.isArray(themePalettes) || themePalettes.length === 0) {
+    throw new Error('Storybook smoke requires at least one theme palette');
+  }
+  const palettes = [...new Set(themePalettes)];
+  if (!palettes.includes('default')) {
+    throw new Error('Storybook smoke theme palettes must include default');
+  }
   const jobs = Object.values(entries)
     .filter((entry) => entry?.type === 'story' && typeof entry.id === 'string')
-    .flatMap((entry) => [
-      { storyId: entry.id, colorScheme: 'light' },
-      ...(DARK_THEME_SENTINEL_STORY_IDS.has(entry.id)
-        ? [{ storyId: entry.id, colorScheme: 'dark' }]
-        : []),
-    ]);
+    .flatMap((entry) => {
+      const hasFullPaletteCoverage = fullPaletteStoryIds.has(entry.id);
+      const entryPalettes = hasFullPaletteCoverage ? palettes : ['default'];
+      const colorSchemes =
+        hasFullPaletteCoverage || DARK_THEME_SENTINEL_STORY_IDS.has(entry.id)
+          ? COLOR_SCHEMES
+          : ['light'];
+      return entryPalettes.flatMap((palette) =>
+        colorSchemes.map((colorScheme) => ({
+          storyId: entry.id,
+          colorScheme,
+          palette,
+        })),
+      );
+    });
   if (jobs.length === 0) throw new Error('Built Storybook index has no stories');
   return jobs;
 }
 
-export function storyUrl(baseUrl, storyId, colorScheme = 'light') {
+export function storyUrl(baseUrl, job) {
   const url = new URL('/iframe.html', baseUrl);
-  url.searchParams.set('id', storyId);
+  url.searchParams.set('id', job.storyId);
   url.searchParams.set('viewMode', 'story');
-  url.searchParams.set('globals', `colorScheme:${colorScheme}`);
+  url.searchParams.set('globals', `colorScheme:${job.colorScheme};palette:${job.palette}`);
   return url.href;
 }
 
@@ -161,7 +182,7 @@ export function storyViewport(storyId) {
 }
 
 export function jobLabel(job) {
-  return `${job.storyId} (${job.colorScheme})`;
+  return `${job.storyId} (${job.colorScheme}/${job.palette})`;
 }
 
 async function smokeStory(page, baseUrl, job, options = {}) {
@@ -180,7 +201,7 @@ async function smokeStory(page, baseUrl, job, options = {}) {
     await page.addInitScript(installStorybookRenderProbe, { storyId: job.storyId });
     await page.setViewportSize(storyViewport(job.storyId));
     await page.emulateMedia({ colorScheme: job.colorScheme });
-    await page.goto(storyUrl(baseUrl, job.storyId, job.colorScheme), { waitUntil: 'load' });
+    await page.goto(storyUrl(baseUrl, job), { waitUntil: 'load' });
 
     try {
       await page.waitForFunction(
@@ -334,7 +355,8 @@ async function runCli() {
   const repoRoot = resolve(scriptDir, '..');
   const staticDir = resolve(process.argv[2] ?? join(repoRoot, 'apps/desktop/storybook-static'));
   const storyIndex = await readFile(join(staticDir, 'index.json'), 'utf8').then(JSON.parse);
-  const jobs = catalogJobs(storyIndex);
+  const { THEME_PALETTES } = await import('@maka/core/settings');
+  const jobs = catalogJobs(storyIndex, { themePalettes: THEME_PALETTES });
   const storyIds = new Set(jobs.map((job) => job.storyId));
   const requiredStoryIds = new Set([
     ...REQUIRED_COMPUTER_USE_STORY_IDS,

@@ -38,6 +38,7 @@ import { type SessionSummary, type StoredMessage } from '@maka/core/session';
 import { type ThinkingLevel } from '@maka/core/model-thinking';
 import type { RuntimeHostConnectionCatalogSnapshot as ConnectionCatalogSnapshot } from '@maka/runtime-host/client';
 import { type UserQuestionResponse } from '@maka/core/user-question';
+import type { InteractionFormResponse } from '@maka/core/interaction';
 import type { SkillInvocationResult } from '@maka/core/skill-invocation';
 import type {
   AgentGraphClientSnapshot,
@@ -2197,6 +2198,169 @@ describe('Maka Pi TUI runner', () => {
 
     await waitFor(() => driver.stopCalls === 1);
     assert.deepEqual(driver.responses, []);
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('reviews and answers a Host-owned form without losing typed or optional values', async () => {
+    const terminal = new FakeTerminal(100, 30);
+    const driver = new FormPromptDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('deploy');
+    terminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('Configure deployment'),
+    );
+    const firstScreen = plainTerminalOutput(terminal.screenOutput());
+    assert.match(firstScreen, /Requested by deploy · Acme MCP/u);
+    assert.match(firstScreen, /Do not enter passwords, API keys, access tokens/u);
+    assert.match(firstScreen, /Version \(required\): empty/u);
+    assert.match(firstScreen, /Notify \(optional\): omitted/u);
+
+    terminal.input('\r');
+    terminal.input('v2');
+    terminal.input('\r');
+    terminal.input('\x1b[B');
+    terminal.input(' ');
+    terminal.input('\r');
+    terminal.input('\x1b[A');
+    terminal.input('\r');
+    terminal.input('s');
+
+    await waitFor(() => driver.responses.length === 1);
+    assert.deepEqual(driver.responses, [
+      {
+        requestId: 'form-1',
+        action: 'accept',
+        values: { version: 'v2', notify: true },
+      },
+    ]);
+
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('keeps form cancel distinct from global Turn stop', async () => {
+    const cancelTerminal = new FakeTerminal(100, 30);
+    const cancelDriver = new FormPromptDriver();
+    const cancelRun = runMakaPiTui({
+      title: 'Maka',
+      driver: cancelDriver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal: cancelTerminal,
+    });
+    cancelTerminal.input('deploy');
+    cancelTerminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(cancelTerminal.screenOutput()).includes('Configure deployment'),
+    );
+    cancelTerminal.input('\u001b');
+    await waitFor(() => cancelDriver.responses.length === 1);
+    assert.deepEqual(cancelDriver.responses, [{ requestId: 'form-1', action: 'cancel' }]);
+    assert.equal(cancelDriver.stopCalls, 0);
+    exitMaka(cancelTerminal);
+    await cancelRun;
+
+    const stopTerminal = new FakeTerminal(100, 30);
+    const stopDriver = new FormPromptDriver();
+    const stopRun = runMakaPiTui({
+      title: 'Maka',
+      driver: stopDriver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal: stopTerminal,
+    });
+    stopTerminal.input('deploy');
+    stopTerminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(stopTerminal.screenOutput()).includes('Configure deployment'),
+    );
+    stopTerminal.input('\u0003');
+    await waitFor(() => stopDriver.stopCalls === 1);
+    assert.deepEqual(stopDriver.responses, []);
+    exitMaka(stopTerminal);
+    await stopRun;
+  });
+
+  test('closes a stale form when reconnect replaces the authoritative transcript', async () => {
+    const terminal = new FakeTerminal(100, 30);
+    const driver = new FormPromptDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('deploy');
+    terminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('Configure deployment'),
+    );
+
+    driver.publishReconnect();
+    await waitFor(
+      () => !plainTerminalOutput(terminal.screenOutput()).includes('Configure deployment'),
+    );
+    assert.deepEqual(driver.responses, []);
+
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('restores a still-pending form draft after reconnect replay', async () => {
+    const terminal = new FakeTerminal(100, 30);
+    const driver = new FormPromptDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('deploy');
+    terminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('Configure deployment'),
+    );
+    terminal.input('\r');
+    terminal.input('v2');
+    terminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('Version (required): v2'),
+    );
+
+    driver.publishReconnect();
+    await waitFor(
+      () => !plainTerminalOutput(terminal.screenOutput()).includes('Configure deployment'),
+    );
+    driver.replayForm();
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('Version (required): v2'),
+    );
+
+    terminal.input('\u001b');
+    await waitFor(() => driver.responses.length === 1);
     exitMaka(terminal);
     await run;
   });
@@ -8999,6 +9163,76 @@ class LongOptionsQuestionDriver extends FakeSessionDriver {
   }
   getSessionId(): string {
     return 'session-1';
+  }
+}
+
+class FormPromptDriver extends FakeSessionDriver {
+  readonly responses: InteractionFormResponse[] = [];
+  stopCalls = 0;
+  private wake: ((action: 'replay' | 'release') => void) | undefined;
+  readonly #transcriptListeners = new Set<
+    (
+      sessionId: string,
+      turnId: string,
+      messages: StoredMessage[],
+      reason: MakaTranscriptReplacementReason,
+    ) => void
+  >();
+
+  preparePrompt(prompt: string): Promise<MakaPreparedSessionTurn> {
+    return prepareTestPrompt(this, prompt);
+  }
+  async *promptEvents(_prompt: string): AsyncIterable<SessionEvent> {
+    const formRequest = {
+      type: 'form_request',
+      id: 'event-form',
+      turnId: 'turn-1',
+      ts: 1,
+      requestId: 'form-1',
+      toolUseId: 'tool-1',
+      message: 'Configure deployment',
+      requester: { name: 'deploy', source: 'Acme MCP' },
+      fields: [
+        { kind: 'string', name: 'version', label: 'Version', required: true, minLength: 2 },
+        { kind: 'boolean', name: 'notify', label: 'Notify', required: false },
+      ],
+    } satisfies SessionEvent;
+    yield formRequest;
+    while (true) {
+      const action = await new Promise<'replay' | 'release'>((resolve) => {
+        this.wake = resolve;
+      });
+      if (action === 'release') break;
+      yield { ...formRequest, id: `event-form-replay-${Date.now()}` };
+    }
+    yield { type: 'complete', id: 'complete-1', turnId: 'turn-1', ts: 2, stopReason: 'end_turn' };
+  }
+  async respondToUserForm(response: InteractionFormResponse): Promise<void> {
+    this.responses.push(response);
+    this.wake?.('release');
+  }
+  async stop(): Promise<void> {
+    this.stopCalls += 1;
+    this.wake?.('release');
+  }
+  subscribeTranscriptReplacements(
+    listener: (
+      sessionId: string,
+      turnId: string,
+      messages: StoredMessage[],
+      reason: MakaTranscriptReplacementReason,
+    ) => void,
+  ): () => void {
+    this.#transcriptListeners.add(listener);
+    return () => this.#transcriptListeners.delete(listener);
+  }
+  publishReconnect(): void {
+    for (const listener of this.#transcriptListeners) {
+      listener('session-1', 'turn-1', [], 'reconnect');
+    }
+  }
+  replayForm(): void {
+    this.wake?.('replay');
   }
 }
 

@@ -28,10 +28,6 @@ import {
   findDesktopRuntimeHostManagedServiceBinding,
   isDesktopRuntimeHostManagedSshServiceBinding,
 } from "../runtime-host-managed-services.js";
-import {
-  createDesktopRuntimeHostProfileService,
-  resolveDesktopRuntimeHostStartup,
-} from "../runtime-host-profile-service.js";
 
 const roots: string[] = [];
 const profile = {
@@ -49,12 +45,17 @@ const profile = {
 const service = {
   id: "b".repeat(64),
   rootPath: "/srv/maka",
-  operatorPath: "/home/operator/.local/share/maka/operator",
+};
+const operator = {
+  kind: "node" as const,
+  platform: "posix" as const,
+  nodePath: "/usr/bin/node",
+  modulePath: "/home/operator/.local/share/maka/operator.mjs",
 };
 const deploymentId = "11111111-1111-4111-8111-111111111111";
 const deployedService = {
   deployment: { id: service.id, rootPath: service.rootPath, deploymentId },
-  control: { kind: "ssh_operator" as const, operatorPath: service.operatorPath },
+  control: { kind: "ssh_operator" as const, operator },
 };
 
 afterEach(async () => {
@@ -63,50 +64,64 @@ afterEach(async () => {
   );
 });
 
+test("migrates released WSL deployment bindings to the legacy operator route", async () => {
+  const root = await mkdtemp(join(tmpdir(), "maka-managed-wsl-migration-"));
+  roots.push(root);
+  const path = join(root, "runtime-host-deployments.json");
+  await writeFile(
+    path,
+    `${JSON.stringify({
+      schemaVersion: 1,
+      bindings: [{
+        profile: {
+          id: "ubuntu",
+          name: "Ubuntu",
+          kind: "environment",
+          provider: { kind: "wsl", distribution: "Ubuntu-24.04" },
+          rootId: "a".repeat(64),
+          operatorPath: "/home/operator/.local/share/maka/operator",
+        },
+        deployment: {
+          id: "a".repeat(64),
+          rootPath: "/home/operator/.config/Maka/workspaces/default",
+          deploymentId,
+        },
+        state: "active",
+      }],
+    })}\n`,
+  );
+
+  const document = await createDesktopRuntimeHostManagedServiceStore(root).read();
+  const binding = document.bindings[0];
+  assert.equal(binding?.profile.kind, "environment");
+  assert.deepEqual(binding?.profile.kind === "environment" ? binding.profile.operator : null, {
+    kind: "legacy_posix_executable",
+    executablePath: "/home/operator/.local/share/maka/operator",
+  });
+  const stored = await readFile(path, "utf8");
+  assert.match(stored, /"schemaVersion": 2/u);
+  assert.doesNotMatch(stored, /operatorPath/u);
+
+  const currentProfile = {
+    id: "ubuntu",
+    name: "Ubuntu",
+    kind: "environment" as const,
+    provider: { kind: "wsl" as const, distribution: "Ubuntu-24.04" },
+    rootId: "a".repeat(64),
+    operator,
+  };
+  const resolved = findDesktopRuntimeHostManagedServiceBinding(document, currentProfile);
+  assert.equal(resolved?.profile.kind, "environment");
+  assert.equal(resolved?.profile.kind === "environment" ? resolved.profile.operator : null, operator);
+});
+
 test("keeps Desktop service bindings outside the shared profile catalog", async () => {
   const root = await mkdtemp(join(tmpdir(), "maka-managed-host-services-"));
   roots.push(root);
   const catalog = createClientRuntimeHostProfileCatalog(root);
-  const legacyPath = join(root, "runtime-host-managed-services.json");
-  const legacyDocument = `${JSON.stringify({
-    schemaVersion: 1,
-    bindings: [{ profile, service, state: "uninstalling" }],
-  })}\n`;
-  await writeFile(
-    legacyPath,
-    legacyDocument,
-  );
   const managedServices = createDesktopRuntimeHostManagedServiceStore(root);
   const concurrentStore = createDesktopRuntimeHostManagedServiceStore(root);
   await catalog.create(profile, "secret");
-
-  assert.equal((await managedServices.read()).bindings[0]?.deployment.id, service.id);
-  await assert.rejects(readFile(legacyPath, "utf8"), {
-    code: "ENOENT",
-  });
-  await writeFile(legacyPath, legacyDocument);
-  await managedServices.read();
-  await assert.rejects(readFile(legacyPath, "utf8"), { code: "ENOENT" });
-
-  const profileService = createDesktopRuntimeHostProfileService({
-    clientDataRoot: root,
-    startup: await resolveDesktopRuntimeHostStartup(root, { catalog }),
-    catalog,
-    managedServices,
-    states: () => [],
-    enable: async () => undefined,
-    disable: async () => undefined,
-    setDefault: () => undefined,
-    finalizePairing: async () => undefined,
-  });
-  const legacyUninstall = await profileService.resolveManagedService(profile.id);
-  assert.ok(legacyUninstall);
-  assert.equal(legacyUninstall.deployment.deploymentId, undefined);
-  assert.equal(legacyUninstall.state, "uninstalling");
-  assert.equal(
-    (await profileService.markManagedServiceUninstalling(legacyUninstall)).state,
-    "uninstalling",
-  );
 
   await Promise.all([
     managedServices.save(profile, deployedService),
@@ -135,7 +150,7 @@ test("keeps Desktop service bindings outside the shared profile catalog", async 
     {
       profile: { ...profile, transport: { ...profile.transport } },
       deployment: { id: service.id, rootPath: service.rootPath, deploymentId },
-      control: { kind: "ssh_operator", operatorPath: service.operatorPath },
+      control: { kind: "ssh_operator", operator },
       state: "active",
     },
   );
@@ -199,7 +214,7 @@ test("persists a WSL deployment through its environment control route", async ()
     kind: "environment" as const,
     provider: { kind: "wsl" as const, distribution: "Ubuntu-24.04" },
     rootId: "a".repeat(64),
-    operatorPath: "/home/operator/.local/share/maka/operator",
+    operator,
   };
   await store.save(environment, {
     deployment: {

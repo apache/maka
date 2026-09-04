@@ -155,7 +155,7 @@ export function createDesktopRuntimeHostPeerMeshManagement(input: {
           const { invitation, ...rest } = command;
           return runFramedPeerMeshCommand(command.action, () =>
             input.runLocal({
-              operatorPath: managed.operatorPath,
+              operator: managed.operator,
               target: managedTarget(managed),
               ...rest,
               ...(invitation ? { invitation: JSON.stringify(invitation) } : {}),
@@ -203,7 +203,7 @@ export function createDesktopRuntimeHostPeerMeshManagement(input: {
         input.runRemote({
           destination: transport.destination,
           ...(transport.sshPort === undefined ? {} : { sshPort: transport.sshPort }),
-          operatorPath: managed.control.operatorPath,
+          operator: managed.control.operator,
           expectedTarget: {
             serviceId: managed.deployment.id,
             rootPath: managed.deployment.rootPath,
@@ -428,7 +428,7 @@ async function reconcileDesktopTarget(
           const run: RunManagedPeerMeshCommand = async (command) => {
             const { invitation, ...rest } = command;
             const response = await runLocal({
-              operatorPath: managed.operatorPath,
+              operator: managed.operator,
               target: managedTarget(managed),
               ...rest,
               ...(invitation ? { invitation: JSON.stringify(invitation) } : {}),
@@ -600,7 +600,7 @@ function requireTarget(value: unknown): DesktopRuntimeHostPeerMeshTarget {
 
 function managedTarget(
   target: DesktopRuntimeHostLocalManagementTarget,
-): Omit<DesktopRuntimeHostLocalManagementTarget, 'operatorPath'> {
+): Omit<DesktopRuntimeHostLocalManagementTarget, 'operator'> {
   return {
     serviceId: target.serviceId,
     rootPath: target.rootPath,

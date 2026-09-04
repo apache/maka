@@ -211,6 +211,10 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 38);
   });
 
+  test('publishes a new compatibility epoch for nested Client Capability interactions', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 81);
+  });
+
   test('publishes a new compatibility epoch for onboarding endpoint overrides', () => {
     // Epoch 44 peers reject the required `baseUrl` and `connectionId` on
     // onboarding inputs, and the `base_url_not_configured` /

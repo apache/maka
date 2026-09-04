@@ -61,6 +61,7 @@ import type {
 import type {
   StoredMessage,
   AssistantMessage,
+  AssistantStepContentKind,
   AssistantThinkingPart,
   ToolCallMessage,
   ToolResultMessage,
@@ -164,6 +165,7 @@ import {
 import { buildProviderOptions } from './model-factory.js';
 import { persistedOpenAiResponsesStepMessages } from './openai-responses-continuation.js';
 import type { OpenAiResponsesTransportState } from './openai-responses-websocket.js';
+import { nonCanonicalContentOrder } from './runtime-event-read-model.js';
 import {
   composeRequestProjection,
   type DispatchRequestShape,
@@ -890,6 +892,11 @@ const MAX_WAITING_CODE_MODE_CELLS = 1;
 const MAX_PROVIDER_ATTEMPTS_PER_STEP = 10;
 const MAX_IDLE_WATCHDOG_RETRIES_PER_STEP = 1;
 const MAX_INCOMPLETE_STREAM_RETRIES_PER_STEP = 1;
+// A mid-stream cut after partial thinking seals one transcript fragment per
+// retry. A gateway that systematically kills long thinking streams (the
+// 2026-08-28 incident shape) would otherwise spend the full attempt budget
+// accumulating fragments before failing anyway, so fail fast after one.
+const MAX_SEALED_THINKING_RETRIES_PER_STEP = 1;
 const PROVIDER_RETRY_BASE_DELAY_MS = 1_000;
 const PROVIDER_RETRY_MAX_DELAY_MS = 32_000;
 const PROVIDER_RETRY_JITTER_FACTOR = 0.25;
@@ -1072,6 +1079,15 @@ export class AiSdkBackend implements AgentBackend {
    */
   private readonly activeTurns = new Set<TurnScope>();
   private readonly compaction: AiSdkCompaction;
+  /**
+   * The provider has been reported dropping context, for this backend.
+   *
+   * Not per send: the condition persists once a provider starts truncating, so
+   * a note on every later turn would repeat one fact the user has already been
+   * told. The scope is this backend's lifetime rather than the Session's, so a
+   * backend that is disposed and rebuilt may say it once more.
+   */
+  private contextProviderDroppingReported = false;
   /** Session-scoped running total, deliberately accumulated across turns. */
   private cumulativeUsageCheckpoint: NormalizedAiSdkUsage | undefined;
   private readonly memoryReplayMessageEvents = new WeakMap<ModelMessage, readonly string[]>();
@@ -1453,8 +1469,12 @@ export class AiSdkBackend implements AgentBackend {
     let stepTextPartStartOffset = 0;
     let stepThinkingParts: AssistantThinkingPart[] = [];
     let stepThinkingPartsById = new Map<string, AssistantThinkingPart>();
+    let stepContentOrder: AssistantStepContentKind[] = [];
     const startedAt = this.now();
 
+    const recordStepContent = (kind: AssistantStepContentKind): void => {
+      if (!stepContentOrder.includes(kind)) stepContentOrder.push(kind);
+    };
     // Flush the current step's AssistantMessage (text + thinking) and the paired
     // terminal thinking/text events, then clear the per-step accumulators.
     // Persist when the step produced text OR reasoning — a thinking-only step
@@ -1464,11 +1484,23 @@ export class AiSdkBackend implements AgentBackend {
     // precedes text_complete so the read-model attaches this step's reasoning to
     // this step's assistant row. Hoisted to send() scope so both the streaming
     // path and the abort/error handler can flush a partial step.
+    const resetStep = (): void => {
+      stepText = '';
+      stepTextProviderOptions = undefined;
+      stepTextPartStartOffset = 0;
+      stepThinkingParts = [];
+      stepThinkingPartsById = new Map();
+      stepContentOrder = [];
+    };
     const flushStep = async (): Promise<void> => {
       const hasThinking = stepThinkingParts.length > 0;
-      if (stepText.length === 0 && !hasThinking) return;
+      if (stepText.length === 0 && !hasThinking) {
+        resetStep();
+        return;
+      }
       const stepId = currentStepMessageId;
       const thinkingText = stepThinkingParts.map((part) => part.text).join('');
+      const contentOrder = nonCanonicalContentOrder(stepContentOrder);
       const msg: AssistantMessage = {
         type: 'assistant',
         id: stepId,
@@ -1478,6 +1510,7 @@ export class AiSdkBackend implements AgentBackend {
         ...(stepTextProviderOptions !== undefined
           ? { providerOptions: stepTextProviderOptions }
           : {}),
+        ...(contentOrder ? { contentOrder } : {}),
         modelId: this.input.modelId,
         ...(hasThinking
           ? {
@@ -1530,11 +1563,7 @@ export class AiSdkBackend implements AgentBackend {
           : {}),
       } satisfies TextCompleteEvent);
       scope.finalAssistantText = stepText.length > 0 ? stepText : undefined;
-      stepText = '';
-      stepTextProviderOptions = undefined;
-      stepTextPartStartOffset = 0;
-      stepThinkingParts = [];
-      stepThinkingPartsById = new Map();
+      resetStep();
     };
     let tokenUsage: NormalizedAiSdkUsage | undefined;
     let tokenUsageCostUsd: number | undefined;
@@ -1565,7 +1594,6 @@ export class AiSdkBackend implements AgentBackend {
     let contextBudgetForTelemetry: ContextBudgetDiagnostic | undefined;
     let contextCompactedNoteWritten = false;
     let contextCompactionFailedOpenNoteWritten = false;
-    let contextProviderDroppingNoteWritten = false;
     let contextWindowOverrunNoteWritten = false;
     let contextReportedWindowNoteWritten = false;
     let contextOverflowAfterCompactionNoteWritten = false;
@@ -1915,7 +1943,7 @@ export class AiSdkBackend implements AgentBackend {
             projectionCheckpoint,
             compatibleProviderReasoningReplayEventIds(
               replayEvents,
-              input.runtimeContextRunHeaders,
+              input.runtimeContextInvocations,
               this.input.providerStateIdentity,
               this.input.modelId,
               scope.runId,
@@ -2057,6 +2085,7 @@ export class AiSdkBackend implements AgentBackend {
           let providerAttempt = 1;
           let idleWatchdogRetryCount = 0;
           let incompleteStreamRetryCount = 0;
+          let sealedThinkingRetryCount = 0;
           const returnedToolCalls: ToolCallPart[] = [];
           let providerToolActivityCount = 0;
           const providerToolInputs = new Map<string, unknown>();
@@ -2079,7 +2108,13 @@ export class AiSdkBackend implements AgentBackend {
               !attemptSawToolActivity &&
               !attemptSawContinuationMetadata &&
               !attemptReachedStepBoundary;
-            const attemptCanRecoverFromIdleTimeout = () =>
+            // Thinking is the only output that can be sealed into its own
+            // message before a retry: flushStep() closes the fragment under
+            // the current message id and the retry streams into a fresh one,
+            // so the user never sees spliced or duplicated content. Text,
+            // tool activity, continuation metadata, and step boundaries stay
+            // non-recoverable for the reasons each of them is tracked.
+            const attemptCanRecoverWithSealedThinking = () =>
               !attemptSawText &&
               !attemptSawToolActivity &&
               !attemptSawContinuationMetadata &&
@@ -2188,27 +2223,55 @@ export class AiSdkBackend implements AgentBackend {
                   const toolSchemaShrank =
                     lastStepActiveToolCount !== undefined &&
                     activeToolsForRequest.length < lastStepActiveToolCount;
+                  // Across the send boundary the comparison is the same one,
+                  // against the last request a provider accepted before this
+                  // send. A provider that truncates to a fixed window reports
+                  // the same input on every later request while the user keeps
+                  // adding turns, and a send of one or two steps never sees
+                  // that from the inside: the live evidence plateaus at 3,716
+                  // input tokens across eight turns with nothing reported
+                  // (#4623). The first request of a send therefore compares
+                  // against the persisted anchor, which is route-validated
+                  // where it is read; a fold before that request would explain
+                  // a smaller input by itself, so it disables the comparison.
+                  const acrossSends = completedRequestIndex === 0;
+                  const priorInput = acrossSends
+                    ? midTurnState?.compactionAppliedThisSend === true
+                      ? undefined
+                      : midTurnState?.priorAcceptedInputTokens
+                    : lastStepInputTokens;
                   if (
-                    !contextProviderDroppingNoteWritten &&
+                    !this.contextProviderDroppingReported &&
                     !toolSchemaShrank &&
                     midTurnState &&
-                    completedRequestIndex >= 1 &&
-                    lastStepInputTokens !== undefined &&
+                    priorInput !== undefined &&
                     midTurnState.replacedStepNumber !== completedRequestIndex &&
                     pruneAppliedAtStep !== completedRequestIndex &&
                     midTurnState.omittedImageToolResults.size === 0 &&
                     stepUsage !== undefined &&
                     Number.isFinite(stepUsage.inputTokens) &&
                     stepUsage.inputTokens > 0 &&
-                    stepUsage.inputTokens <= lastStepInputTokens
+                    // Across sends the test is equality, not "did not grow".
+                    // Inside a send Maka knows it only appended, so any
+                    // shortfall is the provider's. Across the boundary it does
+                    // not: a manual compaction leaves the pre-compaction anchor
+                    // behind, a turn can carry a smaller tool set, and a user
+                    // can edit or branch history. All three shrink the input
+                    // legitimately, and none of them lands on exactly the same
+                    // count. A provider truncating to a fixed window does, on
+                    // every later request.
+                    (acrossSends
+                      ? stepUsage.inputTokens === priorInput
+                      : stepUsage.inputTokens <= priorInput)
                   ) {
-                    contextProviderDroppingNoteWritten = true;
+                    this.contextProviderDroppingReported = true;
                     const note: SystemNoteMessage = {
                       type: 'system_note',
                       id: this.newId(),
                       turnId,
                       ts: this.now(),
                       kind: 'context_provider_dropping',
+                      data: { inputTokens: stepUsage.inputTokens, priorInputTokens: priorInput },
                     };
                     await this.input.appendMessage(note).catch(() => {});
                   }
@@ -2319,8 +2382,13 @@ export class AiSdkBackend implements AgentBackend {
                 }
               }
               if (event.kind === 'text-start') {
+                if (stepText.length > 0 && event.providerItemBoundary === true) {
+                  await flushStep();
+                  currentStepMessageId = this.newId();
+                }
                 stepTextPartStartOffset = stepText.length;
               } else if (event.kind === 'text') {
+                if (event.text.length > 0) recordStepContent('text');
                 stepText += event.text;
                 if (event.text.length > 0) attemptSawText = true;
                 queue.push({
@@ -2331,15 +2399,21 @@ export class AiSdkBackend implements AgentBackend {
                   messageId: currentStepMessageId,
                   text: event.text,
                 } satisfies TextDeltaEvent);
-              } else if (event.kind === 'text-metadata') {
-                attemptSawContinuationMetadata = true;
-                stepTextProviderOptions = mergeTextProviderOptions(
-                  stepTextProviderOptions,
-                  stripUndefinedDeep(event.providerOptions) as NonNullable<
-                    ModelMessage['providerOptions']
-                  >,
-                  stepTextPartStartOffset,
-                );
+              } else if (event.kind === 'text-end') {
+                if (event.providerOptions !== undefined) {
+                  attemptSawContinuationMetadata = true;
+                  stepTextProviderOptions = mergeTextProviderOptions(
+                    stepTextProviderOptions,
+                    stripUndefinedDeep(event.providerOptions) as NonNullable<
+                      ModelMessage['providerOptions']
+                    >,
+                    stepTextPartStartOffset,
+                  );
+                }
+                if (event.providerItemBoundary === true) {
+                  await flushStep();
+                  currentStepMessageId = this.newId();
+                }
               } else if (event.kind === 'thinking-start') {
                 if (event.providerOptions !== undefined) {
                   attemptSawContinuationMetadata = true;
@@ -2355,6 +2429,7 @@ export class AiSdkBackend implements AgentBackend {
                   stepThinkingPartsById.set(event.reasoningPartId, part);
                 }
               } else if (event.kind === 'thinking') {
+                if (event.text.length > 0) recordStepContent('thinking');
                 if (event.text.length > 0) attemptSawThinking = true;
                 if (event.providerOptions !== undefined) {
                   if (event.providerOptionsOrigin !== 'maka_transport') {
@@ -2440,6 +2515,7 @@ export class AiSdkBackend implements AgentBackend {
                 attemptSawToolActivity = true;
               } else if (event.kind === 'tool-call') {
                 attemptSawToolActivity = true;
+                recordStepContent('tools');
                 if (event.toolCall.providerExecuted) {
                   providerToolActivityCount += 1;
                   providerToolInputs.set(event.toolCall.toolCallId, event.toolCall.input);
@@ -2637,33 +2713,50 @@ export class AiSdkBackend implements AgentBackend {
               const idleWatchdogRecovery =
                 settledWatchdogTimeout?.phase === 'idle' &&
                 idleWatchdogRetryCount < MAX_IDLE_WATCHDOG_RETRIES_PER_STEP &&
-                attemptCanRecoverFromIdleTimeout();
+                attemptCanRecoverWithSealedThinking();
               const incompleteStreamRecovery =
                 incompleteStreamTerminal &&
                 incompleteStreamRetryCount < MAX_INCOMPLETE_STREAM_RETRIES_PER_STEP &&
                 incompleteStreamHasNoObservableOutput;
+              // Same seal-and-retry contract as the watchdog path, entered when
+              // the failure arrives as a retryable provider/network error
+              // instead of a local idle timeout. `!idleWatchdogRecovery` keeps
+              // every watchdog-shaped outcome on its existing path, and
+              // `!attemptHasNoObservableOutput()` keeps no-output retries on
+              // the plain budget so this one is spent only on sealed fragments.
+              const sealedThinkingRecovery =
+                !idleWatchdogRecovery &&
+                failure.retryable &&
+                sealedThinkingRetryCount < MAX_SEALED_THINKING_RETRIES_PER_STEP &&
+                attemptCanRecoverWithSealedThinking() &&
+                !attemptHasNoObservableOutput();
               if (
                 (failure.retryable || idleWatchdogRecovery || incompleteStreamRecovery) &&
                 failure.kind !== 'context_overflow' &&
                 providerAttempt < MAX_PROVIDER_ATTEMPTS_PER_STEP &&
                 stepBudgetRemains &&
-                (attemptHasNoObservableOutput() || idleWatchdogRecovery || incompleteStreamRecovery)
+                (attemptHasNoObservableOutput() ||
+                  idleWatchdogRecovery ||
+                  incompleteStreamRecovery ||
+                  sealedThinkingRecovery)
               ) {
-                if (idleWatchdogRecovery) {
-                  idleWatchdogRetryCount += 1;
-                  if (stepThinkingParts.length > 0) {
-                    await flushStep();
-                    currentStepMessageId = this.newId();
-                  }
-                }
+                if (idleWatchdogRecovery) idleWatchdogRetryCount += 1;
+                if (sealedThinkingRecovery) sealedThinkingRetryCount += 1;
                 if (incompleteStreamRecovery) incompleteStreamRetryCount += 1;
+                if (
+                  (idleWatchdogRecovery || sealedThinkingRecovery) &&
+                  stepThinkingParts.length > 0
+                ) {
+                  await flushStep();
+                  currentStepMessageId = this.newId();
+                }
                 // The failed request did not return authoritative usage. Keep
                 // effectiveness recoverable, but fail final metering closed.
                 sawUnusableStepUsage = true;
                 const delayMs = providerRetryDelayMs(providerAttempt, failure.retryAfterMs);
                 const nextAttempt = providerAttempt + 1;
                 const maxAttempts =
-                  idleWatchdogRecovery || incompleteStreamRecovery
+                  idleWatchdogRecovery || incompleteStreamRecovery || sealedThinkingRecovery
                     ? nextAttempt
                     : MAX_PROVIDER_ATTEMPTS_PER_STEP;
                 const reason = providerRetryReason(failure.kind);
@@ -2974,6 +3067,10 @@ export class AiSdkBackend implements AgentBackend {
                       inputTokens: anchorInputTokens,
                       ...(anchorOutputTokens !== undefined
                         ? { outputTokens: anchorOutputTokens }
+                        : {}),
+                      modelId: this.input.modelId,
+                      ...(this.input.header.llmConnectionId !== undefined
+                        ? { connectionId: this.input.header.llmConnectionId }
                         : {}),
                     },
                   }
@@ -3573,7 +3670,7 @@ export class AiSdkBackend implements AgentBackend {
     const priorRuntimeContext = preparedContextBudget.events;
     const providerReasoningReplayEventIds = compatibleProviderReasoningReplayEventIds(
       priorRuntimeContext,
-      input.runtimeContextRunHeaders,
+      input.runtimeContextInvocations,
       this.input.providerStateIdentity,
       this.input.modelId,
     );
@@ -3802,6 +3899,10 @@ export class AiSdkBackend implements AgentBackend {
     >();
     const reasoningByStep = new Map<string, ThinkingItem[]>();
     const textByStep = new Map<string, TextItem>();
+    const pendingStepOrder = new Set<string>();
+    const rememberPendingStep = (stepId: string) => {
+      pendingStepOrder.add(stepId);
+    };
 
     const replaySupport = this.modelAdapter.runtimeEventReplaySupport();
     const reasoningReplay = (item: ThinkingItem): ReplayReasoning | undefined => {
@@ -4060,6 +4161,7 @@ export class AiSdkBackend implements AgentBackend {
         if (stepId !== undefined) {
           reasoningByStep.delete(stepId);
           textByStep.delete(stepId);
+          pendingStepOrder.delete(stepId);
         }
         await emitStep(reasoning, text, group);
         group = [];
@@ -4076,18 +4178,28 @@ export class AiSdkBackend implements AgentBackend {
       bufferedCalls = [];
       await emitGroupedCalls(calls);
     };
+    const flushPendingStep = async (stepId: string) => {
+      const text = textByStep.get(stepId);
+      const reasoning = reasoningByStep.get(stepId);
+      textByStep.delete(stepId);
+      reasoningByStep.delete(stepId);
+      pendingStepOrder.delete(stepId);
+      await emitStep(reasoning, text, []);
+    };
+    const flushPendingStepsBefore = async (stepId: string | undefined) => {
+      const pendingStepIds = [...pendingStepOrder];
+      const lastPendingStepId = pendingStepIds.at(-1);
+      const earlierStepIds =
+        stepId !== undefined && lastPendingStepId === stepId
+          ? pendingStepIds.slice(0, -1)
+          : pendingStepIds;
+      if (earlierStepIds.length === 0) return;
+      await flushLooseCalls();
+      for (const pendingStepId of earlierStepIds) await flushPendingStep(pendingStepId);
+    };
     const flushPendingSteps = async () => {
       await flushLooseCalls();
-      for (const [stepId, text] of textByStep) {
-        textByStep.delete(stepId);
-        const reasoning = reasoningByStep.get(stepId);
-        reasoningByStep.delete(stepId);
-        await emitStep(reasoning, text, []);
-      }
-      for (const [stepId, reasoning] of reasoningByStep) {
-        reasoningByStep.delete(stepId);
-        await emitStep(reasoning, undefined, []);
-      }
+      for (const stepId of [...pendingStepOrder]) await flushPendingStep(stepId);
     };
 
     for (const item of admitProviderReasoningReplayItems(
@@ -4096,6 +4208,7 @@ export class AiSdkBackend implements AgentBackend {
     )) {
       switch (item.kind) {
         case 'tool_call':
+          await flushPendingStepsBefore(item.stepId);
           if (item.toolName !== 'apply_patch') {
             bufferedCalls.push(item);
             break;
@@ -4151,6 +4264,7 @@ export class AiSdkBackend implements AgentBackend {
                 ts: downgradedCall.ts,
               });
             }
+            rememberPendingStep(downgradedCall.stepId);
           } else {
             await flushPendingSteps();
             push({ role: 'assistant', content: [{ type: 'text', text: replayFact }] }, [
@@ -4165,6 +4279,7 @@ export class AiSdkBackend implements AgentBackend {
             const stepReasoning = reasoningByStep.get(item.stepId) ?? [];
             stepReasoning.push(item);
             reasoningByStep.set(item.stepId, stepReasoning);
+            rememberPendingStep(item.stepId);
           } else {
             // Legacy standalone reasoning (pure-reasoning turn): emit on its own.
             await flushPendingSteps();
@@ -4200,11 +4315,13 @@ export class AiSdkBackend implements AgentBackend {
             if (thisCalls.length > 0) {
               await emitStep(reasoningByStep.get(stepId), item, thisCalls);
               reasoningByStep.delete(stepId);
+              pendingStepOrder.delete(stepId);
             } else {
               // Runtime-owned settlement persists assistant facts before the
               // matching tool calls. Hold the step closer until those calls
               // arrive; a terminal text-only step flushes below.
               textByStep.set(stepId, item);
+              rememberPendingStep(stepId);
             }
           } else {
             // Legacy per-turn assistant text: standalone after any tool block.

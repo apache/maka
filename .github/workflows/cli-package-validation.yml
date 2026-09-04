@@ -25,12 +25,15 @@ on:
       - '.github/workflows/runtime-host-peer-admission.yml'
       - 'deny.toml'
       - 'native/runtime-host-peer/**'
+      - 'native/runtime-host-windows-task-launcher/**'
       - 'package-lock.json'
       - 'packages/cli/RUNTIME_HOST_PEER_*'
       - 'packages/cli/src/cli-core.ts'
       - 'packages/cli/src/runtime-host-cli.ts'
+      - 'packages/cli/src/runtime-host-package-deployment.ts'
       - 'packages/cli/src/runtime-host-peer-*'
       - 'packages/cli/src/runtime-host-service-*'
+      - 'packages/cli/src/runtime-host-windows-*'
       - 'packages/runtime-host/package.json'
       - 'packages/runtime-host/src/client/peer-client.ts'
       - 'packages/runtime-host/src/peer-mesh/**'
@@ -154,6 +157,11 @@ jobs:
           MAKA_RUNTIME_HOST_PEER_CARGO_SUBCOMMAND: ${{ matrix.rust_target && 'zigbuild' || '' }}
           MAKA_RUNTIME_HOST_PEER_CARGO_TARGET: ${{ matrix.rust_target }}
         run: node native/runtime-host-peer/build.mjs
+      - name: Build the Windows task launcher
+        if: matrix.target == 'win32-x64'
+        run: |
+          cargo fmt --manifest-path native/runtime-host-windows-task-launcher/Cargo.toml --check
+          node native/runtime-host-windows-task-launcher/build.mjs
       - name: Report Rust build cache
         shell: bash
         run: kache report --format github >> "$GITHUB_STEP_SUMMARY"
@@ -179,15 +187,15 @@ jobs:
           const newer = versions.find(([major, minor]) => major > 2 || (major === 2 && minor > 28));
           if (newer) throw new Error(`Direct-peer addon requires GLIBC_${newer.join('.')}`);
           NODE
-      - name: Stage the platform addon
+      - name: Stage the platform native artifacts
         env:
-          PEER_TARGET: ${{ matrix.target }}
-        run: node -e "const fs=require('node:fs'),p=require('node:path'); const d=p.join('peer-prebuilds',process.env.PEER_TARGET); fs.mkdirSync(d,{recursive:true}); fs.copyFileSync(p.join('native','runtime-host-peer','target','release','maka_runtime_host_peer.node'),p.join(d,'maka_runtime_host_peer.node'))"
-      - name: Upload the platform addon
+          NATIVE_TARGET: ${{ matrix.target }}
+        run: node -e "const fs=require('node:fs'),p=require('node:path'),t=process.env.NATIVE_TARGET,d=p.join('native-prebuilds',t); fs.mkdirSync(d,{recursive:true}); fs.copyFileSync(p.join('native','runtime-host-peer','target','release','maka_runtime_host_peer.node'),p.join(d,'maka_runtime_host_peer.node')); if(t==='win32-x64') fs.copyFileSync(p.join('native','runtime-host-windows-task-launcher','target','release','maka-runtime-host-task-launcher.exe'),p.join(d,'maka-runtime-host-task-launcher.exe'))"
+      - name: Upload the platform native artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: runtime-host-peer-${{ matrix.target }}
-          path: peer-prebuilds
+          name: runtime-host-native-${{ matrix.target }}
+          path: native-prebuilds
           if-no-files-found: error
           retention-days: 1
 
@@ -214,16 +222,16 @@ jobs:
         uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2
         with:
           tool: cargo-deny@0.20.2
-      - name: Download direct-peer addons
+      - name: Download Runtime Host native artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          pattern: runtime-host-peer-*
-          path: ${{ runner.temp }}/runtime-host-peer-prebuilds
+          pattern: runtime-host-native-*
+          path: ${{ runner.temp }}/runtime-host-native-prebuilds
           merge-multiple: true
       - name: Build the release tarball once
         env:
           MAKA_CLI_NIGHTLY_VERSION: ${{ inputs.package_version }}
-          MAKA_RUNTIME_HOST_PEER_PREBUILDS: ${{ runner.temp }}/runtime-host-peer-prebuilds
+          MAKA_RUNTIME_HOST_NATIVE_PREBUILDS: ${{ runner.temp }}/runtime-host-native-prebuilds
         run: npm run release:cli:pack
       - name: Upload the immutable release candidate
         id: release-candidate

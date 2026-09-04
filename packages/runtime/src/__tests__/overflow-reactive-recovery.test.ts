@@ -27,7 +27,8 @@ import type { SessionHeader } from '@maka/core/session';
 import type { SessionEvent } from '@maka/core/events';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { z } from 'zod';
-import type { AgentRunHeader, ModelCallCommit } from '@maka/core/agent-run';
+import type { ModelCallCommit } from '@maka/core/agent-run';
+import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import { decodeModelCallAttempt, type ModelCallAttempt } from '@maka/core/model-call-attempt';
 import { AiSdkBackend } from '../ai-sdk-backend.js';
 import {
@@ -49,6 +50,7 @@ import {
   createTestAiSdkBackend,
   testToolResultArchive,
 } from './execution-boundary-test-helpers.js';
+import { testInvocationOpening } from './invocation-fixture.js';
 
 // The checkpoint write gate validates summary structure and floors the size
 // for large folds (#3029), so the stub summary is shaped like a real
@@ -204,7 +206,7 @@ interface ReactiveFixture {
   summarizerCalls: () => number;
   anchor: RuntimeEvent;
   priorEvents: RuntimeEvent[];
-  priorRunHeaders: AgentRunHeader[];
+  priorInvocations: RuntimeInvocationRecord[];
   events: SessionEvent[];
   messages: unknown[];
   llmCalls: ReactiveLlmCall[];
@@ -495,10 +497,10 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
               ]
             : []),
         ];
-  const priorRunHeaders: AgentRunHeader[] = options.reasoningReplayTail
+  const priorInvocations: RuntimeInvocationRecord[] = options.reasoningReplayTail
     ? [
-        priorRunHeader('same-route-prior-run', 'test-connection-id', 'mock-model-id'),
-        priorRunHeader('prior-run', 'source-connection-id', 'source-model-id'),
+        priorRunInvocation('same-route-prior-run', 'test-connection-id', 'mock-model-id'),
+        priorRunInvocation('prior-run', 'source-connection-id', 'source-model-id'),
       ]
     : [];
   const anchor: RuntimeEvent = {
@@ -713,7 +715,7 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
     summarizerCalls: () => counters.summarizerCalls,
     anchor,
     priorEvents,
-    priorRunHeaders,
+    priorInvocations,
     events,
     messages,
     llmCalls,
@@ -736,7 +738,7 @@ async function runTurn(
     text: ANCHOR_TEXT,
     context: [],
     runtimeContext: [...fixture.priorEvents],
-    runtimeContextRunHeaders: fixture.priorRunHeaders,
+    runtimeContextInvocations: [...fixture.priorInvocations],
     ...(pullSteering ? { pullSteering } : {}),
   })) {
     if (consumer === 'slow') {
@@ -1175,6 +1177,10 @@ describe('reactive overflow recovery in the streaming backend', () => {
   });
 
   test('step-0 overflow recovery gates reasoning on retry and durable reload', async () => {
+    // The subject here is reasoning gating across the retry and the durable
+    // reload, not how many times a fold may retreat: the retreat is bounded by
+    // the one span a provider has already accepted, so the summarizer answers
+    // on its first call.
     let summarizeCalls = 0;
     const fixture = buildReactiveFixture({
       script: ['overflow', 'tool', 'done'],
@@ -1182,16 +1188,16 @@ describe('reactive overflow recovery in the streaming backend', () => {
       reasoningReplayTail: true,
       summarize: (input) => {
         summarizeCalls += 1;
-        if (summarizeCalls <= 2) {
-          throw new HistoryCompactSummarizerError('input_too_large');
-        }
+        if (summarizeCalls === 1) throw new HistoryCompactSummarizerError('input_too_large');
         return reactiveStructuredSummary(input.source.foldedRuntimeEvents);
       },
     });
     await runTurn(fixture);
 
     assert.equal(fixture.model.doStreamCalls.length, 3);
-    assert.equal(fixture.summarizerCalls(), 3);
+    // One retreat, to the span the last accepted input covered, which leaves
+    // the reasoning tail verbatim.
+    assert.equal(fixture.summarizerCalls(), 2);
     for (const call of fixture.model.doStreamCalls.slice(1)) {
       const prompt = JSON.stringify(call.prompt);
       assert.match(prompt, /REACTIVE_SUMMARY_SENTINEL/);
@@ -1984,23 +1990,43 @@ function header(): SessionHeader {
   };
 }
 
-function priorRunHeader(runId: string, llmConnectionId: string, modelId: string): AgentRunHeader {
-  return {
-    runId,
+/** One prior invocation, as its own opening fact and terminal event describe it. */
+function priorRunInvocation(
+  runId: string,
+  llmConnectionId: string,
+  modelId: string,
+): RuntimeInvocationRecord {
+  const identity = {
     sessionId: 'session-1',
+    invocationId: `invocation-${runId}`,
+    runId,
     turnId: 'turn-0',
-    status: 'completed',
-    backendKind: 'ai-sdk',
-    llmConnectionId,
-    llmConnectionSlug: 'anthropic-source',
-    modelId,
-    providerStateIdentity:
-      runId === 'same-route-prior-run' ? PROVIDER_STATE_IDENTITY : `sha256:${'2'.repeat(64)}`,
-    cwd: '/tmp/maka',
-    permissionMode: 'ask',
-    createdAt: 1,
-    updatedAt: 2,
-    completedAt: 2,
+  };
+  return {
+    ...identity,
+    openedAt: 1,
+    opening: testInvocationOpening({
+      route: {
+        provenance: 'runtime',
+        backendKind: 'ai-sdk',
+        llmConnectionId: llmConnectionId,
+        llmConnectionSlug: 'anthropic-source',
+        modelId: modelId,
+        providerStateIdentity:
+          runId === 'same-route-prior-run' ? PROVIDER_STATE_IDENTITY : `sha256:${'2'.repeat(64)}`,
+      },
+      configuration: { cwd: '/tmp/maka' },
+    }),
+    terminalEvent: {
+      ...identity,
+      id: `${identity.runId}-terminal`,
+      ts: 2,
+      partial: false,
+      role: 'system',
+      author: 'system',
+      status: 'completed',
+      actions: { endInvocation: true },
+    },
   };
 }
 

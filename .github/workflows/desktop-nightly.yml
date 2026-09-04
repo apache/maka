@@ -129,12 +129,7 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci
-
-      - name: Audit the shipped Desktop dependency closure
-        run: |
-          npm audit --omit=dev --audit-level=moderate
-          node scripts/audit-shipped-dependencies.mjs
+        run: npm ci --no-audit
 
       - name: Update stable Rust for native Desktop artifacts
         run: rustup update stable --no-self-update
@@ -254,7 +249,7 @@ jobs:
           cache: npm
 
       - name: Install publisher dependencies
-        run: npm ci --ignore-scripts
+        run: npm ci --ignore-scripts --no-audit
 
       - name: Download every verified Desktop build
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1

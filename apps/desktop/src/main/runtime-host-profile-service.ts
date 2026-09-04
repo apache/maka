@@ -31,6 +31,7 @@ import {
   RuntimeHostOperationError,
   RuntimeHostPermanentReconnectError,
   RuntimeHostRemoteCompatibilityError,
+  sameEnvironmentRuntimeHostDeployment,
   sameRemoteRuntimeHostProfileTarget,
   sameResolvedRuntimeHostProfileTarget,
   type EnvironmentRuntimeHostProfile,
@@ -809,22 +810,37 @@ export function createDesktopRuntimeHostProfileService(input: {
         const existing = currentDocument.profiles.find(
           (candidate): candidate is EnvironmentRuntimeHostProfile =>
             candidate.kind === "environment" &&
-            sameResolvedRuntimeHostProfileTarget(
-              { profile: candidate },
-              { profile: requestedProfile },
-            ),
+            sameEnvironmentRuntimeHostDeployment(candidate, requestedProfile),
         );
-        const profile = existing ?? requestedProfile;
-        if (!existing) {
-          const document = await catalog.create(profile);
-          const persisted = document.profiles.find(
-            (candidate) => candidate.id === profile.id,
-          );
-          if (!persisted || persisted.kind !== "environment") {
-            throw new Error("Runtime Host profile creation did not persist");
-          }
+        const profile = existing
+          ? { ...requestedProfile, id: existing.id, name: existing.name }
+          : requestedProfile;
+        const document = existing
+          ? await catalog.save(profile)
+          : await catalog.create(profile);
+        const persisted = document.profiles.find(
+          (candidate) => candidate.id === profile.id,
+        );
+        if (!persisted || persisted.kind !== "environment") {
+          throw new Error("Runtime Host profile creation did not persist");
         }
-        await managedServices.save(profile, value.managedService);
+        try {
+          await managedServices.save(profile, value.managedService);
+        } catch (failure) {
+          if (existing) {
+            try {
+              await catalog.save(existing);
+            } catch (rollbackFailure) {
+              throw new AggregateError(
+                [failure, rollbackFailure],
+                "Runtime Host managed environment could not be saved and its profile could not be restored",
+              );
+            }
+          } else {
+            await rollbackCreatedProfile(catalog, { profile }, failure);
+          }
+          throw failure;
+        }
         const error = await enable(profile.id);
         if (error) throw error;
         return { profileId: profile.id };

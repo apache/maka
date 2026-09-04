@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type { AgentRunEvent, AgentRunHeader, AgentRunStore } from '@maka/core/agent-run';
+import type { AgentRunEvent, AgentRunStore } from '@maka/core/agent-run';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import {
   buildHistoryCompactCheckpoint,
@@ -389,8 +389,8 @@ describe('history compact checkpoint', () => {
       previousCheckpointId: first.checkpointId,
       now: 20,
     });
+    const runIds = ['run-1', 'run-2', 'run-3'];
     const store = new StubAgentRunStore(
-      [run('run-1', 10), run('run-2', 20), run('run-3', 30)],
       new Map([
         ['run-1', [checkpointEvent('ledger-1', 'run-1', first, 10)]],
         ['run-2', [checkpointEvent('ledger-2', 'run-2', latest, 20)]],
@@ -406,11 +406,15 @@ describe('history compact checkpoint', () => {
       ]),
     );
 
-    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1');
+    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(
+      store,
+      'session-1',
+      runIds,
+    );
 
     assert.equal(loaded?.checkpointId, latest.checkpointId);
     assert.deepEqual(
-      (await loadHistoryCompactCheckpointsFromRunLedger(store, 'session-1')).map(
+      (await loadHistoryCompactCheckpointsFromRunLedger(store, 'session-1', runIds)).map(
         (checkpoint) => checkpoint.checkpointId,
       ),
       [first.checkpointId, latest.checkpointId],
@@ -494,12 +498,16 @@ describe('history compact checkpoint', () => {
       },
       now: 20,
     });
+    const runIds = ['run-1'];
     const store = new StubAgentRunStore(
-      [run('run-1', 20)],
       new Map([['run-1', [checkpointEvent('ledger-v3', 'run-1', checkpoint, 20)]]]),
     );
 
-    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1');
+    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(
+      store,
+      'session-1',
+      runIds,
+    );
 
     assert.deepEqual(loaded, checkpoint);
     assert.equal(
@@ -527,15 +535,19 @@ describe('history compact checkpoint', () => {
       previousCheckpointId: valid.checkpointId,
       now: 20,
     });
+    const runIds = ['run-valid', 'run-poisoned'];
     const store = new StubAgentRunStore(
-      [run('run-valid', 10), run('run-poisoned', 20)],
       new Map([
         ['run-valid', [checkpointEvent('ledger-valid', 'run-valid', valid, 10)]],
         ['run-poisoned', [checkpointEvent('ledger-poisoned', 'run-poisoned', poisoned, 20)]],
       ]),
     );
 
-    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1');
+    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(
+      store,
+      'session-1',
+      runIds,
+    );
 
     assert.equal(loaded?.checkpointId, valid.checkpointId);
   });
@@ -556,15 +568,19 @@ describe('history compact checkpoint', () => {
       previousCheckpointId: valid.checkpointId,
       now: 20,
     });
+    const runIds = ['run-valid', 'run-poisoned'];
     const store = new StubAgentRunStore(
-      [run('run-valid', 10), run('run-poisoned', 20)],
       new Map([
         ['run-valid', [checkpointEvent('ledger-valid', 'run-valid', valid, 10)]],
         ['run-poisoned', [checkpointEvent('ledger-poisoned', 'run-poisoned', poisoned, 20)]],
       ]),
     );
 
-    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1');
+    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(
+      store,
+      'session-1',
+      runIds,
+    );
 
     assert.equal(loaded?.checkpointId, valid.checkpointId);
   });
@@ -641,15 +657,19 @@ describe('history compact checkpoint', () => {
       }),
       summaryFormat: 'sections_v1' as const,
     };
+    const runIds = ['run-valid', 'run-marked'];
     const store = new StubAgentRunStore(
-      [run('run-valid', 10), run('run-marked', 20)],
       new Map([
         ['run-valid', [checkpointEvent('ledger-valid', 'run-valid', valid, 10)]],
         ['run-marked', [checkpointEvent('ledger-marked', 'run-marked', markedMalformed, 20)]],
       ]),
     );
 
-    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1');
+    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(
+      store,
+      'session-1',
+      runIds,
+    );
 
     assert.equal(loaded?.checkpointId, valid.checkpointId);
   });
@@ -682,11 +702,12 @@ describe('history compact checkpoint', () => {
         assert.equal(options.ifLedgerRevision, 'ledger-revision');
         replacedEventIds.push(options?.replaceEventId);
       },
-      listSessionRuns: async () => [run('run-canonical', 10)],
       readEvents: async () => [canonicalEvent],
     };
 
-    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1');
+    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1', [
+      'run-canonical',
+    ]);
 
     assert.equal(loaded?.checkpointId, valid.checkpointId);
     assert.deepEqual(replacedEventIds, [poisonedProjection.id]);
@@ -705,15 +726,19 @@ describe('history compact checkpoint', () => {
       summary: 'stale coverage',
       summaryFormat: 'legacy_freeform',
     });
+    const runIds = ['run-furthest', 'run-stale'];
     const store = new StubAgentRunStore(
-      [run('run-furthest', 10), run('run-stale', 20)],
       new Map([
         ['run-furthest', [checkpointEvent('ledger-furthest', 'run-furthest', furthest, 30)]],
         ['run-stale', [checkpointEvent('ledger-stale', 'run-stale', stale, 40)]],
       ]),
     );
 
-    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1');
+    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(
+      store,
+      'session-1',
+      runIds,
+    );
 
     assert.equal(loaded?.checkpointId, furthest.checkpointId);
   });
@@ -743,8 +768,8 @@ describe('history compact checkpoint', () => {
       previousCheckpointId: second.checkpointId,
       now: 30,
     });
+    const runIds = ['parent-created-first', 'child-created-later'];
     const store = new StubAgentRunStore(
-      [run('parent-created-first', 10), run('child-created-later', 20)],
       new Map([
         [
           'parent-created-first',
@@ -759,7 +784,11 @@ describe('history compact checkpoint', () => {
         ],
       ]),
     );
-    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1');
+    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(
+      store,
+      'session-1',
+      runIds,
+    );
 
     assert.equal(loaded?.checkpointId, tip.checkpointId);
   });
@@ -774,15 +803,14 @@ describe('history compact checkpoint', () => {
     const projectedEvent = checkpointEvent('projection-event', 'run-projection', checkpoint, 20);
     const store = {
       readEventProjection: async () => projectedEvent,
-      listSessionRuns: async () => {
-        throw new Error('run enumeration must stay cold');
-      },
       readEvents: async () => {
         throw new Error('run ledger reads must stay cold');
       },
     };
 
-    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1');
+    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1', [
+      'run-canonical',
+    ]);
 
     assert.equal(loaded?.checkpointId, checkpoint.checkpointId);
   });
@@ -790,15 +818,14 @@ describe('history compact checkpoint', () => {
   test('uses an empty bounded projection without enumerating run ledgers', async () => {
     const store = {
       readEventProjection: async () => null,
-      listSessionRuns: async () => {
-        throw new Error('run enumeration must stay cold');
-      },
       readEvents: async () => {
         throw new Error('run ledger reads must stay cold');
       },
     };
 
-    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1');
+    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1', [
+      'run-canonical',
+    ]);
 
     assert.equal(loaded, undefined);
   });
@@ -824,11 +851,12 @@ describe('history compact checkpoint', () => {
         assert.equal(options.ifLedgerRevision, 'ledger-revision');
         repaired.push(repairedEvent);
       },
-      listSessionRuns: async () => [run('run-recovered', 10)],
       readEvents: async () => [event],
     };
 
-    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1');
+    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1', [
+      'run-canonical',
+    ]);
 
     assert.equal(loaded?.checkpointId, checkpoint.checkpointId);
     assert.deepEqual(repaired, [event]);
@@ -848,11 +876,12 @@ describe('history compact checkpoint', () => {
       repairEventProjection: async () => {
         repaired = true;
       },
-      listSessionRuns: async () => [run('run-recovered', 10)],
       readEvents: async () => [event],
     };
 
-    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1');
+    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1', [
+      'run-canonical',
+    ]);
 
     assert.equal(loaded?.checkpointId, checkpoint.checkpointId);
     assert.equal(repaired, false);
@@ -884,11 +913,12 @@ describe('history compact checkpoint', () => {
         assert.equal(options.ifLedgerRevision, 'ledger-revision');
         replacedEventIds.push(options?.replaceEventId);
       },
-      listSessionRuns: async () => [run('run-canonical', 10)],
       readEvents: async () => [canonicalEvent],
     };
 
-    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1');
+    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1', [
+      'run-canonical',
+    ]);
 
     assert.equal(loaded?.checkpointId, checkpoint.checkpointId);
     assert.deepEqual(replacedEventIds, [invalidProjection.id]);
@@ -899,14 +929,13 @@ describe('history compact checkpoint', () => {
       readEventProjection: async () => {
         throw new Error('damaged projection');
       },
-      listSessionRuns: async () => {
+      readEvents: async () => {
         throw new Error('ledger recovery failed');
       },
-      readEvents: async () => [],
     };
 
     await assert.rejects(
-      loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1'),
+      loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1', ['run-canonical']),
       /ledger recovery failed/,
     );
   });
@@ -988,22 +1017,6 @@ function textEvent(index: number): RuntimeEvent {
   };
 }
 
-function run(runId: string, createdAt: number): AgentRunHeader {
-  return {
-    runId,
-    sessionId: 'session-1',
-    turnId: `turn-${runId}`,
-    status: 'completed',
-    backendKind: 'ai-sdk',
-    llmConnectionSlug: 'test',
-    modelId: 'test',
-    cwd: '/tmp',
-    permissionMode: 'ask',
-    createdAt,
-    updatedAt: createdAt,
-  };
-}
-
 function checkpointEvent(
   id: string,
   runId: string,
@@ -1022,28 +1035,12 @@ function checkpointEvent(
 }
 
 class StubAgentRunStore implements AgentRunStore {
-  constructor(
-    private readonly runs: AgentRunHeader[],
-    private readonly events: Map<string, AgentRunEvent[]>,
-  ) {}
-
-  async listSessionRuns(): Promise<AgentRunHeader[]> {
-    return this.runs;
-  }
+  constructor(private readonly events: Map<string, AgentRunEvent[]>) {}
 
   async readEvents(_sessionId: string, runId: string): Promise<AgentRunEvent[]> {
     return this.events.get(runId) ?? [];
   }
 
-  async createRun(): Promise<AgentRunHeader> {
-    throw new Error('not implemented');
-  }
-  async updateRun(): Promise<AgentRunHeader> {
-    throw new Error('not implemented');
-  }
-  async readRun(): Promise<AgentRunHeader> {
-    throw new Error('not implemented');
-  }
   async appendEvent(): Promise<void> {
     throw new Error('not implemented');
   }

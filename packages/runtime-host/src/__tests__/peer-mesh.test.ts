@@ -1395,7 +1395,7 @@ class MemoryPeerClient implements PeerMeshTransport, PeerReachabilityPublisher {
   #reachability: SignedPeerReachabilityLeaseV1 | undefined;
   #reachabilityRevision = 0;
   #now: () => number = Date.now;
-  readonly #reachabilityListeners = new Set<(lease: SignedPeerReachabilityLeaseV1) => void>();
+  readonly #reachabilityListeners = new Set<() => void>();
   #nextConnectionBarrier:
     | {
         readonly started: () => void;
@@ -1478,7 +1478,7 @@ class MemoryPeerClient implements PeerMeshTransport, PeerReachabilityPublisher {
     });
     this.verify(signed, this.peerId);
     this.#reachability = signed;
-    for (const listener of this.#reachabilityListeners) listener(signed);
+    for (const listener of this.#reachabilityListeners) listener();
     return signed;
   }
 
@@ -1496,7 +1496,7 @@ class MemoryPeerClient implements PeerMeshTransport, PeerReachabilityPublisher {
     });
   }
 
-  subscribe(listener: (lease: SignedPeerReachabilityLeaseV1) => void): () => void {
+  subscribe(listener: () => void): () => void {
     this.#reachabilityListeners.add(listener);
     return () => this.#reachabilityListeners.delete(listener);
   }

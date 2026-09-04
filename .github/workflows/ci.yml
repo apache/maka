@@ -102,6 +102,8 @@ jobs:
       - name: Test the epoch guard
         run: node --test --test-concurrency=1 scripts/protocol-epoch-check.test.mjs
 
+      - name: Test Storybook audit contracts
+        run: node --test scripts/ax-tree-audit.test.mjs scripts/storybook-visual-smoke.test.mjs
       - name: Test Computer Use script contracts
         run: node --test scripts/ax-tree-audit.test.mjs scripts/computer-use/lab-root.test.mjs
 
@@ -179,6 +181,10 @@ jobs:
         run: |
           npm run check:tui-copy
           node --test scripts/check-tui-copy.test.mjs
+
+      - name: Test staged Biome hook
+        if: steps.plan.outputs.code == 'true'
+        run: node --test scripts/biome-staged-check.test.mjs
 
       # The header audit above remains install-free. The complete source gate
       # also exercises generation and therefore runs after its pinned formatter

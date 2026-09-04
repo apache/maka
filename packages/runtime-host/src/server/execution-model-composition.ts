@@ -203,6 +203,7 @@ async function buildHostAiSdkBackend(
     });
   const resolveHistoryCompactModel = () =>
     getAIModel({
+      sessionId: input.context.sessionId,
       connection: target.connection,
       apiKey,
       modelId: target.model,

@@ -19,16 +19,21 @@
 
 import { randomUUID } from 'node:crypto';
 import {
+  abortable,
   decodeRemoteRuntimeHostProfile,
   RUNTIME_HOST_ACCESS_CREDENTIAL_MAX_BYTES,
   RuntimeHostPermanentReconnectError,
+  RuntimeHostProfileConnectionError,
   type ResolvedRuntimeHostProfile,
   type RuntimeHostConnectionPhase,
+  type RuntimeHostPeerConnectionPath,
   type RuntimeHostRemoteTransport,
 } from '@maka/runtime-host/client';
 import {
   decodeCollaborationInvitationCode,
+  decodeSharedSessionCatalogProjection,
   type HostPeerEndpoint,
+  type SharedSessionCatalogProjection,
 } from '@maka/runtime-host/protocol';
 import type { CredentialStore } from '@maka/storage/credential-store';
 import type {
@@ -50,6 +55,7 @@ const STORE_SCHEMA_VERSION = 1;
 const STORE_SLOT = 'desktop-guest-session-mounts';
 const MAX_MOUNTS = 128;
 const STARTUP_RETRY_MAX_MS = 30_000;
+const DEFERRED_WRITE_RETRY_MAX_MS = 30_000;
 
 export interface GuestSessionMount {
   readonly mountId: string;
@@ -57,7 +63,10 @@ export interface GuestSessionMount {
   readonly rootId: string;
   readonly transport: RuntimeHostRemoteTransport;
   readonly credential: string;
+  readonly session?: SharedSessionCatalogProjection;
 }
+
+type GuestSessionMountReadiness = SessionCollaborationMountSummary['readiness'];
 
 interface GuestSessionMountDocument {
   readonly schemaVersion: typeof STORE_SCHEMA_VERSION;
@@ -66,7 +75,8 @@ interface GuestSessionMountDocument {
 
 interface LiveGuestActivationBase {
   readonly controller: AbortController;
-  stage: 'connecting' | 'finalizing';
+  stage: 'connecting' | 'finalizing' | 'hydrating';
+  accessActivated: boolean;
   finalization?: Promise<RuntimeHostGuestAccessFinalization>;
   task: Promise<unknown>;
 }
@@ -85,6 +95,16 @@ interface LiveGuestStartupActivation extends LiveGuestActivationBase {
 
 type LiveGuestActivation = LiveGuestImportActivation | LiveGuestStartupActivation;
 
+interface LiveGuestRefresh {
+  dirty: boolean;
+  task: Promise<void>;
+}
+
+interface DeferredWriteFailure {
+  readonly mount: GuestSessionMount;
+  readonly error: Error;
+}
+
 export interface GuestSessionMountStore {
   read(): Promise<readonly GuestSessionMount[]>;
   write(mounts: readonly GuestSessionMount[]): Promise<void>;
@@ -93,6 +113,7 @@ export interface GuestSessionMountStore {
 export interface DesktopGuestSessionMountService {
   start(): Promise<void>;
   list(): Promise<readonly SessionCollaborationMountSummary[]>;
+  connectionChanged(mountId: string, error?: Error): Promise<void>;
   importInvitation(
     code: string,
     allowInsecure: boolean,
@@ -119,7 +140,11 @@ export function createGuestSessionMountStore(
       }
       const document: GuestSessionMountDocument = {
         schemaVersion: STORE_SCHEMA_VERSION,
-        mounts: [...mounts].sort((left, right) => left.mountId.localeCompare(right.mountId)),
+        mounts: mounts
+          .map((mount) =>
+            mount.session ? { ...mount, session: retainedSession(mount.session) } : mount,
+          )
+          .sort((left, right) => left.mountId.localeCompare(right.mountId)),
       };
       decodeDocument(document);
       await credentials.setSecret(
@@ -136,27 +161,63 @@ export function createDesktopGuestSessionMountService(input: {
   readonly mount: (
     target: ResolvedRuntimeHostProfile,
     signal: AbortSignal,
-    onConnectionPhase?: (phase: RuntimeHostConnectionPhase) => void,
-    onPeerEndpoint?: (endpoint: HostPeerEndpoint) => void,
+    onConnectionPhase: ((phase: RuntimeHostConnectionPhase) => void) | undefined,
+    onPeerEndpoint: ((endpoint: HostPeerEndpoint) => void) | undefined,
+    onSessionCatalogChanged: () => void,
   ) => Promise<void>;
   readonly finalizeAccess: (
     mountId: string,
     signal: AbortSignal,
     onAccessActivated?: () => void,
   ) => Promise<RuntimeHostGuestAccessFinalization>;
+  readonly getSharedSession: (mountId: string) => Promise<SharedSessionCatalogProjection | null>;
+  readonly inspect: (mountId: string) =>
+    | {
+        readonly readiness: GuestSessionMountReadiness;
+        readonly peerPath?: RuntimeHostPeerConnectionPath;
+      }
+    | undefined;
+  readonly onMountsChanged: () => void;
   readonly unmount: (mountId: string) => Promise<void>;
   readonly wait?: (delayMs: number, signal: AbortSignal) => Promise<void>;
   readonly onError?: (error: Error, mount: GuestSessionMount) => void;
 }): DesktopGuestSessionMountService {
   const wait = input.wait ?? waitForDelay;
-  const onError = input.onError ?? ((error, mount) => {
-    console.warn(`[runtime-host] shared Session ${mount.mountId} is unavailable:`, error);
-  });
+  const onError =
+    input.onError ??
+    ((error, mount) => {
+      console.warn(`[runtime-host] shared Session ${mount.mountId} is unavailable:`, error);
+    });
   const activations = new Set<LiveGuestActivation>();
   const removingMounts = new Set<string>();
+  const invalidatedAccessMounts = new Set<string>();
+  const refreshes = new Map<string, LiveGuestRefresh>();
   let mounts: Map<string, GuestSessionMount> | undefined;
   let mutationTail = Promise.resolve();
+  let deferredWriteFailure: DeferredWriteFailure | undefined;
+  let deferredWriteRetry: Promise<void> | undefined;
+  const deferredWriteRetryController = new AbortController();
+  const projectionLifetime = new AbortController();
   let closed = false;
+
+  const readSharedSession = (
+    mountId: string,
+    signal?: AbortSignal,
+  ): Promise<SharedSessionCatalogProjection | null> =>
+    abortable(
+      () => input.getSharedSession(mountId),
+      signal
+        ? AbortSignal.any([signal, projectionLifetime.signal])
+        : projectionLifetime.signal,
+    );
+
+  const notifyMountsChanged = (): void => {
+    try {
+      input.onMountsChanged();
+    } catch {
+      // Renderer invalidation cannot control the durable mount lifecycle.
+    }
+  };
 
   const mutate = <T>(operation: () => Promise<T>): Promise<T> => {
     const pending = mutationTail.then(operation);
@@ -168,13 +229,90 @@ export function createDesktopGuestSessionMountService(input: {
   };
 
   const load = async (): Promise<Map<string, GuestSessionMount>> => {
-    if (!mounts) mounts = new Map((await input.store.read()).map((mount) => [mount.mountId, mount]));
+    if (!mounts)
+      mounts = new Map((await input.store.read()).map((mount) => [mount.mountId, mount]));
     return mounts;
+  };
+
+  const persistDeferredState = async (
+    current: Map<string, GuestSessionMount>,
+    changedMount?: GuestSessionMount,
+  ): Promise<Error | undefined> => {
+    const failureMount = changedMount ?? deferredWriteFailure?.mount;
+    if (!failureMount) return undefined;
+    try {
+      await input.store.write([...current.values()]);
+      deferredWriteFailure = undefined;
+      return undefined;
+    } catch (error) {
+      const failure = asError(error);
+      deferredWriteFailure = { mount: failureMount, error: failure };
+      return failure;
+    }
+  };
+
+  const flushDeferredWrite = (): Promise<Error | undefined> =>
+    mutate(async () => persistDeferredState(await load()));
+
+  const scheduleDeferredWriteRetry = (): void => {
+    if (closed || deferredWriteRetry) return;
+    deferredWriteRetry = (async () => {
+      let delayMs = 1_000;
+      while (!closed && deferredWriteFailure) {
+        try {
+          await wait(delayMs, deferredWriteRetryController.signal);
+        } catch {
+          return;
+        }
+        if (!(await flushDeferredWrite())) return;
+        delayMs = Math.min(delayMs * 2, DEFERRED_WRITE_RETRY_MAX_MS);
+      }
+    })().finally(() => {
+      deferredWriteRetry = undefined;
+      // Do not lose a failure installed while the prior task settled.
+      if (!closed && deferredWriteFailure) scheduleDeferredWriteRetry();
+    });
   };
 
   const persist = async (next: Map<string, GuestSessionMount>): Promise<void> => {
     await input.store.write([...next.values()]);
     mounts = next;
+    deferredWriteFailure = undefined;
+  };
+
+  const clearSessionProjection = async (mountId: string): Promise<void> => {
+    // This fence is installed before the durable mutation is queued so a
+    // concurrent refresh cannot restore a projection after authority loss.
+    invalidatedAccessMounts.add(mountId);
+    await mutate(async () => {
+      const current = await load();
+      const mount = current.get(mountId);
+      if (!mount) {
+        invalidatedAccessMounts.delete(mountId);
+        return;
+      }
+      let next = current;
+      if (mount.session) {
+        next = new Map(current).set(mountId, {
+          mountId: mount.mountId,
+          name: mount.name,
+          rootId: mount.rootId,
+          transport: mount.transport,
+          credential: mount.credential,
+        });
+        // Authority loss takes effect in memory before a fallible credential
+        // store write. A locked or unavailable store must never keep exposing
+        // a projection whose credential has already been rejected.
+        mounts = next;
+      }
+      notifyMountsChanged();
+      if (!mount.session && !deferredWriteFailure) return;
+      const error = await persistDeferredState(next, mount.session ? mount : undefined);
+      if (error) {
+        scheduleDeferredWriteRetry();
+        throw error;
+      }
+    });
   };
 
   const recordPeerEndpoint = (mount: GuestSessionMount, endpoint: HostPeerEndpoint): void => {
@@ -182,7 +320,8 @@ export function createDesktopGuestSessionMountService(input: {
       closed ||
       mount.transport.kind !== 'libp2p-direct' ||
       endpoint.lease.peerId !== mount.transport.reachability.lease.peerId
-    ) return;
+    )
+      return;
     void mutate(async () => {
       if (removingMounts.has(mount.mountId)) return;
       const current = await load();
@@ -191,16 +330,126 @@ export function createDesktopGuestSessionMountService(input: {
         retained?.transport.kind !== 'libp2p-direct' ||
         retained.transport.reachability.lease.peerId !== endpoint.lease.peerId ||
         retained.transport.reachability.lease.revision >= endpoint.lease.revision
-      ) return;
-      const updated = decodeMount({
+      )
+        return;
+      const updated: GuestSessionMount = {
         ...retained,
         transport: {
           kind: 'libp2p-direct',
           reachability: endpoint,
         },
-      });
-      await persist(new Map(current).set(mount.mountId, updated));
+      };
+      const next = new Map(current).set(mount.mountId, updated);
+      // The authenticated endpoint is immediately useful to reconnect logic;
+      // a transient credential-store lock must not discard it.
+      mounts = next;
+      const error = await persistDeferredState(next, mount);
+      if (error) {
+        scheduleDeferredWriteRetry();
+        throw error;
+      }
     }).catch((error: unknown) => onError(asError(error), mount));
+  };
+
+  const recordSharedSession = async (
+    mount: GuestSessionMount,
+    session: SharedSessionCatalogProjection,
+  ): Promise<void> => {
+    if (invalidatedAccessMounts.has(mount.mountId)) {
+      throw new RuntimeHostPermanentReconnectError('Shared Session access is no longer available');
+    }
+    const superseded = await mutate(async () => {
+      if (invalidatedAccessMounts.has(mount.mountId)) {
+        throw new RuntimeHostPermanentReconnectError(
+          'Shared Session access is no longer available',
+        );
+      }
+      const current = await load();
+      const retained = current.get(mount.mountId);
+      if (!retained) throw new Error('Shared Session mount was removed while connecting');
+      const next = new Map(current);
+      const duplicates: GuestSessionMount[] = [];
+      for (const candidate of current.values()) {
+        if (
+          candidate.mountId === mount.mountId ||
+          candidate.rootId !== mount.rootId ||
+          candidate.session?.id !== session.id
+        )
+          continue;
+        duplicates.push(candidate);
+        next.delete(candidate.mountId);
+      }
+      next.set(mount.mountId, { ...retained, session });
+      // The authenticated projection is a live cache, not the access grant.
+      // Publish it even when the credential store is temporarily locked, then
+      // retry the durable cache write without holding UI freshness.
+      mounts = next;
+      notifyMountsChanged();
+      const error = await persistDeferredState(next, mount);
+      if (error) {
+        scheduleDeferredWriteRetry();
+        onError(error, mount);
+      }
+      return duplicates;
+    });
+    for (const duplicate of superseded) {
+      void input.unmount(duplicate.mountId).catch((error) => onError(asError(error), duplicate));
+    }
+    if (invalidatedAccessMounts.has(mount.mountId)) {
+      throw new RuntimeHostPermanentReconnectError('Shared Session access is no longer available');
+    }
+  };
+
+  const refreshOnce = async (mountId: string): Promise<void> => {
+    if (removingMounts.has(mountId) || invalidatedAccessMounts.has(mountId)) return;
+    // A catalog change may arrive after activation read its projection but
+    // before that projection is committed. Wait for the admitted activation
+    // and read again so the later authoritative state cannot be lost. Once
+    // admitted, shutdown cancels the cache read without affecting access.
+    while (true) {
+      const activation = [...activations].find((candidate) => candidate.mountId === mountId);
+      if (!activation) break;
+      await activation.task.catch(() => undefined);
+      if (removingMounts.has(mountId) || invalidatedAccessMounts.has(mountId)) return;
+    }
+    const mount = (await mutate(load)).get(mountId);
+    if (!mount) return;
+    const inspected = input.inspect(mountId);
+    if (inspected && inspected.readiness !== 'ready') return;
+    const session = await readSharedSession(mountId);
+    if (removingMounts.has(mountId) || invalidatedAccessMounts.has(mountId)) return;
+    if (!session) {
+      await clearSessionProjection(mountId);
+      return;
+    }
+    await recordSharedSession(mount, session);
+  };
+
+  const refresh = (mountId: string): Promise<void> => {
+    if (closed) return Promise.resolve();
+    const active = refreshes.get(mountId);
+    if (active) {
+      active.dirty = true;
+      return active.task;
+    }
+    const state: LiveGuestRefresh = { dirty: true, task: Promise.resolve() };
+    state.task = (async () => {
+      let failure: unknown;
+      do {
+        state.dirty = false;
+        try {
+          await refreshOnce(mountId);
+          failure = undefined;
+        } catch (error) {
+          failure = error;
+        }
+      } while (state.dirty);
+      if (failure !== undefined) throw failure;
+    })().finally(() => {
+      if (refreshes.get(mountId) === state) refreshes.delete(mountId);
+    });
+    refreshes.set(mountId, state);
+    return state.task;
   };
 
   const activate = async (
@@ -208,14 +457,25 @@ export function createDesktopGuestSessionMountService(input: {
     mount: GuestSessionMount,
   ): Promise<RuntimeHostGuestAccessFinalization> => {
     activation.stage = 'connecting';
-    await input.mount(resolveMountTarget(mount), activation.controller.signal, (phase) => {
-      if (activation.kind === 'import') {
-        reportImportProgress(
-          activation.onProgress,
-          collaborationProgressForConnectionPhase(phase),
-        );
-      }
-    }, (endpoint) => recordPeerEndpoint(mount, endpoint));
+    await input.mount(
+      resolveMountTarget(mount),
+      activation.controller.signal,
+      (phase) => {
+        if (activation.kind === 'import') {
+          reportImportProgress(
+            activation.onProgress,
+            collaborationProgressForConnectionPhase(phase),
+          );
+        }
+      },
+      (endpoint) => recordPeerEndpoint(mount, endpoint),
+      () => {
+        // The candidate publishes the live Session event. Refresh this
+        // durable projection independently; its eventual inventory change
+        // remains useful even when the credential-store write must retry.
+        void refresh(mount.mountId).catch((error: unknown) => onError(asError(error), mount));
+      },
+    );
     // waitForReady observes host.status before mount resolves. Commit that
     // authenticated route snapshot before declaring the durable mount ready.
     await mutationTail;
@@ -227,18 +487,37 @@ export function createDesktopGuestSessionMountService(input: {
     if (activation.kind === 'import') {
       reportImportProgress(activation.onProgress, 'finalizing_access');
     }
-    const finalization = input.finalizeAccess(
-      mount.mountId,
-      activation.controller.signal,
-      activation.kind === 'import'
-        ? () => reportImportProgress(activation.onProgress, 'loading_session')
-        : undefined,
-    );
+    const finalization = (async (): Promise<RuntimeHostGuestAccessFinalization> => {
+      const result = await input.finalizeAccess(mount.mountId, activation.controller.signal, () => {
+        activation.accessActivated = true;
+        if (activation.kind === 'import') {
+          reportImportProgress(activation.onProgress, 'loading_session');
+        }
+      });
+      activation.accessActivated = true;
+      activation.controller.signal.throwIfAborted();
+      if (result === 'ready') {
+        activation.stage = 'hydrating';
+        if (closed || removingMounts.has(mount.mountId)) {
+          return result;
+        }
+        const session = await readSharedSession(mount.mountId, activation.controller.signal);
+        activation.controller.signal.throwIfAborted();
+        if (!session) {
+          await clearSessionProjection(mount.mountId);
+          throw new RuntimeHostPermanentReconnectError(
+            'This shared Session is no longer available to the retained Guest access',
+          );
+        }
+        await recordSharedSession(mount, session);
+      } else {
+        activation.stage = 'connecting';
+      }
+      return result;
+    })();
     activation.finalization = finalization;
     try {
-      const result = await finalization;
-      activation.controller.signal.throwIfAborted();
-      return result;
+      return await finalization;
     } finally {
       if (activation.finalization === finalization) activation.finalization = undefined;
     }
@@ -249,12 +528,14 @@ export function createDesktopGuestSessionMountService(input: {
       closed ||
       removingMounts.has(mount.mountId) ||
       [...activations].some((activation) => activation.mountId === mount.mountId)
-    ) return;
+    )
+      return;
     const activation: LiveGuestActivation = {
       kind: 'startup',
       controller: new AbortController(),
       mountId: mount.mountId,
       stage: 'connecting',
+      accessActivated: false,
       task: Promise.resolve(),
     };
     activations.add(activation);
@@ -263,24 +544,32 @@ export function createDesktopGuestSessionMountService(input: {
       while (!closed && !activation.controller.signal.aborted) {
         if (!(await load()).has(mount.mountId)) return;
         try {
-          await activate(activation, mount);
-          return;
+          const result = await activate(activation, mount);
+          if (result === 'ready') return;
+          if (closed || activation.controller.signal.aborted || removingMounts.has(mount.mountId))
+            return;
+          await wait(delayMs, activation.controller.signal);
+          delayMs = Math.min(delayMs * 2, STARTUP_RETRY_MAX_MS);
         } catch (error) {
-          if (
-            closed ||
-            activation.controller.signal.aborted ||
-            removingMounts.has(mount.mountId)
-          ) return;
+          if (closed || activation.controller.signal.aborted || removingMounts.has(mount.mountId))
+            return;
           activation.stage = 'connecting';
           const failure = asError(error);
           onError(failure, mount);
-          if (failure instanceof RuntimeHostPermanentReconnectError) return;
+          if (isRejectedAccessFailure(failure)) {
+            await clearSessionProjection(mount.mountId);
+            return;
+          }
+          if (failure instanceof RuntimeHostPermanentReconnectError) {
+            return;
+          }
           await wait(delayMs, activation.controller.signal);
           delayMs = Math.min(delayMs * 2, STARTUP_RETRY_MAX_MS);
         }
       }
     })().finally(() => {
       activations.delete(activation);
+      notifyMountsChanged();
     });
     void activation.task.catch((error) => {
       if (!activation.controller.signal.aborted) onError(asError(error), mount);
@@ -292,7 +581,7 @@ export function createDesktopGuestSessionMountService(input: {
     try {
       const matching = [...activations].filter((activation) => activation.mountId === mountId);
       for (const activation of matching) {
-        if (activation.stage === 'connecting') {
+        if (activation.stage !== 'finalizing') {
           activation.controller.abort(new Error('Shared Session mount was removed'));
         }
       }
@@ -311,6 +600,8 @@ export function createDesktopGuestSessionMountService(input: {
         return mount;
       });
       if (!removed) return;
+      invalidatedAccessMounts.delete(mountId);
+      notifyMountsChanged();
       for (const activation of activations) {
         if (activation.mountId === mountId) {
           activation.controller.abort(new Error('Shared Session mount was removed'));
@@ -370,14 +661,16 @@ export function createDesktopGuestSessionMountService(input: {
       if (!(await load()).has(mount.mountId)) {
         throw new Error('Shared Session mount was removed while connecting');
       }
+      reconcile = finalization === 'reconnecting';
       return {
         kind: finalization === 'ready' ? 'connected' : 'recovering',
         mountId: mount.mountId,
       };
     } catch (error) {
       if (
-        activation.stage === 'finalizing' &&
-        error instanceof RuntimeHostPairingFinalizationInterruptedError
+        (activation.stage === 'finalizing' &&
+          error instanceof RuntimeHostPairingFinalizationInterruptedError) ||
+        (activation.accessActivated && !(error instanceof RuntimeHostPermanentReconnectError))
       ) {
         reconcile = true;
       } else {
@@ -388,6 +681,7 @@ export function createDesktopGuestSessionMountService(input: {
         });
         activation.controller.abort(new Error('Shared Session mount activation failed'));
         await input.unmount(mount.mountId).catch(() => undefined);
+        invalidatedAccessMounts.delete(mount.mountId);
       }
       return reconcile
         ? { kind: 'recovering', mountId: mount.mountId }
@@ -399,6 +693,7 @@ export function createDesktopGuestSessionMountService(input: {
     } finally {
       activations.delete(activation);
       if (reconcile) beginStartupReconciliation(mount);
+      notifyMountsChanged();
     }
   };
 
@@ -422,12 +717,11 @@ export function createDesktopGuestSessionMountService(input: {
       ...(onProgress ? { onProgress } : {}),
       controller: new AbortController(),
       stage: 'connecting',
+      accessActivated: false,
       task: Promise.resolve(),
     };
     activations.add(activation);
-    const task = runImport(code, allowInsecure, activation).finally(() => {
-      activations.delete(activation);
-    });
+    const task = runImport(code, allowInsecure, activation);
     activation.task = task;
     return task;
   };
@@ -436,13 +730,55 @@ export function createDesktopGuestSessionMountService(input: {
     async start() {
       if (closed) return;
       const current = await mutate(load);
-      for (const mount of current.values()) beginStartupReconciliation(mount);
+      for (const mount of current.values()) {
+        beginStartupReconciliation(mount);
+      }
     },
 
     async list() {
-      return [...(await mutate(load)).values()]
-        .map(({ mountId, name }) => ({ mountId, name }))
+      // Projection updates replace the whole Map before notifying readers, so
+      // an initialized snapshot is safe to read while its cache write settles.
+      const current = mounts ?? (await mutate(load));
+      return [...current.values()]
+        .map((mount) => {
+          const inspected = input.inspect(mount.mountId);
+          const activation = [...activations].find(
+            (candidate) => candidate.mountId === mount.mountId,
+          );
+          const currentReadiness = deriveMountReadiness({
+            accessInvalidated: invalidatedAccessMounts.has(mount.mountId),
+            activationKind: activation?.kind,
+            activationAccessActivated: activation?.accessActivated === true,
+            connectionReadiness: inspected?.readiness,
+            hasSessionProjection: mount.session !== undefined,
+          });
+          return {
+            mountId: mount.mountId,
+            name: mount.name,
+            hostId: mount.rootId,
+            readiness: currentReadiness,
+            ...(inspected?.peerPath ? { peerPath: inspected.peerPath } : {}),
+            ...(!invalidatedAccessMounts.has(mount.mountId) && mount.session
+              ? { session: mount.session }
+              : {}),
+          };
+        })
         .sort((left, right) => left.name.localeCompare(right.name));
+    },
+
+    async connectionChanged(mountId, error) {
+      if (closed) return;
+      if (error && isRejectedAccessFailure(error)) {
+        await clearSessionProjection(mountId);
+        return;
+      }
+      notifyMountsChanged();
+      if (input.inspect(mountId)?.readiness !== 'ready') return;
+      // Initial activation owns its authenticated projection hydration. A
+      // later ready transition means a reconnect completed and needs a fresh
+      // projection from the recovered Host.
+      if ([...activations].some((activation) => activation.mountId === mountId)) return;
+      await refresh(mountId);
     },
 
     importInvitation,
@@ -453,7 +789,7 @@ export function createDesktopGuestSessionMountService(input: {
           activation.kind === 'import' && activation.operationId === operationId,
       );
       if (!operation) return 'settling';
-      if (operation.stage === 'finalizing') return 'settling';
+      if (operation.stage !== 'connecting') return 'settling';
       operation.controller.abort(new Error('Shared Session import was cancelled'));
       return 'cancelled';
     },
@@ -462,16 +798,52 @@ export function createDesktopGuestSessionMountService(input: {
 
     async close() {
       closed = true;
+      projectionLifetime.abort(new Error('Shared Session mount service is closed'));
+      deferredWriteRetryController.abort(
+        new Error('Shared Session mount service is closed'),
+      );
       for (const activation of activations) {
-        if (activation.stage === 'connecting') {
+        if (activation.stage !== 'finalizing') {
           activation.controller.abort(new Error('Shared Session mount service is closed'));
         }
       }
       await Promise.allSettled([...activations].map((activation) => activation.task));
+      await Promise.allSettled([...refreshes.values()].map((refresh) => refresh.task));
+      if (deferredWriteRetry) await deferredWriteRetry;
       await mutationTail;
+      if (deferredWriteFailure) {
+        await flushDeferredWrite();
+        if (deferredWriteFailure) {
+          onError(deferredWriteFailure.error, deferredWriteFailure.mount);
+        }
+      }
       activations.clear();
+      refreshes.clear();
     },
   };
+}
+
+function deriveMountReadiness(input: {
+  readonly accessInvalidated: boolean;
+  readonly activationKind?: LiveGuestActivation['kind'];
+  readonly activationAccessActivated: boolean;
+  readonly connectionReadiness?: GuestSessionMountReadiness;
+  readonly hasSessionProjection: boolean;
+}): GuestSessionMountReadiness {
+  if (input.accessInvalidated || input.connectionReadiness === 'unavailable') {
+    return 'unavailable';
+  }
+  if (
+    input.connectionReadiness === 'ready' &&
+    input.hasSessionProjection &&
+    (!input.activationKind || input.activationAccessActivated)
+  ) {
+    return 'ready';
+  }
+  if (input.activationKind === 'import') return 'connecting';
+  if (input.activationKind === 'startup') return 'reconnecting';
+  if (input.connectionReadiness === 'ready') return 'reconnecting';
+  return input.connectionReadiness ?? 'reconnecting';
 }
 
 export function registerDesktopGuestSessionMountIpc(
@@ -498,7 +870,8 @@ export function registerDesktopGuestSessionMountIpc(
     },
   );
   ipcMain.handle(channels[1], (_event, operationIdValue: unknown) =>
-    service.cancelImport(requireOperationId(operationIdValue)));
+    service.cancelImport(requireOperationId(operationIdValue)),
+  );
   ipcMain.handle(channels[2], () => service.list());
   ipcMain.handle(channels[3], (_event, mountId: string) => service.remove(mountId));
   ipcMain.handle(channels[4], () => {
@@ -547,9 +920,11 @@ function decodeDocument(value: unknown): GuestSessionMountDocument {
 }
 
 function decodeMount(value: unknown): GuestSessionMount {
+  const keys = ['mountId', 'name', 'rootId', 'transport', 'credential'];
+  if (isRecord(value) && value.session !== undefined) keys.push('session');
   if (
     !isRecord(value) ||
-    !hasExactKeys(value, ['mountId', 'name', 'rootId', 'transport', 'credential']) ||
+    !hasExactKeys(value, keys) ||
     typeof value.credential !== 'string' ||
     !value.credential ||
     /\s/u.test(value.credential) ||
@@ -571,7 +946,23 @@ function decodeMount(value: unknown): GuestSessionMount {
     rootId: target.rootId,
     transport: target.transport,
     credential: value.credential,
+    ...(value.session === undefined
+      ? {}
+      : {
+          session: retainedSession(decodeSharedSessionCatalogProjection(value.session)),
+        }),
   };
+}
+
+function retainedSession(session: SharedSessionCatalogProjection): SharedSessionCatalogProjection {
+  const { liveRunState: _liveRunState, ...retained } = session;
+  return retained;
+}
+
+function isRejectedAccessFailure(error: Error): boolean {
+  return (
+    error instanceof RuntimeHostProfileConnectionError && error.reason === 'credential_rejected'
+  );
 }
 
 function isPeerPathUnavailable(error: unknown): boolean {

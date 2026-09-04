@@ -35,7 +35,12 @@ export function hasActiveTurnAtSubmit(input: {
 export function resolveFollowUpModeAtSubmit(input: {
   requestedMode?: FollowUpMode;
   hasActiveTurn: boolean;
+  /** The parsed command, if the text was one. Only its presence matters here. */
+  slashCommand: object | null;
 }): FollowUpMode | undefined {
+  // A slash command tells the app to do something; it is not text for the
+  // Turn that happens to be running. Dispatch it instead of queueing it.
+  if (input.slashCommand) return undefined;
   if (input.requestedMode) return input.requestedMode;
   // Mid-turn submits always queue; Shift+Enter carries the one-shot steer as
   // the requested mode.

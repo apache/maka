@@ -63,7 +63,7 @@ import {
 } from '@maka/core/runtime-event';
 import { formatAttachmentResourceRef } from '@maka/core/attachments';
 import type { AttachmentRef, DirectoryReference, QuoteRef } from '@maka/core/events';
-import type { AgentRunHeader } from '@maka/core/agent-run';
+import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type {
   ModelMessage,
   ToolResultOutput,
@@ -83,24 +83,29 @@ export const PROVIDER_REPLAY_PROJECTION_VERSION = 2;
 
 /**
  * Resolve the RuntimeEvents whose provider-owned reasoning may cross the
- * current provider boundary. Route provenance remains on AgentRunHeader;
- * current-run events are same-route by construction during mid-turn replay.
+ * current provider boundary.
+ *
+ * Route provenance is stated once, by the opening fact of the invocation that
+ * produced the events, and joined here by `runId`. Current-run events are
+ * same-route by construction during mid-turn replay.
  */
 export function compatibleProviderReasoningReplayEventIds(
   events: readonly RuntimeEvent[],
-  runHeaders: readonly AgentRunHeader[] | undefined,
+  invocations: readonly RuntimeInvocationRecord[] | undefined,
   targetProviderStateIdentity: `sha256:${string}` | undefined,
   targetModelId: string,
   currentRunId?: string,
 ): ReadonlySet<string> {
   const compatibleRunIds = new Set(currentRunId ? [currentRunId] : []);
-  if (targetProviderStateIdentity && runHeaders) {
-    for (const run of runHeaders) {
+  if (targetProviderStateIdentity && invocations) {
+    for (const invocation of invocations) {
+      const route = invocation.opening.route;
       if (
-        run.providerStateIdentity === targetProviderStateIdentity &&
-        run.modelId === targetModelId
+        route.provenance === 'runtime' &&
+        route.providerStateIdentity === targetProviderStateIdentity &&
+        route.modelId === targetModelId
       ) {
-        compatibleRunIds.add(run.runId);
+        compatibleRunIds.add(invocation.runId);
       }
     }
   }

@@ -1936,6 +1936,7 @@ name = "maka-runtime-host-peer"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "bytes",
  "futures",
  "libp2p",
@@ -1950,6 +1951,7 @@ dependencies = [
  "tokio-util",
  "unsigned-varint 0.8.0",
  "webrtc",
+ "windows",
 ]
 
 [[package]]

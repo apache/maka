@@ -23,7 +23,7 @@
 // copy fresh. Pull request search has no size qualifier, which leaves reading
 // effort as the one axis a query cannot express.
 
-const EFFORT_LABELS = ['effort/XS', 'effort/S', 'effort/M', 'effort/L', 'effort/XL'];
+const EFFORT_LABELS = ['effort/XS', 'effort/S', 'effort/M', 'effort/L', 'effort/XL', 'effort/XXL'];
 
 // Counted changes should track what a human actually reads. Lockfiles,
 // regenerated artifacts and binaries are verified by their own contracts, so
@@ -40,13 +40,16 @@ const UNREAD_PATTERNS = [
 ];
 
 // Tier boundaries are inclusive upper bounds on readable lines. Test code is
-// not discounted anywhere here; it is reviewed too.
+// not discounted anywhere here; it is reviewed too. Past 2500 lines a pull
+// request is no longer reviewable as one change, so the top tier exists to
+// start the split conversation before the review does.
 const EFFORT_TIERS = [
   { label: 'effort/XS', maxLines: 10 },
   { label: 'effort/S', maxLines: 100 },
   { label: 'effort/M', maxLines: 500 },
   { label: 'effort/L', maxLines: 1000 },
-  { label: 'effort/XL', maxLines: Number.POSITIVE_INFINITY },
+  { label: 'effort/XL', maxLines: 2500 },
+  { label: 'effort/XXL', maxLines: Number.POSITIVE_INFINITY },
 ];
 
 function isUnreadPath(path) {

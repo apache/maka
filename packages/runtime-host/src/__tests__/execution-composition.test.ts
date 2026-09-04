@@ -18,6 +18,8 @@
  */
 
 import assert from 'node:assert/strict';
+import { runtimeInvocationOutcome } from '@maka/core/runtime-invocation';
+import { runtimeInvocationFailureClass } from '@maka/runtime/runtime-event-read-model';
 import { parseNoRealConnectionError } from '@maka/core/connection-error-copy';
 import { createRequire } from 'node:module';
 import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
@@ -465,10 +467,16 @@ test('production recovery preserves legacy Automation history and closes an orph
         kind: 'legacy_automation',
         automationId: 'historical-automation',
       });
-      const recoveredRun = await stores.agentRunStore.readRun(pending.id, 'legacy-automation-run');
-      assert.equal(recoveredRun.status, 'failed');
-      assert.equal(recoveredRun.legacyAutomationId, 'legacy-automation');
-      assert.equal(recoveredRun.failureClass, 'app_restarted');
+      const recoveredRun = (await stores.runtimeEventStore.listSessionInvocations(pending.id)).find(
+        (candidate) => candidate.runId === 'legacy-automation-run',
+      );
+      assert.ok(recoveredRun);
+      assert.equal(recoveredRun && runtimeInvocationOutcome(recoveredRun), 'failed');
+      assert.deepEqual(recoveredRun?.opening.root, {
+        kind: 'legacy_automation',
+        legacyAutomationId: 'legacy-automation',
+      });
+      assert.equal(recoveredRun && runtimeInvocationFailureClass(recoveredRun), 'app_restarted');
     } finally {
       await composition.close();
     }
@@ -1398,26 +1406,22 @@ test('production composition validates graph stop before aborting a claimed chil
       );
       assert.ok(abortedAdmission?.userMessageId);
       assert.deepEqual(abortedAdmission?.execution, graphExecutionDescriptor(abortedClaim));
-      const abortedRun = await stores.agentRunStore.readRun(
-        abortedClaim.targetSessionId,
-        abortedClaim.targetRunId,
-      );
-      assert.equal(abortedRun.status, 'cancelled');
+      const abortedRun = (
+        await stores.runtimeEventStore.listSessionInvocations(abortedClaim.targetSessionId)
+      ).find((candidate) => candidate.runId === abortedClaim.targetRunId);
+      assert.ok(abortedRun);
+      assert.equal(abortedRun && runtimeInvocationOutcome(abortedRun), 'cancelled');
       await assertUniqueGraphExecutionFacts(
         stores,
         abortedClaim,
         abortedAdmission.userMessageId,
-        'run_cancelled',
+        'cancelled',
       );
-      assert.equal(
-        (
-          await stores.agentRunStore.readRun(
-            completedClaim.targetSessionId,
-            completedClaim.targetRunId,
-          )
-        ).status,
-        'completed',
-      );
+      const completedRun = (
+        await stores.runtimeEventStore.listSessionInvocations(completedClaim.targetSessionId)
+      ).find((candidate) => candidate.runId === completedClaim.targetRunId);
+      assert.ok(completedRun);
+      assert.equal(completedRun && runtimeInvocationOutcome(completedRun), 'completed');
     } catch (error) {
       journeyError = error;
       throw error;
@@ -1690,12 +1694,11 @@ async function assertUniqueGraphExecutionFacts(
   stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>>,
   claim: AgentGraphIntentClaim,
   userMessageId: string,
-  expectedTerminal: 'run_completed' | 'run_cancelled' = 'run_completed',
+  expectedOutcome: 'completed' | 'cancelled' = 'completed',
 ): Promise<void> {
-  const [runs, messages, runEvents, runtimeEvents] = await Promise.all([
-    stores.agentRunStore.listSessionRuns(claim.targetSessionId),
+  const [runs, messages, runtimeEvents] = await Promise.all([
+    stores.runtimeEventStore.listSessionInvocations(claim.targetSessionId),
     stores.sessionStore.readMessages(claim.targetSessionId),
-    stores.agentRunStore.readEvents(claim.targetSessionId, claim.targetRunId),
     stores.runtimeEventStore.readImmutableRuntimeEvents(claim.targetSessionId, claim.targetRunId),
   ]);
   assert.deepEqual(
@@ -1708,11 +1711,13 @@ async function assertUniqueGraphExecutionFacts(
       .map((message) => message.id),
     [userMessageId],
   );
-  assert.equal(runEvents.filter((event) => event.type === 'run_started').length, 1);
-  assert.equal(runEvents.filter((event) => event.type === expectedTerminal).length, 1);
+  assert.equal(
+    runtimeEvents.filter((event) => event.content?.kind === 'invocation_opened').length,
+    1,
+  );
   assert.equal(
     runtimeEvents.filter(
-      (event) => event.status === (expectedTerminal === 'run_cancelled' ? 'aborted' : 'completed'),
+      (event) => event.status === (expectedOutcome === 'cancelled' ? 'aborted' : 'completed'),
     ).length,
     1,
   );

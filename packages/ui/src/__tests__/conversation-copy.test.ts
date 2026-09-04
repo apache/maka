@@ -36,6 +36,39 @@ test('explains why folder-reference messages cannot be edited and resent', () =>
   );
 });
 
+test('context usage explains missing data without exposing provider internals', () => {
+  assert.equal(
+    getConversationCopy('zh').messages.systemNotes.contextUsageUnavailable,
+    '暂无用量数据',
+  );
+  assert.equal(
+    getConversationCopy('en').messages.systemNotes.contextUsageUnavailable,
+    'No usage data is available for this request.',
+  );
+});
+
+test('context usage tooltip leads with the measured share', () => {
+  assert.equal(
+    getConversationCopy('zh').messages.systemNotes.contextUsageShare(12_345, 128_000),
+    '已用 12,345 / 128,000 token（10%）',
+  );
+  assert.equal(
+    getConversationCopy('en').messages.systemNotes.contextUsageShare(12_345, 128_000),
+    'This request used 12,345 / 128,000 tokens (10%).',
+  );
+});
+
+test('context usage tooltip keeps measured usage when the limit is unknown', () => {
+  assert.equal(
+    getConversationCopy('zh').messages.systemNotes.contextUsageNoWindow(12_345),
+    '已用 12,345 token；上下文上限未知',
+  );
+  assert.equal(
+    getConversationCopy('en').messages.systemNotes.contextUsageNoWindow(12_345),
+    'This request used 12,345 tokens; no context limit is available for this model.',
+  );
+});
+
 /**
  * A subscription quota window can hand the runtime an hour-scale Retry-After;
  * the banner must count down in humanized d/h/m/s units rather than a raw

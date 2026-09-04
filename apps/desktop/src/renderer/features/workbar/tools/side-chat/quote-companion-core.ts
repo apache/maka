@@ -454,7 +454,7 @@ export function companionRunEventEffect(
 
 /**
  * Route a companion event into its interaction queue, mirroring the main shell:
- * boundary / question requests enqueue, their acks / tool results dequeue, and
+ * boundary / question / form requests enqueue, their acks / tool results dequeue, and
  * a terminal event clears the queue.
  */
 export function applyCompanionInteractionEvent(
@@ -466,9 +466,12 @@ export function applyCompanionInteractionEvent(
     case 'sandbox_boundary_request':
     case 'client_capability_request':
     case 'user_question_request':
+    case 'form_request':
       return enqueueInteraction(queues, sessionId, event);
     case 'sandbox_boundary_decision_ack':
     case 'client_capability_decision_ack':
+    case 'user_question_answer_ack':
+    case 'form_answer_ack':
       return dequeueInteractionByRequestId(queues, sessionId, event.requestId);
     case 'tool_result':
       return dequeueInteractionByToolUseId(queues, sessionId, event.toolUseId);

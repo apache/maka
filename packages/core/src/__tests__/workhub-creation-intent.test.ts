@@ -1066,3 +1066,63 @@ test('requires a direct, explicitly named command for WorkHub stop authority', (
     );
   }
 });
+
+test('a quoted Session name is a title, not a reason to refuse the request', () => {
+  // The literal mask blanks quoted spans so a quoted word can never be read as
+  // a command. That is right for commands and wrong for the one place the
+  // quotes mark the object itself: naming a Session. Quoting the name is the
+  // natural way to write it, and it used to be the one way that did not work.
+  for (const [quoted, bare] of [
+    ['Create a new Session called "Payments"', 'Create a new Session called Payments'],
+    ['请创建一个新会话名为"支付任务"', '请创建一个新会话名为支付任务'],
+  ] as const) {
+    const quotedIntent = intentFor(quoted);
+    const bareIntent = intentFor(bare);
+    assert.equal(quotedIntent.execution, 'imperative', quoted);
+    assert.equal(quotedIntent.execution, bareIntent.execution, quoted);
+    assert.deepEqual(quotedIntent.creation.naming, bareIntent.creation.naming, quoted);
+  }
+
+  // The mask still decides everything else. None of these may be promoted.
+  for (const text of [
+    'Should we create a new Session called "Payments"?',
+    'Maybe create a new Session called "Payments" later',
+    'Do not create a new Session called "Payments"',
+    'Create a new Session called "',
+  ]) {
+    assert.notEqual(intentFor(text).execution, 'imperative', text);
+  }
+});
+
+test('a spoken Chinese stop is a stop, in the same range English already covers', () => {
+  // `停掉` and `停下` are how the request is usually spoken. Without them
+  // `停掉支付任务` carried no stop cue at all, so the sentence was routed as
+  // ordinary work and delivered to Payments — asking to stop it started more.
+  for (const text of ['停掉支付任务', '停下支付任务', '请停掉支付任务']) {
+    assert.deepEqual(
+      readWorkHubRequestIntent(text).stop,
+      { cue: true, imperative: true, target: '支付任务' },
+      text,
+    );
+  }
+
+  // Anaphora is a stop that names nothing, exactly as `Stop it` is: the cue is
+  // read so the user can be asked which work, and no target is claimed.
+  for (const text of ['停掉它', '停下它']) {
+    assert.deepEqual(readWorkHubRequestIntent(text).stop, { cue: true, imperative: false }, text);
+    // Same shape English gives `Stop it`: a stop was asked for, and no target
+    // was claimed, so the surface asks which work rather than guessing.
+    assert.deepEqual(
+      readWorkHubRequestIntent(text).stop,
+      readWorkHubRequestIntent('Stop it').stop,
+      text,
+    );
+  }
+
+  // Nothing here widens what counts as a stop. `关掉` reads as "switch off",
+  // which is usually work to do inside a Session, and English admits no
+  // equivalent; questions and negations stay refused.
+  for (const text of ['关掉调试日志', '不要停掉支付任务', '怎么停掉支付任务？']) {
+    assert.equal(readWorkHubRequestIntent(text).stop.cue, false, text);
+  }
+});

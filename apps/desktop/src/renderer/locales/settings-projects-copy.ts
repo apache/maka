@@ -38,6 +38,7 @@ export type SettingsProjectsCopy = {
     configureManuallyDescription: string;
     thisComputerRemoteAccess: string;
     thisComputerRemoteAccessHelp: string;
+    remoteAccessEnabling: string;
     remoteAccessOn: string;
     remoteAccessOff: string;
     enableRemoteAccess: string;
@@ -329,6 +330,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       configureManuallyDescription: '为已有 Host 填写 TLS、SSH 或 Direct peer 参数',
       thisComputerRemoteAccess: '远程访问',
       thisComputerRemoteAccessHelp: '通过实验性端到端直连访问此 Host；可自动发现公共协调节点来辅助打洞',
+      remoteAccessEnabling: '正在准备并开启远程访问；首次可能需要一点时间。',
       remoteAccessOn: '已开启',
       remoteAccessOff: '未开启',
       enableRemoteAccess: '开启',
@@ -645,6 +647,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       configureManuallyDescription: 'Enter TLS, SSH, or Direct peer details for an existing Host',
       thisComputerRemoteAccess: 'Remote access',
       thisComputerRemoteAccessHelp: 'Reach this Host through experimental end-to-end direct connections, with automatic public coordination discovery',
+      remoteAccessEnabling: 'Preparing and enabling remote access. The first setup may take a moment.',
       remoteAccessOn: 'On',
       remoteAccessOff: 'Off',
       enableRemoteAccess: 'Enable',

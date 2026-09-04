@@ -17,22 +17,15 @@
  * under the License.
  */
 
-import {
-  decodePersistedPermissionMode,
-  isPermissionMode,
-  type PermissionMode,
-} from './permission.js';
-import type { PersistedValue } from './persisted-value.js';
-import { isCollaborationMode, type CollaborationMode } from './collaboration.js';
-import {
-  isAgentSwarmAuthorizationSource,
-  isEffectiveOrchestrationSource,
-  isOrchestrationMode,
-  type AgentSwarmAuthorizationSource,
-  type EffectiveOrchestrationSource,
-  type OrchestrationMode,
-} from './orchestration.js';
-import type { PersistedBackendKind } from './session.js';
+/**
+ * The operational ledger one invocation writes beside its canonical events.
+ *
+ * These records are metering, request attempts, permission decisions and
+ * diagnostics: facts with an operational demand of their own. What an
+ * invocation *is* — its route, configuration, lineage and outcome — belongs to
+ * the event spine in `runtime-invocation.ts`, not here.
+ */
+
 import {
   defineObjectShape,
   hasExactShape,
@@ -40,345 +33,7 @@ import {
   isOptionalString,
   isRecord,
 } from './record-schema.js';
-import type { AgentGraphIntentClaim } from './agent-graph-control.js';
-import { isToolMode, type ToolMode } from './tool-mode.js';
 import { decodeRunCompositionSnapshot, type RunCompositionSnapshot } from './run-composition.js';
-
-export const AGENT_RUN_STATUSES = [
-  'created',
-  'running',
-  'waiting_for_user',
-  'completed',
-  'failed',
-  'cancelled',
-] as const;
-
-export type AgentRunStatus = (typeof AGENT_RUN_STATUSES)[number];
-
-export interface AgentRunContinuationSourceV1 {
-  sourceInvocationId: string;
-  sourceRunId: string;
-  sourceTurnId: string;
-  sourceRuntimeEventHighWater: number;
-}
-
-export interface AgentRunContinuationSourceV2 extends AgentRunContinuationSourceV1 {
-  protocol: 'continuation_source_v2';
-  claimId: string;
-  boundaryDigest: `sha256:${string}`;
-  sourcePrefixDigest: `sha256:${string}`;
-  replayManifestDigest: `sha256:${string}`;
-}
-
-export type AgentRunContinuationSource =
-  | AgentRunContinuationSourceV1
-  | AgentRunContinuationSourceV2;
-
-export type RootExecutionDescriptor =
-  | {
-      kind: 'external_message';
-      inputDigest?: `sha256:${string}`;
-      maxSteps?: number;
-    }
-  | {
-      /** Tool-free conversational execution admitted only by WorkHub authority. */
-      kind: 'workhub_coordination';
-      inputDigest: `sha256:${string}`;
-    }
-  | { kind: 'regenerate'; sourceTurnId: string }
-  | { kind: 'context_compact' }
-  | {
-      kind: 'scheduled_task';
-      scheduledTaskId: string;
-      /** Includes the immutable Connection target for Agent ScheduledTasks. */
-      executionFingerprint?: `sha256:${string}`;
-    }
-  | { kind: 'legacy_automation'; automationId: string }
-  | { kind: 'goal'; goalId: string }
-  | {
-      kind: 'agent_graph_supervisor_wake';
-      graphId: string;
-      wakeId: string;
-      attemptId: string;
-    }
-  | {
-      kind: 'safe_boundary_continuation';
-      sourceInvocationId: string;
-      sourceRunId: string;
-      sourceTurnId: string;
-      sourceRuntimeEventHighWater: number;
-      claimId: string;
-      boundaryDigest: `sha256:${string}`;
-      providerReplayDigest: `sha256:${string}`;
-      safetyDigest: `sha256:${string}`;
-      targetInvocationId: string;
-    }
-  | {
-      kind: 'linked_child_initial';
-      agentId: string;
-      agentName: string;
-    }
-  | {
-      kind: 'linked_child_resume';
-      agentId: string;
-      agentName: string;
-      sourceRunId: string;
-    }
-  | {
-      kind: 'linked_child_provider_retry';
-      agentId: string;
-      agentName: string;
-      sourceRunId: string;
-    }
-  | {
-      kind: 'claimed_agent_graph_intent';
-      claim: AgentGraphIntentClaim;
-      agentId: string;
-      agentName: string;
-    };
-
-const AGENT_RUN_CONTINUATION_SOURCE_V1_SHAPE = defineObjectShape<AgentRunContinuationSourceV1>()(
-  ['sourceInvocationId', 'sourceRunId', 'sourceTurnId', 'sourceRuntimeEventHighWater'],
-  [],
-);
-const AGENT_RUN_CONTINUATION_SOURCE_V2_SHAPE = defineObjectShape<AgentRunContinuationSourceV2>()(
-  [
-    'protocol',
-    'claimId',
-    'boundaryDigest',
-    'sourceInvocationId',
-    'sourceRunId',
-    'sourceTurnId',
-    'sourceRuntimeEventHighWater',
-    'sourcePrefixDigest',
-    'replayManifestDigest',
-  ],
-  [],
-);
-
-export interface AgentRunHeader {
-  runId: string;
-  /** Durable Runtime invocation spine. Optional only for legacy run headers. */
-  invocationId?: string;
-  sessionId: string;
-  turnId: string;
-  status: AgentRunStatus;
-  backendKind: PersistedBackendKind;
-  /** Immutable Connection entity identity. Optional only on legacy run headers. */
-  llmConnectionId?: string;
-  /**
-   * Opaque identity of the provider endpoint and credential ownership frozen
-   * before this run's first provider dispatch. Optional only on legacy or
-   * non-provider run headers.
-   */
-  providerStateIdentity?: `sha256:${string}`;
-  llmConnectionSlug: string;
-  modelId: string;
-  cwd: string;
-  /** Authoritative host identity for the workspace observed when the run was created. */
-  workspaceIdentity?: string;
-  permissionMode: PermissionMode;
-  /** Snapshot of the session collaboration mode. Optional on legacy runs. */
-  collaborationMode?: CollaborationMode;
-  /** Effective orchestration mode for this run. Optional on legacy runs. */
-  orchestrationMode?: OrchestrationMode;
-  /** Whether the effective mode came from the session or this turn. */
-  orchestrationSource?: EffectiveOrchestrationSource;
-  /** Narrow authority for the parent agent_swarm envelope. */
-  agentSwarmAuthorization?: AgentSwarmAuthorizationSource;
-  /** Effective tool protocol for this run. Optional on legacy runs. */
-  toolMode?: ToolMode;
-  /** Immutable composer-owned prompt and tool-surface snapshot committed before provider dispatch. */
-  runComposition?: RunCompositionSnapshot;
-  createdAt: number;
-  updatedAt: number;
-  completedAt?: number;
-  parentRunId?: string;
-  /** Immediate child AgentRun continued by this run. */
-  resumedFromRunId?: string;
-  /** Immediate child AgentRun whose provider step is retried by this run. */
-  retriedFromRunId?: string;
-  agentId?: string;
-  agentName?: string;
-  parentTurnId?: string;
-  retriedFromTurnId?: string;
-  regeneratedFromTurnId?: string;
-  branchOfTurnId?: string;
-  parentSessionId?: string;
-  /** Durable claim that this run is the continuation child for one source boundary. */
-  continuationSource?: AgentRunContinuationSource;
-  /** ScheduledTask that triggered this host-authored Run. */
-  scheduledTaskId?: string;
-  /** Removed Automation authority that triggered this historical Run. */
-  legacyAutomationId?: string;
-  /** Host-owned Goal generation that triggered this continuation Run. */
-  goalId?: string;
-  /** Durable graph milestone that caused this host-authored supervisor turn. */
-  agentGraphWakeId?: string;
-  /** Durable delivery attempt for this host-authored supervisor turn. */
-  agentGraphWakeAttemptId?: string;
-  /** Positive identity for a host-authored root that has no message lineage. */
-  rootExecutionKind?: 'context_compact';
-  failureClass?: string;
-  failureMessage?: string;
-  abortSource?: string;
-  traceWriteError?: string;
-}
-
-type HostedRootExecutionDescriptor = Extract<
-  RootExecutionDescriptor,
-  {
-    kind:
-      | 'regenerate'
-      | 'context_compact'
-      | 'scheduled_task'
-      | 'legacy_automation'
-      | 'goal'
-      | 'agent_graph_supervisor_wake'
-      | 'safe_boundary_continuation';
-  }
->;
-
-export function agentRunMatchesHostedRootExecution(
-  run: AgentRunHeader,
-  execution: HostedRootExecutionDescriptor,
-): boolean {
-  if (execution.kind !== 'context_compact' && run.rootExecutionKind !== undefined) return false;
-  if (execution.kind === 'regenerate') {
-    return (
-      run.parentTurnId === execution.sourceTurnId &&
-      run.regeneratedFromTurnId === execution.sourceTurnId &&
-      run.parentRunId === undefined &&
-      run.resumedFromRunId === undefined &&
-      run.retriedFromRunId === undefined &&
-      run.agentId === undefined &&
-      run.agentName === undefined &&
-      run.retriedFromTurnId === undefined &&
-      run.branchOfTurnId === undefined &&
-      run.parentSessionId === undefined &&
-      run.continuationSource === undefined &&
-      run.scheduledTaskId === undefined &&
-      run.legacyAutomationId === undefined &&
-      run.goalId === undefined &&
-      run.agentGraphWakeId === undefined &&
-      run.agentGraphWakeAttemptId === undefined
-    );
-  }
-  if (execution.kind === 'context_compact') {
-    return (
-      run.rootExecutionKind === 'context_compact' &&
-      run.parentTurnId === undefined &&
-      run.regeneratedFromTurnId === undefined &&
-      run.parentRunId === undefined &&
-      run.resumedFromRunId === undefined &&
-      run.retriedFromRunId === undefined &&
-      run.agentId === undefined &&
-      run.agentName === undefined &&
-      run.retriedFromTurnId === undefined &&
-      run.branchOfTurnId === undefined &&
-      run.parentSessionId === undefined &&
-      run.continuationSource === undefined &&
-      run.scheduledTaskId === undefined &&
-      run.legacyAutomationId === undefined &&
-      run.goalId === undefined &&
-      run.agentGraphWakeId === undefined &&
-      run.agentGraphWakeAttemptId === undefined
-    );
-  }
-  if (execution.kind === 'safe_boundary_continuation') {
-    const source = run.continuationSource;
-    return (
-      run.invocationId === execution.targetInvocationId &&
-      run.parentRunId === execution.sourceRunId &&
-      run.parentTurnId === execution.sourceTurnId &&
-      source !== undefined &&
-      'protocol' in source &&
-      source.protocol === 'continuation_source_v2' &&
-      source.sourceInvocationId === execution.sourceInvocationId &&
-      source.sourceRunId === execution.sourceRunId &&
-      source.sourceTurnId === execution.sourceTurnId &&
-      source.sourceRuntimeEventHighWater === execution.sourceRuntimeEventHighWater &&
-      source.claimId === execution.claimId &&
-      source.boundaryDigest === execution.boundaryDigest &&
-      source.replayManifestDigest === execution.boundaryDigest &&
-      run.resumedFromRunId === undefined &&
-      run.retriedFromRunId === undefined &&
-      run.agentId === undefined &&
-      run.agentName === undefined &&
-      run.retriedFromTurnId === undefined &&
-      run.regeneratedFromTurnId === undefined &&
-      run.branchOfTurnId === undefined &&
-      run.parentSessionId === undefined &&
-      run.scheduledTaskId === undefined &&
-      run.legacyAutomationId === undefined &&
-      run.goalId === undefined &&
-      run.agentGraphWakeId === undefined &&
-      run.agentGraphWakeAttemptId === undefined
-    );
-  }
-  const authorityMatches = hostedRootAuthorityMatches(run, execution);
-  return (
-    authorityMatches &&
-    run.parentRunId === undefined &&
-    run.resumedFromRunId === undefined &&
-    run.retriedFromRunId === undefined &&
-    run.agentId === undefined &&
-    run.agentName === undefined &&
-    run.parentTurnId === undefined &&
-    run.retriedFromTurnId === undefined &&
-    run.regeneratedFromTurnId === undefined &&
-    run.branchOfTurnId === undefined &&
-    run.parentSessionId === undefined &&
-    run.continuationSource === undefined
-  );
-}
-
-function hostedRootAuthorityMatches(
-  run: AgentRunHeader,
-  execution: Exclude<
-    HostedRootExecutionDescriptor,
-    { kind: 'regenerate' | 'context_compact' | 'safe_boundary_continuation' }
-  >,
-): boolean {
-  switch (execution.kind) {
-    case 'scheduled_task':
-      return (
-        run.scheduledTaskId === execution.scheduledTaskId &&
-        run.legacyAutomationId === undefined &&
-        run.goalId === undefined &&
-        run.agentGraphWakeId === undefined &&
-        run.agentGraphWakeAttemptId === undefined
-      );
-    case 'legacy_automation':
-      return (
-        run.legacyAutomationId === execution.automationId &&
-        run.scheduledTaskId === undefined &&
-        run.goalId === undefined &&
-        run.agentGraphWakeId === undefined &&
-        run.agentGraphWakeAttemptId === undefined
-      );
-    case 'goal':
-      return (
-        run.goalId === execution.goalId &&
-        run.scheduledTaskId === undefined &&
-        run.legacyAutomationId === undefined &&
-        run.agentGraphWakeId === undefined &&
-        run.agentGraphWakeAttemptId === undefined
-      );
-    case 'agent_graph_supervisor_wake':
-      return (
-        execution.wakeId.startsWith(`${execution.graphId}:`) &&
-        run.agentGraphWakeId === execution.wakeId &&
-        run.agentGraphWakeAttemptId === execution.attemptId &&
-        run.orchestrationMode === 'graph' &&
-        run.orchestrationSource === 'turn_override' &&
-        run.agentSwarmAuthorization === 'none' &&
-        run.scheduledTaskId === undefined &&
-        run.legacyAutomationId === undefined &&
-        run.goalId === undefined
-      );
-  }
-}
 
 export interface AgentRunInputSummary {
   textLength: number;
@@ -386,8 +41,6 @@ export interface AgentRunInputSummary {
 }
 
 export const AGENT_RUN_EVENT_TYPES = [
-  'run_created',
-  'run_started',
   'turn_started',
   'plan_context_resolved',
   'plan_submitted',
@@ -399,7 +52,6 @@ export const AGENT_RUN_EVENT_TYPES = [
   'plan_execution_resumed',
   'plan_transition_failed',
   'graph_supervisor_yielded',
-  'run_status_changed',
   'model_resolved',
   'model_resolve_failed',
   'model_stream_started',
@@ -427,16 +79,11 @@ export const AGENT_RUN_EVENT_TYPES = [
   'sandbox_escalation_applied',
   'sandbox_escalation_failed',
   'sandbox_denial_detected',
-  'provider_request_captured',
-  'provider_request_attempt_recorded',
   'model_call_attempt_recorded',
   'history_compact_checkpoint_recorded',
   'model_projection_transition_recorded',
-  'task_gate_decided',
+  'run_composition_recorded',
   'abort_requested',
-  'run_completed',
-  'run_failed',
-  'run_cancelled',
   'trace_write_failed',
   'event_corrupt',
 ] as const;
@@ -563,197 +210,28 @@ export function isEmittedAgentRunEventType(type: string): type is AgentRunEventT
   return EMITTED_AGENT_RUN_EVENT_TYPES.has(type);
 }
 
-const AGENT_RUN_HEADER_SHAPE = defineObjectShape<AgentRunHeader>()(
-  [
-    'runId',
-    'sessionId',
-    'turnId',
-    'status',
-    'backendKind',
-    'llmConnectionSlug',
-    'modelId',
-    'cwd',
-    'permissionMode',
-    'createdAt',
-    'updatedAt',
-  ],
-  [
-    'invocationId',
-    'llmConnectionId',
-    'providerStateIdentity',
-    'completedAt',
-    'parentRunId',
-    'resumedFromRunId',
-    'retriedFromRunId',
-    'agentId',
-    'agentName',
-    'parentTurnId',
-    'retriedFromTurnId',
-    'regeneratedFromTurnId',
-    'branchOfTurnId',
-    'parentSessionId',
-    'workspaceIdentity',
-    'continuationSource',
-    'scheduledTaskId',
-    'legacyAutomationId',
-    'goalId',
-    'agentGraphWakeId',
-    'agentGraphWakeAttemptId',
-    'rootExecutionKind',
-    'failureClass',
-    'failureMessage',
-    'abortSource',
-    'traceWriteError',
-    'collaborationMode',
-    'orchestrationMode',
-    'orchestrationSource',
-    'agentSwarmAuthorization',
-    'toolMode',
-    'runComposition',
-  ],
-);
-
 const AGENT_RUN_EVENT_SHAPE = defineObjectShape<AgentRunEvent>()(
   ['type', 'id', 'runId', 'sessionId', 'turnId', 'ts'],
   ['message', 'data'],
 );
 
-const RETIRED_AGENT_RUN_STATUSES: Readonly<Record<string, AgentRunStatus>> = {
-  waiting_permission: 'waiting_for_user',
-};
+export const RUN_COMPOSITION_RECORDED_EVENT_TYPE = 'run_composition_recorded' as const;
 
-export function decodePersistedAgentRunHeader(
-  persisted: PersistedValue<AgentRunHeader>,
-): AgentRunHeader {
-  let value = persisted as unknown;
-  if (
-    isRecord(value) &&
-    value.automationId !== undefined &&
-    value.legacyAutomationId === undefined
-  ) {
-    const { automationId, ...current } = value;
-    value = { ...current, legacyAutomationId: automationId };
+/**
+ * Read a run's composer snapshot back out of its ledger.
+ *
+ * The composition is written once, before provider dispatch, and the store
+ * refuses a second append that disagrees with the first. So the earliest
+ * matching row is the whole answer, and a reader never has to reduce a stream.
+ */
+export function agentRunCompositionFromEvents(
+  events: readonly AgentRunEvent[],
+): RunCompositionSnapshot | undefined {
+  for (const event of events) {
+    if (event.type !== RUN_COMPOSITION_RECORDED_EVENT_TYPE) continue;
+    return decodeRunCompositionSnapshot(event.data?.runComposition);
   }
-  if (isRecord(value)) {
-    const status =
-      typeof value.status === 'string'
-        ? (RETIRED_AGENT_RUN_STATUSES[value.status] ?? value.status)
-        : value.status;
-    const permissionMode = decodePersistedPermissionMode(value.permissionMode);
-    if (status !== value.status || permissionMode !== value.permissionMode) {
-      value = { ...value, status, permissionMode };
-    }
-  }
-  return decodeAgentRunHeader(value);
-}
-
-export function decodeAgentRunHeader(value: unknown): AgentRunHeader {
-  if (!isRecord(value) || !hasExactShape(value, AGENT_RUN_HEADER_SHAPE)) {
-    throw new Error('Invalid AgentRun header schema');
-  }
-  const valid =
-    typeof value.runId === 'string' &&
-    typeof value.sessionId === 'string' &&
-    typeof value.turnId === 'string' &&
-    (AGENT_RUN_STATUSES as readonly unknown[]).includes(value.status) &&
-    isPersistedBackendKind(value.backendKind) &&
-    (value.llmConnectionId === undefined ||
-      (typeof value.llmConnectionId === 'string' && value.llmConnectionId.length > 0)) &&
-    (value.providerStateIdentity === undefined ||
-      (typeof value.providerStateIdentity === 'string' &&
-        /^sha256:[0-9a-f]{64}$/.test(value.providerStateIdentity))) &&
-    typeof value.llmConnectionSlug === 'string' &&
-    typeof value.modelId === 'string' &&
-    typeof value.cwd === 'string' &&
-    isPermissionMode(value.permissionMode) &&
-    (value.collaborationMode === undefined || isCollaborationMode(value.collaborationMode)) &&
-    (value.orchestrationMode === undefined || isOrchestrationMode(value.orchestrationMode)) &&
-    (value.orchestrationSource === undefined ||
-      isEffectiveOrchestrationSource(value.orchestrationSource)) &&
-    (value.agentSwarmAuthorization === undefined ||
-      isAgentSwarmAuthorizationSource(value.agentSwarmAuthorization)) &&
-    (value.rootExecutionKind === undefined || value.rootExecutionKind === 'context_compact') &&
-    Number(value.scheduledTaskId !== undefined) +
-      Number(value.legacyAutomationId !== undefined) +
-      Number(value.goalId !== undefined) +
-      Number(value.agentGraphWakeId !== undefined) <=
-      1 &&
-    (value.toolMode === undefined || isToolMode(value.toolMode)) &&
-    (value.runComposition === undefined || isRunCompositionSnapshot(value.runComposition)) &&
-    isFiniteNumber(value.createdAt) &&
-    isFiniteNumber(value.updatedAt) &&
-    isOptionalString(value.invocationId) &&
-    (value.completedAt === undefined || isFiniteNumber(value.completedAt)) &&
-    [
-      value.parentRunId,
-      value.resumedFromRunId,
-      value.retriedFromRunId,
-      value.agentId,
-      value.agentName,
-      value.parentTurnId,
-      value.retriedFromTurnId,
-      value.regeneratedFromTurnId,
-      value.branchOfTurnId,
-      value.parentSessionId,
-      value.workspaceIdentity,
-      value.scheduledTaskId,
-      value.legacyAutomationId,
-      value.goalId,
-      value.agentGraphWakeId,
-      value.agentGraphWakeAttemptId,
-      value.failureClass,
-      value.failureMessage,
-      value.abortSource,
-      value.traceWriteError,
-    ].every(isOptionalString) &&
-    (value.continuationSource === undefined ||
-      isAgentRunContinuationSource(value.continuationSource));
-  if (!valid) throw new Error('Invalid AgentRun header schema');
-  return value as unknown as AgentRunHeader;
-}
-
-function isRunCompositionSnapshot(value: unknown): value is RunCompositionSnapshot {
-  try {
-    decodeRunCompositionSnapshot(value);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function isAgentRunContinuationSource(value: unknown): value is AgentRunContinuationSource {
-  if (!isRecord(value)) return false;
-  const common =
-    typeof value.sourceInvocationId === 'string' &&
-    typeof value.sourceRunId === 'string' &&
-    typeof value.sourceTurnId === 'string' &&
-    typeof value.sourceRuntimeEventHighWater === 'number' &&
-    Number.isSafeInteger(value.sourceRuntimeEventHighWater) &&
-    value.sourceRuntimeEventHighWater >= 0;
-  if (!common) return false;
-  if (hasExactShape(value, AGENT_RUN_CONTINUATION_SOURCE_V1_SHAPE)) return true;
-  return (
-    hasExactShape(value, AGENT_RUN_CONTINUATION_SOURCE_V2_SHAPE) &&
-    value.protocol === 'continuation_source_v2' &&
-    typeof value.claimId === 'string' &&
-    value.claimId.length > 0 &&
-    typeof value.sourceInvocationId === 'string' &&
-    value.sourceInvocationId.length > 0 &&
-    typeof value.sourceRunId === 'string' &&
-    value.sourceRunId.length > 0 &&
-    typeof value.sourceTurnId === 'string' &&
-    value.sourceTurnId.length > 0 &&
-    typeof value.sourceRuntimeEventHighWater === 'number' &&
-    value.sourceRuntimeEventHighWater > 0 &&
-    isSha256Digest(value.boundaryDigest) &&
-    isSha256Digest(value.sourcePrefixDigest) &&
-    isSha256Digest(value.replayManifestDigest) &&
-    value.replayManifestDigest === value.boundaryDigest
-  );
-}
-
-function isSha256Digest(value: unknown): value is `sha256:${string}` {
-  return typeof value === 'string' && /^sha256:[0-9a-f]{64}$/.test(value);
+  return undefined;
 }
 
 export function decodeAgentRunEvent(value: unknown): AgentRunEvent {
@@ -775,24 +253,7 @@ export function decodeAgentRunEvent(value: unknown): AgentRunEvent {
   return value as unknown as AgentRunEvent;
 }
 
-/**
- * Decode guard for a durable run header. `'fake'` stays accepted: runs written
- * by builds that shipped FakeBackend must keep decoding (#3211).
- */
-function isPersistedBackendKind(value: unknown): value is PersistedBackendKind {
-  return value === 'ai-sdk' || value === 'fake';
-}
-
 export interface AgentRunStore {
-  createRun(header: AgentRunHeader, options?: { durable?: boolean }): Promise<AgentRunHeader>;
-  updateRun(
-    sessionId: string,
-    runId: string,
-    patch: Partial<AgentRunHeader>,
-    options?: { durable?: boolean },
-  ): Promise<AgentRunHeader>;
-  readRun(sessionId: string, runId: string): Promise<AgentRunHeader>;
-  listSessionRuns(sessionId: string): Promise<AgentRunHeader[]>;
   appendEvent(
     sessionId: string,
     runId: string,
@@ -819,22 +280,4 @@ export interface AgentRunStore {
     event: AgentRunEvent | null,
     options: { ifLedgerRevision: string; replaceEventId?: string },
   ): Promise<void>;
-}
-
-/**
- * Whether a run contributes directly to the owning session's transcript.
- * Top-level continuations carry parent lineage for recovery, but unlike
- * child-agent runs their output remains part of the parent session
- * conversation. A legacy child retry may also carry continuation authority;
- * its agent identity keeps it outside the owning session transcript.
- */
-export function isSessionInlineRun(run: {
-  readonly parentRunId?: string;
-  readonly continuationSource?: unknown;
-  readonly agentId?: string;
-}): boolean {
-  return (
-    run.parentRunId === undefined ||
-    (run.continuationSource !== undefined && run.agentId === undefined)
-  );
 }

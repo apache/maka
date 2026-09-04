@@ -26,7 +26,9 @@ import type {
   McpToolDescriptor,
   McpToolSnapshot,
 } from '@maka/core/mcp';
+import type { InteractionFormInput, InteractionFormResult } from '@maka/core/interaction';
 import type { PermissionMode, ToolCategory } from '@maka/core/permission';
+import { truncateUtf16Safe } from '@maka/core/text-sanitize';
 import type { ExecutionBoundary } from '@maka/core/sandbox-boundary';
 import type { ToolRecoveryMode } from '@maka/core/runtime-event';
 import type { ToolResultContentPart, ToolResultOutput } from './model-protocol.js';
@@ -57,6 +59,7 @@ export interface McpToolProvider {
 export interface McpPreparedToolCall {
   execute(options?: {
     readonly emitProgress?: (current: number, total: number) => void;
+    readonly requestInteraction?: McpToolCallOptions['requestInteraction'];
   }): Promise<McpCallResult>;
   cancel(): Promise<void> | void;
 }
@@ -66,6 +69,10 @@ export interface McpToolCallOptions {
   readonly timeoutMs?: number;
   readonly context: McpToolInvocationContext;
   readonly emitProgress?: (current: number, total: number) => void;
+  readonly requestInteraction?: (
+    form: InteractionFormInput,
+    options?: { readonly cancellationSignal?: AbortSignal },
+  ) => Promise<InteractionFormResult>;
 }
 
 export interface McpToolInvocationContext {
@@ -87,10 +94,27 @@ export interface BuildMcpToolsOptions {
   activityKindForDescriptor?: (descriptor: McpToolDescriptor) => ToolActivityKind | undefined;
 }
 
+export interface McpIdentifiedTool {
+  readonly tool: MakaTool;
+  readonly serverId: string;
+  readonly toolName: string;
+}
+
 export function buildMcpTools(
   provider: McpToolProvider,
   options: BuildMcpToolsOptions = {},
 ): MakaTool[] {
+  return buildMcpToolsWithIdentities(provider, options).map(({ tool }) => tool);
+}
+
+/**
+ * Build the proxy tools together with each tool's source MCP identity, read
+ * from a single snapshot so the pairing can never drift across a reconnect.
+ */
+export function buildMcpToolsWithIdentities(
+  provider: McpToolProvider,
+  options: BuildMcpToolsOptions = {},
+): McpIdentifiedTool[] {
   const names = new Map<string, string>();
   const snapshot = provider.toolSnapshot();
   return snapshot.tools.map(({ descriptor, binding }) => {
@@ -102,79 +126,97 @@ export function buildMcpTools(
     }
     names.set(name, identity);
     return {
-      name,
-      description:
-        descriptor.description?.trim() ||
-        `MCP tool ${descriptor.name} provided by ${descriptor.serverId}`,
-      displayName: descriptor.annotations?.title?.trim() || descriptor.name,
-      activityKind: options.activityKindForDescriptor?.(descriptor) ?? 'tool',
-      // MCP annotations are advisory provider claims, not a security boundary.
-      // The trusted composition may select a stricter open-world category;
-      // ordinary MCP servers retain the side-effecting network default.
-      categoryHint: options.categoryHint ?? 'network_send',
-      ...(options.hostAdmission ? { hostAdmission: options.hostAdmission } : {}),
-      ...(options.recoveryMode ? { recoveryMode: options.recoveryMode } : {}),
-      parameters: jsonSchema(descriptor.inputSchema),
-      ...(provider.prepareTool
-        ? {
-            prepareExecution: async (args: unknown, context) => {
-              const prepared = await provider.prepareTool!(binding, asArguments(args), {
-                signal: context.abortSignal,
-                timeoutMs: options.callTimeoutMs,
-                context: {
-                  sessionId: context.sessionId,
-                  runId: context.runId,
-                  turnId: context.turnId,
-                  toolCallId: context.toolCallId,
-                  cwd: context.cwd,
-                  executionBoundary: context.executionBoundary,
-                  permissionMode: context.permissionMode,
-                },
-              });
-              return {
-                execute: (executionContext) =>
-                  prepared.execute({
-                    ...(executionContext.emitProgress
-                      ? { emitProgress: executionContext.emitProgress }
-                      : {}),
-                  }),
-                cancel: () => prepared.cancel(),
-              };
+      serverId: descriptor.serverId,
+      toolName: descriptor.name,
+      tool: {
+        name,
+        description:
+          descriptor.description?.trim() ||
+          `MCP tool ${descriptor.name} provided by ${descriptor.serverId}`,
+        displayName: descriptor.annotations?.title?.trim() || descriptor.name,
+        activityKind: options.activityKindForDescriptor?.(descriptor) ?? 'tool',
+        // MCP annotations are advisory provider claims, not a security boundary.
+        // The trusted composition may select a stricter open-world category;
+        // ordinary MCP servers retain the side-effecting network default.
+        categoryHint: options.categoryHint ?? 'network_send',
+        ...(options.hostAdmission ? { hostAdmission: options.hostAdmission } : {}),
+        ...(options.recoveryMode ? { recoveryMode: options.recoveryMode } : {}),
+        parameters: jsonSchema(descriptor.inputSchema),
+        ...(provider.prepareTool
+          ? {
+              prepareExecution: async (args: unknown, context) => {
+                const prepared = await provider.prepareTool!(binding, asArguments(args), {
+                  signal: context.abortSignal,
+                  timeoutMs: options.callTimeoutMs,
+                  context: {
+                    sessionId: context.sessionId,
+                    runId: context.runId,
+                    turnId: context.turnId,
+                    toolCallId: context.toolCallId,
+                    cwd: context.cwd,
+                    executionBoundary: context.executionBoundary,
+                    permissionMode: context.permissionMode,
+                  },
+                });
+                return {
+                  execute: (executionContext) =>
+                    prepared.execute({
+                      ...(executionContext.emitProgress
+                        ? { emitProgress: executionContext.emitProgress }
+                        : {}),
+                      ...(executionContext.requestUserForm
+                        ? {
+                            requestInteraction: (form, interactionOptions) =>
+                              executionContext.requestUserForm!(form, interactionOptions),
+                          }
+                        : {}),
+                    }),
+                  cancel: () => prepared.cancel(),
+                };
+              },
+            }
+          : {}),
+        impl: async (args: unknown, context) => {
+          // Managed network authority applies equally to Direct and nested CodeMode dispatch.
+          if (
+            options.executionLocation !== 'remote' &&
+            context.executionBoundary?.kind === 'managed' &&
+            context.executionBoundary.profile.network.kind !== 'enabled'
+          ) {
+            if (!context.requestSandboxBoundary) {
+              throw new Error('MCP network access requires sandbox boundary approval');
+            }
+            const settlement = await context.requestSandboxBoundary(
+              { network: { enabled: true } },
+              `Call MCP tool ${descriptor.serverId}/${descriptor.name}.`,
+            );
+            if (settlement.request.status !== 'approved') {
+              throw new Error('MCP network access denied');
+            }
+          }
+          return provider.callTool(binding, asArguments(args), {
+            signal: context.abortSignal,
+            timeoutMs: options.callTimeoutMs,
+            context: {
+              sessionId: context.sessionId,
+              turnId: context.turnId,
+              toolCallId: context.toolCallId,
+              cwd: context.cwd,
             },
-          }
-        : {}),
-      impl: async (args: unknown, context) => {
-        // Managed network authority applies equally to Direct and nested CodeMode dispatch.
-        if (
-          options.executionLocation !== 'remote' &&
-          context.executionBoundary?.kind === 'managed' &&
-          context.executionBoundary.profile.network.kind !== 'enabled'
-        ) {
-          if (!context.requestSandboxBoundary) {
-            throw new Error('MCP network access requires sandbox boundary approval');
-          }
-          const settlement = await context.requestSandboxBoundary(
-            { network: { enabled: true } },
-            `Call MCP tool ${descriptor.serverId}/${descriptor.name}.`,
-          );
-          if (settlement.request.status !== 'approved') {
-            throw new Error('MCP network access denied');
-          }
-        }
-        return provider.callTool(binding, asArguments(args), {
-          signal: context.abortSignal,
-          timeoutMs: options.callTimeoutMs,
-          context: {
-            sessionId: context.sessionId,
-            turnId: context.turnId,
-            toolCallId: context.toolCallId,
-            cwd: context.cwd,
-          },
-          ...(context.emitProgress ? { emitProgress: context.emitProgress } : {}),
-        });
-      },
-      toModelOutput: ({ output }) => mcpResultToModelOutput(output),
-    } satisfies MakaTool;
+            ...(context.emitProgress ? { emitProgress: context.emitProgress } : {}),
+            ...(context.requestUserForm
+              ? {
+                  requestInteraction: (
+                    form: InteractionFormInput,
+                    interactionOptions?: { readonly cancellationSignal?: AbortSignal },
+                  ) => context.requestUserForm!(form, interactionOptions),
+                }
+              : {}),
+          });
+        },
+        toModelOutput: ({ output }) => mcpResultToModelOutput(output),
+      } satisfies MakaTool,
+    };
   });
 }
 
@@ -284,8 +326,9 @@ function summarizeNonVisualBlock(block: McpCallResult['content'][number]): unkno
 
 function clipModelText(value: string, limit: number): string {
   if (value.length <= limit) return value;
+  // The marker is all-BMP, so slicing it can't split a pair.
   if (limit <= TRUNCATION_MARKER.length) return TRUNCATION_MARKER.slice(0, limit);
-  return `${value.slice(0, limit - TRUNCATION_MARKER.length)}${TRUNCATION_MARKER}`;
+  return `${truncateUtf16Safe(value, limit - TRUNCATION_MARKER.length)}${TRUNCATION_MARKER}`;
 }
 
 function safeJsonStringify(value: unknown): string {

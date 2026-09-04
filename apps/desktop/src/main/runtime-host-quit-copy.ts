@@ -20,19 +20,48 @@
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { MessageBoxOptions } from 'electron';
 import { DesktopLocalHostRetirementError } from './runtime-host-desktop-manager.js';
+import type { RuntimeHostQuitFailureDecision } from './runtime-host-quit.js';
+
+export interface RuntimeHostQuitDialog<Decision extends string> {
+  readonly options: MessageBoxOptions;
+  readonly decisions: readonly Decision[];
+}
+
+export type RuntimeHostActiveQuitDecision = 'quit' | 'cancel';
+
+export function buildRuntimeHostActiveQuitDialog(
+  locale: UiLocale,
+): RuntimeHostQuitDialog<RuntimeHostActiveQuitDecision> {
+  const copy = COPY[locale];
+  return {
+    options: {
+      type: 'warning',
+      title: copy.activeTitle,
+      message: copy.activeMessage,
+      detail: copy.activeDetail,
+      buttons: [copy.stopAndQuit, copy.keepRunning],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    },
+    decisions: ['quit', 'cancel'],
+  };
+}
 
 export function buildRuntimeHostQuitFailureDialog(
   error: unknown,
   locale: UiLocale,
-): MessageBoxOptions {
+): RuntimeHostQuitDialog<RuntimeHostQuitFailureDecision> {
   const retirement = error instanceof DesktopLocalHostRetirementError ? error : undefined;
+  const canForceTerminate = retirement?.facts.forceTerminationAvailable === true;
   const copy = COPY[locale];
   const details: string[] = [copy.detail];
   if (retirement) {
     details.push(`State Root: ${retirement.facts.rootPath}`);
     details.push(`Host epoch: ${retirement.facts.hostEpoch}`);
     if (retirement.facts.pid !== undefined) {
-      details.push(copy.process(retirement.facts.pid), copy.manual);
+      details.push(copy.process(retirement.facts.pid));
+      details.push(canForceTerminate ? copy.forceWarning : copy.manual);
     }
   }
   const cause = error instanceof Error && error.cause instanceof Error
@@ -41,35 +70,59 @@ export function buildRuntimeHostQuitFailureDialog(
       ? error.message
       : String(error);
   details.push(`${copy.cause}: ${cause}`);
+  const decisions: RuntimeHostQuitFailureDecision[] = canForceTerminate
+    ? ['retry', 'force', 'cancel']
+    : ['retry', 'cancel'];
   return {
-    type: 'error',
-    title: copy.title,
-    message: copy.message,
-    detail: details.join('\n'),
-    buttons: [copy.button],
-    defaultId: 0,
-    noLink: true,
+    options: {
+      type: 'error',
+      title: copy.title,
+      message: copy.message,
+      detail: details.join('\n'),
+      buttons: canForceTerminate
+        ? [copy.retry, copy.forceQuit, copy.keepRunning]
+        : [copy.retry, copy.keepRunning],
+      defaultId: decisions.length - 1,
+      cancelId: decisions.length - 1,
+      noLink: true,
+    },
+    decisions,
   };
 }
 
 const COPY = {
   en: {
+    activeTitle: 'Maka is still working',
+    activeMessage: 'Background work is still running.',
+    activeDetail:
+      'Quitting now stops the Runtime Host and may interrupt active executions or scheduled background work.',
+    stopAndQuit: 'Stop Work and Quit',
+    keepRunning: 'Keep Maka Running',
     title: 'Unable to quit Maka safely',
     message: 'The local Runtime Host could not stop safely. Maka is still running.',
     detail: 'Quit was cancelled. Try again, or inspect diagnostics if the problem persists.',
     process: (pid: number) => `Runtime Host process PID: ${pid}`,
     manual:
       "If retry still fails, confirm that no execution must be preserved before stopping this PID with the operating system's process-management tool.",
+    forceWarning: 'Force quitting can discard in-flight external work that has not settled.',
     cause: 'Cause',
-    button: 'OK',
+    retry: 'Retry Quit',
+    forceQuit: 'Force Quit Maka',
   },
   zh: {
+    activeTitle: 'Maka 正在后台工作',
+    activeMessage: '仍有后台工作正在运行。',
+    activeDetail: '现在退出会停止 Runtime Host，并可能中断正在执行或等待运行的后台任务。',
+    stopAndQuit: '停止任务并退出',
+    keepRunning: '继续运行 Maka',
     title: '无法安全退出 Maka',
     message: '本地 Runtime Host 未能安全停止，Maka 仍在运行。',
     detail: '退出已取消。请重试；如果问题持续存在，请查看诊断信息。',
     process: (pid: number) => `Runtime Host 进程 PID：${pid}`,
     manual: '如果重试仍然失败，请先确认没有需要保留的执行，再通过操作系统的进程管理工具停止该 PID。',
+    forceWarning: '强制退出可能丢弃尚未完成的外部工作。',
     cause: '原因',
-    button: '好',
+    retry: '重试退出',
+    forceQuit: '强制退出 Maka',
   },
 } as const;

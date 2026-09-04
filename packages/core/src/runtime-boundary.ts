@@ -19,10 +19,10 @@
 
 import * as nodeCrypto from 'node:crypto';
 import type { Hash } from 'node:crypto';
-import { decodeAgentRunHeader, type AgentRunHeader } from './agent-run.js';
 import { encodeCanonicalRuntimeEvent } from './canonical-runtime-event.js';
 import { isRecord } from './record-schema.js';
-import type { RuntimeEvent } from './runtime-event.js';
+import { decodeRuntimeInvocationOpened, TOOL_BOUNDARY_PROTOCOL_V1 } from './runtime-event.js';
+import type { RuntimeEvent, RuntimeEventInvocationOpenedContent } from './runtime-event.js';
 import { stableJsonStringify } from './tool-args-identity.js';
 
 export type RuntimeBoundaryDigest = `sha256:${string}`;
@@ -79,8 +79,16 @@ export interface ContinuationClaimV1 {
     runId: string;
     turnId: string;
   };
-  /** Exact pre-provider target Run header used by both normal admission and crash repair. */
-  targetRunHeader: AgentRunHeader;
+  /**
+   * The opening fact the target invocation's first event must carry.
+   *
+   * This is what the claim is actually for: a continuation's start event is
+   * event 1 of its target, so it is also that invocation's opening fact, and the
+   * claim has to say in advance exactly what that fact will be. Everything else
+   * about the target is fixed by the claim's own fields, so the pre-provider Run
+   * header is a projection of this rather than a second record of it.
+   */
+  targetOpening: RuntimeEventInvocationOpenedContent;
   claimedAt: number;
 }
 
@@ -231,7 +239,7 @@ export function decodeContinuationClaim(value: unknown): ContinuationClaimV1 {
       'providerProjectionVersion',
       'providerReplayDigest',
       'target',
-      'targetRunHeader',
+      'targetOpening',
       'claimedAt',
     ]) ||
     value.protocol !== 'continuation_claim_v1' ||
@@ -270,32 +278,18 @@ export function decodeContinuationClaim(value: unknown): ContinuationClaimV1 {
   if (boundary.segments.some((segment) => segment.identity.turnId === targetTurnId)) {
     throw new Error('Continuation claim target turnId reuses source identity');
   }
-  const targetRunHeader = decodeAgentRunHeader(value.targetRunHeader);
-  const continuationSource = targetRunHeader.continuationSource;
+  const targetOpening = decodeRuntimeInvocationOpened(value.targetOpening);
+  const openSource = targetOpening.source;
   if (
-    targetRunHeader.runId !== targetRunId ||
-    targetRunHeader.invocationId !== targetInvocationId ||
-    targetRunHeader.sessionId !== value.target.sessionId ||
-    targetRunHeader.turnId !== targetTurnId ||
-    targetRunHeader.status !== 'created' ||
-    targetRunHeader.createdAt !== value.claimedAt ||
-    targetRunHeader.updatedAt !== value.claimedAt ||
-    targetRunHeader.completedAt !== undefined ||
-    targetRunHeader.failureClass !== undefined ||
-    targetRunHeader.failureMessage !== undefined ||
-    !continuationSource ||
-    !('protocol' in continuationSource) ||
-    continuationSource.protocol !== 'continuation_source_v2' ||
-    continuationSource.claimId !== value.claimId ||
-    continuationSource.boundaryDigest !== boundaryDigest ||
-    continuationSource.sourceInvocationId !== source.identity.invocationId ||
-    continuationSource.sourceRunId !== source.identity.runId ||
-    continuationSource.sourceTurnId !== source.identity.turnId ||
-    continuationSource.sourceRuntimeEventHighWater !== source.position.lastEventSeq ||
-    continuationSource.sourcePrefixDigest !== source.prefixDigest ||
-    continuationSource.replayManifestDigest !== boundary.manifestDigest
+    openSource.kind !== 'continuation' ||
+    openSource.claimId !== value.claimId ||
+    openSource.boundaryDigest !== boundaryDigest ||
+    openSource.sourceInvocationId !== source.identity.invocationId ||
+    openSource.sourceRunId !== source.identity.runId ||
+    openSource.sourceTurnId !== source.identity.turnId ||
+    openSource.sourceRuntimeEventHighWater !== source.position.lastEventSeq
   ) {
-    throw new Error('Continuation claim target Run header mismatch');
+    throw new Error('Continuation claim target opening mismatch');
   }
   return {
     protocol: 'continuation_claim_v1',
@@ -310,9 +304,92 @@ export function decodeContinuationClaim(value: unknown): ContinuationClaimV1 {
       runId: value.target.runId,
       turnId: value.target.turnId,
     },
-    targetRunHeader,
+    targetOpening,
     claimedAt: value.claimedAt as number,
   };
+}
+
+/**
+ * Is this the invocation the claim opened?
+ *
+ * The claim froze the target's opening, so the check is that the invocation
+ * still carries it, plus the identity the claim fixed. There is nothing else to
+ * compare: an invocation's lifecycle lives in its events, not in a record that
+ * a frozen copy could go stale against.
+ */
+export function invocationMatchesClaimTarget(
+  invocation: {
+    sessionId: string;
+    invocationId: string;
+    runId: string;
+    turnId: string;
+    opening: RuntimeEventInvocationOpenedContent;
+  },
+  claim: ContinuationClaimV1,
+): boolean {
+  return (
+    invocation.sessionId === claim.target.sessionId &&
+    invocation.invocationId === claim.target.invocationId &&
+    invocation.runId === claim.target.runId &&
+    invocation.turnId === claim.target.turnId &&
+    stableJsonStringify(invocation.opening) === stableJsonStringify(claim.targetOpening)
+  );
+}
+
+/**
+ * Does this event discharge the claim as its target's first event?
+ *
+ * One rule, one implementation. The store refuses a start that fails it and the
+ * runtime refuses to resume across one; when those were two copies of the same
+ * predicate, a fix to either left the other admitting what the other rejected.
+ */
+export function continuationStartEventMatchesClaim(
+  event: RuntimeEvent | undefined,
+  claim: ContinuationClaimV1,
+  /** Undefined means the claim has not recorded a start yet, so nothing matches. */
+  startKind: 'runtime_admission' | 'claim_repair' | undefined,
+): boolean {
+  if (!event?.actions) return false;
+  const start = event.actions.continuationStart;
+  const runtimeProtocol = event.actions.runtimeProtocol;
+  const actionKeys = Object.keys(event.actions);
+  const source = claim.boundary.segments.at(-1)!;
+  return Boolean(
+    event.sessionId === claim.target.sessionId &&
+      event.invocationId === claim.target.invocationId &&
+      event.runId === claim.target.runId &&
+      event.turnId === claim.target.turnId &&
+      event.ts >= claim.claimedAt &&
+      event.partial !== true &&
+      event.role === 'system' &&
+      event.author === 'system' &&
+      event.status === undefined &&
+      // Event 1 of a continuation target is also that invocation's opening fact,
+      // which is why the claim names it in advance.
+      stableJsonStringify(event.content) === stableJsonStringify(claim.targetOpening) &&
+      actionKeys.includes('continuationStart') &&
+      actionKeys.every((key) => key === 'continuationStart' || key === 'runtimeProtocol') &&
+      actionKeys.length === (runtimeProtocol === undefined ? 1 : 2) &&
+      (runtimeProtocol === undefined ||
+        (startKind === 'runtime_admission' &&
+          runtimeProtocol.toolBoundary === TOOL_BOUNDARY_PROTOCOL_V1)) &&
+      start?.protocol === 'continuation_start_v2' &&
+      start.provenance === startKind &&
+      start.claimId === claim.claimId &&
+      start.boundaryDigest === claim.boundaryDigest &&
+      start.replayManifestDigest === claim.boundary.manifestDigest &&
+      start.providerProjectionVersion === claim.providerProjectionVersion &&
+      start.providerReplayDigest === claim.providerReplayDigest &&
+      stableJsonStringify(start.immediateSource) ===
+        stableJsonStringify({
+          sessionId: source.identity.sessionId,
+          invocationId: source.identity.invocationId,
+          runId: source.identity.runId,
+          turnId: source.identity.turnId,
+          highWater: source.position.lastEventSeq,
+          prefixDigest: source.prefixDigest,
+        }),
+  );
 }
 
 function canonicalizePrefixRows(

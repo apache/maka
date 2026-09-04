@@ -23,10 +23,11 @@
     "packages/computer-use",
     "packages/cli",
     "packages/ui",
-    "apps/desktop"
+    "apps/desktop",
+    "website"
   ],
   "scripts": {
-    "prepare": "npm run sync:model-metadata",
+    "prepare": "npm run sync:model-metadata && node scripts/install-husky.mjs",
     "postinstall": "node scripts/apply-dependency-patches.mjs && node scripts/install-electron-with-retry.mjs",
     "lint": "biome lint .",
     "format": "biome format --write .",
@@ -37,6 +38,7 @@
     "test:dist": "node scripts/run-workspace-tests-parallel.mjs --concurrency=3",
     "test:gitoxide-helper": "cargo +1.98.0 test --locked --manifest-path native/gitoxide-helper/Cargo.toml",
     "build:runtime-host-peer": "node native/runtime-host-peer/build.mjs",
+    "build:runtime-host-windows-task-launcher": "node native/runtime-host-windows-task-launcher/build.mjs",
     "lint:runtime-host-peer": "cargo clippy --locked --all-targets --manifest-path native/runtime-host-peer/Cargo.toml -- -D warnings",
     "dev": "npm --workspace @maka/desktop run dev:hmr --",
     "dev:peer": "npm --workspace @maka/desktop run dev:peer --",
@@ -75,7 +77,7 @@
     "check:runtime-host-peer-dependencies": "node scripts/generate-runtime-host-peer-dependencies.mjs --check",
     "generate:runtime-host-peer-notices": "node scripts/generate-runtime-host-peer-notices.mjs",
     "check:runtime-host-peer-notices": "node scripts/generate-runtime-host-peer-notices.mjs --check",
-    "check:release": "npm run check:stale && npm run check:third-party-notices && npm run check:cli-third-party-notices && npm run check:model-metadata && npm run check:product-release-identity && npm run check:asf-npm && node --test scripts/product-nightly.test.mjs scripts/desktop-release-targets.test.mjs scripts/verify-linux-harness.test.mjs scripts/desktop-nightly.test.mjs scripts/desktop-nightly-stage.test.mjs scripts/desktop-nightly-release.test.mjs scripts/desktop-nightly-workflow-policy.test.mjs scripts/product-release.test.mjs scripts/product-release-authority.test.mjs scripts/release-cli-file-policy.test.mjs scripts/release-cli-artifact-policy.test.mjs scripts/release-cli-eval-support.test.mjs scripts/release-cli-publication.test.mjs scripts/release-cli-runtime-host-diagnostics.test.mjs scripts/qualify-released-cli-state-root.test.mjs scripts/release-cli-workflow-policy.test.mjs scripts/verify-packaged-app.test.mjs scripts/third-party-closure.test.mjs scripts/generate-third-party-notices.test.mjs scripts/source-legal-inventory.test.mjs scripts/sync-model-metadata.test.mjs scripts/prepare-windows-upgrade-baseline.test.mjs scripts/windows-package-source-closure.test.mjs",
+    "check:release": "npm run check:stale && npm run check:third-party-notices && npm run check:cli-third-party-notices && npm run check:model-metadata && npm run check:product-release-identity && npm run check:asf-npm && node --test scripts/product-nightly.test.mjs scripts/desktop-release-targets.test.mjs scripts/verify-linux-harness.test.mjs scripts/desktop-nightly.test.mjs scripts/desktop-nightly-stage.test.mjs scripts/desktop-nightly-release.test.mjs scripts/desktop-nightly-workflow-policy.test.mjs scripts/audit-shipped-dependencies.test.mjs scripts/product-release.test.mjs scripts/product-release-authority.test.mjs scripts/release-cli-file-policy.test.mjs scripts/release-cli-artifact-policy.test.mjs scripts/release-cli-eval-support.test.mjs scripts/release-cli-publication.test.mjs scripts/release-cli-runtime-host-diagnostics.test.mjs scripts/qualify-released-cli-state-root.test.mjs scripts/release-cli-workflow-policy.test.mjs scripts/verify-packaged-app.test.mjs scripts/third-party-closure.test.mjs scripts/generate-third-party-notices.test.mjs scripts/source-legal-inventory.test.mjs scripts/sync-model-metadata.test.mjs scripts/prepare-windows-upgrade-baseline.test.mjs scripts/windows-package-source-closure.test.mjs",
     "package:macos-arm64": "node scripts/package-macos.mjs arm64",
     "package:macos-x64": "node scripts/package-macos.mjs x64",
     "verify:macos": "node scripts/verify-macos-dmg.mjs",
@@ -112,6 +114,7 @@
     "@electron/asar": "4.3.0",
     "@types/node": "^26.2.0",
     "esbuild": "^0.28.1",
+    "husky": "^9.1.7",
     "knip": "^6.32.2",
     "patch-package": "8.0.1",
     "typescript": "^7.0.2",

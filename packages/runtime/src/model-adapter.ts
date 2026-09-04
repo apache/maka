@@ -210,6 +210,7 @@ export class ModelAdapter {
       throw new Error(`No API key stored for connection "${this.input.connection.slug}"`);
     }
     return this.input.modelFactory({
+      sessionId: this.input.sessionId,
       connection: this.input.connection,
       apiKey: this.input.apiKey,
       modelId: this.input.modelId,
@@ -981,18 +982,40 @@ function translateChunk(
         },
       ];
     }
-    case 'text-start':
-      return [{ kind: 'text-start' }];
+    case 'text-start': {
+      const providerOptions =
+        chunk.providerMetadata && typeof chunk.providerMetadata === 'object'
+          ? (chunk.providerMetadata as NonNullable<ModelMessage['providerOptions']>)
+          : undefined;
+      const providerItemBoundary =
+        runtime !== undefined &&
+        hasOpenAiResponsesAdapter(runtime) &&
+        providerOptions !== undefined;
+      return [
+        {
+          kind: 'text-start',
+          ...(providerItemBoundary ? { providerItemBoundary: true } : {}),
+        },
+      ];
+    }
     case 'text-delta': {
       const text = chunk.text ?? chunk.textDelta ?? chunk.delta ?? '';
       return text ? [{ kind: 'text', text }] : [];
     }
     case 'text-end': {
-      if (!chunk.providerMetadata || typeof chunk.providerMetadata !== 'object') return [];
+      const providerOptions =
+        chunk.providerMetadata && typeof chunk.providerMetadata === 'object'
+          ? (chunk.providerMetadata as NonNullable<ModelMessage['providerOptions']>)
+          : undefined;
+      const providerItemBoundary =
+        runtime !== undefined &&
+        hasOpenAiResponsesAdapter(runtime) &&
+        providerOptions !== undefined;
       return [
         {
-          kind: 'text-metadata',
-          providerOptions: chunk.providerMetadata as NonNullable<ModelMessage['providerOptions']>,
+          kind: 'text-end',
+          ...(providerOptions !== undefined ? { providerOptions } : {}),
+          ...(providerItemBoundary ? { providerItemBoundary: true } : {}),
         },
       ];
     }

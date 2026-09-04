@@ -22,7 +22,11 @@ import { afterEach, test } from 'node:test';
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
-import { useSessionSettingIntent } from './session-setting-intent.js';
+import {
+  type SessionSettingIntentChannel,
+  type SessionSettingIntentWriteResult,
+  useSessionSettingIntent,
+} from './session-setting-intent.js';
 
 type Channels = {
   model: string;
@@ -99,6 +103,195 @@ test('channels keep independent workers and overlays for the same session', asyn
     assert.deepEqual(await Promise.all([modelCompletion, permissionCompletion]), [true, true]);
   });
 });
+
+test('revision-aware channel types require a catalog Session revision reader', () => {
+  // @ts-expect-error A revision receipt requires catalogSessionRevision.
+  const invalidChannel: SessionSettingIntentChannel<string> = {
+    write: async () => ({ committed: true, sessionRevision: 2 }),
+    onWriteError: () => {},
+  };
+
+  assert.equal(typeof invalidChannel.write, 'function');
+});
+
+test('preserves the public Session setting write result union', () => {
+  const booleanResult: SessionSettingIntentWriteResult = true;
+  const revisionResult: SessionSettingIntentWriteResult = {
+    committed: true,
+    sessionRevision: 2,
+  };
+
+  assert.equal(booleanResult, true);
+  assert.equal(revisionResult.sessionRevision, 2);
+});
+
+test('revision-aware commits retire only after the target session observes that revision', async () => {
+  const { document, window } = parseHTML('<div id="root"></div>');
+  Object.assign(globalThis, {
+    document,
+    window,
+    HTMLElement: window.HTMLElement,
+    Node: window.Node,
+    IS_REACT_ACT_ENVIRONMENT: true,
+  });
+  const container = document.querySelector('#root');
+  assert.ok(container);
+  const root = createRoot(container);
+  mountedRoot = root;
+
+  let controller: Controller | undefined;
+  const render = (catalogRevision: number, sessionRevision: number) => {
+    root.render(createElement(RevisionHarness, {
+      capture: (next) => {
+        controller = next;
+      },
+      catalogRevision,
+      sessionRevision,
+    }));
+  };
+
+  await act(async () => render(0, 0));
+  await act(async () => {
+    assert.equal(await controller!.request('model', 'session-1', 'model-b'), true);
+  });
+  assert.equal(controller!.overlayByChannel.model['session-1'], 'model-b');
+
+  await act(async () => render(1, 1));
+  assert.equal(controller!.overlayByChannel.model['session-1'], 'model-b');
+
+  await act(async () => render(2, 2));
+  assert.equal(controller!.overlayByChannel.model['session-1'], undefined);
+});
+
+test('rapid revision-aware requests retire only after the last committed revision', async () => {
+  const { document, window } = parseHTML('<div id="root"></div>');
+  Object.assign(globalThis, {
+    document,
+    window,
+    HTMLElement: window.HTMLElement,
+    Node: window.Node,
+    IS_REACT_ACT_ENVIRONMENT: true,
+  });
+  const container = document.querySelector('#root');
+  assert.ok(container);
+  const root = createRoot(container);
+  mountedRoot = root;
+
+  const writes: Array<{
+    value: string;
+    result: ReturnType<typeof deferred<{
+      committed: boolean;
+      sessionRevision: number;
+    }>>;
+  }> = [];
+  let controller: Controller | undefined;
+  const render = (catalogRevision: number, sessionRevision: number) => {
+    root.render(createElement(RapidRevisionHarness, {
+      capture: (next) => {
+        controller = next;
+      },
+      catalogRevision,
+      sessionRevision,
+      write: async (_sessionId, value) => {
+        const result = deferred<{ committed: boolean; sessionRevision: number }>();
+        writes.push({ value, result });
+        return result.promise;
+      },
+    }));
+  };
+
+  await act(async () => render(0, 0));
+  let completion!: Promise<boolean>;
+  await act(async () => {
+    completion = controller!.request('model', 'session-1', 'model-a');
+    void controller!.request('model', 'session-1', 'model-b');
+    void controller!.request('model', 'session-1', 'model-c');
+  });
+  assert.equal(controller!.overlayByChannel.model['session-1'], 'model-c');
+  assert.deepEqual(writes.map(({ value }) => value), ['model-a']);
+
+  await act(async () => {
+    writes[0]!.result.resolve({ committed: true, sessionRevision: 1 });
+    await Promise.resolve();
+  });
+  assert.deepEqual(writes.map(({ value }) => value), ['model-a', 'model-c']);
+
+  await act(async () => {
+    writes[1]!.result.resolve({ committed: true, sessionRevision: 3 });
+    assert.equal(await completion, true);
+  });
+  assert.equal(controller!.overlayByChannel.model['session-1'], 'model-c');
+
+  await act(async () => render(1, 1));
+  assert.equal(controller!.overlayByChannel.model['session-1'], 'model-c');
+
+  await act(async () => render(2, 2));
+  assert.equal(controller!.overlayByChannel.model['session-1'], 'model-c');
+
+  await act(async () => render(3, 3));
+  assert.equal(controller!.overlayByChannel.model['session-1'], undefined);
+});
+
+function RapidRevisionHarness({
+  capture,
+  catalogRevision,
+  sessionRevision,
+  write,
+}: {
+  capture(controller: Controller): void;
+  catalogRevision: number;
+  sessionRevision: number;
+  write(
+    sessionId: string,
+    value: string,
+  ): Promise<{ committed: boolean; sessionRevision: number }>;
+}) {
+  const controller = useSessionSettingIntent<Channels>({
+    catalogRevision,
+    refreshCatalog: async () => {},
+    channels: {
+      model: {
+        write,
+        catalogSessionRevision: () => sessionRevision,
+        onWriteError: () => {},
+      },
+      permission: {
+        write: async () => true,
+        onWriteError: () => {},
+      },
+    },
+  });
+  capture(controller);
+  return null;
+}
+
+function RevisionHarness({
+  capture,
+  catalogRevision,
+  sessionRevision,
+}: {
+  capture(controller: Controller): void;
+  catalogRevision: number;
+  sessionRevision: number;
+}) {
+  const controller = useSessionSettingIntent<Channels>({
+    catalogRevision,
+    refreshCatalog: async () => {},
+    channels: {
+      model: {
+        write: async () => ({ committed: true, sessionRevision: 2 }),
+        catalogSessionRevision: () => sessionRevision,
+        onWriteError: () => {},
+      },
+      permission: {
+        write: async () => true,
+        onWriteError: () => {},
+      },
+    },
+  });
+  capture(controller);
+  return null;
+}
 
 function Harness({
   capture,

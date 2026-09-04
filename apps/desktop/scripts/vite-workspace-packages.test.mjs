@@ -79,3 +79,39 @@ test('renderer loads a newly exported workspace module after its manifest change
   }
   throw failure;
 });
+
+test('renderer-facing Runtime Host protocol does not load Node crypto', async (t) => {
+  const repoRoot = await realpath(new URL('../../..', import.meta.url));
+  const root = join(repoRoot, 'apps/desktop/src/renderer');
+  const server = await createServer({
+    configFile: false,
+    root,
+    logLevel: 'silent',
+    // One request, one assertion — nothing here reacts to a file changing. A
+    // watcher would, and this root is the real repository: `close()` returns
+    // before its recursive scan finishes, and the unfinished fs requests keep
+    // the process alive until the workspace suite hits its own timeout.
+    server: { host: '127.0.0.1', port: 0, watch: null },
+    optimizeDeps: { noDiscovery: true, include: [] },
+    plugins: [workspacePackagesPlugin(repoRoot)],
+  });
+  t.after(() => server.close());
+  await server.listen();
+
+  const protocolModule = join(
+    repoRoot,
+    'packages/runtime-host/dist/protocol/client-capability.js',
+  );
+  const response = await fetch(`${server.resolvedUrls.local[0]}@fs/${protocolModule}`);
+  const transformed = await response.text();
+
+  assert.equal(response.status, 200, transformed);
+  // A missing dist is served as the SPA fallback, and index.html trivially
+  // satisfies the assertion below. Say so instead of passing.
+  assert.doesNotMatch(
+    transformed,
+    /^<!doctype html>/iu,
+    'Vite served the SPA fallback; build @maka/runtime-host first',
+  );
+  assert.doesNotMatch(transformed, /vite-browser-external:node:crypto/u);
+});

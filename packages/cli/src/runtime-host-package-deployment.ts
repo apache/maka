@@ -18,6 +18,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { cp, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path';
 import { resolveRuntimeHostNpmDeploymentLayout } from '@maka/runtime-host/operator';
@@ -328,12 +329,12 @@ async function removePackageAtomically(versionsRoot: string, packageName: string
   const packageRoot = join(versionsRoot, packageName);
   try {
     if (packageName.startsWith('.') && packageName.endsWith('.deleted')) {
-      await rm(packageRoot, { recursive: true, force: true });
+      await removeDeploymentDirectory(packageRoot);
       return;
     }
     const tombstone = join(versionsRoot, `.${packageName}.${randomUUID()}.deleted`);
     await rename(packageRoot, tombstone);
-    await rm(tombstone, { recursive: true, force: true });
+    await removeDeploymentDirectory(tombstone);
   } catch (error) {
     if (isNodeError(error, 'ENOENT')) return;
     throw new RuntimeHostPackageDeploymentError(
@@ -342,6 +343,38 @@ async function removePackageAtomically(versionsRoot: string, packageName: string
       { cause: error },
     );
   }
+}
+
+export async function removeDeploymentDirectory(path: string): Promise<void> {
+  try {
+    await rm(path, { recursive: true, force: true });
+  } catch (error) {
+    if (process.platform !== 'win32') throw error;
+    deferWindowsDirectoryRemovalUntilExit(path);
+  }
+}
+
+function deferWindowsDirectoryRemovalUntilExit(path: string): void {
+  // Loaded native addons remain locked until this operator exits. The caller
+  // has already renamed the directory out of authority before reaching here.
+  const script = `const { rm } = require('node:fs/promises');
+const path = process.argv[1];
+const parent = Number(process.argv[2]);
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+(async () => {
+  for (let attempt = 0; attempt < 3000; attempt += 1) {
+    try { process.kill(parent, 0); } catch { break; }
+    await wait(100);
+  }
+  await rm(path, { recursive: true, force: true, maxRetries: 100, retryDelay: 100 });
+})().catch(() => { process.exitCode = 1; });`;
+  const cleanup = spawn(process.execPath, ['-e', script, path, String(process.pid)], {
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true,
+  });
+  cleanup.on('error', () => undefined);
+  cleanup.unref();
 }
 
 function registryPackageLayout(deploymentRoot: string, integrity: string) {

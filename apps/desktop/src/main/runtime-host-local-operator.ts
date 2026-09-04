@@ -17,10 +17,10 @@
  * under the License.
  */
 
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { mkdtemp, rm, rmdir, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 import { redactSecrets } from '@maka/core/redaction';
 import {
   DEFAULT_PROCESS_TERMINATION_GRACE_MS,
@@ -42,6 +42,7 @@ import {
   RUNTIME_HOST_SERVICE_MANAGEMENT_FRAME_PREFIX,
   RUNTIME_HOST_SETUP_FRAME_PREFIX,
   RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY_ENV,
+  runtimeHostOperatorInvocation,
   type RuntimeHostAccessManagementFrame,
   type RuntimeHostManagedUpdatePolicy,
   type RuntimeHostPeerManagementFrame,
@@ -50,6 +51,7 @@ import {
   type RuntimeHostServiceManagementFrame,
   type RuntimeHostServiceUpdatePhase,
   type RuntimeHostSetupFrame,
+  type RuntimeHostOperatorCommand,
 } from '@maka/runtime-host/operator';
 import { createRuntimeHostFramedOutputFilter } from './runtime-host-framed-output.js';
 import {
@@ -60,6 +62,41 @@ import {
 const SETUP_TIMEOUT_MS = 10 * 60_000;
 const SETUP_FRAME_PENDING_MAX = 20 * 1024;
 const STDERR_MAX_BYTES = 64 * 1024;
+const WINDOWS_NPM_RESOLUTION_SCRIPT = String.raw`
+const { statSync } = require('node:fs');
+const path = require('node:path').win32;
+const candidates = [];
+const configuredNode = process.env.npm_node_execpath?.trim();
+const configuredCli = process.env.npm_execpath?.trim();
+if (configuredNode && configuredCli) candidates.push([configuredNode, configuredCli]);
+const searchPath = Object.entries(process.env).find(([key]) => key.toUpperCase() === 'PATH')?.[1];
+for (const entry of searchPath?.split(path.delimiter) ?? []) {
+  const directory = entry.replace(/^"|"$/g, '').trim();
+  if (!directory) continue;
+  candidates.push([
+    path.join(directory, 'node.exe'),
+    path.join(directory, 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+  ]);
+}
+let resolved;
+for (const [nodePath, cliPath] of candidates) {
+  try {
+    if (
+      path.isAbsolute(nodePath) &&
+      path.isAbsolute(cliPath) &&
+      statSync(nodePath).isFile() &&
+      statSync(cliPath).isFile()
+    ) {
+      resolved = [nodePath, cliPath];
+      break;
+    }
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+}
+if (resolved) process.stdout.write(JSON.stringify(resolved));
+else process.exitCode = 1;
+`;
 
 type RuntimeHostSetupCompleteFrame = Extract<RuntimeHostSetupFrame, { kind: 'complete' }>;
 
@@ -87,7 +124,7 @@ export interface DesktopRuntimeHostLocalSetupCommand {
 }
 
 export interface DesktopRuntimeHostLocalServiceManagementInput {
-  readonly operatorPath: string;
+  readonly operator: RuntimeHostOperatorCommand;
   readonly action:
     | 'status'
     | 'start'
@@ -168,7 +205,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
     onProgress: (frame: Extract<RuntimeHostSetupFrame, { kind: 'progress' }>) => void,
   ): Promise<RuntimeHostSetupCompleteFrame>;
   runPeer(input: {
-    readonly operatorPath: string;
+    readonly operator: RuntimeHostOperatorCommand;
     readonly action: 'enable' | 'disable' | 'status';
     readonly target: DesktopRuntimeHostLocalServiceTarget;
     readonly coordinationRelays?: readonly string[];
@@ -176,7 +213,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
     readonly signal?: AbortSignal;
   }): Promise<RuntimeHostPeerManagementFrame>;
   runPeerMesh(input: {
-    readonly operatorPath: string;
+    readonly operator: RuntimeHostOperatorCommand;
     readonly action: RuntimeHostPeerMeshManagementAction;
     readonly target: DesktopRuntimeHostLocalServiceTarget;
     readonly meshId?: string | null;
@@ -186,7 +223,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
     readonly signal?: AbortSignal;
   }): Promise<Exclude<RuntimeHostPeerMeshManagementFrame, { kind: 'input' }>>;
   runAccess(input: {
-    readonly operatorPath: string;
+    readonly operator: RuntimeHostOperatorCommand;
     readonly target: DesktopRuntimeHostLocalServiceTarget;
     readonly signal?: AbortSignal;
   }): Promise<RuntimeHostAccessManagementFrame>;
@@ -205,21 +242,21 @@ export function createDesktopRuntimeHostLocalOperator(input: {
     onProgress: (phase: RuntimeHostServiceUpdatePhase) => void,
   ): Promise<RuntimeHostServiceManagementFrame>;
   runUpdatePolicy(input: {
-    readonly operatorPath: string;
+    readonly operator: RuntimeHostOperatorCommand;
     readonly target: DesktopRuntimeHostLocalServiceTarget;
     readonly policy?: RuntimeHostManagedUpdatePolicy;
     readonly signal?: AbortSignal;
   }): Promise<RuntimeHostServiceManagementFrame>;
   runUpdateReconciliation(
     input: {
-      readonly operatorPath: string;
+      readonly operator: RuntimeHostOperatorCommand;
       readonly target: DesktopRuntimeHostLocalServiceTarget;
       readonly signal?: AbortSignal;
     },
     onProgress: (phase: RuntimeHostServiceUpdatePhase) => void,
   ): Promise<RuntimeHostServiceManagementFrame>;
   cleanupManagedDeployment(input: {
-    readonly operatorPath: string;
+    readonly operator: RuntimeHostOperatorCommand;
     readonly target: DesktopRuntimeHostLocalServiceTarget;
     readonly finalize?: boolean;
     readonly signal?: AbortSignal;
@@ -271,9 +308,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
     runPeer(command) {
       if (closed) throw new Error('Local Runtime Host operator is closed');
       return runSingleFrameProcess({
-        command: {
-          executable: command.operatorPath,
-          args: [
+        command: runtimeHostOperatorInvocation(command.operator, [
             'peer',
             command.action,
             '--framed',
@@ -287,8 +322,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
               : []),
             ...(command.allowInterruptActiveTasks ? ['--allow-interrupt-active-tasks'] : []),
             ...managedTargetArgs(command.target),
-          ],
-        },
+          ]),
         prefix: RUNTIME_HOST_PEER_MANAGEMENT_FRAME_PREFIX,
         decode: decodeRuntimeHostPeerManagementFrame,
         label: 'Local Runtime Host peer management',
@@ -303,9 +337,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
     runPeerMesh(command) {
       if (closed) throw new Error('Local Runtime Host operator is closed');
       return runPeerMeshFrameProcess({
-        command: {
-          executable: command.operatorPath,
-          args: [
+        command: runtimeHostOperatorInvocation(command.operator, [
             'mesh',
             command.action,
             '--framed',
@@ -321,8 +353,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
                 ? ['--name', command.displayName]
                 : []),
             ...managedTargetArgs(command.target),
-          ],
-        },
+          ]),
         environment: input.environment ?? process.env,
         spawnProcess: input.spawnProcess ?? spawn,
         timeoutMs: input.setupTimeoutMs ?? SETUP_TIMEOUT_MS,
@@ -336,9 +367,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
     runAccess(command) {
       if (closed) throw new Error('Local Runtime Host operator is closed');
       return runSingleFrameProcess({
-        command: {
-          executable: command.operatorPath,
-          args: [
+        command: runtimeHostOperatorInvocation(command.operator, [
             'access',
             'list',
             '--framed',
@@ -346,8 +375,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
             command.target.rootPath,
             '--expected-root',
             command.target.rootId,
-          ],
-        },
+          ]),
         prefix: RUNTIME_HOST_ACCESS_MANAGEMENT_FRAME_PREFIX,
         decode: decodeRuntimeHostAccessManagementFrame,
         label: 'Local Runtime Host access management',
@@ -362,9 +390,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
     runService(command) {
       if (closed) throw new Error('Local Runtime Host operator is closed');
       return runSingleFrameProcess({
-        command: {
-          executable: command.operatorPath,
-          args: [
+        command: runtimeHostOperatorInvocation(command.operator, [
             command.action,
             '--framed',
             ...(command.projectDirectoryRoots === undefined
@@ -381,8 +407,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
             ...(command.allowInterruptActiveTasks ? ['--allow-interrupt-active-tasks'] : []),
             ...(command.retainManagedDeployment ? ['--retain-managed-deployment'] : []),
             ...managedTargetArgs(command.target),
-          ],
-        },
+          ]),
         prefix: RUNTIME_HOST_SERVICE_MANAGEMENT_FRAME_PREFIX,
         decode: decodeRuntimeHostServiceManagementFrame,
         label: 'Local Runtime Host service management',
@@ -449,9 +474,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
       if (closed) throw new Error('Local Runtime Host operator is closed');
       const policy = command.policy;
       return runServiceFrameProcess({
-        command: {
-          executable: command.operatorPath,
-          args: [
+        command: runtimeHostOperatorInvocation(command.operator, [
             'update-policy',
             '--framed',
             ...(policy
@@ -465,8 +488,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
                 ]
               : []),
             ...managedTargetArgs(command.target),
-          ],
-        },
+          ]),
         environment: {
           ...(input.environment ?? process.env),
           [RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV]:
@@ -483,10 +505,11 @@ export function createDesktopRuntimeHostLocalOperator(input: {
     runUpdateReconciliation(command, onProgress) {
       if (closed) throw new Error('Local Runtime Host operator is closed');
       return runServiceFrameProcess({
-        command: {
-          executable: command.operatorPath,
-          args: ['reconcile-update', '--framed', ...managedTargetArgs(command.target)],
-        },
+        command: runtimeHostOperatorInvocation(command.operator, [
+          'reconcile-update',
+          '--framed',
+          ...managedTargetArgs(command.target),
+        ]),
         environment: {
           ...(input.environment ?? process.env),
           [RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST_ENV]: '1',
@@ -504,26 +527,26 @@ export function createDesktopRuntimeHostLocalOperator(input: {
     },
     async cleanupManagedDeployment(command) {
       if (closed) throw new Error('Local Runtime Host operator is closed');
+      const operatorPath = command.operator.kind === 'node'
+        ? command.operator.modulePath
+        : command.operator.executablePath;
       try {
-        await stat(command.operatorPath);
+        await stat(operatorPath);
       } catch (error) {
         if (!isNodeError(error, 'ENOENT')) throw error;
         try {
-          await rmdir(dirname(command.operatorPath));
+          await rmdir(dirname(operatorPath));
         } catch (directoryError) {
           if (!isNodeError(directoryError, 'ENOENT')) throw directoryError;
         }
         return;
       }
       await runExitProcess({
-        command: {
-          executable: command.operatorPath,
-          args: [
+        command: runtimeHostOperatorInvocation(command.operator, [
             '__cleanup-managed-deployment',
             ...(command.finalize ? ['--finalize'] : []),
             ...managedTargetArgs(command.target),
-          ],
-        },
+          ]),
         label: 'Local Runtime Host deployment cleanup',
         environment: input.environment ?? process.env,
         spawnProcess: input.spawnProcess ?? spawn,
@@ -674,6 +697,67 @@ function resolveLocalSetupPackage(
   return { specifier: setupPackage.path, integrity: setupPackage.integrity };
 }
 
+async function resolveLocalNpmCommand(
+  command: DesktopRuntimeHostLocalSetupCommand,
+  environment: NodeJS.ProcessEnv,
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
+  label: string,
+): Promise<DesktopRuntimeHostLocalSetupCommand> {
+  if (process.platform !== 'win32' || command.executable !== 'npm') return command;
+
+  const timeout = AbortSignal.timeout(timeoutMs);
+  const lookupSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
+  let npmCommand: readonly [string, string];
+  try {
+    npmCommand = await locateWindowsNpmCommand(environment, lookupSignal);
+  } catch (error) {
+    if (signal?.aborted) throw abortError(signal);
+    if (timeout.aborted) throw new Error(`${label} timed out`);
+    throw new Error(
+      'Local Runtime Host management requires a complete Node.js and npm installation',
+      { cause: error },
+    );
+  }
+  return { executable: npmCommand[0], args: [npmCommand[1], ...command.args] };
+}
+
+function locateWindowsNpmCommand(
+  environment: NodeJS.ProcessEnv,
+  signal: AbortSignal,
+): Promise<readonly [string, string]> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      process.execPath,
+      ['-e', WINDOWS_NPM_RESOLUTION_SCRIPT],
+      {
+        encoding: 'utf8',
+        env: { ...environment, ELECTRON_RUN_AS_NODE: '1' },
+        maxBuffer: 64 * 1024,
+        signal,
+        windowsHide: true,
+      },
+      (error, stdout) => {
+        if (error) return reject(error);
+        let command: unknown;
+        try {
+          command = JSON.parse(stdout);
+        } catch (parseError) {
+          return reject(parseError);
+        }
+        if (
+          !Array.isArray(command) ||
+          command.length !== 2 ||
+          !command.every((path) => typeof path === 'string' && isAbsolute(path))
+        ) {
+          return reject(new Error('The npm resolver returned an invalid command'));
+        }
+        resolve([command[0], command[1]]);
+      },
+    );
+  });
+}
+
 function managedTargetArgs(target: DesktopRuntimeHostLocalServiceTarget): string[] {
   return [
     '--expected-service-id',
@@ -764,7 +848,7 @@ function runSetupProcess(input: {
   });
 }
 
-function runFramedProcess<Frame, Result>(input: {
+async function runFramedProcess<Frame, Result>(input: {
   readonly command: DesktopRuntimeHostLocalSetupCommand;
   readonly cwd?: string;
   readonly prefix: string;
@@ -783,9 +867,22 @@ function runFramedProcess<Frame, Result>(input: {
   readonly inputLine?: string;
   readonly pendingMaxBytes?: number;
 }): Promise<Result> {
+  const deadline = Date.now() + input.timeoutMs;
   input.signal?.throwIfAborted();
+  const lookupTimeoutMs = deadline - Date.now();
+  if (lookupTimeoutMs <= 0) throw new Error(`${input.label} timed out`);
+  const command = await resolveLocalNpmCommand(
+    input.command,
+    input.environment,
+    input.signal,
+    lookupTimeoutMs,
+    input.label,
+  );
+  input.signal?.throwIfAborted();
+  const remainingTimeoutMs = deadline - Date.now();
+  if (remainingTimeoutMs <= 0) throw new Error(`${input.label} timed out`);
   return new Promise((resolve, reject) => {
-    const child = input.spawnProcess(input.command.executable, [...input.command.args], {
+    const child = input.spawnProcess(command.executable, [...command.args], {
       ...(input.cwd ? { cwd: input.cwd } : {}),
       detached: process.platform !== 'win32',
       env: input.environment,
@@ -835,7 +932,10 @@ function runFramedProcess<Frame, Result>(input: {
       );
     };
     const onAbort = () => stop(abortError(input.signal));
-    const timeout = setTimeout(() => stop(new Error(`${input.label} timed out`)), input.timeoutMs);
+    const timeout = setTimeout(
+      () => stop(new Error(`${input.label} timed out`)),
+      remainingTimeoutMs,
+    );
     input.signal?.addEventListener('abort', onAbort, { once: true });
     child.stdout?.on('data', (chunk: Buffer) => filter.push(chunk.toString('utf8')));
     child.stderr?.on('data', (chunk: Buffer) => {

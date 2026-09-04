@@ -136,6 +136,94 @@ describe('Client Capability protocol', () => {
         invocationId: 'invocation',
       },
     );
+    assert.deepEqual(
+      decodeClientFrame({
+        kind: 'client.capability.interaction_request',
+        invocationId: 'invocation',
+        interactionId: 'provider-form-1',
+        request: {
+          message: 'Choose a target',
+          requester: { name: 'deploy', source: 'Fixture' },
+          fields: [
+            {
+              kind: 'single_select',
+              name: 'target',
+              label: 'Target',
+              required: true,
+              options: [
+                { value: 'staging', label: 'Staging' },
+                { value: 'production', label: 'Production' },
+              ],
+            },
+          ],
+        },
+      }),
+      {
+        kind: 'client.capability.interaction_request',
+        invocationId: 'invocation',
+        interactionId: 'provider-form-1',
+        request: {
+          message: 'Choose a target',
+          requester: { name: 'deploy', source: 'Fixture' },
+          fields: [
+            {
+              kind: 'single_select',
+              name: 'target',
+              label: 'Target',
+              required: true,
+              options: [
+                { value: 'staging', label: 'Staging' },
+                { value: 'production', label: 'Production' },
+              ],
+            },
+          ],
+        },
+      },
+    );
+    assert.deepEqual(
+      decodeHostFrame({
+        kind: 'client.capability.interaction_result',
+        invocationId: 'invocation',
+        interactionId: 'provider-form-1',
+        result: { action: 'accept', values: { target: 'staging' } },
+      }),
+      {
+        kind: 'client.capability.interaction_result',
+        invocationId: 'invocation',
+        interactionId: 'provider-form-1',
+        result: { action: 'accept', values: { target: 'staging' } },
+      },
+    );
+  });
+
+  test('rejects malformed nested Client Capability interactions at the codec', () => {
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          kind: 'client.capability.interaction_request',
+          invocationId: 'invocation',
+          interactionId: 'provider-form-1',
+          request: {
+            message: 'Invalid duplicate fields',
+            requester: { name: 'fixture' },
+            fields: [
+              { kind: 'boolean', name: 'same', label: 'First', required: true },
+              { kind: 'boolean', name: 'same', label: 'Second', required: true },
+            ],
+          },
+        }),
+      (error: unknown) => error instanceof RuntimeHostProtocolError,
+    );
+    assert.throws(
+      () =>
+        decodeHostFrame({
+          kind: 'client.capability.interaction_result',
+          invocationId: 'invocation',
+          interactionId: 'provider-form-1',
+          result: { action: 'cancel', values: {} },
+        }),
+      (error: unknown) => error instanceof RuntimeHostProtocolError,
+    );
   });
 
   test('keeps Host services open-world and outside model tool offers', () => {

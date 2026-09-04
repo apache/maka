@@ -27,7 +27,7 @@ export interface AppQuitCoordinator {
 }
 
 export interface AppQuitCoordinatorDeps {
-  prepareToQuit(): Promise<void>;
+  prepareToQuit(): Promise<'ready' | 'cancelled'>;
   cleanup(): Promise<void>;
   focusOrCreateWindow(signal: AbortSignal): void | Promise<void>;
   onPreparationError(error: unknown): void;
@@ -75,7 +75,13 @@ export function createAppQuitCoordinator(deps: AppQuitCoordinatorDeps): AppQuitC
       void Promise.resolve()
         .then(() => deps.prepareToQuit())
         .then(
-          () => {
+          (preparation) => {
+            if (preparation === 'cancelled') {
+              phase = 'running';
+              windowCreationAbort = new AbortController();
+              focusOrCreateWindow();
+              return;
+            }
             phase = 'cleaning';
             return Promise.resolve()
               .then(() => deps.cleanup())

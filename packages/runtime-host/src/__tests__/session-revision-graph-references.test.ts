@@ -19,7 +19,8 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { AgentRunHeader } from '@maka/core/agent-run';
+import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
+import { testInvocationRecord } from '@maka/runtime/test-only/invocation-fixture';
 import type { SessionHeader, StoredMessage } from '@maka/core/session';
 import { agentGraphIdForRootSession } from '@maka/runtime/stream-graph-coordinator';
 import { collectConversationCopyLinkedChildReferences } from '@maka/runtime/conversation-copy';
@@ -199,7 +200,7 @@ test('Agent Graph revision references reject incomplete or mismatched provenance
     },
     {
       name: 'active child Run',
-      input: { runs: [agentRun({ status: 'running', completedAt: undefined })] },
+      input: { runs: [agentRun({ status: 'running' })] },
       code: 'session_busy',
     },
     {
@@ -321,7 +322,7 @@ interface PrepareOverrides {
   readonly messages?: readonly StoredMessage[];
   readonly archivedResults?: readonly string[];
   readonly sessionHeaders?: readonly SessionHeader[];
-  readonly runs?: readonly AgentRunHeader[];
+  readonly runs?: readonly RuntimeInvocationRecord[];
   readonly sessionGraphState?: 'absent' | 'live' | 'terminal';
   readonly graphState?: 'absent' | 'live' | 'terminal';
   readonly artifactTurnId?: string;
@@ -347,8 +348,8 @@ async function prepare(overrides: PrepareOverrides = {}) {
       }),
     },
     {
-      agentRunStore: {
-        listSessionRuns: async () => overrides.runs ?? [agentRun()],
+      runtimeEventStore: {
+        listSessionInvocations: async () => overrides.runs ?? [agentRun()],
       },
       artifacts: {
         getInSession: async (sessionId, artifactId) => ({
@@ -508,22 +509,30 @@ function childHeader(
   };
 }
 
-function agentRun(overrides: Partial<AgentRunHeader> = {}): AgentRunHeader {
-  return {
-    runId: CHILD_RUN_ID,
-    invocationId: 'child-invocation',
-    sessionId: CHILD_SESSION_ID,
-    turnId: CHILD_TURN_ID,
-    status: 'completed',
-    backendKind: 'fake',
-    llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
-    llmConnectionSlug: 'fake',
-    modelId: 'fake-model',
-    cwd: '/workspace',
-    permissionMode: 'ask',
-    createdAt: 1,
-    updatedAt: 2,
-    completedAt: 2,
-    ...overrides,
+function agentRun(
+  overrides: {
+    runId?: string;
+    turnId?: string;
+    status?: 'completed' | 'failed' | 'cancelled' | 'running';
+    resumedFromRunId?: string;
+    retriedFromRunId?: string;
+  } = {},
+): RuntimeInvocationRecord {
+  const status = overrides.status ?? 'completed';
+  const lineage = {
+    ...(overrides.resumedFromRunId ? { resumedFromRunId: overrides.resumedFromRunId } : {}),
+    ...(overrides.retriedFromRunId ? { retriedFromRunId: overrides.retriedFromRunId } : {}),
   };
+  return testInvocationRecord({
+    sessionId: CHILD_SESSION_ID,
+    runId: overrides.runId ?? CHILD_RUN_ID,
+    turnId: overrides.turnId ?? CHILD_TURN_ID,
+    invocationId: overrides.runId ?? 'child-invocation',
+    openedAt: 1,
+    closedAt: 2,
+    ...(status === 'running'
+      ? {}
+      : { outcome: status === 'cancelled' ? ('aborted' as const) : status }),
+    ...(Object.keys(lineage).length > 0 ? { opening: { lineage } } : {}),
+  });
 }

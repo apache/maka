@@ -999,22 +999,17 @@ const STATUS_FOOTER_ICON: Record<TurnFooterActionMeta['id'], ReactNode> = {
   info: <Info size={ICON_SIZE.control} aria-hidden="true" />,
 };
 
-/** How long one working phrase holds before the next fades in. */
-const WORKING_PHRASE_INTERVAL_MS = 20_000;
-/** Must match the `.maka-turn-working-phrase` transition duration in styles.css. */
-const WORKING_PHRASE_FADE_MS = 300;
 const ELAPSED_TICK_MS = 1_000;
 
 /**
- * The live turn's running status line: a working phrase that rotates every 20s,
- * and the elapsed clock beside it.
+ * The live turn's running status line: a truthful activity label and the
+ * elapsed clock beside it.
  *
- * The elapsed time is what actually carries the message — it is the only part
- * that proves the harness and the model are still moving, and it is why the
- * phrase pool can afford to be playful rather than informative. Both are driven
- * by the clock, so this component owns its own timers and re-renders only
- * itself: hoisting the seconds into the turn (let alone the shell) would repaint
- * the whole transcript once a second while an answer streams into it.
+ * A quiet provider request does not prove that the model is actively making
+ * semantic progress. The default therefore says only that Maka is waiting for
+ * model output. A concrete tool label can replace it when Runtime has direct
+ * evidence of work in flight. The clock is local presentation state so ticking
+ * it does not repaint the whole transcript.
  *
  * `startedAt` is the turn's own first-message timestamp, so the clock measures
  * the wait the user actually experienced — from pressing send, not from
@@ -1028,15 +1023,12 @@ export function TurnRunningStatus(props: {
   activityLabel?: string;
 }) {
   const copy = getConversationCopy(useUiLocale()).messages;
-  const phrases = copy.workingPhrases;
   const { startedAt } = props;
   const rootRef = useRef<HTMLDivElement>(null);
   // Undefined until an effect measures it, which is also what keeps a static
   // render deterministic: the clock is a client-only value, so server markup
   // and the first paint carry the phrase alone.
   const [elapsedMs, setElapsedMs] = useState<number | undefined>(undefined);
-  const [phraseIndex, setPhraseIndex] = useState(0);
-  const [phraseFading, setPhraseFading] = useState(false);
 
   useEffect(() => {
     // Frozen (fixture / reduced motion) the clock is dropped rather than
@@ -1051,27 +1043,11 @@ export function TurnRunningStatus(props: {
     return () => window.clearInterval(tick);
   }, [startedAt]);
 
-  useEffect(() => {
-    if (phrases.length < 2 || !isTimeDrivenMotionEnabled(rootRef.current)) return;
-    let fadeTimer: number | undefined;
-    const rotate = window.setInterval(() => {
-      setPhraseFading(true);
-      fadeTimer = window.setTimeout(() => {
-        setPhraseIndex((current) => (current + 1) % phrases.length);
-        setPhraseFading(false);
-      }, WORKING_PHRASE_FADE_MS);
-    }, WORKING_PHRASE_INTERVAL_MS);
-    return () => {
-      window.clearInterval(rotate);
-      if (fadeTimer !== undefined) window.clearTimeout(fadeTimer);
-    };
-  }, [phrases.length]);
-
   return (
     <div
       className="maka-turn-processing"
       role="status"
-      aria-label={props.activityLabel ?? copy.processing}
+      aria-label={props.activityLabel ?? copy.awaitingModelOutput}
       ref={rootRef}
     >
       {props.showSpinner !== false && (
@@ -1081,8 +1057,8 @@ export function TurnRunningStatus(props: {
           talk over the answer being streamed beside it, so the row's label is
           its whole accessible name and the text is decoration. */}
       <span className="maka-turn-indicator-text" aria-hidden="true">
-        <span className="maka-turn-working-phrase" data-fading={phraseFading || undefined}>
-          {props.activityLabel ?? phrases[phraseIndex] ?? copy.processing}
+        <span className="maka-turn-status-label">
+          {props.activityLabel ?? copy.awaitingModelOutput}
         </span>
         {elapsedMs !== undefined && (
           <>

@@ -32,6 +32,8 @@ import {
 import { serializedByteLength } from '@maka/core/serialized-byte-length';
 import { encodeToolStepProgress, ToolOutcomeUnknownError } from '@maka/core/events';
 import type {
+  FormAnswerAckEvent,
+  FormRequestEvent,
   SandboxBoundaryDecisionAckEvent,
   SandboxBoundaryRequestEvent,
   SessionEvent,
@@ -47,11 +49,20 @@ import type {
 } from '@maka/core/events';
 import type { ToolCallMessage, ToolResultMessage } from '@maka/core/session';
 import type {
+  HostedFormSettlement,
   HostedInteractionBridge,
   HostedSandboxBoundarySettlement,
   HostedUserQuestionAnswer,
   HostedUserQuestionSettlement,
 } from '@maka/core/backend-types';
+import {
+  isInteractionAnswerValidForRequest,
+  projectInteractionFormRequest,
+  type InteractionFormInput,
+  type InteractionFormRequest,
+  type InteractionFormResponse,
+  type InteractionFormResult,
+} from '@maka/core/interaction';
 import type { PermissionMode, ToolCategory, ToolExecutionFacts } from '@maka/core/permission';
 import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import type { OrchestrationMode } from '@maka/core/orchestration';
@@ -299,6 +310,10 @@ export interface MakaToolContext {
     view?: 'result' | 'events' | 'runtime_events' | 'all';
   }) => Promise<unknown>;
   askUserQuestion?: (questions: UserQuestion[]) => Promise<UserQuestionResult>;
+  requestUserForm?: (
+    form: InteractionFormInput,
+    options?: { readonly cancellationSignal?: AbortSignal },
+  ) => Promise<InteractionFormResult>;
   requestSandboxBoundary?: (
     expansion: SandboxBoundaryExpansion,
     justification: string,
@@ -545,10 +560,15 @@ export class ToolRuntime {
     UserQuestionResponse,
     { toolUseId: string; questions: UserQuestion[]; hosted: boolean }
   >();
+  private readonly userForms = new AwaitRegistry<
+    InteractionFormResponse,
+    { toolUseId: string; request: InteractionFormRequest; hosted: boolean }
+  >();
   private readonly turnId: string;
   private readonly hostedInteraction: HostedInteractionBridge | undefined;
   private sandboxBoundaryClosureDeferred = false;
   private questionClosureDeferred = false;
+  private formClosureDeferred = false;
   private activeSubagentToolCount = 0;
   private childAgentRunLimiter = new AdmissionLimiter(MAX_ACTIVE_CHILD_AGENT_RUNS_PER_TURN);
   /**
@@ -632,6 +652,7 @@ export class ToolRuntime {
     }
 
     const hasHostedPending = this.userQuestions.entries().some(([, question]) => question.hosted);
+    const hasHostedFormPending = this.userForms.entries().some(([, form]) => form.hosted);
     if (hasHostedBoundaryPending) {
       this.sandboxBoundaryClosureDeferred = true;
       this.finishDeferredSandboxBoundaryTurnClosure();
@@ -651,6 +672,16 @@ export class ToolRuntime {
           new Error(`Turn ${turnId} ${reason} before user question ${requestId} was answered`),
       );
       this.questionClosureDeferred = false;
+    }
+    if (hasHostedFormPending) {
+      this.formClosureDeferred = true;
+      this.finishDeferredFormTurnClosure();
+    } else {
+      this.userForms.close(
+        (requestId) =>
+          new Error(`Turn ${turnId} ${reason} before user form ${requestId} was answered`),
+      );
+      this.formClosureDeferred = false;
     }
     this.resetTurnState();
     // The stop path settles the run's terminal fact right after the
@@ -684,6 +715,22 @@ export class ToolRuntime {
       );
     }
     return this.settleUserQuestionAnswer(turnId, response, pending);
+  }
+
+  respondToUserForm(response: InteractionFormResponse): boolean {
+    if (!response || typeof response.requestId !== 'string') {
+      throw new Error('Invalid user form response');
+    }
+    const pending = this.userForms
+      .entries()
+      .find(([requestId]) => requestId === response.requestId)?.[1];
+    if (!pending) return false;
+    if (pending.hosted) {
+      throw new RuntimeInteractionInvariantError(
+        `Hosted form ${response.requestId} must settle through its captured continuation`,
+      );
+    }
+    return this.settleUserFormAnswer(response, pending);
   }
 
   async respondToSandboxBoundaryResponse(response: {
@@ -736,6 +783,22 @@ export class ToolRuntime {
     return resolved;
   }
 
+  private settleUserFormAnswer(
+    response: InteractionFormResponse,
+    pending: { toolUseId: string; request: InteractionFormRequest; hosted: boolean },
+  ): boolean {
+    const answer =
+      response.action === 'accept'
+        ? { kind: 'form' as const, action: 'accept' as const, values: response.values }
+        : { kind: 'form' as const, action: response.action };
+    if (!isInteractionAnswerValidForRequest(pending.request, answer)) {
+      throw new Error('Invalid user form response');
+    }
+    const resolved = this.userForms.resolve(response.requestId, response) !== null;
+    this.finishDeferredFormTurnClosure();
+    return resolved;
+  }
+
   closeUserQuestion(
     turnId: string,
     requestId: string,
@@ -748,8 +811,20 @@ export class ToolRuntime {
     return closed;
   }
 
+  closeUserForm(requestId: string, reason: RuntimeInteractionClosureReason): boolean {
+    const closed =
+      this.userForms.reject(requestId, new RuntimeInteractionClosedError(requestId, reason)) !==
+      null;
+    this.finishDeferredFormTurnClosure();
+    return closed;
+  }
+
   pendingUserQuestionCount(): number {
     return this.userQuestions.pendingCount();
+  }
+
+  pendingUserFormCount(): number {
+    return this.userForms.pendingCount();
   }
 
   /**
@@ -1650,6 +1725,15 @@ export class ToolRuntime {
           }),
           askUserQuestion: (questions) =>
             this.askUserQuestion(turnId, toolUseId, questions, ctx.abortSignal, queue),
+          requestUserForm: (form, options) =>
+            this.requestUserForm(
+              turnId,
+              toolUseId,
+              form,
+              ctx.abortSignal,
+              queue,
+              options?.cancellationSignal,
+            ),
           requestSandboxBoundary: (expansion, justification) =>
             this.requestSandboxBoundary(
               turnId,
@@ -2554,6 +2638,127 @@ export class ToolRuntime {
     };
   }
 
+  private async requestUserForm(
+    turnId: string,
+    toolUseId: string,
+    form: InteractionFormInput,
+    abortSignal: AbortSignal,
+    queue: DurableSessionEventSink,
+    producerCancellationSignal?: AbortSignal,
+  ): Promise<InteractionFormResult> {
+    const interactionSignal = composeChildAbortSignal(abortSignal, producerCancellationSignal);
+    throwIfAborted(interactionSignal);
+    const hostedRun = this.interactionRun();
+    const requestId = this.input.newId();
+    const request = projectInteractionFormRequest({ toolUseId, ...form });
+    const parked = this.userForms.park(requestId, {
+      toolUseId,
+      request,
+      hosted: hostedRun !== undefined,
+    });
+    const onAbort = (): void => {
+      if (hostedRun) return;
+      this.userForms.reject(requestId, abortErrorFromSignal(abortSignal));
+      this.finishDeferredFormTurnClosure();
+    };
+    let hostedAdmission: Promise<void> | undefined;
+    let producerWithdrawal: Promise<void> | undefined;
+    const onProducerCancellation = (): void => {
+      if (abortSignal.aborted) return;
+      if (hostedRun) {
+        producerWithdrawal ??= Promise.resolve().then(async () => {
+          try {
+            await hostedAdmission;
+          } catch {
+            return;
+          }
+          await hostedRun.withdrawFormRequest(requestId);
+        });
+      } else if (producerCancellationSignal) {
+        this.userForms.reject(requestId, abortErrorFromSignal(producerCancellationSignal));
+        this.finishDeferredFormTurnClosure();
+      }
+    };
+    abortSignal.addEventListener('abort', onAbort, { once: true });
+    producerCancellationSignal?.addEventListener('abort', onProducerCancellation, { once: true });
+    if (hostedRun) void parked.catch(() => undefined);
+    try {
+      const requestEvent: FormRequestEvent = {
+        type: 'form_request',
+        id: this.input.newId(),
+        turnId,
+        ts: this.input.now(),
+        requestId,
+        toolUseId,
+        message: request.message,
+        requester: request.requester,
+        fields: request.fields,
+      };
+      if (hostedRun) {
+        const settlement = this.createFormSettlement(turnId, requestId);
+        const admission = Promise.resolve().then(() =>
+          hostedRun.admitFormRequest({ request: requestEvent, settlement }),
+        );
+        hostedAdmission = admission;
+        try {
+          await racePromiseWithAbort(admission, interactionSignal);
+        } catch (error) {
+          if (interactionSignal.aborted) {
+            void admission.catch((admissionError) => {
+              this.userForms.reject(
+                requestId,
+                admissionError instanceof Error
+                  ? admissionError
+                  : new RuntimeInteractionFailStopError(
+                      `Could not confirm admission for form ${requestId}`,
+                      admissionError,
+                    ),
+              );
+              this.finishDeferredFormTurnClosure();
+            });
+            throw abortErrorFromSignal(interactionSignal);
+          }
+          this.userForms.reject(
+            requestId,
+            error instanceof Error
+              ? error
+              : new RuntimeInteractionFailStopError(
+                  `Could not confirm admission for form ${requestId}`,
+                  error,
+                ),
+          );
+          this.finishDeferredFormTurnClosure();
+          await parked.catch(() => undefined);
+          throw interactionAuthorityError(
+            `Could not confirm admission for form ${requestId}`,
+            error,
+          );
+        }
+      }
+      throwIfAborted(interactionSignal);
+      queue.push(requestEvent);
+      const response = await racePromiseWithAbort(parked, interactionSignal);
+      throwIfAborted(interactionSignal);
+      const answerAck: FormAnswerAckEvent = {
+        type: 'form_answer_ack',
+        id: this.input.newId(),
+        turnId,
+        ts: this.input.now(),
+        requestId,
+        toolUseId,
+      };
+      if (hostedRun) await this.publishHostedSettlementAck(queue, answerAck);
+      else queue.push(answerAck);
+      return response.action === 'accept'
+        ? { action: 'accept', values: response.values }
+        : { action: response.action };
+    } finally {
+      abortSignal.removeEventListener('abort', onAbort);
+      producerCancellationSignal?.removeEventListener('abort', onProducerCancellation);
+      if (producerWithdrawal) await producerWithdrawal;
+    }
+  }
+
   private async askUserQuestion(
     turnId: string,
     toolUseId: string,
@@ -2929,6 +3134,18 @@ export class ToolRuntime {
     );
   }
 
+  private finishDeferredFormTurnClosure(): void {
+    const turnId = this.turnId;
+    if (!this.formClosureDeferred || this.userForms.pendingCount() !== 0) return;
+    this.formClosureDeferred = false;
+    this.userForms.close(
+      (requestId) =>
+        new RuntimeInteractionInvariantError(
+          `Hosted form ${requestId} escaped exact Run closure for turn ${turnId}`,
+        ),
+    );
+  }
+
   private finishDeferredSandboxBoundaryTurnClosure(): void {
     const turnId = this.turnId;
     if (!this.sandboxBoundaryClosureDeferred || this.sandboxBoundaryRequests.pendingCount() !== 0) {
@@ -3011,6 +3228,37 @@ export class ToolRuntime {
         if (!this.closeUserQuestion(turnId, requestId, reason)) {
           throw new RuntimeInteractionInvariantError(
             `Question closure did not take ${requestId} from turn ${turnId}`,
+          );
+        }
+      },
+    });
+  }
+
+  private createFormSettlement(turnId: string, requestId: string): HostedFormSettlement {
+    return Object.freeze({
+      applyAnswer: async (answer: InteractionFormResult): Promise<void> => {
+        if (Object.hasOwn(answer, 'requestId')) {
+          throw new RuntimeInteractionInvariantError(
+            `Form settlement ${requestId} received a routed answer`,
+          );
+        }
+        const pending = this.userForms
+          .entries()
+          .find(([candidateId]) => candidateId === requestId)?.[1];
+        const response: InteractionFormResponse =
+          answer.action === 'accept'
+            ? { requestId, action: 'accept', values: answer.values }
+            : { requestId, action: answer.action };
+        if (!pending || !this.settleUserFormAnswer(response, pending)) {
+          throw new RuntimeInteractionInvariantError(
+            `Form settlement did not take ${requestId} from turn ${turnId}`,
+          );
+        }
+      },
+      applyClosure: async (reason: RuntimeUserQuestionClosureReason): Promise<void> => {
+        if (!this.closeUserForm(requestId, reason)) {
+          throw new RuntimeInteractionInvariantError(
+            `Form closure did not take ${requestId} from turn ${turnId}`,
           );
         }
       },

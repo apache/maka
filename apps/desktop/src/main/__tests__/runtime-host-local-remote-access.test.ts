@@ -35,6 +35,13 @@ const RECOVERY_DEPLOYMENT_ID = '33333333-3333-4333-8333-333333333333';
 import { createDesktopLocalRuntimeHostRemoteAccess } from '../runtime-host-local-remote-access.js';
 import type { createDesktopRuntimeHostLocalOperator } from '../runtime-host-local-operator.js';
 
+const testOperator = (modulePath: string) => ({
+  kind: 'node' as const,
+  platform: 'posix' as const,
+  nodePath: '/usr/bin/node',
+  modulePath,
+});
+
 test('enabling remote access hands the same root to one managed service before Desktop resumes', async (t) => {
   const base = await mkdtemp(join(tmpdir(), 'maka-local-remote-access-'));
   t.after(() => rm(base, { recursive: true, force: true }));
@@ -92,7 +99,7 @@ test('enabling remote access hands the same root to one managed service before D
       });
       return {
         serviceId: 'a'.repeat(64),
-        operatorPath: join(base, 'operator'),
+        operator: testOperator(join(base, 'operator.mjs')),
         rootPath,
         rootId: 'a'.repeat(64),
         deploymentId,
@@ -397,12 +404,13 @@ test('replaces a conflicting supervised Host with the requested active-work poli
     resolveManagedDeploymentAuthority: async () => ({
       kind: 'active',
       lifecycleMode: 'supervised',
+      deploymentRoot: join(base, 'deployment'),
       target: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         serviceId: rootId,
         rootPath,
         rootId,
-        operatorPath: join(base, 'operator'),
+        operator: testOperator(join(base, 'operator.mjs')),
         deploymentId: RECOVERY_DEPLOYMENT_ID,
       },
     }),
@@ -506,122 +514,125 @@ test('does not persist recoverable setup authority before Desktop ownership comm
   assert.equal(setupCalls, 0);
 });
 
-test('adopts committed managed authority for every pending receipt without replaying setup', async (t) => {
+test('adopts a released handoff through its existing legacy operator', async (t) => {
   const base = await mkdtemp(join(tmpdir(), 'maka-local-remote-access-prestart-'));
-  t.after(() => rm(base, { recursive: true, force: true }));
-  for (const state of ['handoff', 'setupPending'] as const) {
-    const clientDataRoot = join(base, state);
-    const rootPath = join(clientDataRoot, 'workspaces', 'default');
-    const rootId = 'a'.repeat(64);
-    const deploymentId = '22222222-2222-4222-8222-222222222222';
-    const operatorPath = join(base, 'installed', 'operator');
-    await mkdir(rootPath, { recursive: true });
-    await writeFile(
-      join(clientDataRoot, 'runtime-host-local-service.json'),
-      `${JSON.stringify({
-        schemaVersion: 1,
-        state,
-        rootPath,
-        rootId,
-        coordinationRelays: [],
-        allowInterruptActiveTasks: true,
-      })}\n`,
-    );
-    const service = createDesktopLocalRuntimeHostRemoteAccess({
-      ipcMain: { handle() {}, removeHandler() {} },
-      clientDataRoot,
-      rootPath,
-      rootId,
-      directPeerAvailable: false,
-      manager: () => assert.fail('pre-start reconciliation must not require the Local manager'),
-      resolveManagedDeploymentAuthority: async () => ({
-        kind: 'active',
-        lifecycleMode: 'supervised',
-        target: {
-          schemaVersion: 1,
-          serviceId: rootId,
-          operatorPath,
-          rootPath,
-          rootId,
-          deploymentId,
-        },
-      }),
-      resolveSetupPackage: async () =>
-        assert.fail('committed authority must not resolve a package'),
-      operator: {
-        async runSetup() {
-          assert.fail('committed authority must not replay setup');
-        },
-        async close() {},
-      } as unknown as ReturnType<typeof createDesktopRuntimeHostLocalOperator>,
-    });
-    t.after(() => service.close());
-
-    assert.equal(await service.recoverBeforeLocalHostStart(), true);
-    assert.deepEqual(
-      JSON.parse(await readFile(join(clientDataRoot, 'runtime-host-local-service.json'), 'utf8')),
-      {
-        schemaVersion: 1,
-        state: 'managed',
-        serviceId: rootId,
-        operatorPath,
-        rootPath,
-        rootId,
-        deploymentId,
-      },
-    );
-  }
-});
-
-test('discards a legacy handoff that belongs to an externally managed Host', async (t) => {
-  const base = await mkdtemp(join(tmpdir(), 'maka-local-remote-access-legacy-external-'));
   t.after(() => rm(base, { recursive: true, force: true }));
   const clientDataRoot = join(base, 'client');
   const rootPath = join(clientDataRoot, 'workspaces', 'default');
   const rootId = 'a'.repeat(64);
-  const lifecyclePath = join(clientDataRoot, 'runtime-host-local-service.json');
+  const deploymentId = '22222222-2222-4222-8222-222222222222';
+  const deploymentRoot = join(base, 'installed');
   await mkdir(rootPath, { recursive: true });
   await writeFile(
-    lifecyclePath,
+    join(clientDataRoot, 'runtime-host-local-service.json'),
     `${JSON.stringify({
       schemaVersion: 1,
       state: 'handoff',
       rootPath,
       rootId,
       coordinationRelays: [],
-      allowInterruptActiveTasks: false,
+      allowInterruptActiveTasks: true,
     })}\n`,
   );
-  let setupCalls = 0;
   const service = createDesktopLocalRuntimeHostRemoteAccess({
     ipcMain: { handle() {}, removeHandler() {} },
     clientDataRoot,
     rootPath,
     rootId,
-    directPeerAvailable: true,
-    manager: () =>
-      ({
-        async retireOwnedLocalHost() {
-          return { kind: 'not_owned' as const };
-        },
-      }) as unknown as RuntimeHostDesktopManager,
-    resolveManagedDeploymentAuthority: async () => undefined,
-    resolveSetupPackage: async () => ({ kind: 'npm', specifier: 'maka-agent@0.2.0' }),
+    directPeerAvailable: false,
+    manager: () => assert.fail('pre-start reconciliation must not require the Local manager'),
+    resolveManagedDeploymentAuthority: async () => ({
+      kind: 'active',
+      lifecycleMode: 'supervised',
+      deploymentRoot,
+      target: {
+        schemaVersion: 2,
+        serviceId: rootId,
+        operator: testOperator(join(deploymentRoot, 'operator.mjs')),
+        rootPath,
+        rootId,
+        deploymentId,
+      },
+    }),
+    resolveSetupPackage: async () =>
+      assert.fail('committed authority must not resolve a package'),
     operator: {
       async runSetup() {
-        setupCalls += 1;
-        throw new Error('setup must not replace an externally managed Host');
+        assert.fail('committed authority must not replay setup');
       },
       async close() {},
     } as unknown as ReturnType<typeof createDesktopRuntimeHostLocalOperator>,
   });
   t.after(() => service.close());
 
-  assert.equal(await service.recoverBeforeLocalHostStart(), false);
-  await service.recover();
+  assert.equal(await service.recoverBeforeLocalHostStart(), true);
+  assert.deepEqual(
+    JSON.parse(await readFile(join(clientDataRoot, 'runtime-host-local-service.json'), 'utf8')),
+    {
+      schemaVersion: 2,
+      state: 'managed',
+      serviceId: rootId,
+      operator: {
+        kind: 'legacy_posix_executable',
+        executablePath: join(deploymentRoot, 'operator'),
+      },
+      rootPath,
+      rootId,
+      deploymentId,
+    },
+  );
+});
 
-  assert.equal(setupCalls, 0);
-  await assert.rejects(readFile(lifecyclePath, 'utf8'), { code: 'ENOENT' });
+test('migrates a released managed receipt before exposing it to lifecycle operations', async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-local-managed-migration-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const clientDataRoot = join(base, 'client');
+  const rootPath = join(clientDataRoot, 'workspaces', 'default');
+  const rootId = 'a'.repeat(64);
+  const operatorPath = join(base, 'installed', 'operator');
+  const lifecyclePath = join(clientDataRoot, 'runtime-host-local-service.json');
+  await mkdir(rootPath, { recursive: true });
+  await writeFile(
+    lifecyclePath,
+    `${JSON.stringify({
+      schemaVersion: 1,
+      state: 'managed',
+      serviceId: rootId,
+      operatorPath,
+      rootPath,
+      rootId,
+      deploymentId: RECOVERY_DEPLOYMENT_ID,
+    })}\n`,
+  );
+  const service = createDesktopLocalRuntimeHostRemoteAccess({
+    ipcMain: { handle() {}, removeHandler() {} },
+    clientDataRoot,
+    rootPath,
+    rootId,
+    directPeerAvailable: true,
+    manager: () => undefined,
+    resolveSetupPackage: async () => ({ kind: 'npm', specifier: 'maka-agent@0.2.0' }),
+    operator: {
+      async close() {},
+    } as unknown as ReturnType<typeof createDesktopRuntimeHostLocalOperator>,
+  });
+  t.after(() => service.close());
+
+  const target = await service.inspectManaged(async (managed) => managed);
+  const expected = {
+    schemaVersion: 2,
+    state: 'managed',
+    serviceId: rootId,
+    operator: {
+      kind: 'legacy_posix_executable',
+      executablePath: operatorPath,
+    },
+    rootPath,
+    rootId,
+    deploymentId: RECOVERY_DEPLOYMENT_ID,
+  };
+  assert.deepEqual(target, expected);
+  assert.deepEqual(JSON.parse(await readFile(lifecyclePath, 'utf8')), expected);
 });
 
 test('interrupted Local Host setup converges to its exact managed service', async (t) => {
@@ -634,7 +645,7 @@ test('interrupted Local Host setup converges to its exact managed service', asyn
   await writeFile(
     join(clientDataRoot, 'runtime-host-local-service.json'),
     `${JSON.stringify({
-      schemaVersion: 1,
+      schemaVersion: 2,
       state: 'setupPending',
       rootPath,
       rootId,
@@ -668,7 +679,7 @@ test('interrupted Local Host setup converges to its exact managed service', asyn
         setupCalls += 1;
         return {
           serviceId: rootId,
-          operatorPath: join(base, 'operator'),
+          operator: testOperator(join(base, 'operator.mjs')),
           rootPath,
           rootId,
           deploymentId: '22222222-2222-4222-8222-222222222222',
@@ -708,10 +719,10 @@ test('startup replays the persisted peer intent instead of gating recovery on st
   await writeFile(
     join(clientDataRoot, 'runtime-host-local-service.json'),
     `${JSON.stringify({
-      schemaVersion: 1,
+      schemaVersion: 2,
       state: 'peerChanging',
       serviceId: 'b'.repeat(64),
-      operatorPath: join(clientDataRoot, 'operator'),
+      operator: testOperator(join(clientDataRoot, 'operator.mjs')),
       rootPath,
       rootId,
       deploymentId: RECOVERY_DEPLOYMENT_ID,
@@ -835,10 +846,10 @@ test('pre-start recovery cleans a committed uninstall before an ephemeral Host c
   await writeFile(
     join(clientDataRoot, 'runtime-host-local-service.json'),
     `${JSON.stringify({
-      schemaVersion: 1,
+      schemaVersion: 2,
       state: 'uninstalling',
       serviceId: 'b'.repeat(64),
-      operatorPath: join(base, 'operator'),
+      operator: testOperator(join(base, 'operator.mjs')),
       rootPath,
       rootId,
       deploymentId: RECOVERY_DEPLOYMENT_ID,
@@ -897,10 +908,10 @@ test('pre-start recovery settles a canonical uninstall transition through its ex
   await writeFile(
     join(clientDataRoot, 'runtime-host-local-service.json'),
     `${JSON.stringify({
-      schemaVersion: 1,
+      schemaVersion: 2,
       state: 'uninstalling',
       serviceId: 'b'.repeat(64),
-      operatorPath: join(base, 'operator'),
+      operator: testOperator(join(base, 'operator.mjs')),
       rootPath,
       rootId,
       deploymentId: RECOVERY_DEPLOYMENT_ID,
@@ -955,10 +966,10 @@ async function writeManagedLifecycle(
   await writeFile(
     join(clientDataRoot, 'runtime-host-local-service.json'),
     `${JSON.stringify({
-      schemaVersion: 1,
+      schemaVersion: 2,
       state: 'managed',
       serviceId: 'b'.repeat(64),
-      operatorPath: join(clientDataRoot, 'operator'),
+      operator: testOperator(join(clientDataRoot, 'operator.mjs')),
       rootPath,
       rootId,
       deploymentId: RECOVERY_DEPLOYMENT_ID,

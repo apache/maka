@@ -22,7 +22,9 @@ import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { MCP_CONFIG_VERSION } from '@maka/core/mcp';
 import { McpClientManager } from '@maka/mcp';
-import { buildMcpTools } from '@maka/runtime/mcp-tools';
+import { buildMcpToolsWithIdentities } from '@maka/runtime/mcp-tools';
+import { decodeClientCapabilityReplaceInput } from '@maka/runtime-host/protocol';
+import { createDesktopNativeCapabilityProvider } from '../runtime-host-native-capabilities.js';
 
 const fixturePath = fileURLToPath(new URL('../../../../../packages/mcp/dist/__fixtures__/stdio-server.js', import.meta.url));
 
@@ -34,14 +36,116 @@ test('MCP tools stay bound to the connection generation that advertised them', a
     await manager.sync({
       version: MCP_CONFIG_VERSION,
       mcpServers: {
-        fixture: { command: process.execPath, args: [fixturePath] },
+        fixture: {
+          command: process.execPath,
+          args: [fixturePath, '--schema-annotations'],
+        },
       },
     });
-    const tools = buildMcpTools(manager);
-    const echo = tools.find((tool) => tool.name === 'mcp__fixture__echo');
+    const identified = buildMcpToolsWithIdentities(manager);
+    assert.deepEqual(
+      identified.map(({ tool }) => tool.name),
+      ['mcp__fixture__annotated', 'mcp__fixture__echo'],
+    );
+    const echo = identified.find(({ tool }) => tool.name === 'mcp__fixture__echo');
     assert.ok(echo);
-    assert.equal(echo.categoryHint, 'network_send');
-    const result = await echo.impl({ value: 'runtime-e2e' }, {
+    assert.equal(echo.tool.categoryHint, 'network_send');
+
+    const provider = createDesktopNativeCapabilityProvider({
+      browserTools: [],
+      resolveBrowserUrl: () => 'https://example.com/',
+      releaseBrowserSession() {},
+      computerUseTools: [] as never,
+      releaseComputerUseSession() {},
+      additionalGroups: () => [
+        {
+          offerId: 'desktop_mcp_fixture',
+          label: 'MCP: fixture',
+          description: 'MCP tools connected by this Desktop client.',
+          tools: identified.map(({ tool, serverId, toolName }) => ({ tool, serverId, toolName })),
+          dynamic: true,
+        },
+      ],
+    });
+    assert.doesNotThrow(() =>
+      decodeClientCapabilityReplaceInput({
+        registrationId: 'registration-1',
+        offers: provider.offers(),
+      }),
+    );
+    // The published descriptor carries the real MCP identity: the Host
+    // re-proxies it to the same mcp__fixture__echo model-facing name.
+    assert.deepEqual(provider.offers()[0]?.tools[0] && {
+      serverId: provider.offers()[0]?.tools[0]?.serverId,
+      name: provider.offers()[0]?.tools[0]?.name,
+      inputSchema: provider.offers()[0]?.tools[0]?.inputSchema,
+    }, {
+      serverId: 'fixture',
+      name: 'echo',
+      inputSchema: {
+        type: 'object',
+        properties: { value: { type: 'string' } },
+      },
+    });
+    if (!provider.call) throw new Error('Expected a callable Desktop capability provider');
+    assert.throws(
+      () => provider.call!(
+        {
+          kind: 'client.capability.call',
+          invocationId: 'incompatible-invocation',
+          registrationId: 'registration-1',
+          offerId: 'desktop_mcp_fixture',
+          serverId: 'fixture',
+          toolName: 'annotated',
+          arguments: {},
+          sessionId: 'session',
+          turnId: 'turn',
+          toolCallId: 'incompatible-capability-call',
+          cwd: process.cwd(),
+        },
+        {
+          signal: new AbortController().signal,
+          accept: async () => undefined,
+          requestInteraction: async () => assert.fail('Unexpected provider interaction'),
+        },
+      ),
+      /not offered/u,
+    );
+    let admissionEvidence: unknown;
+    assert.deepEqual(
+      await provider.call(
+        {
+          kind: 'client.capability.call',
+          invocationId: 'invocation-1',
+          registrationId: 'registration-1',
+          offerId: 'desktop_mcp_fixture',
+          serverId: 'fixture',
+          toolName: 'echo',
+          arguments: { value: 'desktop-capability' },
+          sessionId: 'session',
+          turnId: 'turn',
+          toolCallId: 'capability-call',
+          cwd: process.cwd(),
+        },
+        {
+          signal: new AbortController().signal,
+          accept: async (evidence) => {
+            admissionEvidence = evidence;
+          },
+          requestInteraction: async () => assert.fail('Unexpected provider interaction'),
+        },
+      ),
+      {
+        content: [
+          { type: 'text', text: 'desktop-capability' },
+          { type: 'text', text: '{"structuredContent":{"echoed":"desktop-capability"}}' },
+        ],
+      },
+    );
+    // The Host managed admission policy for desktop_mcp requires this contract.
+    assert.deepEqual(admissionEvidence, { kind: 'none' });
+
+    const result = await echo.tool.impl({ value: 'runtime-e2e' }, {
       sessionId: 'session', turnId: 'turn', cwd: process.cwd(), toolCallId: 'call',
       abortSignal: new AbortController().signal, emitOutput() {},
     });
@@ -55,7 +159,7 @@ test('MCP tools stay bound to the connection generation that advertised them', a
     assert.ok(manager.toolSnapshot().revision > firstRevision);
     await assert.rejects(
       async () =>
-        echo.impl(
+        echo.tool.impl(
           { value: 'stale-generation' },
           {
             sessionId: 'session',
@@ -69,12 +173,12 @@ test('MCP tools stay bound to the connection generation that advertised them', a
       /tool binding is stale/u,
     );
 
-    const replacement = buildMcpTools(manager).find(
-      (tool) => tool.name === 'mcp__fixture__echo',
+    const replacement = buildMcpToolsWithIdentities(manager).find(
+      ({ tool }) => tool.name === 'mcp__fixture__echo',
     );
     assert.ok(replacement);
     assert.deepEqual(
-      await replacement.impl(
+      await replacement.tool.impl(
         { value: 'replacement-generation' },
         {
           sessionId: 'session',
