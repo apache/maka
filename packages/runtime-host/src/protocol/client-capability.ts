@@ -17,7 +17,6 @@
  * under the License.
  */
 
-import { createHash } from 'node:crypto';
 import { TOOL_ACTIVITY_KINDS, type ToolActivityKind } from '@maka/core/events';
 import {
   decodeInteractionAnswer,
@@ -85,18 +84,6 @@ export const CLIENT_CAPABILITY_MAX_OFFERS = 32;
 export const CLIENT_CAPABILITY_MAX_SERVICES = 32;
 export const CLIENT_CAPABILITY_MAX_TOOLS_PER_OFFER = 64;
 
-/**
- * Normalize an arbitrary Client Capability identity (an MCP server id or tool
- * name from user configuration) into a wire-safe entity id: identities that
- * already fit pass through unchanged, anything else becomes a readable label
- * plus a collision-proof digest of the original value.
- */
-export function clientCapabilityEntityId(value: string, maxLength = 128): string {
-  if (/^[A-Za-z0-9_-]+$/u.test(value) && value.length <= maxLength) return value;
-  const label = value.replace(/[^A-Za-z0-9_-]+/gu, '_').slice(0, maxLength - 25) || 'mcp';
-  const digest = createHash('sha256').update(value).digest('hex').slice(0, 24);
-  return `${label}_${digest}`;
-}
 export const CLIENT_CAPABILITY_MAX_TOOLS = 256;
 export const CLIENT_CAPABILITY_MAX_MANIFEST_BYTES = 56 * 1024;
 export const CLIENT_CAPABILITY_MAX_RESULT_BYTES = 24 * 1024 * 1024;

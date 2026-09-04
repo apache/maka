@@ -79,3 +79,28 @@ test('renderer loads a newly exported workspace module after its manifest change
   }
   throw failure;
 });
+
+test('renderer-facing Runtime Host protocol does not load Node crypto', async (t) => {
+  const repoRoot = await realpath(new URL('../../..', import.meta.url));
+  const root = join(repoRoot, 'apps/desktop/src/renderer');
+  const server = await createServer({
+    configFile: false,
+    root,
+    logLevel: 'silent',
+    server: { host: '127.0.0.1', port: 0 },
+    optimizeDeps: { noDiscovery: true, include: [] },
+    plugins: [workspacePackagesPlugin(repoRoot)],
+  });
+  t.after(() => server.close());
+  await server.listen();
+
+  const protocolModule = join(
+    repoRoot,
+    'packages/runtime-host/dist/protocol/client-capability.js',
+  );
+  const response = await fetch(`${server.resolvedUrls.local[0]}@fs/${protocolModule}`);
+  const transformed = await response.text();
+
+  assert.equal(response.status, 200, transformed);
+  assert.doesNotMatch(transformed, /vite-browser-external:node:crypto/u);
+});

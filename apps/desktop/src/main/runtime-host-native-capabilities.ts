@@ -30,7 +30,6 @@ import {
   CLIENT_CAPABILITY_MAX_OFFERS,
   CLIENT_CAPABILITY_MAX_TOOLS,
   CLIENT_CAPABILITY_MAX_TOOLS_PER_OFFER,
-  clientCapabilityEntityId,
   decodeClientCapabilityReplaceInput,
   decodeClientCapabilityToolDescriptor,
   type ClientCapabilityCallFrame,
@@ -42,6 +41,7 @@ import {
   type ClientCapabilityServiceOffer,
   type ClientCapabilityToolDescriptor,
 } from "@maka/runtime-host/protocol";
+import { clientCapabilityEntityId } from "@maka/runtime-host/client-capability-entity-id";
 import { toJSONSchema, z } from "zod";
 import { withBrowserOriginAdmission } from './browser/browser-origin-admission.js';
 import type { DesktopTargetScope } from '../shared/runtime-host-identity.js';
