@@ -56,6 +56,7 @@ const RELEASE_CONTRACT_FILES = new Set([
   '.github/workflows/release-linux-check.yml',
   '.github/workflows/release-windows-check.yml',
   '.github/workflows/windows-recovery.yml',
+  'scripts/audit-shipped-dependencies.test.mjs',
   'scripts/package-macos.mjs',
   'scripts/package-macos-autoupdate-next.mjs',
   'scripts/package-macos-arm64-cli.mjs',
