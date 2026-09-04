@@ -19,7 +19,6 @@
 
 import type { StatusSemantic } from '@maka/ui';
 import type { BotProvider, BotReadinessState } from '@maka/core/bot-chat-settings';
-import type { BotOnboardingRetryFailureCategory } from '@maka/core/bot-onboarding';
 
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
@@ -103,7 +102,7 @@ const zhCopy = {
     connectedRefreshFailed: (message: string) => `连接已完成，但状态刷新失败：${message}`, close: (title: string) => `关闭${title}`,
     generatingAria: '正在生成二维码', privacy: '凭据仅保存在本机，不会传给 renderer 或 Maka 云端。', openBrowser: '无法扫码？在浏览器中打开',
     done: '完成', regenerate: '重新生成', refreshQr: '刷新二维码', cancel: '取消', generating: '正在生成安全二维码…', connecting: '授权完成，正在保存凭据并启动连接…',
-    connected: (name: string) => `${name} 已连接`, connectedWarning: '凭据已保存，但连接尚未成功启动。', retrying: (category: BotOnboardingRetryFailureCategory, count: number, seconds: number) => `${retryCategoryZh(category)}；连续失败 ${count} 次，约 ${seconds} 秒后自动重试。`, expired: '二维码已过期，请重新生成', denied: '授权已取消，请重新生成二维码', cancelled: '扫码接入已取消', failed: '扫码接入失败，请重试', preparing: '准备扫码接入…',
+    connected: (name: string) => `${name} 已连接`, connectedWarning: '凭据已保存，但连接尚未成功启动。', retrying: (category: string, count: number, seconds: number) => `${retryCategoryZh(category)}；连续失败 ${count} 次，约 ${seconds} 秒后自动重试。`, expired: '二维码已过期，请重新生成', denied: '授权已取消，请重新生成二维码', cancelled: '扫码接入已取消', failed: '扫码接入失败，请重试', preparing: '准备扫码接入…',
   },
   wechat: {
     token: '微信 Bot Token', tokenPlaceholder: '本机 wechat-bridge Bearer Token', collapseAdvanced: '收起高级设置', expandAdvanced: '高级设置（公众号 / 本机 bridge 地址）',
@@ -240,20 +239,22 @@ export function getBotSettingsCopy(locale: UiLocale): BotSettingsCopy {
   return BOT_SETTINGS_COPY[locale];
 }
 
-function retryCategoryZh(category: BotOnboardingRetryFailureCategory): string {
+function retryCategoryZh(category: string): string {
   switch (category) {
     case 'timeout': return '请求超时';
     case 'network': return '网络暂时异常';
     case 'rate_limited': return '服务请求频率受限';
     case 'server': return '服务端暂时异常';
+    default: return '服务暂时异常';
   }
 }
 
-function retryCategoryEn(category: BotOnboardingRetryFailureCategory): string {
+function retryCategoryEn(category: string): string {
   switch (category) {
     case 'timeout': return 'The request timed out';
     case 'network': return 'The network is temporarily unavailable';
     case 'rate_limited': return 'The service is rate limiting requests';
     case 'server': return 'The service is temporarily unavailable';
+    default: return 'The service is temporarily unavailable';
   }
 }
