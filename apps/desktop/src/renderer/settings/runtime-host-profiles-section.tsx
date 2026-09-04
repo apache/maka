@@ -125,7 +125,10 @@ export function RuntimeHostProfilesSection(props: {
     readonly name: string;
   }>();
 
-  const [switching, setSwitching] = useState(false);
+  const [activeAction, setActiveAction] = useState<'other' | 'local-access-enable'>();
+  const switching = activeAction !== undefined;
+  const localAccessEnabling = activeAction === 'local-access-enable';
+  const setSwitching = (value: boolean) => setActiveAction(value ? 'other' : undefined);
   const [draft, setDraft] = useState(createRemoteHostDraft);
 
   const reload = useCallback(async () => {
@@ -262,7 +265,7 @@ export function RuntimeHostProfilesSection(props: {
   }
 
   async function enableLocalRemoteAccess(allowInterruptActiveTasks = false): Promise<void> {
-    setSwitching(true);
+    setActiveAction('local-access-enable');
     try {
       const result = await window.maka.localRuntimeHostRemoteAccess.enable({
         allowInterruptActiveTasks,
@@ -298,7 +301,9 @@ export function RuntimeHostProfilesSection(props: {
         );
       }
     } finally {
-      if (mountedRef.current) setSwitching(false);
+      if (mountedRef.current) {
+        setActiveAction(undefined);
+      }
     }
   }
 
@@ -399,7 +404,9 @@ export function RuntimeHostProfilesSection(props: {
         <SettingsRow
           label={copy.thisComputerRemoteAccess}
           description={
-            localAccess?.state === 'unsupported'
+            localAccessEnabling
+              ? copy.remoteAccessEnabling
+              : localAccess?.state === 'unsupported'
               ? localAccess.message
               : localAccess?.state === 'unavailable'
                 ? localAccess.message
@@ -450,6 +457,7 @@ export function RuntimeHostProfilesSection(props: {
                     variant="secondary"
                     size="sm"
                     label={copy.enableRemoteAccess}
+                    isLoading={localAccessEnabling}
                     isDisabled={
                       switching ||
                       !localAccess ||

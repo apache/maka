@@ -20,7 +20,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdtemp, rm, rmdir, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { delimiter, dirname, isAbsolute, join } from 'node:path';
 import { redactSecrets } from '@maka/core/redaction';
 import {
   DEFAULT_PROCESS_TERMINATION_GRACE_MS,
@@ -662,6 +662,45 @@ function resolveLocalSetupPackage(
   return { specifier: setupPackage.path, integrity: setupPackage.integrity };
 }
 
+async function resolveLocalNpmCommand(
+  command: DesktopRuntimeHostLocalSetupCommand,
+  environment: NodeJS.ProcessEnv,
+): Promise<DesktopRuntimeHostLocalSetupCommand> {
+  if (process.platform !== 'win32' || command.executable !== 'npm') return command;
+
+  const configuredNode = environment.npm_node_execpath;
+  const configuredCli = environment.npm_execpath;
+  const candidates: Array<readonly [string, string]> = [];
+  if (configuredNode && configuredCli) candidates.push([configuredNode, configuredCli]);
+
+  const path = Object.entries(environment).find(([key]) => key.toUpperCase() === 'PATH')?.[1];
+  for (const entry of path?.split(delimiter) ?? []) {
+    const directory = entry.replace(/^"|"$/gu, '').trim();
+    if (!directory) continue;
+    candidates.push([
+      join(directory, 'node.exe'),
+      join(directory, 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+    ]);
+  }
+
+  for (const [nodePath, cliPath] of candidates) {
+    if (!isAbsolute(nodePath) || !isAbsolute(cliPath)) continue;
+    if ((await regularFile(nodePath)) && (await regularFile(cliPath))) {
+      return { executable: nodePath, args: [cliPath, ...command.args] };
+    }
+  }
+  throw new Error('Local Runtime Host management requires a complete Node.js and npm installation');
+}
+
+async function regularFile(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isFile();
+  } catch (error) {
+    if (isNodeError(error, 'ENOENT')) return false;
+    throw error;
+  }
+}
+
 function managedTargetArgs(target: DesktopRuntimeHostLocalServiceTarget): string[] {
   return [
     '--expected-service-id',
@@ -752,7 +791,7 @@ function runSetupProcess(input: {
   });
 }
 
-function runFramedProcess<Frame, Result>(input: {
+async function runFramedProcess<Frame, Result>(input: {
   readonly command: DesktopRuntimeHostLocalSetupCommand;
   readonly cwd?: string;
   readonly prefix: string;
@@ -772,8 +811,9 @@ function runFramedProcess<Frame, Result>(input: {
   readonly pendingMaxBytes?: number;
 }): Promise<Result> {
   input.signal?.throwIfAborted();
+  const command = await resolveLocalNpmCommand(input.command, input.environment);
   return new Promise((resolve, reject) => {
-    const child = input.spawnProcess(input.command.executable, [...input.command.args], {
+    const child = input.spawnProcess(command.executable, [...command.args], {
       ...(input.cwd ? { cwd: input.cwd } : {}),
       detached: process.platform !== 'win32',
       env: input.environment,
