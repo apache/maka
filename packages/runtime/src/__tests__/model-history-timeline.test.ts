@@ -112,6 +112,63 @@ test('model history does not pair an orphan result with a later reused call id',
   );
 });
 
+test('model history scopes reused tool call ids to their invocation', () => {
+  const callA = inInvocation(toolCall('call-a', 'shared-step'), 'a');
+  const callB = inInvocation(toolCall('call-b', 'shared-step'), 'b');
+  const resultB = inInvocation(toolResult('result-b', 'read-1', 'second'), 'b');
+
+  const plan = buildRuntimeEventModelReplayPlan([callA, callB, resultB]);
+
+  assert.deepEqual(
+    plan.diagnostics
+      .filter(({ code }) => code === 'unmatched_tool_call')
+      .map(({ eventId }) => eventId),
+    ['call-a'],
+  );
+  assert.deepEqual(
+    buildRuntimeEventReplayTimeline(plan.items).flatMap((entry) =>
+      entry.kind === 'assistant_step'
+        ? entry.calls.map(({ call, result }) => ({
+            call: call.eventId,
+            result: result?.eventId,
+          }))
+        : [],
+    ),
+    [{ call: 'call-b', result: 'result-b' }],
+  );
+});
+
+test('model history keeps reused step ids separate across invocations', () => {
+  const textA = inInvocation(assistantText('text-a', 'shared-step', 'First invocation text'), 'a');
+  const callB = inInvocation(toolCall('call-b', 'shared-step'), 'b');
+  const resultB = inInvocation(toolResult('result-b'), 'b');
+
+  const items = buildRuntimeEventModelReplayPlan([textA, callB, resultB]).items;
+
+  assert.deepEqual(
+    buildRuntimeEventReplayTimeline(items).map((entry) => {
+      if (entry.kind !== 'assistant_step') return entry.kind;
+      return {
+        text: entry.text?.eventId,
+        calls: entry.calls.map(({ call }) => call.eventId),
+      };
+    }),
+    [
+      { text: 'text-a', calls: [] },
+      { text: undefined, calls: ['call-b'] },
+    ],
+  );
+});
+
+function inInvocation(event: RuntimeEvent, suffix: string): RuntimeEvent {
+  return {
+    ...event,
+    invocationId: `invocation-${suffix}`,
+    runId: `run-${suffix}`,
+    turnId: `turn-${suffix}`,
+  };
+}
+
 function assistantText(id: string, stepId: string, text: string): RuntimeEvent {
   return event({
     id,

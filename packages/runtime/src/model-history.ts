@@ -315,6 +315,7 @@ export type RuntimeEventReplaySemanticKind = 'text' | 'thinking' | 'tool_call' |
 export type RuntimeEventModelReplayItem =
   | {
       kind: 'text';
+      invocationId: string;
       role: 'user' | 'assistant' | 'system';
       content: string;
       providerOptions?: NonNullable<ModelMessage['providerOptions']>;
@@ -334,6 +335,7 @@ export type RuntimeEventModelReplayItem =
     }
   | {
       kind: 'thinking';
+      invocationId: string;
       text: string;
       signature?: string;
       providerOptions?: NonNullable<ModelMessage['providerOptions']>;
@@ -344,6 +346,7 @@ export type RuntimeEventModelReplayItem =
     }
   | {
       kind: 'tool_call';
+      invocationId: string;
       toolCallId: string;
       toolName: string;
       input: unknown;
@@ -356,6 +359,7 @@ export type RuntimeEventModelReplayItem =
     }
   | {
       kind: 'tool_result';
+      invocationId: string;
       toolCallId: string;
       toolName: string;
       output: unknown;
@@ -388,6 +392,7 @@ export interface RuntimeEventReplayToolExchange {
 export type RuntimeEventReplayTimelineEntry =
   | {
       kind: 'assistant_step';
+      invocationId: string;
       stepId?: string;
       reasoning: RuntimeEventReplayThinkingItem[];
       text?: RuntimeEventReplayTextItem;
@@ -397,10 +402,10 @@ export type RuntimeEventReplayTimelineEntry =
   | { kind: 'thinking'; item: RuntimeEventReplayThinkingItem };
 
 /**
- * The single authority for model-history chronology. Results attach to their
- * calls, while assistant step parts join only the immediately adjacent segment
- * with the same step id. Reusing an id later never moves that work backward
- * across an intervening step.
+ * The single authority for model-history chronology. Results attach to calls
+ * by invocation + provider-local id, while assistant step parts join only the
+ * immediately adjacent segment with the same invocation + step id. Reusing an
+ * id later never moves that work across an execution boundary.
  */
 export function buildRuntimeEventReplayTimeline(
   items: readonly RuntimeEventModelReplayItem[],
@@ -411,19 +416,25 @@ export function buildRuntimeEventReplayTimeline(
   >();
   for (const [index, item] of items.entries()) {
     if (item.kind !== 'tool_result') continue;
-    const matches = results.get(item.toolCallId) ?? [];
+    const identity = replayToolIdentity(item.invocationId, item.toolCallId);
+    const matches = results.get(identity) ?? [];
     matches.push({ item, index });
-    results.set(item.toolCallId, matches);
+    results.set(identity, matches);
   }
 
   const timeline: RuntimeEventReplayTimelineEntry[] = [];
-  const adjacentStep = (stepId: string | undefined) => {
+  const adjacentStep = (invocationId: string, stepId: string | undefined) => {
     const last = timeline.at(-1);
-    return last?.kind === 'assistant_step' && last.stepId === stepId ? last : undefined;
+    return last?.kind === 'assistant_step' &&
+      last.invocationId === invocationId &&
+      last.stepId === stepId
+      ? last
+      : undefined;
   };
-  const appendStep = (stepId: string | undefined) => {
+  const appendStep = (invocationId: string, stepId: string | undefined) => {
     const entry: Extract<RuntimeEventReplayTimelineEntry, { kind: 'assistant_step' }> = {
       kind: 'assistant_step',
+      invocationId,
       ...(stepId !== undefined ? { stepId } : {}),
       reasoning: [],
       calls: [],
@@ -433,8 +444,8 @@ export function buildRuntimeEventReplayTimeline(
   };
 
   const resultIndexes = new WeakMap<RuntimeEventReplayToolExchange, number>();
-  const adjacentLegacyStepIsOpen = (currentIndex: number) => {
-    const step = adjacentStep(undefined);
+  const adjacentLegacyStepIsOpen = (invocationId: string, currentIndex: number) => {
+    const step = adjacentStep(invocationId, undefined);
     return step?.calls.some((exchange) => {
       const resultIndex = resultIndexes.get(exchange);
       return resultIndex === undefined || resultIndex > currentIndex;
@@ -447,9 +458,11 @@ export function buildRuntimeEventReplayTimeline(
     if (item.kind === 'tool_result') continue;
     if (item.kind === 'tool_call') {
       const step =
-        (item.stepId === undefined ? adjacentLegacyStepIsOpen(index) : adjacentStep(item.stepId)) ??
-        appendStep(item.stepId);
-      const matches = results.get(item.toolCallId);
+        (item.stepId === undefined
+          ? adjacentLegacyStepIsOpen(item.invocationId, index)
+          : adjacentStep(item.invocationId, item.stepId)) ??
+        appendStep(item.invocationId, item.stepId);
+      const matches = results.get(replayToolIdentity(item.invocationId, item.toolCallId));
       while (matches?.[0] && matches[0].index <= index) matches.shift();
       const matchedResult = matches?.shift();
       const exchange: RuntimeEventReplayToolExchange = {
@@ -463,20 +476,29 @@ export function buildRuntimeEventReplayTimeline(
     if (item.kind === 'thinking') {
       if (item.stepId === undefined) timeline.push({ kind: 'thinking', item });
       else {
-        const step = adjacentStep(item.stepId) ?? appendStep(item.stepId);
+        const step =
+          adjacentStep(item.invocationId, item.stepId) ??
+          appendStep(item.invocationId, item.stepId);
         step.reasoning.push(item);
       }
       continue;
     }
     if (item.role === 'assistant' && item.stepId !== undefined) {
-      const adjacent = adjacentStep(item.stepId);
-      const step = adjacent && adjacent.text === undefined ? adjacent : appendStep(item.stepId);
+      const adjacent = adjacentStep(item.invocationId, item.stepId);
+      const step =
+        adjacent && adjacent.text === undefined
+          ? adjacent
+          : appendStep(item.invocationId, item.stepId);
       step.text = item;
     } else {
       timeline.push({ kind: 'text', item });
     }
   }
   return timeline;
+}
+
+function replayToolIdentity(invocationId: string, toolCallId: string): string {
+  return JSON.stringify([invocationId, toolCallId]);
 }
 
 export interface RuntimeEventModelReplayPlan {
@@ -785,6 +807,7 @@ export function buildRuntimeEventModelReplayPlan(
         const assistantStepId = role === 'assistant' ? assistantReplayStepId(event) : undefined;
         items.push({
           kind: 'text',
+          invocationId: event.invocationId,
           role,
           // A steered user event replays in its canonical provider form (the
           // envelope); the raw text is a UI/transcript projection only.
@@ -836,6 +859,7 @@ export function buildRuntimeEventModelReplayPlan(
         const thinkingStepId = assistantReplayStepId(event);
         items.push({
           kind: 'thinking',
+          invocationId: event.invocationId,
           text: event.content.text,
           ...(event.content.signature ? { signature: event.content.signature } : {}),
           ...(event.content.providerOptions !== undefined
@@ -867,6 +891,7 @@ export function buildRuntimeEventModelReplayPlan(
         }
         const item: Extract<RuntimeEventModelReplayItem, { kind: 'tool_call' }> = {
           kind: 'tool_call',
+          invocationId: event.invocationId,
           toolCallId: event.content.id,
           toolName: event.content.name,
           input: event.content.args,
@@ -884,7 +909,7 @@ export function buildRuntimeEventModelReplayPlan(
           eventId: event.id,
           ts: event.ts,
         };
-        callsById.set(event.content.id, {
+        callsById.set(replayToolIdentity(event.invocationId, event.content.id), {
           name: event.content.name,
           eventId: event.id,
           item,
@@ -907,12 +932,13 @@ export function buildRuntimeEventModelReplayPlan(
           continue;
         }
         const effective = decodeEffectiveToolResultProjection(event.content, event.sessionId);
+        const identity = replayToolIdentity(event.invocationId, event.content.id);
         if (effective.kind === 'invalid_legacy') {
-          const call = callsById.get(event.content.id);
+          const call = callsById.get(identity);
           if (call) {
             const callIndex = items.indexOf(call.item);
             if (callIndex >= 0) items.splice(callIndex, 1);
-            callsById.delete(event.content.id);
+            callsById.delete(identity);
           }
           diagnostics.push(diagnostic(event, 'unsupported_content', effective.message));
           continue;
@@ -921,7 +947,7 @@ export function buildRuntimeEventModelReplayPlan(
           effective.kind === 'provider_native' || effective.kind === 'legacy_output'
             ? effective.output
             : effective.legacyOutput;
-        const call = callsById.get(event.content.id);
+        const call = callsById.get(identity);
         if (!call) {
           diagnostics.push(
             diagnostic(
@@ -950,6 +976,7 @@ export function buildRuntimeEventModelReplayPlan(
         }
         items.push({
           kind: 'tool_result',
+          invocationId: event.invocationId,
           toolCallId: event.content.id,
           toolName: event.content.name,
           output: normalizedResult,
@@ -965,7 +992,7 @@ export function buildRuntimeEventModelReplayPlan(
           eventId: event.id,
           ts: event.ts,
         });
-        callsById.delete(event.content.id);
+        callsById.delete(identity);
         break;
       }
       default:
@@ -986,14 +1013,17 @@ export function buildRuntimeEventModelReplayPlan(
   // replay: a tool_use with no tool_result is a provider 400. Drop it — the
   // deliberately non-blocking mirror of unmatched_tool_result — so consumers
   // that read `items` directly (materializer, compact summarizer) stay valid.
-  for (const [toolCallId, call] of callsById) {
+  for (const call of callsById.values()) {
     const index = items.indexOf(call.item);
     if (index >= 0) items.splice(index, 1);
     diagnostics.push({
       code: 'unmatched_tool_call',
       message: 'function_call has no matching function_response; dropped from model replay',
       eventId: call.eventId,
-      detail: { toolCallId },
+      detail: {
+        invocationId: call.item.invocationId,
+        toolCallId: call.item.toolCallId,
+      },
     });
   }
 

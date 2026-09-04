@@ -282,7 +282,10 @@ export function digestProviderReplayAdmission(input: {
       providerStateIdentity: input.targetProviderStateIdentity ?? null,
       modelId: input.targetModelId,
     },
-    items: input.items,
+    // The immutable boundary cursor already binds every segment's invocation.
+    // Keep projection-v2 digests stable while replay uses that identity
+    // internally to pair provider-local step and tool ids.
+    items: input.items.map(({ invocationId: _invocationId, ...item }) => item),
   });
   return `sha256:${createHash('sha256').update(json, 'utf8').digest('hex')}`;
 }
