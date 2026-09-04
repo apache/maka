@@ -52,12 +52,7 @@ import {
   type DeepResearchArtifactRole,
 } from '@maka/core/deep-research-run';
 import { sniffAttachmentMimeType } from '@maka/core/attachments';
-import { publishMarkerFile, readBoundedMarkerFile } from './marker-file.js';
-import {
-  ARTIFACT_PUBLICATION_STAGING_PATTERN,
-  ARTIFACT_PURGE_INTENT_FILE,
-  isArtifactPurgeRecoveryTempName,
-} from './artifact-storage-layout.js';
+import { ARTIFACT_PUBLICATION_STAGING_PATTERN } from './artifact-storage-layout.js';
 import {
   isSafeRelativeArtifactPath,
   validateCanonicalArtifactTargetName,
@@ -79,9 +74,6 @@ export { isSafeRelativeArtifactPath } from './artifact-metadata-codec.js';
 export const ARTIFACT_TEXT_PREVIEW_LIMIT_BYTES = 10 * 1024 * 1024;
 export const ARTIFACT_BINARY_PREVIEW_LIMIT_BYTES = 50 * 1024 * 1024;
 
-const PURGE_INTENT_SCHEMA_VERSION = 1 as const;
-
-const MAX_PURGE_INTENT_BYTES = 64 * 1024 * 1024;
 const ARTIFACT_PURGE_RESOLVE_CONCURRENCY = 8;
 interface ArtifactSessionSnapshot {
   readonly records: readonly ArtifactRecord[];
@@ -263,7 +255,6 @@ export function createSqliteArtifactStoreWriteAuthority(
 
 class SqliteArtifactStore implements ArtifactAuthorityStore {
   private artifactRoot: string;
-  private purgeIntentPath: string;
   private records: ArtifactRecord[] = [];
   private recoveryRequired = true;
   private recoverableOrphans = new Map<string, RecoverableOrphan>();
@@ -276,7 +267,6 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     private readonly leaseBoundWriterLockAuthority?: ArtifactWriterLockAuthority,
   ) {
     this.artifactRoot = join(workspaceRoot, 'artifacts');
-    this.purgeIntentPath = join(this.artifactRoot, ARTIFACT_PURGE_INTENT_FILE);
   }
 
   close(): void {
@@ -800,7 +790,6 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     const ids = new Set(records.map((record) => record.id));
     const paths = await this.preparePurgePathsUnlocked(records);
     try {
-      await this.publishPurgeIntentUnlocked([...ids]);
       await this.completePurgeUnlocked(ids, paths);
     } catch (error) {
       this.invalidateWriterState();
@@ -895,6 +884,9 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     ids: ReadonlySet<string>,
     paths: readonly string[],
   ): Promise<void> {
+    const nextRecords = this.records.filter((record) => !ids.has(record.id));
+    await this.writeMetadataUnlocked({ deleteIds: [...ids] });
+    this.records = nextRecords;
     const changedDirectories = new Set<string>();
     try {
       for (const path of paths) {
@@ -904,10 +896,6 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     } finally {
       for (const directory of changedDirectories) await syncDirectory(directory);
     }
-    const nextRecords = this.records.filter((record) => !ids.has(record.id));
-    await this.writeMetadataUnlocked({ deleteIds: [...ids] });
-    this.records = nextRecords;
-    await this.removePurgeIntentUnlocked();
   }
 
   private async prepareReadInSessionUnlocked(
@@ -955,22 +943,12 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
   }
 
   private async hasCanonicalRecoveryResidueUnlocked(): Promise<boolean> {
-    try {
-      await lstat(this.purgeIntentPath);
-      return true;
-    } catch (error) {
-      if (!isNotFound(error)) throw error;
-    }
-
     let sessionEntries: Dirent[];
     try {
       sessionEntries = await readdir(this.artifactRoot, { withFileTypes: true });
     } catch (error) {
       if (isNotFound(error)) return false;
       throw error;
-    }
-    if (sessionEntries.some((entry) => isArtifactPurgeRecoveryTempName(entry.name))) {
-      return true;
     }
     for (const sessionEntry of sessionEntries) {
       if (!sessionEntry.isDirectory()) continue;
@@ -991,9 +969,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     } catch (error) {
       if (!isNotFound(error)) throw error;
     }
-    await this.recoverMetadataTempsUnlocked();
     await this.recoverPublicationsUnlocked();
-    await this.recoverPurgeIntentUnlocked();
   }
 
   private async adoptRecoverableOrphanUnlocked(
@@ -1149,7 +1125,6 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     if (this.workspaceRoot === canonicalRoot) return;
     this.workspaceRoot = canonicalRoot;
     this.artifactRoot = join(canonicalRoot, 'artifacts');
-    this.purgeIntentPath = join(this.artifactRoot, ARTIFACT_PURGE_INTENT_FILE);
     this.records = [];
     this.recoverableOrphans.clear();
     this.recoveryRequired = true;
@@ -1169,76 +1144,6 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
       .filter((record) => record.sessionId === sessionId)
       .sort(compareArtifactRecords);
     return { records, revision: artifactListRevision(records) };
-  }
-
-  private async publishPurgeIntentUnlocked(artifactIds: readonly string[]): Promise<void> {
-    const contents = JSON.stringify({
-      schemaVersion: PURGE_INTENT_SCHEMA_VERSION,
-      artifactIds,
-    });
-    const result = await publishMarkerFile({
-      root: this.artifactRoot,
-      markerFile: ARTIFACT_PURGE_INTENT_FILE,
-      contents,
-      maxBytes: MAX_PURGE_INTENT_BYTES,
-      publication: 'create',
-      invalidFile: invalidPurgeIntent,
-    });
-    if (result === 'already_exists') {
-      throw new Error('Artifact purge intent already exists');
-    }
-  }
-
-  private async recoverPurgeIntentUnlocked(): Promise<void> {
-    let contents: string;
-    try {
-      contents = await readBoundedMarkerFile({
-        path: this.purgeIntentPath,
-        maxBytes: MAX_PURGE_INTENT_BYTES,
-        invalidFile: invalidPurgeIntent,
-      });
-    } catch (error) {
-      if (isNotFound(error)) return;
-      throw error;
-    }
-    const intent = parsePurgeIntent(contents);
-    const ids = new Set(intent.artifactIds);
-    const records = this.records.filter((record) => ids.has(record.id));
-    if (records.length === 0) {
-      await this.removePurgeIntentUnlocked();
-      return;
-    }
-    if (records.length !== intent.artifactIds.length) {
-      throw invalidPurgeIntent();
-    }
-    const paths = await this.preparePurgePathsUnlocked(records);
-    await this.completePurgeUnlocked(ids, paths);
-  }
-
-  private async removePurgeIntentUnlocked(): Promise<void> {
-    try {
-      await unlink(this.purgeIntentPath);
-      await syncDirectory(this.artifactRoot);
-    } catch (error) {
-      if (!isNotFound(error)) throw error;
-    }
-  }
-
-  private async recoverMetadataTempsUnlocked(): Promise<void> {
-    let entries: Dirent[];
-    try {
-      entries = await readdir(this.artifactRoot, { withFileTypes: true });
-    } catch (error) {
-      if (isNotFound(error)) return;
-      throw error;
-    }
-    for (const entry of entries) {
-      if (!isArtifactPurgeRecoveryTempName(entry.name)) continue;
-      if (!entry.isFile()) {
-        throw new Error(`Artifact recovery temp is not a regular file: ${entry.name}`);
-      }
-      await removeFileDurably(join(this.artifactRoot, entry.name), this.artifactRoot);
-    }
   }
 
   private async recoverPublicationsUnlocked(): Promise<void> {
@@ -1596,39 +1501,6 @@ function assertArtifactTurnKey(value: unknown): asserts value is string {
   if (!isArtifactTurnKey(value)) {
     throw new Error('Artifact turnId must be a bounded opaque turn key without control characters');
   }
-}
-
-interface ArtifactPurgeIntent {
-  schemaVersion: typeof PURGE_INTENT_SCHEMA_VERSION;
-  artifactIds: string[];
-}
-
-function parsePurgeIntent(contents: string): ArtifactPurgeIntent {
-  let value: unknown;
-  try {
-    value = JSON.parse(contents);
-  } catch {
-    throw invalidPurgeIntent();
-  }
-  if (
-    !isRecord(value) ||
-    Object.keys(value).some((key) => key !== 'schemaVersion' && key !== 'artifactIds') ||
-    value.schemaVersion !== PURGE_INTENT_SCHEMA_VERSION ||
-    !Array.isArray(value.artifactIds) ||
-    value.artifactIds.length === 0 ||
-    !value.artifactIds.every(isCanonicalArtifactEntityId) ||
-    new Set(value.artifactIds).size !== value.artifactIds.length
-  ) {
-    throw invalidPurgeIntent();
-  }
-  return {
-    schemaVersion: PURGE_INTENT_SCHEMA_VERSION,
-    artifactIds: value.artifactIds,
-  };
-}
-
-function invalidPurgeIntent(): Error {
-  return new Error('Invalid artifact purge intent');
 }
 
 const ARTIFACT_KIND_SET = new Set<ArtifactKind>(ARTIFACT_KINDS);

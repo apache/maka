@@ -933,52 +933,6 @@ describe('SQLite Artifact store', () => {
     });
   });
 
-  test('write recovery removes only canonical purge-intent temp files', async () => {
-    await withWorkspace(async (root) => {
-      const artifactRoot = join(root, 'artifacts');
-      await mkdir(artifactRoot, { recursive: true });
-      const canonicalTemps = [
-        join(
-          artifactRoot,
-          '.artifact-purge-intent.json.123.00000000-0000-4000-8000-000000000000.tmp',
-        ),
-      ];
-      const unknownFiles = [
-        join(artifactRoot, 'metadata.jsonl.123.00000000-0000-4000-8000-000000000000.tmp'),
-        join(artifactRoot, 'metadata.jsonl.123.1700000000000.tmp'),
-        join(artifactRoot, 'metadata.jsonl.123.not-a-uuid.tmp'),
-        join(artifactRoot, '.artifact-purge-intent.json.123.not-a-uuid.tmp'),
-        join(artifactRoot, 'other.jsonl.123.00000000-0000-4000-8000-000000000000.tmp'),
-      ];
-      for (const path of canonicalTemps) await writeFile(path, 'stale', 'utf8');
-      for (const path of unknownFiles) await writeFile(path, 'keep', 'utf8');
-
-      await createArtifactStoreWriteAuthority(root).recover();
-
-      for (const path of canonicalTemps) {
-        await assert.rejects(() => stat(path), { code: 'ENOENT' });
-      }
-      for (const path of unknownFiles) assert.equal(await readFile(path, 'utf8'), 'keep');
-    });
-  });
-
-  test('write recovery fails closed on a non-file canonical transaction temp', async () => {
-    await withWorkspace(async (root) => {
-      const artifactRoot = join(root, 'artifacts');
-      const canonicalTemp = join(
-        artifactRoot,
-        '.artifact-purge-intent.json.123.00000000-0000-4000-8000-000000000000.tmp',
-      );
-      await mkdir(canonicalTemp, { recursive: true });
-
-      await assert.rejects(
-        () => createArtifactStoreWriteAuthority(root).recover(),
-        /Artifact recovery temp is not a regular file/,
-      );
-      assert.equal((await stat(canonicalTemp)).isDirectory(), true);
-    });
-  });
-
   test('fails closed on mismatched publication residue', async () => {
     await withWorkspace(async (root) => {
       const residue = await createPublicationResidue(root, 'mismatch', 'file.txt', 'payload');
@@ -1013,30 +967,19 @@ describe('SQLite Artifact store', () => {
     }
   });
 
-  test('purge-intent recovery fails closed on non-canonical artifact identities', async () => {
-    for (const artifactId of [
-      'a'.repeat(ARTIFACT_ENTITY_ID_MAX_CHARS + 1),
-      '.',
-      'artifact/id',
-      'artifact id',
-      'artifact\nid',
-    ]) {
-      await withWorkspace(async (root) => {
-        const intentPath = join(root, 'artifacts', '.artifact-purge-intent.json');
-        await mkdir(dirname(intentPath), { recursive: true });
-        await writeFile(
-          intentPath,
-          JSON.stringify({ schemaVersion: 1, artifactIds: [artifactId] }),
-          'utf8',
-        );
+  test('legacy purge-intent residue cannot block recovery or later writes', async () => {
+    await withWorkspace(async (root) => {
+      const intentPath = join(root, 'artifacts', '.artifact-purge-intent.json');
+      await mkdir(dirname(intentPath), { recursive: true });
+      await writeFile(intentPath, 'not valid json', 'utf8');
 
-        await assert.rejects(
-          () => createArtifactStoreWriteAuthority(root).recover(),
-          /Invalid artifact purge intent/,
-        );
-        assert.equal((await stat(intentPath)).isFile(), true);
-      });
-    }
+      const authority = createArtifactStoreWriteAuthority(root);
+      await authority.recover();
+      const record = await authority.store.create(artifactInput('after-retired-purge', 'kept', 1));
+
+      assert.equal(record.id, 'after-retired-purge');
+      assert.equal(await readFile(intentPath, 'utf8'), 'not valid json');
+    });
   });
 
   test('user delete physically removes metadata and bytes idempotently', async () => {
@@ -1237,72 +1180,6 @@ describe('SQLite Artifact store', () => {
       assert.equal((await lstat(lowerPath)).isSymbolicLink(), true);
       assert.equal((await lstat(upperPath)).isSymbolicLink(), true);
       assert.equal(await readFile(targetPath, 'utf8'), 'shared bytes');
-    });
-  });
-
-  test('startup recovery completes purge after payload removal but before metadata commit', async () => {
-    await withWorkspace(async (root) => {
-      const authority = createArtifactStoreWriteAuthority(root);
-      const store = authority.store;
-      await authority.recover();
-      const record = await store.create(artifactInput('purge-retry', 'remove me', 1));
-      const payloadPath = join(root, 'artifacts', record.relativePath);
-      const metadataPath = join(root, 'artifacts', 'metadata.jsonl');
-      const purgeIntentPath = join(root, 'artifacts', '.artifact-purge-intent.json');
-      await rm(payloadPath);
-      await writeFile(
-        purgeIntentPath,
-        JSON.stringify({ schemaVersion: 1, artifactIds: [record.id] }),
-        'utf8',
-      );
-      await assert.rejects(() => stat(payloadPath), { code: 'ENOENT' });
-      assert.equal((await getArtifact(store, record.id))?.id, record.id);
-      assert.deepEqual(JSON.parse(await readFile(purgeIntentPath, 'utf8')), {
-        schemaVersion: 1,
-        artifactIds: [record.id],
-      });
-      await assert.rejects(
-        () => store.create(artifactInput('same-instance-blocked', 'blocked', 2)),
-        /Artifact write recovery is required/,
-      );
-
-      await authority.recover();
-      await authority.recover();
-
-      assert.equal(await getArtifact(store, record.id), null);
-      await assert.rejects(() => stat(metadataPath), { code: 'ENOENT' });
-      await assert.rejects(() => stat(purgeIntentPath), { code: 'ENOENT' });
-      await store.deleteUserArtifactInSession(record.sessionId, record.id);
-
-      await writeFile(
-        purgeIntentPath,
-        JSON.stringify({ schemaVersion: 1, artifactIds: [record.id] }),
-        'utf8',
-      );
-      await createArtifactStoreWriteAuthority(root).recover();
-      await assert.rejects(() => stat(metadataPath), { code: 'ENOENT' });
-      await assert.rejects(() => stat(purgeIntentPath), { code: 'ENOENT' });
-    });
-  });
-
-  test('write authority recovers an interrupted purge before the next write', async () => {
-    await withWorkspace(async (root) => {
-      const store = createArtifactStore(root);
-      const record = await store.create(artifactInput('interrupted-purge', 'remove me', 1));
-      await rm(join(root, 'artifacts', record.relativePath));
-      await writeFile(
-        join(root, 'artifacts', '.artifact-purge-intent.json'),
-        JSON.stringify({ schemaVersion: 1, artifactIds: [record.id] }),
-        'utf8',
-      );
-
-      const reopened = createArtifactStore(root);
-      const next = await reopened.create(artifactInput('after-recovery', 'kept', 2));
-      assert.equal(next.id, 'after-recovery');
-      assert.equal(await getArtifact(reopened, record.id), null);
-      await assert.rejects(() => stat(join(root, 'artifacts', '.artifact-purge-intent.json')), {
-        code: 'ENOENT',
-      });
     });
   });
 
