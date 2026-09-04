@@ -671,6 +671,38 @@ describe('GoalContinuationCoordinator settlement', () => {
     assert.equal(admitted.length, 1);
   });
 
+  for (const field of ['met', 'impossible', 'progress', 'waiting']) {
+    test(`invalid ${field} cannot settle a Goal or change its stall counter`, async (t) => {
+      const { manager, coordinator, deps, admitted } = setup({
+        evaluations: [{ progress: false }],
+      });
+      t.after(() => coordinator.dispose());
+      manager.create(SESSION, 'ship', { blockCap: 2 });
+      await settleExternal(coordinator, SESSION, { kind: 'completed', turnId: 'turn-1' });
+      await waitFor(() => admitted.length === 1);
+      assert.equal(manager.get(SESSION)?.consecutiveNoProgress, 1);
+
+      // Exercise the raw evaluator response through the real continuation path.
+      deps.evaluator.evaluate = async () =>
+        JSON.stringify({
+          met: false,
+          impossible: false,
+          progress: false,
+          waiting: false,
+          [field]: 'false',
+        });
+      const owned = admitted[0]!;
+      owned.completion.resolve({ kind: 'completed', turnId: owned.turnId });
+      await waitFor(
+        () => manager.get(SESSION)?.status !== 'active' || manager.get(SESSION)?.iterations === 2,
+      );
+
+      assert.equal(manager.get(SESSION)?.status, 'active');
+      assert.equal(manager.get(SESSION)?.consecutiveNoProgress, 1);
+      await waitFor(() => admitted.length === 2);
+    });
+  }
+
   test('context failure pauses the exact Goal with a visible reason', async () => {
     const { manager, coordinator, deps, admitted } = setup();
     deps.getRecentContext = async () => {
