@@ -18,11 +18,12 @@
  */
 
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { readFile, rm, writeFile } from 'node:fs/promises';
 import {
   isNonEmptyUnicodeString,
   isSha256Digest,
   type SessionBundleArtifact,
+  type SessionBundleSource,
   type Sha256Digest,
 } from './session-bundle-contract.js';
 
@@ -70,6 +71,15 @@ export interface ImmutableObjectInput {
   readonly source: ImmutableObjectSource;
 }
 
+/** Caller-owned, bounded materialization target for one immutable object. */
+export interface ImmutableObjectMaterializationInput {
+  readonly ref: ImmutableObjectRef;
+  /** A new private file path. Materialization must never overwrite it. */
+  readonly destination: string;
+  /** The caller's maximum acceptable byte count for this materialization. */
+  readonly maxBytes: number;
+}
+
 /**
  * Large immutable bytes live behind this port. Its publication semantics are
  * deliberately distinct from the Repository's head-CAS semantics.
@@ -83,6 +93,12 @@ export interface ImmutableObjectStore {
   publish(input: ImmutableObjectInput): Promise<ImmutableObjectRef>;
   /** Verifies the exact reference, byte count, media type, and digest. */
   assertReadable(ref: ImmutableObjectRef): Promise<void>;
+  /**
+   * Materializes verified bytes at a caller-owned new file path without
+   * overwriting it. The operation must reject objects over maxBytes and verify
+   * the exact reference, byte count, and digest before it returns.
+   */
+  materialize(input: ImmutableObjectMaterializationInput): Promise<void>;
 }
 
 export interface SessionCheckpointManifestV1 {
@@ -244,6 +260,41 @@ export async function publishSessionCheckpointV1(
     source: { kind: 'bytes', value: manifestBytes },
   });
   return storedSessionCheckpoint({ manifest, value });
+}
+
+/**
+ * Converts a retained V1 compatibility Bundle reference into the exact
+ * filesystem source expected by the Bundle inspect/hydrate boundary.
+ *
+ * This is deliberately a materialization seam, not a general Repository read:
+ * callers own the bounded destination and clean it up after hydration/repack.
+ */
+export async function materializeSessionCheckpointV1(input: {
+  readonly objectStore: ImmutableObjectStore;
+  readonly checkpoint: StoredSessionCheckpoint;
+  readonly destination: string;
+  readonly maxBytes: number;
+}): Promise<SessionBundleSource> {
+  if (!isRecord(input))
+    throw new TypeError('Session checkpoint materialization input must be an object');
+  const objectStore = requireImmutableObjectStore(input.objectStore);
+  const checkpoint = admitStoredSessionCheckpoint(input.checkpoint);
+  const request = admitImmutableObjectMaterializationInput({
+    ref: checkpoint.value.compatibilityBundle,
+    destination: input.destination,
+    maxBytes: input.maxBytes,
+  });
+  try {
+    await objectStore.assertReadable(checkpoint.manifest);
+    await objectStore.assertReadable(request.ref);
+    await objectStore.materialize(request);
+    return Object.freeze({
+      path: request.destination,
+      expectedArchiveDigest: request.ref.digest,
+    });
+  } catch (error) {
+    throw normalizeObjectStoreError(error);
+  }
 }
 
 export function createSessionCheckpointManifestV1(
@@ -659,6 +710,34 @@ class InMemoryImmutableObjectStore implements ImmutableObjectStore {
       );
     }
   }
+
+  async materialize(input: ImmutableObjectMaterializationInput): Promise<void> {
+    const request = admitImmutableObjectMaterializationInput(input);
+    const stored = this.objects.get(request.ref.objectRef);
+    if (!stored) throw repositoryError('object_not_found', 'Immutable object was not found');
+    if (
+      !sameImmutableObjectRef(stored.ref, request.ref) ||
+      stored.bytes.byteLength !== request.ref.bytes ||
+      digestBytes(stored.bytes) !== request.ref.digest
+    ) {
+      throw repositoryError(
+        'integrity_mismatch',
+        'Immutable object bytes no longer match their trusted metadata',
+      );
+    }
+    if (request.ref.bytes > request.maxBytes) {
+      throw repositoryError(
+        'quota_exceeded',
+        'Immutable object exceeds materialization byte limit',
+      );
+    }
+    try {
+      await writeFile(request.destination, stored.bytes, { flag: 'wx', mode: 0o600 });
+    } catch (error) {
+      await rm(request.destination, { force: true }).catch(() => {});
+      throw repositoryError('io_failure', 'Immutable object could not be materialized', error);
+    }
+  }
 }
 
 interface SessionState {
@@ -782,6 +861,27 @@ function admitImmutableObjectInput(input: ImmutableObjectInput): ImmutableObject
     });
   }
   throw new TypeError('Immutable object source must contain file or byte content');
+}
+
+function admitImmutableObjectMaterializationInput(
+  input: ImmutableObjectMaterializationInput,
+): ImmutableObjectMaterializationInput {
+  if (!isRecord(input))
+    throw new TypeError('Immutable object materialization input must be an object');
+  if (!isByteCount(input.maxBytes)) {
+    throw new TypeError(
+      'Immutable object materialization byte limit must be a non-negative safe integer',
+    );
+  }
+  return Object.freeze({
+    ref: admitImmutableObjectRef(input.ref),
+    destination: requireIdentifier(
+      input.destination,
+      'Immutable object materialization destination',
+      MAX_OBJECT_REF_LENGTH,
+    ),
+    maxBytes: input.maxBytes,
+  });
 }
 
 function admitImmutableObjectRef(input: ImmutableObjectRef): ImmutableObjectRef {
@@ -1085,9 +1185,12 @@ function requireImmutableObjectStore(value: unknown): ImmutableObjectStore {
   if (
     !isRecord(value) ||
     typeof value.publish !== 'function' ||
-    typeof value.assertReadable !== 'function'
+    typeof value.assertReadable !== 'function' ||
+    typeof value.materialize !== 'function'
   ) {
-    throw new TypeError('Immutable Object Store must implement publish and assertReadable');
+    throw new TypeError(
+      'Immutable Object Store must implement publish, assertReadable, and materialize',
+    );
   }
   return value as unknown as ImmutableObjectStore;
 }

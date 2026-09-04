@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -28,6 +28,7 @@ import {
   createInMemorySessionRepository,
   createSessionCheckpointManifestV1,
   encodeSessionCheckpointManifestV1,
+  materializeSessionCheckpointV1,
   publishSessionCheckpointV1,
   SESSION_BUNDLE_OBJECT_MEDIA_TYPE,
   SESSION_CHECKPOINT_MANIFEST_MEDIA_TYPE,
@@ -54,6 +55,7 @@ test('publishes and verifies Bundle then Manifest before creating an exact head'
         events.push(`assert:${ref.mediaType}`);
         await base.assertReadable(ref);
       },
+      materialize: (input) => base.materialize(input),
     };
     const repository = createInMemorySessionRepository({ objectStore });
     const artifact = await writeArtifact(directory, 'initial.tar.zst', 'initial Bundle bytes');
@@ -125,6 +127,7 @@ test('a source-head race returns the requested Manifest and Bundle rather than a
         reading?.();
         await readReleased;
       },
+      materialize: (input) => base.materialize(input),
     };
     const repository = createInMemorySessionRepository({ objectStore });
     const initial = await publishCheckpoint(
@@ -368,6 +371,7 @@ test('does not claim a Fork from an unreadable source checkpoint', async () => {
         }
         await base.assertReadable(ref);
       },
+      materialize: (input) => base.materialize(input),
     };
     const repository = createInMemorySessionRepository({ objectStore });
     const checkpoint = await publishCheckpoint(
@@ -425,6 +429,7 @@ test('does not claim a Fork when its source head moves during verification', asy
         reading?.();
         await readReleased;
       },
+      materialize: (input) => base.materialize(input),
     };
     const repository = createInMemorySessionRepository({ objectStore });
     const initial = await publishCheckpoint(
@@ -560,6 +565,27 @@ test('claims Fork identity before target creation and resumes both crash windows
     await objectStore.assertReadable(pending.sourceCheckpoint.value.compatibilityBundle);
     assert.deepEqual(await repository.claimFork(request), pending);
 
+    const materialized = await materializeSessionCheckpointV1({
+      objectStore,
+      checkpoint: pending.sourceCheckpoint,
+      destination: join(directory, 'recovered-source.tar.zst'),
+      maxBytes: pending.sourceCheckpoint.value.compatibilityBundle.bytes,
+    });
+    assert.equal(
+      materialized.expectedArchiveDigest,
+      created.checkpoint.value.compatibilityBundle.digest,
+    );
+    assert.deepEqual(await readFile(materialized.path), Buffer.from('initial Bundle bytes'));
+    await assert.rejects(
+      materializeSessionCheckpointV1({
+        objectStore,
+        checkpoint: pending.sourceCheckpoint,
+        destination: join(directory, 'over-budget-source.tar.zst'),
+        maxBytes: pending.sourceCheckpoint.value.compatibilityBundle.bytes - 1,
+      }),
+      hasRepositoryCode('quota_exceeded'),
+    );
+
     // Simulates a retry after a crash before target creation.
     const target = await repository.createSession({
       sessionId: request.targetSessionId,
@@ -647,6 +673,7 @@ test('keeps a Fork pending until its target checkpoint is readable', async () =>
         }
         await base.assertReadable(ref);
       },
+      materialize: (input) => base.materialize(input),
     };
     const repository = createInMemorySessionRepository({ objectStore });
     const sourceCheckpoint = await publishCheckpoint(
@@ -732,6 +759,7 @@ test('fails closed when a published Manifest or Bundle disappears or changes', a
             }
             await base.assertReadable(ref);
           },
+          materialize: (input) => base.materialize(input),
         };
         const repository = createInMemorySessionRepository({ objectStore });
         const checkpoint = await publishCheckpoint(
