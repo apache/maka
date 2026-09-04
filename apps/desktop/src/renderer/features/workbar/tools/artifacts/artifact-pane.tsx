@@ -549,15 +549,8 @@ export function ArtifactPane(props: {
                   : []),
                 { type: 'divider' as const },
                 {
-                  label:
-                    previewRecord.source === 'deep_research' ||
-                    previewRecord.source === 'tool_result_archive'
-                      ? copy.pane.deleteReadOnly
-                      : copy.pane.delete,
+                  label: copy.pane.delete,
                   icon: <Trash2 size={ICON_SIZE.control} aria-hidden="true" />,
-                  isDisabled:
-                    previewRecord.source === 'deep_research' ||
-                    previewRecord.source === 'tool_result_archive',
                   onClick: () => void runArtifactAction(
                     `${previewRecord.id}:delete`,
                     () => deleteArtifact(previewRecord.id),

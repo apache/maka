@@ -73,10 +73,8 @@ export interface InteractiveArtifactStoreWriter extends DurableArtifactAttachmen
   /**
    * Narrow system delete for one Session-owned artifact of a declared source.
    *
-   * Not a user delete: the sources this serves are `userDeletable: false`
-   * precisely because durable replay may depend on them. The caller must name
-   * the source it believes it owns, and a mismatch throws — so a caller that is
-   * wrong about what it is reclaiming reclaims nothing.
+   * The caller must name the source it believes it owns, and a mismatch throws,
+   * so a caller that is wrong about what it is reclaiming reclaims nothing.
    */
   deleteOwnedArtifactInSession(
     sessionId: string,
