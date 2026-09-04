@@ -38,13 +38,14 @@ export function buildSessionRecapMessages(input: {
   readonly modelId: string;
 }): ModelMessage[] {
   const contextWindow = resolveSelectedModelContextWindow(input.connection, input.modelId);
-  let events = input.events;
   let maxEstimatedTokens: number | undefined;
+  let messages: ModelMessage[];
   if (contextWindow !== undefined) {
     maxEstimatedTokens = Math.max(0, Math.floor(contextWindow * 0.85) - 4_096);
-    events = recentTurnsWithinBudget(events, maxEstimatedTokens);
+    messages = recentRecapMessagesWithinBudget(input.events, maxEstimatedTokens);
+  } else {
+    messages = projectSessionRecapMessages(input.events);
   }
-  let messages = projectSessionRecapMessages(events);
   if (
     messages.length === 0 &&
     input.events.length > 0 &&
@@ -59,21 +60,25 @@ export function buildSessionRecapMessages(input: {
 }
 
 /** Request-only recap projection; never mutates or replaces canonical history. */
-function recentTurnsWithinBudget(
+function recentRecapMessagesWithinBudget(
   events: readonly RuntimeEvent[],
   maxEstimatedTokens: number,
   charsPerToken = 4,
-): RuntimeEvent[] {
+): ModelMessage[] {
   const groups = groupEventsByTurn(events, charsPerToken);
-  const selected: RuntimeEvent[][] = [];
-  let selectedTokens = 0;
+  const selectedGroups: ModelMessage[][] = [];
+  let selectedChars = 2;
   for (let index = groups.length - 1; index >= 0; index -= 1) {
-    const group = groups[index]!;
-    if (selectedTokens + group.estimatedTokens > maxEstimatedTokens) break;
-    selected.unshift(group.events);
-    selectedTokens += group.estimatedTokens;
+    const projected = projectSessionRecapMessages(groups[index]!.events);
+    if (projected.length === 0) continue;
+    const projectedChars = stableJsonLength(projected);
+    const candidateChars =
+      selectedGroups.length === 0 ? projectedChars : projectedChars + selectedChars - 1;
+    if (candidateChars > maxEstimatedTokens * charsPerToken) break;
+    selectedGroups.push(projected);
+    selectedChars = candidateChars;
   }
-  return selected.flat();
+  return selectedGroups.reverse().flat();
 }
 
 function boundedOversizedTurnMessages(

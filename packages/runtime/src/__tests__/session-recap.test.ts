@@ -95,6 +95,38 @@ test('session recap includes a concise durable outcome without tool protocol or 
   assert.ok(serialized.length <= 13_000);
 });
 
+test('session recap budgets only the evidence it sends', () => {
+  const earlierSentinel = 'EARLIER-RECAP-SENTINEL';
+  const oversizedArgs = 'tool-args-sentinel '.repeat(4_000);
+  const call = toolCallEvent('call-event', 'call-1', 'turn-2');
+  const messages = buildSessionRecapMessages({
+    events: [
+      textEvent('earlier-user', 'turn-1', 'user', earlierSentinel),
+      textEvent('latest-user', 'turn-2', 'user', 'Inspect the current state.'),
+      {
+        ...call,
+        content: {
+          kind: 'function_call',
+          id: 'call-1',
+          name: 'Read',
+          args: { query: oversizedArgs },
+        },
+      },
+      toolResultEvent('result-event', 'call-1', 'turn-2', 'raw output', 'state is ready'),
+    ],
+    connection: {
+      ...connection(),
+      defaultModel: 'declared-16k-model',
+      relayModelProfiles: { 'declared-16k-model': { contextWindow: 16_384 } },
+    },
+    modelId: 'declared-16k-model',
+  });
+  const serialized = JSON.stringify(messages);
+
+  assert.equal(serialized.includes(earlierSentinel), true);
+  assert.equal(serialized.includes(oversizedArgs), false);
+});
+
 test('session recap excludes model-hidden tool outcomes', () => {
   const messages = buildSessionRecapMessages({
     events: [
