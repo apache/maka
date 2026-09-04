@@ -223,6 +223,7 @@ test('release authority changes select their dedicated contract gate', () => {
     '.github/workflows/release-cli-finalize.yml',
     '.github/workflows/release-cli-stage.yml',
     '.github/workflows/release.yml',
+    'scripts/audit-shipped-dependencies.mjs',
     'scripts/package-macos.mjs',
     'scripts/package-macos-autoupdate-next.mjs',
     'scripts/package-macos-arm64-cli.mjs',
