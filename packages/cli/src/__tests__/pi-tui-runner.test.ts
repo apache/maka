@@ -1691,6 +1691,15 @@ describe('Maka Pi TUI runner', () => {
     const driver = new SlashCommandDriver();
     const verifyCalls: OnboardingVerifyInput[] = [];
     const saveCalls: OnboardingSaveInput[] = [];
+    const editorEndCursor = '\x1b[7m \x1b[0m';
+    const identityFieldLine = (expectedText: string) => {
+      return (
+        terminal.writes
+          .flatMap((write) => write.split('\n'))
+          .reverse()
+          .find((line) => plainTerminalOutput(line).trim() === expectedText) ?? ''
+      );
+    };
     const run = runMakaPiTui({
       title: 'Maka',
       driver,
@@ -1727,10 +1736,18 @@ describe('Maka Pi TUI runner', () => {
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Set Up Provider'));
     terminal.input('\r'); // pick the only row -> identity step, name focused
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('2/4'));
+    assert.equal(identityFieldLine('Name OpenAI').includes(editorEndCursor), true);
+    assert.equal(identityFieldLine('Slug openai').includes(editorEndCursor), false);
     // Replace the prefilled provider label with a display name.
     for (let i = 0; i < 'OpenAI'.length; i++) terminal.input('\x7f');
     terminal.input('Work OpenAI');
     terminal.input('\r'); // name -> slug field
+    await waitFor(
+      () => identityFieldLine('Slug openai').includes(editorEndCursor),
+      'the identity cursor to move from Name to Slug',
+    );
+    assert.equal(identityFieldLine('Name Work OpenAI').includes(editorEndCursor), false);
+    assert.equal(identityFieldLine('Slug openai').includes(editorEndCursor), true);
     // Replace the derived suggestion with a chosen slug.
     for (let i = 0; i < 'openai'.length; i++) terminal.input('\x7f');
     terminal.input('openai-work');
