@@ -31,6 +31,7 @@ export type HostOperationErrorCode =
   | 'operation_conflict'
   | 'capability_unavailable'
   | 'invalid_request'
+  | 'source_unreadable'
   | 'projection_incomplete'
   | 'stale_cursor'
   | 'persistence_failed'

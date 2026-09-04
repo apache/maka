@@ -269,10 +269,10 @@ export class HostExternalSessionCoordinator {
     } catch (error) {
       if (!commitAttempted) {
         return importFailure(
-          isSourceSessionNotFound(error) ? 'not_found' : 'invalid_request',
+          isSourceSessionNotFound(error) ? 'not_found' : 'source_unreadable',
           isSourceSessionNotFound(error)
             ? 'External Session does not exist'
-            : 'External Session could not be converted',
+            : 'External Session could not be read or converted',
         );
       }
       this.#requestDrain();

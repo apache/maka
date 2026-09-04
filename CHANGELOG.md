@@ -30,6 +30,11 @@
 
 ### Fixed
 
+- Fixed Codex task imports for valid rollout JSONL files larger than 64 MiB by
+  parsing a fixed file snapshot incrementally under source, record, converted-byte,
+  and message-count limits. Source read/conversion failures now reach Desktop as
+  an actionable error instead of an unknown commit outcome; the Runtime Host
+  compatibility epoch moves to 110 (#4642).
 - Fixed a renderer crash dialog reporting React error #185 ("Maximum update depth
   exceeded") coming from the composer's prompt-history inline completion (#4117): the
   offer engine the 0.1.11 composer fed could flip-flop its announcement state on

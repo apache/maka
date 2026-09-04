@@ -25,6 +25,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { AstryxLocaleProvider, LocaleProvider } from '@maka/ui';
 import type { DesktopRuntimeHostRef } from '../../preload/bridge-contract.js';
 import type { DesktopExternalSessionCatalogItem } from '../../preload/external-session-catalog.js';
+import type { ExternalSessionImportFailureReason } from '../../preload/external-session-import-result.js';
 import { ImportTasksSettingsPage } from '../../renderer/settings/import-tasks-settings-page.js';
 import { RuntimeHostSettingsTarget } from '../../renderer/settings/runtime-host-settings-target.js';
 
@@ -103,6 +104,31 @@ describe('ImportTasksSettingsPage durable import state', () => {
       { operation: 'list', host: TEST_RUNTIME_HOST },
       { operation: 'import', host: TEST_RUNTIME_HOST },
       { operation: 'list', host: TEST_RUNTIME_HOST },
+    ]);
+
+    await act(async () => harness.root.unmount());
+  });
+
+  it('shows a source-unreadable banner without starting unknown-outcome recovery', async () => {
+    const harness = await renderPage({
+      catalog: catalog(externalSession()),
+      importResult: { ok: false, reason: 'source_unreadable' },
+    });
+
+    const importButton = buttonWithText(harness.container, 'Import');
+    assert.ok(importButton);
+    await act(async () => {
+      importButton.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    assert.match(harness.container.textContent, /could not be read or converted/);
+    assert.doesNotMatch(harness.container.textContent, /Check the import result/);
+    assert.deepEqual(harness.hostCalls(), [
+      { operation: 'listSources', host: TEST_RUNTIME_HOST },
+      { operation: 'list', host: TEST_RUNTIME_HOST },
+      { operation: 'import', host: TEST_RUNTIME_HOST },
     ]);
 
     await act(async () => harness.root.unmount());
@@ -1202,14 +1228,15 @@ async function renderPage(options: {
   adapterIds?: string[];
   bySource?: Record<string, Array<CatalogResult | Error | Promise<CatalogResult>>>;
   importResult?:
-    | { ok: false; reason: 'commit_outcome_unknown' }
-    | Promise<{ ok: false; reason: 'commit_outcome_unknown' }>;
+    | { ok: false; reason: ExternalSessionImportFailureReason }
+    | Promise<{ ok: false; reason: ExternalSessionImportFailureReason }>;
   /**
    * Per-source answers for a batch: `ok` lands, `unknown` is the Host not
-   * answering, `throw` is a rejection. Keyed by source session id, because a
-   * batch is exactly the case where the ids must not share one answer.
+   * answering, `source_unreadable` is a definite pre-commit failure, and
+   * `throw` is a rejection. Keyed by source session id, because a batch is
+   * exactly the case where the ids must not share one answer.
    */
-  importBySource?: Record<string, 'ok' | 'unknown' | 'throw'>;
+  importBySource?: Record<string, 'ok' | 'unknown' | 'source_unreadable' | 'throw'>;
   onOpenImported?: (sessionId: string) => void;
   locale?: 'en' | 'zh';
 }): Promise<{
@@ -1288,6 +1315,7 @@ async function renderPage(options: {
         const perSource = options.importBySource?.[sourceSessionId];
         if (perSource === 'throw') throw new Error(`import-failed:${sourceSessionId}`);
         if (perSource === 'unknown') return { ok: false, reason: 'commit_outcome_unknown' };
+        if (perSource === 'source_unreadable') return { ok: false, reason: 'source_unreadable' };
         if (perSource === 'ok') {
           return { ok: true, session: { id: `imported-${sourceSessionId}` } };
         }
@@ -1496,6 +1524,29 @@ describe('ImportTasksSettingsPage batch import', () => {
     assert.doesNotMatch(text, /could not be imported/);
     // It surfaces through the unconfirmed banner, which owns the retry.
     assert.match(text, /unconfirmed|Unconfirmed|outcome/i);
+  });
+
+  it('counts an unreadable source as a definite failure without offering recovery', async () => {
+    const { container } = await renderPage({
+      catalog: { sessions: [externalSession({ id: 'unreadable' })], nextCursor: null },
+      importBySource: { unreadable: 'source_unreadable' },
+    });
+
+    await tick(masterBox(container), true);
+    const run = buttonWithText(container, 'Import selected');
+    assert.ok(run);
+    await act(async () => {
+      run.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const text = container.textContent ?? '';
+    assert.match(text, /No conversation was imported/);
+    assert.match(text, /1 more could not be imported/);
+    assert.doesNotMatch(text, /Check the import result/);
+    assert.equal(buttonWithText(container, 'Retry'), undefined);
   });
 
   it('spins only the conversion in flight, not every queued row', async () => {

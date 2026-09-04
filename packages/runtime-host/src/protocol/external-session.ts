@@ -57,6 +57,7 @@ const IMPORT_ERRORS = [
   'not_found',
   'operation_conflict',
   'commit_outcome_unknown',
+  'source_unreadable',
 ] as const;
 
 export type ExternalSessionSourceQueryInput = Record<never, never>;

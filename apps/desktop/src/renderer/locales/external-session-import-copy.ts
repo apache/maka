@@ -68,6 +68,7 @@ type ExternalSessionImportCopy = {
   importInProgressDescription: (name: string) => string;
   importFailedTitle: string;
   importFailedFallback: string;
+  importFailedSourceUnreadable: string;
   importRecoveredTitle: string;
   importRecoveredDescription: (name: string) => string;
   importNotRecordedTitle: string;
@@ -133,6 +134,8 @@ const COPY = {
     importInProgressDescription: (name) => `正在导入「${name}」，完成后会直接打开这个任务。`,
     importFailedTitle: '导入失败',
     importFailedFallback: '该对话无法转换或保存。请检查来源后重试。',
+    importFailedSourceUnreadable:
+      '无法读取或转换该对话。来源可能已损坏，或内容超过安全导入限制。请检查来源后重试。',
     importRecoveredTitle: '已确认导入',
     importRecoveredDescription: (name) => `「${name}」导入的任务现已可用。`,
     importNotRecordedTitle: '没有发现新任务',
@@ -186,6 +189,8 @@ const COPY = {
       `Importing “${name}”. Maka opens the task as soon as it lands.`,
     importFailedTitle: 'Import failed',
     importFailedFallback: 'This conversation could not be converted or saved. Check the source and try again.',
+    importFailedSourceUnreadable:
+      'This conversation could not be read or converted. The source may be malformed or exceed a safe import limit.',
     importRecoveredTitle: 'Import confirmed',
     importRecoveredDescription: (name) =>
       `The imported task is available now for “${name}”.`,

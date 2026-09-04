@@ -345,7 +345,10 @@ test('reports conversion errors before persistence and store uncertainty after e
     ),
     {
       ok: false,
-      error: { code: 'invalid_request', message: 'External Session could not be converted' },
+      error: {
+        code: 'source_unreadable',
+        message: 'External Session could not be read or converted',
+      },
     },
   );
   assert.equal(createAttempts, 0);
