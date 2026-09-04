@@ -573,6 +573,7 @@ type E2eTestFixtures = {
   promptRailWindow: Page;
   threadSearchWindow: Page;
   partialHistoryWindow: Page;
+  providerFailureWindow: Page;
   requestHeaderRowWindow: Page;
   permissionCenterWindow: Page;
   newTaskTargetWindow: Page;
@@ -774,6 +775,15 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
       readinessSelector: '[data-turn-id]',
       e2eFixtureScenario: 'chat-partial-history',
       locale: 'zh-CN',
+      showWindow: true,
+    }, use);
+  },
+  providerFailureWindow: async ({}, use) => {
+    await withE2eWindow({
+      seed: false,
+      readinessSelector: '.maka-turn-failed-diagnostic',
+      e2eFixtureScenario: 'chat-provider-failure',
+      locale: 'zh',
       showWindow: true,
     }, use);
   },

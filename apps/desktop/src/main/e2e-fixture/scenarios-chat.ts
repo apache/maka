@@ -120,6 +120,30 @@ export function turnMessages(now: number): StoredMessage[] {
   ];
 }
 
+export function providerFailureMessages(now: number): StoredMessage[] {
+  const turnId = 'turn-provider-failure';
+  return [
+    {
+      type: 'user',
+      id: 'msg-provider-failure-user',
+      turnId,
+      ts: now - 60_000,
+      text: '请总结今天的项目进展。',
+    },
+    {
+      type: 'turn_state',
+      id: 'state-provider-failure',
+      turnId,
+      ts: now - 59_000,
+      status: 'failed',
+      errorClass: 'rate_limit',
+      failureMessage:
+        'Provider returned 429: request rate limit reached. Please retry after 30 seconds.',
+      partialOutputRetained: false,
+    },
+  ];
+}
+
 export function promptRailSession(now: number): SessionHeader {
   return header({
     id: PROMPT_RAIL_SESSION_ID,
