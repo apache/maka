@@ -21,18 +21,19 @@
   <img src="apps/desktop/assets/app-icons/sky.png" alt="Maka" width="72" valign="middle" /> Apache Maka (Incubating)
 </h1>
 
-<p align="center">Apache Maka (Incubating) is a high-performance agent workspace that keeps a complete record of everything it did.</p>
+<h3 align="center">Apache Maka (Incubating) is a high-performance agent workspace that keeps a complete record of everything it did.</h3>
 
 <p align="center">
   <a href="https://maka.apache.org/en/">Website</a> ·
-  <a href="./docs/README.md">Docs</a> ·
-  <a href="https://maka.apache.org/en/downloads/">Downloads</a> ·
+  <a href="./docs/README.md">Documentation</a> ·
+  <a href="https://maka.apache.org/en/downloads/">Download</a> ·
   <a href="./README.zh-CN.md">中文文档</a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/apache/maka/stargazers"><img src="https://img.shields.io/github/stars/apache/maka?style=flat&label=%E2%98%85&color=6E7781" alt="GitHub stars" valign="middle" /></a>
-  <sub><a href="./LICENSE">Apache-2.0</a> · macOS · Windows · Linux</sub>
+  <a href="https://github.com/apache/maka/stargazers"><img src="https://img.shields.io/github/stars/apache/maka?style=flat&label=stars&color=4C8DFF" alt="GitHub stars" /></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-4C8DFF?style=flat" alt="License: Apache 2.0" /></a>
+  <img src="https://img.shields.io/badge/platforms-macOS%20%C2%B7%20Windows%20preview%20%C2%B7%20Linux%20preview-4C8DFF?style=flat" alt="Platforms: macOS, Windows preview, Linux preview" />
 </p>
 
 <picture>

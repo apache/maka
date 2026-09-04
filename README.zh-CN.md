@@ -21,7 +21,7 @@
   <img src="apps/desktop/assets/app-icons/sky.png" alt="Maka" width="72" valign="middle" /> Apache Maka (Incubating)
 </h1>
 
-<p align="center">Apache Maka（孵化中）是一个高性能的 Agent 工作台，并完整记录它做过的每一件事。</p>
+<h3 align="center">Apache Maka（孵化中）是一个高性能的 Agent 工作台，并完整记录它做过的每一件事。</h3>
 
 <p align="center">
   <a href="https://maka.apache.org/zh-CN/">官网</a> ·
@@ -31,8 +31,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/apache/maka/stargazers"><img src="https://img.shields.io/github/stars/apache/maka?style=flat&label=%E2%98%85&color=6E7781" alt="GitHub stars" valign="middle" /></a>
-  <sub><a href="./LICENSE">Apache-2.0</a> · macOS · Windows · Linux</sub>
+  <a href="https://github.com/apache/maka/stargazers"><img src="https://img.shields.io/github/stars/apache/maka?style=flat&label=stars&color=4C8DFF" alt="GitHub stars" /></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-4C8DFF?style=flat" alt="License: Apache 2.0" /></a>
+  <img src="https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-macOS%20%C2%B7%20Windows%20%E9%A2%84%E8%A7%88%20%C2%B7%20Linux%20%E9%A2%84%E8%A7%88-4C8DFF?style=flat" alt="平台：macOS、Windows 预览、Linux 预览" />
 </p>
 
 <picture>
