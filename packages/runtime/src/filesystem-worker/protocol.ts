@@ -22,7 +22,7 @@ import { validateSandboxBoundaryExpansion } from '@maka/core/sandbox-boundary';
 
 // v6 adds the captured target identity (opaque decimal-string dev/ino) to
 // FilesystemWorkerTarget, so the worker can compare-and-swap against the
-// inode that was authorised at lock acquisition instead of only the path
+// inode that was observed after filesystem lease admission instead of only the path
 // string. The identity is carried as strings because bigint cannot cross the
 // JSON protocol boundary.
 export const FILESYSTEM_WORKER_PROTOCOL_VERSION = 7 as const;
@@ -82,11 +82,11 @@ export const FilesystemWorkerTargetSchema = z
     scope: z.enum(['exact', 'subtree']),
     targetType: z.enum(['file', 'directory', 'symlink', 'other', 'missing']),
     // The execution-time identity contract, one required field (no separate
-    // T0 marker — a single three-state shape mirrors the client input, so an
+    // marker — a single three-state shape mirrors the client input, so an
     // illegal combination cannot be expressed on the wire):
-    // - { dev, ino }: the T0 identity the worker must CAS against at T1.
-    // - 'missing': T0 saw no target; a target present at execution time was
-    //   created while the call waited and must fail.
+    // - { dev, ino }: the admission identity the worker must validate.
+    // - 'missing': admission saw no target; a target present at execution time
+    //   appeared in the effect window and must fail.
     // - 'unchecked': the caller does not participate in CAS; the write
     //   proceeds without an identity comparison.
     identity: FilesystemTargetIdentitySchema.or(z.literal('missing')).or(z.literal('unchecked')),

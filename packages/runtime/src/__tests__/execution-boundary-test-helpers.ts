@@ -26,13 +26,18 @@ import {
   type ToolResultArchiveServices,
 } from '../tool-result-archive-capability.js';
 import { ToolRuntime, type ToolRuntimeInput } from '../tool-runtime.js';
+import { ToolAuthorityRegistry } from '../preparation/tool-authority-registry.js';
+import { ToolPreparationService } from '../preparation/tool-preparation-service.js';
 import type { ModelProjectionTransition } from '@maka/core/model-projection-transition';
 
 export const readExternalExecutionBoundary: AiSdkBackendInput['readExecutionBoundary'] = async () =>
   createExternalExecutionBoundary();
 
-type TestAiSdkBackendInput = Omit<AiSdkBackendInput, 'readExecutionBoundary'> &
-  Partial<Pick<AiSdkBackendInput, 'readExecutionBoundary'>> & {
+type TestAiSdkBackendInput = Omit<
+  AiSdkBackendInput,
+  'readExecutionBoundary' | 'preparationService'
+> &
+  Partial<Pick<AiSdkBackendInput, 'readExecutionBoundary' | 'preparationService'>> & {
     testProjectionArtifacts?: boolean;
   };
 
@@ -47,6 +52,7 @@ export function createTestAiSdkBackend(input: TestAiSdkBackendInput): AiSdkBacke
   const transitions: ModelProjectionTransition[] = [];
   return new AiSdkBackend({
     readExecutionBoundary: readExternalExecutionBoundary,
+    preparationService: new ToolPreparationService(new ToolAuthorityRegistry()),
     loadModelProjectionTransitions: async () => ({
       transitions: [...transitions],
       unreadableTargets: new Set<string>(),

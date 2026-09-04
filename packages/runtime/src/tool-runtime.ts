@@ -136,6 +136,17 @@ import {
   type RuntimeInteractionClosureReason,
   type RuntimeUserQuestionClosureReason,
 } from './interaction-authority.js';
+import type { ToolAccesses } from './tool-access.js';
+
+export type ToolStepAdmission =
+  | { readonly kind: 'admitted' }
+  | { readonly kind: 'rejected'; readonly reason: string };
+
+export type PreparedToolEffect = (
+  signal: AbortSignal,
+  fallbackEffect: () => Promise<unknown>,
+  executionContext: MakaToolContext,
+) => Promise<unknown>;
 
 export interface ResolvedMakaToolCall {
   tool: MakaTool;
@@ -150,6 +161,15 @@ export interface ResolvedMakaToolCall {
   parentToolCallId?: string;
   parentOperationId?: string;
   maxResultBytes?: number;
+  /** Precomputed provider-batch admission; nested/direct calls omit it. */
+  stepAdmission?: ToolStepAdmission;
+  /**
+   * Precomputed PreparedOperation.execute (the authority's correctness+effect
+   * shell). It always runs inside the execute boundary, even with zero claims.
+   * Placeholder operations invoke `fallbackEffect`, which preserves the full
+   * live ToolRuntime context for the original `tool.impl`.
+   */
+  effect?: PreparedToolEffect;
 }
 
 export interface DurableSessionEventSink {
@@ -172,6 +192,11 @@ export type MakaToolPreparationContext = Pick<
   | 'permissionMode'
   | 'toolCallId'
   | 'abortSignal'
+>;
+
+export type MakaToolAccessContext = Pick<
+  MakaToolContext,
+  'sessionId' | 'runId' | 'turnId' | 'cwd' | 'permissionMode' | 'toolCallId' | 'abortSignal'
 >;
 
 export interface PreparedMakaToolExecution<R = unknown> {
@@ -216,6 +241,17 @@ export interface MakaTool<P = any, R = unknown> {
   managedMutationTransform?: (args: P) => Promise<R> | R;
   /** Step-level admission contract. Exclusive tools cannot share an assistant step. */
   executionSemantics?: 'parallel' | 'exclusive_step';
+  /**
+   * Pure, call-level declaration of every Scheduler-managed resource this
+   * invocation may access. Omission fails closed to a global access in the
+   * batch runner. This hook must not perform the tool's real side effect.
+   * @deprecated Access planning has moved out of the Scheduler into the
+   * resource Authority's PreparedOperation; register an authority instead.
+   */
+  resolveAccesses?: (
+    args: P,
+    context: MakaToolAccessContext,
+  ) => ToolAccesses | undefined | Promise<ToolAccesses | undefined>;
   /** Nested CodeMode admission. Ordinary tools are nestable by default. */
   nesting?: 'nestable' | 'direct_only';
   /** Optional permission/persistence projection derived from isolated execution args. */
@@ -858,8 +894,10 @@ export class ToolRuntime {
         ...(call.parentOperationId ? { parentOperationId: call.parentOperationId } : {}),
         ...(call.maxResultBytes !== undefined ? { maxResultBytes: call.maxResultBytes } : {}),
         ...(call.providerOptions !== undefined ? { providerOptions: call.providerOptions } : {}),
+        ...(call.effect ? { effect: call.effect } : {}),
       },
       call.stepId,
+      call.stepAdmission,
     );
     const providerError = providerToolErrorMessage(result);
     return { result, ...(providerError ? { providerError } : {}) };
@@ -1115,8 +1153,10 @@ export class ToolRuntime {
       parentToolCallId?: string;
       parentOperationId?: string;
       maxResultBytes?: number;
+      effect?: PreparedToolEffect;
     },
     stepId?: string,
+    stepAdmission?: ToolStepAdmission,
   ): Promise<unknown> {
     const rawExecutionArgs = snapshotToolArgs(args);
     const sandboxBoundaryDecisionGeneration = this.sandboxBoundaryDecisionGeneration;
@@ -1127,7 +1167,13 @@ export class ToolRuntime {
       ctx.origin === 'code_mode' && tool.nesting === 'direct_only'
         ? `Tool ${tool.name} is direct-only and cannot run inside exec.`
         : undefined;
-    const admissionFailure = directOnlyFailure ?? this.admitToolForStep(tool, stepId);
+    const admissionFailure =
+      directOnlyFailure ??
+      (stepAdmission?.kind === 'rejected'
+        ? stepAdmission.reason
+        : stepAdmission?.kind === 'admitted'
+          ? undefined
+          : this.admitToolForStep(tool, stepId));
     const executionArgs = rawExecutionArgs;
     let permissionArgs = executionArgs;
     let permissionArgsError: unknown;
@@ -1744,10 +1790,14 @@ export class ToolRuntime {
               queue,
             ),
         };
-        const invokeTool = () =>
-          preparedExecution
+        const invokeFallbackEffect = async () =>
+          await (preparedExecution
             ? preparedExecution.execute(toolContext)
-            : tool.impl(structuredClone(executionArgs) as never, toolContext);
+            : tool.impl(structuredClone(executionArgs) as never, toolContext));
+        const invokeTool = () =>
+          ctx.effect
+            ? ctx.effect(toolContext.abortSignal, invokeFallbackEffect, toolContext)
+            : invokeFallbackEffect();
         const invokeManagedTransform = () =>
           tool.managedMutationTransform!(structuredClone(executionArgs) as never);
         const prepareOperationValue = async (
@@ -2461,6 +2511,18 @@ export class ToolRuntime {
     if (exclusive) existing.exclusiveToolName = tool.name;
     this.stepAdmissions.set(stepId, existing);
     return undefined;
+  }
+
+  /**
+   * Reserve one provider step's control-plane admission in model order before
+   * resource scheduling begins. Rejected calls still settle through Runtime,
+   * but their batch task can safely declare no resource accesses.
+   */
+  admitToolCallBatch(tools: readonly MakaTool[], stepId: string | undefined): ToolStepAdmission[] {
+    return tools.map((tool) => {
+      const reason = this.admitToolForStep(tool, stepId);
+      return reason ? { kind: 'rejected', reason } : { kind: 'admitted' };
+    });
   }
 
   private assertDurableDispatchNotAborted(toolName: string, abortSignal: AbortSignal): void {

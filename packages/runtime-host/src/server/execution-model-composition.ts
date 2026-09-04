@@ -25,6 +25,7 @@ import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
 import type { ModelCallCommit } from '@maka/core/agent-run';
 import type { PermissionMode } from '@maka/core/permission';
 import { AiSdkBackend } from '@maka/runtime/ai-sdk-backend';
+import type { ToolPreparationService } from '@maka/runtime/tool-preparation';
 import {
   buildDefaultContextBudgetPolicy,
   resolveSelectedModelContextWindow,
@@ -78,6 +79,7 @@ export interface HostAiSdkBackendInput {
   readonly runtimePolicy: HostExecutionRuntimePolicyAuthority;
   readonly oauthCredentials: HostOAuthExecutionAuthority;
   readonly createRunComposer: HostRunComposerFactory;
+  readonly preparationService: ToolPreparationService;
   readonly memoryExtraction?: HostMemoryExtractionCoordinator;
   readonly artifacts: HostExecutionArtifactAuthority;
   readonly contextOffload?: InteractiveContextOffloadReader;
@@ -370,6 +372,7 @@ async function buildHostAiSdkBackend(
         modelId: target.model,
         modelFactory,
         tools: [...modelComposition.tools],
+        preparationService: input.preparationService,
         toolAvailability: modelComposition.toolAvailability,
         ...(modelComposition.planTraceContext
           ? { planTraceContext: modelComposition.planTraceContext }

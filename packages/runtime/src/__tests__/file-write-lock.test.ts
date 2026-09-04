@@ -25,6 +25,9 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { withFileWriteLock } from '../file-write-lock.js';
+import { processFilesystemLeases } from '../filesystem-lease-coordinator.js';
+import { hostFilesystemLeaseKey } from '../filesystem-lease-key.js';
+import { processResourceAdmissions } from '../process-resource-admission.js';
 
 const tick = () => new Promise<void>((r) => setImmediate(r));
 
@@ -85,5 +88,44 @@ describe('withFileWriteLock', () => {
     });
     assert.equal(after, 'ok');
     assert.deepEqual(order, ['fail', 'after']);
+  });
+
+  test('shares the default coordinator namespace with read leases', async () => {
+    let releaseRead!: () => void;
+    const readGate = new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    });
+    let writeRan = false;
+    const read = processFilesystemLeases.withLease(
+      { key: hostFilesystemLeaseKey('adapter-visible'), mode: 'read', scope: 'exact' },
+      undefined,
+      async () => await readGate,
+    );
+    const write = withFileWriteLock('adapter-visible', async () => {
+      writeRan = true;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(writeRan, false);
+    releaseRead();
+    await Promise.all([read, write]);
+    assert.equal(writeRan, true);
+  });
+
+  test('participates in the process-wide all() barrier', async () => {
+    let releaseAll!: () => void;
+    const allGate = new Promise<void>((resolve) => {
+      releaseAll = resolve;
+    });
+    let writeRan = false;
+    const all = processResourceAdmissions.withExclusive(undefined, async () => await allGate);
+    const write = withFileWriteLock('process-visible', async () => {
+      writeRan = true;
+    });
+    await Promise.resolve();
+    assert.equal(writeRan, false);
+    releaseAll();
+    await Promise.all([all, write]);
+    assert.equal(writeRan, true);
   });
 });

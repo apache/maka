@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, type TestContext } from 'node:test';
@@ -43,12 +43,17 @@ test('applies one native update operation through the filesystem authority', asy
   assert.equal(await readFile(join(cwd, 'file.txt'), 'utf8'), 'after\n');
 });
 
-test('deletes a self-referential symlink entry without following it', {
-  skip: process.platform === 'win32',
-}, async (t) => {
+test('deletes a link entry without following it', async (t) => {
   const cwd = await temporaryDirectory(t);
   const link = join(cwd, 'loop');
-  await symlink('loop', link);
+  const junctionTarget = join(cwd, 'junction-target');
+  if (process.platform === 'win32') {
+    await mkdir(junctionTarget);
+    await writeFile(join(junctionTarget, 'keep.txt'), 'keep', 'utf8');
+    await symlink(junctionTarget, link, 'junction');
+  } else {
+    await symlink('loop', link);
+  }
   const filesystem = localFilesystem();
 
   assert.deepEqual(
@@ -58,7 +63,10 @@ test('deletes a self-referential symlink entry without following it', {
     }),
     { status: 'completed' },
   );
-  await assert.rejects(readFile(link, 'utf8'), { code: 'ENOENT' });
+  await assert.rejects(lstat(link), { code: 'ENOENT' });
+  if (process.platform === 'win32') {
+    assert.equal(await readFile(join(junctionTarget, 'keep.txt'), 'utf8'), 'keep');
+  }
 });
 
 test('creates nested files exclusively', async (t) => {

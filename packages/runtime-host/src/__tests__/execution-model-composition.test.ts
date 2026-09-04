@@ -58,6 +58,7 @@ import { type BackendFactoryContext } from '@maka/runtime/session-manager';
 import { type AiSdkBackendInput, type RunTraceEvent } from '@maka/runtime/ai-sdk-backend';
 import { type FilesystemWorkerExecuteInput } from '@maka/runtime/filesystem-worker';
 import { type MakaTool, type MakaToolContext } from '@maka/runtime/tool-runtime';
+import { ToolAuthorityRegistry, ToolPreparationService } from '@maka/runtime/tool-preparation';
 import {
   type ProxiedFetchProxy,
   type ProxiedFetchTransport,
@@ -147,6 +148,33 @@ const HEADLESS_CODING_V1_PROMPT_HASH =
 const HEADLESS_CODING_V1_TOOLS_HASH =
   'sha256:aa3ab56a7b67dde133fffe885f4def81735c93015202e31ecb339a84863f6d03';
 const execFileAsync = promisify(execFile);
+
+test('injects one caller-owned preparation service into every backend', async () => {
+  const preparationService = new ToolPreparationService(new ToolAuthorityRegistry());
+  const createBackend = () =>
+    createHostAiSdkBackend(
+      backendCreationFixture({
+        abortSignal: new AbortController().signal,
+        resolveExecutionConnection: async () => readyExecutionConnection(),
+        readPricing: async () => ({ revision: 0, overrides: [] }),
+        preparationService,
+      }),
+    );
+  const [first, second] = await Promise.all([createBackend(), createBackend()]);
+  try {
+    assert.equal(
+      (first as unknown as { preparationService: ToolPreparationService }).preparationService,
+      preparationService,
+    );
+    assert.equal(
+      (second as unknown as { preparationService: ToolPreparationService }).preparationService,
+      preparationService,
+    );
+  } finally {
+    await Promise.all([first.dispose(), second.dispose()]);
+  }
+});
+
 test('backend creation resolves a bound Session by immutable Connection identity', async () => {
   let observedRef: unknown;
   await createHostAiSdkBackend(
@@ -3964,6 +3992,7 @@ function backendCreationFixture(input: {
   createFetchTransport?: HostAiSdkBackendInput['createFetchTransport'];
   createRunComposer?: HostAiSdkBackendInput['createRunComposer'];
   artifacts?: HostAiSdkBackendInput['artifacts'];
+  preparationService?: HostAiSdkBackendInput['preparationService'];
 }): HostAiSdkBackendInput {
   const runtimePolicy =
     input.runtimePolicy ??
@@ -4037,6 +4066,8 @@ function backendCreationFixture(input: {
     runtimePolicy,
     ...(input.oauthCredentials ? { oauthCredentials: input.oauthCredentials } : {}),
     createRunComposer,
+    preparationService:
+      input.preparationService ?? new ToolPreparationService(new ToolAuthorityRegistry()),
     artifacts: input.artifacts ?? {},
     executionArtifacts: {
       recordToolArtifacts: async () => undefined,

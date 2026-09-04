@@ -85,7 +85,7 @@ describe('filesystem worker client permission snapshots', () => {
     await writeFile(target, 'keep', 'utf8');
     await symlink(target, link);
     // Capture the symlink entry's own identity (lstat, no follow) as the
-    // boundary executor does at T0; a write mutation on an existing target
+    // boundary executor does after lease admission; a write mutation on an existing target
     // without it is rejected as path_changed.
     const linkMeta = await lstat(link, { bigint: true });
     const { client, requests } = fakeClient();
@@ -103,7 +103,7 @@ describe('filesystem worker client permission snapshots', () => {
     assert.equal(expectedTarget?.access, 'write');
     assert.equal(expectedTarget?.scope, 'exact');
     assert.equal(expectedTarget?.targetType, 'symlink');
-    // The symlink entry's own identity (lstat, no follow) is captured at T0 and
+    // The symlink entry's own identity (lstat, no follow) is captured at admission and
     // forwarded; only its shape is stable, not its value.
     assert.equal(typeof expectedTarget?.identity, 'object');
     const forwarded = expectedTarget?.identity as { dev: string; ino: string };
@@ -441,7 +441,7 @@ describe('filesystem worker Linux path context', () => {
       operation: { kind: 'write', path: target, content: 'new' },
       cwd: workspace,
       mode: 'ask',
-      // T0 observed no target (a create), so the T0 marker is 'missing'.
+      // Admission observed no target (a create), so the marker is 'missing'.
       expectedIdentity: 'missing',
     });
 
@@ -704,15 +704,13 @@ describe('filesystem worker client dispatch classification', () => {
     );
   });
 
-  // The missing↔existing transitions while queued (#2600 P2-1): the client
-  // reconciles the T0 identity against the T1 reality the normaliser derived,
-  // so cooperative lock-ordered changes never surface as invalid_request.
-  test('drops a stale identity when the target vanished while queued (delete-then-rewrite)', async () => {
+  test('rejects an admitted existing identity when the target vanished before dispatch', async () => {
     const workspace = await temporaryDirectory('maka-client-stale-identity-');
     const target = join(workspace, 'file.txt');
     await writeFile(target, 'original', 'utf8');
     const stale = await lstat(target, { bigint: true });
-    // The cooperative delete already ran: the target is gone by T1.
+    // Admission observed the file, then an external actor removed it before
+    // the worker client could pin it.
     await rm(target);
 
     const requests: FilesystemWorkerRequest[] = [];
@@ -751,27 +749,26 @@ describe('filesystem worker client dispatch classification', () => {
       },
     });
 
-    // T0 captured an identity; by T1 the target is missing. The stale identity
-    // must be dropped — never sent on a missing target — so the write proceeds
-    // as a fresh exclusive create instead of failing invalid_request.
-    await client.execute({
-      operation: { kind: 'write', path: target, content: 'new' },
-      cwd: workspace,
-      mode: 'ask',
-      expectedIdentity: { dev: String(stale.dev), ino: String(stale.ino) },
-    });
-
-    assert.equal(requests[0]?.expectedTarget.targetType, 'missing');
-    // The stale identity is never sent on a missing target; the wire's
-    // required identity contract reports 'missing' (nothing to compare),
-    // which lets the worker proceed as a fresh exclusive create.
-    assert.equal(requests[0]?.expectedTarget.identity, 'missing');
+    await assert.rejects(
+      client.execute({
+        operation: { kind: 'write', path: target, content: 'new' },
+        cwd: workspace,
+        mode: 'ask',
+        expectedIdentity: { dev: String(stale.dev), ino: String(stale.ino) },
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof FilesystemWorkerClientError);
+        assert.equal(error.reason, 'path_changed');
+        return true;
+      },
+    );
+    assert.equal(requests.length, 0);
   });
 
-  test('rejects a write whose target was created while queued (never invalid_request)', async () => {
+  test('rejects a write whose target appeared after admission (never invalid_request)', async () => {
     const workspace = await temporaryDirectory('maka-client-created-');
     const target = join(workspace, 'file.txt');
-    // The target was approved as missing (no identity) and appeared by T1.
+    // The target was admitted as missing (no identity) and then appeared.
     await writeFile(target, 'external-content', 'utf8');
 
     const sandboxManager = new SandboxManager([new MacosSeatbeltBackend()]);
@@ -799,8 +796,7 @@ describe('filesystem worker client dispatch classification', () => {
         operation: { kind: 'write', path: target, content: 'new' },
         cwd: workspace,
         mode: 'ask',
-        // T0 approved the target as missing; it appeared by T1 — the
-        // "created while queued" race, which must stay path_changed.
+        // Admission approved the target as missing; it appeared before pinning.
         expectedIdentity: 'missing',
       }),
       (error: unknown) => {
@@ -816,7 +812,7 @@ describe('filesystem worker client dispatch classification', () => {
   test('lets an unchecked caller write an existing target without a CAS identity (#3484)', async () => {
     const workspace = await temporaryDirectory('maka-client-unchecked-');
     const target = join(workspace, 'file.txt');
-    // The target already exists; the caller has no T0 snapshot to compare
+    // The target already exists; the caller has no admitted snapshot to compare
     // (e.g. a verification script that owns the path itself).
     await writeFile(target, 'existing', 'utf8');
 
@@ -833,8 +829,8 @@ describe('filesystem worker client dispatch classification', () => {
     assert.equal(expectedTarget?.identity, 'unchecked');
   });
 
-  test('marks a T0-missing create as missing on the wire, not unchecked (#3484)', async () => {
-    const workspace = await temporaryDirectory('maka-client-t0missing-');
+  test('marks an admitted-missing create as missing on the wire, not unchecked (#3484)', async () => {
+    const workspace = await temporaryDirectory('maka-client-admitted-missing-');
     const target = join(workspace, 'new.txt');
 
     const { client, requests } = fakeClient();
@@ -860,12 +856,29 @@ describe('filesystem worker client dispatch classification', () => {
       operation: { kind: 'read', path: target },
       cwd: workspace,
       mode: 'ask',
-      // No expectedIdentity: reads never participate in CAS, and the client
-      // must not reject or silently omit the wire field — a plain-JavaScript
-      // caller that bypasses TypeScript has no way to get this wrong.
+      // Legacy callers may omit expectedIdentity; normal authority-backed exact
+      // Read calls supply one.
     });
 
     assert.equal(requests[0]?.expectedTarget.identity, 'unchecked');
+  });
+
+  test('an exact read preserves its admission identity on the wire', async () => {
+    const workspace = await temporaryDirectory('maka-client-read-identity-');
+    const target = join(workspace, 'file.txt');
+    await writeFile(target, 'content', 'utf8');
+    const metadata = await lstat(target, { bigint: true });
+    const identity = { dev: String(metadata.dev), ino: String(metadata.ino) };
+
+    const { client, requests } = fakeClient();
+    await client.execute({
+      operation: { kind: 'read', path: target },
+      cwd: workspace,
+      mode: 'ask',
+      expectedIdentity: identity,
+    });
+
+    assert.deepEqual(requests[0]?.expectedTarget.identity, identity);
   });
 
   test('a write without expectedIdentity is rejected at runtime (#3487)', async () => {
