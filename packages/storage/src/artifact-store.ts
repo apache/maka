@@ -983,13 +983,11 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
   }
 
   private async load(): Promise<void> {
-    await this.metadataRepository.ready();
     this.metadataReady = true;
     this.records = this.metadataRepository.readAll();
   }
 
   private async writeMetadataUnlocked(changes: ArtifactMetadataChanges): Promise<void> {
-    await this.metadataRepository.ready();
     this.metadataReady = true;
     this.metadataRepository.applyChanges(changes);
   }
@@ -1003,7 +1001,6 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
   }
 
   private async reloadForMutationUnlocked(): Promise<void> {
-    await this.metadataRepository.ready();
     this.metadataReady = true;
     this.records = this.metadataRepository.readAll();
   }
@@ -1410,7 +1407,6 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
       if (!this.metadataReady) {
         return this.runWithWriterLock(async () => {
           await this.assertAuthority?.();
-          await this.metadataRepository.ready();
           this.metadataReady = true;
           return operation();
         });

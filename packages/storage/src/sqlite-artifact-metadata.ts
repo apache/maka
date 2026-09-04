@@ -43,11 +43,6 @@ class SqliteArtifactMetadataRepository implements ArtifactMetadataRepository {
     this.#lease = acquireOperationalStateDatabase(resolve(workspaceRoot));
   }
 
-  ready(): Promise<void> {
-    this.assertOpen();
-    return Promise.resolve();
-  }
-
   readAll(): ArtifactRecord[] {
     this.assertOpen();
     const rows = this.#lease.database

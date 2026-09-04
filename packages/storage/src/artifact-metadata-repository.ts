@@ -25,7 +25,6 @@ export interface ArtifactMetadataChanges {
 }
 
 export interface ArtifactMetadataRepository {
-  ready(): Promise<void>;
   readAll(): ArtifactRecord[];
   applyChanges(changes: ArtifactMetadataChanges): void;
   close(): void;
