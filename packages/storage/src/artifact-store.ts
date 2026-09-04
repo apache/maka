@@ -91,6 +91,19 @@ const ARTIFACT_PURGE_RESOLVE_CONCURRENCY = 8;
  */
 const RETIRED_CAPTURE_ARTIFACT_SOURCE: ArtifactSource = 'provider_request_capture';
 
+/**
+ * A record on its way off disk, which no copy may carry anywhere.
+ *
+ * Copying one would hand the target Session bytes already condemned, and would
+ * put records back after the sweep finished and stopped looking. Leaving them
+ * out also keeps the two from racing: the sweep can no longer delete a record a
+ * copy is holding. That property belongs to the copy, not to one of its three
+ * selection passes, so every pass asks the same question here.
+ */
+function isRetiredCapture(record: ArtifactRecord): boolean {
+  return record.source === RETIRED_CAPTURE_ARTIFACT_SOURCE;
+}
+
 interface ArtifactSessionSnapshot {
   readonly records: readonly ArtifactRecord[];
   readonly revision: ArtifactListRevision;
@@ -429,12 +442,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
             record.sessionId === input.sourceSessionId &&
             turnIds.has(record.turnId) &&
             !excludedArtifactIds.has(record.id) &&
-            // A retired capture is on its way off disk and nothing reads one.
-            // Copying it would hand the new Session bytes already condemned,
-            // and would put records back after the sweep finished and stopped
-            // looking. Leaving them out also keeps the two from racing: the
-            // sweep can no longer delete a record this copy is holding.
-            record.source !== RETIRED_CAPTURE_ARTIFACT_SOURCE,
+            !isRetiredCapture(record),
         )
         .map((record) => ({ ...record }));
       for (const [sessionId, artifactIds] of requestedLinkedArtifactIds) {
@@ -443,7 +451,8 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
             (candidate) =>
               candidate.sessionId === sessionId &&
               candidate.id === artifactId &&
-              candidate.status !== 'deleted',
+              candidate.status !== 'deleted' &&
+              !isRetiredCapture(candidate),
           );
           if (!record) throw new Error(`Linked Artifact ${artifactId} could not be copied`);
           selected.push({ ...record });
@@ -455,7 +464,8 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
           record.sessionId === input.sourceSessionId &&
           includedArtifactIds.has(record.id) &&
           !excludedArtifactIds.has(record.id) &&
-          !selectedIds.has(record.id)
+          !selectedIds.has(record.id) &&
+          !isRetiredCapture(record)
         ) {
           selected.push({ ...record });
           selectedIds.add(record.id);
@@ -915,9 +925,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     let outcome = { purged: 0, remaining: 0 };
     await this.enqueueMutation(async () => {
       await this.prepareMutationUnlocked({ kind: 'purge' });
-      const retired = this.records.filter(
-        (record) => record.source === RETIRED_CAPTURE_ARTIFACT_SOURCE,
-      );
+      const retired = this.records.filter(isRetiredCapture);
       const batch = retired.slice(0, limit);
       await this.purgeRecordsUnlocked(batch);
       outcome = { purged: batch.length, remaining: retired.length - batch.length };

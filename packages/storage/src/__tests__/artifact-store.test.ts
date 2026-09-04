@@ -354,6 +354,58 @@ describe('SQLite Artifact store', () => {
     });
   });
 
+  test('and leaves them behind on the linked and included paths too', async () => {
+    await withWorkspace(async (root) => {
+      const authority = createArtifactStoreWriteAuthority(root);
+      await authority.recover();
+      const { store } = authority;
+      // A Side Conversation copy names artifacts three ways: by turn, by a
+      // linked child Session, and by an explicit include list for the refs
+      // that carry no conversation turn. All three reach the same records.
+      const linkedKept = await store.create({
+        ...artifactInput('linked-kept', 'child result', 10),
+        sessionId: 'session-child',
+      });
+      await store.create({
+        ...artifactInput('linked-capture', 'child request', 11),
+        sessionId: 'session-child',
+        source: 'provider_request_capture',
+      });
+      await store.create({
+        ...artifactInput('upload-capture', 'uploaded request', 12),
+        turnId: 'upload-1',
+        source: 'provider_request_capture',
+      });
+
+      const copied = await store.copyConversationArtifacts({
+        sourceSessionId: 'session-1',
+        targetSessionId: 'session-copy',
+        turnIds: ['turn-1'],
+        includeArtifactIds: ['upload-capture'],
+        linkedArtifacts: [{ sessionId: 'session-child', artifactIds: [linkedKept.id] }],
+      });
+
+      assert.ok(copied.artifactIds.get(linkedKept.id), 'ordinary linked artifacts still copy');
+      assert.equal(copied.artifactIds.get('upload-capture'), undefined);
+      assert.deepEqual(
+        (await store.list('session-copy', { includeDeleted: true })).map((record) => record.source),
+        ['fixture'],
+      );
+
+      // A caller that names a capture outright is asking for a record that is
+      // on its way off disk, and the copy refuses rather than carrying it.
+      await assert.rejects(
+        store.copyConversationArtifacts({
+          sourceSessionId: 'session-1',
+          targetSessionId: 'session-copy-2',
+          turnIds: ['turn-1'],
+          linkedArtifacts: [{ sessionId: 'session-child', artifactIds: ['linked-capture'] }],
+        }),
+        /Linked Artifact linked-capture could not be copied/,
+      );
+    });
+  });
+
   test('reclaims retired request captures in bounded batches and leaves everything else', async () => {
     await withWorkspace(async (root) => {
       const authority = createArtifactStoreWriteAuthority(root);
