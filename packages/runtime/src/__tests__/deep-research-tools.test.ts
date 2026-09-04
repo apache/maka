@@ -148,14 +148,10 @@ describe('Deep Research runtime tools', () => {
   it('runs the source-checkpoint-report lifecycle and makes artifact retries idempotent', async () => {
     await withTempRoot(async (root) => {
       const artifactStore = new FakeArtifactStore();
-      const notifications: string[] = [];
       const store = createSqliteDeepResearchStore(root);
       const tools = buildDeepResearchTools({
         store,
         artifactStore,
-        onArtifactCreated: (event) => {
-          notifications.push(event.artifactId);
-        },
       });
 
       await execute(
@@ -462,7 +458,6 @@ describe('Deep Research runtime tools', () => {
       const status = await execute(tools, DEEP_RESEARCH_STATUS_TOOL_NAME, {}, 'call-status');
       assert.match(status, new RegExp(`Final report: ${reportId}`));
       assert.match(status, new RegExp(`Handoff artifact: ${handoffId}`));
-      assert.equal(notifications.length, 8);
       assert.equal((await store.readEvents(SESSION_ID)).length, 16);
     });
   });

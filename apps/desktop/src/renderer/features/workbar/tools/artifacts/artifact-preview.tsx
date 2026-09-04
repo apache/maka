@@ -104,11 +104,7 @@ function FilePreview(props: { record: ArtifactDescriptor; copy: ArtifactCopy }) 
   const result = useTextRead(props.record.sessionId, props.record.id);
   if (result.state === 'loading') return <PreviewLoading label={props.copy.preview.loadingFile} />;
   if (!result.value.ok) return <TextFailureCard record={props.record} reason={result.value.reason} copy={props.copy} />;
-  const text =
-    props.record.source === 'tool_result_archive' && result.value.text.length <= TEXT_DISPLAY_LIMIT_BYTES
-      ? prettyArchiveJson(result.value.text)
-      : result.value.text;
-  return <TextFilePreview name={props.record.name} text={text} copy={props.copy} />;
+  return <TextFilePreview name={props.record.name} text={result.value.text} copy={props.copy} />;
 }
 
 function TextFilePreview(props: { name: string; text: string; copy: ArtifactCopy }) {
@@ -154,14 +150,6 @@ function TextFilePreview(props: { name: string; text: string; copy: ArtifactCopy
       )}
     </div>
   );
-}
-
-function prettyArchiveJson(text: string): string {
-  try {
-    return JSON.stringify(JSON.parse(text), null, 2);
-  } catch {
-    return text;
-  }
 }
 
 function DiffPreview(props: { record: ArtifactDescriptor; copy: ArtifactCopy }) {

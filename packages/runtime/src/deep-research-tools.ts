@@ -114,12 +114,6 @@ export interface DeepResearchArtifactStore {
 export interface BuildDeepResearchToolsDeps {
   store: DeepResearchStore;
   artifactStore: DeepResearchArtifactStore;
-  onArtifactCreated?: (event: {
-    reason: 'created';
-    artifactId: string;
-    sessionId: string;
-    ts: number;
-  }) => void | Promise<void>;
 }
 
 export function buildDeepResearchTools(deps: BuildDeepResearchToolsDeps): MakaTool[] {
@@ -427,16 +421,6 @@ function buildSaveArtifactTool(deps: BuildDeepResearchToolsDeps): MakaTool<
       } catch (error) {
         await deps.artifactStore.delete(artifactId).catch(() => undefined);
         throw error;
-      }
-      try {
-        await deps.onArtifactCreated?.({
-          reason: 'created',
-          artifactId,
-          sessionId: ctx.sessionId,
-          ts: artifact.createdAt,
-        });
-      } catch {
-        // Renderer notification is best effort; both durable authorities already committed.
       }
       return `Saved ${input.role} artifact ${artifactId}.\n${renderRunStatus(run)}`;
     },
