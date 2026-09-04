@@ -41,6 +41,7 @@ import { closeElectronApplication } from '../../../scripts/electron-lifecycle.mj
 
 const DESKTOP_ROOT = process.cwd();
 const execFileAsync = promisify(execFile);
+const PROMPT_RAIL_READY_SELECTOR = '[data-turn-id^="turn-prompt-rail-"]';
 
 /**
  * The composer's text surface. It is Astryx's `ChatComposerInput`, so the
@@ -557,7 +558,7 @@ async function resetPromptRailWindow(worker: PromptRailWorker): Promise<void> {
   });
   await worker.page.setViewportSize(worker.viewport);
   await worker.page.reload();
-  await worker.page.waitForSelector('[data-turn-id]', { timeout: 20_000 });
+  await worker.page.waitForSelector(PROMPT_RAIL_READY_SELECTOR, { timeout: 20_000 });
 }
 
 type E2eTestFixtures = {
@@ -725,11 +726,11 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
   promptRailWorker: [async ({}, use) => {
     await withE2eWindow({
       seed: false,
-      // A rendered turn, deliberately not the rail: Playwright treats a
-      // zero-area element as hidden, so gating readiness on a tick would turn
-      // every rail regression into a 20s cold-start timeout instead of the
-      // assertion that names it.
-      readinessSelector: '[data-turn-id]',
+      // The fixture always seeds the default Session too, and that Session can
+      // render before the async fixture state selects the prompt-rail Session.
+      // A turn from the target Session proves both selection and transcript
+      // readiness without relying on a rail tick's nonzero geometry.
+      readinessSelector: PROMPT_RAIL_READY_SELECTOR,
       e2eFixtureScenario: 'chat-prompt-rail',
       // Every other fixture window names its locale; without one the renderer
       // takes the host's, so any test that reaches a control by its label
