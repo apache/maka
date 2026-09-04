@@ -173,11 +173,10 @@ establishes a deliberately small link contract while it stays experimental:
   with `expectedRevision` CAS on the revision read before the (asynchronous)
   Host validation, so a concurrent scope/revision change cannot write a Session
   validated for one project into an item that has moved to another.
-- **Surface ownership**: a pending start claim is owned by one specific New Task
-  surface instance (its Session selection revision), not by the target-scoped
-  draft key. A
-  first send from any other surface—including a New Task reopened on the same
-  Host/project—cannot consume the claim.
+- **Surface ownership**: a pending start claim is jointly owned by one specific
+  New Task surface instance (its Session selection revision) and its
+  target-scoped draft key. A first send from another surface, or from the same
+  surface after its Host/project changes, clears rather than consumes the claim.
 - **Retry durability (spike limitation)**: the pending-link claim lives in the
   renderer for the lifetime of the current controller. If the Session is
   created and `linkSession` fails, the claim (with its Session id) is retained
