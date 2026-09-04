@@ -186,6 +186,7 @@ export class RuntimeHostPairingFinalizationInterruptedError extends Error {
 export type RuntimeHostGuestAccessFinalization = 'ready' | 'reconnecting';
 
 const DEFAULT_PAIRING_FINALIZATION_TIMEOUT_MS = 30_000;
+const LOCAL_HOST_RETIREMENT_ADMISSION_TIMEOUT_MS = 5_000;
 
 export type RuntimeHostRestartableConflict = Extract<
   DesktopRuntimeHostCandidateStartResult,
@@ -811,12 +812,22 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     let quiescence: Awaited<
       ReturnType<RuntimeHostReconnectLifecycle<DesktopRuntimeHostCandidate>['quiesce']>
     >;
+    const admissionAbort = new AbortController();
+    const admissionTimeout = setTimeout(
+      () => admissionAbort.abort(new Error('Runtime Host did not reconnect before retirement')),
+      LOCAL_HOST_RETIREMENT_ADMISSION_TIMEOUT_MS,
+    );
     try {
-      quiescence = await lifecycle.quiesce();
+      quiescence = await lifecycle.quiesce(admissionAbort.signal);
     } catch (error) {
       const terminal = this.#unavailableLocalHostRetirement(target, error);
       if (terminal) return terminal;
+      if (admissionAbort.signal.aborted) {
+        throw this.#localHostRetirementError(target, error) ?? error;
+      }
       throw error;
+    } finally {
+      clearTimeout(admissionTimeout);
     }
     let hostPid = quiescence.current.hostPid;
     let launchBarrierPaused = false;
@@ -879,10 +890,27 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     cause: unknown = target.state.readiness === 'unavailable' ? target.state.error : undefined,
   ): DesktopLocalHostRetirement | undefined {
     if (target.state.readiness !== 'unavailable') return undefined;
+    return this.#retirementWithoutCurrentHost(target, cause);
+  }
+
+  #retirementWithoutCurrentHost(
+    target: DesktopRuntimeHostTargetGeneration,
+    cause: unknown,
+  ): DesktopLocalHostRetirement {
+    const failure = this.#localHostRetirementError(target, cause);
+    if (!failure || target.lastCandidate?.ownedProcess?.state === 'exited') {
+      return { kind: 'not_owned' };
+    }
+    throw failure;
+  }
+
+  #localHostRetirementError(
+    target: DesktopRuntimeHostTargetGeneration,
+    cause: unknown,
+  ): DesktopLocalHostRetirementError | undefined {
     const last = target.lastCandidate;
-    if (!last || last.ownership !== 'owned_ephemeral') return { kind: 'not_owned' };
-    if (last.ownedProcess?.state === 'exited') return { kind: 'not_owned' };
-    throw new DesktopLocalHostRetirementError(
+    if (!last || last.ownership !== 'owned_ephemeral') return undefined;
+    return new DesktopLocalHostRetirementError(
       {
         hostId: last.hostId,
         hostEpoch: last.hostEpoch,

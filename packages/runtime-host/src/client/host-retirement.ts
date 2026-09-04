@@ -33,9 +33,14 @@ export type RuntimeHostRetirementPreparation = OperationOutput<'host.upgrade.pre
 export function prepareConnectedRuntimeHostRetirement(
   connection: RuntimeHostConnection,
   mode: RuntimeHostRetirementMode,
+  timeoutMs?: number,
 ): Promise<RuntimeHostRetirementPreparation> {
-  return connection.request('host.upgrade.prepare', {
-    expectedHostEpoch: connection.hostEpoch,
-    allowInterruptActiveTasks: mode === 'interrupt_active_work',
-  });
+  return connection.request(
+    'host.upgrade.prepare',
+    {
+      expectedHostEpoch: connection.hostEpoch,
+      allowInterruptActiveTasks: mode === 'interrupt_active_work',
+    },
+    timeoutMs,
+  );
 }

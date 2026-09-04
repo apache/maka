@@ -215,6 +215,65 @@ test('waits through a reconnect gap before quiescing Host retirement', async () 
   await owner.close();
 });
 
+test('does not treat an in-flight replacement as retired after admission times out', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const first = candidateHarness({
+    ownedProcess: {
+      pid: 42,
+      exited: Promise.resolve({ code: 1, signal: null, stderr: '', stderrTruncated: false }),
+    },
+  });
+  const replacement = candidateHarness();
+  let starts = 0;
+  let reportReconnectStart!: () => void;
+  let releaseReconnect!: () => void;
+  const reconnectStarted = new Promise<void>((resolve) => {
+    reportReconnectStart = resolve;
+  });
+  const reconnectReleased = new Promise<void>((resolve) => {
+    releaseReconnect = resolve;
+  });
+  const owner = await startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
+    startCandidate: async (input) => {
+      starts += 1;
+      if (starts === 1) return ready(first.candidate);
+      reportReconnectStart();
+      const signal = input.signal;
+      assert.ok(signal);
+      await Promise.race([
+        reconnectReleased,
+        new Promise<never>((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+        }),
+      ]);
+      return ready(replacement.candidate);
+    },
+    reconnectBackoff: { minMs: 0, maxMs: 0 },
+    waitForHostExit: async () => {},
+  });
+
+  first.disconnect();
+  await reconnectStarted;
+  const retirement = owner.retireOwnedLocalHost('interrupt_active_work');
+  t.mock.timers.tick(5_000);
+  await assert.rejects(
+    retirement,
+    (error: unknown) =>
+      error instanceof DesktopLocalHostRetirementError &&
+      error.facts.pid === undefined &&
+      !error.facts.forceTerminationAvailable,
+  );
+
+  releaseReconnect();
+  await owner.waitUntilReady('local');
+  assert.equal(
+    (await owner.retireOwnedLocalHost('interrupt_active_work')).kind,
+    'retired',
+  );
+  assert.equal(replacement.prepareRetirementCalls, 1);
+  await owner.close();
+});
+
 test('retires the owned ephemeral Host before Desktop quit', async () => {
   const events: string[] = [];
   const current = candidateHarness({
