@@ -30,6 +30,7 @@ import {
   type ClientCapabilityServiceCallFrame,
 } from '@maka/runtime-host/protocol';
 import { z } from 'zod';
+import { buildBrowserTools } from '../browser/browser-tools.js';
 import { buildClientSettingsTools } from '../client-settings-tools.js';
 import { browserOriginAdmission } from '../browser/browser-origin-admission.js';
 import { buildRiveWorkflowTool } from '../rive-workflow-tool.js';
@@ -81,6 +82,22 @@ test('publishes self-described session-affine Browser and Computer Use offers', 
       registrationId: 'registration-1',
       offers: provider.offers(),
     }),
+  );
+});
+
+test('preserves built-in Browser labels for non-localized consumers', () => {
+  const provider = createDesktopNativeCapabilityProvider({
+    browserTools: buildBrowserTools(),
+    resolveBrowserUrl: () => 'https://example.com/',
+    releaseBrowserSession() {},
+    computerUseTools: computerTools(),
+    releaseComputerUseSession() {},
+  });
+
+  assert.deepEqual(
+    provider.offers().find((offer) => offer.offerId === 'desktop_browser')
+      ?.tools.map((tool) => tool.annotations?.title),
+    ['浏览器导航', '浏览器快照', '浏览器点击', '浏览器输入', '浏览器等待', '浏览器提取'],
   );
 });
 

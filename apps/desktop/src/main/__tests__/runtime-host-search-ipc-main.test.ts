@@ -49,6 +49,25 @@ test('Runtime Host transcripts produce title and content hits with turn ids', as
               ts: 1,
               text: '第 3 个问题：这一段的调用链路是怎样的？',
             },
+            {
+              type: 'tool_call',
+              id: 'browser-call',
+              turnId: 'turn-host-3',
+              ts: 2,
+              toolName: 'mcp__desktop_browser__browser_navigate',
+              displayName: 'browser_navigate',
+              intent: '打开检查页面',
+              args: {},
+            },
+            {
+              type: 'tool_result',
+              id: 'browser-result',
+              turnId: 'turn-host-3',
+              ts: 3,
+              toolUseId: 'browser-call',
+              isError: true,
+              content: { kind: 'text', text: '检查页面失败' },
+            },
           ],
           close: async () => {
             closed += 1;
@@ -70,6 +89,7 @@ test('Runtime Host transcripts produce title and content hits with turn ids', as
   assert.deepEqual(titleHits[0]?.target, {
     kind: 'thread',
     sessionId: 'searchable-session',
+    matchKind: 'session_title',
   });
 
   const contentHits = expectResults(
@@ -86,8 +106,21 @@ test('Runtime Host transcripts produce title and content hits with turn ids', as
     sessionId: 'searchable-session',
     turnId: 'turn-host-3',
     sequence: 0,
+    matchKind: 'user_message',
   });
-  assert.equal(closed, 2);
+
+  const toolHit = expectResults(
+    await handler({} as never, { source: 'thread', query: '打开检查', limit: 10 }),
+  )[0];
+  assert.deepEqual(toolHit?.target?.tool, {
+    name: 'mcp__desktop_browser__browser_navigate',
+    displayName: 'browser_navigate',
+  });
+  const resultHit = expectResults(
+    await handler({} as never, { source: 'thread', query: '检查页面失败', limit: 10 }),
+  )[0];
+  assert.equal(resultHit?.target?.toolResultIsError, true);
+  assert.equal(closed, 4);
 });
 
 test('a Runtime Host transcript failure yields no content hit', async () => {
@@ -128,6 +161,9 @@ function expectResults(outcome: unknown): Array<{
     sessionId: string;
     turnId?: string;
     sequence?: number;
+    matchKind?: string;
+    tool?: { name: string; displayName?: string };
+    toolResultIsError?: boolean;
   };
 }> {
   if (!Array.isArray(outcome)) {

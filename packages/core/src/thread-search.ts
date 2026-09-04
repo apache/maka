@@ -350,6 +350,17 @@ export async function runThreadSearch(
           sequence: messageIndex,
           messageId: message.id,
           matchKind: threadSearchMatchKind(message),
+          ...(message.type === 'tool_call'
+            ? {
+                tool: {
+                  name: message.toolName,
+                  ...(message.displayName
+                    ? { displayName: redactSecrets(message.displayName) }
+                    : {}),
+                },
+              }
+            : {}),
+          ...(message.type === 'tool_result' ? { toolResultIsError: message.isError } : {}),
           messageTimestamp: message.ts,
         },
       });

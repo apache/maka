@@ -23,6 +23,84 @@ type BackgroundTerminalStatus = 'running' | 'completed' | 'failed' | 'timed_out'
 type WebCredentialCopyKey = 'env' | 'settings' | 'missing' | 'unknown';
 type WebGuidanceKey = 'env' | 'settings' | 'rate_limited' | 'not_configured' | 'timed_out' | 'privacy_mode' | 'unknown';
 
+type LocalizedLabel = Record<UiLocale, string>;
+
+/** Maka-owned tool labels, grouped by tool so translations stay aligned. */
+export const BUILTIN_TOOL_LABELS = {
+  apply_patch: { zh: '应用补丁', en: 'Apply patch' },
+  Read: { zh: '读取文件', en: 'Read file' },
+  Write: { zh: '写入文件', en: 'Write file' },
+  Edit: { zh: '编辑文件', en: 'Edit file' },
+  FormatJson: { zh: '格式化 JSON', en: 'Format JSON' },
+  Glob: { zh: '查找文件', en: 'Find files' },
+  Grep: { zh: '搜索文本', en: 'Search text' },
+  Bash: { zh: '运行命令', en: 'Run command' },
+  StopBackgroundTask: { zh: '停止后台任务', en: 'Stop background task' },
+  WriteStdin: { zh: '写入终端', en: 'Write to terminal' },
+  ArchiveRead: { zh: '读取归档结果', en: 'Read archived result' },
+  WebFetch: { zh: '网页读取', en: 'Web fetch' },
+  WebSearch: { zh: '联网搜索', en: 'Web search' },
+  web_search: { zh: '联网搜索', en: 'Web search' },
+  ScheduledTask: { zh: '定时任务', en: 'Scheduled task' },
+  AskUserQuestion: { zh: '询问用户', en: 'Ask user' },
+  request_sandbox_boundary: { zh: '请求沙箱边界', en: 'Request sandbox boundary' },
+  Skill: { zh: '加载技能', en: 'Load skill' },
+  SkillSearch: { zh: '搜索技能', en: 'Search skills' },
+  MakaSettingsGet: { zh: '读取 Maka 设置', en: 'Read Maka settings' },
+  MakaSettingsUpdate: { zh: '更新 Maka 设置', en: 'Update Maka settings' },
+  memory_remember: { zh: '记住信息', en: 'Remember information' },
+  memory_extract: { zh: '提取记忆', en: 'Extract memory' },
+  todo_read: { zh: '读取待办列表', en: 'Read Todo list' },
+  todo_write: { zh: '更新待办列表', en: 'Update Todo list' },
+  GoalSet: { zh: '设置目标', en: 'Set goal' },
+  GoalClear: { zh: '清除目标', en: 'Clear goal' },
+  GoalPause: { zh: '暂停目标', en: 'Pause goal' },
+  GoalResume: { zh: '恢复目标', en: 'Resume goal' },
+  GoalStatus: { zh: '目标状态', en: 'Goal status' },
+  task_create: { zh: '创建任务', en: 'Create task' },
+  task_update: { zh: '更新任务', en: 'Update task' },
+  task_list: { zh: '任务列表', en: 'List tasks' },
+  task_get: { zh: '获取任务', en: 'Get task' },
+  SearchHistory: { zh: '搜索对话历史', en: 'Search conversation history' },
+  ReadHistory: { zh: '读取对话历史', en: 'Read conversation history' },
+  agent_spawn: { zh: '启动智能体', en: 'Agent' },
+  agent_list: { zh: '智能体列表', en: 'Agent list' },
+  agent_output: { zh: '智能体输出', en: 'Agent output' },
+  agent_swarm_status: { zh: '智能体集群状态', en: 'Agent swarm status' },
+  view_agent_graph: { zh: '查看智能体图', en: 'View agent graph' },
+  update_agent_graph: { zh: '更新智能体图', en: 'Update agent graph' },
+  yield_agent_graph: { zh: '让出智能体图', en: 'Yield agent graph' },
+  deep_research_start: { zh: '初始化研究工作区', en: 'Initialize research workspace' },
+  deep_research_read_artifact: { zh: '读取研究产物', en: 'Read research artifact' },
+  deep_research_save_artifact: { zh: '保存研究产物', en: 'Save research artifact' },
+  deep_research_update_checklist: { zh: '更新研究清单', en: 'Update research checklist' },
+  deep_research_record_step: { zh: '记录研究步骤', en: 'Record research step' },
+  deep_research_checkpoint: { zh: '保存研究检查点', en: 'Checkpoint research' },
+  deep_research_status: { zh: '读取研究工作区', en: 'Read research workspace' },
+  deep_research_complete: { zh: '完成研究', en: 'Complete research' },
+  ExploreAgent: { zh: '只读探索', en: 'Read-only exploration' },
+  maka_computer: { zh: 'Maka Computer', en: 'Maka Computer' },
+  SubmitPlan: { zh: '提交计划', en: 'Submit plan' },
+  update_plan: { zh: '更新计划', en: 'Update plan' },
+  cancel_plan: { zh: '取消计划', en: 'Cancel plan' },
+  browser_navigate: { zh: '浏览器导航', en: 'Browser navigation' },
+  browser_snapshot: { zh: '浏览器快照', en: 'Browser snapshot' },
+  browser_click: { zh: '浏览器点击', en: 'Browser click' },
+  browser_type: { zh: '浏览器输入', en: 'Browser input' },
+  browser_wait: { zh: '浏览器等待', en: 'Browser wait' },
+  browser_extract: { zh: '浏览器提取', en: 'Browser extract' },
+  MakaClientSettingsGet: { zh: '读取客户端设置', en: 'Read client settings' },
+  MakaClientSettingsUpdate: { zh: '更新客户端设置', en: 'Update client settings' },
+  RiveWorkflow: { zh: 'Rive 工作流', en: 'Rive workflow' },
+} satisfies Record<string, LocalizedLabel>;
+
+export type BuiltinToolName = keyof typeof BUILTIN_TOOL_LABELS;
+
+export function getBuiltinToolLabel(toolName: string, locale: UiLocale): string | undefined {
+  if (!Object.hasOwn(BUILTIN_TOOL_LABELS, toolName)) return undefined;
+  return BUILTIN_TOOL_LABELS[toolName as BuiltinToolName][locale];
+}
+
 export interface ToolActivityCopy {
   errorLabel: string;
   /** The two outcomes a tool row spells out next to its name. */

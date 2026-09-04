@@ -536,6 +536,7 @@ describe('thread search text projection', () => {
     );
     assert.equal(hits[0]?.target?.matchKind, 'tool_result');
     assert.equal(hits[0]?.target?.messageId, 'tr1');
+    assert.equal(hits[0]?.target?.toolResultIsError, false);
   });
 
   it('indexes tool intent but not tool names or display names', async () => {
@@ -562,6 +563,25 @@ describe('thread search text projection', () => {
     assert.equal(hits.length, 1);
     assert.equal(hits[0]?.target?.matchKind, 'tool_intent');
     assert.equal(hits[0]?.target?.messageId, 'tc1');
+    assert.deepEqual(hits[0]?.target?.tool, {
+      name: 'Bash',
+      displayName: 'Shell command',
+    });
+  });
+
+  it('redacts tool labels in result metadata', async () => {
+    const message = {
+      ...toolCall('find the metadata needle'),
+      displayName: 'token=secret-search-label',
+    };
+    const hits = expectResults(
+      await runThreadSearch(
+        { source: 'thread', query: 'metadata needle', limit: 5 },
+        makeDeps({ s1: { session: session({ id: 's1' }), messages: [message] } }),
+      ),
+    );
+
+    assert.equal(hits[0]?.target?.tool?.displayName, 'token=[redacted]');
   });
 
   it('indexes assistant answers without exposing thinking', async () => {

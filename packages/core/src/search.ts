@@ -116,6 +116,10 @@ export type SearchResultTarget = {
   messageId?: string;
   /** Stable machine-readable classification of the matched transcript surface. */
   matchKind?: ThreadSearchMatchKind;
+  /** Tool identity for UI-owned presentation of tool-intent matches. */
+  tool?: { name: string; displayName?: string };
+  /** Outcome for UI-owned presentation of tool-result matches. */
+  toolResultIsError?: boolean;
   /** Timestamp of the matched stored message; absent for session-title matches. */
   messageTimestamp?: number;
 };

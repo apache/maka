@@ -31,6 +31,7 @@ import {
 import { AstryxLocaleProvider } from './astryx-i18n.js';
 import { getShellControlsCopy } from './shell-controls-copy.js';
 import { useUiLocale } from './locale-context.js';
+import { resolveToolName } from './tool-activity/display-name.js';
 
 interface SearchModalDeps {
   searchThread(
@@ -49,6 +50,32 @@ interface SearchItemAuxiliaryData {
 }
 
 type SearchItem = SearchableItem<SearchItemAuxiliaryData>;
+
+export function formatThreadSearchResultSummary(
+  result: SearchResult,
+  locale: UiLocale,
+): string | undefined {
+  if (result.target?.kind !== 'thread' || !result.target.matchKind) return result.summary;
+  const copy = getShellControlsCopy(locale).search.resultSummary;
+  switch (result.target.matchKind) {
+    case 'session_title':
+      return copy.sessionTitle;
+    case 'user_message':
+      return copy.userMessage;
+    case 'assistant_message':
+      return copy.assistantMessage;
+    case 'tool_intent': {
+      const tool = result.target.tool;
+      return copy.toolCall(
+        tool ? resolveToolName(tool.name, tool.displayName, locale) : undefined,
+      );
+    }
+    case 'tool_result':
+      return result.target.toolResultIsError
+        ? copy.toolResultFailure
+        : copy.toolResultSuccess;
+  }
+}
 
 interface ThreadSearchSourceInput {
   searchThread?: SearchModalDeps['searchThread'];
@@ -253,14 +280,15 @@ export function SearchModal(props: {
         renderItem={(item) => {
           const result = item.auxiliaryData?.result;
           if (!result) return item.label;
+          const summary = formatThreadSearchResultSummary(result, locale);
           return (
             <div className="maka-search-modal-result">
               <div className="maka-search-modal-result-title">
                 {result.title}
               </div>
-              {result.summary && (
+              {summary && (
                 <div className="maka-search-modal-result-meta">
-                  {result.summary}
+                  {summary}
                 </div>
               )}
               {result.snippet && (

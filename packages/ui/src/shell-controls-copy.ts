@@ -50,6 +50,14 @@ type ShellControlsCopy = {
     results(count: number): string;
     truncatedResults(count: number): string;
     resultsLabel: string;
+    resultSummary: {
+      sessionTitle: string;
+      userMessage: string;
+      assistantMessage: string;
+      toolCall(name?: string): string;
+      toolResultSuccess: string;
+      toolResultFailure: string;
+    };
   };
 };
 
@@ -83,6 +91,14 @@ const SHELL_CONTROLS_COPY_BY_LOCALE = {
       results: (count: number) => `找到 ${count} 条匹配`,
       truncatedResults: (count: number) => `结果较多，已显示前 ${count} 条`,
       resultsLabel: '搜索结果',
+      resultSummary: {
+        sessionTitle: '任务标题',
+        userMessage: '用户消息',
+        assistantMessage: '助手回复',
+        toolCall: (name?: string) => name ? `工具调用：${name}` : '工具调用',
+        toolResultSuccess: '工具结果：成功',
+        toolResultFailure: '工具结果：失败',
+      },
     },
   },
   en: {
@@ -115,6 +131,14 @@ const SHELL_CONTROLS_COPY_BY_LOCALE = {
       results: (count: number) => `${count} ${count === 1 ? 'match' : 'matches'}`,
       truncatedResults: (count: number) => `Many results; showing the first ${count}`,
       resultsLabel: 'Search results',
+      resultSummary: {
+        sessionTitle: 'Task title',
+        userMessage: 'User message',
+        assistantMessage: 'Assistant response',
+        toolCall: (name?: string) => name ? `Tool call: ${name}` : 'Tool call',
+        toolResultSuccess: 'Tool result: Succeeded',
+        toolResultFailure: 'Tool result: Failed',
+      },
     },
   },
 } satisfies UiCatalog<ShellControlsCopy>;

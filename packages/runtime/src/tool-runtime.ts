@@ -186,7 +186,7 @@ export interface MakaTool<P = any, R = unknown> {
   description: string;
   /** Zod schema describing the tool's argument shape. */
   parameters: unknown;
-  /** Optional UI display name. */
+  /** Optional provider or compatibility label. Localized built-in UI copy resolves from the canonical name. */
   displayName?: string;
   /** Stable semantic category used by UI presentation; never carries styling. */
   activityKind?: ToolActivityKind;

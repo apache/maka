@@ -854,6 +854,7 @@ export interface ToolCallMessage {
   toolName: string;
   /** Stable semantic category for presentation; absent on legacy rows. */
   activityKind?: ToolActivityKind;
+  /** Provider/compatibility label; built-in UI copy must resolve from toolName and the active locale. */
   displayName?: string;
   intent?: string;
   args: unknown;

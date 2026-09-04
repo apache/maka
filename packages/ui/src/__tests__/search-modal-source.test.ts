@@ -21,7 +21,11 @@ import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { SearchResult } from '@maka/core/search';
-import { createThreadSearchSource } from '../search-modal.js';
+import {
+  createThreadSearchSource,
+  formatThreadSearchResultSummary,
+} from '../search-modal.js';
+
 function result(sessionId: string): SearchResult {
   return {
     source: 'thread',
@@ -77,6 +81,43 @@ function createHarness() {
 }
 
 describe('thread search source', () => {
+  it('formats result metadata in the active locale', () => {
+    const summary = (
+      matchKind: NonNullable<NonNullable<SearchResult['target']>['matchKind']>,
+      locale: 'zh' | 'en',
+      target: Partial<NonNullable<SearchResult['target']>> = {},
+    ) => formatThreadSearchResultSummary({
+      source: 'thread',
+      title: 'Task',
+      target: { kind: 'thread', sessionId: 's1', matchKind, ...target },
+    }, locale);
+
+    assert.equal(summary('session_title', 'en'), 'Task title');
+    assert.equal(summary('user_message', 'zh'), '用户消息');
+    assert.equal(summary('assistant_message', 'en'), 'Assistant response');
+    assert.equal(summary('tool_result', 'zh'), '工具结果：成功');
+    assert.equal(summary('tool_result', 'en', { toolResultIsError: true }), 'Tool result: Failed');
+    assert.equal(
+      summary('tool_intent', 'en', {
+        tool: { name: 'Bash', displayName: '执行命令' },
+      }),
+      'Tool call: Run command',
+    );
+    assert.equal(
+      summary('tool_intent', 'zh', {
+        tool: { name: 'mcp__acme__lookup', displayName: 'Acme Lookup' },
+      }),
+      '工具调用：Acme Lookup',
+    );
+    assert.equal(
+      summary('tool_intent', 'zh', {
+        tool: { name: 'tool_search', displayName: 'Enable capability' },
+      }),
+      '工具调用：启用能力',
+    );
+    assert.equal(summary('tool_intent', 'en'), 'Tool call');
+  });
+
   it('keeps the selectable mapping while a filtered follow-up is pending', async () => {
     const harness = createHarness();
     const initial = harness.source.search('current');

@@ -18,15 +18,15 @@
  */
 
 /**
- * The name a tool row shows. A tool carries its own `displayName` when the
- * backend named it; the search/legacy activation connector gets a localized label
- * (its raw name reads as an implementation detail); everything else falls back
- * to the canonical tool name.
+ * The name a tool row shows. Maka-owned tools use locale copy, connectors use
+ * their activation summary, and external tools keep their provider label before
+ * falling back to the canonical tool name.
  */
 
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { ToolActivityItem } from '../materialize.js';
 import { describeLoadToolResult, loadToolDisplayName } from '../tool-format.js';
+import { getBuiltinToolLabel } from './copy.js';
 
 const CONNECTOR_TOOL_NAMES: ReadonlySet<string> = new Set([
   'tool_search',
@@ -34,16 +34,36 @@ const CONNECTOR_TOOL_NAMES: ReadonlySet<string> = new Set([
   'load_tool',
 ]);
 
+const BUILTIN_PROXY_PREFIXES = [
+  'mcp__desktop_browser__',
+  'mcp__desktop_computer_use__',
+  'mcp__desktop_settings__',
+  'mcp__desktop_rive__',
+] as const;
+
 export function isConnectorTool(name: string): boolean {
   return CONNECTOR_TOOL_NAMES.has(name);
 }
 
+export function resolveToolName(
+  toolName: string,
+  displayName: string | undefined,
+  locale: UiLocale,
+): string {
+  if (isConnectorTool(toolName)) return loadToolDisplayName(locale);
+  const proxyPrefix = BUILTIN_PROXY_PREFIXES.find((prefix) => toolName.startsWith(prefix));
+  const builtinLabel = getBuiltinToolLabel(
+    proxyPrefix ? toolName.slice(proxyPrefix.length) : toolName,
+    locale,
+  );
+  return (builtinLabel ?? displayName) || toolName;
+}
+
 export function resolveToolDisplayName(item: ToolActivityItem, locale: UiLocale): string {
-  if (item.displayName) return item.displayName;
   if (isConnectorTool(item.toolName)) {
     const value = item.result?.kind === 'json' ? item.result.value : undefined;
     return describeLoadToolResult(item.args, value, locale)?.actionLabel
       ?? loadToolDisplayName(locale);
   }
-  return item.toolName;
+  return resolveToolName(item.toolName, item.displayName, locale);
 }

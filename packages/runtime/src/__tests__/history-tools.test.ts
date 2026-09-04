@@ -117,8 +117,12 @@ test('SearchHistory returns typed message hits from current and other sessions',
   assert.ok(messageRows.every((row) => typeof row.message_id === 'string'));
   assert.ok(messageRows.every((row) => typeof row.message_timestamp === 'number'));
   assert.deepEqual(
-    new Set(result.rows.map((row) => row.match_kind)),
-    new Set(['session_title', 'user_message', 'assistant_message']),
+    new Map(result.rows.map((row) => [row.match_kind, row.summary])),
+    new Map([
+      ['session_title', '任务标题'],
+      ['user_message', '用户消息'],
+      ['assistant_message', '助手回复'],
+    ]),
   );
   assert.equal(result.rows.find((row) => row.session_id === 'current')?.is_current_session, true);
   assert.ok(result.rows.every((row) => row.turn_id !== 'current-turn'));
@@ -156,6 +160,66 @@ test('SearchHistory exposes and consumes an opaque session continuation', async 
     ['session-200'],
   );
   assert.equal(second.next_cursor, undefined);
+});
+
+test('SearchHistory preserves existing summaries without exposing canonical tool secrets', async () => {
+  const needle = 'history summary needle';
+  const messages = new Map<string, StoredMessage[]>([
+    [
+      'past',
+      [
+        {
+          type: 'tool_call',
+          id: 'legacy-browser',
+          turnId: 'turn-1',
+          ts: 1,
+          toolName: 'mcp__desktop_browser__browser_navigate',
+          displayName: '浏览器导航',
+          intent: needle,
+          args: {},
+        },
+        {
+          type: 'tool_call',
+          id: 'secret-tool',
+          turnId: 'turn-1',
+          ts: 2,
+          toolName: 'sk-ant-test-secret-token-12345',
+          displayName: 'Acme Lookup',
+          intent: needle,
+          args: {},
+        },
+        {
+          type: 'tool_result',
+          id: 'success-result',
+          turnId: 'turn-1',
+          ts: 3,
+          toolUseId: 'legacy-browser',
+          isError: false,
+          content: { note: needle } as never,
+        },
+        {
+          type: 'tool_result',
+          id: 'failure-result',
+          turnId: 'turn-1',
+          ts: 4,
+          toolUseId: 'secret-tool',
+          isError: true,
+          content: { note: needle } as never,
+        },
+      ],
+    ],
+  ]);
+  const result = (await buildSearchHistoryTool(
+    historyDeps([session('past', 'Past', 1)], messages),
+  ).impl({ query: needle, limit: 10 }, context())) as {
+    rows: Array<{ summary: string }>;
+  };
+
+  assert.ok(result.rows.some((row) => row.summary === '工具调用：浏览器导航'));
+  assert.ok(result.rows.some((row) => row.summary === '工具调用：Acme Lookup'));
+  assert.ok(result.rows.some((row) => row.summary === '工具结果：成功'));
+  assert.ok(result.rows.some((row) => row.summary === '工具结果：失败'));
+  assert.doesNotMatch(JSON.stringify(result.rows), /sk-ant-test-secret-token-12345/u);
 });
 
 test('ReadHistory returns a bounded visible excerpt without reasoning or raw tool data', async () => {

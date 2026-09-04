@@ -205,7 +205,7 @@ describe('single live-turn handoff', () => {
     assert.equal((markup.match(/data-transient-message-id=/g) ?? []).length, 2);
   });
 
-  it('renders one ordered timeline: thinking before its tool and answer', () => {
+  it('renders thinking, answer, and tool in one ordered timeline', () => {
     const markup = renderLiveTurn({
       turnId: 'turn-1',
       phase: 'streamed',
@@ -215,7 +215,8 @@ describe('single live-turn handoff', () => {
         text: { text: '最终答案', truncated: false, complete: true },
         tools: [{
           toolUseId: 'tool-1',
-          toolName: 'Bash',
+          toolName: 'mcp__fixture__ordered_tool',
+          displayName: 'Timeline tool marker',
           stepId: 'assistant-1',
           status: 'running',
           args: {},
@@ -226,9 +227,8 @@ describe('single live-turn handoff', () => {
 
     // Thinking and tools own their disclosures; do not wrap them in another.
     assert.equal((markup.match(/maka-processing-block/g) ?? []).length, 0);
-    assert.ok(markup.indexOf('深度思考') >= 0);
-    assert.ok(markup.indexOf('深度思考') < markup.indexOf('最终答案'));
-    assert.ok(markup.indexOf('最终答案') < markup.indexOf('Bash'));
+    assert.ok(markup.indexOf('先检查') < markup.indexOf('最终答案'));
+    assert.ok(markup.indexOf('最终答案') < markup.indexOf('Timeline tool marker'));
     assert.equal((markup.match(/data-turn-id=/g) ?? []).length, 1);
   });
 

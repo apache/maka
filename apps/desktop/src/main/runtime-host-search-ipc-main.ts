@@ -69,6 +69,11 @@ function projectDesktopSearchResult(result: SearchResult): SearchResult {
       sessionId: result.target.sessionId,
       ...(result.target.turnId !== undefined ? { turnId: result.target.turnId } : {}),
       ...(result.target.sequence !== undefined ? { sequence: result.target.sequence } : {}),
+      ...(result.target.matchKind !== undefined ? { matchKind: result.target.matchKind } : {}),
+      ...(result.target.tool !== undefined ? { tool: result.target.tool } : {}),
+      ...(result.target.toolResultIsError !== undefined
+        ? { toolResultIsError: result.target.toolResultIsError }
+        : {}),
     },
   };
 }

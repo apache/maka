@@ -23,6 +23,7 @@
     "./session-manager": "./dist/session-manager.js",
     "./session-todo-tools": "./dist/session-todo-tools.js",
     "./test-only/fake-backend": "./dist/test-only/fake-backend.js",
+    "./test-only/tool-presentation": "./dist/test-only/tool-presentation.js",
     "./test-only/observation-text-reader": "./dist/__tests__/observation-text-reader.js",
     "./filesystem-worker": "./dist/filesystem-worker/index.js",
     "./sandbox": "./dist/sandbox/index.js",

@@ -53,5 +53,6 @@ test('fixture-seeded transcripts return content hits with turn ids', async ({
     sessionId: desktopSessionKey({ hostId, sessionId: PROMPT_RAIL_SESSION_ID }),
     turnId: 'turn-prompt-rail-3',
     sequence: 4,
+    matchKind: 'user_message',
   });
 });

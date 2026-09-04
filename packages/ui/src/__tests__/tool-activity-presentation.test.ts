@@ -31,6 +31,7 @@ import {
   computerRunningLabel,
   isComputerTool,
 } from '../tool-activity/computer-action-label.js';
+import { BUILTIN_TOOL_LABELS } from '../tool-activity/copy.js';
 
 function renderToStaticMarkup(node: ReactNode, locale: 'zh' | 'en' = 'zh'): string {
   return renderReactToStaticMarkup(createElement(LocaleProvider, {
@@ -93,6 +94,21 @@ describe('tool activity presentation', () => {
 
     assert.match(markup, /This path requires the Bypass execution boundary./);
     assert.doesNotMatch(markup, /控制本机应用|切换并重试/);
+  });
+
+  it('localizes Desktop Browser proxy rows', () => {
+    const markup = renderToStaticMarkup(createElement(ToolTrow, {
+      items: [{
+        toolUseId: 'browser-navigation',
+        toolName: 'mcp__desktop_browser__browser_navigate',
+        displayName: 'browser_navigate',
+        status: 'errored',
+        args: { url: 'https://example.com' },
+      } satisfies ToolActivityItem],
+    }), 'en');
+
+    assert.match(markup, /Browser navigation/);
+    assert.doesNotMatch(markup, /browser_navigate/);
   });
 
   it('localizes file-write result summaries', () => {
@@ -435,7 +451,7 @@ describe('tool activity presentation', () => {
 
     assert.doesNotMatch(render(firstId), new RegExp(firstId));
     assert.doesNotMatch(render(secondId), new RegExp(secondId));
-    assert.match(render(firstId), /Bash/);
+    assert.match(render(firstId), new RegExp(BUILTIN_TOOL_LABELS.Bash.zh));
   });
 
   it('disambiguates code copy actions by their tool call', () => {
