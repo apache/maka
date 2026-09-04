@@ -123,13 +123,15 @@ test('settings hides expanded workbar chrome and restores it on close', async ({
   const workbar = page.locator('.maka-session-workbar[data-placement="right"]');
   const workbarToolbar = workbar.getByRole('toolbar', { name: '任务工作栏标签' });
   await expect(workbarToolbar).toBeVisible();
-  await expect(workbarToolbar.getByRole('button', { name: '打开工作栏标签' })).toBeVisible();
+  await expect(
+    workbarToolbar.getByRole('button', { name: '打开或关闭工作栏的面' }),
+  ).toBeVisible();
   await expect(workbarToolbar.getByRole('button', { name: '收起任务工作栏' })).toBeVisible();
   await page
-    .getByRole('button', { name: /待办.*查看和维护这个任务的待办台账/ })
+    .getByRole('button', { name: /变更.*查看当前 Git 工作区变化/ })
     .click();
-  const taskTab = workbarToolbar.getByRole('tab', { name: '待办' });
-  await expect(taskTab).toBeVisible();
+  const openFaceTab = workbarToolbar.getByRole('tab', { name: '变更' });
+  await expect(openFaceTab).toBeVisible();
 
   await ensureSidebarExpanded(page);
   await page.getByRole('button', { name: '设置' }).click();
@@ -138,7 +140,7 @@ test('settings hides expanded workbar chrome and restores it on close', async ({
 
   await page.keyboard.press('Escape');
   await expect(workbarToolbar).toBeVisible();
-  await expect(taskTab).toBeVisible();
+  await expect(openFaceTab).toBeVisible();
 });
 
 test('wide settings gutters scroll the whole main pane', async ({ window: page }) => {

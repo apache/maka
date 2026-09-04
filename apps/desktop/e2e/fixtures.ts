@@ -799,8 +799,8 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
       showWindow: true,
     }, use);
   },
-  // A data-backed conversation with settled tool evidence and a populated
-  // task ledger. Shown because the accessibility journey follows real native
+  // A data-backed conversation with settled tool evidence and the workbar open
+  // beside it. Shown because the accessibility journey follows real native
   // focus order through the transcript into the composer controls.
   accessibilityNarrativeWindow: async ({}, use) => {
     await withE2eWindow({

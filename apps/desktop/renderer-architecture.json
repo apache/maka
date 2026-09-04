@@ -450,7 +450,7 @@
           "./theme": 1
         },
         "importSpecifiers": 1,
-        "nonTriviaTokens": 672
+        "nonTriviaTokens": 666
       },
       "src/renderer/app-shell-effects.ts": {
         "importDeclarations": 12,

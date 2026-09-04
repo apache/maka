@@ -95,10 +95,6 @@ function WorkbarToolSurface(props: { kind: 'terminal' | 'browser' | 'files' }) {
           onActivateTab={noop}
           onCloseTab={noop}
           onCloseTabs={noop}
-          onReorderTab={noop}
-          onMoveTab={noop}
-          onMoveTabToPanel={noop}
-          onPinTab={noop}
           onOpenLauncher={noop}
           onRequestOpenTab={noop}
           confirmBypass={async () => true}
