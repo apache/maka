@@ -19,6 +19,7 @@
 
 import type { StatusSemantic } from '@maka/ui';
 import type { BotProvider, BotReadinessState } from '@maka/core/bot-chat-settings';
+import type { BotOnboardingRetryFailureCategory } from '@maka/core/bot-onboarding';
 
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
@@ -102,7 +103,7 @@ const zhCopy = {
     connectedRefreshFailed: (message: string) => `连接已完成，但状态刷新失败：${message}`, close: (title: string) => `关闭${title}`,
     generatingAria: '正在生成二维码', privacy: '凭据仅保存在本机，不会传给 renderer 或 Maka 云端。', openBrowser: '无法扫码？在浏览器中打开',
     done: '完成', regenerate: '重新生成', refreshQr: '刷新二维码', cancel: '取消', generating: '正在生成安全二维码…', connecting: '授权完成，正在保存凭据并启动连接…',
-    connected: (name: string) => `${name} 已连接`, connectedWarning: '凭据已保存，但连接尚未成功启动。', expired: '二维码已过期，请重新生成', denied: '授权已取消，请重新生成二维码', cancelled: '扫码接入已取消', failed: '扫码接入失败，请重试', preparing: '准备扫码接入…',
+    connected: (name: string) => `${name} 已连接`, connectedWarning: '凭据已保存，但连接尚未成功启动。', retrying: (category: BotOnboardingRetryFailureCategory, count: number, seconds: number) => `${retryCategoryZh(category)}；连续失败 ${count} 次，约 ${seconds} 秒后自动重试。`, expired: '二维码已过期，请重新生成', denied: '授权已取消，请重新生成二维码', cancelled: '扫码接入已取消', failed: '扫码接入失败，请重试', preparing: '准备扫码接入…',
   },
   wechat: {
     token: '微信 Bot Token', tokenPlaceholder: '本机 wechat-bridge Bearer Token', collapseAdvanced: '收起高级设置', expandAdvanced: '高级设置（公众号 / 本机 bridge 地址）',
@@ -224,7 +225,7 @@ const enCopy: BotSettingsCopy = {
   },
   onboarding: {
     providers: { dingtalk: { title: 'Set up DingTalk', ariaLabel: 'Set up DingTalk with a QR code', qrAlt: 'DingTalk setup QR code', subtitle: 'Scan in DingTalk to register the app', waiting: 'Scan with DingTalk and confirm authorization', scanned: 'Scanned. Complete confirmation in DingTalk.' }, feishu: { title: 'Set up Feishu', ariaLabel: 'Set up Feishu with a QR code', qrAlt: 'Feishu setup QR code', subtitle: 'Scan with Feishu to create and configure the bot', waiting: 'Scan with Feishu and confirm creation', scanned: 'Scanned. Complete confirmation in Feishu.' }, wecom: { title: 'Set up WeCom', ariaLabel: 'Set up WeCom with a QR code', qrAlt: 'WeCom setup QR code', subtitle: 'Quick setup creates and connects a WeCom bot', waiting: 'Open WeCom and scan to create the bot', scanned: 'Scanned. Complete confirmation in WeCom.' }, wechat: { title: 'Scan to sign in', ariaLabel: 'WeChat QR sign-in', qrAlt: 'WeChat sign-in QR code', subtitle: 'Scan with WeChat to connect', waiting: 'Scan with WeChat and confirm on your phone', scanned: 'Scanned. Complete confirmation in WeChat.' }, qq: { title: 'Set up QQ', ariaLabel: 'Set up QQ with a QR code', qrAlt: 'QQ setup QR code', subtitle: 'Scan with mobile QQ to create and bind a bot', waiting: 'Scan with mobile QQ and confirm binding', scanned: 'Scanned. Complete confirmation in QQ.' } },
-    lark: { title: 'Set up Lark', ariaLabel: 'Set up Lark with a QR code', qrAlt: 'Lark setup QR code', subtitle: 'Scan with Lark to create and configure the bot', waiting: 'Scan with Lark and confirm creation', scanned: 'Scanned. Complete confirmation in Lark.' }, connectedRefreshFailed: (message) => `Connected, but status refresh failed: ${message}`, close: (title) => `Close ${title}`, generatingAria: 'Generating QR code', privacy: 'Credentials stay on this device and are never sent to the renderer or Maka cloud.', openBrowser: 'Cannot scan? Open in browser', done: 'Done', regenerate: 'Generate again', refreshQr: 'Refresh QR code', cancel: 'Cancel', generating: 'Generating a secure QR code…', connecting: 'Authorization complete. Saving credentials and starting connection…', connected: (name) => `${name} connected`, connectedWarning: 'Credentials were saved, but the connection did not start.', expired: 'QR code expired. Generate a new one.', denied: 'Authorization cancelled. Generate a new QR code.', cancelled: 'QR setup cancelled', failed: 'QR setup failed. Try again.', preparing: 'Preparing QR setup…',
+    lark: { title: 'Set up Lark', ariaLabel: 'Set up Lark with a QR code', qrAlt: 'Lark setup QR code', subtitle: 'Scan with Lark to create and configure the bot', waiting: 'Scan with Lark and confirm creation', scanned: 'Scanned. Complete confirmation in Lark.' }, connectedRefreshFailed: (message) => `Connected, but status refresh failed: ${message}`, close: (title) => `Close ${title}`, generatingAria: 'Generating QR code', privacy: 'Credentials stay on this device and are never sent to the renderer or Maka cloud.', openBrowser: 'Cannot scan? Open in browser', done: 'Done', regenerate: 'Generate again', refreshQr: 'Refresh QR code', cancel: 'Cancel', generating: 'Generating a secure QR code…', connecting: 'Authorization complete. Saving credentials and starting connection…', connected: (name) => `${name} connected`, connectedWarning: 'Credentials were saved, but the connection did not start.', retrying: (category, count, seconds) => `${retryCategoryEn(category)}; ${count} consecutive ${count === 1 ? 'failure' : 'failures'}. Retrying automatically in about ${seconds}s.`, expired: 'QR code expired. Generate a new one.', denied: 'Authorization cancelled. Generate a new QR code.', cancelled: 'QR setup cancelled', failed: 'QR setup failed. Try again.', preparing: 'Preparing QR setup…',
   },
   wechat: { token: 'WeChat Bot Token', tokenPlaceholder: 'Local wechat-bridge Bearer Token', collapseAdvanced: 'Hide advanced settings', expandAdvanced: 'Advanced settings (Official Account / local bridge URL)', bridgeAddress: 'Local bridge URL', appId: 'Official Account App ID', appIdPlaceholder: 'WeChat Official Account App ID', appSecret: 'Official Account App Secret', appSecretPlaceholder: 'WeChat Official Account App Secret', advancedNotice: 'The local bridge defaults to http://127.0.0.1:18400. Official Account App ID and App Secret are used only for Official Account messaging; personal WeChat QR sign-in uses the local bridge.', readQrFailed: 'Could not read a QR code from the local wechat-bridge. Make sure the bridge is running.', title: 'WeChat QR sign-in', subtitle: 'Scan the QR code with WeChat and confirm signing in to the local wechat-bridge on your phone.', close: 'Close WeChat QR sign-in', generating: 'Generating QR code…', loggedIn: 'WeChat is signed in. Return to test the connection or restart the listener.', expired: 'QR code expired', expiredHint: 'Refresh the QR code and scan again to continue signing in.', refreshing: 'Refreshing…', refresh: 'Refresh QR code', qrAlt: 'WeChat sign-in QR code', waiting: 'Waiting for confirmation… Sign-in status refreshes every 3 seconds.', retrying: 'Retrying…', retry: 'Retry', bridgeGenerating: 'The bridge is generating a QR code', bridgeGeneratingHint: 'The QR code appears automatically once ready; you can also fetch it again.', fetching: 'Fetching…', fetchAgain: 'Fetch again' },
 };
@@ -237,4 +238,22 @@ const BOT_SETTINGS_COPY = {
 
 export function getBotSettingsCopy(locale: UiLocale): BotSettingsCopy {
   return BOT_SETTINGS_COPY[locale];
+}
+
+function retryCategoryZh(category: BotOnboardingRetryFailureCategory): string {
+  switch (category) {
+    case 'timeout': return '请求超时';
+    case 'network': return '网络暂时异常';
+    case 'rate_limited': return '服务请求频率受限';
+    case 'server': return '服务端暂时异常';
+  }
+}
+
+function retryCategoryEn(category: BotOnboardingRetryFailureCategory): string {
+  switch (category) {
+    case 'timeout': return 'The request timed out';
+    case 'network': return 'The network is temporarily unavailable';
+    case 'rate_limited': return 'The service is rate limiting requests';
+    case 'server': return 'The service is temporarily unavailable';
+  }
 }
