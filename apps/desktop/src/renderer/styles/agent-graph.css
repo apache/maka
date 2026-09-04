@@ -165,14 +165,11 @@
 .maka-agent-graph-operators li[data-status="running"] .maka-agent-graph-status-dot,
 .maka-agent-graph-operators li[data-status="runnable"] .maka-agent-graph-status-dot {
   background: var(--status-running);
-  animation: maka-agent-graph-dot-pulse 1.6s ease-in-out infinite;
 }
 
-/* The pulse is a liveness claim, and after a failed snapshot read liveness is
-   unknown — freeze the dots to the same authority that gates the spinner. */
-.maka-agent-graph-panel[data-error="true"] .maka-agent-graph-operators li[data-status="running"] .maka-agent-graph-status-dot,
-.maka-agent-graph-panel[data-error="true"] .maka-agent-graph-operators li[data-status="runnable"] .maka-agent-graph-status-dot {
-  animation: none;
+.maka-agent-graph-panel[data-live="true"] .maka-agent-graph-operators li[data-status="running"] .maka-agent-graph-status-dot,
+.maka-agent-graph-panel[data-live="true"] .maka-agent-graph-operators li[data-status="runnable"] .maka-agent-graph-status-dot {
+  animation: maka-agent-graph-dot-pulse 1.6s ease-in-out infinite;
 }
 
 .maka-agent-graph-operators li[data-status="completed"] .maka-agent-graph-status-dot {

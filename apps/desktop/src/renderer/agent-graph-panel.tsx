@@ -205,9 +205,7 @@ export function AgentGraphPanel(props: {
     stopState.rootSessionId === props.rootSessionId && stopState.graphId === selectedGraphId;
   const stopPending = stopFeedbackMatchesSelection && stopState.pending;
   const stopError = stopFeedbackMatchesSelection && stopState.error;
-  // `error` must gate liveness: a failed snapshot read leaves the last known
-  // status in place, and a spinner asserting liveness while liveness is unknown
-  // is exactly the false signal this panel exists to avoid.
+  // One liveness judgment gates both animated signals.
   const graphLive = !error && snapshot !== undefined && isAgentGraphLive(snapshot.status);
 
   useEffect(() => {
@@ -368,7 +366,7 @@ export function AgentGraphPanel(props: {
       className="maka-agent-graph-panel"
       aria-label={copy.title}
       data-collapsed={collapsed ? 'true' : 'false'}
-      data-error={error ? 'true' : 'false'}
+      data-live={graphLive ? 'true' : 'false'}
     >
       <header className="maka-agent-graph-heading">
         <div className="maka-agent-graph-heading-copy">
