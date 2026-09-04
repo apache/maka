@@ -539,6 +539,7 @@ export class AiSdkBackend implements AgentBackend {
       yield* turn.run();
     } finally {
       this.activeTurns.delete(turn);
+      await turn.close();
     }
   }
 

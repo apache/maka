@@ -685,11 +685,13 @@ export class AiSdkTurn {
   }
 
   async *run(): AsyncIterable<SessionEvent> {
-    try {
-      yield* this.runWithinScope(this.request);
-    } finally {
-      await this.cleanupAfterTurn();
-    }
+    yield* this.runWithinScope(this.request);
+  }
+
+  /** Release resources after the backend removes this turn from its active index. */
+  async close(): Promise<void> {
+    this.deps.modelAdapter.endContinuation(this.turnId);
+    await this.toolRuntime.endTurn(this.aborted ? 'aborted' : 'completed');
   }
 
   requestStop(reason: 'user_stop' | 'redirect', mode: 'immediate' | 'after_step'): void {
@@ -3003,17 +3005,6 @@ export class AiSdkTurn {
       // so it observes `consumerDetached` instead of blocking forever.
       queue.noteConsumerDetached();
     }
-  }
-
-  /**
-   * Retire this turn. Nothing is reset for reuse — the turn is dropped,
-   * so a sibling turn still running on this backend is untouched. Deregistering
-   * before `endTurn` also makes a late tool settlement resolve to "gone" rather
-   * than to whichever turn started next.
-   */
-  private async cleanupAfterTurn(): Promise<void> {
-    this.deps.modelAdapter.endContinuation(this.turnId);
-    await this.toolRuntime.endTurn(this.aborted ? 'aborted' : 'completed');
   }
 
   /**
