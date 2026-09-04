@@ -267,15 +267,6 @@ export async function createExecutionRuntimeHostComposition(
     );
   }
   let stopRetiredCaptureSweep: (() => void) | undefined;
-  // Reclaims what the retired prepared-request capture sink left on disk. It
-  // paces itself behind live turns and stops when the residue is gone, so a
-  // store that never held captures does one empty pass and finishes.
-  stopRetiredCaptureSweep = startRetiredCaptureSweep(storage.artifacts, {
-    onError: (error) =>
-      console.error(
-        `[runtime-host] retired provider-request captures could not be reclaimed: ${generalizedErrorMessage(error)}`,
-      ),
-  });
   const stores = storage.execution;
   let graphControlStore: ReturnType<typeof createAgentGraphControlStore> | undefined;
   let graphClient: HostAgentGraphCoordinator | undefined;
@@ -1772,6 +1763,14 @@ export async function createExecutionRuntimeHostComposition(
           state: async () => {
             await skills.recover();
             await openedArtifactStore.recover();
+            // Only now: a write authority refuses every mutation until it has
+            // recovered, and the sweep gives up on its first failure.
+            stopRetiredCaptureSweep = startRetiredCaptureSweep(storage.artifacts, {
+              onError: (error) =>
+                console.error(
+                  `[runtime-host] retired provider-request captures could not be reclaimed: ${generalizedErrorMessage(error)}`,
+                ),
+            });
           },
         },
         drain: [
