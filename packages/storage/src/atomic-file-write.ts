@@ -72,6 +72,15 @@ const defaultDependencies: AtomicFileWriteDependencies = {
   syncDirectory,
 };
 
+export class AtomicFileWriteCommitUnknownError extends Error {
+  readonly published = true;
+
+  constructor(options: { cause: unknown }) {
+    super('Atomic file commit outcome is unknown; reload before retrying', options);
+    this.name = 'AtomicFileWriteCommitUnknownError';
+  }
+}
+
 export async function writeAtomicFile(
   path: string,
   contents: string,
@@ -88,6 +97,7 @@ export async function writeAtomicFile(
   // cleaned up. A pre-existing file or planted symlink the 'wx' open refused
   // must not be deleted as "our" temp.
   let tempCreated = false;
+  let published = false;
   try {
     const handle = await deps.open(tempPath, 'wx', fileMode);
     tempCreated = true;
@@ -103,6 +113,7 @@ export async function writeAtomicFile(
       throw error;
     }
     await rename(tempPath, path);
+    published = true;
     tempCreated = false;
     await deps.syncDirectory(dirname(path));
   } catch (error) {
@@ -110,6 +121,7 @@ export async function writeAtomicFile(
       // Cleanup must never mask the original failure.
       await rm(tempPath, { force: true }).catch(() => {});
     }
+    if (published) throw new AtomicFileWriteCommitUnknownError({ cause: error });
     throw error;
   }
 }
