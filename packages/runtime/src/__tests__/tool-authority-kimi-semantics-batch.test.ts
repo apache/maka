@@ -51,7 +51,10 @@ describe('Kimi claim predicate', () => {
     assert.equal(claimsConflict(all(), read('a')), true);
     assert.equal(claimsConflict(all(), write('a')), true);
     assert.equal(claimsConflict(all(), tree('src')), true);
-    assert.equal(claimsConflict(all(), [{ kind: 'capacity', authority: 'web', key: 'p', permits: 1 }]), true);
+    assert.equal(
+      claimsConflict(all(), [{ kind: 'capacity', authority: 'web', key: 'p', permits: 1 }]),
+      true,
+    );
     assert.equal(claimsConflict(all(), [{ kind: 'coarse', authority: 'shell', key: 'w' }]), true);
     assert.equal(claimsConflict(all(), all()), true);
   });
@@ -73,10 +76,7 @@ describe('Kimi claim predicate', () => {
 
 describe('Kimi ToolCallBatch semantics', () => {
   test('B01: all blocks a later filesystem claim', async () => {
-    const h = harness([
-      call('update_agent_graph', 'all'),
-      call('Read', 'read', 'a'),
-    ]);
+    const h = harness([call('update_agent_graph', 'all'), call('Read', 'read', 'a')]);
     const batch = h.run();
     await h.waitStarted('all');
     await h.expectStarted('all');
@@ -87,10 +87,7 @@ describe('Kimi ToolCallBatch semantics', () => {
   });
 
   test('B02: all does not block none', async () => {
-    const h = harness([
-      call('update_agent_graph', 'all'),
-      call('WebSearch', 'web'),
-    ]);
+    const h = harness([call('update_agent_graph', 'all'), call('WebSearch', 'web')]);
     const batch = h.run();
     await Promise.all([h.waitStarted('all'), h.waitStarted('web')]);
     await h.expectStarted('all', 'web');
@@ -142,11 +139,7 @@ describe('Kimi ToolCallBatch semantics', () => {
       call('agent_output', 'agent-output'),
     ]);
     const batch = h.run();
-    await Promise.all([
-      h.waitStarted('web'),
-      h.waitStarted('all'),
-      h.waitStarted('agent-output'),
-    ]);
+    await Promise.all([h.waitStarted('web'), h.waitStarted('all'), h.waitStarted('agent-output')]);
     await h.expectActive('web', 'all', 'agent-output');
     h.finish('all');
     await h.waitStarted('write');
@@ -306,10 +299,7 @@ function harness(specs: readonly CallSpec[]) {
   const registry = new ToolAuthorityRegistry([
     ['Read', exactAuthority('read')],
     ['Write', exactAuthority('write')],
-    [
-      'BrokenPreparedTool',
-      { prepare: async () => Promise.reject(new Error('broken prepare')) },
-    ],
+    ['BrokenPreparedTool', { prepare: async () => Promise.reject(new Error('broken prepare')) }],
   ]).withRegistrations(defaultToolAuthorityRegistrations());
   const service = new ToolPreparationService(registry);
   const context = (id: string): MakaToolContext => ({

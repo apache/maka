@@ -62,9 +62,7 @@ export class ToolAuthorityRegistry {
    * the supplied registrations. The constructor remains the single duplicate
    * check, so a policy cannot silently replace a domain authority.
    */
-  withRegistrations(
-    registrations: Iterable<ToolAuthorityRegistration>,
-  ): ToolAuthorityRegistry {
+  withRegistrations(registrations: Iterable<ToolAuthorityRegistration>): ToolAuthorityRegistry {
     return new ToolAuthorityRegistry([...this.#authorities, ...registrations]);
   }
 

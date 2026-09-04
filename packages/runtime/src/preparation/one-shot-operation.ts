@@ -61,9 +61,7 @@ export function oneShotOperation<Result>(
       state = 'running';
       let execution: Promise<Result>;
       try {
-        execution = Promise.resolve(
-          operation.execute(signal, fallbackEffect, executionContext),
-        );
+        execution = Promise.resolve(operation.execute(signal, fallbackEffect, executionContext));
       } catch (error) {
         execution = Promise.reject(error);
       }
