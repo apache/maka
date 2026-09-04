@@ -41,7 +41,7 @@ import {
   type InteractiveArtifactStoreWriter,
 } from '../artifact-stores.js';
 import {
-  type ArtifactStore,
+  type ArtifactAuthorityStore,
   type CreateArtifactInput,
   createSqliteArtifactStoreWriteAuthority,
 } from '../artifact-store.js';
@@ -72,13 +72,21 @@ const COMPETING_PAYLOAD_BYTES = 4 * 1024 * 1024;
 const SKIP_OPEN_SQLITE_ROOT_REPLACEMENT = process.platform === 'win32';
 const artifactStoreClosersByRoot = new Map<string, Set<() => void>>();
 
-function createArtifactStore(root: string): ArtifactStore {
+function createArtifactStore(root: string): ArtifactAuthorityStore {
   const authority = createSqliteArtifactStoreWriteAuthority(root);
   void authority.recover().catch(() => undefined);
   const closers = artifactStoreClosersByRoot.get(root) ?? new Set<() => void>();
   closers.add(() => authority.close());
   artifactStoreClosersByRoot.set(root, closers);
   return authority.store;
+}
+
+async function listArtifacts(store: ArtifactAuthorityStore, sessionId: string) {
+  return (await store.listPage(sessionId, { offset: 0, limit: Number.MAX_SAFE_INTEGER })).records;
+}
+
+function readArtifactText(store: ArtifactAuthorityStore, artifactId: string) {
+  return store.readTextInSession('session-1', artifactId);
 }
 
 async function openInteractiveArtifactStoreForWrite(
@@ -115,7 +123,9 @@ test('unleased write authority waits for a child-held writer lock and preserves 
       await withTimeout(mutation, OPERATION_TIMEOUT_MS, 'Store mutation');
 
       assert.deepEqual(
-        (await createArtifactStore(stateRoot).list('session-1')).map((record) => record.id).sort(),
+        (await listArtifacts(createArtifactStore(stateRoot), 'session-1'))
+          .map((record) => record.id)
+          .sort(),
         ['after-lock', 'seed'],
       );
     } finally {
@@ -132,7 +142,7 @@ test('unleased write authorities in separate processes reload and publish under 
     const seedRecord = await createArtifactStore(stateRoot).create(artifactInput('seed'));
 
     const parentStore = createArtifactStore(stateRoot);
-    await parentStore.list('session-1');
+    await listArtifacts(parentStore, 'session-1');
     const child = await spawnPublicWriter(stateRoot, 'session-1');
     const holder = await spawnLockHolder(stateRoot);
     try {
@@ -154,16 +164,19 @@ test('unleased write authorities in separate processes reload and publish under 
       await withTimeout(waitForExit(child), OPERATION_TIMEOUT_MS, 'public writer shutdown');
 
       const freshStore = createArtifactStore(stateRoot);
-      const records = (await freshStore.list('session-1')).sort(compareRecordsById);
+      const records = [...(await listArtifacts(freshStore, 'session-1'))].sort(compareRecordsById);
       assert.deepEqual(
         records,
         [seedRecord, parentRecord, childCreated.record].sort(compareRecordsById),
       );
-      assert.deepEqual(await freshStore.readText('parent-public'), {
+      assert.deepEqual(await readArtifactText(freshStore, 'parent-public'), {
         ok: true,
         text: parentPayload,
       });
-      assert.deepEqual(await freshStore.readText('child-public'), { ok: true, text: childPayload });
+      assert.deepEqual(await readArtifactText(freshStore, 'child-public'), {
+        ok: true,
+        text: childPayload,
+      });
     } finally {
       await stopHolder(child);
       await stopHolder(holder);
@@ -229,15 +242,15 @@ test('mutations spanning initial root marking remain serialized by the bootstrap
       );
 
       const freshStore = createArtifactStore(stateRoot);
-      assert.deepEqual((await freshStore.list('session-1')).map((record) => record.id).sort(), [
-        'after-root-marking',
-        'before-root-marking',
-      ]);
-      assert.deepEqual(await freshStore.readText('before-root-marking'), {
+      assert.deepEqual(
+        (await listArtifacts(freshStore, 'session-1')).map((record) => record.id).sort(),
+        ['after-root-marking', 'before-root-marking'],
+      );
+      assert.deepEqual(await readArtifactText(freshStore, 'before-root-marking'), {
         ok: true,
         text: 'before-root-marking',
       });
-      assert.deepEqual(await freshStore.readText('after-root-marking'), {
+      assert.deepEqual(await readArtifactText(freshStore, 'after-root-marking'), {
         ok: true,
         text: 'after-root-marking',
       });
@@ -296,7 +309,7 @@ test('unleased mutation through a retargeted alias stays bound to its verified c
     await symlink(stateRoot, alias, process.platform === 'win32' ? 'junction' : 'dir');
     const store = createArtifactStore(alias);
     assert.deepEqual(
-      (await store.list('session-1')).map((record) => record.id),
+      (await listArtifacts(store, 'session-1')).map((record) => record.id),
       ['seed'],
     );
 
@@ -311,7 +324,9 @@ test('unleased mutation through a retargeted alias stays bound to its verified c
       assert.equal((await mutation).id, 'alias-mutation');
 
       assert.deepEqual(
-        (await createArtifactStore(stateRoot).list('session-1')).map((record) => record.id).sort(),
+        (await listArtifacts(createArtifactStore(stateRoot), 'session-1'))
+          .map((record) => record.id)
+          .sort(),
         ['alias-mutation', 'seed'],
       );
       assert.deepEqual(await readdir(replacementRoot), ['replacement-sentinel']);
@@ -433,14 +448,16 @@ test('bundle export excludes a mutation queued behind the same child-held writer
       const exportedStore = createArtifactStore(destinationRoot);
       try {
         assert.deepEqual(
-          (await exportedStore.list(session.id)).map((record) => record.id),
+          (await listArtifacts(exportedStore, session.id)).map((record) => record.id),
           ['seed'],
         );
       } finally {
         exportedStore.close?.();
       }
       assert.deepEqual(
-        (await createArtifactStore(stateRoot).list(session.id)).map((record) => record.id).sort(),
+        (await listArtifacts(createArtifactStore(stateRoot), session.id))
+          .map((record) => record.id)
+          .sort(),
         ['after-export', 'seed'],
       );
     } finally {

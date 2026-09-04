@@ -21,6 +21,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
+  type ArtifactAuthorityStore,
   createSqliteArtifactStoreWriteAuthority,
   type CreateArtifactInput,
 } from '../../artifact-store.js';
@@ -39,6 +40,10 @@ if (!workspaceRoot || !process.send) {
   throw new Error(
     'usage: artifact-writer-lock-holder <workspace-root> [transient-residue-session-id | --public-writer <session-id> | --authority-holder <root-id>]',
   );
+}
+
+async function listArtifacts(store: ArtifactAuthorityStore, sessionId: string) {
+  return (await store.listPage(sessionId, { offset: 0, limit: Number.MAX_SAFE_INTEGER })).records;
 }
 
 try {
@@ -104,7 +109,7 @@ async function runPublicWriter(workspaceRoot: string, sessionId: string): Promis
   await authority.recover();
   const store = authority.store;
   try {
-    await store.list(sessionId);
+    await listArtifacts(store, sessionId);
     await send({ type: 'ready' });
     const command = await waitForCreateCommand();
     const mutation = store.create({

@@ -67,6 +67,34 @@ function createArtifactStore(root: string): ArtifactAuthorityStore {
   return authority.store;
 }
 
+async function listArtifacts(store: ArtifactAuthorityStore, sessionId: string) {
+  return (await store.listPage(sessionId, { offset: 0, limit: Number.MAX_SAFE_INTEGER })).records;
+}
+
+async function getArtifact(
+  store: ArtifactAuthorityStore,
+  artifactId: string,
+  sessionId = 'session-1',
+) {
+  return (await store.getInSession(sessionId, artifactId)).record;
+}
+
+function readArtifactText(
+  store: ArtifactAuthorityStore,
+  artifactId: string,
+  sessionId = 'session-1',
+) {
+  return store.readTextInSession(sessionId, artifactId);
+}
+
+function readArtifactBinary(
+  store: ArtifactAuthorityStore,
+  artifactId: string,
+  sessionId = 'session-1',
+) {
+  return store.readBinaryInSession(sessionId, artifactId);
+}
+
 function createArtifactStoreWriteAuthority(root: string): ArtifactStoreWriteAuthority {
   const authority = createSqliteArtifactStoreWriteAuthority(root);
   trackArtifactStoreCloser(root, () => authority.close());
@@ -92,7 +120,7 @@ describe('SQLite Artifact store', () => {
       assert.equal((await stat(root)).isDirectory(), true);
       assert.equal(created.id, 'missing-root');
       assert.deepEqual(
-        (await createArtifactStore(root).list('session-1')).map((record) => record.id),
+        (await listArtifacts(createArtifactStore(root), 'session-1')).map((record) => record.id),
         ['missing-root'],
       );
     } finally {
@@ -115,18 +143,21 @@ describe('SQLite Artifact store', () => {
       assert.equal(first.relativePath, 'session-1/artifact-1-artifact-1.txt');
       assert.equal(first.sizeBytes, 7);
       assert.deepEqual(
-        (await store.list('session-1')).map((record) => record.id),
+        (await listArtifacts(store, 'session-1')).map((record) => record.id),
         ['artifact-2', 'artifact-1'],
       );
-      assert.deepEqual(await store.readText(first.id), { ok: true, text: '# Notes' });
+      assert.deepEqual(await readArtifactText(store, first.id), { ok: true, text: '# Notes' });
 
       const reopened = createArtifactStore(root);
-      assert.deepEqual(await reopened.get(second.id), second);
+      assert.deepEqual(await getArtifact(reopened, second.id), second);
       await assert.rejects(
         () => reopened.create(artifactInput('artifact-1', 'replacement', 300)),
         /Artifact artifact-1 already exists/,
       );
-      assert.deepEqual(await reopened.readText('artifact-1'), { ok: true, text: '# Notes' });
+      assert.deepEqual(await readArtifactText(reopened, 'artifact-1'), {
+        ok: true,
+        text: '# Notes',
+      });
     });
   });
 
@@ -168,7 +199,10 @@ describe('SQLite Artifact store', () => {
         const input = { ...artifactInput(id, 'compacted', 1), turnId };
         const created = await createArtifactStore(root).create(input);
         assert.equal(created.turnId, input.turnId);
-        assert.equal((await createArtifactStore(root).get(created.id))?.turnId, input.turnId);
+        assert.equal(
+          (await getArtifact(createArtifactStore(root), created.id))?.turnId,
+          input.turnId,
+        );
       }
 
       for (const turnId of [
@@ -300,23 +334,23 @@ describe('SQLite Artifact store', () => {
       assert.ok(copiedId);
       assert.equal(copiedDeletedId, undefined);
       assert.notEqual(copiedId, retained.id);
-      const target = await store.list('session-copy');
+      const target = await listArtifacts(store, 'session-copy');
       assert.equal(target.length, 1);
       assert.equal(target[0]?.id, copiedId);
       assert.equal(target[0]?.turnId, retained.turnId);
       assert.equal(copied.relativePaths.get(retained.relativePath), target[0]?.relativePath);
-      assert.deepEqual(await store.readText(copiedId!), {
+      assert.deepEqual(await readArtifactText(store, copiedId!, 'session-copy'), {
         ok: true,
         text: 'retained',
       });
       assert.equal(copied.relativePaths.get(deleted.relativePath), undefined);
 
       await store.purgeSessionArtifacts('session-copy');
-      assert.deepEqual(await store.list('session-copy'), []);
-      assert.deepEqual((await store.list('session-1')).map((record) => record.id).sort(), [
-        'later-artifact',
-        'retained-artifact',
-      ]);
+      assert.deepEqual(await listArtifacts(store, 'session-copy'), []);
+      assert.deepEqual(
+        (await listArtifacts(store, 'session-1')).map((record) => record.id).sort(),
+        ['later-artifact', 'retained-artifact'],
+      );
     });
   });
 
@@ -344,10 +378,10 @@ describe('SQLite Artifact store', () => {
 
       assert.equal(copied.artifactIds.has('excluded-archive'), false);
       assert.deepEqual(
-        (await store.list('session-copy')).map((record) => record.name),
+        (await listArtifacts(store, 'session-copy')).map((record) => record.name),
         ['retained-artifact.txt'],
       );
-      assert.equal((await store.get('excluded-archive'))?.sessionId, 'session-1');
+      assert.equal((await getArtifact(store, 'excluded-archive'))?.sessionId, 'session-1');
     });
   });
 
@@ -371,9 +405,15 @@ describe('SQLite Artifact store', () => {
 
       const copiedId = copied.artifactIds.get('child-artifact');
       assert.ok(copiedId);
-      assert.deepEqual(await store.readText(copiedId), { ok: true, text: 'child result' });
-      assert.equal((await store.get(copiedId))?.sessionId, 'session-copy');
-      assert.equal((await store.get('child-artifact'))?.sessionId, 'child-session');
+      assert.deepEqual(await readArtifactText(store, copiedId, 'session-copy'), {
+        ok: true,
+        text: 'child result',
+      });
+      assert.equal((await getArtifact(store, copiedId, 'session-copy'))?.sessionId, 'session-copy');
+      assert.equal(
+        (await getArtifact(store, 'child-artifact', 'child-session'))?.sessionId,
+        'child-session',
+      );
     });
   });
 
@@ -409,11 +449,14 @@ describe('SQLite Artifact store', () => {
       });
       const copiedUploadId = withInclude.artifactIds.get(upload.id);
       assert.ok(copiedUploadId);
-      assert.deepEqual(await store.readText(copiedUploadId), {
+      assert.deepEqual(await readArtifactText(store, copiedUploadId, 'session-copy-2'), {
         ok: true,
         text: 'uploaded bytes',
       });
-      assert.equal((await store.get(copiedUploadId))?.sessionId, 'session-copy-2');
+      assert.equal(
+        (await getArtifact(store, copiedUploadId, 'session-copy-2'))?.sessionId,
+        'session-copy-2',
+      );
       // Unknown include ids are a no-op, not an error.
       const withUnknown = await store.copyConversationArtifacts({
         sourceSessionId: 'session-1',
@@ -443,7 +486,7 @@ describe('SQLite Artifact store', () => {
         (await store.deleteUserArtifactInSession(input.sessionId, input.id)).kind,
         'deleted',
       );
-      assert.equal(await store.get(input.id), null);
+      assert.equal(await getArtifact(store, input.id), null);
       assert.deepEqual(await store.deleteUserArtifactInSession('different-session', input.id), {
         kind: 'not_found',
       });
@@ -482,12 +525,14 @@ describe('SQLite Artifact store', () => {
         const created = await createArtifactStore(root).create(input);
         const reopened = createArtifactStore(root);
 
-        assert.deepEqual(await reopened.list(input.sessionId), [
+        assert.deepEqual(await listArtifacts(reopened, input.sessionId), [
           created,
-          ...(await reopened.list(input.sessionId)).filter((record) => record.id !== created.id),
+          ...(await listArtifacts(reopened, input.sessionId)).filter(
+            (record) => record.id !== created.id,
+          ),
         ]);
-        assert.deepEqual(await reopened.get(created.id), created);
-        assert.deepEqual(await reopened.readText(created.id), {
+        assert.deepEqual(await getArtifact(reopened, created.id), created);
+        assert.deepEqual(await readArtifactText(reopened, created.id), {
           ok: true,
           text: input.content,
         });
@@ -503,7 +548,7 @@ describe('SQLite Artifact store', () => {
           canonicalRecord({ id: 'invalid-name', sessionId: 'session-1', name, sizeBytes: 0 }),
         ]);
         await assert.rejects(
-          () => createArtifactStore(root).list('session-1'),
+          () => listArtifacts(createArtifactStore(root), 'session-1'),
           /Invalid artifact metadata record 1/,
         );
       });
@@ -529,7 +574,10 @@ describe('SQLite Artifact store', () => {
       await authority.recover();
       await assert.rejects(() => stat(stagingPath), { code: 'ENOENT' });
       assert.deepEqual(await reopened.create(input), created);
-      assert.deepEqual(await reopened.readText(created.id), { ok: true, text: input.content });
+      assert.deepEqual(await readArtifactText(reopened, created.id), {
+        ok: true,
+        text: input.content,
+      });
     });
   });
 
@@ -563,13 +611,13 @@ describe('SQLite Artifact store', () => {
       });
 
       const reopened = createArtifactStore(root);
-      assert.deepEqual(await reopened.get(report.id), report);
-      assert.deepEqual(await reopened.get(archive.id), archive);
-      assert.deepEqual(await reopened.readText(report.id), {
+      assert.deepEqual(await getArtifact(reopened, report.id), report);
+      assert.deepEqual(await getArtifact(reopened, archive.id), archive);
+      assert.deepEqual(await readArtifactText(reopened, report.id), {
         ok: true,
         text: '<h1>Research</h1>',
       });
-      assert.deepEqual(await reopened.readText(archive.id), {
+      assert.deepEqual(await readArtifactText(reopened, archive.id), {
         ok: true,
         text: '{"ok":true}',
       });
@@ -586,7 +634,7 @@ describe('SQLite Artifact store', () => {
       const replayed = await createArtifactStore(root).create(input);
       assert.deepEqual(replayed, first);
       await assert.rejects(() => stat(metadataPath), { code: 'ENOENT' });
-      assert.deepEqual(await createArtifactStore(root).readText(first.id), {
+      assert.deepEqual(await readArtifactText(createArtifactStore(root), first.id), {
         ok: true,
         text: '# Durable result',
       });
@@ -618,11 +666,11 @@ describe('SQLite Artifact store', () => {
       const store = createArtifactStore(root);
       const first = await store.create(input);
       await store.deleteUserArtifactInSession(input.sessionId, first.id);
-      assert.equal(await store.get(first.id), null);
+      assert.equal(await getArtifact(store, first.id), null);
 
       const recreated = await createArtifactStore(root).create(input);
       assert.deepEqual({ ...recreated, createdAt: first.createdAt }, first);
-      assert.deepEqual(await createArtifactStore(root).readText(first.id), {
+      assert.deepEqual(await readArtifactText(createArtifactStore(root), first.id), {
         ok: true,
         text: '# Revivable',
       });
@@ -636,7 +684,7 @@ describe('SQLite Artifact store', () => {
       await Promise.all(ids.map((id, index) => store.create(artifactInput(id, id, index + 1))));
 
       const reopened = createArtifactStore(root);
-      const rows = await reopened.list('session-1');
+      const rows = await listArtifacts(reopened, 'session-1');
       assert.deepEqual(rows.map((record) => record.id).sort(), ids.sort());
       await assert.rejects(() => stat(join(root, 'artifacts', 'metadata.jsonl')), {
         code: 'ENOENT',
@@ -653,7 +701,7 @@ describe('SQLite Artifact store', () => {
         second.create(artifactInput('independent-second', 'second', 2)),
       ]);
 
-      const rows = await createArtifactStore(root).list('session-1');
+      const rows = await listArtifacts(createArtifactStore(root), 'session-1');
       assert.deepEqual(rows.map((record) => record.id).sort(), [
         'independent-first',
         'independent-second',
@@ -725,9 +773,9 @@ describe('SQLite Artifact store', () => {
         Buffer.from('safe'),
       );
       const reopened = createArtifactStore(root);
-      assert.deepEqual(await reopened.get(record.id), record);
-      assert.deepEqual(await reopened.list('session-1'), [record]);
-      assert.equal(await reopened.get('mutated-id'), null);
+      assert.deepEqual(await getArtifact(reopened, record.id), record);
+      assert.deepEqual(await listArtifacts(reopened, 'session-1'), [record]);
+      assert.equal(await getArtifact(reopened, 'mutated-id'), null);
     });
   });
 
@@ -737,18 +785,18 @@ describe('SQLite Artifact store', () => {
       const writer = createArtifactStore(root);
       await stale.create(artifactInput('first', 'first', 1));
       assert.deepEqual(
-        (await stale.list('session-1')).map((record) => record.id),
+        (await listArtifacts(stale, 'session-1')).map((record) => record.id),
         ['first'],
       );
 
       await writer.create(artifactInput('second', 'second', 2));
 
       assert.deepEqual(
-        (await stale.list('session-1')).map((record) => record.id),
+        (await listArtifacts(stale, 'session-1')).map((record) => record.id),
         ['second', 'first'],
       );
-      assert.equal((await stale.get('second'))?.id, 'second');
-      assert.deepEqual(await stale.readText('second'), { ok: true, text: 'second' });
+      assert.equal((await getArtifact(stale, 'second'))?.id, 'second');
+      assert.deepEqual(await readArtifactText(stale, 'second'), { ok: true, text: 'second' });
     });
   });
 
@@ -767,7 +815,7 @@ describe('SQLite Artifact store', () => {
         { code: 'ENOENT' },
       );
       const reopened = createArtifactStore(root);
-      assert.equal(await reopened.get('rejected'), null);
+      assert.equal(await getArtifact(reopened, 'rejected'), null);
     });
   });
 
@@ -801,7 +849,7 @@ describe('SQLite Artifact store', () => {
         name: 'retry.txt',
       });
       assert.equal(retried.id, 'stable-retry');
-      assert.deepEqual(await store.readText(retried.id), { ok: true, text: 'new' });
+      assert.deepEqual(await readArtifactText(store, retried.id), { ok: true, text: 'new' });
     });
   });
 
@@ -820,7 +868,7 @@ describe('SQLite Artifact store', () => {
 
       await assert.rejects(() => stat(stagingPath), { code: 'ENOENT' });
       assert.equal(await readFile(targetPath, 'utf8'), 'durable');
-      assert.deepEqual(await reopened.readText(record.id), { ok: true, text: 'durable' });
+      assert.deepEqual(await readArtifactText(reopened, record.id), { ok: true, text: 'durable' });
     });
   });
 
@@ -838,7 +886,7 @@ describe('SQLite Artifact store', () => {
       const adopted = await bare.create(input);
       assert.equal(adopted.name, 'report.txt');
       assert.equal(adopted.relativePath, 'session-1/target-orphan-report.txt');
-      assert.deepEqual(await createArtifactStore(root).readText(adopted.id), {
+      assert.deepEqual(await readArtifactText(createArtifactStore(root), adopted.id), {
         ok: true,
         text: input.content,
       });
@@ -958,7 +1006,7 @@ describe('SQLite Artifact store', () => {
       await withWorkspace(async (root) => {
         await writeArtifactMetadata(root, [recordWithIdentity(field, value)]);
         await assert.rejects(
-          () => createArtifactStore(root).list('session-1'),
+          () => listArtifacts(createArtifactStore(root), 'session-1'),
           /Invalid artifact metadata record 1/,
         );
       });
@@ -998,8 +1046,8 @@ describe('SQLite Artifact store', () => {
 
       await store.deleteUserArtifactInSession(record.sessionId, record.id);
       await store.deleteUserArtifactInSession(record.sessionId, record.id);
-      assert.deepEqual(await store.list('session-1'), []);
-      assert.equal(await store.get(record.id), null);
+      assert.deepEqual(await listArtifacts(store, 'session-1'), []);
+      assert.equal(await getArtifact(store, record.id), null);
       await assert.rejects(() => stat(join(root, 'artifacts', record.relativePath)), {
         code: 'ENOENT',
       });
@@ -1041,8 +1089,11 @@ describe('SQLite Artifact store', () => {
         assert.equal(await readFile(externalPath, 'utf8'), 'external');
         assert.equal(await readFile(join(artifactRoot, safeRecord.relativePath), 'utf8'), 'safe');
         assert.equal(await readFile(metadataPath, 'utf8'), metadataBefore);
-        assert.equal((await store.get(safeRecord.id))?.id, safeRecord.id);
-        assert.equal((await store.get(escapedRecord.id))?.id, escapedRecord.id);
+        assert.equal((await getArtifact(store, safeRecord.id))?.id, safeRecord.id);
+        assert.equal(
+          (await getArtifact(store, escapedRecord.id, escapedRecord.sessionId))?.id,
+          escapedRecord.id,
+        );
       });
     } finally {
       await rm(outsideRoot, { recursive: true, force: true });
@@ -1071,7 +1122,7 @@ describe('SQLite Artifact store', () => {
 
       assert.equal(await readFile(targetPath, 'utf8'), 'keep target');
       await assert.rejects(() => stat(linkPath), { code: 'ENOENT' });
-      assert.equal(await store.get(record.id), null);
+      assert.equal(await getArtifact(store, record.id), null);
     });
   });
 
@@ -1105,8 +1156,11 @@ describe('SQLite Artifact store', () => {
 
       await assert.rejects(() => stat(firstPath), { code: 'ENOENT' });
       assert.equal(await readFile(secondPath, 'utf8'), 'shared bytes');
-      assert.equal((await store.get(second.id))?.id, second.id);
-      assert.deepEqual(await store.readText(second.id), { ok: true, text: 'shared bytes' });
+      assert.equal((await getArtifact(store, second.id))?.id, second.id);
+      assert.deepEqual(await readArtifactText(store, second.id), {
+        ok: true,
+        text: 'shared bytes',
+      });
     });
   });
 
@@ -1141,7 +1195,7 @@ describe('SQLite Artifact store', () => {
         /path is still referenced/,
       );
       assert.equal(await readFile(upperPath, 'utf8'), 'shared bytes');
-      assert.equal((await store.get(upper.id))?.id, upper.id);
+      assert.equal((await getArtifact(store, upper.id))?.id, upper.id);
     });
   });
 
@@ -1179,7 +1233,7 @@ describe('SQLite Artifact store', () => {
         /path is still referenced/,
       );
 
-      assert.deepEqual(await store.readText(upper.id), { ok: true, text: 'shared bytes' });
+      assert.deepEqual(await readArtifactText(store, upper.id), { ok: true, text: 'shared bytes' });
       assert.equal((await lstat(lowerPath)).isSymbolicLink(), true);
       assert.equal((await lstat(upperPath)).isSymbolicLink(), true);
       assert.equal(await readFile(targetPath, 'utf8'), 'shared bytes');
@@ -1202,7 +1256,7 @@ describe('SQLite Artifact store', () => {
         'utf8',
       );
       await assert.rejects(() => stat(payloadPath), { code: 'ENOENT' });
-      assert.equal((await store.get(record.id))?.id, record.id);
+      assert.equal((await getArtifact(store, record.id))?.id, record.id);
       assert.deepEqual(JSON.parse(await readFile(purgeIntentPath, 'utf8')), {
         schemaVersion: 1,
         artifactIds: [record.id],
@@ -1215,7 +1269,7 @@ describe('SQLite Artifact store', () => {
       await authority.recover();
       await authority.recover();
 
-      assert.equal(await store.get(record.id), null);
+      assert.equal(await getArtifact(store, record.id), null);
       await assert.rejects(() => stat(metadataPath), { code: 'ENOENT' });
       await assert.rejects(() => stat(purgeIntentPath), { code: 'ENOENT' });
       await store.deleteUserArtifactInSession(record.sessionId, record.id);
@@ -1245,7 +1299,7 @@ describe('SQLite Artifact store', () => {
       const reopened = createArtifactStore(root);
       const next = await reopened.create(artifactInput('after-recovery', 'kept', 2));
       assert.equal(next.id, 'after-recovery');
-      assert.equal(await reopened.get(record.id), null);
+      assert.equal(await getArtifact(reopened, record.id), null);
       await assert.rejects(() => stat(join(root, 'artifacts', '.artifact-purge-intent.json')), {
         code: 'ENOENT',
       });
@@ -1259,7 +1313,10 @@ describe('SQLite Artifact store', () => {
       await store.create({ ...artifactInput('image', png, 1), name: 'image.png', kind: 'image' });
       await store.deleteUserArtifactInSession('session-1', 'image');
 
-      assert.deepEqual(await store.readBinary('image'), { ok: false, reason: 'not_found' });
+      assert.deepEqual(await readArtifactBinary(store, 'image'), {
+        ok: false,
+        reason: 'not_found',
+      });
       assert.deepEqual(
         await store.readDurableAttachmentBinary({
           artifactId: 'image',
@@ -1288,8 +1345,8 @@ describe('SQLite Artifact store', () => {
         name: 'unknown.bin',
       });
 
-      assert.deepEqual(await store.readText('large'), { ok: false, reason: 'too_large' });
-      assert.deepEqual(await store.readBinary('unknown'), {
+      assert.deepEqual(await readArtifactText(store, 'large'), { ok: false, reason: 'too_large' });
+      assert.deepEqual(await readArtifactBinary(store, 'unknown'), {
         ok: false,
         reason: 'unsupported_mime',
       });
@@ -1312,8 +1369,11 @@ describe('SQLite Artifact store', () => {
       });
 
       assert.equal(record.id.length, ARTIFACT_ENTITY_ID_MAX_CHARS);
-      assert.deepEqual(await createArtifactStore(root).get(boundaryId), record);
-      assert.deepEqual(await createArtifactStore(root).list(boundaryId), [record]);
+      assert.deepEqual(
+        await getArtifact(createArtifactStore(root), boundaryId, boundaryId),
+        record,
+      );
+      assert.deepEqual(await listArtifacts(createArtifactStore(root), boundaryId), [record]);
     });
   });
 
@@ -1407,7 +1467,7 @@ describe('SQLite Artifact store', () => {
           }),
           { ok: false, reason: 'not_allowed' },
         );
-        assert.deepEqual(await createArtifactStore(root).readText(record.id), {
+        assert.deepEqual(await readArtifactText(createArtifactStore(root), record.id), {
           ok: false,
           reason: 'not_allowed',
         });

@@ -38,6 +38,14 @@ import {
 
 const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
+async function listArtifacts(store: ArtifactAuthorityStore, sessionId: string) {
+  return (await store.listPage(sessionId, { offset: 0, limit: Number.MAX_SAFE_INTEGER })).records;
+}
+
+function readArtifactBinary(store: ArtifactAuthorityStore, artifactId: string) {
+  return store.readBinaryInSession('session-1', artifactId);
+}
+
 describe('artifact attachment authority', () => {
   test('reads only live user-uploaded text within the invoking Session', async () => {
     await withStore(async (store) => {
@@ -224,7 +232,7 @@ describe('artifact attachment authority', () => {
         }),
         /Image exceeds the 5MB model input limit/,
       );
-      assert.deepEqual(await store.list('session-1'), []);
+      assert.deepEqual(await listArtifacts(store, 'session-1'), []);
     });
   });
 
@@ -243,7 +251,7 @@ describe('artifact attachment authority', () => {
       const repeated = await snapshot(input);
 
       assert.deepEqual(repeated, first);
-      assert.equal((await store.list('session-1')).length, 1);
+      assert.equal((await listArtifacts(store, 'session-1')).length, 1);
     });
   });
 
@@ -261,7 +269,7 @@ describe('artifact attachment authority', () => {
         (await store.deleteUserArtifactInSession('session-1', ref.relativePath)).kind,
         'deleted',
       );
-      assert.deepEqual(await store.readBinary(ref.relativePath), {
+      assert.deepEqual(await readArtifactBinary(store, ref.relativePath), {
         ok: false,
         reason: 'not_found',
       });
@@ -280,17 +288,17 @@ describe('artifact attachment authority', () => {
       };
       const plan = createReadImageSnapshotPlanner(store)(input);
 
-      assert.deepEqual(await store.list('session-1'), []);
+      assert.deepEqual(await listArtifacts(store, 'session-1'), []);
       bytes[0] = 0;
       input.name = 'mutated after prepare';
       await Promise.all([plan.persist(), plan.persist()]);
-      const published = await store.list('session-1');
+      const published = await listArtifacts(store, 'session-1');
       assert.deepEqual(
         published.map((artifact) => artifact.id),
         [plan.ref.relativePath],
       );
       assert.equal(published[0]?.name, 'Tool Result image');
-      assert.deepEqual(await store.readBinary(plan.ref.relativePath), {
+      assert.deepEqual(await readArtifactBinary(store, plan.ref.relativePath), {
         ok: true,
         base64: Buffer.from(png).toString('base64'),
         mimeType: 'image/png',
@@ -334,12 +342,12 @@ describe('artifact attachment authority', () => {
       await second.retract();
 
       assert.deepEqual(deleted, []);
-      assert.equal((await store.readBinary(first.ref.relativePath)).ok, true);
+      assert.equal((await readArtifactBinary(store, first.ref.relativePath)).ok, true);
 
       await first.retract();
 
       assert.deepEqual(deleted, [first.ref.relativePath]);
-      assert.equal((await store.readBinary(first.ref.relativePath)).ok, false);
+      assert.equal((await readArtifactBinary(store, first.ref.relativePath)).ok, false);
     });
   });
 });

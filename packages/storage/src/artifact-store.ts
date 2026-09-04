@@ -177,13 +177,6 @@ export interface ConversationArtifactCopyResult {
   readonly relativePaths: ReadonlyMap<string, string>;
 }
 
-export interface ArtifactStoreReader {
-  list(sessionId: string): Promise<ArtifactRecord[]>;
-  get(artifactId: string): Promise<ArtifactRecord | null>;
-  readText(artifactId: string, opts?: { maxBytes?: number }): Promise<ArtifactTextReadResult>;
-  readBinary(artifactId: string, opts?: { maxBytes?: number }): Promise<ArtifactBinaryReadResult>;
-}
-
 export type DurableArtifactBinaryReadResult =
   | ArtifactBinaryReadResult
   | { ok: false; reason: 'session_mismatch' };
@@ -196,7 +189,7 @@ export interface DurableArtifactAttachmentReader {
   }): Promise<DurableArtifactBinaryReadResult>;
 }
 
-export interface ArtifactStore extends ArtifactStoreReader, DurableArtifactAttachmentReader {
+export interface ArtifactStore extends DurableArtifactAttachmentReader {
   create(input: CreateArtifactInput): Promise<ArtifactRecord>;
   close?(): void;
 }
@@ -557,7 +550,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
 
   async purgeSessionArtifacts(sessionId: string): Promise<void> {
     assertCanonicalArtifactEntityId(sessionId, 'sessionId');
-    const records = await this.list(sessionId);
+    const records = await this.listSessionRecords(sessionId);
     if (records.length > 0) await this.purgeArtifacts(records.map((record) => record.id));
   }
 
@@ -615,7 +608,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     });
   }
 
-  async list(sessionId: string): Promise<ArtifactRecord[]> {
+  private async listSessionRecords(sessionId: string): Promise<ArtifactRecord[]> {
     return this.enqueue(async () => {
       await this.load();
       return (
@@ -626,14 +619,6 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
           .sort(compareArtifactRecords)
           .map((record) => ({ ...record }))
       );
-    });
-  }
-
-  async get(artifactId: string): Promise<ArtifactRecord | null> {
-    return this.enqueue(async () => {
-      await this.load();
-      const record = this.records.find((item) => item.id === artifactId);
-      return record ? { ...record } : null;
     });
   }
 
@@ -677,28 +662,6 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
         record: record ? { ...record } : null,
       };
     });
-  }
-
-  async readText(
-    artifactId: string,
-    opts: { maxBytes?: number } = {},
-  ): Promise<ArtifactTextReadResult> {
-    const prepared = await this.prepareRead(
-      artifactId,
-      opts.maxBytes ?? ARTIFACT_TEXT_PREVIEW_LIMIT_BYTES,
-    );
-    return this.readPreparedText(prepared);
-  }
-
-  async readBinary(
-    artifactId: string,
-    opts: { maxBytes?: number } = {},
-  ): Promise<ArtifactBinaryReadResult> {
-    const prepared = await this.prepareRead(
-      artifactId,
-      opts.maxBytes ?? ARTIFACT_BINARY_PREVIEW_LIMIT_BYTES,
-    );
-    return this.readPreparedBinary(prepared);
   }
 
   readTextInSession(
@@ -945,15 +908,6 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     await this.writeMetadataUnlocked({ deleteIds: [...ids] });
     this.records = nextRecords;
     await this.removePurgeIntentUnlocked();
-  }
-
-  private async prepareRead(
-    artifactId: string,
-    maxBytes: number,
-  ): Promise<PreparedArtifactRead | ArtifactReadFailure> {
-    const record = await this.get(artifactId);
-    if (!record) return { ok: false, reason: 'not_found' };
-    return this.prepareRecordRead(record, maxBytes);
   }
 
   private async prepareReadInSessionUnlocked(
