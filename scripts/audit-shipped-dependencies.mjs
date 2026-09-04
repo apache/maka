@@ -125,7 +125,7 @@ function main() {
   if (result.outcome === 'unavailable') {
     const message = `[audit-shipped] registry audit unavailable: ${result.detail}`;
     if (allowUnavailable) {
-      console.warn(`${message}; continuing Product Nightly`);
+      console.warn(`${message}; continuing without an advisory result`);
       return;
     }
     throw new Error(message);
