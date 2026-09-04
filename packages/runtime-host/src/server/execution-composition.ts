@@ -1766,10 +1766,17 @@ export async function createExecutionRuntimeHostComposition(
             // Only now: a write authority refuses every mutation until it has
             // recovered, and the sweep gives up on its first failure.
             stopRetiredCaptureSweep = startRetiredCaptureSweep(storage.artifacts, {
-              onError: (error) =>
+              onError: async (error) => {
                 console.error(
                   `[runtime-host] retired provider-request captures could not be reclaimed: ${generalizedErrorMessage(error)}`,
-                ),
+                );
+                // A purge that fails part way leaves the write authority
+                // refusing every mutation until something recovers it -- not
+                // just this sweep's, but the live turn's tool results and the
+                // user's uploads. Recovering here is what hands those back,
+                // and it replays the purge intent the failed batch left.
+                await openedArtifactStore.recover();
+              },
             });
           },
         },
@@ -2014,7 +2021,6 @@ export async function createExecutionRuntimeHostComposition(
     try {
       unsubscribeTranscriptChanges?.();
       unsubscribeUsageChanges?.();
-      stopRetiredCaptureSweep?.();
     } catch (closeError) {
       errors.push(closeError);
     }
