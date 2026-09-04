@@ -2278,7 +2278,7 @@ describe('SessionManager child-session runtime primitive', () => {
       .sendMessage(parent.id, { turnId: 'parent-turn-ad-hoc', text: 'delegate' })
       [Symbol.asyncIterator]();
     await parentTurn.next();
-    const [parentRun] = await runStore.listSessionRuns(parent.id);
+    const [parentRun] = await runStore.listSessionInvocations(parent.id);
     if (!parentRun) throw new Error('parent run was not recorded');
 
     const result = await manager.spawnChildSession(parent.id, {
@@ -2341,7 +2341,7 @@ describe('SessionManager child-session runtime primitive', () => {
       .sendMessage(parent.id, { turnId: 'parent-turn-narrow', text: 'delegate' })
       [Symbol.asyncIterator]();
     await parentTurn.next();
-    const [parentRun] = await runStore.listSessionRuns(parent.id);
+    const [parentRun] = await runStore.listSessionInvocations(parent.id);
     if (!parentRun) throw new Error('parent run was not recorded');
 
     await assert.rejects(
@@ -2400,7 +2400,7 @@ describe('SessionManager child-session runtime primitive', () => {
       .sendMessage(parent.id, { turnId: 'parent-turn-side-conversation', text: 'delegate' })
       [Symbol.asyncIterator]();
     await parentTurn.next();
-    const [parentRun] = await runStore.listSessionRuns(parent.id);
+    const [parentRun] = await runStore.listSessionInvocations(parent.id);
     if (!parentRun) throw new Error('parent run was not recorded');
 
     await assert.rejects(
@@ -2444,7 +2444,7 @@ describe('SessionManager child-session runtime primitive', () => {
       .sendMessage(parent.id, { turnId: 'parent-turn-invalid-role', text: 'delegate' })
       [Symbol.asyncIterator]();
     await parentTurn.next();
-    const [parentRun] = await runStore.listSessionRuns(parent.id);
+    const [parentRun] = await runStore.listSessionInvocations(parent.id);
     if (!parentRun) throw new Error('parent run was not recorded');
     await assert.rejects(
       manager.spawnChildSession(parent.id, {
