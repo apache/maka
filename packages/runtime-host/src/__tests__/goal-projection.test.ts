@@ -17,25 +17,31 @@
  * under the License.
  */
 
-import type { GoalStatus } from '@maka/core/goal';
-import type { DesktopGoalState } from '../../../../shared/goal-arm.js';
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { projectGoalState } from '../server/goal-projection.js';
 
-type LiveGoalStatus = Extract<GoalStatus, 'active' | 'waiting'>;
-
-export type LiveGoalState =
-  | (DesktopGoalState & { readonly status: LiveGoalStatus })
-  | (DesktopGoalState & { readonly status: 'paused'; readonly pausedAt: number });
-
-const LIVE_GOAL_STATUSES: ReadonlySet<GoalStatus> = new Set([
-  'active',
-  'waiting',
-  'paused',
-]);
-
-export function isLiveGoal(goal: DesktopGoalState): goal is LiveGoalState {
-  return (
-    LIVE_GOAL_STATUSES.has(goal.status) &&
-    (goal.status !== 'paused' ||
-      (typeof goal.pausedAt === 'number' && Number.isFinite(goal.pausedAt)))
+test('projects the identity of the Turn bound to an armed Goal', () => {
+  const projection = projectGoalState(
+    {
+      id: 'goal-1',
+      revision: 0,
+      sessionId: 'session-1',
+      condition: 'Ship the feature',
+      status: 'active',
+      setAt: 1,
+      iterations: 0,
+      maxIterations: 50,
+      consecutiveNoProgress: 0,
+      blockCap: 8,
+      tokensAtStart: 0,
+      tokensNow: 0,
+      tokensBaselinePending: true,
+      armedAt: 1,
+    },
+    'turn-after-arm',
   );
-}
+
+  assert.equal(projection.armedAt, 1);
+  assert.equal(projection.boundTurnId, 'turn-after-arm');
+});

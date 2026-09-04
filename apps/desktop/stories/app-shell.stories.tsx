@@ -1269,6 +1269,7 @@ export const SessionContextLayer: Story = {
       goal={{
         condition: '把 Session Context Layer 收敛到可 review 状态',
         status: 'active',
+        isArmed: false,
         iterations: 4,
         maxIterations: 12,
         setAt: Date.now() - 12 * 60_000,
@@ -1287,6 +1288,7 @@ export const SessionContextLayerWaiting: Story = {
       goal={{
         condition: '等待 CI 状态变化后继续处理 review',
         status: 'waiting',
+        isArmed: false,
         iterations: 4,
         maxIterations: 12,
         setAt: Date.now() - 12 * 60_000,
@@ -1307,6 +1309,7 @@ export const SessionContextLayerPaused: Story = {
         goal={{
           condition: '把 Session Context Layer 收敛到可 review 状态',
           status: 'paused',
+          isArmed: false,
           iterations: 4,
           maxIterations: 12,
           setAt: pausedAt - 8 * 60_000,

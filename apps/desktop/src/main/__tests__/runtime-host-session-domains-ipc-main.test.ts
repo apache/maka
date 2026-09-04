@@ -117,6 +117,7 @@ test('goal:arm reconciles a lost dispatched response without dispatching again',
         tokensAtStart: 0,
         tokensNow: 120,
         tokensBaselinePending: false,
+        armedAt: 7,
       },
       matchesRequestedState: true,
     },
@@ -311,6 +312,7 @@ test('goal:arm reconciliation reports different, missing, and unavailable author
         tokensAtStart: 0,
         tokensNow: 120,
         tokensBaselinePending: false,
+        armedAt: 7,
       },
       matchesRequestedState: false,
     },
@@ -490,6 +492,7 @@ test('adapts Host Goal, Task, Deep Research, and Resource projections', async ()
     tokensAtStart: 0,
     tokensNow: 120,
     tokensBaselinePending: false,
+    armedAt: 7,
   });
   await ipc.invoke('goal:clear', 'session-1');
   await ipc.invoke('goal:pause', 'session-1');
@@ -1217,6 +1220,8 @@ function baseGoalProjection() {
     lastReason: null,
     achievedAt: null,
     pausedAt: null,
+    armedAt: 7,
+    boundTurnId: null,
   };
 }
 

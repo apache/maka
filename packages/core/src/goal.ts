@@ -61,23 +61,24 @@ export interface GoalState {
   readonly achievedAt?: number;
   readonly pausedAt?: number;
   /**
-   * When `goal.arm` created this Goal, and absent once the Goal drives itself.
+   * When `goal.arm` created this Goal, retained through its first bound Turn.
    *
    * A Goal the model sets drives from the moment it exists: the Turn that set
    * it is already bound to it and settles into its first continuation. Arming
    * happens outside every Turn and deliberately starts nothing, so an armed
-   * Goal waits — for a Turn to carry it into a continuation, or for the user
-   * to resume it — and this records that wait. Both events clear it, so its
-   * absence is the whole fact `isDrivingGoal` reads. Absence is also what
-   * every Goal written before arming existed carries, which is what those
-   * Goals mean.
+   * Goal waits for a Turn to carry it. The Host pairs this durable marker with
+   * the transient bound Turn identity: no identity means still waiting; an
+   * identity means that first Turn is running. Settlement, pause, clear, and
+   * terminal verdicts all clear the marker. Its absence is also what every
+   * Goal written before arming existed carries.
    */
   readonly armedAt?: number;
 }
 
 /**
- * Whether this Goal admits its own continuation Turns, which a restart or a
- * resume has to put back.
+ * Whether an active or waiting Goal admits its own continuation Turns, which
+ * a restart or resume has to put back. Callers must still check the status:
+ * a paused Goal also has no armed marker, but it must not schedule work.
  *
  * `status` cannot answer this: `active` covers both a Goal between
  * continuations and an armed one still waiting for its first Turn. Neither
@@ -87,6 +88,20 @@ export interface GoalState {
  */
 export function isDrivingGoal(goal: Pick<GoalState, 'armedAt'>): boolean {
   return goal.armedAt === undefined;
+}
+
+/** Whether an armed Goal is still waiting for its first bound Turn. */
+export function isGoalArmedAwaitingFirstTurn(goal: {
+  readonly status: GoalStatus;
+  readonly armedAt?: number | null;
+  readonly boundTurnId?: string | null;
+}): boolean {
+  return (
+    goal.status === 'active' &&
+    goal.armedAt !== undefined &&
+    goal.armedAt !== null &&
+    (goal.boundTurnId === undefined || goal.boundTurnId === null)
+  );
 }
 
 export interface GoalCheckpoint {

@@ -269,6 +269,36 @@ describe('GoalManager arming', () => {
     assert.ok(resumed);
     assert.equal(isDrivingGoal(resumed), true);
   });
+
+  test('leaving the armed phase clears its marker, including terminal verdicts and clear', () => {
+    const { mgr } = createManager();
+    const armed = createGoal(mgr, 'x', { armed: true });
+    assert.equal(mgr.clear(SESSION)?.armedAt, undefined);
+
+    const pausable = createGoal(mgr, 'x', { armed: true });
+    assert.equal(mgr.pause(SESSION, { checkpoint: goalCheckpoint(pausable) })?.armedAt, undefined);
+    mgr.clear(SESSION);
+
+    const achieved = createGoal(mgr, 'x', { armed: true });
+    assert.equal(
+      mgr.settleTurn(SESSION, {
+        checkpoint: goalCheckpoint(achieved),
+        verdict: 'achieved',
+        reason: 'done',
+      })?.armedAt,
+      undefined,
+    );
+
+    const impossible = createGoal(mgr, 'x', { armed: true });
+    assert.equal(
+      mgr.settleTurn(SESSION, {
+        checkpoint: goalCheckpoint(impossible),
+        verdict: 'impossible',
+        reason: 'blocked',
+      })?.armedAt,
+      undefined,
+    );
+  });
 });
 
 describe('GoalManager atomic turn settlement', () => {

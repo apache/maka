@@ -2858,6 +2858,8 @@ test("publishes Host sidecar and graph invalidations without inventing Session s
         lastReason: null,
         achievedAt: null,
         pausedAt: null,
+        armedAt: null,
+        boundTurnId: null,
       },
     }),
   });
@@ -2966,6 +2968,8 @@ function activeGoal() {
     lastReason: null,
     achievedAt: null,
     pausedAt: null,
+    armedAt: null,
+    boundTurnId: null,
   };
 }
 

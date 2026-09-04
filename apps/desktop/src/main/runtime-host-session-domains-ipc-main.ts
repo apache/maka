@@ -24,7 +24,7 @@ import type {
   AgentGraphClientSnapshotOptions,
   AgentGraphOperatorInspection,
 } from '@maka/runtime/stream-graph-read-model';
-import { DEFAULT_MAX_ITERATIONS, type GoalState } from '@maka/runtime/goal-state';
+import { DEFAULT_MAX_ITERATIONS } from '@maka/runtime/goal-state';
 import type { ShellRunPtyDataEvent } from '@maka/runtime/shell-run-contract';
 import type {
   GoalProjection,
@@ -37,6 +37,7 @@ import {
   GOAL_ARM_REQUEST_KEYS,
   type GoalArmOutcome,
 } from '../shared/goal-arm.js';
+import type { DesktopGoalState } from '../shared/goal-arm.js';
 import { projectHostedDeepResearch } from './deep-research-desktop-projection.js';
 import {
   handleReconciledControl,
@@ -451,7 +452,7 @@ function optionalCount(value: unknown, label: string): number | null {
   return value;
 }
 
-function toDesktopGoal(goal: GoalProjection): GoalState {
+function toDesktopGoal(goal: GoalProjection): DesktopGoalState {
   return {
     id: goal.goalId,
     revision: goal.revision,
@@ -470,6 +471,8 @@ function toDesktopGoal(goal: GoalProjection): GoalState {
     ...(goal.lastReason === null ? {} : { lastReason: goal.lastReason }),
     ...(goal.achievedAt === null ? {} : { achievedAt: goal.achievedAt }),
     ...(goal.pausedAt === null ? {} : { pausedAt: goal.pausedAt }),
+    ...(goal.armedAt === null ? {} : { armedAt: goal.armedAt }),
+    ...(goal.boundTurnId === null ? {} : { boundTurnId: goal.boundTurnId }),
   };
 }
 

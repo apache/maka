@@ -232,11 +232,15 @@ export class HostGoalCoordinator {
 
   readProjection(sessionId: string): GoalProjection | null {
     const goal = this.manager.get(sessionId);
-    return goal ? projectGoalState(goal) : null;
+    return goal
+      ? projectGoalState(goal, this.continuation.observedGoalTurnId(sessionId, goal.id))
+      : null;
   }
 
   beginObservedTurn(sessionId: string, turnId: string): GoalObservedTurnStart {
-    return this.continuation.beginObservedTurn(sessionId, turnId);
+    const registration = this.continuation.beginObservedTurn(sessionId, turnId);
+    if (registration.kind === 'registered') this.#onProjectionChanged(sessionId);
+    return registration;
   }
 
   begin(input: HostedExecutionObservation): HostedExecutionCompletionObserver | undefined {
@@ -245,6 +249,7 @@ export class HostGoalCoordinator {
     }
     const registration = this.continuation.beginObservedTurn(input.sessionId, input.turnId);
     if (registration.kind !== 'registered') return undefined;
+    this.#onProjectionChanged(input.sessionId);
     return (completion) =>
       registration.settle(goalOutcomeFromCompletion(completion)).catch((error) => {
         this.#persistenceFailure ??= error;

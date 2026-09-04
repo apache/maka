@@ -65,6 +65,13 @@ export interface GoalProjection {
   readonly lastReason: string | null;
   readonly achievedAt: number | null;
   readonly pausedAt: number | null;
+  /**
+   * Epoch ms from arming through the first bound Turn. A null `boundTurnId`
+   * means the Goal is still waiting; a value means that Turn is running.
+   */
+  readonly armedAt: number | null;
+  /** The currently running Turn that observed this armed Goal, if any. */
+  readonly boundTurnId: string | null;
 }
 
 export interface GoalQueryInput {
@@ -169,6 +176,8 @@ export function decodeGoalProjection(value: unknown): GoalProjection {
     'lastReason',
     'achievedAt',
     'pausedAt',
+    'armedAt',
+    'boundTurnId',
   ]);
   const condition = requireUtf8String(
     record.condition,
@@ -195,6 +204,9 @@ export function decodeGoalProjection(value: unknown): GoalProjection {
     lastReason,
     achievedAt: requireNullableCount(record.achievedAt, 'Goal achievedAt'),
     pausedAt: requireNullableCount(record.pausedAt, 'Goal pausedAt'),
+    armedAt: requireNullableCount(record.armedAt, 'Goal armedAt'),
+    boundTurnId:
+      record.boundTurnId === null ? null : requireEntityId(record.boundTurnId, 'Goal boundTurnId'),
   };
 }
 

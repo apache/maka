@@ -45,6 +45,8 @@ const goal = {
   lastReason: 'Waiting for an exact resume',
   achievedAt: null,
   pausedAt: 2,
+  armedAt: null,
+  boundTurnId: null,
 };
 
 test('Goal query and exact-revision control frames round-trip', () => {
@@ -135,6 +137,10 @@ test('Goal projection is part of the exact Session continuity schema', () => {
 });
 
 test('Goal projection rejects unknown fields and text beyond the shared UTF-8 boundary', () => {
+  const { armedAt: _armedAt, ...legacyGoal } = goal;
+  assert.throws(() => decodeGoalProjection(legacyGoal));
+  const { boundTurnId: _boundTurnId, ...unboundGoal } = goal;
+  assert.throws(() => decodeGoalProjection(unboundGoal));
   assert.throws(() => decodeGoalProjection({ ...goal, extra: true }));
   assert.throws(() => decodeGoalProjection({ ...goal, condition: '界'.repeat(501) }));
   assert.throws(() => decodeGoalProjection({ ...goal, lastReason: '界'.repeat(501) }));

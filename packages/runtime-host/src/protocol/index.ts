@@ -100,7 +100,10 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 110 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 111 as const;
+// 111: Goal projections carry `armedAt` and `boundTurnId`. The exact projection
+// schema makes this a closed wire change, so mixed-version peers must fail
+// before decoding it. Re-derived from current `main` at epoch 110.
 // 110: Runtime Host is the sole schema-migration authority for its State Root.
 // Epoch 109 Desktop builds could migrate the event-only AgentRun schema while
 // an older service Host still held the root, leaving that Host querying a

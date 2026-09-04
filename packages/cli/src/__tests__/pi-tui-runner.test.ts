@@ -7679,6 +7679,8 @@ describe('Maka Pi TUI runner', () => {
       lastReason: 'tests still failing',
       achievedAt: null,
       pausedAt: null,
+      armedAt: null,
+      boundTurnId: null,
     };
 
     test('/goal prints the live goal summary and the status line carries the indicator', async () => {
@@ -7808,7 +7810,7 @@ describe('Maka Pi TUI runner', () => {
     test('/goal pause|resume|clear control the loop and print confirmations', async () => {
       const terminal = new FakeTerminal(160, 24);
       const driver = new SlashCommandDriver();
-      driver.goal = armedGoal;
+      driver.goal = { ...armedGoal, armedAt: Date.now() };
       const run = runMakaPiTui({
         title: 'Maka',
         driver,
@@ -7819,10 +7821,11 @@ describe('Maka Pi TUI runner', () => {
         terminal,
       });
 
-      // Attaching to a session whose goal is running announces the loop —
-      // recovery never resumes a token-burning loop silently.
+      // Attaching to a session whose goal is armed announces that it is set;
+      // the notice must not be suppressed just because its first Turn is not
+      // bound yet.
       await waitFor(() =>
-        plainTerminalOutput(terminal.output()).includes('Autonomous goal is running (2/50)'),
+        plainTerminalOutput(terminal.output()).includes('Autonomous goal is set (2/50)'),
       );
 
       terminal.input('/goal pause');
@@ -7975,6 +7978,35 @@ describe('Maka Pi TUI runner', () => {
 
       await waitFor(() =>
         plainTerminalOutput(terminal.output()).includes('Autonomous goal is running (2/50)'),
+      );
+
+      exitMaka(terminal);
+      await Promise.race([
+        run,
+        delay(CLOSE_BUDGET_MS).then(() => {
+          throw new Error('TUI did not close during test cleanup');
+        }),
+      ]);
+    });
+
+    test('resuming into a session with an armed goal announces that it is set', async () => {
+      const terminal = new FakeTerminal(160, 24);
+      const driver = new SlashCommandDriver([fakeSessionSummary('session-2', '/repo')]);
+      driver.goal = null;
+      driver.goalsBySessionId.set('session-2', { ...armedGoal, armedAt: Date.now() });
+      const run = runMakaPiTui({
+        title: 'Maka',
+        driver,
+        cwd: '/repo',
+        model: 'claude-sonnet-4-5',
+        connectionSlug: 'claude-subscription',
+        permissionMode: 'ask',
+        terminal,
+        resumeSessionId: 'session-2',
+      });
+
+      await waitFor(() =>
+        plainTerminalOutput(terminal.output()).includes('Autonomous goal is set (2/50)'),
       );
 
       exitMaka(terminal);

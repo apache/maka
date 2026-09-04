@@ -42,7 +42,7 @@ import {
   GOAL_MAX_ITERATIONS_LIMIT,
   GOAL_TOKEN_BUDGET_MINIMUM,
 } from '@maka/core/goal';
-import { useUiLocale } from '@maka/ui';
+import { redactSecrets, useUiLocale } from '@maka/ui';
 import {
   getShellCopy,
   localizedShellErrorMessage,
@@ -109,12 +109,12 @@ export function GoalDialog(props: GoalDialogProps) {
     switch (reconciliation.kind) {
       case 'matching_goal':
         return copy.reconciledMatching(
-          reconciliation.goal.condition,
+          redactSecrets(reconciliation.goal.condition),
           copy.statusLabels[reconciliation.goal.status],
         );
       case 'different_goal':
         return copy.reconciledDifferent(
-          reconciliation.goal.condition,
+          redactSecrets(reconciliation.goal.condition),
           copy.statusLabels[reconciliation.goal.status],
         );
       case 'no_goal':

@@ -121,6 +121,21 @@ test('closes only for armed and locks reconciled state until reopen', async () =
   assert.equal(harness.closed, 1);
 });
 
+test('redacts secrets in a reconciled Goal condition', async () => {
+  const secret = 'sk-ant-api03-abc123def456ghi789jkl0mn1opq';
+  const harness = installGoalDialog(async () => ({
+    kind: 'reconciled',
+    currentGoal: { ...goalState(), condition: `Use Authorization: Bearer ${secret}` },
+    matchesRequestedState: true,
+  }));
+  await harness.render('session-1');
+  await setInputValue(harness.document, 'textarea', 'Finish session one');
+  await clickButton(harness.document, 'Start');
+
+  assert.equal(harness.document.body.textContent.includes(secret), false);
+  assert.match(harness.document.body.textContent, /Authorization: Bearer <redacted>/);
+});
+
 test('keeps the Goal form editable after a deterministic rejection', async () => {
   const harness = installGoalDialog(async () => {
     throw new Error('Goal already exists');

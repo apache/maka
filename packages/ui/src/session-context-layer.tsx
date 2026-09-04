@@ -33,9 +33,10 @@ import {
   Tooltip,
   type DropdownMenuOption,
 } from '@astryxdesign/core';
-import { getConversationCopy } from './conversation-copy.js';
+import { getConversationCopy, type GoalDisplayPhase } from './conversation-copy.js';
 import { ICON_SIZE, Pause, Play } from './icons.js';
 import { useUiLocale } from './locale-context.js';
+import { redactSecrets } from './redact.js';
 import { dotForStatus } from './status-vocabulary.js';
 
 export interface SessionContextBranch {
@@ -55,8 +56,10 @@ interface SessionContextGoalBase {
   condition: string;
   iterations: number;
   maxIterations: number;
-  /** Epoch ms when the goal was armed; the chip derives wall-clock elapsed. */
+  /** Epoch ms when the goal was set; the chip derives wall-clock elapsed. */
   setAt: number;
+  /** Whether the Goal is set and waiting for its first Turn. */
+  isArmed: boolean;
   tokensSpent?: number;
   /** When present (a budget exists), the chip shows spent / budget. */
   tokenBudget?: number;
@@ -112,17 +115,26 @@ export function SessionContextLayer(props: {
 
   if (props.goal) {
     const goal = props.goal;
+    const condition = redactSecrets(goal.condition);
     // A paused goal burns nothing, while waiting remains live but is not
     // currently executing. Both must be visually still; only paused needs an
     // attention tone.
     const paused = goal.status === 'paused';
     const waiting = goal.status === 'waiting';
+    const armed = goal.isArmed;
+    const phase: GoalDisplayPhase = paused
+      ? 'paused'
+      : armed
+        ? 'armed'
+        : waiting
+          ? 'waiting'
+          : 'running';
     const elapsedMs = paused
       ? Math.max(0, goal.pausedAt - goal.setAt)
       : Math.max(0, Date.now() - goal.setAt);
     const goalText = [
       copy.goalProgress(goal.iterations, goal.maxIterations),
-      copy.goalElapsed(elapsedMs),
+      ...(armed ? [] : [copy.goalElapsed(elapsedMs)]),
       goal.tokenBudget !== undefined && goal.tokensSpent !== undefined
         ? copy.goalTokens(goal.tokensSpent, goal.tokenBudget)
         : null,
@@ -158,11 +170,13 @@ export function SessionContextLayer(props: {
             label={
               paused
                 ? copy.goalPausedAriaLabel
+                : armed
+                  ? copy.goalArmedAriaLabel
                 : waiting
                   ? copy.goalWaitingAriaLabel
                   : copy.goalRunningAriaLabel
             }
-            isPulsing={!paused && !waiting}
+            isPulsing={!paused && !armed && !waiting}
           />
           <Text type="supporting" hasTabularNumbers>
             {goalText}
@@ -176,10 +190,10 @@ export function SessionContextLayer(props: {
               size="sm"
               onClick={goal.onPause}
               tooltip={copy.pauseGoal(
-                goal.condition,
+                condition,
                 goal.iterations,
                 goal.maxIterations,
-                goal.status,
+                phase,
               )}
             />
           ) : null}
@@ -191,7 +205,7 @@ export function SessionContextLayer(props: {
               variant="ghost"
               size="sm"
               onClick={goal.onResume}
-              tooltip={copy.resumeGoal(goal.condition, goal.iterations, goal.maxIterations)}
+              tooltip={copy.resumeGoal(condition, goal.iterations, goal.maxIterations)}
             />
           ) : null}
           <IconButton
@@ -202,10 +216,10 @@ export function SessionContextLayer(props: {
             size="sm"
             onClick={goal.onClear}
             tooltip={copy.clearGoal(
-              goal.condition,
+              condition,
               goal.iterations,
               goal.maxIterations,
-              goal.status,
+              phase,
             )}
           />
         </div>
@@ -359,10 +373,10 @@ export function SessionContextLayer(props: {
             this one branched FROM. */}
         <div className="maka-session-context__lineage">
           {props.goal ? (
-            <Tooltip content={props.goal.condition}>
+            <Tooltip content={redactSecrets(props.goal.condition)}>
               <div className="maka-session-context__goal-description">
                 <Text type="supporting" maxLines={1}>
-                  {props.goal.condition}
+                  {redactSecrets(props.goal.condition)}
                 </Text>
               </div>
             </Tooltip>

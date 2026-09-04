@@ -25,6 +25,7 @@ import {
   useState,
   type ComponentProps,
 } from 'react';
+import { isGoalArmedAwaitingFirstTurn } from '@maka/core/goal';
 import { useUiLocale, type ChatView } from '@maka/ui';
 import {
   getShellCopy,
@@ -144,6 +145,7 @@ export function useGoalController(
       iterations: activeGoal.iterations,
       maxIterations: activeGoal.maxIterations,
       setAt: activeGoal.setAt,
+      isArmed: isGoalArmedAwaitingFirstTurn(activeGoal),
       tokensSpent: activeGoal.tokensNow,
       ...(activeGoal.tokenBudget !== undefined
         ? { tokenBudget: activeGoal.tokenBudget }

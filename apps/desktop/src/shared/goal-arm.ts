@@ -19,6 +19,11 @@
 
 import type { GoalState } from '@maka/runtime/goal-state';
 
+/** Desktop-only runtime detail; it is transient and never persisted with a Goal. */
+export type DesktopGoalState = GoalState & {
+  readonly boundTurnId?: string;
+};
+
 /**
  * What the renderer sends to arm a Goal.
  *
@@ -34,10 +39,10 @@ export interface GoalArmRequest {
 }
 
 export type GoalArmOutcome =
-  | { readonly kind: 'armed'; readonly goal: GoalState }
+  | { readonly kind: 'armed'; readonly goal: DesktopGoalState }
   | {
       readonly kind: 'reconciled';
-      readonly currentGoal: GoalState | null;
+      readonly currentGoal: DesktopGoalState | null;
       readonly matchesRequestedState: boolean;
     }
   | { readonly kind: 'reconciliation_unavailable' };

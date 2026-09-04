@@ -328,9 +328,10 @@ export class GoalManager {
         status: 'achieved',
         lastReason: input.reason,
         achievedAt: this.deps.now(),
+        armedAt: undefined,
       };
     } else if (input.verdict === 'impossible') {
-      patch = { status: 'impossible', lastReason: input.reason };
+      patch = { status: 'impossible', lastReason: input.reason, armedAt: undefined };
     } else {
       let tokensAtStart = current.tokensAtStart;
       let tokensNow = current.tokensNow;
@@ -409,6 +410,7 @@ export class GoalManager {
       {
         status: 'paused',
         pausedAt: this.deps.now(),
+        armedAt: undefined,
         ...(options?.reason !== undefined ? { lastReason: options.reason } : {}),
       },
       { renewControlLease: true },
@@ -440,7 +442,11 @@ export class GoalManager {
   clear(sessionId: string): GoalState | undefined {
     const record = this.goals.get(sessionId);
     if (!record || TERMINAL_GOAL_STATUSES.has(record.state.status)) return undefined;
-    return this.commit(record, { status: 'cleared' }, { renewControlLease: true });
+    return this.commit(
+      record,
+      { status: 'cleared', armedAt: undefined },
+      { renewControlLease: true },
+    );
   }
 
   remove(sessionId: string): boolean {

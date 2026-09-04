@@ -25,7 +25,8 @@
  * Codex parallel: codex-rs/tui/src/goal_display.rs.
  */
 
-import type { GoalStatus } from '@maka/core/goal';
+import { isGoalArmedAwaitingFirstTurn, type GoalStatus } from '@maka/core/goal';
+import { redactSecrets } from '@maka/core/display-redaction';
 import type { GoalProjection } from '@maka/runtime-host/protocol';
 import { formatTokenCount } from './pi-transcript-format.js';
 import { stripAnsi } from './tui-ansi.js';
@@ -103,11 +104,19 @@ export function formatGoalElapsed(elapsedMs: number): string {
 export function goalStatusLineText(
   goal: Pick<
     GoalProjection,
-    'status' | 'iterations' | 'maxIterations' | 'setAt' | 'pausedAt' | 'achievedAt'
+    | 'status'
+    | 'iterations'
+    | 'maxIterations'
+    | 'setAt'
+    | 'pausedAt'
+    | 'achievedAt'
+    | 'armedAt'
+    | 'boundTurnId'
   >,
   now: number,
 ): string {
   const counter = `${goal.iterations}/${goal.maxIterations}`;
+  if (isArmedGoal(goal)) return `goal set ${counter}`;
   if (goal.status === 'active') {
     return `goal ${counter} ${formatGoalElapsed(goalElapsedMs(goal, now))}`;
   }
@@ -116,7 +125,7 @@ export function goalStatusLineText(
 
 /** Conditions and evaluator notes may legally embed newlines; collapse whitespace so notices stay one line per field. */
 function inlineGoalText(value: string): string {
-  return stripAnsi(value)
+  return redactSecrets(stripAnsi(value))
     .replace(/[\u0000-\u001f\u007f-\u009f]/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -139,20 +148,27 @@ export function goalPausedNoticeText(
  * auto-continuing after recovery — a token-burning loop never resumes silently.
  */
 export function goalAttachedNoticeText(
-  goal: Pick<GoalProjection, 'condition' | 'iterations' | 'maxIterations'>,
+  goal: Pick<
+    GoalProjection,
+    'condition' | 'iterations' | 'maxIterations' | 'status' | 'armedAt' | 'boundTurnId'
+  >,
 ): string {
   const condition = inlineGoalText(goal.condition);
   const short = condition.length > 120 ? `${condition.slice(0, 119)}…` : condition;
+  if (isArmedGoal(goal)) {
+    return `Autonomous goal is set (${goal.iterations}/${goal.maxIterations}): ${short} — it takes hold on the next Turn.`;
+  }
   return `Autonomous goal is running (${goal.iterations}/${goal.maxIterations}): ${short} — /goal shows details, /goal pause pauses it.`;
 }
 
 /** Full `/goal` summary. Terminal goals are as welcome here as live ones. */
 export function goalSummaryLines(goal: GoalProjection, now: number): string[] {
-  const status = `Status: ${goalStatusLabel(goal.status)} · ${goal.iterations}/${goal.maxIterations} iterations`;
+  const status = `Status: ${isArmedGoal(goal) ? 'set' : goalStatusLabel(goal.status)} · ${goal.iterations}/${goal.maxIterations} iterations`;
   // Terminal verdicts other than `achieved` carry no freeze timestamp, so a
   // wall-clock elapsed would keep growing for a loop that already ended.
   const elapsedMeaningful =
-    isLiveGoalStatus(goal.status) || (goal.status === 'achieved' && goal.achievedAt !== null);
+    (!isArmedGoal(goal) && isLiveGoalStatus(goal.status)) ||
+    (goal.status === 'achieved' && goal.achievedAt !== null);
   const lines = [
     // A cleared goal keeps its terminal record, so say "cleared" up front
     // instead of presenting the condition as if it were still armed.
@@ -170,4 +186,8 @@ export function goalSummaryLines(goal: GoalProjection, now: number): string[] {
   }
   if (goal.lastReason) lines.push(`Last evaluator note: ${inlineGoalText(goal.lastReason)}`);
   return lines;
+}
+
+function isArmedGoal(goal: Pick<GoalProjection, 'status' | 'armedAt' | 'boundTurnId'>): boolean {
+  return isGoalArmedAwaitingFirstTurn(goal);
 }

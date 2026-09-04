@@ -40,6 +40,10 @@
 
 ### Changed
 
+- Distinguished Goals that are armed and waiting for their first Turn from
+  Goals that are already running across Desktop and CLI/TUI surfaces. Goal
+  conditions shown in client status, tooltip, lineage, and reconciliation
+  displays are now redacted. The Runtime Host compatibility epoch moves to 111.
 - Made typed `request()` the sole direct Runtime Host operation API; removed the 17 forwarding
   aliases from direct and reconnecting connections while preserving status validation,
   subscriptions, capabilities, listeners, lifecycle, and close behavior.

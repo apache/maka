@@ -237,6 +237,29 @@ describe('useGoalController', () => {
     assert.equal(pauseCalls, 2);
   });
 
+  it('shows an armed marker only while the first Turn is unbound', async () => {
+    const { root } = installReactRenderer();
+    const defaults = createFakeGoalServices();
+    const services = createFakeGoalServices({
+      goal: {
+        ...defaults.goal,
+        get: async () => ({ ...goal('a'), armedAt: 150 }),
+      },
+    });
+
+    await act(async () => renderController(root, services, input('a')));
+    assert.equal(controller().selectors.indicator?.isArmed, true);
+
+    const boundServices = createFakeGoalServices({
+      goal: {
+        ...defaults.goal,
+        get: async () => ({ ...goal('a'), armedAt: 150, boundTurnId: 'turn-1' }),
+      },
+    });
+    await act(async () => renderController(root, boundServices, input('a')));
+    assert.equal(controller().selectors.indicator?.isArmed, false);
+  });
+
   it('routes resume and clear controls for paused Goals', async () => {
     const { root } = installReactRenderer();
     const calls: string[] = [];

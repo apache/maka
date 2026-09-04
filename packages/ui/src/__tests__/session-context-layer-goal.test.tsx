@@ -43,6 +43,7 @@ test('a running goal reads as running and offers pause, with elapsed and tokens'
     status: 'active',
     iterations: 3,
     maxIterations: 50,
+    isArmed: false,
     setAt: Date.now() - 12 * 60_000,
     tokensSpent: 12_000,
     tokenBudget: 100_000,
@@ -71,6 +72,7 @@ test('a paused goal reads as paused and offers resume, not pause', () => {
     status: 'paused',
     iterations: 3,
     maxIterations: 50,
+    isArmed: false,
     setAt: 1_000,
     pausedAt: 1_000 + 12 * 60_000,
     onResume: () => undefined,
@@ -91,6 +93,7 @@ test('a waiting goal reads as waiting without looking active or paused', () => {
     status: 'waiting',
     iterations: 4,
     maxIterations: 50,
+    isArmed: false,
     setAt: Date.now() - 30_000,
     tokensSpent: 12_000,
     tokenBudget: 100_000,
@@ -103,4 +106,52 @@ test('a waiting goal reads as waiting without looking active or paused', () => {
   assert.ok(markup.includes('Pause autonomous goal after 4/50 iterations'));
   assert.ok(!markup.includes('Resume autonomous goal'));
   assert.ok(markup.includes('12k / 100k'));
+});
+
+test('an armed goal waits for its first Turn without looking like it is running', () => {
+  const markup = renderGoalChip({
+    condition: 'Ship the feature',
+    status: 'active',
+    isArmed: true,
+    iterations: 0,
+    maxIterations: 50,
+    setAt: Date.now() - 30_000,
+    onPause: () => undefined,
+    onClear: () => undefined,
+  });
+  assert.ok(markup.includes('Autonomous goal set; takes hold on the next Turn'));
+  assert.ok(!markup.includes('Autonomous goal running'));
+  assert.ok(!markup.includes('Autonomous goal paused'));
+  assert.ok(markup.includes('Clear autonomous goal after 0/50 iterations'));
+});
+
+test('a bound first Turn makes an armed goal read as running', () => {
+  const markup = renderGoalChip({
+    condition: 'Ship the feature',
+    status: 'active',
+    isArmed: false,
+    iterations: 0,
+    maxIterations: 50,
+    setAt: Date.now() - 30_000,
+    onPause: () => undefined,
+    onClear: () => undefined,
+  });
+  assert.ok(markup.includes('Autonomous goal running'));
+  assert.ok(!markup.includes('Autonomous goal set; takes hold on the next Turn'));
+});
+
+test('redacts secrets from the visible Goal condition', () => {
+  const secret = 'sk-ant-api03-abc123def456ghi789jkl0mn1opq';
+  const markup = renderGoalChip({
+    condition: `Use Authorization: Bearer ${secret}`,
+    status: 'waiting',
+    iterations: 4,
+    maxIterations: 50,
+    isArmed: false,
+    setAt: Date.now() - 30_000,
+    onClear: () => undefined,
+  });
+
+  assert.equal(markup.includes(secret), false);
+  assert.ok(markup.includes('Authorization: Bearer &lt;redacted&gt;'));
 });

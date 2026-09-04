@@ -205,7 +205,7 @@ import type {
 } from '@maka/runtime/stream-graph-read-model';
 import type { BotStatus, WechatBridgeQrCodeResult } from '@maka/runtime/bots';
 import type { ShellRunPtyDataEvent, ShellRunPtySnapshot } from '@maka/runtime/shell-run-contract';
-import type { GoalState } from '@maka/runtime/goal-state';
+import type { DesktopGoalState } from '../shared/goal-arm.js';
 import type { BundledSkillCatalogEntry, ManagedSkillSourceEntry, ManagedSkillUpdatePreview, SkillEntry } from '@maka/ui';
 import type { ConfigCategory } from '@maka/storage/config-transfer';
 import {
@@ -2752,7 +2752,7 @@ const makaBridge = {
     },
   },
   goal: {
-    get(sessionId: string): Promise<GoalState | null> {
+    get(sessionId: string): Promise<DesktopGoalState | null> {
       return invokeProjectedSessionRuntimeHost('goal:get', sessionId);
     },
     arm(sessionId: string, goal: GoalArmRequest): Promise<GoalArmOutcome> {

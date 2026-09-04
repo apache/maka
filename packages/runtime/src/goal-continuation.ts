@@ -249,6 +249,21 @@ export class GoalContinuationCoordinator {
     };
   }
 
+  /** The in-flight Turn that actually observed this armed Goal, if any. */
+  observedGoalTurnId(sessionId: string, goalId: string): string | null {
+    const goal = this.deps.goalManager.get(sessionId);
+    const controlLease = this.deps.goalManager.getControlLease(sessionId);
+    if (!goal || goal.id !== goalId || goal.armedAt === undefined || !controlLease) return null;
+    const lane = this.lanes.get(sessionId);
+    if (!lane) return null;
+    for (const registration of lane.turns.values()) {
+      if (sameGoalControlLease(registration.controlLease, controlLease)) {
+        return registration.turnId;
+      }
+    }
+    return null;
+  }
+
   /**
    * Why this turn may not arm a Goal, or that it may.
    *

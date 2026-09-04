@@ -51,6 +51,8 @@ function goal(overrides: Partial<GoalProjection> = {}): GoalProjection {
     lastReason: null,
     achievedAt: null,
     pausedAt: null,
+    armedAt: null,
+    boundTurnId: null,
     ...overrides,
   };
 }
@@ -97,6 +99,25 @@ describe('pi-goal display helpers', () => {
       goalStatusLineText(goal({ status: 'paused', pausedAt: 31_000 }), now),
       'goal paused 3/50',
     );
+  });
+
+  test('armed Goals remain set until their first bound Turn, without a running notice or elapsed time', () => {
+    const armed = goal({ armedAt: 1_000 });
+    assert.equal(goalStatusLineText(armed, 61_000), 'goal set 3/50');
+    assert.deepEqual(goalSummaryLines(armed, 61_000).slice(0, 2), [
+      'Goal: Ship the feature',
+      'Status: set · 3/50 iterations',
+    ]);
+    assert.equal(
+      goalAttachedNoticeText(armed),
+      'Autonomous goal is set (3/50): Ship the feature — it takes hold on the next Turn.',
+    );
+  });
+
+  test('a bound first Turn makes the same Goal running again', () => {
+    const running = goal({ armedAt: 1_000, boundTurnId: 'turn-1' });
+    assert.equal(goalStatusLineText(running, 61_000), 'goal 3/50 1m');
+    assert.match(goalAttachedNoticeText(running), /Autonomous goal is running/);
   });
 
   test('summary lines include budget only when set and the evaluator note only when present', () => {
@@ -183,5 +204,15 @@ describe('pi-goal display helpers', () => {
     // Long conditions are capped with an ellipsis.
     const long = goalAttachedNoticeText(goal({ condition: 'x'.repeat(200) }));
     assert.ok(long.includes('…') && long.length <= 210);
+  });
+
+  test('redacts secrets from condition text in CLI goal displays', () => {
+    const secret = 'sk-ant-api03-abc123def456ghi789jkl0mn1opq';
+    const current = goal({ condition: `Use Authorization: Bearer ${secret}` });
+
+    for (const text of [goalAttachedNoticeText(current), goalSummaryLines(current, 61_000)[0]!]) {
+      assert.equal(text.includes(secret), false);
+      assert.match(text, /<redacted>/);
+    }
   });
 });

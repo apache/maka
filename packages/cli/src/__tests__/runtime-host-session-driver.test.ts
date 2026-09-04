@@ -3009,6 +3009,8 @@ function goalProjection(overrides: Partial<GoalProjection> = {}): GoalProjection
     lastReason: null,
     achievedAt: null,
     pausedAt: null,
+    armedAt: null,
+    boundTurnId: null,
     ...overrides,
   };
 }
