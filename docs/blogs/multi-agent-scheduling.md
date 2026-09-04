@@ -21,36 +21,36 @@
 
 # From Copy-on-Write to Mailboxes: Two Paths for Multi-Agent Scheduling
 
-When an agent starts creating subagents, the most intuitive explanation is that it has launched more models to work in parallel. The difficult part, however, is not parallelism. It is scheduling: which context a subagent inherits, who decomposes the work, how dependencies are represented, how results are delivered, how execution recovers after failure, and whether active agents should communicate with one another.
+In multi-agent architectures, creating a subagent is often simplified as running multiple model instances in parallel. The true engineering bottleneck lies in the scheduling topology: what context a subagent inherits, who decomposes and dispatches tasks, how dependencies are expressed, how results are reliably handed off, how systems recover deterministically from failures, and whether concurrent agents require direct communication channels.
 
-These questions lead multi-agent systems down two distinct paths.
+These trade-offs divide multi-agent systems into two distinct evolutionary paths.
 
-One path treats a subagent as an operator. The main agent writes a workflow, a scheduler advances it according to explicit dependencies, and results travel downstream along directed edges. The other path treats a subagent as a participant. Every agent has an identity and a mailbox, agents coordinate by sending messages, and the actual workflow unfolds through conversation.
+The first path treats subagents as workflow operators: the main agent defines an execution graph, the scheduler advances steps based on explicit dependencies, and data artifacts flow unidirectionally along directed edges. The second path treats subagents as collaborative participants: each agent possesses an addressable identity and a private mailbox, coordinating via asynchronous message passing while the effective control flow unfolds across multi-turn conversations.
 
-Maka takes the first path. The newer Codex subagent design clearly belongs to the second. To understand both, we can begin with the way an operating system creates an execution branch cheaply.
+Maka implements the explicit workflow graph approach, whereas the Codex subagent architecture represents the message-driven pattern. Understanding these designs begins with examining how operating systems manage state branching efficiently during process creation.
 
-## Copy-on-Write: Share First, Diverge on Mutation
+## Copy-on-Write: Branching State on Mutation
 
-Strictly speaking, copy-on-write is not a threading model. Linux threads normally share one virtual address space. The classic use of copy-on-write appears when `fork()` creates a process.
+In operating system design, Copy-on-Write (CoW) optimizes the cost of branching execution state. Linux threads share a single virtual address space by default, while classic CoW governs process creation during `fork()` system calls.
 
-If `fork()` copied all of the parent's physical memory immediately, the cost of creating a child would grow linearly with the parent's memory footprint. Worse, a child often calls `exec()` shortly afterward, so most of the copied pages would never be read.
+If `fork()` performed a deep physical memory copy immediately, child process instantiation costs would scale linearly with parent memory footprint. Child processes typically call `exec()` shortly after creation, discarding freshly duplicated memory pages before reading them.
 
-Linux therefore copies the logical view before copying all physical data. After `fork()`, the parent and child have logically independent virtual address spaces, but their page tables may initially refer to the same read-only physical pages:
+Linux optimizes this by creating separate page tables whose entries initially map the same underlying physical frames. Upon `fork()`, the kernel assigns an independent virtual address space to the child, points corresponding page table entries at shared physical pages, and marks the private writable mappings as read-only:
 
 ```text
-Parent virtual pages ─┐
-                      ├──> shared physical pages
-Child virtual pages ──┘
+Parent virtual pages ──┐
+                       ├──> shared physical pages
+Child virtual pages ───┘
 ```
 
-The pages remain shared while both processes only read them. When either process first writes to a page, the CPU raises a page fault, the kernel copies that page, and the writer mutates its private copy:
+Both processes share physical pages during read-only access. When either process issues a write, the memory management unit (MMU) triggers a page fault. The kernel intercepts the fault, allocates a fresh physical frame, and grants write permissions to the mutating process:
 
 ```text
 Before write
 
-Parent ─┐
-        ├──> Page A
-Child ──┘
+Parent ──┐
+         ├──> Page A
+Child ───┘
 
 After child writes
 
@@ -58,9 +58,9 @@ Parent ─────> Page A
 Child  ─────> Page A'
 ```
 
-The essential property of copy-on-write is not merely faster copying. It defers copying until divergence actually occurs. Creating a branch requires a new identity and a sharing relationship; its cost follows the amount of changed state rather than the size of the complete state.
+Copy-on-Write defers data duplication to the precise point of divergence. Branch creation incurs minimal metadata overhead, with total cost governed by actual mutation volume rather than total state magnitude.
 
-The idea transfers naturally to agent systems. A subagent can fork from a prefix of the main agent's history, initially sharing existing context and then recording only its own incremental events:
+This architectural principle maps directly to agent systems. A subagent can fork from the parent agent conversation history, sharing the initial context prefix while recording subsequent events to a private delta stream:
 
 ```text
 Shared conversation prefix
@@ -70,59 +70,59 @@ Shared conversation prefix
     Main delta  Child delta
 ```
 
-Context, however, is not an ordinary memory page. A parent agent's history mixes user intent, temporary reasoning, tool logs, permission decisions, and abandoned hypotheses. Full inheritance is convenient, but it also copies noise, stale assumptions, and token cost into the child.
+However, model context differs fundamentally from physical memory pages. Parent conversation history may contain raw user prompts, intermediate assistant turns, tool diagnostic output, authorization events, and discarded trial paths. Unrestricted context inheritance passes historical noise, stale assumptions, and compounding token costs directly to child tasks.
 
-The first multi-agent design choice is therefore not just how to copy cheaply. It is how much to copy at all.
+Multi-agent architectures must therefore define the exact boundary and granularity of context propagation.
 
-## A Subagent Is a Tool, Not a Coworker
+## Subagents as Task-Scoped Tools
 
-Maka gives a strong answer: a subagent does not automatically inherit the parent agent's conversation history.
+Maka enforces a strict isolation boundary: subagents never automatically inherit the full conversation history of the parent agent.
 
-When the main agent calls `agent_spawn`, it must provide a bounded, self-contained task:
+When the main agent invokes `agent_spawn`, it must supply a self-contained task specification:
 
 ```text
 agent_spawn({
   subagent_id: "local-reader",
-  task: "Inspect concurrent writes in the storage module and cite files and symbols"
+  task: "Inspect how the storage package handles concurrent writes, citing files and symbols"
 })
 ```
 
-The runtime creates an independent child Session and injects its role, tools, permissions, and workspace boundary. The child's first model invocation starts from its own history. It sees the task explicitly supplied by the main agent rather than the entire parent conversation.
+The runtime provisions an independent child session with its own conversation history, role instructions, bounded tool registry, permission scope, and workspace boundary. The child does not receive the parent's full conversation; its initial context combines runtime instructions with the explicit task specification, keeping unrelated parent history outside the child working set.
 
-The main agent must compile implicit context into an independently executable specification:
+This contract requires the main agent to compile implicit conversational context into a standalone specification:
 
 ```text
-Inspect concurrent writes under packages/storage.
+Investigate concurrent write handling in packages/storage.
 
-Answer:
-1. Which objects provide concurrency control?
-2. How are conflicts detected?
-3. Cite the relevant files and symbols.
-4. Perform read-only research; do not edit code.
+Provide answers for:
+1. Which objects manage concurrency control;
+2. How conflicts are detected;
+3. Specific files and code symbols;
+4. Perform read-only inspection without modifying files.
 ```
 
-Do the main agent and subagent need to communicate? Maka's answer is that they do not need an ongoing conversation.
+Maka eliminates ongoing conversational chatter between the main agent and its subagents:
 
 ```text
 Main Agent  ── task ──>  Subagent
-Main Agent  <─ result ─  Subagent
+Main Agent  <── result ──  Subagent
 ```
 
-There is no mailbox between them and no protocol for negotiating the next step halfway through execution. The main agent decomposes the problem, selects the executor, and synthesizes results. The subagent completes the bounded task. Runtime events may be projected into the UI for the user to observe, but that presentation is not an inter-agent conversation.
+No shared mailbox or intermediate negotiation protocol exists between the two tiers. The main agent decomposes high-level objectives, selects operators, and synthesizes final outcomes; subagents focus on localized task execution. Runtime execution events can be projected to the user interface for observability, serving as one-way telemetry rather than inter-agent dialogue.
 
-From the caller's perspective, a subagent still honors a Tool contract: accept a task, execute a constrained process, and return a status, summary, and artifact references.
+From the caller perspective, a subagent adheres to standard tool semantics: it consumes structured input parameters, executes within assigned runtime boundaries, and returns terminal execution state, summary metrics, and artifact references:
 
 ```text
 result = subagent(role, tools, task, workspace)
 ```
 
-That creates a clean context boundary, but raises another question. If tasks have complex dependencies and children do not coordinate through conversation, how does the system represent the global plan?
+While this contract ensures scoped execution boundaries, it raises an architectural challenge: when subtasks possess complex causal dependencies without direct communication channels, the system requires a formal mechanism to represent and advance the global execution plan.
 
-## DAGs: How Databases Turn Intent into Execution
+## DAGs: The Relational Engine Execution Model
 
-When a computation consists of interdependent steps, a Directed Acyclic Graph is often a more natural representation than a list.
+Directed Acyclic Graphs (DAGs) provide a rigorous structural representation for multi-stage computation involving dependency constraints.
 
-A list imposes a total order: A, then B, then C. A DAG represents a partial order. Edges declare only required precedence, so unrelated nodes may run concurrently.
+Flat sequential lists enforce total ordering (A, then B, then C). A DAG defines a partial order: directed edges enforce mandatory precedence constraints, while disconnected nodes execute with natural concurrency:
 
 ```text
 A ───────> C
@@ -130,15 +130,15 @@ A ───────> C
 B ───────> D
 ```
 
-A must precede C and B must precede D, but A and B have no inherent ordering. A scheduler does not need a complete execution sequence. It only needs to find nodes whose input conditions are satisfied.
+Here, A must precede C, and B must precede D, while A and B share no temporal constraints. The scheduler avoids deriving an arbitrary global sequence, focusing exclusively on nodes whose incoming dependencies have been satisfied:
 
 ```text
-Node  = a unit of computation
-Edge  = a dependency or data flow
-Ready = the node's input conditions are satisfied
+Node  = Computational unit (Operator)
+Edge  = Dependency constraint or data flow
+Ready = All inbound preconditions satisfied
 ```
 
-Databases have long separated what should be computed from how it should execute. A SQL statement first becomes a logical plan:
+Relational database systems long ago decoupled declarative intent from physical execution. When a user submits a SQL statement, the query engine compiles an abstract Logical Plan:
 
 ```text
               Aggregate by region
@@ -150,9 +150,9 @@ Databases have long separated what should be computed from how it should execute
           Scan orders  Scan customers
 ```
 
-The logical plan describes relational semantics. An optimizer can push down filters, prune columns, reorder joins, and simplify expressions as long as the result remains unchanged.
+The logical plan models relational algebraic semantics. The query optimizer applies rule-based transformations such as predicate pushdown, column pruning, join reordering, and expression simplification while preserving output equivalence.
 
-A physical planner then lowers abstract operators into concrete implementations:
+The Physical Planner subsequently translates logical operators into concrete engine implementations:
 
 ```text
              FinalHashAggregateExec
@@ -168,19 +168,19 @@ A physical planner then lowers abstract operators into concrete implementations:
      ParquetScanExec     ParquetScanExec
 ```
 
-The physical plan chooses join algorithms, partition counts, parallelism, and data exchanges. The same logical plan may produce different physical plans as data volume, partitioning, available memory, and CPU resources change.
+The physical plan selects join algorithms, partition layouts, target parallelism, and exchange operators. The same logical plan compiles into distinct physical plans based on dataset cardinality, cluster distribution, and memory allocations.
 
-Yet a physical plan is still not execution. The runtime must instantiate state, allocate resources, move data, and handle completion, cancellation, errors, and backpressure.
+Once the physical plan compiles, the execution engine instantiates pipelines, manages memory pools, routes record batches, and handles completion, cancellation, errors, and backpressure signals.
 
-Operators that can immediately consume and produce batches form a pipeline:
+Operators that consume and produce record batches in a streaming manner combine into execution pipelines:
 
 ```text
 Scan ──batch──> Filter ──batch──> Project ──batch──> Sink
 ```
 
-A sort, the build side of a hash join, or a global aggregate may need to accumulate input before producing output and therefore becomes a pipeline breaker. At this layer, the execution engine finally decides which pipelines are ready and how upstream and downstream work advance concurrently.
+In contrast, sort operations, the build side of hash joins, or global aggregations must buffer full input streams before emitting records, forming pipeline breakers. The engine schedules pipeline execution dynamically based on readiness and available resource capacity.
 
-Apache Arrow Acero provides a compact example. A `Declaration` describes a node to construct, `ExecPlan` and `ExecNode` represent the physical graph for one execution, and `ExecBatch` is the data moving along its edges.
+Apache Arrow Acero provides a clean reference implementation: `Declaration` defines node configurations, `ExecPlan` and `ExecNode` represent physical execution topologies, and `ExecBatch` serves as the standardized unit of data passing along edges.
 
 ```text
 SQL
@@ -198,23 +198,25 @@ Physical Plan
 Running Pipelines
 ```
 
-The central database lesson is that a DAG is not execution itself. It is an intermediate representation that a system can optimize, lower, instantiate, and eventually schedule.
+Relational engines demonstrate that a DAG functions primarily as an Intermediate Representation (IR), enabling systematic optimization, lowering, and deterministic scheduling.
 
-## Maka Agent Graph: Agents Write Plans, Systems Advance Them
+## Maka Agent Graph: Declarative Planning and Engine Progression
 
-A database can usually construct a reasonably complete physical plan before execution. An agent rarely knows its whole plan in advance.
+Relational query engines produce deterministic physical plans prior to execution, whereas agent plans evolve dynamically based on runtime discovery.
 
-An investigation may reveal a new problem. An implementation result may change the validation strategy. When a node fails, the main agent may choose a different path instead of retrying mechanically. A Maka Agent Graph is therefore a DAG that grows while it runs.
+Exploratory analysis uncovers unindexed code paths, intermediate builds shift validation requirements, and task failures require path recalculation rather than blind retries. Maka models the Agent Graph as a dynamically expanding DAG throughout the session lifecycle.
 
-Maka divides the work among three responsibilities:
+The architecture enforces a strict separation of operational concerns:
 
-> The main agent writes the plan, the Coordinator advances it, and the Supervisor observes it.
+- **Main Agent:** Owns high-level goal decomposition and semantic decisions.
+- **Coordinator:** Drives dependency resolution and topological convergence.
+- **Supervisor:** Observes graph checkpoints and resumes semantic judgment when the workflow requires it.
 
 ### The Main Agent Writes Durable Intent
 
-Only the main agent in the root Session owns Graph control tools. It can append work, stop or replace existing work, select final results, and close the Graph. Child Sessions cannot mutate the global topology in return.
+Only the main agent within the root session holds graph mutation capabilities. It registers operator definitions, schedules dependent work, deprecates historical branches, and selects final artifacts to close the graph; child sessions cannot mutate global topology.
 
-The main agent submits schedule revisions through `update_agent_graph`. Work without input dependencies can run in parallel; later work refers to committed upstream result records:
+The main agent records plan modifications via `update_agent_graph`. Independent nodes run concurrently, while dependent nodes explicitly reference committed upstream artifacts:
 
 ```text
 Runtime review result ─┐
@@ -222,13 +224,13 @@ Runtime review result ─┐
 Storage review result ─┘
 ```
 
-This is not an ephemeral instruction to start three processes now. It is durable intent: which work to add, what its input frontier is, which work should stop or be replaced, and which results are ultimately selected.
+This interaction commits Durable Intent: specifying newly provisioned work units, current input frontiers, targeted node deprecations, and terminal outcome selections.
 
-Schedule updates are committed to SQLite as append-only revisions with their source Session, Run, Turn, and Tool Call identity. If the main agent exits, the plan does not disappear with its model context.
+Schedule mutations append to SQLite as immutable revision records marked with session, run, turn, and call identifiers. Even if the host process terminates unexpectedly, committed execution plans remain fully preserved in durable storage.
 
-### The Coordinator Is a Reconciler
+### The Coordinator Acts as a State Reconciler
 
-The Coordinator does not keep one authoritative mutable DAG in memory. Every reconciliation reads durable state again:
+The Coordinator avoids retaining authoritative in-memory graph objects. Every reconciliation cycle reconstructs baseline truth directly from durable storage:
 
 ```text
 SQLite control plane
@@ -242,7 +244,7 @@ SQLite control plane
 Coordinator reconstructs a snapshot
 ```
 
-It folds revisions into the current plan, assembles provisions into a topology, and combines that view with AgentRuns and committed RuntimeEvents. From those facts it calculates which work has completed, which inputs are missing, and which nodes are ready.
+The Coordinator folds committed revision logs into the current plan snapshot, constructs the operational topology from registered operators, and correlates completed `RuntimeEvents` to evaluate node readiness:
 
 ```text
 Observe durable state
@@ -263,11 +265,11 @@ Claim exact Turn / Run identities
 Dispatch child AgentRuns
 ```
 
-Maka currently uses an event-driven, single-flight driver rather than a fixed `setInterval` database scan. A new schedule, a child RuntimeEvent, or host recovery can request reconciliation. Only one driver advances a Graph at a time, and repeated wakes coalesce into another pass.
+Maka uses an event-driven single-flight driver rather than a fixed-interval database polling loop. New schedule commits, child completion events, or host recovery routines trigger reconciliation; a single driver instance runs per graph, coalescing concurrent wakeups into subsequent iterations.
 
-### SQLite Is the Control Plane
+### SQLite Serves as the Control Plane
 
-The Graph does not introduce a second agent runtime. SQLite stores scheduling facts, while model invocations, Tool Calls, permissions, stopping, and RuntimeEvent persistence remain the responsibility of the Session Runtime.
+The Agent Graph layer avoids duplicating core agent runtime capabilities. SQLite acts purely as the control plane for scheduling facts, while model sampling, tool execution, permission arbitration, cancellation, and event logging remain delegated to the established Session Runtime.
 
 ```text
 Main Agent ──> SQLite schedule
@@ -282,13 +284,13 @@ Main Agent ──> SQLite schedule
           committed RuntimeEvents
 ```
 
-A child Session is a stable operator container, an AgentRun is one activation, and only a committed RuntimeEvent can become a record consumed by the Graph.
+Child sessions function as stable operator containers, while `AgentRun` represents an individual execution lifecycle. Downstream graph nodes consume committed result records backed by runtime events, rather than treating every `RuntimeEvent` as graph input.
 
-### Claims Separate Ready from Execute
+### Claims Decouple Readiness from Execution Admission
 
-Because the Coordinator can rebuild its snapshot repeatedly, it can calculate the same node as ready more than once. Starting a model whenever readiness is observed would allow a crash or retry to duplicate execution.
+Because the Coordinator reconstructs plan snapshots on every cycle, identical nodes can evaluate as ready across multiple reconciliation passes. Triggering model calls immediately upon detecting readiness risks duplicate executions during retries or transient scheduling jitter.
 
-Before execution, Maka writes a conditional claim to SQLite and binds a deterministic intent to a specific operator, Session, Turn, and Run identity:
+Maka requires writing a conditional claim to SQLite before execution begins, binding ready work to an allocated operator, session, turn, and run identity:
 
 ```text
 ready intent
@@ -300,13 +302,13 @@ conditional claim
      └── new claim ───────> execute the allocated Run
 ```
 
-Readiness remains a recomputable projection. Execution admission becomes a durable fact.
+Readiness evaluation remains a reproducible, side-effect-free projection, whereas execution admission commits as an atomic, durable fact.
 
-### The Supervisor Regains Judgment at Checkpoints
+### The Supervisor Restores Semantic Judgment at Checkpoints
 
-The Coordinator can advance an existing plan deterministically, but it should not decide whether two investigations contradict each other, or whether a failed node calls for a retry, replacement, or change in direction. Those semantic decisions remain with the main agent.
+Deterministic Coordinators excel at dependency management, yet cannot replace language models for high-level semantic arbitration: resolving contradictions between reports, deciding whether to retry or replace failing components, or altering strategic direction. Strategic judgment remains reserved for the main agent.
 
-After writing one round of the schedule, the main agent can end its current supervisor turn. The Coordinator advances the Graph asynchronously. At a durable checkpoint, the Host creates another supervisor turn:
+After writing a schedule update, the main agent concludes its current supervisor turn. The Coordinator drives the execution graph asynchronously; once the graph reaches a durable checkpoint, the host environment wakes the main agent into a fresh supervisor turn:
 
 ```text
 Main Agent schedules work
@@ -321,19 +323,19 @@ durable checkpoint
 Host wakes Main Agent
 ```
 
-The main agent reads a bounded Graph snapshot and, when needed, a child's committed result. It can then add another round of work, stop or replace obsolete work, or select results and finish the Graph.
+The main agent inspects bounded graph snapshots and committed child outputs, scheduling subsequent work units, pruning obsolete branches, or marking the graph complete.
 
-The loop contains two kinds of intelligence. The main agent contributes semantic intelligence through decomposition, judgment, and synthesis. The Coordinator contributes systems intelligence through persistence, topology reconstruction, concurrent advancement, and failure recovery.
+This lifecycle combines two complementary capabilities: the main agent provides semantic decomposition and synthesis, while the Coordinator enforces transaction durability, topological planning, concurrency control, and fault tolerance.
 
-## Go Channels: Communication Is Scheduling
+## Go Channels: Communication as Scheduling
 
-A DAG describes dependency, but does not by itself implement waiting, wakeup, and backpressure. Go's concurrency model offers another way to think about scheduling.
+DAGs excel at modeling macro-level dependencies, yet runtime scheduling requires low-level primitives for task suspension, wakeup notifications, and backpressure. The Go concurrency model provides a classic systems perspective on communication-driven coordination.
 
-A goroutine is a lightweight execution unit scheduled by the Go runtime. The runtime model often summarized as G-M-P multiplexes many goroutines over fewer OS threads: G is a goroutine, M is an OS thread, and P is the runtime resource required to execute Go code.
+A goroutine is a lightweight execution unit scheduled by the Go runtime. The G-M-P scheduler multiplexes thousands of application goroutines across a small pool of operating system threads: G represents the goroutine, M represents an OS thread, and P represents logical processor resources required to execute Go code.
 
-Goroutines make concurrent tasks cheap. Channels define how those tasks cooperate.
+Goroutines provide cost-effective concurrency, while channels establish structured communication contracts between them.
 
-### An Unbuffered Channel Is a Rendezvous
+### Unbuffered Channels as Rendezvous Points
 
 ```go
 handoff := make(chan Result)
@@ -341,27 +343,27 @@ go func() { handoff <- result }()
 received := <-handoff
 ```
 
-The sender of an unbuffered Channel waits for a receiver, and the receiver waits for a sender. Communication completes only when both sides reach the handoff point. It transfers not only a `Result`, but also the synchronization fact that both parties met there.
+An unbuffered channel requires both sender and receiver to be ready before data transfers. The sender blocks until a receiver arrives, and the receiver blocks until a value is available. The send and receive operations therefore form a synchronization point between the two goroutines.
 
-The Go memory model defines happens-before relations for Channel operations. After receiving the value, the receiver can observe writes completed by the sender before the send. A Channel therefore combines:
+The Go memory model establishes strict happens-before guarantees for channel operations. The receiver observing a transmitted value is guaranteed to observe all memory writes performed by the sender prior to the send operation. A single channel transmission combines multiple coordination primitives:
 
 ```text
 value transfer + scheduling point + memory ordering
 ```
 
-### A Buffer Defines How Far a Producer May Lead
+### Buffers Regulate Decoupling Capacity
 
 ```go
 jobs := make(chan Job, 32)
 ```
 
-A buffered Channel decouples a producer and consumer across a bounded distance. A send proceeds while capacity remains. When the buffer fills, the producer blocks and pressure propagates backward through the pipeline.
+A buffered channel allows producers and consumers to decouple within a bounded capacity. As long as slots remain available, send operations complete without blocking; once the buffer fills, the producer suspends, propagating backpressure upstream.
 
-The capacity `32` is not merely a performance setting. It defines how many units of work the producer may get ahead of the consumer. Too little capacity can suppress useful parallelism. Too much can accumulate obsolete work, consume memory, and delay the discovery of a slow downstream stage.
+Buffer capacity determines the maximum lead a producer may hold over a consumer. Tight limits restrict throughput smoothing, while excessive buffers accumulate obsolete work, elevate memory pressure, and conceal downstream degradation.
 
-### `select`, `close`, and nil Channels
+### Multiplexing and Lifecycle Signaling
 
-`select` lets one goroutine wait on several communication edges:
+Go provides the `select` statement to allow a goroutine to monitor multiple channel events simultaneously:
 
 ```go
 select {
@@ -372,15 +374,15 @@ case <-ctx.Done():
 }
 ```
 
-It acts as a scheduling interface. An execution unit declares the events it depends on, and the runtime resumes it when one becomes ready.
+The `select` construct functions as a declarative scheduling interface: the worker declares event dependencies, and the runtime awakens it when any condition resolves.
 
-`close(ch)` publishes a lifecycle transition: no new values will arrive. Receivers first drain the buffer and then observe termination through `value, ok := <-ch`. Closing can also broadcast a signal because all waiting receivers can observe it.
+The `close(ch)` primitive broadcasts lifecycle termination across all readers. Upon closure, receivers drain remaining buffered items, after which `value, ok := <-ch` signals that the channel has terminated. All receivers blocked on an empty closed channel can observe this terminal state.
 
-A nil Channel can never become ready. Assigning nil to a Channel variable in a `select` dynamically disables that branch and makes it possible to build small concurrent state machines.
+A nil channel never resolves. Dynamically setting a channel reference to nil inside a `select` block cleanly disables a specific branch without altering the outer loop structure, forming a compact state machine.
 
-### Every Pipeline Needs Cancellation
+### Cancellation Propagation in Pipelines
 
-Channels naturally connect stages into pipelines and support fan-out and fan-in with multiple goroutines. But when a downstream stage exits early, an upstream producer may remain blocked forever on a send and leak its goroutine.
+Multiple execution stages connect via channels to form processing pipelines, expanding into fan-out and fan-in topologies. However, if downstream stages exit prematurely, uncoordinated upstream producers block indefinitely on send operations, leaking goroutines.
 
 ```go
 select {
@@ -390,21 +392,21 @@ case <-ctx.Done():
 }
 ```
 
-Every send or receive that may block indefinitely must answer one question: how does this goroutine exit if the other endpoint never appears again?
+Any blocking communication site that may outlive its downstream consumer needs an explicit cancellation path so workers can terminate cleanly and release resources.
 
-The distinctive property of a Go Channel is that it does not fully separate data flow from control flow. One communication carries a value while expressing dependency, synchronization, and backpressure:
+Go channels integrate data passing with scheduling semantics: a single communication primitive handles data transport, dependency signaling, synchronization, and backpressure:
 
 ```text
 communication = dependency + synchronization + backpressure
 ```
 
-That model suggests another approach to subagents. If every agent owns an inbox, can message arrival itself become a scheduling condition?
+This model inspires an alternative multi-agent coordination pattern: provisioning private inboxes for individual agents, allowing message delivery to act as the primary scheduling mechanism.
 
-## Codex Subagents: Collaboration Through Mailboxes
+## Codex Subagents: Mailbox-Driven Collaboration
 
-Codex answers yes. It preserves parent-child delegation while modeling every agent as an execution unit with an identity, independent history, and an inbox that can receive messages over time.
+Codex applies message-driven coordination to its subagent architecture. While preserving parent-child task delegation, it models each agent as an actor addressable within a root task tree, with dedicated conversation history and asynchronous communication through private mailboxes.
 
-Agents in the same subagent tree have addressable paths:
+Agents within the same root task tree share a hierarchical addressing namespace:
 
 ```text
 /root
@@ -414,7 +416,7 @@ Agents in the same subagent tree have addressable paths:
 └── /root/test_runner
 ```
 
-The design resembles an Actor system:
+This architecture closely mirrors the classic Actor model:
 
 ```text
 Actor identity   = AgentPath
@@ -423,9 +425,9 @@ Actor mailbox    = Session InputQueue
 Actor activation = Turn
 ```
 
-### A Mailbox Is Private to a Session
+### Private Mailbox Queues per Session
 
-Codex Core separates the payload queue from the wakeup signal in `InputQueue`:
+The Codex Core `InputQueue` decouples payload storage from wakeup notifications:
 
 ```rust
 struct InputQueue {
@@ -434,22 +436,22 @@ struct InputQueue {
 }
 ```
 
-The `VecDeque` stores FIFO messages. A Tokio `watch` Channel tells waiters that mailbox activity occurred. Notifications may coalesce because the queue, not the signal, is the source of message truth.
+An in-memory `VecDeque` preserves FIFO message ordering while the session is resident, while a Tokio `watch` channel transmits change notifications to waiting schedulers. Wakeup signals may coalesce safely because pending payloads remain in the queue; this queue does not itself imply durable persistence.
 
-This is not a shared inbox from which workers compete to claim work. Every Session has a private mailbox. Before delivery, every `InterAgentCommunication` already identifies its `author`, `recipient`, `content`, and `trigger_turn` behavior.
+This design avoids competitive worker claim patterns. Each session owns a dedicated mailbox, and every `InterAgentCommunication` payload specifies author, recipient, content, and a turn trigger flag (`trigger_turn`) prior to dispatch.
 
-### A Message Also Carries Scheduling Intent
+### Messages Convey Scheduling Intent
 
-Codex V2 distinguishes two delivery modes:
+Codex V2 differentiates message delivery into two scheduling tiers:
 
 ```text
 send_message   = QueueOnly
 followup_task  = TriggerTurn
 ```
 
-`send_message` places content in the target inbox. A running agent sees it at a later model boundary. If the target is idle, the message waits for its next natural activation.
+The `send_message` operation enqueues the payload without forcing an immediate wakeup. Active recipients inspect incoming messages at their next reasoning boundary; idle recipients hold messages until subsequent conversational turns activate them.
 
-`followup_task` sets `trigger_turn=true`. If the target is idle, the pending-work scheduler may create a new Turn for it.
+The `followup_task` operation marks `trigger_turn = true`. If the recipient is idle, the task scheduler immediately provisions a new turn to process the payload.
 
 ```text
                     InterAgentCommunication
@@ -461,11 +463,11 @@ followup_task  = TriggerTurn
               queue message        wake idle Agent
 ```
 
-A message therefore carries information, a recipient, and scheduling intent at the same time.
+A message transmission simultaneously conveys conversational information, destination addressing, and execution scheduling intent.
 
-### Agents Read Mail at Model Boundaries
+### Controlled Message Ingestion at Model Boundaries
 
-A message cannot alter an LLM sampling request that has already been sent. It first enters the mailbox and waits for the Turn loop to construct another model context:
+External messages do not interrupt in-flight LLM sampling requests. New arrivals queue in the mailbox, merging into the conversation context when the active turn completes and constructs the next model request:
 
 ```text
 Agent B starts sampling
@@ -484,15 +486,15 @@ Agent A sends a message
 build next model request
 ```
 
-Codex also tracks a `MailboxDeliveryPhase`. At the beginning of a Turn, new mail may join the current execution. Once the runtime has recorded user-visible final output, late mail is left for a later Turn so that background messages cannot silently extend an answer that already appeared complete.
+Codex regulates ingestion via `MailboxDeliveryPhase`. Pending messages drain into context during early turn phases; once the runtime records a final user-visible response, late-arriving messages defer to subsequent turns, preventing external inputs from altering finalized outputs.
 
-### Completion Is Also a Message
+### Task Completion Delivered as Structured Messages
 
-Codex starts a completion watcher for a child. When the child reaches a terminal status, the watcher constructs an `InterAgentCommunication` from the child to the parent and places it in the parent's mailbox.
+Codex attaches a completion watcher to child sessions. When a child reaches terminal state, the watcher constructs an `InterAgentCommunication` payload from child to parent, depositing it into the parent mailbox.
 
-That completion message uses `trigger_turn=false`. A result first becomes a fact in the parent's inbox rather than an interruption that always forces immediate reasoning.
+The completion message sets `trigger_turn = false`. Results enter the parent inbox as factual events rather than disruptive interrupts, preserving parent reasoning continuity.
 
-For the same reason, `wait_agent` does not pull the response body directly from a selected child. It subscribes to mailbox activity on the current Session:
+The `wait_agent` tool waits on parent mailbox activity instead of returning a child result directly:
 
 ```text
 wait_agent
@@ -502,11 +504,11 @@ wait_agent
     └── deadline ─────> timeout
 ```
 
-The tool handles suspension and wakeup. The message body remains in the mailbox and is subsequently added to model context by the Turn loop.
+The tool coordinates suspension and wakeups, while message content remains buffered within the mailbox until the turn loop incorporates it into model context.
 
-### The Workflow Unfolds in Conversation
+### Conversational Workflow Evolution
 
-A DAG system writes dependencies as explicit edges. The same collaboration in Codex may appear as a dynamic sequence of messages:
+DAG systems compile execution dependencies into explicit topological edges, whereas mailbox architectures express workflows through dynamic message exchanges:
 
 ```text
 Root ──task──────> Agent A
@@ -517,43 +519,41 @@ Root ──follow-up─> Agent A
 Agent A ──result─> Root
 ```
 
-Agent A can immediately tell Agent B about a discovery, and the main agent can add constraints before a child finishes. The complete workflow does not have to exist in advance. It grows through conversation.
+Agent A shares findings with concurrent Agent B immediately, while the root agent injects steering constraints during child execution. Workflows evolve organically through conversation rather than requiring static upfront definition.
 
-That flexibility has a cost. Control flow is distributed across message histories. Explaining why Agent B changed direction may require replaying its mailbox, and deciding when work is ready cannot be reduced to counting incoming edges in one global DAG.
+This flexibility introduces architectural trade-offs: control flow distributes across message histories. Explaining strategic adjustments requires reconstructing full mailbox absorption traces, and evaluating task readiness cannot be determined from topological graph degrees alone.
 
-Codex can therefore be summarized as main-agent delegation with an Actor mailbox as its collaboration plane.
+The Codex architecture combines root-scoped parent-child delegation with actor-style private mailboxes to form a collaborative coordination layer.
 
-## Conclusion: Workflow and Collaboration
+## Architectural Trade-offs: Workflow Scheduling and Message Collaboration
 
-Maka and Codex can both create subagents, execute work in parallel, and assign follow-ups, but they choose different systems primitives.
+Maka and Codex support subagent delegation, concurrent execution, and iterative follow-ups, but diverge fundamentally in their underlying systems primitives.
 
-| Dimension          | Maka workflow                                | Codex mailbox                                 |
-| ------------------ | -------------------------------------------- | --------------------------------------------- |
-| Core abstraction   | Operators and edges in a DAG                 | Addressable agents with private inboxes       |
-| Work creation      | The main agent writes a schedule             | Parent spawn or an agent sends a follow-up    |
-| Scheduling signal  | The Coordinator calculates node readiness    | Message arrival, `trigger_turn`, agent status |
-| Data transfer      | Records become downstream edge inputs        | Messages enter the target agent's context     |
-| Peer communication | Children do not need to communicate          | Agents may message other agents               |
-| Observation        | Read a global Graph snapshot                 | Inspect agent status and consume inboxes      |
-| Primary strength   | Explicit, auditable, deterministic recovery  | Flexible negotiation along unknown paths      |
-| Primary cost       | Ad hoc coordination must return to the Graph | Implicit control flow and growing context     |
+| Dimension                | Maka Workflow Architecture                  | Codex Mailbox Architecture                                         |
+| ------------------------ | ------------------------------------------- | ------------------------------------------------------------------ |
+| **Core Abstraction**     | Operators and edges within a DAG            | Agents addressable within a root task tree, with private mailboxes |
+| **Task Emission**        | Main agent writes schedule revisions        | Parent spawn or peer follow-up messages                            |
+| **Scheduling Driver**    | Coordinator evaluates node readiness        | Message queuing, `trigger_turn`, and agent state                   |
+| **Data Propagation**     | Structured records pass along edges         | Message payloads inject at turn boundaries                         |
+| **Peer Communication**   | No direct child-to-child channel is exposed | Supported within the root task tree via direct message passing     |
+| **Global Observability** | Reconstructible from graph snapshots        | Aggregated across distributed mailboxes                            |
+| **Primary Strength**     | Explicit topology, deterministic recovery   | Dynamic negotiation, exploratory adaptability                      |
+| **Primary Trade-off**    | Plan revisions require graph mutations      | Implicit control flow, context expansion risks                     |
 
-A workflow fits tasks with clear dependencies, structured outputs, long execution, and strong recovery requirements. Code scans, test matrices, data processing, and multi-stage research synthesis can all be modeled as operators and records.
+The workflow architecture excels in scenarios featuring defined dependencies, structured artifacts, prolonged execution spans, and rigorous crash recovery requirements. Static code analysis, automated test suites, data pipelines, and multi-stage research synthesis map cleanly to operators and record streams.
 
-A mailbox fits tasks whose next step depends on semantic discoveries, where roles must exchange findings, and where the plan cannot be enumerated in advance. Design discussions, cross-review, and open-ended investigations are closer to this kind of collaboration.
+The mailbox architecture fits exploratory tasks where subsequent steps depend on semantic discovery, roles exchange continuous feedback, and execution paths resist upfront enumeration. Architectural deliberations, collaborative code reviews, and open-ended investigations align naturally with conversational messaging.
 
-The real dividing line is not whether a system uses subagents. It is where coordination state lives:
+The fundamental divergence lies in where coordination state resides:
 
-```text
-Maka:  coordination lives in the Graph
-Codex: coordination lives in the Conversation
-```
+- **Maka:** Coordination lives in the Graph.
+- **Codex:** Coordination lives in the Conversation.
 
-A Graph extracts the plan from model context and gives a deterministic system responsibility for advancing it. A Conversation preserves freedom to communicate and lets the plan emerge during execution. The former resembles a database execution engine; the latter resembles an Actor system.
+The Agent Graph extracts execution plans from model context, delegating progression to a deterministic system engine. The mailbox approach preserves conversational flexibility, allowing coordination to emerge dynamically. The former resembles relational database execution engines, while the latter reflects classic Actor concurrency systems.
 
-This distinction also explains why Maka deliberately avoids conversations among subagents. It is not an assumption that agents cannot collaborate. It is a choice to compile collaboration into an explicit schedule: models provide semantic judgment, the Runtime owns execution facts, and the Coordinator advances dependencies.
+This clarifies Maka design choice regarding subagent isolation: it compiles collaboration into transparent, auditable scheduling graphs. Models provide semantic reasoning, the runtime records execution ground truth, and the Coordinator advances data dependencies deterministically.
 
-Multi-agent scheduling is ultimately not a question of how many models to start. It is a classic systems question: how to represent state, carry dependencies, control concurrency, and still know what to do next after any executor disappears.
+Multi-agent scheduling ultimately addresses foundational distributed systems challenges: modeling state, passing dependencies reliably, bounding concurrency, and ensuring predictable forward progress when individual workers terminate.
 
 ## Further Reading
 
