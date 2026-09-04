@@ -76,7 +76,7 @@ export function applyThinkingDelta(
   rawDelta: string,
   options: ApplyThinkingOptions = {},
 ): ApplyThinkingResult {
-  const copy = getSharedUiCopy(options.locale ?? 'zh').stream;
+  const copy = getSharedUiCopy(options.locale ?? 'zh-CN').stream;
   return applyStreamDelta(prev, rawDelta, {
     maxDeltaChars: options.maxDeltaChars ?? THINKING_MAX_DELTA_CHARS,
     maxTotalChars: options.maxTotalChars ?? THINKING_MAX_TOTAL_CHARS,
@@ -101,6 +101,6 @@ export function applyThinkingComplete(
   return applyStreamComplete(rawText, {
     maxTotalChars: options.maxTotalChars ?? THINKING_MAX_TOTAL_CHARS,
     recovery: 'tail',
-    totalMarker: getSharedUiCopy(options.locale ?? 'zh').stream.thinkingHeadTruncated,
+    totalMarker: getSharedUiCopy(options.locale ?? 'zh-CN').stream.thinkingHeadTruncated,
   });
 }

@@ -28,7 +28,7 @@ const UNGROUPED_KEY = '__ungrouped__';
 export function deriveProjectGroups(
   sessions: ReadonlyArray<SessionSummary>,
   projects: ReadonlyArray<ProjectRecord>,
-  locale: UiLocale = 'zh',
+  locale: UiLocale = 'zh-CN',
 ): SessionHistoryGroup[] {
   const sessionsByProject = new Map<string, SessionSummary[]>();
   const canonicalProjectIds = new Map<string, string>();

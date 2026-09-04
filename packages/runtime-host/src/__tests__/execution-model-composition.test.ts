@@ -2029,7 +2029,7 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     const capturedRequestCount = mainRequests.length + compactRequests.length;
     const attempts = await waitForCanonicalAttempts(usageStores, session.id, capturedRequestCount);
     assert.equal(attempts.length, capturedRequestCount);
-    assert.ok(attempts.every((attempt) => attempt.requestObservation));
+    assert.ok(attempts.every((attempt) => attempt.promptComposition));
     const contextDiagnostics = await composition.handlers['context.diagnostics.query'](
       { sessionId: session.id },
       connectionContext,
@@ -2047,22 +2047,6 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     }
 
     const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
-    const captureArtifacts = await waitForCaptureArtifacts(
-      artifacts,
-      session.id,
-      capturedRequestCount,
-    );
-    assert.equal(captureArtifacts.length, capturedRequestCount);
-    let summaryCaptureFound = false;
-    for (const artifact of captureArtifacts) {
-      const read = await artifacts.readTextInSession(session.id, artifact.id);
-      if (read.ok && /context summarization assistant/.test(read.text)) {
-        summaryCaptureFound = true;
-        break;
-      }
-    }
-    assert.equal(summaryCaptureFound, true);
-
     const streamRequestsBeforeArtifactFailure = provider.requests.filter(
       (request) => request.body.stream === true,
     ).length;
@@ -2469,8 +2453,7 @@ test('production Host executes a durable runnable child with an exact tool ceili
     );
     const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
     const childArtifacts = await artifacts.listTurnArtifacts(child.id, childRuns[0]!.turnId);
-    assert.equal(childArtifacts.length, 1);
-    assert.equal(childArtifacts[0]?.source, 'provider_request_capture');
+    assert.equal(childArtifacts.length, 0, 'a child turn no longer stores anything of its own');
     const parentRuntimeEvents = await execution.runtimeEventStore.readRuntimeEvents(
       parent.id,
       terminal.runId,
@@ -2483,7 +2466,7 @@ test('production Host executes a durable runnable child with an exact tool ceili
     const typedSpawnResult = decodeCanonicalToolResultContent(spawnResult.content.result);
     assert.equal(typedSpawnResult.kind, 'subagent');
     assert.deepEqual(
-      (typedSpawnResult as { artifactIds?: readonly string[] }).artifactIds,
+      (typedSpawnResult as { artifactIds?: readonly string[] }).artifactIds ?? [],
       childArtifacts.map((artifact) => artifact.id),
     );
   } finally {
@@ -2686,11 +2669,7 @@ test('production Host publishes and retires an implementation child patch', asyn
     );
     const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
     const childArtifacts = await artifacts.listTurnArtifacts(child.id, childRuns[0]!.turnId);
-    assert.equal(childArtifacts.length, childRequests.length + 2);
-    assert.equal(
-      childArtifacts.filter((artifact) => artifact.source === 'provider_request_capture').length,
-      childRequests.length,
-    );
+    assert.equal(childArtifacts.length, 2);
     assert.ok(
       childArtifacts.some(
         (artifact) => artifact.source === 'tool_result' && artifact.name === 'implementation.txt',
@@ -3903,22 +3882,6 @@ async function waitForCanonicalAttempts(
       unreadableRecords: page.unreadableRecords,
     })}`,
   );
-}
-
-async function waitForCaptureArtifacts(
-  artifacts: Awaited<ReturnType<typeof openInteractiveArtifactStoreForWrite>>,
-  sessionId: string,
-  expectedRequests: number,
-) {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const page = await artifacts.listPage(sessionId, { offset: 0, limit: 100 });
-    const captures = page.records.filter(
-      (artifact) => artifact.source === 'provider_request_capture',
-    );
-    if (captures.length >= expectedRequests) return captures;
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error(`Hosted request artifacts did not reach ${expectedRequests}`);
 }
 
 async function waitForAutomaticMemoryRequestsToSettle(

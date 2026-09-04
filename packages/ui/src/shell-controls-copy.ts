@@ -54,7 +54,7 @@ type ShellControlsCopy = {
 };
 
 const SHELL_CONTROLS_COPY_BY_LOCALE = {
-  zh: {
+  'zh-CN': {
     shared: { close: '关闭' },
     navigation: {
       mainLabel: '主导航',
@@ -83,6 +83,37 @@ const SHELL_CONTROLS_COPY_BY_LOCALE = {
       results: (count: number) => `找到 ${count} 条匹配`,
       truncatedResults: (count: number) => `结果较多，已显示前 ${count} 条`,
       resultsLabel: '搜索结果',
+    },
+  },
+  'zh-TW': {
+    shared: { close: '關閉' },
+    navigation: {
+      mainLabel: '主導航',
+      newTask: '新任務',
+      automations: '定時任務',
+      extensions: '擴充套件',
+      settings: '設定',
+      updateDownloaded: (version: string) => `新版本 ${version} 已下載，重啟後安裝`,
+      updateFailed: (version: string) => `新版本 ${version} 更新失敗，點選重試或手動下載`,
+      pendingTasks: (count: number) => `定時任務，${count} 條進行中`,
+    },
+    search: {
+      title: '搜尋',
+      conversationsLabel: '搜尋任務',
+      placeholder: '搜尋任務標題和內容…',
+      clearLabel: '清空搜尋',
+      statusRegionLabel: '搜尋狀態和結果',
+      unavailable: '目前環境無法連線搜尋後端，請稍後重試。',
+      privacyTitle: '隱私模式已關閉搜尋。',
+      privacyDetail: '關閉隱私模式後可以繼續按關鍵詞查詢歷史任務。',
+      errorTitle: '搜尋暫時無法完成。',
+      errorFallback: '搜尋服務需要重新整理，請重試。',
+      introduction: '開始輸入以按關鍵詞查詢歷史任務。結果只包含任務標題和內容文本，不進入網路。',
+      searching: '正在搜尋…',
+      empty: '沒有符合的任務標題或內容。換個關鍵詞試試。',
+      results: (count: number) => `找到 ${count} 條符合`,
+      truncatedResults: (count: number) => `結果較多，已顯示前 ${count} 條`,
+      resultsLabel: '搜尋結果',
     },
   },
   en: {

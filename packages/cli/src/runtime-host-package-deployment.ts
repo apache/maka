@@ -369,6 +369,7 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   await rm(path, { recursive: true, force: true, maxRetries: 100, retryDelay: 100 });
 })().catch(() => { process.exitCode = 1; });`;
   const cleanup = spawn(process.execPath, ['-e', script, path, String(process.pid)], {
+    cwd: dirname(process.execPath),
     detached: true,
     stdio: 'ignore',
     windowsHide: true,

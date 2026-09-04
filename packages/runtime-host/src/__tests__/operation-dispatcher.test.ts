@@ -191,6 +191,7 @@ function validHandlers(): OperationHandlerMap {
   return {
     'host.status': unavailable,
     'host.diagnostics.query': unavailable,
+    'host.resources.query': unavailable,
     'host.upgrade.prepare': unavailable,
     ...createUnavailableHostCoreOperationHandlers(),
     ...createUnavailableDomainOperationHandlers(),

@@ -94,6 +94,7 @@ import {
 import { HostResidencyRegistry } from './host-residency-registry.js';
 import type { PeerMeshNode } from '../peer-mesh/node.js';
 import { createPeerMeshOperationHandlers } from './peer-mesh-authority.js';
+import { createHostResourceCollector } from './host-resource-collector.js';
 
 const DEFAULT_IDLE_GRACE_MS = 30_000;
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 5_000;
@@ -207,6 +208,7 @@ export class RuntimeHostKernel {
   >();
   readonly #operationDrainWaiters = new Set<() => void>();
   readonly #residencies = new HostResidencyRegistry();
+  readonly #resourceCollector = createHostResourceCollector();
   readonly #lifecycle: RuntimeHostLifecycle;
   readonly #handshakeTimeoutMs: number;
   readonly #shutdownGraceMs: number;
@@ -699,6 +701,10 @@ export class RuntimeHostKernel {
               .snapshot()
               .map((entry) => collapseHomePath(entry, homedir(), process.platform)),
           },
+        }),
+        'host.resources.query': async () => ({
+          ok: true,
+          result: await this.#resourceCollector.snapshot(this.hostEpoch),
         }),
         'host.upgrade.prepare': async (input) => {
           if (input.expectedHostEpoch !== this.hostEpoch) {

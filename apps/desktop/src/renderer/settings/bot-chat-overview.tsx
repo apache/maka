@@ -145,7 +145,7 @@ function botOverviewDetail(
   currentError: string | undefined,
   fallback: string,
   liveOperational: boolean,
-  locale: 'zh' | 'en',
+  locale: 'zh-CN' | 'zh-TW' | 'en',
 ): ReactNode {
   const copy = getBotSettingsCopy(locale).overview;
   const identity = status?.identity?.username ?? status?.identity?.displayName;
@@ -157,7 +157,7 @@ function botOverviewDetail(
       </>
     );
   }
-  if (currentError) return locale === 'zh' ? currentError : fallback;
+  if (currentError) return locale === 'zh-CN' ? currentError : fallback;
   if (status?.reason) return botStatusDetail(status, locale);
   return fallback;
 }

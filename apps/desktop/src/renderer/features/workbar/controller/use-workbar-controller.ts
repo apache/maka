@@ -64,6 +64,7 @@ import {
 import { recoverOrphanedCompanionCopies } from '../tools/side-chat/quote-companion-core.js';
 import { useSideConversationWorkspace } from '../tools/side-chat/use-side-conversation-workspace.js';
 import { useWorkbarLayoutState } from './use-workbar-layout-state.js';
+import { LiveContextUsageProbe } from '../tools/inspector/live-context-usage-probe.js';
 
 interface OpenToolOptions {
   initialPrompt?: string;
@@ -102,6 +103,14 @@ export interface WorkbarController {
   host: WorkbarHostModel;
   commands: WorkbarControllerCommands;
   selectors: WorkbarControllerSelectors;
+  /**
+   * The composer context gauge's live overlay (#4717), handed to the shell on
+   * the controller so the shell gains no import edge to the inspector's
+   * subscription: the app shell is a debt-ratcheted legacy file, and every
+   * named import it adds is new debt the ratchet forbids. The probe's readers
+   * stay inside this feature; the shell only forwards the reference.
+   */
+  readonly LiveContextUsageProbe: typeof LiveContextUsageProbe;
 }
 
 function assertNever(value: never): never {
@@ -694,6 +703,7 @@ export function useWorkbarController(
 
   return {
     commands,
+    LiveContextUsageProbe,
     selectors: {
       rightCollapsed: layout.workbarCollapsed,
       hiddenSessionIds: hiddenCompanionForkIds,

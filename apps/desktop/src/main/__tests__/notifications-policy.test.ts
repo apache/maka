@@ -48,38 +48,43 @@ it('recognizes terminal kinds and keeps distinct localized fallback copy', () =>
     assert.equal(isRunNotificationKind(value), false);
   }
 
-  const completed = runNotificationCopy('completed', 'zh');
-  const errored = runNotificationCopy('errored', 'zh');
+  const completed = runNotificationCopy('completed', 'zh-CN');
+  const errored = runNotificationCopy('errored', 'zh-CN');
   assert.ok(completed.title && completed.body);
   assert.ok(errored.title && errored.body);
   assert.notEqual(completed.title, errored.title);
+
+  assert.deepEqual(runNotificationCopy('completed', 'zh-TW'), {
+    title: '回答已產生',
+    body: 'Maka 已完成本次回答，按一下以檢視。',
+  });
 });
 
 it('sanitizes renderer content, caps it, and falls back per field', () => {
   const clean = resolveNotificationContent(
     { kind: 'completed', title: '  会话  A  ', body: 'line one\n\nline two\tindented' },
-    'zh',
+    'zh-CN',
   );
   assert.deepEqual(clean, { title: '会话 A', body: 'line one line two indented' });
 
-  const completedFallback = runNotificationCopy('completed', 'zh');
+  const completedFallback = runNotificationCopy('completed', 'zh-CN');
   for (const value of ['', '   ', undefined, null, 42, {}]) {
     assert.deepEqual(
-      resolveNotificationContent({ kind: 'completed', title: value, body: value }, 'zh'),
+      resolveNotificationContent({ kind: 'completed', title: value, body: value }, 'zh-CN'),
       completedFallback,
     );
   }
 
   const capped = resolveNotificationContent(
     { kind: 'completed', title: 'S', body: 'x'.repeat(500) },
-    'zh',
+    'zh-CN',
   );
   assert.equal(capped.body.length, 160);
   assert.ok(capped.body.endsWith('…'));
 
-  const erroredFallback = runNotificationCopy('errored', 'zh');
+  const erroredFallback = runNotificationCopy('errored', 'zh-CN');
   assert.deepEqual(
-    resolveNotificationContent({ kind: 'errored', title: '出错的会话', body: '' }, 'zh'),
+    resolveNotificationContent({ kind: 'errored', title: '出错的会话', body: '' }, 'zh-CN'),
     { title: '出错的会话', body: erroredFallback.body },
   );
 });

@@ -109,7 +109,7 @@ const COPY = {
     retry: 'Retry Quit',
     forceQuit: 'Force Quit Maka',
   },
-  zh: {
+  'zh-CN': {
     activeTitle: 'Maka 正在后台工作',
     activeMessage: '仍有后台工作正在运行。',
     activeDetail: '现在退出会停止 Runtime Host，并可能中断正在执行或等待运行的后台任务。',
@@ -124,5 +124,21 @@ const COPY = {
     cause: '原因',
     retry: '重试退出',
     forceQuit: '强制退出 Maka',
+  },
+  'zh-TW': {
+    activeTitle: 'Maka 正在背景工作',
+    activeMessage: '仍有背景工作正在執行。',
+    activeDetail: '現在退出會停止 Runtime Host，並可能中斷正在執行或等待執行的背景工作。',
+    stopAndQuit: '停止工作並退出',
+    keepRunning: '繼續執行 Maka',
+    title: '無法安全退出 Maka',
+    message: '本地 Runtime Host 未能安全停止，Maka 仍在執行。',
+    detail: '退出已取消。請重試；如果問題持續存在，請檢視診斷資訊。',
+    process: (pid: number) => `Runtime Host 程序 PID：${pid}`,
+    manual: '如果重試仍然失敗，請先確認沒有需要保留的執行，再透過作業系統的程序管理工具停止該 PID。',
+    forceWarning: '強制退出可能丟棄尚未完成的外部工作。',
+    cause: '原因',
+    retry: '重試退出',
+    forceQuit: '強制退出 Maka',
   },
 } as const;

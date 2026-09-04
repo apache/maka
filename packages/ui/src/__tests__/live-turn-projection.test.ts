@@ -70,7 +70,7 @@ describe('the unconfirmed claim an arm carries', () => {
 
 describe('provider retry copy', () => {
   it('describes capacity retries without collapsing them into generic unavailability', () => {
-    assert.match(getConversationCopy('zh').messages.providerRetryReason.provider_capacity, /满载/);
+    assert.match(getConversationCopy('zh-CN').messages.providerRetryReason.provider_capacity, /满载/);
     assert.match(
       getConversationCopy('en').messages.providerRetryReason.provider_capacity,
       /capacity/,

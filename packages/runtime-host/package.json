@@ -32,9 +32,10 @@
     "@maka/core": "0.1.0",
     "@maka/runtime": "0.1.0",
     "@maka/storage": "0.1.0",
+    "systeminformation": "^5.33.8",
     "ws": "^8.21.3",
     "yaml": "^2.9.0",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@types/ws": "^8.18.1",

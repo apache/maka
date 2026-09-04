@@ -19,6 +19,9 @@
 
 import type { SessionEvent } from '@maka/core/events';
 
+/** Long enough to absorb a turn's closing burst, short enough to feel live. */
+export const TRACE_REFRESH_DEBOUNCE_MS = 400;
+
 /**
  * When a live session's trace is worth re-reading (#1625).
  *

@@ -37,7 +37,6 @@ import {
   type CuObservation,
 } from '../computer-use-tools.js';
 import { buildProviderOptions, getAIModel } from '../model-factory.js';
-import type { PreparedRequestArtifactInput } from '../provider-request-telemetry.js';
 import { backfillRuntimeEventsFromStoredMessages } from '../runtime-event-backfill.js';
 import { createDurableTurnHarness } from './durable-turn-harness.js';
 import { createTestAiSdkBackend } from './execution-boundary-test-helpers.js';
@@ -219,7 +218,6 @@ describe('Anthropic-compatible Computer Use product loops', () => {
         text: 'Set the fixture field to provider-loop.',
       });
       const requestBodies: Array<Record<string, unknown>> = [];
-      const captures: PreparedRequestArtifactInput[] = [];
       const attempts: ModelCallAttempt[] = [];
       const server = await startJsonServer(async (request, response) => {
         assert.equal(request.method, 'POST');
@@ -278,10 +276,6 @@ describe('Anthropic-compatible Computer Use product loops', () => {
         loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
         newId: idGenerator(),
         now: monotonicClock(),
-        persistPreparedRequestArtifact: async (capture) => {
-          captures.push(capture);
-          return { artifactId: `capture-artifact-${captures.length}` };
-        },
         recordModelCallAttempt: ({ attempt }) => {
           attempts.push(attempt);
         },
@@ -306,7 +300,6 @@ describe('Anthropic-compatible Computer Use product loops', () => {
       );
       assert.equal(events.at(-1)?.type, 'complete');
       assert.equal(requestBodies.length, 4);
-      assert.equal(captures.length, 4);
       assert.equal(attempts.length, 4);
       assert.deepEqual(toolResults, [{ isError: false }, { isError: false }, { isError: false }]);
       assert.deepEqual(
@@ -901,7 +894,6 @@ describe('OpenAI-compatible product loops', () => {
       text: 'Set the fixture field to provider-loop.',
     });
     const requestBodies: Array<Record<string, unknown>> = [];
-    const captures: PreparedRequestArtifactInput[] = [];
     const attempts: ModelCallAttempt[] = [];
     const server = await startJsonServer(async (request, response) => {
       assert.equal(request.method, 'POST');
@@ -952,10 +944,6 @@ describe('OpenAI-compatible product loops', () => {
       loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
       newId: idGenerator(),
       now: monotonicClock(),
-      persistPreparedRequestArtifact: async (capture) => {
-        captures.push(capture);
-        return { artifactId: `capture-artifact-${captures.length}` };
-      },
       recordModelCallAttempt: ({ attempt }) => {
         attempts.push(attempt);
       },
@@ -981,13 +969,12 @@ describe('OpenAI-compatible product loops', () => {
     );
     assert.equal(events.at(-1)?.type, 'complete');
     assert.equal(requestBodies.length, 4);
-    assert.equal(captures.length, 4);
     assert.equal(attempts.length, 4);
-    for (const capture of captures) {
+    for (const body of requestBodies) {
       assert.doesNotMatch(
-        capture.serializedRequest,
+        JSON.stringify(body),
         /MAKA_(?:KIMI|OPENAI_CHAT)_EMPTY_REASONING/,
-        'provider request evidence must not persist the SDK-only empty-reasoning marker',
+        'the SDK-only empty-reasoning marker must not reach the provider',
       );
     }
     for (const body of requestBodies) {

@@ -20,10 +20,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
 import { EmptyState } from '@astryxdesign/core/EmptyState';
-import {
-  generalizedErrorMessage,
-  generalizedErrorMessageChinese,
-} from '@maka/core/redaction';
+import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
 import { useUiLocale } from '@maka/ui';
 import { ICON_SIZE, Terminal as TerminalIcon } from '@maka/ui/icons';
 import { FitAddon } from '@xterm/addon-fit';
@@ -148,9 +145,7 @@ export function SessionTerminalPanel(props: {
         .catch((nextError) => {
           if (disposed || !hydration.isCurrent(epoch)) return;
           setError(
-            locale === 'zh'
-              ? generalizedErrorMessageChinese(nextError, copy.loadFailed)
-              : generalizedErrorMessage(nextError, copy.loadFailed),
+            generalizedErrorMessageForLocale(nextError, copy.loadFailed, locale),
           );
         });
     };
@@ -169,9 +164,7 @@ export function SessionTerminalPanel(props: {
         .catch((nextError) => {
           if (disposed) return;
           setError(
-            locale === 'zh'
-              ? generalizedErrorMessageChinese(nextError, copy.writeFailed)
-              : generalizedErrorMessage(nextError, copy.writeFailed),
+            generalizedErrorMessageForLocale(nextError, copy.writeFailed, locale),
           );
         });
     });

@@ -81,7 +81,6 @@ import {
 } from '../sandbox-boundary-declaration.js';
 import { FilesystemWorkerClientError } from '../filesystem-worker/client.js';
 import { RunTrace } from '../run-trace.js';
-import type { PreparedRequestArtifactInput } from '../provider-request-telemetry.js';
 import { decodeModelCallAttempt, type ModelCallAttempt } from '@maka/core/model-call-attempt';
 import { buildLlmHistorySummarizer } from '../history-compact-summarizer.js';
 import { createToolResultArchiveCapability } from '../tool-result-archive-capability.js';
@@ -9096,7 +9095,6 @@ describe('AiSdkBackend context budget and prompt attribution', () => {
 describe('AiSdkBackend RunTrace', () => {
   for (const protocol of ['openai-compatible', 'anthropic-compatible'] as const) {
     test(`records ${protocol} multi-step requests and reconciles complete attempt usage`, async () => {
-      const captures: PreparedRequestArtifactInput[] = [];
       const attempts: ModelCallAttempt[] = [];
       const durable = durableTurnHarness('turn-1', 'hi');
       let calls = 0;
@@ -9196,10 +9194,6 @@ describe('AiSdkBackend RunTrace', () => {
         loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
         newId: idGenerator(),
         now: monotonicClock(),
-        persistPreparedRequestArtifact: async (capture) => {
-          captures.push(capture);
-          return { artifactId: `artifact-${captures.length}` };
-        },
         recordModelCallAttempt: ({ attempt }) => {
           attempts.push(attempt);
         },
@@ -9207,7 +9201,6 @@ describe('AiSdkBackend RunTrace', () => {
 
       const events = await drainDurably(backend.send(durable.input({ runId: 'run-1' })), durable);
 
-      assert.equal(captures.length, 2);
       assert.deepEqual(
         attempts.map(({ step, attempt, status }) => ({ step, attempt, status })),
         [
@@ -9234,15 +9227,9 @@ describe('AiSdkBackend RunTrace', () => {
   }
 
   test('observes the prepared request at dispatch and records its canonical attempt', async () => {
-    const captures: PreparedRequestArtifactInput[] = [];
     const attempts: ModelCallAttempt[] = [];
     const model = new MockLanguageModelV4({
       doStream: async () => {
-        assert.equal(
-          captures.length,
-          1,
-          'artifact persistence must start before provider dispatch',
-        );
         return {
           stream: simulateReadableStream({
             chunks: [
@@ -9281,10 +9268,6 @@ describe('AiSdkBackend RunTrace', () => {
       tools: [],
       newId: idGenerator(),
       now: monotonicClock(),
-      persistPreparedRequestArtifact: async (capture) => {
-        captures.push(capture);
-        return { artifactId: `artifact-${captures.length}` };
-      },
       recordModelCallAttempt: async ({ attempt }) => {
         attempts.push(attempt);
       },
@@ -9300,7 +9283,6 @@ describe('AiSdkBackend RunTrace', () => {
       events.push(event);
     }
 
-    assert.equal(captures.length, 1);
     assert.equal(attempts.length, 1);
     assert.equal(attempts[0]?.step, 0);
     assert.equal(attempts[0]?.attempt, 0);
@@ -9309,7 +9291,7 @@ describe('AiSdkBackend RunTrace', () => {
     assert.equal(attempts[0]?.cacheMissInputTokens, 4);
     assert.equal(
       events.find((event) => event.type === 'token_usage')?.providerRequestTraceId,
-      captures[0]?.traceId,
+      attempts[0]?.traceId,
     );
   });
 
@@ -9415,36 +9397,7 @@ describe('AiSdkBackend RunTrace', () => {
     assert.equal(stored?.type === 'token_usage' && 'contextRemaining' in stored, false);
   });
 
-  test('continues the canonical call when private request persistence fails', async () => {
-    const model = completionModel();
-    const backend = createTestAiSdkBackend({
-      sessionId: 'session-1',
-      header: header(),
-      appendMessage: async () => {},
-      connection: connection(),
-      apiKey: 'sk-test',
-      modelId: 'mock-model-id',
-      modelFactory: () => model,
-      tools: [],
-      newId: idGenerator(),
-      now: monotonicClock(),
-      persistPreparedRequestArtifact: async () => {
-        throw new Error('capture unavailable');
-      },
-    });
-
-    const events: SessionEvent[] = [];
-    for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
-      events.push(event);
-    }
-
-    assert.equal(model.doStreamCalls.length, 1);
-    assert.equal(events.at(-1)?.type, 'complete');
-    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
-  });
-
   test('disables hidden AI SDK retries and traces the one explicit Runtime retry', async () => {
-    const captures: PreparedRequestArtifactInput[] = [];
     const attempts: ModelCallAttempt[] = [];
     let calls = 0;
     const model = new MockLanguageModelV4({
@@ -9489,10 +9442,6 @@ describe('AiSdkBackend RunTrace', () => {
       tools: [],
       newId: idGenerator(),
       now: monotonicClock(),
-      persistPreparedRequestArtifact: async (capture) => {
-        captures.push(capture);
-        return { artifactId: 'artifact-1' };
-      },
       recordModelCallAttempt: ({ attempt }) => {
         attempts.push(attempt);
       },
@@ -9502,7 +9451,6 @@ describe('AiSdkBackend RunTrace', () => {
     await drain(backend.send({ turnId: 'turn-1', runId: 'run-1', text: 'hi', context: [] }));
 
     assert.equal(calls, 2);
-    assert.equal(captures.length, 1);
     assert.deepEqual(
       attempts.map(({ attempt, status }) => ({ attempt, status })),
       [

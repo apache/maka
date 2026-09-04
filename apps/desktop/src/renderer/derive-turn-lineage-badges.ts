@@ -50,7 +50,7 @@ export interface TurnLineageBadgeInput {
 }
 
 export function deriveTurnLineageBadges(input: TurnLineageBadgeInput): TurnLineageBadge[] {
-  const copy = getDesktopConversationCopy(input.locale ?? 'zh').lineage;
+  const copy = getDesktopConversationCopy(input.locale ?? 'zh-CN').lineage;
   const badges: TurnLineageBadge[] = [];
 
   const forwardFrom = input.regeneratedFromTurnId ?? input.retriedFromTurnId;

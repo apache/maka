@@ -17,7 +17,6 @@
  * under the License.
  */
 
-import { FAKE_HOLD_OPEN_PROMPT } from '@maka/runtime/test-only/fake-backend';
 import { expect, test, COMPOSER_INPUT } from './fixtures';
 
 test('shows only slash commands executable in the current session state', async ({
@@ -206,34 +205,6 @@ test('opens the slash menu after a DOM block break', async ({
     'first line\n/',
   );
   await expect(menu).toBeVisible();
-});
-
-test('dispatches /side instead of steering it into a running turn', async ({
-  invocableSkillsWindow: page,
-}) => {
-  const composer = page.locator(COMPOSER_INPUT);
-  const runningPrompt = FAKE_HOLD_OPEN_PROMPT;
-  await composer.fill(runningPrompt);
-  await composer.press('Enter');
-  await expect(page.locator('.maka-user-message', { hasText: runningPrompt })).toBeVisible();
-  await expect(page.getByRole('button', { name: '停止' })).toBeVisible();
-
-  await composer.click();
-  await composer.pressSequentially('/');
-  const menu = page.getByRole('listbox', { name: '命令和技能' });
-  const commands = menu.getByRole('group', { name: '命令' });
-  const side = commands.getByRole('option', { name: /打开侧聊.*\/side/ });
-  await expect(side).toBeVisible();
-  await expect(commands.getByRole('option', { name: /\/compact/ })).toHaveCount(0);
-  await side.click();
-  await expect.poll(() => composer.textContent()).toBe('/side ');
-  await expect(page.locator('.maka-quote-workbar-panel')).toHaveCount(0);
-
-  await composer.fill('/side discuss separately');
-  await composer.press('Enter');
-
-  await expect(page.locator('.maka-quote-workbar-panel')).toHaveCount(1);
-  await page.getByRole('button', { name: '停止' }).click();
 });
 
 test('an open menu keeps its container and skills group across projection refreshes', async ({

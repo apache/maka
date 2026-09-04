@@ -29,7 +29,6 @@ import {
   type Dispatch,
   type SetStateAction,
 } from 'react';
-import type { ProjectRecord } from '@maka/core/project';
 import type {
   FollowUpMode,
   InlineReference,
@@ -65,7 +64,6 @@ import {
   activeInteractionFor,
   deriveComposerModelSwitchAvailability,
   deriveTitlebarProjectName,
-  enqueueInteraction,
   reconcileInteractions,
 } from '@maka/ui';
 import type { ConnectionEvent } from '@maka/core/connections';
@@ -106,7 +104,10 @@ import { useNewTaskChoice } from './use-new-task-choice';
 import { SessionCollaborationDialog } from './session-collaboration-dialog';
 import * as SessionCollaboration from './features/session-collaboration';
 import { NEW_TASK_PENDING_KEY } from './pending-items';
-import { parseDesktopSlashCommand } from './desktop-slash-command';
+import {
+  desktopSlashCommandAvailability,
+  parseDesktopSlashCommand,
+} from './desktop-slash-command';
 import {
   hasActiveTurnAtSubmit,
   mergeWorkspaceReferences,
@@ -1324,11 +1325,11 @@ function AppShellContent({
       : undefined;
   const desktopSlashCommands = useMemo<readonly ComposerSlashCommandOption[]>(
     () => {
-      const streaming = turnActive || activeStreamingLive;
       const availableCommands = slashCommandsForSurface('desktop').filter(
-        ({ id, session }) =>
-          (session === 'none' || Boolean(activeId))
-          && !(streaming && id === 'compact'),
+        desktopSlashCommandAvailability({
+          hasSession: Boolean(activeId),
+          streaming: turnActive || activeStreamingLive,
+        }),
       );
       const presentation: Record<
         SlashCommandIdForSurface<'desktop'>,
@@ -1919,12 +1920,11 @@ function AppShellContent({
     const runningTurnIds = sessionId
       ? sessionsRef.current.find((session) => session.id === sessionId)?.runningTurnIds
       : undefined;
-    const followUpAtSubmit = !slashCommand
-      ? resolveFollowUpModeAtSubmit({
-          requestedMode: metadata?.followUpMode,
-          hasActiveTurn: hasActiveTurnAtSubmit({ liveTurn, runningTurnIds }),
-        })
-      : undefined;
+    const followUpAtSubmit = resolveFollowUpModeAtSubmit({
+      requestedMode: metadata?.followUpMode,
+      hasActiveTurn: hasActiveTurnAtSubmit({ liveTurn, runningTurnIds }),
+      slashCommand,
+    });
     if (sessionId && followUpAtSubmit) {
       const queued = await enqueueFollowUp(sessionId, text, followUpAtSubmit, {
         ...metadata,
@@ -2866,7 +2866,7 @@ function AppShellContent({
                     {workHubEnabled && navSelection.section === 'sessions' && activeId ? (
                       <Button
                         className="workhub-return"
-                        label={uiLocale === 'zh' ? '返回 WorkHub' : 'Return to WorkHub'}
+                        label={uiLocale !== 'en' ? '返回 WorkHub' : 'Return to WorkHub'}
                         variant="secondary"
                         size="sm"
                         onClick={openWorkHub}
@@ -2958,6 +2958,7 @@ function AppShellContent({
                   activeProviderType={activeConnection?.providerType}
                   latestRequestUsageTokens={selectLatestRequestUsage(messages, activeTranscriptRange, activeModel, activeSessionForModelControls)}
                   onOpenContextUsage={() => workbar.commands.openTool('inspector')}
+                  LiveContextUsageProbe={workbar.LiveContextUsageProbe}
                   modelChoices={chatModelChoices}
                   modelSwitchHasHistory={modelSwitchHasHistory}
                   hideUnavailableCurrentModel={sessionHealthNotice?.onClickTarget === 'model_picker'}

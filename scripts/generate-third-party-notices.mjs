@@ -105,15 +105,14 @@ const LICENSE_METADATA_OVERRIDES = new Map([
 // The published tarball omits the repository LICENSE; package.json declares Apache-2.0.
 // Keyed by exact version so a bump re-checks the license rather than inheriting this.
 const APACHE_TEXT_OVERRIDE_KEYS = new Set([
-  '@ai-sdk/provider-utils@5.0.28',
-  '@ai-sdk/provider-utils@5.0.32',
+  '@ai-sdk/provider-utils@5.0.34',
   '@sigstore/verify@4.1.2',
 ]);
 const EMBEDDED_COMPONENT_LICENSES = new Map([
   [
     '@ai-sdk/code-mode',
     {
-      version: '1.0.27',
+      version: '1.0.42',
       components: [
         {
           name: 'quickjs-emscripten (embedded runtime)',
@@ -134,8 +133,7 @@ const EMBEDDED_COMPONENT_LICENSES = new Map([
 ]);
 const MIT_COPYRIGHT_OVERRIDES = new Map([
   // The published tarball omits the monorepo-root LICENSE.
-  ['@earendil-works/pi-tui@0.83.0', 'Copyright (c) 2025 Mario Zechner'],
-  ['@earendil-works/pi-tui@0.84.2', 'Copyright (c) 2025 Mario Zechner'],
+  ['@earendil-works/pi-tui@0.84.4', 'Copyright (c) 2025 Mario Zechner'],
   // The published tarball omits the repository LICENSE; sibling @astryxdesign
   // packages ship it verbatim with this notice.
   ['@astryxdesign/core@0.1.9', 'Copyright (c) 2026 Meta Platforms, Inc.'],
@@ -157,7 +155,7 @@ const MIT_COPYRIGHT_OVERRIDES = new Map([
   ],
   // The published tarball ships no license file; the repository LICENSE is
   // vendored at apps/desktop/resources/licenses/renderer/ANT_DESIGN_ICONS_LICENSE.txt.
-  ['@ant-design/icons-svg@4.5.0', 'Copyright (c) 2018-present Ant UED, https://xtech.antfin.com/'],
+  ['@ant-design/icons-svg@4.6.0', 'Copyright (c) 2018-present Ant UED, https://xtech.antfin.com/'],
   ['agent-base@6.0.2', 'Copyright (c) 2013 Nathan Rajlich <nathan@tootallnate.net>'],
   ['https-proxy-agent@5.0.1', 'Copyright (c) 2013 Nathan Rajlich <nathan@tootallnate.net>'],
   // Published from TooTallNate/proxy-agents, which keeps its LICENSE at the

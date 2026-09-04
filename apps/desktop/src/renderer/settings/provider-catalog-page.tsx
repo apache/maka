@@ -34,6 +34,7 @@ import {
   type ProviderType,
 } from '@maka/core/provider-registry';
 import { PROVIDER_REGISTRY, type LlmConnection } from '@maka/core/llm-connections';
+import type { UiLocale } from '@maka/core/ui-locale';
 import { Button, TextInput, useUiLocale } from '@maka/ui';
 import { AddProviderForm } from './provider-add-form';
 import { ProviderLogo, providerDisplay } from './provider-display';
@@ -204,7 +205,7 @@ export function ProviderCatalogPage(props: {
  */
 function ProviderCatalogRows(props: {
   title?: string;
-  locale: 'zh' | 'en';
+  locale: UiLocale;
   cards: readonly OAuthCard[];
   providers: readonly ProviderType[];
   onPick(target: SetupTarget): void;
@@ -317,7 +318,7 @@ export function ProviderSetupPage(props: {
 function providersMatching(
   source: readonly ProviderType[],
   query: string,
-  locale: 'zh' | 'en',
+  locale: UiLocale,
   group?: ProviderCatalogGroup,
 ): ProviderType[] {
   const normalizedQuery = query.toLocaleLowerCase();

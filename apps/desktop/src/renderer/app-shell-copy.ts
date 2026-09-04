@@ -20,7 +20,7 @@
 import type { ConnectionTestResult } from '@maka/core/llm-connections';
 import type { TextFileImportPreflightFailureReason } from '@maka/core/text-file-import';
 import type { UiLocale } from '@maka/core/ui-locale';
-import { generalizedErrorMessage, generalizedErrorMessageChinese } from '@maka/core/redaction';
+import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
 import { getShellCopy } from './locales/shell-copy.js';
 
 const SESSION_READ_MESSAGES_ERROR_MARKER = 'MAKA_SESSION_READ_MESSAGES_ERROR:';
@@ -36,13 +36,13 @@ export function messageRefreshErrorMessage(error: unknown, locale: UiLocale): st
 function sessionMessageErrorMessage(error: unknown, fallback: string, locale: UiLocale): string {
   const raw = error instanceof Error ? error.message : String(error);
   const markerIndex = raw.indexOf(SESSION_READ_MESSAGES_ERROR_MARKER);
-  if (markerIndex < 0 || locale === 'en') return localizedErrorMessage(error, fallback, locale);
+  if (markerIndex < 0 || locale !== 'zh-CN') return localizedErrorMessage(error, fallback, locale);
   const marked = raw.slice(markerIndex + SESSION_READ_MESSAGES_ERROR_MARKER.length).trim();
   return marked.split(/\r?\n/, 1)[0]?.trim() || fallback;
 }
 
 function localizedErrorMessage(error: unknown, fallback: string, locale: UiLocale): string {
-  return locale === 'zh' ? generalizedErrorMessageChinese(error, fallback) : generalizedErrorMessage(error, fallback);
+  return generalizedErrorMessageForLocale(error, fallback, locale);
 }
 
 export function commandPaletteActionErrorMessage(error: unknown, fallback: string, locale: UiLocale): string {

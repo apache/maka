@@ -47,7 +47,7 @@ export function formatDuration(ms: number | undefined): string | null {
   return `${minutes}m ${seconds}s`;
 }
 
-export function formatUserVisibleToolText(text: string, locale: UiLocale = 'zh'): string {
+export function formatUserVisibleToolText(text: string, locale: UiLocale = 'zh-CN'): string {
   return text.replace(/\bUser denied permission(?: request)?\b|用户已拒绝权限请求/g, getToolActivityCopy(locale).permissionDenied);
 }
 

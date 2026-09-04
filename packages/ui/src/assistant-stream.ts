@@ -67,7 +67,7 @@ export function applyAssistantDelta(
   rawDelta: string,
   options: ApplyAssistantOptions = {},
 ): ApplyAssistantResult {
-  const copy = getSharedUiCopy(options.locale ?? 'zh').stream;
+  const copy = getSharedUiCopy(options.locale ?? 'zh-CN').stream;
   return applyStreamDelta(prev, rawDelta, {
     maxDeltaChars: options.maxDeltaChars ?? ASSISTANT_MAX_DELTA_CHARS,
     maxTotalChars: options.maxTotalChars ?? ASSISTANT_MAX_TOTAL_CHARS,
@@ -88,6 +88,6 @@ export function applyAssistantComplete(
   return applyStreamComplete(rawText, {
     maxTotalChars: options.maxTotalChars ?? ASSISTANT_MAX_TOTAL_CHARS,
     recovery: 'head',
-    totalMarker: getSharedUiCopy(options.locale ?? 'zh').stream.assistantTailTruncated,
+    totalMarker: getSharedUiCopy(options.locale ?? 'zh-CN').stream.assistantTailTruncated,
   });
 }

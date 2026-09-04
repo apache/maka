@@ -23,10 +23,10 @@ import {
   type ModelCallAttempt,
   type ModelCallKind,
   type ModelCallUsageBasis,
-  type PreparedRequestObservation,
+  type PromptComposition,
 } from '@maka/core/model-call-attempt';
 import type { PricingConfig } from '@maka/core/usage-stats/types';
-import { prepareRequestObservation, type PreparedRequestMaterial } from './request-shape.js';
+import { preparedPromptComposition } from './request-shape.js';
 import { rawFinishReasonString } from './model-protocol.js';
 import {
   providerFailureDiagnostic,
@@ -65,26 +65,12 @@ export interface ProviderRequestUsageLike {
 
 export type ProviderRequestAttemptStatus = 'completed' | 'failed' | 'interrupted' | 'aborted';
 
-export interface PreparedRequestArtifactInput extends PreparedRequestMaterial {
-  traceId: string;
-  captureId: string;
-  turnId: string;
-  step: number;
-  providerId: string;
-  modelId: string;
-}
-
-export interface PreparedRequestArtifactRef {
-  artifactId: string;
-}
-
 interface SettledProviderAttempt extends ProviderRequestUsage {
   traceId: string;
   attemptId: string;
   turnId: string;
   step: number;
   attempt: number;
-  captureArtifactId?: string;
   providerId: string;
   modelId: string;
   contextWindow?: number;
@@ -115,11 +101,6 @@ export interface ProviderRequestTrackerInput {
   now: () => number;
   newId: () => string;
   /**
-   * Optional private artifact sink. Failure leaves the canonical observation
-   * intact and the attempt explicitly has no artifact join.
-   */
-  persistArtifact?: (input: PreparedRequestArtifactInput) => Promise<PreparedRequestArtifactRef>;
-  /**
    * Durable run metadata that must exist before any physical provider call.
    * Kept outside accounting because a dispatch gate is an execution contract,
    * not a metering concern.
@@ -130,7 +111,7 @@ export interface ProviderRequestTrackerInput {
    * Canonical metering. Present as a unit or not at all: a `ModelCallAttempt`
    * without session, run, and kind is unattributable, so identity and sink are
    * wired together rather than as independently optional fields. Absent leaves
-   * the tracker purely diagnostic, which is what the capture-only tests use.
+   * the tracker purely diagnostic.
    */
   accounting?: ModelCallAccountingInput;
 }
@@ -285,12 +266,6 @@ export interface ProviderGenerateResult {
   [key: string]: unknown;
 }
 
-interface StoredCapture {
-  material: PreparedRequestMaterial;
-  /** Absent when artifact persistence is unavailable or failed. */
-  artifactId?: string;
-}
-
 const CANONICAL_USAGE_FIELDS = [
   'inputTokens',
   'outputTokens',
@@ -328,7 +303,6 @@ function modelCallUsageFields(
 export class ProviderRequestTracker {
   private step = 0;
   private readonly attemptsByStep = new Map<number, number>();
-  private readonly captures = new Map<string, StoredCapture>();
   /**
    * One logical call per step. Retries of the same step are further attempts of
    * that call, not new calls, so they share this id.
@@ -351,10 +325,10 @@ export class ProviderRequestTracker {
     throwIfAbortedBeforeDispatch(input.abortSignal);
     this.input.accounting?.assertReady?.();
     const step = this.step;
-    const capture = this.capture(step, input);
+    const composition = preparedPromptComposition(secretFreeParams(input.params));
     throwIfAbortedBeforeDispatch(input.abortSignal);
     let sawOutput = false;
-    const attempt = this.beginAttempt(step, capture, input);
+    const attempt = this.beginAttempt(step, composition, input);
 
     let result: ProviderStreamResult;
     try {
@@ -420,9 +394,9 @@ export class ProviderRequestTracker {
     throwIfAbortedBeforeDispatch(input.abortSignal);
     this.input.accounting?.assertReady?.();
     const step = this.step;
-    const capture = this.capture(step, input);
+    const composition = preparedPromptComposition(secretFreeParams(input.params));
     throwIfAbortedBeforeDispatch(input.abortSignal);
-    const attempt = this.beginAttempt(step, capture, input);
+    const attempt = this.beginAttempt(step, composition, input);
     try {
       const result = await input.doGenerate();
       await attempt.finalize(input.abortSignal?.aborted ? 'aborted' : 'completed', {
@@ -438,7 +412,7 @@ export class ProviderRequestTracker {
 
   private beginAttempt(
     step: number,
-    capture: StoredCapture,
+    composition: PromptComposition | undefined,
     input: Pick<
       TrackProviderStreamInput | TrackProviderGenerateInput,
       'providerId' | 'modelId' | 'abortSignal' | 'historyCompactBoundary' | 'historyCompactRoute'
@@ -493,7 +467,6 @@ export class ProviderRequestTracker {
         turnId: this.input.turnId,
         step,
         attempt,
-        ...(capture.artifactId ? { captureArtifactId: capture.artifactId } : {}),
         providerId: input.providerId,
         modelId: input.modelId,
         ...(contextWindow !== undefined ? { contextWindow } : {}),
@@ -511,7 +484,7 @@ export class ProviderRequestTracker {
           logicalCallId,
           usage,
           contextWindow,
-          requestObservation: capture.material.observation,
+          promptComposition: composition,
           // Frozen when THIS request was prepared, so a checkpoint published
           // mid-flight by another turn cannot be sealed into a prompt built
           // before it existed.
@@ -555,7 +528,7 @@ export class ProviderRequestTracker {
       logicalCallId: string;
       usage: ProviderRequestUsage | undefined;
       contextWindow: number | undefined;
-      requestObservation: PreparedRequestObservation;
+      promptComposition: PromptComposition | undefined;
       historyCompactBoundary: ContextDiagnosticsCompaction | undefined;
       historyCompactRoute: HistoryCompactRoute | undefined;
     },
@@ -592,10 +565,7 @@ export class ProviderRequestTracker {
       providerId: accounting.providerId ?? record.providerId,
       modelId: record.modelId,
       ...(context.contextWindow !== undefined ? { contextWindow: context.contextWindow } : {}),
-      ...(record.captureArtifactId !== undefined
-        ? { captureArtifactId: record.captureArtifactId }
-        : {}),
-      requestObservation: context.requestObservation,
+      ...(context.promptComposition ? { promptComposition: context.promptComposition } : {}),
       startedAt: record.startedAt,
       completedAt: record.completedAt,
       latencyMs: record.latencyMs,
@@ -626,7 +596,7 @@ export class ProviderRequestTracker {
       attempt.callKind === 'main' && attempt.status === 'completed'
         ? latestContextProjectionInput(
             attempt,
-            attempt.requestObservation?.segments,
+            attempt.promptComposition,
             context.historyCompactBoundary,
           )
         : undefined;
@@ -638,56 +608,12 @@ export class ProviderRequestTracker {
       // itself. Settlement must not fail the turn the call already completed.
     }
   }
-
-  private capture(
-    step: number,
-    input: TrackProviderStreamInput | TrackProviderGenerateInput,
-  ): StoredCapture {
-    const material = preparedRequestMaterial(input.params);
-    const key = `${step}:${input.providerId}:${input.modelId}:${material.observation.digest}`;
-    const existing = this.captures.get(key);
-    if (existing) return existing;
-
-    const persistArtifact = this.input.persistArtifact;
-    const capture: StoredCapture = { material };
-    this.captures.set(key, capture);
-    if (persistArtifact) {
-      const artifactInput: PreparedRequestArtifactInput = {
-        ...material,
-        traceId: this.input.traceId,
-        captureId: this.input.newId(),
-        turnId: this.input.turnId,
-        step,
-        providerId: input.providerId,
-        modelId: input.modelId,
-      };
-      // Persist the private body in parallel. Dispatch and canonical accounting
-      // are both allowed to finish without it; the bounded observation already
-      // lives on the canonical attempt. If persistence wins the race, the
-      // attempt also carries the optional artifact join.
-      try {
-        void persistArtifact(artifactInput)
-          .then((ref) => {
-            capture.artifactId = ref.artifactId;
-          })
-          .catch(() => undefined);
-      } catch {
-        // A synchronous adapter failure is the same optional-artifact miss.
-      }
-    }
-    return capture;
-  }
 }
 
 function throwIfAbortedBeforeDispatch(signal: AbortSignal | undefined): void {
   if (signal?.aborted) {
     throw new DOMException('The provider request was cancelled before dispatch', 'AbortError');
   }
-}
-
-function preparedRequestMaterial(params: Record<string, unknown>): PreparedRequestMaterial {
-  const safeParams = secretFreeParams(params);
-  return prepareRequestObservation(safeParams);
 }
 
 function secretFreeParams(params: Record<string, unknown>): Record<string, unknown> {

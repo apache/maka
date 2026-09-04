@@ -86,7 +86,7 @@ describe('incremental transcript projection', () => {
     const chinese = projection.project({
       sessionId: SESSION,
       messages,
-      locale: 'zh',
+      locale: 'zh-CN',
     });
 
     assert.equal(

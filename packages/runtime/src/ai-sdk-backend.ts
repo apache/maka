@@ -231,7 +231,6 @@ import type { ModelCallAttempt, ModelCallKind } from '@maka/core/model-call-atte
 import {
   ProviderRequestTracker,
   type ModelCallAccountingInput,
-  type PreparedRequestArtifactInput,
   type ProviderRequestUsage,
   type ResolvedModelCallCost,
 } from './provider-request-telemetry.js';
@@ -758,10 +757,6 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   readChildAgentOutput?: ToolRuntimeInput['readChildAgentOutput'];
   /** Optional diagnostic trace hook for explaining a runtime turn without changing renderer events. */
   recordRunTrace?: RunTraceRecorder;
-  /** Optional private artifact sink for the secret-free prepared request. */
-  persistPreparedRequestArtifact?: (
-    input: PreparedRequestArtifactInput,
-  ) => Promise<{ artifactId: string }>;
   /**
    * Commits one settled provider request: the canonical attempt and, when it
    * is the completed main call, the derived latest-context row it authorises.
@@ -3509,9 +3504,8 @@ export class AiSdkBackend implements AgentBackend {
    * this backend. Callers receive a ready tracker rather than the ingredients:
    * a half-wired tracker is what produces records nothing can attribute.
    *
-   * Absent only when there is nothing to feed: no artifact sink, canonical
-   * sink, or dispatch gate. Metering deliberately does not depend on artifact
-   * persistence: the observation is created in memory for every tracked call.
+   * Absent only when there is nothing to feed: no canonical sink and no
+   * dispatch gate.
    */
   private createProviderRequestTracker(input: {
     turnId: string;
@@ -3525,7 +3519,6 @@ export class AiSdkBackend implements AgentBackend {
      */
     runId: string | undefined;
   }): ProviderRequestTracker | undefined {
-    const persistArtifact = this.input.persistPreparedRequestArtifact;
     const accounting = this.modelCallAccounting(input.callKind, {
       modelId: input.modelId,
       ...(input.runId ? { runId: input.runId } : {}),
@@ -3542,14 +3535,13 @@ export class AiSdkBackend implements AgentBackend {
               runId,
             })
         : undefined;
-    if (!persistArtifact && !accounting && !beforeDispatch) return undefined;
+    if (!accounting && !beforeDispatch) return undefined;
     return new ProviderRequestTracker({
       traceId: this.newId(),
       turnId: input.turnId,
       contextWindow: resolveSelectedModelContextWindow(this.input.connection, input.modelId),
       now: this.now,
       newId: this.newId,
-      ...(persistArtifact ? { persistArtifact } : {}),
       ...(beforeDispatch ? { beforeDispatch } : {}),
       ...(accounting ? { accounting } : {}),
     });

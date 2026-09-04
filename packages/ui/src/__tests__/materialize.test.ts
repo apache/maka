@@ -209,11 +209,11 @@ describe("materializeChat message metadata", () => {
       "Context compacted to keep this session within the model window.",
     );
     assert.equal(
-      materializeChat(messages, "zh")[0]?.text,
+      materializeChat(messages, "zh-CN")[0]?.text,
       "已压缩较早的对话内容，以适应模型上下文窗口。",
     );
     assert.equal(
-      materializeTurns(messages, "zh")[0]?.notes[0]?.text,
+      materializeTurns(messages, "zh-CN")[0]?.notes[0]?.text,
       "已压缩较早的对话内容，以适应模型上下文窗口。",
     );
   });

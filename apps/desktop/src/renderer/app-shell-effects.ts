@@ -25,7 +25,6 @@ import type { SessionEvent } from '@maka/core/events';
 import type { SessionEventStreamSnapshot } from '@maka/core/session-event-health';
 import type { ThemePalette, ThemePreference } from '@maka/core/settings';
 import type { UiLocale } from '@maka/core/ui-locale';
-import { generalizedErrorMessageChinese } from '@maka/core/redaction';
 import { sessionExpectsEventStream } from '@maka/core/session-event-health';
 import { type ShellRunUpdate } from '@maka/core/events';
 import type { LiveTurnProjection, NavSelection } from '@maka/ui';

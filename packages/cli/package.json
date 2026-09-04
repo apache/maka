@@ -20,7 +20,7 @@
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.4.0",
-    "@earendil-works/pi-tui": "0.84.2",
+    "@earendil-works/pi-tui": "0.84.4",
     "@maka/core": "0.1.0",
     "@maka/eval": "0.1.0",
     "@maka/mcp": "0.1.0",

@@ -38,6 +38,7 @@
     "test:dist": "node scripts/run-workspace-tests-parallel.mjs --concurrency=3",
     "test:gitoxide-helper": "cargo +1.98.0 test --locked --manifest-path native/gitoxide-helper/Cargo.toml",
     "build:runtime-host-peer": "node native/runtime-host-peer/build.mjs",
+    "build:runtime-host-windows-task-launcher": "node native/runtime-host-windows-task-launcher/build.mjs",
     "lint:runtime-host-peer": "cargo clippy --locked --all-targets --manifest-path native/runtime-host-peer/Cargo.toml -- -D warnings",
     "dev": "npm --workspace @maka/desktop run dev:hmr --",
     "dev:peer": "npm --workspace @maka/desktop run dev:peer --",
@@ -106,15 +107,15 @@
     "smoke:windows:dist": "node scripts/windows-smoke.mjs"
   },
   "devDependencies": {
-    "@ai-sdk/provider-utils": "5.0.28",
-    "@astryxdesign/cli": "0.4.5",
+    "@ai-sdk/provider-utils": "5.0.34",
+    "@astryxdesign/cli": "0.5.2",
     "@astryxdesign/core": "0.5.2",
-    "@biomejs/biome": "2.5.9",
+    "@biomejs/biome": "2.5.11",
     "@electron/asar": "4.3.0",
-    "@types/node": "^26.2.0",
+    "@types/node": "^26.4.0",
     "esbuild": "^0.28.1",
     "husky": "^9.1.7",
-    "knip": "^6.32.2",
+    "knip": "^6.33.0",
     "patch-package": "8.0.1",
     "typescript": "^7.0.2",
     "yaml": "2.9.0"

@@ -48,7 +48,8 @@ const SIDEBAR_TIME_BUCKETS = [
 ] as const;
 
 const JUST_NOW: UiCatalog<string> = {
-  zh: '刚刚',
+  'zh-CN': '刚刚',
+  'zh-TW': '剛剛',
   en: 'just now',
 };
 
@@ -93,7 +94,7 @@ function getAbsoluteFormat(uiLocale: UiLocale): Intl.DateTimeFormat {
  * reading a relative label falls back to and a tooltip shows; `@maka/ui` had
  * its own uncached copy of the same `Intl` options until this became public.
  */
-export function formatAbsoluteTimestamp(ts: number, locale: UiLocale = 'zh'): string {
+export function formatAbsoluteTimestamp(ts: number, locale: UiLocale = 'zh-CN'): string {
   return getAbsoluteFormat(locale).format(new Date(ts));
 }
 
@@ -105,7 +106,7 @@ export function formatAbsoluteTimestamp(ts: number, locale: UiLocale = 'zh'): st
 export function formatRelativeTimestamp(
   ts: number,
   now: number = Date.now(),
-  locale: UiLocale = 'zh',
+  locale: UiLocale = 'zh-CN',
 ): string {
   const diffMs = relativeAgeMs(ts, now);
   if (diffMs < JUST_NOW_MS) {
@@ -158,7 +159,7 @@ function getCompactFormats(uiLocale: UiLocale): {
 export function formatCompactTimestamp(
   ts: number,
   now: number = Date.now(),
-  locale: UiLocale = 'zh',
+  locale: UiLocale = 'zh-CN',
 ): string {
   const diffMs = relativeAgeMs(ts, now);
   if (diffMs <= RELATIVE_HORIZON_MS) return formatRelativeTimestamp(ts, now, locale);
@@ -178,7 +179,7 @@ export function formatCompactTimestamp(
 export function formatSidebarTimestamp(
   ts: number,
   now: number = Date.now(),
-  locale: UiLocale = 'zh',
+  locale: UiLocale = 'zh-CN',
 ): string {
   const diffMs = relativeAgeMs(ts, now);
   if (diffMs < JUST_NOW_MS) return JUST_NOW[locale];

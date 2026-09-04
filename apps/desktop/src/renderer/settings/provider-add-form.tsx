@@ -181,7 +181,7 @@ export function AddProviderForm(props: {
     if (issue.field === 'slug') {
       return issue.reason === 'duplicate'
         ? copy.duplicateSlug
-        : locale === 'zh'
+        : locale === 'zh-CN'
           ? issue.detail
           : copy.invalidSlug;
     }
