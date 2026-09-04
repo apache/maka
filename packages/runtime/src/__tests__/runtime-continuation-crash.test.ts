@@ -26,7 +26,6 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, test } from 'node:test';
 
-import type { AgentRunHeader } from '@maka/core/agent-run';
 import type { BackendSendInput } from '@maka/core/backend-types';
 import type { SessionEvent } from '@maka/core/events';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
@@ -125,7 +124,11 @@ if (process.env[CRASH_CHILD_ENV] === '1') {
           runId: 'source-run',
           turnId: 'source-turn',
         };
-        await first.runStore.createRun(sourceHeader(session.id, root));
+        await first.runtimeEventStore.appendRuntimeEvent(
+          session.id,
+          'source-run',
+          sourceEvents(session.id, root)[0]!,
+        );
         await first.runtimeEventStore.appendRuntimeEvent(session.id, 'source-run', {
           ...identity,
           id: 'source-user',

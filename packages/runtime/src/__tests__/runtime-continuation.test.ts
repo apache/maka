@@ -149,7 +149,7 @@ test('RuntimeContinuationPlanner does not carry the durable negotiation projecti
     }),
   ];
   const planner = new RuntimeContinuationPlanner({
-    readSourceRun: async () => runHeader('run-1'),
+    readSourceInvocation: async () => runInvocation('run-1'),
     readImmutableRuntimePrefix: async () => immutablePrefix(sourceEvents),
     readSandboxBoundaryRequests: async () => [
       {
@@ -166,7 +166,7 @@ test('RuntimeContinuationPlanner does not carry the durable negotiation projecti
       },
     ],
     newId: (() => {
-      const ids = ['invocation-2', 'run-2', 'turn-2', 'claim-2'];
+      const ids = ['invocation-2', 'turn-2', 'claim-2'];
       return () => ids.shift() ?? 'unexpected-id';
     })(),
   });
@@ -203,7 +203,7 @@ test('RuntimeContinuationPlanner parks when the durable boundary reader is absen
     }),
   ];
   const planner = new RuntimeContinuationPlanner({
-    readSourceRun: async () => runHeader('run-1'),
+    readSourceInvocation: async () => runInvocation('run-1'),
     readImmutableRuntimePrefix: async () => immutablePrefix(sourceEvents),
     newId: () => 'unused',
   });
