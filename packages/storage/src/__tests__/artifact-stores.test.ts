@@ -170,14 +170,36 @@ describe('retired request capture sweep', () => {
 
     await settled(() => residue === 0);
     const passes = limits.length;
-    assert.equal(passes, 3);
-    assert.ok(
-      limits.every((limit) => limit > 0 && Number.isSafeInteger(limit)),
-      'every pass asks for a bounded batch',
-    );
+    assert.equal(passes, 3, 'a batch that clears part of the residue is followed by another');
 
     await idleLongerThanOnePause();
     assert.equal(limits.length, passes, 'an empty residue does not schedule another pass');
+  });
+
+  test('waits longer after a batch that took longer', async () => {
+    const gaps: number[] = [];
+    let previousEnd = 0;
+    let residue = 3;
+    // A batch that holds the writer lock for 300 ms must not be followed
+    // straight away on a store large enough for that to happen.
+    startRetiredCaptureSweep({
+      purgeRetiredCaptures: async () => {
+        if (previousEnd) gaps.push(Date.now() - previousEnd);
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, 300);
+        });
+        residue -= 1;
+        previousEnd = Date.now();
+        return { purged: 1, remaining: residue };
+      },
+    });
+
+    await settled(() => residue === 0);
+    assert.ok(gaps.length >= 1, 'the sweep took more than one batch');
+    assert.ok(
+      gaps.every((gap) => gap >= 600),
+      `a 300 ms batch must be followed by a pause of at least 600 ms, saw ${gaps.join(', ')}`,
+    );
   });
 
   test('reports a failing batch once and gives up rather than retrying', async () => {

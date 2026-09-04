@@ -228,6 +228,8 @@ function createWriterFacade(
  */
 const RETIRED_CAPTURE_SWEEP_BATCH = 256;
 const RETIRED_CAPTURE_SWEEP_PAUSE_MS = 250;
+/** Keeps the sweep to a quarter of the time, however long a batch takes. */
+const RETIRED_CAPTURE_SWEEP_DUTY_DIVISOR = 3;
 
 /**
  * Drains the prepared-request captures the retired capture sink left behind.
@@ -244,15 +246,25 @@ export function startRetiredCaptureSweep(
   let stopped = false;
   void (async () => {
     while (!stopped) {
+      let batchMs: number;
       try {
+        const startedAt = Date.now();
         const { remaining } = await artifacts.purgeRetiredCaptures(RETIRED_CAPTURE_SWEEP_BATCH);
+        batchMs = Date.now() - startedAt;
         if (remaining === 0) return;
       } catch (error) {
         options.onError?.(error);
         return;
       }
+      // A batch holds the writer lock, and its cost rises with everything the
+      // store holds. Waiting a multiple of what the last one took keeps the
+      // sweep behind live turns on a store large enough for that to matter.
+      const pauseMs = Math.max(
+        RETIRED_CAPTURE_SWEEP_PAUSE_MS,
+        batchMs * RETIRED_CAPTURE_SWEEP_DUTY_DIVISOR,
+      );
       await new Promise<void>((resolve) => {
-        setTimeout(resolve, RETIRED_CAPTURE_SWEEP_PAUSE_MS).unref();
+        setTimeout(resolve, pauseMs).unref();
       });
     }
   })();
