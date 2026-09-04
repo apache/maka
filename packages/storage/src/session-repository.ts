@@ -145,6 +145,12 @@ export interface PendingForkOperation {
   readonly source: SessionRevisionRef;
   /** Captured from the verified source Session when the Fork is first claimed. */
   readonly sourceAgentId: string;
+  /**
+   * The exact source checkpoint admitted by the claim. V1 retains only the
+   * current head, so a later source advance must not make a pending Fork
+   * unable to recover its source bytes and metadata.
+   */
+  readonly sourceCheckpoint: StoredSessionCheckpoint;
   readonly targetSessionId: string;
 }
 
@@ -456,6 +462,7 @@ class InMemorySessionRepository implements SessionRepository {
       forkId: admitted.forkId,
       source: admitted.source,
       sourceAgentId: source.agentId,
+      sourceCheckpoint: source.checkpoint,
       targetSessionId: admitted.targetSessionId,
     };
     this.forks.set(admitted.forkId, pending);
@@ -545,9 +552,7 @@ class InMemorySessionRepository implements SessionRepository {
     }
   }
 
-  private async resolveForkSource(
-    source: SessionRevisionRef,
-  ): Promise<{ readonly agentId: string }> {
+  private async resolveForkSource(source: SessionRevisionRef): Promise<CommittedSessionRevision> {
     const initial = this.sessions.get(source.sessionId);
     if (!initial || initial.head.ref.revision !== source.revision) {
       throw repositoryError(
@@ -573,7 +578,7 @@ class InMemorySessionRepository implements SessionRepository {
         'Fork source Session revision is no longer current',
       );
     }
-    return Object.freeze({ agentId: committed.agentId });
+    return committed;
   }
 
   private async assertCheckpointReadable(
@@ -858,6 +863,9 @@ function admitCreateSessionInput(input: CreateSessionInput): InternalCreateSessi
   if ((forkedFrom === undefined) !== (createdByForkId === undefined)) {
     throw new TypeError('Fork lineage and Fork identity must be supplied together');
   }
+  if (createdByForkId !== undefined && input.lastCommittedActivationId !== undefined) {
+    throw new TypeError('Fork-created Session must not carry an Activation identity');
+  }
   return Object.freeze({
     sessionId: requireIdentifier(input.sessionId, 'Session identity'),
     agentId: requireIdentifier(input.agentId, 'Agent identity'),
@@ -962,6 +970,7 @@ function copyForkOperation(input: InternalForkOperation): ForkOperation {
       forkId: input.forkId,
       source: copyRevisionRef(input.source),
       sourceAgentId: input.sourceAgentId,
+      sourceCheckpoint: copyStoredSessionCheckpoint(input.sourceCheckpoint),
       targetSessionId: input.targetSessionId,
     });
   }
@@ -974,6 +983,7 @@ function copyCompletedForkOperation(input: InternalCompletedForkOperation): Comp
     forkId: input.forkId,
     source: copyRevisionRef(input.source),
     sourceAgentId: input.sourceAgentId,
+    sourceCheckpoint: copyStoredSessionCheckpoint(input.sourceCheckpoint),
     targetSessionId: input.targetSessionId,
     target: copyRevisionRef(input.target),
   });

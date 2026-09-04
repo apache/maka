@@ -499,6 +499,17 @@ test('binds a Fork target to its verified source Agent and a distinct Session id
       }),
       hasRepositoryCode('fork_agent_mismatch'),
     );
+    await assert.rejects(
+      repository.createSession({
+        sessionId: 'session-b',
+        agentId: created.agentId,
+        checkpoint: targetCheckpoint,
+        lastCommittedActivationId: 'source-activation',
+        forkedFrom: created.ref,
+        createdByForkId: 'fork-a',
+      }),
+      /Fork-created Session must not carry an Activation identity/,
+    );
 
     const target = await repository.createSession({
       sessionId: 'session-b',
@@ -526,6 +537,27 @@ test('claims Fork identity before target creation and resumes both crash windows
     const pending = await repository.claimFork(request);
     assert.equal(pending.state, 'pending');
     assert.equal(pending.sourceAgentId, created.agentId);
+    assert.deepEqual(pending.sourceCheckpoint, created.checkpoint);
+    assert.deepEqual(await repository.claimFork(request), pending);
+
+    // V1 no longer retains the source revision as a Session head after it
+    // advances. A pending Fork must retain the exact checkpoint it admitted so
+    // recovery can still materialize and repack that source.
+    const advancedCheckpoint = await publishCheckpoint(
+      objectStore,
+      await writeArtifact(directory, 'source-advanced.tar.zst', 'source advanced'),
+    );
+    await repository.commit({
+      sessionId: created.ref.sessionId,
+      expectedRevision: created.ref.revision,
+      checkpoint: advancedCheckpoint,
+    });
+    await assert.rejects(
+      repository.checkoutExact(created.ref),
+      hasRepositoryCode('revision_not_available'),
+    );
+    await objectStore.assertReadable(pending.sourceCheckpoint.manifest);
+    await objectStore.assertReadable(pending.sourceCheckpoint.value.compatibilityBundle);
     assert.deepEqual(await repository.claimFork(request), pending);
 
     // Simulates a retry after a crash before target creation.
