@@ -392,17 +392,20 @@ describe('SQLite Artifact store', () => {
         ['fixture'],
       );
 
-      // A caller that names a capture outright is asking for a record that is
-      // on its way off disk, and the copy refuses rather than carrying it.
-      await assert.rejects(
-        store.copyConversationArtifacts({
-          sourceSessionId: 'session-1',
-          targetSessionId: 'session-copy-2',
-          turnIds: ['turn-1'],
-          linkedArtifacts: [{ sessionId: 'session-child', artifactIds: ['linked-capture'] }],
-        }),
-        /Linked Artifact linked-capture could not be copied/,
-      );
+      // A child result lists every Artifact its turn held, captures included,
+      // and the ledger holding that list cannot be rewritten. So a request
+      // naming one is answered with what is still copyable, not refused: the
+      // alternative is a Session that can never be forked again.
+      const named = await store.copyConversationArtifacts({
+        sourceSessionId: 'session-1',
+        targetSessionId: 'session-copy-2',
+        turnIds: ['turn-1'],
+        linkedArtifacts: [
+          { sessionId: 'session-child', artifactIds: ['linked-capture', linkedKept.id] },
+        ],
+      });
+      assert.equal(named.artifactIds.get('linked-capture'), undefined);
+      assert.ok(named.artifactIds.get(linkedKept.id));
     });
   });
 

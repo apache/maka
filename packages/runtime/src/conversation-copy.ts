@@ -1115,20 +1115,30 @@ function rewriteOwnedArtifactId(
 }
 
 /**
- * The `captureArtifactId` join, or nothing when its Artifact is gone.
+ * A reference whose target may have been reclaimed, mapped or dropped.
  *
- * Every other Artifact reference throws on a missing target, because the bytes
- * and the events naming them have always been removed together. This one is the
- * exception: the capture Artifacts are reclaimed from disk on their own, while
- * the attempts pointing at them stay in an append-only ledger. So a copy drops
- * the key instead of failing on it.
+ * An Artifact reference normally throws on a missing target, because the bytes
+ * and the record naming them are removed together and a copy that lost one has
+ * lost something a reader will ask for. These references are the exception:
+ * they live in an append-only ledger that outlives what it names, and the
+ * retired provider-request captures are reclaimed from disk on their own. A
+ * copy carries what is still there and drops the rest, because failing would
+ * make a whole Session uncopyable over a byte nothing reads.
  */
+function reclaimableArtifactReference(
+  sourceArtifactId: string,
+  references: ConversationCopyArtifactReferenceMap,
+): string | undefined {
+  if (references.mode === 'preserve_external') return sourceArtifactId;
+  return references.artifactIds.get(sourceArtifactId);
+}
+
+/** The `captureArtifactId` join, or nothing when its Artifact is gone. */
 function capturedArtifactJoin(
   sourceArtifactId: string,
   references: ConversationCopyArtifactReferenceMap,
 ): { captureArtifactId?: string } {
-  if (references.mode === 'preserve_external') return { captureArtifactId: sourceArtifactId };
-  const targetArtifactId = references.artifactIds.get(sourceArtifactId);
+  const targetArtifactId = reclaimableArtifactReference(sourceArtifactId, references);
   return targetArtifactId === undefined ? {} : { captureArtifactId: targetArtifactId };
 }
 
@@ -1598,7 +1608,10 @@ function rewriteArtifactIds(
   artifactIds: readonly string[],
   references: ConversationCopyArtifactReferenceMap,
 ): readonly string[] {
-  return artifactIds.map((artifactId) => rewriteOwnedArtifactId(artifactId, references));
+  return artifactIds.flatMap((artifactId) => {
+    const targetArtifactId = reclaimableArtifactReference(artifactId, references);
+    return targetArtifactId === undefined ? [] : [targetArtifactId];
+  });
 }
 
 function validatedExternalChildReferences(
@@ -1628,9 +1641,10 @@ function rewriteSnapshotArtifactIds(
   if (references.mode !== 'exact' || references.linkedChildren.mode !== 'snapshot') {
     return artifactIds;
   }
-  return artifactIds.map((artifactId) =>
-    requiredMappedId(references.artifactIds, artifactId, 'linked Artifact'),
-  );
+  return artifactIds.flatMap((artifactId) => {
+    const targetArtifactId = references.artifactIds.get(artifactId);
+    return targetArtifactId === undefined ? [] : [targetArtifactId];
+  });
 }
 
 function rewriteArchivedSnapshot(

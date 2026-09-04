@@ -454,8 +454,12 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
               candidate.status !== 'deleted' &&
               !isRetiredCapture(candidate),
           );
-          if (!record) throw new Error(`Linked Artifact ${artifactId} could not be copied`);
-          selected.push({ ...record });
+          // A linked child result names every Artifact its turn held, and the
+          // ledger naming them cannot be rewritten. One that is no longer
+          // there is copied as nothing rather than failing the copy -- the
+          // caller is asking for what a past turn had, not asserting that all
+          // of it survived.
+          if (record) selected.push({ ...record });
         }
       }
       const selectedIds = new Set(selected.map((record) => record.id));

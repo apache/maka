@@ -241,14 +241,21 @@ export async function prepareAgentGraphRevisionReferences(
     ) {
       return failure('operation_unavailable', 'Retained Agent Graph run reference is unavailable');
     }
+    // A child result names every Artifact its turn held, and the ledger that
+    // records it can never be rewritten -- so an id in it outlives whatever it
+    // named. What this checks is therefore that a reference does not reach
+    // outside its own child and lineage, not that its target survived: the
+    // retired provider-request captures are reclaimed on their own, and a user
+    // may delete a child's Artifact. A reference whose target is gone stays
+    // admissible and simply resolves to nothing, while one that crosses a
+    // Session or a lineage was never admissible and still fails.
     for (const artifactId of request.artifactIds) {
       const artifact = await dependencies.artifacts
         .getInSession(childSessionId, artifactId)
         .catch(() => null);
+      if (!artifact?.record || artifact.record.status === 'deleted') continue;
       if (
-        !artifact?.record ||
         artifact.record.sessionId !== childSessionId ||
-        artifact.record.status === 'deleted' ||
         !lineage.turnIds.has(artifact.record.turnId)
       ) {
         return failure('operation_unavailable', 'Retained Agent Graph Artifact is unavailable');

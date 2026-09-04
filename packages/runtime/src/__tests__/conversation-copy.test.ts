@@ -1001,16 +1001,31 @@ test('conversation copy rewrites owned references without changing opaque tool p
     preserved.type === 'user' ? preserved.attachments?.[0]?.ref : undefined,
     messages[0]?.type === 'user' ? messages[0].attachments?.[0]?.ref : undefined,
   );
-  for (const message of [messages[2]!, messages[3]!]) {
-    assert.throws(
-      () =>
-        rewriteConversationCopyMessage(message, {
-          ...references,
-          artifactIds: new Map(),
-        }),
-      /missing Artifact artifact-source/,
-    );
-  }
+  // An archived tool result's Artifact holds that result's own bytes, and the
+  // two are removed together, so a copy that lost it has lost what a reader
+  // will ask for.
+  assert.throws(
+    () =>
+      rewriteConversationCopyMessage(messages[2]!, {
+        ...references,
+        artifactIds: new Map(),
+      }),
+    /missing Artifact artifact-source/,
+  );
+  // A child result is the opposite case: it lists every Artifact its turn
+  // held, in a ledger that cannot be rewritten, so an id in it outlives what
+  // it named. The copy carries what is still there and drops the rest, rather
+  // than making a whole Session uncopyable over a reclaimed byte nobody reads.
+  const reclaimed = rewriteConversationCopyMessage(messages[3]!, {
+    ...references,
+    artifactIds: new Map(),
+  });
+  assert.deepEqual(
+    reclaimed.type === 'tool_result' && reclaimed.content.kind === 'agent_swarm'
+      ? reclaimed.content.items[0]?.artifactIds
+      : undefined,
+    [],
+  );
   assert.throws(
     () =>
       rewriteConversationCopyMessage(messages[3]!, {
@@ -2079,28 +2094,36 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
     const source = await new RuntimeReadModel({
       runtimeEventStore,
     }).getSessionView('session-source');
-    await assert.rejects(
-      async () =>
-        cloneConversationRuntimeLedger({
-          plan: await prepareTestCopyPlan(source, source.messages, runStore, runtimeEventStore),
-          copiedMessages: source.messages,
-          referenceMap: {
-            mode: 'exact',
-            linkedChildren: { mode: 'reject' },
-            sourceSessionId: 'session-source',
-            targetSessionId: 'session-missing-artifact',
-            artifactIds: new Map([['artifact-source', 'artifact-target']]),
-            relativePaths: new Map(),
-          },
-          runStore,
-          runtimeEventStore,
-          newId: () => crypto.randomUUID(),
-        }),
-      /missing Artifact artifact-deleted/,
+    // The child result names an Artifact the copy has no mapping for, because
+    // it was reclaimed after the ledger recorded it. The copy carries the run
+    // and drops that one id, rather than making the Session uncopyable.
+    const withReclaimed = await cloneConversationRuntimeLedger({
+      plan: await prepareTestCopyPlan(source, source.messages, runStore, runtimeEventStore),
+      copiedMessages: source.messages,
+      referenceMap: {
+        mode: 'exact',
+        linkedChildren: { mode: 'reject' },
+        sourceSessionId: 'session-source',
+        targetSessionId: 'session-missing-artifact',
+        artifactIds: new Map([['artifact-source', 'artifact-target']]),
+        relativePaths: new Map(),
+      },
+      runStore,
+      runtimeEventStore,
+      newId: () => crypto.randomUUID(),
+    });
+    const reclaimedResult = withReclaimed.copiedMessages.find(
+      (message) => message.type === 'tool_result' && message.content.kind === 'subagent',
     );
     assert.deepEqual(
-      await runtimeEventStore.listSessionInvocations('session-missing-artifact'),
+      reclaimedResult?.type === 'tool_result' && reclaimedResult.content.kind === 'subagent'
+        ? reclaimedResult.content.artifactIds
+        : undefined,
       [],
+    );
+    assert.equal(
+      (await runtimeEventStore.listSessionInvocations('session-missing-artifact')).length,
+      1,
     );
     // A copied run and its copied invocation share one fresh identity, so the
     // copy mints one id here rather than two.
