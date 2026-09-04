@@ -806,6 +806,25 @@ export async function verifyRuntimeHostLifecycleReady(
   );
 }
 
+/** Repairs update-control artifacts without interrupting the running Host supervisor. */
+export async function convergeRuntimeHostLifecycleControlProjection(
+  config: RuntimeHostManagedDeploymentConfig,
+  deps: RuntimeHostLifecycleTransactionDeps,
+): Promise<void> {
+  const canonical = decodeRuntimeHostManagedDeploymentConfig(config);
+  await deps.convergeOperator(canonical, canonical);
+  if (canonical.lifecycle.mode !== 'supervised') return;
+  const provider = deps.resolveProvider(canonical);
+  if (canonical.reconciliation.trigger === 'scheduled') {
+    await provider.reconciliationTrigger.converge(
+      runtimeHostReconciliationTriggerDefinition(canonical),
+    );
+    await provider.reconciliationTrigger.activate();
+  } else {
+    await provider.reconciliationTrigger.uninstall();
+  }
+}
+
 /** Verifies the durable operator and supervisor projection without requiring a compatible Host. */
 export async function verifyRuntimeHostLifecycleProjection(
   config: RuntimeHostManagedDeploymentConfig,
