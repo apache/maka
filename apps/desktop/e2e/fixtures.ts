@@ -574,6 +574,7 @@ type E2eTestFixtures = {
   partialHistoryWindow: Page;
   promptRailMotionWindow: Page;
   requestHeaderRowWindow: Page;
+  permissionCenterWindow: Page;
   newTaskTargetWindow: Page;
   directoryReferenceWindow: { page: Page; folder: string };
   accessibilityNarrativeWindow: Page;
@@ -794,6 +795,15 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
       seed: false,
       readinessSelector: '.settingsSurface',
       e2eFixtureScenario: 'settings-models',
+      locale: 'zh',
+      showWindow: true,
+    }, use);
+  },
+  permissionCenterWindow: async ({}, use) => {
+    await withE2eWindow({
+      seed: false,
+      readinessSelector: '.settingsCapabilityGroup',
+      e2eFixtureScenario: 'settings-permissions',
       locale: 'zh',
       showWindow: true,
     }, use);

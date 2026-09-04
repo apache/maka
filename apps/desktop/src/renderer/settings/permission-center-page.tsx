@@ -487,6 +487,7 @@ function CapabilityRow(props: {
               row grew ~5x. `label position: start` keeps each readout on
               one line (label left, value right) like the <dl> it replaced. */}
           <MetadataList
+            className="settingsCapabilityMetadata"
             columns={2}
             label={{ position: 'start', width: 92 }}
             aria-label={copy.layers.aria(capabilityLabel)}
@@ -497,7 +498,7 @@ function CapabilityRow(props: {
                     an unwrapped reason ran straight into the state value
                     ("探测降级maka-cu 未响应握手…"). */}
                 <VStack gap={0.5}>
-                  <Text type="body" size="sm">{layer.value}</Text>
+                  <Text type="body">{layer.value}</Text>
                   {layer.reason ? (
                     <Text type="supporting" size="sm" color="secondary">{layer.reason}</Text>
                   ) : null}
@@ -507,6 +508,7 @@ function CapabilityRow(props: {
           </MetadataList>
           {capability.osPermissions.length > 0 && (
             <MetadataList
+              className="settingsCapabilityMetadata"
               columns={2}
               label={{ position: 'start', width: 92 }}
               aria-label={copy.requiredPermissionsAria(capabilityLabel)}
