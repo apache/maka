@@ -575,6 +575,11 @@ export function WorkHubCoordinationTurnView(props: {
         (candidate) => candidate.target.sessionId === props.turn.stop!.targetSessionId,
       )
     : undefined;
+  const resumedSession = props.turn.resume
+    ? props.projection.sessions.find(
+        (candidate) => candidate.target.sessionId === props.turn.resume!.targetSessionId,
+      )
+    : undefined;
   return (
     <WorkHubMessageFrame
       text={props.turn.text}
@@ -597,6 +602,19 @@ export function WorkHubCoordinationTurnView(props: {
             : props.turn.stop.outcome
               ? copy.stopRecorded
               : copy.stopping}
+          result={undefined}
+          copy={copy}
+          onOpenSession={props.onOpenSession}
+        />
+      ) : props.turn.resume ? (
+        <SubmittedWorkView
+          session={resumedSession}
+          targetSessionId={props.turn.resume.targetSessionId}
+          fallbackName={props.turn.resume.targetSessionName}
+          heading={props.turn.resume.outcome
+            ? copy.resumeOutcomes[props.turn.resume.outcome]
+            : copy.resumingWork}
+          state={props.turn.resume.outcome ? copy.resumeRecorded : copy.resuming}
           result={undefined}
           copy={copy}
           onOpenSession={props.onOpenSession}
@@ -688,6 +706,7 @@ function WorkHubTurnView(props: {
   const { turn, copy } = props;
   const submitted = turn.outcome?.kind === 'submitted' ? turn.outcome : undefined;
   const stopped = turn.outcome?.kind === 'stop' ? turn.outcome : undefined;
+  const resumed = turn.outcome?.kind === 'resume' ? turn.outcome : undefined;
   const target = submitted
     ? props.projection.sessions.find((session) => session.target.sessionId === submitted.target.sessionId)
     : undefined;
@@ -740,6 +759,18 @@ function WorkHubTurnView(props: {
               targetSessionId={stopped.target.sessionId}
               heading={copy.stopOutcomes[stopped.outcome]}
               state={stopped.outcome === 'not_owned' ? copy.openSessionToStop : copy.stopRecorded}
+              result={undefined}
+              copy={copy}
+              onOpenSession={props.onOpenSession}
+            />
+          ) : resumed ? (
+            <SubmittedWorkView
+              session={props.projection.sessions.find(
+                (session) => session.target.sessionId === resumed.target.sessionId,
+              )}
+              targetSessionId={resumed.target.sessionId}
+              heading={copy.resumeOutcomes[resumed.outcome]}
+              state={copy.resumeRecorded}
               result={undefined}
               copy={copy}
               onOpenSession={props.onOpenSession}
@@ -866,6 +897,7 @@ function workHubCopy(locale: UiLocale) {
         already_running: '这项工作还在跑，不需要恢复：',
         parked: '无法继续这项工作；请打开该 Session 查看原因：',
       },
+      resumingWork: '正在请求继续：', resuming: '正在处理', resumeRecorded: '结果已记录',
       resumeTargetAmbiguous: '这个名称对应多项工作；请打开具体的 Session 继续它。',
       resumeTargetUnavailable: '这项工作现在没有可以继续的单个 WorkHub 委派；请打开该 Session 查看。',
       waitingForDecision: '这项工作正在等待你的决定。',
@@ -937,6 +969,14 @@ function workHubCopy(locale: UiLocale) {
         already_terminal: '這項工作已經結束：',
         not_owned: '未停止共享或使用者擁有的 Turn：',
       },
+      resumeOutcomes: {
+        resume_started: '已讓中斷的工作繼續：',
+        already_running: '這項工作仍在執行，不需要恢復：',
+        parked: '無法繼續這項工作；請開啟該 Session 檢視原因：',
+      },
+      resumingWork: '正在請求繼續：', resuming: '正在處理', resumeRecorded: '結果已記錄',
+      resumeTargetAmbiguous: '這個名稱對應多項工作；請開啟具體的 Session 繼續它。',
+      resumeTargetUnavailable: '這項工作現在沒有可以繼續的單一 WorkHub 委派；請開啟該 Session 檢視。',
       submitFailures: {
         candidates_changed: '工作清單已變更，請重新傳送以使用最新目標。',
         linked_correction_unavailable: '跨 Session 更正將於持久委派關聯完成後開放；請先開啟原 Session 並停止目前工作。',
@@ -997,6 +1037,7 @@ function workHubCopy(locale: UiLocale) {
       already_running: 'This work is still running, so there was nothing to resume:',
       parked: 'Could not carry this work on. Open its Session to see why:',
     },
+    resumingWork: 'Requesting resume:', resuming: 'Resuming', resumeRecorded: 'Result recorded',
     resumeTargetAmbiguous:
       'That name matches more than one work item. Open the exact Session to resume it.',
     resumeTargetUnavailable:

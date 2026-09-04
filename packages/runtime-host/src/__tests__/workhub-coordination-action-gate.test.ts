@@ -25,6 +25,8 @@ import type {
   WorkHubDelegationAssignedMessage,
   WorkHubDelegationReplacementAbortedMessage,
   WorkHubDelegationReplacementRequestedMessage,
+  WorkHubDelegationResumeRequestedMessage,
+  WorkHubDelegationResumeResolvedMessage,
   WorkHubDelegationStopRequestedMessage,
   WorkHubDelegationStopResolvedMessage,
   WorkHubDelegationSupersededMessage,
@@ -39,10 +41,13 @@ import {
   type WorkHubDelegationAssignmentInput,
   type WorkHubDelegationReplacementAbortInput,
   type WorkHubDelegationReplacementInput,
+  type WorkHubDelegationResumeInput,
+  type WorkHubDelegationResumeResolutionInput,
   type WorkHubDelegationRetirementClaim,
   type WorkHubDelegationStopInput,
   type WorkHubDelegationStopResolutionInput,
   type WorkHubRetirementResult,
+  type WorkHubResumePlan,
 } from '../server/workhub-coordination-action-gate.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 
@@ -371,9 +376,53 @@ describe('WorkHub Coordination Action Gate', () => {
       targetTurnId: 'resumed-turn',
     });
     assert.equal(effects.resumeCalls.length, 1);
-    assert.equal(effects.resumeCalls[0]?.actionId, 'source-action');
+    assert.equal(effects.resumeCalls[0]?.resumesActionId, 'source-action');
     // Resume claims like every other disposition, so the identity is spent.
     assert.equal(effects.actionClaims.get('resume-action')?.operation, 'resume');
+  });
+
+  test('resume binds the trusted named target to the proposed Session', async () => {
+    const effects = fakeEffects([
+      session('payments', { name: 'Payments' }),
+      session('login', { name: 'Login' }),
+    ]);
+    delegatedTo(effects, 'payments');
+
+    await assert.rejects(
+      () =>
+        new WorkHubCoordinationActionGate(effects).act(
+          {
+            actionId: 'resume-wrong-target',
+            userText: 'Resume Login',
+            proposal: resumeProposal('payments'),
+          },
+          CONTEXT,
+        ),
+      (error) => error instanceof WorkHubActionGateFailure && error.code === 'action_conflict',
+    );
+    assert.equal(effects.resumeCalls.length, 0);
+  });
+
+  test('resume replays one durable result without planning or starting twice', async () => {
+    const effects = fakeEffects([session('payments', { name: 'Payments' })]);
+    delegatedTo(effects, 'payments');
+    const gate = new WorkHubCoordinationActionGate(effects);
+    const input = {
+      actionId: 'resume-replay',
+      userText: 'Resume Payments',
+      proposal: resumeProposal('payments'),
+    };
+
+    const first = await gate.act(input, CONTEXT);
+    effects.resumeOutcome = { outcome: 'parked' };
+    effects.resumePlan = { kind: 'parked' };
+    const replay = await gate.act(input, CONTEXT);
+
+    assert.deepEqual(replay, first);
+    assert.equal(effects.planResumeCalls.length, 1);
+    assert.equal(effects.resumeCalls.length, 1);
+    assert.equal(effects.resumeRequests.size, 1);
+    assert.equal(effects.resumeResolutions.size, 1);
   });
 
   test('resume needs a named command and carries no destructive confirmation', async () => {
@@ -2682,6 +2731,8 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
   const supersessions = new Map<string, WorkHubDelegationSupersededMessage>();
   const stopRequests = new Map<string, WorkHubDelegationStopRequestedMessage>();
   const stopResolutions = new Map<string, WorkHubDelegationStopResolvedMessage>();
+  const resumeRequests = new Map<string, WorkHubDelegationResumeRequestedMessage>();
+  const resumeResolutions = new Map<string, WorkHubDelegationResumeResolvedMessage>();
   const actionClaims = new Map<string, WorkHubActionClaim>();
   return {
     sessions: [...initialSessions],
@@ -2700,6 +2751,8 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
     supersessions,
     stopRequests,
     stopResolutions,
+    resumeRequests,
+    resumeResolutions,
     retirements: [] as WorkHubDelegationAssignedMessage[],
     retirementClaims: [] as WorkHubDelegationRetirementClaim[],
     async listSessions() {
@@ -2717,14 +2770,103 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
         ? 'same_claim'
         : 'conflict';
     },
-    resumeCalls: [] as WorkHubDelegationAssignedMessage[],
-    resumeOutcome: { outcome: 'resume_started' as const, targetTurnId: 'resumed-turn' } as {
+    resumeCalls: [] as WorkHubDelegationResumeRequestedMessage[],
+    planResumeCalls: [] as Array<{
+      assignment: WorkHubDelegationAssignedMessage;
+      previous: WorkHubDelegationResumeResolvedMessage | undefined;
+    }>,
+    resumePlan: {
+      kind: 'ready',
+      sourceTurnId: 'source-turn',
+      sourceRunId: 'source-run',
+      sourceRuntimeEventHighWater: 1,
+      targetTurnId: 'resumed-turn',
+    } as WorkHubResumePlan,
+    resumeOutcome: {
+      outcome: 'resume_started' as const,
+      targetTurnId: 'resumed-turn',
+      targetRunId: 'resumed-run',
+    } as {
       outcome: 'resume_started' | 'already_running' | 'parked';
       targetTurnId?: string;
+      targetRunId?: string;
     },
-    async resumeDelegation(assignment: WorkHubDelegationAssignedMessage) {
-      this.resumeCalls.push(assignment);
+    async readResumeRequest(actionId: string) {
+      return resumeRequests.get(actionId);
+    },
+    async readResumeResolution(actionId: string) {
+      return resumeResolutions.get(actionId);
+    },
+    async listResumeResolutions(delegationId: string) {
+      return [...resumeResolutions.values()].filter(
+        (resolution) => resolution.resumesDelegationId === delegationId,
+      );
+    },
+    async planResume(
+      assignment: WorkHubDelegationAssignedMessage,
+      previous: WorkHubDelegationResumeResolvedMessage | undefined,
+    ) {
+      this.planResumeCalls.push({ assignment, previous });
+      return this.resumePlan;
+    },
+    async prepareResume(input: WorkHubDelegationResumeInput) {
+      const existing = resumeRequests.get(input.actionId);
+      if (existing) return existing;
+      const requested: WorkHubDelegationResumeRequestedMessage = {
+        type: 'workhub_coordination',
+        id: `resume-${input.actionId}`,
+        turnId: input.actionId,
+        ts: 7,
+        schemaVersion: 4,
+        kind: 'delegation_resume_requested',
+        actionId: input.actionId,
+        actionFingerprint: input.actionFingerprint,
+        coordinationTurnId: input.actionId,
+        resumesActionId: input.resumesActionId,
+        resumesDelegationId: input.resumesDelegationId,
+        targetSessionId: input.targetSessionId,
+        targetMessageId: input.targetMessageId,
+        targetSessionName: input.targetSessionName,
+        userText: input.userText,
+        plan: input.plan.kind,
+        ...(input.plan.kind === 'ready'
+          ? {
+              sourceTurnId: input.plan.sourceTurnId,
+              sourceRunId: input.plan.sourceRunId,
+              sourceRuntimeEventHighWater: input.plan.sourceRuntimeEventHighWater,
+              targetTurnId: input.plan.targetTurnId,
+            }
+          : {}),
+      };
+      resumeRequests.set(input.actionId, requested);
+      return requested;
+    },
+    async resumeDelegation(request: WorkHubDelegationResumeRequestedMessage) {
+      this.resumeCalls.push(request);
       return this.resumeOutcome;
+    },
+    async resolveResume(input: WorkHubDelegationResumeResolutionInput) {
+      const existing = resumeResolutions.get(input.request.actionId);
+      if (existing) return existing;
+      const resolved: WorkHubDelegationResumeResolvedMessage = {
+        type: 'workhub_coordination',
+        id: `resume-resolved-${input.request.actionId}`,
+        turnId: input.request.actionId,
+        ts: 8,
+        schemaVersion: 4,
+        kind: 'delegation_resume_resolved',
+        actionId: input.request.actionId,
+        actionFingerprint: input.request.actionFingerprint,
+        coordinationTurnId: input.request.coordinationTurnId,
+        resumesActionId: input.request.resumesActionId,
+        resumesDelegationId: input.request.resumesDelegationId,
+        targetSessionId: input.request.targetSessionId,
+        outcome: input.outcome,
+        ...(input.targetTurnId ? { targetTurnId: input.targetTurnId } : {}),
+        ...(input.targetRunId ? { targetRunId: input.targetRunId } : {}),
+      };
+      resumeResolutions.set(input.request.actionId, resolved);
+      return resolved;
     },
     async readActionClaim(actionId: string) {
       return actionClaims.get(actionId);
@@ -2920,11 +3062,19 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
     supersessions: Map<string, WorkHubDelegationSupersededMessage>;
     stopRequests: Map<string, WorkHubDelegationStopRequestedMessage>;
     stopResolutions: Map<string, WorkHubDelegationStopResolvedMessage>;
+    resumeRequests: Map<string, WorkHubDelegationResumeRequestedMessage>;
+    resumeResolutions: Map<string, WorkHubDelegationResumeResolvedMessage>;
     retirements: WorkHubDelegationAssignedMessage[];
-    resumeCalls: WorkHubDelegationAssignedMessage[];
+    resumeCalls: WorkHubDelegationResumeRequestedMessage[];
+    planResumeCalls: Array<{
+      assignment: WorkHubDelegationAssignedMessage;
+      previous: WorkHubDelegationResumeResolvedMessage | undefined;
+    }>;
+    resumePlan: WorkHubResumePlan;
     resumeOutcome: {
       outcome: 'resume_started' | 'already_running' | 'parked';
       targetTurnId?: string;
+      targetRunId?: string;
     };
   };
 }

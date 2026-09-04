@@ -473,6 +473,19 @@ export function matchWorkHubSessionName(
   return { kind: 'named', remainder: normalizedTarget.slice(matchedName.length).trim() };
 }
 
+/** Whether a direct stop/resume reference names exactly this Session. */
+export function workHubNamedDelegationActionTargetsSession(
+  action: { readonly imperative: boolean; readonly target?: string },
+  sessionName: string,
+): boolean {
+  if (!action.imperative || !action.target) return false;
+  const match = matchWorkHubSessionName(action.target, sessionName);
+  return (
+    match.kind === 'elided_name_punctuation' ||
+    (match.kind === 'named' && /^[.!?。！？]*$/u.test(match.remainder))
+  );
+}
+
 /**
  * The correction policy's tail rule. A correction may name its target and then
  * say what to do with it, but a withdrawal anywhere in the reference retracts

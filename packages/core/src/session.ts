@@ -941,6 +941,7 @@ export interface TurnStateMessage {
 export const WORKHUB_COORDINATION_RECORD_SCHEMA_VERSION = 1 as const;
 export const WORKHUB_COORDINATION_REPLACEMENT_SCHEMA_VERSION = 2 as const;
 export const WORKHUB_COORDINATION_STOP_SCHEMA_VERSION = 3 as const;
+export const WORKHUB_COORDINATION_RESUME_SCHEMA_VERSION = 4 as const;
 
 export type WorkHubDelegationDisposition = 'delegate_existing' | 'create_new';
 
@@ -1077,6 +1078,51 @@ export interface WorkHubDelegationStopResolvedMessage {
   targetTurnId?: string;
 }
 
+export type WorkHubDelegationResumeOutcome = 'resume_started' | 'already_running' | 'parked';
+
+/** Durable resume plan written before attempting a continuation. */
+export interface WorkHubDelegationResumeRequestedMessage {
+  type: 'workhub_coordination';
+  id: string;
+  turnId: string;
+  ts: number;
+  schemaVersion: typeof WORKHUB_COORDINATION_RESUME_SCHEMA_VERSION;
+  kind: 'delegation_resume_requested';
+  actionId: string;
+  actionFingerprint: `sha256:${string}`;
+  coordinationTurnId: string;
+  resumesActionId: string;
+  resumesDelegationId: string;
+  targetSessionId: string;
+  targetMessageId: string;
+  targetSessionName: string;
+  userText: string;
+  plan: 'ready' | 'already_running' | 'parked';
+  sourceTurnId?: string;
+  sourceRunId?: string;
+  sourceRuntimeEventHighWater?: number;
+  targetTurnId?: string;
+}
+
+/** Durable observed result of a resume attempt. */
+export interface WorkHubDelegationResumeResolvedMessage {
+  type: 'workhub_coordination';
+  id: string;
+  turnId: string;
+  ts: number;
+  schemaVersion: typeof WORKHUB_COORDINATION_RESUME_SCHEMA_VERSION;
+  kind: 'delegation_resume_resolved';
+  actionId: string;
+  actionFingerprint: `sha256:${string}`;
+  coordinationTurnId: string;
+  resumesActionId: string;
+  resumesDelegationId: string;
+  targetSessionId: string;
+  outcome: WorkHubDelegationResumeOutcome;
+  targetTurnId?: string;
+  targetRunId?: string;
+}
+
 /**
  * The exact durable operation one WorkHub action identity is allowed to own.
  *
@@ -1115,7 +1161,9 @@ export type WorkHubCoordinationMessage =
   | WorkHubDelegationReplacementAbortedMessage
   | WorkHubDelegationSupersededMessage
   | WorkHubDelegationStopRequestedMessage
-  | WorkHubDelegationStopResolvedMessage;
+  | WorkHubDelegationStopResolvedMessage
+  | WorkHubDelegationResumeRequestedMessage
+  | WorkHubDelegationResumeResolvedMessage;
 
 function isWorkHubDelegationStopResolution(
   outcome: unknown,
@@ -1385,6 +1433,47 @@ const WORKHUB_DELEGATION_STOP_RESOLVED_MESSAGE_SHAPE =
     ],
     ['targetTurnId'],
   );
+const WORKHUB_DELEGATION_RESUME_REQUESTED_MESSAGE_SHAPE =
+  defineObjectShape<WorkHubDelegationResumeRequestedMessage>()(
+    [
+      'type',
+      'id',
+      'turnId',
+      'ts',
+      'schemaVersion',
+      'kind',
+      'actionId',
+      'actionFingerprint',
+      'coordinationTurnId',
+      'resumesActionId',
+      'resumesDelegationId',
+      'targetSessionId',
+      'targetMessageId',
+      'targetSessionName',
+      'userText',
+      'plan',
+    ],
+    ['sourceTurnId', 'sourceRunId', 'sourceRuntimeEventHighWater', 'targetTurnId'],
+  );
+const WORKHUB_DELEGATION_RESUME_RESOLVED_MESSAGE_SHAPE =
+  defineObjectShape<WorkHubDelegationResumeResolvedMessage>()(
+    [
+      'type',
+      'id',
+      'turnId',
+      'ts',
+      'schemaVersion',
+      'kind',
+      'actionId',
+      'actionFingerprint',
+      'coordinationTurnId',
+      'resumesActionId',
+      'resumesDelegationId',
+      'targetSessionId',
+      'outcome',
+    ],
+    ['targetTurnId', 'targetRunId'],
+  );
 const WORKHUB_DELEGATION_CREATE_SHAPE = defineObjectShape<WorkHubDelegationCreateSpec>()(
   ['title', 'workspace'],
   [],
@@ -1575,6 +1664,64 @@ function decodeMessage(
 }
 
 function isWorkHubCoordinationMessage(message: Record<string, unknown>): boolean {
+  if (message.kind === 'delegation_resume_requested') {
+    const ready = message.plan === 'ready';
+    return (
+      hasMessageEnvelope(message, true) &&
+      hasExactShape(message, WORKHUB_DELEGATION_RESUME_REQUESTED_MESSAGE_SHAPE) &&
+      message.schemaVersion === WORKHUB_COORDINATION_RESUME_SCHEMA_VERSION &&
+      isWorkHubActionIdentity(message) &&
+      typeof message.resumesActionId === 'string' &&
+      message.resumesActionId.length > 0 &&
+      typeof message.resumesDelegationId === 'string' &&
+      message.resumesDelegationId.length > 0 &&
+      typeof message.targetSessionId === 'string' &&
+      message.targetSessionId.length > 0 &&
+      typeof message.targetMessageId === 'string' &&
+      message.targetMessageId.length > 0 &&
+      typeof message.targetSessionName === 'string' &&
+      message.targetSessionName.trim().length > 0 &&
+      typeof message.userText === 'string' &&
+      message.userText.trim().length > 0 &&
+      (ready || message.plan === 'already_running' || message.plan === 'parked') &&
+      (ready
+        ? typeof message.sourceTurnId === 'string' &&
+          message.sourceTurnId.length > 0 &&
+          typeof message.sourceRunId === 'string' &&
+          message.sourceRunId.length > 0 &&
+          typeof message.sourceRuntimeEventHighWater === 'number' &&
+          Number.isSafeInteger(message.sourceRuntimeEventHighWater) &&
+          message.sourceRuntimeEventHighWater >= 0 &&
+          typeof message.targetTurnId === 'string' &&
+          message.targetTurnId.length > 0
+        : message.sourceTurnId === undefined &&
+          message.sourceRunId === undefined &&
+          message.sourceRuntimeEventHighWater === undefined &&
+          message.targetTurnId === undefined)
+    );
+  }
+  if (message.kind === 'delegation_resume_resolved') {
+    const started = message.outcome === 'resume_started';
+    return (
+      hasMessageEnvelope(message, true) &&
+      hasExactShape(message, WORKHUB_DELEGATION_RESUME_RESOLVED_MESSAGE_SHAPE) &&
+      message.schemaVersion === WORKHUB_COORDINATION_RESUME_SCHEMA_VERSION &&
+      isWorkHubActionIdentity(message) &&
+      typeof message.resumesActionId === 'string' &&
+      message.resumesActionId.length > 0 &&
+      typeof message.resumesDelegationId === 'string' &&
+      message.resumesDelegationId.length > 0 &&
+      typeof message.targetSessionId === 'string' &&
+      message.targetSessionId.length > 0 &&
+      (started || message.outcome === 'already_running' || message.outcome === 'parked') &&
+      (started
+        ? typeof message.targetTurnId === 'string' &&
+          message.targetTurnId.length > 0 &&
+          typeof message.targetRunId === 'string' &&
+          message.targetRunId.length > 0
+        : message.targetTurnId === undefined && message.targetRunId === undefined)
+    );
+  }
   if (message.kind === 'delegation_stop_requested') {
     return (
       hasMessageEnvelope(message, true) &&

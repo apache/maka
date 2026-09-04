@@ -132,6 +132,11 @@ export interface WorkHubCoordinationTurn {
     readonly targetSessionName: string;
     readonly outcome?: Extract<WorkHubCoordinationActResult, { disposition: 'stop_work' }>['outcome'];
   };
+  resume?: {
+    readonly targetSessionId: string;
+    readonly targetSessionName: string;
+    readonly outcome?: Extract<WorkHubCoordinationActResult, { disposition: 'resume_work' }>['outcome'];
+  };
   updatedAt: number;
 }
 

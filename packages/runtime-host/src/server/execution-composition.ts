@@ -1389,30 +1389,84 @@ export async function createExecutionRuntimeHostComposition(
           const snapshot = await coordinator.read(identity);
           return isHostedExecutionTerminal(snapshot) ? 'retired' : 'recovering';
         },
-        // Resume is the same two steps the Desktop banner takes: ask the Host
-        // whether this Session has a continuation to make, then make it. The
-        // Host owns both answers, so a repeat parks rather than forking, and
-        // WorkHub records only which of the three things happened.
-        resumeDelegation: async (assignment, context) => {
-          const plan = await coordinator.handlers['turn.resume.query'](
-            { sessionId: assignment.targetSessionId },
-            context,
-          );
-          if (!plan.ok) return { outcome: 'parked' as const };
-          if (plan.result.disposition === 'parked') {
-            return {
-              outcome:
-                plan.result.reason === 'resume_candidate_missing'
-                  ? ('already_running' as const)
-                  : ('parked' as const),
+        // Resolve only the execution lineage owned by this delegation. A
+        // Session-wide latest-failure query could otherwise continue unrelated
+        // work started directly in the same Session.
+        planResume: async (assignment, previous, context) => {
+          let source:
+            | { readonly sessionId: string; readonly turnId: string; readonly runId: string }
+            | undefined;
+          if (
+            previous?.outcome === 'resume_started' &&
+            previous.targetTurnId &&
+            previous.targetRunId
+          ) {
+            source = {
+              sessionId: assignment.targetSessionId,
+              turnId: previous.targetTurnId,
+              runId: previous.targetRunId,
+            };
+          } else {
+            const disposition = await messages.readMessageExecutionDisposition(
+              assignment.targetSessionId,
+              assignment.targetMessageId,
+            );
+            if (disposition.kind !== 'owned_root') return { kind: 'parked' as const };
+            source = {
+              sessionId: assignment.targetSessionId,
+              turnId: disposition.turnId,
+              runId: disposition.runId,
             };
           }
+          let snapshot;
+          try {
+            snapshot = await coordinator.read(source);
+          } catch {
+            return { kind: 'parked' as const };
+          }
+          if (
+            snapshot.status === 'admitted' ||
+            snapshot.status === 'created' ||
+            snapshot.status === 'running'
+          ) {
+            return { kind: 'already_running' as const };
+          }
+          if (snapshot.status !== 'failed' && snapshot.status !== 'cancelled') {
+            return { kind: 'parked' as const };
+          }
+          const plan = await coordinator.handlers['turn.resume.query'](
+            { sessionId: assignment.targetSessionId, sourceRunId: source.runId },
+            context,
+          );
+          if (
+            !plan.ok ||
+            plan.result.disposition === 'parked' ||
+            plan.result.sourceRunId !== source.runId ||
+            plan.result.sourceTurnId !== source.turnId
+          )
+            return { kind: 'parked' as const };
+          return {
+            kind: 'ready' as const,
+            sourceTurnId: plan.result.sourceTurnId,
+            sourceRunId: plan.result.sourceRunId,
+            sourceRuntimeEventHighWater: plan.result.sourceRuntimeEventHighWater,
+            targetTurnId: workHubResumedTurnId(assignment.delegationId, plan.result.sourceRunId),
+          };
+        },
+        resumeDelegation: async (request, context) => {
+          if (
+            request.plan !== 'ready' ||
+            !request.sourceRunId ||
+            request.sourceRuntimeEventHighWater === undefined ||
+            !request.targetTurnId
+          )
+            return { outcome: 'parked' as const };
           const started = await coordinator.handlers['turn.resume.start'](
             {
-              sessionId: assignment.targetSessionId,
-              turnId: workHubResumedTurnId(assignment.delegationId, plan.result.sourceRunId),
-              sourceRunId: plan.result.sourceRunId,
-              sourceRuntimeEventHighWater: plan.result.sourceRuntimeEventHighWater,
+              sessionId: request.targetSessionId,
+              turnId: request.targetTurnId,
+              sourceRunId: request.sourceRunId,
+              sourceRuntimeEventHighWater: request.sourceRuntimeEventHighWater,
             },
             context,
           );
@@ -1422,6 +1476,7 @@ export async function createExecutionRuntimeHostComposition(
           return {
             outcome: 'resume_started' as const,
             targetTurnId: started.result.turn.turnId,
+            targetRunId: started.result.turn.runId,
           };
         },
         retireDelegation: async (assignment, retirement) => {

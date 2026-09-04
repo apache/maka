@@ -167,12 +167,35 @@ export function projectWorkHubCoordinationTurns(
         : [],
     ),
   );
+  const resumeResolutionByActionId = new Map(
+    messages.flatMap((message) =>
+      message.type === 'workhub_coordination' && message.kind === 'delegation_resume_resolved'
+        ? [[message.actionId, message] as const]
+        : [],
+    ),
+  );
   for (const message of messages) {
     const terminal = terminalDelegationLink(message);
     if (terminal) terminalLinkState.set(terminal.delegationId, terminal.state);
   }
 
   for (const message of messages) {
+    if (message.type === 'workhub_coordination' && message.kind === 'delegation_resume_requested') {
+      const resolution = resumeResolutionByActionId.get(message.actionId);
+      turns.push({
+        messageId: message.id,
+        turnId: message.coordinationTurnId,
+        text: boundedWorkHubTimelineText(message.userText),
+        state: resolution ? 'completed' : 'running',
+        resume: {
+          targetSessionId: message.targetSessionId,
+          targetSessionName: message.targetSessionName,
+          ...(resolution ? { outcome: resolution.outcome } : {}),
+        },
+        updatedAt: resolution ? Math.max(message.ts, resolution.ts) : message.ts,
+      });
+      continue;
+    }
     if (message.type === 'workhub_coordination' && message.kind === 'delegation_stop_requested') {
       const resolution = stopResolutionByDelegationId.get(message.stopsDelegationId);
       turns.push({

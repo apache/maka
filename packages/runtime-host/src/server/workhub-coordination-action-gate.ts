@@ -32,6 +32,8 @@ import type {
   WorkHubDelegationStopRequestedMessage,
   WorkHubDelegationStopResolvedMessage,
   WorkHubDelegationStopOutcome,
+  WorkHubDelegationResumeRequestedMessage,
+  WorkHubDelegationResumeResolvedMessage,
   WorkHubDelegationSupersededMessage,
 } from '@maka/core/session';
 import {
@@ -42,6 +44,7 @@ import {
   readWorkHubRequestIntent,
   workHubCorrectionTargetsSession,
   workHubCreationAuthorizesTitle,
+  workHubNamedDelegationActionTargetsSession,
 } from '@maka/core/workhub-creation-intent';
 import type {
   WorkHubCoordinationActInput,
@@ -114,6 +117,13 @@ export interface WorkHubActionGateEffects {
   readStopResolution(
     delegationId: string,
   ): Promise<WorkHubDelegationStopResolvedMessage | undefined>;
+  readResumeRequest(actionId: string): Promise<WorkHubDelegationResumeRequestedMessage | undefined>;
+  readResumeResolution(
+    actionId: string,
+  ): Promise<WorkHubDelegationResumeResolvedMessage | undefined>;
+  listResumeResolutions(
+    delegationId: string,
+  ): Promise<readonly WorkHubDelegationResumeResolvedMessage[]>;
   answer(
     input: { readonly turnId: string; readonly text: string },
     context: ConnectionContext,
@@ -150,10 +160,21 @@ export interface WorkHubActionGateEffects {
    * unfinished. The Host owns whether that is possible; a repeat is safe
    * because a continuation that already exists parks rather than forks.
    */
-  resumeDelegation(
+  planResume(
     assignment: WorkHubDelegationAssignedMessage,
+    previous: WorkHubDelegationResumeResolvedMessage | undefined,
+    context: ConnectionContext,
+  ): Promise<WorkHubResumePlan>;
+  prepareResume(
+    input: WorkHubDelegationResumeInput,
+  ): Promise<WorkHubDelegationResumeRequestedMessage>;
+  resumeDelegation(
+    request: WorkHubDelegationResumeRequestedMessage,
     context: ConnectionContext,
   ): Promise<WorkHubResumeResult>;
+  resolveResume(
+    input: WorkHubDelegationResumeResolutionInput,
+  ): Promise<WorkHubDelegationResumeResolvedMessage>;
 }
 
 /**
@@ -171,6 +192,36 @@ export interface WorkHubDelegationRetirementClaim {
 export interface WorkHubResumeResult {
   readonly outcome: 'resume_started' | 'already_running' | 'parked';
   readonly targetTurnId?: string;
+  readonly targetRunId?: string;
+}
+
+export type WorkHubResumePlan =
+  | { readonly kind: 'already_running' | 'parked' }
+  | {
+      readonly kind: 'ready';
+      readonly sourceTurnId: string;
+      readonly sourceRunId: string;
+      readonly sourceRuntimeEventHighWater: number;
+      readonly targetTurnId: string;
+    };
+
+export interface WorkHubDelegationResumeInput {
+  readonly actionId: string;
+  readonly actionFingerprint: `sha256:${string}`;
+  readonly resumesActionId: string;
+  readonly resumesDelegationId: string;
+  readonly targetSessionId: string;
+  readonly targetMessageId: string;
+  readonly targetSessionName: string;
+  readonly userText: string;
+  readonly plan: WorkHubResumePlan;
+}
+
+export interface WorkHubDelegationResumeResolutionInput {
+  readonly request: WorkHubDelegationResumeRequestedMessage;
+  readonly outcome: 'resume_started' | 'already_running' | 'parked';
+  readonly targetTurnId?: string;
+  readonly targetRunId?: string;
 }
 
 export interface WorkHubRetirementResult {
@@ -451,16 +502,59 @@ export class WorkHubCoordinationActionGate {
           'WorkHub resume requires an explicit named command in trusted user text',
         );
       }
+      const replay = await this.#effects.readResumeRequest(input.actionId);
+      if (replay) {
+        if (
+          replay.userText !== input.userText ||
+          replay.targetSessionId !== proposal.expects.targetSessionId ||
+          !workHubNamedDelegationActionTargetsSession(
+            requestIntent.resume,
+            replay.targetSessionName,
+          )
+        ) {
+          throw new WorkHubActionGateFailure(
+            'action_conflict',
+            'WorkHub resume identity belongs to a different request',
+          );
+        }
+        await this.#claimAction(
+          input.actionId,
+          'resume',
+          replay.actionFingerprint,
+          replay.resumesDelegationId,
+        );
+        return this.#resume(replay, context);
+      }
       const source = await this.#resumeSource(proposal.expects.targetSessionId);
+      const sessions = await this.#effects.listSessions();
+      const currentTargetName = sessions.find(({ id }) => id === source.targetSessionId)?.name;
+      if (
+        !currentTargetName ||
+        !workHubNamedDelegationActionTargetsSession(requestIntent.resume, currentTargetName)
+      ) {
+        throw new WorkHubActionGateFailure(
+          'action_conflict',
+          'WorkHub resume target is not affirmed in trusted user text',
+        );
+      }
       const resumeFingerprint = resumeActionFingerprint(input, source);
       await this.#claimAction(input.actionId, 'resume', resumeFingerprint, source.delegationId);
-      const resumed = await this.#effects.resumeDelegation(source, context);
-      return {
-        disposition: 'resume_work',
-        outcome: resumed.outcome,
+      const previous = (await this.#effects.listResumeResolutions(source.delegationId))
+        .filter(({ outcome }) => outcome === 'resume_started')
+        .at(-1);
+      const plan = await this.#effects.planResume(source, previous, context);
+      const request = await this.#effects.prepareResume({
+        actionId: input.actionId,
+        actionFingerprint: resumeFingerprint,
+        resumesActionId: source.actionId,
+        resumesDelegationId: source.delegationId,
         targetSessionId: source.targetSessionId,
-        ...(resumed.targetTurnId ? { targetTurnId: resumed.targetTurnId } : {}),
-      };
+        targetMessageId: source.targetMessageId,
+        targetSessionName: currentTargetName,
+        userText: input.userText,
+        plan,
+      });
+      return this.#resume(request, context);
     }
 
     if (proposal.disposition === 'create_new') {
@@ -586,6 +680,25 @@ export class WorkHubCoordinationActionGate {
       );
     }
     return onTarget[0]!;
+  }
+
+  async #resume(
+    request: WorkHubDelegationResumeRequestedMessage,
+    context: ConnectionContext,
+  ): Promise<Extract<WorkHubCoordinationActResult, { disposition: 'resume_work' }>> {
+    const existing = await this.#effects.readResumeResolution(request.actionId);
+    if (existing) return resumeResult(existing);
+    const resumed: WorkHubResumeResult =
+      request.plan === 'ready'
+        ? await this.#effects.resumeDelegation(request, context)
+        : { outcome: request.plan };
+    const resolution = await this.#effects.resolveResume({
+      request,
+      outcome: resumed.outcome,
+      ...(resumed.targetTurnId ? { targetTurnId: resumed.targetTurnId } : {}),
+      ...(resumed.targetRunId ? { targetRunId: resumed.targetRunId } : {}),
+    });
+    return resumeResult(resolution);
   }
 
   /**
@@ -1253,6 +1366,17 @@ function stopResult(
 ): WorkHubCoordinationActResult {
   return {
     disposition: 'stop_work',
+    outcome: resolution.outcome,
+    targetSessionId: resolution.targetSessionId,
+    ...(resolution.targetTurnId ? { targetTurnId: resolution.targetTurnId } : {}),
+  };
+}
+
+function resumeResult(
+  resolution: WorkHubDelegationResumeResolvedMessage,
+): Extract<WorkHubCoordinationActResult, { disposition: 'resume_work' }> {
+  return {
+    disposition: 'resume_work',
     outcome: resolution.outcome,
     targetSessionId: resolution.targetSessionId,
     ...(resolution.targetTurnId ? { targetTurnId: resolution.targetTurnId } : {}),

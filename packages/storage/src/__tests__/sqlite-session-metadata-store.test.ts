@@ -1513,10 +1513,17 @@ describe('SqliteSessionMetadataStore', () => {
       actionFingerprint: `sha256:${'a'.repeat(64)}` as const,
       subject: 'whd_payments',
     };
+    const resumeClaim = {
+      actionId: 'resume-action',
+      operation: 'resume' as const,
+      actionFingerprint: `sha256:${'b'.repeat(64)}` as const,
+      subject: 'whd_payments',
+    };
     let store = createSqliteSessionMetadataStore(path);
     try {
       assert.equal(await store.claimWorkHubAction(stopClaim), 'claimed');
       assert.equal(await store.claimWorkHubAction(stopClaim), 'same_claim');
+      assert.equal(await store.claimWorkHubAction(resumeClaim), 'claimed');
     } finally {
       store.close();
     }
@@ -1524,6 +1531,7 @@ describe('SqliteSessionMetadataStore', () => {
     store = createSqliteSessionMetadataStore(path);
     try {
       assert.deepEqual(await store.readWorkHubActionClaim('stop-action'), stopClaim);
+      assert.deepEqual(await store.readWorkHubActionClaim('resume-action'), resumeClaim);
       assert.equal(await store.claimWorkHubAction(stopClaim), 'same_claim');
       // A second delegation, a second disposition, and a changed payload are
       // each a different operation for the same identity.

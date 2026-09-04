@@ -19,7 +19,7 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 38;
+export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 39;
 export const SQLITE_SESSION_MESSAGE_CHUNK_BYTES = 64 * 1024;
 export const SQLITE_SESSION_MESSAGE_CHUNK_MARKER = '{"$maka":"session-message-chunks-v1"}';
 
@@ -1266,6 +1266,44 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
       subject TEXT NOT NULL,
       claimed_at INTEGER NOT NULL CHECK (claimed_at >= 0)
     );
+  `,
+  ],
+  [
+    39,
+    `
+    -- SQLite cannot widen a CHECK constraint in place. Rebuild the action
+    -- claim table so resume receives the same durable one-action/one-operation
+    -- ownership as every other WorkHub action.
+    ALTER TABLE workhub_action_claims RENAME TO workhub_action_claims_v38;
+
+    CREATE TABLE workhub_action_claims (
+      action_id TEXT PRIMARY KEY,
+      operation TEXT NOT NULL CHECK (
+        operation IN (
+          'answer_here', 'clarify', 'delegate_existing', 'create_new', 'replace', 'stop', 'resume'
+        )
+      ),
+      action_fingerprint TEXT NOT NULL,
+      subject TEXT NOT NULL,
+      claimed_at INTEGER NOT NULL CHECK (claimed_at >= 0)
+    );
+
+    INSERT INTO workhub_action_claims(
+      action_id,
+      operation,
+      action_fingerprint,
+      subject,
+      claimed_at
+    )
+    SELECT
+      action_id,
+      operation,
+      action_fingerprint,
+      subject,
+      claimed_at
+    FROM workhub_action_claims_v38;
+
+    DROP TABLE workhub_action_claims_v38;
   `,
   ],
 ]);

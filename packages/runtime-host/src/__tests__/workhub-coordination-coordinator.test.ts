@@ -1075,6 +1075,109 @@ describe('Host WorkHub Coordination coordinator', () => {
     }
   });
 
+  test('persists a resume plan and result before replaying after Host restart', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-workhub-resume-'));
+    let store = createSessionStore(root);
+    let targetId = '';
+    const resumeInput = () => ({
+      actionId: 'resume-action',
+      userText: 'Resume Payments',
+      proposal: {
+        disposition: 'resume_work' as const,
+        expects: { targetSessionId: targetId },
+      },
+    });
+    try {
+      const target = await store.create({
+        cwd: root,
+        name: 'Payments',
+        llmConnectionSlug: 'test-connection',
+        model: 'test-model',
+        permissionMode: 'ask',
+      });
+      targetId = target.id;
+      let resumeCalls = 0;
+      const workhub = coordinator(root, store, () => undefined, undefined, undefined, undefined, {
+        assign: persistTestAssignmentAction(store, 'payments-turn'),
+        planResume: async () => ({
+          kind: 'ready',
+          sourceTurnId: 'payments-turn',
+          sourceRunId: 'payments-run',
+          sourceRuntimeEventHighWater: 9,
+          targetTurnId: 'resumed-turn',
+        }),
+        resumeDelegation: async () => {
+          resumeCalls += 1;
+          return {
+            outcome: 'resume_started',
+            targetTurnId: 'resumed-turn',
+            targetRunId: 'resumed-run',
+          };
+        },
+      });
+      assert.equal((await workhub.handlers['workhub.coordination.resolve']({}, CONTEXT)).ok, true);
+      const candidates = await workhub.handlers['workhub.coordination.candidates']({}, CONTEXT);
+      assert.equal(candidates.ok, true);
+      if (!candidates.ok) return;
+      const candidate = candidates.result.candidates.find(
+        ({ sessionId }) => sessionId === target.id,
+      )!;
+      assert.equal(
+        (
+          await workhub.handlers['workhub.coordination.act'](
+            {
+              actionId: 'source-action',
+              userText: 'Fix payment retry',
+              candidateSetId: candidates.result.candidateSetId,
+              proposal: { disposition: 'delegate_existing', candidateRef: candidate.candidateRef },
+            },
+            CONTEXT,
+          )
+        ).ok,
+        true,
+      );
+
+      const resumed = await workhub.handlers['workhub.coordination.act'](resumeInput(), CONTEXT);
+      assert.deepEqual(resumed, {
+        ok: true,
+        result: {
+          disposition: 'resume_work',
+          outcome: 'resume_started',
+          targetSessionId: target.id,
+          targetTurnId: 'resumed-turn',
+        },
+      });
+      assert.equal(resumeCalls, 1);
+      assert.equal(
+        (await store.readWorkHubResumeRequest('resume-action'))?.sourceRunId,
+        'payments-run',
+      );
+      assert.equal(
+        (await store.readWorkHubResumeResolution('resume-action'))?.targetRunId,
+        'resumed-run',
+      );
+    } finally {
+      await store.close?.();
+    }
+
+    store = createSessionStore(root);
+    try {
+      const restarted = coordinator(root, store, () => undefined, undefined, undefined, undefined, {
+        planResume: async () => assert.fail('durable resume replay must not replan'),
+        resumeDelegation: async () => assert.fail('durable resume replay must not restart'),
+      });
+      const replay = await restarted.handlers['workhub.coordination.act'](resumeInput(), CONTEXT);
+      assert.equal(replay.ok, true);
+      if (replay.ok && replay.result.disposition === 'resume_work') {
+        assert.equal(replay.result.outcome, 'resume_started');
+        assert.equal(replay.result.targetTurnId, 'resumed-turn');
+      }
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('rechecks sole-delegation stop preconditions after the advisory active-link read', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-workhub-stop-race-'));
     const store = createSessionStore(root);
@@ -1869,9 +1972,17 @@ function coordinator(
     executions,
     sessionActions: {
       readDelegationRetirement: async () => 'not_retired',
+      planResume: async () => ({
+        kind: 'ready' as const,
+        sourceTurnId: 'source-turn',
+        sourceRunId: 'source-run',
+        sourceRuntimeEventHighWater: 1,
+        targetTurnId: 'resumed-turn',
+      }),
       resumeDelegation: async () => ({
         outcome: 'resume_started' as const,
         targetTurnId: 'resumed-turn',
+        targetRunId: 'resumed-run',
       }),
       retireDelegation: async () => ({ outcome: 'cancelled_pending' }),
       ...sessionActions,

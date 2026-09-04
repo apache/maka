@@ -90,6 +90,8 @@ import {
   type WorkHubActionClaimOutcome,
   type WorkHubDelegationStopRequestedMessage,
   type WorkHubDelegationStopResolvedMessage,
+  type WorkHubDelegationResumeRequestedMessage,
+  type WorkHubDelegationResumeResolvedMessage,
   type WorkHubDelegationSupersededMessage,
 } from '@maka/core/session';
 import type {
@@ -445,6 +447,12 @@ export interface SessionAuthorityStore extends SessionStore, MessageAdmissionSto
   readWorkHubStopResolution(
     delegationId: string,
   ): Promise<WorkHubDelegationStopResolvedMessage | undefined>;
+  readWorkHubResumeRequest(
+    actionId: string,
+  ): Promise<WorkHubDelegationResumeRequestedMessage | undefined>;
+  readWorkHubResumeResolution(
+    actionId: string,
+  ): Promise<WorkHubDelegationResumeResolvedMessage | undefined>;
   /**
    * Durably binds one action identity to one exact WorkHub operation before its
    * effect. Survives removal of the target Session so a committed destructive
@@ -768,6 +776,29 @@ class SqliteSessionStore implements SessionAuthorityStore {
       `whz_${workHubIdentitySuffix(delegationId)}`,
     );
     return message?.type === 'workhub_coordination' && message.kind === 'delegation_stop_resolved'
+      ? message
+      : undefined;
+  }
+
+  async readWorkHubResumeRequest(
+    actionId: string,
+  ): Promise<WorkHubDelegationResumeRequestedMessage | undefined> {
+    const message = await this.readWorkHubCoordinationMessage(
+      `whr_${workHubIdentitySuffix(actionId)}`,
+    );
+    return message?.type === 'workhub_coordination' &&
+      message.kind === 'delegation_resume_requested'
+      ? message
+      : undefined;
+  }
+
+  async readWorkHubResumeResolution(
+    actionId: string,
+  ): Promise<WorkHubDelegationResumeResolvedMessage | undefined> {
+    const message = await this.readWorkHubCoordinationMessage(
+      `whn_${workHubIdentitySuffix(actionId)}`,
+    );
+    return message?.type === 'workhub_coordination' && message.kind === 'delegation_resume_resolved'
       ? message
       : undefined;
   }
