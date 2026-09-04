@@ -64,7 +64,8 @@ import {
   openRuntimeHostPeerEndpointOwner,
   type RuntimeHostPeerEndpointOwner,
 } from '@maka/runtime-host/peer-reachability';
-import { clientCapabilityEntityId, type WorkspaceTarget } from "@maka/runtime-host/protocol";
+import { clientCapabilityEntityId } from "@maka/runtime-host/capability-entity-id";
+import { type WorkspaceTarget } from "@maka/runtime-host/protocol";
 import { runtimeHostProfileUsesHostWorkspace } from "@maka/runtime-host/profile-kind";
 import { createCredentialMcpOAuthStorage, McpClientManager } from "@maka/mcp";
 import { createWorkBoardStore } from "@maka/storage/work-board-store";

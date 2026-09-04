@@ -24,11 +24,11 @@ import type { ClientCapabilityProvider } from '@maka/runtime-host/client';
 import {
   CLIENT_CAPABILITY_MAX_TOOLS,
   CLIENT_CAPABILITY_MAX_TOOLS_PER_OFFER,
-  clientCapabilityEntityId,
   decodeClientCapabilityReplaceInput,
   type ClientCapabilityCallResult,
   type ClientCapabilityOffer,
 } from '@maka/runtime-host/protocol';
+import { clientCapabilityEntityId } from '@maka/runtime-host/capability-entity-id';
 import type { McpCallResult, McpToolDescriptor } from '@maka/core/mcp';
 
 const CAPABILITY_VERSION = '0';
