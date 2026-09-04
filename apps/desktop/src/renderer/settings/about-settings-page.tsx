@@ -35,7 +35,11 @@ import { SettingsPage, SettingsRow, SettingsSection } from './settings-section.j
 import { settingsActionErrorMessage } from './settings-error-copy.js';
 import { SettingsSkeletonStack } from './settings-skeleton.js';
 import { useActionGuard } from './use-action-guard.js';
-import { aboutChannelFacts, aboutUpdateStatusDetail } from './about-update-status.js';
+import {
+  aboutChannelFacts,
+  aboutUpdateErrorCopy,
+  aboutUpdateStatusDetail,
+} from './about-update-status.js';
 import { getSettingsPreferencesCopy } from '../locales/settings-preferences-copy.js';
 import {
   defaultRuntimeHostDiagnosticTarget,
@@ -125,7 +129,8 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
       const status = await window.maka.app.checkForUpdates();
       if (aboutPageMountedRef.current) setUpdateStatus(status);
       if (status.state === 'error') {
-        toast.error(copy.updateCheckFailed, copy.updateCheckFailedDetail(status.message));
+        const updateError = aboutUpdateErrorCopy(status, copy);
+        toast.error(updateError.title, updateError.detail);
       }
     } catch (error) {
       if (aboutPageMountedRef.current) {

@@ -22,6 +22,13 @@ import type { SettingsPreferencesCopy } from '../locales/settings-preferences-co
 
 type AboutCopy = SettingsPreferencesCopy['about'];
 
+export type AboutUpdateErrorStatus = Extract<AppUpdateStatus, { state: 'error' }>;
+
+export type AboutUpdateErrorCopy = {
+  readonly title: string;
+  readonly detail: string;
+};
+
 export interface AboutChannelFacts {
   /** One sentence saying what following this channel means. */
   readonly summary: string;
@@ -80,5 +87,28 @@ export function aboutUpdateStatusDetail(
   if (status.state === 'verifying') return copy.updateVerifying(status.latestVersion);
   if (status.state === 'downloaded') return copy.updateDownloaded(status.latestVersion);
   if (status.state === 'installing') return copy.updateInstalling(status.latestVersion);
-  return copy.updateCheckFailedDetail(status.message);
+  if (status.state === 'error') return aboutUpdateErrorCopy(status, copy).detail;
+  throw new Error('Unexpected update status');
+}
+
+export function aboutUpdateErrorCopy(
+  status: AboutUpdateErrorStatus,
+  copy: AboutCopy,
+): AboutUpdateErrorCopy {
+  if (status.operation === 'download') {
+    return {
+      title: copy.updateDownloadFailed,
+      detail: copy.updateDownloadFailedDetail(status.message),
+    };
+  }
+  if (status.operation === 'install') {
+    return {
+      title: copy.updateInstallFailed,
+      detail: copy.updateInstallFailedDetail(status.message),
+    };
+  }
+  return {
+    title: copy.updateCheckFailed,
+    detail: copy.updateCheckFailedDetail(status.message),
+  };
 }

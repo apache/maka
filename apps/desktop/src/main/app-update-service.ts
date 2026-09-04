@@ -250,6 +250,21 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
       ? status.latestVersion
       : updateInfoVersion(latestInfo);
 
+  const resolveErrorOperation = (): Extract<AppUpdateStatus, { state: 'error' }>['operation'] => {
+    if (status.state === 'installing') return 'install';
+    if (
+      activeDownload ||
+      activeVerification ||
+      status.state === 'available' ||
+      status.state === 'downloading' ||
+      status.state === 'verifying' ||
+      status.state === 'downloaded'
+    ) {
+      return 'download';
+    }
+    return 'check';
+  };
+
   const publishError = (
     operation: Extract<AppUpdateStatus, { state: 'error' }>['operation'],
     error: unknown,
@@ -357,11 +372,7 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
       });
   });
   updater.on('error', (error) => {
-    const operation = status.state === 'installing'
-      ? 'install'
-      : status.state === 'available' || status.state === 'downloading' || status.state === 'verifying'
-        ? 'download'
-        : 'check';
+    const operation = resolveErrorOperation();
     if (operation === 'install') rollbackInstallHandoff();
     publishError(operation, error);
   });
@@ -386,7 +397,7 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
         if (verification) await verification.catch(() => undefined);
         return status;
       })
-      .catch((error) => status.state === 'error' ? status : publishError('check', error))
+      .catch((error) => publishError(resolveErrorOperation(), error))
       .finally(() => {
         checkInFlight = null;
       });

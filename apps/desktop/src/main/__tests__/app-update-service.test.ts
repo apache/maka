@@ -362,6 +362,51 @@ describe('AppUpdateService', () => {
     assert.equal(updater.quitAndInstallCalls, 0);
   });
 
+  test('replaces a stale check error with a later download or provenance failure', async () => {
+    const { service, updater } = createHarness({
+      verifyDownloadedUpdate: async () => {},
+    });
+
+    updater.checkForUpdates = async () => {
+      updater.checkCalls += 1;
+      throw new Error('temporary network failure');
+    };
+    await service.checkForUpdatesNow();
+    const firstStatus = service.getStatus();
+    assert.equal(firstStatus.state, 'error');
+    assert.equal(firstStatus.state === 'error' ? firstStatus.operation : undefined, 'check');
+
+    let settleDownload!: () => void;
+    const downloadPromise = new Promise<string[]>((resolve) => {
+      settleDownload = () => resolve([]);
+    });
+    updater.checkForUpdates = async () => {
+      updater.checkCalls += 1;
+      updater.emit('checking-for-update');
+      updater.emit('update-available', updateInfo('1.1.0'));
+      return {
+        isUpdateAvailable: true,
+        updateInfo: updateInfo('1.1.0'),
+        versionInfo: updateInfo('1.1.0'),
+        downloadPromise,
+        cancellationToken: {
+          cancel: settleDownload,
+        },
+      };
+    };
+    await service.checkForUpdatesNow();
+    updater.emit('error', new Error('root was signed by 0/3 keys'));
+
+    assert.deepEqual(service.getStatus(), {
+      state: 'error',
+      currentVersion: '1.0.0',
+      latestVersion: '1.1.0',
+      operation: 'download',
+      message: 'root was signed by 0/3 keys',
+    });
+    settleDownload();
+  });
+
   test('cancels a stalled auto-download before retrying it', async () => {
     const updater = new FakeUpdater();
     const statuses: AppUpdateStatus[] = [];

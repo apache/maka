@@ -254,7 +254,11 @@ export type SettingsPreferencesCopy = {
     updateDownloaded: (version: string) => string;
     updateInstalling: (version: string) => string;
     updateCheckFailed: string;
+    updateDownloadFailed: string;
+    updateInstallFailed: string;
     updateCheckFailedDetail: (message: string) => string;
+    updateDownloadFailedDetail: (message: string) => string;
+    updateInstallFailedDetail: (message: string) => string;
   };
   password: {
     copyFailed: string;
@@ -363,7 +367,11 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
       updateDownloaded: (version) => `v${version} 已下载，可在侧栏选择重启安装。`,
       updateInstalling: (version) => `正在安装 v${version}…`,
       updateCheckFailed: '检查更新失败',
+      updateDownloadFailed: '下载更新失败',
+      updateInstallFailed: '安装更新失败',
       updateCheckFailedDetail: (message) => message,
+      updateDownloadFailedDetail: (message) => `下载或发布来源验证失败：${message}`,
+      updateInstallFailedDetail: (message) => `安装更新失败：${message}`,
     },
     password: { copyFailed: '复制失败', clipboardUnavailable: '剪贴板不可用或被系统拒绝。', copying: '复制中', copied: '已复制', copy: '复制', hide: '隐藏', show: '显示', value: '凭据值' },
   },
@@ -424,7 +432,11 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
       updateDownloaded: (version) => `v${version} is ready. Restart from the sidebar to install.`,
       updateInstalling: (version) => `Installing v${version}…`,
       updateCheckFailed: 'Could not check for updates',
+      updateDownloadFailed: 'Could not download the update',
+      updateInstallFailed: 'Could not install the update',
       updateCheckFailedDetail: (message) => message,
+      updateDownloadFailedDetail: (message) => `Download or provenance verification failed: ${message}`,
+      updateInstallFailedDetail: (message) => `Install failed: ${message}`,
     },
     password: { copyFailed: 'Copy failed', clipboardUnavailable: 'The clipboard is unavailable or access was denied.', copying: 'Copying', copied: 'Copied', copy: 'Copy', hide: 'Hide', show: 'Show', value: 'credential value' },
   },
