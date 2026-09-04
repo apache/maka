@@ -40,6 +40,10 @@
 
 ### Changed
 
+- Isolated invalid optional MCP tools while publishing Desktop Client Capability
+  manifests: malformed tools are omitted with diagnostics, complete manifest
+  budgets include services, and valid JSON-Schema MCP arguments are validated
+  before admission.
 - Made typed `request()` the sole direct Runtime Host operation API; removed the 17 forwarding
   aliases from direct and reconnecting connections while preserving status validation,
   subscriptions, capabilities, listeners, lifecycle, and close behavior.

@@ -815,6 +815,7 @@ const CLIENT_CAPABILITY_SCHEMA_KEYWORDS = new Set([
   '$ref',
   'additionalItems',
   'additionalProperties',
+  'additionalItems',
   'allOf',
   'anyOf',
   'const',
@@ -923,6 +924,9 @@ function validateToolInputSchema(root: Record<string, unknown>): void {
       if (schema[key] !== undefined && typeof schema[key] !== 'boolean') {
         visit(schema[key]);
       }
+    }
+    if (schema.additionalItems !== undefined && typeof schema.additionalItems !== 'boolean') {
+      visit(schema.additionalItems);
     }
     if (schema.propertyNames !== undefined) {
       visit(schema.propertyNames);

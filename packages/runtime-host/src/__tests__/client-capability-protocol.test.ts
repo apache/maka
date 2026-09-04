@@ -405,6 +405,7 @@ describe('Client Capability protocol', () => {
                     coordinate: {
                       type: 'array',
                       items: [{ type: 'integer' }, { type: 'integer' }],
+                      additionalItems: false,
                     },
                   },
                 },
@@ -413,6 +414,32 @@ describe('Client Capability protocol', () => {
           },
         ]),
       ),
+    );
+    assert.throws(
+      () =>
+        decodeClientFrame(
+          replaceFrame([
+            {
+              ...offer('invalid_additional_items', 'move'),
+              tools: [
+                {
+                  ...offer('invalid_additional_items', 'move').tools[0],
+                  inputSchema: {
+                    type: 'object',
+                    properties: {
+                      coordinate: {
+                        type: 'array',
+                        items: [{ type: 'integer' }],
+                        additionalItems: { unsupportedKeyword: true },
+                      },
+                    },
+                  },
+                },
+              ],
+            },
+          ]),
+        ),
+      (error: unknown) => error instanceof RuntimeHostProtocolError,
     );
     for (const items of [[], [{ type: 'integer' }, 'not-a-schema']]) {
       assert.throws(

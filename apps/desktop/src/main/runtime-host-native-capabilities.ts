@@ -19,6 +19,10 @@
 
 import { Buffer } from "node:buffer";
 import type { ComputerUseToolSet } from '@maka/runtime/computer-use-tools';
+import {
+  jsonSchemaErrorSummary,
+  validateJsonSchemaInput,
+} from '@maka/runtime/json-schema-validation';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
 import {
   createOAuthPresentationClientProvider,
@@ -676,10 +680,20 @@ async function parseToolArguments(tool: MakaTool, args: unknown): Promise<unknow
   if (tool.parameters instanceof z.ZodType) {
     return tool.parameters.parseAsync(args);
   }
-  // The only non-Zod parameters are JSON-Schema declarations (MCP tools via
-  // jsonSchema()), which carry no client-side validator: validation is the
-  // producing server's responsibility.
-  return args;
+  const parameters = tool.parameters as { readonly jsonSchema?: unknown };
+  if (parameters.jsonSchema && typeof parameters.jsonSchema === "object" && !Array.isArray(parameters.jsonSchema)) {
+    try {
+      return validateJsonSchemaInput(await parameters.jsonSchema, args);
+    } catch (error) {
+      throw new Error(
+        `Invalid arguments for tool "${tool.name}": ${jsonSchemaErrorSummary(error)}`,
+        { cause: error },
+      );
+    }
+  }
+  throw new Error(
+    `Desktop native capability tool has an invalid schema: ${tool.name}`,
+  );
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {

@@ -1038,8 +1038,8 @@ const startLocalRuntimeHostManager = () => startRuntimeHostDesktopManager(
               serverId: identified.serverId,
               toolName: identified.toolName,
             })),
-            dynamic: true as const,
-          })),
+             dynamic: true as const,
+           })),
         ];
       },
       additionalServices: (scope) => [
