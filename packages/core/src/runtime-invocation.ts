@@ -71,9 +71,11 @@ export function runtimeInvocationsFromSessionEvents(
       });
     }
   }
-  // A run is sealed by its terminal event — the store refuses anything after
-  // it — so an invocation has at most one, and a Session-ordered read may place
-  // it anywhere relative to other invocations' events.
+  // An invocation ends at its first terminal event. Sealing makes that the only
+  // one for any ledger this codebase wrote; one written before the seal existed
+  // can carry a straggler after it, and the ending is still the terminal event.
+  // A Session-ordered read may place it anywhere relative to other invocations'
+  // events, so this scans rather than looking at the tail.
   for (const event of events) {
     if (event.sessionId !== sessionId || event.partial === true) continue;
     if (!isTerminalRuntimeEvent(event)) continue;

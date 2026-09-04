@@ -80,6 +80,17 @@ export interface RuntimeEventStore {
    * clearing any physical index and rebuilding from the events produces the
    * same inventory. Reserved control-plane invocation streams have no opening
    * fact and therefore never appear here.
+   *
+   * One exception, and it is a durable one: an invocation that predates the
+   * opening fact could not be given one without rewriting an immutable
+   * sequence, so a store that migrated such a Session keeps that opening
+   * outside the events and merges it in here. Those invocations cannot be
+   * rebuilt from events alone, and never will be.
+   *
+   * An invocation's `terminalEvent` is its first terminal event. Sealing makes
+   * that the only one for anything written through this interface; a ledger
+   * from before the seal can carry a straggler after it, and the ending is
+   * still the terminal event.
    */
   listSessionInvocations(sessionId: string): Promise<RuntimeInvocationRecord[]>;
   /**
@@ -91,6 +102,17 @@ export interface RuntimeEventStore {
     sessionId: string,
     runId: string,
   ): Promise<RuntimeInvocationRecord | undefined>;
+  /**
+   * Append one event to a run.
+   *
+   * Every implementation seals: once a run holds a terminal event, appending
+   * any event the store does not already have must throw `RunSealedError`. An
+   * exact-id replay of an event already stored stays idempotent. This is what
+   * makes a run's ending single and final, so it is an obligation of this
+   * interface rather than a detail of one store — a test double that skips it
+   * is manufacturing a ledger no supported store can produce. Tests that need a
+   * corrupt ledger should build it beneath this interface, not through it.
+   */
   appendRuntimeEvent(
     sessionId: string,
     runId: string,
@@ -101,14 +123,21 @@ export interface RuntimeEventStore {
    * Coalesce one already-admitted mutable presentation stream into one store
    * transaction. Callers must preserve provider order and flush before every
    * immutable execution boundary. Stores that do not implement this optional
-   * fast path continue to receive one append per partial event.
+   * fast path continue to receive one append per partial event. The seal on
+   * `appendRuntimeEvent` applies here too.
    */
   appendRuntimePartialBatch?(
     sessionId: string,
     runId: string,
     events: readonly RuntimeEvent[],
   ): Promise<void>;
-  /** Append the terminal event if absent, or re-establish its stable-storage barrier if present. */
+  /**
+   * Append the terminal event if absent, or re-establish its stable-storage
+   * barrier if present. This is the one writer the seal admits: it must commit
+   * the terminal event and the seal check in the same transaction, so two
+   * callers racing to end one run produce one terminal event and a
+   * `RunSealedError` for the loser.
+   */
   ensureTerminalRuntimeEventDurable(
     sessionId: string,
     runId: string,

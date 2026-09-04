@@ -752,22 +752,39 @@ export class SqliteRuntimeStore
     });
   }
 
+  /**
+   * An invocation's ending is its first terminal event, wherever it sits.
+   *
+   * The store seals a run on that event, so for anything it wrote itself the
+   * first terminal is also the only one and the last event. Ledgers written
+   * before the seal existed can carry a straggler after the terminal, and
+   * reading those as unfinished would contradict every other reader of the same
+   * rule: recovery, the read model and continuation resume all take the first
+   * terminal. A ledger that somehow holds two is corrupt, and saying so is the
+   * job of those readers — this inventory feeds Session lists, so it reports the
+   * ending it can see rather than poisoning the whole Session over one run.
+   */
   private completeInvocationRecordSync(
     record: Omit<RuntimeInvocationRecord, 'terminalEvent'>,
   ): RuntimeInvocationRecord {
-    const lastRow = this.db
+    const terminalRow = this.db
       .prepare(`
         SELECT event_id, session_id, invocation_id, run_id, turn_id, payload_json
         FROM runtime_events
         WHERE invocation_id = ?
-        ORDER BY event_seq DESC
+          AND (
+            json_extract(payload_json, '$.actions.endInvocation') = 1
+            OR json_extract(payload_json, '$.status')
+              IN ('completed', 'failed', 'aborted', 'cancelled')
+          )
+        ORDER BY event_seq ASC
         LIMIT 1
       `)
       .get(record.invocationId) as unknown as RuntimeEventStorageRow | undefined;
-    const last = lastRow ? decodeRuntimeEventStorageRow(lastRow) : undefined;
+    const terminal = terminalRow ? decodeRuntimeEventStorageRow(terminalRow) : undefined;
     return {
       ...record,
-      ...(last && isTerminalRuntimeEvent(last) ? { terminalEvent: last } : {}),
+      ...(terminal && isTerminalRuntimeEvent(terminal) ? { terminalEvent: terminal } : {}),
     };
   }
 

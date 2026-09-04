@@ -27,9 +27,12 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
+import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
 import { runtimeInvocationsFromSessionEvents } from '@maka/core/runtime-invocation';
 import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
+import { OPERATIONAL_STATE_DATABASE_NAME } from '@maka/storage/operational-state-store';
 import { createWorkspaceRuntimeStore } from '@maka/storage/runtime-event-persistence';
 import { createSessionStore } from '@maka/storage/session-store';
 import type { SessionEvent } from '@maka/core/events';
@@ -102,8 +105,70 @@ test('the invocation index returns the same inventory as a rebuild from events a
       );
     }
 
-    runStore.close?.();
+    // A ledger written before the store sealed runs can carry a straggler after
+    // the terminal event: stop sealed the run while the stream was still
+    // draining, and nothing has ever removed those. Recovery, the read model and
+    // continuation resume all read such a run as ended, so the index must too —
+    // reading it as active is what makes one reader disagree with the rest.
+    const straggler = invocations[0]!;
     runtimeEventStore.close();
+    const db = new DatabaseSync(join(root, OPERATIONAL_STATE_DATABASE_NAME));
+    try {
+      const { json } = encodeCanonicalRuntimeEvent({
+        id: 'post-terminal-straggler',
+        invocationId: straggler.invocationId,
+        runId: straggler.runId,
+        sessionId: session.id,
+        turnId: straggler.turnId,
+        ts: 9_999,
+        partial: false,
+        role: 'model',
+        author: 'agent',
+        modelVisibility: 'visible',
+        content: { kind: 'text', text: 'arrived after the run was sealed' },
+      });
+      db.prepare(`
+        INSERT INTO runtime_events (
+          event_id, session_id, invocation_id, run_id, turn_id, event_seq,
+          event_kind, payload_json, committed_at
+        ) VALUES (?, ?, ?, ?, ?, (
+          SELECT MAX(event_seq) + 1 FROM runtime_events WHERE invocation_id = ?
+        ), 'text', ?, 9999)
+      `).run(
+        'post-terminal-straggler',
+        session.id,
+        straggler.invocationId,
+        straggler.runId,
+        straggler.turnId,
+        straggler.invocationId,
+        json,
+      );
+    } finally {
+      db.close();
+    }
+
+    const reopened = createWorkspaceRuntimeStore(root);
+    try {
+      const afterStraggler = await reopened.listSessionInvocations(session.id);
+      assert.deepStrictEqual(
+        afterStraggler,
+        runtimeInvocationsFromSessionEvents(
+          session.id,
+          await reopened.readSessionRuntimeEvents(session.id),
+        ),
+        'the index and a rebuild must still agree once a straggler follows the terminal',
+      );
+      assert.equal(
+        afterStraggler.find((invocation) => invocation.invocationId === straggler.invocationId)
+          ?.terminalEvent?.status,
+        'completed',
+        'a run that ended stays ended when an unsealed-era straggler follows it',
+      );
+    } finally {
+      reopened.close();
+    }
+
+    runStore.close?.();
     sessionStore.close?.();
   } finally {
     await rm(root, { recursive: true, force: true });
