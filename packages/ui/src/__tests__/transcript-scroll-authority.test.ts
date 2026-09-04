@@ -333,3 +333,29 @@ test('only the reader\'s own movement reaches a reader-scroll listener', () => {
     assert.equal(heard, 1);
   });
 });
+
+test('a clamp that leaves the reader on the tail is not the reader', () => {
+  withObservers(() => {
+    const root = fakeRoot();
+    const authority = createTranscriptScrollAuthority();
+    let heard = 0;
+    authority.subscribeToReaderScroll(() => {
+      heard += 1;
+    });
+    authority.attach(root as unknown as HTMLElement);
+    assert.equal(root.scrollTop, 2_400);
+
+    // Content shrinks under a reader who is already at the end — a notice that
+    // retires, a turn that settles shorter than it first laid out. The browser
+    // clamps the offset itself and the event carries an offset this authority
+    // never wrote, but the reader is still on the tail: they did not move up,
+    // so there is nobody to report. Telling anyone otherwise is how a
+    // transcript that nobody scrolled goes and asks for history.
+    root.scrollHeight -= 500;
+    root.scrollTop = root.scrollHeight - root.clientHeight;
+    root.emitScroll();
+    assert.equal(heard, 0);
+    assert.equal(authority.getSnapshot().pinned, true);
+    assert.equal(root.style.overflowAnchor, 'none');
+  });
+});

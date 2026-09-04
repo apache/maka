@@ -178,22 +178,26 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
         // asked for anything. The affordance still follows the new distance,
         // because that is a fact about the viewport rather than about them.
         //
-        // While pinned there is nothing left for this to catch. Anchoring is off
-        // and growth alone does not move `scrollTop`, so a non-echo event there
-        // is the reader — and swallowing it because content grew in the same
+        // While pinned, swallowing an event because content grew in the same
         // frame is exactly how a reader who scrolls up during streaming gets
-        // written back to the tail.
+        // written back to the tail. Anchoring is off there, so growth does not
+        // move `scrollTop` and the event that finds them away from the tail is
+        // theirs. An event that leaves them still on it is not: they did not
+        // move up, so there is nobody to report and nothing to release. That is
+        // where the browser's own clamp lands when the content shrinks under a
+        // reader who is already at the end.
         const moved =
           target.scrollHeight !== lastScrollHeight || target.clientHeight !== lastClientHeight;
         lastScrollHeight = target.scrollHeight;
         lastClientHeight = target.clientHeight;
         const distance = distanceToTail();
         awayFromTail = distance > BUTTON_THRESHOLD_PX;
-        if (moved && !pinned) {
+        const atTail = distance <= PIN_THRESHOLD_PX;
+        if (moved && (!pinned || atTail)) {
           publish();
           return;
         }
-        pinned = distance <= PIN_THRESHOLD_PX;
+        pinned = atTail;
         applyAnchoring();
         publish();
         for (const listener of [...readerListeners]) listener();
