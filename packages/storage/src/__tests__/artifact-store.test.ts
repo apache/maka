@@ -41,7 +41,7 @@ import {
 } from '@maka/core/artifacts';
 import {
   ARTIFACT_TEXT_PREVIEW_LIMIT_BYTES,
-  type ArtifactStore,
+  type ArtifactAuthorityStore,
   type ArtifactStoreWriteAuthority,
   type CreateArtifactInput,
   createSqliteArtifactStoreWriteAuthority,
@@ -60,7 +60,7 @@ function trackArtifactStoreCloser(root: string, close: () => void): void {
   artifactStoreClosersByRoot.set(root, closers);
 }
 
-function createArtifactStore(root: string): ArtifactStore {
+function createArtifactStore(root: string): ArtifactAuthorityStore {
   const authority = createSqliteArtifactStoreWriteAuthority(root);
   void authority.recover().catch(() => undefined);
   trackArtifactStoreCloser(root, () => authority.close());
@@ -263,7 +263,7 @@ describe('SQLite Artifact store', () => {
       assert.notEqual(revived.revision, deleted.revision);
       assert.equal(revived.records.find((record) => record.id === 'first')?.id, 'first');
 
-      await store.purge(['first', 'second', 'revision-race']);
+      await store.purgeSessionArtifacts('session-1');
       const purged = await store.listPage('session-1', { offset: 0, limit: 2 });
       assert.equal(purged.revision, empty.revision);
       assert.equal(purged.total, 0);
@@ -284,7 +284,7 @@ describe('SQLite Artifact store', () => {
         ...artifactInput('deleted-artifact', 'deleted', 11),
         turnId: 'turn-retained',
       });
-      await store.delete(deleted.id);
+      await store.deleteUserArtifactInSession('session-1', deleted.id);
       await store.create({
         ...artifactInput('later-artifact', 'later', 20),
         turnId: 'turn-later',
@@ -432,7 +432,7 @@ describe('SQLite Artifact store', () => {
       const { store } = authority;
       const input = artifactInput('current-policy', 'replaceable', 1);
       await store.create(input);
-      await store.purge([input.id]);
+      await store.deleteUserArtifactInSession(input.sessionId, input.id);
       await store.create({
         ...input,
         content: 'protected replacement',
@@ -617,7 +617,7 @@ describe('SQLite Artifact store', () => {
       const input = deepResearchArtifactInput('stable-revive', '# Revivable');
       const store = createArtifactStore(root);
       const first = await store.create(input);
-      await store.delete(first.id);
+      await store.deleteUserArtifactInSession(input.sessionId, first.id);
       assert.equal(await store.get(first.id), null);
 
       const recreated = await createArtifactStore(root).create(input);
@@ -752,26 +752,6 @@ describe('SQLite Artifact store', () => {
     });
   });
 
-  test('snapshots purge inputs before lock waits', async () => {
-    await withWorkspace(async (root) => {
-      const authority = createArtifactStoreWriteAuthority(root);
-      await authority.recover();
-      const { store } = authority;
-      await store.create(artifactInput('purge-me', 'purge', 2));
-      await store.create(artifactInput('keep-me', 'keep', 3));
-
-      const purgeIds = ['purge-me'];
-      const purgeLock = await holdArtifactWriterLock(root);
-      const purged = store.purge(purgeIds);
-      purgeIds[0] = 'keep-me';
-      purgeLock.release();
-      await purgeLock.finished;
-      await purged;
-      assert.equal(await store.get('purge-me'), null);
-      assert.equal((await store.get('keep-me'))?.id, 'keep-me');
-    });
-  });
-
   test('does not publish a payload after the SQLite metadata repository closes', async () => {
     await withWorkspace(async (root) => {
       const store = createArtifactStore(root);
@@ -805,8 +785,10 @@ describe('SQLite Artifact store', () => {
           }),
         /Artifact write recovery is required/,
       );
-      await assert.rejects(() => store.delete('missing'), /Artifact write recovery is required/);
-      await assert.rejects(() => store.purge(['missing']), /Artifact write recovery is required/);
+      await assert.rejects(
+        () => store.deleteUserArtifactInSession('session-1', 'missing'),
+        /Artifact write recovery is required/,
+      );
       assert.equal(await readFile(residue.stagingPath, 'utf8'), 'old');
       assert.equal(await readFile(residue.targetPath, 'utf8'), 'old');
 
@@ -1009,13 +991,13 @@ describe('SQLite Artifact store', () => {
     }
   });
 
-  test('delete physically removes metadata and bytes idempotently', async () => {
+  test('user delete physically removes metadata and bytes idempotently', async () => {
     await withWorkspace(async (root) => {
       const store = createArtifactStore(root);
       const record = await store.create(artifactInput('artifact-1', '<h1>Report</h1>', 1));
 
-      await store.delete(record.id);
-      await store.delete(record.id);
+      await store.deleteUserArtifactInSession(record.sessionId, record.id);
+      await store.deleteUserArtifactInSession(record.sessionId, record.id);
       assert.deepEqual(await store.list('session-1'), []);
       assert.equal(await store.get(record.id), null);
       await assert.rejects(() => stat(join(root, 'artifacts', record.relativePath)), {
@@ -1052,7 +1034,7 @@ describe('SQLite Artifact store', () => {
 
         const store = createArtifactStore(root);
         await assert.rejects(
-          () => store.purge([safeRecord.id, escapedRecord.id]),
+          () => store.deleteUserArtifactInSession(escapedRecord.sessionId, escapedRecord.id),
           /outside the artifact root/,
         );
 
@@ -1085,7 +1067,7 @@ describe('SQLite Artifact store', () => {
       await writeArtifactMetadata(root, [record]);
 
       const store = createArtifactStore(root);
-      await store.purge([record.id]);
+      await store.deleteUserArtifactInSession(record.sessionId, record.id);
 
       assert.equal(await readFile(targetPath, 'utf8'), 'keep target');
       await assert.rejects(() => stat(linkPath), { code: 'ENOENT' });
@@ -1119,7 +1101,7 @@ describe('SQLite Artifact store', () => {
       assert.equal(firstStat.ino, secondStat.ino);
 
       const store = createArtifactStore(root);
-      await store.purge([first.id]);
+      await store.deleteUserArtifactInSession(first.sessionId, first.id);
 
       await assert.rejects(() => stat(firstPath), { code: 'ENOENT' });
       assert.equal(await readFile(secondPath, 'utf8'), 'shared bytes');
@@ -1154,7 +1136,10 @@ describe('SQLite Artifact store', () => {
       await writeArtifactMetadata(root, [lower, upper]);
 
       const store = createArtifactStore(root);
-      await assert.rejects(() => store.purge([lower.id]), /path is still referenced/);
+      await assert.rejects(
+        () => store.deleteUserArtifactInSession(lower.sessionId, lower.id),
+        /path is still referenced/,
+      );
       assert.equal(await readFile(upperPath, 'utf8'), 'shared bytes');
       assert.equal((await store.get(upper.id))?.id, upper.id);
     });
@@ -1189,7 +1174,10 @@ describe('SQLite Artifact store', () => {
       await writeArtifactMetadata(root, [lower, upper]);
 
       const store = createArtifactStore(root);
-      await assert.rejects(() => store.purge([lower.id]), /path is still referenced/);
+      await assert.rejects(
+        () => store.deleteUserArtifactInSession(lower.sessionId, lower.id),
+        /path is still referenced/,
+      );
 
       assert.deepEqual(await store.readText(upper.id), { ok: true, text: 'shared bytes' });
       assert.equal((await lstat(lowerPath)).isSymbolicLink(), true);
@@ -1230,7 +1218,7 @@ describe('SQLite Artifact store', () => {
       assert.equal(await store.get(record.id), null);
       await assert.rejects(() => stat(metadataPath), { code: 'ENOENT' });
       await assert.rejects(() => stat(purgeIntentPath), { code: 'ENOENT' });
-      await store.purge([record.id]);
+      await store.deleteUserArtifactInSession(record.sessionId, record.id);
 
       await writeFile(
         purgeIntentPath,
@@ -1269,7 +1257,7 @@ describe('SQLite Artifact store', () => {
       const store = createArtifactStore(root);
       const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
       await store.create({ ...artifactInput('image', png, 1), name: 'image.png', kind: 'image' });
-      await store.delete('image');
+      await store.deleteUserArtifactInSession('session-1', 'image');
 
       assert.deepEqual(await store.readBinary('image'), { ok: false, reason: 'not_found' });
       assert.deepEqual(

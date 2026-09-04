@@ -199,8 +199,6 @@ export interface DurableArtifactAttachmentReader {
 
 export interface ArtifactStore extends ArtifactStoreReader, DurableArtifactAttachmentReader {
   create(input: CreateArtifactInput): Promise<ArtifactRecord>;
-  delete(artifactId: string): Promise<void>;
-  purge(artifactIds: readonly string[]): Promise<void>;
   close?(): void;
 }
 
@@ -213,6 +211,11 @@ export interface ArtifactAuthorityStore extends ArtifactStore {
     input: ConversationArtifactCopyInput,
   ): Promise<ConversationArtifactCopyResult>;
   purgeSessionArtifacts(sessionId: string): Promise<void>;
+  deleteOwnedArtifactInSession(
+    sessionId: string,
+    artifactId: string,
+    source: ArtifactSource,
+  ): Promise<void>;
   deleteUserArtifactInSession(
     sessionId: string,
     artifactId: string,
@@ -557,7 +560,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
   async purgeSessionArtifacts(sessionId: string): Promise<void> {
     assertCanonicalArtifactEntityId(sessionId, 'sessionId');
     const records = await this.list(sessionId);
-    if (records.length > 0) await this.purge(records.map((record) => record.id));
+    if (records.length > 0) await this.purgeArtifacts(records.map((record) => record.id));
   }
 
   private async replayExistingArtifactUnlocked(
@@ -792,11 +795,19 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     return { ok: true, base64: read.bytes.toString('base64'), mimeType };
   }
 
-  async delete(artifactId: string): Promise<void> {
-    await this.enqueueMutation(async () => {
+  deleteOwnedArtifactInSession(
+    sessionId: string,
+    artifactId: string,
+    source: ArtifactSource,
+  ): Promise<void> {
+    return this.enqueueMutation(async () => {
       await this.prepareMutationUnlocked();
-      const existing = this.records.find((record) => record.id === artifactId);
-      await this.purgeRecordsUnlocked(existing ? [existing] : []);
+      const snapshot = this.sessionSnapshot(sessionId);
+      const existing = snapshot.records.find((record) => record.id === artifactId);
+      if (!existing || existing.source !== source) {
+        throw new Error('Artifact does not belong to the expected Session authority');
+      }
+      await this.purgeRecordsUnlocked([existing]);
     });
   }
 
@@ -814,7 +825,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     });
   }
 
-  async purge(artifactIds: readonly string[]): Promise<void> {
+  private async purgeArtifacts(artifactIds: readonly string[]): Promise<void> {
     const acceptedArtifactIds = Object.freeze([...artifactIds]);
     await this.enqueueMutation(async () => {
       await this.prepareMutationUnlocked();

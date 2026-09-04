@@ -175,13 +175,7 @@ function createWriterFacade(
       });
     },
     deleteOwnedArtifactInSession: (sessionId, artifactId, source) =>
-      run(async () => {
-        const entry = await store.getInSession(sessionId, artifactId);
-        if (!entry.record || entry.record.source !== source) {
-          throw new Error('Artifact does not belong to the expected Session authority');
-        }
-        await store.delete(artifactId);
-      }),
+      run(() => store.deleteOwnedArtifactInSession(sessionId, artifactId, source)),
     copyConversationArtifacts: (input) => {
       const acceptedInput: ConversationArtifactCopyInput = Object.freeze({
         ...input,

@@ -63,7 +63,7 @@ describe('artifact attachment authority', () => {
         reader.readAttachmentResource('session-2', 'notes-1', signal),
         /not found in this Session/,
       );
-      await store.delete('notes-1');
+      await store.deleteUserArtifactInSession('session-1', 'notes-1');
       await assert.rejects(
         reader.readAttachmentResource('session-1', 'notes-1', signal),
         /not found in this Session/,
@@ -90,7 +90,7 @@ describe('artifact attachment authority', () => {
         ok: true,
         bytes: Buffer.from(png),
       });
-      await store.delete('image-1');
+      await store.deleteUserArtifactInSession('session-1', 'image-1');
       assert.deepEqual(await reader(sessionFileRef('image-1')), {
         ok: false,
         reason: 'not_found',
@@ -319,7 +319,7 @@ describe('artifact attachment authority', () => {
       };
       const planner = createReadImageSnapshotPlanner(owned, async (_sessionId, artifactId) => {
         deleted.push(artifactId);
-        await store.delete(artifactId);
+        await store.deleteUserArtifactInSession('session-1', artifactId);
       });
 
       const first = planner(input);
