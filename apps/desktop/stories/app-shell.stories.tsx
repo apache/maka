@@ -2069,3 +2069,588 @@ export const HistoryAtTheTopStillLandsAboveTheReader: Story = {
     expect(tailScroller().scrollTop).toBeGreaterThanOrEqual(1);
   },
 };
+
+/**
+ * The prompt anchor rail (#563), rebuilt from `prompt-rail.spec.ts` (#4741).
+ *
+ * That spec exists because the rail failed three times in a row the same way:
+ * the code kept working and the pixels stopped. #2161 pinned it against
+ * `.maka-chat-shell` while Astryx's ChatLayout owned the scroll container, so
+ * the rail laid out across the whole conversation and scrolled off screen.
+ * #2338 parked it under macOS's overlay scrollbar, which takes no layout space
+ * but still swallows the pointer, so every tick rendered and none could be
+ * clicked. #2580 moved the tick onto Astryx's `Button`, whose label span put
+ * the bar back into normal flow — an inline box takes no width or height, so
+ * the bars computed to 0x0 and the rail shipped invisible in 0.1.9 and 0.1.10.
+ *
+ * None is visible to a static read of the CSS, and none is reachable from
+ * jsdom. All three need a real scroller with a real transcript, and none needs
+ * Electron.
+ *
+ * The E2E fixture reached these through a 120-prompt seeded session. Here the
+ * two props ChatView actually reads express it directly: the transcript holds
+ * only the Host's active range, and `transcriptTurnIndex` carries the rest of
+ * the landmarks. So the rail gets its full tick count without 120 Turns in the
+ * DOM — which is what the Host does in production too.
+ */
+const PROMPT_RAIL_TURN_COUNT = 120;
+
+/** `DESKTOP_TRANSCRIPT_ACTIVE_RANGE_MAX_TURNS`, restated to keep stories off preload. */
+const PROMPT_RAIL_ACTIVE_RANGE = 10;
+
+/** `MAX_PROMPT_RAIL_TICKS` in prompt-anchor-rail.tsx, which does not export it. */
+const PROMPT_RAIL_MAX_TICKS = 64;
+
+const promptRailIndex = Array.from({ length: PROMPT_RAIL_TURN_COUNT }, (_, offset) => ({
+  turnId: `turn-prompt-rail-${offset + 1}`,
+  sequence: offset + 1,
+  label: `第 ${offset + 1} 个问题`,
+}));
+
+/** One Host active range, the way the Host hands it over: bounded and moving. */
+function promptRailMessagesFrom(firstIndex: number): StoredMessage[] {
+  return Array.from({ length: PROMPT_RAIL_ACTIVE_RANGE }, (_, offset) => {
+    const index = firstIndex + offset;
+    const turnId = `turn-prompt-rail-${index}`;
+    return [
+      user(`msg-rail-${index}-u`, turnId, 500 - index * 2, `第 ${index} 个问题`),
+      assistant(
+        `msg-rail-${index}-a`,
+        turnId,
+        499 - index * 2,
+        TAIL_LINES.slice(0, 4).join('\n\n'),
+      ),
+    ];
+  }).flat();
+}
+
+const PROMPT_RAIL_TAIL_RANGE_START = PROMPT_RAIL_TURN_COUNT - PROMPT_RAIL_ACTIVE_RANGE + 1;
+
+const promptRailMessages = promptRailMessagesFrom(PROMPT_RAIL_TAIL_RANGE_START);
+
+function PromptRailHarness() {
+  return (
+    <ComposedShell
+      chat={{ messages: promptRailMessages, transcriptTurnIndex: promptRailIndex }}
+    />
+  );
+}
+
+function railTicks(): HTMLElement[] {
+  return [...document.querySelectorAll<HTMLElement>('.maka-prompt-rail-tick')];
+}
+
+function railBars(): HTMLElement[] {
+  return [...document.querySelectorAll<HTMLElement>('.maka-prompt-rail-tick-bar')];
+}
+
+/** Positive on all four = the rail's box is inside the scrollport, clear of the dock. */
+function railInsets(): {
+  insetTop: number;
+  insetBottom: number;
+  insetRight: number;
+  dockClearance: number;
+} {
+  const scroller = tailScroller();
+  const rail = document.querySelector('.maka-prompt-rail');
+  if (!rail) throw new Error('the prompt rail is missing');
+  const scrollport = scroller.getBoundingClientRect();
+  const box = rail.getBoundingClientRect();
+  // Astryx renders the composer dock as the scroll container's last child; the
+  // rail measures it the same way, for want of a published hook.
+  const dock = scroller.lastElementChild?.getBoundingClientRect();
+  if (!dock) throw new Error('the composer dock is missing');
+  return {
+    insetTop: Math.round(box.top - scrollport.top),
+    insetBottom: Math.round(scrollport.bottom - box.bottom),
+    insetRight: Math.round(scrollport.right - box.right),
+    dockClearance: Math.round(dock.top - box.bottom),
+  };
+}
+
+export const PromptRailTicksPaintRealBoxes: Story = {
+  render: () => <PromptRailHarness />,
+  play: async () => {
+    await waitFor(() => expect(railBars().length).toBeGreaterThan(0));
+
+    // Measured over ALL ticks, not a sample: a helper that skips what it
+    // cannot evaluate creates its blind spot exactly where a regression lives.
+    const bars = railBars().map((bar) => {
+      const box = bar.getBoundingClientRect();
+      return { width: Math.round(box.width), height: Math.round(box.height) };
+    });
+
+    expect(bars).toHaveLength(Math.min(PROMPT_RAIL_TURN_COUNT, PROMPT_RAIL_MAX_TICKS));
+    // #2580 shipped bars at 0x0 — present in the DOM, painting nothing.
+    expect(Math.min(...bars.map((bar) => bar.width))).toBeGreaterThan(0);
+    expect(Math.min(...bars.map((bar) => bar.height))).toBeGreaterThan(0);
+  },
+};
+
+export const PromptRailStaysInsideTheScrollport: Story = {
+  render: () => <PromptRailHarness />,
+  play: async () => {
+    const scroller = tailScroller();
+    await waitFor(() => expect(railBars().length).toBeGreaterThan(0));
+    // Without an overflowing transcript the rail has nothing to be pinned
+    // against and the rest of this proves nothing.
+    expect(scroller.scrollHeight).toBeGreaterThan(scroller.clientHeight);
+
+    for (const position of ['top', 'bottom'] as const) {
+      scroller.scrollTop = position === 'top' ? 0 : scroller.scrollHeight;
+      scroller.dispatchEvent(new Event('scroll'));
+      await painted(4);
+
+      // The bottom is where it bites: a sticky offset is clamped by its
+      // containing block, and the chat shell ends a dock-height above the
+      // scrollport's bottom edge (#2161 showed up as a negative insetTop).
+      await waitFor(() => {
+        const insets = railInsets();
+        expect(
+          {
+            insetTop: insets.insetTop >= 0,
+            insetBottom: insets.insetBottom >= 0,
+            insetRight: insets.insetRight >= 0,
+            dockClearance: insets.dockClearance >= 0,
+          },
+          `rail geometry at the ${position}: ${JSON.stringify(insets)}`,
+        ).toEqual({
+          insetTop: true,
+          insetBottom: true,
+          insetRight: true,
+          dockClearance: true,
+        });
+      });
+    }
+  },
+};
+
+export const PromptRailHasNoGapsBetweenTicks: Story = {
+  render: () => <PromptRailHarness />,
+  play: async () => {
+    await waitFor(() => expect(railBars().length).toBeGreaterThan(1));
+
+    // The hover falloff reads which tick the pointer entered. A gap between
+    // the hit boxes is a band where it is over the rail and over no tick, so
+    // the effect drops out and picks up again every few pixels of travel.
+    // Walked a pixel at a time rather than sampled between two ticks: a single
+    // midpoint would pass on a rail whose gaps sat anywhere else.
+    const bars = railBars();
+    const first = bars[0].getBoundingClientRect();
+    const last = bars[bars.length - 1].getBoundingClientRect();
+    const x = Math.round(first.left + first.width / 2);
+    const misses: number[] = [];
+    for (
+      let y = Math.round(first.top + first.height / 2);
+      y <= Math.round(last.top + last.height / 2);
+      y += 1
+    ) {
+      if (!document.elementFromPoint(x, y)?.closest('.maka-prompt-rail-tick')) misses.push(y);
+    }
+
+    expect(Math.round(last.bottom - first.top)).toBeGreaterThan(0);
+    expect(misses, `misses at y=${misses.slice(0, 12).join(',')}`).toHaveLength(0);
+  },
+};
+
+export const PromptRailTickOwnsItsOwnHitBox: Story = {
+  render: () => <PromptRailHarness />,
+  play: async () => {
+    await waitFor(() => expect(railTicks().length).toBeGreaterThan(0));
+
+    // `elementFromPoint`, not a dispatched pointer event: dispatched events
+    // cannot see occlusion, and macOS's overlay scrollbar occludes without
+    // taking layout space.
+    //
+    // Worth knowing before trusting a green run: this is load-bearing on macOS
+    // only. Linux's in-flow scrollbar moves the content column left instead of
+    // overlaying it, so the #2338 regression goes green on CI here exactly as
+    // it did in E2E. Run this story locally on macOS before merging anything
+    // that touches the rail's right edge.
+    const box = railTicks()[0].getBoundingClientRect();
+    const found = document.elementFromPoint(
+      Math.round(box.left + box.width / 2),
+      Math.round(box.top + box.height / 2),
+    );
+
+    expect(found?.closest('.maka-prompt-rail')).not.toBe(null);
+  },
+};
+
+/** Away from the tail, but still inside the band that would ask for history. */
+async function scrollAwayFromTail(): Promise<void> {
+  const root = tailScroller();
+  root.scrollTop = Math.min(root.scrollHeight - root.clientHeight - 100, loadBand() + 200);
+  root.dispatchEvent(new Event('scroll'));
+  await painted(4);
+}
+
+async function scrollTranscriptTo(position: 'top' | 'bottom'): Promise<void> {
+  const root = tailScroller();
+  root.scrollTop = position === 'top' ? 0 : root.scrollHeight;
+  root.dispatchEvent(new Event('scroll'));
+  await painted(4);
+}
+
+export const ActiveTurnsKeepStableDomIdentities: Story = {
+  render: () => <PromptRailHarness />,
+  play: async () => {
+    await waitFor(() => expect(railBars().length).toBeGreaterThan(0));
+    const sourceCount = Number(
+      messageList().getAttribute('data-turn-source-count'),
+    );
+    expect(sourceCount).toBe(PROMPT_RAIL_ACTIVE_RANGE);
+    expect(document.querySelectorAll('[data-turn-id]')).toHaveLength(sourceCount);
+
+    // Marked on the elements themselves: a remount drops the attribute, which
+    // a count alone cannot tell apart from a remount that produced the same
+    // number of Turns.
+    for (const turn of document.querySelectorAll<HTMLElement>('[data-turn-id]')) {
+      turn.dataset.stableMountProbe = turn.dataset.turnId;
+    }
+
+    await scrollTranscriptTo('bottom');
+    await scrollAwayFromTail();
+
+    expect(document.querySelectorAll('[data-turn-id]')).toHaveLength(sourceCount);
+    expect(document.querySelectorAll('[data-turn-id][data-stable-mount-probe]')).toHaveLength(
+      sourceCount,
+    );
+  },
+};
+
+export const ScrollingAwayPreservesTurnOwnedFocus: Story = {
+  render: () => <PromptRailHarness />,
+  play: async () => {
+    await waitFor(() => expect(railBars().length).toBeGreaterThan(0));
+    await scrollTranscriptTo('bottom');
+
+    const tailTurnId = `turn-prompt-rail-${PROMPT_RAIL_TURN_COUNT}`;
+    const turn = document.querySelector<HTMLElement>(`[data-turn-id="${tailTurnId}"]`);
+    if (!turn) throw new Error('the tail Turn is missing');
+
+    const action = document.createElement('button');
+    action.dataset.turnOwnedAction = 'true';
+    action.textContent = 'Turn-owned action';
+    turn.append(action);
+    action.focus();
+    const range = document.createRange();
+    range.selectNodeContents(action);
+    const selection = document.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+
+    await scrollAwayFromTail();
+
+    await waitFor(() => {
+      const active = document.activeElement;
+      expect({
+        retained: document.querySelector(`[data-turn-id="${tailTurnId}"]`) !== null,
+        focusRetained: active instanceof HTMLElement && active.dataset.turnOwnedAction === 'true',
+        selectionRetained: document.getSelection()?.isCollapsed === false,
+      }).toEqual({ retained: true, focusRetained: true, selectionRetained: true });
+    });
+  },
+};
+
+export const OffscreenActiveTurnsStayFindable: Story = {
+  render: () => <PromptRailHarness />,
+  play: async () => {
+    await waitFor(() => expect(railBars().length).toBeGreaterThan(0));
+    const firstTurnId = document
+      .querySelector('[data-turn-id]')
+      ?.getAttribute('data-turn-id');
+    const turnNumber = Number(firstTurnId?.split('-').at(-1));
+    expect(turnNumber).toBeGreaterThan(0);
+    const needle = `第 ${turnNumber} 个问题`;
+
+    await scrollTranscriptTo('bottom');
+
+    // `window.find` walks the rendered text, so a Turn skipped by
+    // `content-visibility` would not be there to find. The E2E original also
+    // asserted the AX tree; the storybook smoke audits the full AX tree of
+    // every story it runs, so that half is covered by running at all.
+    document.getSelection()?.removeAllRanges();
+    // `window.find` is non-standard, so it is not on the DOM lib's Window.
+    const found = (window as unknown as { find(text: string): boolean }).find(needle);
+
+    expect(found, `searching for ${needle}`).toBe(true);
+    expect(document.getSelection()?.toString() ?? '').toContain(needle);
+    document.getSelection()?.removeAllRanges();
+  },
+};
+
+/** Started by the play function, after its observer probe is in place. */
+let startPromptRailStream: (() => void) | undefined;
+
+const PROMPT_RAIL_STREAM_LINES = 40;
+
+/**
+ * The rail alongside a Turn that keeps growing. What is under test is that
+ * text updates inside one Turn do not rebuild the rail's IntersectionObserver
+ * — the E2E original reached this by sending a 40-line prompt through the fake
+ * backend, which is the same deltas ChatView sees, arriving by a longer road.
+ */
+function PromptRailStreamingHarness() {
+  const [lines, setLines] = useState(1);
+  useEffect(() => {
+    let frame = 0;
+    let running = false;
+    const tick = (): void => {
+      if (!running) return;
+      setLines((count) => (count >= PROMPT_RAIL_STREAM_LINES ? count : count + 1));
+      frame = requestAnimationFrame(tick);
+    };
+    startPromptRailStream = () => {
+      running = true;
+      frame = requestAnimationFrame(tick);
+    };
+    return () => {
+      running = false;
+      cancelAnimationFrame(frame);
+      startPromptRailStream = undefined;
+    };
+  }, []);
+  return (
+    <ComposedShell
+      session={{ status: 'running', streaming: true }}
+      chat={{
+        messages: promptRailMessages,
+        transcriptTurnIndex: promptRailIndex,
+        runningStatus: true,
+        liveTurn: {
+          turnId: `turn-prompt-rail-${PROMPT_RAIL_TURN_COUNT}`,
+          phase: 'streamed',
+          steps: [
+            {
+              stepId: 'msg-rail-live',
+              text: {
+                text: TAIL_LINES.slice(0, lines).join('\n\n'),
+                truncated: false,
+                complete: false,
+              },
+              tools: [],
+            },
+          ],
+        },
+      }}
+    />
+  );
+}
+
+export const StreamingDeltasKeepThePromptRailObserver: Story = {
+  render: () => <PromptRailStreamingHarness />,
+  play: async () => {
+    await waitFor(() => expect(railBars().length).toBeGreaterThan(0));
+
+    // Counted from here on, with the rail's observer already built: what is
+    // asserted is that the deltas after this point rebuild nothing.
+    const scroller = tailScroller();
+    const NativeIntersectionObserver = window.IntersectionObserver;
+    let constructions = 0;
+    window.IntersectionObserver = class extends NativeIntersectionObserver {
+      constructor(callback: IntersectionObserverCallback, options?: IntersectionObserverInit) {
+        super(callback, options);
+        if (options?.root === scroller && options.rootMargin === '0px 0px -66% 0px') {
+          constructions += 1;
+        }
+      }
+    };
+
+    try {
+      startPromptRailStream?.();
+      // Many same-Turn text updates, not one: a rebuild triggered by the first
+      // delta and by the fortieth are the same bug and only one of them shows
+      // up in a single-update check.
+      await waitFor(
+        () => {
+          expect(tailScroller().textContent).toContain(
+            TAIL_LINES[PROMPT_RAIL_STREAM_LINES - 1],
+          );
+        },
+        { timeout: 10_000 },
+      );
+    } finally {
+      window.IntersectionObserver = NativeIntersectionObserver;
+    }
+
+    expect(constructions, 'the rail observer was rebuilt mid-stream').toBe(0);
+    expect(railBars().length).toBe(Math.min(PROMPT_RAIL_TURN_COUNT, PROMPT_RAIL_MAX_TICKS));
+  },
+};
+
+/** Where a Turn sits relative to the top of the scrollport. */
+function turnOffsetFromScroller(turnId: string): number {
+  const root = tailScroller();
+  const turn = document.querySelector(`[data-turn-id="${CSS.escape(turnId)}"]`);
+  if (!turn) throw new Error(`turn ${turnId} is not mounted`);
+  return Math.round(turn.getBoundingClientRect().top - root.getBoundingClientRect().top);
+}
+
+/**
+ * The Host's half of a rail jump: a tick for a Turn outside the active range
+ * comes back out as `onLoadTranscriptTurn`, and the range moves to it. ChatView
+ * holds the claim until the Turn mounts, then aligns to it.
+ */
+function PromptRailNavigationHarness() {
+  const [firstIndex, setFirstIndex] = useState(PROMPT_RAIL_TAIL_RANGE_START);
+  return (
+    <ComposedShell
+      chat={{
+        messages: promptRailMessagesFrom(firstIndex),
+        transcriptTurnIndex: promptRailIndex,
+        onLoadTranscriptTurn: (target) => setFirstIndex(target.sequence),
+      }}
+    />
+  );
+}
+
+export const FirstRailClickLandsOnItsPromptAndHolds: Story = {
+  render: () => <PromptRailNavigationHarness />,
+  play: async () => {
+    await waitFor(() => expect(railTicks().length).toBeGreaterThan(0));
+
+    // The case that used to fail: the head of the conversation is not mounted,
+    // so the jump has to bring it in, and the fill that follows changes
+    // scrollHeight underneath the tail-follow lock. A lock that ignores
+    // scroll-ups arriving with a changed height stays on and pulls the
+    // transcript back to the bottom — the click looks dead until the reader
+    // scrolls by hand.
+    const targetTurnId = 'turn-prompt-rail-1';
+    expect(document.querySelector(`[data-turn-id="${targetTurnId}"]`)).toBe(null);
+
+    railTicks()[0].click();
+
+    // Bounded on both sides: below is the Turn never arriving, above is it
+    // arriving and then being pulled off the top of the scrollport.
+    await waitFor(
+      () => expect(Math.abs(turnOffsetFromScroller(targetTurnId))).toBeLessThan(24),
+      { timeout: 10_000 },
+    );
+    expect(railTicks()[0].getAttribute('aria-current')).toBe('true');
+
+    // And stays: Turns keep resolving their content and remeasuring after the
+    // jump, so one that only wins the first frame reads as landing and then
+    // sliding away.
+    await painted(72);
+    const settled = turnOffsetFromScroller(targetTurnId);
+    expect(settled, `the prompt slid to ${settled} after landing`).toBeGreaterThan(-24);
+    expect(settled).toBeLessThan(24);
+    expect(railTicks()[0].getAttribute('aria-current')).toBe('true');
+  },
+};
+
+/**
+ * Which tick the reading position maps to, derived the way the rail derives
+ * it: the newest Turn when parked at the end, otherwise the first Turn in the
+ * top third of the scrollport, projected onto the tick count.
+ */
+function promptRailSnapshot(): {
+  currentIds: string[];
+  expectedId: string | null;
+  sourceTurnId: string | null;
+} {
+  const root = tailScroller();
+  const ticks = railTicks();
+  const currentIds = ticks
+    .filter((tick) => tick.getAttribute('aria-current') === 'true')
+    .map((tick) => tick.dataset.promptTurnId ?? '');
+  const rootBounds = root.getBoundingClientRect();
+  const atEnd = root.scrollHeight - root.scrollTop - root.clientHeight <= 2;
+  const turns = [...root.querySelectorAll<HTMLElement>('[data-transcript-turn-id]')]
+    .map((turn) => ({
+      element: turn,
+      id: turn.dataset.transcriptTurnId ?? '',
+      index: Number(turn.dataset.transcriptTurnId?.split('-').at(-1)) - 1,
+    }))
+    .filter((turn) => turn.id.length > 0 && Number.isFinite(turn.index));
+  const inScrollport = (element: HTMLElement, bottomEdge: number): boolean => {
+    const bounds = element.getBoundingClientRect();
+    return bounds.bottom > rootBounds.top && bounds.top < bottomEdge;
+  };
+  const readingBandTurns = turns
+    .filter(({ element }) => inScrollport(element, rootBounds.top + rootBounds.height * 0.34))
+    .sort((left, right) => left.index - right.index);
+  const scrollportTurns = turns
+    .filter(({ element }) => inScrollport(element, rootBounds.bottom))
+    .sort((left, right) => left.index - right.index);
+  const sourceTurn = atEnd
+    ? turns.reduce<(typeof turns)[number] | null>(
+        (latest, turn) => (latest === null || turn.index > latest.index ? turn : latest),
+        null,
+      )
+    : (readingBandTurns[0] ?? scrollportTurns[0] ?? null);
+  const expectedRailIndex =
+    sourceTurn === null || ticks.length === 0
+      ? null
+      : Math.round((sourceTurn.index * (ticks.length - 1)) / (PROMPT_RAIL_TURN_COUNT - 1));
+  return {
+    currentIds,
+    expectedId:
+      expectedRailIndex === null ? null : (ticks[expectedRailIndex]?.dataset.promptTurnId ?? null),
+    sourceTurnId: sourceTurn?.id ?? null,
+  };
+}
+
+async function expectRailMatchesReadingPosition(where: string): Promise<void> {
+  await waitFor(() => {
+    const snapshot = promptRailSnapshot();
+    expect(snapshot.expectedId, `no visible Turn at the ${where}`).not.toBe(null);
+    expect(snapshot.currentIds, `rail at the ${where}: ${JSON.stringify(snapshot)}`).toEqual([
+      snapshot.expectedId,
+    ]);
+  });
+}
+
+export const RailStaysOnTheVisiblePrompt: Story = {
+  render: () => <PromptRailNavigationHarness />,
+  play: async () => {
+    const root = tailScroller();
+    await waitFor(() => expect(railTicks().length).toBeGreaterThan(0));
+
+    await scrollTranscriptTo('bottom');
+    await expectRailMatchesReadingPosition('tail');
+    expect(railTicks().at(-1)?.getAttribute('aria-current')).toBe('true');
+
+    // Counted across every change, not sampled at rest: two current ticks for
+    // one frame in the middle of a scroll is the failure, and it is invisible
+    // to a reading taken after the scroll settles.
+    const currentCounts: number[] = [];
+    const rail = document.querySelector('.maka-prompt-rail');
+    if (!rail) throw new Error('the prompt rail is missing');
+    const record = (): void => {
+      currentCounts.push(rail.querySelectorAll('.maka-prompt-rail-tick[aria-current="true"]').length);
+    };
+    const observer = new MutationObserver(record);
+    observer.observe(rail, { attributes: true, subtree: true, attributeFilter: ['aria-current'] });
+    record();
+
+    try {
+      // Reading positions across the active range, then a jump that replaces
+      // the range entirely — the two ways the rail's input changes.
+      for (const fraction of [0.75, 0.5, 0.25, 0]) {
+        root.scrollTop = Math.round((root.scrollHeight - root.clientHeight) * fraction);
+        root.dispatchEvent(new Event('scroll'));
+        await painted(4);
+        await expectRailMatchesReadingPosition(`${fraction * 100}% of the transcript`);
+      }
+
+      railTicks()[0].click();
+      await waitFor(
+        () => expect(document.querySelector('[data-turn-id="turn-prompt-rail-1"]')).not.toBe(null),
+        { timeout: 10_000 },
+      );
+      await scrollTranscriptTo('top');
+      await expectRailMatchesReadingPosition('head');
+      expect(railTicks()[0].getAttribute('aria-current')).toBe('true');
+    } finally {
+      observer.disconnect();
+    }
+
+    expect(currentCounts.length).toBeGreaterThan(1);
+    expect(
+      currentCounts.every((count) => count === 1),
+      `current tick count over time: ${currentCounts.join(',')}`,
+    ).toBe(true);
+  },
+};
