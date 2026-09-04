@@ -1095,9 +1095,13 @@ const CONVERSATION_COPY = {
         contextWindowOverrun: (used, declared) => `This exchange used about ${used} tokens, over your declared window (${declared}). Maka will compact before the next request.`,
         contextReportedWindowExceeded: (used, reported) => `This exchange used about ${used} tokens, over the model-reported window (${reported}), but the provider did not reject it. Declare a window in connection settings so Maka can compact first.`,
         contextOverflowAfterCompaction: 'The provider still rejected the request after history was compacted. Shorten this message to reduce the remaining prompt.',
-        contextUsageShare: (used, window) => `${used.toLocaleString('en-US')} / ${window.toLocaleString('en-US')} tokens`,
-        contextUsageNoWindow: 'No context window is available for this model.',
-        contextUsageUnavailable: 'The provider did not report usage.',
+        contextUsageLabel: '사용량',
+        contextUsageShare: (used, window) =>
+          `${used.toLocaleString('ko-KR')} / ${window.toLocaleString('ko-KR')} 토큰`,
+        contextUsageNoWindow: (used) =>
+          `이 요청은 ${used.toLocaleString('ko-KR')}개 토큰을 사용했지만 이 모델의 컨텍스트 한도를 확인할 수 없습니다.`,
+        contextUsageUnavailable: '이 요청의 사용량 데이터가 없습니다.',
+        contextUsageOpen: '사용량 추적 열기',
         stepLimit: 'Reached the configured step limit. The task may be incomplete. Send “continue” to resume.',
       },
     },

@@ -104,8 +104,22 @@ test('Korean catalog additions do not leak Korean into English or leave key dyna
   }
 
   assert.match(getMemorySettingsCopy('ko').text.localFile, /[가-힣]/u);
-  assert.match(getProviderSettingsCopy('ko').panel.loadFailed, /[가-힣]/u);
-  assert.match(getProviderSettingsCopy('ko').oauthFlow.refreshFailed, /[가-힣]/u);
+  const provider = getProviderSettingsCopy('ko');
+  for (const value of [
+    provider.detail.status,
+    provider.detail.filterModels,
+    provider.detail.declareCapabilities,
+    provider.shared.filterMatches(2),
+    provider.panel.groups.recommended,
+    provider.panel.connectionsHelp,
+    provider.panel.browseAll,
+    provider.add.stepsAria,
+    provider.add.onboardingSelectedCount(2, 3),
+    provider.add.onboardingDefaultModelHelp,
+    provider.oauthFlow.refreshFailed,
+  ]) {
+    assert.match(value, /[가-힣]/u);
+  }
   assert.match(getHealthCenterCopy('ko').signalMessage({
     id: 'connection:test:runtime',
     label: '테스트',
