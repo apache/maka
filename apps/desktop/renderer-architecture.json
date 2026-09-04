@@ -120,7 +120,6 @@
     "src/renderer/session-message-settlement.ts",
     "src/renderer/session-read-state.ts",
     "src/renderer/session-status-presentation.ts",
-    "src/renderer/session-trace-refresh.ts",
     "src/renderer/session-workspace-actions.ts",
     "src/renderer/session-workspace-errors.ts",
     "src/renderer/settings/about-settings-page.tsx",
@@ -273,7 +272,6 @@
     "src/renderer/features/workbar/model/workbar-layout.ts -> src/renderer/browser-storage",
     "src/renderer/features/workbar/model/workbar-tabs.ts -> src/renderer/browser-storage",
     "src/renderer/features/workbar/tools/artifacts/artifact-pane.tsx -> src/renderer/open-path",
-    "src/renderer/features/workbar/tools/inspector/use-session-trace.ts -> src/renderer/session-trace-refresh",
     "src/renderer/features/workbar/tools/side-chat/quote-companion-core.ts -> src/renderer/model-connection-errors",
     "src/renderer/features/workbar/tools/side-chat/quote-companion-core.ts -> src/renderer/session-copy-attempt",
     "src/renderer/features/workbar/tools/side-chat/quote-companion-panel.tsx -> src/renderer/attachment-preflight",
@@ -891,7 +889,7 @@
           "react": 1
         },
         "importSpecifiers": 148,
-        "nonTriviaTokens": 15602
+        "nonTriviaTokens": 15601
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 2,
@@ -2216,15 +2214,6 @@
           "./session-error-presentation.js": 1,
           "@maka/core/sandbox-boundary": 1
         }
-      },
-      "src/renderer/session-trace-refresh.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {}
       },
       "src/renderer/session-workspace-actions.ts": {
         "bridgePaths": {

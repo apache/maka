@@ -29,7 +29,6 @@ import {
   type Dispatch,
   type SetStateAction,
 } from 'react';
-import type { ProjectRecord } from '@maka/core/project';
 import type {
   FollowUpMode,
   InlineReference,
@@ -2959,6 +2958,7 @@ function AppShellContent({
                   activeProviderType={activeConnection?.providerType}
                   latestRequestUsageTokens={selectLatestRequestUsage(messages, activeTranscriptRange, activeModel, activeSessionForModelControls)}
                   onOpenContextUsage={() => workbar.commands.openTool('inspector')}
+                  LiveContextUsageProbe={workbar.LiveContextUsageProbe}
                   modelChoices={chatModelChoices}
                   modelSwitchHasHistory={modelSwitchHasHistory}
                   hideUnavailableCurrentModel={sessionHealthNotice?.onClickTarget === 'model_picker'}

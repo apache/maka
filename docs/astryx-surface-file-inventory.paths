@@ -50,6 +50,7 @@ apps/desktop/src/renderer/features/workbar/tools/artifacts/artifact-pane.tsx
 apps/desktop/src/renderer/features/workbar/tools/artifacts/artifact-preview-registry-shell.tsx
 apps/desktop/src/renderer/features/workbar/tools/artifacts/artifact-preview.tsx
 apps/desktop/src/renderer/features/workbar/tools/browser/browser-panel.tsx
+apps/desktop/src/renderer/features/workbar/tools/inspector/live-context-usage-probe.tsx
 apps/desktop/src/renderer/features/workbar/tools/inspector/session-inspector-panel.tsx
 apps/desktop/src/renderer/features/workbar/tools/review/session-review-panel.tsx
 apps/desktop/src/renderer/features/workbar/tools/side-chat/quote-companion-panel.tsx

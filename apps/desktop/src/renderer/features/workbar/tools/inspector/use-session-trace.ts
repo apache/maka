@@ -33,7 +33,8 @@ import type {
 import {
   createRefreshCoalescer,
   createTraceRefreshCoalescer,
-} from '../../../../session-trace-refresh.js';
+  TRACE_REFRESH_DEBOUNCE_MS,
+} from './session-trace-refresh.js';
 import { useWorkbarServices } from '../../services-context.js';
 
 interface SessionTraceState {
@@ -61,9 +62,6 @@ interface SessionTraceSnapshot extends Omit<SessionTraceState, 'tracePages'> {
 
 const EMPTY_STATE: SessionTraceState = { loading: false };
 const EMPTY_SNAPSHOT: SessionTraceSnapshot = { loading: false };
-
-/** Long enough to absorb a turn's closing burst, short enough to feel live. */
-export const TRACE_REFRESH_DEBOUNCE_MS = 400;
 
 /**
  * Reads the per-session causal trace (#1625).

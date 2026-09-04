@@ -6,7 +6,7 @@ Generated against `@astryxdesign/core@0.5.2` (194 component exports).
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 246 files — blocker 0, reimplementation 0, polish 1, aligned 245.
+**Totals:** 247 files — blocker 0, reimplementation 0, polish 1, aligned 246.
 
 ## Exclusions (explicit)
 
@@ -79,6 +79,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/features/workbar/tools/artifacts/artifact-preview-registry-shell.tsx` | shell-chrome-or-panel | Banner, Button, Spinner | aligned — uses Astryx (Banner, Button, Spinner) | aligned |
 | `apps/desktop/src/renderer/features/workbar/tools/artifacts/artifact-preview.tsx` | shell-chrome-or-panel | Banner, Button, CodeBlock, Spinner | aligned — uses Astryx (Banner, Button, CodeBlock, Spinner) | aligned |
 | `apps/desktop/src/renderer/features/workbar/tools/browser/browser-panel.tsx` | shell-chrome-or-panel | EmptyState, IconButton, TextInput, Toolbar, Tooltip | aligned — uses Astryx (EmptyState, IconButton, TextInput, Toolbar, Tooltip) | aligned |
+| `apps/desktop/src/renderer/features/workbar/tools/inspector/live-context-usage-probe.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/workbar/tools/inspector/session-inspector-panel.tsx` | shell-chrome-or-panel | Banner, Button, EmptyState, Heading, Section, Text, VStack | aligned — uses Astryx (Banner, Button, EmptyState, Heading, Section, Text, VStack) | aligned |
 | `apps/desktop/src/renderer/features/workbar/tools/review/session-review-panel.tsx` | shell-chrome-or-panel | Banner, Button, Collapsible, CollapsibleGroup, EmptyState, HStack, Section, Skeleton, Text, VStack | aligned — uses Astryx (Banner, Button, Collapsible, CollapsibleGroup, EmptyState, HStack, Section, Skeleton) | aligned |
 | `apps/desktop/src/renderer/features/workbar/tools/side-chat/quote-companion-panel.tsx` | shell-chrome-or-panel | Banner | aligned — uses Astryx (Banner) | aligned |
