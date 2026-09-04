@@ -35,6 +35,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import {
+  AtomicFileWriteCommitUnknownError,
   writeAtomicFile,
   type AtomicFileWriteDependencies,
   type AtomicFileWriteHandle,
@@ -138,7 +139,7 @@ describe('writeAtomicFile', () => {
     });
   });
 
-  test('propagates a directory-fsync failure after the rename with the new file already in place', async () => {
+  test('reports an unknown commit outcome when directory fsync fails after publication', async () => {
     await withTempDir(async (dir) => {
       const path = join(dir, 'settings.json');
       const fault = new Error('dirsync failed');
@@ -149,10 +150,16 @@ describe('writeAtomicFile', () => {
               throw fault;
             },
           }),
-        fault,
+        (error: unknown) => {
+          assert.ok(error instanceof AtomicFileWriteCommitUnknownError);
+          assert.equal(error.published, true);
+          assert.equal(error.cause, fault);
+          assert.match(error.message, /reload before retrying/);
+          return true;
+        },
       );
       // rename is the commit point: the replacement is live (readers get the
-      // new bytes) even though the post-rename durability fence failed loud.
+      // new bytes) even though its durability is not known to the caller.
       assert.equal(await readFile(path, 'utf8'), '{"a":1}\n');
       assert.deepEqual(await readdir(dir), ['settings.json']);
     });
