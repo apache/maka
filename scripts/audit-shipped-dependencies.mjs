@@ -57,11 +57,8 @@ function shippedCopies(vulnerability, shippedVersions, lockPackages) {
 }
 
 function unavailableDetail(audit, report) {
-  const registryError = report?.error;
-  if (registryError && JSON.stringify(registryError) !== '{}') {
-    const detail = JSON.stringify(registryError);
-    if (detail !== '{"summary":"","detail":""}') return detail;
-  }
+  const registryDetail = [report?.error?.summary, report?.error?.detail].filter(Boolean).join(': ');
+  if (registryDetail) return registryDetail;
   if (audit.error instanceof Error) return audit.error.message;
   if (typeof audit.stderr === 'string' && audit.stderr.trim()) return audit.stderr.trim();
   return `npm audit exited with status ${audit.status ?? 'unknown'}`;
