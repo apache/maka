@@ -181,16 +181,13 @@ export interface DurableArtifactAttachmentReader {
   }): Promise<DurableArtifactBinaryReadResult>;
 }
 
-export interface ArtifactStore extends DurableArtifactAttachmentReader {
-  create(input: CreateArtifactInput): Promise<ArtifactRecord>;
-  close?(): void;
-}
-
 export type ArtifactUserDeleteResult =
   | { readonly kind: 'deleted' }
   | { readonly kind: 'not_found' };
 
-export interface ArtifactAuthorityStore extends ArtifactStore {
+export interface ArtifactAuthorityStore extends DurableArtifactAttachmentReader {
+  create(input: CreateArtifactInput): Promise<ArtifactRecord>;
+  close(): void;
   copyConversationArtifacts(
     input: ConversationArtifactCopyInput,
   ): Promise<ConversationArtifactCopyResult>;

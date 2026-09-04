@@ -804,7 +804,7 @@ describe('SQLite Artifact store', () => {
     await withWorkspace(async (root) => {
       const store = createArtifactStore(root);
       await store.create(artifactInput('published', 'kept', 1));
-      store.close?.();
+      store.close();
 
       await assert.rejects(
         () => store.create(artifactInput('rejected', 'not durable', 2)),

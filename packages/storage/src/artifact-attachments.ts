@@ -31,11 +31,7 @@ import {
 import { createHash } from 'node:crypto';
 import { type StorageRef, type ToolResultContent } from '@maka/core/events';
 import type { ReadImageSnapshotReader } from '@maka/core/context-offload';
-import type {
-  ArtifactAuthorityStore,
-  ArtifactStore,
-  DurableArtifactAttachmentReader,
-} from './artifact-store.js';
+import type { ArtifactAuthorityStore, DurableArtifactAttachmentReader } from './artifact-store.js';
 import { sanitizeArtifactName } from './artifact-store.js';
 
 export interface ArtifactAttachmentResourceReader {
@@ -142,10 +138,10 @@ export interface ReadImageSnapshotPlan {
   retract(): Promise<void>;
 }
 
-export interface ReadImageSnapshotArtifactStore extends Pick<ArtifactStore, 'create'> {
+export interface ReadImageSnapshotArtifactStore extends Pick<ArtifactAuthorityStore, 'create'> {
   /** Create with a receipt saying whether this call published the artifact. */
-  createOwned?: (input: Parameters<ArtifactStore['create']>[0]) => Promise<{
-    record: Awaited<ReturnType<ArtifactStore['create']>>;
+  createOwned?: (input: Parameters<ArtifactAuthorityStore['create']>[0]) => Promise<{
+    record: Awaited<ReturnType<ArtifactAuthorityStore['create']>>;
     publishedByThisCall: boolean;
   }>;
 }
@@ -237,7 +233,7 @@ export function createReadImageSnapshotPlanner(
   };
 }
 
-export function createReadImageSnapshotter(artifactStore: Pick<ArtifactStore, 'create'>) {
+export function createReadImageSnapshotter(artifactStore: Pick<ArtifactAuthorityStore, 'create'>) {
   const planSnapshot = createReadImageSnapshotPlanner(artifactStore);
   return async (
     input: ReadImageSnapshotInput,
