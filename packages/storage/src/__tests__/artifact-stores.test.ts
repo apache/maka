@@ -160,6 +160,7 @@ function artifactInput(id: string, content: string | Uint8Array) {
     name: `${id}.txt`,
     kind: 'file' as const,
     content,
+    source: 'tool_result' as const,
     now: 1,
   };
 }

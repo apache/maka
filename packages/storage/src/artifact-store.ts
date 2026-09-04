@@ -123,7 +123,7 @@ export interface CreateArtifactInput {
   kind: ArtifactKind;
   content: string | Uint8Array;
   mimeType?: string;
-  source?: ArtifactSource;
+  source: ArtifactSource;
   summary?: string;
   deepResearchRole?: DeepResearchArtifactRole;
   now?: number;
@@ -299,7 +299,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     });
     const id = acceptedInput.id ?? randomUUID();
     if (!ARTIFACT_KIND_SET.has(acceptedInput.kind)) throw new Error('Invalid Artifact kind');
-    if (acceptedInput.source !== undefined && !ARTIFACT_SOURCE_SET.has(acceptedInput.source)) {
+    if (!ARTIFACT_SOURCE_SET.has(acceptedInput.source)) {
       throw new Error('Invalid Artifact source');
     }
     if (
@@ -354,7 +354,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
           kind: acceptedInput.kind,
           relativePath,
           ...(acceptedInput.mimeType ? { mimeType: acceptedInput.mimeType } : {}),
-          ...(acceptedInput.source ? { source: acceptedInput.source } : {}),
+          source: acceptedInput.source,
           ...(acceptedInput.summary ? { summary: acceptedInput.summary } : {}),
           ...(acceptedInput.deepResearchRole
             ? { deepResearchRole: acceptedInput.deepResearchRole }
@@ -1107,7 +1107,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
       relativePath: candidate.relativePath,
       sizeBytes: payloadStat.size,
       ...(input.mimeType ? { mimeType: input.mimeType } : {}),
-      ...(input.source ? { source: input.source } : {}),
+      source: input.source,
       ...(input.summary ? { summary: input.summary } : {}),
       ...(input.deepResearchRole ? { deepResearchRole: input.deepResearchRole } : {}),
     };

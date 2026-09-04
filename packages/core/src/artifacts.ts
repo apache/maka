@@ -127,7 +127,7 @@ export interface ArtifactDescriptor {
   kind: ArtifactKind;
   sizeBytes: number;
   mimeType?: string;
-  source?: ArtifactSource;
+  source: ArtifactSource;
   summary?: string;
 }
 
@@ -164,15 +164,15 @@ const CHILD_RESULT_OUTPUT_SOURCES = new Set<ArtifactSource>([
 ]);
 
 export function isArtifactUserVisible(record: Pick<ArtifactRecord, 'source'>): boolean {
-  return record.source === undefined || ARTIFACT_SOURCE_POLICIES[record.source].userVisible;
+  return ARTIFACT_SOURCE_POLICIES[record.source].userVisible;
 }
 
 export function isArtifactSharedSessionReadable(record: Pick<ArtifactRecord, 'source'>): boolean {
-  return record.source !== undefined && ARTIFACT_SOURCE_POLICIES[record.source].sharedReadable;
+  return ARTIFACT_SOURCE_POLICIES[record.source].sharedReadable;
 }
 
 export function isArtifactChildResultOutput(record: Pick<ArtifactRecord, 'source'>): boolean {
-  return record.source !== undefined && CHILD_RESULT_OUTPUT_SOURCES.has(record.source);
+  return CHILD_RESULT_OUTPUT_SOURCES.has(record.source);
 }
 
 export type ArtifactReadFailureReason = 'not_found' | 'too_large' | 'read_failed' | 'not_allowed';

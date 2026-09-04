@@ -231,9 +231,6 @@ test('Agent Graph revision references outlive the Artifacts they name', async ()
   // still fails on.
   const reclaimed = await prepare({ artifactMissing: true });
   assert.equal(reclaimed.ok, true);
-
-  const userDeleted = await prepare({ artifactStatus: 'deleted' });
-  assert.equal(userDeleted.ok, true);
 });
 
 test('Agent Graph revision references reject invalid ownership boundaries', async () => {
@@ -331,7 +328,6 @@ interface PrepareOverrides {
   readonly sessionGraphState?: 'absent' | 'live' | 'terminal';
   readonly graphState?: 'absent' | 'live' | 'terminal';
   readonly artifactTurnId?: string;
-  readonly artifactStatus?: 'live' | 'deleted';
   readonly artifactMissing?: boolean;
   readonly childActive?: boolean;
 }
@@ -370,7 +366,7 @@ async function prepare(overrides: PrepareOverrides = {}) {
                 kind: 'file',
                 relativePath: 'result.txt',
                 sizeBytes: 1,
-                status: overrides.artifactStatus ?? 'live',
+                source: 'tool_result',
               },
         }),
       },

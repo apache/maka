@@ -80,6 +80,7 @@ describe('artifact attachment authority', () => {
         name: 'image.png',
         kind: 'image',
         content: png,
+        source: 'tool_result',
         now: 1,
       });
       const reader = createAttachmentByteReader({
@@ -111,6 +112,7 @@ describe('artifact attachment authority', () => {
         name: 'large.png',
         kind: 'image',
         content: new Uint8Array(MAX_ATTACHMENT_BYTES + 1).fill(0x89),
+        source: 'tool_result',
         now: 1,
       });
       const reader = createAttachmentByteReader({
@@ -200,6 +202,7 @@ describe('artifact attachment authority', () => {
         name: 'unknown.bin',
         kind: 'file',
         content: Uint8Array.from([0, 1, 2, 3]),
+        source: 'tool_result',
         now: 1,
       });
       assert.deepEqual(await reader(sessionFileRef('unknown-binary')), {

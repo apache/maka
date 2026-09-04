@@ -63,8 +63,9 @@ const ARTIFACT_REQUIRED_FIELDS = [
   'name',
   'kind',
   'sizeBytes',
+  'source',
 ] as const;
-const ARTIFACT_FIELDS = new Set([...ARTIFACT_REQUIRED_FIELDS, 'mimeType', 'source', 'summary']);
+const ARTIFACT_FIELDS = new Set([...ARTIFACT_REQUIRED_FIELDS, 'mimeType', 'summary']);
 
 export type ArtifactRevision = `sha256:${string}`;
 
@@ -77,7 +78,7 @@ export interface ArtifactProjection {
   readonly kind: ArtifactKind;
   readonly sizeBytes: number;
   readonly mimeType?: string;
-  readonly source?: ArtifactSource;
+  readonly source: ArtifactSource;
   readonly summary?: string;
 }
 
@@ -565,7 +566,7 @@ export function encodeArtifactProjection(record: ArtifactRecord): ArtifactProjec
     ...(record.mimeType === undefined
       ? {}
       : { mimeType: projectArtifactText(record.mimeType, ARTIFACT_MIME_TYPE_MAX_BYTES) }),
-    ...(record.source === undefined ? {} : { source: record.source }),
+    source: record.source,
     ...(record.summary === undefined
       ? {}
       : { summary: projectArtifactText(record.summary, ARTIFACT_SUMMARY_MAX_BYTES) }),
@@ -593,7 +594,7 @@ function decodeArtifactProjection(value: unknown): ArtifactProjection {
           mimeType: boundedText(record.mimeType, 'artifact mimeType', ARTIFACT_MIME_TYPE_MAX_BYTES),
         }
       : {}),
-    ...(Object.hasOwn(record, 'source') ? { source: artifactSource(record.source) } : {}),
+    source: artifactSource(record.source),
     ...(Object.hasOwn(record, 'summary')
       ? { summary: boundedText(record.summary, 'artifact summary', ARTIFACT_SUMMARY_MAX_BYTES) }
       : {}),

@@ -72,8 +72,8 @@ export function decodeArtifactRecordJsons(values: readonly unknown[]): ArtifactR
 function hasSupportedArtifactSource(value: unknown): boolean {
   return (
     isRecord(value) &&
-    (value.source === undefined ||
-      (typeof value.source === 'string' && ARTIFACT_SOURCE_SET.has(value.source as ArtifactSource)))
+    typeof value.source === 'string' &&
+    ARTIFACT_SOURCE_SET.has(value.source as ArtifactSource)
   );
 }
 
@@ -120,7 +120,7 @@ function decodeArtifactRecord(value: unknown, index: number): ArtifactRecord {
     !isOptionalNonEmptyString(value.mimeType) ||
     !isOptionalNonEmptyString(value.summary) ||
     (value.deepResearchRole !== undefined && !isDeepResearchArtifactRole(value.deepResearchRole)) ||
-    (value.source !== undefined && typeof value.source !== 'string')
+    typeof value.source !== 'string'
   ) {
     throw invalidMetadataRecord(index);
   }

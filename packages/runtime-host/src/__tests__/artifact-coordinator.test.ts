@@ -279,6 +279,7 @@ test('Artifact mutation failure requests Host drain and fails closed', async () 
       name: 'artifact.txt',
       kind: 'file',
       content: 'durable',
+      source: 'tool_result',
       now: 1,
     });
 
@@ -354,6 +355,7 @@ test('Artifact query streams complete content in bounded ordered chunks', async 
       name: 'large.bin',
       kind: 'file',
       content,
+      source: 'tool_result',
       now: 1,
     });
     const coordinator = new HostArtifactCoordinator(

@@ -518,6 +518,7 @@ function artifactInput(id: string, content = id, now = 1): CreateArtifactInput {
     name: `${id}.txt`,
     kind: 'file' as const,
     content,
+    source: 'tool_result',
     now,
   };
 }

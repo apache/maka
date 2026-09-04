@@ -1307,6 +1307,7 @@ describe('SQLite Artifact store', () => {
         name: 'boundary.txt',
         kind: 'file',
         content: 'boundary',
+        source: 'tool_result',
         now: 1,
       });
 

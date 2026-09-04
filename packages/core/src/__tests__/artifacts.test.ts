@@ -62,7 +62,6 @@ describe('Artifact source policy', () => {
     assert.equal(isArtifactChildResultOutput({ source: 'subagent_writeback' }), true);
     assert.equal(isArtifactChildResultOutput({ source: 'tool_result_archive' }), false);
     assert.equal(isArtifactChildResultOutput({ source: 'user_upload' }), false);
-    assert.equal(isArtifactChildResultOutput({ source: undefined }), false);
   });
 
   test('keeps projection artifacts internal, durable, and readable in shared sessions', () => {
@@ -70,12 +69,5 @@ describe('Artifact source policy', () => {
 
     assert.equal(isArtifactUserVisible(projection), false);
     assert.equal(isArtifactSharedSessionReadable(projection), true);
-  });
-
-  test('preserves unattributed artifact defaults', () => {
-    const unattributed = { source: undefined };
-
-    assert.equal(isArtifactUserVisible(unattributed), true);
-    assert.equal(isArtifactSharedSessionReadable(unattributed), false);
   });
 });
