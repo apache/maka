@@ -65,7 +65,6 @@ import {
   activeInteractionFor,
   deriveComposerModelSwitchAvailability,
   deriveTitlebarProjectName,
-  enqueueInteraction,
   reconcileInteractions,
 } from '@maka/ui';
 import type { ConnectionEvent } from '@maka/core/connections';
@@ -106,7 +105,10 @@ import { useNewTaskChoice } from './use-new-task-choice';
 import { SessionCollaborationDialog } from './session-collaboration-dialog';
 import * as SessionCollaboration from './features/session-collaboration';
 import { NEW_TASK_PENDING_KEY } from './pending-items';
-import { parseDesktopSlashCommand } from './desktop-slash-command';
+import {
+  desktopSlashCommandAvailability,
+  parseDesktopSlashCommand,
+} from './desktop-slash-command';
 import {
   hasActiveTurnAtSubmit,
   mergeWorkspaceReferences,
@@ -1324,11 +1326,11 @@ function AppShellContent({
       : undefined;
   const desktopSlashCommands = useMemo<readonly ComposerSlashCommandOption[]>(
     () => {
-      const streaming = turnActive || activeStreamingLive;
       const availableCommands = slashCommandsForSurface('desktop').filter(
-        ({ id, session }) =>
-          (session === 'none' || Boolean(activeId))
-          && !(streaming && id === 'compact'),
+        desktopSlashCommandAvailability({
+          hasSession: Boolean(activeId),
+          streaming: turnActive || activeStreamingLive,
+        }),
       );
       const presentation: Record<
         SlashCommandIdForSurface<'desktop'>,
