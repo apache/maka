@@ -775,7 +775,7 @@
           "useNewTaskChoice": 1,
           "useOnboardingSnapshot": 1,
           "usePlanModeState": 1,
-          "useRef": 23,
+          "useRef": 24,
           "useSessionCollaborationDialog": 1,
           "useSessionEventHealthPolling": 1,
           "useSessionNavigationReads": 1,
@@ -896,7 +896,7 @@
           "react": 1
         },
         "importSpecifiers": 124,
-        "nonTriviaTokens": 15588
+        "nonTriviaTokens": 15604
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 2,

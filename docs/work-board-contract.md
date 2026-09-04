@@ -155,6 +155,36 @@ projection. A future projection must be implemented beside the real continuity
 adapter using only canonical `SessionContinuitySnapshot` / `TurnSnapshot`
 facts.
 
+## Phase 3 start-task link contract (spike)
+
+The default-off `Start task` spike ([#4598](https://github.com/apache/maka/pull/4598))
+establishes a deliberately small link contract while it stays experimental:
+
+- **Single-link bound** (`WORK_BOARD_MAX_LINKED_SESSIONS = 1`): a project-scoped
+  item owns at most one started Session at a time. Linking a freshly started
+  Session replaces any previous link, so `linkedSessions` stays bounded instead
+  of growing on repeated starts. Read paths stay tolerant of legacy arrays with
+  more than one entry (they fail normalization rather than silently truncating).
+- **Project ownership**: `workBoard:linkSession` is the single main-process
+  mutation boundary. It resolves the item, requires a project scope, passes the
+  canonical board `projectId` into the Host validator, and requires the Session's
+  workspace target to be a project matching that id. The mutation then commits
+  with `expectedRevision` CAS on the revision read before the (asynchronous)
+  Host validation, so a concurrent scope/revision change cannot write a Session
+  validated for one project into an item that has moved to another.
+- **Surface ownership**: a pending start claim is owned by one specific New Task
+  surface instance (its owner nonce), not by the target-scoped draft key. A
+  first send from any other surface—including a New Task reopened on the same
+  Host/project—cannot consume the claim.
+- **Retry durability (spike limitation)**: the pending-link claim lives in the
+  renderer for the lifetime of the current controller. If the Session is
+  created and `linkSession` fails, the claim (with its Session id) is retained
+  in memory so retrying `Start task` on the same item reuses that Session.
+  A renderer reload or app restart before the retry drops the claim; restarting
+  the item then creates a second Session and leaves the first unlinked. This is
+  an accepted, documented limitation of the spike (persisting a pending-link
+  intent in the main process/storage is tracked for a later phase).
+
 ## Tests
 
 - contract: decode, provenance invariants, state transitions, archive invariant,

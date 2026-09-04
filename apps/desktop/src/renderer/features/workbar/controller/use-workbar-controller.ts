@@ -84,9 +84,10 @@ export interface WorkbarControllerCommands {
   toggleRight(): void;
   /**
    * Accepts the Session produced by a projected first send that belongs to the
-   * pending Work Board start claim. The claim is bound to the new-task surface
-   * it opened (via the controller input's `newTaskDraftKey`), so a first send
-   * from any other surface must not consume it.
+   * pending Work Board start claim. The claim is owned by one specific
+   * new-task surface instance (its owner nonce), so a first send from any
+   * other surface—even one reopened on the same Host/project—must not consume
+   * it.
    */
   onNewTaskSessionResolved(sessionId: string): void;
   onNewTaskSessionNotProjected(): void;
@@ -112,11 +113,12 @@ export interface UseWorkbarControllerInput {
   openNewTaskSurface?(): void;
   openSessionInChat?(sessionId: string): void;
   /**
-   * The draft key of the currently projected new-task surface. Work Board
-   * start claims are bound to this identity so a first send from any other
-   * surface cannot consume them.
+   * The per-surface owner nonce of the currently projected new-task surface.
+   * Work Board start claims bind to this token rather than the target-scoped
+   * draft key, so a New Task reopened on the same Host/project is a distinct
+   * surface and cannot consume another claim's Session.
    */
-  newTaskDraftKey?: string;
+  newTaskSurfaceNonceRef?: { current: number };
   resolveWorkBoardTarget?(item: WorkBoardItem):
     | { ok: true; target: { profileId: string; hostId: string; projectId: string } }
     | { ok: false; message: string };
@@ -229,7 +231,7 @@ export function useWorkbarController(
   const pendingWorkBoardStartRef = useRef<{
     itemId: string;
     target: { profileId: string; hostId: string; projectId: string };
-    draftKey: string;
+    surfaceNonce: number;
     sessionId?: string;
   } | undefined>(undefined);
   const resourceGenerationRef = useRef(0);
@@ -348,10 +350,15 @@ export function useWorkbarController(
         return;
       }
       input.openNewTaskSurface?.();
+      // The new-task surface owns this claim. The owner nonce is read after
+      // `openNewTaskSurface` so it reflects the freshly created surface, and
+      // a New Task opened later on the same Host/project gets a different
+      // nonce and therefore cannot consume this claim.
+      const surfaceNonce = input.newTaskSurfaceNonceRef?.current ?? 0;
       pendingWorkBoardStartRef.current = {
         itemId: item.id,
         target: result.target,
-        draftKey,
+        surfaceNonce,
       };
       globalThis.requestAnimationFrame(() => {
         input.composerRef?.current?.setDraft(draftKey, draft);
@@ -374,13 +381,11 @@ export function useWorkbarController(
     (sessionId: string) => {
       const pending = pendingWorkBoardStartRef.current;
       if (!pending) return;
-      // The claim is bound to the new-task surface it opened. A first send
-      // from any other surface must not consume it: drop the abandoned claim
-      // and refuse to link the wrong Session.
-      if (
-        input.newTaskDraftKey !== undefined &&
-        input.newTaskDraftKey !== pending.draftKey
-      ) {
+      // The claim is owned by one specific New Task surface instance. A first
+      // send from any other surface (even one reopened on the same
+      // Host/project, which shares the draft key but has a fresh owner nonce)
+      // must not consume it: drop the abandoned claim and refuse the link.
+      if (input.newTaskSurfaceNonceRef?.current !== pending.surfaceNonce) {
         pendingWorkBoardStartRef.current = undefined;
         return;
       }
@@ -396,7 +401,7 @@ export function useWorkbarController(
       }
       settlePendingWorkBoardLink(pending);
     },
-    [input.newTaskDraftKey, settlePendingWorkBoardLink],
+    [input.newTaskSurfaceNonceRef, settlePendingWorkBoardLink],
   );
   const respondToClientCapability = useCallback<
     WorkbarControllerCommands['respondToClientCapability']

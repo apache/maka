@@ -777,6 +777,11 @@ function AppShellContent({
   const [helpOpen, closeHelp, openHelp] = useKeyboardHelp();
   const [paletteOpen, openPalette, closePalette] = useCommandPalette();
   const composerRef = useRef<ComposerHandle>(null);
+  // A monotonically increasing owner token for each freshly opened New Task
+  // surface. Work Board start claims bind to this token rather than the
+  // target-scoped draft key, so a New Task reopened on the same Host/project
+  // is a distinct surface and can never consume another claim's Session.
+  const newTaskSurfaceNonceRef = useRef(0);
   const openComposerModelPicker = useCallback(() => {
     composerRef.current?.openModelPicker();
   }, []);
@@ -1492,6 +1497,7 @@ function AppShellContent({
     toastApi,
   });
   const openNewTaskSurface = useCallback(() => {
+    newTaskSurfaceNonceRef.current += 1;
     imageNoticeLifecycle.reset(NEW_TASK_PENDING_KEY);
     startNewSession();
     // Only Plan resets: a new task starts out of Plan, in whatever
@@ -1602,7 +1608,7 @@ function AppShellContent({
     openSessionInChat,
     resolveWorkBoardTarget: taskEntry.commands.resolveWorkBoardTarget,
     prepareWorkBoardDraft: taskEntry.commands.prepareWorkBoardDraft,
-    newTaskDraftKey: currentNewTaskDraftKey,
+    newTaskSurfaceNonceRef,
   });
 
   const exitWorkHub = useCallback(() => setWorkHubActive(false), []);
