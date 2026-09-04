@@ -17,21 +17,47 @@
  * under the License.
  */
 
-import { lstat } from 'node:fs/promises';
-import { join, parse } from 'node:path';
+import { lstat, readFile, stat } from 'node:fs/promises';
+import { join, parse, resolve } from 'node:path';
+
+const GITDIR_PREFIX = 'gitdir: ';
 
 export async function hasEnclosingGitEntry(path: string): Promise<boolean> {
   let current = path;
   while (true) {
+    const gitPath = join(current, '.git');
     try {
-      await lstat(join(current, '.git'));
-      return true;
+      // lstat does not follow symlinks, so a dangling `.git` symlink still
+      // counts as an existing entry. The selected directory fails closed
+      // downstream when its own Git metadata is damaged; an ancestor only
+      // counts when it is structurally valid.
+      const entry = await lstat(gitPath);
+      if (current === path) return true;
+      const gitStat = entry.isSymbolicLink() ? await stat(gitPath) : entry;
+      if (gitStat.isDirectory()) return pathExists(join(gitPath, 'HEAD'));
+      if (gitStat.isFile()) {
+        const content = (await readFile(gitPath, 'utf8')).trim();
+        if (!content.startsWith(GITDIR_PREFIX)) return false;
+        const target = content.slice(GITDIR_PREFIX.length).trim();
+        if (!target) return false;
+        return pathExists(join(resolve(current, target), 'HEAD'));
+      }
+      return false;
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
-      if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error;
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') return current === path;
     }
     const parent = parse(current).dir;
     if (parent === current) return false;
     current = parent;
+  }
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch {
+    return false;
   }
 }
