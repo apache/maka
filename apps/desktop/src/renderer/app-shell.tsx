@@ -404,7 +404,8 @@ function AppShellContent({
   // Named on its own because the rail depends on it: `taskEntry.commands` is a
   // fresh object every render, so depending on the bag rather than the command
   // would rebuild the rail's Project rows on every AppShell commit (#4109).
-  const { selectLocalProject } = taskEntry.commands;
+  const { selectLocalProject, resolveWorkBoardTarget, prepareWorkBoardDraft } =
+    taskEntry.commands;
   const currentNewTaskDraftKey = taskEntry.selectors.draftKey;
   // Staged files and quotes do NOT take the target-scoped key: they belong to
   // the composer the user is looking at, and an in-flight send needs an owner
@@ -1507,7 +1508,7 @@ function AppShellContent({
     setSearchScrollTarget(null);
     // New-task affordances reset to the empty-state composer; move focus
     // there so the user can start typing immediately.
-    requestAnimationFrame(() => composerRef.current?.focus());
+    window.requestAnimationFrame(() => composerRef.current?.focus());
   }, [imageNoticeLifecycle, setNavSelection, setSearchScrollTarget, startNewSession]);
 
   const createSession = useCallback(async () => {
@@ -1606,8 +1607,8 @@ function AppShellContent({
     composerRef,
     openNewTaskSurface,
     openSessionInChat,
-    resolveWorkBoardTarget: taskEntry.commands.resolveWorkBoardTarget,
-    prepareWorkBoardDraft: taskEntry.commands.prepareWorkBoardDraft,
+    resolveWorkBoardTarget,
+    prepareWorkBoardDraft,
     newTaskSurfaceNonce,
   });
 
