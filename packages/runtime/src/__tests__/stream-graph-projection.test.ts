@@ -210,6 +210,66 @@ describe('committed stream graph projection', () => {
     assert.doesNotMatch(JSON.stringify(projection.records), /mutable-stream-chunk/);
   });
 
+  test('derives bounded operator output and actual throughput from immutable runtime facts', async () => {
+    const run = runInvocation({
+      sessionId: 'child-output',
+      runId: 'run-output',
+      turnId: 'turn-output',
+      status: 'completed',
+      createdAt: baseTs,
+    });
+    const text = `Summary ${'界'.repeat(400)}`;
+    const projection = await readCommittedAgentGraphProjection({
+      graphId: 'graph-output',
+      operators: [{ operatorId: 'writer', sessionId: run.sessionId }],
+      runtimeEventStore: {
+        async listSessionInvocations() {
+          return [run];
+        },
+        async readImmutableRuntimeEvents() {
+          return [
+            runtimeEvent(run, {
+              id: 'output-start',
+              ts: baseTs + 500,
+              partial: true,
+              role: 'model',
+              author: 'agent',
+              content: { kind: 'text', text: 'Summary ' },
+            }),
+            runtimeEvent(run, {
+              id: 'output-text',
+              ts: baseTs + 1_000,
+              role: 'model',
+              author: 'agent',
+              content: { kind: 'text', text },
+            }),
+            runtimeEvent(run, {
+              id: 'output-usage',
+              ts: baseTs + 5_000,
+              actions: { tokenUsage: { input: 100, output: 90 } },
+            }),
+            runtimeEvent(run, {
+              id: 'output-complete',
+              ts: baseTs + 5_001,
+              status: 'completed',
+              actions: { endInvocation: true },
+            }),
+          ];
+        },
+      },
+    });
+
+    const output = projection.operatorOutputs?.[0];
+    assert.ok(output);
+    assert.equal(Array.from(output.preview).length, 280);
+    assert.equal(output.previewTruncated, true);
+    assert.equal(output.phase, 'completed');
+    assert.equal(output.outputTokens, 90);
+    assert.equal(output.sampleDurationMs, 4_500);
+    assert.equal(output.tokensPerSecond, 20);
+    assert.equal(output.sourceEventId, 'output-text');
+  });
+
   test('replay is deterministic for reordered delivery and idempotent duplicates', () => {
     const run = runInvocation({
       sessionId: 'child-a',

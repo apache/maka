@@ -101,6 +101,30 @@ function snapshot(
   };
 }
 
+function operator(
+  overrides: Pick<AgentGraphClientSnapshot['operators'][number], 'operatorId' | 'status'> &
+    Partial<AgentGraphClientSnapshot['operators'][number]>,
+): AgentGraphClientSnapshot['operators'][number] {
+  return {
+    childSessionId: `child-${overrides.operatorId}`,
+    provisionId: `provision-${overrides.operatorId}`,
+    agentId: 'reviewer',
+    provisionedAt: 1,
+    inboundEdgeIds: [],
+    outboundEdgeIds: [],
+    scheduledWorkIds: [],
+    readiness: [],
+    omitted: {
+      inboundEdgeIds: 0,
+      outboundEdgeIds: 0,
+      scheduledWorkIds: 0,
+      readiness: 0,
+      readinessWaits: 0,
+    },
+    ...overrides,
+  };
+}
+
 function installGraphRenderer(
   initial: AgentGraphClientSnapshot,
   historical: readonly AgentGraphClientSnapshot[] = [],
@@ -308,6 +332,69 @@ async function renderPanel(
 }
 
 describe('AgentGraphPanel dismiss', () => {
+  it('renders bounded live and completed output facts without replacing child navigation', async () => {
+    const opened: string[] = [];
+    const source = snapshot({
+      graphId: 'graph-output',
+      status: 'active',
+      operators: [
+        operator({
+          operatorId: 'operator-live',
+          status: 'running',
+          output: {
+            activationId: 'run-live',
+            preview: 'Inspecting the renderer projection',
+            previewTruncated: true,
+            phase: 'streaming',
+            previewUpdatedAt: 2_000,
+            sourceEventId: 'event-live',
+            messageId: 'message-live',
+            sampleStartedAt: 1_000,
+            outputTokens: 21,
+            sampleDurationMs: 1_000,
+            tokensPerSecond: 21,
+          },
+        }),
+        operator({
+          operatorId: 'operator-done',
+          status: 'completed',
+          output: {
+            activationId: 'run-done',
+            preview: 'Projection verified',
+            previewTruncated: false,
+            phase: 'completed',
+            previewUpdatedAt: 3_000,
+            sourceEventId: 'event-done',
+            sampleStartedAt: 2_000,
+          },
+        }),
+      ],
+    });
+    const harness = installGraphRenderer(source);
+    await act(async () => {
+      harness.root.render(
+        createElement(AgentGraphPanel, {
+          rootSessionId: 'session-1',
+          enabled: true,
+          locale: 'en',
+          onOpenSession: (sessionId: string) => opened.push(sessionId),
+        }),
+      );
+      await Promise.resolve();
+    });
+
+    assert.match(harness.container.textContent ?? '', /Live output · 21\.0 token\/s/);
+    assert.match(harness.container.textContent ?? '', /Inspecting the renderer projection…/);
+    assert.match(harness.container.textContent ?? '', /Result preview/);
+    const open = [...harness.container.querySelectorAll('button')].find((button) =>
+      button.textContent?.includes('Open child task'),
+    );
+    assert.ok(open);
+    await act(async () => (open as HTMLElement).click());
+    assert.deepEqual(opened, ['child-operator-live']);
+    await act(async () => harness.root.unmount());
+  });
+
   it('keeps the new session loading when a disposed read settles later', async () => {
     const sessionA = snapshot({ graphId: 'graph-a', status: 'active' });
     const sessionB = snapshot({

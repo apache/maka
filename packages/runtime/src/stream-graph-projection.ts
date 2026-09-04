@@ -202,6 +202,27 @@ export interface AgentGraphProjection {
   records: AgentGraphRecord[];
   supervisorMetaStream: AgentGraphSupervisorMetaRecord[];
   state: AgentGraphReplayState;
+  /**
+   * Bounded presentation facts derived from the same immutable RuntimeEvents.
+   * RuntimeEvents remain authoritative; this is not part of scheduling or
+   * supervisor replay.
+   */
+  operatorOutputs?: AgentGraphOperatorOutputProjection[];
+}
+
+export interface AgentGraphOperatorOutputProjection {
+  operatorId: string;
+  activationId: string;
+  preview: string;
+  previewTruncated: boolean;
+  phase: 'streaming' | 'completed';
+  previewUpdatedAt: number;
+  sourceEventId: string;
+  messageId?: string;
+  sampleStartedAt: number;
+  outputTokens?: number;
+  sampleDurationMs?: number;
+  tokensPerSecond?: number;
 }
 
 export interface ReadCommittedAgentGraphProjectionInput {
@@ -287,8 +308,96 @@ export async function readCommittedAgentGraphProjectionWithRuns(
       records: projected.records,
       supervisorMetaStream: projected.supervisorMetaStream,
       state,
+      operatorOutputs: projectOperatorOutputs(streams),
     },
   };
+}
+
+const AGENT_GRAPH_OUTPUT_PREVIEW_MAX_CODE_POINTS = 280;
+
+function projectOperatorOutputs(
+  streams: readonly AgentGraphRunStream[],
+): AgentGraphOperatorOutputProjection[] {
+  const latestByOperator = new Map<string, AgentGraphRunStream>();
+  for (const stream of streams) {
+    const current = latestByOperator.get(stream.operator.operatorId);
+    if (
+      !current ||
+      stream.run.openedAt > current.run.openedAt ||
+      (stream.run.openedAt === current.run.openedAt &&
+        compareAgentGraphIdentity(stream.run.runId, current.run.runId) > 0)
+    ) {
+      latestByOperator.set(stream.operator.operatorId, stream);
+    }
+  }
+  return [...latestByOperator.values()]
+    .map(projectOperatorOutput)
+    .filter((output): output is AgentGraphOperatorOutputProjection => output !== undefined)
+    .sort((left, right) => compareAgentGraphIdentity(left.operatorId, right.operatorId));
+}
+
+function projectOperatorOutput(
+  stream: AgentGraphRunStream,
+): AgentGraphOperatorOutputProjection | undefined {
+  const orderedEvents = stream.events
+    .slice()
+    .sort((left, right) => left.ts - right.ts || compareAgentGraphIdentity(left.id, right.id));
+  const events = orderedEvents.filter((event) => !event.partial);
+  const textEvents = events.filter(
+    (event) => event.role === 'model' && event.content?.kind === 'text',
+  );
+  const latestText = textEvents.at(-1);
+  if (!latestText || latestText.content?.kind !== 'text') return undefined;
+  const preview = boundOutputPreview(latestText.content.text, 'head');
+  if (!preview.text) return undefined;
+  const usageEvents = events.filter((event) => event.actions?.tokenUsage !== undefined);
+  const latestUsage = usageEvents.at(-1);
+  const outputTokens = latestUsage?.actions?.tokenUsage?.output;
+  const usageEndedAt = latestUsage?.ts;
+  const sampleStartedAt =
+    orderedEvents.find((event) => event.role === 'model' && event.content?.kind === 'text')?.ts ??
+    textEvents[0]!.ts;
+  const sampleDurationMs =
+    outputTokens !== undefined && outputTokens > 0 && usageEndedAt !== undefined
+      ? Math.max(0, usageEndedAt - sampleStartedAt)
+      : undefined;
+  const tokensPerSecond =
+    outputTokens !== undefined && sampleDurationMs !== undefined && sampleDurationMs > 0
+      ? roundTokensPerSecond((outputTokens * 1_000) / sampleDurationMs)
+      : undefined;
+  return {
+    operatorId: stream.operator.operatorId,
+    activationId: stream.run.runId,
+    preview: preview.text,
+    previewTruncated: preview.truncated,
+    phase: runtimeInvocationOutcome(stream.run) ? 'completed' : 'streaming',
+    previewUpdatedAt: latestText.ts,
+    sourceEventId: latestText.id,
+    ...(latestText.refs?.providerEventId ? { messageId: latestText.refs.providerEventId } : {}),
+    sampleStartedAt,
+    ...(outputTokens !== undefined ? { outputTokens } : {}),
+    ...(sampleDurationMs !== undefined ? { sampleDurationMs } : {}),
+    ...(tokensPerSecond !== undefined ? { tokensPerSecond } : {}),
+  };
+}
+
+function boundOutputPreview(
+  text: string,
+  edge: 'head' | 'tail',
+): { text: string; truncated: boolean } {
+  const codePoints = Array.from(text.trim());
+  if (codePoints.length <= AGENT_GRAPH_OUTPUT_PREVIEW_MAX_CODE_POINTS) {
+    return { text: codePoints.join(''), truncated: false };
+  }
+  const visible =
+    edge === 'head'
+      ? codePoints.slice(0, AGENT_GRAPH_OUTPUT_PREVIEW_MAX_CODE_POINTS)
+      : codePoints.slice(-AGENT_GRAPH_OUTPUT_PREVIEW_MAX_CODE_POINTS);
+  return { text: visible.join(''), truncated: true };
+}
+
+function roundTokensPerSecond(value: number): number {
+  return Math.round(value * 10) / 10;
 }
 
 export function projectAgentGraphRecords(input: ProjectAgentGraphRecordsInput): {
