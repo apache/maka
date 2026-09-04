@@ -420,7 +420,25 @@ test('Focus between two visible transcript controls under pending growth keeps t
   });
   await waitForPaintedFrames(page);
 
-  const groupHeader = root.locator('.maka-tool-activity-card [role="button"]:visible').first();
+  const visibleGroupHeader = await root.evaluate((element) => {
+    const rootRect = element.getBoundingClientRect();
+    const header = [...element.querySelectorAll<HTMLElement>(
+      '.maka-tool-activity-card [role="button"][tabindex="0"]',
+    )].find((candidate) => {
+      const boundary = candidate.closest<HTMLElement>('[data-maka-transcript-boundary]');
+      const rect = candidate.getBoundingClientRect();
+      return Boolean(boundary?.checkVisibility({ contentVisibilityAuto: true }))
+        && rect.top >= rootRect.top
+        && rect.bottom <= rootRect.bottom;
+    });
+    if (!header) throw new Error('the visible tool-card header is missing');
+    header.dataset.e2eVisibleGroupHeader = 'true';
+    return true;
+  });
+  expect(visibleGroupHeader).toBe(true);
+  const groupHeader = root.locator(
+    '.maka-tool-activity-card [data-e2e-visible-group-header="true"]',
+  );
   await expect(groupHeader).toBeVisible();
   await groupHeader.click();
   await waitForPaintedFrames(page);
