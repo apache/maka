@@ -173,6 +173,11 @@ import {
 } from './history-compact-checkpoint.js';
 import { resolveSelectedModelContextWindow } from './context-budget-policy.js';
 import type { AiSdkBackendInput } from './ai-sdk-backend.js';
+import {
+  INVALID_TOOL_NAME,
+  isProviderSandboxBoundaryAttempt,
+  repairMakaToolCall,
+} from './ai-sdk-tool-repair.js';
 
 export interface AiSdkSessionState {
   contextProviderDroppingReported: boolean;
@@ -194,13 +199,6 @@ export interface AiSdkTurnDependencies {
   maxSteps?: number;
   providerRetrySleep: (delayMs: number, signal: AbortSignal) => Promise<void>;
   createToolRuntime: (turn: AiSdkTurn) => ToolRuntime;
-  repairToolCall: (input: {
-    toolCall: RepairableAiSdkToolCall;
-    availableToolNames: readonly string[];
-    error: unknown;
-    toolParameters?: (toolName: string) => unknown;
-    toolCategoryHint?: (toolName: string) => string | undefined;
-  }) => RepairableAiSdkToolCall | null;
 }
 
 type PriorReplayResult = {
@@ -412,19 +410,6 @@ function mergeTextProviderOptions(
   }
   return merged;
 }
-
-// ============================================================================
-// AgentBackend interface — port contract now lives in @maka/core/backend-types;
-// re-exported here for backward compatibility with existing import sites.
-// ============================================================================
-
-export type {
-  AgentBackend,
-  BackendCompactHistoryInput,
-  BackendCompactHistoryResult,
-} from '@maka/core/backend-types';
-
-export const INVALID_TOOL_NAME = 'invalid';
 
 function projectToolModePlan(
   plan: ToolAvailabilityPlan,
@@ -1575,7 +1560,7 @@ export class AiSdkTurn {
                 toolCall: RepairableAiSdkToolCall;
                 error: unknown;
               }) => {
-                return this.deps.repairToolCall({
+                return repairMakaToolCall({
                   toolCall,
                   availableToolNames: currentRepairToolNames(),
                   toolParameters: (name) =>
@@ -3133,25 +3118,6 @@ function isAgentGraphYieldToolResult(output: unknown): output is YieldAgentGraph
     result.reason.length <= 4_000 &&
     result.reason.trim() === result.reason
   );
-}
-
-function isProviderSandboxBoundaryAttempt(toolCall: { toolName: string; input: unknown }): boolean {
-  const toolName = toolCall.toolName.toLowerCase();
-  if (toolName === REQUEST_SANDBOX_BOUNDARY_TOOL_NAME) return true;
-  if (toolName !== 'bash') return false;
-  const input = parseToolCallInput(toolCall.input);
-  if (!input || typeof input !== 'object' || Array.isArray(input)) return false;
-  const boundaryIntent = (input as Record<string, unknown>).boundary_intent;
-  return boundaryIntent !== undefined && boundaryIntent !== 'current';
-}
-
-function parseToolCallInput(raw: unknown): unknown {
-  if (typeof raw !== 'string') return raw;
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return undefined;
-  }
 }
 
 function priorReplayFailureTrace(replay: {

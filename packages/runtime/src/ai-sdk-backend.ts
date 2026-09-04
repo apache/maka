@@ -41,23 +41,16 @@ import { pricingModelKey } from '@maka/core/usage-stats/pricing';
 import type { PricingConfig, ToolInvocationRecord } from '@maka/core/usage-stats/types';
 import type { ModelCallCommit } from '@maka/core/agent-run';
 import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
-import { z } from 'zod';
 
 import { AdmissionLimiter } from './admission-limiter.js';
 import {
   ToolRuntime,
-  formatSyntheticToolErrorText,
-  formatToolArgsViolationText,
   type MakaTool,
   type MakaToolContext,
   type ToolRuntimeInput,
 } from './tool-runtime.js';
 import type { RuntimeCommitSink } from './runtime-commit-sink.js';
-import {
-  ModelAdapter,
-  type NormalizedAiSdkUsage,
-  type RepairableAiSdkToolCall,
-} from './model-adapter.js';
+import { ModelAdapter, type NormalizedAiSdkUsage } from './model-adapter.js';
 import { buildProviderOptions } from './model-factory.js';
 import type { OpenAiResponsesTransportState } from './openai-responses-websocket.js';
 import type { StreamWatchdogInput } from './stream-watchdog.js';
@@ -65,12 +58,11 @@ import { AiSdkCompaction } from './ai-sdk-compaction.js';
 import type { AiSdkCompactionCapabilities } from './ai-sdk-compaction-contract.js';
 import type { ToolArtifactRecorder } from './tool-artifacts.js';
 import type { RunTraceRecorder } from './run-trace.js';
-import { SandboxCommandError } from './sandbox/errors.js';
-import { REQUEST_SANDBOX_BOUNDARY_TOOL_NAME } from './sandbox-boundary-tool.js';
 import { getBuiltinPricing } from './telemetry/builtin-pricing.js';
 import { ProviderRequestTelemetry } from './provider-request-telemetry.js';
 import { AiSdkMessageProjection } from './ai-sdk-message-projection.js';
 import { AiSdkTurn, type AiSdkSessionState } from './ai-sdk-turn.js';
+import { buildInvalidMakaTool } from './ai-sdk-tool-repair.js';
 import { ToolAvailabilityRuntime, type ToolAvailabilityConfig } from './tool-availability.js';
 import {
   MEMORY_EXTRACT_TOOL_NAME,
@@ -105,8 +97,8 @@ export type {
   BackendCompactHistoryInput,
   BackendCompactHistoryResult,
 } from '@maka/core/backend-types';
+export { INVALID_TOOL_NAME, repairMakaToolCall } from './ai-sdk-tool-repair.js';
 
-export const INVALID_TOOL_NAME = 'invalid';
 export type AppendMessageFn = (m: StoredMessage) => Promise<void>;
 export type ToolTelemetryRecorder = (record: ToolInvocationRecord) => void;
 export type {
@@ -259,19 +251,6 @@ function sleepForProviderRetry(delayMs: number, signal: AbortSignal): Promise<vo
 // Implementation
 // ============================================================================
 
-/**
- * The mutable state of ONE `send()`.
- *
- * Identity is readonly and captured at dispatch: a tool that executes minutes
- * later commits against the run that actually issued it, never against whatever
- * run happens to be current when it finishes. The remaining fields are the
- * turn's own stream/abort bookkeeping, isolated so an overlapping turn on the
- * same backend cannot observe or clear them.
- *
- * Each scope owns its ToolRuntime for the same reason: gating, the loop gate,
- * the subagent and child-run limiters, durable attempts, and step admission are
- * all per-turn facts.
- */
 export class AiSdkBackend implements AgentBackend {
   readonly kind: BackendKind = 'ai-sdk';
   readonly sessionId: string;
@@ -525,7 +504,6 @@ export class AiSdkBackend implements AgentBackend {
             orchestrationMode: owner.orchestration.mode,
             scope: () => owner,
           }),
-        repairToolCall: repairMakaToolCall,
       },
       input,
     );
@@ -600,122 +578,4 @@ export class AiSdkBackend implements AgentBackend {
     else this.compaction.abortHistoryCompact();
     this.modelAdapter.dispose();
   }
-}
-
-export function repairMakaToolCall(input: {
-  toolCall: RepairableAiSdkToolCall;
-  availableToolNames: readonly string[];
-  error: unknown;
-  /** Schema lookup for the tool that was called, when the caller has one. */
-  toolParameters?: (toolName: string) => unknown;
-  /**
-   * Category lookup for the same tool.
-   *
-   * Computer Use declares one flat wire object standing in for a per-action
-   * union, so its schema shape alone names every field of every action.
-   */
-  toolCategoryHint?: (toolName: string) => string | undefined;
-}): RepairableAiSdkToolCall | null {
-  const requestedName = input.toolCall.toolName;
-  if (requestedName === INVALID_TOOL_NAME) return null;
-
-  const lowerRequestedName = requestedName.toLowerCase();
-  const exactLowercaseMatch = input.availableToolNames.find(
-    (name) => name.toLowerCase() === lowerRequestedName,
-  );
-  if (exactLowercaseMatch && exactLowercaseMatch !== requestedName) {
-    return { ...input.toolCall, toolName: exactLowercaseMatch };
-  }
-
-  return {
-    ...input.toolCall,
-    toolName: INVALID_TOOL_NAME,
-    input: JSON.stringify({
-      tool: requestedName,
-      error: describeUnrepairableToolCall(input),
-      ...(isProviderSandboxBoundaryAttempt(input.toolCall) ? { sandboxBoundaryAttempt: true } : {}),
-    }),
-  };
-}
-
-/**
- * What the model is told about a call that could not be repaired.
- *
- * Two different failures arrive here. A name that matches nothing: the caller
- * is holding the list of names that would have worked and used to drop it,
- * leaving the model with its own wrong name and a validator's complaint — the
- * same dead end `tool-availability` avoids by naming what is available.
- * Arguments the tool's schema rejected: the schema knows which fields the call
- * takes, so say them rather than let the model re-send the shape just refused.
- */
-function describeUnrepairableToolCall(input: {
-  toolCall: RepairableAiSdkToolCall;
-  availableToolNames: readonly string[];
-  error: unknown;
-  toolParameters?: (toolName: string) => unknown;
-  toolCategoryHint?: (toolName: string) => string | undefined;
-}): string {
-  const requestedName = input.toolCall.toolName;
-  const known = input.availableToolNames.includes(requestedName);
-  if (!known) {
-    const available = input.availableToolNames.join(', ');
-    const detail = formatSyntheticToolErrorText(input.error);
-    return available ? `${detail} Available tools: ${available}.` : detail;
-  }
-  return formatToolArgsViolationText({
-    toolName: requestedName,
-    parameters: input.toolParameters?.(requestedName),
-    categoryHint: input.toolCategoryHint?.(requestedName),
-    args: parseToolCallInput(input.toolCall.input),
-    error: input.error,
-  });
-}
-
-function parseToolCallInput(raw: unknown): unknown {
-  if (typeof raw !== 'string') return raw;
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return undefined;
-  }
-}
-
-function isProviderSandboxBoundaryAttempt(toolCall: { toolName: string; input: unknown }): boolean {
-  const toolName = toolCall.toolName.toLowerCase();
-  if (toolName === REQUEST_SANDBOX_BOUNDARY_TOOL_NAME) return true;
-  if (toolName !== 'bash') return false;
-  const parsed = parseToolCallInput(toolCall.input);
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false;
-  const boundaryIntent = (parsed as Record<string, unknown>).boundary_intent;
-  return boundaryIntent !== undefined && boundaryIntent !== 'current';
-}
-
-function buildInvalidMakaTool(): MakaTool<
-  { tool?: string; error?: string; sandboxBoundaryAttempt?: true },
-  never
-> {
-  return {
-    name: INVALID_TOOL_NAME,
-    description:
-      'Internal repair target for malformed or unknown tool calls. Do not call directly.',
-    parameters: z.object({
-      tool: z.string().optional(),
-      error: z.string().optional(),
-      sandboxBoundaryAttempt: z.literal(true).optional(),
-    }),
-    impl: ({ tool, error, sandboxBoundaryAttempt }) => {
-      const requested = tool ? ` "${tool}"` : '';
-      const message = `模型请求了不可用或格式错误的工具${requested}：${error || 'tool call could not be parsed'}`;
-      if (sandboxBoundaryAttempt) {
-        throw new SandboxCommandError({
-          domain: 'command',
-          stage: 'validation',
-          reason: 'invalid_boundary_declaration',
-          recoverable: true,
-          message,
-        });
-      }
-      throw new Error(message);
-    },
-  };
 }
