@@ -562,6 +562,7 @@ async function resetPromptRailWindow(worker: PromptRailWorker): Promise<void> {
 
 type E2eTestFixtures = {
   window: Page;
+  koreanWindow: Page;
   agentGraphWindow: Page;
   onboardingWindow: Page;
   gitReviewWindow: { page: Page; projectRoot: string };
@@ -622,6 +623,9 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
   // Seeded: a pre-staged connection clears onboarding so the composer is ready.
   window: async ({}, use) => {
     await withE2eWindow({ seed: true, readinessSelector: COMPOSER_INPUT, locale: 'zh-CN' }, use);
+  },
+  koreanWindow: async ({}, use) => {
+    await withE2eWindow({ seed: true, readinessSelector: COMPOSER_INPUT, locale: 'ko' }, use);
   },
   agentGraphWindow: async ({}, use) => {
     await withE2eWindow(

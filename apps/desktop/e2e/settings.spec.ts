@@ -43,6 +43,21 @@ async function choiceContentGeometry(card: import('@playwright/test').Locator) {
   });
 }
 
+test('Korean locale renders the localized settings navigation and page', async ({
+  koreanWindow: page,
+}) => {
+  await page.getByRole('button', { name: 'Expand sidebar' }).click();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+
+  const settings = page.getByRole('main', { name: '설정 내용' });
+  await expect(settings).toBeVisible();
+  const navigation = page.getByRole('navigation', { name: '설정 섹션' });
+  await expect(navigation.getByRole('button', { name: '일반적인', exact: true })).toBeVisible();
+  await expect(navigation.getByRole('button', { name: '모델', exact: true })).toBeVisible();
+  await navigation.getByRole('button', { name: '하위 에이전트', exact: true }).click();
+  await expect(settings.getByRole('heading', { name: '하위 에이전트', exact: true })).toBeVisible();
+});
+
 test('Settings loading surface owns unmodified Escape', async ({ window: page }) => {
   const latchInstalled = await page.evaluate(() => {
     const e2eLatch = (window as unknown as SettingsChunkLatchWindow).makaE2eLatch;
