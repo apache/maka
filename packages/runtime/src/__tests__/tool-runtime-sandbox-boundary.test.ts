@@ -23,8 +23,12 @@ import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import {
+  createReadOnlyPermissionProfile,
+  createWorkspaceWritePermissionProfile,
+} from '@maka/core/permission-profile';
+import {
+  applySandboxBoundaryExpansion,
   type ExecutionBoundary,
   type SandboxBoundaryRequest,
   type SandboxBoundarySettlement,
@@ -56,6 +60,7 @@ describe('ToolRuntime session sandbox boundary', () => {
         header: header(),
         connection: { providerType: 'openai', slug: 'test' } as never,
         modelId: 'test',
+        readPermissionMode: async () => 'ask',
         readExecutionBoundary: async () => {
           reads += 1;
           return {
@@ -113,12 +118,13 @@ describe('ToolRuntime session sandbox boundary', () => {
   test('reads the authoritative boundary for every tool invocation', async () => {
     const observed: ExecutionBoundary[] = [];
     let revision = 0;
-    const runtime = new ToolRuntime({
+    const runtime = createRuntime({
       turnId: 'turn-1',
       sessionId: 'session-1',
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
+      readPermissionMode: async () => 'ask',
       readExecutionBoundary: async () => ({
         kind: 'managed',
         profile: createWorkspaceWritePermissionProfile(),
@@ -148,24 +154,25 @@ describe('ToolRuntime session sandbox boundary', () => {
     );
   });
 
-  // #3349: the header carries the mode the backend was built with. A picker
-  // switch to Bypass between two turns widens the boundary without rebuilding
-  // that header, so a dispatch that trusts the header keeps sandboxing and
-  // keeps prompting while the picker already reads Bypass.
-  test('reads the permission mode off the live boundary, not the header it was built with', async () => {
+  test('reads the selected mode live while letting a Bypass boundary override it', async () => {
+    let selectedMode: 'explore' | 'ask' = 'explore';
     let boundary: ExecutionBoundary = {
       kind: 'managed',
-      profile: createWorkspaceWritePermissionProfile(),
+      profile: applySandboxBoundaryExpansion(createReadOnlyPermissionProfile(), {
+        filesystem: {
+          entries: [{ path: '/approved/output', access: 'write', scope: 'subtree' }],
+        },
+      }),
       revision: 0,
     };
     const observed: Array<{ kind: string; permissionMode: string | undefined }> = [];
-    const runtime = new ToolRuntime({
+    const runtime = createRuntime({
       turnId: 'turn-1',
       sessionId: 'session-1',
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
-      appendMessage: async () => {},
+      readPermissionMode: async () => selectedMode,
       readExecutionBoundary: async () => boundary,
       newId: nextId(),
       now: () => 1,
@@ -186,11 +193,14 @@ describe('ToolRuntime session sandbox boundary', () => {
     };
 
     await settle(runtime, tool, 'tool-1');
-    boundary = { kind: 'bypass', revision: 1 };
+    selectedMode = 'ask';
     await settle(runtime, tool, 'tool-2');
+    boundary = { kind: 'bypass', revision: 1 };
+    await settle(runtime, tool, 'tool-3');
 
     assert.equal(header().permissionMode, 'ask');
     assert.deepEqual(observed, [
+      { kind: 'managed', permissionMode: 'explore' },
       { kind: 'managed', permissionMode: 'ask' },
       { kind: 'bypass', permissionMode: 'bypass' },
     ]);
@@ -198,13 +208,12 @@ describe('ToolRuntime session sandbox boundary', () => {
 
   test('holds Plan mode to read-only even when the live boundary allows writes', async () => {
     let observed: string | undefined;
-    const runtime = new ToolRuntime({
+    const runtime = createRuntime({
       turnId: 'turn-1',
       sessionId: 'session-1',
       header: { ...header(), collaborationMode: 'plan' },
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
-      appendMessage: async () => {},
       readExecutionBoundary: async () => ({
         kind: 'managed',
         profile: createWorkspaceWritePermissionProfile(),
@@ -240,7 +249,7 @@ describe('ToolRuntime session sandbox boundary', () => {
       revision: 0,
     };
     let created: SandboxBoundaryRequest | undefined;
-    const runtime = new ToolRuntime({
+    const runtime = createRuntime({
       turnId: 'turn-1',
       sessionId: 'session-1',
       header: header(),
@@ -360,7 +369,7 @@ describe('ToolRuntime session sandbox boundary', () => {
         await releaseAdmission.promise;
       },
     };
-    const runtime = new ToolRuntime({
+    const runtime = createRuntime({
       turnId: 'turn-1',
       hostedInteraction,
       sessionId: 'session-1',
@@ -442,7 +451,7 @@ describe('ToolRuntime session sandbox boundary', () => {
 
   test('rejects an invalid expansion before creating durable pending state', async () => {
     let createCalls = 0;
-    const runtime = new ToolRuntime({
+    const runtime = createRuntime({
       turnId: 'turn-1',
       sessionId: 'session-1',
       header: header(),
@@ -499,7 +508,7 @@ describe('ToolRuntime session sandbox boundary', () => {
     const canonicalFile = await realpath(file);
     let created: SandboxBoundaryRequest | undefined;
     const events: SessionEvent[] = [];
-    const runtime = new ToolRuntime({
+    const runtime = createRuntime({
       turnId: 'turn-1',
       sessionId: 'session-1',
       header: header(root),
@@ -577,7 +586,7 @@ describe('ToolRuntime session sandbox boundary', () => {
   test('rejects exact directory authority before creating durable pending state', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-boundary-directory-'));
     let createCalls = 0;
-    const runtime = new ToolRuntime({
+    const runtime = createRuntime({
       turnId: 'turn-1',
       sessionId: 'session-1',
       header: header(root),
@@ -636,7 +645,7 @@ describe('ToolRuntime session sandbox boundary', () => {
     };
     let created: SandboxBoundaryRequest | undefined;
     const settlements: Array<{ requestId: string; decision: string }> = [];
-    const runtime = new ToolRuntime({
+    const runtime = createRuntime({
       turnId: 'turn-1',
       sessionId: 'session-1',
       header: header(),
@@ -711,7 +720,7 @@ describe('ToolRuntime session sandbox boundary', () => {
       releaseCreate = resolve;
     });
     const settlements: string[] = [];
-    const runtime = new ToolRuntime({
+    const runtime = createRuntime({
       turnId: 'turn-1',
       sessionId: 'session-1',
       header: header(),
@@ -775,7 +784,7 @@ describe('ToolRuntime session sandbox boundary', () => {
   });
 
   test('returns a structured boundary requirement to the agent', async () => {
-    const runtime = new ToolRuntime({
+    const runtime = createRuntime({
       turnId: 'turn-1',
       sessionId: 'session-1',
       header: header(),
@@ -837,7 +846,7 @@ describe('ToolRuntime session sandbox boundary', () => {
   });
 
   test('counts one boundary correction per model step and keeps failure kinds independent', async () => {
-    const runtime = new ToolRuntime({
+    const runtime = createRuntime({
       turnId: 'turn-1',
       sessionId: 'session-1',
       header: header(),
@@ -910,7 +919,7 @@ describe('ToolRuntime session sandbox boundary', () => {
   test('cancels a suspended nested boundary wait when its cell aborts', async () => {
     const events: SessionEvent[] = [];
     const settlements: string[] = [];
-    const runtime = new ToolRuntime({
+    const runtime = createRuntime({
       turnId: 'turn-1',
       sessionId: 'session-1',
       header: header(),
@@ -991,7 +1000,7 @@ describe('ToolRuntime session sandbox boundary', () => {
 
   test('keeps a durable deny failure attached to the aborted nested call', async () => {
     const events: SessionEvent[] = [];
-    const runtime = new ToolRuntime({
+    const runtime = createRuntime({
       turnId: 'turn-1',
       sessionId: 'session-1',
       header: header(),
@@ -1046,7 +1055,7 @@ describe('ToolRuntime session sandbox boundary', () => {
 
   test('returns structured requires_bypass without opening an interaction', async () => {
     const events: SessionEvent[] = [];
-    const runtime = new ToolRuntime({
+    const runtime = createRuntime({
       turnId: 'turn-1',
       sessionId: 'session-1',
       header: header(),
@@ -1114,7 +1123,7 @@ describe('ToolRuntime session sandbox boundary', () => {
     // here: ToolRuntime injects that callback unconditionally. This is the
     // branch a model actually reaches, and it used to say something different
     // from the tool the model called.
-    const runtime = new ToolRuntime({
+    const runtime = createRuntime({
       turnId: 'turn-1',
       sessionId: 'session-1',
       header: header(),
@@ -1157,6 +1166,16 @@ describe('ToolRuntime session sandbox boundary', () => {
     });
   });
 });
+
+type SandboxToolRuntimeInput = Omit<ToolRuntimeInput, 'readPermissionMode'> &
+  Partial<Pick<ToolRuntimeInput, 'readPermissionMode'>>;
+
+function createRuntime(input: SandboxToolRuntimeInput): ToolRuntime {
+  return new ToolRuntime({
+    readPermissionMode: async () => input.header.permissionMode,
+    ...input,
+  });
+}
 
 async function settle(runtime: ToolRuntime, tool: MakaTool, toolCallId: string): Promise<void> {
   const events: SessionEvent[] = [];
