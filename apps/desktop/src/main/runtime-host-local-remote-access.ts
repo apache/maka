@@ -92,6 +92,7 @@ type LocalManagedDeploymentAuthority =
   | {
       readonly kind: 'active';
       readonly lifecycleMode: 'on_demand' | 'supervised';
+      readonly deploymentRoot: string;
       readonly target: LocalServiceTarget;
     }
   | { readonly kind: 'transition' };
@@ -205,6 +206,7 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
       return {
         kind: 'active',
         lifecycleMode: authority.record.lifecycle.mode,
+        deploymentRoot: authority.record.deploymentRoot,
         target: requireServiceTarget(
           {
             schemaVersion: 2,
@@ -223,7 +225,7 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
     });
 
   const adoptCommittedSetup = async (
-    setup: LocalServiceSetupPending,
+    setup: LocalServiceSetupPending | LocalServiceLegacyHandoff,
   ): Promise<
     | { readonly kind: 'absent' | 'transition' }
     | { readonly kind: 'managed'; readonly managed: LocalServiceManaged }
@@ -231,7 +233,16 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
     const authority = await resolveManagedDeploymentAuthority(setup.rootId);
     if (!authority) return { kind: 'absent' };
     if (authority.kind === 'transition') return authority;
-    const managed = managedLifecycle(authority.target);
+    const target =
+      setup.schemaVersion === 1
+        ? {
+            ...authority.target,
+            operator: createRuntimeHostLegacyPosixOperatorCommand(
+              join(authority.deploymentRoot, 'operator'),
+            ),
+          }
+        : authority.target;
+    const managed = managedLifecycle(target);
     await writeDocument(lifecyclePath, managed);
     return { kind: 'managed', managed };
   };
@@ -472,7 +483,7 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
     | { readonly kind: 'complete'; readonly managed: LocalServiceManaged }
   > => {
     const pending = pendingSetup(legacy);
-    const authority = await adoptCommittedSetup(pending);
+    const authority = await adoptCommittedSetup(legacy);
     if (authority.kind === 'managed') {
       return { kind: 'complete', managed: authority.managed };
     }
@@ -487,7 +498,7 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
     );
     if (retirement.kind === 'active_tasks') return { kind: 'active_tasks' };
     if (retirement.kind === 'not_owned') {
-      const raced = await adoptCommittedSetup(pending);
+      const raced = await adoptCommittedSetup(legacy);
       if (raced.kind === 'managed') {
         return { kind: 'complete', managed: raced.managed };
       }
@@ -857,7 +868,7 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
         const pending = await readLifecycle(lifecyclePath, input.rootPath, input.rootId);
         if (pending?.state !== 'setupPending' && pending?.state !== 'handoff') return false;
         const current = pendingSetup(pending);
-        const authority = await adoptCommittedSetup(current);
+        const authority = await adoptCommittedSetup(pending);
         if (authority.kind === 'absent') return false;
         if (authority.kind === 'managed') return true;
         if (pending.state === 'handoff') await writeDocument(lifecyclePath, current);
@@ -882,7 +893,7 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
           return;
         }
         if (lifecycle.state === 'handoff' || lifecycle.state === 'setupPending') {
-          const committed = await adoptCommittedSetup(pendingSetup(lifecycle));
+          const committed = await adoptCommittedSetup(lifecycle);
           if (committed.kind === 'managed') return;
           if (!supported(input.directPeerAvailable)) return;
           if (lifecycle.state === 'handoff') await recoverLegacyHandoff(lifecycle);

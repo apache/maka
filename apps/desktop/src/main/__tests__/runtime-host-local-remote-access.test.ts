@@ -404,6 +404,7 @@ test('replaces a conflicting supervised Host with the requested active-work poli
     resolveManagedDeploymentAuthority: async () => ({
       kind: 'active',
       lifecycleMode: 'supervised',
+      deploymentRoot: join(base, 'deployment'),
       target: {
         schemaVersion: 2,
         serviceId: rootId,
@@ -513,14 +514,14 @@ test('does not persist recoverable setup authority before Desktop ownership comm
   assert.equal(setupCalls, 0);
 });
 
-test('adopts committed managed authority from a released handoff without replaying setup', async (t) => {
+test('adopts a released handoff through its existing legacy operator', async (t) => {
   const base = await mkdtemp(join(tmpdir(), 'maka-local-remote-access-prestart-'));
   t.after(() => rm(base, { recursive: true, force: true }));
   const clientDataRoot = join(base, 'client');
   const rootPath = join(clientDataRoot, 'workspaces', 'default');
   const rootId = 'a'.repeat(64);
   const deploymentId = '22222222-2222-4222-8222-222222222222';
-  const installedOperator = testOperator(join(base, 'installed', 'operator.mjs'));
+  const deploymentRoot = join(base, 'installed');
   await mkdir(rootPath, { recursive: true });
   await writeFile(
     join(clientDataRoot, 'runtime-host-local-service.json'),
@@ -543,10 +544,11 @@ test('adopts committed managed authority from a released handoff without replayi
     resolveManagedDeploymentAuthority: async () => ({
       kind: 'active',
       lifecycleMode: 'supervised',
+      deploymentRoot,
       target: {
         schemaVersion: 2,
         serviceId: rootId,
-        operator: installedOperator,
+        operator: testOperator(join(deploymentRoot, 'operator.mjs')),
         rootPath,
         rootId,
         deploymentId,
@@ -570,7 +572,10 @@ test('adopts committed managed authority from a released handoff without replayi
       schemaVersion: 2,
       state: 'managed',
       serviceId: rootId,
-      operator: installedOperator,
+      operator: {
+        kind: 'legacy_posix_executable',
+        executablePath: join(deploymentRoot, 'operator'),
+      },
       rootPath,
       rootId,
       deploymentId,
