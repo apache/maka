@@ -17,10 +17,10 @@
  * under the License.
  */
 
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { mkdtemp, rm, rmdir, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { delimiter, dirname, isAbsolute, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 import { redactSecrets } from '@maka/core/redaction';
 import {
   DEFAULT_PROCESS_TERMINATION_GRACE_MS,
@@ -62,6 +62,41 @@ import {
 const SETUP_TIMEOUT_MS = 10 * 60_000;
 const SETUP_FRAME_PENDING_MAX = 20 * 1024;
 const STDERR_MAX_BYTES = 64 * 1024;
+const WINDOWS_NPM_RESOLUTION_SCRIPT = String.raw`
+const { statSync } = require('node:fs');
+const path = require('node:path').win32;
+const candidates = [];
+const configuredNode = process.env.npm_node_execpath?.trim();
+const configuredCli = process.env.npm_execpath?.trim();
+if (configuredNode && configuredCli) candidates.push([configuredNode, configuredCli]);
+const searchPath = Object.entries(process.env).find(([key]) => key.toUpperCase() === 'PATH')?.[1];
+for (const entry of searchPath?.split(path.delimiter) ?? []) {
+  const directory = entry.replace(/^"|"$/g, '').trim();
+  if (!directory) continue;
+  candidates.push([
+    path.join(directory, 'node.exe'),
+    path.join(directory, 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+  ]);
+}
+let resolved;
+for (const [nodePath, cliPath] of candidates) {
+  try {
+    if (
+      path.isAbsolute(nodePath) &&
+      path.isAbsolute(cliPath) &&
+      statSync(nodePath).isFile() &&
+      statSync(cliPath).isFile()
+    ) {
+      resolved = [nodePath, cliPath];
+      break;
+    }
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+}
+if (resolved) process.stdout.write(JSON.stringify(resolved));
+else process.exitCode = 1;
+`;
 
 type RuntimeHostSetupCompleteFrame = Extract<RuntimeHostSetupFrame, { kind: 'complete' }>;
 
@@ -665,40 +700,62 @@ function resolveLocalSetupPackage(
 async function resolveLocalNpmCommand(
   command: DesktopRuntimeHostLocalSetupCommand,
   environment: NodeJS.ProcessEnv,
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
+  label: string,
 ): Promise<DesktopRuntimeHostLocalSetupCommand> {
   if (process.platform !== 'win32' || command.executable !== 'npm') return command;
 
-  const configuredNode = environment.npm_node_execpath;
-  const configuredCli = environment.npm_execpath;
-  const candidates: Array<readonly [string, string]> = [];
-  if (configuredNode && configuredCli) candidates.push([configuredNode, configuredCli]);
-
-  const path = Object.entries(environment).find(([key]) => key.toUpperCase() === 'PATH')?.[1];
-  for (const entry of path?.split(delimiter) ?? []) {
-    const directory = entry.replace(/^"|"$/gu, '').trim();
-    if (!directory) continue;
-    candidates.push([
-      join(directory, 'node.exe'),
-      join(directory, 'node_modules', 'npm', 'bin', 'npm-cli.js'),
-    ]);
+  const timeout = AbortSignal.timeout(timeoutMs);
+  const lookupSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
+  let npmCommand: readonly [string, string];
+  try {
+    npmCommand = await locateWindowsNpmCommand(environment, lookupSignal);
+  } catch (error) {
+    if (signal?.aborted) throw abortError(signal);
+    if (timeout.aborted) throw new Error(`${label} timed out`);
+    throw new Error(
+      'Local Runtime Host management requires a complete Node.js and npm installation',
+      { cause: error },
+    );
   }
-
-  for (const [nodePath, cliPath] of candidates) {
-    if (!isAbsolute(nodePath) || !isAbsolute(cliPath)) continue;
-    if ((await regularFile(nodePath)) && (await regularFile(cliPath))) {
-      return { executable: nodePath, args: [cliPath, ...command.args] };
-    }
-  }
-  throw new Error('Local Runtime Host management requires a complete Node.js and npm installation');
+  return { executable: npmCommand[0], args: [npmCommand[1], ...command.args] };
 }
 
-async function regularFile(path: string): Promise<boolean> {
-  try {
-    return (await stat(path)).isFile();
-  } catch (error) {
-    if (isNodeError(error, 'ENOENT')) return false;
-    throw error;
-  }
+function locateWindowsNpmCommand(
+  environment: NodeJS.ProcessEnv,
+  signal: AbortSignal,
+): Promise<readonly [string, string]> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      process.execPath,
+      ['-e', WINDOWS_NPM_RESOLUTION_SCRIPT],
+      {
+        encoding: 'utf8',
+        env: { ...environment, ELECTRON_RUN_AS_NODE: '1' },
+        maxBuffer: 64 * 1024,
+        signal,
+        windowsHide: true,
+      },
+      (error, stdout) => {
+        if (error) return reject(error);
+        let command: unknown;
+        try {
+          command = JSON.parse(stdout);
+        } catch (parseError) {
+          return reject(parseError);
+        }
+        if (
+          !Array.isArray(command) ||
+          command.length !== 2 ||
+          !command.every((path) => typeof path === 'string' && isAbsolute(path))
+        ) {
+          return reject(new Error('The npm resolver returned an invalid command'));
+        }
+        resolve([command[0], command[1]]);
+      },
+    );
+  });
 }
 
 function managedTargetArgs(target: DesktopRuntimeHostLocalServiceTarget): string[] {
@@ -810,9 +867,20 @@ async function runFramedProcess<Frame, Result>(input: {
   readonly inputLine?: string;
   readonly pendingMaxBytes?: number;
 }): Promise<Result> {
+  const deadline = Date.now() + input.timeoutMs;
   input.signal?.throwIfAborted();
-  const command = await resolveLocalNpmCommand(input.command, input.environment);
+  const lookupTimeoutMs = deadline - Date.now();
+  if (lookupTimeoutMs <= 0) throw new Error(`${input.label} timed out`);
+  const command = await resolveLocalNpmCommand(
+    input.command,
+    input.environment,
+    input.signal,
+    lookupTimeoutMs,
+    input.label,
+  );
   input.signal?.throwIfAborted();
+  const remainingTimeoutMs = deadline - Date.now();
+  if (remainingTimeoutMs <= 0) throw new Error(`${input.label} timed out`);
   return new Promise((resolve, reject) => {
     const child = input.spawnProcess(command.executable, [...command.args], {
       ...(input.cwd ? { cwd: input.cwd } : {}),
@@ -864,7 +932,10 @@ async function runFramedProcess<Frame, Result>(input: {
       );
     };
     const onAbort = () => stop(abortError(input.signal));
-    const timeout = setTimeout(() => stop(new Error(`${input.label} timed out`)), input.timeoutMs);
+    const timeout = setTimeout(
+      () => stop(new Error(`${input.label} timed out`)),
+      remainingTimeoutMs,
+    );
     input.signal?.addEventListener('abort', onAbort, { once: true });
     child.stdout?.on('data', (chunk: Buffer) => filter.push(chunk.toString('utf8')));
     child.stderr?.on('data', (chunk: Buffer) => {
