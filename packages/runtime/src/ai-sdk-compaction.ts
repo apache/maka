@@ -408,10 +408,9 @@ export class AiSdkCompaction {
                 foldedRuntimeEvents: [...coveredRuntimeEvents],
                 ...(input.runtimeContextInvocations
                   ? {
-                      invocations: input.runtimeContextInvocations.filter((invocation) =>
-                        coveredRuntimeEvents.some(
-                          (event) => event.invocationId === invocation.invocationId,
-                        ),
+                      invocations: invocationsForFoldedEvents(
+                        input.runtimeContextInvocations,
+                        coveredRuntimeEvents,
                       ),
                     }
                   : {}),
@@ -512,10 +511,8 @@ export class AiSdkCompaction {
       memoryExtractionBoundary?: HistoryCompactMemoryExtractionBoundary;
     },
   ): Promise<string | HistoryCompactProviderState | undefined> {
-    const foldedRunIds = new Set(input.source.foldedRuntimeEvents.map((event) => event.runId));
     const sourceRunRoutes = input.source.invocations
-      ?.filter((invocation) => foldedRunIds.has(invocation.runId))
-      .map((invocation) => {
+      ?.map((invocation) => {
         const route = invocation.opening.route;
         return {
           runId: invocation.runId,
@@ -1178,7 +1175,10 @@ export class AiSdkCompaction {
             ...(input.origin.runId ? { runId: input.origin.runId } : {}),
             source: {
               foldedRuntimeEvents: [...coveredRuntimeEvents],
-              invocations: state.priorInvocations,
+              invocations: invocationsForFoldedEvents(
+                state.priorInvocations,
+                coveredRuntimeEvents,
+              ),
             },
             ...(previousCheckpoint ? { previousCheckpoint } : {}),
             newlyFoldedRuntimeEvents: [...newlyFoldedRuntimeEvents],
@@ -1739,6 +1739,14 @@ function waitForAbortablePromise<T>(
       },
     );
   });
+}
+
+function invocationsForFoldedEvents(
+  invocations: readonly RuntimeInvocationRecord[],
+  foldedRuntimeEvents: readonly RuntimeEvent[],
+): RuntimeInvocationRecord[] {
+  const foldedInvocationIds = new Set(foldedRuntimeEvents.map((event) => event.invocationId));
+  return invocations.filter((invocation) => foldedInvocationIds.has(invocation.invocationId));
 }
 
 export function hasBlockingReplayDiagnostics(plan: RuntimeEventModelReplayPlan): boolean {
