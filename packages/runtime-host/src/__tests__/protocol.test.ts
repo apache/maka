@@ -1912,6 +1912,34 @@ describe('Runtime Host bootstrap protocol', () => {
     );
   });
 
+  test('admits structured-only Messages: empty inline text with quotes or attachments (#4804)', () => {
+    const submit = (content: unknown) =>
+      decodeClientFrame({
+        requestId: 'submit-structured-only',
+        operation: 'turn.message.submit',
+        input: {
+          originHostEpoch: 'epoch-1',
+          sessionId: 'session-1',
+          messageId: 'message-1',
+          content,
+          placement: 'next_turn',
+        },
+      });
+    // A quote or an attachment carries the turn by itself: empty inline text
+    // is admissible when either is present.
+    assert.doesNotThrow(() =>
+      submit({ text: '', quotes: [{ text: 'pasted reference-sized excerpt' }] }),
+    );
+    assert.doesNotThrow(() =>
+      submit({
+        text: '',
+        attachments: [attachmentRef({ kind: 'workspace_file', relativePath: 'a.ts' })],
+      }),
+    );
+    // A Message with nothing but empty text is still an invalid frame.
+    assert.throws(() => submit({ text: '' }), isInvalidFrame);
+  });
+
   test('bounds Message text in UTF-8 bytes while preserving frame headroom', () => {
     const input = {
       originHostEpoch: 'epoch-1',

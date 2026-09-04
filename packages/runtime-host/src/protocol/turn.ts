@@ -464,7 +464,20 @@ export function decodeMessageAdmissionContent(
   value: unknown,
   allowEmptyText = false,
 ): MessageContent {
-  const content = decodeMessageContent(value, allowEmptyText);
+  // Structure first with text emptiness unconstrained, then apply the
+  // admission rule: a quote or an attachment carries the turn by itself, so
+  // empty inline text is admissible when either is present (#4804). A truly
+  // contentless Message still throws, with the same frame error the
+  // text-length rule produced.
+  const content = decodeMessageContent(value, true);
+  if (
+    !allowEmptyText &&
+    content.text.length === 0 &&
+    (content.quotes?.length ?? 0) === 0 &&
+    (content.attachments?.length ?? 0) === 0
+  ) {
+    throw invalidProtocolFrame('Invalid Message text');
+  }
   if (content.attachments?.some((attachment) => attachment.ref.kind === 'session_context')) {
     throw invalidProtocolFrame('Session context references are Host-owned');
   }
