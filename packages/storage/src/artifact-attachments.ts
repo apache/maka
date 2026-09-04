@@ -48,9 +48,7 @@ export interface ArtifactAttachmentResourceReader {
 
 /** Read a user-uploaded Artifact without exposing its storage path. */
 export function createArtifactAttachmentResourceReader(input: {
-  artifactStore:
-    | Pick<ArtifactAuthorityStore, 'getInSession' | 'readTextInSession'>
-    | Pick<ArtifactStore, 'get' | 'readText'>;
+  artifactStore: Pick<ArtifactAuthorityStore, 'getInSession' | 'readTextInSession'>;
 }): ArtifactAttachmentResourceReader {
   return Object.freeze({
     async readAttachmentResource(
@@ -59,10 +57,7 @@ export function createArtifactAttachmentResourceReader(input: {
       abortSignal: AbortSignal,
     ): Promise<ToolResultContent> {
       abortSignal.throwIfAborted();
-      const record =
-        'getInSession' in input.artifactStore
-          ? (await input.artifactStore.getInSession(sessionId, artifactId)).record
-          : await input.artifactStore.get(artifactId);
+      const record = (await input.artifactStore.getInSession(sessionId, artifactId)).record;
       if (!record || record.source !== 'user_upload') {
         throw new Error('Attachment was not found in this Session');
       }
@@ -80,10 +75,7 @@ export function createArtifactAttachmentResourceReader(input: {
       if (record.kind === 'pdf') {
         throw new Error('PDF attachments cannot be decoded by Read');
       }
-      const read =
-        'readTextInSession' in input.artifactStore
-          ? await input.artifactStore.readTextInSession(sessionId, artifactId)
-          : await input.artifactStore.readText(artifactId);
+      const read = await input.artifactStore.readTextInSession(sessionId, artifactId);
       abortSignal.throwIfAborted();
       if (!read.ok) throw new Error(`Attachment could not be read: ${read.reason}`);
       return { kind: 'text', text: read.text };
