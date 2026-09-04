@@ -22,7 +22,6 @@ import type { BotIncomingMessage } from '@maka/runtime/bots';
 import {
   abortable,
   forceTerminateObservedRegisteredRuntimeHost,
-  forceTerminateRegisteredRuntimeHost,
   RuntimeHostOperationError,
   RuntimeHostPermanentReconnectError,
   RuntimeHostRequestInterruptedError,
@@ -98,7 +97,7 @@ export interface RuntimeHostDesktopManager {
   runManagedLocalHostChange<T>(change: () => Promise<T>): Promise<T>;
   setDefaultProfile(profileId: string): void;
   retireOwnedLocalHost(mode: RuntimeHostRetirementMode): Promise<DesktopLocalHostRetirement>;
-  forceTerminateOwnedLocalHost(facts: DesktopLocalHostRetirementFacts): Promise<boolean>;
+  probeOwnedLocalHostActivity(): Promise<DesktopLocalHostActivityProbe>;
   close(): Promise<void>;
 }
 
@@ -136,6 +135,17 @@ export type DesktopLocalHostRetirement =
   | { readonly kind: 'not_owned' }
   | { readonly kind: 'retired'; resume(): void };
 
+/**
+ * Read-only answer to "would quitting interrupt active work right now". Quit
+ * never drives retirement — the launch-owner guard closes an owned ephemeral
+ * Host when the Desktop process exits — so the probe only feeds the
+ * interruption-consent dialog.
+ */
+export type DesktopLocalHostActivityProbe =
+  | { readonly kind: 'active_tasks' }
+  | { readonly kind: 'clear' }
+  | { readonly kind: 'not_owned' };
+
 interface DesktopLocalHostRetirementTask {
   readonly mode: RuntimeHostRetirementMode;
   readonly result: Promise<DesktopLocalHostRetirement>;
@@ -147,7 +157,6 @@ export interface DesktopLocalHostRetirementFacts {
   readonly lifecycleMode: 'ephemeral';
   readonly rootPath: string;
   readonly pid?: number;
-  readonly forceTerminationAvailable: boolean;
 }
 
 export class DesktopLocalHostRetirementError extends Error {
@@ -247,7 +256,6 @@ export async function startRuntimeHostDesktopManager(
     onFatalError?: (error: Error, target: ResolvedRuntimeHostProfile) => void;
     upgradePrompts?: RuntimeHostUpgradePrompts;
     waitForHostExit?: (pid: number) => Promise<void>;
-    forceTerminateHost?: typeof forceTerminateRegisteredRuntimeHost;
     forceTerminateObservedHost?: typeof forceTerminateObservedRegisteredRuntimeHost;
     waitForHostRetirement?: (
       registration: HostRegistration,
@@ -272,7 +280,6 @@ export async function startRuntimeHostDesktopManager(
     options.onFatalError ?? ((error) => console.error('[runtime-host] reconnect failed:', error)),
     options.upgradePrompts,
     options.waitForHostExit ?? waitForProcessExit,
-    options.forceTerminateHost ?? forceTerminateRegisteredRuntimeHost,
     options.forceTerminateObservedHost ?? forceTerminateObservedRegisteredRuntimeHost,
     options.waitForHostRetirement ?? waitForProcessRetirement,
     options.resolveLocalHostReplacement,
@@ -312,7 +319,6 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     ) => void,
     private readonly upgradePrompts: RuntimeHostUpgradePrompts | undefined,
     private readonly waitForHostExit: (pid: number) => Promise<void>,
-    private readonly forceTerminateHost: typeof forceTerminateRegisteredRuntimeHost,
     private readonly forceTerminateObservedHost: typeof forceTerminateObservedRegisteredRuntimeHost,
     private readonly waitForHostRetirement: (
       registration: HostRegistration,
@@ -762,58 +768,20 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     return result;
   }
 
-  async forceTerminateOwnedLocalHost(
-    facts: DesktopLocalHostRetirementFacts,
-  ): Promise<boolean> {
-    if (this.#localHostRetirement) return true;
+  async probeOwnedLocalHostActivity(): Promise<DesktopLocalHostActivityProbe> {
     const target = this.#targets.get(LOCAL_RUNTIME_HOST_PROFILE.id);
-    const last = target?.lastCandidate;
-    const ownedProcess = last?.ownedProcess;
-    if (
-      !facts.forceTerminationAvailable ||
-      !last ||
-      last.hostId !== facts.hostId ||
-      last.hostEpoch !== facts.hostEpoch ||
-      last.ownership !== 'owned_ephemeral' ||
-      facts.pid === undefined ||
-      !ownedProcess ||
-      ownedProcess.pid !== facts.pid ||
-      ownedProcess.state === 'unknown'
-    ) {
-      return false;
+    const candidate = target?.lifecycle?.current;
+    if (!candidate || candidate.hostOwnership !== 'owned_ephemeral') {
+      return { kind: 'not_owned' };
     }
-    const stillOwnsProcess = () =>
-      !this.#closed &&
-      target?.lastCandidate === last &&
-      last.ownedProcess === ownedProcess &&
-      ownedProcess.state === 'running';
-    const barrier = this.#baseInput.candidateLaunchBarrier;
-    let paused = false;
-    let retained = false;
     try {
-      barrier?.pause();
-      paused = barrier !== undefined;
-      await barrier?.retireExcept(facts.pid);
-      const terminated =
-        ownedProcess.state === 'exited' ||
-        await this.forceTerminateHost(
-          {
-            rootPath: facts.rootPath,
-            rootId: facts.hostId,
-            hostEpoch: facts.hostEpoch,
-            pid: facts.pid,
-          },
-          stillOwnsProcess,
-        );
-      if (!terminated && (target.lastCandidate !== last || ownedProcess.state !== 'exited')) {
-        return false;
-      }
-      target.lastCandidate = undefined;
-      this.#completeLocalHostRetirement(() => barrier?.resume());
-      retained = true;
-      return true;
-    } finally {
-      if (paused && !retained) barrier?.resume();
+      const diagnostics = await candidate.client.queryHostDiagnostics();
+      return { kind: diagnostics.upgradeBlockingActivity === true ? 'active_tasks' : 'clear' };
+    } catch {
+      // A Host that cannot answer a probe is still closed by its launch-owner
+      // guard when this process exits; diagnostics must never hold quit
+      // hostage.
+      return { kind: 'clear' };
     }
   }
 
@@ -877,14 +845,6 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       target.lastCandidate = undefined;
       return this.#completeLocalHostRetirement(resume);
     } catch (error) {
-      const last = target.lastCandidate;
-      const forceTerminationAvailable =
-        hostPid !== undefined &&
-        last?.hostId === quiescence.current.client.hostId &&
-        last.hostEpoch === quiescence.current.client.hostEpoch &&
-        last.ownership === 'owned_ephemeral' &&
-        last.ownedProcess?.pid === hostPid &&
-        last.ownedProcess.state === 'running';
       resume();
       throw new DesktopLocalHostRetirementError(
         {
@@ -893,7 +853,6 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
           lifecycleMode: 'ephemeral',
           rootPath: this.#baseInput.rootPath,
           ...(hostPid === undefined ? {} : { pid: hostPid }),
-          forceTerminationAvailable,
         },
         { cause: error },
       );
@@ -934,7 +893,6 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
         ...(last.ownedProcess?.state === 'running'
           ? { pid: last.ownedProcess.pid }
           : {}),
-        forceTerminationAvailable: last.ownedProcess?.state === 'running',
       },
       { cause: cause instanceof Error ? cause : new Error(String(cause)) },
     );
@@ -973,7 +931,10 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     const results = await Promise.allSettled(
       [...this.#targets.values()].map((target) => this.#removeTarget(target)),
     );
-    this.#baseInput.candidateLaunchBarrier?.release();
+    // Owned candidates are deliberately not released here: a launcher that
+    // exits without releasing them is their close authority, so keeping the
+    // launch-owner guard armed is what retires an owned ephemeral Host on
+    // quit.
     this.#ipcMain.close();
     const failures = results.filter(
       (result): result is PromiseRejectedResult => result.status === 'rejected',
