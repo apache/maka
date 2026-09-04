@@ -78,7 +78,7 @@ export interface CoarseResourceClaim {
   readonly key: string;
 }
 
-/** Placeholder `all()`: conflicts with everything. Fail-closed fallback only. */
+/** Scheduler description for process-exclusive all(); explicit none() has no claims. */
 export interface AllResourceClaim {
   readonly kind: 'all';
 }

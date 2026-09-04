@@ -23,6 +23,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { after, before, describe, test } from 'node:test';
 import { buildBuiltinToolComposition } from '../builtin-tools.js';
+import { hostFilesystemLeaseKey } from '../filesystem-lease-key.js';
 import { ToolPreparationService } from '../preparation/tool-preparation-service.js';
 import type { MakaTool, MakaToolContext } from '../tool-runtime.js';
 
@@ -30,10 +31,9 @@ describe('builtin tool resource claims', () => {
   let cwd: string;
   const tools = new Map<string, MakaTool>();
   let preparationService: ToolPreparationService;
-  // claim.key must equal the executor's lock key. On Windows realpath returns
-  // backslash paths, and normalising here would break the claim==lock key
-  // invariant, so the key is compared verbatim.
-  const expectedKey = (path: string) => resolve(cwd, path);
+  // claim.key must equal the process-wide coordinator key, including the
+  // platform normalization used by the filesystem authority.
+  const expectedKey = (path: string) => hostFilesystemLeaseKey(resolve(cwd, path));
 
   before(async () => {
     cwd = await realpath(await mkdtemp(join(tmpdir(), 'maka-claims-')));
@@ -48,7 +48,13 @@ describe('builtin tool resource claims', () => {
 
   test('maps file reads and writes to canonical keyed claims', async () => {
     assert.deepEqual(await claims(preparationService, tools, 'Read', { path: 'a.ts' }, cwd), [
-      { kind: 'keyed', authority: 'filesystem:workspace', key: expectedKey('a.ts'), mode: 'read' },
+      {
+        kind: 'keyed',
+        authority: 'filesystem:workspace',
+        key: expectedKey('a.ts'),
+        mode: 'read',
+        scope: 'exact',
+      },
     ]);
     assert.deepEqual(
       await claims(preparationService, tools, 'Write', { path: 'a.ts', content: 'x' }, cwd),
@@ -58,6 +64,7 @@ describe('builtin tool resource claims', () => {
           authority: 'filesystem:workspace',
           key: expectedKey('a.ts'),
           mode: 'write',
+          scope: 'exact',
         },
       ],
     );
@@ -71,6 +78,7 @@ describe('builtin tool resource claims', () => {
           authority: 'filesystem:workspace',
           key: expectedKey(input.path),
           mode: 'write',
+          scope: 'exact',
         },
       ]);
     }
@@ -145,20 +153,34 @@ describe('builtin tool resource claims', () => {
           authority: 'filesystem:workspace',
           key: expectedKey('changed.txt'),
           mode: 'write',
+          scope: 'exact',
         },
       ],
     );
-    // A string (multi-operation) patch falls back to the plain impl. Until the
-    // parser is shared safely with prepare, it must conservatively claim all.
+    // Freeform multi-operation patches share the production parser and claim
+    // every target up front in stable key order.
     assert.deepEqual(
       await claims(
         preparationService,
         tools,
         'apply_patch',
-        '*** Begin Patch\n+x\n*** End Patch',
+        [
+          '*** Begin Patch',
+          '*** Add File: b.txt',
+          '+b',
+          '*** Add File: a.txt',
+          '+a',
+          '*** End Patch',
+        ].join('\n'),
         cwd,
       ),
-      [{ kind: 'all' }],
+      ['a.txt', 'b.txt'].map((path) => ({
+        kind: 'keyed',
+        authority: 'filesystem:workspace',
+        key: expectedKey(path),
+        mode: 'write',
+        scope: 'exact',
+      })),
     );
   });
 

@@ -71,6 +71,7 @@ import {
   type FilesystemResult,
 } from './filesystem-executor.js';
 import type { FilesystemLeaseCoordinator } from './filesystem-lease-coordinator.js';
+import type { ProcessResourceAdmissionCoordinator } from './process-resource-admission.js';
 import { noneOperation } from './preparation/placeholder-authorities.js';
 import { defaultToolAuthorityRegistrations } from './preparation/default-tool-authorities.js';
 import {
@@ -196,6 +197,8 @@ export interface BuildBuiltinToolsOptions {
   filesystemWorker?: Pick<FilesystemWorkerClient, 'execute'>;
   /** Process-wide correctness owner shared by direct and prepared file tools. */
   filesystemLeaseCoordinator?: FilesystemLeaseCoordinator;
+  /** Process-wide shared/exclusive barrier shared by all authority paths. */
+  processResourceAdmissionCoordinator?: ProcessResourceAdmissionCoordinator;
   /** Test/embedding override. Production callers use the current process platform. */
   sandboxPlatform?: SandboxPlatform;
   snapshotImage?: (input: {
@@ -227,6 +230,11 @@ function buildBuiltinToolDefinitions(
     ...(options.permissionProfile ? { permissionProfile: options.permissionProfile } : {}),
     ...(options.filesystemLeaseCoordinator
       ? { filesystemLeaseCoordinator: options.filesystemLeaseCoordinator }
+      : {}),
+    ...(options.processResourceAdmissionCoordinator
+      ? {
+          processResourceAdmissionCoordinator: options.processResourceAdmissionCoordinator,
+        }
       : {}),
   });
   const filesystem = filesystemOwner.executor;
@@ -876,7 +884,7 @@ export function buildBuiltinToolComposition(
   return {
     tools: tools.map(stripResourceAuthority),
     authorityRegistry: new ToolAuthorityRegistry(registrations).withRegistrations(
-      defaultToolAuthorityRegistrations(),
+      defaultToolAuthorityRegistrations(options.processResourceAdmissionCoordinator),
     ),
   };
 }

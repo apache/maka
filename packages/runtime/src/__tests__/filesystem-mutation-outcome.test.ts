@@ -211,8 +211,8 @@ describe('filesystem mutation unknown-outcome classification', () => {
   });
 });
 
-describe('filesystem mutation T0 identity capture (queue-window closure)', () => {
-  test('a queued mutation rejects a replacement before dispatching its effect', async () => {
+describe('filesystem mutation admission identity capture', () => {
+  test('a queued mutation admits the current identity after the prior owner completes', async () => {
     const cwd = await realpath(await mkdtemp(join(tmpdir(), 'maka-t0-lockwait-')));
     cleanup.push(cwd);
     const target = join(cwd, 'file.txt');
@@ -225,13 +225,13 @@ describe('filesystem mutation T0 identity capture (queue-window closure)', () =>
     const firstGate = new Promise<void>((resolve) => {
       releaseFirst = resolve;
     });
-    let calls = 0;
+    const calls: FilesystemWorkerExecuteInput[] = [];
     const gatedWorker: {
       execute: (input: FilesystemWorkerExecuteInput) => Promise<FilesystemWorkerResult>;
     } = {
       async execute(input) {
-        calls += 1;
-        if (calls === 1) {
+        calls.push(input);
+        if (calls.length === 1) {
           await firstGate; // hold the path's lock until the swap has happened
           return { kind: 'write', ok: true, path: target, bytes: 5 };
         }
@@ -247,24 +247,26 @@ describe('filesystem mutation T0 identity capture (queue-window closure)', () =>
     });
     await sleep(50); // let the first call reach the worker and hold the lock
 
-    // Second mutation: captures its identity (T0) and queues on the lock.
+    // Second mutation prepares only the stable claim and queues on the lock.
     const second = fs.execute({
       operation: { kind: 'write', path: target, content: 'second' },
       cwd,
     });
-    await sleep(50); // let the second call finish its T0 capture and queue
+    await sleep(50); // let the second call finish claim preparation and queue
 
     // Replace the path WHILE the second mutation is still waiting for the lock.
     await rename(replacement, target);
 
-    // Release the first mutation; the second acquires the prepared key, detects
-    // the identity drift inside the lease, and must not dispatch.
+    const replacementIdentity = await stat(target, { bigint: true });
+    // Release the first mutation; the second acquires the prepared key, samples
+    // the current replacement identity at admission, and dispatches against it.
     releaseFirst();
-    await Promise.all([
-      first,
-      assert.rejects(second, { code: 'filesystem_prepared_target_changed' }),
-    ]);
-    assert.equal(calls, 1, 'the changed queued target must never reach the raw worker');
+    await Promise.all([first, second]);
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls[1]?.expectedIdentity, {
+      dev: String(replacementIdentity.dev),
+      ino: String(replacementIdentity.ino),
+    });
   });
 
   test('an apply_patch mutation forwards its captured identity, not unchecked (#3484 regression)', async () => {

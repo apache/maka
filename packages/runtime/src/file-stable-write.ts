@@ -105,7 +105,7 @@ export async function openStableTarget(input: {
   if (input.targetType !== undefined && input.targetType !== 'missing') {
     // An existing target with no identity: the caller explicitly opted out of
     // CAS (#3484). Open without truncation but perform no comparison — the
-    // caller's own absence of a T0 snapshot is the contract.
+    // caller's own admitted-missing observation is the contract.
     return openExistingNoTruncate(input.path);
   }
   try {

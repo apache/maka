@@ -26,6 +26,7 @@ import { z } from 'zod';
 import type { MakaTool, MakaToolContext } from '../tool-runtime.js';
 import { ToolAuthorityRegistry } from '../preparation/tool-authority-registry.js';
 import { ToolPreparationService } from '../preparation/tool-preparation-service.js';
+import { createProcessResourceAdmissionCoordinator } from '../process-resource-admission.js';
 
 describe('ToolPreparationService (single dispatch entry)', () => {
   let cwd: string;
@@ -143,6 +144,37 @@ describe('ToolPreparationService (single dispatch entry)', () => {
     assert.equal(ran, 1);
   });
 
+  test('a registry miss holds real process-exclusive admission', async () => {
+    const coordinator = createProcessResourceAdmissionCoordinator();
+    const releaseShared = deferred<void>();
+    const shared = coordinator.withShared(undefined, async () => {
+      await releaseShared.promise;
+    });
+    let ran = false;
+    const service = new ToolPreparationService(new ToolAuthorityRegistry(), coordinator);
+    const operation = await service.prepare({
+      tool: {
+        name: 'DynamicTool',
+        description: 'test',
+        parameters: z.object({}),
+        impl: async () => {
+          ran = true;
+        },
+      },
+      input: {},
+      ctx: context(),
+    });
+    const execution = operation.execute();
+    await Promise.resolve();
+    assert.equal(ran, false);
+    assert.equal(coordinator.inspect().queued[0]?.mode, 'exclusive');
+
+    releaseShared.resolve();
+    await shared;
+    await execution;
+    assert.equal(ran, true);
+  });
+
   test('canonicalising does not freeze the live AbortSignal', async () => {
     const controller = new AbortController();
     const tool: MakaTool = {
@@ -191,3 +223,13 @@ describe('ToolPreparationService (single dispatch entry)', () => {
     assert.throws(() => base.withRegistrations([['first', second]]), /already registered: first/);
   });
 });
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}

@@ -18,6 +18,11 @@
  */
 
 import type { PreparedOperation } from './preparation/types.js';
+import { processAllOperation } from './preparation/placeholder-authorities.js';
+import {
+  processResourceAdmissions,
+  type ProcessResourceAdmissionCoordinator,
+} from './process-resource-admission.js';
 import { ToolScheduler } from './tool-scheduler.js';
 
 export interface ToolCallBatchEntry<Result> {
@@ -37,6 +42,10 @@ export interface ToolCallBatchEntry<Result> {
   readonly run: (operation: PreparedOperation<unknown> | undefined) => Promise<Result> | Result;
 }
 
+export interface SettleToolCallBatchOptions {
+  readonly processAdmission?: ProcessResourceAdmissionCoordinator;
+}
+
 /**
  * Prepare every call behind one barrier, submit by original array index, and
  * return settled outcomes in that same order regardless of completion order.
@@ -45,7 +54,9 @@ export interface ToolCallBatchEntry<Result> {
  */
 export async function settleToolCallBatch<Result>(
   entries: readonly ToolCallBatchEntry<Result>[],
+  options: SettleToolCallBatchOptions = {},
 ): Promise<PromiseSettledResult<Result>[]> {
+  const processAdmission = options.processAdmission ?? processResourceAdmissions;
   const scheduler = new ToolScheduler();
   const slots = entries.map((entry, index) => ({ entry, sequence: index }));
   const prepared = await Promise.all(
@@ -61,16 +72,16 @@ export async function settleToolCallBatch<Result>(
   );
 
   const resultSlots = prepared.map(({ slot, operation }) => {
-    const runnable: PreparedOperation<unknown> = operation ?? {
-      claims: [{ kind: 'all' }],
-      execute: () => slot.entry.run(undefined) as Promise<Result>,
-    };
+    const runnable: PreparedOperation<unknown> =
+      operation ??
+      processAllOperation(async () => await slot.entry.run(undefined), processAdmission);
     return scheduler.add({
       id: slot.entry.id,
       sequence: slot.sequence,
       operation: runnable,
       ...(slot.entry.signal ? { signal: slot.entry.signal } : {}),
-      run: (candidate) => slot.entry.run(candidate === runnable ? operation : undefined),
+      run: async (candidate, signal) =>
+        operation ? await slot.entry.run(operation) : ((await candidate.execute(signal)) as Result),
     });
   });
   return await Promise.allSettled(resultSlots);

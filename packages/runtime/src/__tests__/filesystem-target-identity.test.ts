@@ -17,9 +17,9 @@
  * under the License.
  */
 
-// Red-line tests for the T0 target identity CAS (issue #2600 concern #1).
-// A mutation whose target was replaced while the call waited for the write
-// lock must be detected and rejected, not silently written to the replacement.
+// Red-line tests for the admission-time target identity CAS (issue #2600 concern #1).
+// A mutation whose target is replaced after admission must be detected and
+// rejected, not silently written to the replacement.
 // These tests exercise the worker's assertTargetUnchanged identity check
 // directly against a real filesystem.
 import assert from 'node:assert/strict';
@@ -78,7 +78,7 @@ describe('filesystem worker target identity CAS', () => {
     await writeFile(target, 'original', 'utf8');
     await writeFile(replacement, 'replacement', 'utf8');
 
-    // Capture the identity of the original target (T0).
+    // Capture the identity admitted for the original target.
     const identity = await captureIdentity(target);
 
     // Swap the path to a different inode while "queued" (before the worker runs).

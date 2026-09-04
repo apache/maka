@@ -29,6 +29,7 @@ import type { FilesystemWorkerExecuteInput } from '../filesystem-worker/client.j
 import type { FilesystemWorkerResult } from '../filesystem-worker/protocol.js';
 import { ToolPreparationService } from '../preparation/tool-preparation-service.js';
 import type { AuthorityContext } from '../preparation/types.js';
+import { createProcessResourceAdmissionCoordinator } from '../process-resource-admission.js';
 import { createLocalWorkspaceExecutor } from '../workspace-executor.js';
 
 function deferred<T = void>(): {
@@ -41,6 +42,89 @@ function deferred<T = void>(): {
   });
   return { promise, resolve };
 }
+
+test('direct filesystem execution participates in the process-wide all() barrier', async () => {
+  const cwd = await realpath(await mkdtemp(join(tmpdir(), 'maka-process-fs-')));
+  try {
+    await writeFile(join(cwd, 'shared.txt'), 'before', 'utf8');
+    const processAdmission = createProcessResourceAdmissionCoordinator();
+    const releaseAll = deferred();
+    const allStarted = deferred();
+    const readStarted = deferred();
+    let workerCalls = 0;
+    const owner = createFilesystemResourceOwner({
+      workspace: createLocalWorkspaceExecutor(),
+      filesystemLeaseCoordinator: createFilesystemLeaseCoordinator(),
+      processResourceAdmissionCoordinator: processAdmission,
+      worker: {
+        async execute(input: FilesystemWorkerExecuteInput): Promise<FilesystemWorkerResult> {
+          workerCalls += 1;
+          assert.equal(input.operation.kind, 'read');
+          readStarted.resolve();
+          return { kind: 'read', content: 'before' };
+        },
+      },
+    });
+    const all = processAdmission.withExclusive(undefined, async () => {
+      allStarted.resolve();
+      await releaseAll.promise;
+    });
+    await allStarted.promise;
+    const read = owner.executor.execute({
+      operation: { kind: 'read', path: 'shared.txt' },
+      cwd,
+    });
+    await Promise.resolve();
+    assert.equal(workerCalls, 0, 'the filesystem worker must remain behind active all()');
+
+    releaseAll.resolve();
+    await all;
+    await readStarted.promise;
+    assert.equal((await read).kind, 'read');
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test('active direct filesystem execution blocks a later all() holder', async () => {
+  const cwd = await realpath(await mkdtemp(join(tmpdir(), 'maka-fs-process-')));
+  try {
+    await writeFile(join(cwd, 'shared.txt'), 'before', 'utf8');
+    const processAdmission = createProcessResourceAdmissionCoordinator();
+    const readStarted = deferred();
+    const releaseRead = deferred();
+    let allStarted = false;
+    const owner = createFilesystemResourceOwner({
+      workspace: createLocalWorkspaceExecutor(),
+      filesystemLeaseCoordinator: createFilesystemLeaseCoordinator(),
+      processResourceAdmissionCoordinator: processAdmission,
+      worker: {
+        async execute(input: FilesystemWorkerExecuteInput): Promise<FilesystemWorkerResult> {
+          assert.equal(input.operation.kind, 'read');
+          readStarted.resolve();
+          await releaseRead.promise;
+          return { kind: 'read', content: 'before' };
+        },
+      },
+    });
+    const read = owner.executor.execute({
+      operation: { kind: 'read', path: 'shared.txt' },
+      cwd,
+    });
+    await readStarted.promise;
+    const all = processAdmission.withExclusive(undefined, async () => {
+      allStarted = true;
+    });
+    assert.equal(allStarted, false);
+
+    releaseRead.resolve();
+    await read;
+    assert.equal(allStarted, true);
+    await all;
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
 
 test('direct and prepared filesystem operations share the owner lease without Scheduler help', async () => {
   const cwd = await realpath(await mkdtemp(join(tmpdir(), 'maka-authority-leases-')));

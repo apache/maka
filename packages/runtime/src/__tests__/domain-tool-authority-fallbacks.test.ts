@@ -59,6 +59,11 @@ describe('domain tool authority fallbacks', () => {
     assert.deepEqual(await claims('SkillSearch'), []);
   });
 
+  test('maps the Code Mode exec container to none()', async () => {
+    assert.equal(EXPLICIT_NONE_TOOL_AUTHORITY_IDS.includes('exec'), true);
+    assert.deepEqual(await claims('exec'), []);
+  });
+
   test('keeps Computer fail-closed at all() until host/window ownership exists', async () => {
     assert.equal(EXPLICIT_ALL_TOOL_AUTHORITY_IDS.includes('maka_computer'), true);
     assert.deepEqual(await claims('maka_computer'), [{ kind: 'all' }]);

@@ -2956,6 +2956,7 @@ export class AiSdkBackend implements AgentBackend {
                   },
                 }),
               ),
+              { processAdmission: this.preparationService.processAdmission },
             );
             const rejectedSettlement = settlementOutcomes.find(
               (outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected',
@@ -3390,10 +3391,20 @@ export class AiSdkBackend implements AgentBackend {
           const tool = snapshot.get(name);
           if (!tool) throw new Error(`Tool "${name}" is not active or nestable in this cell`);
           const parsedInput = await validateCodeModeToolInput(tool, input);
+          const nestedToolCallId = `${context.toolCallId}:nested:${this.newId()}`;
+          const operation = await this.preparationService.prepare({
+            tool,
+            input: parsedInput,
+            ctx: {
+              ...context,
+              toolCallId: nestedToolCallId,
+              abortSignal: signal,
+            },
+          });
           const settlement = await scope.toolRuntime.settleToolCall({
             tool,
             turnId: context.turnId,
-            toolCallId: `${context.toolCallId}:nested:${this.newId()}`,
+            toolCallId: nestedToolCallId,
             input: parsedInput,
             abortSignal: signal,
             eventSink: nestedEventSink,
@@ -3401,6 +3412,8 @@ export class AiSdkBackend implements AgentBackend {
             parentToolCallId: context.toolCallId,
             ...(context.operationId ? { parentOperationId: context.operationId } : {}),
             maxResultBytes: DEFAULT_CODE_MODE_EXECUTION_POLICY.maxToolOutputBytes,
+            effect: (executionSignal, fallbackEffect, executionContext) =>
+              operation.execute(executionSignal, fallbackEffect, executionContext),
           });
           if (settlement.providerError !== undefined) {
             throw new Error(settlement.providerError);

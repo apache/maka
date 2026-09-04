@@ -23,10 +23,14 @@
 // - `none()`: claims=[] -> the Scheduler neither blocks this task nor is blocked
 //   by it -> it starts immediately. It must be selected explicitly for tools
 //   known not to occupy a modelled resource, or for synthetic/no-effect calls.
-// - `all()`: claims=[{kind:'all'}] -> conflicts with everything -> global
-//   serialization against non-empty claims, fail-closed. It is the conservative
-//   default for real effects whose precise authority is not registered yet.
+// - `all()`: claims=[{kind:'all'}] plus process exclusive admission ->
+//   process-wide serialization against participating non-empty authorities,
+//   fail-closed. Explicit none() operations bypass it.
 
+import {
+  processResourceAdmissions,
+  type ProcessResourceAdmissionCoordinator,
+} from '../process-resource-admission.js';
 import type { AuthorityContext, PreparedOperation, ResourceAuthority } from './types.js';
 import { oneShotOperation } from './one-shot-operation.js';
 
@@ -41,16 +45,30 @@ export const noneResourceAuthority = (): ResourceAuthority<unknown, unknown> => 
   },
 });
 
-export const allResourceAuthority = (): ResourceAuthority<unknown, unknown> => ({
+export const allResourceAuthority = (
+  admission: ProcessResourceAdmissionCoordinator = processResourceAdmissions,
+): ResourceAuthority<unknown, unknown> => ({
   async prepare(_input, context: AuthorityContext): Promise<PreparedOperation<unknown>> {
     const { effect } = context;
-    return oneShotOperation({
-      claims: [{ kind: 'all' }],
-      execute: (signal, fallbackEffect) =>
+    return processAllOperation(
+      (signal, fallbackEffect) =>
         fallbackEffect ? fallbackEffect() : effect ? effect(signal) : Promise.resolve(),
-    });
+      admission,
+    );
   },
 });
+
+/** The single fail-closed implementation used by all() and real-effect fallbacks. */
+export function processAllOperation<Result>(
+  effect: (signal?: AbortSignal, fallbackEffect?: () => Promise<Result>) => Promise<Result>,
+  admission: ProcessResourceAdmissionCoordinator = processResourceAdmissions,
+): PreparedOperation<Result> {
+  return oneShotOperation({
+    claims: [{ kind: 'all' }],
+    execute: (signal, fallbackEffect) =>
+      admission.withExclusive(signal, async () => await effect(signal, fallbackEffect)),
+  });
+}
 
 /** A pre-built `none()` operation for explicit none or synthetic/no-effect calls. */
 export function noneOperation(

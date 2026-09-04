@@ -21,6 +21,8 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { settleToolCallBatch, type ToolCallBatchEntry } from '../tool-call-batch.js';
 import type { PreparedOperation, ResourceClaim } from '../preparation/types.js';
+import { noneOperation, processAllOperation } from '../preparation/placeholder-authorities.js';
+import { createProcessResourceAdmissionCoordinator } from '../process-resource-admission.js';
 
 const FILE = 'filesystem:workspace';
 const write = (key: string): ResourceClaim[] => [
@@ -198,7 +200,177 @@ describe('settleToolCallBatch', () => {
     assert.equal(outcomes[0]?.status, 'fulfilled');
     assert.equal(outcomes[1]?.status, 'rejected');
   });
+
+  test('lets none() start in the same batch while all() is active', async () => {
+    const coordinator = createProcessResourceAdmissionCoordinator();
+    const releaseAll = deferred<void>();
+    const allStarted = deferred<void>();
+    const noneStarted = deferred<void>();
+    const allOperation = processAllOperation(async () => {
+      allStarted.resolve();
+      await releaseAll.promise;
+      return 'all';
+    }, coordinator);
+    const bypassOperation = noneOperation(async () => {
+      noneStarted.resolve();
+      return 'none';
+    });
+
+    const batch = settleToolCallBatch(
+      [operationEntry('all', allOperation), operationEntry('none', bypassOperation)],
+      { processAdmission: coordinator },
+    );
+    await allStarted.promise;
+    await noneStarted.promise;
+    assert.equal(coordinator.inspect().activeExclusive, true);
+    releaseAll.resolve();
+    assert.deepEqual(await batch, [
+      { status: 'fulfilled', value: 'all' },
+      { status: 'fulfilled', value: 'none' },
+    ]);
+  });
+
+  test('lets none() bypass active and queued all() work across independent batches', async () => {
+    const coordinator = createProcessResourceAdmissionCoordinator();
+    const releaseShared = deferred<void>();
+    const releaseAll = deferred<void>();
+    const allStarted = deferred<void>();
+    let noneRuns = 0;
+    const shared = coordinator.withShared(undefined, async () => {
+      await releaseShared.promise;
+    });
+    const allBatch = settleToolCallBatch(
+      [
+        operationEntry(
+          'all',
+          processAllOperation(async () => {
+            allStarted.resolve();
+            await releaseAll.promise;
+            return 'all';
+          }, coordinator),
+        ),
+      ],
+      { processAdmission: coordinator },
+    );
+    await flushMicrotasks();
+    assert.equal(coordinator.inspect().queued[0]?.mode, 'exclusive');
+
+    const queuedBypass = await settleToolCallBatch(
+      [
+        operationEntry(
+          'none-queued',
+          noneOperation(async () => {
+            noneRuns += 1;
+            return 'none-queued';
+          }),
+        ),
+      ],
+      { processAdmission: coordinator },
+    );
+    assert.deepEqual(queuedBypass, [{ status: 'fulfilled', value: 'none-queued' }]);
+    releaseShared.resolve();
+    await shared;
+    await allStarted.promise;
+
+    const activeBypass = await settleToolCallBatch(
+      [
+        operationEntry(
+          'none-active',
+          noneOperation(async () => {
+            noneRuns += 1;
+            return 'none-active';
+          }),
+        ),
+      ],
+      { processAdmission: coordinator },
+    );
+    assert.deepEqual(activeBypass, [{ status: 'fulfilled', value: 'none-active' }]);
+    assert.equal(noneRuns, 2);
+    releaseAll.resolve();
+    await allBatch;
+  });
+
+  test('does not make all() wait for a long-running none()', async () => {
+    const coordinator = createProcessResourceAdmissionCoordinator();
+    const releaseNone = deferred<void>();
+    const noneStarted = deferred<void>();
+    const allStarted = deferred<void>();
+    const noneBatch = settleToolCallBatch(
+      [
+        operationEntry(
+          'none',
+          noneOperation(async () => {
+            noneStarted.resolve();
+            await releaseNone.promise;
+            return 'none';
+          }),
+        ),
+      ],
+      { processAdmission: coordinator },
+    );
+    await noneStarted.promise;
+    const allBatch = settleToolCallBatch(
+      [
+        operationEntry(
+          'all',
+          processAllOperation(async () => {
+            allStarted.resolve();
+            return 'all';
+          }, coordinator),
+        ),
+      ],
+      { processAdmission: coordinator },
+    );
+
+    await allStarted.promise;
+    assert.deepEqual(await allBatch, [{ status: 'fulfilled', value: 'all' }]);
+    releaseNone.resolve();
+    await noneBatch;
+  });
+
+  test('runs a preparation-failure fallback under real exclusive admission', async () => {
+    const coordinator = createProcessResourceAdmissionCoordinator();
+    const releaseShared = deferred<void>();
+    let fallbackStarted = false;
+    const shared = coordinator.withShared(undefined, async () => {
+      await releaseShared.promise;
+    });
+    const fallbackBatch = settleToolCallBatch(
+      [
+        entry(
+          'fallback',
+          async () => {
+            throw new Error('prepare failed');
+          },
+          async () => {
+            fallbackStarted = true;
+            return 'fallback';
+          },
+        ),
+      ],
+      { processAdmission: coordinator },
+    );
+    await flushMicrotasks();
+    assert.equal(fallbackStarted, false);
+    assert.equal(coordinator.inspect().queued[0]?.mode, 'exclusive');
+
+    releaseShared.resolve();
+    await shared;
+    assert.deepEqual(await fallbackBatch, [{ status: 'fulfilled', value: 'fallback' }]);
+    assert.equal(fallbackStarted, true);
+  });
 });
+
+function operationEntry<Result>(
+  id: string,
+  operation: PreparedOperation<Result>,
+): ToolCallBatchEntry<Result> {
+  return {
+    id,
+    prepare: async () => operation,
+    run: async (candidate) => (await candidate?.execute()) as Result,
+  };
+}
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;

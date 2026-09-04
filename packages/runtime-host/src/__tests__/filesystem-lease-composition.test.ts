@@ -24,8 +24,13 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import { createManagedExecutionBoundary } from '@maka/core/sandbox-boundary';
-import { buildBuiltinTools, type BuildBuiltinToolsOptions } from '@maka/runtime/builtin-tools';
+import {
+  buildBuiltinToolComposition,
+  buildBuiltinTools,
+  type BuildBuiltinToolsOptions,
+} from '@maka/runtime/builtin-tools';
 import { createFilesystemLeaseCoordinator } from '@maka/runtime/filesystem-lease-coordinator';
+import { createProcessResourceAdmissionCoordinator } from '@maka/runtime/process-resource-admission';
 import type { MakaTool, MakaToolContext } from '@maka/runtime/tool-runtime';
 import { createHostChildAgentToolComposition } from '../server/child-agent-composition.js';
 
@@ -107,6 +112,80 @@ test('root and child tool compositions share one filesystem coordinator', async 
     releaseRead.resolve();
     await Promise.all([read, edit]);
     assert.deepEqual(calls, ['read', 'edit']);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test('root all() and child filesystem tools share one process admission coordinator', async () => {
+  const cwd = await realpath(await mkdtemp(join(tmpdir(), 'maka-root-child-process-')));
+  try {
+    await writeFile(join(cwd, 'shared.txt'), 'before', 'utf8');
+    const processAdmission = createProcessResourceAdmissionCoordinator();
+    const releaseAll = deferred();
+    const allStarted = deferred();
+    let workerCalls = 0;
+    const filesystemWorker: NonNullable<BuildBuiltinToolsOptions['filesystemWorker']> = {
+      async execute(input) {
+        workerCalls += 1;
+        assert.equal(input.operation.kind, 'read');
+        return { kind: 'read', content: 'before' } as const;
+      },
+    };
+    const options: BuildBuiltinToolsOptions = {
+      filesystemWorker,
+      filesystemLeaseCoordinator: createFilesystemLeaseCoordinator(),
+      processResourceAdmissionCoordinator: processAdmission,
+    };
+    const root = buildBuiltinToolComposition(options);
+    const rootAllAuthority = root.authorityRegistry.resolve('Bash');
+    assert.ok(rootAllAuthority);
+    const allOperation = await rootAllAuthority.prepare(
+      {},
+      {
+        sessionId: 'root-session',
+        turnId: 'root-turn',
+        toolCallId: 'root-all',
+        cwd,
+        effect: async () => {
+          allStarted.resolve();
+          await releaseAll.promise;
+        },
+      },
+    );
+    const all = allOperation.execute();
+    await allStarted.promise;
+
+    const childRead = createHostChildAgentToolComposition({
+      builtinTools: options,
+      worktreePatchWriteBackAvailable: true,
+    }).childTools.find((tool) => tool.name === 'Read') as
+      | MakaTool<{ path: string }, unknown>
+      | undefined;
+    assert.ok(childRead);
+    const read = childRead.impl(
+      { path: 'shared.txt' },
+      {
+        sessionId: 'child-session',
+        turnId: 'child-turn',
+        toolCallId: 'child-read',
+        cwd,
+        permissionMode: 'ask',
+        executionBoundary: createManagedExecutionBoundary(
+          createWorkspaceWritePermissionProfile(),
+          0,
+        ),
+        abortSignal: new AbortController().signal,
+        emitOutput: () => {},
+      },
+    );
+    await Promise.resolve();
+    assert.equal(workerCalls, 0);
+
+    releaseAll.resolve();
+    await all;
+    await read;
+    assert.equal(workerCalls, 1);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }

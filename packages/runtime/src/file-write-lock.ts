@@ -24,6 +24,7 @@
 
 import { processFilesystemLeases } from './filesystem-lease-coordinator.js';
 import { hostFilesystemLeaseKey } from './filesystem-lease-key.js';
+import { processResourceAdmissions } from './process-resource-admission.js';
 
 /**
  * Runs `fn` exclusively for `key`: it waits until any prior work for `key`
@@ -34,9 +35,11 @@ import { hostFilesystemLeaseKey } from './filesystem-lease-key.js';
  * Windows case fold as the filesystem owner before entering the shared queue.
  */
 export function withFileWriteLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
-  return processFilesystemLeases.withLease(
-    { key: hostFilesystemLeaseKey(key), mode: 'write', scope: 'exact' },
-    undefined,
-    fn,
+  return processResourceAdmissions.withShared(undefined, () =>
+    processFilesystemLeases.withLease(
+      { key: hostFilesystemLeaseKey(key), mode: 'write', scope: 'exact' },
+      undefined,
+      fn,
+    ),
   );
 }

@@ -18,12 +18,10 @@
  */
 
 // packages/runtime/src/preparation/target-identity.ts
-// The `(dev, ino)` snapshot contract shared between the filesystem Authority's
-// `prepare` (capture at T0) and `PreparedOperation.execute` (re-check at run
-// time). This is the coarse pre-guard against "the target was replaced while the
-// call waited for the lock". It is NOT a replacement for the fd-pinned
-// read-modify-write in file-stable-write.ts, which catches in-place content
-// changes that leave the inode unchanged.
+// The `(dev, ino)` execution contract captured after filesystem lease admission.
+// Prepared operations retain only their canonical claim; the mutable identity is
+// sampled after preceding conflicting owners have completed, immediately before
+// the backend pins the object with a handle/CAS primitive.
 
 export type TargetIdentity =
   | { readonly kind: 'file'; readonly dev: string; readonly ino: string }
@@ -38,14 +36,22 @@ export interface ResolvedTarget {
   readonly identity: TargetIdentity;
 }
 
+/** The target a backend is authorised to use for one admitted effect. */
+export interface AdmittedTargetContract {
+  /** Backend-executable canonical path. Never reconstruct this from provider input. */
+  readonly canonicalPath: string;
+  readonly semantics: 'target' | 'entry';
+  /** Identity sampled while the operation owns the matching filesystem lease. */
+  readonly identity: TargetIdentity;
+}
+
 export interface ResolveIdentity {
   (input: { cwd: string; path: string; semantics: 'target' | 'entry' }): Promise<ResolvedTarget>;
 }
 
 /**
- * True when the identity captured at prepare-time no longer matches the state
- * observed at execute-time. `missing` is only stable when both sides are
- * `missing` (a create target that is still absent).
+ * True when two execution-time observations name different objects. Backends
+ * and tests use this for CAS/revalidation; prepare never stores an identity.
  */
 export function identityChanged(a: TargetIdentity, b: TargetIdentity): boolean {
   if (a.kind === 'missing' || b.kind === 'missing') return a.kind !== b.kind;

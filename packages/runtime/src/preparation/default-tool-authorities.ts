@@ -18,12 +18,19 @@
  */
 
 import { allResourceAuthority, noneResourceAuthority } from './placeholder-authorities.js';
+import {
+  processResourceAdmissions,
+  type ProcessResourceAdmissionCoordinator,
+} from '../process-resource-admission.js';
 import type { ToolAuthorityRegistration } from './tool-authority-registry.js';
 
 /** Stable Kimi-policy decisions for tools outside the filesystem domain. */
 export const EXPLICIT_NONE_TOOL_AUTHORITY_IDS = Object.freeze([
   'WebSearch',
   'WebFetch',
+  // Code Mode is an orchestration container. Its nested leaf calls prepare and
+  // acquire their own authorities; the container itself owns only cell capacity.
+  'exec',
   'agent_spawn',
   'agent_list',
   'agent_output',
@@ -71,9 +78,13 @@ export const EXPLICIT_ALL_TOOL_AUTHORITY_IDS = Object.freeze([
  * Static policy registrations are composed once into the process registry.
  * Dynamic and newly introduced tools remain safe through registry-miss all().
  */
-export function defaultToolAuthorityRegistrations(): readonly ToolAuthorityRegistration[] {
+export function defaultToolAuthorityRegistrations(
+  processAdmission: ProcessResourceAdmissionCoordinator = processResourceAdmissions,
+): readonly ToolAuthorityRegistration[] {
   return Object.freeze([
     ...EXPLICIT_NONE_TOOL_AUTHORITY_IDS.map((toolId) => [toolId, noneResourceAuthority()] as const),
-    ...EXPLICIT_ALL_TOOL_AUTHORITY_IDS.map((toolId) => [toolId, allResourceAuthority()] as const),
+    ...EXPLICIT_ALL_TOOL_AUTHORITY_IDS.map(
+      (toolId) => [toolId, allResourceAuthority(processAdmission)] as const,
+    ),
   ]);
 }

@@ -30,6 +30,10 @@ import { realpath } from 'node:fs/promises';
 import type { ExecutionBoundary } from '@maka/core/sandbox-boundary';
 import type { PermissionMode } from '@maka/core/permission';
 import type { MakaTool, MakaToolContext } from '../tool-runtime.js';
+import {
+  processResourceAdmissions,
+  type ProcessResourceAdmissionCoordinator,
+} from '../process-resource-admission.js';
 import { oneShotOperation } from './one-shot-operation.js';
 import { allResourceAuthority } from './placeholder-authorities.js';
 import type { AuthorityContext, PreparedOperation } from './types.js';
@@ -66,7 +70,10 @@ interface SchemaValidator {
 }
 
 export class ToolPreparationService {
-  constructor(private readonly authorities: ToolAuthorityRegistry) {}
+  constructor(
+    private readonly authorities: ToolAuthorityRegistry,
+    readonly processAdmission: ProcessResourceAdmissionCoordinator = processResourceAdmissions,
+  ) {}
 
   async prepare(toolCall: {
     readonly tool: MakaTool;
@@ -93,7 +100,8 @@ export class ToolPreparationService {
     // ③ dispatch only through the process-owned registry. A real tool whose
     //    effect has not been classified fails closed to all modelled resources.
     //    Synthetic/no-effect calls bypass this fallback with noneOperation().
-    const authority = this.authorities.resolve(canonical.toolId) ?? allResourceAuthority();
+    const authority =
+      this.authorities.resolve(canonical.toolId) ?? allResourceAuthority(this.processAdmission);
     const operation = await authority.prepare(
       canonical.input,
       this.toAuthorityContext(canonical, toolCall.ctx, toolCall.tool),

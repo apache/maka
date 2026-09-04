@@ -29,7 +29,12 @@ import { buildBuiltinToolComposition } from '../builtin-tools.js';
 import type { FilesystemWorkerExecuteInput } from '../filesystem-worker/client.js';
 import type { FilesystemWorkerResult } from '../filesystem-worker/protocol.js';
 import { ToolPreparationService } from '../preparation/tool-preparation-service.js';
+import { processAllOperation } from '../preparation/placeholder-authorities.js';
 import type { ResourceClaim } from '../preparation/types.js';
+import {
+  createProcessResourceAdmissionCoordinator,
+  type ProcessResourceAdmissionCoordinator,
+} from '../process-resource-admission.js';
 import { settleToolCallBatch } from '../tool-call-batch.js';
 import type { MakaToolContext } from '../tool-runtime.js';
 
@@ -40,6 +45,85 @@ afterEach(async () => {
 });
 
 describe('filesystem ToolCallBatch scenarios', () => {
+  // These controlled-worker cases prove admission and ordering only. Identity
+  // transitions require real disk effects and live in
+  // filesystem-admission-identity.test.ts.
+  test('independent batches: active all() keeps real builtin Read and Write out of the worker', async () => {
+    const cwd = await scenarioWorkspace();
+    const observer = new ControlledFilesystemWorker();
+    const processAdmission = createProcessResourceAdmissionCoordinator();
+    const releaseAll = deferred<void>();
+    const allStarted = deferred<void>();
+    const allOperation = processAllOperation(async () => {
+      allStarted.resolve();
+      await releaseAll.promise;
+      return 'all';
+    }, processAdmission);
+    const allBatch = settleToolCallBatch(
+      [
+        {
+          id: 'bash-all',
+          prepare: async () => allOperation,
+          run: async (operation) => await operation?.execute(),
+        },
+      ],
+      { processAdmission },
+    );
+    await allStarted.promise;
+    const readBatch = startBatch(
+      cwd,
+      observer,
+      [
+        { id: 'read-a', toolName: 'Read', input: { path: 'a.txt' } },
+        { id: 'write-b', toolName: 'Write', input: { path: 'b.txt', content: 'B' } },
+      ],
+      processAdmission,
+    );
+    await Promise.resolve();
+    assert.deepEqual(observer.started, []);
+
+    releaseAll.resolve();
+    await allBatch;
+    await observer.waitForStarted(['read:a.txt#1', 'write:b.txt#1']);
+    observer.releaseAll();
+    await readBatch.outcomes;
+  });
+
+  test('independent batches: active real builtin Read blocks a later all()', async () => {
+    const cwd = await scenarioWorkspace();
+    const observer = new ControlledFilesystemWorker();
+    const processAdmission = createProcessResourceAdmissionCoordinator();
+    const readBatch = startBatch(
+      cwd,
+      observer,
+      [{ id: 'read-a', toolName: 'Read', input: { path: 'a.txt' } }],
+      processAdmission,
+    );
+    await observer.waitForStarted(['read:a.txt#1']);
+    let allStarted = false;
+    const allOperation = processAllOperation(async () => {
+      allStarted = true;
+      return 'all';
+    }, processAdmission);
+    const allBatch = settleToolCallBatch(
+      [
+        {
+          id: 'bash-all',
+          prepare: async () => allOperation,
+          run: async (operation) => await operation?.execute(),
+        },
+      ],
+      { processAdmission },
+    );
+    await Promise.resolve();
+    assert.equal(allStarted, false);
+
+    observer.releaseAll();
+    await readBatch.outcomes;
+    assert.deepEqual(await allBatch, [{ status: 'fulfilled', value: 'all' }]);
+    assert.equal(allStarted, true);
+  });
+
   test('independent batches: Read holds a same-file Edit until the first batch settles', async () => {
     const cwd = await scenarioWorkspace();
     const observer = new ControlledFilesystemWorker();
@@ -344,14 +428,16 @@ function startBatch(
   cwd: string,
   observer: ControlledFilesystemWorker,
   calls: readonly ScenarioCall[],
+  processAdmission?: ProcessResourceAdmissionCoordinator,
 ): {
   readonly claims: Map<string, readonly ResourceClaim[]>;
   readonly outcomes: Promise<PromiseSettledResult<ScenarioValue>[]>;
 } {
   const composition = buildBuiltinToolComposition({
     filesystemWorker: { execute: (input) => observer.execute(input) },
+    ...(processAdmission ? { processResourceAdmissionCoordinator: processAdmission } : {}),
   });
-  const preparation = new ToolPreparationService(composition.authorityRegistry);
+  const preparation = new ToolPreparationService(composition.authorityRegistry, processAdmission);
   const tools = new Map(composition.tools.map((tool) => [tool.name, tool]));
   const claims = new Map<string, readonly ResourceClaim[]>();
   const abortSignal = new AbortController().signal;
@@ -391,6 +477,7 @@ function startBatch(
         },
       };
     }),
+    processAdmission ? { processAdmission } : {},
   );
 
   return { claims, outcomes };

@@ -33,6 +33,7 @@ import {
   openStableTarget,
   writeThroughHandle,
 } from './file-stable-write.js';
+import { readStableTarget, type StableReadExpectedIdentity } from './file-stable-read.js';
 import { promisify } from 'node:util';
 import type { ToolExecutionFacts } from '@maka/core/permission';
 import { runProcessWithBoundedTail, runShellWithBoundedTail } from './shell-exec.js';
@@ -99,6 +100,15 @@ export interface WorkspaceReadImageResult {
 }
 
 export type WorkspaceReadFileResult = WorkspaceReadTextResult | WorkspaceReadImageResult;
+
+export interface WorkspaceStableReadInput extends WorkspaceReadFileInput {
+  /** The object observed after filesystem lease admission. */
+  expectedIdentity: StableReadExpectedIdentity;
+}
+
+export interface WorkspaceStableReadExecutor {
+  stableReadFile(input: WorkspaceStableReadInput): Promise<WorkspaceReadFileResult>;
+}
 
 export interface WorkspaceWriteFileInput {
   cwd: string;
@@ -297,6 +307,7 @@ export interface WorkspaceExecutor
     WorkspaceGlobExecutor,
     WorkspaceGrepExecutor,
     Partial<WorkspaceApplyPatchExecutor>,
+    Partial<WorkspaceStableReadExecutor>,
     Partial<WorkspaceReadModifyWriteExecutor> {}
 
 export class LocalWorkspaceExecutor implements WorkspaceExecutor {
@@ -336,6 +347,10 @@ export class LocalWorkspaceExecutor implements WorkspaceExecutor {
     const start = input.offset ?? 0;
     const end = input.limit ? start + input.limit : lines.length;
     return { content: lines.slice(start, end).join('\n') };
+  }
+
+  async stableReadFile(input: WorkspaceStableReadInput): Promise<WorkspaceReadFileResult> {
+    return await readStableTarget(input);
   }
 
   async writeFile(input: WorkspaceWriteFileInput): Promise<WorkspaceWriteFileResult> {

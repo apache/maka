@@ -52,7 +52,12 @@ import {
 } from './filesystem-lease-coordinator.js';
 import { hostFilesystemLeaseKey } from './filesystem-lease-key.js';
 import {
+  processResourceAdmissions,
+  type ProcessResourceAdmissionCoordinator,
+} from './process-resource-admission.js';
+import {
   identityChanged,
+  type AdmittedTargetContract,
   type ResolvedTarget,
   type TargetIdentity,
 } from './preparation/target-identity.js';
@@ -79,6 +84,7 @@ import type {
   WorkspacePathScope,
   WorkspaceReadModifyWriteExecutor,
   WorkspaceSearchExecutor,
+  WorkspaceStableReadExecutor,
   WorkspaceWriteExecutor,
 } from './workspace-executor.js';
 
@@ -144,6 +150,7 @@ export type FilesystemWorkspaceExecutor = WorkspaceWriteExecutor &
   WorkspaceEditExecutor &
   Partial<WorkspaceApplyPatchExecutor> &
   Partial<WorkspaceReadModifyWriteExecutor> &
+  Partial<WorkspaceStableReadExecutor> &
   WorkspaceSearchExecutor;
 
 export interface BoundaryFilesystemExecutorInput {
@@ -152,6 +159,10 @@ export interface BoundaryFilesystemExecutorInput {
   /** Explicit embedding policy handed to the worker instead of a mode default. */
   permissionProfile?: PermissionProfile;
   filesystemLeaseCoordinator?: FilesystemLeaseCoordinator;
+  /** Shared side of the process-wide all() correctness barrier. */
+  processResourceAdmissionCoordinator?: ProcessResourceAdmissionCoordinator;
+  /** @internal Deterministic admission-to-effect race gate for filesystem tests. */
+  beforeTargetEffectForTest?: (target: AdmittedTargetContract) => void | Promise<void>;
 }
 
 /**
@@ -167,10 +178,10 @@ function pathScopeForBoundary(boundary: ExecutionBoundary | undefined): Workspac
 }
 
 /**
- * Capture the target's stable identity at prepare/direct-call T0, before lease
- * admission. This is the inode the owner rechecks inside the lease and the
- * worker compare-and-swaps against. Returns undefined when the target does not
- * yet exist (a create), since there is no inode to pin.
+ * Capture the target identity for a resolve observation. Prepare discards this
+ * mutable field; admission retains it and the backend validates it on the pinned
+ * handle. Returns undefined when the target does not yet exist (a create), since
+ * there is no inode to pin.
  *
  * `follow` must match how the worker derives the targetType: content operations
  * follow the final symlink (stat), create/delete pin the directory entry (lstat)
@@ -206,7 +217,7 @@ async function captureFilesystemTargetIdentity(
 interface FilesystemBackend {
   run(
     call: FilesystemBackendExecuteInput,
-    expectedIdentity?: FilesystemTargetIdentity,
+    target: AdmittedTargetContract,
   ): Promise<FilesystemResult>;
   resolveTarget(input: {
     cwd: string;
@@ -239,19 +250,43 @@ function buildFilesystemBackend(input: BoundaryFilesystemExecutorInput): Filesys
   };
   async function run(
     call: FilesystemBackendExecuteInput,
-    expectedIdentity?: FilesystemTargetIdentity,
+    target: AdmittedTargetContract,
   ): Promise<FilesystemResult> {
+    await input.beforeTargetEffectForTest?.(target);
     const worker = workerFor(call.executionBoundary);
     if (!worker) {
-      // The local backend consumes the same identity authority as the worker
-      // (#2600): the pinned read-modify-write validates the T0 identity on the
-      // descriptor. Remote/isolated workspaces without readModifyWrite stay on
-      // the path-based fallback, documented as unprotected by the authority.
-      return await local.execute(
+      // Local stableReadFile/readModifyWrite implementations pin the admitted
+      // identity on a descriptor. External workspaces without those optional
+      // primitives remain a weaker path-based backend.
+      const result = await local.execute(
         call,
         pathScopeForBoundary(call.executionBoundary),
-        expectedIdentity,
+        target,
       );
+      if (call.operation.kind === 'read' && !input.workspace.stableReadFile) {
+        // A remote/external workspace without handle support is explicitly a
+        // weaker backend. A post-read observation at least rejects ordinary
+        // replacement races; it is not an atomic snapshot and cannot prevent
+        // an external ABA replacement.
+        const after = await resolveTarget({
+          cwd: call.cwd,
+          path: target.canonicalPath,
+          semantics: target.semantics,
+          ...(call.executionBoundary ? { executionBoundary: call.executionBoundary } : {}),
+          ...(call.permissionMode ? { permissionMode: call.permissionMode } : {}),
+          ...(call.abortSignal ? { abortSignal: call.abortSignal } : {}),
+        });
+        if (
+          after.canonicalPath !== target.canonicalPath ||
+          identityChanged(target.identity, after.identity)
+        ) {
+          throw new StableWriteFailure(
+            'path_changed',
+            'The filesystem target changed while the external workspace read was running.',
+          );
+        }
+      }
+      return result;
     }
     const result = await worker.execute({
       operation: call.operation,
@@ -265,16 +300,12 @@ function buildFilesystemBackend(input: BoundaryFilesystemExecutorInput): Filesys
       mode: call.permissionMode ?? 'ask',
       ...(input.permissionProfile ? { permissionProfile: input.permissionProfile } : {}),
       ...(call.abortSignal ? { abortSignal: call.abortSignal } : {}),
-      // The worker client now requires an explicit T0 marker (#3484): a
-      // mutation carries its captured identity, or 'missing' when T0 saw no
-      // target; a read never participates in CAS and says so. `operationAccess`
-      // is the single authority on which kinds are writes (write | apply_patch
-      // | edit | format_json) — `mutates` is narrower and would silently drop
-      // the apply_patch identity onto 'unchecked', disabling the queue-window
-      // CAS on the main editing channel.
+      // Exact reads and mutations both carry the identity sampled after lease
+      // admission. Tree searches remain explicitly weaker: a directory inode
+      // is not a version for all descendants.
       expectedIdentity:
-        operationAccess(call.operation.kind) === 'write'
-          ? (expectedIdentity ?? 'missing')
+        operationAccess(call.operation.kind) === 'write' || call.operation.kind === 'read'
+          ? toWorkerExpectedIdentity(target.identity)
           : 'unchecked',
     });
     if (result.kind === 'read_image') {
@@ -329,8 +360,9 @@ function buildFilesystemBackend(input: BoundaryFilesystemExecutorInput): Filesys
       inputArg.path,
       inputArg.semantics,
     );
-    // Capture the target's stable identity at T0, before entering the lease
-    // queue. Execute re-resolves it only after admission on this prepared key.
+    // resolveTarget is used both for prepare-time claim resolution and for the
+    // admission-time execution target. Prepare deliberately discards identity;
+    // execute samples it again after acquiring the prepared lease.
     // Content operations follow the final symlink (stat); create/delete pin the
     // directory entry (lstat) so a swapped link is caught against the entry's
     // own inode. canonicalPath remains executable while leaseKey is used for
@@ -359,8 +391,7 @@ function buildFilesystemBackend(input: BoundaryFilesystemExecutorInput): Filesys
 export type FilesystemAuthorityInput = FilesystemExecuteInput | FilesystemApplyPatchInput;
 
 /**
- * The process-visible identity captured at prepare-time (T0), expressed in the
- * authority's vocabulary. A create target with no on-disk inode is `missing`.
+ * The process-visible identity captured while the matching lease is held.
  */
 function toTargetIdentity(
   identity: FilesystemTargetIdentity | undefined,
@@ -375,6 +406,10 @@ function toTargetIdentity(
 function toExpectedIdentity(identity: TargetIdentity): FilesystemTargetIdentity | undefined {
   if (identity.kind === 'missing') return undefined;
   return { dev: identity.dev, ino: identity.ino };
+}
+
+function toWorkerExpectedIdentity(identity: TargetIdentity): FilesystemTargetIdentity | 'missing' {
+  return toExpectedIdentity(identity) ?? 'missing';
 }
 
 function filesystemSemantics(target: FilesystemAuthorityInput): 'target' | 'entry' {
@@ -470,29 +505,31 @@ function replaceOperationPath(
   return { ...call, operation: { ...call.operation, path: canonicalPath } };
 }
 
-interface PreparedFilesystemAccess {
+interface PreparedFilesystemClaim {
   readonly target: FilesystemAuthorityInput;
   readonly semantics: 'target' | 'entry';
-  readonly resolved: ResolvedTarget;
+  readonly canonicalPath: string;
   readonly lease: FilesystemLeaseRequest;
 }
 
-export class FilesystemPreparedTargetChangedError extends Error {
-  override readonly name = 'FilesystemPreparedTargetChangedError';
-  readonly code = 'filesystem_prepared_target_changed';
+export class FilesystemPreparedClaimChangedError extends Error {
+  override readonly name = 'FilesystemPreparedClaimChangedError';
+  readonly code = 'filesystem_prepared_claim_changed';
 
   constructor() {
-    super('The approved filesystem target changed before execution.');
+    super('The prepared filesystem claim changed before execution; prepare the operation again.');
   }
 }
 
-function assertSamePreparedTarget(prepared: ResolvedTarget, now: ResolvedTarget): void {
+function assertSamePreparedClaim(
+  prepared: PreparedFilesystemClaim,
+  admitted: ResolvedTarget,
+): void {
   if (
-    prepared.canonicalPath !== now.canonicalPath ||
-    prepared.leaseKey !== now.leaseKey ||
-    identityChanged(prepared.identity, now.identity)
+    prepared.canonicalPath !== admitted.canonicalPath ||
+    prepared.lease.key !== admitted.leaseKey
   ) {
-    throw new FilesystemPreparedTargetChangedError();
+    throw new FilesystemPreparedClaimChangedError();
   }
 }
 
@@ -516,13 +553,13 @@ async function prepareFilesystemAccess(
   backend: FilesystemBackend,
   target: FilesystemAuthorityInput,
   context: Pick<AuthorityContext, 'cwd' | 'executionBoundary' | 'permissionMode' | 'abortSignal'>,
-): Promise<PreparedFilesystemAccess> {
+): Promise<PreparedFilesystemClaim> {
   const semantics = filesystemSemantics(target);
   const resolved = await backend.resolveTarget(resourceArgsFor(target, context));
   return {
     target,
     semantics,
-    resolved,
+    canonicalPath: resolved.canonicalPath,
     lease: filesystemLeaseFor(target, resolved.leaseKey),
   };
 }
@@ -554,35 +591,40 @@ export function createFilesystemResourceOwner(
 ): FilesystemResourceOwner {
   const backend = buildFilesystemBackend(input);
   const coordinator = input.filesystemLeaseCoordinator ?? processFilesystemLeases;
+  const processAdmission = input.processResourceAdmissionCoordinator ?? processResourceAdmissions;
 
   const executeAccess = async (
-    access: PreparedFilesystemAccess,
+    access: PreparedFilesystemClaim,
     context: Pick<AuthorityContext, 'cwd' | 'executionBoundary' | 'permissionMode' | 'abortSignal'>,
     signal?: AbortSignal,
   ): Promise<FilesystemResult> => {
     const abortSignal = signal ?? context.abortSignal;
-    return await coordinator.withLease(access.lease, abortSignal, async () => {
-      const now = await backend.resolveTarget(resourceArgsFor(access.target, context, signal));
-      assertSamePreparedTarget(access.resolved, now);
-      const call = replaceOperationPath(
-        toBackendCall(access.target, context, signal),
-        now.canonicalPath,
-      );
-      try {
-        return await backend.run(
-          call,
-          access.lease.mode === 'write' ? toExpectedIdentity(now.identity) : undefined,
+    const executeUnderLease = async (): Promise<FilesystemResult> =>
+      await coordinator.withLease(access.lease, abortSignal, async () => {
+        const now = await backend.resolveTarget(resourceArgsFor(access.target, context, signal));
+        assertSamePreparedClaim(access, now);
+        const admitted: AdmittedTargetContract = {
+          canonicalPath: now.canonicalPath,
+          semantics: access.semantics,
+          identity: now.identity,
+        };
+        const call = replaceOperationPath(
+          toBackendCall(access.target, context, signal),
+          now.canonicalPath,
         );
-      } catch (error) {
-        throw access.lease.mode === 'write' ? settleMutationFailure(error) : error;
-      }
-    });
+        try {
+          return await backend.run(call, admitted);
+        } catch (error) {
+          throw access.lease.mode === 'write' ? settleMutationFailure(error) : error;
+        }
+      });
+    return await processAdmission.withShared(abortSignal, executeUnderLease);
   };
 
   const preparePatchAccesses = async (
     operations: readonly ApplyPatchOperation[],
     context: Pick<AuthorityContext, 'cwd' | 'executionBoundary' | 'permissionMode' | 'abortSignal'>,
-  ): Promise<readonly PreparedFilesystemAccess[]> =>
+  ): Promise<readonly PreparedFilesystemClaim[]> =>
     await Promise.all(
       operations.map((operation) =>
         prepareFilesystemAccess(backend, { operation, ...context }, context),
@@ -590,62 +632,70 @@ export function createFilesystemResourceOwner(
     );
 
   const executePatchBatch = async (
-    accesses: readonly PreparedFilesystemAccess[],
+    accesses: readonly PreparedFilesystemClaim[],
     context: Pick<AuthorityContext, 'cwd' | 'executionBoundary' | 'permissionMode' | 'abortSignal'>,
     signal?: AbortSignal,
   ): Promise<ApplyPatchBatchResult> => {
     const requests = normalizeFilesystemLeaseRequests(accesses.map((access) => access.lease));
     const abortSignal = signal ?? context.abortSignal;
-    return await coordinator.withLeases(requests, abortSignal, async () => {
-      const preflight: ResolvedTarget[] = [];
-      for (let index = 0; index < accesses.length; index += 1) {
-        const access = accesses[index]!;
-        try {
-          const now = await backend.resolveTarget(resourceArgsFor(access.target, context, signal));
-          assertSamePreparedTarget(access.resolved, now);
-          preflight.push(now);
-        } catch (error) {
-          const operation = (access.target as FilesystemApplyPatchInput).operation;
-          return {
-            status: 'failed',
-            applied: [],
-            failed: { type: operation.type, path: operation.path },
-            error: `ApplyPatch preflight failed for ${operation.type} ${operation.path}: ${error instanceof Error ? error.message : String(error)}`,
-          };
-        }
-      }
-
-      let operationIndex = 0;
-      const seenLeaseKeys = new Set<string>();
-      const operations = accesses.map(
-        (access) => (access.target as FilesystemApplyPatchInput).operation,
-      );
-      return await executeApplyPatchOperations(
-        operations,
-        async (operation) => {
-          const index = operationIndex++;
+    const executeUnderLeases = async (): Promise<ApplyPatchBatchResult> =>
+      await coordinator.withLeases(requests, abortSignal, async () => {
+        // Claim-only preflight must complete before the first mutation. Identity
+        // is intentionally not retained here: each operation samples the current
+        // object immediately before its own effect.
+        for (let index = 0; index < accesses.length; index += 1) {
           const access = accesses[index]!;
-          let now = preflight[index]!;
-          if (seenLeaseKeys.has(access.lease.key)) {
-            now = await backend.resolveTarget(resourceArgsFor(access.target, context, signal));
-          }
-          seenLeaseKeys.add(access.lease.key);
-          const call = replaceOperationPath(
-            toBackendCall({ operation, ...context }, context, signal),
-            now.canonicalPath,
-          );
           try {
-            const result = await backend.run(call, toExpectedIdentity(now.identity));
-            if (result.kind !== 'apply_patch') {
-              throw new Error(`ApplyPatch backend returned ${JSON.stringify(result.kind)}.`);
-            }
+            const now = await backend.resolveTarget(
+              resourceArgsFor(access.target, context, signal),
+            );
+            assertSamePreparedClaim(access, now);
           } catch (error) {
-            throw settleMutationFailure(error);
+            const operation = (access.target as FilesystemApplyPatchInput).operation;
+            return {
+              status: 'failed',
+              applied: [],
+              failed: { type: operation.type, path: operation.path },
+              error: `ApplyPatch preflight failed for ${operation.type} ${operation.path}: ${error instanceof Error ? error.message : String(error)}`,
+            };
           }
-        },
-        abortSignal,
-      );
-    });
+        }
+
+        let operationIndex = 0;
+        const operations = accesses.map(
+          (access) => (access.target as FilesystemApplyPatchInput).operation,
+        );
+        return await executeApplyPatchOperations(
+          operations,
+          async (operation) => {
+            const index = operationIndex++;
+            const access = accesses[index]!;
+            const now = await backend.resolveTarget(
+              resourceArgsFor(access.target, context, signal),
+            );
+            assertSamePreparedClaim(access, now);
+            const admitted: AdmittedTargetContract = {
+              canonicalPath: now.canonicalPath,
+              semantics: access.semantics,
+              identity: now.identity,
+            };
+            const call = replaceOperationPath(
+              toBackendCall({ operation, ...context }, context, signal),
+              now.canonicalPath,
+            );
+            try {
+              const result = await backend.run(call, admitted);
+              if (result.kind !== 'apply_patch') {
+                throw new Error(`ApplyPatch backend returned ${JSON.stringify(result.kind)}.`);
+              }
+            } catch (error) {
+              throw settleMutationFailure(error);
+            }
+          },
+          abortSignal,
+        );
+      });
+    return await processAdmission.withShared(abortSignal, executeUnderLeases);
   };
 
   const authority: FilesystemResourceAuthority = {
@@ -715,7 +765,7 @@ function settleMutationFailure(error: unknown): unknown {
     if (error.code === 'outcome_unknown') {
       return new ToolOutcomeUnknownError(error.message, { cause: error });
     }
-    return new Error(error.message, { cause: error });
+    return error;
   }
   if (classifyFailedMutationOutcome(error) === 'unknown') {
     return new ToolOutcomeUnknownError(
@@ -730,7 +780,7 @@ interface WorkspaceFilesystemBackend {
   execute(
     input: FilesystemBackendExecuteInput,
     scope: WorkspacePathScope,
-    expectedIdentity?: FilesystemTargetIdentity,
+    target: AdmittedTargetContract,
   ): Promise<FilesystemResult>;
 }
 
@@ -743,9 +793,33 @@ function createWorkspaceFilesystemExecutor(
   workspace: FilesystemWorkspaceExecutor,
 ): WorkspaceFilesystemBackend {
   return {
-    async execute({ operation, cwd, abortSignal }, scope, expectedIdentity) {
+    async execute({ operation, cwd, abortSignal }, scope, target) {
       switch (operation.kind) {
         case 'read': {
+          if (workspace.stableReadFile) {
+            // Preserve the workspace executor's containment policy, then read
+            // the already-admitted canonical path through the pinned handle.
+            // The resolver result is intentionally not used as a new target.
+            await workspace.resolveExistingPath({
+              cwd,
+              path: target.canonicalPath,
+              label: 'Read',
+              scope,
+            });
+            const result = await workspace.stableReadFile({
+              cwd,
+              path: target.canonicalPath,
+              expectedIdentity: toWorkerExpectedIdentity(target.identity),
+              ...(operation.offset !== undefined ? { offset: operation.offset } : {}),
+              ...(operation.limit !== undefined ? { limit: operation.limit } : {}),
+            });
+            if ('bytes' in result) {
+              return { kind: 'read_image', bytes: result.bytes, mimeType: result.mimeType };
+            }
+            return { kind: 'read', content: result.content };
+          }
+          // External workspace fallback: the provider may not expose a handle
+          // or CAS primitive. This is a weaker path-based read contract.
           const { path } = await workspace.resolveExistingPath({
             cwd,
             path: operation.path,
@@ -771,14 +845,14 @@ function createWorkspaceFilesystemExecutor(
             scope,
           });
           if (workspace.readModifyWrite) {
-            // Pinned RMW (#2600): open once, validate the T0 identity on the
+            // Pinned RMW (#2600): open once, validate the admitted identity on the
             // descriptor, write through it. previous feeds the diff below.
             const result = await workspace.readModifyWrite({
               cwd,
               path,
               label: 'Write',
               scope,
-              approvedIdentity: expectedIdentity,
+              approvedIdentity: toExpectedIdentity(target.identity),
               transform: () => operation.content,
             });
             const diff =
@@ -840,7 +914,7 @@ function createWorkspaceFilesystemExecutor(
             await workspace.readModifyWrite({
               ...common,
               path,
-              approvedIdentity: expectedIdentity,
+              approvedIdentity: toExpectedIdentity(target.identity),
               transform: (ctx) => applyUpdateToContent(ctx.content ?? '', operation.diff),
             });
             return { kind: 'apply_patch', ok: true, path };
@@ -850,7 +924,9 @@ function createWorkspaceFilesystemExecutor(
               ? {
                   ...common,
                   action: 'delete' as const,
-                  ...(expectedIdentity ? { approvedIdentity: expectedIdentity } : {}),
+                  ...(toExpectedIdentity(target.identity)
+                    ? { approvedIdentity: toExpectedIdentity(target.identity) }
+                    : {}),
                 }
               : { ...common, action: operation.action, diff: operation.diff },
           );
@@ -872,7 +948,7 @@ function createWorkspaceFilesystemExecutor(
               path,
               label: 'Edit',
               scope,
-              approvedIdentity: expectedIdentity,
+              approvedIdentity: toExpectedIdentity(target.identity),
               transform: (ctx) => {
                 originalContent = ctx.content ?? '';
                 edited = computeEditedSource(
@@ -935,7 +1011,7 @@ function createWorkspaceFilesystemExecutor(
               path,
               label: 'FormatJson',
               scope,
-              approvedIdentity: expectedIdentity,
+              approvedIdentity: toExpectedIdentity(target.identity),
               transform: (ctx) => {
                 original = ctx.content ?? '';
                 try {

@@ -71,18 +71,20 @@ export interface FilesystemWorkerClientInput {
 }
 
 /**
- * What the caller observed about the operation target at lock acquisition
- * (T0). Required, so every caller must decide explicitly which CAS contract it
+ * What the caller observed about the operation target after filesystem lease
+ * admission. Required for mutations; exact reads from the filesystem authority
+ * also provide it so the worker can pin the admitted object. Every caller decides
+ * explicitly which CAS contract it
  * is participating in — an absent field is no longer a silently accepted "no
  * CAS" that a queue window can slip through (#3484).
  *
- * - `{ dev, ino }`: T0 observed an existing target; the worker compare-and-
- *   swaps this against the on-disk inode at T1.
- * - `'missing'`: T0 observed no target (a create). If the target exists by T1,
+ * - `{ dev, ino }`: admission observed an existing target; the worker validates
+ *   the opened descriptor against it.
+ * - `'missing'`: admission observed no target (a create). If the target exists,
  *   something created it while this call waited — writing would clobber
  *   content this call never saw, so the operation fails with `path_changed`.
- * - `'unchecked'`: the caller does not participate in CAS (no T0 snapshot,
- *   e.g. a verification script or a read). Writes proceed without an identity
+ * - `'unchecked'`: the caller does not participate in CAS (no admitted snapshot,
+ *   e.g. a verification script or tree search). Writes proceed without an identity
  *   check; use deliberately, never as a default for mutations.
  */
 export type FilesystemWorkerExpectedIdentity =
@@ -99,13 +101,13 @@ export interface FilesystemWorkerExecuteInput {
   permissionProfile?: PermissionProfile;
   abortSignal?: AbortSignal;
   /**
-   * The caller's T0 observation, see `FilesystemWorkerExpectedIdentity`.
+   * The caller's admission-time observation, see `FilesystemWorkerExpectedIdentity`.
    *
    * REQUIRED for write operations: the client throws at runtime when a write
    * arrives without one, so a JavaScript caller (which TypeScript cannot
-   * guard) fails loudly instead of silently skipping the queue-window CAS.
-   * Reads never participate in CAS: the client sends 'unchecked' for them
-   * automatically, so read callers have no way to get this wrong.
+   * guard) fails loudly instead of silently skipping the execution-window CAS.
+   * Reads without an authority-provided identity remain `unchecked` for backwards
+   * compatibility; normal exact Read execution always supplies one.
    */
   expectedIdentity?: FilesystemWorkerExpectedIdentity;
 }
@@ -217,14 +219,11 @@ export class FilesystemWorkerClient {
     if (!parsedOperation.success) throw clientError('invalid_operation', 'validation', requestId);
 
     const access = operationAccess(parsedOperation.data.kind);
-    // Reads never participate in CAS: the client sends 'unchecked' for them
-    // automatically, so read callers (including plain-JavaScript verifiers
-    // that bypass TypeScript) have no way to get the identity wrong.
-    // Writes require an explicit T0 state, enforced at runtime: a caller that
+    // Writes require an explicit admission state, enforced at runtime: a caller that
     // omits it fails loudly here instead of silently skipping the
-    // queue-window CAS (#3487, maintainer review).
-    const writeIdentity = access === 'write' ? input.expectedIdentity : 'unchecked';
-    if (access === 'write' && writeIdentity === undefined) {
+    // execution-window CAS (#3487, maintainer review).
+    const admittedIdentity = input.expectedIdentity ?? 'unchecked';
+    if (access === 'write' && input.expectedIdentity === undefined) {
       throw clientError(
         'invalid_request',
         'validation',
@@ -252,34 +251,26 @@ export class FilesystemWorkerClient {
       ).catch(() => {
         throw clientError('invalid_operation', 'validation', requestId);
       });
-    // The identity was captured by the caller at lock acquisition (T0) and
-    // passed in as expectedIdentity. Do NOT re-derive it here: re-deriving at
-    // this point (after the lock is held) would sample the post-queue inode,
-    // making the CAS self-fulfilling and re-opening the queue window.
-    //
-    // Missing↔existing transitions while queued are reconciled here, against
-    // the T1 reality the target normaliser just derived:
-    // - T0 existing (identity present) but T1 missing: the target was removed
-    //   while this call waited — typically a cooperative Maka delete that ran
-    //   first under the same write lock. Drop the stale identity and let the
-    //   mutation proceed as a fresh exclusive create ("delete then rewrite"
-    //   stays a clean apply; a rename-swap is NOT this case — it leaves an
-    //   existing inode and is caught by the identity comparison instead).
-    // - T0 missing ('missing') but T1 existing: the target was created while
-    //   this call waited. Writing would clobber content this call never saw,
-    //   so fail with a meaningful path_changed (never invalid_request).
-    // - 'unchecked': the caller does not participate in CAS. The target may
-    //   be present at T1 without this being a race — the caller simply has no
-    //   T0 snapshot, so nothing can be compared (#3484).
-    const targetExistsAtT1 = target.targetType !== 'missing';
-    const identity =
-      targetExistsAtT1 && typeof writeIdentity === 'object' ? writeIdentity : undefined;
-    if (targetExistsAtT1 && access === 'write' && writeIdentity === 'missing') {
+    // The identity was captured after authority admission. Do NOT re-derive it
+    // here: any missing/existing transition between admission and client
+    // normalisation is already an execution-window race and must fail closed.
+    // - 'unchecked': the caller does not participate in CAS, so nothing can be
+    //   compared (#3484).
+    const targetExistsNow = target.targetType !== 'missing';
+    if (targetExistsNow && admittedIdentity === 'missing') {
       throw clientError(
         'path_changed',
         'validation',
         requestId,
-        'The target was created while this call waited for the lock; re-read before writing.',
+        'The target appeared after filesystem admission; the operation was not started.',
+      );
+    }
+    if (!targetExistsNow && typeof admittedIdentity === 'object') {
+      throw clientError(
+        'path_changed',
+        'validation',
+        requestId,
+        'The target disappeared after filesystem admission; the operation was not started.',
       );
     }
     const compiled =
@@ -361,11 +352,8 @@ export class FilesystemWorkerClient {
         access,
         scope: target.scope,
         targetType: target.targetType,
-        // The execution-time identity contract. A concrete identity is only
-        // carried when the target still exists at T1; a target that vanished
-        // while queued (or was never there) is 'missing'; reads always say
-        // 'unchecked' (the client generates it, callers cannot get it wrong).
-        identity: typeof writeIdentity === 'object' ? (identity ?? 'missing') : writeIdentity,
+        // The execution-time identity contract captured after lease admission.
+        identity: admittedIdentity,
       },
     } as const;
     const requestJson = JSON.stringify(request);

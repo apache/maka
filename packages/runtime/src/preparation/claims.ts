@@ -37,7 +37,8 @@ export function claimsConflict(
 }
 
 export function resourceClaimsConflict(a: ResourceClaim, b: ResourceClaim): boolean {
-  // Placeholder `all()` is the fail-closed global serialization marker.
+  // Batch-local description only: the corresponding PreparedOperation acquires
+  // the real process-wide exclusive barrier against participating authorities.
   if (a.kind === 'all' || b.kind === 'all') return true;
 
   // Coarse claims only interact with another coarse claim on the same key.

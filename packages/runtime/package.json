@@ -11,6 +11,7 @@
     "./mcp-tools": "./dist/mcp-tools.js",
     "./builtin-tools": "./dist/builtin-tools.js",
     "./filesystem-lease-coordinator": "./dist/filesystem-lease-coordinator.js",
+    "./process-resource-admission": "./dist/process-resource-admission.js",
     "./shell-tools": "./dist/shell-tools.js",
     "./shell-run-manager": "./dist/shell-run-manager.js",
     "./deep-research-tools": "./dist/deep-research-tools.js",
