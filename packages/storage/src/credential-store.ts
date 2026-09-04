@@ -242,15 +242,14 @@ class FileCredentialStore implements CredentialStore {
 }
 
 /**
- * Owner-only atomic write for a credentials file: a hardened 0700 directory,
- * an exclusive 0600 temp ('wx'/O_EXCL so we never follow a pre-planted symlink
- * at a predictable path), a durability fence before and after the atomic
- * rename, and temp cleanup on failure. Implemented by the package-wide
- * `writeAtomicFile` authority so its guarantees cannot drift from the other
- * JSON stores.
+ * Owner-only atomic write for a credentials file. Directory hardening is an
+ * explicit credential-store policy; file publication uses the shared legacy
+ * JSON writer so its mode, synchronization, and cleanup behavior remains
+ * aligned with settings and MCP config.
  */
 async function writeSecretFileAtomic(path: string, contents: string): Promise<void> {
-  await writeAtomicFile(path, contents, { fileMode: 0o600, dir: 'harden' });
+  await hardenDirectory(dirname(path));
+  await writeAtomicFile(path, contents, { fileMode: 0o600 });
 }
 
 const LOCK_TIMEOUT_MS = 10_000;

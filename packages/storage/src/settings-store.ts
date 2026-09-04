@@ -190,9 +190,10 @@ class FileSettingsStore implements SettingsStore {
   }
 
   private async write(settings: AppSettings): Promise<void> {
-    // workspaceRoot is a user-owned directory; keep the plain mkdir and do
-    // not impose 0700 on it. The file itself is 0600 because settings.json
-    // carries plaintext credentials (bot secrets, proxy password).
+    // SettingsStore does not own the workspace directory's permission policy:
+    // sibling stores such as MCP config may independently harden the same root.
+    // Keep creation here plain; settings.json itself is 0600 because it carries
+    // plaintext credentials (bot secrets, proxy password).
     await mkdir(dirname(this.settingsPath), { recursive: true });
     await writeAtomicFile(this.settingsPath, JSON.stringify(settings, null, 2) + '\n', {
       fileMode: 0o600,
