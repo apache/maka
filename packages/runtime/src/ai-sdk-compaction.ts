@@ -155,6 +155,12 @@ export interface AutomaticMemoryCompactionDecision {
   readonly dispatch: boolean;
 }
 
+interface InFlightHistorySummary {
+  readonly abortController: AbortController;
+  readonly consumers: Set<symbol>;
+  readonly promise: Promise<string | HistoryCompactProviderState | undefined>;
+}
+
 /** Constructor dependencies for AiSdkCompaction. */
 export interface AiSdkCompactionDeps {
   input: AiSdkCompactionCapabilities;
@@ -217,10 +223,7 @@ export class AiSdkCompaction {
    * fingerprint already describes the request that spends provider budget.
    * Each caller still completes its own checkpoint/turn bookkeeping.
    */
-  private readonly inFlightHistorySummaries = new Map<
-    string,
-    Promise<string | HistoryCompactProviderState | undefined>
-  >();
+  private readonly inFlightHistorySummaries = new Map<string, InFlightHistorySummary>();
   /**
    * Session-scoped circuit for exact malformed compaction inputs. A retry or
    * regeneration on the same backend must not dispatch the same doomed call;
@@ -551,13 +554,26 @@ export class AiSdkCompaction {
     const priorFailure = this.malformedSummaryFailures.get(fingerprint);
     if (priorFailure) throw new HistoryCompactSummarizerError(priorFailure);
 
-    const existing = this.inFlightHistorySummaries.get(fingerprint);
-    if (existing) return existing;
-
-    const pending = Promise.resolve().then(() => summarizer(input));
-    this.inFlightHistorySummaries.set(fingerprint, pending);
+    let shared = this.inFlightHistorySummaries.get(fingerprint);
+    if (!shared) {
+      const abortController = new AbortController();
+      const pending = Promise.resolve().then(() =>
+        summarizer({ ...input, abortSignal: abortController.signal }),
+      );
+      shared = { abortController, consumers: new Set(), promise: pending };
+      this.inFlightHistorySummaries.set(fingerprint, shared);
+      void pending.then(
+        () => this.removeInFlightHistorySummary(fingerprint, shared!),
+        () => this.removeInFlightHistorySummary(fingerprint, shared!),
+      );
+    }
+    const consumer = Symbol('history-summary-consumer');
+    shared.consumers.add(consumer);
     try {
-      return await pending;
+      // A rider must be able to stop waiting without aborting the physical
+      // call for other consumers. The shared controller is aborted only when
+      // every consumer has detached.
+      return await waitForAbortablePromise(shared.promise, input.abortSignal);
     } catch (error) {
       if (
         error instanceof HistoryCompactSummarizerError &&
@@ -573,9 +589,19 @@ export class AiSdkCompaction {
       }
       throw error;
     } finally {
-      if (this.inFlightHistorySummaries.get(fingerprint) === pending) {
-        this.inFlightHistorySummaries.delete(fingerprint);
+      shared.consumers.delete(consumer);
+      if (
+        shared.consumers.size === 0 &&
+        this.inFlightHistorySummaries.get(fingerprint) === shared
+      ) {
+        shared.abortController.abort();
       }
+    }
+  }
+
+  private removeInFlightHistorySummary(fingerprint: string, shared: InFlightHistorySummary): void {
+    if (this.inFlightHistorySummaries.get(fingerprint) === shared) {
+      this.inFlightHistorySummaries.delete(fingerprint);
     }
   }
 
@@ -1685,6 +1711,40 @@ function waitForQueueProgressOrAbort(
     };
     abortSignal?.addEventListener('abort', settle, { once: true });
     void queue.waitForProgress().then(settle);
+  });
+}
+
+/** Let an individual compaction stop waiting without cancelling shared work. */
+function waitForAbortablePromise<T>(
+  promise: Promise<T>,
+  abortSignal?: AbortSignal,
+): Promise<T | undefined> {
+  if (!abortSignal) return promise;
+  if (abortSignal.aborted) return Promise.resolve(undefined);
+  return new Promise<T | undefined>((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => abortSignal.removeEventListener('abort', onAbort);
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(undefined);
+    };
+    abortSignal.addEventListener('abort', onAbort, { once: true });
+    void promise.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(value);
+      },
+      (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error);
+      },
+    );
   });
 }
 
