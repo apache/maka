@@ -28,10 +28,17 @@
  *   pinned  → content that grows writes `scrollTop = scrollHeight`
  *   !pinned → nothing here writes `scrollTop`, ever
  *
- * "Keep the reader where they were reading" is the definition of
- * `overflow-anchor: auto`, which is already the initial value and costs nothing,
- * and "the reader is dragging" is also just don't touch it — so both of those
- * are the same instruction to this code: stay out of the way.
+ * While released, "keep the reader where they were reading" is the definition
+ * of `overflow-anchor: auto`, so that case is just don't touch it: stay out of
+ * the way and let the browser hold their place.
+ *
+ * While pinned it is the opposite instruction. Anchoring holds an anchor node
+ * still; the pin holds the tail. Both cannot be obeyed, and the pin wins every
+ * time — this authority overwrites anchoring's adjustment on the very next
+ * frame, so it was never drawn. What survives is its `scroll` event, which
+ * arrives with the offset moved and no reader behind it, and that is a lie this
+ * file cannot see through. So the pin turns anchoring off, and turns it back on
+ * when it releases.
  *
  * Being the only writer is what makes the state exact rather than guessed. It
  * remembers the offset it wrote, so a scroll event that finds the scroller
@@ -123,6 +130,16 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
   const distanceToTail = (): number =>
     root ? root.scrollHeight - root.scrollTop - root.clientHeight : 0;
 
+  /**
+   * Anchoring is a writer, and while pinned it is a writer whose every write is
+   * about to be overwritten. Turning it off there leaves the reader and this
+   * authority as the only two, which is what lets a non-echo event be read as
+   * the reader without inferring anything.
+   */
+  const applyAnchoring = (): void => {
+    if (root) root.style.overflowAnchor = pinned ? 'none' : '';
+  };
+
   const writeToTail = (): void => {
     if (!root) return;
     root.scrollTop = root.scrollHeight;
@@ -152,26 +169,32 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
           lastClientHeight = target.clientHeight;
           return;
         }
-        // An event that arrives with the scroll geometry changed is the content
-        // or the viewport moving under the reader, not the reader moving:
-        // anchoring holding them still as turns land above, growth that outran
-        // this authority's own write, or a resize the browser answered by
-        // clamping the offset. Their offset changed and their intent did not,
-        // so the pin — which is that intent — must not be re-derived from where
-        // they now are, and nobody may be told the reader asked for anything.
-        // The affordance still follows the new distance, because that is a fact
-        // about the viewport rather than about them.
+        // While released, an event that arrives with the scroll geometry changed
+        // is the content or the viewport moving under the reader, not the reader
+        // moving: anchoring holding them still as turns land above, or a resize
+        // the browser answered by clamping the offset. Their offset changed and
+        // their intent did not, so the pin — which is that intent — must not be
+        // re-derived from where they now are, and nobody may be told the reader
+        // asked for anything. The affordance still follows the new distance,
+        // because that is a fact about the viewport rather than about them.
+        //
+        // While pinned there is nothing left for this to catch. Anchoring is off
+        // and growth alone does not move `scrollTop`, so a non-echo event there
+        // is the reader — and swallowing it because content grew in the same
+        // frame is exactly how a reader who scrolls up during streaming gets
+        // written back to the tail.
         const moved =
           target.scrollHeight !== lastScrollHeight || target.clientHeight !== lastClientHeight;
         lastScrollHeight = target.scrollHeight;
         lastClientHeight = target.clientHeight;
         const distance = distanceToTail();
         awayFromTail = distance > BUTTON_THRESHOLD_PX;
-        if (moved) {
+        if (moved && !pinned) {
           publish();
           return;
         }
         pinned = distance <= PIN_THRESHOLD_PX;
+        applyAnchoring();
         publish();
         for (const listener of [...readerListeners]) listener();
       };
@@ -207,22 +230,26 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
       const childList = new MutationObserver(observeBox);
       childList.observe(target, { childList: true });
       observeBox();
+      applyAnchoring();
       if (pinned) writeToTail();
       return () => {
         childList.disconnect();
         box.disconnect();
         target.removeEventListener('scroll', onScroll);
+        target.style.overflowAnchor = '';
         lastWrittenTop = undefined;
         if (root === target) root = null;
       };
     },
     pinToTail() {
       pinned = true;
+      applyAnchoring();
       writeToTail();
       publish();
     },
     releasePin() {
       pinned = false;
+      applyAnchoring();
       awayFromTail = distanceToTail() > BUTTON_THRESHOLD_PX;
       publish();
     },

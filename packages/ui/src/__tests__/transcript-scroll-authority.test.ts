@@ -38,6 +38,8 @@ interface FakeRoot {
   clientHeight: number;
   /** The boxes `scrollHeight` is made of, which is what the authority watches. */
   children: readonly unknown[];
+  /** `overflow-anchor` is the authority's to set, so the fake carries it. */
+  style: { overflowAnchor: string };
   addEventListener(type: string, listener: () => void): void;
   removeEventListener(type: string, listener: () => void): void;
   /** Dispatch the scroll event the browser would, one frame later. */
@@ -54,6 +56,7 @@ function fakeRoot(options?: { scrollHeight?: number; clientHeight?: number }): F
     scrollHeight: options?.scrollHeight ?? 3_000,
     clientHeight: options?.clientHeight ?? 600,
     children: [{}],
+    style: { overflowAnchor: '' },
     addEventListener(type, listener) {
       if (type === 'scroll') listeners.add(listener);
     },
@@ -231,26 +234,47 @@ test('a scroll event that arrives late is still this authority\'s own write', ()
   });
 });
 
-test('growth that outruns the write does not read as the reader scrolling up', () => {
+test('a reader who scrolls up mid-stream is not swallowed by the growth', () => {
   withObservers((resize) => {
     const root = fakeRoot();
     const authority = createTranscriptScrollAuthority();
     authority.attach(root as unknown as HTMLElement);
     assert.equal(root.scrollTop, 2_400);
 
-    // The transcript grew, and the scroll event for it arrives before this
-    // authority has been told to follow it. The offset is 302px from a tail
-    // that moved — identical, as a position, to a reader who scrolled up.
+    // Streaming: content lands, and the reader's gesture reaches this authority
+    // in the same event as the growth it landed with. Geometry changed, so the
+    // released rule would swallow it — and swallowing it is how a reader gets
+    // written back to the tail for as long as the answer keeps coming.
     root.grow(302);
-    root.scrollTop = 2_402;
+    root.scrollTop = 900;
     root.emitScroll();
-    assert.equal(authority.getSnapshot().pinned, true);
-
-    // The affordance still knows how far the tail now is, and the next growth
-    // signal takes the reader back to it.
+    assert.equal(authority.getSnapshot().pinned, false);
     assert.equal(authority.getSnapshot().awayFromTail, true);
+
+    // And released means released: the next growth leaves them where they are.
     resize();
-    assert.equal(root.scrollTop, 2_702);
+    assert.equal(root.scrollTop, 900);
+  });
+});
+
+test('the pin owns anchoring, and hands it back on release', () => {
+  withObservers(() => {
+    const root = fakeRoot();
+    const authority = createTranscriptScrollAuthority();
+    const detach = authority.attach(root as unknown as HTMLElement);
+
+    // Pinned, this authority writes the tail every frame, so anchoring can only
+    // produce events for adjustments that were never drawn.
+    assert.equal(root.style.overflowAnchor, 'none');
+
+    authority.releasePin();
+    assert.equal(root.style.overflowAnchor, '');
+
+    authority.pinToTail();
+    assert.equal(root.style.overflowAnchor, 'none');
+
+    detach();
+    assert.equal(root.style.overflowAnchor, '');
   });
 });
 
@@ -292,9 +316,9 @@ test('only the reader\'s own movement reaches a reader-scroll listener', () => {
     root.emitScroll();
     assert.equal(heard, 0);
 
-    // Content arriving, with anchoring moving the offset to hold the reader.
+    // Content arriving. Anchoring is off while pinned and growth below moves no
+    // offset, so the event carries the offset this authority wrote: its echo.
     root.grow(500);
-    root.scrollTop = 2_900;
     root.emitScroll();
     assert.equal(heard, 0);
 
