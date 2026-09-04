@@ -57,6 +57,7 @@ import {
   matchHistoryCompactCheckpointPrefix,
   projectHistoryCompactCheckpointReplay,
   type HistoryCompactCheckpoint,
+  type HistoryCompactCheckpointHeadAnchor,
   type HistoryCompactMemoryExtractionBoundary,
   type HistoryCompactProviderState,
 } from './history-compact-checkpoint.js';
@@ -401,27 +402,36 @@ export class AiSdkCompaction {
         ...(automaticMemoryBoundary ? { memoryExtractionBoundary: automaticMemoryBoundary } : {}),
         ...(previousCheckpoint ? { previousCheckpoint } : {}),
         summarize: async ({ coveredRuntimeEvents, newlyFoldedRuntimeEvents, previousCheckpoint }) =>
-          await this.summarizeWithFailureCircuit(summarizer, {
-            sessionId: this.sessionId,
-            turnId: input.turnId,
-            runId: input.runId,
-            source: {
-              foldedRuntimeEvents: [...coveredRuntimeEvents],
-              ...(input.runtimeContextInvocations
-                ? {
-                    invocations: input.runtimeContextInvocations.filter((invocation) =>
-                      coveredRuntimeEvents.some(
-                        (event) => event.invocationId === invocation.invocationId,
+          await this.summarizeWithFailureCircuit(
+            summarizer,
+            {
+              sessionId: this.sessionId,
+              turnId: input.turnId,
+              runId: input.runId,
+              source: {
+                foldedRuntimeEvents: [...coveredRuntimeEvents],
+                ...(input.runtimeContextInvocations
+                  ? {
+                      invocations: input.runtimeContextInvocations.filter((invocation) =>
+                        coveredRuntimeEvents.some(
+                          (event) => event.invocationId === invocation.invocationId,
+                        ),
                       ),
-                    ),
-                  }
+                    }
+                  : {}),
+              },
+              newlyFoldedRuntimeEvents: [...newlyFoldedRuntimeEvents],
+              ...(previousCheckpoint ? { previousCheckpoint } : {}),
+              abortSignal: historyCompactAbortController.signal,
+              ...(tracker ? { providerRequestTracker: tracker } : {}),
+            },
+            {
+              phase: 'pre_turn',
+              ...(automaticMemoryBoundary
+                ? { memoryExtractionBoundary: automaticMemoryBoundary }
                 : {}),
             },
-            newlyFoldedRuntimeEvents: [...newlyFoldedRuntimeEvents],
-            ...(previousCheckpoint ? { previousCheckpoint } : {}),
-            abortSignal: historyCompactAbortController.signal,
-            ...(tracker ? { providerRequestTracker: tracker } : {}),
-          }),
+          ),
       });
       if (historyCompactAbortController.signal.aborted) {
         return { outcome: { kind: 'failed', reason: 'aborted' } };
@@ -500,6 +510,11 @@ export class AiSdkCompaction {
   private async summarizeWithFailureCircuit(
     summarizer: HistoryCompactSummarizer,
     input: HistoryCompactSummaryInput,
+    checkpointIntent?: {
+      phase?: 'pre_turn' | 'mid_turn';
+      headAnchor?: HistoryCompactCheckpointHeadAnchor;
+      memoryExtractionBoundary?: HistoryCompactMemoryExtractionBoundary;
+    },
   ): Promise<string | HistoryCompactProviderState | undefined> {
     const foldedRunIds = new Set(input.source.foldedRuntimeEvents.map((event) => event.runId));
     const sourceRunRoutes = input.source.invocations
@@ -530,6 +545,7 @@ export class AiSdkCompaction {
         sourceRunRoutes,
         foldedRuntimeEvents: input.source.foldedRuntimeEvents,
         newlyFoldedRuntimeEvents: input.newlyFoldedRuntimeEvents,
+        checkpointIntent,
       }),
     );
     const priorFailure = this.malformedSummaryFailures.get(fingerprint);
@@ -1107,6 +1123,15 @@ export class AiSdkCompaction {
     }
     const orderedEvents = [...state.priorContentEvents, ...currentTurnEvents];
     const memoryDecision = input.memoryCompactionDecision?.();
+    const memoryExtractionBoundary =
+      memoryDecision && orderedEvents.at(-1)
+        ? {
+            runId: orderedEvents.at(-1)!.runId,
+            turnId: orderedEvents.at(-1)!.turnId,
+            runtimeEventId: orderedEvents.at(-1)!.id,
+            disposition: memoryDecision.disposition,
+          }
+        : undefined;
     const plan = await planHistoryCompaction({
       sessionId: this.sessionId,
       phase: input.phase ?? 'mid_turn',
@@ -1124,30 +1149,29 @@ export class AiSdkCompaction {
         ? { highWaterName: compactPolicy.highWaterName }
         : {}),
       ...(state.previousCheckpoint ? { previousCheckpoint: state.previousCheckpoint } : {}),
-      ...(memoryDecision && orderedEvents.at(-1)
-        ? {
-            memoryExtractionBoundary: {
-              runId: orderedEvents.at(-1)!.runId,
-              turnId: orderedEvents.at(-1)!.turnId,
-              runtimeEventId: orderedEvents.at(-1)!.id,
-              disposition: memoryDecision.disposition,
-            },
-          }
-        : {}),
+      ...(memoryExtractionBoundary ? { memoryExtractionBoundary } : {}),
       summarize: async ({ coveredRuntimeEvents, newlyFoldedRuntimeEvents, previousCheckpoint }) => {
-        return await this.summarizeWithFailureCircuit(summarizer, {
-          sessionId: this.sessionId,
-          turnId,
-          ...(input.origin.runId ? { runId: input.origin.runId } : {}),
-          source: {
-            foldedRuntimeEvents: [...coveredRuntimeEvents],
-            invocations: state.priorInvocations,
+        return await this.summarizeWithFailureCircuit(
+          summarizer,
+          {
+            sessionId: this.sessionId,
+            turnId,
+            ...(input.origin.runId ? { runId: input.origin.runId } : {}),
+            source: {
+              foldedRuntimeEvents: [...coveredRuntimeEvents],
+              invocations: state.priorInvocations,
+            },
+            ...(previousCheckpoint ? { previousCheckpoint } : {}),
+            newlyFoldedRuntimeEvents: [...newlyFoldedRuntimeEvents],
+            ...(abortSignal ? { abortSignal } : {}),
+            ...(midTurnTracker ? { providerRequestTracker: midTurnTracker } : {}),
           },
-          ...(previousCheckpoint ? { previousCheckpoint } : {}),
-          newlyFoldedRuntimeEvents: [...newlyFoldedRuntimeEvents],
-          ...(abortSignal ? { abortSignal } : {}),
-          ...(midTurnTracker ? { providerRequestTracker: midTurnTracker } : {}),
-        });
+          {
+            phase: input.phase ?? 'mid_turn',
+            headAnchor: { runtimeEventId: state.headAnchor.id, turnId },
+            ...(memoryExtractionBoundary ? { memoryExtractionBoundary } : {}),
+          },
+        );
       },
     });
 
