@@ -108,6 +108,11 @@ export interface HostInteractionCoordinatorOptions {
     admission: SessionAdmissionLease,
   ) => Promise<void>;
   readonly onPoison: (error: RuntimeInteractionFailStopError) => void;
+  /** Resolve graph-wake lineage while the settled Session still holds admission. */
+  readonly resolveSandboxBoundaryGraphWake?: (
+    sessionId: string,
+    admission: SessionAdmissionLease,
+  ) => Promise<string | undefined> | string | undefined;
   readonly onSandboxBoundarySettled: (sessionId: string) => Promise<void> | void;
 }
 
@@ -205,6 +210,7 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
   readonly #preflightSessionSnapshot: HostInteractionCoordinatorOptions['preflightSessionSnapshot'];
   readonly #refreshCanonicalContinuity: HostInteractionCoordinatorOptions['refreshCanonicalContinuity'];
   readonly #onPoison: HostInteractionCoordinatorOptions['onPoison'];
+  readonly #resolveSandboxBoundaryGraphWake: HostInteractionCoordinatorOptions['resolveSandboxBoundaryGraphWake'];
   readonly #onSandboxBoundarySettled: HostInteractionCoordinatorOptions['onSandboxBoundarySettled'];
   readonly #runs = new Map<string, BoundRun>();
   readonly #live = new Map<string, LiveEntry>();
@@ -220,6 +226,7 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
     this.#preflightSessionSnapshot = options.preflightSessionSnapshot;
     this.#refreshCanonicalContinuity = options.refreshCanonicalContinuity;
     this.#onPoison = options.onPoison;
+    this.#resolveSandboxBoundaryGraphWake = options.resolveSandboxBoundaryGraphWake;
     this.#onSandboxBoundarySettled = options.onSandboxBoundarySettled;
   }
 
@@ -886,13 +893,18 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
     await this.#refreshCanonicalContinuity(request.sessionId, admission);
     this.#throwIfPoisoned();
     await this.#applySandboxBoundaryDecisionAndDelete(entry, settlement);
-    // The answer owns Session admission. Graph-wake reconciliation may need to
-    // acquire the activity lease held by the wake turn that is parked on this
-    // very answer, so awaiting it here deadlocks the Session (#3328, #3866).
-    // Start it after the durable answer is applied, but keep failures visible
-    // to the Host's fail-stop path instead of creating an unhandled rejection.
+    // The answer owns Session admission. Resolve graph-wake lineage while that
+    // admission is held, then detach only the notification which may need to
+    // acquire the activity lease held by the wake turn parked on this answer.
+    // Awaiting that notification here deadlocks the Session (#3328, #3866).
+    const resolvedRootSessionId = this.#resolveSandboxBoundaryGraphWake
+      ? await this.#resolveSandboxBoundaryGraphWake(request.sessionId, admission)
+      : undefined;
     void Promise.resolve()
-      .then(() => this.#onSandboxBoundarySettled(request.sessionId))
+      .then(() => {
+        if (this.#resolveSandboxBoundaryGraphWake && !resolvedRootSessionId) return;
+        return this.#onSandboxBoundarySettled(resolvedRootSessionId ?? request.sessionId);
+      })
       .catch((error: unknown) => {
         this.#poison(error);
       });

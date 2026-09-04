@@ -403,6 +403,7 @@ describe('HostInteractionCoordinator', () => {
       const wakeStarted = deferred();
       const releaseWake = deferred();
       const wakeFinished = deferred();
+      let resolvedRootSessionId: string | undefined;
       const coordinator = new HostInteractionCoordinator({
         store,
         sandboxBoundaries: stores.sessionStore,
@@ -410,7 +411,12 @@ describe('HostInteractionCoordinator', () => {
         sessions: stores.sessionStore,
         preflightSessionSnapshot: () => true,
         refreshCanonicalContinuity: async () => {},
-        onSandboxBoundarySettled: async () => {
+        resolveSandboxBoundaryGraphWake: async (sessionId) => {
+          resolvedRootSessionId = sessionId;
+          return session.id;
+        },
+        onSandboxBoundarySettled: async (rootSessionId) => {
+          assert.equal(rootSessionId, session.id);
           wakeStarted.resolve();
           await releaseWake.promise;
           wakeFinished.resolve();
@@ -465,6 +471,7 @@ describe('HostInteractionCoordinator', () => {
         );
         assert.equal(answerResult?.ok, true);
         if (answerResult?.ok) assert.equal(answerResult.result.status, 'answered');
+        assert.equal(resolvedRootSessionId, session.id);
       } finally {
         releaseWake.resolve();
         await wakeFinished.promise;
@@ -473,6 +480,66 @@ describe('HostInteractionCoordinator', () => {
       await binding.close('turn_terminal');
       binding.release();
       await coordinator.close();
+    });
+  });
+
+  test('poisons when detached graph wake notification rejects', async () => {
+    await withStore(async ({ owner, store, stores }) => {
+      const workspace = join(owner.capability.canonicalPath, 'wake-rejection-workspace');
+      await mkdir(workspace);
+      const session = await stores.sessionStore.create({
+        cwd: workspace,
+        llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'ask',
+      });
+      const identity = { ...RUN, sessionId: session.id };
+      const poison: RuntimeInteractionFailStopError[] = [];
+      const coordinator = new HostInteractionCoordinator({
+        store,
+        sandboxBoundaries: stores.sessionStore,
+        sessionAdmission: new SessionAdmissionGate(),
+        sessions: stores.sessionStore,
+        preflightSessionSnapshot: () => true,
+        refreshCanonicalContinuity: async () => {},
+        resolveSandboxBoundaryGraphWake: async () => session.id,
+        onSandboxBoundarySettled: async () => {
+          throw new Error('graph wake notification failed');
+        },
+        onPoison: (error) => poison.push(error),
+      });
+      const binding = coordinator.bindRun(identity);
+      const request = sandboxBoundaryEvent({
+        sessionId: session.id,
+        requestId: 'boundary_wake_rejection',
+        status: 'pending',
+        baseRevision: 0,
+        turnId: identity.turnId,
+        runId: identity.runId,
+        expansion: { network: { enabled: true } },
+        justification: 'Connect to the requested service.',
+        createdAt: 1,
+      });
+      await binding.acceptSandboxBoundaryRequest({
+        request,
+        continuation: sandboxBoundaryContinuation(identity, request.requestId),
+      });
+
+      const answerResult = await coordinator.handlers['interaction.answer'](
+        {
+          sessionId: session.id,
+          interactionId: request.requestId,
+          answer: { kind: 'sandbox_boundary', decision: 'allow' },
+        },
+        connection(),
+      );
+      assert.equal(answerResult.ok, true);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(poison.length, 1);
+      assert.equal(coordinator.isPoisoned(), true);
+      await assert.rejects(binding.close('turn_terminal'), poison[0]);
+      await assert.rejects(coordinator.close(), poison[0]);
     });
   });
 
