@@ -166,10 +166,14 @@ Field names are generic across providers, so the mapping matters:
 | discord | Bot token | — | — | — |
 | slack | Bot User OAuth token (`xoxb-`) | — | **App-level token (`xapp-`)** | — |
 | dingtalk | — | ClientID | ClientSecret | — |
-| feishu | App token | App ID | App Secret | `domain` picks Feishu vs Lark |
+| feishu | Fallback for `appSecret` | App ID | App Secret | `domain` picks Feishu vs Lark |
 | wecom | — | Bot ID | Secret | — |
 | qq | — | App ID | App Secret | — |
 | wechat | Bot token | — | — | `webhookUrl` = local bridge URL |
+
+⚠️ Feishu reads `appSecret` **or**, when that is empty, `token` — the two are
+interchangeable for this channel, and only one needs to be set. Feishu does not
+take three distinct credentials.
 
 ⚠️ Slack's `appSecret` holds the **app-level token** used for Socket Mode —
 `SlackBotBridge.start()` reads it as `appToken` — not the signing secret. The
@@ -253,12 +257,12 @@ traffic.
 
 ## Setup
 
-> **Status: not yet written.** The sections below are placeholders. Each one
-> must be walked end-to-end against a real developer account before it lands —
-> the issue's acceptance criteria require tested instructions, and untested
+> **Status: Feishu/Lark is verified end-to-end. The rest are placeholders.**
+> Each remaining section must be walked against a real developer account before
+> it lands — the acceptance criteria require tested instructions, and untested
 > setup steps are worse than none.
 >
-> For DingTalk, Feishu/Lark, WeCom and WeChat, check
+> For DingTalk, WeCom and WeChat, check
 > [the onboarding architecture doc](architecture/bot-onboarding-runtime.zh-CN.md)
 > first: QR-code onboarding may make most manual steps unnecessary.
 
@@ -285,7 +289,75 @@ _TODO — internal app, Stream mode, ClientID/ClientSecret._
 
 ### Feishu 飞书 / Lark
 
-_TODO — self-built app; document the `domain` split between regions._
+Maka's Feishu channel opens a **WebSocket long connection** from the runtime
+(`transport: 'websocket'` in `feishu-bridge.ts`). There is no public callback
+URL to expose and no inbound port to open, so this works from a laptop behind
+NAT. The console must be configured for long-connection event delivery, not for
+webhook delivery.
+
+**1. Create a custom app.** Open the developer console —
+[open.feishu.cn](https://open.feishu.cn/) for Feishu, or
+[open.larksuite.com](https://open.larksuite.com/) for Lark — and create a
+*企业自建应用 / Custom app*. From the app's credentials page, copy:
+
+| Console field | Maka setting |
+| --- | --- |
+| App ID (`cli_…`) | `appId` |
+| App Secret | `appSecret` |
+
+Feishu and Lark are separate consoles with separate accounts. Create the app in
+the console matching the account you will actually chat from.
+
+**2. Add the bot capability.** *添加应用能力 / Add features* → *机器人 / Bot*.
+Without this the app has no chat identity and no message can be sent or
+received.
+
+**3. Grant the permission scopes.** At minimum, to receive direct messages:
+
+- `im:message.p2p_msg:readonly` — required for `im.message.receive_v1`.
+
+Group chats and outbound sending need their own scopes; grant the message-send
+scope for the bot, and the group-message read scope if the bot will serve group
+chats rather than DMs only.
+
+**4. Subscribe to events over the long connection.** *事件与回调 / Events &
+callbacks* → set the delivery mode to *长连接 / Long connection* (**not**
+*将事件发送至开发者服务器 / Send to developer server*), then add the event:
+
+- `im.message.receive_v1` — 接收消息 / Receive message.
+
+**5. Publish a version.** *版本管理与发布 / Version management & release*.
+Scopes and event subscriptions do not take effect for a tenant until a released
+version is approved, and the *可用范围 / Availability* of that version must
+include the users who will talk to the bot.
+
+**6. Configure the channel in Maka.** Enter `appId` and `appSecret`. Leave
+`domain` empty for Feishu; set it to `larksuite.com` for Lark — the bridge
+selects `Domain.Lark` only on that exact string and falls back to
+`Domain.Feishu` otherwise, so a typo silently points a Lark app at the Feishu
+endpoint.
+
+Optionally set `allowedUserIds` to the open IDs (`ou_…`) permitted to use the
+bot. Feishu is one of the three platforms that enforce this list. Note that the
+Lark SDK's own policy gate only covers DMs, so the bridge re-checks the
+allowlist locally to catch group messages too.
+
+**7. Verify.** The channel should reach `operational`. If it does not, the
+reason string on the status distinguishes the failure:
+`missing-feishu-credentials` means `appId` or `appSecret`/`token` is empty,
+while a handshake failure leaves readiness at `configured` with the underlying
+error as the reason.
+
+> **A connected channel does not mean a reachable bot.** The long connection
+> handshake succeeds using app credentials alone. If the app version has not
+> been released, or the availability range excludes you, the channel reports a
+> healthy connection while no user can find the bot to message it — the bridge
+> simply receives nothing. When a channel looks connected but silent, check the
+> release status before debugging the runtime.
+>
+> The quickest way out of that state is to have the bot open the conversation
+> itself: sending a direct message to a user's open ID creates the P2P chat and
+> makes it appear in that user's client.
 
 ### WeCom 企业微信
 
