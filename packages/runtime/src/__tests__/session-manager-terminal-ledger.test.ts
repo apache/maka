@@ -63,6 +63,7 @@ import { RuntimeReadModel } from '../runtime-read-model.js';
 import { RuntimeKernel } from '../runtime-kernel.js';
 import type { RuntimeInteractionAuthority } from '../interaction-authority.js';
 import { testInvocationOpening } from './invocation-fixture.js';
+import { assertDoubleRunNotSealed } from './runtime-event-store-seal.js';
 
 describe('SessionManager terminal ledger invariants', () => {
   test('coalesces one partial stream and flushes it before the final model event', async () => {
@@ -1042,7 +1043,7 @@ describe('SessionManager terminal ledger invariants', () => {
       }),
     ]);
 
-    assert.strictEqual(result.kind, 'ambiguous');
+    assert.strictEqual(result.kind, 'corrupt');
     assert.deepStrictEqual(
       result.terminalEvents.map((event) => event.id),
       ['rt-completed', 'rt-failed'],
@@ -2394,6 +2395,7 @@ class BatchingRuntimeEventStore implements RuntimeEventStore {
   constructor(private readonly failPartialBatch = false) {}
 
   async appendRuntimeEvent(_sessionId: string, _runId: string, event: RuntimeEvent): Promise<void> {
+    assertDoubleRunNotSealed(this.events, event);
     this.order.push(`append:${event.id}`);
     this.events.push(clone(event));
   }

@@ -47,7 +47,12 @@ export type TerminalRuntimeLedgerClassification =
       terminalEvents: readonly RuntimeEvent[];
     }
   | {
-      kind: 'ambiguous';
+      /**
+       * More than one terminal event. Nothing ambiguous about it: a store seals
+       * a run on its first terminal, so a second one means the ledger was
+       * written around that seal and is corrupt.
+       */
+      kind: 'corrupt';
       terminalEvents: readonly RuntimeEvent[];
     };
 
@@ -60,7 +65,7 @@ export function classifyTerminalRuntimeLedger(
     return { kind: 'none', terminalEvents };
   }
   if (terminalEvents.length > 1) {
-    return { kind: 'ambiguous', terminalEvents };
+    return { kind: 'corrupt', terminalEvents };
   }
 
   const fact = classifyRuntimeEventTerminalFact(run, events).fact;

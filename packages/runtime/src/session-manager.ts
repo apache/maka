@@ -4592,9 +4592,11 @@ export class SessionManager {
         }
       }
       const terminalLedger = classifyTerminalRuntimeLedger(run, inspected.runtimeEvents);
-      if (terminalLedger.kind === 'ambiguous') {
+      if (terminalLedger.kind === 'corrupt') {
         if (policy.kind === 'strict') {
-          throw new Error(`RuntimeEvent ledger has ambiguous terminal facts for run ${run.runId}`);
+          throw new Error(
+            `RuntimeEvent ledger has more than one terminal event for run ${run.runId}`,
+          );
         }
         continue;
       }

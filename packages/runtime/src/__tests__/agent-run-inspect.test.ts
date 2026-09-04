@@ -29,6 +29,7 @@ import {
 } from '@maka/core/runtime-invocation';
 import { inspectAgentRunReadModel } from '../agent-run-inspect.js';
 import { testInvocationOpening } from './invocation-fixture.js';
+import { assertDoubleRunNotSealed } from './runtime-event-store-seal.js';
 
 const sessionId = 'session-1';
 const invocationId = 'inv-1';
@@ -186,6 +187,7 @@ class MemoryAgentRunStore implements AgentRunStore, RuntimeEventStore {
 
   async appendRuntimeEvent(sessionId: string, runId: string, event: RuntimeEvent): Promise<void> {
     const eventKey = key(sessionId, runId);
+    assertDoubleRunNotSealed(this.runtimeEvents.get(eventKey) ?? [], event);
     this.runtimeEvents.set(eventKey, [
       ...(this.runtimeEvents.get(eventKey) ?? []),
       copyRuntimeEvent(event),

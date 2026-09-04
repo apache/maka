@@ -91,6 +91,7 @@ import type {
 import { PlanConflictError, emptyPlanSessionState, type PlanStore } from '@maka/core/plan';
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 import { createTestAiSdkBackend } from './execution-boundary-test-helpers.js';
+import { assertDoubleRunNotSealed } from './runtime-event-store-seal.js';
 import type { LanguageModelV4StreamPart } from '@ai-sdk/provider';
 import { z } from 'zod';
 import { AiSdkBackend } from '../ai-sdk-backend.js';
@@ -6011,7 +6012,7 @@ describe('SessionManager permission mode updates', () => {
 
     const targetRunId = firstPlan.continuation.runId;
     const targetRun = await readInvocation(runStore, session.id, targetRunId);
-    await runStore.appendRuntimeEvent(
+    runStore.seedRuntimeEvent(
       session.id,
       targetRunId,
       runtimeEvent({
@@ -6708,7 +6709,7 @@ describe('SessionManager permission mode updates', () => {
     });
     if (!plan.continuation) throw new Error('expected continuation');
 
-    await runStore.appendRuntimeEvent(
+    runStore.seedRuntimeEvent(
       session.id,
       sourceRunId,
       runtimeEvent({
@@ -10053,7 +10054,7 @@ describe('SessionManager permission mode updates', () => {
           ts: 120 + index,
         }),
       );
-      await runStore.appendRuntimeEvent(
+      runStore.seedRuntimeEvent(
         session.id,
         'child-run',
         runtimeEvent({
@@ -10122,7 +10123,7 @@ describe('SessionManager permission mode updates', () => {
         permissionMode: 'explore',
       }),
     );
-    await runStore.appendRuntimeEvent(
+    runStore.seedRuntimeEvent(
       session.id,
       'child-run',
       runtimeEvent({
@@ -10136,7 +10137,7 @@ describe('SessionManager permission mode updates', () => {
         content: { kind: 'text', text: 'x'.repeat(64 * 1024) },
       }),
     );
-    await runStore.appendRuntimeEvent(
+    runStore.seedRuntimeEvent(
       session.id,
       'child-run',
       runtimeEvent({
@@ -10467,7 +10468,7 @@ describe('SessionManager permission mode updates', () => {
     }
 
     const [run] = await runStore.listSessionInvocations(session.id);
-    await runStore.appendRuntimeEvent(
+    runStore.seedRuntimeEvent(
       session.id,
       run!.runId,
       runtimeEvent({
@@ -13185,6 +13186,17 @@ class MemoryAgentRunStore
       this.options.failRuntimeEventAppendAfter = undefined;
       throw new Error('runtime event append failed');
     }
+    assertDoubleRunNotSealed(this.runtimeEvents.get(key(sessionId, runId)) ?? [], event);
+    this.seedRuntimeEvent(sessionId, runId, event);
+  }
+
+  /**
+   * Put an event into the ledger underneath the seal.
+   *
+   * A test that needs a ledger shape the store would refuse to write has to
+   * assemble it below the store, not through the API whose contract forbids it.
+   */
+  seedRuntimeEvent(sessionId: string, runId: string, event: RuntimeEvent): void {
     const eventKey = key(sessionId, runId);
     this.runtimeEvents.set(eventKey, [
       ...(this.runtimeEvents.get(eventKey) ?? []),
@@ -13566,6 +13578,17 @@ class MemoryRuntimeEventStore implements RuntimeEventStore {
 
   async appendRuntimeEvent(sessionId: string, runId: string, event: RuntimeEvent): Promise<void> {
     if (this.options.failRuntimeEventAppends) throw new Error('runtime event append failed');
+    assertDoubleRunNotSealed(this.runtimeEvents.get(key(sessionId, runId)) ?? [], event);
+    this.seedRuntimeEvent(sessionId, runId, event);
+  }
+
+  /**
+   * Put an event into the ledger underneath the seal.
+   *
+   * A test that needs a ledger shape the store would refuse to write has to
+   * assemble it below the store, not through the API whose contract forbids it.
+   */
+  seedRuntimeEvent(sessionId: string, runId: string, event: RuntimeEvent): void {
     const eventKey = key(sessionId, runId);
     this.runtimeEvents.set(eventKey, [
       ...(this.runtimeEvents.get(eventKey) ?? []),
