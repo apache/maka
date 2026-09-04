@@ -190,6 +190,21 @@ export function useWorkbarController(
 
   const activeSessionId = input.activeSession?.id;
   const activeSessionIdRef = useRef<string | undefined>(undefined);
+  const lastKnownFamilySessionRef = useRef<SessionSummary | undefined>(undefined);
+  const lastKnownFamilySessionsRef = useRef<readonly SessionSummary[]>([]);
+  const activeSessionIsCataloged = Boolean(
+    input.activeSession && input.sessions.some((session) => session.id === input.activeSession!.id),
+  );
+  if (activeSessionIsCataloged) {
+    lastKnownFamilySessionRef.current = input.activeSession;
+    lastKnownFamilySessionsRef.current = input.sessions;
+  }
+  const familySessionForSideChat = activeSessionIsCataloged
+    ? input.activeSession
+    : (lastKnownFamilySessionRef.current ?? input.activeSession);
+  const familySessionsForSideChat = activeSessionIsCataloged
+    ? input.sessions
+    : lastKnownFamilySessionsRef.current;
   const resourceGenerationRef = useRef(0);
   useLayoutEffect(() => {
     resourceGenerationRef.current += 1;
@@ -564,8 +579,8 @@ export function useWorkbarController(
       (panel) =>
         !isLinkedSideConversationSessionFamily(
           panel.sourceSessionId,
-          input.activeSession,
-          input.sessions,
+          familySessionForSideChat,
+          familySessionsForSideChat,
         ),
     );
     if (stalePanels.length === 0) return;
@@ -582,8 +597,8 @@ export function useWorkbarController(
     sideConversations.removePanels(staleIds);
   }, [
     activeSessionId,
-    input.activeSession,
-    input.sessions,
+    familySessionForSideChat,
+    familySessionsForSideChat,
     layout.closeWorkbarTab,
     layout.workbarPanelsState,
     sideConversations.panels,
@@ -700,11 +715,11 @@ export function useWorkbarController(
       sideConversations.panels.filter((panel) =>
         isLinkedSideConversationSessionFamily(
           panel.sourceSessionId,
-          input.activeSession,
-          input.sessions,
+          familySessionForSideChat,
+          familySessionsForSideChat,
         ),
       ),
-    [input.activeSession, input.sessions, sideConversations.panels],
+    [familySessionForSideChat, familySessionsForSideChat, sideConversations.panels],
   );
   const activeSideChatTabIds = useMemo(
     () => new Set(activeSideConversationPanels.map((panel) => `side-chat:${panel.id}`)),
@@ -713,12 +728,18 @@ export function useWorkbarController(
   // Keep one WorkbarSurface mounted for the whole linked Session scope. This
   // avoids remounting every tool when the first/last Side Chat tab appears and
   // lets each tool receive the new sessionId and reset its own session data.
-  const sideConversationSurfaceKey = useMemo(
-    () =>
-      linkedSideConversationFamilyRootId(input.activeSession, input.sessions) ??
-      activeSessionId,
-    [activeSessionId, input.activeSession, input.sessions],
-  );
+  const sideConversationSurfaceKeyRef = useRef<string | undefined>(undefined);
+  const sideConversationSurfaceKey = useMemo(() => {
+    const familyRoot = linkedSideConversationFamilyRootId(
+      familySessionForSideChat,
+      familySessionsForSideChat,
+    );
+    if (familyRoot !== undefined) {
+      sideConversationSurfaceKeyRef.current = familyRoot;
+      return familyRoot;
+    }
+    return sideConversationSurfaceKeyRef.current ?? activeSessionId;
+  }, [activeSessionId, familySessionForSideChat, familySessionsForSideChat]);
   const hostPanelsState = useMemo(
     () =>
       projectWorkbarPanelsForSession(

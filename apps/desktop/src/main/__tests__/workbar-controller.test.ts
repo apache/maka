@@ -567,6 +567,33 @@ describe('useWorkbarController', () => {
     );
   });
 
+  it('keeps the previous family surface through a pending child catalog gap', async () => {
+    const { root } = installReactRenderer();
+    const parent = session('parent');
+    const child = session('child');
+    child.subagent = { parentSessionId: parent.id };
+    const services = createFakeWorkbarServices();
+
+    await act(async () => renderController(root, services, input(parent, [], [parent])));
+    await act(async () => controller().commands.openTool('side-chat'));
+    const panelId = controller().host.quotes?.[0]?.id;
+    assert.ok(panelId);
+
+    await act(async () => renderController(root, services, input(child, [], [])));
+    assert.equal(controller().host.surfaceKey, parent.id);
+    assert.equal(controller().host.quotes?.some((panel) => panel.id === panelId), true);
+    assert.equal(
+      controller().host.panelsState.right.tabs.some(
+        (candidate) => candidate.id === `side-chat:${panelId}`,
+      ),
+      true,
+    );
+
+    await act(async () => renderController(root, services, input(child, [], [parent, child])));
+    assert.equal(controller().host.surfaceKey, parent.id);
+    assert.equal(controller().host.quotes?.some((panel) => panel.id === panelId), true);
+  });
+
   it('keeps the family surface mounted when one of multiple source panels closes', async () => {
     const { root } = installReactRenderer();
     const parent = session('parent');

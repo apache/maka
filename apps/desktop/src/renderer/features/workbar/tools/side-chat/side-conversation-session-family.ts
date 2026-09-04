@@ -17,12 +17,14 @@
  * under the License.
  */
 
+import type { SessionSummary } from '@maka/core/session';
 import {
-  linkedSubagentParentSessionId,
-  type SessionSummary,
-} from '@maka/core/session';
+  collapseSessionRevisions,
+  projectRevisionLinkedSessionTree,
+  sessionRevisionFamilyId,
+} from '@maka/core/session-revisions';
 
-type LinkedSession = Pick<SessionSummary, 'id' | 'subagent' | 'subagentParent'>;
+type LinkedSession = SessionSummary;
 
 /**
  * Whether the active Session is the source itself or a linked descendant of
@@ -39,15 +41,27 @@ export function isLinkedSideConversationSessionFamily(
   // before its catalog row arrives. Keep the panel through that refresh; a
   // missing source is only destructive once navigation has left its id.
   if (sourceSessionId === activeSession.id) return true;
-  // A pending active Session has no lineage metadata yet. Do not destroy a
-  // live Side Chat during that short catalog gap; once the row arrives the
-  // normal descendant check below decides whether it belongs to this scope.
-  if (!sessions.some((session) => session.id === activeSession.id)) return true;
+  // A pending active Session has no catalog lineage yet. The controller keeps
+  // the previous known family alive during that short gap; this helper itself
+  // must not retain every panel for an unrelated unknown Session.
+  if (!sessions.some((session) => session.id === activeSession.id)) return false;
   const sourceSession = sessions.find((session) => session.id === sourceSessionId);
   if (!sourceSession) return false;
 
-  const sessionsById = new Map(sessions.map((session) => [session.id, session]));
-  return reachesSession(activeSession, sourceSessionId, sessionsById);
+  const logicalSessions = collapseSessionRevisions(sessions, activeSession.id);
+  const representativeByFamilyId = new Map(
+    logicalSessions.map((session) => [sessionRevisionFamilyId(session), session.id]),
+  );
+  const sourceId =
+    representativeByFamilyId.get(sessionRevisionFamilyId(sourceSession)) ?? sourceSession.id;
+  const activeId =
+    representativeByFamilyId.get(sessionRevisionFamilyId(activeSession)) ?? activeSession.id;
+  const tree = projectRevisionLinkedSessionTree(sessions, activeSession.id);
+  const parentByChildId = new Map<string, string>();
+  for (const [parentId, children] of tree.childrenByParentId) {
+    for (const child of children) parentByChildId.set(child.id, parentId);
+  }
+  return reachesSession(activeId, sourceId, parentByChildId);
 }
 
 /**
@@ -60,34 +74,40 @@ export function linkedSideConversationFamilyRootId(
   sessions: readonly LinkedSession[],
 ): string | undefined {
   if (!activeSession) return undefined;
-  const sessionsById = new Map(sessions.map((session) => [session.id, session]));
-  const visited = new Set<string>();
-  let current = activeSession;
-  while (!visited.has(current.id)) {
-    visited.add(current.id);
-    const parentSessionId = linkedSubagentParentSessionId(current);
-    if (!parentSessionId) return current.id;
-    const parent = sessionsById.get(parentSessionId);
-    if (!parent) return current.id;
-    current = parent;
+  if (!sessions.some((session) => session.id === activeSession.id)) return undefined;
+  const logicalSessions = collapseSessionRevisions(sessions, activeSession.id);
+  const activeRepresentative =
+    logicalSessions.find(
+      (session) => sessionRevisionFamilyId(session) === sessionRevisionFamilyId(activeSession),
+    ) ?? activeSession;
+  const tree = projectRevisionLinkedSessionTree(sessions, activeSession.id);
+  const parentByChildId = new Map<string, string>();
+  for (const [parentId, children] of tree.childrenByParentId) {
+    for (const child of children) parentByChildId.set(child.id, parentId);
   }
-  return current.id;
+  const visited = new Set<string>();
+  let currentId = activeRepresentative.id;
+  while (!visited.has(currentId)) {
+    visited.add(currentId);
+    const parentId = parentByChildId.get(currentId);
+    if (!parentId) return currentId;
+    currentId = parentId;
+  }
+  return currentId;
 }
 
 function reachesSession(
-  start: LinkedSession,
+  startId: string,
   targetSessionId: string,
-  sessionsById: ReadonlyMap<string, LinkedSession>,
+  parentByChildId: ReadonlyMap<string, string>,
 ): boolean {
   const visited = new Set<string>();
-  let current: LinkedSession | undefined = start;
-  while (current) {
-    if (current.id === targetSessionId) return true;
-    if (visited.has(current.id)) return false;
-    visited.add(current.id);
-    const parentSessionId = linkedSubagentParentSessionId(current);
-    if (!parentSessionId) return false;
-    current = sessionsById.get(parentSessionId);
+  let currentId: string | undefined = startId;
+  while (currentId) {
+    if (currentId === targetSessionId) return true;
+    if (visited.has(currentId)) return false;
+    visited.add(currentId);
+    currentId = parentByChildId.get(currentId);
   }
   return false;
 }
