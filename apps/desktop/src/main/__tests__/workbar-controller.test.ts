@@ -188,7 +188,7 @@ function workBoardInput(
       nonceRef.current += 1;
     },
     composerRef: { current: { setDraft: () => undefined, focus: () => undefined } },
-    newTaskSurfaceNonceRef: nonceRef,
+    newTaskSurfaceNonce: nonceRef.current,
     ...overrides,
   };
 }
@@ -647,6 +647,13 @@ describe('useWorkbarController', () => {
     );
     assert.equal(opened.length, 1);
     assert.equal(nonceRef.current, 1);
+    // Re-render so the claim backfills the nonce of the freshly opened surface.
+    await act(async () =>
+      renderController(root, services, {
+        ...controllerInput,
+        newTaskSurfaceNonce: nonceRef.current,
+      }),
+    );
 
     // The first send on the claimed surface links item A.
     await act(async () =>
@@ -686,10 +693,23 @@ describe('useWorkbarController', () => {
       controller().host.onStartWorkBoardTask?.(workBoardItem('A')),
     );
     assert.equal(nonceRef.current, 1);
+    // Re-render after the open so the claim sees the freshly opened surface.
+    await act(async () =>
+      renderController(root, services, {
+        ...controllerInput,
+        newTaskSurfaceNonce: nonceRef.current,
+      }),
+    );
 
     // The user abandons that surface and opens a fresh New Task on the SAME
     // Host/project (a new owner nonce, identical draft key).
     nonceRef.current += 1;
+    await act(async () =>
+      renderController(root, services, {
+        ...controllerInput,
+        newTaskSurfaceNonce: nonceRef.current,
+      }),
+    );
     // A first send there must not consume the claim or link item A.
     await act(async () =>
       controller().commands.onNewTaskSessionResolved('session-B'),
@@ -727,8 +747,20 @@ describe('useWorkbarController', () => {
     await act(async () =>
       controller().host.onStartWorkBoardTask?.(workBoardItem('A')),
     );
+    await act(async () =>
+      renderController(root, services, {
+        ...controllerInput,
+        newTaskSurfaceNonce: nonceRef.current,
+      }),
+    );
     // A different New Task surface (project B) is opened and sends first.
     nonceRef.current += 1;
+    await act(async () =>
+      renderController(root, services, {
+        ...controllerInput,
+        newTaskSurfaceNonce: nonceRef.current,
+      }),
+    );
     await act(async () =>
       controller().commands.onNewTaskSessionResolved('session-B'),
     );
@@ -763,6 +795,12 @@ describe('useWorkbarController', () => {
     await act(async () => renderController(root, services, controllerInput));
     await act(async () =>
       controller().host.onStartWorkBoardTask?.(workBoardItem('A')),
+    );
+    await act(async () =>
+      renderController(root, services, {
+        ...controllerInput,
+        newTaskSurfaceNonce: nonceRef.current,
+      }),
     );
     await act(async () =>
       controller().commands.onNewTaskSessionResolved(

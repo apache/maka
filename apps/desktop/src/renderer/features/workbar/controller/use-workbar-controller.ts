@@ -90,7 +90,6 @@ export interface WorkbarControllerCommands {
    * it.
    */
   onNewTaskSessionResolved(sessionId: string): void;
-  onNewTaskSessionNotProjected(): void;
 }
 
 export interface WorkbarControllerSelectors {
@@ -113,12 +112,12 @@ export interface UseWorkbarControllerInput {
   openNewTaskSurface?(): void;
   openSessionInChat?(sessionId: string): void;
   /**
-   * The per-surface owner nonce of the currently projected new-task surface.
-   * Work Board start claims bind to this token rather than the target-scoped
-   * draft key, so a New Task reopened on the same Host/project is a distinct
-   * surface and cannot consume another claim's Session.
+   * The owner nonce of the projected new-task surface as of the current
+   * render. Work Board start claims bind to this token rather than the
+   * target-scoped draft key, so a New Task reopened on the same Host/project
+   * is a distinct surface and cannot consume another claim's Session.
    */
-  newTaskSurfaceNonceRef?: { current: number };
+  newTaskSurfaceNonce?: number;
   resolveWorkBoardTarget?(item: WorkBoardItem):
     | { ok: true; target: { profileId: string; hostId: string; projectId: string } }
     | { ok: false; message: string };
@@ -227,14 +226,26 @@ export function useWorkbarController(
    * new-task surface it opened; `sessionId` is filled once the first send on
    * that surface is projected, and is retained across a failed link so a retry
    * can reuse the same Session instead of creating a duplicate.
+   *
+   * `surfaceNonce` is filled on the first render after the claim is created,
+   * when the freshly opened surface's owner nonce is visible as a render-time
+   * value (the open itself already bumped the module counter past the value
+   * captured at claim time).
    */
   const pendingWorkBoardStartRef = useRef<{
     itemId: string;
     target: { profileId: string; hostId: string; projectId: string };
-    surfaceNonce: number;
+    surfaceNonce?: number;
     sessionId?: string;
   } | undefined>(undefined);
   const resourceGenerationRef = useRef(0);
+  // A claim created inside an event handler cannot read the nonce of the
+  // surface it just opened (that bump lands on the next render), so its
+  // surfaceNonce is backfilled here on the next commit.
+  const pendingClaim = pendingWorkBoardStartRef.current;
+  if (pendingClaim && pendingClaim.surfaceNonce === undefined) {
+    pendingClaim.surfaceNonce = input.newTaskSurfaceNonce ?? 0;
+  }
   useLayoutEffect(() => {
     resourceGenerationRef.current += 1;
     activeSessionIdRef.current = activeSessionId;
@@ -296,36 +307,19 @@ export function useWorkbarController(
     [linkPendingWorkBoardSession],
   );
 
-  const onNewTaskSessionNotProjected = useCallback(() => {
-    const pending = pendingWorkBoardStartRef.current;
-    // Only drop a claim that never produced a Session. A claim that already
-    // has a Session id may still have a link in flight or a retryable link
-    // failure, so it must survive until the link settles.
-    if (pending && pending.sessionId === undefined) {
-      pendingWorkBoardStartRef.current = undefined;
-    }
-  }, []);
-
   const startWorkBoardTask = useCallback(
     (item: WorkBoardItem) => {
       const pending = pendingWorkBoardStartRef.current;
       if (pending) {
-        if (pending.itemId === item.id) {
-          if (pending.sessionId !== undefined) {
-            // A previous link attempt failed for this same item: retry the
-            // link against the already-created Session instead of opening a
-            // new surface and creating a duplicate.
-            settlePendingWorkBoardLink(pending);
-          } else {
-            input.toastApi.info(
-              getDesktopConversationCopy(locale).workBoardPanel.actionFailed,
-              'Finish sending the current Work Board task before starting another one.',
-            );
-          }
+        if (pending.itemId === item.id && pending.sessionId !== undefined) {
+          // A previous link attempt failed for this same item: retry the
+          // link against the already-created Session instead of opening a
+          // new surface and creating a duplicate.
+          settlePendingWorkBoardLink(pending);
           return;
         }
-        // A different item was started: the previous claim's surface was
-        // abandoned, so its claim is no longer bound and is dropped.
+        // A claim without a Session was abandoned (its surface was reopened
+        // or never projected a first send), so a fresh start replaces it.
         pendingWorkBoardStartRef.current = undefined;
       }
       const result = input.resolveWorkBoardTarget?.(item);
@@ -350,15 +344,12 @@ export function useWorkbarController(
         return;
       }
       input.openNewTaskSurface?.();
-      // The new-task surface owns this claim. The owner nonce is read after
-      // `openNewTaskSurface` so it reflects the freshly created surface, and
-      // a New Task opened later on the same Host/project gets a different
-      // nonce and therefore cannot consume this claim.
-      const surfaceNonce = input.newTaskSurfaceNonceRef?.current ?? 0;
+      // The claim binds to the surface opened just above; its owner nonce is
+      // backfilled on the next render (see the ref comment above), which is
+      // always before a first send can happen on that surface.
       pendingWorkBoardStartRef.current = {
         itemId: item.id,
         target: result.target,
-        surfaceNonce,
       };
       globalThis.requestAnimationFrame(() => {
         input.composerRef?.current?.setDraft(draftKey, draft);
@@ -385,7 +376,7 @@ export function useWorkbarController(
       // send from any other surface (even one reopened on the same
       // Host/project, which shares the draft key but has a fresh owner nonce)
       // must not consume it: drop the abandoned claim and refuse the link.
-      if (input.newTaskSurfaceNonceRef?.current !== pending.surfaceNonce) {
+      if ((input.newTaskSurfaceNonce ?? 0) !== pending.surfaceNonce) {
         pendingWorkBoardStartRef.current = undefined;
         return;
       }
@@ -401,7 +392,7 @@ export function useWorkbarController(
       }
       settlePendingWorkBoardLink(pending);
     },
-    [input.newTaskSurfaceNonceRef, settlePendingWorkBoardLink],
+    [input.newTaskSurfaceNonce, settlePendingWorkBoardLink],
   );
   const respondToClientCapability = useCallback<
     WorkbarControllerCommands['respondToClientCapability']
@@ -884,10 +875,8 @@ export function useWorkbarController(
       respondToUserForm: sideChat.respondToUserForm,
       toggleRight,
       onNewTaskSessionResolved,
-      onNewTaskSessionNotProjected,
     }),
     [
-      onNewTaskSessionNotProjected,
       onNewTaskSessionResolved,
       openSideChatWithQuote,
       openTool,

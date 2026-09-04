@@ -750,9 +750,9 @@
         },
         "environmentCapabilities": {
           "document.querySelector": 1,
-          "requestAnimationFrame": 1,
+          "requestAnimationFrame": 2,
           "window.clearTimeout": 4,
-          "window.requestAnimationFrame": 4,
+          "window.requestAnimationFrame": 3,
           "window.setTimeout": 2
         },
         "hookCalls": {
