@@ -1175,10 +1175,7 @@ export class AiSdkCompaction {
             ...(input.origin.runId ? { runId: input.origin.runId } : {}),
             source: {
               foldedRuntimeEvents: [...coveredRuntimeEvents],
-              invocations: invocationsForFoldedEvents(
-                state.priorInvocations,
-                coveredRuntimeEvents,
-              ),
+              invocations: invocationsForFoldedEvents(state.priorInvocations, coveredRuntimeEvents),
             },
             ...(previousCheckpoint ? { previousCheckpoint } : {}),
             newlyFoldedRuntimeEvents: [...newlyFoldedRuntimeEvents],
