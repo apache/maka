@@ -23,6 +23,7 @@ import {
   type ModelCallAttempt,
 } from '@maka/core/model-call-attempt';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import { readRunInvocation } from '@maka/core/runtime-event-store';
 import type {
   RuntimeInvocationPageCursor,
   RuntimeInvocationRecord,
@@ -126,9 +127,7 @@ export class HostExecutionInspectCoordinator {
   ): Promise<ExecutionInspectQueryResult | undefined> {
     let invocation;
     try {
-      invocation = (await this.#stores.runtimeEventStore.listSessionInvocations(sessionId)).find(
-        (candidate) => candidate.runId === agentRunId,
-      );
+      invocation = await readRunInvocation(this.#stores.runtimeEventStore, sessionId, agentRunId);
     } catch (error) {
       if (isMissing(error)) return undefined;
       throw error;
@@ -287,9 +286,7 @@ export class HostExecutionInspectCoordinator {
     if (!admission) return undefined;
     let run;
     try {
-      run = (await this.#stores.runtimeEventStore.listSessionInvocations(sessionId)).find(
-        (candidate) => candidate.runId === admission.runId,
-      );
+      run = await readRunInvocation(this.#stores.runtimeEventStore, sessionId, admission.runId);
     } catch (error) {
       if (isMissing(error)) return undefined;
       throw error;

@@ -35,7 +35,7 @@ export interface ExecutionInspectDiagnostic {
   eventId?: string;
 }
 
-export const AGENT_RUN_INSPECT_STATUSES = ['running', 'completed', 'failed', 'cancelled'] as const;
+const AGENT_RUN_INSPECT_STATUSES = ['running', 'completed', 'failed', 'cancelled'] as const;
 
 export interface AgentRunInspectIdentity {
   sessionId: string;
