@@ -704,6 +704,7 @@ const runtimeHostManagement = createDesktopRuntimeHostManagement({
   resolveUpdatePackage: runtimeHostSetupPackage.resolve,
   currentHostEpoch: (profileId) =>
     runtimeHostManager?.current(profileId)?.candidate?.client.hostEpoch,
+  liveHost: (profileId) => runtimeHostManager?.current(profileId)?.candidate?.client,
   awaitUpdatedConnection: async (
     profileId,
     expectedHostId,

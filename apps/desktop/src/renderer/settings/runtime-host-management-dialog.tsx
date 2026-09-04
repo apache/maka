@@ -58,7 +58,10 @@ import {
   RuntimeHostProjectDirectoryEditor,
   type ProjectDirectoryRootDraft,
 } from './runtime-host-project-directory-editor.js';
-import { RuntimeHostConnectionCodeButton } from '../features/runtime-host-management';
+import {
+  RuntimeHostConnectionCodeButton,
+  RuntimeHostResourceDialog,
+} from '../features/runtime-host-management';
 
 type RuntimeHostManagementConfirmation =
   | { readonly kind: 'uninstall'; readonly allowInterruptActiveTasks: boolean }
@@ -775,6 +778,9 @@ export function RuntimeHostManagementDialog(props: {
                       <Fact label={copy.stateRoot} value={service.stateRoot} wide />
                     ) : null}
                   </dl>
+                  {target ? (
+                    <RuntimeHostResourceDialog profileId={target.id} hostName={target.name} />
+                  ) : null}
                   {serviceInstalled && fullManagement && target?.directPeerManagement ? (
                     <section className="settingsRuntimeHostDirectPeer">
                       <div className="settingsRuntimeHostUpdatePolicyHeading">

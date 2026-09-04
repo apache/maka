@@ -6,7 +6,7 @@ Generated against `@astryxdesign/core@0.5.2` (194 component exports).
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 247 files — blocker 0, reimplementation 0, polish 1, aligned 246.
+**Totals:** 248 files — blocker 0, reimplementation 0, polish 1, aligned 247.
 
 ## Exclusions (explicit)
 
@@ -58,6 +58,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-connection-code-dialog.tsx` | dialog-overlay | Button, Dialog, DialogHeader, FormLayout, IconButton, Layout, LayoutContent, LayoutFooter, TextArea, Tooltip | aligned — uses Astryx (Button, Dialog, DialogHeader, FormLayout, IconButton, Layout, LayoutContent, LayoutFooter) | aligned |
 | `apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-peer-mesh-dialog.tsx` | dialog-overlay | Badge, Banner, Button, Dialog, DialogHeader, HStack, Layout, LayoutContent, LayoutFooter, MoreMenu, SegmentedControl, SegmentedControlItem, Selector, Switch, Text, TextArea, TextInput, Tooltip | aligned — uses Astryx (Badge, Banner, Button, Dialog, DialogHeader, HStack, Layout, LayoutContent) | aligned |
 | `apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-profile-pairing-actions.tsx` | other | Button, MoreMenu | aligned — uses Astryx (Button, MoreMenu) | aligned |
+| `apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-resource-dialog.tsx` | dialog-overlay | Button, Dialog, DialogHeader, Layout, LayoutContent, LayoutFooter, Spinner, Text | aligned — uses Astryx (Button, Dialog, DialogHeader, Layout, LayoutContent, LayoutFooter, Spinner, Text) | aligned |
 | `apps/desktop/src/renderer/features/session-collaboration/services-context.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/session-collaboration/turn-request-inbox-context.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/session-collaboration/ui/session-collaboration-join-dialog.tsx` | dialog-overlay | Badge, Banner, Button, Dialog, DialogHeader, FormLayout, HStack, Layout, LayoutContent, LayoutFooter, List, ListItem, TextArea, Tooltip | aligned — uses Astryx (Badge, Banner, Button, Dialog, DialogHeader, FormLayout, HStack, Layout) | aligned |

@@ -20,6 +20,7 @@
 import type { RuntimeHostPeerMeshManagementAction } from '@maka/runtime-host/operator';
 import type { RuntimeHostWebRtcStunPolicy } from '@maka/runtime-host/operator';
 import type {
+  HostResourcesResult,
   PeerMeshInvitationResult,
   PeerMeshQueryResult,
 } from '@maka/runtime-host/protocol';
@@ -103,9 +104,15 @@ export interface RuntimeHostConnectionCodeServices {
   writeClipboardText(value: string): Promise<void>;
 }
 
+export interface RuntimeHostResourceServices {
+  query(profileId: string): Promise<HostResourcesResult | undefined>;
+  schedule(callback: () => void, delayMs: number): () => void;
+}
+
 export interface RuntimeHostManagementServices {
   readonly peerMesh: PeerMeshServices;
   readonly profilePairing: RuntimeHostProfilePairingServices;
   readonly connectionCodes: RuntimeHostConnectionCodeServices;
+  readonly resources: RuntimeHostResourceServices;
   readonly supportsWsl: boolean;
 }

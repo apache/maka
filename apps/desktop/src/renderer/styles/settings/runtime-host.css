@@ -121,6 +121,15 @@
   font: var(--maka-text-body);
 }
 
+.settingsRuntimeHostResources {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.settingsRuntimeHostResources dd {
+  white-space: pre-line;
+}
+
 .settingsRuntimeHostManagementDirectoryRoots {
   display: grid;
   gap: var(--space-2);
