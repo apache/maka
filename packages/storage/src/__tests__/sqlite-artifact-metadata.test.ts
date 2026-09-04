@@ -89,6 +89,48 @@ test('Artifact metadata changes only write changed rows', async () => {
   }
 });
 
+test('Artifact metadata recovery ignores records from unsupported sources', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-artifact-metadata-unsupported-'));
+  const repository = createSqliteArtifactMetadataRepository(root);
+  let inspector: DatabaseSync | undefined;
+  try {
+    const supported = artifactRecord('supported');
+    repository.applyChanges({ upserts: [supported] });
+
+    const unsupported = {
+      ...artifactRecord('unsupported'),
+      source: 'retired_artifact_source',
+    };
+    inspector = new DatabaseSync(join(root, OPERATIONAL_STATE_DATABASE_NAME));
+    const insert = inspector.prepare(`
+        INSERT INTO artifact_records(
+          storage_key,
+          artifact_id,
+          session_id,
+          created_at,
+          status,
+          relative_path,
+          record_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `);
+    insert.run(
+      `${unsupported.id}-storage-key`,
+      unsupported.id,
+      unsupported.sessionId,
+      unsupported.createdAt,
+      unsupported.status,
+      unsupported.relativePath,
+      JSON.stringify(unsupported),
+    );
+
+    assert.deepEqual(repository.readAll(), [supported]);
+  } finally {
+    inspector?.close();
+    repository.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 function artifactRecord(id: string): ArtifactRecord {
   return {
     id,

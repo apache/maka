@@ -56,7 +56,9 @@ export function decodeArtifactRecordJsons(values: readonly unknown[]): ArtifactR
   for (const [index, value] of values.entries()) {
     try {
       if (typeof value !== 'string') throw invalidMetadataRecord(index + 1);
-      const record = decodeArtifactRecord(JSON.parse(value), index + 1);
+      const parsed = JSON.parse(value);
+      if (!hasSupportedArtifactSource(parsed)) continue;
+      const record = decodeArtifactRecord(parsed, index + 1);
       if (ids.has(record.id)) throw invalidMetadataRecord(index + 1);
       ids.add(record.id);
       records.push(record);
@@ -68,6 +70,14 @@ export function decodeArtifactRecordJsons(values: readonly unknown[]): ArtifactR
     }
   }
   return records;
+}
+
+function hasSupportedArtifactSource(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    (value.source === undefined ||
+      (typeof value.source === 'string' && ARTIFACT_SOURCE_SET.has(value.source as ArtifactSource)))
+  );
 }
 
 export function isSafeRelativeArtifactPath(relativePath: string): boolean {
@@ -115,9 +125,7 @@ function decodeArtifactRecord(value: unknown, index: number): ArtifactRecord {
     !isOptionalNonEmptyString(value.mimeType) ||
     !isOptionalNonEmptyString(value.summary) ||
     (value.deepResearchRole !== undefined && !isDeepResearchArtifactRole(value.deepResearchRole)) ||
-    (value.source !== undefined &&
-      (typeof value.source !== 'string' ||
-        !ARTIFACT_SOURCE_SET.has(value.source as ArtifactSource)))
+    (value.source !== undefined && typeof value.source !== 'string')
   ) {
     throw invalidMetadataRecord(index);
   }
