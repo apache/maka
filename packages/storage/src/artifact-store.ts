@@ -428,7 +428,13 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
           (record) =>
             record.sessionId === input.sourceSessionId &&
             turnIds.has(record.turnId) &&
-            !excludedArtifactIds.has(record.id),
+            !excludedArtifactIds.has(record.id) &&
+            // A retired capture is on its way off disk and nothing reads one.
+            // Copying it would hand the new Session bytes already condemned,
+            // and would put records back after the sweep finished and stopped
+            // looking. Leaving them out also keeps the two from racing: the
+            // sweep can no longer delete a record this copy is holding.
+            record.source !== RETIRED_CAPTURE_ARTIFACT_SOURCE,
         )
         .map((record) => ({ ...record }));
       for (const [sessionId, artifactIds] of requestedLinkedArtifactIds) {
@@ -912,7 +918,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
       const retired = this.records.filter(
         (record) => record.source === RETIRED_CAPTURE_ARTIFACT_SOURCE,
       );
-      const batch = retired.slice(0, Math.max(0, limit));
+      const batch = retired.slice(0, limit);
       await this.purgeRecordsUnlocked(batch);
       outcome = { purged: batch.length, remaining: retired.length - batch.length };
     });

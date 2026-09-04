@@ -322,6 +322,38 @@ describe('SQLite Artifact store', () => {
     });
   });
 
+  test('a conversation copy leaves retired captures behind rather than reintroducing them', async () => {
+    await withWorkspace(async (root) => {
+      const authority = createArtifactStoreWriteAuthority(root);
+      await authority.recover();
+      const { store } = authority;
+      const kept = await store.create(artifactInput('kept-artifact', 'kept', 10));
+      await store.create({
+        ...artifactInput('capture-artifact', 'request', 11),
+        source: 'provider_request_capture',
+      });
+
+      const copied = await store.copyConversationArtifacts({
+        sourceSessionId: 'session-1',
+        targetSessionId: 'session-copy',
+        turnIds: ['turn-1'],
+      });
+
+      // The sweep runs once and stops when nothing is left. A copy that
+      // carried captures would put them back afterwards, so every fork would
+      // hand the new Session a fresh set of bytes nobody reads and nothing
+      // will come back for.
+      assert.equal(copied.artifactIds.get('capture-artifact'), undefined);
+      assert.ok(copied.artifactIds.get(kept.id));
+      assert.deepEqual(
+        (await store.list('session-copy', { includeDeleted: true })).map((record) => record.source),
+        ['fixture'],
+      );
+      // And the source keeps its own until the sweep takes them.
+      assert.deepEqual(await store.purgeRetiredCaptures(8), { purged: 1, remaining: 0 });
+    });
+  });
+
   test('reclaims retired request captures in bounded batches and leaves everything else', async () => {
     await withWorkspace(async (root) => {
       const authority = createArtifactStoreWriteAuthority(root);
