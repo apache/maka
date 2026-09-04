@@ -455,11 +455,12 @@ function durableProviderErrorClass(
   classified: string,
   httpStatus: number | undefined,
 ): string {
-  // Structured context-overflow and capacity evidence can legitimately arrive
+  // Structured context-overflow, capacity, and billing evidence can legitimately arrive
   // behind a generic 4xx/5xx proxy response and remains stronger than the wrapper code.
   if (
     classified === 'ContextLength' ||
     classified === 'ProviderCapacity' ||
+    classified === 'ProviderBilling' ||
     (classified === 'ProviderUnavailable' && isTrustedCodexEdgeRejection(facts))
   ) {
     return classified;

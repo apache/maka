@@ -69,6 +69,7 @@ describe('Provider error classification', () => {
       data: { error: { code: 'insufficient_quota' } },
     });
     assert.equal(classifyError(quotaOn401), 'ProviderBilling');
+    assert.equal(providerFailureDiagnostic(quotaOn401).errorClass, 'ProviderBilling');
 
     const balanceOn403 = Object.assign(new Error('request failed'), {
       name: 'AI_APICallError',
@@ -76,6 +77,7 @@ describe('Provider error classification', () => {
       data: { error: { code: 'insufficient_balance' } },
     });
     assert.equal(classifyError(balanceOn403), 'ProviderBilling');
+    assert.equal(providerFailureDiagnostic(balanceOn403).errorClass, 'ProviderBilling');
 
     // Explicit provider evidence outranks the numeric HTTP fallback: an
     // exhausted quota is a closed window, not a transient throttle to retry.
@@ -86,6 +88,7 @@ describe('Provider error classification', () => {
     });
     assert.equal(classifyError(quotaOn429), 'ProviderBilling');
     assert.equal(providerRetryMetadata(quotaOn429).retryable, false);
+    assert.equal(providerFailureDiagnostic(quotaOn429).errorClass, 'ProviderBilling');
   });
 
   test('plan-window wording on a credential-shaped status projects to billing', () => {
@@ -100,6 +103,7 @@ describe('Provider error classification', () => {
     });
     assert.equal(classifyError(planWindow), 'ProviderBilling');
     assert.equal(providerRetryMetadata(planWindow).retryable, false);
+    assert.equal(providerFailureDiagnostic(planWindow).errorClass, 'ProviderBilling');
 
     const exhaustedCredits = Object.assign(new Error('Request failed with status code 403'), {
       name: 'AI_APICallError',
@@ -109,6 +113,7 @@ describe('Provider error classification', () => {
       }),
     });
     assert.equal(classifyError(exhaustedCredits), 'ProviderBilling');
+    assert.equal(providerFailureDiagnostic(exhaustedCredits).errorClass, 'ProviderBilling');
   });
 
   test('genuine credential and permission failures stay auth on 401/403', () => {
