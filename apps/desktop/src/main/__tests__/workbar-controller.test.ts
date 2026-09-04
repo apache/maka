@@ -649,9 +649,8 @@ describe('useWorkbarController', () => {
 
     // The synchronous owner handoff links without an intervening render.
     await act(async () =>
-      controller().commands.onNewTaskSessionResolved(
+      controller().commands.bindNewTaskSessionResolver(ownerRef.current)(
         JSON.stringify(['host-1', 'session-1']),
-        ownerRef.current,
       ),
     );
     assert.deepEqual(links, [{ id: 'A', sessionId: 'session-1' }]);
@@ -693,14 +692,14 @@ describe('useWorkbarController', () => {
     ownerRef.current += 1;
     // A first send there must not consume the claim or link item A.
     await act(async () =>
-      controller().commands.onNewTaskSessionResolved('session-B', ownerRef.current),
+      controller().commands.bindNewTaskSessionResolver(ownerRef.current)('session-B'),
     );
     assert.deepEqual(links, []);
 
     // The mismatched send abandoned the claim, so a later send on the
     // original surface must not resurrect it either.
     await act(async () =>
-      controller().commands.onNewTaskSessionResolved('session-A', 1),
+      controller().commands.bindNewTaskSessionResolver(1)('session-A'),
     );
     assert.deepEqual(links, []);
   });
@@ -732,7 +731,7 @@ describe('useWorkbarController', () => {
     // A different New Task surface (project B) is opened and sends first.
     ownerRef.current += 1;
     await act(async () =>
-      controller().commands.onNewTaskSessionResolved('session-B', ownerRef.current),
+      controller().commands.bindNewTaskSessionResolver(ownerRef.current)('session-B'),
     );
     assert.deepEqual(links, []);
   });
@@ -768,9 +767,8 @@ describe('useWorkbarController', () => {
       controller().host.onStartWorkBoardTask?.(workBoardItem('A')),
     );
     await act(async () =>
-      controller().commands.onNewTaskSessionResolved(
+      controller().commands.bindNewTaskSessionResolver(ownerRef.current)(
         JSON.stringify(['host-1', 'session-1']),
-        ownerRef.current,
       ),
     );
     // First attempt fails; the claim (with its Session id) must be retained.

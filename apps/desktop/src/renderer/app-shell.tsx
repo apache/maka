@@ -229,7 +229,6 @@ type ComposerImportOwner = {
   sessionId: string | undefined;
   navSection: NavSelection['section'];
   newTaskDraftKey?: string;
-  newTaskSurfaceOwnerToken?: number;
 };
 
 /**
@@ -2102,7 +2101,7 @@ function AppShellContent({
       : undefined;
     const quotes = pendingQuotes.length ? pendingQuotes : undefined;
     const ok = await send(text, pending, {
-      onSessionResolved: workbar.commands.onNewTaskSessionResolved,
+      onSessionResolved: workbar.commands.bindNewTaskSessionResolver(readSelectionRevision()),
       ...directoryOptions,
       ...(quotes ? { quotes } : {}),
       ...(workspaceFileReferences.length
@@ -2388,10 +2387,7 @@ function AppShellContent({
       sessionId: activeIdRef.current,
       navSection: navSelectionRef.current.section,
       ...(activeIdRef.current === undefined
-        ? {
-            newTaskDraftKey: currentNewTaskDraftKey,
-            newTaskSurfaceOwnerToken: readSelectionRevision(),
-          }
+        ? { newTaskDraftKey: currentNewTaskDraftKey }
         : {}),
     };
   }

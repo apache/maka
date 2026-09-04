@@ -89,10 +89,7 @@ export interface WorkbarControllerCommands {
    * other surface—even one reopened on the same Host/project—must not consume
    * it.
    */
-  onNewTaskSessionResolved(
-    sessionId: string,
-    surfaceOwnerToken: number | undefined,
-  ): void;
+  bindNewTaskSessionResolver(surfaceOwnerToken: number): (sessionId: string) => void;
 }
 
 export interface WorkbarControllerSelectors {
@@ -358,7 +355,7 @@ export function useWorkbarController(
   );
 
   const onNewTaskSessionResolved = useCallback(
-    (sessionId: string, surfaceOwnerToken: number | undefined) => {
+    (sessionId: string, surfaceOwnerToken: number) => {
       const pending = pendingWorkBoardStartRef.current;
       if (!pending) return;
       // The claim is owned by one specific New Task surface instance. A first
@@ -382,6 +379,11 @@ export function useWorkbarController(
       settlePendingWorkBoardLink(pending);
     },
     [settlePendingWorkBoardLink],
+  );
+  const bindNewTaskSessionResolver = useCallback(
+    (surfaceOwnerToken: number) =>
+      (sessionId: string) => onNewTaskSessionResolved(sessionId, surfaceOwnerToken),
+    [onNewTaskSessionResolved],
   );
   const respondToClientCapability = useCallback<
     WorkbarControllerCommands['respondToClientCapability']
@@ -863,10 +865,10 @@ export function useWorkbarController(
       respondToClientCapability,
       respondToUserForm: sideChat.respondToUserForm,
       toggleRight,
-      onNewTaskSessionResolved,
+      bindNewTaskSessionResolver,
     }),
     [
-      onNewTaskSessionResolved,
+      bindNewTaskSessionResolver,
       openSideChatWithQuote,
       openTool,
       respondToClientCapability,
