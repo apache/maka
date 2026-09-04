@@ -76,7 +76,7 @@ test('local preparation never enables distribution readiness', async () => {
   assert.equal(manifest.windowsCu.distributionReady, false);
 });
 
-test('distribution readiness requires evidence tied to the exact artifact', () => {
+test('caller-authored provenance can never enable distribution readiness', () => {
   const hash = 'a'.repeat(64);
   const complete = {
     executorCommit: 'b'.repeat(40),
@@ -86,7 +86,7 @@ test('distribution readiness requires evidence tied to the exact artifact', () =
     cleanMachineE2e: true,
     packagedConversationE2e: true,
   };
-  assert.equal(resolveWindowsCuDistributionReady(complete, hash), true);
+  assert.equal(resolveWindowsCuDistributionReady(complete, hash), false);
   assert.equal(
     resolveWindowsCuDistributionReady({ ...complete, artifactSha256: 'c'.repeat(64) }, hash),
     false,

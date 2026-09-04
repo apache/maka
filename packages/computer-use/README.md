@@ -75,9 +75,20 @@ On Windows, Desktop reads the `windowsCu` entry from
 `apps/desktop/bundled-tools.json`, verifies the complete helper directory
 against its declared file digests, and uses the same `maka.cu/2` service. The
 helper preparation script is `node scripts/computer-use.mjs prepare-windows`.
-Local preparation always leaves `distributionReady: false`; release readiness
-requires evidence tied to the exact CI artifact, Authenticode signature, clean
-machine run, and packaged conversation run.
+Local preparation always leaves `distributionReady: false` and cannot promote
+it by accepting a caller-authored provenance file. Release readiness requires a
+separately reviewed pipeline that mechanically verifies the exact CI artifact,
+GitHub attestation, Authenticode signature, clean-machine run, and packaged
+conversation run. When readiness is eventually true, a missing helper fails
+packaging and the packaged verifier checks the exact file set, sizes, digests,
+and Authenticode status.
+
+Windows Computer Use intentionally owns only native desktop applications. Web
+content is routed to Browser Use/OpenCLI, which can use browser-native page,
+DOM/accessibility, tab, navigation, and command state with stronger targeting
+and verification. This separation prevents duplicate browser automation and
+keeps coordinate/global-input/foreground fallbacks out of the strict
+background-only desktop contract.
 
 ## Protocol and lifecycle
 

@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { chmod, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -167,6 +167,17 @@ describe('Computer Use host health', () => {
         physicalInputRecentlyActive: () => false,
       });
       assert.equal(selected.selected.backendId, 'maka-cu');
+
+      await mkdir(join(directory, 'unexpected-directory'));
+      const withUnexpectedDirectory = createComputerUseHost({
+        isPackaged: false,
+        resourcesPath: directory,
+        manifestPath,
+        binaryPath,
+        platform: 'win32',
+        physicalInputRecentlyActive: () => false,
+      });
+      assert.equal(withUnexpectedDirectory.selected.backendId, 'none');
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

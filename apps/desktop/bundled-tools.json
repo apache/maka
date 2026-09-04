@@ -22,6 +22,7 @@
       "executor": "rust-native-windows",
       "protocol": "maka.cu/2",
       "runtimeIdentifier": "win-x64",
+      "rustTarget": "x86_64-pc-windows-msvc",
       "cargoProfile": "release",
       "lto": true,
       "staticNativeDependencies": true

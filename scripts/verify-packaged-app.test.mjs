@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -27,7 +28,48 @@ import {
   asarLookupPath,
   assertPackagedDependencyClosure,
   assertPackagedResources,
+  assertPackagedWindowsCuResources,
 } from './verify-packaged-app.mjs';
+
+test('packaged Windows Computer Use resources are readiness-gated and exactly pinned', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-windows-cu-package-'));
+  const resources = join(root, 'resources');
+  const helperDirectory = join(resources, 'bin', 'maka-cu-windows');
+  roots.push(root);
+  await mkdir(resources, { recursive: true });
+  await writeFile(
+    join(resources, 'bundled-tools.json'),
+    JSON.stringify({ windowsCu: { distributionReady: false } }),
+  );
+  await assertPackagedWindowsCuResources(resources);
+
+  const bytes = Buffer.from('signed-static-windows-helper');
+  const sha256 = createHash('sha256').update(bytes).digest('hex');
+  await mkdir(helperDirectory, { recursive: true });
+  await writeFile(join(helperDirectory, 'maka-cu-windows.exe'), bytes);
+  await writeFile(
+    join(resources, 'bundled-tools.json'),
+    JSON.stringify({
+      windowsCu: {
+        distributionReady: true,
+        binaryName: 'maka-cu-windows.exe',
+        binarySizeBytes: bytes.length,
+        binarySha256: sha256,
+        files: [{ name: 'maka-cu-windows.exe', sizeBytes: bytes.length, sha256 }],
+      },
+    }),
+  );
+  assert.deepEqual(await assertPackagedWindowsCuResources(resources), {
+    required: true,
+    binaryPath: join(helperDirectory, 'maka-cu-windows.exe'),
+  });
+
+  await writeFile(join(helperDirectory, 'unexpected.dll'), Buffer.from('unexpected'));
+  await assert.rejects(
+    () => assertPackagedWindowsCuResources(resources),
+    /file set does not match/,
+  );
+});
 
 test('packaged resources forbid the retired bundled Git distribution', async () => {
   const required = [];

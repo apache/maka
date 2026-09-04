@@ -29,9 +29,11 @@ existing shared `maka.cu/2` host service.
 
 - Add Windows platform selection to the existing protocol backend.
 - Select the `windowsCu` manifest entry and verify every packaged helper file.
-- Package the helper directory only when an artifact is present.
-- Provide a preparation script whose release flag is evidence-derived and
-  defaults to `distributionReady: false`.
+- Package the helper directory only when `distributionReady` is true; fail the
+  build when readiness is true but the exact helper is missing.
+- Keep local preparation permanently at `distributionReady: false`; a future
+  release qualification verifier must establish attestation, Authenticode,
+  clean-machine, and packaged-conversation evidence mechanically.
 - Do not copy the old PR's generated browser JSON, raw outputs, experiments,
   duplicate service, or compatibility input subsystem.
 
@@ -46,8 +48,10 @@ qualification pipeline and must match the exact binary digest.
 
 - [x] Start from the current `apache/main` after #4497.
 - [x] Reuse the existing `MakaCuService` and `maka.cu/2` backend.
-- [x] Add Windows manifest, digest-set validation, and conditional packaging.
-- [x] Add evidence-gated preparation script and focused tests.
+- [x] Add Windows manifest, exact digest-set validation, and readiness-gated packaging.
+- [x] Make readiness fail closed instead of trusting caller-authored provenance booleans.
+- [x] Require the packaged helper's exact file set/size/digests and a valid Authenticode status.
+- [x] Use a locked explicit `x86_64-pc-windows-msvc` source build contract.
 - [ ] Run a real packaged Windows conversation E2E on the exact artifact.
 
 ## Validation
@@ -56,4 +60,6 @@ qualification pipeline and must match the exact binary digest.
 - `npm run typecheck --workspace @maka/desktop` — baseline failure unrelated to
   this change; no diagnostic references the changed host or selector files.
 - `node --test scripts/prepare-windows-cu-helper.test.mjs` — 4 passed.
+- Focused release/verifier assertions pass; unrelated full script tests still
+  require generated workspace build output and a working Bash/WSL path.
 - Windows packaged/clean-machine validation — not run in this environment.

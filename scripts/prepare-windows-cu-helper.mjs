@@ -40,6 +40,7 @@ const PUBLISH_CONTRACT = {
   executor: 'rust-native-windows',
   protocol: 'maka.cu/2',
   runtimeIdentifier: 'win-x64',
+  rustTarget: 'x86_64-pc-windows-msvc',
   cargoProfile: 'release',
   lto: true,
   staticNativeDependencies: true,
@@ -50,20 +51,13 @@ const PUBLISH_CONTRACT = {
  * Readiness is tied to the exact bytes and requires release evidence from CI,
  * Authenticode, a clean machine, and a packaged conversation run.
  */
-export function resolveWindowsCuDistributionReady(provenance, binarySha256) {
-  return Boolean(
-    provenance &&
-      typeof provenance.executorCommit === 'string' &&
-      /^[0-9a-f]{40}$/.test(provenance.executorCommit) &&
-      typeof provenance.workflowRun === 'string' &&
-      /^[1-9][0-9]*$/.test(provenance.workflowRun) &&
-      provenance.artifactSha256 === binarySha256 &&
-      typeof binarySha256 === 'string' &&
-      /^[a-f0-9]{64}$/.test(binarySha256) &&
-      provenance.signature === 'authenticode' &&
-      provenance.cleanMachineE2e === true &&
-      provenance.packagedConversationE2e === true,
-  );
+export function resolveWindowsCuDistributionReady() {
+  // This local preparation command cannot verify GitHub artifact attestation,
+  // Authenticode trust, clean-machine execution, or packaged conversation E2E.
+  // Treating a caller-authored JSON field as proof would turn provenance into
+  // an unsafe boolean escape hatch. A release workflow must qualify and write
+  // the manifest through a separately reviewed verifier.
+  return false;
 }
 
 export async function inspectWindowsCuArtifact(artifactDirectory) {
@@ -115,10 +109,24 @@ async function publishFromSource(sourceRoot) {
   await mkdir(artifact, { recursive: true });
   await exec(
     process.platform === 'win32' ? 'cargo.exe' : 'cargo',
-    ['build', '--release', '--manifest-path', manifest],
+    [
+      'build',
+      '--locked',
+      '--release',
+      '--target',
+      PUBLISH_CONTRACT.rustTarget,
+      '--manifest-path',
+      manifest,
+    ],
     { cwd: sourceRoot },
   );
-  const built = resolve(dirname(manifest), 'target/release/maka-cu-windows-rust.exe');
+  const built = resolve(
+    dirname(manifest),
+    'target',
+    PUBLISH_CONTRACT.rustTarget,
+    'release',
+    'maka-cu-windows-rust.exe',
+  );
   if (!existsSync(built)) throw new Error(`Rust release binary was not produced: ${built}`);
   await cp(built, resolve(artifact, 'maka-cu-windows.exe'));
   await inspectWindowsCuArtifact(artifact);
@@ -166,7 +174,7 @@ export async function prepareWindowsCuHelper({ source = process.env.MAKA_CU_WIND
     publishContract: PUBLISH_CONTRACT,
     provenance,
     // There is deliberately no --distribution-ready escape hatch.
-    distributionReady: resolveWindowsCuDistributionReady(provenance, hash),
+    distributionReady: resolveWindowsCuDistributionReady(),
   };
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
   console.log(

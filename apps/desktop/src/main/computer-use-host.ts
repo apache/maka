@@ -86,9 +86,9 @@ function hasPinnedWindowsHelperFiles(
   }
   let actual: string[];
   try {
-    actual = readdirSync(dirname(binaryPath), { withFileTypes: true })
-      .filter((entry) => entry.isFile() && entry.name !== 'bundled-tools.json')
-      .map((entry) => entry.name);
+    const entries = readdirSync(dirname(binaryPath), { withFileTypes: true });
+    if (entries.some((entry) => !entry.isFile())) return false;
+    actual = entries.map((entry) => entry.name);
   } catch {
     return false;
   }

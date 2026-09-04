@@ -1095,6 +1095,67 @@ export async function assertPackagedResources(
   }
 }
 
+export async function assertPackagedWindowsCuResources(
+  resourcesPath,
+  { forbidPath = assertMissing } = {},
+) {
+  const manifest = JSON.parse(await readFile(join(resourcesPath, 'bundled-tools.json'), 'utf8'));
+  const entry = manifest.windowsCu;
+  const helperDirectory = join(resourcesPath, 'bin', 'maka-cu-windows');
+  if (entry?.distributionReady !== true) {
+    await forbidPath(helperDirectory);
+    return { required: false };
+  }
+  if (!Array.isArray(entry.files) || entry.files.length === 0) {
+    throw new Error('distribution-ready windowsCu has no pinned file manifest');
+  }
+  const expected = new Map();
+  for (const file of entry.files) {
+    if (
+      typeof file?.name !== 'string' ||
+      file.name.length === 0 ||
+      file.name !== file.name.split(/[\\/]/u).at(-1) ||
+      !Number.isSafeInteger(file.sizeBytes) ||
+      file.sizeBytes < 0 ||
+      typeof file.sha256 !== 'string' ||
+      !/^[a-f0-9]{64}$/u.test(file.sha256) ||
+      expected.has(file.name)
+    ) {
+      throw new Error('distribution-ready windowsCu has an invalid pinned file manifest');
+    }
+    expected.set(file.name, file);
+  }
+  const actualEntries = await readdir(helperDirectory, { withFileTypes: true });
+  if (actualEntries.some((item) => !item.isFile())) {
+    throw new Error('packaged Windows Computer Use helper must contain regular files only');
+  }
+  const actualNames = actualEntries.map((item) => item.name).sort();
+  const expectedNames = [...expected.keys()].sort();
+  if (JSON.stringify(actualNames) !== JSON.stringify(expectedNames)) {
+    throw new Error('packaged Windows Computer Use helper file set does not match its manifest');
+  }
+  for (const [name, pin] of expected) {
+    const bytes = await readFile(join(helperDirectory, name));
+    if (bytes.byteLength !== pin.sizeBytes) {
+      throw new Error(`packaged Windows Computer Use helper size mismatch: ${name}`);
+    }
+    if (createHash('sha256').update(bytes).digest('hex') !== pin.sha256) {
+      throw new Error(`packaged Windows Computer Use helper digest mismatch: ${name}`);
+    }
+  }
+  const binaryName = entry.binaryName;
+  const binaryPin = expected.get(binaryName);
+  if (
+    typeof binaryName !== 'string' ||
+    !binaryPin ||
+    binaryPin.sha256 !== entry.binarySha256 ||
+    binaryPin.sizeBytes !== entry.binarySizeBytes
+  ) {
+    throw new Error('packaged Windows Computer Use binary pin is inconsistent');
+  }
+  return { required: true, binaryPath: join(helperDirectory, binaryName) };
+}
+
 /**
  * Recursive content manifest of a directory tree: POSIX-normalized relative
  * paths, sorted, each with its file's SHA-256. Nothing is skipped — an install

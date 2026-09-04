@@ -31,6 +31,23 @@ function readManifest(relativePath) {
   return JSON.parse(readFileSync(new URL(relativePath, import.meta.url), 'utf8'));
 }
 
+export function windowsCuExtraResources({
+  platform = process.platform,
+  manifest = readManifest('./bundled-tools.json'),
+  helperExists = existsSync('resources/bin/maka-cu-windows/maka-cu-windows.exe'),
+} = {}) {
+  if (platform !== 'win32' || manifest.windowsCu?.distributionReady !== true) return [];
+  if (!helperExists) {
+    throw new Error(
+      'windowsCu is distribution-ready but resources/bin/maka-cu-windows/maka-cu-windows.exe is missing',
+    );
+  }
+  return [{
+    from: 'resources/bin/maka-cu-windows',
+    to: 'bin/maka-cu-windows',
+  }];
+}
+
 // Some license files below ship inside third-party packages that apps/desktop
 // depends on (electron, @fontsource-variable/geist*). Locate each package by
 // resolving its manifest rather than assuming its node_modules location:
@@ -138,12 +155,7 @@ const baseDesktopBuilderConfig = {
     },
     ...(process.platform === 'win32'
       ? [
-          ...(existsSync('resources/bin/maka-cu-windows/maka-cu-windows.exe')
-            ? [{
-                from: 'resources/bin/maka-cu-windows',
-                to: 'bin/maka-cu-windows',
-              }]
-            : []),
+          ...windowsCuExtraResources(),
           {
             from: 'resources/windows-sandbox/maka-windows-sandbox.exe',
             to: 'windows-sandbox/maka-windows-sandbox.exe',
