@@ -3335,6 +3335,133 @@ describe('AiSdkBackend model history', () => {
     assert.match(JSON.stringify(assistant), /Maka shipped the feature/);
   });
 
+  test('preserves pending assistant steps before a following client tool step', async () => {
+    const prompt = await replayPrompt([
+      runtimeTextEvent({
+        id: 'rt-user',
+        turnId: 'turn-prev',
+        role: 'user',
+        author: 'user',
+        text: 'inspect the workspace',
+      }),
+      runtimeEvent({
+        id: 'rt-progress-a',
+        turnId: 'turn-prev',
+        role: 'model',
+        author: 'agent',
+        refs: { providerEventId: 'progress-step-a' },
+        content: { kind: 'text', text: 'I found the relevant package.' },
+      }),
+      runtimeEvent({
+        id: 'rt-progress-b',
+        turnId: 'turn-prev',
+        role: 'model',
+        author: 'agent',
+        refs: { providerEventId: 'progress-step-b' },
+        content: { kind: 'text', text: 'I will inspect its configuration.' },
+      }),
+      clientToolCallEvent('rt-read-call', 'tool-step'),
+      clientToolResultEvent('rt-read-result'),
+    ]);
+
+    assert.deepEqual(
+      prompt.slice(0, 5).map((message) => ({
+        role: message.role,
+        types: message.content.map((part) => part.type),
+        text: message.content.find((part) => part.type === 'text')?.text,
+      })),
+      [
+        { role: 'user', types: ['text'], text: 'inspect the workspace' },
+        {
+          role: 'assistant',
+          types: ['text'],
+          text: 'I found the relevant package.',
+        },
+        {
+          role: 'assistant',
+          types: ['text'],
+          text: 'I will inspect its configuration.',
+        },
+        { role: 'assistant', types: ['tool-call'], text: undefined },
+        { role: 'tool', types: ['tool-result'], text: undefined },
+      ],
+    );
+  });
+
+  test('groups a client tool only with the immediately pending matching step', async () => {
+    const contiguousPrompt = await replayPrompt([
+      runtimeTextEvent({
+        id: 'rt-user',
+        turnId: 'turn-prev',
+        role: 'user',
+        author: 'user',
+        text: 'read the file',
+      }),
+      runtimeEvent({
+        id: 'rt-progress',
+        turnId: 'turn-prev',
+        role: 'model',
+        author: 'agent',
+        refs: { providerEventId: 'shared-step' },
+        content: { kind: 'text', text: 'I will read the file now.' },
+      }),
+      clientToolCallEvent('rt-read-call', 'shared-step'),
+      clientToolResultEvent('rt-read-result'),
+    ]);
+    assert.deepEqual(
+      contiguousPrompt.slice(0, 3).map((message) => ({
+        role: message.role,
+        types: message.content.map((part) => part.type),
+      })),
+      [
+        { role: 'user', types: ['text'] },
+        { role: 'assistant', types: ['text', 'tool-call'] },
+        { role: 'tool', types: ['tool-result'] },
+      ],
+    );
+
+    const interruptedPrompt = await replayPrompt([
+      runtimeTextEvent({
+        id: 'rt-user',
+        turnId: 'turn-prev',
+        role: 'user',
+        author: 'user',
+        text: 'read the file',
+      }),
+      runtimeEvent({
+        id: 'rt-progress-a',
+        turnId: 'turn-prev',
+        role: 'model',
+        author: 'agent',
+        refs: { providerEventId: 'shared-step' },
+        content: { kind: 'text', text: 'I will read the file now.' },
+      }),
+      runtimeEvent({
+        id: 'rt-progress-b',
+        turnId: 'turn-prev',
+        role: 'model',
+        author: 'agent',
+        refs: { providerEventId: 'intervening-step' },
+        content: { kind: 'text', text: 'Another step was persisted.' },
+      }),
+      clientToolCallEvent('rt-read-call', 'shared-step'),
+      clientToolResultEvent('rt-read-result'),
+    ]);
+    assert.deepEqual(
+      interruptedPrompt.slice(0, 5).map((message) => ({
+        role: message.role,
+        types: message.content.map((part) => part.type),
+      })),
+      [
+        { role: 'user', types: ['text'] },
+        { role: 'assistant', types: ['text'] },
+        { role: 'assistant', types: ['text'] },
+        { role: 'assistant', types: ['tool-call'] },
+        { role: 'tool', types: ['tool-result'] },
+      ],
+    );
+  });
+
   test('falls back to grounded text when Open Responses cannot replay a hosted tool pair', async () => {
     const model = completionModel();
     const backend = createTestAiSdkBackend({
@@ -16038,6 +16165,65 @@ function runtimeEvent(input: {
     ...(input.actions ? { actions: input.actions } : {}),
     ...(input.refs ? { refs: input.refs } : {}),
   };
+}
+
+function clientToolCallEvent(id: string, stepId: string): RuntimeEvent {
+  return runtimeEvent({
+    id,
+    turnId: 'turn-prev',
+    role: 'model',
+    author: 'agent',
+    refs: { stepId },
+    content: {
+      kind: 'function_call',
+      id: 'read-1',
+      name: 'Read',
+      args: { path: 'notes.md' },
+    },
+  });
+}
+
+function clientToolResultEvent(id: string): RuntimeEvent {
+  return runtimeEvent({
+    id,
+    turnId: 'turn-prev',
+    role: 'tool',
+    author: 'tool',
+    content: {
+      kind: 'function_response',
+      id: 'read-1',
+      name: 'Read',
+      result: { kind: 'text', text: 'file contents' },
+      isError: false,
+    },
+  });
+}
+
+async function replayPrompt(
+  runtimeContext: RuntimeEvent[],
+): Promise<Array<{ role: string; content: any[] }>> {
+  const model = completionModel();
+  const backend = createTestAiSdkBackend({
+    sessionId: 'session-1',
+    header: header(),
+    appendMessage: async () => {},
+    connection: connection(),
+    apiKey: 'sk-test',
+    modelId: 'mock-model-id',
+    modelFactory: () => model,
+    tools: [],
+    newId: idGenerator(),
+    now: monotonicClock(),
+  });
+  await drain(
+    backend.send({
+      turnId: 'turn-current',
+      text: 'continue',
+      context: [],
+      runtimeContext,
+    }),
+  );
+  return compactPrompt(model) as Array<{ role: string; content: any[] }>;
 }
 
 function compactPrompt(model: MockLanguageModelV4): unknown {
