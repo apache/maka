@@ -17,7 +17,13 @@
  * under the License.
  */
 
-import { COMPOSER_INPUT, test, expect } from './fixtures';
+import {
+  COMPOSER_INPUT,
+  PARENT_REMOVAL_CHILD_NAME,
+  PARENT_REMOVAL_PARENT_NAME,
+  test,
+  expect,
+} from './fixtures';
 import type { Page } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -494,4 +500,40 @@ test('Side Chat survives collapse, confirms close, and cleans up on source switc
     )
     .toBe(false);
   await expect(composer).toHaveText('');
+});
+
+test('parent Side Chat and its staged quote survive linked child navigation', async ({
+  parentRemovalWindow: page,
+}) => {
+  await page.getByRole('button', { name: '展开侧边栏' }).click();
+  const taskList = page.getByRole('navigation', { name: '任务列表' });
+  await taskList.getByText(PARENT_REMOVAL_PARENT_NAME, { exact: true }).click();
+  const parentAnswer = page
+    .getByLabel('Maka 的回答')
+    .getByText('实现子任务已完成检查。');
+  await expect(parentAnswer).toBeVisible();
+  const bounds = await parentAnswer.evaluate((element) => {
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    const rect = range.getBoundingClientRect();
+    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+  });
+  const selectionY = bounds.y + bounds.height / 2;
+  await page.mouse.move(bounds.x + 2, selectionY);
+  await page.mouse.down();
+  await page.mouse.move(bounds.x + bounds.width - 2, selectionY, { steps: 5 });
+  await page.mouse.up();
+  await page.getByRole('button', { name: '在侧栏追问' }).click();
+  const companion = page.locator('.maka-quote-companion');
+  const stagedQuote = companion.getByRole('group', { name: '附加内容' });
+  await expect(stagedQuote).toBeVisible();
+  const stagedQuoteText = await stagedQuote.textContent();
+  expect(stagedQuoteText).toBeTruthy();
+
+  const parentTurn = parentAnswer.locator('xpath=ancestor::*[@data-turn-id][1]');
+  await parentTurn.getByText('Implementation', { exact: true }).click();
+  await expect(page.getByText(PARENT_REMOVAL_CHILD_NAME, { exact: true })).toBeVisible();
+  await expect(page.getByText('已确认切换到子任务后，父任务的侧边对话应继续保留。')).toBeVisible();
+  await expect(companion).toBeVisible();
+  await expect(stagedQuote).toHaveText(stagedQuoteText!);
 });
