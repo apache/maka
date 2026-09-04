@@ -143,116 +143,131 @@ interface RailStateSnapshot extends ActivePromptRailSnapshot {
   clientHeight: number;
 }
 
-interface RailSettleOutcome {
-  settled: boolean;
-  state: RailStateSnapshot | null;
+interface RailSettleArgs {
+  promptCount: number;
+  quietFrames: number;
+  timeoutMs: number;
 }
 
-// One full rail read, in-page: the tick mapping plus the scroll metrics that
-// feed it. A source string so the settle loop below and any diagnostic read
-// run the exact same logic.
-const READ_PROMPT_RAIL_STATE = `() => {
-  const promptCount = ${PROMPT_RAIL_PROMPT_COUNT};
-  const root = document.querySelector('[data-chat-scroll-container="true"]');
-  if (!root) throw new Error('the chat scroll container is missing');
-  const ticks = [...document.querySelectorAll('.maka-prompt-rail-tick')];
-  const currentIds = ticks
-    .filter((tick) => tick.getAttribute('aria-current') === 'true')
-    .map((tick) => tick.dataset.promptTurnId ?? '');
-  const rootBounds = root.getBoundingClientRect();
-  const atEnd = root.scrollHeight - root.scrollTop - root.clientHeight <= 2;
-  const turns = [...root.querySelectorAll('[data-transcript-turn-id]')]
-    .map((turn) => ({
-      element: turn,
-      id: turn.dataset.transcriptTurnId ?? '',
-      index: Number(turn.dataset.transcriptTurnId?.split('-').at(-1)) - 1,
-    }))
-    .filter((turn) => turn.id.length > 0 && Number.isFinite(turn.index));
-  const readingBandTurns = turns
-    .filter(({ element }) => {
-      const bounds = element.getBoundingClientRect();
-      return bounds.bottom > rootBounds.top
-        && bounds.top < rootBounds.top + rootBounds.height * 0.34;
-    })
-    .sort((left, right) => left.index - right.index);
-  const scrollportTurns = turns
-    .filter(({ element }) => {
-      const bounds = element.getBoundingClientRect();
-      return bounds.bottom > rootBounds.top && bounds.top < rootBounds.bottom;
-    })
-    .sort((left, right) => left.index - right.index);
-  const sourceTurn = atEnd
-    ? turns.reduce((latest, turn) => latest === null || turn.index > latest.index ? turn : latest, null)
-    : readingBandTurns[0] ?? scrollportTurns[0] ?? null;
-  const expectedRailIndex = sourceTurn === null || ticks.length === 0
-    ? null
-    : Math.round(sourceTurn.index * (ticks.length - 1) / (promptCount - 1));
-  const expectedId = expectedRailIndex === null
-    ? null
-    : ticks[expectedRailIndex]?.dataset.promptTurnId ?? null;
-  return {
-    currentIds,
-    expectedId,
-    sourceTurnId: sourceTurn?.id ?? null,
-    scrollTop: root.scrollTop,
-    scrollHeight: root.scrollHeight,
-    clientHeight: root.clientHeight,
-  };
-}`;
+type RailSettleOutcome =
+  | { settled: true; state: RailStateSnapshot }
+  | { settled: false; state: RailStateSnapshot | null };
 
 // The rail resolves on the frame after a scroll and keeps re-resolving for
 // six frames after each transcript mutation, and the transcript keeps
 // remeasuring under them — so a snapshot can agree mid-settle and differ one
-// mutation later. No fixed delay or pair of protocol reads proves the rail
-// settled; that is how #4675 flaked and how frame-count fixes kept flaking
-// under 4-worker stress. The observable quiet state is instead one read —
-// mapping plus the scroll metrics that feed it — unchanged across six
+// mutation later. After a scroll to the bottom that remeasure grows
+// `scrollHeight` while `scrollTop` stays put, the atEnd branch flips, and the
+// current tick moves off the last prompt for good: a stable flip that no
+// fixed delay between two reads can rule out (#4675 and the 4-worker stress
+// on its review thread). The observable quiet state is instead one full read
+// — tick mapping plus the scroll metrics that feed it — unchanged across six
 // consecutive painted frames while mapping to the Turn being read. Every
 // input the rail's resolver reacts to (scroll, mutation, geometry) is then
 // exactly what produced the asserted state, so the reads a test makes after
 // this helper see the same rail. The loop resolves with the state it
 // verified; the passing path reads nothing after it.
+//
+// The loop runs in one `page.evaluate` so the per-frame reads cannot straddle
+// a protocol round trip, and it is passed as a real function: a string
+// pageFunction is evaluated as an expression and never invoked.
 const RAIL_QUIET_FRAMES = 6;
 const RAIL_SETTLE_TIMEOUT_MS = 10_000;
 
-const SETTLE_PROMPT_RAIL_SOURCE = `({ quietFrames, timeoutMs }) => new Promise((resolve) => {
-  const read = ${READ_PROMPT_RAIL_STATE};
-  let previousKey = null;
-  let quietFramesSeen = 0;
-  let lastState = null;
-  const timer = setTimeout(
-    () => resolve({ settled: false, state: lastState }),
-    timeoutMs,
-  );
-  const frame = () => {
-    const state = read();
-    const key = JSON.stringify(state);
-    quietFramesSeen = key === previousKey ? quietFramesSeen + 1 : 0;
-    previousKey = key;
-    lastState = state;
-    const agreed = state.expectedId !== null
-      && state.currentIds.length === 1
-      && state.currentIds[0] === state.expectedId;
-    if (agreed && quietFramesSeen >= quietFrames) {
-      clearTimeout(timer);
-      resolve({ settled: true, state });
-      return;
-    }
-    requestAnimationFrame(frame);
+async function settlePromptRailInPage({
+  promptCount,
+  quietFrames,
+  timeoutMs,
+}: RailSettleArgs): Promise<RailSettleOutcome> {
+  const read = (): RailStateSnapshot => {
+    const root = document.querySelector<HTMLElement>('[data-chat-scroll-container="true"]');
+    if (!root) throw new Error('the chat scroll container is missing');
+    const ticks = [...document.querySelectorAll<HTMLElement>('.maka-prompt-rail-tick')];
+    const currentIds = ticks
+      .filter((tick) => tick.getAttribute('aria-current') === 'true')
+      .map((tick) => tick.dataset.promptTurnId ?? '');
+    const rootBounds = root.getBoundingClientRect();
+    const atEnd = root.scrollHeight - root.scrollTop - root.clientHeight <= 2;
+    const turns = [...root.querySelectorAll<HTMLElement>('[data-transcript-turn-id]')]
+      .map((turn) => ({
+        element: turn,
+        id: turn.dataset.transcriptTurnId ?? '',
+        index: Number(turn.dataset.transcriptTurnId?.split('-').at(-1)) - 1,
+      }))
+      .filter((turn) => turn.id.length > 0 && Number.isFinite(turn.index));
+    const readingBandTurns = turns
+      .filter(({ element }) => {
+        const bounds = element.getBoundingClientRect();
+        return bounds.bottom > rootBounds.top
+          && bounds.top < rootBounds.top + rootBounds.height * 0.34;
+      })
+      .sort((left, right) => left.index - right.index);
+    const scrollportTurns = turns
+      .filter(({ element }) => {
+        const bounds = element.getBoundingClientRect();
+        return bounds.bottom > rootBounds.top && bounds.top < rootBounds.bottom;
+      })
+      .sort((left, right) => left.index - right.index);
+    const sourceTurn = atEnd
+      ? turns.reduce<typeof turns[number] | null>(
+        (latest, turn) => latest === null || turn.index > latest.index ? turn : latest,
+        null,
+      )
+      : readingBandTurns[0] ?? scrollportTurns[0] ?? null;
+    const expectedRailIndex = sourceTurn === null || ticks.length === 0
+      ? null
+      : Math.round(sourceTurn.index * (ticks.length - 1) / (promptCount - 1));
+    const expectedId = expectedRailIndex === null
+      ? null
+      : ticks[expectedRailIndex]?.dataset.promptTurnId ?? null;
+    return {
+      currentIds,
+      expectedId,
+      sourceTurnId: sourceTurn?.id ?? null,
+      scrollTop: root.scrollTop,
+      scrollHeight: root.scrollHeight,
+      clientHeight: root.clientHeight,
+    };
   };
-  frame();
-})`;
+  return new Promise<RailSettleOutcome>((resolve) => {
+    let previousKey: string | null = null;
+    let quietFramesSeen = 0;
+    let lastState: RailStateSnapshot | null = null;
+    const timer = setTimeout(
+      () => resolve({ settled: false, state: lastState }),
+      timeoutMs,
+    );
+    const frame = (): void => {
+      const state = read();
+      const key = JSON.stringify(state);
+      quietFramesSeen = key === previousKey ? quietFramesSeen + 1 : 0;
+      previousKey = key;
+      lastState = state;
+      const agreed = state.expectedId !== null
+        && state.currentIds.length === 1
+        && state.currentIds[0] === state.expectedId;
+      if (agreed && quietFramesSeen >= quietFrames) {
+        clearTimeout(timer);
+        resolve({ settled: true, state });
+        return;
+      }
+      requestAnimationFrame(frame);
+    };
+    frame();
+  });
+}
 
 async function expectPromptRailMatchesReadingPosition(page: Page): Promise<void> {
-  const outcome = await page.evaluate(SETTLE_PROMPT_RAIL_SOURCE, {
+  const outcome = await page.evaluate(settlePromptRailInPage, {
+    promptCount: PROMPT_RAIL_PROMPT_COUNT,
     quietFrames: RAIL_QUIET_FRAMES,
     timeoutMs: RAIL_SETTLE_TIMEOUT_MS,
-  }) as RailSettleOutcome;
+  });
   if (!outcome.settled) {
     throw new Error(`the prompt rail did not settle on the reading position: ${JSON.stringify(outcome.state)}`);
   }
-  expect(outcome.state?.expectedId, `no visible Turn in ${JSON.stringify(outcome.state)}`).not.toBeNull();
-  expect(outcome.state?.currentIds).toEqual([outcome.state?.expectedId]);
+  expect(outcome.state.expectedId, `no visible Turn in ${JSON.stringify(outcome.state)}`).not.toBeNull();
+  expect(outcome.state.currentIds).toEqual([outcome.state.expectedId]);
 }
 
 async function scrollTranscriptThroughHistory(page: Page): Promise<void> {
