@@ -90,7 +90,7 @@ pub fn windows_task_probe() -> Result<()> {
 pub fn windows_task_converge(
     root_id: String,
     target: String,
-    runner_path: String,
+    launcher_path: String,
     command: Vec<String>,
 ) -> Result<()> {
     let target = require_target(&root_id, &target)?;
@@ -99,7 +99,7 @@ pub fn windows_task_converge(
         &scheduler().map_err(native_error)?,
         &root_id,
         target,
-        &runner_path,
+        &launcher_path,
         &command,
     )
     .map_err(native_error)
@@ -109,7 +109,7 @@ pub fn windows_task_converge(
 pub fn windows_task_verify(
     root_id: String,
     target: String,
-    runner_path: String,
+    launcher_path: String,
     command: Vec<String>,
 ) -> Result<()> {
     let target = require_target(&root_id, &target)?;
@@ -118,7 +118,7 @@ pub fn windows_task_verify(
     let name = task_name(&root_id, target);
     let task =
         required_owned_task(&context.folder, &name, &root_id, target).map_err(native_error)?;
-    verify_registered_definition(&task, target, &runner_path, &command, &context.user)
+    verify_registered_definition(&task, target, &launcher_path, &command, &context.user)
         .map_err(native_error)
 }
 
@@ -244,7 +244,7 @@ fn converge_task(
     context: &Scheduler,
     root_id: &str,
     target: Target,
-    runner_path: &str,
+    launcher_path: &str,
     command: &[String],
 ) -> windows::core::Result<()> {
     let name = task_name(root_id, target);
@@ -257,7 +257,7 @@ fn converge_task(
         &context.service,
         root_id,
         target,
-        runner_path,
+        launcher_path,
         command,
         &context.user,
     )?;
@@ -282,7 +282,7 @@ fn normalized_definition(
     service: &ITaskService,
     root_id: &str,
     target: Target,
-    runner_path: &str,
+    launcher_path: &str,
     command: &[String],
     user: &str,
 ) -> windows::core::Result<windows::Win32::System::TaskScheduler::ITaskDefinition> {
@@ -292,7 +292,7 @@ fn normalized_definition(
         definition.SetXmlText(&BSTR::from(render_task_xml(
             root_id,
             target,
-            runner_path,
+            launcher_path,
             command,
             user,
         )?))?;
@@ -322,14 +322,14 @@ fn owned_task(
 fn verify_registered_definition(
     task: &IRegisteredTask,
     target: Target,
-    runner_path: &str,
+    launcher_path: &str,
     command: &[String],
     user: &str,
 ) -> windows::core::Result<()> {
     // SAFETY: every interface is obtained from this thread's live registered-task definition;
     // all out pointers refer to initialized local values for the duration of each call.
     unsafe {
-        let expected_command = task_action_command(target, runner_path, command)?;
+        let expected_command = task_action_command(target, launcher_path, command)?;
         let definition = task.Definition()?;
 
         let actions = definition.Actions()?;
@@ -590,20 +590,18 @@ fn direct_child_pid_in_snapshot(
     parent_pid: u32,
     processes: &[PROCESSENTRY32W],
 ) -> windows::core::Result<Option<u32>> {
-    let parent_name = processes
+    if !processes
         .iter()
-        .find(|process| process.th32ProcessID == parent_pid)
-        .map(|process| process_name(&process.szExeFile))
-        .ok_or_else(|| {
-            windows::core::Error::new(
-                windows::core::HRESULT(0x80070002_u32 as i32),
-                "The Windows Runtime Host supervisor process is not available",
-            )
-        })?;
+        .any(|process| process.th32ProcessID == parent_pid)
+    {
+        return Err(windows::core::Error::new(
+            windows::core::HRESULT(0x80070002_u32 as i32),
+            "The Windows Runtime Host supervisor process is not available",
+        ));
+    }
     let mut child = None;
     for process in processes {
         if process.th32ParentProcessID == parent_pid
-            && process_name(&process.szExeFile).eq_ignore_ascii_case(&parent_name)
             && child.replace(process.th32ProcessID).is_some()
         {
             return Err(windows::core::Error::new(
@@ -613,15 +611,6 @@ fn direct_child_pid_in_snapshot(
         }
     }
     Ok(child)
-}
-
-fn process_name(value: &[u16]) -> String {
-    String::from_utf16_lossy(
-        &value[..value
-            .iter()
-            .position(|part| *part == 0)
-            .unwrap_or(value.len())],
-    )
 }
 
 fn wait_until_task_stopped(task: &IRegisteredTask) -> windows::core::Result<()> {
@@ -695,7 +684,7 @@ fn stop_task(task: &IRegisteredTask) -> windows::core::Result<()> {
 fn render_task_xml(
     root_id: &str,
     target: Target,
-    runner_path: &str,
+    launcher_path: &str,
     command: &[String],
     user: &str,
 ) -> windows::core::Result<String> {
@@ -713,7 +702,7 @@ fn render_task_xml(
         )
         .to_owned(),
     };
-    let action_command = task_action_command(target, runner_path, command)?;
+    let action_command = task_action_command(target, launcher_path, command)?;
     let arguments = command_line(&action_command[1..]);
     Ok(format!(
         concat!(
@@ -745,11 +734,11 @@ fn render_task_xml(
 
 fn task_action_command(
     target: Target,
-    runner_path: &str,
+    launcher_path: &str,
     command: &[String],
 ) -> windows::core::Result<Vec<String>> {
-    if !Path::new(runner_path).is_absolute()
-        || runner_path.contains('%')
+    if !Path::new(launcher_path).is_absolute()
+        || launcher_path.contains('%')
         || command[0].contains('%')
         || (matches!(target, Target::Host)
             && (command.len() < 4 || command[2] != "runtime-host" || command[3] != "serve"))
@@ -760,7 +749,7 @@ fn task_action_command(
         Target::Host => "--supervise",
         Target::Reconciliation => "--once",
     };
-    let mut projected = vec![command[0].clone(), runner_path.to_owned(), mode.to_owned()];
+    let mut projected = vec![launcher_path.to_owned(), mode.to_owned()];
     projected.extend(
         command
             .iter()

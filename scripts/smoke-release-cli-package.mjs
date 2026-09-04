@@ -430,8 +430,6 @@ async function smokeWindowsTaskScheduler(createProvider, cliEntrypoint, root) {
     dirname(managedCliEntrypoint),
     'runtime-host-windows-supervisor-smoke.mjs',
   );
-  const controllerRunnerPath = join(dirname(cliEntrypoint), 'runtime-host-windows-task-runner.js');
-  const disabledControllerRunnerPath = `${controllerRunnerPath}.disabled`;
   const readyPath = join(root, 'ready.json');
   const replacementReadyPath = join(root, 'replacement-ready.json');
   const hostileArgument = '空 格 &|^<>%PATH% " \\';
@@ -470,7 +468,6 @@ async function smokeWindowsTaskScheduler(createProvider, cliEntrypoint, root) {
   ];
   const replacementHostCommand = [...hostCommand.slice(0, -1), replacementReadyPath];
   const reconciliationCommand = [process.execPath, '-e', 'process.exit(0)'];
-  renameSync(controllerRunnerPath, disabledControllerRunnerPath);
   try {
     await provider.supervisor.preflight();
     await provider.supervisor.converge({ command: hostCommand });
@@ -551,7 +548,6 @@ async function smokeWindowsTaskScheduler(createProvider, cliEntrypoint, root) {
   } finally {
     await provider.supervisor.uninstall().catch(() => undefined);
     await provider.reconciliationTrigger.uninstall().catch(() => undefined);
-    renameSync(disabledControllerRunnerPath, controllerRunnerPath);
   }
 }
 
