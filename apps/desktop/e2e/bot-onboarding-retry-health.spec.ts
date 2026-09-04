@@ -18,13 +18,18 @@
  */
 
 import { expect, test } from './fixtures';
+import { getBotSettingsCopy } from '../src/renderer/locales/settings-bot-copy';
 
 test('bot onboarding shows bounded retry health while preserving the QR', async ({
   linkColorWindow: page,
 }, testInfo) => {
   const status = page.locator('.settingsBotOnboardingStatus');
-  await expect(status).toContainText('服务端暂时异常');
-  await expect(status).toContainText('自动重试');
+  const expectedStatuses = (['zh', 'en'] as const).map((locale) =>
+    getBotSettingsCopy(locale).onboarding.retrying('server', 1, 3),
+  );
+  await expect(status).toHaveAttribute('data-state', 'waiting');
+  await expect.poll(async () => expectedStatuses.includes(await status.innerText())).toBe(true);
+  await expect(status).not.toContainText('HTTP 503');
   await expect(status).not.toContainText('provider detail');
   await expect(page.locator('.settingsBotOnboardingQrFrame img')).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath('bot-onboarding-retry-health.png') });
