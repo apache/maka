@@ -21,27 +21,28 @@
   <img src="apps/desktop/assets/app-icons/sky.png" alt="Maka" width="72" valign="middle" /> Apache Maka (Incubating)
 </h1>
 
+<p align="center">Apache Maka (Incubating) is a high-performance agent workspace that keeps a complete record of everything it did.</p>
+
 <p align="center">
-  <a href="https://maka.apache.org/en/"><img src="https://img.shields.io/badge/Website-maka.apache.org-4C8DFF?style=flat" alt="Website: maka.apache.org" /></a>
-  <a href="https://maka.apache.org/en/downloads/"><img src="https://img.shields.io/badge/Downloads-4C8DFF?style=flat" alt="Downloads" /></a>
-  <a href="./README.zh-CN.md"><img src="https://img.shields.io/badge/%E4%B8%AD%E6%96%87%E6%96%87%E6%A1%A3-4C8DFF?style=flat" alt="中文文档" /></a>
+  <a href="https://maka.apache.org/en/">Website</a> ·
+  <a href="./docs/README.md">Docs</a> ·
+  <a href="https://maka.apache.org/en/downloads/">Downloads</a> ·
+  <a href="./README.zh-CN.md">中文文档</a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/apache/maka/stargazers"><img src="https://img.shields.io/github/stars/apache/maka?style=flat&label=%E2%98%85&color=6E7781" alt="GitHub stars" /></a>
-  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-6E7781?style=flat" alt="License: Apache 2.0" /></a>
-  <img src="https://img.shields.io/badge/platforms-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-6E7781?style=flat" alt="Platforms: macOS, Windows, Linux" />
-  <a href="https://deepwiki.com/apache/maka"><img src="https://img.shields.io/badge/DeepWiki-third--party%20AI%20docs-6E7781?style=flat" alt="DeepWiki: third-party AI-generated docs" /></a>
+  <a href="https://github.com/apache/maka/stargazers"><img src="https://img.shields.io/github/stars/apache/maka?style=flat&label=%E2%98%85&color=6E7781" alt="GitHub stars" valign="middle" /></a>
+  <sub><a href="./LICENSE">Apache-2.0</a> · macOS · Windows · Linux</sub>
 </p>
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="./.github/assets/readme-hero.en.dark.png" />
-  <img alt="A high-performance agent workspace that keeps a complete record of everything it did. One turn of RuntimeEvents: the model speaks, runs a command, asks permission, you approve, it gets the result, edits a file, the turn ends." src="./.github/assets/readme-hero.en.light.png" />
+  <img alt="One turn of RuntimeEvents: the model speaks, runs a command, asks permission, you approve, it gets the result, edits a file, the turn ends." src="./.github/assets/readme-hero.en.light.png" />
 </picture>
 
 ## What Maka is
 
-Apache Maka (Incubating) is a high-performance agent workspace that keeps a complete record of everything it did. An agent harness exists to finish tasks. We hold it to one measure: how many it completes and at what cost. We publish every run: same model, same official verifier, full per-task record.
+An agent harness exists to finish tasks. We hold it to one measure: how many it completes and at what cost. We publish every run: same model, same official verifier, full per-task record.
 
 - **Measured, not claimed.** Maka is benchmarked against other harnesses on the same model with the official verifier, and the per-task results ship with every report in [`docs/eval/`](./docs/eval).
 - **The log is the runtime.** Every model message, tool call, permission decision and termination is an append-only RuntimeEvent. The UI, the next prompt and crash recovery are projections of that log, never the only copy. Old tool output can leave the next prompt without leaving the log.
@@ -244,6 +245,7 @@ Before submitting code, run typecheck, build, and focused tests proportionate to
 - [Product design](./DESIGN.md)
 - [Contributing guide](./CONTRIBUTING.md)
 - [Security policy](./SECURITY.md)
+- [DeepWiki](https://deepwiki.com/apache/maka), third-party AI-generated documentation the project does not maintain
 
 ## License
 

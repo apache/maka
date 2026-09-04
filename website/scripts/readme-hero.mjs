@@ -59,12 +59,12 @@ const server = http.createServer((request, response) => {
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 const origin = `http://127.0.0.1:${server.address().port}`;
 
-// Headline and scene only: the README supplies its own lede and links, and
-// reduced motion shows every event of the turn at once.
+// The scene only: the README carries the headline, the lede and the links as
+// its own text, and reduced motion shows every event of the turn at once.
 const readmeOnly = `
-  .cta, .fine, .lede { display: none !important; }
-  .hero { padding-top: 48px !important; padding-bottom: 48px !important; }
-  .scene { margin-top: 36px !important; }
+  .display, .cta, .fine, .lede { display: none !important; }
+  .hero { padding-top: 32px !important; padding-bottom: 32px !important; }
+  .scene { margin-top: 0 !important; }
 `;
 
 // npm ci installs the Playwright package but not a browser, so a clean

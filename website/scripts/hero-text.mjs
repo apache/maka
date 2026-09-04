@@ -23,7 +23,7 @@
  * site test recomputes it, so committed heroes cannot outlive their copy.
  */
 const hidden =
-  /<p class="lede">.*?<\/p>|<div class="cta">.*?<\/div>|<div class="fine">.*?<\/div>/gsu;
+  /<h1 class="display">.*?<\/h1>|<p class="lede">.*?<\/p>|<div class="cta">.*?<\/div>|<div class="fine">.*?<\/div>/gsu;
 
 const entities = {
   '&amp;': '&',

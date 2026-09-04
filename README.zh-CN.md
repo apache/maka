@@ -21,27 +21,28 @@
   <img src="apps/desktop/assets/app-icons/sky.png" alt="Maka" width="72" valign="middle" /> Apache Maka (Incubating)
 </h1>
 
+<p align="center">Apache Maka（孵化中）是一个高性能的 Agent 工作台，并完整记录它做过的每一件事。</p>
+
 <p align="center">
-  <a href="https://maka.apache.org/zh-CN/"><img src="https://img.shields.io/badge/%E5%AE%98%E7%BD%91-maka.apache.org-4C8DFF?style=flat" alt="官网：maka.apache.org" /></a>
-  <a href="https://maka.apache.org/zh-CN/downloads/"><img src="https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD-4C8DFF?style=flat" alt="下载" /></a>
-  <a href="./README.md"><img src="https://img.shields.io/badge/English-4C8DFF?style=flat" alt="English" /></a>
+  <a href="https://maka.apache.org/zh-CN/">官网</a> ·
+  <a href="./docs/README.md">文档</a> ·
+  <a href="https://maka.apache.org/zh-CN/downloads/">下载</a> ·
+  <a href="./README.md">English</a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/apache/maka/stargazers"><img src="https://img.shields.io/github/stars/apache/maka?style=flat&label=%E2%98%85&color=6E7781" alt="GitHub stars" /></a>
-  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-6E7781?style=flat" alt="License: Apache 2.0" /></a>
-  <img src="https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-6E7781?style=flat" alt="平台：macOS、Windows、Linux" />
-  <a href="https://deepwiki.com/apache/maka"><img src="https://img.shields.io/badge/DeepWiki-%E7%AC%AC%E4%B8%89%E6%96%B9%20AI%20%E6%96%87%E6%A1%A3-6E7781?style=flat" alt="DeepWiki：第三方 AI 生成文档" /></a>
+  <a href="https://github.com/apache/maka/stargazers"><img src="https://img.shields.io/github/stars/apache/maka?style=flat&label=%E2%98%85&color=6E7781" alt="GitHub stars" valign="middle" /></a>
+  <sub><a href="./LICENSE">Apache-2.0</a> · macOS · Windows · Linux</sub>
 </p>
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="./.github/assets/readme-hero.zh-CN.dark.png" />
-  <img alt="一个高性能的 Agent 工作台，并完整记录它做过的每一件事。一轮交互的运行时事件：模型说、执行命令、请求权限、你批准了、拿到结果、编辑文件、本轮结束。" src="./.github/assets/readme-hero.zh-CN.light.png" />
+  <img alt="一轮交互的运行时事件：模型说、执行命令、请求权限、你批准了、拿到结果、编辑文件、本轮结束。" src="./.github/assets/readme-hero.zh-CN.light.png" />
 </picture>
 
 ## 什么是 Maka
 
-Apache Maka（孵化中）是一个高性能的 Agent 工作台，并完整记录它做过的每一件事。Agent harness 的本职就是把任务做完。衡量它的标准只有一条：完成了多少，花了多少。我们公开每一次运行：同一个模型，同一个官方验证器，逐任务的完整记录。
+Agent harness 的本职就是把任务做完。衡量它的标准只有一条：完成了多少，花了多少。我们公开每一次运行：同一个模型，同一个官方验证器，逐任务的完整记录。
 
 - **靠测量，不靠宣称。** Maka 与其他 harness 在同一个模型、同一个官方验证器下对比跑分，每份报告都附逐任务结果，见 [`docs/eval/`](./docs/eval)。
 - **日志就是运行时。** 每条模型消息、工具调用、权限决定和终止都是一条只追加的 RuntimeEvent。界面、下一轮 prompt 和崩溃恢复都是这份日志的投影，从不是唯一副本。旧的工具输出可以不进下一轮 prompt，但不会从日志里消失。
@@ -243,6 +244,7 @@ npm --workspace @maka/desktop run smoke:real-window
 - [产品设计](./DESIGN.md)
 - [贡献指南](./CONTRIBUTING.zh-CN.md)
 - [安全政策](./SECURITY.md)
+- [DeepWiki](https://deepwiki.com/apache/maka)，第三方 AI 生成文档，不由项目维护
 
 ## 开源协议
 
