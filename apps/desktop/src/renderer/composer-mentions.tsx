@@ -17,9 +17,24 @@
  * under the License.
  */
 
-/** Compatibility entry point for older renderer consumers. */
-export {
+import type { ReactNode } from 'react';
+import {
   ComposerMentionsProvider,
   useComposerMentionsContext,
   type ComposerMentionsSurface,
 } from './features/conversation/index.js';
+
+/** Compatibility entry point for older renderer consumers. */
+export { ComposerMentionsProvider, useComposerMentionsContext, type ComposerMentionsSurface };
+
+export type ComposerMentionsSurfaceInput = Omit<ComposerMentionsSurface, 'skillCatalogRevision'>;
+
+export function renderComposerMentionsProvider(
+  surface: ComposerMentionsSurfaceInput,
+): (skillCatalogRevision: number, children: ReactNode) => ReactNode {
+  return (skillCatalogRevision, children) => (
+    <ComposerMentionsProvider {...surface} skillCatalogRevision={skillCatalogRevision}>
+      {children}
+    </ComposerMentionsProvider>
+  );
+}
