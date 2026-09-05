@@ -650,12 +650,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
       new RuntimeHostTransportError('closed', 'Runtime Host connection closed by Client'),
       true,
     );
-    const deadline = setTimeout(() => this.#transport.abort(), 5_000);
-    try {
-      await this.closed;
-    } finally {
-      clearTimeout(deadline);
-    }
+    await this.closed;
   }
 
   async replaceClientCapabilities(
