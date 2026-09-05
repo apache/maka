@@ -514,9 +514,69 @@ export const Composer = forwardRef<
   const inputHandleRef = useRef<ChatComposerInputHandle>(null);
   /** ChatComposerInput's root, from which the editable node is resolved. */
   const inputRootRef = useRef<HTMLDivElement>(null);
+  /** Selection to restore after a toolbar control changes composer settings. */
+  const thinkingSelectionRef = useRef<{ range: Range; value: string } | null>(null);
   function editableNode(): HTMLElement | null {
     return inputRootRef.current?.querySelector<HTMLElement>('[contenteditable="true"]') ?? null;
   }
+  function rememberThinkingSelection() {
+    if (thinkingSelectionRef.current) return;
+    const editable = editableNode();
+    const selection = document.getSelection();
+    if (!editable || !selection || selection.rangeCount === 0) return;
+    const range = selection.getRangeAt(0);
+    if (!editable.contains(range.commonAncestorContainer)) return;
+    thinkingSelectionRef.current = {
+      range: range.cloneRange(),
+      value: inputHandleRef.current?.getValue() ?? editable.textContent ?? '',
+    };
+  }
+  function restoreThinkingSelection() {
+    const pending = thinkingSelectionRef.current;
+    thinkingSelectionRef.current = null;
+    if (!pending) return;
+    const editable = editableNode();
+    const currentValue = editable ? inputHandleRef.current?.getValue() ?? editable.textContent ?? '' : '';
+    if (
+      !editable ||
+      currentValue !== pending.value ||
+      !editable.contains(pending.range.startContainer) ||
+      !editable.contains(pending.range.endContainer)
+    ) return;
+    editable.focus();
+    const selection = document.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(pending.range);
+  }
+  function changeThinkingLevel(
+    level: import('@maka/core/model-thinking').ThinkingLevel | undefined,
+    onChange?: (next: import('@maka/core/model-thinking').ThinkingLevel | undefined) => void | Promise<void>,
+  ) {
+    if (!thinkingSelectionRef.current) rememberThinkingSelection();
+    const result = onChange?.(level);
+    if (thinkingSelectionRef.current) {
+      window.requestAnimationFrame(() => restoreThinkingSelection());
+    }
+    return result;
+  }
+  useEffect(() => {
+    const form = formRef.current;
+    if (!form) return undefined;
+    const rememberForThinkingControl = (event: Event) => {
+      const target = event.target as Element | null;
+      if (target?.closest?.('.maka-thinking-level-selector')) {
+        rememberThinkingSelection();
+      } else if (event.type === 'pointerdown' && target?.closest?.('[contenteditable="true"]')) {
+        thinkingSelectionRef.current = null;
+      }
+    };
+    form.addEventListener('pointerdown', rememberForThinkingControl, true);
+    form.addEventListener('focusin', rememberForThinkingControl, true);
+    return () => {
+      form.removeEventListener('pointerdown', rememberForThinkingControl, true);
+      form.removeEventListener('focusin', rememberForThinkingControl, true);
+    };
+  }, []);
   const [dragActive, setDragActive] = useState(false);
   const [sendPending, setSendPending] = useState(false);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
@@ -2133,7 +2193,7 @@ export const Composer = forwardRef<
                   <ThinkingLevelSelector
                     levels={props.activeThinkingLevels ?? []}
                     current={props.activeThinkingLevel}
-                    onChange={props.onThinkingLevelChange}
+                    onChange={(level) => changeThinkingLevel(level, props.onThinkingLevelChange)}
                     disabled={!modelSwitchAvailability.available}
                     disabledReason={thinkingSwitcherDisabledReason}
                   />
@@ -2141,7 +2201,7 @@ export const Composer = forwardRef<
                   <ThinkingLevelSelector
                     levels={props.newChatThinkingLevels ?? []}
                     current={props.newChatThinkingLevel}
-                    onChange={props.onNewChatThinkingLevelChange}
+                    onChange={(level) => changeThinkingLevel(level, props.onNewChatThinkingLevelChange)}
                   />
                 )}
                 {props.contextUsage ? <ContextUsageAction {...props.contextUsage} /> : null}
