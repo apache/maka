@@ -30,6 +30,10 @@ import {
   parseRuntimeHostInstalledUpdateCommand,
   type RuntimeHostCliCommand,
 } from './runtime-host-cli.js';
+import {
+  parsePermissionsCommand,
+  type PermissionCliCommand,
+} from './permissions-command-parser.js';
 import { resolveCliUiLocale } from './cli-ui-locale.js';
 
 export type MakaCliCommand =
@@ -44,6 +48,7 @@ export type MakaCliCommand =
   | { kind: 'activate'; args: string[] }
   | { kind: 'eval'; args: string[] }
   | { kind: 'acp' }
+  | PermissionCliCommand
   | RuntimeHostCliCommand
   | { kind: 'help'; text: string }
   | { kind: 'version'; text: string }
@@ -84,6 +89,7 @@ export function parseMakaCliArgs(
   if (first === 'run' || first === '-p') return { kind: 'run', args: argv.slice(1) };
   if (first === 'activate') return { kind: 'activate', args: argv.slice(1) };
   if (first === 'eval') return { kind: 'eval', args: argv.slice(1) };
+  if (first === 'permissions') return parsePermissionsCommand(argv.slice(1));
   if (first === 'update') return parseRuntimeHostInstalledUpdateCommand(argv.slice(1));
   if (first === 'runtime-host') return parseRuntimeHostCommand(argv.slice(1));
   return {
@@ -138,6 +144,11 @@ function helpText(cliCommand: string): string {
     `  ${cliCommand} activate ... Run one Cloud Session activation and emit JSONL`,
     `  ${cliCommand} -p ...       Alias for ${cliCommand} run`,
     `  ${cliCommand} eval ...     Run one declarative multi-arm experiment`,
+    `  ${cliCommand} permissions list [--root <path>] [--host <profile-id>]`,
+    `  ${cliCommand} permissions deny-command <glob> [--root <path>] [--host <profile-id>]`,
+    `  ${cliCommand} permissions deny-path <path> --scope <exact|subtree> [--root <path>] [--host <profile-id>]`,
+    `  ${cliCommand} permissions remove-command <glob> [--root <path>] [--host <profile-id>]`,
+    `  ${cliCommand} permissions remove-path <path> --scope <exact|subtree> [--root <path>] [--host <profile-id>]`,
     `  ${cliCommand} update --target <latest|next|version>  Update this npm-global CLI and its local Runtime Host`,
     `  ${cliCommand} runtime-host serve [options]  Run a Runtime Host service`,
     `  ${cliCommand} runtime-host activate --framed --root-id <id>`,
@@ -298,6 +309,13 @@ export async function runMakaCli(
       configureInstalledEvalBundle();
       const { runMakaEvalCli } = await import('@maka/eval');
       return runMakaEvalCli(command.args);
+    }
+    case 'permissions': {
+      const { runPermissionsCli } = await import('./permissions-command.js');
+      return runPermissionsCli(command, {
+        defaultRootPath: dataRoots.workspaceRoot,
+        clientDataRoot: dataRoots.clientDataRoot,
+      });
     }
     case 'acp': {
       const { runMakaAcpStdioServer } = await import('./acp/stdio-server.js');

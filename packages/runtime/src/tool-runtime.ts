@@ -18,6 +18,12 @@
  */
 
 import { decodeCanonicalToolResultContent } from '@maka/core/tool-result-record-schema';
+import {
+  compilePermissionRules,
+  matchPermissionRules,
+  permissionPathWithinRoot,
+  type PermissionRules,
+} from '@maka/core/runtime-policy';
 import { projectAgentSwarmResult } from '@maka/core/agent-swarm';
 import { projectToolActivityArgs } from '@maka/core/tool-activity-args';
 import {
@@ -84,6 +90,7 @@ import {
   type RuntimeEventManagedWorkspaceMutationV2,
 } from '@maka/core/runtime-event';
 import { isDeepStrictEqual } from 'node:util';
+import { isAbsolute, resolve } from 'node:path';
 
 import { recordToolArtifactsSafely, type ToolArtifactRecorder } from './tool-artifacts.js';
 import { computerActionFields, describeComputerUseArgsViolation } from './computer-use-codec.js';
@@ -136,6 +143,9 @@ import {
   type RuntimeInteractionClosureReason,
   type RuntimeUserQuestionClosureReason,
 } from './interaction-authority.js';
+import { realpathAllowMissing } from './path-containment.js';
+
+const MAX_PENDING_PTY_COMMAND_INPUT_CHARS = 64 * 1024;
 
 export interface ResolvedMakaToolCall {
   tool: MakaTool;
@@ -391,6 +401,12 @@ export interface ToolRuntimeInput {
    * still describe the turn that dispatched it (#1990).
    */
   turnId: string;
+  /** Host-owned persistent deny rules. These outrank the session boundary mode. */
+  permissionRules?: PermissionRules;
+  /** Reads the current Host-owned deny rules for each pre-dispatch check. */
+  readPermissionRules?: () => PermissionRules;
+  /** Session-scoped state for PTY command fragments across backend generations. */
+  permissionRuntimeState?: PermissionRuntimeState;
   hostedInteraction?: HostedInteractionBridge;
   /**
    * Durable identity of the ONE run this ToolRuntime serves, fixed at
@@ -604,10 +620,20 @@ export class ToolRuntime {
     string,
     { callCount: number; exclusiveToolName?: string }
   >();
+  /**
+   * Command text typed into each model-owned PTY since its last line break.
+   * Keeping the unfinished line here closes the split-call form of a PTY
+   * command deny (`WriteStdin("git ")`, then `WriteStdin("push ...")`).
+   */
+  private readonly pendingPtyCommandInput: Map<string, string>;
+  private readonly ownsPendingPtyCommandInput: boolean;
   constructor(private readonly input: ToolRuntimeInput) {
     if (!input.readExecutionBoundary) {
       throw new Error('ToolRuntime requires explicit execution boundary authority');
     }
+    this.ownsPendingPtyCommandInput = input.permissionRuntimeState === undefined;
+    this.pendingPtyCommandInput =
+      input.permissionRuntimeState?.pendingPtyCommandInput ?? new Map<string, string>();
     const hosted = input.hostedInteraction;
     if (hosted && (hosted.sessionId !== input.sessionId || hosted.turnId !== input.turnId)) {
       throw new RuntimeInteractionInvariantError(
@@ -948,6 +974,7 @@ export class ToolRuntime {
     this.sandboxBoundaryFinalizationRequested = false;
     this.durableToolAttempts.clear();
     this.stepAdmissions.clear();
+    if (this.ownsPendingPtyCommandInput) this.pendingPtyCommandInput.clear();
   }
 
   hasSandboxBoundaryDenial(): boolean {
@@ -1425,6 +1452,40 @@ export class ToolRuntime {
       });
       this.recordLoopGateOutcome(callSignature, true, boundaryKind);
       return this.errorReturn(msg);
+    }
+
+    const persistentPermissionDenial = await this.findPersistentPermissionDenial(
+      tool,
+      executionArgs,
+    );
+    if (persistentPermissionDenial !== undefined) {
+      await refuseBeforeDispatch(persistentPermissionDenial);
+      this.input.recordToolInvocation?.({
+        sessionId: this.input.sessionId,
+        turnId,
+        toolCallId: toolUseId,
+        toolName: tool.name,
+        providerId: this.input.connection.providerType,
+        modelId: this.input.modelId,
+        durationMs: 0,
+        status: 'error',
+        errorClass: 'PersistentPermissionDenied',
+        argsSummary:
+          tool.categoryHint === 'computer_use'
+            ? summarizePersistedArgs(persistedArgs)
+            : summarizeArgs(tool.name, executionArgs),
+        bytesIn: byteLength(persistedArgs),
+        bytesOut: byteLength(persistentPermissionDenial),
+        startedAt: now,
+      });
+      trace?.emit('tool', 'tool_failed', 'Tool denied by persistent permission rule', {
+        toolUseId,
+        toolName: tool.name,
+        status: 'error',
+        errorClass: 'PersistentPermissionDenied',
+      });
+      this.recordLoopGateOutcome(callSignature, true);
+      return this.errorReturn(persistentPermissionDenial);
     }
 
     // Loop-gate (#92): block this call up front — before the guards and the real
@@ -3264,7 +3325,365 @@ export class ToolRuntime {
       },
     });
   }
+
+  private async findPersistentPermissionDenial(
+    tool: MakaTool,
+    args: unknown,
+  ): Promise<string | undefined> {
+    const configuredRules = this.input.readPermissionRules?.() ?? this.input.permissionRules;
+    if (!configuredRules) return undefined;
+    const rules = permissionRulesForCurrentHost(configuredRules);
+    const matcher = compilePermissionRules(rules);
+
+    if (tool.name === 'Bash' && isRecord(args) && typeof args.command === 'string') {
+      const match = matcher.match({ command: args.command });
+      if (match?.kind === 'command') {
+        return `Tool Bash was denied by a persistent permission rule matching ${JSON.stringify(match.pattern)}.`;
+      }
+      const pathDenial = await this.findPersistentPathDenial(
+        tool.name,
+        commandPathCandidates(args.command),
+        rules,
+      );
+      if (pathDenial !== undefined) return pathDenial;
+    }
+
+    if (tool.name === 'WriteStdin' && isRecord(args) && typeof args.ref === 'string') {
+      const input = terminalCommandInput(args);
+      if (input !== undefined) {
+        if (input.unverifiable) {
+          return `${tool.name} was denied by a persistent permission rule because terminal editing input could not be verified safely.`;
+        }
+        const stateKey = permissionPtyStateKey(this.input.sessionId, args.ref);
+        const prior = this.pendingPtyCommandInput.get(stateKey) ?? '';
+        const inspection = inspectPtyCommandInput(prior, input.text, rules);
+        if (inspection.match !== undefined) {
+          return `Tool WriteStdin was denied by a persistent permission rule matching ${JSON.stringify(inspection.match)}.`;
+        }
+        const pathDenial = await this.findPersistentPathDenial(
+          tool.name,
+          commandPathCandidates(`${prior}${input.text}`),
+          rules,
+        );
+        if (pathDenial !== undefined) return pathDenial;
+        if (inspection.pending.length > MAX_PENDING_PTY_COMMAND_INPUT_CHARS) {
+          return `${tool.name} was denied by a persistent permission rule because its unfinished command exceeded the verification limit.`;
+        }
+        if (inspection.pending.length > 0) {
+          this.pendingPtyCommandInput.set(stateKey, inspection.pending);
+        } else {
+          this.pendingPtyCommandInput.delete(stateKey);
+        }
+      }
+    }
+
+    const paths = permissionPathsForTool(tool.name, args, this.input.header.cwd);
+    if (paths.length === 0) return undefined;
+    const pathDenial = await this.findPersistentPathDenial(tool.name, paths, rules);
+    if (pathDenial !== undefined) return pathDenial;
+    if (rules.denyPaths.length === 0) return undefined;
+    if (tool.name === 'Glob' || tool.name === 'Grep') {
+      const searchRoot = paths[0];
+      if (searchRoot !== undefined) {
+        let canonicalRoot: string;
+        try {
+          canonicalRoot = await this.resolvePermissionPath(searchRoot);
+        } catch {
+          return `${tool.name} was denied by a persistent permission rule because its search scope could not be verified safely.`;
+        }
+        for (const rule of rules.denyPaths) {
+          if (
+            permissionPathWithinRoot(canonicalRoot, rule.path) ||
+            permissionPathWithinRoot(rule.path, canonicalRoot)
+          ) {
+            return `${tool.name} was denied by a persistent permission rule because its search scope includes ${rule.scope} path ${JSON.stringify(rule.path)}.`;
+          }
+        }
+      }
+    }
+    return undefined;
+  }
+
+  private async findPersistentPathDenial(
+    toolName: string,
+    paths: readonly string[],
+    rules: PermissionRules,
+  ): Promise<string | undefined> {
+    if (rules.denyPaths.length === 0) return undefined;
+    const matcher = compilePermissionRules(rules);
+    for (const path of paths) {
+      let canonicalPath: string;
+      try {
+        canonicalPath = await this.resolvePermissionPath(path);
+      } catch {
+        return `${toolName} was denied by a persistent permission rule because its path could not be verified safely.`;
+      }
+      const match = matcher.match({ path: canonicalPath });
+      if (match?.kind === 'path') {
+        return `${toolName} was denied by a persistent permission rule for ${match.rule.scope} path ${JSON.stringify(match.rule.path)}.`;
+      }
+    }
+    return undefined;
+  }
+
+  private async resolvePermissionPath(path: string): Promise<string> {
+    const requested = isAbsolute(path) ? resolve(path) : resolve(this.input.header.cwd, path);
+    return await realpathAllowMissing(requested);
+  }
 }
+
+function permissionPathsForTool(toolName: string, args: unknown, cwd: string): readonly string[] {
+  if (toolName === 'apply_patch' && typeof args === 'string') return applyPatchTextPaths(args);
+  if (!isRecord(args)) return [];
+  switch (toolName) {
+    case 'Bash':
+      return typeof args.command === 'string' ? commandPathCandidates(args.command) : [];
+    case 'Read':
+    case 'Write':
+    case 'Edit':
+    case 'FormatJson':
+      return typeof args.path === 'string' ? [args.path] : [];
+    case 'Grep':
+      return [typeof args.path === 'string' ? args.path : '.'];
+    case 'Glob': {
+      const base = typeof args.cwd === 'string' ? args.cwd : '.';
+      const pattern = typeof args.pattern === 'string' ? args.pattern : '.';
+      return [resolve(cwd, base, globPatternBase(pattern))];
+    }
+    case 'apply_patch':
+      return collectPathFields(args);
+    default:
+      return [];
+  }
+}
+
+function commandPathCandidates(command: string): readonly string[] {
+  const candidates = new Set<string>();
+  const tokens = shellWordTokens(command);
+  for (const token of tokens) {
+    if (looksLikePath(token.value) || token.pathHint) candidates.add(token.value);
+  }
+  // Shell substitutions and quoted language snippets can hide a path from the
+  // word tokenizer. Literal absolute paths are safe to inspect as an additional
+  // conservative pass; canonical path matching still prevents `/mnt-other`
+  // from matching a `/mnt` subtree rule.
+  for (const match of command.matchAll(
+    /(?:\/[^\s"'`;&|()<>]+|[A-Za-z]:\\[^\s"'`;&|()<>]+|\\\\[^\s"'`;&|()<>]+)/g,
+  )) {
+    if (match[0]) candidates.add(trimShellPathToken(match[0]));
+  }
+  return [...candidates].filter((candidate) => candidate.length > 0);
+}
+
+interface ShellWordToken {
+  readonly value: string;
+  readonly pathHint: boolean;
+}
+
+function shellWordTokens(command: string): readonly ShellWordToken[] {
+  const tokens: ShellWordToken[] = [];
+  let value = '';
+  let quote: "'" | '"' | undefined;
+  let pathHint = false;
+  const flush = () => {
+    if (value.length > 0) tokens.push({ value: trimShellPathToken(value), pathHint });
+    value = '';
+    pathHint = false;
+  };
+  for (let index = 0; index < command.length; index += 1) {
+    const character = command[index]!;
+    if (quote !== undefined) {
+      if (character === quote) quote = undefined;
+      else value += character;
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      continue;
+    }
+    if (character === '\\' && index + 1 < command.length) {
+      value += command[++index]!;
+      continue;
+    }
+    if (/\s/.test(character)) {
+      flush();
+      continue;
+    }
+    if (';|&()<>'.includes(character)) {
+      flush();
+      if (character === '>' || character === '<') pathHint = true;
+      continue;
+    }
+    value += character;
+  }
+  flush();
+  return tokens;
+}
+
+function trimShellPathToken(value: string): string {
+  return value.replace(/^[`([{]+|[`),;:}]+$/g, '');
+}
+
+function looksLikePath(value: string): boolean {
+  return (
+    value.startsWith('/') ||
+    /^[A-Za-z]:\\/.test(value) ||
+    value.startsWith('\\\\') ||
+    value.startsWith('./') ||
+    value.startsWith('../') ||
+    value.includes('/') ||
+    value.includes('\\') ||
+    value.includes('.')
+  );
+}
+
+function terminalCommandInput(
+  args: Record<string, unknown>,
+): { readonly text: string; readonly unverifiable: boolean } | undefined {
+  if (typeof args.input === 'string') {
+    return { text: args.input, unverifiable: hasUnmodelledTerminalControl(args.input) };
+  }
+  if (!Array.isArray(args.actions)) return undefined;
+  let text = '';
+  let unverifiable = false;
+  for (const action of args.actions) {
+    if (!isRecord(action) || typeof action.type !== 'string') {
+      unverifiable = true;
+      continue;
+    }
+    if (action.type === 'text' && typeof action.text === 'string') {
+      text += action.text;
+    } else if (action.type === 'key' && typeof action.key === 'string') {
+      if (action.key === 'enter') text += '\n';
+      else if (action.key === 'backspace') text += '\b';
+      else if (
+        action.key.length === 1 &&
+        (!Array.isArray(action.modifiers) || action.modifiers.length === 0)
+      ) {
+        text += action.key;
+      } else {
+        // Cursor movement, deletion at the cursor, and modifier chords can
+        // rewrite an earlier part of the line. A string concatenation model
+        // cannot prove the resulting command or path, so deny conservatively.
+        unverifiable = true;
+      }
+    } else {
+      // Mouse input and resize do not describe a verifiable command line.
+      unverifiable = true;
+    }
+  }
+  return text.length > 0 || unverifiable ? { text, unverifiable } : undefined;
+}
+
+function hasUnmodelledTerminalControl(value: string): boolean {
+  return [...value].some((character) => {
+    const code = character.charCodeAt(0);
+    return code < 0x20 && character !== '\n' && character !== '\r' && character !== '\b';
+  });
+}
+
+function inspectPtyCommandInput(
+  prior: string,
+  input: string,
+  rules: PermissionRules,
+): { readonly match?: string; readonly pending: string } {
+  let pending = prior;
+  for (const character of input) {
+    if (character === '\n' || character === '\r' || ';|&'.includes(character)) {
+      const match = matchPermissionCommandFragments(rules, pending);
+      if (match !== undefined) return { match, pending };
+      pending = '';
+      continue;
+    }
+    if (character === '\b' || character === '\u007f') {
+      pending = [...pending].slice(0, -1).join('');
+      continue;
+    }
+    pending += character;
+    const match = matchPermissionCommandFragments(rules, pending);
+    if (match !== undefined) return { match, pending };
+  }
+  return { pending };
+}
+
+function matchPermissionCommandFragments(
+  rules: PermissionRules,
+  input: string,
+): string | undefined {
+  const value = input.trim();
+  if (value.length === 0) return undefined;
+  const match = matchPermissionRules(rules, { command: value });
+  return match?.kind === 'command' ? match.pattern : undefined;
+}
+
+function globPatternBase(pattern: string): string {
+  const wildcard = pattern.search(/[?*[{]/);
+  if (wildcard < 0) return pattern || '.';
+  const prefix = pattern.slice(0, wildcard);
+  const separator = Math.max(prefix.lastIndexOf('/'), prefix.lastIndexOf('\\'));
+  return separator < 0 ? '.' : prefix.slice(0, separator) || (isAbsolute(pattern) ? '/' : '.');
+}
+
+function applyPatchTextPaths(input: string): readonly string[] {
+  const paths: string[] = [];
+  for (const line of input.replaceAll('\r\n', '\n').split('\n')) {
+    const match = /^\*\*\* (?:Add|Delete|Update) File: (.+)$/.exec(line);
+    if (match?.[1]) paths.push(match[1].trim());
+  }
+  return paths;
+}
+
+function collectPathFields(value: unknown): readonly string[] {
+  if (Array.isArray(value)) return value.flatMap((item) => collectPathFields(item));
+  if (!isRecord(value)) return [];
+  const paths: string[] = [];
+  if (typeof value.path === 'string') paths.push(value.path);
+  for (const [key, nested] of Object.entries(value)) {
+    if (key !== 'path') paths.push(...collectPathFields(nested));
+  }
+  return paths;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+export interface PermissionRuntimeState {
+  readonly pendingPtyCommandInput: Map<string, string>;
+}
+
+export function createPermissionRuntimeState(): PermissionRuntimeState {
+  return { pendingPtyCommandInput: new Map() };
+}
+
+function permissionPtyStateKey(sessionId: string, ref: string): string {
+  return `${sessionId}\u0000${ref}`;
+}
+
+/**
+ * Permission policy is persisted in a platform-neutral document, while the
+ * filesystem executor resolves paths using the current Host's path API. On
+ * Windows, Node treats a POSIX-looking absolute path such as `/mnt` as the
+ * root of the current drive (`D:\\mnt`); convert that spelling before matching
+ * so a rule configured through the CLI cannot silently become ineffective.
+ */
+function permissionRulesForCurrentHost(rules: PermissionRules): PermissionRules {
+  if (process.platform !== 'win32') return rules;
+  const cached = hostPermissionRulesCache.get(rules);
+  if (cached) return cached;
+  const converted = Object.freeze({
+    denyCommands: rules.denyCommands,
+    denyPaths: Object.freeze(
+      rules.denyPaths.map((rule) =>
+        Object.freeze(rule.path.startsWith('/') ? { ...rule, path: resolve(rule.path) } : rule),
+      ),
+    ),
+  });
+  hostPermissionRulesCache.set(rules, converted);
+  return converted;
+}
+
+const hostPermissionRulesCache = new WeakMap<object, PermissionRules>();
 
 async function validateDeclaredToolArgs(parameters: unknown, args: unknown): Promise<void> {
   if (!parameters || (typeof parameters !== 'object' && typeof parameters !== 'function')) {

@@ -48,10 +48,14 @@ export function resolveApplyPatchProfile(
 export function routeApplyPatchTools(
   tools: readonly MakaTool[],
   profile: ApplyPatchProfile | null,
+  nativeApplyPatchAllowed = true,
 ): MakaTool[] {
   const applyPatchTool = tools.find((tool) => tool.providerTool?.kind === 'openai-apply-patch');
   if (!applyPatchTool) return [...tools];
-  if (!profile) return tools.filter((tool) => tool !== applyPatchTool);
+  // Native Apply Patch executes at the provider, so it cannot be guarded by
+  // ToolRuntime's persistent path rules. Fall back to the client-side file
+  // tools whenever a path deny is active; those tools settle through Runtime.
+  if (!profile || !nativeApplyPatchAllowed) return tools.filter((tool) => tool !== applyPatchTool);
 
   return tools.filter((tool) => tool.name !== 'Write' && tool.name !== 'Edit');
 }

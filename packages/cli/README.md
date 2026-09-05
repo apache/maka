@@ -101,6 +101,24 @@ Maka asks before privileged tool operations by default. `maka run --yolo` grants
 and network access and should only be used in an environment you are prepared to let the task
 modify.
 
+## Persistent permission rules
+
+The Runtime Host can persist explicit deny rules for commands and filesystem paths. They are checked
+before tool dispatch, including when a turn uses `--yolo`:
+
+```sh
+maka permissions deny-command 'git commit *'
+maka permissions deny-command 'git push *'
+maka permissions deny-path /mnt --scope subtree
+maka permissions deny-path /etc/wsl.conf --scope exact
+maka permissions list
+```
+
+Use `remove-command` or `remove-path` with the same value and scope to remove a rule. Paths must be
+absolute. Command patterns use glob matching (`*` and `?`), not regular expressions. Unmatched
+operations continue to use the Session permission mode and sandbox. To manage a different local or
+remote Runtime Host, pass `--root <path>` and, where applicable, `--host <profile-id>`.
+
 ## Upgrade
 
 While using prereleases, keep the `next` tag explicit:

@@ -20,6 +20,11 @@
 import { isThinkingLevel } from '../model-thinking.js';
 import { CHAT_DEFAULT_PERMISSION_MODES } from '../settings.js';
 import { normalizeSubagentSettings } from '../subagent-settings.js';
+import {
+  decodeCanonicalPermissionRules,
+  EMPTY_PERMISSION_RULES,
+  normalizePermissionRules,
+} from './permission-rules.js';
 import type {
   AgentRuntimeSettingsPatch,
   MutateRuntimePolicyInput,
@@ -67,8 +72,32 @@ export function decodeRuntimePolicyV2(value: unknown): RuntimePolicy {
     policy,
     normalizeSubagentSettings(policy.subagents),
     { preference: 'auto', executable: '' },
+    EMPTY_PERMISSION_RULES,
   );
-  assertCanonicalValue(value, withoutShell(decoded), 'runtime policy v2');
+  assertCanonicalValue(value, withoutShellAndPermissionRules(decoded), 'runtime policy v2');
+  return decoded;
+}
+
+/** Upgrade the immediately previous canonical document with empty permission rules. */
+export function decodeRuntimePolicyV3(value: unknown): RuntimePolicy {
+  const policy = exactRecord(value, 'runtime policy v3', [
+    'networkProxy',
+    'personalization',
+    'memory',
+    'workspaceInstructions',
+    'privacy',
+    'chatDefaults',
+    'webSearch',
+    'subagents',
+    'shell',
+  ]);
+  const decoded = normalizeRuntimePolicyFields(
+    policy,
+    normalizeSubagentSettings(policy.subagents),
+    normalizeShell(policy.shell),
+    EMPTY_PERMISSION_RULES,
+  );
+  assertCanonicalValue(value, withoutPermissionRules(decoded), 'runtime policy v3');
   return decoded;
 }
 
@@ -185,11 +214,13 @@ function normalizeRuntimePolicy(value: unknown): RuntimePolicy {
     'webSearch',
     'subagents',
     'shell',
+    'permissionRules',
   ]);
   return normalizeRuntimePolicyFields(
     policy,
     normalizeSubagentSettings(policy.subagents),
     normalizeShell(policy.shell),
+    decodeCanonicalPermissionRules(policy.permissionRules),
   );
 }
 
@@ -197,6 +228,7 @@ function normalizeRuntimePolicyFields(
   policy: Record<string, unknown>,
   subagents: RuntimePolicy['subagents'],
   shell: RuntimePolicy['shell'],
+  permissionRules: RuntimePolicy['permissionRules'],
 ): RuntimePolicy {
   return {
     networkProxy: normalizeNetworkProxy(policy.networkProxy),
@@ -208,11 +240,19 @@ function normalizeRuntimePolicyFields(
     webSearch: normalizeWebSearch(policy.webSearch),
     subagents,
     shell,
+    permissionRules,
   };
 }
 
-function withoutShell(policy: RuntimePolicy): Omit<RuntimePolicy, 'shell'> {
-  const { shell: _shell, ...legacy } = policy;
+function withoutShellAndPermissionRules(
+  policy: RuntimePolicy,
+): Omit<RuntimePolicy, 'shell' | 'permissionRules'> {
+  const { shell: _shell, permissionRules: _permissionRules, ...legacy } = policy;
+  return legacy;
+}
+
+function withoutPermissionRules(policy: RuntimePolicy): Omit<RuntimePolicy, 'permissionRules'> {
+  const { permissionRules: _permissionRules, ...legacy } = policy;
   return legacy;
 }
 
@@ -236,6 +276,8 @@ function normalizeMutationOperation(operation: Record<string, unknown>): Runtime
       return { kind: operation.kind, value: normalizeSubagentSettings(operation.value) };
     case 'set_shell':
       return { kind: operation.kind, value: normalizeShell(operation.value) };
+    case 'set_permission_rules':
+      return { kind: operation.kind, value: normalizePermissionRules(operation.value) };
     case 'patch_agent_settings':
       return { kind: operation.kind, value: normalizeAgentRuntimeSettingsPatch(operation.value) };
     default:

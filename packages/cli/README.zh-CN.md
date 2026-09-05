@@ -94,6 +94,24 @@ maka run --help
 Maka 默认会在执行高权限工具操作前询问。`maka run --yolo` 会授予该任务完整的文件和网络
 权限，只应在你允许任务修改的环境中使用。
 
+## 持久化权限拒绝规则
+
+Runtime Host 支持为命令和文件路径持久化显式拒绝规则。规则会在工具真正执行前检查，
+即使 Turn 使用了 `--yolo` 也仍然生效：
+
+```sh
+maka permissions deny-command 'git commit *'
+maka permissions deny-command 'git push *'
+maka permissions deny-path /mnt --scope subtree
+maka permissions deny-path /etc/wsl.conf --scope exact
+maka permissions list
+```
+
+删除规则时，使用相同值和 scope 的 `remove-command` 或 `remove-path`。路径必须是绝对路径；
+命令模式使用 glob 匹配（`*` 和 `?`），不是正则表达式。没有匹配规则的操作继续遵循当前
+Session 的 permission mode 和 sandbox。要管理其他本地或远程 Runtime Host，可传入
+`--root <path>`，并在需要时传入 `--host <profile-id>`。
+
 ## 升级
 
 使用预发布版本时，请继续明确指定 `next`：

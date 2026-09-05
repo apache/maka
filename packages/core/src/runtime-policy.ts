@@ -35,6 +35,7 @@ import {
 } from './settings.js';
 import type { SubagentSettings } from './subagent-settings.js';
 import type { JsonObject } from './request-customization.js';
+import { EMPTY_PERMISSION_RULES, type PermissionRules } from './runtime-policy/permission-rules.js';
 import {
   WEB_SEARCH_PROVIDERS,
   type WebSearchCredentialProvider,
@@ -54,8 +55,28 @@ export {
   normalizeNetworkProxyCredentialTarget,
   decodeRuntimePolicyV2,
   normalizeNetworkProxyUpdate,
+  decodeRuntimePolicyV3,
   normalizeRuntimePolicyMutation,
 } from './runtime-policy/policy-codec.js';
+export {
+  decodeCanonicalPermissionRules,
+  compilePermissionRules,
+  EMPTY_PERMISSION_RULES,
+  matchPermissionRules,
+  normalizePermissionRules,
+  permissionPathWithinRoot,
+  samePermissionPath,
+  PERMISSION_RULES_MAX_COMMANDS,
+  PERMISSION_RULES_MAX_PATHS,
+  PERMISSION_RULE_MAX_COMMAND_LENGTH,
+  PERMISSION_RULE_MAX_PATH_LENGTH,
+} from './runtime-policy/permission-rules.js';
+export type {
+  PermissionPathRule,
+  CompiledPermissionRules,
+  PermissionRuleMatch,
+  PermissionRules,
+} from './runtime-policy/permission-rules.js';
 export {
   CONNECTION_CATALOG_MAX_CONNECTIONS,
   CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS,
@@ -160,6 +181,7 @@ export interface RuntimePolicy {
   };
   readonly subagents: SubagentSettings;
   readonly shell: ShellSettings;
+  readonly permissionRules: PermissionRules;
 }
 
 export interface RuntimePolicySnapshot {
@@ -188,6 +210,7 @@ export type RuntimePolicyMutation =
   | { readonly kind: 'set_web_search'; readonly value: RuntimePolicy['webSearch'] }
   | { readonly kind: 'set_subagents'; readonly value: RuntimePolicy['subagents'] }
   | { readonly kind: 'set_shell'; readonly value: RuntimePolicy['shell'] }
+  | { readonly kind: 'set_permission_rules'; readonly value: RuntimePolicy['permissionRules'] }
   | { readonly kind: 'patch_agent_settings'; readonly value: AgentRuntimeSettingsPatch };
 
 export interface MutateRuntimePolicyInput {
@@ -257,6 +280,7 @@ export function createDefaultRuntimePolicy(): RuntimePolicy {
     webSearch: { enabled: false, defaultProvider: 'model' },
     subagents: { presets: [] },
     shell: { preference: 'auto', executable: '' },
+    permissionRules: EMPTY_PERMISSION_RULES,
   };
 }
 

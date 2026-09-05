@@ -36,6 +36,7 @@ export function isNormalizedAbsolutePath(path: string): boolean {
       .some((segment) => segment === '' || segment === '.' || segment === '..');
   }
   if (!path.startsWith('/') || path.includes('\\')) return false;
+  if (path === '/') return true;
   if (path.length > 1 && path.endsWith('/')) return false;
   return !path
     .split('/')

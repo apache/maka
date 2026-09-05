@@ -170,6 +170,7 @@ import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
 import { readLatestContextDiagnostics, type ContextDiagnostics } from './context-diagnostics.js';
 import type { ModelCallCommit } from '@maka/core/agent-run';
 import type { ShellRunProcessManager } from './shell-run-manager.js';
+import type { PermissionRuntimeState } from './tool-runtime.js';
 import type { HistoryCompactCheckpoint } from './history-compact-checkpoint.js';
 import type { ModelProjectionTransition } from '@maka/core/model-projection-transition';
 import type { LoadedModelProjectionTransitions } from './model-projection-transition-ledger.js';
@@ -725,6 +726,9 @@ export interface BackendFactoryContext {
   loadTurnRuntimeEvents?: (turnId: string) => Promise<RuntimeEvent[]>;
   /** Whether this activation may fold its run ledger into session-scoped history. */
   allowMidTurnHistoryCompaction?: boolean;
+  shellRunContextSummary?: () => Promise<string | undefined>;
+  /** Session-scoped runtime state retained across backend generations. */
+  permissionRuntimeState?: PermissionRuntimeState;
 }
 
 export type BackendFactory = (ctx: BackendFactoryContext) => AgentBackend | Promise<AgentBackend>;
@@ -818,6 +822,7 @@ interface SessionManagerBaseDeps {
   /** Optional host-owned parent run authority for runtimes that execute the parent externally. */
   isParentRunActive?: (sessionId: string, runId: string, turnId: string) => boolean;
   shellRuns?: ShellRunProcessManager;
+  permissionRuntimeState?: PermissionRuntimeState;
   cleanupHistoryCompactArtifacts?: (input: HistoryCompactCleanupRequest) => Promise<void>;
   inspectContinuationSafety?: (sessionId: string) => Promise<RuntimeContinuationSafetyObservation>;
   continuationFailpoint?: (point: RuntimeContinuationFailpoint) => Promise<void>;
@@ -909,7 +914,13 @@ export class SessionManager {
         now: deps.now,
       });
     }
-    this.runtimeKernel = deps.runtimeKernel ?? new RuntimeKernel({ ...deps });
+    const runtimeKernelDeps = {
+      ...deps,
+      permissionRuntimeState: deps.permissionRuntimeState ?? {
+        pendingPtyCommandInput: new Map<string, string>(),
+      },
+    };
+    this.runtimeKernel = deps.runtimeKernel ?? new RuntimeKernel(runtimeKernelDeps);
   }
 
   // --------------------------------------------------------------------------

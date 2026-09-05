@@ -165,6 +165,37 @@ describe('AiSdkBackend ApplyPatch routing', () => {
     assert.equal(names.includes('Edit'), true);
   });
 
+  test('hides native apply_patch when persistent path denies are active', async () => {
+    const model = completionModel();
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: { ...connection(), slug: 'openai', providerType: 'openai' },
+      apiKey: 'sk-test',
+      modelId: 'gpt-5.4',
+      modelFactory: () => model,
+      tools: [
+        nativeApplyPatchTool(),
+        testTool('Write', z.object({})),
+        testTool('Edit', z.object({})),
+      ],
+      permissionRules: {
+        denyCommands: [],
+        denyPaths: [{ path: '/mnt', scope: 'subtree' }],
+      },
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drain(backend.send({ turnId: 'turn-1', text: 'edit', context: [] }));
+
+    const names = modelToolNames(model);
+    assert.equal(names.includes('apply_patch'), false);
+    assert.equal(names.includes('Write'), true);
+    assert.equal(names.includes('Edit'), true);
+  });
+
   test('replays a durable apply_patch failure as native provider JSON', async () => {
     const model = completionModel();
     const backend = createTestAiSdkBackend({

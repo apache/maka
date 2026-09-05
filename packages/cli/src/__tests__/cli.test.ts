@@ -51,6 +51,7 @@ describe('Maka CLI args', () => {
     assert.match(help.text, /^  maka run /m);
     assert.match(help.text, /^  maka activate /m);
     assert.match(help.text, /^  maka eval /m);
+    assert.match(help.text, /^  maka permissions list /m);
     assert.match(help.text, /^  maka update --target /m);
     assert.match(
       help.text,

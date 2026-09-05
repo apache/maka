@@ -24,6 +24,7 @@ import { relayModelProfile } from '@maka/core/model-thinking';
 import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
 import type { ModelCallCommit } from '@maka/core/agent-run';
 import type { PermissionMode } from '@maka/core/permission';
+import type { PermissionRules } from '@maka/core/runtime-policy';
 import { AiSdkBackend } from '@maka/runtime/ai-sdk-backend';
 import {
   buildDefaultContextBudgetPolicy,
@@ -85,6 +86,8 @@ export interface HostAiSdkBackendInput {
   readonly executionArtifacts: HostExecutionArtifactServices;
   readonly usage: HostExecutionUsageAuthority;
   readonly requestDrain: () => void;
+  readonly readPermissionRules?: () => PermissionRules;
+  readonly updatePermissionRules?: (rules: PermissionRules) => void;
   readonly runtimeCommitSink?: RuntimeCommitSink;
   readonly childAgents?: HostChildAgentBackendCapabilities;
   readonly createFetchTransport?: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport;
@@ -143,6 +146,7 @@ async function buildHostAiSdkBackend(
     () => input.runtimePolicy.runtimePolicy.getSnapshot(),
     input.context.abortSignal,
   );
+  input.updatePermissionRules?.(runtimePolicySnapshot.policy.permissionRules);
   const transport = createFetchTransport(
     toRuntimePolicyProxy(target.networkProxy, target.proxySecret),
   );
@@ -364,6 +368,9 @@ async function buildHostAiSdkBackend(
                 input.context.store.settleSandboxBoundaryRequest!(request),
             }
           : {}),
+        permissionRules: runtimePolicySnapshot.policy.permissionRules,
+        readPermissionRules: input.readPermissionRules,
+        permissionRuntimeState: input.context.permissionRuntimeState,
         connection: target.connection,
         providerStateIdentity: target.providerStateIdentity,
         apiKey,
