@@ -17,12 +17,11 @@
  * under the License.
  */
 
-import { botDisplayLabel } from '@maka/core/bot-events';
 import { type BotChannelSettings, type BotProvider } from '@maka/core/bot-chat-settings';
-import { generalizedErrorMessage } from '@maka/core/redaction';
 import { WebClient } from '@slack/web-api';
 import type { BotTestResult } from './types.js';
 import { proxiedFetch } from './proxied-fetch.js';
+import { botDiagnosticMessage } from './base-adapter.js';
 import {
   normalizeWechatIlinkBaseUrl,
   testWechatBridge,
@@ -45,6 +44,18 @@ export async function testBotChannel(
   provider: BotProvider,
   channel: BotChannelSettings,
 ): Promise<BotTestResult> {
+  const result = await probeBotChannel(provider, channel);
+  if (result.ok) return result;
+  const errorCode = result.errorCode ?? 'connection_failed';
+  const error = result.error ? botDiagnosticMessage(channel, result.error) : undefined;
+  if (error) console.warn(`[bots:${provider}] ${errorCode}: ${error}`);
+  return { ...result, errorCode, ...(error ? { error } : {}) };
+}
+
+async function probeBotChannel(
+  provider: BotProvider,
+  channel: BotChannelSettings,
+): Promise<BotTestResult> {
   if (
     provider !== 'feishu' &&
     provider !== 'wecom' &&
@@ -54,7 +65,7 @@ export async function testBotChannel(
     provider !== 'slack' &&
     !channel.token.trim()
   ) {
-    return { ok: false, error: 'Bot token is required' };
+    return { ok: false, errorCode: 'token_missing' };
   }
   switch (provider) {
     case 'telegram':
@@ -80,7 +91,7 @@ async function testSlack(channel: BotChannelSettings): Promise<BotTestResult> {
   const botToken = channel.token.trim();
   const appToken = channel.appSecret?.trim() ?? '';
   if (!botToken || !appToken) {
-    return { ok: false, error: 'Slack 需要 Bot Token 与 App-Level Token' };
+    return { ok: false, errorCode: 'slack_tokens_missing' };
   }
   try {
     const identity = await new WebClient(botToken).auth.test();
@@ -96,15 +107,15 @@ async function testSlack(channel: BotChannelSettings): Promise<BotTestResult> {
         ...(identity.user ? { username: identity.user, displayName: identity.user } : {}),
       },
       capabilities: { auth: true, socketMode: true },
-      hint: '凭据有效，Socket Mode 连接可用。',
+      hintCode: 'slack_socket_ready',
     };
   } catch (error) {
-    return { ok: false, error: generalizedErrorMessage(error) };
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
 }
 
 async function testWechat(channel: BotChannelSettings): Promise<BotTestResult> {
-  if (channel.token.trim() && normalizeWechatIlinkBaseUrl(channel.webhookUrl)) {
+  if (normalizeWechatIlinkBaseUrl(channel.webhookUrl)) {
     return testWechatIlinkCredentials(channel);
   }
   const appId = channel.appId?.trim() ?? '';
@@ -129,7 +140,7 @@ async function testWechat(channel: BotChannelSettings): Promise<BotTestResult> {
       ok: true,
       identity: { id: appId, username: appId, displayName: appId },
       capabilities: { auth: true },
-      hint: '凭据有效；消息收发还需要公众号服务器配置和回调验证。',
+      hintCode: 'wechat_mp_callback_required',
     };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
@@ -139,10 +150,23 @@ async function testWechat(channel: BotChannelSettings): Promise<BotTestResult> {
 async function testTelegram(channel: BotChannelSettings): Promise<BotTestResult> {
   const base = `https://api.telegram.org/bot${channel.token}`;
   try {
-    const me = await (
-      await proxiedFetch(`${base}/getMe`, { method: 'GET', timeoutMs: BOT_TEST_TIMEOUT_MS })
-    ).json();
-    if (!me.ok) return { ok: false, error: me.description ?? 'Invalid bot token' };
+    const response = await proxiedFetch(`${base}/getMe`, {
+      method: 'GET',
+      timeoutMs: BOT_TEST_TIMEOUT_MS,
+    });
+    const me = await response.json().catch(() => null);
+    if (!response.ok || me?.ok !== true)
+      return {
+        ok: false,
+        errorCode:
+          response.status === 401 || (response.ok && me?.error_code === 401)
+            ? 'token_invalid'
+            : 'connection_failed',
+        error:
+          typeof me?.description === 'string' && me.description.trim()
+            ? me.description
+            : `Telegram getMe failed (HTTP ${response.status})`,
+      };
     return {
       ok: true,
       identity: {
@@ -151,7 +175,7 @@ async function testTelegram(channel: BotChannelSettings): Promise<BotTestResult>
         displayName: me.result.first_name,
       },
       messageSent: false,
-      hint: '发送 /start 给机器人后可在运行态接收消息。',
+      hintCode: 'telegram_send_start',
     };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
@@ -200,14 +224,14 @@ async function testWeCom(channel: BotChannelSettings): Promise<BotTestResult> {
   const botId = channel.appId?.trim() ?? '';
   const secret = channel.appSecret?.trim() ?? '';
   if (!botId || !secret) {
-    return { ok: false, error: '企业微信 AI 机器人需要 Bot ID 与 Secret', verified: false };
+    return { ok: false, errorCode: 'wecom_credentials_missing', verified: false };
   }
   return {
     ok: true,
     verified: false,
     identity: { id: botId, username: botId, displayName: botId },
     capabilities: { auth: false },
-    hint: '已保存凭据；企业微信 AI 机器人的连接状态以运行态长连接为准。',
+    hintCode: 'wecom_runtime_authority',
   };
 }
 
@@ -230,7 +254,7 @@ async function testDingTalk(channel: BotChannelSettings): Promise<BotTestResult>
   const appkey = channel.appId?.trim() ?? '';
   const appsecret = channel.appSecret?.trim() ?? '';
   if (!appkey || !appsecret) {
-    return { ok: false, error: '钉钉需要 appkey 与 appsecret' };
+    return { ok: false, errorCode: 'dingtalk_credentials_missing' };
   }
   const url =
     'https://oapi.dingtalk.com/gettoken?appkey=' +
@@ -246,17 +270,17 @@ async function testDingTalk(channel: BotChannelSettings): Promise<BotTestResult>
     if (json.errcode && json.errcode !== 0) {
       return {
         ok: false,
-        error: json.errmsg ? `钉钉: ${json.errmsg}` : `钉钉 errcode ${json.errcode}`,
+        error: json.errmsg ? String(json.errmsg) : `errcode ${json.errcode}`,
       };
     }
     if (typeof json.access_token !== 'string' || json.access_token.length === 0) {
-      return { ok: false, error: '钉钉凭据测试未返回 access_token' };
+      return { ok: false, errorCode: 'dingtalk_no_access_token' };
     }
     return {
       ok: true,
       identity: { id: appkey, username: appkey, displayName: appkey },
       capabilities: { auth: true },
-      hint: '凭据有效；接收消息需要 outgoing 机器人或 Stream 模式配置。',
+      hintCode: 'dingtalk_stream_required',
     };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
@@ -282,7 +306,7 @@ async function testQQ(channel: BotChannelSettings): Promise<BotTestResult> {
   const appId = channel.appId?.trim() ?? '';
   const clientSecret = channel.appSecret?.trim() ?? '';
   if (!appId || !clientSecret) {
-    return { ok: false, error: 'QQ 官方机器人需要 App ID 与 Client Secret' };
+    return { ok: false, errorCode: 'qq_credentials_missing' };
   }
   try {
     const response = await proxiedFetch('https://bots.qq.com/app/getAppAccessToken', {
@@ -295,18 +319,18 @@ async function testQQ(channel: BotChannelSettings): Promise<BotTestResult> {
     if (!response.ok) {
       const message =
         typeof json.message === 'string' && json.message.length > 0
-          ? `QQ: ${json.message}`
+          ? json.message
           : `HTTP ${response.status}`;
       return { ok: false, error: message };
     }
     if (typeof json.access_token !== 'string' || json.access_token.length === 0) {
-      return { ok: false, error: 'QQ 官方机器人凭据测试未返回 access_token' };
+      return { ok: false, errorCode: 'qq_no_access_token' };
     }
     return {
       ok: true,
       identity: { id: appId, username: appId, displayName: appId },
       capabilities: { auth: true },
-      hint: '凭据有效；接收消息需要 QQ Gateway WebSocket 接入。',
+      hintCode: 'qq_gateway_required',
     };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
@@ -316,7 +340,7 @@ async function testQQ(channel: BotChannelSettings): Promise<BotTestResult> {
 async function testFeishu(channel: BotChannelSettings): Promise<BotTestResult> {
   const appId = channel.appId ?? '';
   const appSecret = channel.appSecret || channel.token;
-  if (!appId || !appSecret) return { ok: false, error: 'Feishu appId and appSecret are required' };
+  if (!appId || !appSecret) return { ok: false, errorCode: 'feishu_credentials_missing' };
   // PR1197 review (P1-4): brand-switch the account host by the channel domain,
   // exactly like the onboarding flow does. A Lark tenant (larksuite.com) cannot
   // issue a tenant_access_token from the feishu.cn host, so a hardcoded host

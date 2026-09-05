@@ -208,94 +208,70 @@ function isAssignmentSensitiveKey(key: string): boolean {
   return suffix !== 'auth' && suffix !== 'authorization';
 }
 
-type GeneralizedErrorCategory = 'timeout' | 'rateLimit' | 'authentication' | 'provider' | 'network';
+export type GeneralizedErrorClass =
+  | 'timeout'
+  | 'rate_limited'
+  | 'auth_failed'
+  | 'provider_error'
+  | 'network_error';
 
-const GENERALIZED_ERROR_COPY: UiCatalog<Record<GeneralizedErrorCategory, string>> = {
-  'zh-CN': {
-    timeout: '请求超时',
-    rateLimit: '触发模型速率限制',
-    authentication: '鉴权失败',
-    provider: '模型服务返回错误',
-    network: '网络错误',
-  },
-  'zh-TW': {
-    timeout: '請求逾時',
-    rateLimit: '已達模型速率限制',
-    authentication: '驗證失敗',
-    provider: '模型服務傳回錯誤',
-    network: '網路錯誤',
-  },
-  en: {
-    timeout: 'Request timed out',
-    rateLimit: 'Rate limit exceeded',
-    authentication: 'Authentication failed',
-    provider: 'Provider returned an error',
-    network: 'Network error',
-  },
-};
-
-function classifyGeneralizedError(error: unknown): GeneralizedErrorCategory | null {
+/**
+ * Keyword classification shared by the localized message helpers and by
+ * producers that emit a stable machine code instead of prose.
+ */
+export function classifyGeneralizedError(error: unknown): GeneralizedErrorClass | undefined {
   const message = error instanceof Error ? error.message : String(error);
-  const redacted = redactSecrets(message);
-  const lower = redacted.toLowerCase();
+  const lower = redactSecrets(message).toLowerCase();
   if (lower.includes('timeout')) return 'timeout';
-  if (lower.includes('429') || lower.includes('rate')) return 'rateLimit';
+  if (lower.includes('429') || lower.includes('rate')) return 'rate_limited';
   if (lower.includes('401') || lower.includes('403') || isAuthenticationErrorText(lower))
-    return 'authentication';
-  if (lower.includes('5') && /\b5\d\d\b/.test(lower)) return 'provider';
+    return 'auth_failed';
+  if (/\b5\d\d\b/.test(lower)) return 'provider_error';
   if (
     lower.includes('network') ||
     lower.includes('fetch') ||
     lower.includes('econn') ||
     lower.includes('enotfound')
   )
-    return 'network';
-  return null;
+    return 'network_error';
+  return undefined;
 }
 
-function localizedGeneralizedErrorMessage(
-  error: unknown,
-  fallback: string,
-  locale: UiLocale,
-): string {
-  const category = classifyGeneralizedError(error);
-  return category ? GENERALIZED_ERROR_COPY[locale][category] : fallback;
-}
-
-export function generalizedErrorMessage(error: unknown, fallback = 'Operation failed'): string {
-  return localizedGeneralizedErrorMessage(error, fallback, 'en');
-}
-
-/**
- * Chinese-locale companion to `generalizedErrorMessage()` (PR110b
- * follow-up). Same classification rules; returns Chinese phrasing
- * instead of English. Used by surfaces that must enforce a
- * Chinese-only error copy contract (session start, onboarding setup
- * banners, etc.) — the English version would have leaked through any
- * matched category, breaking the gate.
- *
- * The fallback default is also Chinese so callers that don't supply
- * one still produce a Chinese-only result. Pass a more specific
- * Chinese fallback (e.g. "会话已创建但发送失败，请重试。") for better
- * UX when the classifier can't categorize.
- */
-export function generalizedErrorMessageChinese(error: unknown, fallback = '操作失败'): string {
-  return localizedGeneralizedErrorMessage(error, fallback, 'zh-CN');
-}
-
-export function generalizedErrorMessageTraditionalChinese(
-  error: unknown,
-  fallback = '操作失敗',
-): string {
-  return localizedGeneralizedErrorMessage(error, fallback, 'zh-TW');
-}
+const GENERALIZED_ERROR_COPY = {
+  'zh-CN': {
+    timeout: '请求超时',
+    rate_limited: '触发模型速率限制',
+    auth_failed: '鉴权失败',
+    provider_error: '模型服务返回错误',
+    network_error: '网络错误',
+  },
+  'zh-TW': {
+    timeout: '請求逾時',
+    rate_limited: '已達模型速率限制',
+    auth_failed: '驗證失敗',
+    provider_error: '模型服務傳回錯誤',
+    network_error: '網路錯誤',
+  },
+  en: {
+    timeout: 'Request timed out',
+    rate_limited: 'Rate limit exceeded',
+    auth_failed: 'Authentication failed',
+    provider_error: 'Provider returned an error',
+    network_error: 'Network error',
+  },
+} satisfies UiCatalog<Record<GeneralizedErrorClass, string>>;
 
 export function generalizedErrorMessageForLocale(
   error: unknown,
   fallback: string,
   locale: UiLocale,
 ): string {
-  return localizedGeneralizedErrorMessage(error, fallback, locale);
+  const classified = classifyGeneralizedError(error);
+  return classified ? GENERALIZED_ERROR_COPY[locale][classified] : fallback;
+}
+
+export function generalizedErrorMessage(error: unknown, fallback = 'Operation failed'): string {
+  return generalizedErrorMessageForLocale(error, fallback, 'en');
 }
 
 export function isAuthenticationErrorText(message: string): boolean {

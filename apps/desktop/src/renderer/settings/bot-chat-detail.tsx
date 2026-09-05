@@ -53,7 +53,7 @@ import {
   botStatusDetail,
   type BotPendingActionName,
 } from './bot-chat-shared';
-import { getBotSettingsCopy, type BotSettingsCopy } from '../locales/settings-bot-copy';
+import { botStatusReasonMessage, getBotSettingsCopy, type BotSettingsCopy } from '../locales/settings-bot-copy';
 import { SettingsPage, SettingsSection } from './settings-section';
 import { dotForStatus } from '@maka/ui';
 
@@ -305,7 +305,7 @@ export function BotChatChannelDetail(props: {
           title={detailCopy.latestFailure}
           description={(
             <span className="settingsBotBannerDescription">
-              {locale === 'zh-CN' ? viewState.currentError : detailCopy.latestFailureDetail}
+              {botStatusReasonMessage(viewState.currentError, locale) ?? detailCopy.latestFailureDetail}
             </span>
           )} />
       )}
@@ -412,10 +412,13 @@ export function BotChatChannelDetail(props: {
             // PR1197 review (P0-3): the bridge may have failed to start even
             // though credentials saved. Reflect that honestly instead of a
             // success toast that overstates the connection.
-            if (snapshot.warning) {
+            if (snapshot.warningCode) {
+              const onboardingCopy = botCopy.onboarding;
               toast.warning(
                 detailCopy.credentialsSaved(providerPresentation.label),
-                locale === 'zh-CN' ? snapshot.warning : detailCopy.savedButNotConnected,
+                snapshot.warningDetail
+                  ? onboardingCopy.savedNotConnectedDetail(botStatusReasonMessage(snapshot.warningDetail, locale) ?? detailCopy.savedButNotConnected)
+                  : onboardingCopy.savedNotConnected,
               );
               return;
             }
@@ -635,7 +638,7 @@ function BotAllowedUserIdsField(props: {
     if (!same) props.onChange(next);
   };
   const warning = invalidEntries.length > 0
-    ? `${copy.invalidUsers(invalidEntries.slice(0, 3).join(locale !== 'en' ? '、' : ', '))}${invalidEntries.length > 3 ? copy.moreInvalid(invalidEntries.length) : ''}`
+    ? copy.invalidUsers(invalidEntries)
     : undefined;
 
   return (
@@ -647,7 +650,7 @@ function BotAllowedUserIdsField(props: {
       hasSpellCheck={false}
       placeholder={copy.allowedUsersPlaceholder}
       label={copy.allowedUsersLabel(parsed.length, MAX_ALLOWED_USER_IDS)}
-      description={`${copy.allowedUsersHelp}${atCap ? ` ${copy.limitReached}` : ''}`}
+      description={copy.allowedUsersHelp(atCap)}
       status={warning ? { type: 'warning', message: warning } : undefined}
     />
   );

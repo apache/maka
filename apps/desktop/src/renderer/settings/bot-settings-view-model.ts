@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { humanizeBotStatusReason } from '@maka/core/bot-events';
+import { botStatusErrorReason } from '@maka/core/bot-events';
 import { type BotChannelSettings, type BotReadinessState } from '@maka/core/bot-chat-settings';
 import type { BotStatus } from '@maka/runtime/bots';
 
@@ -43,7 +43,7 @@ export function deriveBotChannelViewState(input: {
     || isConfiguredReadiness(readiness);
   const liveOperational = status?.running === true && readiness === 'operational';
   const liveError = readiness === 'degraded'
-    ? humanizeBotStatusReason(status?.reason)
+    ? botStatusErrorReason(status?.reason)
     : undefined;
   const currentError = liveOperational ? undefined : liveError ?? channel.lastError;
   const needsAttention = configured && (

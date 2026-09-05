@@ -35,7 +35,7 @@ export {
   testWechatIlinkCredentials,
   WechatBridge,
 } from './wechat-bridge.js';
-export type { WechatBridgeQrCodeResult } from './wechat-bridge.js';
+export type { WechatBridgeQrCodeResult, WechatBridgeQrHintCode } from './wechat-bridge.js';
 export { WeComBotBridge, wecomTextFrameToEvent } from './wecom-bridge.js';
 export { SlackBotBridge, slackMessageToEvent } from './slack-bridge.js';
 export type {
@@ -45,6 +45,10 @@ export type {
   BotReplyStream,
   BotReplyStreamOptions,
   BotStatus,
+  BotStatusCode,
+  BotStatusReason,
   BotTestResult,
+  BotTestErrorCode,
+  BotTestHintCode,
   SendCapable,
 } from './types.js';

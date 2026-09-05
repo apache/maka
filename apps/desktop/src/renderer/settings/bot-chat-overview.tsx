@@ -26,7 +26,7 @@ import { EmptyState, Item, StatusDot } from '@astryxdesign/core';
 import { Button, RelativeTime, useUiLocale, Banner } from '@maka/ui';
 import { deriveBotChannelViewState } from './bot-settings-view-model';
 import { BOT_LABELS, BotBrandLogo, botReadinessCopyForSupport, botStatusDetail } from './bot-chat-shared';
-import { getBotSettingsCopy } from '../locales/settings-bot-copy';
+import { botStatusReasonMessage, getBotSettingsCopy } from '../locales/settings-bot-copy';
 import { SettingsPage, SettingsSection } from './settings-section';
 import { dotForStatus } from '@maka/ui';
 
@@ -157,7 +157,7 @@ function botOverviewDetail(
       </>
     );
   }
-  if (currentError) return locale === 'zh-CN' ? currentError : fallback;
+  if (currentError) return botStatusReasonMessage(currentError, locale) ?? fallback;
   if (status?.reason) return botStatusDetail(status, locale);
   return fallback;
 }

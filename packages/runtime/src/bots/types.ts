@@ -19,8 +19,32 @@
 
 import type { BotProvider, BotReadinessState } from '@maka/core/bot-chat-settings';
 import type { BotMessageEvent, BotPlatform } from '@maka/core/bot-events';
+import type { GeneralizedErrorClass } from '@maka/core/redaction';
 
 export type { BotPlatform };
+
+export type BotStatusCode =
+  | BotTestErrorCode
+  | GeneralizedErrorClass
+  | 'disabled'
+  | 'stopped'
+  | 'slack-disconnected'
+  | 'disconnected'
+  | 'reconnecting'
+  | 'rate-limited'
+  | 'polling-timeout'
+  | 'send-failed'
+  | 'get-me-failed'
+  | 'stream-failed';
+
+export type BotStatusReason =
+  | BotStatusCode
+  | `gateway-bot-${number}`
+  | `gateway-closed-${number}`
+  | `connections-open-${number}`
+  | `stream-closed-${number}`
+  | `send-failed-${number}`
+  | `getAppAccessToken-${number}`;
 
 export interface BotStatus {
   platform: BotPlatform;
@@ -116,13 +140,43 @@ export interface SendCapable {
   sendTypingIndicator?(chatId: string): Promise<boolean>;
 }
 
+/** Stable machine codes for producer-known test failures; presenters own copy. */
+export type BotTestErrorCode =
+  | 'connection_failed'
+  | 'token_missing'
+  | 'token_invalid'
+  | 'slack_tokens_missing'
+  | 'feishu_credentials_missing'
+  | 'wecom_credentials_missing'
+  | 'dingtalk_credentials_missing'
+  | 'dingtalk_no_access_token'
+  | 'qq_credentials_missing'
+  | 'qq_no_access_token'
+  | 'wechat_bridge_url_invalid'
+  | 'wechat_ilink_credentials_incomplete';
+
+/** Stable machine codes for follow-up guidance; presenters own copy. */
+export type BotTestHintCode =
+  | 'slack_socket_ready'
+  | 'wechat_mp_callback_required'
+  | 'telegram_send_start'
+  | 'wecom_runtime_authority'
+  | 'dingtalk_stream_required'
+  | 'qq_gateway_required'
+  | 'wechat_bridge_local_only'
+  | 'wechat_bridge_start_required'
+  | 'wechat_ilink_login_required'
+  | 'wechat_ilink_polling';
+
 export interface BotTestResult {
   ok: boolean;
   identity?: { id: string; username?: string; displayName?: string };
   messageSent?: boolean;
   capabilities?: Record<string, boolean>;
+  errorCode?: BotTestErrorCode;
+  /** Diagnostic for redacted logging only, never product copy. */
   error?: string;
-  hint?: string;
+  hintCode?: BotTestHintCode;
   /**
    * `false` when `ok` reflects only a shape/non-empty check and the credentials
    * could NOT be verified against a live endpoint (e.g. WeCom AI-bot creds,

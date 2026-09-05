@@ -17,7 +17,8 @@
  * under the License.
  */
 
-import type { SettingsTestResult } from '@maka/core/settings';
+import type { SettingsTestResult, SettingsTestResultCode } from '@maka/core/settings';
+import type { BotTestErrorCode } from '@maka/runtime/bots';
 
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
@@ -40,6 +41,7 @@ type SettingsTestResultCopy = {
     tokenInvalid: string;
     appCredentialsMissing: string;
     connectionFailed: string;
+    errors: Record<Extract<SettingsTestResultCode, BotTestErrorCode>, string>;
   };
 };
 
@@ -67,6 +69,16 @@ const COPY = {
       tokenInvalid: "Bot Token 无效，请检查后重试。",
       appCredentialsMissing: "请填写 App ID 和 App Secret 后再测试。",
       connectionFailed: "请检查凭据和网络设置后重试。",
+      errors: {
+        slack_tokens_missing: '请填写 Slack Bot Token 和 App-Level Token 后再测试。',
+        wecom_credentials_missing: '请填写企业微信 Bot ID 和 Secret 后再测试。',
+        dingtalk_credentials_missing: '请填写钉钉 Client ID（AppKey）和 Client Secret 后再测试。',
+        dingtalk_no_access_token: '钉钉未返回 access_token，请检查凭据和网络后重试。',
+        qq_credentials_missing: '请填写 QQ App ID 和 AppSecret 后再测试。',
+        qq_no_access_token: 'QQ 未返回 access_token，请检查凭据和网络后重试。',
+        wechat_bridge_url_invalid: '微信本地桥接只允许访问本机 wechat-bridge，不能指向远端 URL。',
+        wechat_ilink_credentials_incomplete: '请先完成微信扫码登录，保存 iLink bot token 与 base URL。',
+      },
     },
   },
   'zh-TW': {
@@ -92,6 +104,16 @@ const COPY = {
       tokenInvalid: "Bot Token 無效，請檢查後重試。",
       appCredentialsMissing: "請填寫 App ID 和 App Secret 後再測試。",
       connectionFailed: "請檢查憑據和網路設定後重試。",
+      errors: {
+        slack_tokens_missing: '請填寫 Slack Bot Token 和 App-Level Token 後再測試。',
+        wecom_credentials_missing: '請填寫企業微信 Bot ID 和 Secret 後再測試。',
+        dingtalk_credentials_missing: '請填寫釘釘 Client ID（AppKey）和 Client Secret 後再測試。',
+        dingtalk_no_access_token: '釘釘未回傳 access_token，請檢查憑證和網路後重試。',
+        qq_credentials_missing: '請填寫 QQ App ID 和 AppSecret 後再測試。',
+        qq_no_access_token: 'QQ 未回傳 access_token，請檢查憑證和網路後重試。',
+        wechat_bridge_url_invalid: '微信本機橋接只允許存取本機 wechat-bridge，不能指向遠端 URL。',
+        wechat_ilink_credentials_incomplete: '請先完成微信掃碼登入，儲存 iLink bot token 與 base URL。',
+      },
     },
   },
   en: {
@@ -124,6 +146,16 @@ const COPY = {
         "Enter an App ID and App Secret before testing the connection.",
       connectionFailed:
         "Check the credentials and network settings, then try again.",
+      errors: {
+        slack_tokens_missing: 'Enter a Slack Bot Token and App-Level Token before testing the connection.',
+        wecom_credentials_missing: 'Enter a WeCom Bot ID and Secret before testing the connection.',
+        dingtalk_credentials_missing: 'Enter a DingTalk Client ID (AppKey) and Client Secret before testing the connection.',
+        dingtalk_no_access_token: 'DingTalk returned no access_token. Check the credentials and network, then try again.',
+        qq_credentials_missing: 'Enter a QQ App ID and AppSecret before testing the connection.',
+        qq_no_access_token: 'QQ returned no access_token. Check the credentials and network, then try again.',
+        wechat_bridge_url_invalid: 'The local WeChat bridge only accepts the local wechat-bridge, not a remote URL.',
+        wechat_ilink_credentials_incomplete: 'Complete WeChat QR sign-in first to save the iLink bot token and base URL.',
+      },
     },
   },
 } satisfies UiCatalog<SettingsTestResultCopy>;
@@ -162,10 +194,17 @@ export function settingsTestResultMessage(
       return copy.bot.appCredentialsMissing;
     case "bot_connection_failed":
       return copy.bot.connectionFailed;
+    case 'slack_tokens_missing':
+    case 'wecom_credentials_missing':
+    case 'dingtalk_credentials_missing':
+    case 'dingtalk_no_access_token':
+    case 'qq_credentials_missing':
+    case 'qq_no_access_token':
+    case 'wechat_bridge_url_invalid':
+    case 'wechat_ilink_credentials_incomplete':
+      return copy.bot.errors[result.code];
     default:
-      return locale === "en" && result.message.trim()
-        ? result.message
-        : copy.bot.connectionFailed;
+      return copy.bot.connectionFailed;
   }
 }
 
