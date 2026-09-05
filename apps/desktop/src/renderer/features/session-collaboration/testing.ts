@@ -29,3 +29,4 @@ export type { SessionCollaborationServices } from './ports.js';
 export { SessionCollaborationServicesProvider } from './services-context.js';
 export { SessionCollaborationJoinDialog } from './ui/session-collaboration-join-dialog.js';
 export { SessionTurnRequestComposer } from './ui/session-turn-request-composer.js';
+export { sessionCollaborationImportErrorMessage } from './ui/session-collaboration-join-dialog.js';

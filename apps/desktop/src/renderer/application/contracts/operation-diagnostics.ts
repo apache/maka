@@ -17,21 +17,23 @@
  * under the License.
  */
 
-import type { WorkBoardMutationOptions, WorkBoardStoreErrorCode } from '@maka/storage/work-board-store';
-export type { WorkBoardMutationOptions };
+import { redactSecrets } from '@maka/core/redaction';
 
-export type WorkBoardErrorCode = WorkBoardStoreErrorCode | 'unknown';
+/** Transport for expected operation failures carried as stable codes. */
+export class ExpectedOperationError<Code extends string> extends Error {
+  constructor(readonly code: Code) {
+    super(code);
+    this.name = 'ExpectedOperationError';
+  }
+}
 
-export type WorkBoardIpcResult<T> =
-  | { readonly ok: true; readonly value: T }
-  | {
-      readonly ok: false;
-      readonly error: {
-        readonly code: WorkBoardErrorCode;
-      };
-    };
+/** Redacted diagnostics channel for unexpected operation failures. */
+export function reportUnexpectedError(scope: string, error: unknown): void {
+  const detail = error instanceof Error ? (error.stack ?? `${error.name}: ${error.message}`) : String(error);
+  console.error(`[${scope}] operation failed:`, redactSecrets(detail));
+}
 
-export interface WorkBoardChangedEvent {
-  readonly type: 'work_board_changed';
-  readonly ts: number;
+export function unexpectedErrorFallback(error: unknown, fallback: string, scope: string): string {
+  reportUnexpectedError(scope, error);
+  return fallback;
 }

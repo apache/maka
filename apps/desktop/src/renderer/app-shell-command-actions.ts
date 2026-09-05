@@ -183,7 +183,6 @@ export function buildAppShellCommandList(
           commandPaletteActionErrorMessage(
             err,
             copy.connectionUnavailable,
-            options.uiLocale,
           ),
           undefined,
           defaultRuntimeHostDiagnosticTarget(err),
@@ -205,7 +204,6 @@ export function buildAppShellCommandList(
           commandPaletteActionErrorMessage(
             err,
             copy.setDefaultFallback,
-            options.uiLocale,
           ),
           undefined,
           defaultRuntimeHostDiagnosticTarget(err),
@@ -287,7 +285,6 @@ export function buildAppShellCommandList(
           commandPaletteActionErrorMessage(
             err,
             copy.exportFallback,
-            options.uiLocale,
           ),
         );
       }
@@ -307,7 +304,6 @@ export function buildAppShellCommandList(
           commandPaletteActionErrorMessage(
             err,
             copy.memoryOpenFallback,
-            options.uiLocale,
           ),
           undefined,
           defaultRuntimeHostDiagnosticTarget(err),
@@ -350,7 +346,6 @@ export function buildAppShellCommandList(
           commandPaletteActionErrorMessage(
             err,
             copy.clipboardDenied,
-            options.uiLocale,
           ),
           undefined,
           target,
@@ -381,7 +376,6 @@ export function buildAppShellCommandList(
           commandPaletteActionErrorMessage(
             err,
             copy.networkTestFallback,
-            options.uiLocale,
           ),
           undefined,
           defaultRuntimeHostDiagnosticTarget(err),

@@ -21,6 +21,7 @@ import type { PlanExecutionStep, PlanProposal } from '@maka/core/plan';
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 export interface PlanModeCopy {
+  readonly operationFailed: string;
   readonly abandonConfirmation: {
     readonly title: string;
     description(title: string): string;
@@ -51,6 +52,7 @@ export interface PlanModeCopy {
 
 const COPY = {
   'zh-CN': {
+    operationFailed: '计划操作失败，请稍后重试。',
     abandonConfirmation: {
       title: '放弃这个计划？',
       description: (title) => `“${title}”的执行记录会保留，但之后不能继续恢复。`,
@@ -70,6 +72,7 @@ const COPY = {
     },
   },
   'zh-TW': {
+    operationFailed: '計劃操作失敗，請稍後重試。',
     abandonConfirmation: {
       title: '放棄這個計劃？',
       description: (title) => `“${title}”的執行記錄會保留，但之後不能繼續恢復。`,
@@ -89,6 +92,7 @@ const COPY = {
     },
   },
   en: {
+    operationFailed: 'The plan action failed. Try again later.',
     abandonConfirmation: {
       title: 'Abandon this plan?',
       description: (title) => `The execution record for “${title}” will remain, but it cannot be resumed.`,

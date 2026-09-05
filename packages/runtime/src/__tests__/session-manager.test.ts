@@ -4531,7 +4531,10 @@ describe('SessionManager permission mode updates', () => {
       ],
     );
 
-    await expectRejects(manager.setPermissionMode(session.id, 'bypass'), /当前任务正在运行/);
+    await expectRejects(
+      manager.setPermissionMode(session.id, 'bypass'),
+      /session_control_blocked:permission_turn_running/,
+    );
 
     secondGate.release();
     await second.next();
@@ -10252,7 +10255,10 @@ describe('SessionManager permission mode updates', () => {
     assert.strictEqual((await store.readHeader(session.id)).status, 'waiting_for_user');
     const [run] = await runStore.listSessionInvocations(session.id);
     assert.strictEqual(run?.terminalEvent, undefined);
-    await expectRejects(manager.setPermissionMode(session.id, 'bypass'), /当前任务正在运行/);
+    await expectRejects(
+      manager.setPermissionMode(session.id, 'bypass'),
+      /session_control_blocked:permission_turn_running/,
+    );
     assert.strictEqual((await store.readHeader(session.id)).permissionMode, 'ask');
 
     await manager.respondToSandboxBoundary(session.id, {

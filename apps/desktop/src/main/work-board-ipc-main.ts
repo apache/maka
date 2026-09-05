@@ -19,6 +19,7 @@
 
 import type { IpcMain } from 'electron';
 import type { WorkBoardItem, WorkBoardPage } from '@maka/core/work-board';
+import { redactSecrets } from '@maka/core/redaction';
 import {
   createWorkBoardStore,
   WorkBoardStoreError,
@@ -166,14 +167,12 @@ function requireWorkBoardId(id: unknown): string {
 }
 
 function workBoardFailure(error: unknown): {
-  readonly code: WorkBoardStoreErrorCode | 'unknown';
-  readonly message: string;
+  readonly error: { readonly code: WorkBoardStoreErrorCode | 'unknown' };
 } {
   if (error instanceof WorkBoardStoreError) {
-    return { code: error.code, message: error.message };
+    return { error: { code: error.code } };
   }
-  return {
-    code: 'unknown',
-    message: error instanceof Error ? error.message : 'Work Board operation failed',
-  };
+  const detail = error instanceof Error ? error.stack ?? error.message : String(error);
+  console.error('[work-board] operation failed:', redactSecrets(detail));
+  return { error: { code: 'unknown' } };
 }

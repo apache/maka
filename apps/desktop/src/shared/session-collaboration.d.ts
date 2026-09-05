@@ -30,7 +30,11 @@ export type SessionCollaborationImportResult =
         | 'insecure_confirmation_required'
         | 'peer_path_unavailable'
         | 'connection_failed';
-      readonly message?: string;
+    }
+  | {
+      readonly kind: 'error';
+      readonly reason: 'mount_limit_reached';
+      readonly params: { readonly max: number };
     };
 
 export type SessionCollaborationImportPhase =

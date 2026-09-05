@@ -44,7 +44,7 @@ describe('resolveIngestItems (pre-read validation)', () => {
           approvals,
           stat: async () => (statCalls++, { size: 1 }),
         }),
-      /最多/,
+      /attachment_ingest:count_limit/,
     );
     assert.equal(statCalls, 0);
   });
@@ -60,7 +60,7 @@ describe('resolveIngestItems (pre-read validation)', () => {
           approvals,
           stat: async () => (statCalls++, { size: 1 }),
         }),
-      /过期|无效/,
+      /attachment_ingest:(source_expired|items_invalid)/,
     );
     assert.equal(statCalls, 0);
   });
@@ -77,7 +77,7 @@ describe('resolveIngestItems (pre-read validation)', () => {
           approvals,
           stat: async () => (statCalls++, { size: 1 }),
         }),
-      /过期|无效/,
+      /attachment_ingest:(source_expired|items_invalid)/,
     );
     assert.equal(statCalls, 0);
   });
@@ -95,7 +95,7 @@ describe('resolveIngestItems (pre-read validation)', () => {
           stat: async () => (statCalls++, { size: 200 }),
           maxBytes: 100,
         }),
-      /超出大小限制/,
+      /attachment_ingest:item_too_large/,
     );
     assert.equal(statCalls, 1);
   });
@@ -120,7 +120,7 @@ describe('resolveIngestItems (pre-read validation)', () => {
             stat: async () => (statCalls++, { size: 1 }),
             maxBytes: 100,
           }),
-        /超出大小限制/,
+        /attachment_ingest:item_too_large/,
       );
       assert.equal(statCalls, 0);
       assert.equal(decodeCalls, 0, 'must reject by base64 string length before Buffer.from');
@@ -148,7 +148,7 @@ describe('resolveIngestItems (pre-read validation)', () => {
           approvals,
           stat: async () => ({ size: 10 }),
         }),
-      /过期|无效/,
+      /attachment_ingest:(source_expired|items_invalid)/,
     );
   });
 
@@ -184,7 +184,7 @@ describe('resolveIngestItems (pre-read validation)', () => {
         approvals,
         stat: async () => (statCalls++, { size: 10 }),
       }),
-      /无效/,
+      /attachment_ingest:items_invalid/,
     );
     assert.notEqual(
       approvals.consumeApproval(1, issued.approvalId),
@@ -207,7 +207,7 @@ describe('resolveIngestItems (pre-read validation)', () => {
         approvals,
         stat: async () => (statCalls++, { size: 10 }),
       }),
-      /重复/,
+      /attachment_ingest:duplicate_source/,
     );
     assert.notEqual(
       approvals.consumeApproval(1, issued.approvalId),
@@ -226,7 +226,7 @@ describe('resolveIngestItems (pre-read validation)', () => {
           approvals,
           stat: async () => ({ size: 1 }),
         }),
-      /无效/,
+      /attachment_ingest:items_invalid/,
     );
     await assert.rejects(
       () =>
@@ -236,7 +236,7 @@ describe('resolveIngestItems (pre-read validation)', () => {
           approvals,
           stat: async () => ({ size: 1 }),
         }),
-      /无效/,
+      /attachment_ingest:items_invalid/,
     );
   });
 });
@@ -420,7 +420,7 @@ describe('resolveAttachmentRefs', () => {
             throw new Error('snapshot must not run');
           },
         }),
-        /超出大小限制/,
+        /attachment_ingest:item_too_large/,
       );
       assert.equal(snapshots, 0);
     } finally {

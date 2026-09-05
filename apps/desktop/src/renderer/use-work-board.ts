@@ -26,15 +26,23 @@ import {
   type WorkBoardListQuery,
   type WorkBoardPage,
 } from '@maka/core/work-board';
-import type { WorkBoardMutationOptions } from '@maka/storage/work-board-store';
-import type { WorkBoardChangedEvent, WorkBoardIpcResult } from '../shared/work-board-ipc.js';
+import type {
+  WorkBoardChangedEvent,
+  WorkBoardErrorCode,
+  WorkBoardIpcResult,
+  WorkBoardMutationOptions,
+} from '../shared/work-board-ipc.js';
+import {
+  ExpectedOperationError,
+  reportUnexpectedError,
+} from './application/contracts/operation-diagnostics.js';
 
 interface WorkBoardSnapshot {
   items: WorkBoardItem[];
   nextCursor?: string;
   loading: boolean;
-  error?: string;
-  continuationError?: string;
+  error?: WorkBoardErrorCode;
+  continuationError?: WorkBoardErrorCode;
   continuationCursor?: string;
 }
 
@@ -94,7 +102,7 @@ async function listWindow(
 
 function requireResult<T>(result: WorkBoardIpcResult<T>): T {
   if (result.ok) return result.value;
-  throw new Error(result.message);
+  throw new ExpectedOperationError(result.error.code);
 }
 
 /**
@@ -137,20 +145,20 @@ export function useWorkBoard(query?: WorkBoardListQuery): UseWorkBoardResult {
             items: current.items,
             nextCursor: current.nextCursor,
             loading: false,
-            error: current.items.length === 0 ? result.message : undefined,
-            continuationError: current.items.length > 0 ? result.message : undefined,
+            error: current.items.length === 0 ? result.error.code : undefined,
+            continuationError: current.items.length > 0 ? result.error.code : undefined,
             continuationCursor: undefined,
           }));
         },
         (error: unknown) => {
           if (revision !== revisionRef.current) return;
-          const message = error instanceof Error ? error.message : 'Work Board load failed';
+          reportUnexpectedError('work-board:list', error);
           setSnapshot((current) => ({
             items: current.items,
             nextCursor: current.nextCursor,
             loading: false,
-            error: current.items.length === 0 ? message : undefined,
-            continuationError: current.items.length > 0 ? message : undefined,
+            error: current.items.length === 0 ? 'unknown' : undefined,
+            continuationError: current.items.length > 0 ? 'unknown' : undefined,
             continuationCursor: undefined,
           }));
         },
@@ -188,7 +196,7 @@ export function useWorkBoard(query?: WorkBoardListQuery): UseWorkBoardResult {
           setSnapshot((current) => ({
             ...current,
             loading: false,
-            continuationError: result.message,
+            continuationError: result.error.code,
             continuationCursor: cursor,
           }));
           return;
@@ -211,11 +219,11 @@ export function useWorkBoard(query?: WorkBoardListQuery): UseWorkBoardResult {
       },
       (error: unknown) => {
         if (revision !== revisionRef.current) return;
-        const message = error instanceof Error ? error.message : 'Work Board load failed';
+        reportUnexpectedError('work-board:continuation', error);
         setSnapshot((current) => ({
           ...current,
           loading: false,
-          continuationError: message,
+          continuationError: 'unknown',
           continuationCursor: cursor,
         }));
       },

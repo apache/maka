@@ -17,9 +17,7 @@
  * under the License.
  */
 
-import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
-
-import { type UiCatalog, type UiLocale } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, lookupCopy } from '@maka/core/ui-locale';
 
 import { type PermissionMode } from '@maka/core/permission';
 
@@ -28,6 +26,7 @@ import { type SettingsSection } from '@maka/core/settings';
 import { type SlashCommandIdForSurface } from '@maka/core/slash-command-catalog';
 
 import { type GoalStatus } from '@maka/core/goal';
+import { redactSecrets } from '@maka/core/redaction';
 
 export const STATIC_COMMAND_IDS = [
   'action:new-chat',
@@ -344,6 +343,8 @@ type ShellCopy = {
     bypassCancelLabel: string;
     permissionFailedTitle: string;
     permissionFallback: string;
+    sessionControlBlocked: Record<SessionControlBlockedCode, string>;
+    attachmentIngestBlocked: Record<AttachmentIngestBlockedCode, string>;
     modelFailedTitle: string;
     modelFallback: string;
     thinkingFailedTitle: string;
@@ -435,6 +436,7 @@ type ShellCopy = {
     workspaceActions: string;
   };
   app: {
+    returnToWorkHub: string;
     loadingWorkbarLabel: string;
     loadingWorkbar: string;
     useSkillPrompt(skillName: string): string;
@@ -1005,6 +1007,26 @@ const SHELL_COPY_BY_LOCALE = {
       bypassCancelLabel: '保持自动',
       permissionFailedTitle: '切换权限模式失败',
       permissionFallback: '权限模式暂时无法切换，请稍后重试。',
+      sessionControlBlocked: {
+        permission_turn_running: '当前任务正在运行，等结束后再切换权限模式。',
+        permission_tool_pending: '当前有工具调用正在等待确认，处理后再切换权限模式。',
+        boundary_turn_running: '当前任务正在运行，等结束后再切换沙箱边界。',
+        boundary_request_pending: '当前有沙箱边界请求正在等待确认，处理后再切换。',
+        collaboration_turn_running: '当前任务正在运行，等结束后再切换协作模式。',
+        collaboration_tool_pending: '当前有工具调用正在等待确认，处理后再切换协作模式。',
+        plan_mode_plan_running: '当前计划仍在执行，结束或中断后才能切换到 Plan Mode。',
+        plan_mode_awaiting_approval: '当前方案正在等待审批，请明确放弃方案后再退出 Plan Mode。',
+      },
+      attachmentIngestBlocked: {
+        count_exceeded: '附件数量超过 8 个',
+        size_exceeded: '附件大小超过 50MB',
+        payload_invalid: '附件信息无效。',
+        item_too_large: '单个附件超出大小限制。',
+        items_invalid: '附件信息无效，请重新选择文件后再发送。',
+        count_limit: '一次最多添加 8 个附件。',
+        duplicate_source: '附件来源重复，请勿重复添加同一文件。',
+        source_expired: '附件来源已过期或无效，请重新选择文件后再发送。',
+      },
       modelFailedTitle: '切换模型失败',
       modelFallback: '模型暂时无法切换，请稍后重试。',
       thinkingFailedTitle: '切换思考级别失败',
@@ -1169,6 +1191,7 @@ const SHELL_COPY_BY_LOCALE = {
       workspaceActions: '工作区辅助操作',
     },
     app: {
+      returnToWorkHub: '返回 WorkHub',
       loadingWorkbarLabel: '正在加载任务工作栏',
       loadingWorkbar: '正在加载任务工作栏…',
       useSkillPrompt: (skillName: string) => `使用 ${skillName} 技能：`,
@@ -1507,6 +1530,26 @@ const SHELL_COPY_BY_LOCALE = {
       bypassCancelLabel: '保持自動',
       permissionFailedTitle: '切換權限模式失敗',
       permissionFallback: '權限模式暫時無法切換，請稍後重試。',
+      sessionControlBlocked: {
+        permission_turn_running: '目前任務正在執行，等結束後再切換權限模式。',
+        permission_tool_pending: '目前有工具呼叫正在等待確認，處理後再切換權限模式。',
+        boundary_turn_running: '目前任務正在執行，等結束後再切換沙箱邊界。',
+        boundary_request_pending: '目前有沙箱邊界請求正在等待確認，處理後再切換。',
+        collaboration_turn_running: '目前任務正在執行，等結束後再切換協作模式。',
+        collaboration_tool_pending: '目前有工具呼叫正在等待確認，處理後再切換協作模式。',
+        plan_mode_plan_running: '目前計劃仍在執行，結束或中斷後才能切換到 Plan Mode。',
+        plan_mode_awaiting_approval: '目前方案正在等待審批，請明確放棄方案後再退出 Plan Mode。',
+      },
+      attachmentIngestBlocked: {
+        count_exceeded: '附件數量超過 8 個',
+        size_exceeded: '附件大小超過 50MB',
+        payload_invalid: '附件資訊無效。',
+        item_too_large: '單一附件超出大小限制。',
+        items_invalid: '附件資訊無效，請重新選擇檔案後再傳送。',
+        count_limit: '一次最多新增 8 個附件。',
+        duplicate_source: '附件來源重複，請勿重複新增同一檔案。',
+        source_expired: '附件來源已過期或無效，請重新選擇檔案後再傳送。',
+      },
       modelFailedTitle: '切換模型失敗',
       modelFallback: '模型暫時無法切換，請稍後重試。',
       thinkingFailedTitle: '切換思考級別失敗',
@@ -1671,6 +1714,7 @@ const SHELL_COPY_BY_LOCALE = {
       workspaceActions: '工作區輔助操作',
     },
     app: {
+      returnToWorkHub: '返回 WorkHub',
       loadingWorkbarLabel: '正在載入任務工作欄',
       loadingWorkbar: '正在載入任務工作欄…',
       useSkillPrompt: (skillName: string) => `使用 ${skillName} 技能：`,
@@ -2015,6 +2059,26 @@ const SHELL_COPY_BY_LOCALE = {
       bypassCancelLabel: 'Keep Auto',
       permissionFailedTitle: 'Could not change permission mode',
       permissionFallback: 'The permission mode could not be changed. Try again later.',
+      sessionControlBlocked: {
+        permission_turn_running: 'A task is still running. Change the permission mode after it finishes.',
+        permission_tool_pending: 'A tool call is waiting for confirmation. Resolve it before changing the permission mode.',
+        boundary_turn_running: 'A task is still running. Change the sandbox boundary after it finishes.',
+        boundary_request_pending: 'A sandbox boundary request is waiting for confirmation. Resolve it first.',
+        collaboration_turn_running: 'A task is still running. Change the collaboration mode after it finishes.',
+        collaboration_tool_pending: 'A tool call is waiting for confirmation. Resolve it before changing the collaboration mode.',
+        plan_mode_plan_running: 'The current plan is still executing. Finish or interrupt it before switching to Plan mode.',
+        plan_mode_awaiting_approval: 'A proposal is awaiting approval. Abandon it explicitly before leaving Plan mode.',
+      },
+      attachmentIngestBlocked: {
+        count_exceeded: 'More than 8 attachments.',
+        size_exceeded: 'Attachment larger than 50MB.',
+        payload_invalid: 'The attachment payload is invalid.',
+        item_too_large: 'One attachment exceeds the size limit.',
+        items_invalid: 'The attachment list is invalid. Pick the files again and resend.',
+        count_limit: 'At most 8 attachments per message.',
+        duplicate_source: 'Duplicate attachment source. Do not add the same file twice.',
+        source_expired: 'The attachment source expired or is invalid. Pick the files again and resend.',
+      },
       modelFailedTitle: 'Could not change model',
       modelFallback: 'The model could not be changed. Try again later.',
       thinkingFailedTitle: 'Could not change thinking level',
@@ -2218,6 +2282,7 @@ const SHELL_COPY_BY_LOCALE = {
       workspaceActions: 'Workspace actions',
     },
     app: {
+      returnToWorkHub: 'Return to WorkHub',
       loadingWorkbarLabel: 'Loading task workbar',
       loadingWorkbar: 'Loading task workbar…',
       useSkillPrompt: (skillName: string) => `Use the ${skillName} skill: `,
@@ -2320,7 +2385,45 @@ export function getShellCopy(locale: UiLocale): ShellCopy {
 }
 
 export function localizedShellErrorMessage(error: unknown, fallback: string, locale: UiLocale): string {
-  return generalizedErrorMessageForLocale(error, fallback, locale);
+  const blocked = sessionControlBlockedMessage(error, locale);
+  if (blocked) return blocked;
+  // Diagnostics are inlined: a depended-on copy catalog may only hold bare
+  // package runtime imports.
+  const detail = error instanceof Error ? (error.stack ?? `${error.name}: ${error.message}`) : String(error);
+  console.error('[desktop] operation failed:', redactSecrets(detail));
+  return fallback;
+}
+
+export type AttachmentIngestBlockedCode =
+  | 'count_exceeded'
+  | 'size_exceeded'
+  | 'payload_invalid'
+  | 'item_too_large'
+  | 'items_invalid'
+  | 'count_limit'
+  | 'duplicate_source'
+  | 'source_expired';
+
+export type SessionControlBlockedCode =
+  | 'permission_turn_running'
+  | 'permission_tool_pending'
+  | 'boundary_turn_running'
+  | 'boundary_request_pending'
+  | 'collaboration_turn_running'
+  | 'collaboration_tool_pending'
+  | 'plan_mode_plan_running'
+  | 'plan_mode_awaiting_approval';
+
+// The Runtime rejects a blocked session-control switch with a stable
+// `session_control_blocked:<code>` token that survives every IPC wrapper the
+// message passes through (same convention as the CLI's reason tokens).
+function sessionControlBlockedMessage(error: unknown, locale: UiLocale): string | undefined {
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+  const maps = getShellCopy(locale).sessionSettingsActions;
+  return (
+    lookupCopy(maps.sessionControlBlocked, message.match(/session_control_blocked:([a-z_]+)/u)?.[1]) ??
+    lookupCopy(maps.attachmentIngestBlocked, message.match(/attachment_ingest:([a-z_]+)/u)?.[1])
+  );
 }
 
 export function sessionSettingFailureCopy(

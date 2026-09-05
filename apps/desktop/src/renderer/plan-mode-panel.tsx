@@ -24,6 +24,7 @@ import type { SessionSummary } from '@maka/core/session';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Collapsible } from '@astryxdesign/core/Collapsible';
 import { Badge, type BadgeVariant, Button as UiButton, useToast, useUiLocale } from '@maka/ui';
+import { reportUnexpectedError } from './application/contracts/operation-diagnostics.js';
 import { getPlanModeCopy, type PlanModeCopy } from './locales/plan-mode-copy.js';
 
 export interface PlanModeState {
@@ -64,7 +65,10 @@ export function usePlanModeState(session: SessionSummary | undefined): PlanModeS
     setState(undefined);
     setError(undefined);
     if (!session) return;
-    const refreshOrReport = () => void refresh().catch((cause) => setError(message(cause)));
+    const refreshOrReport = () => void refresh().catch((cause) => {
+      reportUnexpectedError('plan-mode:refresh', cause);
+      setError(copy.operationFailed);
+    });
     refreshOrReport();
     const unsubscribeEvents = window.maka.sessions.subscribeEvents(session.id, (event: SessionEvent) => {
       if (
@@ -83,7 +87,7 @@ export function usePlanModeState(session: SessionSummary | undefined): PlanModeS
       unsubscribeEvents();
       unsubscribePlanChanges();
     };
-  }, [session?.id, session?.collaborationMode, refresh]);
+  }, [copy.operationFailed, session?.id, session?.collaborationMode, refresh]);
 
   const run = useCallback(async (action: () => Promise<void>): Promise<void> => {
     setPending(true);
@@ -92,11 +96,12 @@ export function usePlanModeState(session: SessionSummary | undefined): PlanModeS
       await action();
       await refresh();
     } catch (cause) {
-      setError(message(cause));
+      reportUnexpectedError('plan-mode:action', cause);
+      setError(copy.operationFailed);
     } finally {
       setPending(false);
     }
-  }, [refresh]);
+  }, [copy.operationFailed, refresh]);
 
   const requestRevision = useCallback(async (proposalId: string): Promise<void> => {
     if (!session) return;
@@ -365,8 +370,4 @@ function executionStepMark(status: PlanExecutionStep['status']): string {
   if (status === 'in_progress') return '•';
   if (status === 'skipped') return '–';
   return '';
-}
-
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

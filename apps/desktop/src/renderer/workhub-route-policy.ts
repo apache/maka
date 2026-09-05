@@ -101,6 +101,7 @@ export interface WorkHubRoutePolicy {
     sessions: WorkHubRoutableSession[];
     originPromptBySessionId: ReadonlyMap<string, string | undefined>;
     explicitTarget?: WorkHubRouteTarget;
+    newSessionFallbackTitle: string;
   }): WorkHubRouteDecision;
   initializeFocus(targets: readonly WorkHubRouteTarget[]): void;
   newVisit(): WorkHubRoutePolicy;
@@ -109,6 +110,7 @@ export interface WorkHubRoutePolicy {
 
 export function workHubNewSessionName(
   text: string,
+  fallbackTitle: string,
   parsedIntent?: WorkHubRequestIntent,
 ): string {
   const intent = typeof parsedIntent === 'object'
@@ -120,7 +122,7 @@ export function workHubNewSessionName(
     '',
   );
   const firstClause = withoutCreationPrefix.split(/[，。；;\n]/u)[0]?.trim();
-  return firstClause?.slice(0, 48) || '新工作';
+  return firstClause?.slice(0, 48) || fallbackTitle;
 }
 
 const MIN_EXACT_SESSION_NAME_LENGTH = 2;
@@ -199,7 +201,7 @@ function createWorkHubRoutePolicyVisit(
       // Host's answer and is made under the lease that performs the stop.
       return { kind: 'target', target: resolved.target };
     },
-    resolve({ text, sessions, originPromptBySessionId, explicitTarget }) {
+    resolve({ text, sessions, originPromptBySessionId, explicitTarget, newSessionFallbackTitle }) {
       const intent = readWorkHubRequestIntent(text);
       if (intent.execution === 'ambiguous') {
         return { kind: 'clarification', options: [], reason: 'ambiguous_command' };
@@ -227,7 +229,7 @@ function createWorkHubRoutePolicyVisit(
       }
       if (correctionText && correctedFrom) {
         if (looksLikeCorrectionCreation(intent)) {
-          return { kind: 'new_session', title: workHubNewSessionName(text, intent), correctedFrom };
+          return { kind: 'new_session', title: workHubNewSessionName(text, newSessionFallbackTitle, intent), correctedFrom };
         }
         const alternatives = sessions.filter((session) =>
           session.target.sessionId !== correctedFrom.sessionId);
@@ -264,7 +266,7 @@ function createWorkHubRoutePolicyVisit(
       }
 
       if (looksLikeExplicitNewSession(intent)) {
-        return { kind: 'new_session', title: workHubNewSessionName(text, intent) };
+        return { kind: 'new_session', title: workHubNewSessionName(text, newSessionFallbackTitle, intent) };
       }
 
       const exact = rankExactSessions(text, sessions);
@@ -345,7 +347,7 @@ function createWorkHubRoutePolicyVisit(
         };
       }
       return looksExecutable(intent)
-        ? { kind: 'new_session', title: workHubNewSessionName(text, intent) }
+        ? { kind: 'new_session', title: workHubNewSessionName(text, newSessionFallbackTitle, intent) }
         : { kind: 'discussion' };
     },
     initializeFocus(targets) {

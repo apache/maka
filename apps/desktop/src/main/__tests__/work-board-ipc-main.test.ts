@@ -164,8 +164,10 @@ describe('Work Board IPC', () => {
           { title: 'stale write' },
           { expectedRevision: 1 },
         );
-        assert.equal(staleRename.ok, false);
-        if (!staleRename.ok) assert.equal(staleRename.code, 'operation_conflict');
+        assert.deepEqual(staleRename, {
+          ok: false,
+          error: { code: 'operation_conflict' },
+        });
 
       const removedBeforeArchive = await ipc.invoke<WorkBoardIpcResult<null>>(
         'workBoard:remove',
@@ -173,7 +175,7 @@ describe('Work Board IPC', () => {
       );
       assert.equal(removedBeforeArchive.ok, false);
       if (!removedBeforeArchive.ok) {
-        assert.equal(removedBeforeArchive.code, 'must_archive_first');
+        assert.equal(removedBeforeArchive.error.code, 'must_archive_first');
       }
 
       const archived = await ipc.invoke<
@@ -194,14 +196,14 @@ describe('Work Board IPC', () => {
         { titel: 'x' },
       );
       assert.equal(invalidPatch.ok, false);
-      if (!invalidPatch.ok) assert.equal(invalidPatch.code, 'invalid_input');
+      if (!invalidPatch.ok) assert.equal(invalidPatch.error.code, 'invalid_input');
 
       const invalidCreate = await ipc.invoke<WorkBoardIpcResult<unknown>>(
         'workBoard:create',
         { ...itemInput(), notes: null },
       );
       assert.equal(invalidCreate.ok, false);
-      if (!invalidCreate.ok) assert.equal(invalidCreate.code, 'invalid_input');
+      if (!invalidCreate.ok) assert.equal(invalidCreate.error.code, 'invalid_input');
 
       await ipc.invoke('workBoard:archive', id);
       const removed = await ipc.invoke<WorkBoardIpcResult<null>>('workBoard:remove', id);
