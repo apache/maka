@@ -37,6 +37,11 @@ import {
   type CandidateExitDetails,
   type OwnedCandidateAttempt,
 } from '../client/launcher.js';
+import {
+  resolveExistingStorageRoot,
+  resolveExistingStorageRootControlDirectory,
+} from '@maka/storage/root-authority';
+import { readHostRegistration } from '../control/registration.js';
 
 test('owned connection keeps a fresh Host alive for its full election window', async () => {
   const rootPath = await mkdtemp(join(tmpdir(), 'maka-owned-first-connection-'));
@@ -257,12 +262,20 @@ test('owned Host exits promptly after its first connection closes', async () => 
 
   assert.equal(result.kind, 'connected', connectFailure(result));
   if (result.kind !== 'connected') return;
+  const controlDirectory = await resolveHostControlDirectory(rootPath, result.connection.rootId);
   await result.connection.close();
-  // Prompt means the owned launch's idleGraceMs of 0, as opposed to the 30 s
-  // default grace, so the bound only has to sit well below that. Shutdown takes
-  // about 30 ms on an idle machine and stretches past 500 ms under a full CI
-  // suite while still exiting cleanly: the Host is starved, not stuck.
-  assert.equal(await result.host.settle(5_000), true);
+  // Promptness is when the Host starts shutting down, not how long shutting
+  // down takes: the owned launch's idleGraceMs is 0 against a 30 s default.
+  // The kernel publishes its draining registration as the first step of
+  // shutdown, so the registration reports the idle grace directly. Reading it
+  // from `settle` alone could not separate the two, which is why a loaded
+  // machine that only made the shutdown itself slow failed this assertion.
+  await waitForHostShutdownStart(controlDirectory, 10_000);
+  // The exit is a second claim with a bound of its own, and the kernel sets
+  // it: shutdown gets `shutdownGraceMs` (10 s) to close every resource before
+  // the kernel force-terminates the process. Anything below that fails a Host
+  // that is starved rather than stuck.
+  assert.equal(await result.host.settle(15_000), true);
 });
 
 test('an exited owned Candidate permits one real successor in the same election', {
@@ -435,6 +448,35 @@ test('pre-cancelled hosted execution does not start a Runtime Host', async () =>
   assert.equal(result.kind, 'indeterminate');
   assert.deepEqual(await readdir(rootPath), []);
 });
+
+async function resolveHostControlDirectory(rootPath: string, rootId: string): Promise<string> {
+  const capability = await resolveExistingStorageRoot({
+    path: rootPath,
+    kind: 'interactive',
+    expectedRootId: rootId,
+  });
+  const { controlDirectory } = await resolveExistingStorageRootControlDirectory(capability);
+  return controlDirectory;
+}
+
+/**
+ * Resolves once the Host has begun shutting down. `draining` is the state the
+ * kernel publishes before it does any shutdown work, and the registration is
+ * removed near the end of that work, so either observation proves shutdown
+ * started; the Host was serving this Client, so its registration existed.
+ */
+async function waitForHostShutdownStart(
+  controlDirectory: string,
+  timeoutMs: number,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const registration = await readHostRegistration(controlDirectory).catch(() => undefined);
+    if (!registration || registration.state === 'draining') return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error('owned Host did not begin shutting down after its first connection closed');
+}
 
 function connectFailure(
   result:
