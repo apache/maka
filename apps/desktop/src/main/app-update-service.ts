@@ -122,6 +122,15 @@ const UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
  * four-hour timer stays as the floor for a window that is never refocused.
  */
 const UPDATE_CHECK_ON_FOCUS_MIN_INTERVAL_MS = 15 * 60 * 1000;
+/**
+ * GitHub intermittently answers the releases-feed request electron-updater
+ * uses to resolve "latest" with a transient HTTP 406 (#4790), and the same
+ * request succeeds seconds later. One quick retry before surfacing a check
+ * failure absorbs that class of error; anything still failing afterwards is
+ * reported exactly as before.
+ */
+const UPDATE_CHECK_RETRY_DELAY_MS = 2_000;
+const UPDATE_CHECK_MAX_ATTEMPTS = 2;
 
 /**
  * Harness-only override for the update feed (`MAKA_UPDATE_TEST_FEED`).
@@ -222,6 +231,13 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
   } | undefined;
   let activeVerification: Promise<void> | undefined;
   let checkTimer: unknown;
+  let checkRetryTimer: unknown;
+  /**
+   * Attempts still owed after the one currently running. While this is
+   * non-zero a check failure is transient by definition and must not be
+   * published as an error — the retry has not had its turn yet.
+   */
+  let checkAttemptsRemaining = 0;
   let installHandoff: { rollback(): void } | undefined;
   let started = false;
   let disposed = false;
@@ -363,6 +379,10 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
         ? 'download'
         : 'check';
     if (operation === 'install') rollbackInstallHandoff();
+    // A check failure with retry attempts still owed is transient: hold it
+    // back and let the scheduled retry produce the final word. Download and
+    // install errors always surface immediately.
+    if (operation === 'check' && checkAttemptsRemaining > 0) return;
     publishError(operation, error);
   });
 
@@ -378,18 +398,51 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
     if (activeDownload && !allowDuringDownload) return status;
     if (checkInFlight) return checkInFlight;
     lastCheckStartedAt = now();
-    checkInFlight = updater
-      .checkForUpdates()
-      .then(async (result) => {
-        trackAutoDownload(result);
-        const verification = activeVerification;
-        if (verification) await verification.catch(() => undefined);
+    // Each attempt propagates its rejection; the publish-or-retry decision
+    // lives in the outer catch below, so only the last failure surfaces.
+    const attempt = (): Promise<AppUpdateStatus> =>
+      updater
+        .checkForUpdates()
+        .then(async (result) => {
+          trackAutoDownload(result);
+          const verification = activeVerification;
+          if (verification) await verification.catch(() => undefined);
+          return status;
+        });
+    checkAttemptsRemaining = UPDATE_CHECK_MAX_ATTEMPTS - 1;
+    checkInFlight = attempt().catch((error) => {
+      if (disposed) {
+        // Terminal: settle without publishing to a disposed service's
+        // subscribers, and run the .finally cleanup below.
+        checkAttemptsRemaining = 0;
         return status;
-      })
-      .catch((error) => status.state === 'error' ? status : publishError('check', error))
-      .finally(() => {
-        checkInFlight = null;
+      }
+      if (checkAttemptsRemaining <= 0) {
+        checkAttemptsRemaining = 0;
+        return status.state === 'error' ? status : publishError('check', error);
+      }
+      checkAttemptsRemaining -= 1;
+      // Back off briefly, then re-check. The 'error' listener holds the
+      // first failure back while this retry is pending, so a transient
+      // feed refusal (#4790) never reaches the renderer as an error.
+      return new Promise<AppUpdateStatus>((resolve) => {
+        checkRetryTimer = clock.setTimeout(() => {
+          checkRetryTimer = undefined;
+          if (disposed) {
+            // dispose() does not clear this timer precisely so the promise
+            // still settles here and `checkInFlight` is not left dangling.
+            resolve(status);
+            return;
+          }
+          resolve(attempt().catch((retryError) =>
+            status.state === 'error' ? status : publishError('check', retryError),
+          ));
+        }, UPDATE_CHECK_RETRY_DELAY_MS);
       });
+    }).finally(() => {
+      checkAttemptsRemaining = 0;
+      checkInFlight = null;
+    });
     return checkInFlight;
   }
 
@@ -417,6 +470,9 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
       clock.clearTimeout(checkTimer);
       checkTimer = undefined;
     }
+    // Deliberately leaves the retry timer running: its callback checks
+    // `disposed` and settles the in-flight check, so `checkInFlight` is not
+    // left dangling and its .finally cleanup still runs.
   }
 
   async function retryUpdateDownload(): Promise<AppUpdateStatus> {
