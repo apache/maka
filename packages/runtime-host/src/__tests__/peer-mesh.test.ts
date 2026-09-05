@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { waitFor } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -275,10 +276,11 @@ test('announces authority commits without coupling success to delivery', async (
     await member.join(await authority.invite(mesh.roster.roster.meshId));
 
     await authority.setMeshDisplayName(mesh.roster.roster.meshId, 'Online');
-    for (let attempt = 0; attempt < 20; attempt += 1) {
-      if (member.status()[0]?.roster.roster.displayName === 'Online') break;
-      await delay(10);
-    }
+    await waitFor(() => member.status()[0]?.roster.roster.displayName === 'Online', {
+      timeoutMs: 5_000,
+      pollMs: 10,
+      message: 'peer mesh member did not reach Online',
+    });
     assert.equal(member.status()[0]?.roster.roster.displayName, 'Online');
 
     memberPeer.stallNextControl();

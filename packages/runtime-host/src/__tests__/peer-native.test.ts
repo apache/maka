@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { waitFor } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -465,9 +466,11 @@ async function waitForRequestCount(
   stats: { readonly requests: readonly unknown[] },
   expected: number,
 ): Promise<void> {
-  for (let attempt = 0; attempt < 10 && stats.requests.length < expected; attempt += 1) {
-    await waitForImmediate();
-  }
+  await waitFor(() => stats.requests.length >= expected, {
+    timeoutMs: 5_000,
+    pollMs: 10,
+    message: `peer-native request count did not reach ${expected}`,
+  });
   assert.equal(stats.requests.length, expected);
 }
 
