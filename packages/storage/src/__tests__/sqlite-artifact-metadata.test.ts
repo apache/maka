@@ -66,7 +66,7 @@ test('Artifact metadata changes only write changed rows', async () => {
     );
     assert.deepEqual(
       repository
-        .readAll()
+        .listBySession('session-1')
         .map(({ id, summary }) => ({ id, summary }))
         .sort((left, right) => left.id.localeCompare(right.id)),
       [
@@ -119,7 +119,10 @@ test('Artifact metadata recovery ignores records from unsupported sources', asyn
       JSON.stringify(unsupported),
     );
 
-    assert.deepEqual(repository.readAll(), [supported]);
+    assert.deepEqual(repository.listBySession('session-1'), [supported]);
+    assert.deepEqual(repository.getById(supported.id), supported);
+    assert.equal(repository.getById(unsupported.id), null);
+    assert.deepEqual(repository.readAllForPurgeSafety(), [supported]);
   } finally {
     inspector?.close();
     repository.close();
@@ -127,16 +130,121 @@ test('Artifact metadata recovery ignores records from unsupported sources', asyn
   }
 });
 
-function artifactRecord(id: string): ArtifactRecord {
+test('Artifact metadata queries select only the requested identity or Session', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-artifact-metadata-scope-'));
+  const repository = createSqliteArtifactMetadataRepository(root);
+  try {
+    const first = artifactRecord('first');
+    const second = { ...artifactRecord('second'), createdAt: 2 };
+    const other = artifactRecord('other', 'session-2');
+    repository.applyChanges({ upserts: [other, second, first] });
+
+    assert.deepEqual(repository.getById(first.id), first);
+    assert.equal(repository.getById('missing'), null);
+    assert.deepEqual(repository.listBySession('session-1'), [first, second]);
+    assert.deepEqual(repository.listBySession('session-2'), [other]);
+    assert.deepEqual(repository.listBySession('missing'), []);
+  } finally {
+    repository.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('indexed Artifact reads reject malformed JSON and inconsistent projections', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-artifact-metadata-invalid-'));
+  const repository = createSqliteArtifactMetadataRepository(root);
+  let inspector: DatabaseSync | undefined;
+  try {
+    const valid = artifactRecord('valid');
+    repository.applyChanges({ upserts: [valid] });
+    inspector = new DatabaseSync(join(root, OPERATIONAL_STATE_DATABASE_NAME));
+    const insert = inspector.prepare(`
+      INSERT INTO artifact_records(artifact_id, session_id, created_at, relative_path, record_json)
+      VALUES (?, ?, ?, ?, ?)
+    `);
+    const invalidRecords = [
+      { id: 'bad-json', json: '{' },
+      {
+        id: 'bad-fields',
+        json: JSON.stringify({ ...artifactRecord('bad-fields'), sizeBytes: -1 }),
+      },
+      { id: 'wrong-id', json: JSON.stringify(artifactRecord('different-id')) },
+      { id: 'wrong-session', json: JSON.stringify(artifactRecord('wrong-session', 'session-2')) },
+      { id: 'wrong-time', json: JSON.stringify({ ...artifactRecord('wrong-time'), createdAt: 2 }) },
+      {
+        id: 'wrong-path',
+        json: JSON.stringify({
+          ...artifactRecord('wrong-path'),
+          name: 'other.txt',
+          relativePath: 'session-1/wrong-path-other.txt',
+        }),
+      },
+    ];
+    for (const { id, json } of invalidRecords) {
+      const projected = artifactRecord(id);
+      insert.run(id, projected.sessionId, projected.createdAt, projected.relativePath, json);
+      assert.equal(repository.getById(id), null, id);
+    }
+    assert.deepEqual(repository.listBySession('session-1'), [valid]);
+    assert.deepEqual(repository.listBySession('session-2'), []);
+    assert.equal(repository.getById('different-id'), null);
+  } finally {
+    inspector?.close();
+    repository.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('composed Artifact reads use one snapshot and release it on success or failure', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-artifact-metadata-snapshot-'));
+  const repository = createSqliteArtifactMetadataRepository(root);
+  let writer: DatabaseSync | undefined;
+  try {
+    const source = artifactRecord('source');
+    const linked = artifactRecord('linked', 'linked-session');
+    repository.applyChanges({ upserts: [source, linked] });
+    writer = new DatabaseSync(join(root, OPERATIONAL_STATE_DATABASE_NAME));
+    const update = writer.prepare(
+      'UPDATE artifact_records SET record_json = ? WHERE artifact_id = ?',
+    );
+    const changed = { ...linked, summary: 'newly committed' };
+
+    repository.withReadSnapshot(() => {
+      assert.deepEqual(repository.listBySession(source.sessionId), [source]);
+      update.run(JSON.stringify(changed), linked.id);
+      assert.deepEqual(repository.getById(linked.id), linked);
+    });
+    assert.deepEqual(repository.getById(linked.id), changed);
+
+    assert.throws(
+      () =>
+        repository.withReadSnapshot(() => {
+          assert.deepEqual(repository.getById(linked.id), changed);
+          update.run(JSON.stringify(linked), linked.id);
+          throw new Error('selection failed');
+        }),
+      /selection failed/,
+    );
+    assert.deepEqual(repository.getById(linked.id), linked);
+    repository.applyChanges({ upserts: [{ ...source, summary: 'still writable' }] });
+    assert.equal(repository.getById(source.id)?.summary, 'still writable');
+  } finally {
+    writer?.close();
+    repository.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+function artifactRecord(id: string, sessionId = 'session-1'): ArtifactRecord {
   return {
     id,
-    sessionId: 'session-1',
+    sessionId,
     turnId: 'turn-1',
     createdAt: 1,
     name: `${id}.txt`,
     kind: 'file',
     sizeBytes: id.length,
-    relativePath: `session-1/${id}-${id}.txt`,
+    relativePath: `${sessionId}/${id}-${id}.txt`,
     source: 'tool_result',
   };
 }
