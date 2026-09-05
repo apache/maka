@@ -273,7 +273,6 @@ const runtimeHostMetadata = new Map<
   }
 >();
 const runtimeHostSessionProfiles = new Map<string, string>();
-const unavailableCollaborationScopes = new Set<RuntimeHostScopeKey>();
 let lastDesktopSessionCatalog: RuntimeHostSessionCatalogCoverage = {
   sessions: [],
   completeHostIds: [],
@@ -1465,25 +1464,15 @@ const makaBridge = {
       );
     },
     async getPendingTurnRequests() {
-      const readyScopes = (await runtimeHostScopeList()).filter(
+      const scopes = (await runtimeHostScopeList()).filter(
         (scope) => runtimeHostMetadataFor(scope)?.profileAccess === 'owner',
-      );
-      const readyScopeKeys = new Set(readyScopes.map(runtimeHostScopeKey));
-      for (const scopeKey of unavailableCollaborationScopes) {
-        if (!readyScopeKeys.has(scopeKey)) unavailableCollaborationScopes.delete(scopeKey);
-      }
-      const scopes = readyScopes.filter(
-        (scope) => !unavailableCollaborationScopes.has(runtimeHostScopeKey(scope)),
       );
       return collectAvailablePendingTurnRequests(
         scopes.map(async (scope) => {
           const result = await ipcRenderer.invoke(
             'session-collaboration:turn-request:query',
             scope,
-          ) as CollaborationTurnRequestQueryResult & { authorityUnavailable?: true };
-          if (result.authorityUnavailable) {
-            unavailableCollaborationScopes.add(runtimeHostScopeKey(scope));
-          }
+          ) as CollaborationTurnRequestQueryResult;
           return result.requests
             .filter((request) => request.state.kind === 'pending')
             .map((request): SessionTurnAccessRequest => ({

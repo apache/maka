@@ -106,11 +106,7 @@ export function registerRuntimeHostCollaborationIpc(
       } catch (error) {
         if (requestedSessionId === undefined && isCollaborationInboxUnavailable(error)) {
           backgroundInboxUnavailable = true;
-          return {
-            canRequestTurns: false,
-            requests: [],
-            authorityUnavailable: true,
-          };
+          return { canRequestTurns: false, requests: [] };
         }
         throw error;
       }
