@@ -45,13 +45,7 @@ import { runtimeInvocationOutcome } from '@maka/core/runtime-invocation';
 import { agentRunCompositionFromEvents } from '@maka/core/agent-run';
 import type { BackendCompactHistoryInput } from '@maka/core/backend-types';
 import { decodeCanonicalToolResultContent } from '@maka/core/tool-result-record-schema';
-import {
-  decodeModelCallAttempt,
-  MODEL_CALL_ATTEMPT_EVENT_TYPE,
-  type ModelCallAttempt,
-  type ModelCallKind,
-  type ModelCallPricingRecord,
-} from '@maka/core/model-call-attempt';
+import { type ModelCallAttempt, type ModelCallKind } from '@maka/core/model-call-attempt';
 import { type RuntimeEvent } from '@maka/core/runtime-event';
 import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
 import type { PlanSessionState, PlanStore } from '@maka/core/plan';
@@ -2031,20 +2025,10 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     assert.equal(compactUsage.inputTokens, 7);
     assert.equal(compactUsage.outputTokens, 3);
     const capturedRequestCount = mainRequests.length + compactRequests.length;
-    const attempts = await waitForCanonicalAttempts(usageStores, session.id, capturedRequestCount);
-    assert.equal(attempts.length, capturedRequestCount);
-    // The request's composition lives on the AgentRun authority; the Usage read
-    // model keeps only what a cost answer reads, so this is asserted at the
-    // source rather than through the projection.
-    const authorityAttempts: ModelCallAttempt[] = [];
-    for (const invocation of await execution.runtimeEventStore.listSessionInvocations(session.id)) {
-      for (const event of await execution.agentRunStore.readEvents(session.id, invocation.runId)) {
-        if (event.type !== MODEL_CALL_ATTEMPT_EVENT_TYPE) continue;
-        authorityAttempts.push(decodeModelCallAttempt(event.data));
-      }
-    }
-    assert.equal(authorityAttempts.length, attempts.length);
-    assert.ok(authorityAttempts.every((attempt) => attempt.promptComposition));
+    assert.equal(
+      await waitForCanonicalRequests(usageStores, session.id, capturedRequestCount),
+      capturedRequestCount,
+    );
     const contextDiagnostics = await composition.handlers['context.diagnostics.query'](
       { sessionId: session.id },
       connectionContext,
@@ -3873,28 +3857,23 @@ async function waitForUsage(
   throw new Error('Hosted real-model usage attribution was not persisted');
 }
 
-async function waitForCanonicalAttempts(
+async function waitForCanonicalRequests(
   usage: InteractiveUsageStoresWriter,
   sessionId: string,
   expectedRequests: number,
-): Promise<readonly ModelCallPricingRecord[]> {
+): Promise<number> {
+  const ask = () => usage.modelCalls.modelCallSummary({ range: 'all', sessionId }, Date.now());
   for (let attempt = 0; attempt < 100; attempt += 1) {
-    const page = await usage.modelCalls.modelCallAttempts(
-      { from: 0, to: Number.MAX_SAFE_INTEGER },
-      sessionId,
-    );
-    if (page.attempts.length >= expectedRequests) return page.attempts;
+    const { projection } = await ask();
+    if (projection.totalRequests >= expectedRequests) return projection.totalRequests;
     await new Promise<void>((resolve) => setTimeout(resolve, 10));
   }
-  const page = await usage.modelCalls.modelCallAttempts(
-    { from: 0, to: Number.MAX_SAFE_INTEGER },
-    sessionId,
-  );
+  const { projection, unreadableRecords } = await ask();
   throw new Error(
     `Hosted canonical model-call attempts were not persisted: ${JSON.stringify({
       expectedRequests,
-      attempts: page.attempts.length,
-      unreadableRecords: page.unreadableRecords,
+      totalRequests: projection.totalRequests,
+      unreadableRecords,
     })}`,
   );
 }

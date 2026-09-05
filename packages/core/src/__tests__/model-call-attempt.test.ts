@@ -25,11 +25,8 @@ import {
   MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
   PROMPT_COMPOSITION_MAX_TOOLS,
   decodeModelCallAttempt,
-  decodeModelCallPricingRecord,
+  dedupeModelCallAttempts,
   groupModelCallAttempts,
-  projectModelCallPricingRecord,
-  settledAttempt,
-  summarizeModelCallCoverage,
   type ModelCallAttempt,
 } from '../model-call-attempt.js';
 
@@ -324,123 +321,27 @@ describe('ModelCallAttempt codec', () => {
 });
 
 describe('ModelCallAttempt projections', () => {
-  test('groups retries under one logical call and derives the settled attempt', () => {
+  test('groups retries under one logical call', () => {
     const groups = groupModelCallAttempts([
       attempt({ attemptId: 'a-0', attempt: 0, status: 'failed', costUsd: 0.001 }),
       attempt({ attemptId: 'a-1', attempt: 1, status: 'completed', costUsd: 0.004 }),
       attempt({ attemptId: 'b-0', logicalCallId: 'call-2' }),
     ]);
     assert.equal(groups.length, 2);
-    const retried = groups.find((g) => g.logicalCallId === 'call-1');
-    assert.equal(retried?.attempts.length, 2);
-    assert.equal(settledAttempt(retried!)?.attemptId, 'a-1');
+    assert.equal(groups.find((g) => g.logicalCallId === 'call-1')?.attempts.length, 2);
   });
 
-  test('coverage counts priced, unpriced, and usage bases separately', () => {
-    const coverage = summarizeModelCallCoverage([
-      attempt({ attemptId: 'a' }),
-      attempt({ attemptId: 'b', costBasis: 'unpriced', costUsd: undefined }),
-      attempt({
-        attemptId: 'c',
-        costBasis: 'unpriced',
-        costUsd: undefined,
-        usageBasis: 'missing',
-        inputTokens: undefined,
-        outputTokens: undefined,
-      }),
-      attempt({ attemptId: 'd', usageBasis: 'partial', outputTokens: undefined }),
-    ]);
-    assert.deepEqual(coverage, {
-      attempts: 4,
-      pricedAttempts: 2,
-      unpricedAttempts: 2,
-      usageReportedAttempts: 2,
-      usagePartialAttempts: 1,
-      usageMissingAttempts: 1,
-    });
-  });
-
-  test('a replayed attemptId is counted once through coverage and grouping', () => {
+  test('a replayed attemptId is the same call, kept at its last value', () => {
     const stream = [
       attempt({ attemptId: 'a', logicalCallId: 'call-1', costUsd: 0.004 }),
       attempt({ attemptId: 'b', logicalCallId: 'call-2', costUsd: 0.006 }),
       attempt({ attemptId: 'a', logicalCallId: 'call-1', costUsd: 0.005 }),
     ];
-    const coverage = summarizeModelCallCoverage(stream);
-    assert.equal(coverage.attempts, 2);
-    assert.equal(coverage.pricedAttempts, 2);
+    const unique = dedupeModelCallAttempts(stream);
+    assert.deepEqual(
+      unique.map((a) => a.costUsd),
+      [0.005, 0.006],
+    );
     assert.equal(groupModelCallAttempts(stream).length, 2);
-  });
-
-  test('a genuinely free priced call is distinguishable from an unpriced one', () => {
-    const coverage = summarizeModelCallCoverage([
-      attempt({ attemptId: 'free', costBasis: 'priced', costUsd: 0 }),
-      attempt({ attemptId: 'unknown', costBasis: 'unpriced', costUsd: undefined }),
-    ]);
-    assert.equal(coverage.pricedAttempts, 1);
-    assert.equal(coverage.unpricedAttempts, 1);
-  });
-});
-
-describe('the pricing record a Usage read model stores', () => {
-  test('keeps every field a cost answer reads and drops the rest', () => {
-    const record = projectModelCallPricingRecord(
-      attempt({
-        connectionSlug: 'work',
-        errorClass: 'RequestRejected',
-        cacheReadInputTokens: 40,
-        cacheWriteInputTokens: 10,
-        reasoningTokens: 5,
-        promptComposition: { segments: [{ kind: 'messages', bytes: 4_096 }] },
-        providerRequestId: 'req-1',
-        pricingRevision: 3,
-      }),
-    );
-
-    // Exact: an unset optional such as `cacheMissInputTokens` must stay absent,
-    // and everything the authority carries beyond these fields must be gone.
-    assert.deepEqual(record, {
-      logicalCallId: 'call-1',
-      attemptId: 'attempt-1',
-      sessionId: 'session-1',
-      turnId: 'turn-1',
-      callKind: 'main',
-      connectionSlug: 'work',
-      providerId: 'anthropic',
-      modelId: 'claude-opus-5',
-      completedAt: 1_250,
-      latencyMs: 250,
-      status: 'completed',
-      errorClass: 'RequestRejected',
-      usageBasis: 'reported',
-      costBasis: 'priced',
-      costUsd: 0.004,
-      inputTokens: 100,
-      outputTokens: 20,
-      cacheReadInputTokens: 40,
-      cacheWriteInputTokens: 10,
-      reasoningTokens: 5,
-    });
-  });
-
-  test('decodes what the projection writes and nothing wider', () => {
-    const written = projectModelCallPricingRecord(attempt());
-    assert.deepEqual(decodeModelCallPricingRecord(JSON.parse(JSON.stringify(written))), written);
-    // A whole attempt is not a projection row: reading one back would mean the
-    // table holds two shapes and no reader knows which it has.
-    assert.throws(() => decodeModelCallPricingRecord(attempt()), /Invalid ModelCallPricingRecord/);
-  });
-
-  test('holds a stored row to the same cost invariants as the authority', () => {
-    // The rules themselves are covered against the authority codec; this only
-    // proves the read model is wired to the same ones.
-    assert.throws(
-      () =>
-        decodeModelCallPricingRecord({
-          ...projectModelCallPricingRecord(attempt()),
-          costBasis: 'unpriced',
-        }),
-      /unpriced record carries a cost/,
-    );
   });
 });

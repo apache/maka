@@ -32,84 +32,46 @@ import {
   ModelCallLedgerClosedError,
   ModelCallLedgerPublicationError,
   type ModelCallLedger,
+  type ModelCallLedgerReader,
 } from '../model-call-ledger.js';
 import { acquireOperationalStateDatabase } from '../operational-state-store.js';
+import { MODEL_CALL_COLUMNS } from '../sqlite-usage-schema.js';
 import { createSqliteAgentRunStore } from '../agent-run-store.js';
 import { openInvocation } from './fixtures/invocation-opening.js';
 import {
+  appendAuthorityEvent,
   modelCallAttempt as attempt,
   MODEL_CALL_NOW as NOW,
-  MODEL_CALL_PRICING_ROW_KEYS,
-  storedModelCallRecord,
+  withLedger,
 } from './fixtures/model-call-attempt.js';
 
-async function withLedger(run: (ledger: ModelCallLedger, root: string) => Promise<void>) {
-  const root = await mkdtemp(join(tmpdir(), 'maka-model-call-ledger-'));
-  const ledger = createSqliteModelCallLedger(root);
-  try {
-    await run(ledger, root);
-  } finally {
-    await ledger.close().catch(() => undefined);
-    await rm(root, { recursive: true, force: true });
-  }
+/** The calls a window holds, newest first, as the Usage log surface sees them. */
+function ids(ledger: ModelCallLedgerReader, from = 0, sessionId?: string): string[] {
+  return ledger
+    .logs({ range: { from, to: NOW }, ...(sessionId ? { sessionId } : {}) }, NOW, 0, 100)
+    .projection.rows.map((row) => row.id);
 }
 
-function appendAuthorityEvent(
-  root: string,
-  sequence: number,
-  value: ModelCallAttempt | { readonly schemaVersion: number },
-  sessionId = 'session-1',
-  runId = 'run-1',
-): void {
+function unreadable(ledger: ModelCallLedgerReader, sessionId?: string): number {
+  return ledger.logs(
+    { range: { from: 0, to: NOW }, ...(sessionId ? { sessionId } : {}) },
+    NOW,
+    0,
+    1,
+  ).unreadableRecords;
+}
+
+/** Records one call whose pricing was lost before the ledger held columns. */
+function insertTombstone(root: string, attemptId: string, sessionId?: string): void {
   const lease = acquireOperationalStateDatabase(root);
   try {
     lease.transaction('write', () => {
       lease.database
-        .prepare(`
-          INSERT OR IGNORE INTO core_agent_runs(session_id, run_id, created_at)
-          VALUES (?, ?, ?)
-        `)
-        .run(sessionId, runId, NOW - 1_000);
-      lease.database
-        .prepare(`
-          INSERT INTO core_agent_run_events(
-            session_id, run_id, sequence, event_id, event_type, event_ts, record_json
-          ) VALUES (?, ?, ?, ?, ?, ?, ?)
-        `)
-        .run(
-          sessionId,
-          runId,
-          sequence,
-          `event-${sessionId}-${runId}-${sequence}`,
-          MODEL_CALL_ATTEMPT_EVENT_TYPE,
-          NOW - 500 + sequence,
-          JSON.stringify({
-            id: `event-${sessionId}-${runId}-${sequence}`,
-            type: MODEL_CALL_ATTEMPT_EVENT_TYPE,
-            ts: NOW - 500 + sequence,
-            sessionId,
-            runId,
-            turnId: 'turn-1',
-            data: value,
-          }),
-        );
-      lease.database
-        .prepare(`
-          UPDATE core_agent_runs
-          SET latest_model_call_sequence = ?
-          WHERE session_id = ? AND run_id = ?
-        `)
-        .run(sequence, sessionId, runId);
+        .prepare(
+          'INSERT INTO usage_model_call_attempts(attempt_id, completed_at, session_id) VALUES (?, ?, ?)',
+        )
+        .run(attemptId, NOW - 400, sessionId ?? null);
     });
-  } finally {
-    lease.close();
-  }
-}
-
-function storedRecord(root: string, attemptId: string): Record<string, unknown> {
-  const lease = acquireOperationalStateDatabase(root);
-  try {
-    return storedModelCallRecord(lease.database, attemptId);
   } finally {
     lease.close();
   }
@@ -126,12 +88,8 @@ describe('canonical model call ledger', () => {
       );
       await ledger.catchUpProjection();
 
-      const page = ledger.read({ from: NOW - 1_000, to: NOW });
-      assert.deepEqual(
-        page.attempts.map((row) => row.attemptId),
-        ['inside'],
-      );
-      assert.equal(page.unreadableRecords, 0);
+      assert.deepEqual(ids(ledger, NOW - 1_000), ['inside']);
+      assert.equal(unreadable(ledger), 0);
     });
   });
 
@@ -164,20 +122,30 @@ describe('canonical model call ledger', () => {
 
       const reopened = createSqliteModelCallLedger(root);
       try {
-        const restored = reopened.read({ from: 0, to: NOW }).attempts[0];
+        const restored = reopened.logs({ range: { from: 0, to: NOW } }, NOW, 0, 10).projection
+          .rows[0];
         assert.equal(restored?.callKind, 'history_compact');
-        assert.equal(restored?.status, 'failed');
-        assert.equal(restored?.usageBasis, 'missing');
+        assert.equal(restored?.status, 'error');
         assert.equal(restored?.costBasis, 'unpriced');
+        assert.equal(Object.hasOwn(restored ?? {}, 'costUsd'), false);
         // The Usage log row shows this one; the rest of the provider diagnostics
-        // are answered from the AgentRun authority, not from here.
+        // have nowhere to land here and are answered from the AgentRun authority.
         assert.equal(restored?.errorClass, 'RequestRejected');
-        assert.deepEqual(
-          Object.keys(storedRecord(root, 'attempt-1')).filter(
-            (key) => !MODEL_CALL_PRICING_ROW_KEYS.includes(key) && key !== 'errorClass',
-          ),
-          [],
-        );
+        const lease = acquireOperationalStateDatabase(root);
+        try {
+          assert.deepEqual(
+            (
+              lease.database
+                .prepare('PRAGMA table_info(usage_model_call_attempts)')
+                .all() as Array<{
+                name: string;
+              }>
+            ).map((column) => column.name),
+            [...MODEL_CALL_COLUMNS],
+          );
+        } finally {
+          lease.close();
+        }
       } finally {
         await reopened.close();
       }
@@ -210,10 +178,7 @@ describe('canonical model call ledger', () => {
     const migrated = createSqliteModelCallLedger(root);
     try {
       await migrated.catchUpProjection();
-      assert.deepEqual(
-        migrated.read({ from: 0, to: NOW }).attempts.map((row) => row.attemptId),
-        ['pre-checkpoint'],
-      );
+      assert.deepEqual(ids(migrated), ['pre-checkpoint']);
       const lease = acquireOperationalStateDatabase(root);
       try {
         assert.equal(
@@ -233,33 +198,42 @@ describe('canonical model call ledger', () => {
     }
   });
 
-  test('a row narrowed in place keeps spend the authority can no longer replay', async () => {
+  test('a row converted in place keeps spend the authority can no longer replay', async () => {
     // Deleting a Session drops its runs and cascades their events, but leaves
     // its ledger rows. Converging those rows by wiping and re-projecting would
-    // erase that spend from the all-time totals, so they are folded in place.
-    const root = await mkdtemp(join(tmpdir(), 'maka-model-call-ledger-narrow-'));
+    // erase that spend from the all-time totals, so they are converted in place.
+    const root = await mkdtemp(join(tmpdir(), 'maka-model-call-ledger-convert-'));
     const first = createSqliteModelCallLedger(root);
-    appendAuthorityEvent(root, 0, attempt({ attemptId: 'deleted-session-call' }));
-    await first.catchUpProjection();
     await first.close();
 
     const database = new DatabaseSync(join(root, 'runtime.sqlite'));
-    database
-      .prepare('UPDATE usage_model_call_attempts SET record_json = ? WHERE attempt_id = ?')
-      .run(JSON.stringify(attempt({ attemptId: 'deleted-session-call' })), 'deleted-session-call');
     database.exec(`
       PRAGMA foreign_keys = ON;
-      DELETE FROM core_agent_runs WHERE session_id = 'session-1';
-      UPDATE operational_schema_migrations SET version = 5 WHERE scope = 'usage';
+      DROP TABLE usage_model_call_attempts;
+      CREATE TABLE usage_model_call_attempts (
+        attempt_id TEXT PRIMARY KEY,
+        completed_at INTEGER NOT NULL,
+        record_json TEXT NOT NULL,
+        session_id TEXT
+      );
+      UPDATE operational_schema_migrations SET version = 6 WHERE scope = 'usage';
     `);
+    database
+      .prepare('INSERT INTO usage_model_call_attempts VALUES (?, ?, ?, ?)')
+      .run(
+        'deleted-session-call',
+        NOW - 500,
+        JSON.stringify(attempt({ attemptId: 'deleted-session-call' })),
+        'session-1',
+      );
     database.close();
 
     const migrated = createSqliteModelCallLedger(root);
     try {
-      const page = migrated.read({ from: 0, to: NOW });
+      const page = migrated.logs({ range: { from: 0, to: NOW } }, NOW, 0, 10);
       assert.equal(page.unreadableRecords, 0);
-      assert.equal(page.attempts[0]?.attemptId, 'deleted-session-call');
-      assert.equal(page.attempts[0]?.costUsd, 0.004);
+      assert.equal(page.projection.rows[0]?.id, 'deleted-session-call');
+      assert.equal(page.projection.rows[0]?.costUsd, 0.004);
     } finally {
       await migrated.close();
       await rm(root, { recursive: true, force: true });
@@ -283,10 +257,10 @@ describe('canonical model call ledger', () => {
       appendAuthorityEvent(root, 1, attempt({ status: 'completed', usageBasis: 'reported' }));
       await ledger.catchUpProjection();
 
-      const page = ledger.read({ from: 0, to: NOW });
-      assert.equal(page.attempts.length, 1);
-      assert.equal(page.attempts[0]?.status, 'completed');
-      assert.equal(page.attempts[0]?.inputTokens, 100);
+      const rows = ledger.logs({ range: { from: 0, to: NOW } }, NOW, 0, 10).projection.rows;
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0]?.status, 'success');
+      assert.equal(rows[0]?.inputTokens, 100);
     });
   });
 
@@ -295,7 +269,7 @@ describe('canonical model call ledger', () => {
       appendAuthorityEvent(root, 0, attempt({ costBasis: 'unpriced', costUsd: 0.004 }));
       const result = await ledger.catchUpProjection();
       assert.equal(result.unreadableEvents, 1);
-      assert.equal(ledger.read({ from: 0, to: NOW }).attempts.length, 0);
+      assert.equal(ids(ledger).length, 0);
     });
   });
 
@@ -303,25 +277,10 @@ describe('canonical model call ledger', () => {
     await withLedger(async (ledger, root) => {
       appendAuthorityEvent(root, 0, attempt({ attemptId: 'good' }));
       await ledger.catchUpProjection();
-      const lease = acquireOperationalStateDatabase(root);
-      try {
-        lease.transaction('write', () => {
-          lease.database
-            .prepare(
-              'INSERT INTO usage_model_call_attempts(attempt_id, completed_at, record_json) VALUES (?, ?, ?)',
-            )
-            .run('corrupt', NOW - 400, '{"schemaVersion":1,');
-        });
-      } finally {
-        lease.close();
-      }
+      insertTombstone(root, 'lost');
 
-      const page = ledger.read({ from: 0, to: NOW });
-      assert.deepEqual(
-        page.attempts.map((row) => row.attemptId),
-        ['good'],
-      );
-      assert.equal(page.unreadableRecords, 1);
+      assert.deepEqual(ids(ledger), ['good']);
+      assert.equal(unreadable(ledger), 1);
     });
   });
 
@@ -342,27 +301,12 @@ describe('canonical model call ledger', () => {
         'run-b',
       );
       await ledger.catchUpProjection();
-      const lease = acquireOperationalStateDatabase(root);
-      try {
-        lease.transaction('write', () => {
-          lease.database
-            .prepare(
-              `INSERT INTO usage_model_call_attempts(
-                attempt_id, completed_at, record_json, session_id
-              ) VALUES (?, ?, ?, ?)`,
-            )
-            .run('session-b-corrupt', NOW - 400, '{', 'session-b');
-        });
-      } finally {
-        lease.close();
-      }
+      insertTombstone(root, 'session-b-lost', 'session-b');
 
-      const page = ledger.read({ from: 0, to: NOW }, 'session-a');
-      assert.deepEqual(
-        page.attempts.map((row) => row.attemptId),
-        ['session-a-call'],
-      );
-      assert.equal(page.unreadableRecords, 0);
+      assert.deepEqual(ids(ledger, 0, 'session-a'), ['session-a-call']);
+      assert.equal(unreadable(ledger, 'session-a'), 0);
+      // The other Session's lost row is still reported to whoever asks for it.
+      assert.equal(unreadable(ledger, 'session-b'), 1);
     });
   });
 
@@ -373,7 +317,7 @@ describe('canonical model call ledger', () => {
     await ledger.close();
 
     await assert.rejects(() => ledger.catchUpProjection(), ModelCallLedgerClosedError);
-    assert.throws(() => ledger.read({ from: 0, to: NOW }), ModelCallLedgerClosedError);
+    assert.throws(() => ledger.summary({ range: 'all' }, NOW), ModelCallLedgerClosedError);
     await rm(root, { recursive: true, force: true });
   });
 });
@@ -396,10 +340,7 @@ describe('catching the read model up from the AgentRun authority', () => {
 
       await ledger.catchUpProjection({ sessionId: 'session-1' });
 
-      assert.deepEqual(
-        ledger.read({ from: 0, to: NOW }).attempts.map((row) => row.attemptId),
-        ['real-append'],
-      );
+      assert.deepEqual(ids(ledger), ['real-append']);
     });
   });
 
@@ -414,10 +355,7 @@ describe('catching the read model up from the AgentRun authority', () => {
         pendingRuns: 0,
         unreadableEvents: 0,
       });
-      assert.deepEqual(
-        ledger.read({ from: 0, to: NOW }).attempts.map((row) => row.attemptId),
-        ['missed'],
-      );
+      assert.deepEqual(ids(ledger), ['missed']);
     });
   });
 
@@ -430,13 +368,7 @@ describe('catching the read model up from the AgentRun authority', () => {
       const result = await ledger.catchUpProjection({ sessionId: 'session-1' });
 
       assert.equal(result.pendingRuns, 0);
-      assert.deepEqual(
-        ledger
-          .read({ from: 0, to: NOW })
-          .attempts.map((row) => row.attemptId)
-          .sort(),
-        ['new', 'old'],
-      );
+      assert.deepEqual(ids(ledger).sort(), ['new', 'old']);
     });
   });
 
@@ -452,10 +384,7 @@ describe('catching the read model up from the AgentRun authority', () => {
       assert.equal(first.pendingRuns, 0);
       assert.equal(second.unreadableEvents, 1);
       assert.deepEqual(second.changedSessionIds, []);
-      assert.deepEqual(
-        ledger.read({ from: 0, to: NOW }).attempts.map((row) => row.attemptId),
-        ['good'],
-      );
+      assert.deepEqual(ids(ledger), ['good']);
     });
   });
 
@@ -475,7 +404,7 @@ describe('catching the read model up from the AgentRun authority', () => {
 
       assert.equal(first.pendingRuns, 1);
       assert.equal(second.pendingRuns, 0);
-      assert.equal(ledger.read({ from: 0, to: NOW }).attempts.length, 2);
+      assert.equal(ids(ledger).length, 2);
     });
   });
 
@@ -503,10 +432,7 @@ describe('catching the read model up from the AgentRun authority', () => {
 
       const recovered = await ledger.catchUpProjection();
       assert.equal(recovered.pendingRuns, 0);
-      assert.deepEqual(
-        ledger.read({ from: 0, to: NOW }).attempts.map((row) => row.attemptId),
-        ['retry-after-storage-failure'],
-      );
+      assert.deepEqual(ids(ledger), ['retry-after-storage-failure']);
     });
   });
 });

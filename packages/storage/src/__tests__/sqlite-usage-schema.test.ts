@@ -23,11 +23,44 @@ import { test } from 'node:test';
 import { migrateSqliteUsageDatabase } from '../sqlite-usage-schema.js';
 import {
   MODEL_CALL_NOW as NOW,
-  MODEL_CALL_PRICING_ROW_KEYS,
   modelCallAttempt as attempt,
-  storedModelCallRecord as storedRecord,
   wideModelCallAttempt as wideAttempt,
 } from './fixtures/model-call-attempt.js';
+import { MODEL_CALL_COLUMNS } from '../sqlite-usage-schema.js';
+
+/** A ledger as it stood before the record was spread into columns. */
+function blobLedger(database: DatabaseSync): void {
+  database.exec(`
+    CREATE TABLE usage_model_call_attempts (
+      attempt_id TEXT PRIMARY KEY,
+      completed_at INTEGER NOT NULL,
+      record_json TEXT NOT NULL,
+      session_id TEXT
+    );
+  `);
+}
+
+function insertBlob(
+  database: DatabaseSync,
+  attemptId: string,
+  record: unknown,
+  sessionId?: string,
+) {
+  database
+    .prepare('INSERT INTO usage_model_call_attempts VALUES (?, ?, ?, ?)')
+    .run(
+      attemptId,
+      NOW - 500,
+      typeof record === 'string' ? record : JSON.stringify(record),
+      sessionId ?? null,
+    );
+}
+
+function storedRow(database: DatabaseSync, attemptId: string): Record<string, unknown> {
+  return database
+    .prepare('SELECT * FROM usage_model_call_attempts WHERE attempt_id = ?')
+    .get(attemptId) as Record<string, unknown>;
+}
 
 test('usage migration backfills Session identity for existing ledger rows', () => {
   const database = new DatabaseSync(':memory:');
@@ -82,86 +115,145 @@ test('usage migration backfills Session identity for existing ledger rows', () =
   }
 });
 
-test('usage migration narrows ledger rows to the fields a cost answer reads', () => {
+test('the migration spreads a stored record into the columns a cost answer sums', () => {
   const database = new DatabaseSync(':memory:');
   try {
-    migrateSqliteUsageDatabase(database);
+    blobLedger(database);
     const wide = wideAttempt();
-    const insert = database.prepare(`
-      INSERT INTO usage_model_call_attempts(attempt_id, completed_at, record_json, session_id)
-      VALUES (?, ?, ?, ?)
-    `);
-    insert.run(wide.attemptId, wide.completedAt, JSON.stringify(wide), wide.sessionId);
-    insert.run('corrupt', NOW - 400, '{"schemaVersion":1,', 'session-1');
+    insertBlob(database, wide.attemptId, wide, wide.sessionId);
 
     migrateSqliteUsageDatabase(database);
 
-    const narrowed = storedRecord(database, wide.attemptId);
-    assert.deepEqual(Object.keys(narrowed).sort(), MODEL_CALL_PRICING_ROW_KEYS);
-    // Every number a Usage total is built from reads the same after the fold.
-    assert.equal(narrowed.costUsd, 0.004);
-    assert.equal(narrowed.inputTokens, 100);
-    assert.equal(narrowed.outputTokens, 20);
-    assert.equal(narrowed.costBasis, 'priced');
-    // A corrupt row is not rewritable from itself and must stay, so a read can
-    // keep reporting it instead of a total quietly losing a real call.
-    assert.equal(
+    const row = storedRow(database, wide.attemptId);
+    assert.deepEqual(Object.keys(row), [...MODEL_CALL_COLUMNS]);
+    // Every number a Usage total is built from reads the same after the spread.
+    assert.equal(row.cost_usd, 0.004);
+    assert.equal(row.cost_basis, 'priced');
+    assert.equal(row.input_tokens, 100);
+    assert.equal(row.output_tokens, 20);
+    assert.equal(row.provider_id, 'anthropic');
+    assert.equal(row.session_id, 'session-1');
+  } finally {
+    database.close();
+  }
+});
+
+test('a record the migration cannot read whole keeps its identity and loses the rest', () => {
+  // A row that ends up half-filled would make the table's own CHECK
+  // unsatisfiable and take the whole migration with it, so conversion is
+  // all-or-nothing per row. What is left says a call happened and its cost is
+  // gone — which is what a read reports as unreadable.
+  const database = new DatabaseSync(':memory:');
+  try {
+    blobLedger(database);
+    insertBlob(database, 'damaged', '{"schemaVersion":1,', 'session-1');
+    insertBlob(database, 'alien', { sessionId: 'session-2' });
+    const priced = attempt({ attemptId: 'priced' });
+    insertBlob(database, priced.attemptId, priced, priced.sessionId);
+
+    migrateSqliteUsageDatabase(database);
+
+    assert.deepEqual(
       database
-        .prepare("SELECT record_json FROM usage_model_call_attempts WHERE attempt_id = 'corrupt'")
-        .get()?.record_json,
-      '{"schemaVersion":1,',
+        .prepare(
+          'SELECT attempt_id, session_id FROM usage_model_call_attempts WHERE cost_basis IS NULL ORDER BY attempt_id',
+        )
+        .all()
+        .map((row) => ({ ...row })),
+      [
+        { attempt_id: 'alien', session_id: 'session-2' },
+        { attempt_id: 'damaged', session_id: 'session-1' },
+      ],
     );
+    assert.equal(storedRow(database, 'priced').cost_usd, 0.004);
   } finally {
     database.close();
   }
 });
 
-test('usage migration leaves an already narrowed ledger row untouched', () => {
+test('the migration is a no-op once the ledger already holds columns', () => {
   const database = new DatabaseSync(':memory:');
   try {
-    migrateSqliteUsageDatabase(database);
+    blobLedger(database);
     const wide = wideAttempt();
-    database
-      .prepare(`
-        INSERT INTO usage_model_call_attempts(attempt_id, completed_at, record_json, session_id)
-        VALUES (?, ?, ?, ?)
-      `)
-      .run(wide.attemptId, wide.completedAt, JSON.stringify(wide), wide.sessionId);
+    insertBlob(database, wide.attemptId, wide, wide.sessionId);
     migrateSqliteUsageDatabase(database);
-    const once = storedRecord(database, wide.attemptId);
+    const once = storedRow(database, wide.attemptId);
 
     migrateSqliteUsageDatabase(database);
 
-    assert.deepEqual(storedRecord(database, wide.attemptId), once);
+    assert.deepEqual(storedRow(database, wide.attemptId), once);
   } finally {
     database.close();
   }
 });
 
-test('usage migration narrows every row, not just the first page', () => {
+test('the migration converts every row, however many a workspace holds', () => {
   const database = new DatabaseSync(':memory:');
   try {
-    migrateSqliteUsageDatabase(database);
-    const insert = database.prepare(`
-      INSERT INTO usage_model_call_attempts(attempt_id, completed_at, record_json, session_id)
-      VALUES (?, ?, ?, ?)
-    `);
+    blobLedger(database);
     for (let index = 0; index < 1_200; index += 1) {
-      const wide = attempt({ attemptId: `attempt-${String(index).padStart(5, '0')}` });
-      insert.run(wide.attemptId, wide.completedAt, JSON.stringify(wide), wide.sessionId);
+      const row = attempt({ attemptId: `attempt-${String(index).padStart(5, '0')}` });
+      insertBlob(database, row.attemptId, row, row.sessionId);
     }
 
     migrateSqliteUsageDatabase(database);
 
     assert.equal(
       database
-        .prepare(`
-          SELECT COUNT(*) AS count FROM usage_model_call_attempts
-          WHERE json_type(record_json, '$.schemaVersion') IS NOT NULL
-        `)
+        .prepare('SELECT COUNT(*) AS count FROM usage_model_call_attempts WHERE cost_basis IS NULL')
         .get()?.count,
       0,
     );
+  } finally {
+    database.close();
+  }
+});
+
+test('the ledger refuses a row that would make a total dishonest', () => {
+  const database = new DatabaseSync(':memory:');
+  try {
+    migrateSqliteUsageDatabase(database);
+    const insert = (values: Record<string, unknown>) => {
+      const columns = Object.keys(values);
+      database
+        .prepare(
+          `INSERT INTO usage_model_call_attempts(${columns.join(', ')}) VALUES (${columns
+            .map(() => '?')
+            .join(', ')})`,
+        )
+        .run(...(Object.values(values) as (string | number | null)[]));
+    };
+    const base = {
+      completed_at: NOW,
+      logical_call_id: 'call-1',
+      turn_id: 'turn-1',
+      call_kind: 'main',
+      provider_id: 'anthropic',
+      model_id: 'claude-opus-5',
+      latency_ms: 10,
+      status: 'completed',
+      usage_basis: 'reported',
+    };
+    // A price nobody could resolve must never surface as an amount.
+    assert.throws(() =>
+      insert({ ...base, attempt_id: 'a', cost_basis: 'unpriced', cost_usd: 0.004 }),
+    );
+    // A priced call must carry one; zero is legal and means genuinely free.
+    assert.throws(() => insert({ ...base, attempt_id: 'b', cost_basis: 'priced' }));
+    // "No usage reported" and "zero tokens" are different facts.
+    assert.throws(() =>
+      insert({
+        ...base,
+        attempt_id: 'c',
+        usage_basis: 'missing',
+        input_tokens: 0,
+        cost_basis: 'priced',
+        cost_usd: 0,
+      }),
+    );
+    // Half a record is not a record.
+    assert.throws(() => insert({ attempt_id: 'd', completed_at: NOW, cost_basis: 'unpriced' }));
   } finally {
     database.close();
   }
