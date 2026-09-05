@@ -18,7 +18,10 @@
  */
 
 import type { DatabaseSync } from 'node:sqlite';
-import { decodeArtifactRecordJsons } from './artifact-metadata-codec.js';
+import {
+  decodeArtifactRecordJsons,
+  isSafeRelativeArtifactPath,
+} from './artifact-metadata-codec.js';
 
 export const SQLITE_ARTIFACT_SCHEMA_VERSION = 3;
 
@@ -27,15 +30,21 @@ export function migrateSqliteArtifactDatabase(db: DatabaseSync): void {
     name?: unknown;
   }>;
   const retained: string[] = [];
-  if (columns.some(({ name }) => name === 'status' || name === 'storage_key')) {
+  // Every path the old table named. Whatever is not carried over is a file no
+  // catalog will name again, and this is the last moment anything knows it is
+  // there. Unlinking here is not an option: a rollback after one would be
+  // unrecoverable, so the paths are recorded for the store to reclaim later.
+  const scanned: string[] = [];
+  const hasStatusColumn = columns.some(({ name }) => name === 'status');
+  if (hasStatusColumn || columns.some(({ name }) => name === 'storage_key')) {
     const rows = db.prepare('SELECT * FROM artifact_records').all();
     for (const row of rows) {
-      if (columns.some(({ name }) => name === 'status') && row.status !== 'live') continue;
+      if (typeof row.relative_path === 'string' && isSafeRelativeArtifactPath(row.relative_path)) {
+        scanned.push(row.relative_path);
+      }
       try {
         const parsed = JSON.parse(String(row.record_json));
         if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
-        if (parsed.status !== undefined && parsed.status !== 'live') continue;
-        delete parsed.status;
         if (
           parsed.id !== row.artifact_id ||
           parsed.sessionId !== row.session_id ||
@@ -43,6 +52,13 @@ export function migrateSqliteArtifactDatabase(db: DatabaseSync): void {
           parsed.relativePath !== row.relative_path
         )
           continue;
+        if (
+          [hasStatusColumn ? row.status : undefined, parsed.status].some(
+            (value) => value !== undefined && value !== null && value !== 'live',
+          )
+        )
+          continue;
+        delete parsed.status;
         retained.push(JSON.stringify(parsed));
       } catch {}
     }
@@ -62,11 +78,22 @@ export function migrateSqliteArtifactDatabase(db: DatabaseSync): void {
 
     CREATE UNIQUE INDEX IF NOT EXISTS artifact_records_relative_path
       ON artifact_records(relative_path);
+
+    CREATE TABLE IF NOT EXISTS artifact_upgrade_orphan_paths (
+      relative_path TEXT PRIMARY KEY
+    );
   `);
+  const carried = decodeArtifactRecordJsons(retained);
+  const kept = new Set(carried.map((record) => record.relativePath));
+  const orphan = db.prepare(`
+    INSERT INTO artifact_upgrade_orphan_paths VALUES (?)
+    ON CONFLICT(relative_path) DO NOTHING
+  `);
+  for (const relativePath of scanned) if (!kept.has(relativePath)) orphan.run(relativePath);
   const insert = db.prepare(`
     INSERT INTO artifact_records VALUES (?, ?, ?, ?, ?)
   `);
-  for (const record of decodeArtifactRecordJsons(retained)) {
+  for (const record of carried) {
     insert.run(
       record.id,
       record.sessionId,
