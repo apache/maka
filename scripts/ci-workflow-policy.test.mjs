@@ -28,7 +28,10 @@
  * this file asserts exactly that, for every suite the install-free steps run.
  */
 import assert from 'node:assert/strict';
-import { readdirSync, readFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 
 import { formatGitHubOutputs, loadWorkspaceGraph, planTests } from './ci-test-plan.mjs';
@@ -106,6 +109,98 @@ test('core CI uses the Windows inventory package-script authority', () => {
 
   assert.match(workflow, /run: npm run windows:inventory/u);
   assert.doesNotMatch(workflow, /run: node scripts\/windows-test-inventory\.mjs --check/u);
+});
+
+test('renderer gate compares a refreshed PR merge with its actual base and rejects wrong checkouts', () => {
+  const workflow = readWorkflow('ci.yml');
+  const start = workflow.indexOf('      - name: Check renderer architecture\n');
+  assert.ok(start >= 0);
+  const step = workflow.slice(start, workflow.indexOf('\n      - ', start + 1));
+  assert.match(step, /CI_EVENT_NAME: \$\{\{ github\.event_name \}\}/u);
+  assert.match(step, /PR_HEAD_SHA: \$\{\{ github\.event\.pull_request\.head\.sha \}\}/u);
+  const script = step.split('        run: |\n')[1];
+  assert.ok(script);
+  const root = mkdtempSync(join(tmpdir(), 'renderer-ci-base-'));
+  const git = (...args) =>
+    execFileSync('git', ['-c', 'core.hooksPath=/dev/null', ...args], {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim();
+  const commit = (message) => {
+    git(
+      '-c',
+      'user.name=CI fixture',
+      '-c',
+      'user.email=ci@example.invalid',
+      '-c',
+      'commit.gpgsign=false',
+      'commit',
+      '--allow-empty',
+      '-m',
+      message,
+    );
+    return git('rev-parse', 'HEAD');
+  };
+  const run = (env) =>
+    spawnSync('bash', ['-e', '-c', `npm() { printf '%s\\n' "$@"; }\n${script}`], {
+      cwd: root,
+      encoding: 'utf8',
+      env: { ...process.env, BASE_SHA: '', CI_EVENT_NAME: '', PR_HEAD_SHA: '', ...env },
+    });
+  const assertInvocation = (result, base) => {
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(result.stdout.trim().split('\n'), [
+      'run',
+      'check:renderer-architecture',
+      ...(base ? ['--', '--base', base] : []),
+    ]);
+  };
+  try {
+    git('init', '--initial-branch=main');
+    const oldBase = commit('original main');
+    git('checkout', '-b', 'feature');
+    const prHead = commit('storage change');
+    git('checkout', 'main');
+    const newBase = commit('main advanced after the PR event');
+    git(
+      '-c',
+      'user.name=CI fixture',
+      '-c',
+      'user.email=ci@example.invalid',
+      '-c',
+      'commit.gpgsign=false',
+      'merge',
+      '--no-ff',
+      'feature',
+      '-m',
+      'PR merge',
+    );
+
+    // The event retains oldBase, but checkout now contains newBase + prHead.
+    assertInvocation(
+      run({ CI_EVENT_NAME: 'pull_request', BASE_SHA: oldBase, PR_HEAD_SHA: prHead }),
+      newBase,
+    );
+    // Pushes (including merge commits) must still compare with event.before.
+    assertInvocation(run({ CI_EVENT_NAME: 'push', BASE_SHA: oldBase }), oldBase);
+    assertInvocation(run({ CI_EVENT_NAME: 'push', BASE_SHA: '0'.repeat(40) }));
+    assertInvocation(run({ CI_EVENT_NAME: 'workflow_dispatch' }));
+
+    const mismatch = run({
+      CI_EVENT_NAME: 'pull_request',
+      BASE_SHA: oldBase,
+      PR_HEAD_SHA: oldBase,
+    });
+    assert.notEqual(mismatch.status, 0);
+    assert.equal(mismatch.stdout, '', 'wrong-head checkouts must not run the gate');
+    git('checkout', '--detach', prHead);
+    const unmerged = run({ CI_EVENT_NAME: 'pull_request', BASE_SHA: oldBase, PR_HEAD_SHA: prHead });
+    assert.notEqual(unmerged.status, 0);
+    assert.equal(unmerged.stdout, '', 'a linear checkout cannot supply the merge base');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('contract checks run before dependency setup and can fail the job', () => {

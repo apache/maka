@@ -194,7 +194,20 @@ jobs:
         if: steps.plan.outputs.code == 'true'
         env:
           BASE_SHA: ${{ github.event_name == 'push' && github.event.before || github.event.pull_request.base.sha }}
+          CI_EVENT_NAME: ${{ github.event_name }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          # A rerun can check out a refreshed PR merge while the event still
+          # names an older base. Compare against this merge's actual base so
+          # changes already on main are not charged to the pull request.
+          if [[ "$CI_EVENT_NAME" == "pull_request" ]]; then
+            MERGED_HEAD_SHA="$(git rev-parse --verify 'HEAD^2')"
+            if [[ -z "$PR_HEAD_SHA" || "$MERGED_HEAD_SHA" != "$PR_HEAD_SHA" ]]; then
+              echo "Renderer architecture check requires the merge of the requested PR head" >&2
+              exit 1
+            fi
+            BASE_SHA="$(git rev-parse --verify 'HEAD^1')"
+          fi
           if [[ -n "$BASE_SHA" && ! "$BASE_SHA" =~ ^0+$ ]]; then
             npm run check:renderer-architecture -- --base "$BASE_SHA"
           else
