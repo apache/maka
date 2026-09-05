@@ -965,11 +965,11 @@ export function ChatView(props: {
 export function DeepResearchProgressPanel({
   run,
   onContinue,
-  copy = getConversationCopy('zh-CN').chat.deepResearchProgress,
+  copy,
 }: {
   run: DeepResearchClientProgress;
   onContinue?: (run: DeepResearchClientProgress) => void;
-  copy?: ReturnType<typeof getConversationCopy>['chat']['deepResearchProgress'];
+  copy: ReturnType<typeof getConversationCopy>['chat']['deepResearchProgress'];
 }) {
   const completedItems = run.checklist.filter(
     (item) => item.status === 'completed' || item.status === 'skipped',

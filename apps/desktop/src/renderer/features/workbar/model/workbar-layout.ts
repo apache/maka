@@ -36,7 +36,12 @@ import {
  * a reader who never dragged the handle sees the change.
  */
 export const SESSION_WORKBAR_DEFAULT_WIDTH = 480;
-export const SESSION_WORKBAR_MIN_WIDTH = 320;
+/**
+ * 340 is the floor `astryx docs layout` gives a detail/inspector panel, and it
+ * is also where the strip stops fitting: five faces need 386px of tab and have
+ * 260px, so below this the strip is always scrolling.
+ */
+export const SESSION_WORKBAR_MIN_WIDTH = 340;
 export const SESSION_WORKBAR_MAX_WIDTH = 600;
 export const SESSION_BOTTOM_PANEL_DEFAULT_HEIGHT = 300;
 export const SESSION_BOTTOM_PANEL_MIN_HEIGHT = 180;
