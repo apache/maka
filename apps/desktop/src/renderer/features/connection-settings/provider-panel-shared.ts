@@ -19,7 +19,7 @@
 
 import { generalizedErrorMessageForLocale, redactSecrets } from '@maka/core/redaction';
 import { type ConnectionTestResult } from '@maka/core/llm-connections';
-import { type UiLocale } from '@maka/core/ui-locale';
+import { type UiLocale, lookupCopy } from '@maka/core/ui-locale';
 import { getProviderSettingsCopy } from './settings-provider-copy.js';
 import { cleanErrorMessage } from '../../application/contracts/connection-error-cleaner.js';
 
@@ -32,8 +32,6 @@ export function providerPanelActionErrorMessage(error: unknown, locale: UiLocale
   // wrapper — channel names like 'connections:fetchModels' contain "fetch",
   // which the keyword classifier reads as a network error.
   const cleaned = redactSecrets(cleanErrorMessage(error)).trim();
-  const known = (shared.lastTest as Readonly<Record<string, string>>)[cleaned.toLowerCase()];
-  if (known) return known;
   // Main-process handlers throw display-ready Chinese copy; keep it instead
   // of flattening it into a coarser classification or the generic fallback.
   if (locale === 'zh-CN' && /[\u3400-\u9fff]/.test(cleaned)) return cleaned;
@@ -88,10 +86,9 @@ export function connectionLastTestMessageDisplay(message: string | undefined, lo
   if (!message) return undefined;
   const trimmed = message.trim();
   if (!trimmed) return undefined;
-  const normalized = trimmed.toLowerCase();
   const copy = getProviderSettingsCopy(locale).shared;
-  const known = (copy.lastTest as Readonly<Record<string, string>>)[normalized];
-  if (known) return known;
-  const classified = generalizedErrorMessageForLocale(new Error(trimmed), '', locale);
-  return classified || copy.statusUnavailable;
+  return (
+    lookupCopy(copy.lastTest, trimmed) ??
+    (generalizedErrorMessageForLocale(new Error(trimmed), '', locale) || copy.statusUnavailable)
+  );
 }

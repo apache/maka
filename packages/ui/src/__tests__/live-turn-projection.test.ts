@@ -20,8 +20,8 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import { encodeToolStepProgress } from '@maka/core/events';
+import { applyLiveTurnEvent } from './live-turn-zh.js';
 import {
-  applyLiveTurnEvent,
   armLiveTurn,
   confirmLiveTurn,
   reconcileTerminalLiveTurn,
