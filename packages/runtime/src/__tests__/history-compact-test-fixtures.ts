@@ -17,15 +17,6 @@
  * under the License.
  */
 
-export { ModuleHubServicesProvider } from './services-context.js';
-export type {
-  ModuleHubClipboardService,
-  ModuleHubServices,
-} from './ports.js';
-export { ModuleHubHost, ModuleHubHostView } from './ui/module-hub-host.js';
-export {
-  createModuleHubCommandPort,
-  ModuleHubProvider,
-  ModuleHubScheduledTasksBoundary,
-  ModuleHubSkillCatalogRevisionBoundary,
-} from './ui/module-hub-provider.js';
+export function sectionedSummary(goal: string): string {
+  return `## Goal\n${goal}\n\n## Progress\n- done\n\n## Next Steps\n1. continue\n\n## Critical Context\n- (none)`;
+}

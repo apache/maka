@@ -578,6 +578,7 @@ type E2eTestFixtures = {
   parentRemovalWindow: Page;
   railRenderWindow: Page;
   promptRailWindow: Page;
+  threadSearchWindow: Page;
   partialHistoryWindow: Page;
   oversizedTurnWindow: Page;
   requestHeaderRowWindow: Page;
@@ -760,6 +761,18 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
     } finally {
       await setPromptRailWindowVisible(promptRailWorker, false);
     }
+  },
+  // The same seeded transcript, on a window of its own. Search reads the Host
+  // through the bridge and renders nothing, so it needs neither the warm
+  // window's compositor nor its between-test reset — and taking it off the
+  // reused window is what retires the readiness gate's cross-test bleed (#4707).
+  threadSearchWindow: async ({}, use) => {
+    await withE2eWindow({
+      seed: false,
+      readinessSelector: '[data-turn-id]',
+      e2eFixtureScenario: 'chat-prompt-rail',
+      locale: 'zh-CN',
+    }, use);
   },
   // A transcript larger than the bounded Desktop range. Clicking an unloaded
   // prompt exercises the real load-around path and its partial-history UI.

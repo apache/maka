@@ -29,15 +29,9 @@
  *   !pinned → nothing here writes `scrollTop`, ever
  *
  * "Keep the reader where they were reading" is the definition of
- * `overflow-anchor`, and once the reader has left the tail that is exactly the
- * behaviour this code wants — so on release it hands anchoring back to the
- * browser and stays out of the way. While pinned it does the opposite and turns
- * anchoring off, because a second writer moving `scrollTop` under a following
- * tail is not help: its adjustments are overwritten on the next frame, but the
- * `scroll` events they emit are indistinguishable from the reader, and the
- * guard would swallow a real upward gesture along with them (#4269). The pin
- * owns anchoring, so while it is set this authority is genuinely the only
- * writer.
+ * `overflow-anchor: auto`, which is already the initial value and costs nothing,
+ * and "the reader is dragging" is also just don't touch it — so both of those
+ * are the same instruction to this code: stay out of the way.
  *
  * Being the only writer is what makes the state exact rather than guessed. It
  * remembers the offset it wrote, so a scroll event that finds the scroller
@@ -59,6 +53,26 @@ import { ChatLayoutScrollButton } from '@astryxdesign/core/Chat';
 /** Astryx's own thresholds, so the affordance keeps the feel readers learnt. */
 const PIN_THRESHOLD_PX = 10;
 const BUTTON_THRESHOLD_PX = 100;
+/**
+ * How far an offset may miss what the content accounts for and still be the
+ * content.
+ *
+ * The band below holds an exact `scrollTop` against a range built from two
+ * rounded integers, and native anchoring rounds the anchor's own positions
+ * separately again, so a step that is entirely the content still lands a pixel
+ * or two outside its own band. A story in `packages/ui/stories` measures that
+ * against a real layout engine and goes red if a browser starts missing by
+ * more.
+ *
+ * It is spent only where that arithmetic happened. An event that finds the
+ * content unchanged has nothing rounded in it: the band is a point, the offset
+ * either moved or did not, and a reader inching down a settled transcript is
+ * heard exactly. Spending it on those events instead is what would make a slow
+ * reader unhearable, and no accumulator can buy that back — the error is
+ * bounded per event but one-directional across a stream, so a running total
+ * turns a pixel of arithmetic into a drift that crosses any threshold.
+ */
+const GEOMETRY_ROUNDING_PX = 2;
 
 export interface TranscriptScrollSnapshot {
   /** Following the tail: growth writes `scrollTop`. */
@@ -116,6 +130,8 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
    */
   let lastScrollHeight = 0;
   let lastClientHeight = 0;
+  /** The offset the last event saw, to measure the next one's move against. */
+  let lastScrollTop = 0;
   let snapshot: TranscriptScrollSnapshot = { pinned, awayFromTail };
   const listeners = new Set<() => void>();
   const readerListeners = new Set<() => void>();
@@ -137,15 +153,9 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
     lastWrittenTop = root.scrollTop;
     lastScrollHeight = root.scrollHeight;
     lastClientHeight = root.clientHeight;
+    lastScrollTop = root.scrollTop;
     awayFromTail = false;
     publish();
-  };
-
-  // The pin owns overflow anchoring. Off while following the tail so the browser
-  // is not a competing writer; handed back on release so a reader who left the
-  // tail keeps their place as turns land above them.
-  const ownAnchoring = (): void => {
-    if (root) root.style.overflowAnchor = pinned ? 'none' : '';
   };
 
   return {
@@ -163,40 +173,52 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
         if (lastWrittenTop !== undefined && Math.abs(target.scrollTop - lastWrittenTop) < 1) {
           lastScrollHeight = target.scrollHeight;
           lastClientHeight = target.clientHeight;
+          lastScrollTop = target.scrollTop;
           return;
         }
-        // While pinned, anchoring is off — the pin owns it — so no second writer
-        // moves the offset: any event that is not this authority's echo is the
-        // reader, and reading their position is exact even when growth changed
-        // the geometry in the same frame. Once released, anchoring is back and a
-        // geometry-changing event is the content or the viewport moving under a
-        // reader this code no longer follows, not a re-pin signal — so a `moved`
-        // event while unpinned is left alone. Only a stable-geometry event, or
-        // the reader arriving back at the tail, moves the pin.
-        const moved =
-          target.scrollHeight !== lastScrollHeight || target.clientHeight !== lastClientHeight;
+        // Content moves the offset too, and only ever by how much the end of
+        // the transcript moved. Native anchoring answers content landing above
+        // the reader by pushing the offset down by exactly what was inserted,
+        // content leaving from above by pulling it up by exactly what went,
+        // and a transcript that ends before the offset by clamping it to the
+        // new end — every one of them somewhere between nothing and that whole
+        // amount. Inside that band their offset changed and their intent did
+        // not, so the pin must not be re-derived from where they now are, and
+        // nobody may be told the reader asked for anything. The affordance
+        // still follows the new distance, because that is a fact about the
+        // viewport rather than about them.
+        //
+        // Outside it, the move is the reader's, and this may not be decided
+        // from the geometry merely having changed. During growth it always
+        // has, so a reader who scrolled while an answer streamed arrived
+        // carrying a changed `scrollHeight` and was discarded along with it —
+        // the pin stayed, and the next growth wrote the view back to the tail.
+        // Scrolling away from a streaming answer is the one moment a reader
+        // most needs to be believed.
+        const maxScroll = target.scrollHeight - target.clientHeight;
+        const contentDelta = maxScroll - (lastScrollHeight - lastClientHeight);
+        const explainedLow = Math.min(0, contentDelta);
+        const explainedHigh = Math.max(0, contentDelta);
+        const topDelta = target.scrollTop - lastScrollTop;
+        const unexplained = topDelta - Math.min(explainedHigh, Math.max(explainedLow, topDelta));
+        const slack = contentDelta === 0 ? 0 : GEOMETRY_ROUNDING_PX;
+        const readerMoved = Math.abs(unexplained) > slack;
         lastScrollHeight = target.scrollHeight;
         lastClientHeight = target.clientHeight;
+        lastScrollTop = target.scrollTop;
         const distance = distanceToTail();
         awayFromTail = distance > BUTTON_THRESHOLD_PX;
-        if (moved && !pinned) {
+        if (!readerMoved) {
           publish();
           return;
         }
         pinned = distance <= PIN_THRESHOLD_PX;
-        ownAnchoring();
         publish();
-        // Only a stable-geometry scroll is a clean reader signal. A geometry
-        // change that reaches here is content settling under the pin, not the
-        // reader asking for earlier history — firing the listeners on it would
-        // request history while still following the tail (a short transcript
-        // sits inside the "near the start" band at its own tail).
-        if (!moved) {
-          for (const listener of [...readerListeners]) listener();
-        }
+        for (const listener of [...readerListeners]) listener();
       };
       lastScrollHeight = target.scrollHeight;
       lastClientHeight = target.clientHeight;
+      lastScrollTop = target.scrollTop;
       target.addEventListener('scroll', onScroll, { passive: true });
       // Everything that moves the tail without the reader asking, watched in
       // one place: the scroller's own box, because the tail also moves when the
@@ -227,28 +249,22 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
       const childList = new MutationObserver(observeBox);
       childList.observe(target, { childList: true });
       observeBox();
-      ownAnchoring();
       if (pinned) writeToTail();
       return () => {
         childList.disconnect();
         box.disconnect();
         target.removeEventListener('scroll', onScroll);
-        // Hand anchoring back to the browser: the pin no longer owns this
-        // scroller, so its default `overflow-anchor` must be restored.
-        target.style.overflowAnchor = '';
         lastWrittenTop = undefined;
         if (root === target) root = null;
       };
     },
     pinToTail() {
       pinned = true;
-      ownAnchoring();
       writeToTail();
       publish();
     },
     releasePin() {
       pinned = false;
-      ownAnchoring();
       awayFromTail = distanceToTail() > BUTTON_THRESHOLD_PX;
       publish();
     },
