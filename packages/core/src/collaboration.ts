@@ -17,10 +17,28 @@
  * under the License.
  */
 
+import type { PermissionMode } from './permission.js';
+
 export const COLLABORATION_MODES = ['agent', 'plan'] as const;
 
 export type CollaborationMode = (typeof COLLABORATION_MODES)[number];
 
 export function isCollaborationMode(value: unknown): value is CollaborationMode {
   return typeof value === 'string' && (COLLABORATION_MODES as readonly string[]).includes(value);
+}
+
+/**
+ * The permission mode a session runs under once its collaboration mode is
+ * applied: Plan mode holds the session to read-only unless it is on Bypass.
+ *
+ * Lives here because both the model composer and tool dispatch have to reach
+ * the same answer; a second copy of the rule is a second authority.
+ */
+export function resolveCollaborationPermissionMode(input: {
+  readonly collaborationMode: CollaborationMode;
+  readonly permissionMode: PermissionMode;
+}): PermissionMode {
+  return input.collaborationMode === 'plan' && input.permissionMode !== 'bypass'
+    ? 'explore'
+    : input.permissionMode;
 }

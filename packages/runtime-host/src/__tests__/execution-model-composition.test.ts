@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { deferred } from '@maka/core/test-only/async-primitives';
+import { deferred, type Deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -98,7 +98,6 @@ import {
 import {
   createHostAiSdkBackend,
   prepareHostAiSdkBackend,
-  resolveCollaborationPermissionMode,
   type HostAiSdkBackendInput,
 } from '../server/execution-model-composition.js';
 import {
@@ -514,6 +513,337 @@ test('production Host executes Bash against the current live sandbox boundary', 
     }
   }
 });
+
+test('permission widening through the Host reaches the next ordinary Turn tool call', async () => {
+  await runPermissionUpdateHostRegression('ordinary_session');
+});
+
+test('permission widening through the Host reaches a tool call in an active Goal continuation', async () => {
+  await runPermissionUpdateHostRegression('active_goal');
+});
+
+async function runPermissionUpdateHostRegression(
+  scenario: 'ordinary_session' | 'active_goal',
+): Promise<void> {
+  const scenarioSlug = scenario.replace('_', '-');
+  const base = await mkdtemp(join(tmpdir(), `maka-host-permission-${scenario}-`));
+  const root = join(base, 'interactive');
+  const project = join(base, 'project');
+  const provider = await startProvider();
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) return;
+  const context: ConnectionContext = {
+    hostEpoch: `permission-${scenario}-epoch`,
+    connectionId: `permission-${scenario}-client`,
+    principal: 'local_os_user',
+    acquireResidency: () => ({ release() {} }),
+  };
+  const capabilityConnectionId = `permission-${scenario}-capability`;
+  const capabilityContext: ConnectionContext = {
+    ...context,
+    connectionId: capabilityConnectionId,
+  };
+  const calls: Array<Extract<ClientCapabilityHostFrame, { kind: 'client.capability.call' }>> = [];
+  let admitted = 0;
+  let composition: Awaited<ReturnType<typeof createExecutionRuntimeHostComposition>> | undefined;
+  let capabilityConnection:
+    | ReturnType<HostClientCapabilityCoordinator['attachConnection']>
+    | undefined;
+  let releaseActiveRequest: (() => void) | undefined;
+  try {
+    await mkdir(project);
+    const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+    const created = await policy.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: `permission-${scenarioSlug}-provider`,
+        name: `Permission ${scenario} provider`,
+        providerType: 'moonshot',
+        baseUrl: provider.baseUrl,
+        enabled: true,
+        enabledModelIds: [MODEL_ID],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const modelConnection = created.snapshot.connections[0];
+    assert.ok(modelConnection);
+    if (!modelConnection) return;
+    assert.equal(
+      (
+        await policy.credentialVault.set({
+          locator: {
+            scope: 'connection',
+            connectionId: modelConnection.connectionId,
+            kind: 'api_key',
+          },
+          expected: null,
+          secret: API_KEY,
+        })
+      ).kind,
+      'committed',
+    );
+    await publishConnectionModel(policy, modelConnection.connectionId, MODEL_ID, 32_768);
+
+    const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const session = await execution.sessionStore.create({
+      cwd: project,
+      llmConnectionId: modelConnection.connectionId,
+      llmConnectionSlug: `permission-${scenarioSlug}-provider`,
+      model: MODEL_ID,
+      permissionMode: 'explore',
+    });
+    composition = await createExecutionRuntimeHostComposition({
+      owner,
+      hostEpoch: context.hostEpoch,
+      acquireResidency: context.acquireResidency,
+      retainUntilProcessExit: () => undefined,
+      requestDrain: () => undefined,
+    });
+    await composition.recover();
+    const clientCapabilities = composition.clientCapabilities as
+      | HostClientCapabilityCoordinator
+      | undefined;
+    assert.ok(clientCapabilities);
+    if (!clientCapabilities) return;
+
+    capabilityConnection = clientCapabilities.attachConnection(
+      clientCapabilityConnectionIdentity(capabilityConnectionId),
+      {
+        send: async (frame) => {
+          if (frame.kind === 'client.capability.call') {
+            calls.push(frame);
+            queueMicrotask(() => {
+              capabilityConnection?.accept({
+                kind: 'client.capability.accepted',
+                invocationId: frame.invocationId,
+                admissionEvidence: { kind: 'none' },
+              });
+            });
+          } else if (frame.kind === 'client.capability.admitted') {
+            admitted += 1;
+            queueMicrotask(() => {
+              capabilityConnection?.accept({
+                kind: 'client.capability.result',
+                invocationId: frame.invocationId,
+                result: {
+                  content: [{ type: 'text', text: CLIENT_CAPABILITY_RESULT_TEXT }],
+                },
+              });
+            });
+          }
+        },
+      },
+    );
+    const registered = await composition.handlers['client.capability.replace'](
+      {
+        registrationId: `permission-${scenario}-registration`,
+        offers: [
+          {
+            offerId: 'hosted-browser',
+            version: '0',
+            affinity: 'session',
+            hostPathAccess: 'cwd',
+            label: 'Hosted Browser',
+            tools: [
+              {
+                serverId: 'hosted_browser',
+                name: 'navigate',
+                description: 'Navigate the hosted browser.',
+                inputSchema: {
+                  type: 'object',
+                  properties: { url: { type: 'string' } },
+                  required: ['url'],
+                  additionalProperties: false,
+                },
+              },
+            ],
+          },
+        ],
+      },
+      capabilityContext,
+    );
+    assert.equal(registered.ok, true);
+    assert.deepEqual(await clientCapabilities.bindSession(session.id, capabilityConnectionId), {
+      ok: true,
+    });
+    const snapshot = clientCapabilities.snapshotForSession(session.id);
+    assert.ok(snapshot);
+    if (!snapshot) return;
+    const group = snapshot.groups[0];
+    const tool = snapshot.tools[0];
+    snapshot.release();
+    assert.ok(group);
+    assert.ok(tool);
+    if (!group || !tool) return;
+    const providerControl = provider.configurePermissionUpdateFlow({
+      scenario,
+      groupId: group.id,
+      toolName: tool.name,
+    });
+    releaseActiveRequest = providerControl.releaseActiveRequest;
+
+    let exercisedRunId: string;
+    if (scenario === 'ordinary_session') {
+      const firstTurnId = 'permission-ordinary-running-turn';
+      const firstStarted = await startTurn(
+        composition,
+        session.id,
+        firstTurnId,
+        'Keep this Turn active while permission changes.',
+        context,
+      );
+      await settleWithin(providerControl.activeRequestStarted);
+      await commitBypassPermissionUpdate(composition, execution, session.id, context);
+      providerControl.releaseActiveRequest();
+      const firstTerminal = await waitForTerminal(
+        composition,
+        session.id,
+        firstTurnId,
+        firstStarted,
+        context,
+      );
+      assert.equal(firstTerminal.status, 'completed');
+
+      const nextTurnId = 'permission-ordinary-next-turn';
+      const nextTerminal = await waitForTerminal(
+        composition,
+        session.id,
+        nextTurnId,
+        await startTurn(
+          composition,
+          session.id,
+          nextTurnId,
+          'Use the connected browser capability.',
+          context,
+        ),
+        context,
+      );
+      assert.equal(nextTerminal.status, 'completed');
+      exercisedRunId = nextTerminal.runId;
+    } else {
+      const armed = await composition.handlers['goal.arm'](
+        {
+          sessionId: session.id,
+          condition: 'Use the connected browser capability once.',
+          maxIterations: 3,
+          tokenBudget: null,
+        },
+        context,
+      );
+      assert.equal(armed.ok, true);
+      if (!armed.ok) return;
+      const carryingTurnId = 'permission-goal-carrying-turn';
+      const carryingStarted = await startTurn(
+        composition,
+        session.id,
+        carryingTurnId,
+        'Begin the active Goal.',
+        context,
+      );
+      const carryingTerminal = waitForTerminal(
+        composition,
+        session.id,
+        carryingTurnId,
+        carryingStarted,
+        context,
+      );
+      await settleWithin(providerControl.activeRequestStarted);
+      assert.equal((await carryingTerminal).status, 'completed');
+      const activeGoalRun = (
+        await execution.runtimeEventStore.listSessionInvocations(session.id)
+      ).find(
+        (run) =>
+          run.terminalEvent === undefined &&
+          run.opening.root.kind === 'goal' &&
+          run.opening.root.goalId === armed.result.goal.goalId,
+      );
+      assert.ok(activeGoalRun, 'Goal continuation did not hold an active Run');
+      if (!activeGoalRun) return;
+      assert.equal(activeGoalRun.opening.configuration.permissionMode, 'explore');
+      exercisedRunId = activeGoalRun.runId;
+
+      await commitBypassPermissionUpdate(composition, execution, session.id, context);
+      providerControl.releaseActiveRequest();
+      await waitForGoalStatus(composition, session.id, 'achieved', context);
+    }
+
+    assert.equal((await execution.sessionStore.readHeader(session.id)).permissionMode, 'bypass');
+    assert.equal((await execution.sessionStore.readExecutionBoundary(session.id)).kind, 'bypass');
+    assert.equal(admitted, 1);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0]?.arguments, {
+      url: 'https://example.test/permission-update',
+    });
+    const events = await execution.runtimeEventStore.readRuntimeEvents(session.id, exercisedRunId);
+    assert.ok(
+      events.some(
+        (event) =>
+          event.content?.kind === 'function_response' &&
+          event.content.name === tool.name &&
+          JSON.stringify(event.content.result).includes(CLIENT_CAPABILITY_RESULT_TEXT),
+      ),
+    );
+  } finally {
+    releaseActiveRequest?.();
+    try {
+      await capabilityConnection?.close();
+    } finally {
+      try {
+        await composition?.close();
+      } finally {
+        try {
+          await owner.close();
+        } finally {
+          try {
+            await provider.close();
+          } finally {
+            await rm(base, { recursive: true, force: true });
+          }
+        }
+      }
+    }
+  }
+}
+
+async function commitBypassPermissionUpdate(
+  composition: Awaited<ReturnType<typeof createExecutionRuntimeHostComposition>>,
+  execution: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>>,
+  sessionId: string,
+  context: ConnectionContext,
+): Promise<void> {
+  const current = await execution.sessionStore.readHeaderRecordSnapshot(sessionId);
+  const updated = await composition.handlers['session.configuration.update'](
+    {
+      sessionId,
+      expectedRevision: current.revision,
+      patch: { permissionMode: 'bypass' },
+    },
+    context,
+  );
+  assert.equal(updated.ok, true, JSON.stringify(updated));
+  if (!updated.ok) return;
+  assert.equal(updated.result.kind, 'committed');
+  if (updated.result.kind !== 'committed' || 'kind' in updated.result.session) return;
+  assert.equal(updated.result.session.permissionMode, 'bypass');
+}
+
+async function waitForGoalStatus(
+  composition: Awaited<ReturnType<typeof createExecutionRuntimeHostComposition>>,
+  sessionId: string,
+  status: 'achieved',
+  context: ConnectionContext,
+): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const queried = await composition.handlers['goal.query']({ sessionId }, context);
+    assert.equal(queried.ok, true);
+    if (queried.ok && queried.result.goal?.status === status) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Hosted Goal did not reach ${status}`);
+}
 
 test('backend creation admits the enabled bootstrap DeepSeek model before discovery', async () => {
   const modelId = 'deepseek-v4-flash';
@@ -4352,6 +4682,15 @@ interface ManagedSandboxPaths {
 type ProviderFlow =
   | { readonly kind: 'default' }
   | {
+      readonly kind: 'permission_update';
+      readonly scenario: 'ordinary_session' | 'active_goal';
+      readonly groupId: string;
+      readonly toolName: string;
+      readonly activeRequestStarted: Deferred<void>;
+      readonly activeRequestRelease: Deferred<void>;
+      goalEvaluationCount: number;
+    }
+  | {
       readonly kind: 'managed_bash';
       readonly sandboxPaths?: ManagedSandboxPaths;
     }
@@ -4372,6 +4711,14 @@ type ProviderFlow =
 async function startProvider(): Promise<{
   readonly baseUrl: string;
   readonly requests: ProviderRequest[];
+  configurePermissionUpdateFlow(input: {
+    scenario: 'ordinary_session' | 'active_goal';
+    groupId: string;
+    toolName: string;
+  }): {
+    readonly activeRequestStarted: Promise<void>;
+    releaseActiveRequest(): void;
+  };
   configureManagedBashFlow(sandboxPaths?: ManagedSandboxPaths): void;
   configureClientCapability(input: { groupId: string; toolName: string }): void;
   configureProjectionImageFlow(toolName: string): void;
@@ -4401,6 +4748,22 @@ async function startProvider(): Promise<{
   return {
     baseUrl: `http://127.0.0.1:${address.port}/v1`,
     requests,
+    configurePermissionUpdateFlow: (input) => {
+      if (flow.kind !== 'default') throw new Error('Provider flow is already configured');
+      const activeRequestStarted = deferred<void>();
+      const activeRequestRelease = deferred<void>();
+      flow = {
+        kind: 'permission_update',
+        ...input,
+        activeRequestStarted,
+        activeRequestRelease,
+        goalEvaluationCount: 0,
+      };
+      return {
+        activeRequestStarted: activeRequestStarted.promise,
+        releaseActiveRequest: () => activeRequestRelease.resolve(),
+      };
+    },
     configureManagedBashFlow: (sandboxPaths) => {
       if (flow.kind !== 'default') throw new Error('Provider flow is already configured');
       flow = {
@@ -4464,6 +4827,11 @@ async function handleProviderRequest(
       serialized,
     );
     const isHistoryCompaction = /context summarization assistant/.test(serialized);
+    const isGoalEvaluation = /goal evaluation judge/.test(serialized);
+    const goalEvaluation =
+      flow.kind === 'permission_update' && flow.scenario === 'active_goal' && isGoalEvaluation
+        ? ++flow.goalEvaluationCount
+        : 0;
     response.writeHead(200, { 'content-type': 'application/json' });
     response.end(
       JSON.stringify({
@@ -4484,9 +4852,20 @@ async function handleProviderRequest(
                     requestedItems: [],
                     incidentalItems: [],
                   })
-                : isHistoryCompaction
-                  ? COMPACT_SUMMARY_TEXT
-                  : SUMMARY_TEXT,
+                : goalEvaluation > 0
+                  ? JSON.stringify({
+                      met: goalEvaluation > 1,
+                      impossible: false,
+                      progress: true,
+                      waiting: false,
+                      reason:
+                        goalEvaluation > 1
+                          ? 'The permission update reached the continuation tool.'
+                          : 'Continue with the permission-sensitive tool call.',
+                    })
+                  : isHistoryCompaction
+                    ? COMPACT_SUMMARY_TEXT
+                    : SUMMARY_TEXT,
             },
             finish_reason: 'stop',
           },
@@ -4497,6 +4876,36 @@ async function handleProviderRequest(
     return;
   }
   const streamRequestIndex = requests.filter((candidate) => candidate.body.stream === true).length;
+  if (flow.kind === 'permission_update' && streamRequestIndex === 1) {
+    if (flow.scenario === 'ordinary_session') {
+      flow.activeRequestStarted.resolve();
+      await flow.activeRequestRelease.promise;
+    }
+    respondProviderText(response, RESPONSE_TEXT);
+    return;
+  }
+  if (flow.kind === 'permission_update' && streamRequestIndex === 2) {
+    if (flow.scenario === 'active_goal') {
+      flow.activeRequestStarted.resolve();
+      await flow.activeRequestRelease.promise;
+    }
+    assert.ok(toolNames(body).includes('tool_search'));
+    respondProviderToolCall(response, streamRequestIndex, 'tool_search', {
+      query: flow.toolName,
+    });
+    return;
+  }
+  if (flow.kind === 'permission_update' && streamRequestIndex === 3) {
+    assert.ok(toolNames(body).includes(flow.toolName));
+    respondProviderToolCall(response, streamRequestIndex, flow.toolName, {
+      url: 'https://example.test/permission-update',
+    });
+    return;
+  }
+  if (flow.kind === 'permission_update') {
+    respondProviderText(response, RESPONSE_TEXT);
+    return;
+  }
   if (flow.kind === 'projection_image' && streamRequestIndex === 1) {
     assert.ok(toolNames(body).includes(flow.toolName));
     respondProviderToolCall(response, streamRequestIndex, flow.toolName, {});

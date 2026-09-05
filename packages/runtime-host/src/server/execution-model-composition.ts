@@ -24,6 +24,7 @@ import { relayModelProfile } from '@maka/core/model-thinking';
 import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
 import type { ModelCallCommit } from '@maka/core/agent-run';
 import type { PermissionMode } from '@maka/core/permission';
+import { resolveCollaborationPermissionMode } from '@maka/core/collaboration';
 import { AiSdkBackend } from '@maka/runtime/ai-sdk-backend';
 import {
   buildDefaultContextBudgetPolicy,
@@ -352,6 +353,8 @@ async function buildHostAiSdkBackend(
           ((message) => input.context.store.appendMessage(input.context.sessionId, message)),
         readExecutionBoundary: () =>
           input.context.store.readExecutionBoundary(input.context.sessionId),
+        readPermissionMode: async () =>
+          (await input.context.store.readHeader(input.context.sessionId)).permissionMode,
         ...(input.context.store.createSandboxBoundaryRequest
           ? {
               createSandboxBoundaryRequest: (request) =>
@@ -516,13 +519,4 @@ class HostAiSdkBackend extends AiSdkBackend {
       }
     }
   }
-}
-
-export function resolveCollaborationPermissionMode(input: {
-  readonly collaborationMode: 'agent' | 'plan';
-  readonly permissionMode: PermissionMode;
-}): PermissionMode {
-  return input.collaborationMode === 'plan' && input.permissionMode !== 'bypass'
-    ? 'explore'
-    : input.permissionMode;
 }
