@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { deferred } from '@maka/core/test-only/async-primitives';
+import { deferred, withTimeout } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -294,7 +294,8 @@ describe('HostInteractionCoordinator', () => {
           return true;
         },
         refreshCanonicalContinuity: async () => {},
-        onSandboxBoundarySettled: async (sessionId) => {
+        resolveSandboxBoundaryRootSession: async (sessionId) => sessionId,
+        onSandboxBoundaryGraphWake: async (sessionId) => {
           assert.equal(sessionId, session.id);
           graphWakes += 1;
         },
@@ -403,7 +404,10 @@ describe('HostInteractionCoordinator', () => {
       const wakeStarted = deferred();
       const releaseWake = deferred();
       const wakeFinished = deferred();
+      const resolverStarted = deferred();
+      const releaseResolver = deferred();
       let resolvedRootSessionId: string | undefined;
+      let wakeNotificationStarted = false;
       const coordinator = new HostInteractionCoordinator({
         store,
         sandboxBoundaries: stores.sessionStore,
@@ -411,12 +415,15 @@ describe('HostInteractionCoordinator', () => {
         sessions: stores.sessionStore,
         preflightSessionSnapshot: () => true,
         refreshCanonicalContinuity: async () => {},
-        resolveSandboxBoundaryGraphWake: async (sessionId) => {
+        resolveSandboxBoundaryRootSession: async (sessionId) => {
           resolvedRootSessionId = sessionId;
+          resolverStarted.resolve();
+          await releaseResolver.promise;
           return session.id;
         },
-        onSandboxBoundarySettled: async (rootSessionId) => {
+        onSandboxBoundaryGraphWake: async (rootSessionId) => {
           assert.equal(rootSessionId, session.id);
+          wakeNotificationStarted = true;
           wakeStarted.resolve();
           await releaseWake.promise;
           wakeFinished.resolve();
@@ -461,9 +468,39 @@ describe('HostInteractionCoordinator', () => {
           answerSettled = true;
         },
       );
-      await wakeStarted.promise;
+      let querySettled = false;
+      let query: ReturnType<(typeof coordinator.handlers)['interaction.query']> | undefined;
       try {
+        await withTimeout(
+          resolverStarted.promise,
+          5_000,
+          'sandbox boundary root-session resolver did not start',
+        );
+        query = coordinator.handlers['interaction.query'](
+          { sessionId: session.id, interactionId: request.requestId },
+          connection(),
+        );
+        void query.then(
+          () => {
+            querySettled = true;
+          },
+          () => {
+            querySettled = true;
+          },
+        );
         await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.equal(
+          querySettled,
+          false,
+          'interaction query bypassed the resolver admission lease',
+        );
+        releaseResolver.resolve();
+        await answer;
+        assert.ok(query);
+        const queryResult = await query;
+        assert.equal(queryResult.ok, true);
+        assert.equal(querySettled, true);
+        await withTimeout(wakeStarted.promise, 5_000, 'sandbox boundary graph wake did not start');
         assert.equal(
           answerSettled,
           true,
@@ -473,9 +510,10 @@ describe('HostInteractionCoordinator', () => {
         if (answerResult?.ok) assert.equal(answerResult.result.status, 'answered');
         assert.equal(resolvedRootSessionId, session.id);
       } finally {
+        releaseResolver.resolve();
         releaseWake.resolve();
-        await wakeFinished.promise;
-        await answer;
+        if (wakeNotificationStarted) await wakeFinished.promise;
+        await answer.catch(() => undefined);
       }
       await binding.close('turn_terminal');
       binding.release();
@@ -503,8 +541,8 @@ describe('HostInteractionCoordinator', () => {
         sessions: stores.sessionStore,
         preflightSessionSnapshot: () => true,
         refreshCanonicalContinuity: async () => {},
-        resolveSandboxBoundaryGraphWake: async () => session.id,
-        onSandboxBoundarySettled: async () => {
+        resolveSandboxBoundaryRootSession: async () => session.id,
+        onSandboxBoundaryGraphWake: async () => {
           throw new Error('graph wake notification failed');
         },
         onPoison: (error) => poison.push(error),
@@ -572,7 +610,8 @@ describe('HostInteractionCoordinator', () => {
           await releaseAdmissionRefresh.promise;
         },
         onPoison: () => {},
-        onSandboxBoundarySettled: async () => {},
+        resolveSandboxBoundaryRootSession: async () => undefined,
+        onSandboxBoundaryGraphWake: async () => {},
       });
       const binding = await bindRuntimeInteractionRun(coordinator, identity);
       const request = sandboxBoundaryEvent({
@@ -656,7 +695,8 @@ describe('HostInteractionCoordinator', () => {
         preflightSessionSnapshot: () => false,
         refreshCanonicalContinuity: async () => {},
         onPoison: () => {},
-        onSandboxBoundarySettled: async () => {},
+        resolveSandboxBoundaryRootSession: async () => undefined,
+        onSandboxBoundaryGraphWake: async () => {},
       });
       const ownerRun = coordinator.bindRun(identity);
 
@@ -1000,7 +1040,8 @@ function createCoordinator(
     preflightSessionSnapshot: () => true,
     refreshCanonicalContinuity: async () => {},
     onPoison: () => {},
-    onSandboxBoundarySettled: async () => {},
+    resolveSandboxBoundaryRootSession: async () => undefined,
+    onSandboxBoundaryGraphWake: async () => {},
     ...overrides,
   });
 }
