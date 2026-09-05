@@ -295,18 +295,18 @@ function inspectCompactionCheckpoints(
     if (event.type !== 'history_compact_checkpoint_recorded') continue;
     const checkpoint = event.data?.checkpoint;
     if (!validateHistoryCompactCheckpointShape(checkpoint, invocation.sessionId)) {
-      // A checkpoint recorded under an older source policy is expected history,
-      // not corruption: the ledger keeps every checkpoint it ever wrote, and
-      // every consumer fails open on it. Reporting it as an error would drown
-      // out the records that really are damaged.
-      const superseded = isSupersededHistoryCompactCheckpoint(checkpoint);
+      // A checkpoint recorded under an older contract is expected history, not
+      // corruption: the ledger keeps every checkpoint it ever wrote, and every
+      // consumer fails open on it. Reporting it as an error would drown out the
+      // records that really are damaged.
+      const superseded = isSupersededHistoryCompactCheckpoint(checkpoint, invocation.sessionId);
       diagnostics.push(
         diagnostic(
           invocation,
           superseded ? 'compaction_checkpoint_superseded' : 'compaction_checkpoint_invalid',
           superseded ? 'info' : 'error',
           superseded
-            ? 'AgentRun contains a durable Compaction checkpoint from a superseded source policy; it is ignored and re-created on demand.'
+            ? 'AgentRun contains a durable Compaction checkpoint from a superseded summary contract; it is ignored and re-created on demand.'
             : 'AgentRun contains an invalid durable Compaction checkpoint record.',
           event.id,
         ),

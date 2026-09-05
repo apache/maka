@@ -29,6 +29,7 @@ import {
   historyCompactCheckpointToModelMessage,
   historyCompactCheckpointToRuntimeEvent,
   isProviderHistoryCompactCheckpoint,
+  isSupersededHistoryCompactCheckpoint,
   matchHistoryCompactCheckpointPrefix,
   validateHistoryCompactCheckpointShape,
 } from '../history-compact-checkpoint.js';
@@ -592,6 +593,38 @@ describe('history compact checkpoint', () => {
     const { summaryFormat: _summaryFormat, ...unmarked } = stamped;
 
     assert.equal(validateHistoryCompactCheckpointShape(unmarked, 'session-1'), false);
+  });
+
+  test('an unmarked 0.1.x checkpoint reads as superseded, a damaged one does not', () => {
+    // Diagnostics have to tell "this Session predates the current summary
+    // contract" apart from "this record is broken". Both fail shape validation,
+    // so the only separator is whether restoring the stamp would make it valid.
+    const stamped = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: [textEvent(0)],
+      summary: STRUCTURED_SUMMARY,
+    });
+    const { summaryFormat: _summaryFormat, ...unmarked } = stamped;
+
+    assert.equal(isSupersededHistoryCompactCheckpoint(unmarked, 'session-1'), true);
+    assert.equal(isSupersededHistoryCompactCheckpoint(stamped, 'session-1'), false);
+    assert.equal(
+      isSupersededHistoryCompactCheckpoint(
+        { ...stamped, source: { ...stamped.source, policyVersion: 'maka.older_policy.v0' } },
+        'session-1',
+      ),
+      true,
+    );
+    assert.equal(
+      isSupersededHistoryCompactCheckpoint({ ...unmarked, coverage: undefined }, 'session-1'),
+      false,
+    );
+    assert.equal(
+      isSupersededHistoryCompactCheckpoint({ ...unmarked, summary: '' }, 'session-1'),
+      false,
+    );
+    // A record from another Session is not this Session's history.
+    assert.equal(isSupersededHistoryCompactCheckpoint(unmarked, 'session-2'), false);
   });
 
   test('a marked checkpoint is held to the complete predicate at load', async () => {

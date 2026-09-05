@@ -491,24 +491,45 @@ export function validateHistoryCompactCheckpointShape(
   );
 }
 
-/** Accept forward progress, or a compare-and-swap rewrite of the exact same source coverage. */
 /**
  * A recorded checkpoint that this Runtime no longer holds to its own contract
- * because it was minted under an older source policy — not a corrupt record.
+ * because it was minted under an older contract — not a corrupt record.
  * Every consumer already fails open on it (compaction re-summarizes, copy
  * drops it); diagnostics use this to say so instead of crying corruption.
+ *
+ * Two generations qualify. A checkpoint carrying an older source policy names
+ * itself. A v0.1.x text checkpoint cannot: it predates both the source policy
+ * and the summary format stamp, so the only thing that separates it from a
+ * damaged record is that restoring the stamp would make it valid.
  */
-export function isSupersededHistoryCompactCheckpoint(value: unknown): boolean {
+export function isSupersededHistoryCompactCheckpoint(value: unknown, sessionId?: string): boolean {
   if (!value || typeof value !== 'object') return false;
   const checkpoint = value as Partial<HistoryCompactCheckpoint>;
+  if (checkpoint.kind !== 'maka.history_compact_checkpoint') return false;
   const policyVersion = checkpoint.source?.policyVersion as unknown;
-  return (
-    checkpoint.kind === 'maka.history_compact_checkpoint' &&
+  if (
     typeof policyVersion === 'string' &&
     policyVersion !== HISTORY_COMPACT_SOURCE_POLICY_VERSION
+  ) {
+    return true;
+  }
+  return isRetiredFreeformTextCheckpoint(checkpoint, sessionId);
+}
+
+/** The unmarked v0.1.x summary contract this Runtime stopped admitting. */
+function isRetiredFreeformTextCheckpoint(
+  checkpoint: Partial<HistoryCompactCheckpoint>,
+  sessionId?: string,
+): boolean {
+  const text = checkpoint as Partial<TextHistoryCompactCheckpoint>;
+  if (checkpoint.version !== 2 || text.summaryFormat !== undefined) return false;
+  return validateHistoryCompactCheckpointShape(
+    { ...checkpoint, summaryFormat: SECTIONED_SUMMARY_FORMAT },
+    sessionId,
   );
 }
 
+/** Accept forward progress, or a compare-and-swap rewrite of the exact same source coverage. */
 export function canReplaceHistoryCompactCheckpoint(
   current: HistoryCompactCheckpoint | undefined,
   candidate: HistoryCompactCheckpoint,
