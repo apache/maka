@@ -41,7 +41,7 @@ export interface UsageColumn {
   width?: number;
 }
 
-type UsageTableRow = Record<string, unknown> & { id: number };
+export type UsageTableRow = Record<string, unknown> & { id: number };
 
 function usageCellNeedsCustomRenderer(value: ReactNode) {
   return (
@@ -81,6 +81,9 @@ export interface UsageEmpty {
 
 export function UsageStatsTable(props: {
   ariaLabel: string;
+  rowIndexStart?: number;
+  rowCount?: number;
+  plugins?: Record<string, TablePlugin<UsageTableRow>>;
   columns: UsageColumn[];
   rows: Array<Array<ReactNode>>;
   empty: UsageEmpty;
@@ -121,13 +124,17 @@ export function UsageStatsTable(props: {
     <Card className="settingsUsageTable" padding={3}>
       <Table
         aria-label={props.ariaLabel}
+        rowIndexStart={props.rowIndexStart}
+        rowCount={props.rowCount}
         data={data}
         columns={columns}
         idKey="id"
         density="compact"
         dividers="rows"
         textOverflow="truncate"
-        plugins={usageTablePlugins}
+        plugins={
+          props.plugins ? { ...usageTablePlugins, ...props.plugins } : usageTablePlugins
+        }
       />
     </Card>
   );

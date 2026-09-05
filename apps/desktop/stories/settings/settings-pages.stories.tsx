@@ -239,6 +239,8 @@ function makeUsageLog(input: {
   };
 }
 
+const USAGE_PAGINATION_SENTINEL = 'Usage pagination page two sentinel';
+
 const usageLogs: UsageStats['logs'] = [
   makeUsageLog({
     id: '1',
@@ -265,6 +267,23 @@ const usageLogs: UsageStats['logs'] = [
     turnId: undefined,
     costUsd: undefined,
   },
+  ...Array.from({ length: 47 }, (_, index) => {
+    const id = String(index + 6);
+    return makeUsageLog({
+      id,
+      kind: 'model',
+      model: 'gpt-5',
+      sessionName: `Usage pagination fixture ${id}`,
+      minutesAgo: index + 40,
+    });
+  }),
+  makeUsageLog({
+    id: '53',
+    kind: 'model',
+    model: 'gpt-5',
+    sessionName: USAGE_PAGINATION_SENTINEL,
+    minutesAgo: 90,
+  }),
 ];
 
 // Priced provenance so the fixtures' costs read as authoritative
@@ -1452,7 +1471,7 @@ function withUsageStoryBridge(
       ): Promise<UpdateAppSettingsResult> => ({
         settings: mergeSettings(settings, patch),
       }),
-      usageStats: async (): Promise<UsageStats> => stats,
+      usageStats: async (): Promise<UsageStats> => ({ ...stats, logs: [...stats.logs] }),
     },
   } satisfies Record<string, unknown>);
 }
@@ -2088,6 +2107,8 @@ export const UsageLongTail: Story = {
     if (showDetails) await userEvent.click(showDetails);
 
     const table = await canvas.findByRole('table', { name: usageCopy.tables.requestsAria });
+    expect(table.querySelectorAll('tbody tr')).toHaveLength(50);
+    expect(within(table).queryByText(USAGE_PAGINATION_SENTINEL)).not.toBeInTheDocument();
     const timeCell = table.querySelector<HTMLTableCellElement>('tbody tr td:first-child');
     expect(timeCell).not.toBeNull();
     const timeText = timeCell?.firstElementChild;
@@ -2112,6 +2133,66 @@ export const UsageLongTail: Story = {
       expect(tooltip).toHaveTextContent(longTarget);
     });
     await userEvent.unhover(targetCellText);
+
+    async function goToPageTwo() {
+      const pageTwo = canvas
+        .getAllByRole('button')
+        .find((button) => button.textContent?.trim() === '2');
+      expect(pageTwo).toBeDefined();
+      await userEvent.click(pageTwo!);
+      await waitFor(() => {
+        const secondPageTable = canvas.getByRole('table', {
+          name: usageCopy.tables.requestsAria,
+        });
+        expect(secondPageTable.querySelectorAll('tbody tr')).toHaveLength(3);
+        expect(secondPageTable).toHaveAttribute('aria-rowcount', String(usageLogs.length));
+        expect(secondPageTable.querySelector('tbody tr')).toHaveAttribute('aria-rowindex', '51');
+        expect(within(secondPageTable).getByText(USAGE_PAGINATION_SENTINEL)).toBeInTheDocument();
+      });
+    }
+
+    async function expectFirstPage(reason: string) {
+      await waitFor(() => {
+        const firstPageTable = canvas.getByRole('table', {
+          name: usageCopy.tables.requestsAria,
+        });
+        expect(firstPageTable.querySelectorAll('tbody tr'), reason).toHaveLength(50);
+        expect(within(firstPageTable).getByText(longTarget)).toBeInTheDocument();
+        expect(within(firstPageTable).queryByText(USAGE_PAGINATION_SENTINEL)).not.toBeInTheDocument();
+      });
+    }
+
+    await goToPageTwo();
+    const modelFilter = canvas.getByRole('textbox', { name: usageCopy.filterAria });
+    await userEvent.type(modelFilter, 'zai');
+    await expectFirstPage('model filter should reset pagination');
+
+    await goToPageTwo();
+    const statusFilter = canvas.getByRole('combobox', { name: usageCopy.statusAria });
+    await userEvent.click(canvas.getByRole('button', { name: usageCopy.clearFilters }));
+    await expectFirstPage('clearing filters should reset pagination');
+    expect(modelFilter).toHaveValue('');
+    expect(statusFilter).toHaveTextContent(usageCopy.statuses[0]);
+
+    await goToPageTwo();
+    await userEvent.click(statusFilter);
+    await userEvent.click(
+      await within(document.body).findByRole('option', { name: usageCopy.statuses[1] }),
+    );
+    await expectFirstPage('status filter should reset pagination');
+
+    await userEvent.click(await canvas.findByRole('button', { name: usageCopy.clearFilters }));
+    await goToPageTwo();
+    const nextRange = canvas
+      .getAllByRole('radio')
+      .find((radio) => radio.getAttribute('aria-checked') === 'false');
+    expect(nextRange).toBeDefined();
+    await userEvent.click(nextRange!);
+    await expectFirstPage('changing range should reset pagination');
+
+    await goToPageTwo();
+    await userEvent.click(canvas.getByRole('button', { name: usageCopy.refreshAria }));
+    await expectFirstPage('refreshing should reset pagination');
   },
 };
 // Real path: the same long-content Usage page at the minimum supported window width.

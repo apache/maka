@@ -19,11 +19,13 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
+  paginateData,
   SegmentedControl,
   SegmentedControlItem,
   Tab,
   TabList,
   Tooltip,
+  useTablePagination,
 } from '@astryxdesign/core';
 import { uiLocaleToIntlLocale } from '@maka/core/ui-locale';
 import { parseDesktopSessionKey } from '../../../../shared/runtime-host-identity.js';
@@ -36,12 +38,14 @@ import {
   type UsageSettingsCopy,
 } from '../../../locales/settings-usage-copy.js';
 import { MetricCard } from './metric-card.js';
-import { UsageStatsTable } from './usage-stats-table.js';
+import { UsageStatsTable, type UsageTableRow } from './usage-stats-table.js';
 import { useActionGuard } from '../controller/action-guard.js';
 import { useOptimisticSettingsDraft } from '../controller/optimistic-settings-draft.js';
 import { useUsageServices, useUsageStats } from '../services-context.js';
 
 type UsageActiveTab = UsageSettings['activeTab'];
+
+const USAGE_REQUESTS_PAGE_SIZE = 50;
 
 /**
  * The Usage settings surface (issue #4425). A disposable view: it unmounts when
@@ -69,6 +73,7 @@ export function UsageSettingsView(props: {
   // panels read `null` (loading/empty) rather than the previous range's numbers.
   const { stats, reload, targetKey } = useUsageStats(persistedUsage.range);
   const [refreshing, setRefreshing] = useState(false);
+  const [usageRefreshRevision, setUsageRefreshRevision] = useState(0);
   const usageRefreshGuard = useActionGuard<'refresh'>();
   const {
     draft: usageDraft,
@@ -127,6 +132,7 @@ export function UsageSettingsView(props: {
 
   async function refresh() {
     if (!usageRefreshGuard.begin('refresh')) return;
+    setUsageRefreshRevision((revision) => revision + 1);
     setRefreshing(true);
     try {
       await reload(usageDraftRef.current.range);
@@ -210,6 +216,7 @@ export function UsageSettingsView(props: {
         {usageDraft.activeTab === 'requests' ? (
           <div className="settingsUsageTabPanel">
             <UsageRequestsPanel
+              key={`${usageDraft.range}:${usageRefreshRevision}`}
               logs={showRequestDetails ? filteredLogs : []}
               showDetails={usageDraft.showDetails}
               modelFilter={usageDraft.modelFilter}
@@ -276,6 +283,21 @@ function UsageRequestsPanel(props: {
   onToggleDetails(showDetails: boolean): void;
   onClearFilters(): void;
 }) {
+  const [page, setPage] = useState(1);
+  const pageCount = Math.max(1, Math.ceil(props.logs.length / USAGE_REQUESTS_PAGE_SIZE));
+  const currentPage = Math.min(page, pageCount);
+  const pagination = useTablePagination<UsageTableRow>({
+    page: currentPage,
+    onPageChange: setPage,
+    totalItems: props.logs.length,
+    pageSize: USAGE_REQUESTS_PAGE_SIZE,
+    size: 'sm',
+  });
+
+  useEffect(() => {
+    setPage(1);
+  }, [props.logs]);
+
   if (!props.showDetails) {
     return (
       <Banner
@@ -290,7 +312,10 @@ function UsageRequestsPanel(props: {
         <div className="settingsUsageModelFilter">
           <TextInput
             value={props.modelFilter}
-            onChange={(value) => props.onModelFilterChange(value)}
+            onChange={(value) => {
+              setPage(1);
+              props.onModelFilterChange(value);
+            }}
             placeholder={props.copy.filterPlaceholder}
             label={props.copy.filterAria}
             isLabelHidden
@@ -308,7 +333,10 @@ function UsageRequestsPanel(props: {
             { value: 'aborted', label: props.copy.statuses[3] },
           ]}
           width={320}
-          onChange={(value) => props.onStatusChange(value as UsageSettings['status'])}
+          onChange={(value) => {
+            setPage(1);
+            props.onStatusChange(value as UsageSettings['status']);
+          }}
         />
         <div className="settingsUsageDetailToggle">
           <span>{props.copy.details}</span>
@@ -327,12 +355,22 @@ function UsageRequestsPanel(props: {
           isDisabled={!props.hasRequestFilters}
           aria-hidden={!props.hasRequestFilters ? 'true' : undefined}
           tabIndex={!props.hasRequestFilters ? -1 : undefined}
-          onClick={props.hasRequestFilters ? props.onClearFilters : undefined}
+          onClick={
+            props.hasRequestFilters
+              ? () => {
+                  setPage(1);
+                  props.onClearFilters();
+                }
+              : undefined
+          }
           label={props.copy.clearFilters}
         />
       </div>
       <UsageStatsTable
         ariaLabel={props.copy.tables.requestsAria}
+        rowIndexStart={(currentPage - 1) * USAGE_REQUESTS_PAGE_SIZE + 1}
+        rowCount={props.logs.length}
+        plugins={{ pagination }}
         columns={[
           { header: props.copy.tables.requestHeaders[0], width: 168 },
           { header: props.copy.tables.requestHeaders[1], width: 72 },
@@ -343,7 +381,7 @@ function UsageRequestsPanel(props: {
           { header: props.copy.tables.requestHeaders[6], numeric: true },
           { header: props.copy.tables.requestHeaders[7], width: 72 },
         ]}
-        rows={props.logs.map((row) => [
+        rows={paginateData(props.logs, currentPage, USAGE_REQUESTS_PAGE_SIZE).map((row) => [
           new Date(row.ts).toLocaleString(uiLocaleToIntlLocale(props.locale)),
           usageRequestKindLabel(row.kind, props.copy),
           usageRequestTarget(row),
@@ -362,7 +400,10 @@ function UsageRequestsPanel(props: {
               variant="ghost"
               size="sm"
               label={props.copy.clearFilters}
-              onClick={props.onClearFilters}
+              onClick={() => {
+                setPage(1);
+                props.onClearFilters();
+              }}
             />
           ) : undefined,
         }}
