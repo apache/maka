@@ -81,7 +81,7 @@ export class SlackBotBridge extends BaseBotAdapter implements SendCapable {
     if (!botToken || !appToken) {
       this.running = false;
       this.readiness = botReadinessFromSettings(this.settings);
-      this.reason = 'missing-slack-tokens';
+      this.reason = 'slack_tokens_missing';
       this.emitStatusChange();
       return;
     }

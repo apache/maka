@@ -220,8 +220,8 @@ function sanitizeBotUserName(value: string): string {
 const BOT_BENIGN_STATUS_REASONS: ReadonlySet<string> = new Set([
   'disabled',
   'stopped',
-  'no-token',
-  'missing-feishu-credentials',
+  'token_missing',
+  'feishu_credentials_missing',
   'feishu-domain-required',
   'feishu-events-not-connected',
   'scaffold-only',

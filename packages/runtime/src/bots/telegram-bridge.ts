@@ -268,7 +268,7 @@ export class TelegramBotBridge extends BaseBotAdapter implements SendCapable {
       return;
     }
     if (!this.settings.token.trim()) {
-      this.reason = 'no-token';
+      this.reason = 'token_missing';
       this.readiness = 'scaffolded';
       return;
     }

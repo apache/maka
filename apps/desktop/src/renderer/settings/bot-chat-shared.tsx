@@ -102,8 +102,8 @@ export function botStatusDetail(status: BotStatus, locale: UiLocale): string {
   const copy = getBotSettingsCopy(locale).status;
   switch (status.reason) {
     case 'disabled': return copy.disabled;
-    case 'no-token': return copy.noToken;
-    case 'missing-feishu-credentials': return copy.missingFeishuCredentials;
+    case 'token_missing': return copy.noToken;
+    case 'feishu_credentials_missing': return copy.missingFeishuCredentials;
     case 'feishu-domain-required': return copy.feishuDomainRequired;
     case 'feishu-events-not-connected': return copy.feishuEventsNotConnected;
     case 'scaffold-only': return copy.unavailable;

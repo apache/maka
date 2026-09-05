@@ -92,7 +92,7 @@ export class FeishuBotBridge extends BaseBotAdapter implements SendCapable {
     const appId = this.settings.appId?.trim() ?? '';
     const appSecret = this.settings.appSecret?.trim() || this.settings.token.trim();
     if (!appId || !appSecret) {
-      this.reason = 'missing-feishu-credentials';
+      this.reason = 'feishu_credentials_missing';
       this.readiness = 'scaffolded';
       this.emitStatusChange();
       return;

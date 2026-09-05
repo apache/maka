@@ -79,7 +79,7 @@ class TestGatewayBridge extends GatewayBridgeBase {
     return this.gatewayUrl;
   }
 
-  protected override checkCredentials(): 'no-credentials' | null {
+  protected override checkCredentials(): 'token_missing' | null {
     return null;
   }
 
@@ -184,8 +184,8 @@ describe('GatewayBridgeBase start gate', () => {
 
   it('does not open a connection when credentials are missing', async () => {
     class NoCredentialsBridge extends TestGatewayBridge {
-      protected override checkCredentials(): 'no-credentials' | null {
-        return 'no-credentials';
+      protected override checkCredentials(): 'token_missing' | null {
+        return 'token_missing';
       }
     }
     const bridge = new NoCredentialsBridge('qq', {
@@ -194,7 +194,7 @@ describe('GatewayBridgeBase start gate', () => {
       token: 'token',
     });
     await bridge.start();
-    assert.equal(bridge.getStatus().reason, 'no-credentials');
+    assert.equal(bridge.getStatus().reason, 'token_missing');
     assert.equal(bridge.getStatus().readiness, 'scaffolded');
     assert.equal(bridge.fetchCalls, 0);
   });

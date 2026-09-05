@@ -218,8 +218,8 @@ function sleep(ms: number): Promise<void> {
 export class DiscordBotBridge extends GatewayBridgeBase implements SendCapable {
   protected resumeGatewayUrl: string | null = null;
 
-  protected override checkCredentials(): 'no-token' | null {
-    return this.settings.token.trim() ? null : 'no-token';
+  protected override checkCredentials(): 'token_missing' | null {
+    return this.settings.token.trim() ? null : 'token_missing';
   }
 
   protected override decideClose(code: number, explicitlyStopped: boolean): WsCloseDecision {

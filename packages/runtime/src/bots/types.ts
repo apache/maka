@@ -28,10 +28,6 @@ export type BotStatusCode =
   | GeneralizedErrorClass
   | 'disabled'
   | 'stopped'
-  | 'no-token'
-  | 'no-credentials'
-  | 'missing-feishu-credentials'
-  | 'missing-slack-tokens'
   | 'slack-disconnected'
   | 'disconnected'
   | 'reconnecting'

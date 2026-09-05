@@ -64,7 +64,7 @@ export abstract class WsBridgeBase extends BaseBotAdapter {
   protected readonly closeReasonPrefix: 'gateway' | 'stream' = 'gateway';
 
   protected abstract openConnection(): Promise<void>;
-  /** Return a reason string (e.g. 'no-token') to abort start(), or null to proceed. */
+  /** Return a reason string (e.g. 'token_missing') to abort start(), or null to proceed. */
   protected abstract checkCredentials(): BotStatusReason | null;
   protected abstract decideClose(code: number, explicitlyStopped: boolean): WsCloseDecision;
   protected abstract handleWsMessage(data: string): void;
