@@ -436,6 +436,8 @@ export const ActiveTaskActionsOpen: Story = {
     const page = within(canvasElement.ownerDocument.body);
     await waitFor(() => expect(page.getByRole('menu')).toBeVisible());
     expect(page.getByRole('menuitem', { name: '重命名' })).toBeVisible();
+    expect(page.getByRole('menuitem', { name: /^归档$/ })).toBeVisible();
+    expect(page.queryByRole('menuitem', { name: /删除/ })).toBeNull();
   },
 };
 

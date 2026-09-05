@@ -135,12 +135,12 @@ afterEach(() => {
 });
 
 describe('useTaskEntryController', () => {
-  it('projects the canonical target, draft identity, Host defaults, and Workspace Picker', async () => {
+  it('projects the target and keeps draft identity in sync with Workspace Picker selections', async () => {
     const { root } = installReactRenderer();
     const services = createFakeTaskEntryServices({
       catalog: {
         ...createFakeTaskEntryServices().catalog,
-        getCatalog: async () => catalog(),
+        getCatalog: async () => catalog(readyHost({ selectNoProject: true })),
       },
     });
 
@@ -158,6 +158,17 @@ describe('useTaskEntryController', () => {
     assert.equal(controller().selectors.workspacePicker.branch, 'main');
     assert.equal(controller().selectors.workspacePicker.groups[0]?.selectedProjectId, 'project-a');
     assert.match(controller().selectors.draftKey, /host-local.*project-a/);
+    const projectDraftKey = controller().selectors.draftKey;
+
+    await act(async () => controller().selectors.workspacePicker.groups[0]!.onSelectNoProject!());
+    assert.equal(controller().selectors.target?.projectId, null);
+    assert.notEqual(controller().selectors.draftKey, projectDraftKey);
+    assert.equal(controller().selectors.workspacePicker.groups[0]?.selectedProjectId, null);
+
+    await act(async () => controller().selectors.workspacePicker.groups[0]!.onSelectProject!('project-a'));
+    assert.equal(controller().selectors.target?.projectId, 'project-a');
+    assert.equal(controller().selectors.draftKey, projectDraftKey);
+    assert.equal(controller().selectors.workspacePicker.label, 'project-a');
   });
 
   it('drains a queued catalog refresh and releases its subscription', async () => {

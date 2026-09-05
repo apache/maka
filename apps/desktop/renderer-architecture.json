@@ -895,8 +895,8 @@
           "@maka/ui/icons": 1,
           "react": 1
         },
-        "importSpecifiers": 122,
-        "nonTriviaTokens": 15587
+        "importSpecifiers": 124,
+        "nonTriviaTokens": 15588
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 2,

@@ -75,7 +75,6 @@ import { ChatMessageSurface } from './chat-message-surface';
 import { useTaskSubmissionReadiness } from './use-task-submission-readiness';
 import {
   deriveTaskReadinessNotice,
-  retireRevisionDraft,
   isTaskSubmissionHardBlocked,
   resolveTaskReadinessModelTarget,
   transcriptReadingPosition,
@@ -184,8 +183,12 @@ import {
 import { createAppShellE2eFixtureActions } from './app-shell-e2e-fixture';
 import { createAppShellChatActions } from './app-shell-chat-actions';
 import { createAppShellTurnActions } from './app-shell-turn-actions';
-import * as revisionActions from './app-shell-revision-actions';
-import type { TurnRevisionDraft } from './app-shell-revision-actions';
+import {
+  abandonTurnRevisionCopyAttempt,
+  completeTurnRevisionCopyAttempt,
+  createAppShellRevisionActions,
+  type TurnRevisionDraft,
+} from './app-shell-revision-actions';
 import { createAppShellSessionStartActions } from './app-shell-session-start-actions';
 import { createAppShellStopAction } from './app-shell-stop-action';
 import { useStableActions } from './use-stable-actions';
@@ -790,15 +793,12 @@ function AppShellContent({
     const source = sessions.find((session) => session.id === draft.sourceSessionId);
     const owner = sessions.find((session) => session.id === draft.draftSessionId);
     if (source && owner && !source.isArchived && !owner.isArchived) return;
-    retireRevisionDraft(
-      draft,
-      (sessionId) => composerRef.current?.clearDraft(sessionId),
-      () =>
-        draft.copyPhase === 'reserved'
-          ? revisionActions.completeTurnRevisionCopyAttempt(draft)
-          : void revisionActions.abandonTurnRevisionCopyAttempt(draft),
-      () => commitRevisionDraft(null),
-    );
+    composerRef.current?.clearDraft(draft.draftSessionId);
+    if (draft.sourceSessionId !== draft.draftSessionId)
+      composerRef.current?.clearDraft(draft.sourceSessionId);
+    if (draft.copyPhase === 'reserved') completeTurnRevisionCopyAttempt(draft);
+    else void abandonTurnRevisionCopyAttempt(draft);
+    commitRevisionDraft(null);
   }, [sessions, commitRevisionDraft]);
 
   const {
@@ -1800,7 +1800,7 @@ function AppShellContent({
     beginEditUserMessage,
     prepareRevisionSend,
     cancelRevisionDraft,
-  } = useStableActions(revisionActions.createAppShellRevisionActions, {
+  } = useStableActions(createAppShellRevisionActions, {
     uiLocale,
     activeIdRef,
     composerRef,
@@ -2112,15 +2112,13 @@ function AppShellContent({
     }
     if (ok !== false && revisionSend) {
       if (expectedRevisionDraft) {
-        retireRevisionDraft(
-          expectedRevisionDraft,
-          (sessionId) => composerRef.current?.clearDraft(sessionId),
-          () => revisionActions.completeTurnRevisionCopyAttempt(expectedRevisionDraft),
-          () => commitRevisionDraft(null),
-        );
-      } else {
-        commitRevisionDraft(null);
+        completeTurnRevisionCopyAttempt(expectedRevisionDraft);
+        composerRef.current?.clearDraft(expectedRevisionDraft.draftSessionId);
+        if (expectedRevisionDraft.sourceSessionId !== expectedRevisionDraft.draftSessionId) {
+          composerRef.current?.clearDraft(expectedRevisionDraft.sourceSessionId);
+        }
       }
+      commitRevisionDraft(null);
     }
     return ok;
   }

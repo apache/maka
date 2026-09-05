@@ -39,5 +39,4 @@ export {
   resolveTaskReadinessModelTarget,
   type TaskReadinessNotice,
 } from './model/task-readiness-notice.js';
-export { retireRevisionDraft } from './model/revision-draft-lifecycle.js';
 export * from './model/session-ui-state.js';
