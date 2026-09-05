@@ -49,6 +49,8 @@ The current authority path is:
 - The effective state is the Runtime Host runtime policy: `packages/core/src/runtime-policy.ts` declares the readonly `privacy.incognitoActive` field and defaults it to `false`; patches are validated by the policy codec's `privacy patch` record rule.
 - Desktop surfaces resolve the effective state from the policy via `queryRuntimePolicy()` (for example `apps/desktop/src/main/runtime-host-search-ipc-main.ts`), and core-boundary consumers validate the projected context through `validateWorkspacePrivacyContext()` (`packages/core/src/incognito.ts`) before reading any field.
 
+One documented exception: the run-ended notification gate (`apps/desktop/src/main/notifications-ipc-main.ts`) still reads `privacy.incognitoActive` from the local settings store, and privacy patches never reach that store (`apps/desktop/src/shared/settings-ownership.ts` excludes `privacy` from the local patch), so the gate keeps seeing the stale or default value after incognito is enabled and can raise a notification carrying the session title and reply preview. Migrating this gate to the policy authority is a named follow-up; until it lands, this gate is the one documented deviation from the rule above.
+
 `validateWorkspacePrivacyContext()` rejects malformed input; it never converts missing or invalid data to `false`. Boundaries that cannot resolve a valid authoritative context must fail closed.
 
 ## Consumer rule
