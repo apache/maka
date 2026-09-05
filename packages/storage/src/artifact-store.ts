@@ -182,6 +182,7 @@ export interface ArtifactAuthorityStore extends DurableArtifactAttachmentReader 
     input: ConversationArtifactCopyInput,
   ): Promise<ConversationArtifactCopyResult>;
   purgeSessionArtifacts(sessionId: string): Promise<void>;
+  reclaimUpgradeResidue(): Promise<void>;
   deleteOwnedArtifactInSession(
     sessionId: string,
     artifactId: string,
@@ -470,6 +471,38 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
       await this.purgeRecordsUnlocked(
         this.records.filter((record) => record.sessionId === sessionId),
       );
+    });
+  }
+
+  /**
+   * Deletes the files the v1 upgrade recorded as no longer named by any record.
+   *
+   * A path some record has since claimed keeps its bytes; every other note is
+   * discharged whether or not the file was still there.
+   */
+  async reclaimUpgradeResidue(): Promise<void> {
+    await this.enqueueMutation(async () => {
+      await this.prepareMutationUnlocked();
+      const recorded = this.metadataRepository.readUpgradeOrphanPaths();
+      if (recorded.length === 0) return;
+      const claimed = new Set(this.records.map((record) => record.relativePath));
+      const directories = new Set<string>();
+      try {
+        for (const relativePath of recorded) {
+          if (claimed.has(relativePath) || !isSafeRelativeArtifactPath(relativePath)) continue;
+          const target = join(this.artifactRoot, relativePath);
+          try {
+            await unlink(target);
+          } catch (error) {
+            if (!isNotFound(error)) throw error;
+            continue;
+          }
+          directories.add(dirname(target));
+        }
+      } finally {
+        for (const directory of directories) await syncDirectory(directory);
+      }
+      this.metadataRepository.forgetUpgradeOrphanPaths(recorded);
     });
   }
 
@@ -1087,10 +1120,6 @@ function assertArtifactTurnKey(value: unknown): asserts value is string {
 
 const ARTIFACT_KIND_SET = new Set<ArtifactKind>(ARTIFACT_KINDS);
 const ARTIFACT_SOURCE_SET = new Set<ArtifactSource>(ARTIFACT_SOURCES);
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 async function assertArtifactDirectory(artifactRoot: string, directory: string): Promise<void> {
   const root = await ensureRealDirectory(artifactRoot);
