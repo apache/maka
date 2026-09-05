@@ -21,6 +21,7 @@ import {
   importGitHubCopilotLocalCredential,
   type ImportedGitHubCopilotCredential,
 } from './oauth/github-copilot-local-credential.js';
+import type { SubscriptionActionCode } from '@maka/core/oauth-subscription';
 import type { ReconnectableReadIpcMain } from './ipc-reconnect-policy.js';
 import {
   findRuntimeHostAccountConnection,
@@ -53,7 +54,7 @@ export function registerRuntimeHostGitHubCopilotIpc(deps: RuntimeHostGitHubCopil
   deps.ipcMain.handle('github-copilot:connect-existing-login', async () => {
     const imported = await importExistingLogin();
     if (!imported.result.ok) return imported.result;
-    if (!imported.secret) return storageFailure('GitHub Copilot login produced no credential');
+    if (!imported.secret) return storageFailure('copilot_import_no_credential');
 
     try {
       const before = await deps.client.loadConnectionCatalog();
@@ -69,23 +70,23 @@ export function registerRuntimeHostGitHubCopilotIpc(deps: RuntimeHostGitHubCopil
       });
       if (adopted.kind === 'rejected') {
         if (adopted.reason === 'superseded') {
-          return storageFailure('GitHub Copilot 账号在导入期间发生变化，请重试。');
+          return storageFailure('copilot_import_superseded');
         }
         return adopted.reason === 'model_unavailable'
-          ? actionFailure('当前 GitHub 账号没有可用的 Copilot 订阅权限。')
-          : actionFailure('当前 GitHub 凭据无法导入，请检查凭据后重试。');
+          ? actionFailure('copilot_subscription_unavailable')
+          : actionFailure('copilot_credential_import_rejected');
       }
       if (adopted.kind === 'failed') {
         return adopted.errorClass === 'auth'
-          ? actionFailure('当前 GitHub 账号没有可用的 Copilot 订阅权限。')
-          : actionFailure('暂时无法验证 GitHub Copilot 订阅状态，请稍后重试。');
+          ? actionFailure('copilot_subscription_unavailable')
+          : actionFailure('copilot_subscription_check_failed');
       }
 
       await selectAccountDefaultIfMissing(deps.client, adopted.connection.connectionId);
       deps.emitConnectionListChanged();
       return { ok: true as const };
     } catch {
-      return storageFailure('GitHub Copilot login could not be committed to Runtime Host');
+      return storageFailure('copilot_import_commit_failed');
     }
   });
 }
@@ -108,10 +109,10 @@ async function selectAccountDefaultIfMissing(
   }
 }
 
-function actionFailure(message: string) {
-  return { ok: false as const, reason: 'token_exchange_failed' as const, message };
+function actionFailure(code: SubscriptionActionCode) {
+  return { ok: false as const, reason: 'token_exchange_failed' as const, code, message: code };
 }
 
-function storageFailure(message: string) {
-  return { ok: false as const, reason: 'storage_failed' as const, message };
+function storageFailure(code: SubscriptionActionCode) {
+  return { ok: false as const, reason: 'storage_failed' as const, code, message: code };
 }

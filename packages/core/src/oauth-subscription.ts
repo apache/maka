@@ -38,7 +38,23 @@
  */
 export type SubscriptionActionResult =
   | { ok: true }
-  | { ok: false; reason: SubscriptionActionFailureReason; message: string };
+  | {
+      ok: false;
+      reason: SubscriptionActionFailureReason;
+      code?: SubscriptionActionCode;
+      message: string;
+    };
+
+export type SubscriptionActionCode =
+  | 'copilot_classic_pat_unsupported'
+  | 'copilot_credential_type_unsupported'
+  | 'copilot_local_credential_missing'
+  | 'copilot_import_no_credential'
+  | 'copilot_import_superseded'
+  | 'copilot_subscription_unavailable'
+  | 'copilot_credential_import_rejected'
+  | 'copilot_subscription_check_failed'
+  | 'copilot_import_commit_failed';
 
 export type SubscriptionActionFailureReason =
   | 'authorization_pending' // no startAuthorization called yet

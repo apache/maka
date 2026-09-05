@@ -36,7 +36,11 @@ import type {
   PermissionSnapshot,
 } from '@maka/core/capabilities';
 import type { UiLocale } from '@maka/core/ui-locale';
-import { isDragGrantPermissionId, OS_PERMISSION_IDS } from '@maka/core/capabilities';
+import {
+  isCapabilityReasonCode,
+  isDragGrantPermissionId,
+  OS_PERMISSION_IDS,
+} from '@maka/core/capabilities';
 import {
   Banner,
   Button,
@@ -421,10 +425,10 @@ function CapabilityRow(props: {
   const { copy, locale } = props;
   const readinessCopy = copy.readiness[capability.readiness];
   const capabilityLabel = localizedCapabilityLabel(capability, locale);
-  const featureReason = localizedSnapshotText(capability.feature.reason, locale);
-  const configurationReason = localizedSnapshotText(capability.configuration.reason, locale);
-  const runtimeReason = localizedSnapshotText(capability.runtimeProbe.reason, locale);
-  const guidance = localizedCapabilityGuidance(capability, locale, copy);
+  const featureReason = capabilityReasonText(capability.feature.reason, capability, copy);
+  const configurationReason = capabilityReasonText(capability.configuration.reason, capability, copy);
+  const runtimeReason = capabilityReasonText(capability.runtimeProbe.reason, capability, copy);
+  const guidance = localizedCapabilityGuidance(capability, copy);
 
   const layers: Array<{ label: string; value: string; reason?: string }> = [
     {
@@ -589,7 +593,7 @@ function OsPermissionRow(props: {
   const purpose = permissionCopy?.purpose ?? '';
   const impact = permissionCopy?.impact ?? '';
   const stateCopy = props.copy.osStates[snapshot.status];
-  const reason = localizedSnapshotText(snapshot.reason, props.locale);
+  const reason = osPermissionReasonText(snapshot, props.copy);
 
   const showRequest = snapshot.canRequest && snapshot.status !== 'granted';
   const showOpenSettings = snapshot.canOpenSettings && snapshot.status !== 'granted';
@@ -704,17 +708,44 @@ function localizedCapabilityLabel(capability: CapabilitySnapshot, locale: UiLoca
   return capability.label;
 }
 
-function localizedSnapshotText(value: string | undefined, locale: UiLocale): string | undefined {
-  if (!value || (locale !== 'zh-CN' && /[\u3400-\u9fff]/u.test(value))) return undefined;
-  return value;
+function capabilityReasonText(
+  reason: string | undefined,
+  capability: CapabilitySnapshot,
+  copy: PermissionCenterCopy,
+): string | undefined {
+  if (!reason) return undefined;
+  if (reason === 'cu_backend_status') {
+    const missing = capability.osPermissions
+      .filter((permission) => permission.required && permission.status !== 'granted')
+      .map((permission) => copy.osPermissions[permission.id]?.label ?? permission.id);
+    return copy.cuBackendStatus(missing, capability.runtimeProbe.state);
+  }
+  if (isCapabilityReasonCode(reason) && reason !== 'cu_backend_status') {
+    return copy.reasons[reason];
+  }
+  // Bot capabilities pass bridge status reasons through as machine codes; the
+  // bot settings page owns their full copy, this summary shows the generic line.
+  return copy.reasonFallback;
 }
 
 function localizedCapabilityGuidance(
   capability: CapabilitySnapshot,
-  locale: UiLocale,
   copy: PermissionCenterCopy,
 ): readonly string[] {
-  return capability.guidance.filter((item) => locale === 'zh-CN' || !/[\u3400-\u9fff]/u.test(item));
+  return capability.guidance
+    .map((code) => capabilityReasonText(code, capability, copy))
+    .filter((item): item is string => Boolean(item));
+}
+
+function osPermissionReasonText(
+  snapshot: OsPermissionSnapshot,
+  copy: PermissionCenterCopy,
+): string | undefined {
+  return snapshot.reason
+    ? isCapabilityReasonCode(snapshot.reason) && snapshot.reason !== 'cu_backend_status'
+      ? copy.reasons[snapshot.reason]
+      : copy.reasonFallback
+    : undefined;
 }
 
 function featureTone(state: CapabilitySnapshot['feature']['state']): StatusSemantic {

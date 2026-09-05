@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 import { randomUUID } from "node:crypto";
 import { open, mkdir, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -36,6 +37,7 @@ import type { createMainWindowController } from "./main-window.js";
 import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
 
 interface RuntimeHostArtifactsIpcDeps {
+  uiLocale(): UiLocale;
   readonly ipcMain: ReconnectableReadIpcMain;
   readonly client: DesktopRuntimeHostClient;
   readonly mainWindowController: ReturnType<typeof createMainWindowController>;
@@ -130,7 +132,7 @@ export function registerRuntimeHostArtifactsIpc(
       if (!artifact) return { ok: false, reason: "not_found" };
       if (artifact.status === "deleted") return { ok: false, reason: "deleted" };
       const result = await deps.mainWindowController.showSaveDialog({
-        title: `另存为 ${artifact.name}`,
+        title: ARTIFACT_DIALOG_COPY[deps.uiLocale()].saveAs(artifact.name),
         defaultPath: artifact.name,
       });
       if (result.canceled || !result.filePath) {
@@ -250,3 +252,9 @@ async function materializeArtifact(
     throw error;
   }
 }
+
+const ARTIFACT_DIALOG_COPY = {
+  'zh-CN': { saveAs: (name: string) => `另存为 ${name}` },
+  'zh-TW': { saveAs: (name: string) => `另存為 ${name}` },
+  en: { saveAs: (name: string) => `Save ${name} as` },
+} satisfies UiCatalog<{ saveAs(name: string): string }>;

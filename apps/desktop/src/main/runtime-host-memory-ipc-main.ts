@@ -23,6 +23,7 @@ import { join } from "node:path";
 import type {
   LocalMemoryBackupInfo,
   LocalMemoryEntryPreview,
+  LocalMemoryOperationCode,
   LocalMemoryState,
 } from '@maka/core/local-memory';
 import { isPathInside } from '@maka/runtime/path-containment';
@@ -34,6 +35,7 @@ import {
   type MemoryEntriesView,
   type MemoryMutateInput,
   type MemoryMutateResult,
+  type MemoryMutationRejectionReason,
   type MemoryRevision,
   type MemoryStateProjection,
 } from "@maka/runtime-host/protocol";
@@ -42,6 +44,8 @@ import {
   handleReconnectableRead,
   type ReconnectableReadIpcMain,
 } from "./ipc-reconnect-policy.js";
+
+type LocalMemoryResultCode = LocalMemoryOperationCode | MemoryMutationRejectionReason;
 
 type LocalMemoryMutationResult =
   | {
@@ -53,7 +57,8 @@ type LocalMemoryMutationResult =
   | {
       readonly ok: false;
       readonly state: LocalMemoryState;
-      readonly reason: string;
+      readonly reason: LocalMemoryResultCode;
+      readonly code: LocalMemoryResultCode;
       readonly message: string;
     };
 
@@ -99,6 +104,7 @@ export function registerRuntimeHostMemoryIpc(
       return {
         ok: false as const,
         state,
+        code: "no_backup",
         message: "No Memory backup is available",
       };
     return restoreBackup(deps, backup.kind);
@@ -108,6 +114,7 @@ export function registerRuntimeHostMemoryIpc(
       return {
         ok: false as const,
         state: await getMemoryState(deps),
+        code: "invalid_backup_kind",
         message: "Invalid Memory backup kind",
       };
     }
@@ -140,12 +147,20 @@ export function registerRuntimeHostMemoryIpc(
           deps,
           BACKUP_FILES[state.latestBackup.kind],
         )
-      : { ok: false as const, message: "No Memory backup is available" };
+      : {
+          ok: false as const,
+          code: "no_backup",
+          message: "No Memory backup is available",
+        };
   });
   deps.ipcMain.handle("memory:openBackup", async (_event, kind: unknown) => {
     return isBackupKind(kind)
       ? openMemoryPath(deps, BACKUP_FILES[kind])
-      : { ok: false as const, message: "Invalid Memory backup kind" };
+      : {
+          ok: false as const,
+          code: "invalid_backup_kind",
+          message: "Invalid Memory backup kind",
+        };
   });
 }
 
@@ -479,13 +494,14 @@ async function restoreBackup(
   kind: MemoryBackupKind,
 ): Promise<
   | { ok: true; state: LocalMemoryState }
-  | { ok: false; state: LocalMemoryState; message: string }
+  | { ok: false; state: LocalMemoryState; code: LocalMemoryResultCode; message: string }
 > {
   const state = await deps.client.queryMemory({ kind: "state" });
   if (state.kind !== "state") {
     return {
       ok: false,
       state: await getMemoryState(deps),
+      code: "memory_unavailable",
       message: "Memory is unavailable",
     };
   }
@@ -494,6 +510,7 @@ async function restoreBackup(
     return {
       ok: false,
       state: await getMemoryState(deps),
+      code: "backup_not_found",
       message: "Memory backup not found",
     };
   }
@@ -505,7 +522,7 @@ async function restoreBackup(
   }));
   return result.ok
     ? { ok: true, state: result.state }
-    : { ok: false, state: result.state, message: result.message };
+    : { ok: false, state: result.state, code: result.code, message: result.message };
 }
 
 async function openMemoryPath(
@@ -514,10 +531,11 @@ async function openMemoryPath(
     "workspaceRoot" | "allowLocalPaths" | "openPath"
   >,
   fileName: string,
-): Promise<{ ok: true } | { ok: false; message: string }> {
+): Promise<{ ok: true } | { ok: false; code: LocalMemoryResultCode; message: string }> {
   if (deps.allowLocalPaths === false) {
     return {
       ok: false,
+      code: "remote_host_owned",
       message: "Memory files are owned by the remote Runtime Host",
     };
   }
@@ -529,15 +547,20 @@ async function openMemoryPath(
     if (!isPathInside(directory, path) || !(await lstat(path)).isFile()) {
       return {
         ok: false,
+        code: "not_regular_file",
         message: "Memory path is not an allowed regular file",
       };
     }
     const error = await deps.openPath(path);
     return error
-      ? { ok: false, message: "The system could not open the Memory file" }
+      ? {
+          ok: false,
+          code: "open_failed",
+          message: "The system could not open the Memory file",
+        }
       : { ok: true };
   } catch {
-    return { ok: false, message: "Memory file not found" };
+    return { ok: false, code: "file_not_found", message: "Memory file not found" };
   }
 }
 
@@ -594,12 +617,13 @@ function isBackupKind(value: unknown): value is MemoryBackupKind {
 
 async function mutationFailure(
   deps: RuntimeHostMemoryIpcDeps,
-  reason: string,
+  reason: LocalMemoryResultCode,
 ): Promise<LocalMemoryMutationResult> {
   return {
     ok: false,
     state: await getMemoryState(deps),
     reason,
+    code: reason,
     message: memoryReasonMessage(reason),
   };
 }

@@ -220,10 +220,7 @@ export function DataSettingsPage(props: {
       if (res.ok) {
         toast.success(copy.imported, summarizeImportResult(res.result, copy));
       } else if (res.reason !== 'canceled') {
-        const detail = res.message && (locale === 'zh-CN' || !/[\u3400-\u9fff]/u.test(res.message))
-          ? res.message
-          : copy.invalidFile;
-        toast.error(copy.importFailed, detail, undefined, diagnosticTarget);
+        toast.error(copy.importFailed, copy.importFailures[res.reason], undefined, diagnosticTarget);
       }
     } catch (error) {
       toast.error(

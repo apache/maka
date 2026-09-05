@@ -25,7 +25,7 @@ import {
   useUiLocale,
 } from '@maka/ui';
 import { createOneShotActionGuard, teardownPendingAuthorization } from './oauth-login-flow-guard';
-import { getProviderSettingsCopy, subscriptionResultMessage } from '../features/connection-settings';
+import { getProviderSettingsCopy, subscriptionActionErrorMessage, subscriptionResultMessage } from '../features/connection-settings';
 import { useRuntimeHostSettingsErrorReporter } from './runtime-host-settings-target.js';
 
 // Shared browser-assisted OAuth login-flow controller (device-code polling).
@@ -210,7 +210,7 @@ export function useOAuthLoginFlow(params: OAuthLoginFlowParams): OAuthLoginFlowC
       const payload = await authorizationBridge.getAuthUrl();
       if ('ok' in payload) {
         if (!oauthLoginFlowMountedRef.current) return;
-        const failureMessage = payload.ok ? copy.retry : subscriptionResultMessage(payload.message, copy.startFailedRetry, locale, payload.reason);
+        const failureMessage = payload.ok ? copy.retry : subscriptionResultMessage(payload, copy.startFailedRetry, locale);
         reportHostError(copy.startFailed, failureMessage);
         setErrorMessage(failureMessage);
         return;
@@ -226,7 +226,7 @@ export function useOAuthLoginFlow(params: OAuthLoginFlowParams): OAuthLoginFlowC
       const opened = await authorizationBridge.openAuthUrl(payload.authRequestId);
       if (!oauthLoginFlowMountedRef.current) return;
       if (!opened.ok) {
-        const message = subscriptionResultMessage(opened.message, copy.openFailedRetry, locale, opened.reason);
+        const message = subscriptionResultMessage(opened, copy.openFailedRetry, locale);
         reportHostError(copy.openFailed, message);
         setErrorMessage(message);
         void authorizationBridge.cancelAuthorization(payload.authRequestId);
@@ -249,7 +249,7 @@ export function useOAuthLoginFlow(params: OAuthLoginFlowParams): OAuthLoginFlowC
         if (!oauthLoginFlowMountedRef.current) return;
         if (params.onLoginSuccess) await params.onLoginSuccess(result.connection);
       } else {
-        const message = subscriptionResultMessage(result.message, copy.incompleteRetry, locale, result.reason);
+        const message = subscriptionResultMessage(result, copy.incompleteRetry, locale);
         reportHostError(copy.incomplete, message);
         setErrorMessage(message);
       }
@@ -293,7 +293,7 @@ export function useOAuthLoginFlow(params: OAuthLoginFlowParams): OAuthLoginFlowC
       } else {
         reportHostError(
           copy.logoutFailed,
-          subscriptionResultMessage(result.message, copy.logoutFailedRetry, locale),
+          subscriptionResultMessage(result, copy.logoutFailedRetry, locale),
         );
       }
     } catch (error) {
@@ -326,13 +326,4 @@ export function useOAuthLoginFlow(params: OAuthLoginFlowParams): OAuthLoginFlowC
     logout: accountBridge ? logout : undefined,
     refresh,
   };
-}
-
-export function subscriptionActionErrorMessage(error: unknown, locale: UiLocale = 'zh-CN'): string {
-  const message = error instanceof Error
-    ? error.message
-    : typeof error === 'string'
-      ? error
-      : '';
-  return subscriptionResultMessage(message, getProviderSettingsCopy(locale).oauthFlow.serviceUnavailable, locale);
 }

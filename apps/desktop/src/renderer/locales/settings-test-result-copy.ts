@@ -163,9 +163,7 @@ export function settingsTestResultMessage(
     case "bot_connection_failed":
       return copy.bot.connectionFailed;
     default:
-      return locale === "en" && result.message.trim()
-        ? result.message
-        : copy.bot.connectionFailed;
+      return copy.bot.connectionFailed;
   }
 }
 
