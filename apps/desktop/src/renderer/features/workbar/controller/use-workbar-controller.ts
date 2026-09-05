@@ -293,19 +293,6 @@ export function useWorkbarController(
 
   const startWorkBoardTask = useCallback(
     (item: WorkBoardItem) => {
-      const pending = pendingWorkBoardStartRef.current;
-      if (pending) {
-        if (pending.itemId === item.id && pending.sessionId !== undefined) {
-          // A previous link attempt failed for this same item: retry the
-          // link against the already-created Session instead of opening a
-          // new surface and creating a duplicate.
-          settlePendingWorkBoardLink(pending);
-          return;
-        }
-        // A claim without a Session was abandoned (its surface was reopened
-        // or never projected a first send), so a fresh start replaces it.
-        pendingWorkBoardStartRef.current = undefined;
-      }
       const result = input.resolveWorkBoardTarget?.(item);
       if (!result) {
         input.toastApi.info(
@@ -317,6 +304,24 @@ export function useWorkbarController(
       if (!result.ok) {
         input.toastApi.info(getDesktopConversationCopy(locale).workBoardPanel.actionFailed, result.message);
         return;
+      }
+      const pending = pendingWorkBoardStartRef.current;
+      if (pending) {
+        if (pending.itemId === item.id && pending.sessionId !== undefined) {
+          if (
+            pending.target.profileId === result.target.profileId &&
+            pending.target.hostId === result.target.hostId &&
+            pending.target.projectId === result.target.projectId
+          ) {
+            // A previous link attempt failed for this same item and target:
+            // retry the already-created Session rather than create a duplicate.
+            settlePendingWorkBoardLink(pending);
+            return;
+          }
+        }
+        // A claim without a Session was abandoned, or the item moved to a new
+        // target after link failure. A fresh start replaces either claim.
+        pendingWorkBoardStartRef.current = undefined;
       }
       const draft = [item.title, item.notes?.trim()].filter(Boolean).join('\n\n');
       const draftKey = input.prepareWorkBoardDraft?.(result.target, draft);
@@ -362,12 +367,12 @@ export function useWorkbarController(
     (sessionId: string, surfaceOwnerToken: number, draftKey: string | undefined) => {
       const pending = pendingWorkBoardStartRef.current;
       if (!pending) return;
-      // A surface reopen changes the token; a Workspace Picker change changes
-      // the draft key. Neither may attach its Session to the old claim.
-      if (
-        surfaceOwnerToken !== pending.surfaceOwnerToken ||
-        draftKey !== pending.draftKey
-      ) {
+      // An older surface can resolve after a later Start has installed a new
+      // claim. Its callback is stale and must not mutate that newer claim.
+      if (surfaceOwnerToken < pending.surfaceOwnerToken) return;
+      // A newer surface abandons the old claim; a Workspace Picker change on
+      // the owning surface does the same. Neither may attach its Session.
+      if (surfaceOwnerToken !== pending.surfaceOwnerToken || draftKey !== pending.draftKey) {
         pendingWorkBoardStartRef.current = undefined;
         return;
       }

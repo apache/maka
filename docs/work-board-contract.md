@@ -175,12 +175,16 @@ establishes a deliberately small link contract while it stays experimental:
   validated for one project into an item that has moved to another.
 - **Surface ownership**: a pending start claim is jointly owned by one specific
   New Task surface instance (its Session selection revision) and its
-  target-scoped draft key. A first send from another surface, or from the same
-  surface after its Host/project changes, clears rather than consumes the claim.
+  target-scoped draft key. A first send from a newer surface, or from the same
+  surface after its Host/project changes, clears rather than consumes the claim;
+  a late callback from an older surface is ignored so it cannot clear a newer
+  claim.
 - **Retry durability (spike limitation)**: the pending-link claim lives in the
   renderer for the lifetime of the current controller. If the Session is
   created and `linkSession` fails, the claim (with its Session id) is retained
-  in memory so retrying `Start task` on the same item reuses that Session.
+  in memory so retrying `Start task` on the same item and unchanged target
+  reuses that Session. If the item moved to a different target, retry discards
+  the old claim and starts a new Session against the current target.
   A renderer reload or app restart before the retry drops the claim; restarting
   the item then creates a second Session and leaves the first unlinked. This is
   an accepted, documented limitation of the spike (persisting a pending-link

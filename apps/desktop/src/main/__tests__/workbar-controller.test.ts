@@ -805,6 +805,46 @@ describe('useWorkbarController', () => {
     assert.deepEqual(links, []);
   });
 
+  it('ignores an older surface callback without clearing a newer claim', async () => {
+    const { root } = installReactRenderer();
+    const links: Array<{ id: string; sessionId: string }> = [];
+    const services = createFakeWorkbarServices({
+      workBoard: {
+        linkSession: async (id, link) => {
+          links.push({ id, sessionId: link.sessionId });
+          return { ok: true, value: workBoardItem(id) };
+        },
+      },
+    });
+    const ownerRef = { current: 0 };
+
+    await act(async () =>
+      renderController(root, services, workBoardInput(session('a'), createFakeToastApi(), {}, ownerRef)),
+    );
+    await act(async () => controller().host.onStartWorkBoardTask?.(workBoardItem('A')));
+    const olderOwner = ownerRef.current;
+    await act(async () => controller().host.onStartWorkBoardTask?.(workBoardItem('A')));
+    const currentOwner = ownerRef.current;
+    assert.equal(olderOwner, 1);
+    assert.equal(currentOwner, 2);
+
+    await act(async () =>
+      controller().commands.bindNewTaskSessionResolver(olderOwner)(
+        'session-old',
+        workBoardItemDraftKey('A'),
+      ),
+    );
+    assert.deepEqual(links, []);
+
+    await act(async () =>
+      controller().commands.bindNewTaskSessionResolver(currentOwner)(
+        'session-current',
+        workBoardItemDraftKey('A'),
+      ),
+    );
+    assert.deepEqual(links, [{ id: 'A', sessionId: 'session-current' }]);
+  });
+
   it('does not link a first send from a different project surface', async () => {
     const { root } = installReactRenderer();
     const links: Array<{ id: string; sessionId: string }> = [];
@@ -947,6 +987,81 @@ describe('useWorkbarController', () => {
       linkCalls.map((call) => call.sessionId),
       ['session-1', 'session-1'],
     );
+  });
+
+  it('starts a new Session when an item target changes after link failure', async () => {
+    const { root } = installReactRenderer();
+    let attempts = 0;
+    const linkCalls: Array<{ id: string; sessionId: string }> = [];
+    const resolvedProjectIds: string[] = [];
+    const services = createFakeWorkbarServices({
+      workBoard: {
+        linkSession: async (id, link) => {
+          attempts += 1;
+          linkCalls.push({ id, sessionId: link.sessionId });
+          if (attempts === 1) return { ok: false, message: 'transient SQLite busy' };
+          return { ok: true, value: workBoardItem(id) };
+        },
+      },
+    });
+    const ownerRef = { current: 0 };
+    const opened: number[] = [];
+    const resolveWorkBoardTarget: NonNullable<UseWorkbarControllerInput['resolveWorkBoardTarget']> =
+      (item) => {
+        const projectId = item.scope.kind === 'project' ? item.scope.projectId : 'unavailable';
+        resolvedProjectIds.push(projectId);
+        return {
+          ok: true,
+          target: {
+            profileId: 'profile-1',
+            hostId: 'host-1',
+            projectId,
+          },
+        };
+      };
+    const controllerInput = workBoardInput(session('a'), createFakeToastApi(), {
+      resolveWorkBoardTarget,
+      openNewTaskSurface: () => {
+        ownerRef.current += 1;
+        opened.push(ownerRef.current);
+        return ownerRef.current;
+      },
+    }, ownerRef);
+
+    await act(async () => renderController(root, services, controllerInput));
+    await act(async () => controller().host.onStartWorkBoardTask?.(workBoardItem('A')));
+    await act(async () =>
+      controller().commands.bindNewTaskSessionResolver(ownerRef.current)(
+        'session-1',
+        workBoardItemDraftKey('A'),
+      ),
+    );
+    assert.equal(linkCalls.length, 1);
+
+    const movedItem: WorkBoardActiveItem = {
+      ...workBoardItem('A'),
+      revision: 2,
+      scope: { kind: 'project', projectId: 'project-B' },
+    };
+    await act(async () => controller().host.onStartWorkBoardTask?.(movedItem));
+    assert.deepEqual(opened, [1, 2]);
+    assert.equal(linkCalls.length, 1);
+
+    await act(async () =>
+      controller().commands.bindNewTaskSessionResolver(ownerRef.current)(
+        'session-2',
+        workBoardDraftKey({
+          profileId: 'profile-1',
+          hostId: 'host-1',
+          projectId: 'project-B',
+        }),
+      ),
+    );
+    assert.deepEqual(linkCalls, [
+      { id: 'A', sessionId: 'session-1' },
+      { id: 'A', sessionId: 'session-2' },
+    ]);
+    assert.deepEqual(resolvedProjectIds, ['project-A', 'project-B']);
   });
 
   it('opens a previously linked Session from a board item', async () => {
