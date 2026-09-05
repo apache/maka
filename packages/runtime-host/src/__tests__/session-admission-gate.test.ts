@@ -90,15 +90,16 @@ test('serializes overlapping multi-Session admissions without lock-order deadloc
   assert.deepEqual(order, ['first:start', 'third', 'first:end', 'second']);
 });
 
-test('keeps the admission open until admitted child work settles', async () => {
+test('keeps the admission open until joined leaf work settles', async () => {
   const gate = new SessionAdmissionGate();
   const childEntered = deferred();
   const releaseChild = deferred();
   let outerSettled = false;
 
   const outer = gate
-    .run('session', (lease) => {
-      void gate.runAdmitted('session', lease, async () => {
+    .run('session', () => {
+      assert.throws(() => gate.runOrJoin('other', () => undefined), /does not match/);
+      void gate.runOrJoin('session', async () => {
         childEntered.resolve();
         await releaseChild.promise;
       });

@@ -28,6 +28,7 @@ import { openInteractiveArtifactStoreForWrite } from '@maka/storage/artifact-sto
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import { createHostExecutionArtifactServices } from '../server/execution-artifacts.js';
 import { restoreArtifactV1Shape } from './fixtures/artifact-v1.js';
+import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 
 test('Hosted execution publishes contained Tool Artifacts and durable result archives', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-host-execution-artifacts-'));
@@ -45,6 +46,8 @@ test('Hosted execution publishes contained Tool Artifacts and durable result arc
     const store = await openInteractiveArtifactStoreForWrite(owner.lease);
     const services = createHostExecutionArtifactServices({
       artifacts: store,
+      sessionAdmission: new SessionAdmissionGate(),
+      sessions: { probeSessionRemoval: async () => ({ kind: 'present' }) },
       requestDrain: () => assert.fail('successful Artifact writes must not request Host drain'),
     });
     await services.recordToolArtifacts({
@@ -103,6 +106,8 @@ test('Hosted execution publishes contained Tool Artifacts and durable result arc
     try {
       const successor = createHostExecutionArtifactServices({
         artifacts: upgraded,
+        sessionAdmission: new SessionAdmissionGate(),
+        sessions: { probeSessionRemoval: async () => ({ kind: 'present' }) },
         requestDrain: () => assert.fail('reading an upgraded archive must not drain'),
       });
       assert.deepEqual(
