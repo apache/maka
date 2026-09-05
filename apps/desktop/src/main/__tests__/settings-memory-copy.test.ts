@@ -44,10 +44,11 @@ test('renders Runtime Host memory rejection codes per locale', () => {
 });
 
 test('falls back for an unknown Runtime Host memory rejection code', () => {
-  assert.equal(
-    memoryResultMessage({ code: 'future_host_code' }, getMemorySettingsCopy('en'), 'fallback'),
-    'fallback',
-  );
+  for (const locale of UI_LOCALES) {
+    for (const code of [undefined, '', 'future_host_code', 'toString', 'constructor', '__proto__']) {
+      assert.equal(memoryResultMessage({ code }, getMemorySettingsCopy(locale), 'fallback'), 'fallback');
+    }
+  }
 });
 
 const formattedCopy = {

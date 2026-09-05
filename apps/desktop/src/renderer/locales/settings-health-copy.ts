@@ -18,6 +18,7 @@
  */
 
 import type { StatusSemantic } from '@maka/ui';
+import type { CapabilityReasonCode } from '@maka/core/capabilities';
 import type {
   HealthConnectionTestErrorClass,
   HealthSignal,
@@ -28,7 +29,7 @@ import type {
   HealthSignalStatus,
 } from '@maka/core/health';
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, lookupCopy } from '@maka/core/ui-locale';
 
 /**
  * Health signals carry their own severity ladder — error > warning > info > ok
@@ -253,6 +254,84 @@ const connectionTestErrorMessages = {
   },
 } satisfies UiCatalog<Record<HealthConnectionTestErrorClass, string>>;
 
+const capabilityReasons = {
+  'zh-CN': {
+    disabled: '该能力当前已关闭。',
+    'missing platform credentials': '等待填写平台凭据。',
+    'macOS TCC only': '仅 macOS 系统权限可探测。',
+    'no Electron API for per-target Apple Events TCC status': '系统未提供可直接读取的授权状态。',
+    cu_artifact_missing: '未找到通过完整性检查的 Computer Use 执行器 artifact。',
+    cu_backend_status: 'maka-cu artifact 已通过本地完整性检查。',
+    cu_backend_unavailable: 'Computer Use 后端当前不可用。',
+    cu_executor_undistributable: '未找到通过完整性检查且可分发的 maka-cu executor。',
+    cu_executor_stopped: 'maka-cu executor 已停止。',
+    cu_executor_start_failed: 'maka-cu executor 启动失败或已退出。',
+    cu_executor_recovering: 'maka-cu executor 正在启动或恢复。',
+    cu_executor_ready: 'maka-cu executor 已就绪。',
+    cu_executor_lazy_start: 'maka-cu 已可用，将在首次调用时启动。',
+    activity_recorder_partial: 'Daily Review 已聚合本地任务 / 工具 / 模型活动；当前不包含屏幕与应用级录制',
+    activity_recorder_probe_hint: '打开 Daily Review 可查看本地活动聚合结果',
+    memory_partial: '本地 MEMORY.md 已可见；自动抽取/写入仍需用户确认',
+    memory_no_probe: '透明本地记忆为文件读写能力，不做后台探测',
+    accessibility_status_ambiguous: 'macOS 不区分辅助功能权限是未授权还是未申请',
+    screen_recording_status_mac_only: '屏幕录制权限状态仅能在 macOS 上读取',
+    notifications_status_unreadable_macos: 'Electron 无法可靠读取 macOS 通知授权状态，请在系统设置中确认',
+    notifications_status_unreadable: 'Electron 无法可靠读取当前系统的通知授权状态',
+    notifications_unsupported: 'Electron 通知能力不可用',
+    permission_probe_failed: '权限探测失败',
+  },
+  'zh-TW': {
+    disabled: '此能力目前已關閉。',
+    'missing platform credentials': '等待填寫平台憑據。',
+    'macOS TCC only': '僅能探測 macOS 系統權限。',
+    'no Electron API for per-target Apple Events TCC status': '系統未提供可直接讀取的授權狀態。',
+    cu_artifact_missing: '找不到通過完整性檢查的 Computer Use 執行器 artifact。',
+    cu_backend_status: 'maka-cu artifact 已通過本機完整性檢查。',
+    cu_backend_unavailable: 'Computer Use 後端目前無法使用。',
+    cu_executor_undistributable: '找不到通過完整性檢查且可分發的 maka-cu executor。',
+    cu_executor_stopped: 'maka-cu executor 已停止。',
+    cu_executor_start_failed: 'maka-cu executor 啟動失敗或已退出。',
+    cu_executor_recovering: 'maka-cu executor 正在啟動或恢復。',
+    cu_executor_ready: 'maka-cu executor 已就緒。',
+    cu_executor_lazy_start: 'maka-cu 已可用，將在首次呼叫時啟動。',
+    activity_recorder_partial: 'Daily Review 已彙整本機任務 / 工具 / 模型活動；目前不包含螢幕與應用程式層級錄製',
+    activity_recorder_probe_hint: '開啟 Daily Review 可檢視本機活動彙整結果',
+    memory_partial: '本機 MEMORY.md 已可見；自動擷取/寫入仍需使用者確認',
+    memory_no_probe: '透明本機記憶為檔案讀寫能力，不做背景探測',
+    accessibility_status_ambiguous: 'macOS 不區分輔助使用權限是未授權還是未申請',
+    screen_recording_status_mac_only: '螢幕錄製權限狀態僅能在 macOS 上讀取',
+    notifications_status_unreadable_macos: 'Electron 無法可靠讀取 macOS 通知授權狀態，請在系統設定中確認',
+    notifications_status_unreadable: 'Electron 無法可靠讀取目前系統的通知授權狀態',
+    notifications_unsupported: 'Electron 通知能力無法使用',
+    permission_probe_failed: '權限探測失敗',
+  },
+  en: {
+    disabled: 'This capability is turned off.',
+    'missing platform credentials': 'Waiting for platform credentials.',
+    'macOS TCC only': 'Only macOS system permissions can be probed.',
+    'no Electron API for per-target Apple Events TCC status': 'The system does not expose authorization status directly.',
+    cu_artifact_missing: 'No Computer Use executor artifact passed the integrity check.',
+    cu_backend_status: 'The maka-cu artifact passed the local integrity check.',
+    cu_backend_unavailable: 'The Computer Use backend is currently unavailable.',
+    cu_executor_undistributable: 'No distributable maka-cu executor passed the integrity check.',
+    cu_executor_stopped: 'The maka-cu executor has stopped.',
+    cu_executor_start_failed: 'The maka-cu executor failed to start or has exited.',
+    cu_executor_recovering: 'The maka-cu executor is starting or recovering.',
+    cu_executor_ready: 'The maka-cu executor is ready.',
+    cu_executor_lazy_start: 'maka-cu is available and starts on first use.',
+    activity_recorder_partial: 'Daily Review aggregates local task, tool, and model activity; screen and app-level recording is not included.',
+    activity_recorder_probe_hint: 'Open Daily Review to see the local activity summary.',
+    memory_partial: 'The local MEMORY.md is visible; automatic extraction and writes still require confirmation.',
+    memory_no_probe: 'Transparent local memory is plain file access, so no background probe runs.',
+    accessibility_status_ambiguous: 'macOS does not distinguish denied from never-requested Accessibility permission',
+    screen_recording_status_mac_only: 'Screen Recording permission status can only be read on macOS',
+    notifications_status_unreadable_macos: 'Electron cannot reliably read macOS notification authorization; check System Settings',
+    notifications_status_unreadable: 'Electron cannot reliably read notification authorization on this system',
+    notifications_unsupported: 'Electron notifications are unavailable',
+    permission_probe_failed: 'Permission probe failed',
+  },
+} satisfies UiCatalog<Record<CapabilityReasonCode, string>>;
+
 function signalDetailZh(detail: HealthSignalDetail | undefined): string | undefined {
   if (!detail) return undefined;
   switch (detail.kind) {
@@ -271,9 +350,7 @@ function signalDetailZh(detail: HealthSignalDetail | undefined): string | undefi
         ...(detail.errorClass ? [`错误类型=${localizedRuntimeErrorClass(detail.errorClass, 'zh-CN')}`] : []),
       ].join(' · ');
     case 'capability_reason':
-      // Interim: capability-snapshot still emits zh-CN prose; code it as a
-      // CapabilityReasonCode to drop this sniff.
-      return /[\u3400-\u9fff]/u.test(detail.reason) ? detail.reason : '状态详情请见对应设置页。';
+      return lookupCopy(capabilityReasons['zh-CN'], detail.reason) ?? '状态详情请见对应设置页。';
     case 'last_test_error_class':
       return connectionTestErrorMessages['zh-CN'][detail.errorClass];
     case 'last_test_message':
@@ -301,7 +378,7 @@ function signalDetailZhTw(detail: HealthSignalDetail | undefined): string | unde
         ...(detail.errorClass ? [`錯誤類型=${localizedRuntimeErrorClass(detail.errorClass, 'zh-TW')}`] : []),
       ].join(' · ');
     case 'capability_reason':
-      return '狀態詳細資料請參閱對應的設定頁。';
+      return lookupCopy(capabilityReasons['zh-TW'], detail.reason) ?? '狀態詳細資料請參閱對應的設定頁。';
     case 'last_test_error_class':
       return connectionTestErrorMessages['zh-TW'][detail.errorClass];
     case 'last_test_message':
@@ -329,7 +406,7 @@ function signalDetailEn(detail: HealthSignalDetail | undefined): string | undefi
         ...(detail.errorClass ? [`Error type=${localizedRuntimeErrorClass(detail.errorClass, 'en')}`] : []),
       ].join(' · ');
     case 'capability_reason':
-      return 'See the corresponding settings page for details.';
+      return lookupCopy(capabilityReasons.en, detail.reason) ?? 'See the corresponding settings page for details.';
     case 'last_test_error_class':
       return connectionTestErrorMessages.en[detail.errorClass];
     case 'last_test_message':

@@ -19,7 +19,7 @@
 
 import type { LocalMemoryState } from '@maka/core/local-memory';
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, lookupCopy } from '@maka/core/ui-locale';
 
 type MemoryTextKey =
   | 'localFile' | 'localFileHelp' | 'enableLocalFile' | 'agentReadable' | 'agentReadableHelp' | 'enableAgentRead'
@@ -242,6 +242,5 @@ export function memoryResultMessage(
   copy: MemorySettingsCopy,
   fallback: string,
 ): string {
-  const results: Readonly<Record<string, string | undefined>> = copy.results;
-  return (result.code && results[result.code]) || fallback;
+  return lookupCopy(copy.results, result.code) || fallback;
 }

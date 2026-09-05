@@ -19,6 +19,8 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { CAPABILITY_REASON_CODES } from '@maka/core/capabilities';
+import { UI_LOCALES, type UiCatalog } from '@maka/core/ui-locale';
 import { connectionLastTestMessageDisplay } from '../../renderer/features/connection-settings/index.js';
 import { getHealthCenterCopy } from '../../renderer/locales/settings-health-copy.js';
 
@@ -96,23 +98,27 @@ test('renders runtime probe details from structured params, not string parsing',
   );
 });
 
-test('keeps zh capability reasons and hides wrong-locale ones', () => {
-  const zhReason = { kind: 'capability_reason', reason: '未配置平台凭据' } as const;
-  assert.equal(getHealthCenterCopy('zh-CN').signalDetail(signal({ detail: zhReason })), '未配置平台凭据');
-  assert.equal(
-    getHealthCenterCopy('en').signalDetail(signal({ detail: zhReason })),
-    'See the corresponding settings page for details.',
-  );
-
-  const enReason = { kind: 'capability_reason', reason: 'Slack requires a Bot Token.' } as const;
-  assert.equal(
-    getHealthCenterCopy('zh-CN').signalDetail(signal({ detail: enReason })),
-    '状态详情请见对应设置页。',
-  );
-  assert.equal(
-    getHealthCenterCopy('en').signalDetail(signal({ detail: enReason })),
-    'See the corresponding settings page for details.',
-  );
+test('renders capability codes in all locales without inspecting prose', () => {
+  const expected = {
+    'zh-CN': ['maka-cu executor 正在启动或恢复。', '等待填写平台凭据。', '状态详情请见对应设置页。'],
+    'zh-TW': ['maka-cu executor 正在啟動或恢復。', '等待填寫平台憑據。', '狀態詳細資料請參閱對應的設定頁。'],
+    en: ['The maka-cu executor is starting or recovering.', 'Waiting for platform credentials.', 'See the corresponding settings page for details.'],
+  } satisfies UiCatalog<readonly [string, string, string]>;
+  for (const locale of UI_LOCALES) {
+    const copy = getHealthCenterCopy(locale);
+    const [recovering, credentials, fallback] = expected[locale];
+    const render = (reason: string) => copy.signalDetail(signal({ detail: { kind: 'capability_reason', reason } }));
+    assert.equal(render('cu_executor_recovering'), recovering);
+    assert.equal(render('missing platform credentials'), credentials);
+    for (const code of CAPABILITY_REASON_CODES) {
+      assert.equal(typeof render(code), 'string');
+      assert.notEqual(render(code), fallback, `${locale}: ${code} must have copy`);
+      assert.notEqual(render(code), code);
+    }
+    for (const reason of ['future_code', '未配置平台凭据', 'Slack requires a Bot Token.', 'toString', '__proto__']) {
+      assert.equal(render(reason), fallback);
+    }
+  }
 });
 
 test('maps connection test error classes without exposing machine tokens', () => {

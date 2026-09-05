@@ -741,12 +741,11 @@ function osPermissionReasonText(
   snapshot: OsPermissionSnapshot,
   copy: PermissionCenterCopy,
 ): string | undefined {
-  const text = snapshot.reason
+  return snapshot.reason
     ? isCapabilityReasonCode(snapshot.reason) && snapshot.reason !== 'cu_backend_status'
       ? copy.reasons[snapshot.reason]
       : copy.reasonFallback
     : undefined;
-  return text;
 }
 
 function featureTone(state: CapabilitySnapshot['feature']['state']): StatusSemantic {
