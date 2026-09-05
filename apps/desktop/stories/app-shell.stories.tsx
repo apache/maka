@@ -18,7 +18,7 @@
  */
 
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { expect, waitFor } from 'storybook/test';
+import { expect, userEvent, waitFor, within } from 'storybook/test';
 import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
 import type { ComponentProps } from 'react';
 import type { ProjectRecord } from '@maka/core/project';
@@ -271,6 +271,7 @@ const baseComposerProps: ComposerProps = {
 
 function ShellFrame(props: {
   children: ReactNode;
+  height?: number | string;
   motionEnabled?: boolean;
   sidebarCollapsed?: boolean;
 }) {
@@ -287,6 +288,7 @@ function ShellFrame(props: {
       style={
         {
           minHeight: 640,
+          height: props.height,
           /* Same publication point as production, for the same reason as
              `data-sidebar-state` above: the titlebar's first grid track is a
              `calc()` on this variable, and an unset variable makes the whole
@@ -336,6 +338,7 @@ function ComposedShell(props: {
    * supplying the relatives, not by hand-writing what the helpers would return.
    */
   relatedSessions?: SessionSummary[];
+  frameHeight?: number | string;
   /** Drives the footer's update action; `undefined` is the silent phase. */
   updateReminder?: SessionListPanelProps['updateReminder'];
 }) {
@@ -380,7 +383,11 @@ function ComposedShell(props: {
   }));
 
   return (
-    <ShellFrame motionEnabled={props.motionEnabled} sidebarCollapsed={collapsed}>
+    <ShellFrame
+      height={props.frameHeight}
+      motionEnabled={props.motionEnabled}
+      sidebarCollapsed={collapsed}
+    >
       <header className="maka-window-titlebar">
         <AppShellTopbarActions
           sidebarCollapsed={collapsed}
@@ -490,6 +497,22 @@ function ComposedShell(props: {
 // messages (sidebar expanded, composer ready).
 export const DefaultLayout: Story = {
   render: () => <ComposedShell />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const sidebar = canvas.getByRole('navigation', { name: '任务列表' });
+    const actions = canvasElement.querySelector<HTMLElement>(
+      '[data-maka-contract="shell-topbar-rail"]',
+    );
+    if (!actions) throw new Error('Shell topbar rail did not render');
+    await expect(sidebar).toBeVisible();
+    await expect(actions).toBeVisible();
+    const sidebarBox = sidebar.getBoundingClientRect();
+    const actionsBox = actions.getBoundingClientRect();
+    const trailingInset = sidebarBox.right - actionsBox.right;
+    expect(trailingInset).toBeGreaterThanOrEqual(0);
+    expect(trailingInset).toBeLessThanOrEqual(16);
+    expect(getComputedStyle(actions).columnGap).toBe('4px');
+  },
 };
 
 // Real path: the updater finishes downloading in the background (autoDownload
@@ -512,6 +535,21 @@ export const UpdateDownloadedCollapsed: Story = {
   render: () => (
     <ComposedShell sidebarCollapsed updateReminder={{ state: 'downloaded', latestVersion: '0.1.7' }} />
   ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const sidebar = canvasElement.querySelector<HTMLElement>('nav.maka-session-panel');
+    const motion = canvasElement.querySelector<HTMLElement>('.maka-sidenav-motion');
+    if (!sidebar || !motion) throw new Error('Collapsed sidebar did not render');
+    await expect(sidebar).not.toBeVisible();
+    expect(getComputedStyle(motion).width).toBe('0px');
+    const expand = canvas.getByRole('button', { name: '展开侧边栏' });
+    await expect(expand).toBeVisible();
+    expand.click();
+    await waitFor(() => {
+      expect(canvas.getByRole('navigation', { name: '任务列表' })).toBeVisible();
+    });
+    expect(canvas.getByRole('button', { name: '收起侧边栏' })).toBeVisible();
+  },
 };
 
 // Real path: send a message → the turn is streaming (composer shows the
@@ -848,6 +886,72 @@ export const ManyTurns: Story = {
       }}
     />
   ),
+};
+
+// Real path: enough task history to overflow the sidebar. The rail owns the
+// scrollport while its footer remains inside the fixed shell frame.
+export const OverflowingSidebar: Story = {
+  render: () => (
+    <ComposedShell
+      frameHeight={680}
+      relatedSessions={Array.from({ length: 60 }, (_, index) =>
+        makeSession({
+          id: `session-overflow-${index}`,
+          name: `历史任务 ${String(index + 1).padStart(2, '0')}`,
+          lastMessageAt: NOW - (index + 20) * 60_000,
+          projectId: 'project-maka',
+          cwd: '/workspace/maka-agent',
+        }))}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const nav = canvasElement.querySelector<HTMLElement>('nav.maka-session-panel');
+    const wrapper = canvasElement.querySelector<HTMLElement>('.maka-sidenav-motion');
+    const footer = canvasElement.querySelector<HTMLElement>('.maka-session-panel-footer');
+    if (!nav || !wrapper || !footer) throw new Error('Overflowing sidebar is incomplete');
+    const scrollOwner = [nav, ...nav.querySelectorAll<HTMLElement>('*')].find(
+      (element) =>
+        element.scrollHeight - element.clientHeight > 4 &&
+        getComputedStyle(element).overflowY !== 'visible',
+    );
+    expect(scrollOwner).toBeDefined();
+    const frameBottom = canvasElement.querySelector<HTMLElement>('.appFrame')?.getBoundingClientRect().bottom;
+    if (frameBottom === undefined) throw new Error('Shell frame did not render');
+    expect(wrapper.getBoundingClientRect().bottom).toBeLessThanOrEqual(frameBottom + 1);
+    expect(footer.getBoundingClientRect().bottom).toBeLessThanOrEqual(frameBottom + 1);
+  },
+};
+
+// Real path: an assistant response in a wide conversation. Maka's prose owns
+// the full turn column instead of inheriting Astryx's 680px text cap.
+export const WideAssistantProse: Story = {
+  render: () => (
+    <ComposedShell
+      chat={{
+        messages: [
+          user('msg-wide-u', 'turn-wide', 2, '检查宽屏回答的阅读列。'),
+          assistant(
+            'msg-wide-a',
+            'turn-wide',
+            1,
+            '这段回答故意保持为普通段落，用来验证文本会抵达 Maka 自己的转录列边缘，而不是停在上游组件的旧宽度上限。',
+          ),
+        ],
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const answers = await canvas.findAllByRole('article', { name: 'Maka 的回答' });
+    const answer = answers.at(-1);
+    if (!answer) throw new Error('Wide assistant answer did not render');
+    const paragraph = await within(answer).findByRole('paragraph');
+    const turn = paragraph.closest<HTMLElement>('.maka-turn');
+    if (!turn) throw new Error('Wide assistant paragraph did not render inside a turn');
+    const turnRect = turn.getBoundingClientRect();
+    expect(turnRect.width).toBeGreaterThan(680);
+    expect(turnRect.right - paragraph.getBoundingClientRect().right).toBeLessThanOrEqual(1);
+  },
 };
 
 // Real path: Desktop Computer Use is exposed through the Runtime Host Client
@@ -1372,6 +1476,73 @@ export const PlanAndSwarmModeOn: Story = {
   ),
 };
 
+function PlusMenuRefreshHarness() {
+  const [planModeActive, setPlanModeActive] = useState(false);
+  const [skillsLoading, setSkillsLoading] = useState(false);
+
+  return (
+    <ComposedShell
+      composer={{
+        planModeActive,
+        mentionSkills: skillsLoading ? [] : baseComposerProps.mentionSkills,
+        mentionSkillsUnavailable: false,
+        mentionSkillsLoading: skillsLoading,
+        onPlanModeChange(active) {
+          setPlanModeActive(active);
+          setSkillsLoading(true);
+          window.setTimeout(() => setSkillsLoading(false), 150);
+        },
+      }}
+    />
+  );
+}
+
+// Real path: toggling Plan while the Runtime invocable-Skill projection is
+// refreshing. The settled presentation stays in place, but activation is held
+// until the new catalog arrives, so the open panel neither jumps nor writes a
+// stray slash into the composer.
+export const PlusMenuDuringSkillRefresh: Story = {
+  render: () => <PlusMenuRefreshHarness />,
+  play: async ({ canvasElement }) => {
+    const page = within(canvasElement.ownerDocument.body);
+    await userEvent.click(page.getByRole('button', { name: '添加上下文' }));
+    const menu = page.getByRole('menu', { name: '添加上下文' });
+    const planRow = within(menu).getByRole('menuitemcheckbox', { name: 'Plan' });
+    const skillsRow = within(menu).getByRole('menuitem', { name: /选择技能/ });
+    const height = menu.getBoundingClientRect().height;
+
+    await userEvent.click(planRow);
+    await expect(planRow).toHaveAttribute('aria-checked', 'true');
+    await expect(skillsRow).toHaveAttribute('aria-busy', 'true');
+    await expect(skillsRow).not.toHaveAttribute('aria-disabled', 'true');
+    await expect(menu).not.toHaveTextContent('当前没有可用技能');
+    expect(Math.abs(menu.getBoundingClientRect().height - height)).toBeLessThanOrEqual(0.5);
+
+    await userEvent.click(skillsRow);
+    await expect(menu).toBeVisible();
+    const editor = canvasElement.querySelector<HTMLElement>(
+      '.maka-composer-editor [contenteditable="true"]',
+    );
+    if (!editor) throw new Error('composer editor is missing');
+    await expect(editor).toHaveTextContent('');
+    await expect(page.queryByRole('listbox', { name: /技能/ })).not.toBeInTheDocument();
+
+    await waitFor(() => {
+      const settledRow = within(
+        page.getByRole('menu', { name: '添加上下文' }),
+      ).getByRole('menuitem', { name: /选择技能/ });
+      expect(settledRow).not.toHaveAttribute('aria-busy');
+    });
+    const settledRow = within(
+      page.getByRole('menu', { name: '添加上下文' }),
+    ).getByRole('menuitem', { name: /选择技能/ });
+    await userEvent.click(settledRow);
+    await expect(await page.findByRole('listbox', { name: /技能/ }, {
+      timeout: 5_000,
+    })).toBeVisible();
+  },
+};
+
 // Real path: a mode is on AND context is staged for the next send. The point of
 // the story is the split: the drawer badge counts the two attachments only,
 // while Plan reads off the footer — the mode is not something the send consumes.
@@ -1595,6 +1766,134 @@ function transcriptTurns(from: number, count: number): StoredMessage[] {
     ];
   }).flat();
 }
+
+const PARTIAL_HISTORY_INDEX = Array.from({ length: 8 }, (_, index) => ({
+  turnId: `turn-scroll-${index + 1}`,
+  sequence: index + 1,
+  label: `第 ${index + 1} 个问题`,
+}));
+
+function PartialHistoryHarness() {
+  const [readingEarlier, setReadingEarlier] = useState(false);
+  return (
+    <ComposedShell
+      frameHeight={720}
+      chat={{
+        messages: readingEarlier ? transcriptTurns(1, 8) : transcriptTurns(5, 4),
+        transcriptTurnIndex: PARTIAL_HISTORY_INDEX,
+        onLoadTranscriptTurn: () => setReadingEarlier(true),
+        returnToLatest: readingEarlier
+          ? {
+              title: '正在查看较早的消息',
+              label: '返回最新消息',
+              isPending: false,
+              onClick: () => setReadingEarlier(false),
+            }
+          : undefined,
+      }}
+    />
+  );
+}
+
+function historyNoticePresentation(notice: HTMLElement) {
+  const style = getComputedStyle(notice);
+  const box = notice.getBoundingClientRect();
+  const composer = document.querySelector<HTMLElement>('.maka-composer-astryx');
+  const frame = notice.closest<HTMLElement>('.appFrame');
+  if (!composer || !frame) throw new Error('The shell geometry is incomplete');
+  const composerBox = composer.getBoundingClientRect();
+  const frameBox = frame.getBoundingClientRect();
+  return {
+    backgroundColor: style.backgroundColor,
+    borderWidths: [
+      style.borderTopWidth,
+      style.borderRightWidth,
+      style.borderBottomWidth,
+      style.borderLeftWidth,
+    ],
+    display: style.display,
+    flexWrap: style.flexWrap,
+    justifyContent: style.justifyContent,
+    widthDelta: Math.abs(box.width - composerBox.width),
+    centerDelta: Math.abs(
+      (box.left + box.right) / 2 - (composerBox.left + composerBox.right) / 2,
+    ),
+    fitsFrame: box.left >= frameBox.left && box.right <= frameBox.right,
+    hasHorizontalOverflow: notice.scrollWidth > notice.clientWidth,
+  };
+}
+
+// Real path: selecting a prompt outside the loaded transcript range, then
+// returning to the latest range. The notice stays a quiet reading-column
+// control and every inactive prompt-rail tick uses one neutral treatment.
+export const PartialHistoryNotice: Story = {
+  render: () => <PartialHistoryHarness />,
+  play: async ({ canvasElement }) => {
+    expect(canvasElement.querySelector('.maka-transcript-history-controls')).toBeNull();
+    const firstPrompt = canvasElement.querySelector<HTMLButtonElement>(
+      '.maka-prompt-rail-tick[data-prompt-turn-id="turn-scroll-1"]',
+    );
+    if (!firstPrompt) throw new Error('The first historical prompt tick did not render');
+    firstPrompt.click();
+
+    await waitFor(() => {
+      expect(canvasElement.querySelector('.maka-transcript-history-controls')).not.toBeNull();
+    });
+    const notice = canvasElement.querySelector<HTMLElement>('.maka-transcript-history-controls');
+    if (!notice) throw new Error('The partial-history notice did not render');
+    expect(notice.textContent).toContain('正在查看较早的消息');
+    expect(notice.textContent).not.toMatch(/保存|加载/);
+
+    const regular = historyNoticePresentation(notice);
+    expect(regular.backgroundColor).toBe('rgba(0, 0, 0, 0)');
+    expect(regular.borderWidths).toEqual(['0px', '0px', '0px', '0px']);
+    expect(regular.display).toBe('flex');
+    expect(regular.flexWrap).toBe('wrap');
+    expect(regular.justifyContent).toBe('center');
+    expect(regular.widthDelta).toBeLessThanOrEqual(1);
+    expect(regular.centerDelta).toBeLessThanOrEqual(1);
+    expect(regular.hasHorizontalOverflow).toBe(false);
+
+    const neutralPaint = [
+      ...canvasElement.querySelectorAll<HTMLElement>('.maka-prompt-rail-tick'),
+    ]
+      .filter((tick) => tick.dataset.active !== 'true' && !tick.matches(':hover'))
+      .map((tick) => {
+        const bar = tick.querySelector<HTMLElement>('.maka-prompt-rail-tick-bar');
+        if (!bar) throw new Error('A prompt rail tick is missing its bar');
+        const barStyle = getComputedStyle(bar);
+        return JSON.stringify({
+          backgroundColor: barStyle.backgroundColor,
+          borderStyle: barStyle.borderStyle,
+          borderWidth: barStyle.borderWidth,
+          boxShadow: barStyle.boxShadow,
+        });
+      });
+    expect(neutralPaint.length).toBeGreaterThan(1);
+    expect(new Set(neutralPaint).size).toBe(1);
+    expect(canvasElement.querySelectorAll('[data-resident]')).toHaveLength(0);
+    expect(
+      [...document.styleSheets].flatMap((sheet) =>
+        [...sheet.cssRules].filter((rule) => rule.cssText.includes('data-resident'))),
+    ).toHaveLength(0);
+
+    const frame = canvasElement.querySelector<HTMLElement>('.appFrame');
+    if (!frame) throw new Error('Shell frame did not render');
+    frame.style.width = '520px';
+    await painted(2);
+    const narrow = historyNoticePresentation(notice);
+    expect(narrow.centerDelta).toBeLessThanOrEqual(1);
+    expect(narrow.fitsFrame).toBe(true);
+    expect(narrow.hasHorizontalOverflow).toBe(false);
+
+    const returnButton = within(notice).getByRole('button', { name: '返回最新消息' });
+    returnButton.click();
+    await waitFor(() => {
+      expect(canvasElement.querySelector('.maka-transcript-history-controls')).toBeNull();
+      expect(canvasElement.querySelector('[data-turn-id="turn-scroll-8"]')).not.toBeNull();
+    });
+  },
+};
 
 /** Stops the harness below, so the tail can be read against a settled transcript. */
 let stopTailStream: (() => void) | undefined;

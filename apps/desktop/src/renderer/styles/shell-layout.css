@@ -173,7 +173,7 @@
   /* The nav sizes itself against a definite height (`.maka-session-panel`
      is `height: 100%`); without one here the wrapper grows to the unclipped
      content and the footer leaves the window — the geometry
-     e2e/sidebar-geometry.spec.ts locks. */
+     the OverflowingSidebar shell story locks. */
   height: 100%;
   width: var(--maka-sidenav-width);
   /* Clip the expanded content while the sidebar width catches up. */

@@ -441,7 +441,7 @@
           "window.maka.e2eFixture.getState": 1
         },
         "environmentCapabilities": {
-          "document.documentElement.setAttribute": 4
+          "document.documentElement.setAttribute": 3
         },
         "hookCalls": {},
         "lifecycleMethods": {},
@@ -453,7 +453,7 @@
           "./theme": 1
         },
         "importSpecifiers": 1,
-        "nonTriviaTokens": 666
+        "nonTriviaTokens": 642
       },
       "src/renderer/app-shell-effects.ts": {
         "importDeclarations": 11,
@@ -2115,7 +2115,6 @@
           "document.documentElement": 2,
           "document.documentElement.dataset.makaE2eFixture": 1,
           "document.documentElement.dataset.makaReducedMotion": 1,
-          "document.documentElement.dataset.makaScrollMotion": 5,
           "window.matchMedia": 2
         },
         "hookCalls": {},

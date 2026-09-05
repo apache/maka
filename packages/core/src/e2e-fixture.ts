@@ -27,7 +27,6 @@ export type E2eFixtureScenario =
   | 'turn-narrative'
   | 'turn-narrative-browser'
   | 'chat-prompt-rail'
-  | 'chat-partial-history'
   | 'settings-data'
   | 'settings-bots-onboarding'
   | 'settings-general'
@@ -37,7 +36,6 @@ export type E2eFixtureScenario =
   | 'module-mcp'
   | 'module-daily-review'
   | 'scheduled-tasks'
-  | 'agent-graph-layout'
   | 'sidebar-search-modal-open';
 
 export interface E2eFixtureState {
@@ -46,13 +44,6 @@ export interface E2eFixtureState {
   activeSessionId?: string;
   openSettingsSection?: SettingsSection;
   reducedMotion?: boolean;
-  /**
-   * Opt a fixture back into animated scrolling. Captures collapse scroll
-   * motion so a screenshot never depends on when it settles, which also means
-   * no fixture can exercise a scroll that is still in flight — and that is
-   * precisely what the prompt rail's jump has to survive.
-   */
-  scrollMotion?: 'auto' | 'smooth';
   theme?: 'light' | 'dark' | 'auto';
   locale?: UiLocale;
   timezone?: string;

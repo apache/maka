@@ -42,6 +42,7 @@ test('ordinary catalog stories render the default palette in light mode', () => 
       {
         storyId: 'product-settings--memory',
         colorScheme: 'light',
+        forcedColors: 'none',
         palette: 'default',
       },
     ],
@@ -52,8 +53,16 @@ test('dark theme sentinel stories render the default palette in both colour sche
   const storyId = 'product-settings-pages--appearance';
 
   assert.deepEqual(catalogJobs(storyIndex(storyId), { themePalettes: THEME_PALETTES }), [
-    { storyId, colorScheme: 'light', palette: 'default' },
-    { storyId, colorScheme: 'dark', palette: 'default' },
+    { storyId, colorScheme: 'light', forcedColors: 'none', palette: 'default' },
+    { storyId, colorScheme: 'dark', forcedColors: 'none', palette: 'default' },
+  ]);
+});
+
+test('forced-colors stories render under the forced palette', () => {
+  const storyId = 'product-settings-pages--general-forced-colors-focus-ring';
+
+  assert.deepEqual(catalogJobs(storyIndex(storyId), { themePalettes: THEME_PALETTES }), [
+    { storyId, colorScheme: 'light', forcedColors: 'active', palette: 'default' },
   ]);
 });
 
@@ -65,16 +74,18 @@ test('the reference story renders every palette in both colour schemes', () => {
   assert.equal(jobs.length, 22);
   assert.equal(new Set(jobs.map((job) => `${job.colorScheme}/${job.palette}`)).size, 22);
   assert.deepEqual(jobs.slice(0, 4), [
-    { storyId: REFERENCE_STORY_ID, colorScheme: 'light', palette: 'default' },
-    { storyId: REFERENCE_STORY_ID, colorScheme: 'dark', palette: 'default' },
+    { storyId: REFERENCE_STORY_ID, colorScheme: 'light', forcedColors: 'none', palette: 'default' },
+    { storyId: REFERENCE_STORY_ID, colorScheme: 'dark', forcedColors: 'none', palette: 'default' },
     {
       storyId: REFERENCE_STORY_ID,
       colorScheme: 'light',
+      forcedColors: 'none',
       palette: 'test-palette-1',
     },
     {
       storyId: REFERENCE_STORY_ID,
       colorScheme: 'dark',
+      forcedColors: 'none',
       palette: 'test-palette-1',
     },
   ]);
