@@ -1880,7 +1880,10 @@ function oversizedTurnMessages(): StoredMessage[] {
       turnId,
       ts,
       text: `### 合成步骤 ${step}\n\n${prose}`,
-      thinking: { text: `${reasoning}\n\n${reasoning}` },
+      // The first line becomes the disclosure button's accessible name, so it
+      // carries the step number — identical names across materialized steps
+      // read as indistinguishable controls to the AX audit.
+      thinking: { text: `第 ${step} 组边界检查\n\n${reasoning}\n\n${reasoning}` },
       modelId: 'claude-sonnet-4-5',
     });
     out.push({
