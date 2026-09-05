@@ -83,7 +83,7 @@ import { useWorkbarServices } from '../../services-context.js';
 
 export function ArtifactPane(props: {
   sessionId: string;
-  active: boolean;
+  refreshEnabled: boolean;
   onCountChange?: (count: number) => void;
   onDismiss?: () => void;
 }) {
@@ -166,11 +166,11 @@ export function ArtifactPane(props: {
   }, [artifacts, copy, locale, sessionId, toast]);
 
   useEffect(() => {
-    if (!props.active) return;
+    if (!props.refreshEnabled) return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     // Writeback can commit after the terminal Session event. Read the existing
-    // catalog while visible instead of treating that event as a commit signal.
+    // catalog while the workbar is visible, including its background file tab's count.
     const poll = async () => {
       await refresh(false);
       if (!stopped) timer = setTimeout(() => void poll(), 2_000);
@@ -181,7 +181,7 @@ export function ArtifactPane(props: {
       clearTimeout(timer);
       artifactListRequestSeqRef.current += 1;
     };
-  }, [props.active, sessionId, refresh]);
+  }, [props.refreshEnabled, sessionId, refresh]);
 
   const activeRecords = useMemo(
     () => (recordsSessionId === sessionId ? filterUserVisibleArtifacts(records) : []),

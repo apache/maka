@@ -65,7 +65,7 @@ function withWorkbarServices(overrides: Partial<WorkbarServices>): Decorator {
   );
 }
 
-function WorkbarToolSurface(props: { kind: 'terminal' | 'browser' | 'files'; hidden?: boolean }) {
+function WorkbarToolSurface(props: { kind: 'terminal' | 'browser' | 'files'; hidden?: boolean; backgroundFiles?: boolean }) {
   const terminalRef = 'pty:storybook';
   const right = props.kind === 'terminal'
     ? createSessionWorkbarTabsState(
@@ -89,7 +89,7 @@ function WorkbarToolSurface(props: { kind: 'terminal' | 'browser' | 'files'; hid
           sessionId="runtime-surface"
           hidden={props.hidden ?? false}
           onDismissPanel={noop}
-          panelsState={createSessionWorkbarPanelsState(right)}
+          panelsState={createSessionWorkbarPanelsState(props.backgroundFiles ? openStaticSessionWorkbarTab(right, 'tasks') : right)}
           rightCollapsed={false}
           bottomOpen={false}
           onActivateTab={noop}
@@ -334,6 +334,19 @@ export const HiddenArtifact: Story = {
     const reads = listHtmlArtifacts.mock.calls.length;
     await new Promise(resolve => setTimeout(resolve, 2_200));
     await expect(listHtmlArtifacts.mock.calls.length).toBe(reads);
+  },
+};
+
+export const BackgroundArtifactCount: Story = {
+  decorators: HtmlArtifact.decorators,
+  beforeEach: HtmlArtifact.beforeEach,
+  render: () => <WorkbarToolSurface kind="files" backgroundFiles />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByRole('tab', { name: '生成文件, 0' });
+    htmlPublished = true;
+    const tab = await canvas.findByRole('tab', { name: '生成文件, 1' }, { timeout: 10_000 });
+    await expect(tab).toHaveAttribute('aria-selected', 'false');
   },
 };
 
