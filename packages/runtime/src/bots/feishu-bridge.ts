@@ -25,7 +25,6 @@ import {
   type NormalizedMessage,
 } from '@larksuiteoapi/node-sdk';
 import type { BotChannelSettings } from '@maka/core/bot-chat-settings';
-import { generalizedErrorMessage } from '@maka/core/redaction';
 import { BaseBotAdapter, botReadinessFromSettings } from './base-adapter.js';
 import type { BotSendOptions, BotStatus, SendCapable } from './types.js';
 
@@ -126,7 +125,7 @@ export class FeishuBotBridge extends BaseBotAdapter implements SendCapable {
     } catch (error) {
       if (this.explicitlyStopped || this.channel !== channel) return;
       this.running = false;
-      this.reason = generalizedErrorMessage(error);
+      this.recordFailure(error);
       this.readiness = 'configured';
       this.emitStatusChange();
       await this.disconnectChannel(channel);
@@ -165,7 +164,7 @@ export class FeishuBotBridge extends BaseBotAdapter implements SendCapable {
       return result.messageId;
     } catch (error) {
       this.readiness = this.readiness === 'operational' ? 'degraded' : 'credentials_valid';
-      this.reason = generalizedErrorMessage(error);
+      this.recordFailure(error, 'send-failed');
       this.emitStatusChange();
       return null;
     }
@@ -206,7 +205,7 @@ export class FeishuBotBridge extends BaseBotAdapter implements SendCapable {
       }),
       channel.on('error', (error) => {
         if (this.channel !== channel || this.explicitlyStopped) return;
-        this.reason = generalizedErrorMessage(error);
+        this.recordFailure(error);
         this.readiness = this.readiness === 'operational' ? 'degraded' : 'configured';
         this.emitStatusChange();
       }),

@@ -79,7 +79,7 @@ class TestGatewayBridge extends GatewayBridgeBase {
     return this.gatewayUrl;
   }
 
-  protected override checkCredentials(): string | null {
+  protected override checkCredentials(): 'no-credentials' | null {
     return null;
   }
 
@@ -184,7 +184,7 @@ describe('GatewayBridgeBase start gate', () => {
 
   it('does not open a connection when credentials are missing', async () => {
     class NoCredentialsBridge extends TestGatewayBridge {
-      protected override checkCredentials(): string | null {
+      protected override checkCredentials(): 'no-credentials' | null {
         return 'no-credentials';
       }
     }
@@ -299,7 +299,8 @@ describe('GatewayBridgeBase reconnect triggers', () => {
     await bridge.stop();
   });
 
-  it('schedules a reconnect when constructing the socket throws', async () => {
+  it('schedules a reconnect with a stable failure code when constructing the socket throws', async (t) => {
+    const log = t.mock.method(console, 'warn', () => {});
     class ThrowingSocketBridge extends TestGatewayBridge {
       protected override createWebSocket(): WebSocket {
         throw new Error('bad-url');
@@ -311,7 +312,8 @@ describe('GatewayBridgeBase reconnect triggers', () => {
       token: 'token',
     });
     await bridge.start();
-    assert.equal(bridge.getStatus().reason, 'bad-url');
+    assert.equal(bridge.getStatus().reason, 'connection_failed');
+    assert.equal(log.mock.calls[0].arguments[0], '[bots:qq] connection_failed: bad-url');
     assert.equal(bridge.getStatus().readiness, 'configured');
     assert.equal(bridge.hasReconnectTimer(), true);
     await bridge.stop();
@@ -330,11 +332,16 @@ describe('GatewayBridgeBase close policy', () => {
     assert.equal(bridge.hasReconnectTimer(), false);
   });
 
-  it('reconnects resumably after an abnormal close, keeping the session', async () => {
+  it('reconnects resumably with a stable close code and redacted diagnostics', async (t) => {
+    const log = t.mock.method(console, 'warn', () => {});
     const { bridge, fake } = await startBridge();
     receiveReady(fake);
-    fake.emit('close', { code: 4000, reason: 'please reconnect' });
-    assert.equal(bridge.getStatus().reason, 'please reconnect');
+    fake.emit('close', { code: 4000, reason: 'please reconnect app-secret' });
+    assert.equal(bridge.getStatus().reason, 'gateway-closed-4000');
+    assert.equal(
+      log.mock.calls[0].arguments[0],
+      '[bots:qq] gateway-closed-4000: please reconnect [redacted]',
+    );
     assert.equal(bridge.getStatus().readiness, 'degraded');
     assert.deepEqual(bridge.getSessionState(), { sessionId: 'sess-1', seq: 12 });
     assert.equal(bridge.hasReconnectTimer(), true);

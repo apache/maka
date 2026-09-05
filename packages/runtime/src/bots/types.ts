@@ -19,8 +19,36 @@
 
 import type { BotProvider, BotReadinessState } from '@maka/core/bot-chat-settings';
 import type { BotMessageEvent, BotPlatform } from '@maka/core/bot-events';
+import type { GeneralizedErrorClass } from '@maka/core/redaction';
 
 export type { BotPlatform };
+
+export type BotStatusCode =
+  | BotTestErrorCode
+  | GeneralizedErrorClass
+  | 'disabled'
+  | 'stopped'
+  | 'no-token'
+  | 'no-credentials'
+  | 'missing-feishu-credentials'
+  | 'missing-slack-tokens'
+  | 'slack-disconnected'
+  | 'disconnected'
+  | 'reconnecting'
+  | 'rate-limited'
+  | 'polling-timeout'
+  | 'send-failed'
+  | 'get-me-failed'
+  | 'stream-failed';
+
+export type BotStatusReason =
+  | BotStatusCode
+  | `gateway-bot-${number}`
+  | `gateway-closed-${number}`
+  | `connections-open-${number}`
+  | `stream-closed-${number}`
+  | `send-failed-${number}`
+  | `getAppAccessToken-${number}`;
 
 export interface BotStatus {
   platform: BotPlatform;
@@ -118,6 +146,7 @@ export interface SendCapable {
 
 /** Stable machine codes for producer-known test failures; presenters own copy. */
 export type BotTestErrorCode =
+  | 'connection_failed'
   | 'token_missing'
   | 'token_invalid'
   | 'slack_tokens_missing'
@@ -149,7 +178,7 @@ export interface BotTestResult {
   messageSent?: boolean;
   capabilities?: Record<string, boolean>;
   errorCode?: BotTestErrorCode;
-  /** Raw platform-supplied diagnostic (external error text), passed through verbatim. */
+  /** Diagnostic for redacted logging only, never product copy. */
   error?: string;
   hintCode?: BotTestHintCode;
   /**

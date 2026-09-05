@@ -32,10 +32,7 @@ import {
   BotOnboardingService,
   type BotOnboardingProviderAdapter,
 } from './bot-onboarding-main.js';
-import {
-  botTestErrorMessage,
-  toSettingsTestResult,
-} from './settings-ipc-helpers.js';
+import { toSettingsTestResult } from './settings-ipc-helpers.js';
 
 export interface SettingsBotsIpcDeps {
   readonly ipcMain: Pick<IpcMain, 'handle'>;
@@ -90,12 +87,12 @@ export function registerSettingsBotsIpc(
               : 'configured') as BotReadinessState,
             readinessReason: result.ok
               ? undefined
-              : botTestErrorMessage(provider, result),
+              : result.errorCode ?? 'connection_failed',
             readinessUpdatedAt: Date.now(),
             lastTestAt: Date.now(),
             lastError: result.ok
               ? undefined
-              : botTestErrorMessage(provider, result),
+              : result.errorCode ?? 'connection_failed',
           };
     await deps.settingsStore.update({
       botChat: { channels: { [provider]: channelPatch } },

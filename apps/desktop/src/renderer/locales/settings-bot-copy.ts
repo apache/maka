@@ -19,6 +19,7 @@
 
 import type { StatusSemantic } from '@maka/ui';
 import type { BotProvider, BotReadinessState } from '@maka/core/bot-chat-settings';
+import type { BotStatusCode, BotTestErrorCode } from '@maka/runtime/bots';
 
 import { type UiCatalog, type UiLocale, lookupCopy } from '@maka/core/ui-locale';
 
@@ -70,10 +71,20 @@ const zhCopy = {
   },
   statusReasons: {
     codes: {
+      'slack-disconnected': 'Slack 连接已断开，正在等待重新连接',
+      disconnected: '连接已断开',
+      reconnecting: '正在重新连接',
+      'stream-failed': '消息接收失败，请检查网络和运行日志',
+      timeout: '请求超时，请稍后重试',
+      rate_limited: '请求过于频繁，请稍后重试',
+      auth_failed: '鉴权失败，请检查凭据',
+      provider_error: '平台服务暂时不可用，请稍后重试',
+      network_error: '网络错误，请检查网络和代理设置',
+      'no-credentials': '请补齐此平台需要的凭据',
       'rate-limited': '发送被节流（429）；上一条回复可能截断，可以请用户再发一次',
       'polling-timeout': '事件轮询超时；可能是网络抖动或代理失效',
-      'send-failed': '上一次发送失败，详细原因 Telegram 没有返回',
-      'get-me-failed': '凭据探测失败；请检查 Bot Token',
+      'send-failed': '消息发送失败，请检查运行日志后重试',
+      'get-me-failed': '连接探测失败，请检查网络后重试',
     },
     withCode: {
       gatewayBot: (code: string) => `获取 Gateway 失败（HTTP ${code}）`,
@@ -84,6 +95,18 @@ const zhCopy = {
       getAppAccessToken: (code: string) => `获取 access_token 失败（HTTP ${code}）`,
     },
   },
+  testErrors: {
+    connection_failed: '请检查凭据和网络设置后重试。',
+    token_missing: '请填写 Bot Token 后再测试。',
+    token_invalid: 'Bot Token 无效，请检查后重试。',
+    slack_tokens_missing: '请填写 Slack Bot Token 和 App-Level Token 后再测试。',
+    feishu_credentials_missing: '请填写 App ID 和 App Secret 后再测试。',
+    wecom_credentials_missing: '请填写企业微信 Bot ID 和 Secret 后再测试。',
+    dingtalk_credentials_missing: '请填写钉钉 Client ID（AppKey）和 Client Secret 后再测试。',
+    dingtalk_no_access_token: '钉钉未返回 access_token，请检查凭据和网络后重试。',
+    qq_credentials_missing: '请填写 QQ App ID 和 AppSecret 后再测试。',
+    qq_no_access_token: 'QQ 未返回 access_token，请检查凭据和网络后重试。',
+  } satisfies Record<Exclude<BotTestErrorCode, 'wechat_bridge_url_invalid' | 'wechat_ilink_credentials_incomplete'>, string>,
   overview: {
     loadFailed: '远程接入状态载入失败', reload: '重新载入', active: '正在使用', sortHint: '按需要处理、最近活动排序',
     empty: '还没有正在使用的渠道', emptyHelp: '从下方选择一个消息平台开始配置。', more: '接入更多渠道', choose: '选择平台开始配置',
@@ -199,10 +222,20 @@ const zhTwCopy = {
   },
   statusReasons: {
     codes: {
+      'slack-disconnected': 'Slack 連線已中斷，正在等待重新連線',
+      disconnected: '連線已中斷',
+      reconnecting: '正在重新連線',
+      'stream-failed': '訊息接收失敗，請檢查網路和執行記錄',
+      timeout: '請求逾時，請稍後重試',
+      rate_limited: '請求過於頻繁，請稍後重試',
+      auth_failed: '驗證失敗，請檢查憑證',
+      provider_error: '平台服務暫時無法使用，請稍後重試',
+      network_error: '網路錯誤，請檢查網路和代理設定',
+      'no-credentials': '請補齊此平台需要的憑證',
       'rate-limited': '傳送被節流（429）；上一則回覆可能截斷，可以請使用者再發一次',
       'polling-timeout': '事件輪詢逾時；可能是網路抖動或代理失效',
-      'send-failed': '上一次傳送失敗，詳細原因 Telegram 沒有回傳',
-      'get-me-failed': '憑證探測失敗；請檢查 Bot Token',
+      'send-failed': '訊息傳送失敗，請檢查執行記錄後重試',
+      'get-me-failed': '連線探測失敗，請檢查網路後重試',
     },
     withCode: {
       gatewayBot: (code: string) => `取得 Gateway 失敗（HTTP ${code}）`,
@@ -212,6 +245,18 @@ const zhTwCopy = {
       sendFailed: (code: string) => `傳送失敗（HTTP ${code}）`,
       getAppAccessToken: (code: string) => `取得 access_token 失敗（HTTP ${code}）`,
     },
+  },
+  testErrors: {
+    connection_failed: '請檢查憑據和網路設定後重試。',
+    token_missing: '請填寫 Bot Token 後再測試。',
+    token_invalid: 'Bot Token 無效，請檢查後重試。',
+    slack_tokens_missing: '請填寫 Slack Bot Token 和 App-Level Token 後再測試。',
+    feishu_credentials_missing: '請填寫 App ID 和 App Secret 後再測試。',
+    wecom_credentials_missing: '請填寫企業微信 Bot ID 和 Secret 後再測試。',
+    dingtalk_credentials_missing: '請填寫釘釘 Client ID（AppKey）和 Client Secret 後再測試。',
+    dingtalk_no_access_token: '釘釘未回傳 access_token，請檢查憑證和網路後重試。',
+    qq_credentials_missing: '請填寫 QQ App ID 和 AppSecret 後再測試。',
+    qq_no_access_token: 'QQ 未回傳 access_token，請檢查憑證和網路後重試。',
   },
   overview: {
     loadFailed: '遠端串接狀態載入失敗', reload: '重新載入', active: '正在使用', sortHint: '按需要處理、最近活動排序',
@@ -319,10 +364,20 @@ const enCopy: BotSettingsCopy = {
   },
   statusReasons: {
     codes: {
+      'slack-disconnected': 'Slack disconnected; waiting to reconnect',
+      disconnected: 'Connection lost',
+      reconnecting: 'Reconnecting',
+      'stream-failed': 'Failed to receive messages. Check the network and runtime logs',
+      timeout: 'Request timed out. Try again later',
+      rate_limited: 'Too many requests. Try again later',
+      auth_failed: 'Authentication failed. Check the credentials',
+      provider_error: 'The platform is temporarily unavailable. Try again later',
+      network_error: 'Network error. Check the network and proxy settings',
+      'no-credentials': 'Add the credentials required by this platform',
       'rate-limited': 'Sending was throttled (429); the last reply may be truncated, so ask the user to resend',
       'polling-timeout': 'Event polling timed out; the network or proxy may be unstable',
-      'send-failed': 'The last send failed; Telegram returned no details',
-      'get-me-failed': 'Credential probe failed; check the Bot Token',
+      'send-failed': 'Message send failed. Check the runtime logs and try again',
+      'get-me-failed': 'Connection probe failed. Check the network and try again',
     },
     withCode: {
       gatewayBot: (code) => `Failed to fetch the Gateway (HTTP ${code})`,
@@ -332,6 +387,18 @@ const enCopy: BotSettingsCopy = {
       sendFailed: (code) => `Send failed (HTTP ${code})`,
       getAppAccessToken: (code) => `Failed to fetch access_token (HTTP ${code})`,
     },
+  },
+  testErrors: {
+    connection_failed: 'Check the credentials and network settings, then try again.',
+    token_missing: 'Enter a Bot Token before testing the connection.',
+    token_invalid: 'The Bot Token is invalid. Check it and try again.',
+    slack_tokens_missing: 'Enter a Slack Bot Token and App-Level Token before testing the connection.',
+    feishu_credentials_missing: 'Enter an App ID and App Secret before testing the connection.',
+    wecom_credentials_missing: 'Enter a WeCom Bot ID and Secret before testing the connection.',
+    dingtalk_credentials_missing: 'Enter a DingTalk Client ID (AppKey) and Client Secret before testing the connection.',
+    dingtalk_no_access_token: 'DingTalk returned no access_token. Check the credentials and network, then try again.',
+    qq_credentials_missing: 'Enter a QQ App ID and AppSecret before testing the connection.',
+    qq_no_access_token: 'QQ returned no access_token. Check the credentials and network, then try again.',
   },
   overview: { loadFailed: 'Failed to load remote-access status', reload: 'Reload', active: 'In use', sortHint: 'Sorted by attention needed and recent activity', empty: 'No channels are in use', emptyHelp: 'Choose a messaging platform below to begin setup.', more: 'Connect more channels', choose: 'Choose a platform to begin setup', listening: 'Listening', manageAria: (name, status) => `Manage ${name}, ${status}`, connectAria: (name) => `Connect ${name}` },
   page: { saveFailed: (name) => `Failed to save ${name}`, loadFailed: 'Failed to load remote-access status', refreshFailed: 'Failed to refresh remote-access status', credentialVerified: (name) => `${name} credentials verified`, credentialVerifiedDetail: 'The credential check passed.', credentialTestFailed: (name) => `${name} credential test failed`, credentialTestFailedDetail: 'Check the credentials and network settings, then try again.', testError: (name) => `${name} test error`, listening: (name) => `${name} is listening`, notListening: (name) => `${name} did not start listening`, startFailed: (name) => `Failed to start ${name}`, disconnectTitle: 'Disconnect WeChat?', disconnectDescription: 'This clears the saved local QR sign-in credentials. You will need to scan again to keep using WeChat.', disconnect: 'Disconnect', cancel: 'Cancel', disconnected: 'WeChat disconnected', credentialsCleared: 'Local linked-session credentials cleared.' },
@@ -388,14 +455,23 @@ export function botStatusReasonMessage(
   locale: UiLocale,
 ): string | undefined {
   if (!reason) return undefined;
-  const copy = BOT_SETTINGS_COPY[locale].statusReasons;
-  const fixed = lookupCopy(copy.codes, reason);
+  const settings = BOT_SETTINGS_COPY[locale];
+  const copy = settings.statusReasons;
+  const fixed = lookupCopy({
+    ...copy.codes,
+    ...settings.testErrors,
+    disabled: settings.status.disabled,
+    stopped: settings.status.stopped,
+    'no-token': settings.status.noToken,
+    'missing-feishu-credentials': settings.status.missingFeishuCredentials,
+    'missing-slack-tokens': settings.testErrors.slack_tokens_missing,
+    wechat_bridge_url_invalid: settings.testHints.wechat_bridge_local_only,
+    wechat_ilink_credentials_incomplete: settings.testHints.wechat_ilink_login_required,
+  } satisfies Record<BotStatusCode, string>, reason);
   if (fixed) return fixed;
   for (const { pattern, key } of BOT_STATUS_REASON_PATTERNS) {
     const match = pattern.exec(reason);
     if (match) return copy.withCode[key](match[1]);
   }
-  // Platform-supplied description ("Bad Request: chat not found", …): external
-  // error text passes through verbatim rather than being classified by content.
-  return reason;
+  return settings.status.detailsInLogs;
 }

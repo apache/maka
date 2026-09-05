@@ -21,7 +21,7 @@ import type { BotProvider, BotReadinessState } from '@maka/core/bot-chat-setting
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { BotStatus } from '@maka/runtime/bots';
 import { BotBrandLogo as BotBrandMark } from '@maka/ui';
-import { getBotSettingsCopy } from '../locales/settings-bot-copy';
+import { botStatusReasonMessage, getBotSettingsCopy } from '../locales/settings-bot-copy';
 
 /**
  * Per-platform brand presentation.
@@ -109,10 +109,6 @@ export function botStatusDetail(status: BotStatus, locale: UiLocale): string {
     case 'scaffold-only': return copy.unavailable;
     case 'unimplemented': return copy.unavailable;
     case 'stopped': return copy.stopped;
-    // PR-BOT-CHAT-POLISH-0: the previous fallback `status.reason ??
-    // '暂无运行细节'` would surface a raw reason code (e.g.
-    // `polling-timeout`) for any unmapped state. That's noise the
-    // user can't act on; collapse to a generalized copy.
-    default: return copy.detailsInLogs;
+    default: return botStatusReasonMessage(status.reason, locale) ?? copy.detailsInLogs;
   }
 }

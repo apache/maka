@@ -21,7 +21,7 @@ import type { BotChannelSettings } from '@maka/core/bot-chat-settings';
 import { generalizedErrorMessage } from '@maka/core/redaction';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
-import { BaseBotAdapter, botReadinessFromSettings } from './base-adapter.js';
+import { BaseBotAdapter, botDiagnosticMessage, botReadinessFromSettings } from './base-adapter.js';
 import { proxiedFetch } from './proxied-fetch.js';
 import type {
   BotIncomingMessage,
@@ -97,7 +97,8 @@ export class WechatBridge extends BaseBotAdapter implements SendCapable {
       : await testWechatBridge(this.settings);
     if (!probe.ok) {
       this.running = false;
-      this.reason = probe.error;
+      this.reason = probe.errorCode ?? 'connection_failed';
+      if (probe.error) this.recordFailure(probe.error, this.reason);
       this.readiness = botReadinessFromSettings(this.settings);
       this.emitStatusChange();
       return;
@@ -116,7 +117,7 @@ export class WechatBridge extends BaseBotAdapter implements SendCapable {
     // marked degraded instead of crashing the main process.
     const fail = (err: unknown) => {
       this.running = false;
-      this.reason = err instanceof Error ? err.message : 'stream-failed';
+      this.recordFailure(err, 'stream-failed');
       this.readiness = 'degraded';
       this.emitStatusChange();
     };
@@ -155,8 +156,7 @@ export class WechatBridge extends BaseBotAdapter implements SendCapable {
       const status = typeof response.status === 'string' ? response.status : '';
       if (status === 'failed') {
         this.readiness = 'degraded';
-        this.reason =
-          typeof response.diagnostic === 'string' ? response.diagnostic : 'wechat-send-failed';
+        this.recordFailure(response.diagnostic ?? 'wechat-send-failed', 'send-failed');
         this.emitStatusChange();
         return null;
       }
@@ -168,7 +168,7 @@ export class WechatBridge extends BaseBotAdapter implements SendCapable {
       return typeof id === 'string' || typeof id === 'number' ? String(id) : 'wechat-submitted';
     } catch (error) {
       this.readiness = 'degraded';
-      this.reason = generalizedErrorMessage(error);
+      this.recordFailure(error);
       this.emitStatusChange();
       return null;
     }
@@ -213,7 +213,7 @@ export class WechatBridge extends BaseBotAdapter implements SendCapable {
         if (error instanceof Error && error.name === 'AbortError') return;
         this.readiness =
           this.readiness === 'operational' ? 'degraded' : botReadinessFromSettings(this.settings);
-        this.reason = generalizedErrorMessage(error);
+        this.recordFailure(error);
         this.emitStatusChange();
         await sleep(3_000);
       }
@@ -243,7 +243,7 @@ export class WechatBridge extends BaseBotAdapter implements SendCapable {
         if (errcode === -14) continue;
         if (errcode !== 0) {
           this.readiness = this.readiness === 'operational' ? 'degraded' : 'credentials_valid';
-          this.reason = stringField(response.errmsg) ?? `ilink-${errcode}`;
+          this.recordFailure(stringField(response.errmsg) ?? `ilink-${errcode}`, 'stream-failed');
           this.emitStatusChange();
           await sleep(5_000);
           continue;
@@ -266,7 +266,7 @@ export class WechatBridge extends BaseBotAdapter implements SendCapable {
         if (error instanceof Error && error.name === 'AbortError') return;
         consecutiveErrors += 1;
         this.readiness = this.readiness === 'operational' ? 'degraded' : 'credentials_valid';
-        this.reason = generalizedErrorMessage(error);
+        this.recordFailure(error);
         this.emitStatusChange();
         await sleep(consecutiveErrors >= 3 ? 30_000 : 2_000);
         if (consecutiveErrors >= 3) consecutiveErrors = 0;
@@ -481,7 +481,8 @@ export async function testWechatBridge(channel: BotChannelSettings): Promise<Bot
   } catch (error) {
     return {
       ok: false,
-      error: generalizedErrorMessage(error),
+      errorCode: 'connection_failed',
+      error: botDiagnosticMessage(channel, error),
       hintCode: 'wechat_bridge_start_required',
     };
   }
@@ -536,7 +537,7 @@ export async function testWechatIlinkCredentials(
 }
 
 function isWechatIlinkChannel(channel: BotChannelSettings): boolean {
-  return Boolean(channel.token.trim() && normalizeWechatIlinkBaseUrl(channel.webhookUrl));
+  return Boolean(normalizeWechatIlinkBaseUrl(channel.webhookUrl));
 }
 
 async function wechatIlinkPost(

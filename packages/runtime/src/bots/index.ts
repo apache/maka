@@ -45,6 +45,8 @@ export type {
   BotReplyStream,
   BotReplyStreamOptions,
   BotStatus,
+  BotStatusCode,
+  BotStatusReason,
   BotTestResult,
   BotTestErrorCode,
   BotTestHintCode,

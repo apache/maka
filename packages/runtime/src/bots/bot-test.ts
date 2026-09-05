@@ -17,12 +17,11 @@
  * under the License.
  */
 
-import { botDisplayLabel } from '@maka/core/bot-events';
 import { type BotChannelSettings, type BotProvider } from '@maka/core/bot-chat-settings';
-import { generalizedErrorMessage } from '@maka/core/redaction';
 import { WebClient } from '@slack/web-api';
 import type { BotTestResult } from './types.js';
 import { proxiedFetch } from './proxied-fetch.js';
+import { botDiagnosticMessage } from './base-adapter.js';
 import {
   normalizeWechatIlinkBaseUrl,
   testWechatBridge,
@@ -42,6 +41,18 @@ export function feishuOpenApiHost(domain: string | undefined): string {
 }
 
 export async function testBotChannel(
+  provider: BotProvider,
+  channel: BotChannelSettings,
+): Promise<BotTestResult> {
+  const result = await probeBotChannel(provider, channel);
+  if (result.ok) return result;
+  const errorCode = result.errorCode ?? 'connection_failed';
+  const error = result.error ? botDiagnosticMessage(channel, result.error) : undefined;
+  if (error) console.warn(`[bots:${provider}] ${errorCode}: ${error}`);
+  return { ...result, errorCode, ...(error ? { error } : {}) };
+}
+
+async function probeBotChannel(
   provider: BotProvider,
   channel: BotChannelSettings,
 ): Promise<BotTestResult> {
@@ -99,12 +110,12 @@ async function testSlack(channel: BotChannelSettings): Promise<BotTestResult> {
       hintCode: 'slack_socket_ready',
     };
   } catch (error) {
-    return { ok: false, error: generalizedErrorMessage(error) };
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
 }
 
 async function testWechat(channel: BotChannelSettings): Promise<BotTestResult> {
-  if (channel.token.trim() && normalizeWechatIlinkBaseUrl(channel.webhookUrl)) {
+  if (normalizeWechatIlinkBaseUrl(channel.webhookUrl)) {
     return testWechatIlinkCredentials(channel);
   }
   const appId = channel.appId?.trim() ?? '';
@@ -139,14 +150,22 @@ async function testWechat(channel: BotChannelSettings): Promise<BotTestResult> {
 async function testTelegram(channel: BotChannelSettings): Promise<BotTestResult> {
   const base = `https://api.telegram.org/bot${channel.token}`;
   try {
-    const me = await (
-      await proxiedFetch(`${base}/getMe`, { method: 'GET', timeoutMs: BOT_TEST_TIMEOUT_MS })
-    ).json();
-    if (!me.ok)
+    const response = await proxiedFetch(`${base}/getMe`, {
+      method: 'GET',
+      timeoutMs: BOT_TEST_TIMEOUT_MS,
+    });
+    const me = await response.json().catch(() => null);
+    if (!response.ok || me?.ok !== true)
       return {
         ok: false,
-        errorCode: 'token_invalid',
-        ...(me.description ? { error: me.description } : {}),
+        errorCode:
+          response.status === 401 || (response.ok && me?.error_code === 401)
+            ? 'token_invalid'
+            : 'connection_failed',
+        error:
+          typeof me?.description === 'string' && me.description.trim()
+            ? me.description
+            : `Telegram getMe failed (HTTP ${response.status})`,
       };
     return {
       ok: true,

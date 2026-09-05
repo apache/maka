@@ -417,7 +417,7 @@ export function BotChatChannelDetail(props: {
               toast.warning(
                 detailCopy.credentialsSaved(providerPresentation.label),
                 snapshot.warningDetail
-                  ? onboardingCopy.savedNotConnectedDetail(snapshot.warningDetail)
+                  ? onboardingCopy.savedNotConnectedDetail(botStatusReasonMessage(snapshot.warningDetail, locale) ?? detailCopy.savedButNotConnected)
                   : onboardingCopy.savedNotConnected,
               );
               return;

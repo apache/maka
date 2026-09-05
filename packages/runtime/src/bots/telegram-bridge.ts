@@ -27,7 +27,6 @@
 
 import type { BotAttachmentKind } from '@maka/core/bot-events';
 import type { BotChannelSettings } from '@maka/core/bot-chat-settings';
-import { generalizedErrorMessage } from '@maka/core/redaction';
 import { truncateUtf16Safe } from '@maka/core/text-sanitize';
 import { BaseBotAdapter, botReadinessFromSettings } from './base-adapter.js';
 import type {
@@ -313,7 +312,10 @@ export class TelegramBotBridge extends BaseBotAdapter implements SendCapable {
       }
       if (classification.kind !== 'ok') {
         this.readiness = this.readiness === 'operational' ? 'degraded' : 'credentials_valid';
-        this.reason = classification.kind === 'retry' ? 'rate-limited' : classification.description;
+        this.recordFailure(
+          classification.kind === 'retry' ? 'rate-limited' : classification.description,
+          classification.kind === 'retry' ? 'rate-limited' : 'send-failed',
+        );
         this.emitStatusChange();
         return null;
       }
@@ -388,7 +390,10 @@ export class TelegramBotBridge extends BaseBotAdapter implements SendCapable {
     try {
       const me = await telegramApi(this.settings.token, 'getMe');
       if (!me.ok) {
-        this.reason = me.description ?? 'get-me-failed';
+        this.recordFailure(
+          me.description ?? 'get-me-failed',
+          me.error_code === 401 ? 'token_invalid' : 'get-me-failed',
+        );
         this.readiness = 'configured';
         this.emitStatusChange();
         return;
@@ -407,7 +412,7 @@ export class TelegramBotBridge extends BaseBotAdapter implements SendCapable {
       this.emitStatusChange();
       void this.pollTelegram();
     } catch (error) {
-      this.reason = generalizedErrorMessage(error);
+      this.recordFailure(error);
       this.readiness =
         this.readiness === 'operational' ? 'degraded' : botReadinessFromSettings(this.settings);
       this.emitStatusChange();

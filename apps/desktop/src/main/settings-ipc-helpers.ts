@@ -211,21 +211,20 @@ export function toSettingsTestResult(
   };
 }
 
-export function botTestErrorMessage(
-  provider: BotProvider,
-  result: Pick<BotTestResult, "errorCode" | "error">,
-): string {
-  return botTestFailure(provider, result).message;
-}
-
-const MISSING_CREDENTIAL_CODES: ReadonlySet<BotTestErrorCode> = new Set([
-  "slack_tokens_missing",
-  "feishu_credentials_missing",
-  "wecom_credentials_missing",
-  "dingtalk_credentials_missing",
-  "qq_credentials_missing",
-  "wechat_ilink_credentials_incomplete",
-]);
+const BOT_TEST_FAILURE_CODES = {
+  token_missing: 'bot_token_missing',
+  token_invalid: 'bot_token_invalid',
+  feishu_credentials_missing: 'bot_app_credentials_missing',
+  slack_tokens_missing: 'slack_tokens_missing',
+  wecom_credentials_missing: 'wecom_credentials_missing',
+  dingtalk_credentials_missing: 'dingtalk_credentials_missing',
+  dingtalk_no_access_token: 'dingtalk_no_access_token',
+  qq_credentials_missing: 'qq_credentials_missing',
+  qq_no_access_token: 'qq_no_access_token',
+  wechat_bridge_url_invalid: 'wechat_bridge_url_invalid',
+  wechat_ilink_credentials_incomplete: 'wechat_ilink_credentials_incomplete',
+  connection_failed: 'bot_connection_failed',
+} satisfies Record<BotTestErrorCode, SettingsTestResultCode>;
 
 function botTestFailure(
   provider: BotProvider,
@@ -244,7 +243,7 @@ function botTestFailure(
       message: `${label} rejected the Bot Token.`,
     };
   }
-  if (result.errorCode && MISSING_CREDENTIAL_CODES.has(result.errorCode)) {
+  if (result.errorCode === 'feishu_credentials_missing') {
     return {
       code: "bot_app_credentials_missing",
       message: `${label} requires an App ID and App Secret.`,
@@ -256,7 +255,8 @@ function botTestFailure(
   ).trim();
   const classified = generalizedErrorMessage(raw, "");
   return {
-    code: "bot_connection_failed",
+    code: result.errorCode && Object.hasOwn(BOT_TEST_FAILURE_CODES, result.errorCode)
+      ? BOT_TEST_FAILURE_CODES[result.errorCode] : 'bot_connection_failed',
     message: classified
       ? `${label} connection test failed: ${classified}.`
       : `${label} connection test failed.`,
