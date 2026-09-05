@@ -275,6 +275,10 @@ jobs:
         if: steps.plan.outputs.code == 'true'
         run: npx knip --workspace packages/ui
 
+      - name: Knip (unlisted dependencies, all workspaces)
+        if: steps.plan.outputs.code == 'true'
+        run: npx knip --include unlisted
+
       - name: Linux sandbox smoke
         if: steps.plan.outputs.runtime_sandbox == 'true'
         env:
