@@ -57,6 +57,8 @@ export const BASH_MAX_RETAINED_CHARS = 1024 * 1024;
 // chunks keep flowing into the retained tail buffer.
 export const BASH_MAX_LIVE_EMIT_CHARS = 1024 * 1024;
 
+const ELECTRON_RUN_AS_NODE = 'ELECTRON_RUN_AS_NODE';
+
 // Emitted once per stream when live forwarding is suppressed. The full output is
 // not lost — it still feeds the retained tail and the returned result.
 export const LIVE_OUTPUT_SUPPRESSED_MARKER =
@@ -120,6 +122,23 @@ export interface BoundedShellResult {
 }
 
 /**
+ * Build the environment boundary for a user command without changing the
+ * Runtime Host's own environment. Electron uses this variable to put the
+ * current process in Node mode; inheriting it would make Electron-launched
+ * user programs lose Electron APIs such as BrowserWindow. Windows environment
+ * names are case-insensitive, while POSIX environment names are not.
+ */
+export function buildUserCommandEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return Object.fromEntries(
+    Object.entries(env).filter(([key]) =>
+      process.platform === 'win32'
+        ? key.toUpperCase() !== ELECTRON_RUN_AS_NODE
+        : key !== ELECTRON_RUN_AS_NODE,
+    ),
+  );
+}
+
+/**
  * Run `command` in a shell, streaming output into a memory-bounded tail. Never
  * kills the command for producing too much output — it keeps only the last
  * `maxRetainedChars` per stream. On timeout/abort it SIGTERMs (then SIGKILLs
@@ -131,18 +150,15 @@ export function runShellWithBoundedTail(
   command: string,
   options: BoundedShellOptions,
 ): Promise<BoundedShellResult> {
-  const plan = buildShellSpawnPlan(
-    options.shell ?? defaultShellPlan(),
-    command,
-    options.env ?? process.env,
-  );
+  const env = buildUserCommandEnv(options.env ?? process.env);
+  const plan = buildShellSpawnPlan(options.shell ?? defaultShellPlan(), command, env);
   return runSpawnedProcessWithBoundedTail(
     plan.file,
     plan.args,
     plan.useShellOption,
     {
       ...options,
-      ...(plan.env ? { env: plan.env } : {}),
+      env: plan.env ?? env,
     },
     plan.stdin,
   );
@@ -154,7 +170,10 @@ export function runProcessWithBoundedTail(
   args: readonly string[],
   options: BoundedShellOptions,
 ): Promise<BoundedShellResult> {
-  return runSpawnedProcessWithBoundedTail(program, args, false, options);
+  return runSpawnedProcessWithBoundedTail(program, args, false, {
+    ...options,
+    env: buildUserCommandEnv(options.env ?? process.env),
+  });
 }
 
 function runSpawnedProcessWithBoundedTail(
