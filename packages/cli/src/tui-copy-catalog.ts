@@ -149,12 +149,15 @@ export const TUI_COPY_RESOURCES = {
           stale_import: 'An imported entry changed; preview the import again.',
           missing: 'That server no longer exists.',
           closed: 'The MCP controller is closed.',
+          cancelled: 'The MCP action was cancelled.',
           'invalid-config': 'The server configuration is invalid.',
           'credential-cleanup-failed':
             'Stored credentials could not be removed; the configuration was not changed.',
           'publication-credential-failed':
             'The provider credential could not be stored or applied.',
           'persist-failed': 'The configuration could not be saved.',
+          'rollback-failed':
+            'The MCP action was cancelled, but cleanup failed. The configuration may be out of sync.',
           'manager-failed': 'The MCP connection action failed.',
           turn_active: 'MCP cannot be changed while a turn or another control action is running.',
           invalid: 'Check the value and try again.',
@@ -250,10 +253,12 @@ export const TUI_COPY_RESOURCES = {
           stale_import: '导入项已变化，请重新预览。',
           missing: '该服务器已不存在。',
           closed: 'MCP 控制器已关闭。',
+          cancelled: 'MCP 操作已取消。',
           'invalid-config': '服务器配置无效。',
           'credential-cleanup-failed': '无法删除旧凭据，配置未修改。',
           'publication-credential-failed': '无法保存或应用 Provider 凭据。',
           'persist-failed': '无法保存配置。',
+          'rollback-failed': 'MCP 操作已取消，但清理失败，配置可能不同步。',
           'manager-failed': 'MCP 连接操作失败。',
           turn_active: 'Turn 或其他控制操作运行期间不能修改 MCP。',
           invalid: '请检查输入后重试。',
@@ -350,10 +355,12 @@ export const TUI_COPY_RESOURCES = {
           stale_import: '匯入項目已變更，請重新預覽。',
           missing: '該伺服器已不存在。',
           closed: 'MCP 控制器已關閉。',
+          cancelled: 'MCP 操作已取消。',
           'invalid-config': '伺服器設定無效。',
           'credential-cleanup-failed': '無法移除已儲存的認證資料；設定未變更。',
           'publication-credential-failed': '無法儲存或套用 Provider 認證資料。',
           'persist-failed': '無法儲存設定。',
+          'rollback-failed': 'MCP 操作已取消，但清理失敗，設定可能不同步。',
           'manager-failed': 'MCP 連線操作失敗。',
           turn_active: 'Turn 或其他控制操作執行期間無法修改 MCP。',
           invalid: '請檢查輸入後重試。',
@@ -453,7 +460,7 @@ export const TUI_COPY_RESOURCES = {
     en: {
       modelPickerTitle: 'Select Model',
       modelSwitchCacheWarning:
-        '⚠ Switching models may rebuild the prompt cache; the next request may be slower or cost more.',
+        '\u26a0 Switching models may rebuild the prompt cache; the next request may be slower or cost more.',
       modelSearchHint:
         'Search models / providers / connections · ↑↓ select · Enter confirm · Esc cancel',
       searchLabel: 'Search',
@@ -553,7 +560,8 @@ export const TUI_COPY_RESOURCES = {
     },
     'zh-CN': {
       modelPickerTitle: '选择模型',
-      modelSwitchCacheWarning: '⚠ 切换模型可能需要重建提示缓存；下一次请求可能更慢或成本更高。',
+      modelSwitchCacheWarning:
+        '\u26a0 切换模型可能需要重建提示缓存；下一次请求可能更慢或成本更高。',
       modelSearchHint: '搜索模型 / 服务商 / 连接 · ↑↓ 选择 · Enter 确认 · Esc 取消',
       searchLabel: '搜索',
       noMatchingModels: '没有匹配的模型',
@@ -642,7 +650,8 @@ export const TUI_COPY_RESOURCES = {
     },
     'zh-TW': {
       modelPickerTitle: '選擇模型',
-      modelSwitchCacheWarning: '⚠ 切換模型可能需要重建提示快取；下一次請求可能較慢或成本較高。',
+      modelSwitchCacheWarning:
+        '\u26a0 切換模型可能需要重建提示快取；下一次請求可能較慢或成本較高。',
       modelSearchHint: '搜尋模型 / 服務商 / 連線 · ↑↓ 選擇 · Enter 確認 · Esc 取消',
       searchLabel: '搜尋',
       noMatchingModels: '沒有符合的模型',

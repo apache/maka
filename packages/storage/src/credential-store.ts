@@ -118,6 +118,12 @@ export interface CredentialStore {
     expected: string | null,
     value: string,
   ): Promise<CredentialCasResult>;
+  /** Delete only while the stored entry still equals `expected`. */
+  compareAndDeleteSecret?(
+    slug: string,
+    kind: CredentialKind,
+    expected: string | null,
+  ): Promise<CredentialCasResult>;
 }
 
 export function createFileCredentialStore(workspaceRoot: string): CredentialStore {
@@ -181,6 +187,25 @@ class FileCredentialStore implements CredentialStore {
         return { committed: false, current };
       }
       file.values[key] = value;
+      await this.write(file);
+      return { committed: true };
+    });
+  }
+
+  compareAndDeleteSecret(
+    slug: string,
+    kind: CredentialKind,
+    expected: string | null,
+  ): Promise<CredentialCasResult> {
+    const key = this.key(slug, toStoredKind(kind));
+    return withCredentialFileLock(this.path, async () => {
+      const file = await this.readUnlocked();
+      const stored = file.values[key];
+      const current = stored === undefined ? null : stored;
+      if (current !== expected) {
+        return { committed: false, current };
+      }
+      delete file.values[key];
       await this.write(file);
       return { committed: true };
     });

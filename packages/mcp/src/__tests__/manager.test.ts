@@ -18,7 +18,10 @@
  */
 
 import assert from 'node:assert/strict';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, test } from 'node:test';
 import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node';
@@ -30,7 +33,13 @@ import {
   type McpProtocolPreference,
   type McpToolBinding,
 } from '@maka/core/mcp';
-import { buildStdioEnvironment, McpClientManager, McpToolCallError } from '../index.js';
+import { deferred } from '@maka/core/test-only/async-primitives';
+import {
+  buildStdioEnvironment,
+  McpClientManager,
+  McpToolCallError,
+  type McpOAuthStorage,
+} from '../index.js';
 import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 const fixturePath = fileURLToPath(new URL('../__fixtures__/stdio-server.js', import.meta.url));
@@ -70,6 +79,82 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
         ),
       );
       assertLegacyHandshake(fixture);
+    });
+
+    test('caller abort stops waiting on the initial OAuth credential read', async () => {
+      const readStarted = deferred<void>();
+      const releaseRead = deferred<void>();
+      let reads = 0;
+      const storage: McpOAuthStorage = {
+        get: async () => {
+          reads += 1;
+          if (reads === 1) {
+            readStarted.resolve();
+            await releaseRead.promise;
+          }
+          return undefined;
+        },
+        set: async () => undefined,
+        delete: async () => undefined,
+      };
+      const manager = createManager({ oauthStorage: storage });
+      const abort = new AbortController();
+      const syncing = manager.sync(
+        {
+          version: MCP_CONFIG_VERSION,
+          mcpServers: {
+            remote: { url: 'https://oauth-read.example/mcp', transport: 'streamable-http' },
+          },
+        },
+        { signal: abort.signal },
+      );
+      await readStarted.promise;
+
+      abort.abort(new Error('cancel initial OAuth credential read'));
+      const rejected = await rejectsWithin(syncing, 100, /cancel initial OAuth credential read/u);
+      releaseRead.resolve();
+      await syncing.catch(() => undefined);
+
+      assert.equal(rejected, true);
+      assert.equal(manager.status('remote')?.state, 'disconnected');
+    });
+
+    test('caller abort stops waiting on the OAuth authorization-owner read', async () => {
+      const readStarted = deferred<void>();
+      const releaseRead = deferred<void>();
+      let reads = 0;
+      const storage: McpOAuthStorage = {
+        get: async () => {
+          reads += 1;
+          if (reads === 2) {
+            readStarted.resolve();
+            await releaseRead.promise;
+          }
+          return undefined;
+        },
+        set: async () => undefined,
+        delete: async () => undefined,
+      };
+      const manager = createManager({ oauthStorage: storage });
+      const abort = new AbortController();
+      const syncing = manager.sync(
+        {
+          version: MCP_CONFIG_VERSION,
+          mcpServers: {
+            remote: { url: 'https://oauth-owner.example/mcp', transport: 'streamable-http' },
+          },
+        },
+        { signal: abort.signal },
+      );
+      await readStarted.promise;
+
+      abort.abort(new Error('cancel OAuth authorization-owner read'));
+      const rejected = await rejectsWithin(syncing, 100, /cancel OAuth authorization-owner read/u);
+      releaseRead.resolve();
+      await syncing.catch(() => undefined);
+
+      assert.equal(rejected, true);
+      assert.equal(manager.status('remote')?.state, 'disconnected');
     });
 
     test('auto probes before negotiating a legacy Streamable HTTP server', async () => {
@@ -1207,6 +1292,192 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
       assert.deepEqual(manager.toolSnapshot().tools, []);
     });
 
+    test('caller abort cancels sync and reaps its in-flight stdio child', async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'maka-mcp-sync-abort-'));
+      const eventLog = join(root, 'events.jsonl');
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const manager = createManager();
+      const abort = new AbortController();
+      const sync = manager.sync(
+        {
+          version: MCP_CONFIG_VERSION,
+          mcpServers: {
+            fixture: {
+              command: process.execPath,
+              args: [fixturePath, '--slow-start'],
+              env: { MAKA_MCP_STDIO_EVENT_LOG: eventLog },
+            },
+          },
+        },
+        { signal: abort.signal },
+      );
+      await pollFor(
+        async () => {
+          try {
+            return (await readFile(eventLog, 'utf8')).includes('"event":"start"');
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+            throw error;
+          }
+        },
+        { timeoutMs: 1_000, pollMs: 5 },
+      );
+      abort.abort(new Error('cancelled by caller'));
+      await assert.rejects(sync, /cancelled by caller/u);
+      await pollFor(() => manager.status('fixture')?.state === 'disconnected', {
+        timeoutMs: 2_000,
+        pollMs: 5,
+      });
+      const events = await readFile(eventLog, 'utf8');
+      const start = events
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as { event: string; pid: number })
+        .find((event) => event.event === 'start');
+      assert.ok(start);
+      await pollFor(() => !processExists(start.pid), { timeoutMs: 5_000, pollMs: 5 });
+      assert.equal(manager.status('fixture')?.state, 'disconnected');
+      assert.deepEqual(manager.toolSnapshot().tools, []);
+    });
+
+    test('a joining caller aborts only its wait for a shared in-flight connect', async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'maka-mcp-joined-connect-abort-'));
+      const eventLog = join(root, 'events.jsonl');
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const manager = createManager();
+      const initialSync = manager.sync({
+        version: MCP_CONFIG_VERSION,
+        mcpServers: {
+          fixture: {
+            command: process.execPath,
+            args: [fixturePath, '--slow-start'],
+            env: { MAKA_MCP_STDIO_EVENT_LOG: eventLog },
+          },
+        },
+      });
+      await pollFor(
+        async () => {
+          try {
+            return (await readFile(eventLog, 'utf8')).includes('"event":"start"');
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+            throw error;
+          }
+        },
+        { timeoutMs: 1_000, pollMs: 5 },
+      );
+      const abort = new AbortController();
+      const joined = manager.connect('fixture', { signal: abort.signal });
+
+      abort.abort(new Error('joining caller cancelled'));
+      await assert.rejects(joined, /joining caller cancelled/u);
+      assert.equal(await settlesWithin(initialSync, 50), false);
+      const eventsBeforeOwnerCancellation = await readFile(eventLog, 'utf8');
+      const start = eventsBeforeOwnerCancellation
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as { event: string; pid: number })
+        .find((event) => event.event === 'start');
+      assert.ok(start);
+      assert.equal(processExists(start.pid), true);
+
+      assert.equal(manager.cancelConnect('fixture'), true);
+      await initialSync;
+      await pollFor(() => manager.status('fixture')?.state === 'disconnected', {
+        timeoutMs: 2_000,
+        pollMs: 5,
+      });
+      await pollFor(() => !processExists(start.pid), { timeoutMs: 5_000, pollMs: 5 });
+      assert.deepEqual(manager.toolSnapshot().tools, []);
+    });
+
+    test('caller abort stops waiting on a credential read before sync mutates connections', async () => {
+      let releaseGet!: () => void;
+      const getGate = new Promise<void>((resolve) => {
+        releaseGet = resolve;
+      });
+      const storage: McpOAuthStorage = {
+        get: async () => {
+          await getGate;
+          return undefined;
+        },
+        set: async () => undefined,
+        delete: async () => undefined,
+      };
+      const manager = createManager({ oauthStorage: storage });
+      await manager.sync({
+        version: MCP_CONFIG_VERSION,
+        mcpServers: { fixture: { command: process.execPath, enabled: false } },
+      });
+      const abort = new AbortController();
+      const removing = manager.sync(
+        { version: MCP_CONFIG_VERSION, mcpServers: {} },
+        { signal: abort.signal },
+      );
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      abort.abort(new Error('credential read cancelled'));
+
+      assert.equal(await rejectsWithin(removing, 100, /credential read cancelled/u), true);
+      assert.equal(manager.status('fixture')?.state, 'disabled');
+      releaseGet();
+    });
+
+    test('sync waits for every started removal before it settles after a sibling aborts', async () => {
+      const fastRead = deferred<void>();
+      const slowWrite = deferred<void>();
+      let fastReadStarted = false;
+      let slowWriteStarted = false;
+      let removalActive = false;
+      let slowWrites = 0;
+      const storage: McpOAuthStorage = {
+        get: async (serverId) => {
+          if (serverId === 'fast' && removalActive) {
+            fastReadStarted = true;
+            await fastRead.promise;
+          }
+          return undefined;
+        },
+        set: async (serverId) => {
+          if (serverId === 'slow' && removalActive) {
+            slowWrites += 1;
+            slowWriteStarted = true;
+            await slowWrite.promise;
+          }
+        },
+        delete: async () => undefined,
+      };
+      const manager = createManager({ oauthStorage: storage });
+      await manager.sync({
+        version: MCP_CONFIG_VERSION,
+        mcpServers: {
+          fast: { command: process.execPath, enabled: false },
+          slow: { url: 'https://slow.example/mcp', enabled: false },
+        },
+      });
+      const abort = new AbortController();
+      removalActive = true;
+      const removing = manager.sync(
+        { version: MCP_CONFIG_VERSION, mcpServers: {} },
+        { signal: abort.signal },
+      );
+      const observedRemoval = removing.then(
+        () => ({ status: 'fulfilled' as const }),
+        (error: unknown) => ({ status: 'rejected' as const, error }),
+      );
+      await waitFor(() => fastReadStarted && slowWriteStarted);
+      abort.abort(new Error('cancel parallel removals'));
+
+      assert.equal(await settlesWithin(observedRemoval, 50), false);
+      assert.equal(slowWrites, 1);
+      slowWrite.resolve();
+      fastRead.resolve();
+      const result = await observedRemoval;
+      assert.equal(result.status, 'rejected');
+      assert.match(String('error' in result ? result.error : ''), /cancel parallel removals/u);
+      assert.equal(manager.status('fast')?.state, 'disabled');
+      assert.equal(manager.status('slow'), undefined);
+    });
+
     test('cancels installation after remote tool discovery starts', async () => {
       const fixture = await createRemoteFixture('streamable-http');
       const manager = createManager();
@@ -1377,6 +1648,15 @@ function fixtureConfig(extraArgs: string[] = []): McpConfigFile {
   };
 }
 
+function processExists(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
 function remoteConfig(
   url: string,
   transport: 'auto' | 'streamable-http' = 'streamable-http',
@@ -1404,6 +1684,27 @@ async function settlesWithin(promise: Promise<unknown>, timeoutMs: number): Prom
   try {
     return await Promise.race([
       promise.then(() => true),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function rejectsWithin(
+  promise: Promise<unknown>,
+  timeoutMs: number,
+  pattern: RegExp,
+): Promise<boolean> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise.then(
+        () => false,
+        (error: unknown) => pattern.test(String(error)),
+      ),
       new Promise<boolean>((resolve) => {
         timer = setTimeout(() => resolve(false), timeoutMs);
       }),

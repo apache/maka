@@ -282,6 +282,12 @@ export interface RuntimeHostCapabilityProviderCredentialStore {
     credential: string,
   ): Promise<void>;
   delete(target: RuntimeHostRemoteProfileIncarnation, ownerClientInstanceId: string): Promise<void>;
+  compareAndSet?(
+    target: RuntimeHostRemoteProfileIncarnation,
+    ownerClientInstanceId: string,
+    expected: string | null,
+    credential: string | null,
+  ): Promise<boolean>;
 }
 
 export type RuntimeHostProfileConnectionFailureReason =
@@ -360,8 +366,21 @@ export function createRuntimeHostProfileCredentialStore(
 }
 
 export function createRuntimeHostCapabilityProviderCredentialStore(
-  credentials: Pick<CredentialStore, 'getSecret' | 'setSecret' | 'deleteSecret'>,
+  credentials: Pick<
+    CredentialStore,
+    'getSecret' | 'setSecret' | 'deleteSecret' | 'compareAndSetSecret' | 'compareAndDeleteSecret'
+  >,
 ): RuntimeHostCapabilityProviderCredentialStore {
+  const compareAndSetSecret = credentials.compareAndSetSecret?.bind(credentials);
+  const compareAndDeleteSecret = credentials.compareAndDeleteSecret?.bind(credentials);
+  const locator = (
+    target: RuntimeHostRemoteProfileIncarnation,
+    ownerClientInstanceId: string,
+    credential: string,
+  ) => ({
+    slot: profileCredentialSlot(target.profile),
+    encoded: encodeCapabilityProviderCredential(target, ownerClientInstanceId, credential),
+  });
   return {
     get: async (target, ownerClientInstanceId) => {
       const stored = await credentials.getSecret(
@@ -376,19 +395,43 @@ export function createRuntimeHostCapabilityProviderCredentialStore(
         : null;
     },
     set: async (target, ownerClientInstanceId, credential) => {
-      await credentials.setSecret(
-        profileCredentialSlot(target.profile),
-        'runtime_host_capability_provider',
-        JSON.stringify({
-          schemaVersion: 1,
-          profileIncarnationId: requireProfileIncarnationId(target.profileIncarnationId),
-          ownerClientInstanceId: requireClientInstanceId(ownerClientInstanceId),
-          credential: requireRuntimeHostAccessCredential(credential),
-        }),
-      );
+      const value = locator(target, ownerClientInstanceId, credential);
+      await credentials.setSecret(value.slot, 'runtime_host_capability_provider', value.encoded);
     },
     delete: (target, ownerClientInstanceId) =>
       deleteCapabilityProviderCredential(credentials, target, ownerClientInstanceId),
+    ...(compareAndSetSecret
+      ? {
+          compareAndSet: async (
+            target: RuntimeHostRemoteProfileIncarnation,
+            ownerClientInstanceId: string,
+            expected: string | null,
+            credential: string | null,
+          ) => {
+            const slot = profileCredentialSlot(target.profile);
+            const encodedExpected =
+              expected === null
+                ? null
+                : encodeCapabilityProviderCredential(target, ownerClientInstanceId, expected);
+            if (credential === null) {
+              if (!compareAndDeleteSecret) return false;
+              const result = await compareAndDeleteSecret(
+                slot,
+                'runtime_host_capability_provider',
+                encodedExpected,
+              );
+              return result.committed;
+            }
+            const result = await compareAndSetSecret(
+              slot,
+              'runtime_host_capability_provider',
+              encodedExpected,
+              encodeCapabilityProviderCredential(target, ownerClientInstanceId, credential),
+            );
+            return result.committed;
+          },
+        }
+      : {}),
   };
 }
 
@@ -1444,7 +1487,7 @@ function profileCredentialSlot(profile: RemoteRuntimeHostProfile): string {
 }
 
 async function deleteCapabilityProviderCredential(
-  credentials: Pick<CredentialStore, 'getSecret' | 'deleteSecret'>,
+  credentials: Pick<CredentialStore, 'getSecret' | 'deleteSecret' | 'compareAndDeleteSecret'>,
   target: RuntimeHostRemoteProfileIncarnation,
   ownerClientInstanceId: string,
 ): Promise<void> {
@@ -1456,6 +1499,10 @@ async function deleteCapabilityProviderCredential(
     decoded.ownerClientInstanceId !== requireClientInstanceId(ownerClientInstanceId) ||
     decoded.profileIncarnationId !== requireProfileIncarnationId(target.profileIncarnationId)
   ) {
+    return;
+  }
+  if (credentials.compareAndDeleteSecret) {
+    await credentials.compareAndDeleteSecret(slot, 'runtime_host_capability_provider', stored);
     return;
   }
   await credentials.deleteSecret(slot, 'runtime_host_capability_provider');
@@ -1485,6 +1532,19 @@ function decodeCapabilityProviderCredential(value: string): {
   } catch (error) {
     throw new Error('Runtime Host capability-provider credential is invalid', { cause: error });
   }
+}
+
+function encodeCapabilityProviderCredential(
+  target: RuntimeHostRemoteProfileIncarnation,
+  ownerClientInstanceId: string,
+  credential: string,
+): string {
+  return JSON.stringify({
+    schemaVersion: 1,
+    profileIncarnationId: requireProfileIncarnationId(target.profileIncarnationId),
+    ownerClientInstanceId: requireClientInstanceId(ownerClientInstanceId),
+    credential: requireRuntimeHostAccessCredential(credential),
+  });
 }
 
 function encodeProfileCredential(credential: RuntimeHostProfileCredential): string {
