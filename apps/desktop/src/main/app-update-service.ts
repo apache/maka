@@ -411,7 +411,13 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
         });
     checkAttemptsRemaining = UPDATE_CHECK_MAX_ATTEMPTS - 1;
     checkInFlight = attempt().catch((error) => {
-      if (disposed || checkAttemptsRemaining <= 0) {
+      if (disposed) {
+        // Terminal: settle without publishing to a disposed service's
+        // subscribers, and run the .finally cleanup below.
+        checkAttemptsRemaining = 0;
+        return status;
+      }
+      if (checkAttemptsRemaining <= 0) {
         checkAttemptsRemaining = 0;
         return status.state === 'error' ? status : publishError('check', error);
       }
@@ -422,6 +428,12 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
       return new Promise<AppUpdateStatus>((resolve) => {
         checkRetryTimer = clock.setTimeout(() => {
           checkRetryTimer = undefined;
+          if (disposed) {
+            // dispose() does not clear this timer precisely so the promise
+            // still settles here and `checkInFlight` is not left dangling.
+            resolve(status);
+            return;
+          }
           resolve(attempt().catch((retryError) =>
             status.state === 'error' ? status : publishError('check', retryError),
           ));
@@ -458,10 +470,9 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
       clock.clearTimeout(checkTimer);
       checkTimer = undefined;
     }
-    if (checkRetryTimer !== undefined) {
-      clock.clearTimeout(checkRetryTimer);
-      checkRetryTimer = undefined;
-    }
+    // Deliberately leaves the retry timer running: its callback checks
+    // `disposed` and settles the in-flight check, so `checkInFlight` is not
+    // left dangling and its .finally cleanup still runs.
   }
 
   async function retryUpdateDownload(): Promise<AppUpdateStatus> {
