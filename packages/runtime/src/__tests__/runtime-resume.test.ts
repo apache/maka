@@ -362,7 +362,7 @@ describe('runtime resume phase 1 safe-boundary continuation', () => {
       plan.diagnostics.map((diagnostic) => diagnostic.code),
       ['tool_not_dispatched'],
     );
-    assert.deepEqual(plan.rejectionReasons, ['dangling_tool_state']);
+    assert.deepEqual(plan.rejectionReasons, ['tool_not_dispatched']);
   });
 
   test('lets composite replay trim a new-protocol call that never crossed T1', () => {

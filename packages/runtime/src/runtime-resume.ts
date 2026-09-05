@@ -145,6 +145,7 @@ export type ResumePlanDiagnosticCode =
 export type ResumeRejectionReason =
   | 'runtime_offset_mismatch'
   | 'dangling_tool_state'
+  | 'tool_not_dispatched'
   | 'pending_permission'
   | 'workspace_identity_mismatch'
   | 'background_operation_pending'
@@ -1435,7 +1436,6 @@ function deriveRejectionReasons(
         reasons.add('runtime_offset_mismatch');
         break;
       case 'pending_tool_result':
-      case 'tool_not_dispatched':
       case 'tool_recovery_parked':
       case 'tool_recovery_corruption':
       case 'tool_ledger_corruption':
@@ -1445,6 +1445,9 @@ function deriveRejectionReasons(
       case 'unmatched_tool_result':
       case 'tool_name_mismatch':
         reasons.add('dangling_tool_state');
+        break;
+      case 'tool_not_dispatched':
+        reasons.add('tool_not_dispatched');
         break;
     }
   }
