@@ -69,6 +69,7 @@ const DARK_THEME_SENTINEL_STORY_IDS = new Set([
   'product-accessibility-dialogs--rename-conversation',
   'product-markdown--rich-assistant-answer',
   'product-settings-pages--appearance',
+  'product-settings-pages--bot-chat-needs-attention',
   'product-shell-official-appshell--default-layout',
 ]);
 

@@ -519,7 +519,6 @@ type E2eTestFixtures = {
   window: Page;
   gitReviewWindow: { page: Page; projectRoot: string };
   invocableSkillsWindow: Page;
-  linkColorWindow: Page;
   projectSidebarWindow: Page;
   parentRemovalWindow: Page;
   railRenderWindow: Page;
@@ -527,7 +526,6 @@ type E2eTestFixtures = {
   threadSearchWindow: Page;
   partialHistoryWindow: Page;
   requestHeaderRowWindow: Page;
-  permissionCenterWindow: Page;
   newTaskTargetWindow: Page;
   directoryReferenceWindow: { page: Page; folder: string };
   accessibilityNarrativeWindow: Page;
@@ -598,13 +596,6 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
       readinessSelector: COMPOSER_INPUT,
       locale: 'zh-CN',
       invocableSkills: true,
-    }, use);
-  },
-  linkColorWindow: async ({}, use) => {
-    await withE2eWindow({
-      seed: false,
-      readinessSelector: '.settingsBotConfigDocLink',
-      e2eFixtureScenario: 'settings-bots-onboarding',
     }, use);
   },
   // Seeded connection so the composer is ready, plus one registered Project so
@@ -703,15 +694,6 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
       seed: false,
       readinessSelector: '.settingsSurface',
       e2eFixtureScenario: 'settings-models',
-      locale: 'zh-CN',
-      showWindow: true,
-    }, use);
-  },
-  permissionCenterWindow: async ({}, use) => {
-    await withE2eWindow({
-      seed: false,
-      readinessSelector: '.settingsCapabilityGroup',
-      e2eFixtureScenario: 'settings-permissions',
       locale: 'zh-CN',
       showWindow: true,
     }, use);

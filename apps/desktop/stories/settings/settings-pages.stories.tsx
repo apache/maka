@@ -1614,6 +1614,36 @@ function makeBotAttentionBridge(settings: AppSettings) {
 
 const withBotAttentionBridge = withScopedMakaBridge(makeBotAttentionBridge(botAttentionSettings));
 
+function renderedLinkColors(renderedLink: HTMLElement) {
+  const root = document.documentElement;
+  renderedLink.style.setProperty('transition', 'none', 'important');
+  root.setAttribute('data-maka-theme', 'tokyo-night');
+
+  const resolve = (value: string) => {
+    const probe = document.createElement('span');
+    probe.style.setProperty('color', value, 'important');
+    renderedLink.parentElement?.appendChild(probe);
+    const color = getComputedStyle(probe).color;
+    probe.remove();
+    return color;
+  };
+  const canvas = document.createElement('canvas');
+  const context = canvas.getContext('2d', { willReadFrequently: true });
+  if (!context) throw new Error('Link color canvas is unavailable');
+  const rgba = (value: string) => {
+    context.clearRect(0, 0, 1, 1);
+    context.fillStyle = value;
+    context.fillRect(0, 0, 1, 1);
+    return [...context.getImageData(0, 0, 1, 1).data];
+  };
+  return {
+    link: rgba(resolve('var(--link)')),
+    solid: rgba(resolve('var(--accent-solid)')),
+    accent: rgba(resolve('var(--accent)')),
+    rendered: rgba(getComputedStyle(renderedLink).color),
+  };
+}
+
 type SettingsStoryProps = {
   section: SettingsSection;
   connections?: LlmConnection[];
@@ -1623,6 +1653,9 @@ type SettingsStoryProps = {
   /** Seeds 已归档任务. Empty for every story that is not about that page. */
   archivedTaskSessions?: readonly SessionSummary[];
   seedSnapshotCache?(cache: SettingsSnapshotCache): void;
+  frameHeight?: number | string;
+  frameMinHeight?: number;
+  frameWidth?: number | string;
 };
 
 /**
@@ -1672,8 +1705,9 @@ function SettingsStoryFrame(props: SettingsStoryProps) {
         data-maka-e2e-fixture="true"
         style={{
           background: 'var(--surface-canvas)',
-          height: '100dvh',
-          minHeight: 640,
+          height: props.frameHeight ?? '100dvh',
+          minHeight: props.frameMinHeight ?? 640,
+          width: props.frameWidth ?? '100%',
         }}
       >
         <ConnectionSettingsServicesProvider services={connectionSettingsServices}>
@@ -1776,6 +1810,36 @@ export const SubagentEditor: Story = {
 export const General: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="general" />,
+};
+// Real path: 设置 → 通用 in a wide, short Desktop window. The main pane owns
+// overflow even when the pointer is over its blank right gutter.
+export const GeneralWideShort: Story = {
+  decorators: [withSettingsBridge],
+  render: () => (
+    <SettingsStory
+      section="general"
+      frameHeight={520}
+      frameMinHeight={0}
+      frameWidth={1600}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByRole('textbox', { name: '助手语气偏好' });
+    const pane = canvasElement.querySelector<HTMLElement>('.settingsMainPane');
+    const content = pane?.querySelector<HTMLElement>('.settingsPageStack');
+    const layoutContent = pane?.querySelector<HTMLElement>('.astryx-layout-content');
+    if (!pane || !content || !layoutContent) throw new Error('Settings layout is incomplete');
+    const paneRect = pane.getBoundingClientRect();
+    const contentRect = content.getBoundingClientRect();
+    expect(paneRect.right - contentRect.right).toBeGreaterThan(40);
+    expect(pane.scrollHeight).toBeGreaterThan(pane.clientHeight);
+    expect(getComputedStyle(layoutContent).overflowY).not.toBe('auto');
+    expect(getComputedStyle(pane).overflowY).toBe('auto');
+    pane.scrollTop = 600;
+    await waitFor(() => expect(pane.scrollTop).toBeGreaterThan(0));
+    expect(content.getBoundingClientRect().width).toBeGreaterThan(0);
+  },
 };
 // Cold path: Desktop-owned preferences are ready while the selected Runtime
 // Host settings read is still pending. The complete page topology stays
@@ -2039,7 +2103,26 @@ export const GeneralGitBash: Story = {
 // Real path: 设置 → 外观.
 export const Appearance: Story = {
   decorators: [withSettingsBridge],
+  globals: { locale: 'en' },
   render: () => <SettingsStory section="appearance" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByRole('heading', { name: 'App icon' });
+    for (const name of ['Azure', 'Classic']) {
+      const input = await canvas.findByRole('checkbox', { name });
+      const card = input.parentElement;
+      const content = card ? [...card.children].find((child) => child.tagName !== 'INPUT') : null;
+      if (!(card instanceof HTMLElement) || !(content instanceof HTMLElement)) {
+        throw new Error(`Appearance card ${name} is incomplete`);
+      }
+      const cardRect = card.getBoundingClientRect();
+      const contentRect = content.getBoundingClientRect();
+      expect(cardRect.height).toBeGreaterThan(contentRect.height);
+      expect(
+        Math.abs((contentRect.top - cardRect.top) - (cardRect.bottom - contentRect.bottom)),
+      ).toBeLessThanOrEqual(1);
+    }
+  },
 };
 /** #1362: proxy + auth enabled so the full form-grid stack renders. */
 // Real path: 设置 → 使用统计 → 供应商统计, before any usage has been recorded.
@@ -2207,6 +2290,23 @@ export const WebSearch: Story = {
 export const BotChatNeedsAttention: Story = {
   decorators: [withBotAttentionBridge],
   render: () => <SettingsStory section="bot-chat" />,
+  play: async ({ canvasElement }) => {
+    const dingtalk = await waitForStoryButton(
+      canvasElement,
+      (button) => button.closest('.settingsRemoteAccessCatalogRow')?.textContent?.includes('钉钉') === true,
+    );
+    await userEvent.click(dingtalk);
+    await waitForStoryCondition(
+      () => canvasElement.querySelector('.settingsBotConfigDocLink') !== null,
+      'Bot configuration documentation link did not render',
+    );
+    const link = canvasElement.querySelector<HTMLElement>('.settingsBotConfigDocLink');
+    if (!link) throw new Error('Bot configuration documentation link did not render');
+    const colors = renderedLinkColors(link);
+    expect(colors.link).toEqual(colors.solid);
+    expect(colors.link).not.toEqual(colors.accent);
+    expect(colors.rendered).toEqual(colors.link);
+  },
 };
 // Real path: 设置 → 每日回顾.
 export const DailyReview: Story = {
@@ -2589,6 +2689,35 @@ export const PermissionCenterDiagnosticsExpanded: Story = {
         canvasElement.querySelector('[data-readiness] button[aria-expanded="true"]') !== null,
       'Permission Center story did not expand a capability row',
     );
+    const row = canvasElement.querySelector<HTMLElement>('[data-readiness]');
+    if (!row) throw new Error('Permission Center capability row did not render');
+    const firstTextMetrics = (root: HTMLElement) => {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      let node = walker.nextNode();
+      while (node && !node.textContent?.trim()) node = walker.nextNode();
+      if (!node?.parentElement) throw new Error('Metadata cell has no text');
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      return {
+        bottom: range.getBoundingClientRect().bottom,
+        fontSize: getComputedStyle(node.parentElement).fontSize,
+      };
+    };
+    const grids = row.querySelectorAll<HTMLElement>('.settingsCapabilityMetadata > dl');
+    expect(grids.length).toBeGreaterThan(0);
+    for (const grid of grids) {
+      const terms = [...grid.querySelectorAll<HTMLElement>(':scope > dt')];
+      const values = [...grid.querySelectorAll<HTMLElement>(':scope > dd')];
+      expect(values).toHaveLength(terms.length);
+      for (const [index, term] of terms.entries()) {
+        const value = values[index];
+        if (!value) throw new Error('Permission metadata value is missing');
+        const labelMetrics = firstTextMetrics(term);
+        const valueMetrics = firstTextMetrics(value);
+        expect(Math.abs(labelMetrics.bottom - valueMetrics.bottom)).toBeLessThanOrEqual(1);
+        expect(valueMetrics.fontSize).toBe(labelMetrics.fontSize);
+      }
+    }
   },
 };
 // Real path: 设置 → 健康 (also reachable from the topbar health action), with probes
