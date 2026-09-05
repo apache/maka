@@ -35,6 +35,7 @@ export type RuntimeHostPeerErrorCode =
   | 'transit_unavailable'
   | 'peer_native_unavailable'
   | 'peer_native_failed'
+  | 'peer_capacity_exceeded'
   | 'peer_connect_in_progress';
 
 export class RuntimeHostPeerError extends Error {
@@ -321,12 +322,18 @@ export async function writeRuntimeHostPeerAuthentication(
 export async function writeRuntimeHostPeerAuthenticationResult(
   stream: RuntimeHostPeerNativeStream,
   accepted: boolean,
-  resume?: { readonly received: number },
+  detail?: { readonly received: number } | { readonly reason: 'capacity_exceeded' },
 ): Promise<void> {
   await withStreamDeadline(
     stream.write(
       Buffer.from(
-        `${JSON.stringify(resume ? { v: 2, accepted, resume } : { v: 1, accepted })}\n`,
+        `${JSON.stringify(
+          detail && 'reason' in detail
+            ? { v: 2, accepted: false, reason: detail.reason }
+            : detail
+              ? { v: 2, accepted, resume: detail }
+              : { v: 1, accepted },
+        )}\n`,
         'utf8',
       ),
     ),
@@ -374,6 +381,12 @@ export async function readRuntimeHostPeerAuthenticationResult(
   );
   if (!isAuthenticationResult(decoded.value)) {
     throw new RuntimeHostPeerError('peer_native_failed', 'Peer authentication result is invalid');
+  }
+  if ('reason' in decoded.value) {
+    throw new RuntimeHostPeerError(
+      'peer_capacity_exceeded',
+      'Runtime Host peer connection capacity is full; close unused Host or shared Session connections and retry',
+    );
   }
   return {
     accepted: decoded.value.accepted,
@@ -687,7 +700,21 @@ function isAuthenticationResult(
   value: unknown,
 ): value is
   | { v: 1; accepted: boolean }
-  | { v: 2; accepted: boolean; resume: { readonly received: number } } {
+  | { v: 2; accepted: boolean; resume: { readonly received: number } }
+  | { v: 2; accepted: false; reason: 'capacity_exceeded' } {
+  if (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.keys(value).length === 3 &&
+    'v' in value &&
+    value.v === 2 &&
+    'accepted' in value &&
+    value.accepted === false &&
+    'reason' in value &&
+    value.reason === 'capacity_exceeded'
+  )
+    return true;
   return (
     typeof value === 'object' &&
     value !== null &&
@@ -738,6 +765,7 @@ function isPeerErrorCode(value: string | undefined): value is RuntimeHostPeerErr
     value === 'transit_unavailable' ||
     value === 'peer_native_unavailable' ||
     value === 'peer_native_failed' ||
+    value === 'peer_capacity_exceeded' ||
     value === 'peer_connect_in_progress'
   );
 }

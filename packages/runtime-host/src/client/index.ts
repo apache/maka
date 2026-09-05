@@ -187,7 +187,7 @@ export {
   type IssueRuntimeHostOwnerConnectionCodeInput,
   type RuntimeHostOwnerConnectionCode,
 } from './owner-connection-code.js';
-export { ensureRuntimeHostPeerIdentity } from '../transport/peer-native.js';
+export { ensureRuntimeHostPeerIdentity, RuntimeHostPeerError } from '../transport/peer-native.js';
 export {
   createRuntimeHostPeerClient,
   createRuntimeHostPeerClientFromEnvironment,

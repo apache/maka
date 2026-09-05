@@ -25,6 +25,7 @@ import {
   forceTerminateRegisteredRuntimeHost,
   RuntimeHostOperationError,
   RuntimeHostPermanentReconnectError,
+  RuntimeHostPeerError,
   RuntimeHostRequestInterruptedError,
   runtimeHostStartupError,
   LOCAL_RUNTIME_HOST_PROFILE,
@@ -1009,7 +1010,9 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
             first ? target.input.onConnectionPhase : undefined,
           );
         },
-        retryInitialFailure,
+        retryInitialFailure: retryInitialFailure
+          ? (error) => !(error instanceof RuntimeHostPeerError && error.code === 'peer_capacity_exceeded')
+          : false,
         ...(initialSignal ? { initialSignal } : {}),
         onReconnectError: (error) => {
           console.warn('[runtime-host] reconnect attempt failed:', error);

@@ -444,6 +444,25 @@ test('bounds and separates the peer credential preface from Runtime Host frames'
     streamWith(Buffer.from('{"v":2,"accepted":true,"resume":{"received":65536}}\n')),
   );
   assert.equal(resumedResult.resume?.received, 65_536);
+  await assert.rejects(
+    readRuntimeHostPeerAuthenticationResult(
+      streamWith(Buffer.from('{"v":2,"accepted":false,"reason":"capacity_exceeded"}\n')),
+    ),
+    (error: unknown) =>
+      error instanceof RuntimeHostPeerError && error.code === 'peer_capacity_exceeded',
+  );
+  for (const invalid of [
+    { v: 2, accepted: true, reason: 'capacity_exceeded' },
+    { v: 2, accepted: false, reason: 'unknown' },
+    { v: 2, accepted: false, reason: 'capacity_exceeded', resume: { received: 0 } },
+  ]) {
+    await assert.rejects(
+      readRuntimeHostPeerAuthenticationResult(
+        streamWith(Buffer.from(`${JSON.stringify(invalid)}\n`)),
+      ),
+      /result is invalid/u,
+    );
+  }
   for (const invalid of [
     { ...resume, generation: 0 },
     { ...resume, received: -1 },
