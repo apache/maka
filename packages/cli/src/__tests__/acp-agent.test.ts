@@ -23,13 +23,13 @@ import { client, methods, RequestError } from '@agentclientprotocol/sdk';
 import { createMakaAcpAgent } from '../acp/maka-acp-agent.js';
 
 describe('Maka ACP agent', () => {
-  test('returns the Maka identity and advertises only Session listing', async () => {
+  test('returns the Maka identity and advertises Session listing and close', async () => {
     await client({ name: 'test-client' }).connectWith(
       createMakaAcpAgent({ version: '0.2.0', sessionRegistry: fakeSessionRegistry() }),
       async (agent) => {
         assert.deepEqual(await agent.request(methods.agent.initialize, { protocolVersion: 1 }), {
           protocolVersion: 1,
-          agentCapabilities: { sessionCapabilities: { list: {} } },
+          agentCapabilities: { sessionCapabilities: { list: {}, close: {} } },
           authMethods: [],
           agentInfo: { name: 'maka', title: 'Maka', version: '0.2.0' },
         });
@@ -70,16 +70,102 @@ describe('Maka ACP agent', () => {
     assert.deepEqual(lists, [{ cwd: '/workspace' }]);
   });
 
-  test('does not implement or advertise session/close', async () => {
+  test('routes official SDK set-config requests through the Session registry', async () => {
+    const configurationRequests: unknown[] = [];
+    await client({ name: 'test-client' }).connectWith(
+      createMakaAcpAgent({
+        version: '0.2.0',
+        sessionRegistry: fakeSessionRegistry({ configurationRequests }),
+      }),
+      async (agent) => {
+        assert.deepEqual(
+          await agent.request(methods.agent.session.setConfigOption, {
+            sessionId: 'session-1',
+            configId: 'collaboration_mode',
+            value: 'plan',
+          }),
+          {
+            configOptions: [
+              {
+                type: 'select',
+                id: 'collaboration_mode',
+                name: 'Collaboration mode',
+                category: 'mode',
+                currentValue: 'plan',
+                options: [
+                  { value: 'agent', name: 'Agent' },
+                  { value: 'plan', name: 'Plan' },
+                ],
+              },
+            ],
+          },
+        );
+      },
+    );
+    assert.deepEqual(configurationRequests, [
+      { sessionId: 'session-1', configId: 'collaboration_mode', value: 'plan' },
+    ]);
+  });
+
+  test('routes prompt, cancel, and close through the Session registry', async () => {
+    const prompts: unknown[] = [];
+    const cancellations: unknown[] = [];
+    const closes: unknown[] = [];
+    const updates: unknown[] = [];
+    const testClient = client({ name: 'test-client' }).onNotification(
+      methods.client.session.update,
+      ({ params }) => void updates.push(params),
+    );
+    await testClient.connectWith(
+      createMakaAcpAgent({
+        version: '0.2.0',
+        sessionRegistry: fakeSessionRegistry({ prompts, cancellations, closes }),
+      }),
+      async (agent) => {
+        assert.deepEqual(
+          await agent.request(methods.agent.session.prompt, {
+            sessionId: 'session-1',
+            prompt: [{ type: 'text', text: 'hello' }],
+          }),
+          { stopReason: 'end_turn' },
+        );
+        await agent.notify(methods.agent.session.cancel, { sessionId: 'session-1' });
+        assert.deepEqual(
+          await agent.request(methods.agent.session.close, { sessionId: 'session-1' }),
+          {},
+        );
+      },
+    );
+    assert.deepEqual(prompts, [
+      { sessionId: 'session-1', prompt: [{ type: 'text', text: 'hello' }] },
+    ]);
+    assert.deepEqual(cancellations, [{ sessionId: 'session-1' }]);
+    assert.deepEqual(closes, [{ sessionId: 'session-1' }]);
+    assert.deepEqual(updates, [
+      {
+        sessionId: 'session-1',
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: 'hello' },
+          messageId: 'message-1',
+        },
+      },
+    ]);
+  });
+
+  test('does not implement session/set_mode', async () => {
     await client({ name: 'test-client' }).connectWith(
       createMakaAcpAgent({ version: '0.2.0', sessionRegistry: fakeSessionRegistry() }),
       async (agent) => {
         await assert.rejects(
-          agent.request(methods.agent.session.close, { sessionId: 'session-1' }),
+          agent.request(methods.agent.session.setMode, {
+            sessionId: 'session-1',
+            modeId: 'plan',
+          }),
           (error: unknown) => {
             assert.ok(error instanceof RequestError);
             assert.equal(error.code, -32601);
-            assert.deepEqual(error.data, { method: 'session/close' });
+            assert.deepEqual(error.data, { method: 'session/set_mode' });
             return true;
           },
         );
@@ -100,7 +186,16 @@ describe('Maka ACP agent', () => {
   });
 });
 
-function fakeSessionRegistry(observations: { creates?: unknown[]; lists?: unknown[] } = {}) {
+function fakeSessionRegistry(
+  observations: {
+    creates?: unknown[];
+    lists?: unknown[];
+    configurationRequests?: unknown[];
+    prompts?: unknown[];
+    cancellations?: unknown[];
+    closes?: unknown[];
+  } = {},
+) {
   return {
     create: async (params: unknown) => {
       observations.creates?.push(params);
@@ -118,6 +213,41 @@ function fakeSessionRegistry(observations: { creates?: unknown[]; lists?: unknow
           },
         ],
       };
+    },
+    setConfigOption: async (params: unknown) => {
+      observations.configurationRequests?.push(params);
+      return {
+        configOptions: [
+          {
+            type: 'select' as const,
+            id: 'collaboration_mode',
+            name: 'Collaboration mode',
+            category: 'mode',
+            currentValue: 'plan',
+            options: [
+              { value: 'agent', name: 'Agent' },
+              { value: 'plan', name: 'Plan' },
+            ],
+          },
+        ],
+      };
+    },
+    prompt: async (params: unknown, context: { notify(notification: unknown): Promise<void> }) => {
+      observations.prompts?.push(params);
+      await context.notify({
+        sessionId: 'session-1',
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: 'hello' },
+          messageId: 'message-1',
+        },
+      });
+      return { stopReason: 'end_turn' as const };
+    },
+    cancel: async (params: unknown) => void observations.cancellations?.push(params),
+    close: async (params: unknown) => {
+      observations.closes?.push(params);
+      return {};
     },
   };
 }

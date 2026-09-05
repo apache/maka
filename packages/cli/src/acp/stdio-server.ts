@@ -19,7 +19,10 @@
 
 import { Readable, Writable } from 'node:stream';
 import { ndJsonStream } from '@agentclientprotocol/sdk';
-import type { RuntimeHostConnection } from '@maka/runtime-host/client';
+import {
+  isRuntimeHostReconnectingConnection,
+  type RuntimeHostConnection,
+} from '@maka/runtime-host/client';
 import { createMakaAcpAgent } from './maka-acp-agent.js';
 import { AcpSessionRegistry } from './session-registry.js';
 import { connectRuntimeHostCliConnection } from '../runtime-host-cli-context.js';
@@ -49,10 +52,16 @@ export async function runMakaAcpStdioServer(
         clientDataRoot: input.clientDataRoot,
         signal,
       });
+      const connection = context.connection;
+      if (!isRuntimeHostReconnectingConnection(connection)) {
+        await context.close().catch(() => undefined);
+        throw new Error('ACP requires a reconnecting Runtime Host connection');
+      }
       return {
-        request: context.connection.request.bind(
-          context.connection,
-        ) as RuntimeHostConnection['request'],
+        hostEpoch: connection.hostEpoch,
+        request: connection.request.bind(connection) as RuntimeHostConnection['request'],
+        openSessionSubscription: connection.openSessionSubscription.bind(connection),
+        openSessionSubscriptionOnce: connection.openSessionSubscriptionOnce.bind(connection),
         close: () => context.close(),
       };
     },

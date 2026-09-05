@@ -22,17 +22,33 @@ import type { AcpSessionRegistry } from './session-registry.js';
 
 export interface MakaAcpAgentOptions {
   readonly version: string;
-  readonly sessionRegistry: Pick<AcpSessionRegistry, 'create' | 'list'>;
+  readonly sessionRegistry: Pick<
+    AcpSessionRegistry,
+    'create' | 'list' | 'setConfigOption' | 'prompt' | 'cancel' | 'close'
+  >;
 }
 
 export function createMakaAcpAgent(options: MakaAcpAgentOptions): AgentApp {
   return agent({ name: 'maka' })
     .onRequest(methods.agent.initialize, () => ({
       protocolVersion: 1,
-      agentCapabilities: { sessionCapabilities: { list: {} } },
+      agentCapabilities: { sessionCapabilities: { list: {}, close: {} } },
       authMethods: [],
       agentInfo: { name: 'maka', title: 'Maka', version: options.version },
     }))
     .onRequest(methods.agent.session.new, ({ params }) => options.sessionRegistry.create(params))
-    .onRequest(methods.agent.session.list, ({ params }) => options.sessionRegistry.list(params));
+    .onRequest(methods.agent.session.list, ({ params }) => options.sessionRegistry.list(params))
+    .onRequest(methods.agent.session.setConfigOption, ({ params }) =>
+      options.sessionRegistry.setConfigOption(params),
+    )
+    .onRequest(methods.agent.session.prompt, ({ params, signal, client }) =>
+      options.sessionRegistry.prompt(params, {
+        signal,
+        notify: (notification) => client.notify(methods.client.session.update, notification),
+      }),
+    )
+    .onNotification(methods.agent.session.cancel, ({ params }) =>
+      options.sessionRegistry.cancel(params),
+    )
+    .onRequest(methods.agent.session.close, ({ params }) => options.sessionRegistry.close(params));
 }

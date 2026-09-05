@@ -67,6 +67,8 @@ export interface RuntimeHostSessionChannelOpenResult {
 
 export interface RuntimeHostSessionChannelOptions {
   connection: Pick<RuntimeHostConnection, 'openSessionSubscription'>;
+  /** Optional opener pinned to the concrete Host connection used for first attachment. */
+  openInitialSessionSubscription?: RuntimeHostConnection['openSessionSubscription'];
   sessionId: string;
   now: () => number;
   onTurnStarted: (turn: MakaPreparedSessionTurn) => void;
@@ -149,7 +151,10 @@ export class RuntimeHostSessionChannel {
   static async open(
     options: RuntimeHostSessionChannelOptions,
   ): Promise<RuntimeHostSessionChannelOpenResult> {
-    const subscription = await options.connection.openSessionSubscription({
+    const openInitial =
+      options.openInitialSessionSubscription ??
+      options.connection.openSessionSubscription.bind(options.connection);
+    const subscription = await openInitial({
       sessionId: options.sessionId,
       transcript: {
         kind: 'tail',

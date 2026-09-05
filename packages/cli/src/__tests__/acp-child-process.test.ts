@@ -20,9 +20,10 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { realpath } from 'node:fs/promises';
+import { createServer, type ServerResponse } from 'node:http';
 import { PassThrough } from 'node:stream';
 import { describe, test } from 'node:test';
-import { RequestError, methods } from '@agentclientprotocol/sdk';
+import { methods, type SessionNotification } from '@agentclientprotocol/sdk';
 import {
   pipeCapturedStdout,
   StdoutCaptureBridge,
@@ -119,7 +120,7 @@ describe('Maka ACP child process', () => {
       await harness.withClient(async ({ context }) => {
         assert.deepEqual(await context.request(methods.agent.initialize, { protocolVersion: 1 }), {
           protocolVersion: 1,
-          agentCapabilities: { sessionCapabilities: { list: {} } },
+          agentCapabilities: { sessionCapabilities: { list: {}, close: {} } },
           authMethods: [],
           agentInfo: { name: 'maka', title: 'Maka', version: '0.2.0' },
         });
@@ -154,6 +155,27 @@ describe('Maka ACP child process', () => {
             cwd: harness.workspaceRoot,
             mcpServers: [],
           });
+          assert.deepEqual(
+            (first.configOptions ?? []).map((option) => [option.id, option.currentValue]),
+            [
+              ['permission_mode', 'ask'],
+              ['collaboration_mode', 'agent'],
+              ['orchestration_mode', 'default'],
+            ],
+          );
+          const configured = await context.request(methods.agent.session.setConfigOption, {
+            sessionId: first.sessionId,
+            configId: 'collaboration_mode',
+            value: 'plan',
+          });
+          assert.deepEqual(
+            (configured.configOptions ?? []).map((option) => [option.id, option.currentValue]),
+            [
+              ['permission_mode', 'ask'],
+              ['collaboration_mode', 'plan'],
+              ['orchestration_mode', 'default'],
+            ],
+          );
           const second = await context.request(methods.agent.session.new, {
             cwd: harness.workspaceRoot,
             mcpServers: [],
@@ -172,14 +194,16 @@ describe('Maka ACP child process', () => {
             true,
           );
 
-          await assert.rejects(
-            context.request(methods.agent.session.close, { sessionId: first.sessionId }),
-            (error: unknown) => {
-              assert.ok(error instanceof RequestError);
-              assert.equal(error.code, -32601);
-              assert.deepEqual(error.data, { method: 'session/close' });
-              return true;
-            },
+          assert.deepEqual(
+            await context.request(methods.agent.session.close, { sessionId: first.sessionId }),
+            {},
+          );
+          const listedAfterClose = await context.request(methods.agent.session.list, {
+            cwd: harness.workspaceRoot,
+          });
+          assert.equal(
+            listedAfterClose.sessions.some((session) => session.sessionId === first.sessionId),
+            true,
           );
         });
 
@@ -195,6 +219,76 @@ describe('Maka ACP child process', () => {
         }
       },
       { startRuntimeHost: true },
+    );
+  });
+
+  test('configures every advertised option for a reasoning model through a real Runtime Host', {
+    timeout: 30_000,
+  }, async () => {
+    await withAcpChildProcessHarness(
+      async (harness) => {
+        await harness.withClient(async ({ context }) => {
+          await context.request(methods.agent.initialize, { protocolVersion: 1 });
+          const created = await context.request(methods.agent.session.new, {
+            cwd: harness.workspaceRoot,
+            mcpServers: [],
+          });
+          assert.deepEqual(
+            (created.configOptions ?? []).map(({ id, currentValue }) => [id, currentValue]),
+            [
+              ['permission_mode', 'ask'],
+              ['thinking_level', 'default'],
+              ['collaboration_mode', 'agent'],
+              ['orchestration_mode', 'default'],
+            ],
+          );
+          const permission = created.configOptions?.find(({ id }) => id === 'permission_mode');
+          assert.ok(permission?.type === 'select');
+          assert.deepEqual(
+            permission.options.flatMap((option) => ('value' in option ? [option.value] : [])),
+            ['ask', 'bypass'],
+          );
+          const thinking = created.configOptions?.find(({ id }) => id === 'thinking_level');
+          assert.ok(thinking?.type === 'select');
+          assert.deepEqual(
+            thinking.options.flatMap((option) => ('value' in option ? [option.value] : [])),
+            ['default', 'low', 'high'],
+          );
+
+          let configuredOptions = created.configOptions;
+          for (const [configId, value] of [
+            ['permission_mode', 'bypass'],
+            ['thinking_level', 'high'],
+            ['collaboration_mode', 'plan'],
+            ['orchestration_mode', 'swarm'],
+          ] as const) {
+            configuredOptions = (
+              await context.request(methods.agent.session.setConfigOption, {
+                sessionId: created.sessionId,
+                configId,
+                value,
+              })
+            ).configOptions;
+          }
+          assert.deepEqual(
+            (configuredOptions ?? []).map(({ id, currentValue }) => [id, currentValue]),
+            [
+              ['permission_mode', 'bypass'],
+              ['thinking_level', 'high'],
+              ['collaboration_mode', 'plan'],
+              ['orchestration_mode', 'swarm'],
+            ],
+          );
+        });
+
+        await harness.closeStdin();
+        assert.deepEqual(await harness.waitForExit(), { code: 0, signal: null });
+        assert.equal(harness.stderr, '');
+      },
+      {
+        startRuntimeHost: true,
+        model: { id: 'relay-reasoner', thinkingLevels: ['low', 'high'] },
+      },
     );
   });
 
@@ -230,7 +324,159 @@ describe('Maka ACP child process', () => {
       { startRuntimeHost: true },
     );
   });
+
+  test('streams, cancels, and closes through the real ACP and Runtime Host process boundary', {
+    timeout: 30_000,
+  }, async () => {
+    const model = await startAcpModelFixture();
+    try {
+      await withAcpChildProcessHarness(
+        async (harness) => {
+          const updates: SessionNotification[] = [];
+          await harness.withClient(
+            async ({ context }) => {
+              await context.request(methods.agent.initialize, { protocolVersion: 1 });
+              const created = await context.request(methods.agent.session.new, {
+                cwd: harness.workspaceRoot,
+                mcpServers: [],
+              });
+
+              assert.deepEqual(
+                await context.request(methods.agent.session.prompt, {
+                  sessionId: created.sessionId,
+                  prompt: [{ type: 'text', text: 'COMPLETE_ME' }],
+                }),
+                { stopReason: 'end_turn' },
+              );
+              assert.equal(
+                updates.some(
+                  ({ update }) =>
+                    update.sessionUpdate === 'agent_message_chunk' &&
+                    update.content.type === 'text' &&
+                    update.content.text.includes('ACP fixture completed'),
+                ),
+                true,
+              );
+
+              const cancelled = context.request(methods.agent.session.prompt, {
+                sessionId: created.sessionId,
+                prompt: [{ type: 'text', text: 'CANCEL_ME' }],
+              });
+              await model.cancelStarted;
+              await context.notify(methods.agent.session.cancel, { sessionId: created.sessionId });
+              assert.deepEqual(await cancelled, { stopReason: 'cancelled' });
+              assert.deepEqual(
+                await context.request(methods.agent.session.close, {
+                  sessionId: created.sessionId,
+                }),
+                {},
+              );
+            },
+            (app) =>
+              app.onNotification(methods.client.session.update, ({ params }) => {
+                updates.push(params);
+              }),
+          );
+
+          await harness.closeStdin();
+          assert.deepEqual(await harness.waitForExit(), { code: 0, signal: null });
+          assert.equal(harness.stderr, '');
+        },
+        {
+          startRuntimeHost: true,
+          model: {
+            id: 'acp-stream-fixture',
+            thinkingLevels: ['low'],
+            baseUrl: model.baseUrl,
+          },
+        },
+      );
+    } finally {
+      await model.close();
+    }
+  });
 });
+
+async function startAcpModelFixture(): Promise<{
+  readonly baseUrl: string;
+  readonly cancelStarted: Promise<void>;
+  close(): Promise<void>;
+}> {
+  let markCancelStarted!: () => void;
+  const cancelStarted = new Promise<void>((resolve) => {
+    markCancelStarted = resolve;
+  });
+  const server = createServer((request, response) => {
+    void readBody(request)
+      .then((body) => {
+        if (body.includes('CANCEL_ME')) {
+          response.writeHead(200, { 'content-type': 'text/event-stream' });
+          response.write(`data: ${JSON.stringify(modelChunk('partial', null))}\n\n`);
+          markCancelStarted();
+          request.once('close', () => response.end());
+          return;
+        }
+        if (body.includes('COMPLETE_ME')) {
+          respondModelText(response, 'ACP fixture completed.');
+          return;
+        }
+        respondModelText(response, 'ACP fixture session');
+      })
+      .catch((error) => response.destroy(error as Error));
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}/v1`,
+    cancelStarted,
+    close: () =>
+      new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      ),
+  };
+}
+
+function respondModelText(response: ServerResponse, text: string): void {
+  response.writeHead(200, { 'content-type': 'text/event-stream' });
+  response.write(`data: ${JSON.stringify(modelChunk(text, null))}\n\n`);
+  response.write(`data: ${JSON.stringify(modelChunk('', 'stop'))}\n\n`);
+  response.end('data: [DONE]\n\n');
+}
+
+function modelChunk(text: string, finishReason: 'stop' | null) {
+  return {
+    id: 'chatcmpl-acp-fixture',
+    object: 'chat.completion.chunk',
+    created: 1,
+    model: 'acp-stream-fixture',
+    choices: [
+      {
+        index: 0,
+        delta: finishReason === null ? { role: 'assistant', content: text } : {},
+        finish_reason: finishReason,
+      },
+    ],
+    ...(finishReason === 'stop'
+      ? { usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }
+      : {}),
+  };
+}
+
+function readBody(request: import('node:http').IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    request.setEncoding('utf8');
+    request.on('data', (chunk) => {
+      body += chunk;
+    });
+    request.on('end', () => resolve(body));
+    request.on('error', reject);
+  });
+}
 
 function assertJsonRpcMessage(message: unknown): void {
   assert.ok(message && typeof message === 'object' && !Array.isArray(message));
