@@ -343,9 +343,11 @@ export const BackgroundArtifactCount: Story = {
   render: () => <WorkbarToolSurface kind="files" backgroundFiles />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await canvas.findByRole('tab', { name: '生成文件, 0' });
+    const tab = await canvas.findByRole('tab', { name: /^生成文件/ });
+    await expect(within(tab).getByText('0', { exact: true })).toBeVisible();
+    await expect(tab).toHaveAttribute('aria-selected', 'false');
     htmlPublished = true;
-    const tab = await canvas.findByRole('tab', { name: '生成文件, 1' }, { timeout: 10_000 });
+    await within(tab).findByText('1', { exact: true }, { timeout: 10_000 });
     await expect(tab).toHaveAttribute('aria-selected', 'false');
   },
 };
