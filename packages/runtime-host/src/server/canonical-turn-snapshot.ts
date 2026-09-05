@@ -18,9 +18,10 @@
  */
 
 import { type ContextCompactionOutcome } from '@maka/core/events';
-import { truncateUtf8 } from '@maka/core/diagnostic-log';
+import { providerFailureSummaryFromDetails, truncateUtf8 } from '@maka/core/diagnostic-log';
 import { redactSecrets } from '@maka/core/redaction';
 import { readRunInvocation } from '@maka/core/runtime-event-store';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import { classifyTerminalRuntimeLedger } from '@maka/runtime/terminal-run-commit';
 import type { ExecutionStoresWriter } from '@maka/storage/execution-stores';
@@ -125,12 +126,11 @@ async function hasPendingInteraction(
 }
 
 function providerFailureSummaryFromRuntimeEvent(
-  event: import('@maka/core/runtime-event').RuntimeEvent,
+  event: RuntimeEvent,
 ): string | undefined {
-  const details = event.content?.kind === 'error' ? event.content.details : undefined;
-  if (!details || Array.isArray(details)) return undefined;
-  const summary = details.providerSummary;
-  return typeof summary === 'string' && summary.length > 0 ? summary : undefined;
+  return providerFailureSummaryFromDetails(
+    event.content?.kind === 'error' ? event.content.details : undefined,
+  );
 }
 function readContextCompactionOutcome(value: unknown): ContextCompactionOutcome | undefined {
   if (!value || typeof value !== 'object') return undefined;
