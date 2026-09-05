@@ -27,7 +27,6 @@ import { type SlashCommandIdForSurface } from '@maka/core/slash-command-catalog'
 
 import { type GoalStatus } from '@maka/core/goal';
 import { redactSecrets } from '@maka/core/redaction';
-import type { SessionControlBlockedCode } from '@maka/runtime/session-manager';
 import type { AttachmentIngestBlockedCode } from '@maka/core/attachments';
 
 export const STATIC_COMMAND_IDS = [
@@ -345,7 +344,6 @@ type ShellCopy = {
     bypassCancelLabel: string;
     permissionFailedTitle: string;
     permissionFallback: string;
-    sessionControlBlocked: Record<SessionControlBlockedCode, string>;
     attachmentIngestBlocked: Record<AttachmentIngestBlockedCode, string>;
     modelFailedTitle: string;
     modelFallback: string;
@@ -1009,16 +1007,6 @@ const SHELL_COPY_BY_LOCALE = {
       bypassCancelLabel: '保持自动',
       permissionFailedTitle: '切换权限模式失败',
       permissionFallback: '权限模式暂时无法切换，请稍后重试。',
-      sessionControlBlocked: {
-        permission_turn_running: '当前任务正在运行，等结束后再切换权限模式。',
-        permission_tool_pending: '当前有工具调用正在等待确认，处理后再切换权限模式。',
-        boundary_turn_running: '当前任务正在运行，等结束后再切换沙箱边界。',
-        boundary_request_pending: '当前有沙箱边界请求正在等待确认，处理后再切换。',
-        collaboration_turn_running: '当前任务正在运行，等结束后再切换协作模式。',
-        collaboration_tool_pending: '当前有工具调用正在等待确认，处理后再切换协作模式。',
-        plan_mode_plan_running: '当前计划仍在执行，结束或中断后才能切换到 Plan Mode。',
-        plan_mode_awaiting_approval: '当前方案正在等待审批，请明确放弃方案后再退出 Plan Mode。',
-      },
       attachmentIngestBlocked: {
         count_exceeded: '附件数量超过 8 个',
         size_exceeded: '附件大小超过 50MB',
@@ -1532,16 +1520,6 @@ const SHELL_COPY_BY_LOCALE = {
       bypassCancelLabel: '保持自動',
       permissionFailedTitle: '切換權限模式失敗',
       permissionFallback: '權限模式暫時無法切換，請稍後重試。',
-      sessionControlBlocked: {
-        permission_turn_running: '目前任務正在執行，等結束後再切換權限模式。',
-        permission_tool_pending: '目前有工具呼叫正在等待確認，處理後再切換權限模式。',
-        boundary_turn_running: '目前任務正在執行，等結束後再切換沙箱邊界。',
-        boundary_request_pending: '目前有沙箱邊界請求正在等待確認，處理後再切換。',
-        collaboration_turn_running: '目前任務正在執行，等結束後再切換協作模式。',
-        collaboration_tool_pending: '目前有工具呼叫正在等待確認，處理後再切換協作模式。',
-        plan_mode_plan_running: '目前計劃仍在執行，結束或中斷後才能切換到 Plan Mode。',
-        plan_mode_awaiting_approval: '目前方案正在等待審批，請明確放棄方案後再退出 Plan Mode。',
-      },
       attachmentIngestBlocked: {
         count_exceeded: '附件數量超過 8 個',
         size_exceeded: '附件大小超過 50MB',
@@ -2061,16 +2039,6 @@ const SHELL_COPY_BY_LOCALE = {
       bypassCancelLabel: 'Keep Auto',
       permissionFailedTitle: 'Could not change permission mode',
       permissionFallback: 'The permission mode could not be changed. Try again later.',
-      sessionControlBlocked: {
-        permission_turn_running: 'A task is still running. Change the permission mode after it finishes.',
-        permission_tool_pending: 'A tool call is waiting for confirmation. Resolve it before changing the permission mode.',
-        boundary_turn_running: 'A task is still running. Change the sandbox boundary after it finishes.',
-        boundary_request_pending: 'A sandbox boundary request is waiting for confirmation. Resolve it first.',
-        collaboration_turn_running: 'A task is still running. Change the collaboration mode after it finishes.',
-        collaboration_tool_pending: 'A tool call is waiting for confirmation. Resolve it before changing the collaboration mode.',
-        plan_mode_plan_running: 'The current plan is still executing. Finish or interrupt it before switching to Plan mode.',
-        plan_mode_awaiting_approval: 'A proposal is awaiting approval. Abandon it explicitly before leaving Plan mode.',
-      },
       attachmentIngestBlocked: {
         count_exceeded: 'More than 8 attachments.',
         size_exceeded: 'Attachment larger than 50MB.',
@@ -2389,10 +2357,11 @@ export function getShellCopy(locale: UiLocale): ShellCopy {
 export function localizedShellErrorMessage(error: unknown, fallback: string, locale: UiLocale): string {
   const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
   const maps = getShellCopy(locale).sessionSettingsActions;
-  // Stable reason tokens survive the Runtime and Electron IPC wrappers.
-  const blocked =
-    lookupCopy(maps.sessionControlBlocked, message.match(/session_control_blocked:([a-z_]+)/u)?.[1]) ??
-    lookupCopy(maps.attachmentIngestBlocked, message.match(/attachment_ingest:([a-z_]+)/u)?.[1]);
+  // The reason token survives the Electron IPC wrapper.
+  const blocked = lookupCopy(
+    maps.attachmentIngestBlocked,
+    message.match(/attachment_ingest:([a-z_]+)/u)?.[1],
+  );
   if (blocked) return blocked;
   // Diagnostics are inlined: a depended-on copy catalog may only hold bare
   // package runtime imports.

@@ -41,18 +41,6 @@ test('routes Work Board codes through each locale catalog', () => {
   }
 });
 
-test('maps blocked session-control tokens per locale at the shared entry', () => {
-  const blocked = new Error('session_control_blocked:permission_turn_running');
-  assert.equal(
-    localizedShellErrorMessage(blocked, 'fallback', 'zh-CN'),
-    '当前任务正在运行，等结束后再切换权限模式。',
-  );
-  assert.equal(
-    localizedShellErrorMessage(blocked, 'fallback', 'en'),
-    'A task is still running. Change the permission mode after it finishes.',
-  );
-});
-
 test('maps attachment-ingest tokens per locale at the shared entry', () => {
   const blocked = new Error("Error invoking remote method 'attachments': Error: attachment_ingest:count_limit");
   assert.equal(localizedShellErrorMessage(blocked, 'fallback', 'zh-CN'), '一次最多添加 8 个附件。');
@@ -65,12 +53,10 @@ test('maps attachment-ingest tokens per locale at the shared entry', () => {
 test('unknown and inherited reason tokens retain the caller fallback', (context) => {
   context.mock.method(console, 'error', () => undefined);
   for (const locale of ['zh-CN', 'zh-TW', 'en'] as const) {
-    for (const namespace of ['session_control_blocked', 'attachment_ingest']) {
-      for (const code of ['future_code', 'constructor']) {
-        const token = `${namespace}:${code}`;
-        for (const error of [token, new Error(token)]) {
-          assert.equal(localizedShellErrorMessage(error, 'fallback', locale), 'fallback');
-        }
+    for (const code of ['future_code', 'constructor']) {
+      const token = `attachment_ingest:${code}`;
+      for (const error of [token, new Error(token)]) {
+        assert.equal(localizedShellErrorMessage(error, 'fallback', locale), 'fallback');
       }
     }
   }
