@@ -412,6 +412,90 @@ test('an imported turn with no terminal state is repaired to failed', async () =
   }
 });
 
+test("converts Maka's own legacy transcript whole, and resumes an interrupted conversion", async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-native-transcript-'));
+  const sessions = createSessionStore(root);
+  const runtimeEvents = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
+
+  try {
+    const ts = Date.now();
+    const session = await sessions.create({
+      cwd: '/repo',
+      llmConnectionSlug: 'anthropic',
+      model: 'claude-opus-5',
+      permissionMode: 'ask',
+    });
+    await sessions.appendMessages(session.id, [
+      { type: 'user', id: 'n-user', turnId: 'turn-1', ts, text: 'run the tests' },
+      {
+        type: 'tool_call',
+        id: 'n-tool',
+        turnId: 'turn-1',
+        ts: ts + 1,
+        toolName: 'Bash',
+        args: { command: 'npm test' },
+      },
+      {
+        type: 'tool_result',
+        id: 'n-result',
+        turnId: 'turn-1',
+        ts: ts + 2,
+        toolUseId: 'n-tool',
+        isError: false,
+        content: { kind: 'text', text: 'ok' },
+      },
+      {
+        type: 'system_note',
+        id: 'n-note',
+        turnId: 'turn-1',
+        ts: ts + 3,
+        kind: 'step_limit',
+      },
+      {
+        type: 'assistant',
+        id: 'n-assistant',
+        turnId: 'turn-1',
+        ts: ts + 4,
+        text: 'All green.',
+        modelId: 'claude-opus-5',
+      },
+      {
+        type: 'turn_state',
+        id: 'n-state',
+        turnId: 'turn-1',
+        ts: ts + 5,
+        status: 'completed',
+        partialOutputRetained: true,
+      },
+    ]);
+
+    const repair = new RuntimeLedgerRepair({
+      runtimeEventStore: runtimeEvents,
+      readMessages: (sessionId) => sessions.readMessages(sessionId),
+      appendMessage: (sessionId, message) => sessions.appendMessage(sessionId, message),
+      newId: () => 'unused',
+      now: () => 100,
+    });
+
+    await repair.materializeTranscriptLedger(await sessions.readHeader(session.id));
+    // The same transcript converts to the same events, so a second pass — the
+    // retry after an interrupted one — adds nothing.
+    await repair.materializeTranscriptLedger(await sessions.readHeader(session.id));
+
+    const [run] = await runtimeEvents.listSessionInvocations(session.id);
+    assert.ok(run);
+    assert.equal(runtimeInvocationOutcome(run), 'completed');
+    const events = await runtimeEvents.readRuntimeEvents(session.id, run.runId);
+    assert.deepEqual(
+      events.flatMap((event) => (event.content ? [event.content.kind] : [])),
+      ['invocation_opened', 'text', 'function_call', 'function_response', 'system_note', 'text'],
+    );
+  } finally {
+    await runtimeEvents.close?.();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('a resolved Claude transcript replays as the conversation the user kept', async () => {
   // The whole path, end to end: raw records → lineage resolution → conversion
   // → Ledger materialization → the replay a continuation would be given.

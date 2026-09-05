@@ -72,12 +72,13 @@ export class RuntimeLedgerRepair {
   constructor(private readonly deps: RuntimeLedgerRepairDeps) {}
 
   /**
-   * Give an imported transcript a runtime spine: one invocation per turn, opened
-   * by its own opening fact and closed by its own terminal event.
+   * Give a transcript a runtime spine: one invocation per turn, opened by its
+   * own opening fact and closed by its own terminal event.
    *
-   * The transcript is the only evidence there is, so a turn it cannot close is
-   * refused rather than imported half-formed. Re-running is a no-op: a turn
-   * whose invocation already exists is left exactly as it is.
+   * Every event id is derived from the run it belongs to and its position in
+   * that run, so importing the same transcript twice writes the same events and
+   * the store dedupes them. That is what makes an interrupted import resumable:
+   * a turn is skipped once its invocation has ended, and re-derived until then.
    */
   async materializeTranscriptLedger(header: SessionHeader): Promise<void> {
     const sessionId = header.id;
@@ -86,8 +87,10 @@ export class RuntimeLedgerRepair {
       const ledgerMessages = messages.filter(
         (message) => message.type !== 'user' || message.steeringEventId === undefined,
       );
-      const openedTurnIds = new Set(
-        (await this.listInlineInvocations(sessionId)).map((invocation) => invocation.turnId),
+      const endedTurnIds = new Set(
+        (await this.listInlineInvocations(sessionId))
+          .filter((invocation) => invocation.terminalEvent)
+          .map((invocation) => invocation.turnId),
       );
       const messagesByTurn = groupMessagesByTurn(ledgerMessages);
       const turns = deriveTurnRecords(ledgerMessages).filter((turn) =>
@@ -98,25 +101,26 @@ export class RuntimeLedgerRepair {
       const firstOpenedAt = Math.max(0, header.createdAt - turns.length);
 
       for (const [index, turn] of turns.entries()) {
-        if (openedTurnIds.has(turn.turnId)) continue;
+        if (endedTurnIds.has(turn.turnId)) continue;
         const turnMessages = messagesByTurn.get(turn.turnId) ?? [];
         const runId = transcriptRunId(sessionId, turn.turnId);
         const openedAt = firstOpenedAt + index;
         const run = { sessionId, runId, turnId: turn.turnId, invocationId: runId };
         const events = [
-          transcriptOpeningEvent({ header, run, openedAt, newId: this.deps.newId }),
+          transcriptOpeningEvent({ header, run, openedAt }),
           ...backfillRuntimeEventsFromStoredMessages({
             run,
             outcome: transcriptOutcome(turn, turnMessages, openedAt),
             messages: turnMessages,
-            modelHistory: 'conversation_text',
-            newId: this.deps.newId,
+            // Another runtime's tool calls belong to its protocol, not to the
+            // provider this Session will talk to next, so a foreign transcript
+            // converts as the conversation it is. Maka's own history converts
+            // whole: its tool calls are the ones it would replay.
+            modelHistory: header.externalOrigin ? 'conversation_text' : 'full',
+            newId: transcriptEventIds(runId),
             now: this.deps.now,
           }).events,
         ];
-        if (!events.some(isTerminalRuntimeEvent)) {
-          throw new Error(`Imported transcript Run ${runId} has no terminal RuntimeEvent`);
-        }
         for (const event of events) {
           await this.deps.runtimeEventStore.appendRuntimeEvent(sessionId, runId, event);
         }
@@ -179,6 +183,19 @@ function transcriptRunId(sessionId: string, turnId: string): string {
 }
 
 /**
+ * Ids for one run's converted events, numbered in the order the converter
+ * emits them. The run id is already derived from the Session and turn, so the
+ * same transcript always produces the same ids and a re-run appends nothing.
+ */
+function transcriptEventIds(runId: string): () => string {
+  let seq = 0;
+  return () => {
+    seq += 1;
+    return `${runId}-e${seq}`;
+  };
+}
+
+/**
  * The opening fact of an imported turn.
  *
  * Its route is `unknown` on purpose: an external transcript records which model
@@ -189,7 +206,6 @@ function transcriptOpeningEvent(input: {
   header: SessionHeader;
   run: { sessionId: string; runId: string; turnId: string; invocationId: string };
   openedAt: number;
-  newId: () => string;
 }): RuntimeEvent {
   const opening: RuntimeEventInvocationOpenedContent = {
     kind: 'invocation_opened',
@@ -212,7 +228,7 @@ function transcriptOpeningEvent(input: {
     source: { kind: 'fresh' },
   };
   return buildInvocationOpenedEvent({
-    id: input.newId(),
+    id: `${input.run.runId}-opened`,
     run: input.run,
     openedAt: input.openedAt,
     opening,
