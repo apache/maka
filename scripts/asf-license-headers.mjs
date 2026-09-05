@@ -111,6 +111,8 @@ const commentStyles = {
 const coveredExtensions = new Map([
   ['.astro', 'astro'],
   ['.cjs', 'block'],
+  ['.cs', 'block'],
+  ['.csproj', 'html'],
   ['.css', 'block'],
   ['.html', 'html'],
   ['.js', 'block'],

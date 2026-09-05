@@ -211,6 +211,8 @@ describe('ASF header classification', () => {
       'scripts/asf-source-release.mjs',
       'apps/desktop/build/installer.nsh',
       'experiments/windows-sandbox/launcher/src/main.rs',
+      'experiments/maka-cu-windows/src/Program.cs',
+      'experiments/maka-cu-windows/src/MakaCuWindows.csproj',
       'packages/eval/harbor/egress-proxy/Dockerfile',
       'packages/eval/harbor/egress-proxy/network-policy',
       '.husky/pre-commit',
