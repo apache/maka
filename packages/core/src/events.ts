@@ -126,6 +126,14 @@ export interface QuoteRef {
   label?: string;
   /** Provenance: the transcript turn the excerpt was selected from. */
   sourceTurnId?: string;
+  /** Source Session identity for a read-only cross-session snapshot. */
+  sourceSessionId?: string;
+  /** Frozen source Session display name for provenance chips and replay. */
+  sourceSessionName?: string;
+  /** Unix timestamp at which the source snapshot was captured. */
+  sourceCapturedAt?: number;
+  /** Whether the source snapshot was bounded before it was attached. */
+  sourceTruncated?: boolean;
 }
 
 /**
@@ -170,7 +178,19 @@ const ATTACHMENT_REF_SHAPE = defineObjectShape<AttachmentRef>()(
   ['kind', 'name', 'mimeType', 'bytes', 'ref'],
   [],
 );
-const QUOTE_REF_SHAPE = defineObjectShape<QuoteRef>()(['text'], ['label', 'sourceTurnId']);
+const QUOTE_REF_SHAPE = defineObjectShape<QuoteRef>()(
+  ['text'],
+  [
+    'label',
+    'sourceTurnId',
+    'sourceSessionId',
+    'sourceSessionName',
+    'sourceCapturedAt',
+    'sourceTruncated',
+  ],
+);
+const QUOTE_REF_SESSION_ID_MAX_LENGTH = 512;
+const QUOTE_REF_SESSION_NAME_MAX_LENGTH = 200;
 const INLINE_REFERENCE_SHAPE = defineObjectShape<InlineReference>()(
   ['kind', 'value', 'label', 'start'],
   [],
@@ -218,6 +238,22 @@ export function normalizeMessageContent(content: MessageContent): MessageContent
             text: quote.text,
             ...(quote.label !== undefined ? { label: quote.label } : {}),
             ...(quote.sourceTurnId !== undefined ? { sourceTurnId: quote.sourceTurnId } : {}),
+            ...(quote.sourceSessionId !== undefined
+              ? { sourceSessionId: quote.sourceSessionId }
+              : {}),
+            ...(quote.sourceSessionName !== undefined
+              ? { sourceSessionName: quote.sourceSessionName }
+              : {}),
+            ...(quote.sourceCapturedAt !== undefined
+              ? {
+                  sourceCapturedAt: Object.is(quote.sourceCapturedAt, -0)
+                    ? 0
+                    : quote.sourceCapturedAt,
+                }
+              : {}),
+            ...(quote.sourceTruncated !== undefined
+              ? { sourceTruncated: quote.sourceTruncated }
+              : {}),
           })),
         }
       : {}),
@@ -322,12 +358,33 @@ export function isInlineReference(value: unknown): value is InlineReference {
 }
 
 export function isQuoteRef(value: unknown): value is QuoteRef {
+  const record = isRecord(value) ? value : undefined;
+  const sourceFields = record
+    ? [
+        record.sourceSessionId,
+        record.sourceSessionName,
+        record.sourceCapturedAt,
+        record.sourceTruncated,
+      ]
+    : [];
+  const hasSourceMetadata = sourceFields.some((field) => field !== undefined);
   return (
-    isRecord(value) &&
-    hasExactShape(value, QUOTE_REF_SHAPE) &&
-    typeof value.text === 'string' &&
-    (value.label === undefined || typeof value.label === 'string') &&
-    (value.sourceTurnId === undefined || typeof value.sourceTurnId === 'string')
+    record !== undefined &&
+    hasExactShape(record, QUOTE_REF_SHAPE) &&
+    typeof record.text === 'string' &&
+    (record.label === undefined || typeof record.label === 'string') &&
+    (record.sourceTurnId === undefined || typeof record.sourceTurnId === 'string') &&
+    (!hasSourceMetadata ||
+      (typeof record.sourceSessionId === 'string' &&
+        record.sourceSessionId.length > 0 &&
+        record.sourceSessionId.length <= QUOTE_REF_SESSION_ID_MAX_LENGTH &&
+        typeof record.sourceSessionName === 'string' &&
+        record.sourceSessionName.length > 0 &&
+        record.sourceSessionName.length <= QUOTE_REF_SESSION_NAME_MAX_LENGTH &&
+        typeof record.sourceCapturedAt === 'number' &&
+        Number.isFinite(record.sourceCapturedAt) &&
+        record.sourceCapturedAt >= 0 &&
+        typeof record.sourceTruncated === 'boolean'))
   );
 }
 
@@ -489,7 +546,11 @@ function quoteRefsEqual(left: QuoteRef, right: QuoteRef): boolean {
   return (
     left.text === right.text &&
     left.label === right.label &&
-    left.sourceTurnId === right.sourceTurnId
+    left.sourceTurnId === right.sourceTurnId &&
+    left.sourceSessionId === right.sourceSessionId &&
+    left.sourceSessionName === right.sourceSessionName &&
+    left.sourceCapturedAt === right.sourceCapturedAt &&
+    left.sourceTruncated === right.sourceTruncated
   );
 }
 

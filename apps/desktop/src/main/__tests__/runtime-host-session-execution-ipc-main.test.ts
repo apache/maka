@@ -58,6 +58,236 @@ test('registers Session observation as one reconnectable operation', () => {
   assert.equal(ipc.reconnectableChannels.has('sessions:observe'), true);
 });
 
+test('reads a bounded Session snapshot without loading or waking the target runtime', async () => {
+  const ipc = ipcHarness();
+  let closed = false;
+  let decodedPages = 0;
+  const sourceSession = session('workspace', 'source-session');
+  const sourceMessages = [
+    {
+      type: 'user' as const,
+      id: 'user-1',
+      turnId: 'turn-1',
+      ts: 1,
+      text: 'Keep this user context',
+    },
+    {
+      type: 'assistant' as const,
+      id: 'assistant-1',
+      turnId: 'turn-1',
+      ts: 2,
+      text: 'Keep this assistant result',
+      modelId: 'model',
+    },
+    {
+      type: 'tool_call' as const,
+      id: 'tool-1',
+      turnId: 'turn-1',
+      ts: 3,
+      toolName: 'Bash',
+      args: { command: 'cat secret.txt' },
+    },
+  ];
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        getSession: async () => sourceSession,
+        openSession: async () => runtimeHostSessionFixture({
+          snapshot: {
+            schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
+            session: {
+              sessionId: 'source-session',
+              metadataRevision: 1,
+              status: 'active',
+              createdAt: 1,
+              isArchived: false,
+            },
+            projectionRevision: 1,
+            rootTurn: null,
+            goal: null,
+            queue: { hostEpoch: 'host-1', queueRevision: 0, steering: [], followup: [] },
+            interactions: { pending: [] },
+          },
+          transcript: Promise.resolve(sourceMessages),
+          transcriptBootstrap: {
+            throughSequence: null,
+            durableCoverage: 'projected',
+            overlayMessageCount: 0,
+            durable: {
+              kind: 'page',
+              sessionId: 'source-session',
+              source: 'durable',
+              direction: 'older',
+              throughSequence: null,
+              rawBytes: 1,
+              fragments: [],
+              rangeBoundarySequence: null,
+              protectedTurnSequence: null,
+              nextCursor: null,
+            },
+            overlay: {
+              kind: 'page',
+              sessionId: 'source-session',
+              source: 'overlay',
+              direction: 'older',
+              throughSequence: null,
+              rawBytes: 0,
+              fragments: [],
+              rangeBoundarySequence: null,
+              protectedTurnSequence: null,
+              nextCursor: null,
+            },
+          },
+          decodeTranscriptPage: async (page) => {
+            decodedPages += 1;
+            return {
+              messages: page.source === 'durable'
+                ? sourceMessages.map((message, identity) => ({ identity, message }))
+                : [],
+              nextCursor: null,
+            };
+          },
+          close: async () => {
+            closed = true;
+          },
+          events: (async function* () {})(),
+        }),
+      }),
+    },
+    ipc,
+  );
+  assert.equal(ipc.reconnectableChannels.has('sessions:readSnapshot'), true);
+
+  const snapshot = await ipc.invoke('sessions:readSnapshot', 'source-session', { maxChars: 10_000 }) as {
+    text: string;
+    reference: { sessionId: string; sessionName: string; capturedAt: number };
+    truncated: boolean;
+  };
+  assert.match(snapshot.text, /Keep this user context/);
+  assert.match(snapshot.text, /Keep this assistant result/);
+  assert.doesNotMatch(snapshot.text, /secret/);
+  assert.deepEqual(
+    {
+      sessionId: snapshot.reference.sessionId,
+      sessionName: snapshot.reference.sessionName,
+    },
+    {
+      sessionId: 'source-session',
+      sessionName: 'Session',
+    },
+  );
+  assert.equal(typeof snapshot.reference.capturedAt, 'number');
+  assert.equal(snapshot.truncated, false);
+  assert.equal(decodedPages, 2);
+  assert.equal(closed, true);
+});
+
+test('marks transcript-tail omissions as truncated and rejects archived snapshots', async () => {
+  const ipc = ipcHarness();
+  let openCalls = 0;
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        getSession: async (_sessionId) => session(),
+        openSession: async () => {
+          openCalls += 1;
+          return runtimeHostSessionFixture({
+            snapshot: {
+              schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
+              session: {
+                sessionId: 'session-1',
+                metadataRevision: 1,
+                status: 'active',
+                createdAt: 1,
+                isArchived: false,
+              },
+              projectionRevision: 1,
+              rootTurn: null,
+              goal: null,
+              queue: { hostEpoch: 'host-1', queueRevision: 0, steering: [], followup: [] },
+              interactions: { pending: [] },
+            },
+            transcript: Promise.resolve([]),
+            events: (async function* () {})(),
+            transcriptBootstrap: {
+              throughSequence: 3,
+              durableCoverage: 'projected',
+              overlayMessageCount: 0,
+              durable: {
+                kind: 'page',
+                sessionId: 'session-1',
+                source: 'durable',
+                direction: 'older',
+                throughSequence: 3,
+                rawBytes: 1,
+                fragments: [],
+                rangeBoundarySequence: null,
+                protectedTurnSequence: null,
+                nextCursor: 'older-page',
+              },
+              overlay: {
+                kind: 'page',
+                sessionId: 'session-1',
+                source: 'overlay',
+                direction: 'older',
+                throughSequence: 3,
+                rawBytes: 0,
+                fragments: [],
+                rangeBoundarySequence: null,
+                protectedTurnSequence: null,
+                nextCursor: null,
+              },
+            },
+            decodeTranscriptPage: async (page) => ({
+              messages: page.source === 'durable'
+                ? [{
+                    identity: 1,
+                    message: {
+                      type: 'assistant' as const,
+                      id: 'assistant-1',
+                      turnId: 'turn-1',
+                      ts: 1,
+                      text: 'Recent answer',
+                      modelId: 'model',
+                    },
+                  }]
+                : [],
+              nextCursor: page.nextCursor,
+            }),
+            close: async () => undefined,
+          });
+        },
+      }),
+    },
+    ipc,
+  );
+
+  const snapshot = await ipc.invoke('sessions:readSnapshot', 'session-1') as {
+    text: string;
+    truncated: boolean;
+  };
+  assert.match(snapshot.text, /Recent answer/);
+  assert.equal(snapshot.truncated, true);
+  assert.equal(openCalls, 1);
+
+  const archivedIpc = ipcHarness();
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        getSession: async () => ({ ...session(), isArchived: true }),
+        openSession: async () => {
+          throw new Error('archived session must not be opened');
+        },
+      }),
+    },
+    archivedIpc,
+  );
+  await assert.rejects(
+    archivedIpc.invoke('sessions:readSnapshot', 'session-1'),
+    /archived Runtime Host Session/,
+  );
+});
+
 test("keeps synthetic E2E interactions visible through Host hydration and retires their answer", async () => {
   const observer = observerWithSnapshot();
   const ipc = ipcHarness();
@@ -1708,6 +1938,7 @@ function executionClient(overrides: Partial<ExecutionClient>): ExecutionClient {
     getSession: unavailable,
     ingestAttachment: unavailable,
     interruptTurn: unavailable,
+    openSession: unavailable,
     listSessionTurnLandmarks: unavailable,
     listSessionTurns: unavailable,
     queryMessageExecutions: unavailable,

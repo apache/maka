@@ -259,14 +259,23 @@ export interface ConversationCopy {
   };
   mentions: {
     noFiles: string;
+    noFilesOrSessions: string;
     noSkills: string;
     noCommandsOrSkills: string;
     filesAriaLabel: string;
+    filesAndSessionsAriaLabel: string;
+    sessionsGroup: string;
     skillsAriaLabel: string;
     commandsAndSkillsAriaLabel: string;
     commandsGroup: string;
     skillsGroup: string;
     loading: string;
+    sessionReferenceUnavailableTitle: string;
+    sessionReferenceUnavailableDetail: string;
+    sessionReferenceEmptyTitle: string;
+    sessionReferenceEmptyDetail: string;
+    sessionReferenceReadFailedTitle: string;
+    sessionReferenceReadFailedDetail: string;
   };
   workspace: {
     choose: string;
@@ -483,7 +492,7 @@ const CONVERSATION_COPY = {
       startersAriaLabel: '深度研究起手式', starters: DEEP_RESEARCH_STARTER_PROMPTS,
     },
     composer: {
-      placeholder: '描述任务，@ 引用文件，/ 选择技能…', textareaAriaLabel: '消息输入框', pastedQuoteLabel: '粘贴的文本', selectedSkillsAriaLabel: '已选择的 Skill', removeSkillAriaLabel: (name) => `移除 Skill：${name}`, awaitingPermission: '等待你确认权限…',
+      placeholder: '描述任务，@ 引用文件或会话，/ 选择技能…', textareaAriaLabel: '消息输入框', pastedQuoteLabel: '粘贴的文本', selectedSkillsAriaLabel: '已选择的 Skill', removeSkillAriaLabel: (name) => `移除 Skill：${name}`, awaitingPermission: '等待你确认权限…',
       sending: '正在发送…', importing: '正在导入…', sendLabel: '发送',
       queuedMessagesAriaLabel: (count) => `${count} 条待发送消息`,
       promoteQueuedEntry: '调整方向', editQueuedEntry: '编辑', saveQueuedEntry: '保存', cancelQueuedEntryEdit: '取消编辑', deleteQueuedEntry: '删除', reorderQueuedEntry: '拖动排序',
@@ -540,8 +549,8 @@ const CONVERSATION_COPY = {
       allowSession: '本任务允许',
     },
     questions: { other: '其他', otherDescription: '输入一个不同的答案。', otherAriaLabel: '其他答案', otherPlaceholder: '输入你的答案', stop: '停止', stopping: '停止中…', previous: '上一题', submitting: '正在提交…', submit: '提交答案', next: '下一题' },
-    forms: { requester: (name) => `由 ${name} 请求`, requesterWithSource: (name, source) => `由 ${name} 请求 · ${source}`, required: '必填', optional: '选填', include: (label) => `提供：${label}`, enabled: (label) => `启用：${label}`, enterValue: '输入内容', enterNumber: '输入数字', constraintSeparator: '；', lengthConstraint: (minimum, maximum) => minimum === undefined ? `最多 ${maximum} 个字符` : maximum === undefined ? `至少 ${minimum} 个字符` : `长度 ${minimum}–${maximum} 个字符`, numberConstraint: (minimum, maximum) => minimum === undefined ? `最大值 ${maximum}` : maximum === undefined ? `最小值 ${minimum}` : `范围 ${minimum}–${maximum}`, itemConstraint: (minimum, maximum) => minimum === undefined ? `最多选择 ${maximum} 项` : maximum === undefined ? `至少选择 ${minimum} 项` : `选择 ${minimum}–${maximum} 项`, formatConstraint: { email: '格式：email', uri: '格式：URI', date: '格式：date（YYYY-MM-DD）', 'date-time': '格式：date-time（RFC 3339）' }, invalid: '请提供符合要求的值。', cancel: '取消', decline: '拒绝', accept: '提交', submitting: '正在提交…' },
-    mentions: { noFiles: '未找到文件', noSkills: '暂无技能', noCommandsOrSkills: '没有匹配的命令或技能', filesAriaLabel: '工作区文件', skillsAriaLabel: '技能', commandsAndSkillsAriaLabel: '命令和技能', commandsGroup: '命令', skillsGroup: 'Skills', loading: '加载中…' },
+   forms: { requester: (name) => `由 ${name} 请求`, requesterWithSource: (name, source) => `由 ${name} 请求 · ${source}`, required: '必填', optional: '选填', include: (label) => `提供：${label}`, enabled: (label) => `启用：${label}`, enterValue: '输入内容', enterNumber: '输入数字', constraintSeparator: '；', lengthConstraint: (minimum, maximum) => minimum === undefined ? `最多 ${maximum} 个字符` : maximum === undefined ? `至少 ${minimum} 个字符` : `长度 ${minimum}–${maximum} 个字符`, numberConstraint: (minimum, maximum) => minimum === undefined ? `最大值 ${maximum}` : maximum === undefined ? `最小值 ${minimum}` : `范围 ${minimum}–${maximum}`, itemConstraint: (minimum, maximum) => minimum === undefined ? `最多选择 ${maximum} 项` : maximum === undefined ? `至少选择 ${minimum} 项` : `选择 ${minimum}–${maximum} 项`, formatConstraint: { email: '格式：email', uri: '格式：URI', date: '格式：date（YYYY-MM-DD）', 'date-time': '格式：date-time（RFC 3339）' }, invalid: '请提供符合要求的值。', cancel: '取消', decline: '拒绝', accept: '提交', submitting: '正在提交…' },
+    mentions: { noFiles: '未找到文件', noFilesOrSessions: '未找到文件或会话', noSkills: '暂无技能', noCommandsOrSkills: '没有匹配的命令或技能', filesAriaLabel: '工作区文件', filesAndSessionsAriaLabel: '工作区文件和会话', sessionsGroup: '会话', skillsAriaLabel: '技能', commandsAndSkillsAriaLabel: '命令和技能', commandsGroup: '命令', skillsGroup: 'Skills', loading: '加载中…', sessionReferenceUnavailableTitle: '无法引用会话', sessionReferenceUnavailableDetail: '该会话已不可用，请刷新任务列表后重试。', sessionReferenceEmptyTitle: '会话没有可引用内容', sessionReferenceEmptyDetail: '只会引用用户和助手文本；工具调用等内部记录不会注入当前任务。', sessionReferenceReadFailedTitle: '读取会话失败', sessionReferenceReadFailedDetail: '无法读取该会话的快照，请稍后重试。' },
     workspace: {
       choose: '选择项目', current: '当前项目', addProject: '添加项目', manageProjects: '管理项目', noProject: '无项目', relink: '重新定位', unavailable: '不可用',
       chooseTitle: (branch) => branch ? `选择项目 · ${branch}` : '选择项目',
@@ -693,7 +702,7 @@ const CONVERSATION_COPY = {
     },
     questions: { other: '其他', otherDescription: '輸入一個不同的答案。', otherAriaLabel: '其他答案', otherPlaceholder: '輸入你的答案', stop: '停止', stopping: '停止中…', previous: '上一題', submitting: '正在提交…', submit: '提交答案', next: '下一題' },
     forms: { requester: (name) => `由 ${name} 請求`, requesterWithSource: (name, source) => `由 ${name} 請求 · ${source}`, required: '必填', optional: '選填', include: (label) => `提供：${label}`, enabled: (label) => `啟用：${label}`, enterValue: '輸入內容', enterNumber: '輸入數字', constraintSeparator: '；', lengthConstraint: (minimum, maximum) => minimum === undefined ? `最多 ${maximum} 個字元` : maximum === undefined ? `至少 ${minimum} 個字元` : `長度 ${minimum}–${maximum} 個字元`, numberConstraint: (minimum, maximum) => minimum === undefined ? `最大值 ${maximum}` : maximum === undefined ? `最小值 ${minimum}` : `範圍 ${minimum}–${maximum}`, itemConstraint: (minimum, maximum) => minimum === undefined ? `最多選取 ${maximum} 項` : maximum === undefined ? `至少選取 ${minimum} 項` : `選取 ${minimum}–${maximum} 項`, formatConstraint: { email: '格式：email', uri: '格式：URI', date: '格式：date（YYYY-MM-DD）', 'date-time': '格式：date-time（RFC 3339）' }, invalid: '請提供符合要求的值。', cancel: '取消', decline: '拒絕', accept: '提交', submitting: '正在提交…' },
-    mentions: { noFiles: '未找到檔案', noSkills: '暫無技能', noCommandsOrSkills: '沒有符合的命令或技能', filesAriaLabel: '工作區檔案', skillsAriaLabel: '技能', commandsAndSkillsAriaLabel: '命令和技能', commandsGroup: '命令', skillsGroup: 'Skills', loading: '載入中…' },
+    mentions: { noFiles: '未找到檔案', noFilesOrSessions: '未找到檔案或工作階段', noSkills: '暫無技能', noCommandsOrSkills: '沒有符合的命令或技能', filesAriaLabel: '工作區檔案', filesAndSessionsAriaLabel: '工作區檔案和工作階段', sessionsGroup: '工作階段', skillsAriaLabel: '技能', commandsAndSkillsAriaLabel: '命令和技能', commandsGroup: '命令', skillsGroup: 'Skills', loading: '載入中…', sessionReferenceUnavailableTitle: '工作階段引用無法使用', sessionReferenceUnavailableDetail: '此工作階段已無法使用，請重新整理任務列表後再試。', sessionReferenceEmptyTitle: '工作階段沒有可引用內容', sessionReferenceEmptyDetail: '只會引用使用者和助手文字；工具呼叫等內部記錄不會注入目前工作階段。', sessionReferenceReadFailedTitle: '讀取工作階段失敗', sessionReferenceReadFailedDetail: '無法讀取此工作階段的快照，請稍後再試。' },
     workspace: {
       choose: '選擇專案', current: '目前專案', addProject: '新增專案', manageProjects: '管理專案', noProject: '無專案', relink: '重新定位', unavailable: '不可用',
       chooseTitle: (branch) => branch ? `選擇專案 · ${branch}` : '選擇專案',
@@ -816,7 +825,7 @@ const CONVERSATION_COPY = {
       ],
     },
     composer: {
-      placeholder: 'Describe a task, @ to reference files, / for skills…', textareaAriaLabel: 'Message input', pastedQuoteLabel: 'Pasted text', selectedSkillsAriaLabel: 'Selected Skills', removeSkillAriaLabel: (name) => `Remove Skill: ${name}`, awaitingPermission: 'Waiting for your permission decision…',
+      placeholder: 'Describe a task, @ to reference files or sessions, / for skills…', textareaAriaLabel: 'Message input', pastedQuoteLabel: 'Pasted text', selectedSkillsAriaLabel: 'Selected Skills', removeSkillAriaLabel: (name) => `Remove Skill: ${name}`, awaitingPermission: 'Waiting for your permission decision…',
       sending: 'Sending…', importing: 'Importing…', sendLabel: 'Send',
       queuedMessagesAriaLabel: (count) => `${count} queued message${count === 1 ? '' : 's'}`,
       promoteQueuedEntry: 'Steer', editQueuedEntry: 'Edit', saveQueuedEntry: 'Save', cancelQueuedEntryEdit: 'Cancel editing', deleteQueuedEntry: 'Delete', reorderQueuedEntry: 'Drag to reorder',
@@ -871,7 +880,7 @@ const CONVERSATION_COPY = {
     },
     questions: { other: 'Other', otherDescription: 'Enter a different answer.', otherAriaLabel: 'Other answer', otherPlaceholder: 'Enter your answer', stop: 'Stop', stopping: 'Stopping…', previous: 'Previous', submitting: 'Submitting…', submit: 'Submit answers', next: 'Next' },
     forms: { requester: (name) => `Requested by ${name}`, requesterWithSource: (name, source) => `Requested by ${name} · ${source}`, required: 'Required', optional: 'Optional', include: (label) => `Provide ${label}`, enabled: (label) => `Enable ${label}`, enterValue: 'Enter a value', enterNumber: 'Enter a number', constraintSeparator: ' · ', lengthConstraint: (minimum, maximum) => minimum === undefined ? `At most ${maximum} characters` : maximum === undefined ? `At least ${minimum} characters` : `${minimum}–${maximum} characters`, numberConstraint: (minimum, maximum) => minimum === undefined ? `Maximum ${maximum}` : maximum === undefined ? `Minimum ${minimum}` : `Range ${minimum}–${maximum}`, itemConstraint: (minimum, maximum) => minimum === undefined ? `Select at most ${maximum}` : maximum === undefined ? `Select at least ${minimum}` : `Select ${minimum}–${maximum}`, formatConstraint: { email: 'Format: email', uri: 'Format: URI', date: 'Format: date (YYYY-MM-DD)', 'date-time': 'Format: date-time (RFC 3339)' }, invalid: 'Provide a value that meets the requirements.', cancel: 'Cancel', decline: 'Decline', accept: 'Submit', submitting: 'Submitting…' },
-    mentions: { noFiles: 'No files found', noSkills: 'No skills available', noCommandsOrSkills: 'No matching commands or skills', filesAriaLabel: 'Workspace files', skillsAriaLabel: 'Skills', commandsAndSkillsAriaLabel: 'Commands and skills', commandsGroup: 'Commands', skillsGroup: 'Skills', loading: 'Loading…' },
+    mentions: { noFiles: 'No files found', noFilesOrSessions: 'No files or sessions found', noSkills: 'No skills available', noCommandsOrSkills: 'No matching commands or skills', filesAriaLabel: 'Workspace files', filesAndSessionsAriaLabel: 'Workspace files and sessions', sessionsGroup: 'Sessions', skillsAriaLabel: 'Skills', commandsAndSkillsAriaLabel: 'Commands and skills', commandsGroup: 'Commands', skillsGroup: 'Skills', loading: 'Loading…', sessionReferenceUnavailableTitle: 'Session reference unavailable', sessionReferenceUnavailableDetail: 'This session is no longer available. Refresh the task list and try again.', sessionReferenceEmptyTitle: 'No referenceable content', sessionReferenceEmptyDetail: 'Only user and assistant text is shared; tool calls and internal records stay out of the current task.', sessionReferenceReadFailedTitle: 'Could not read session', sessionReferenceReadFailedDetail: 'The session snapshot could not be read. Try again later.' },
     workspace: {
       choose: 'Choose project', current: 'Current project', addProject: 'Add project', manageProjects: 'Manage projects', noProject: 'No project', relink: 'Relink', unavailable: 'Unavailable',
       chooseTitle: (branch) => branch ? `Choose project · ${branch}` : 'Choose project',

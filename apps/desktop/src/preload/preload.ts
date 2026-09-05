@@ -2193,6 +2193,28 @@ const makaBridge = {
       ) as TurnRecord[];
       return turns.map((turn) => projectDesktopTurnRecord(session.scope, turn));
     },
+    async readSnapshot(
+      sessionId: string,
+      options?: { maxChars?: number },
+    ): Promise<import('@maka/core/session-reference').SessionSnapshot> {
+      const session = await runtimeHostSessionRef(sessionId);
+      const snapshot = await ipcRenderer.invoke(
+        'sessions:readSnapshot',
+        session.scope,
+        session.sessionId,
+        options,
+      ) as import('@maka/core/session-reference').SessionSnapshot;
+      return {
+        ...snapshot,
+        reference: {
+          ...snapshot.reference,
+          sessionId: recordRuntimeHostSessionScope(
+            session.scope,
+            snapshot.reference.sessionId,
+          ),
+        },
+      };
+    },
     listTurnLandmarks(sessionId) {
       return invokeProjectedSessionRuntimeHost('sessions:listTurnLandmarks', sessionId);
     },

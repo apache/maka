@@ -114,6 +114,7 @@ export {
   Loader2,
   Loader2Icon,
   MessageCircleQuestion,
+  MessagesSquare,
   MessageSquare,
   Mic,
   Maximize2,

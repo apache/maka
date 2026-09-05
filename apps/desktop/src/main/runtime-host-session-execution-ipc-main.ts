@@ -30,6 +30,12 @@ import {
   type SessionChangedReason,
 } from '@maka/core/session';
 import { type ActiveInteractionRequestEvent, type AttachmentRef } from '@maka/core/events';
+import {
+  createSessionSnapshot,
+  SESSION_SNAPSHOT_DEFAULT_MAX_CHARS,
+  SESSION_SNAPSHOT_MAX_CHARS,
+} from '@maka/core/session-reference';
+import type { StoredMessage } from '@maka/core/session';
 import { type PermissionMode } from '@maka/core/permission';
 import { decodeInteractionFormResponse } from '@maka/core/interaction';
 import { type SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
@@ -95,6 +101,7 @@ type RuntimeHostSessionExecutionClient = Pick<
   | "getSession"
   | "ingestAttachment"
   | "interruptTurn"
+  | "openSession"
   | 'listSessionTurns'
   | 'listSessionTurnLandmarks'
   | 'queryMessageExecutions'
@@ -276,6 +283,52 @@ export function registerRuntimeHostSessionExecutionIpc(
 
   handleReconnectableRead(ipcMain, 'sessions:listTurns', async (_event, sessionId: unknown) =>
     deps.client.listSessionTurns(requiredId(sessionId, 'Session')),
+  );
+  handleReconnectableRead(
+    ipcMain,
+    'sessions:readSnapshot',
+    async (_event, sessionId: unknown, options?: unknown) => {
+      const normalizedSessionId = requiredId(sessionId, 'Session');
+      const maxChars = normalizeSnapshotMaxChars(options);
+      const session = await deps.client.getSession(normalizedSessionId);
+      if (!session) throw new Error(`Runtime Host Session not found: ${normalizedSessionId}`);
+      if (session.isArchived) {
+        throw new Error(`Cannot read an archived Runtime Host Session: ${normalizedSessionId}`);
+      }
+      const opened = await deps.client.openSession(normalizedSessionId);
+      try {
+        if (opened.snapshot.session.isArchived) {
+          throw new Error(`Cannot read an archived Runtime Host Session: ${normalizedSessionId}`);
+        }
+        const { durable, overlay } = opened.transcriptBootstrap;
+        const [durablePage, overlayPage] = await Promise.all([
+          opened.decodeTranscriptPage(durable),
+          opened.decodeTranscriptPage(overlay),
+        ]);
+        const messagesById = new Map<string, StoredMessage>();
+        for (const entry of [...durablePage.messages, ...overlayPage.messages]) {
+          messagesById.set(entry.message.id, entry.message);
+        }
+        const snapshot = createSessionSnapshot(
+          [...messagesById.values()].sort((left, right) => left.ts - right.ts),
+          {
+            sessionId: normalizedSessionId,
+            sessionName: session.name,
+            maxChars,
+          },
+        );
+        // `openSession` intentionally receives a bounded tail. A non-null
+        // cursor means older transcript records were omitted before Core's
+        // character/item budget ran, so preserve that provenance on the quote.
+        return {
+          ...snapshot,
+          truncated:
+            snapshot.truncated || durablePage.nextCursor !== null || overlayPage.nextCursor !== null,
+        };
+      } finally {
+        await opened.close();
+      }
+    },
   );
   handleReconnectableRead(
     ipcMain,
@@ -968,6 +1021,24 @@ function requiredSequence(value: unknown, label: string): number {
     throw new Error(`Invalid ${label} sequence`);
   }
   return value as number;
+}
+
+function normalizeSnapshotMaxChars(options: unknown): number {
+  if (options === undefined) return SESSION_SNAPSHOT_DEFAULT_MAX_CHARS;
+  if (!options || typeof options !== 'object' || Array.isArray(options)) {
+    throw new Error('Invalid Session snapshot options');
+  }
+  const value = (options as { maxChars?: unknown }).maxChars;
+  if (
+    value !== undefined &&
+    (typeof value !== 'number' ||
+      !Number.isSafeInteger(value) ||
+      value < 1 ||
+      value > SESSION_SNAPSHOT_MAX_CHARS)
+  ) {
+    throw new Error('Invalid Session snapshot maxChars');
+  }
+  return value === undefined ? SESSION_SNAPSHOT_DEFAULT_MAX_CHARS : value;
 }
 
 

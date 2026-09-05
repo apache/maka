@@ -313,6 +313,8 @@ export function ChatComposerRegion({
           mentionSkillsUnavailable={mentions?.mentionSkillsUnavailable}
           mentionSkillsLoading={mentions?.mentionSkillsLoading}
           onSearchMentionFiles={mentions?.searchMentionFiles}
+          sessionReferences={mentions?.sessionReferences}
+          onPickSessionReference={mentions?.onPickSessionReference}
           {...directoryComposerProps}
           onPickDirectory={
             directoryPickerEnabled ? directoryComposerProps.onPickDirectory : undefined
@@ -353,6 +355,14 @@ export function ChatComposerRegion({
                 onClick={boundaryUnreadableNotice.onRetry}
               />} />
           </div>
+        )}
+        {mentions?.sessionReferenceError && (
+          <Banner
+            status="error"
+            role="alert"
+            title={mentions.sessionReferenceError.title}
+            description={mentions.sessionReferenceError.detail}
+          />
         )}
         {activeSandboxBoundary && (
           <SandboxBoundaryPrompt

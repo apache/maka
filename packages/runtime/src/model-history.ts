@@ -1307,8 +1307,23 @@ function formatAttachmentRefs(attachments: readonly AttachmentRef[]): string {
 function formatQuoteRefs(quotes: readonly QuoteRef[]): string {
   return quotes
     .map((q) => {
-      const label = q.label === undefined ? '' : ` label="${q.label.replace(/"/g, "'")}"`;
-      return `<quoted_excerpt${label}>\n${q.text}\n</quoted_excerpt>`;
+      const attributes = [
+        q.label === undefined ? undefined : `label="${quoteAttribute(q.label)}"`,
+        q.sourceSessionId === undefined
+          ? undefined
+          : `source_session="${quoteAttribute(q.sourceSessionId)}"`,
+        q.sourceCapturedAt === undefined ? undefined : `captured_at="${q.sourceCapturedAt}"`,
+        q.sourceTruncated === undefined ? undefined : `truncated="${q.sourceTruncated}"`,
+      ].filter((attribute): attribute is string => attribute !== undefined);
+      const opening =
+        attributes.length > 0 ? `<quoted_excerpt ${attributes.join(' ')}>` : '<quoted_excerpt>';
+      return `${opening}\n${q.text}\n</quoted_excerpt>`;
     })
     .join('\n');
+}
+
+function quoteAttribute(value: string): string {
+  return value.replace(/["<&>]/g, (character) =>
+    character === '"' ? "'" : `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`,
+  );
 }

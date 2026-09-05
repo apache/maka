@@ -59,7 +59,7 @@ Delete when that guard passes against an unpatched package.
 
 ## `@astryxdesign/core@0.5.2`
 
-Five published component seams drop host-owned state or semantics:
+Six published component seams drop host-owned state or semantics:
 
 - `ChatLayout` needs a conversation identity that resets scroll/unread state
   without remounting its composer slot and discarding the live draft.
@@ -83,6 +83,10 @@ Five published component seams drop host-owned state or semantics:
   Skills entry holds its look steady while the Skill catalog refreshes and
   defers activation meanwhile; without the attribute the row announces
   "available" to assistive technology and silently ignores the action.
+- `useTriggerMenu` keeps the `@` menu open across spaces so Composer can search
+  multi-word Session names and browse with a trailing `@ `. Slash commands
+  retain their existing single-token grammar. Remove this hunk when the
+  published trigger-menu API supports the same distinction.
 
 Streaming text and Markdown expose an explicit `settledText` seam so the
 renderer can verify and advance the exact prefix already presented without

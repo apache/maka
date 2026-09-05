@@ -20,7 +20,7 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import { Button } from '@astryxdesign/core/Button';
 import { IconButton } from '@astryxdesign/core/IconButton';
-import { TextQuote, X } from './icons.js';
+import { MessagesSquare, TextQuote, X } from './icons.js';
 import { cn } from './utils.js';
 import type { QuoteRef } from '@maka/core/events';
 import { useUiLocale } from './locale-context.js';
@@ -57,6 +57,7 @@ export function QuoteRefChip(props: {
   const a11yLabel = canExpand
     ? (expanded ? copy.quoteCollapseAriaLabel : copy.quoteExpandAriaLabel)
     : full;
+  const SourceIcon = props.quote.sourceSessionId ? MessagesSquare : TextQuote;
 
   return (
     <span
@@ -68,7 +69,7 @@ export function QuoteRefChip(props: {
       )}
       title={expanded ? undefined : full}
     >
-      <TextQuote
+      <SourceIcon
         className={cn('maka-quote-chip-icon', expanded && 'maka-quote-chip-icon-expanded')}
         aria-hidden="true"
       />

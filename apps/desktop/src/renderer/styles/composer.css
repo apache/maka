@@ -134,6 +134,37 @@
   padding: var(--space-1) var(--space-3) var(--space-2);
 }
 
+/* A Session reference follows the compact Codex-style context rail: one
+   content-sized token directly above the input, with no extra disclosure band
+   or empty panel around it. Attachment and directory drawers keep the
+   standard collapsible layout below. */
+.maka-composer-astryx
+  .maka-composer-drawer[data-maka-session-reference-only='true'] {
+  margin: 0 0 var(--space-1);
+  padding: 0;
+  background: transparent;
+  border-radius: 0;
+}
+
+.maka-composer-astryx
+  .maka-composer-drawer[data-maka-session-reference-only='true']
+  .maka-composer-context-drawer {
+  gap: var(--space-1);
+  padding: 0;
+}
+
+.maka-composer-astryx
+  .maka-composer-drawer[data-maka-session-reference-only='true']
+  .maka-composer-session-token {
+  /* Keep a single reference compact like Codex's context chip. The token's
+     own Astryx surface supplies its height, padding, radius, and remove
+     affordance; this rule only constrains unusually long session names. */
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: min(420px, 100%);
+  overflow: hidden;
+}
+
 /* Astryx ChatComposerDrawer wraps its content in a display:grid whose single
    implicit column sizes to the content's max-content contribution — with a
    long chip row that resolves WIDER than the grid (measured: 896px column in

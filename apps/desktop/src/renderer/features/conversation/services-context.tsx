@@ -17,8 +17,24 @@
  * under the License.
  */
 
-/** Compatibility entry point; quote state now belongs to Conversation. */
-import { useComposerQuotes } from './features/conversation/index.js';
+import { createContext, useContext, type ReactNode } from 'react';
+import type { ConversationServices } from './ports.js';
 
-export { useComposerQuotes };
-export const useAppShellComposerQuotes: typeof useComposerQuotes = useComposerQuotes;
+const ConversationServicesContext = createContext<ConversationServices | null>(null);
+
+export function ConversationServicesProvider(props: {
+  readonly services: ConversationServices;
+  readonly children?: ReactNode;
+}) {
+  return (
+    <ConversationServicesContext.Provider value={props.services}>
+      {props.children}
+    </ConversationServicesContext.Provider>
+  );
+}
+
+export function useConversationServices(): ConversationServices {
+  const services = useContext(ConversationServicesContext);
+  if (!services) throw new Error('ConversationServicesProvider is missing');
+  return services;
+}

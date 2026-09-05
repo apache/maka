@@ -896,24 +896,21 @@
           "react": 1
         },
         "importSpecifiers": 147,
-        "nonTriviaTokens": 15588
+        "nonTriviaTokens": 15587
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
-        "importDeclarations": 2,
+        "importDeclarations": 1,
         "bridgePaths": {},
         "environmentCapabilities": {},
-        "hookCalls": {
-          "useState": 1
-        },
+        "hookCalls": {},
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
-          "./pending-items.js": 1,
-          "react": 1
+          "./features/conversation/index.js": 1
         },
-        "importSpecifiers": 5,
-        "nonTriviaTokens": 360
+        "importSpecifiers": 1,
+        "nonTriviaTokens": 24
       },
       "src/renderer/use-app-shell-session-list.ts": {
         "importDeclarations": 10,
@@ -1261,25 +1258,14 @@
         }
       },
       "src/renderer/composer-mentions.tsx": {
-        "bridgePaths": {
-          "window.maka.mcp.subscribeChanges": 1,
-          "window.maka.newTasks.listInvocableSkills": 1,
-          "window.maka.newTasks.searchFiles": 1,
-          "window.maka.newTasks.subscribeChanges": 1,
-          "window.maka.sessions.subscribeChanges": 1,
-          "window.maka.skills.listInvocable": 1,
-          "window.maka.workspace.searchFiles": 1
-        },
+        "bridgePaths": {},
         "environmentCapabilities": {},
-        "hookCalls": {
-          "useEffect": 1,
-          "useState": 1
-        },
+        "hookCalls": {},
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
-          "react": 1
+          "./features/conversation/index.js": 1
         }
       },
       "src/renderer/conversation-markdown.ts": {
