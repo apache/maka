@@ -55,7 +55,7 @@ function RenameConversationStory() {
   );
 }
 
-// Real path: conversation sidebar → row actions → rename.
+// Real path: conversation sidebar task rename opened by double-click.
 export const RenameConversation: Story = {
   render: () => <RenameConversationStory />,
   play: async ({ canvasElement }) => {

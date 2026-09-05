@@ -112,39 +112,64 @@ test('project navigation and actions follow their visual keyboard order', async 
   await expect(action).toBeFocused();
 });
 
-test('task row action menu accepts pointer selection', async ({
+test('task rows keep double-click rename out of the action menu', async ({
   projectSidebarWindow: page,
 }) => {
   await page.keyboard.press('Escape');
   await expect(page.locator('[data-maka-contract="search-modal"]')).not.toBeVisible();
 
   const sidebar = page.getByRole('navigation', { name: '任务列表' });
-  const taskSessionId = `${LONG_SIDEBAR_SESSION_PREFIX}00`;
-  const taskRow = sessionRow(sidebar, taskSessionId);
-  const actionMenu = taskRow.locator(':scope > .maka-session-row-action');
-  const timestamp = taskRow.locator('.maka-session-row-time');
-  await expect(timestamp).toHaveCSS('visibility', 'visible');
-  await taskRow.hover();
-  await taskRow.getByRole('button', { name: /任务操作$/ }).click();
+  await sidebar.getByRole('radio', { name: '按项目', exact: true }).click();
+  const projectGroup = sidebar.locator(
+    `[data-project-id="project:${LONG_SIDEBAR_PROJECT_ID}"]`,
+  );
+  const noProjectGroup = sidebar.locator('[data-project-id="__ungrouped__"]');
 
-  const rename = page.getByRole('menuitem', { name: '重命名', exact: true });
-  await expect(rename).toBeVisible();
-  await expect(actionMenu).toHaveAttribute('data-menu-open', 'true');
-  await rename.hover();
-  await expect.poll(() => taskRow.evaluate((row) => row.matches(':hover'))).toBe(false);
-  await expect(timestamp).toHaveCSS('visibility', 'hidden');
+  async function expectDoubleClickRenameOnly(group: Locator, sessionId: string): Promise<void> {
+    const taskRow = sessionRow(group, sessionId);
+    const taskButton = taskRow.locator(':scope > div > button.astryx-side-nav-item');
+    const actionMenu = taskRow.locator(':scope > .maka-session-row-action');
+    const actionTrigger = taskRow.getByRole('button', { name: /任务操作$/ });
+    const timestamp = taskRow.locator('.maka-session-row-time');
+    await expect(taskButton).toBeVisible();
+    await expect(timestamp).toHaveCSS('visibility', 'visible');
 
-  await page.mouse.click(4, 4);
-  await expect(rename).not.toBeVisible();
-  await expect(actionMenu).not.toHaveAttribute('data-menu-open', 'true');
+    await taskRow.hover();
+    await actionTrigger.click();
 
-  await taskRow.hover();
-  await taskRow.getByRole('button', { name: /任务操作$/ }).focus();
-  await page.keyboard.press('Enter');
-  await expect(rename).toBeVisible();
-  await rename.click();
+    const pin = page.getByRole('menuitem', { name: '置顶', exact: true });
+    await expect(pin).toBeVisible();
+    await expect(page.getByRole('menuitem', { name: '重命名', exact: true })).toHaveCount(0);
+    await expect(actionMenu).toHaveAttribute('data-menu-open', 'true');
+    await pin.hover();
+    await expect.poll(() => taskRow.evaluate((row) => row.matches(':hover'))).toBe(false);
+    await expect(timestamp).toHaveCSS('visibility', 'hidden');
 
-  await expect(page.getByRole('dialog', { name: '重命名任务' })).toBeVisible();
+    await page.mouse.click(4, 4);
+    await expect(pin).not.toBeVisible();
+    await expect(actionMenu).not.toHaveAttribute('data-menu-open', 'true');
+
+    await actionTrigger.focus();
+    await page.keyboard.press('Enter');
+    await expect(pin).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(actionTrigger).toBeFocused();
+
+    await taskButton.focus();
+    await page.keyboard.press('F2');
+    const dialog = page.getByRole('dialog', { name: '重命名任务' });
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole('button', { name: '关闭', exact: true }).click();
+    await expect(taskButton).toBeFocused();
+
+    await taskButton.dblclick();
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole('button', { name: '关闭', exact: true }).click();
+    await expect(taskButton).toBeFocused();
+  }
+
+  await expectDoubleClickRenameOnly(projectGroup, `${LONG_SIDEBAR_SESSION_PREFIX}00`);
+  await expectDoubleClickRenameOnly(noProjectGroup, `${LONG_SIDEBAR_SESSION_PREFIX}03`);
 });
 
 test('project and task rows show contextual hover details', async ({

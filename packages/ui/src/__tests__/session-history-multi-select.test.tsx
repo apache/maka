@@ -588,7 +588,7 @@ test('the menu is about the one row when only that row is picked', async () => {
   const harness = await mount({ selectedIds: ['b'] });
   try {
     await harness.openRowMenu('b');
-    assert.deepEqual(harness.menuLabels(), ['Pin', 'Rename', 'Archive']);
+    assert.deepEqual(harness.menuLabels(), ['Pin', 'Archive']);
   } finally {
     await harness.dispose();
   }
@@ -700,7 +700,7 @@ test('a menu sweeps only the picked rows still on screen', async () => {
     // so it leaves the set here, and stays out of it.
     assert.deepEqual(harness.retains.at(-1), ['a1', 'a2']);
     // And the menu says so: one row, with the single-row wording.
-    assert.deepEqual(harness.menuLabels(), ['Pin', 'Rename', 'Archive']);
+    assert.deepEqual(harness.menuLabels(), ['Pin', 'Archive']);
   } finally {
     await harness.dispose();
   }

@@ -313,7 +313,9 @@ export const ActiveTaskActionsOpen: Story = {
   play: async ({ canvasElement }) => {
     const page = within(canvasElement.ownerDocument.body);
     await waitFor(() => expect(page.getByRole('menu')).toBeVisible());
-    expect(page.getByRole('menuitem', { name: '重命名' })).toBeVisible();
+    expect(page.getByRole('menuitem', { name: '置顶' })).toBeVisible();
+    expect(page.getByRole('menuitem', { name: '归档' })).toBeVisible();
+    expect(page.queryByRole('menuitem', { name: '重命名' })).not.toBeInTheDocument();
   },
 };
 
