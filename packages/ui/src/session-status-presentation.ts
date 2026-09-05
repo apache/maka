@@ -66,7 +66,7 @@ const STATUS_SEMANTIC: Record<SessionStatus, StatusSemantic | undefined> = {
 
 export function presentSessionStatus(
   status: SessionStatus,
-  locale: UiLocale = 'zh-CN',
+  locale: UiLocale,
 ): SessionStatusPresentation {
   const semantic = STATUS_SEMANTIC[status];
   return {
@@ -84,7 +84,7 @@ export function presentSessionStatus(
  */
 export function describeBlockedReason(
   reason: SessionBlockedReason | undefined,
-  locale: UiLocale = 'zh-CN',
+  locale: UiLocale,
 ): string {
   const copy = getConversationCopy(locale).sessions.blockedReason;
   return reason ? copy[reason] : copy.unknown;

@@ -588,10 +588,7 @@ export async function runMakaActivationCli(
   if (invocation?.failure?.class === 'permission_denied') {
     return finish('blocked', 'permission_denied', undefined, 'grant_permission');
   }
-  if (
-    (streamBoundaryFailure && invocation?.sandboxBoundary !== 'recovered') ||
-    invocation?.sandboxBoundary === 'unresolved'
-  ) {
+  if (streamBoundaryFailure || invocation?.sandboxBoundary === 'unresolved') {
     return finish('blocked', 'permission_required', undefined, 'grant_permission');
   }
   if (!invocation) return finish('fatal_failure', 'missing_invocation');

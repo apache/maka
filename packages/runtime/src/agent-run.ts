@@ -74,7 +74,6 @@ import type { AgentBackend, BackendSendInput } from '@maka/core/backend-types';
 import type { RunTraceEvent } from './run-trace.js';
 import type { StopSessionInput } from './session-manager.js';
 import type { HistoryCompactCheckpoint } from './history-compact-checkpoint.js';
-import { projectRuntimeEventsToStoredMessages } from './runtime-event-read-model.js';
 import {
   buildPriorRuntimeContext as buildPriorRuntimeContextProjection,
   type PriorRuntimeContext,
@@ -704,11 +703,6 @@ export class AgentRun {
     await this.input.hooks.updateStatus(this.sessionId, 'running', undefined, this.lastTs);
 
     const priorRuntimeContext = await this.buildPriorRuntimeContext();
-    const projectionContext = priorRuntimeContext
-      ? projectRuntimeEventsToStoredMessages(priorRuntimeContext.events, {
-          invocations: priorRuntimeContext.invocations,
-        }).messages
-      : [];
 
     return {
       backend: this.active.backend,
@@ -727,7 +721,6 @@ export class AgentRun {
           ? { directoryReferences: this.input.userInput.directoryReferences }
           : {}),
         ...(this.input.userInput.quotes ? { quotes: this.input.userInput.quotes } : {}),
-        context: projectionContext,
         ...(priorRuntimeContext
           ? {
               runtimeContext: priorRuntimeContext.events,

@@ -47,7 +47,6 @@
 @import "./styles/settings/select.css" layer(components);
 @import "./styles/model-switcher.css" layer(components);
 @import "./styles/chat-header.css" layer(components);
-@import "./styles/session-todo-panel.css" layer(components);
 @import "./styles/work-board.css" layer(components);
 @import "./styles/plan-mode.css" layer(components);
 @import "./styles/agent-graph.css" layer(components);

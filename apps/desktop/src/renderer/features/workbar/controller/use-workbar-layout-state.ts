@@ -118,17 +118,7 @@ export function useWorkbarLayoutState() {
     (
       kind: Exclude<SessionWorkbarTabKind, 'side-chat'>,
       placement: SessionWorkbarPlacement = 'right',
-      options: { preview?: boolean } = {},
-    ) =>
-      dispatch({
-        type: 'open',
-        placement,
-        tab: {
-          id: `workbar:${kind}`,
-          kind,
-          ...(options.preview ? { preview: true } : {}),
-        },
-      }),
+    ) => dispatch({ type: 'open', placement, tab: { id: `workbar:${kind}`, kind } }),
     [],
   );
   const openDynamicWorkbarTab = useCallback(
@@ -151,19 +141,6 @@ export function useWorkbarLayoutState() {
       dispatch({ type: 'close', placement, tabIds }),
     [],
   );
-  const reorderWorkbarTab = useCallback(
-    (placement: SessionWorkbarPlacement, tabId: string, targetTabId: string) =>
-      dispatch({ type: 'reorder', placement, tabId, targetTabId }),
-    [],
-  );
-  const moveWorkbarTab = useCallback(
-    (
-      placement: SessionWorkbarPlacement,
-      tabId: string,
-      direction: 'left' | 'right',
-    ) => dispatch({ type: 'move', placement, tabId, direction }),
-    [],
-  );
   const openWorkbarLauncher = useCallback(
     (placement: SessionWorkbarPlacement = 'right') =>
       dispatch({ type: 'open-launcher', placement }),
@@ -176,9 +153,6 @@ export function useWorkbarLayoutState() {
   );
   const titleWorkbarTab = useCallback((tabId: string, title: string) => {
     dispatch({ type: 'title', tabId, title });
-  }, []);
-  const pinWorkbarTab = useCallback((tabId: string) => {
-    dispatch({ type: 'pin', tabId });
   }, []);
 
   useEffect(() => {
@@ -241,11 +215,8 @@ export function useWorkbarLayoutState() {
     activateWorkbarTab,
     closeWorkbarTab,
     closeWorkbarTabs,
-    reorderWorkbarTab,
-    moveWorkbarTab,
     moveWorkbarTabToPanel,
     titleWorkbarTab,
-    pinWorkbarTab,
     openWorkbarLauncher,
   };
 }
