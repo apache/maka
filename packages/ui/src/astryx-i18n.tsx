@@ -89,20 +89,14 @@ export function AstryxLocaleProvider({
   );
 }
 
-// en otherwise resolves to Astryx's shipped defaults. These two are the
-// sole exceptions: the drawer toggle's aria-label doubles as its visible
-// hover tooltip (composer.css renders attr(aria-label)), and the shipped
-// "Collapse {label}" / "Expand {label}" read as state names there — the
-// click affordance is the tooltip's whole point.
-const EN_OVERRIDES: Overrides = {
-  en: {
-    '@astryx.chatComposerDrawer.collapse': 'Click to collapse {label}',
-    '@astryx.chatComposerDrawer.expand': 'Click to expand {label}',
-  },
-};
-
 const OVERRIDES_BY_LOCALE = {
-  en: EN_OVERRIDES,
+  // The drawer aria-label also serves as a tooltip; all other English copy uses Astryx defaults.
+  en: {
+    en: {
+      '@astryx.chatComposerDrawer.collapse': 'Click to collapse {label}',
+      '@astryx.chatComposerDrawer.expand': 'Click to expand {label}',
+    },
+  },
   'zh-CN': chineseOverrides('zh-CN', ASTRYX_COPY_ZH),
   'zh-TW': chineseOverrides('zh-TW', ASTRYX_COPY_ZH_TW),
 } satisfies UiCatalog<Overrides>;
