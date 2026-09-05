@@ -231,6 +231,25 @@ test('a scroll event that arrives late is still this authority\'s own write', ()
   });
 });
 
+test('growth a late echo already sees still explains the offset move after it', () => {
+  withObservers((resize) => {
+    const root = fakeRoot({ scrollHeight: 3_523, clientHeight: 860 });
+    const authority = createTranscriptScrollAuthority();
+    authority.attach(root as unknown as HTMLElement);
+
+    // Content grew before the write's echo landed, then the offset moved by
+    // less than that growth: content, not the reader.
+    root.grow(600);
+    root.emitScroll();
+    root.scrollTop += 91;
+    root.emitScroll();
+    assert.equal(authority.getSnapshot().pinned, true);
+
+    resize();
+    assert.equal(root.scrollTop, 3_263);
+  });
+});
+
 test('growth that outruns the write does not read as the reader scrolling up', () => {
   withObservers((resize) => {
     const root = fakeRoot();

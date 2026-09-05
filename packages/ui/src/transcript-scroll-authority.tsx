@@ -170,10 +170,8 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
         // scrollers (a tool output box, a terminal) never reach here at all:
         // `scroll` does not bubble, and there is no `wheel` listener to catch
         // instead.
+        // Growth this echo already sees has not reached the observer yet.
         if (lastWrittenTop !== undefined && Math.abs(target.scrollTop - lastWrittenTop) < 1) {
-          lastScrollHeight = target.scrollHeight;
-          lastClientHeight = target.clientHeight;
-          lastScrollTop = target.scrollTop;
           return;
         }
         // Content moves the offset too, and only ever by how much the end of
