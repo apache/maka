@@ -92,7 +92,6 @@ export interface E2eFixture {
   locale: UiLocale | null;
   timezone: string | null;
   platform: 'darwin' | 'win32' | 'linux' | null;
-  scrollMotion: 'auto' | 'smooth' | null;
 }
 
 export function resolveE2eFixture(
@@ -103,7 +102,6 @@ export function resolveE2eFixture(
   rawLocale: string | undefined = undefined,
   rawTimezone: string | undefined = undefined,
   rawPlatform: string | undefined = undefined,
-  rawScrollMotion: string | undefined = undefined,
 ): E2eFixture | null {
   if (!rawScenario) return null;
   if (isPackaged) throw new Error('MAKA_E2E_FIXTURE is only available in dev/test builds.');
@@ -119,13 +117,7 @@ export function resolveE2eFixture(
     locale: parseLocaleFlag(rawLocale),
     timezone: parseTimezoneFlag(rawTimezone),
     platform: parsePlatformFlag(rawPlatform),
-    scrollMotion: parseScrollMotionFlag(rawScrollMotion),
   };
-}
-
-function parseScrollMotionFlag(raw: string | undefined): 'auto' | 'smooth' | null {
-  const normalized = raw?.trim().toLowerCase();
-  return normalized === 'auto' || normalized === 'smooth' ? normalized : null;
 }
 
 function parseThemeFlag(raw: string | undefined): 'light' | 'dark' | 'auto' | null {
@@ -174,7 +166,6 @@ export function getE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState 
     ...(fixture.theme ? { theme: fixture.theme } : {}),
     ...(fixture.locale ? { locale: fixture.locale } : {}),
     ...(fixture.timezone ? { timezone: fixture.timezone } : {}),
-    ...(fixture.scrollMotion ? { scrollMotion: fixture.scrollMotion } : {}),
   };
   switch (fixture.scenario) {
     case 'settings-models':
@@ -188,9 +179,7 @@ export function getE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState 
       return { ...state, activeSessionId: TURN_SESSION_ID, workbarCollapsed: false, workbarTab: 'browser' };
     case 'chat-prompt-rail':
       // Workbar collapsed: the rail lives on the chat scrollport's right edge,
-      // and the panel would take the width the measurements are about. Whether
-      // this window scrolls smoothly is a per-launch choice (`scrollMotion`),
-      // because only the jump case needs it and it costs seconds of settling.
+      // and the panel would take the width the measurements are about.
       return { ...state, activeSessionId: PROMPT_RAIL_SESSION_ID, workbarCollapsed: true };
     case 'chat-partial-history':
       return { ...state, activeSessionId: PARTIAL_HISTORY_SESSION_ID, workbarCollapsed: true };

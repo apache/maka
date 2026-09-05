@@ -416,7 +416,6 @@ async function withE2eWindow(
     locale,
     platform,
     showWindow,
-    scrollMotion,
     invocableSkills,
     gitReviewExtraFiles,
     parentRemovalSessions,
@@ -427,8 +426,6 @@ async function withE2eWindow(
     readinessSelector: string;
     e2eFixtureScenario?: string;
     locale?: 'zh-CN' | 'zh-TW' | 'en';
-    /** Opt this window back into animated scrolling; see `scroll-motion-policy`. */
-    scrollMotion?: 'auto' | 'smooth';
     /** #1312: force app:info's platform so the window boots natively into that platform's `data-os` cascade. */
     platform?: 'darwin' | 'win32' | 'linux';
     /** Show fixtures whose contract depends on compositor-paced frames. */
@@ -473,7 +470,6 @@ async function withE2eWindow(
         scenario: e2eFixtureScenario,
         locale,
         platform,
-        scrollMotion,
         showWindow: visibleWindow,
       }),
     });
@@ -519,47 +515,6 @@ async function withE2eWindow(
   }
 }
 
-interface PromptRailWorker {
-  app: ElectronApplication;
-  page: Page;
-  viewport: { width: number; height: number };
-}
-
-async function setPromptRailWindowVisible(
-  worker: PromptRailWorker,
-  visible: boolean,
-): Promise<void> {
-  await worker.app.evaluate(({ BrowserWindow }, shouldShow) => {
-    const window = BrowserWindow.getAllWindows()[0];
-    if (!window) throw new Error('the prompt-rail BrowserWindow is missing');
-    // showInactive, not show: this worker window is re-revealed between every
-    // test in the file, and show() activates the app each time — a suite run
-    // would yank the developer's foreground away a dozen times over. The
-    // window still needs to be on screen for the compositor.
-    if (shouldShow) window.showInactive();
-    else window.hide();
-  }, visible);
-}
-
-async function resetPromptRailWindow(worker: PromptRailWorker): Promise<void> {
-  await worker.page.evaluate(async () => {
-    const controls = (
-      window as typeof window & {
-        makaE2eLatch?: {
-          releaseRendererObservations(): Promise<void>;
-        };
-      }
-    ).makaE2eLatch;
-    if (!controls) throw new Error('the isolated E2E controls are unavailable');
-    await controls.releaseRendererObservations();
-    localStorage.clear();
-    sessionStorage.clear();
-  });
-  await worker.page.setViewportSize(worker.viewport);
-  await worker.page.reload();
-  await worker.page.waitForSelector('[data-turn-id]', { timeout: 20_000 });
-}
-
 type E2eTestFixtures = {
   window: Page;
   agentGraphWindow: Page;
@@ -582,7 +537,6 @@ type E2eTestFixtures = {
 
 type E2eWorkerFixtures = {
   isolatedDisplay: void;
-  promptRailWorker: PromptRailWorker;
 };
 
 export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
@@ -720,10 +674,10 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
       use,
     );
   },
-  // Keep this scenario's real Electron + Host composition warm for the worker,
-  // while the test-scoped wrapper below restores Host and renderer state
-  // between tests. Tests on it may run a Turn, so the reset is not read-only.
-  promptRailWorker: [async ({}, use) => {
+  // A multi-prompt transcript. Each cost assertion gets an isolated Host and
+  // renderer so observation state cannot bleed between tests. The window is
+  // shown because these cases drive the real compositor through CDP.
+  promptRailWindow: async ({}, use) => {
     await withE2eWindow({
       seed: false,
       // A rendered turn, deliberately not the rail: Playwright treats a
@@ -737,22 +691,7 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
       // passes on a Chinese desktop and cannot find it on an English CI runner.
       locale: 'zh-CN',
       showWindow: true,
-    }, async (page, { app }) => {
-      const viewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
-      await use({ app, page, viewport });
-    });
-  }, { scope: 'worker' }],
-  // A multi-prompt transcript. Shown, because the perf suite that measures it
-  // reads real frame pacing, and a throttled compositor paces nothing a user
-  // would see.
-  promptRailWindow: async ({ promptRailWorker }, use) => {
-    await setPromptRailWindowVisible(promptRailWorker, true);
-    try {
-      await resetPromptRailWindow(promptRailWorker);
-      await use(promptRailWorker.page);
-    } finally {
-      await setPromptRailWindowVisible(promptRailWorker, false);
-    }
+    }, use);
   },
   // The same seeded transcript, on a window of its own. Search reads the Host
   // through the bridge and renders nothing, so it needs neither the warm
