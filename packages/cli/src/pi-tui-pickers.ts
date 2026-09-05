@@ -79,6 +79,7 @@ interface TuiPickerCopy {
   readonly contextTarget: string;
   readonly contextTargetAuto: string;
   readonly contextTargetScope: string;
+  readonly contextTargetUsage: string;
   readonly currentMarker: string;
   readonly defaultMarker: string;
   readonly setupTitle: string;

@@ -3513,7 +3513,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           state.entries.push({
             kind: 'notice',
             level: 'error',
-            text: 'Usage: /context [256k|512k|1m|auto]',
+            text: pickerCopy.contextTargetUsage,
           });
           requestRender();
           return;

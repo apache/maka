@@ -4127,6 +4127,41 @@ describe('Maka Pi TUI runner', () => {
     }
   });
 
+  for (const [locale, usage] of [
+    ['en', 'Usage: /context [256k|512k|1m|auto]'],
+    ['zh-CN', '用法：/context [256k|512k|1m|auto]'],
+    ['zh-TW', '用法：/context [256k|512k|1m|auto]'],
+  ] as const) {
+    test(`/context rejects extra arguments with localized usage (${locale})`, async () => {
+      const terminal = new FakeTerminal();
+      const driver = new SlashCommandDriver();
+      let updates = 0;
+      const run = runMakaPiTui({
+        title: 'Maka',
+        driver,
+        cwd: '/repo',
+        model: 'gpt-5',
+        connectionSlug: 'openai',
+        permissionMode: 'ask',
+        locale,
+        terminal,
+        setModelContextTarget: async () => {
+          updates += 1;
+        },
+      });
+      try {
+        terminal.input('/context 256k extra');
+        terminal.input('\r');
+        await waitFor(() => plainTerminalOutput(terminal.output()).includes(usage));
+        assert.equal(updates, 0);
+        assert.deepEqual(driver.prompts, []);
+      } finally {
+        exitMaka(terminal);
+        await run;
+      }
+    });
+  }
+
   test('rejects unsupported /thinking levels with usage instead of sending an update', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver();
