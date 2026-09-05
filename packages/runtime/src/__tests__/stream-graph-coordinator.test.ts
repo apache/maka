@@ -502,6 +502,11 @@ describe('host-managed agent graph coordinator', () => {
         snapshot.work[0]?.instructionPreview,
         'Inspect the repository and report one concrete finding.',
       );
+      const operatorOutput = snapshot.operators[0]?.output;
+      assert.ok(operatorOutput);
+      assert.equal(operatorOutput.phase, 'completed');
+      assert.ok(Array.from(operatorOutput.preview).length <= 280);
+      assert.match(operatorOutput.preview, /Fake backend received:/);
       assert.match(snapshot.snapshotVersion, /^sha256:[a-f0-9]{64}$/);
       const readsBeforeInspection = delayedControlStore.projectionReadCounts();
       const inspection = await coordinator.inspectOperator(
@@ -541,15 +546,40 @@ describe('host-managed agent graph coordinator', () => {
       );
       await new Promise<void>((resolve) => setImmediate(resolve));
       assert.ok(clientEvents.includes('reconciled'));
-      assert.equal(
-        clientEvents.filter((reason) => reason === 'runtime_activity').length,
-        2,
-        'partial text deltas must not cause projection writes or invalidations',
-      );
       const incrementalProjectionCommits = delayedControlStore.projectionCommits.filter(
         (request) => request.incrementalRecordId !== undefined,
       );
       assert.equal(incrementalProjectionCommits.length, 2);
+      const outputProjectionCommits = delayedControlStore.projectionCommits.filter(
+        (request) =>
+          request.incrementalRecordId === undefined &&
+          !request.replaceOperators &&
+          request.activityRecords.length === 0 &&
+          request.operators.some((candidate) => {
+            const payload = candidate.payload as {
+              operator?: { output?: { preview?: unknown } };
+            };
+            return typeof payload.operator?.output?.preview === 'string';
+          }),
+      );
+      assert.ok(outputProjectionCommits.length > 0);
+      assert.ok(
+        outputProjectionCommits.every((request) =>
+          request.operators.every((candidate) => {
+            const payload = candidate.payload as {
+              operator?: { output?: { preview?: unknown } };
+            };
+            const preview = payload.operator?.output?.preview;
+            return typeof preview === 'string' && Array.from(preview).length <= 280;
+          }),
+        ),
+        'streaming output commits must remain bounded',
+      );
+      assert.equal(
+        clientEvents.filter((reason) => reason === 'runtime_activity').length,
+        incrementalProjectionCommits.length + outputProjectionCommits.length,
+        'each materialized activity or bounded output update must invalidate exactly once',
+      );
       assert.ok(
         incrementalProjectionCommits.every((request) => request.terminalActivities.length === 0),
         'yielded SessionEvents must never write immutable terminal history',

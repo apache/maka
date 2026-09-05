@@ -408,6 +408,29 @@ function projectOperator(
           },
         }
       : {}),
+    ...(operator.output
+      ? {
+          output: {
+            activationId: operator.output.activationId,
+            preview: operator.output.preview,
+            previewTruncated: operator.output.previewTruncated,
+            phase: operator.output.phase,
+            previewUpdatedAt: operator.output.previewUpdatedAt,
+            sourceEventId: operator.output.sourceEventId,
+            sampleStartedAt: operator.output.sampleStartedAt,
+            ...(operator.output.messageId ? { messageId: operator.output.messageId } : {}),
+            ...(operator.output.outputTokens !== undefined
+              ? { outputTokens: operator.output.outputTokens }
+              : {}),
+            ...(operator.output.sampleDurationMs !== undefined
+              ? { sampleDurationMs: operator.output.sampleDurationMs }
+              : {}),
+            ...(operator.output.tokensPerSecond !== undefined
+              ? { tokensPerSecond: operator.output.tokensPerSecond }
+              : {}),
+          },
+        }
+      : {}),
   };
 }
 

@@ -237,6 +237,64 @@ export const BlockedOnUpstream: Story = {
   },
 };
 
+// Real path: one child task is streaming while another has settled. The graph
+// read model supplies bounded text and provider-reported throughput; the panel
+// never reads either child Session independently.
+export const OutputPreviews: Story = {
+  decorators: [
+    withScopedMakaBridge(
+      graphBridge(
+        snapshot({
+          status: 'active',
+          operators: [
+            operator({
+              operatorId: 'op-research',
+              status: 'running',
+              output: {
+                activationId: 'run-research',
+                preview: 'Comparing the three provider adapters and their retry boundaries…',
+                previewTruncated: false,
+                phase: 'streaming',
+                previewUpdatedAt: 2_000,
+                sourceEventId: 'event-research',
+                messageId: 'message-research',
+                sampleStartedAt: 1_000,
+                outputTokens: 42,
+                sampleDurationMs: 1_000,
+                tokensPerSecond: 42,
+              },
+            }),
+            operator({
+              operatorId: 'op-review',
+              status: 'completed',
+              output: {
+                activationId: 'run-review',
+                preview: 'Found one retry guard that needs a focused regression test.',
+                previewTruncated: false,
+                phase: 'completed',
+                previewUpdatedAt: 3_000,
+                sourceEventId: 'event-review',
+                sampleStartedAt: 2_000,
+                outputTokens: 18,
+                sampleDurationMs: 1_000,
+                tokensPerSecond: 18,
+              },
+            }),
+          ],
+        }),
+      ),
+    ),
+  ],
+  render: panel,
+  play: async ({ canvasElement }) => {
+    await waitFor(() => {
+      expect(canvasElement.textContent).toContain(copy.liveOutput);
+      expect(canvasElement.textContent).toContain(copy.completedOutput);
+      expect(canvasElement.textContent).toContain(copy.throughput(42));
+    });
+  },
+};
+
 // Real path: a wide fan-out — many operators provisioned at once, the breadth a
 // small graph never shows. The read-model only elides operators past 256 (far
 // beyond a story's scale), so this shows a genuine many-operator list rather
