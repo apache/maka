@@ -21,6 +21,13 @@ import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import { migrateSqliteUsageDatabase } from '../sqlite-usage-schema.js';
+import {
+  MODEL_CALL_NOW as NOW,
+  MODEL_CALL_PRICING_ROW_KEYS,
+  modelCallAttempt as attempt,
+  storedModelCallRecord as storedRecord,
+  wideModelCallAttempt as wideAttempt,
+} from './fixtures/model-call-attempt.js';
 
 test('usage migration backfills Session identity for existing ledger rows', () => {
   const database = new DatabaseSync(':memory:');
@@ -69,6 +76,91 @@ test('usage migration backfills Session identity for existing ledger rows', () =
           "SELECT 1 FROM sqlite_schema WHERE type = 'index' AND name = 'usage_model_call_attempts_session_completed_at'",
         )
         .get(),
+    );
+  } finally {
+    database.close();
+  }
+});
+
+test('usage migration narrows ledger rows to the fields a cost answer reads', () => {
+  const database = new DatabaseSync(':memory:');
+  try {
+    migrateSqliteUsageDatabase(database);
+    const wide = wideAttempt();
+    const insert = database.prepare(`
+      INSERT INTO usage_model_call_attempts(attempt_id, completed_at, record_json, session_id)
+      VALUES (?, ?, ?, ?)
+    `);
+    insert.run(wide.attemptId, wide.completedAt, JSON.stringify(wide), wide.sessionId);
+    insert.run('corrupt', NOW - 400, '{"schemaVersion":1,', 'session-1');
+
+    migrateSqliteUsageDatabase(database);
+
+    const narrowed = storedRecord(database, wide.attemptId);
+    assert.deepEqual(Object.keys(narrowed).sort(), MODEL_CALL_PRICING_ROW_KEYS);
+    // Every number a Usage total is built from reads the same after the fold.
+    assert.equal(narrowed.costUsd, 0.004);
+    assert.equal(narrowed.inputTokens, 100);
+    assert.equal(narrowed.outputTokens, 20);
+    assert.equal(narrowed.costBasis, 'priced');
+    // A corrupt row is not rewritable from itself and must stay, so a read can
+    // keep reporting it instead of a total quietly losing a real call.
+    assert.equal(
+      database
+        .prepare("SELECT record_json FROM usage_model_call_attempts WHERE attempt_id = 'corrupt'")
+        .get()?.record_json,
+      '{"schemaVersion":1,',
+    );
+  } finally {
+    database.close();
+  }
+});
+
+test('usage migration leaves an already narrowed ledger row untouched', () => {
+  const database = new DatabaseSync(':memory:');
+  try {
+    migrateSqliteUsageDatabase(database);
+    const wide = wideAttempt();
+    database
+      .prepare(`
+        INSERT INTO usage_model_call_attempts(attempt_id, completed_at, record_json, session_id)
+        VALUES (?, ?, ?, ?)
+      `)
+      .run(wide.attemptId, wide.completedAt, JSON.stringify(wide), wide.sessionId);
+    migrateSqliteUsageDatabase(database);
+    const once = storedRecord(database, wide.attemptId);
+
+    migrateSqliteUsageDatabase(database);
+
+    assert.deepEqual(storedRecord(database, wide.attemptId), once);
+  } finally {
+    database.close();
+  }
+});
+
+test('usage migration narrows every row, not just the first page', () => {
+  const database = new DatabaseSync(':memory:');
+  try {
+    migrateSqliteUsageDatabase(database);
+    const insert = database.prepare(`
+      INSERT INTO usage_model_call_attempts(attempt_id, completed_at, record_json, session_id)
+      VALUES (?, ?, ?, ?)
+    `);
+    for (let index = 0; index < 1_200; index += 1) {
+      const wide = attempt({ attemptId: `attempt-${String(index).padStart(5, '0')}` });
+      insert.run(wide.attemptId, wide.completedAt, JSON.stringify(wide), wide.sessionId);
+    }
+
+    migrateSqliteUsageDatabase(database);
+
+    assert.equal(
+      database
+        .prepare(`
+          SELECT COUNT(*) AS count FROM usage_model_call_attempts
+          WHERE json_type(record_json, '$.schemaVersion') IS NOT NULL
+        `)
+        .get()?.count,
+      0,
     );
   } finally {
     database.close();

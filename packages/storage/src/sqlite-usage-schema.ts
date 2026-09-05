@@ -17,9 +17,13 @@
  * under the License.
  */
 
+import {
+  decodeModelCallAttempt,
+  projectModelCallPricingRecord,
+} from '@maka/core/model-call-attempt';
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_USAGE_SCHEMA_VERSION = 5;
+export const SQLITE_USAGE_SCHEMA_VERSION = 6;
 
 export function migrateSqliteUsageDatabase(db: DatabaseSync): void {
   db.exec(`
@@ -46,7 +50,9 @@ export function migrateSqliteUsageDatabase(db: DatabaseSync): void {
 
     -- Canonical model-call accounting ledger (#1679). Separate from
     -- usage_llm_calls, which is a frozen historical projection: these rows carry
-    -- usageBasis/costBasis, which that schema cannot express.
+    -- usageBasis/costBasis, which that schema cannot express. record_json holds
+    -- the pricing subset of the AgentRun authority's attempt, never the whole
+    -- record.
     CREATE TABLE IF NOT EXISTS usage_model_call_attempts (
       attempt_id TEXT PRIMARY KEY,
       completed_at INTEGER NOT NULL CHECK (completed_at >= 0),
@@ -102,6 +108,54 @@ export function migrateSqliteUsageDatabase(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS usage_model_call_attempts_session_completed_at
       ON usage_model_call_attempts(session_id, completed_at DESC, attempt_id);
   `);
+  narrowModelCallProjectionRows(db);
+}
+
+/**
+ * Folds rows written before the projection was narrowed through the same
+ * function that writes new ones.
+ *
+ * Not rebuilt from the authority, the usual move for a read model: rows whose
+ * Session was deleted no longer have an authority to replay from, so a
+ * wipe-and-replay would erase their spend. See the header of
+ * `model-call-ledger.ts`.
+ */
+function narrowModelCallProjectionRows(db: DatabaseSync): void {
+  // `schemaVersion` discriminates the two shapes in both directions: required on
+  // an attempt, rejected by the pricing decoder. So SQLite selects exactly the
+  // rows still to fold, and a converged table costs one scan instead of a
+  // row-at-a-time trip through JS.
+  const page = db.prepare(`
+    SELECT attempt_id, record_json
+    FROM usage_model_call_attempts
+    WHERE attempt_id > ?
+      AND json_valid(record_json)
+      AND json_type(record_json, '$.schemaVersion') IS NOT NULL
+    ORDER BY attempt_id
+    LIMIT 500
+  `);
+  const update = db.prepare(
+    'UPDATE usage_model_call_attempts SET record_json = ? WHERE attempt_id = ?',
+  );
+  let cursor = '';
+  for (;;) {
+    const rows = page.all(cursor) as Array<{ attempt_id: string; record_json: string }>;
+    if (rows.length === 0) return;
+    for (const row of rows) {
+      let narrowed: string;
+      try {
+        narrowed = JSON.stringify(
+          projectModelCallPricingRecord(decodeModelCallAttempt(JSON.parse(row.record_json))),
+        );
+      } catch {
+        // Wide-shaped but not a valid attempt. It is not rewritable from itself
+        // and must survive to be reported by a read rather than dropped.
+        continue;
+      }
+      update.run(narrowed, row.attempt_id);
+    }
+    cursor = rows[rows.length - 1]?.attempt_id ?? cursor;
+  }
 }
 
 function ensureColumn(db: DatabaseSync, table: string, column: string, definition: string): void {

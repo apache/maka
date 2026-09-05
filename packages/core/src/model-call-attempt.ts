@@ -24,6 +24,7 @@ import {
   isOptionalFiniteNumber,
   isOptionalString,
   isRecord,
+  pickShape,
 } from './record-schema.js';
 import { MODEL_CALL_KINDS, type ModelCallKind, type PricingConfig } from './usage-stats/types.js';
 
@@ -171,9 +172,14 @@ export interface PreparedRequestObservation {
   segments: PreparedRequestObservationSegment[];
 }
 
-export interface ModelCallAttempt {
-  schemaVersion: typeof MODEL_CALL_ATTEMPT_SCHEMA_VERSION;
-
+/**
+ * What a Usage answer is made of: the fields, and only the fields, that pricing,
+ * filtering, and the Usage log row read off an attempt.
+ *
+ * The Usage read model stores exactly this. {@link ModelCallAttempt} extends it,
+ * so the authority record still satisfies every pricing consumer.
+ */
+export interface ModelCallPricingRecord {
   /**
    * One logical model call. Every attempt of the same call — first try and each
    * retry — shares this id. Explicit rather than reconstructed from
@@ -183,30 +189,56 @@ export interface ModelCallAttempt {
   logicalCallId: string;
   /** Idempotency key: appending the same `attemptId` twice records once. */
   attemptId: string;
+
+  /**
+   * Session and turn the call belongs to. This payload identity is the portable
+   * source of truth: when the record is written as an AgentRun event it must
+   * agree with the envelope, so a record stays attributable on its own once it
+   * leaves the event stream.
+   */
+  sessionId: string;
+  turnId: string;
+
+  callKind: ModelCallKind;
+  connectionSlug?: string;
+  providerId: string;
+  modelId: string;
+
+  completedAt: number;
+  latencyMs: number;
+
+  status: ModelCallAttemptStatus;
+  errorClass?: string;
+
+  usageBasis: ModelCallUsageBasis;
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadInputTokens?: number;
+  cacheMissInputTokens?: number;
+  cacheWriteInputTokens?: number;
+  reasoningTokens?: number;
+
+  costBasis: ModelCallCostBasis;
+  /** Present only when `costBasis` is `'priced'`. Frozen at record time. */
+  costUsd?: number;
+}
+
+export interface ModelCallAttempt extends ModelCallPricingRecord {
+  schemaVersion: typeof MODEL_CALL_ATTEMPT_SCHEMA_VERSION;
+
   /** Tracker instance id, retained to join private prepared-request artifacts. */
   traceId: string;
 
-  /**
-   * Session, run, and turn the call belongs to. This payload identity is the
-   * portable source of truth: when the record is written as an AgentRun event it
-   * must agree with the envelope, so a record stays attributable on its own once
-   * it leaves the event stream.
-   */
-  sessionId: string;
+  /** Run the call belongs to; like `sessionId`, it must agree with the envelope. */
   runId: string;
-  turnId: string;
 
   /** Runtime tool-loop step index within the turn. */
   step: number;
   /** Retry ordinal within the logical call; 0 is the first dispatch. */
   attempt: number;
 
-  callKind: ModelCallKind;
   /** Present on history-compaction calls when the selected route is known. */
   historyCompactRoute?: HistoryCompactRoute;
-  connectionSlug?: string;
-  providerId: string;
-  modelId: string;
   contextWindow?: number;
   /**
    * Join key for the private prepared-request artifact.
@@ -223,29 +255,14 @@ export interface ModelCallAttempt {
   requestObservation?: PreparedRequestObservation;
 
   startedAt: number;
-  completedAt: number;
-  latencyMs: number;
   timeToFirstTokenMs?: number;
 
-  status: ModelCallAttemptStatus;
   finishReason?: string;
-  errorClass?: string;
   httpStatus?: number;
   providerCode?: string;
   providerRequestId?: string;
   retryable?: boolean;
 
-  usageBasis: ModelCallUsageBasis;
-  inputTokens?: number;
-  outputTokens?: number;
-  cacheReadInputTokens?: number;
-  cacheMissInputTokens?: number;
-  cacheWriteInputTokens?: number;
-  reasoningTokens?: number;
-
-  costBasis: ModelCallCostBasis;
-  /** Present only when `costBasis` is `'priced'`. Frozen at record time. */
-  costUsd?: number;
   /** Pricing authority revision the cost was computed against. */
   pricingRevision?: number;
   /** Rates actually applied, so a recorded amount stays auditable. */
@@ -299,6 +316,34 @@ const MODEL_CALL_ATTEMPT_SHAPE = defineObjectShape<ModelCallAttempt>()(
   ],
 );
 
+const MODEL_CALL_PRICING_RECORD_SHAPE = defineObjectShape<ModelCallPricingRecord>()(
+  [
+    'logicalCallId',
+    'attemptId',
+    'sessionId',
+    'turnId',
+    'callKind',
+    'providerId',
+    'modelId',
+    'completedAt',
+    'latencyMs',
+    'status',
+    'usageBasis',
+    'costBasis',
+  ],
+  [
+    'connectionSlug',
+    'errorClass',
+    'inputTokens',
+    'outputTokens',
+    'cacheReadInputTokens',
+    'cacheMissInputTokens',
+    'cacheWriteInputTokens',
+    'reasoningTokens',
+    'costUsd',
+  ],
+);
+
 const TOKEN_FIELDS = [
   'inputTokens',
   'outputTokens',
@@ -306,7 +351,7 @@ const TOKEN_FIELDS = [
   'cacheMissInputTokens',
   'cacheWriteInputTokens',
   'reasoningTokens',
-] as const satisfies readonly (keyof ModelCallAttempt)[];
+] as const satisfies readonly (keyof ModelCallPricingRecord)[];
 
 const PREPARED_REQUEST_OBSERVATION_SHAPE = defineObjectShape<PreparedRequestObservation>()(
   ['schemaVersion', 'digest', 'bytes', 'segments'],
@@ -535,6 +580,49 @@ function isPricingRates(value: unknown): value is PricingConfig {
   );
 }
 
+/** Field-level gate on the pricing subset, shared by both record codecs. */
+function hasValidPricingFields(value: Record<string, unknown>): boolean {
+  return (
+    isNonEmptyString(value.logicalCallId) &&
+    isNonEmptyString(value.attemptId) &&
+    isNonEmptyString(value.sessionId) &&
+    isNonEmptyString(value.turnId) &&
+    (MODEL_CALL_KINDS as readonly unknown[]).includes(value.callKind) &&
+    isOptionalString(value.connectionSlug) &&
+    isNonEmptyString(value.providerId) &&
+    isNonEmptyString(value.modelId) &&
+    isFiniteNumber(value.completedAt) &&
+    isNonNegativeNumber(value.latencyMs) &&
+    (MODEL_CALL_ATTEMPT_STATUSES as readonly unknown[]).includes(value.status) &&
+    isOptionalDiagnosticString(value.errorClass) &&
+    (MODEL_CALL_USAGE_BASES as readonly unknown[]).includes(value.usageBasis) &&
+    TOKEN_FIELDS.every((field) => isOptionalNonNegativeNumber(value[field])) &&
+    (MODEL_CALL_COST_BASES as readonly unknown[]).includes(value.costBasis) &&
+    isOptionalNonNegativeNumber(value.costUsd)
+  );
+}
+
+/**
+ * Cross-field rules that keep a total honest. Checked wherever a priced record
+ * is decoded, so the read model cannot state something the authority forbids.
+ */
+function assertPricingInvariants(value: Record<string, unknown>): void {
+  // `costBasis` and `costUsd` travel together in both directions. A price we
+  // could not resolve must never be published as an amount, and a priced record
+  // must carry one — otherwise coverage counts it as priced while the sum skips
+  // it, and "every call priced, total $0" reads as genuinely free. Zero stays
+  // legal, and is the only way to say a call cost nothing.
+  if (value.costBasis === 'unpriced' && value.costUsd !== undefined) {
+    throw new Error('Model call record: unpriced record carries a cost');
+  }
+  if (value.costBasis === 'priced' && value.costUsd === undefined) {
+    throw new Error('Model call record: priced record carries no cost');
+  }
+  if (value.usageBasis === 'missing' && TOKEN_FIELDS.some((f) => value[f] !== undefined)) {
+    throw new Error('Model call record: reports missing usage but carries tokens');
+  }
+}
+
 /**
  * Strict subtype codec. The generic AgentRun event decoder only checks that
  * `data` is a record, which is not enough for an accounting record — an
@@ -546,40 +634,25 @@ export function decodeModelCallAttempt(value: unknown): ModelCallAttempt {
   }
   const valid =
     value.schemaVersion === MODEL_CALL_ATTEMPT_SCHEMA_VERSION &&
-    isNonEmptyString(value.logicalCallId) &&
-    isNonEmptyString(value.attemptId) &&
+    hasValidPricingFields(value) &&
     isNonEmptyString(value.traceId) &&
-    isNonEmptyString(value.sessionId) &&
     isNonEmptyString(value.runId) &&
-    isNonEmptyString(value.turnId) &&
     isNonNegativeInteger(value.step) &&
     isNonNegativeInteger(value.attempt) &&
-    (MODEL_CALL_KINDS as readonly unknown[]).includes(value.callKind) &&
     (value.historyCompactRoute === undefined ||
       (HISTORY_COMPACT_ROUTES as readonly unknown[]).includes(value.historyCompactRoute)) &&
-    isOptionalString(value.connectionSlug) &&
-    isNonEmptyString(value.providerId) &&
-    isNonEmptyString(value.modelId) &&
     isOptionalNonNegativeNumber(value.contextWindow) &&
     isOptionalString(value.captureArtifactId) &&
     (value.promptComposition === undefined || isPromptComposition(value.promptComposition)) &&
     (value.requestObservation === undefined ||
       isPreparedRequestObservation(value.requestObservation)) &&
     isFiniteNumber(value.startedAt) &&
-    isFiniteNumber(value.completedAt) &&
-    isNonNegativeNumber(value.latencyMs) &&
     isOptionalNonNegativeNumber(value.timeToFirstTokenMs) &&
-    (MODEL_CALL_ATTEMPT_STATUSES as readonly unknown[]).includes(value.status) &&
     isOptionalString(value.finishReason) &&
-    isOptionalDiagnosticString(value.errorClass) &&
     isOptionalHttpStatus(value.httpStatus) &&
     isOptionalDiagnosticString(value.providerCode) &&
     isOptionalDiagnosticString(value.providerRequestId) &&
     (value.retryable === undefined || typeof value.retryable === 'boolean') &&
-    (MODEL_CALL_USAGE_BASES as readonly unknown[]).includes(value.usageBasis) &&
-    TOKEN_FIELDS.every((field) => isOptionalNonNegativeNumber(value[field])) &&
-    (MODEL_CALL_COST_BASES as readonly unknown[]).includes(value.costBasis) &&
-    isOptionalNonNegativeNumber(value.costUsd) &&
     isOptionalNonNegativeNumber(value.pricingRevision) &&
     isPricingRates(value.pricingRates);
   if (!valid) throw new Error('Invalid ModelCallAttempt schema');
@@ -592,30 +665,38 @@ export function decodeModelCallAttempt(value: unknown): ModelCallAttempt {
   if (value.historyCompactRoute !== undefined && value.callKind !== 'history_compact') {
     throw new Error('ModelCallAttempt non-compaction call carries historyCompactRoute');
   }
-  // `costBasis` and `costUsd` travel together in both directions. A price we
-  // could not resolve must never be published as an amount, and a priced record
-  // must carry one — otherwise coverage counts it as priced while the sum skips
-  // it, and "every call priced, total $0" reads as genuinely free. Zero stays
-  // legal, and is the only way to say a call cost nothing.
-  if (value.costBasis === 'unpriced' && value.costUsd !== undefined) {
-    throw new Error('ModelCallAttempt unpriced record carries a cost');
-  }
-  if (value.costBasis === 'priced' && value.costUsd === undefined) {
-    throw new Error('ModelCallAttempt priced record carries no cost');
-  }
-  if (value.usageBasis === 'missing' && TOKEN_FIELDS.some((f) => value[f] !== undefined)) {
-    throw new Error('ModelCallAttempt reports missing usage but carries tokens');
-  }
+  assertPricingInvariants(value);
   return value as unknown as ModelCallAttempt;
 }
 
-export function isModelCallAttempt(value: unknown): value is ModelCallAttempt {
-  try {
-    decodeModelCallAttempt(value);
-    return true;
-  } catch {
-    return false;
+/**
+ * Narrows an attempt to what the Usage read model stores.
+ *
+ * The one place a projection row's shape is decided: the ledger writes rows
+ * through it and the schema migration folds pre-existing rows through it, so the
+ * table cannot hold two shapes.
+ */
+export function projectModelCallPricingRecord(
+  attempt: ModelCallPricingRecord,
+): ModelCallPricingRecord {
+  return pickShape(attempt, MODEL_CALL_PRICING_RECORD_SHAPE);
+}
+
+/**
+ * Strict codec for a stored Usage read-model row, held to the exact projected
+ * shape. A row of any other shape is not one this projection wrote, and is
+ * reported as unreadable rather than trusted.
+ */
+export function decodeModelCallPricingRecord(value: unknown): ModelCallPricingRecord {
+  if (
+    !isRecord(value) ||
+    !hasExactShape(value, MODEL_CALL_PRICING_RECORD_SHAPE) ||
+    !hasValidPricingFields(value)
+  ) {
+    throw new Error('Invalid ModelCallPricingRecord schema');
   }
+  assertPricingInvariants(value);
+  return value as unknown as ModelCallPricingRecord;
 }
 
 /**
@@ -625,8 +706,10 @@ export function isModelCallAttempt(value: unknown): value is ModelCallAttempt {
  * asynchronously and carry the provider settlement time, so timestamp order and
  * append order disagree.
  */
-export function dedupeModelCallAttempts(attempts: readonly ModelCallAttempt[]): ModelCallAttempt[] {
-  const byId = new Map<string, ModelCallAttempt>();
+export function dedupeModelCallAttempts<T extends { readonly attemptId: string }>(
+  attempts: readonly T[],
+): T[] {
+  const byId = new Map<string, T>();
   for (const attempt of attempts) byId.set(attempt.attemptId, attempt);
   return [...byId.values()];
 }
@@ -711,7 +794,7 @@ export interface ModelCallCoverage {
 }
 
 export function summarizeModelCallCoverage(
-  attempts: readonly ModelCallAttempt[],
+  attempts: readonly ModelCallPricingRecord[],
 ): ModelCallCoverage {
   const unique = dedupeModelCallAttempts(attempts);
   const coverage: ModelCallCoverage = {
@@ -730,21 +813,4 @@ export function summarizeModelCallCoverage(
     else coverage.usageMissingAttempts += 1;
   }
   return coverage;
-}
-
-/**
- * Sums cost across attempts. Returns the total alongside the coverage that
- * qualifies it, because a bare number cannot express "plus an unknown amount
- * from unpriced calls".
- */
-export function sumModelCallCostUsd(attempts: readonly ModelCallAttempt[]): {
-  costUsd: number;
-  coverage: ModelCallCoverage;
-} {
-  const unique = dedupeModelCallAttempts(attempts);
-  let costUsd = 0;
-  for (const attempt of unique) {
-    if (attempt.costBasis === 'priced' && attempt.costUsd !== undefined) costUsd += attempt.costUsd;
-  }
-  return { costUsd, coverage: summarizeModelCallCoverage(unique) };
 }

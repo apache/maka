@@ -25,7 +25,6 @@ import { DatabaseSync } from 'node:sqlite';
 import { describe, test } from 'node:test';
 import {
   MODEL_CALL_ATTEMPT_EVENT_TYPE,
-  MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
   type ModelCallAttempt,
 } from '@maka/core/model-call-attempt';
 import {
@@ -37,35 +36,12 @@ import {
 import { acquireOperationalStateDatabase } from '../operational-state-store.js';
 import { createSqliteAgentRunStore } from '../agent-run-store.js';
 import { openInvocation } from './fixtures/invocation-opening.js';
-
-const NOW = 1_750_000_000_000;
-
-function attempt(overrides: Partial<ModelCallAttempt> = {}): ModelCallAttempt {
-  return {
-    schemaVersion: MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
-    logicalCallId: 'call-1',
-    attemptId: 'attempt-1',
-    traceId: 'trace-1',
-    sessionId: 'session-1',
-    runId: 'run-1',
-    turnId: 'turn-1',
-    step: 0,
-    attempt: 0,
-    callKind: 'main',
-    providerId: 'anthropic',
-    modelId: 'claude-opus-5',
-    startedAt: NOW - 1_000,
-    completedAt: NOW - 500,
-    latencyMs: 500,
-    status: 'completed',
-    usageBasis: 'reported',
-    inputTokens: 100,
-    outputTokens: 20,
-    costBasis: 'priced',
-    costUsd: 0.004,
-    ...overrides,
-  };
-}
+import {
+  modelCallAttempt as attempt,
+  MODEL_CALL_NOW as NOW,
+  MODEL_CALL_PRICING_ROW_KEYS,
+  storedModelCallRecord,
+} from './fixtures/model-call-attempt.js';
 
 async function withLedger(run: (ledger: ModelCallLedger, root: string) => Promise<void>) {
   const root = await mkdtemp(join(tmpdir(), 'maka-model-call-ledger-'));
@@ -130,6 +106,15 @@ function appendAuthorityEvent(
   }
 }
 
+function storedRecord(root: string, attemptId: string): Record<string, unknown> {
+  const lease = acquireOperationalStateDatabase(root);
+  try {
+    return storedModelCallRecord(lease.database, attemptId);
+  } finally {
+    lease.close();
+  }
+}
+
 describe('canonical model call ledger', () => {
   test('reads back what it recorded, bounded to the queried window', async () => {
     await withLedger(async (ledger, root) => {
@@ -150,7 +135,7 @@ describe('canonical model call ledger', () => {
     });
   });
 
-  test('provider failure diagnostics survive closing and reopening the ledger', async () => {
+  test('a failed call keeps its pricing basis and drops what pricing cannot use', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-model-call-ledger-reopen-'));
     const first = createSqliteModelCallLedger(root);
     try {
@@ -180,12 +165,19 @@ describe('canonical model call ledger', () => {
       const reopened = createSqliteModelCallLedger(root);
       try {
         const restored = reopened.read({ from: 0, to: NOW }).attempts[0];
-        assert.equal(restored?.historyCompactRoute, 'provider_native');
+        assert.equal(restored?.callKind, 'history_compact');
+        assert.equal(restored?.status, 'failed');
+        assert.equal(restored?.usageBasis, 'missing');
+        assert.equal(restored?.costBasis, 'unpriced');
+        // The Usage log row shows this one; the rest of the provider diagnostics
+        // are answered from the AgentRun authority, not from here.
         assert.equal(restored?.errorClass, 'RequestRejected');
-        assert.equal(restored?.httpStatus, 400);
-        assert.equal(restored?.providerCode, 'invalid_request_error');
-        assert.equal(restored?.providerRequestId, 'req-reopen-1');
-        assert.equal(restored?.retryable, false);
+        assert.deepEqual(
+          Object.keys(storedRecord(root, 'attempt-1')).filter(
+            (key) => !MODEL_CALL_PRICING_ROW_KEYS.includes(key) && key !== 'errorClass',
+          ),
+          [],
+        );
       } finally {
         await reopened.close();
       }
@@ -235,6 +227,39 @@ describe('canonical model call ledger', () => {
       } finally {
         lease.close();
       }
+    } finally {
+      await migrated.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('a row narrowed in place keeps spend the authority can no longer replay', async () => {
+    // Deleting a Session drops its runs and cascades their events, but leaves
+    // its ledger rows. Converging those rows by wiping and re-projecting would
+    // erase that spend from the all-time totals, so they are folded in place.
+    const root = await mkdtemp(join(tmpdir(), 'maka-model-call-ledger-narrow-'));
+    const first = createSqliteModelCallLedger(root);
+    appendAuthorityEvent(root, 0, attempt({ attemptId: 'deleted-session-call' }));
+    await first.catchUpProjection();
+    await first.close();
+
+    const database = new DatabaseSync(join(root, 'runtime.sqlite'));
+    database
+      .prepare('UPDATE usage_model_call_attempts SET record_json = ? WHERE attempt_id = ?')
+      .run(JSON.stringify(attempt({ attemptId: 'deleted-session-call' })), 'deleted-session-call');
+    database.exec(`
+      PRAGMA foreign_keys = ON;
+      DELETE FROM core_agent_runs WHERE session_id = 'session-1';
+      UPDATE operational_schema_migrations SET version = 5 WHERE scope = 'usage';
+    `);
+    database.close();
+
+    const migrated = createSqliteModelCallLedger(root);
+    try {
+      const page = migrated.read({ from: 0, to: NOW });
+      assert.equal(page.unreadableRecords, 0);
+      assert.equal(page.attempts[0]?.attemptId, 'deleted-session-call');
+      assert.equal(page.attempts[0]?.costUsd, 0.004);
     } finally {
       await migrated.close();
       await rm(root, { recursive: true, force: true });

@@ -25,9 +25,10 @@ import {
   MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
   PROMPT_COMPOSITION_MAX_TOOLS,
   decodeModelCallAttempt,
+  decodeModelCallPricingRecord,
   groupModelCallAttempts,
+  projectModelCallPricingRecord,
   settledAttempt,
-  sumModelCallCostUsd,
   summarizeModelCallCoverage,
   type ModelCallAttempt,
 } from '../model-call-attempt.js';
@@ -359,36 +360,87 @@ describe('ModelCallAttempt projections', () => {
     });
   });
 
-  test('cost sum reports the qualifying coverage alongside the total', () => {
-    const { costUsd, coverage } = sumModelCallCostUsd([
-      attempt({ attemptId: 'a', costUsd: 0.004 }),
-      attempt({ attemptId: 'b', costUsd: 0.006 }),
-      attempt({ attemptId: 'c', costBasis: 'unpriced', costUsd: undefined }),
-    ]);
-    assert.equal(Math.round(costUsd * 1000) / 1000, 0.01);
-    assert.equal(coverage.unpricedAttempts, 1);
-  });
-
-  test('a replayed attemptId is counted once through sum and coverage', () => {
+  test('a replayed attemptId is counted once through coverage and grouping', () => {
     const stream = [
       attempt({ attemptId: 'a', logicalCallId: 'call-1', costUsd: 0.004 }),
       attempt({ attemptId: 'b', logicalCallId: 'call-2', costUsd: 0.006 }),
       attempt({ attemptId: 'a', logicalCallId: 'call-1', costUsd: 0.005 }),
     ];
-    const { costUsd, coverage } = sumModelCallCostUsd(stream);
-    assert.equal(Math.round(costUsd * 1000) / 1000, 0.011);
+    const coverage = summarizeModelCallCoverage(stream);
     assert.equal(coverage.attempts, 2);
     assert.equal(coverage.pricedAttempts, 2);
-    assert.equal(summarizeModelCallCoverage(stream).attempts, 2);
     assert.equal(groupModelCallAttempts(stream).length, 2);
   });
 
   test('a genuinely free priced call is distinguishable from an unpriced one', () => {
-    const free = attempt({ attemptId: 'free', costBasis: 'priced', costUsd: 0 });
-    const unknown = attempt({ attemptId: 'unknown', costBasis: 'unpriced', costUsd: undefined });
-    const { costUsd, coverage } = sumModelCallCostUsd([free, unknown]);
-    assert.equal(costUsd, 0);
+    const coverage = summarizeModelCallCoverage([
+      attempt({ attemptId: 'free', costBasis: 'priced', costUsd: 0 }),
+      attempt({ attemptId: 'unknown', costBasis: 'unpriced', costUsd: undefined }),
+    ]);
     assert.equal(coverage.pricedAttempts, 1);
     assert.equal(coverage.unpricedAttempts, 1);
+  });
+});
+
+describe('the pricing record a Usage read model stores', () => {
+  test('keeps every field a cost answer reads and drops the rest', () => {
+    const record = projectModelCallPricingRecord(
+      attempt({
+        connectionSlug: 'work',
+        errorClass: 'RequestRejected',
+        cacheReadInputTokens: 40,
+        cacheWriteInputTokens: 10,
+        reasoningTokens: 5,
+        promptComposition: { segments: [{ kind: 'messages', bytes: 4_096 }] },
+        providerRequestId: 'req-1',
+        pricingRevision: 3,
+      }),
+    );
+
+    // Exact: an unset optional such as `cacheMissInputTokens` must stay absent,
+    // and everything the authority carries beyond these fields must be gone.
+    assert.deepEqual(record, {
+      logicalCallId: 'call-1',
+      attemptId: 'attempt-1',
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      callKind: 'main',
+      connectionSlug: 'work',
+      providerId: 'anthropic',
+      modelId: 'claude-opus-5',
+      completedAt: 1_250,
+      latencyMs: 250,
+      status: 'completed',
+      errorClass: 'RequestRejected',
+      usageBasis: 'reported',
+      costBasis: 'priced',
+      costUsd: 0.004,
+      inputTokens: 100,
+      outputTokens: 20,
+      cacheReadInputTokens: 40,
+      cacheWriteInputTokens: 10,
+      reasoningTokens: 5,
+    });
+  });
+
+  test('decodes what the projection writes and nothing wider', () => {
+    const written = projectModelCallPricingRecord(attempt());
+    assert.deepEqual(decodeModelCallPricingRecord(JSON.parse(JSON.stringify(written))), written);
+    // A whole attempt is not a projection row: reading one back would mean the
+    // table holds two shapes and no reader knows which it has.
+    assert.throws(() => decodeModelCallPricingRecord(attempt()), /Invalid ModelCallPricingRecord/);
+  });
+
+  test('holds a stored row to the same cost invariants as the authority', () => {
+    // The rules themselves are covered against the authority codec; this only
+    // proves the read model is wired to the same ones.
+    assert.throws(
+      () =>
+        decodeModelCallPricingRecord({
+          ...projectModelCallPricingRecord(attempt()),
+          costBasis: 'unpriced',
+        }),
+      /unpriced record carries a cost/,
+    );
   });
 });
