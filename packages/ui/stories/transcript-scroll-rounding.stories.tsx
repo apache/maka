@@ -183,3 +183,51 @@ export const ContentThatOnlyRoundsIsNotTheReader: Story = {
     }
   },
 };
+
+// Growth can replace intrinsic-size estimates above the viewport while adding
+// content below it. A queued tail-write event must not turn that layout into
+// reader intent just because its net height change has the opposite sign.
+export const OpposingResizesKeepFollowingTheTail: Story = {
+  play: async () => {
+    const root = scroller();
+    const above = root.querySelector<HTMLElement>('[data-probe="above"]');
+    const below = root.querySelector<HTMLElement>('[data-probe="below"]');
+    if (!above || !below) throw new Error('the probe spacers are missing');
+    const anchor = root.querySelector<HTMLElement>('[data-probe="anchor"]');
+    if (!anchor) throw new Error('the probe anchor is missing');
+    // Keep the anchor visible above the tail spacer so native anchoring has
+    // a candidate whose position changes when the upper box shrinks.
+    root.style.height = '860px';
+    above.style.height = '2000px';
+    anchor.style.height = '1000px';
+    below.style.height = '600px';
+    const authority = createTranscriptScrollAuthority();
+    const detach = authority.attach(root);
+    try {
+      await settled();
+      // Leave the rAF callback: mutations made inside it are observed by RO
+      // in that same rendering step, before a pending scroll can be delivered.
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      let readerMoves = 0;
+      authority.subscribeToReaderScroll(() => { readerMoves += 1; });
+
+      const previousHeight = root.scrollHeight;
+      // Queue a real scroll event from a tail write. Before it arrives, layout
+      // shrinks above the reader and grows below them in the same task.
+      below.style.height = '601px';
+      authority.pinToTail();
+      above.style.height = '1909px';
+      below.style.height = '1200px';
+      // Commit layout before the queued scroll event is delivered. This is
+      // also what a consumer reading scrollHeight during streaming does.
+      expect(root.scrollHeight).toBeGreaterThan(previousHeight);
+      await settled();
+
+      expect(readerMoves).toBe(0);
+      expect(authority.getSnapshot().pinned).toBe(true);
+      expect(root.scrollHeight - root.clientHeight - root.scrollTop).toBeLessThanOrEqual(4);
+    } finally {
+      detach();
+    }
+  },
+};

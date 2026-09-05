@@ -132,7 +132,6 @@ export function createAppShellE2eFixtureActions(options: {
     if (
       state.workbarTab === 'review' ||
       state.workbarTab === 'terminal' ||
-      state.workbarTab === 'tasks' ||
       state.workbarTab === 'browser' ||
       state.workbarTab === 'files' ||
       state.workbarTab === 'inspector'

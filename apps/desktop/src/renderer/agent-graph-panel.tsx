@@ -33,6 +33,7 @@ import { EmptyState } from '@astryxdesign/core/EmptyState';
 import { Spinner } from '@astryxdesign/core/Spinner';
 import {
   dismissAgentGraphPanel,
+  isAgentGraphLive,
   isAgentGraphPanelDismissible,
   reconcileAgentGraphPanelDismissals,
   shouldShowAgentGraphPanel,
@@ -240,7 +241,7 @@ export function AgentGraphPanel(props: {
     pending: false,
     error: false,
   });
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState<boolean>();
   const [dismissedBySession, setDismissedBySession] = useState<AgentGraphPanelDismissals>({});
   const contentId = useId();
   const refreshRef = useRef<AgentGraphRefreshScheduler>(noopAgentGraphRefreshScheduler);
@@ -252,6 +253,8 @@ export function AgentGraphPanel(props: {
     stopState.rootSessionId === props.rootSessionId && stopState.graphId === selectedGraphId;
   const stopPending = stopFeedbackMatchesSelection && stopState.pending;
   const stopError = stopFeedbackMatchesSelection && stopState.error;
+  // One liveness judgment gates both animated signals.
+  const graphLive = !error && snapshot !== undefined && isAgentGraphLive(snapshot.status);
 
   useEffect(() => {
     setSnapshot(undefined);
@@ -268,7 +271,7 @@ export function AgentGraphPanel(props: {
       pending: false,
       error: false,
     });
-    setCollapsed(false);
+    setCollapsed(undefined);
     setLoading(props.enabled);
     let cachedDirectory: AgentGraphEpochDirectory | undefined;
 
@@ -304,6 +307,7 @@ export function AgentGraphPanel(props: {
           setEpochs(nextEpochs);
           setEpochsTruncated(directory.truncated);
           setSelectedGraphId(graphId);
+          setCollapsed((current) => current ?? next.status === 'completed');
           setSnapshot(next);
           setError(false);
         }
@@ -398,7 +402,7 @@ export function AgentGraphPanel(props: {
     !loading &&
     snapshot !== undefined &&
     snapshot.graphId === selectedGraphId &&
-    ['active', 'waiting', 'closing'].includes(snapshot.status);
+    isAgentGraphLive(snapshot.status);
   const dismissAvailable =
     selectedEpoch?.current === true &&
     !loading &&
@@ -411,6 +415,7 @@ export function AgentGraphPanel(props: {
       className="maka-agent-graph-panel"
       aria-label={copy.title}
       data-collapsed={collapsed ? 'true' : 'false'}
+      data-live={graphLive ? 'true' : 'false'}
     >
       <header className="maka-agent-graph-heading">
         <div className="maka-agent-graph-heading-copy">
@@ -441,6 +446,14 @@ export function AgentGraphPanel(props: {
           ) : null}
           {snapshot ? (
             <span className="maka-agent-graph-progress">
+              {graphLive ? (
+                <Spinner
+                  size="sm"
+                  shade="subtle"
+                  className="maka-agent-graph-heartbeat"
+                  aria-hidden="true"
+                />
+              ) : null}
               {copy.status(snapshot.status)} ·{' '}
               {copy.progress(
                 progress.settled,

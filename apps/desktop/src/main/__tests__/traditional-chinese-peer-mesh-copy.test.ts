@@ -46,8 +46,7 @@ test('Traditional Chinese connection copy uses 回傳, 回應, and 發送', () =
   assert.match(conversation.turnError.provider, /模型服務回傳錯誤/);
 
   const provider = getProviderSettingsCopy('zh-TW');
-  assert.equal(provider.shared.lastTest['模型服务返回错误'], '模型服務回傳錯誤');
-  assert.equal(provider.shared.lastTest['provider returned an error'], '模型服務回傳錯誤');
+  assert.equal(provider.shared.lastTest.provider_unavailable, '模型服務回傳錯誤');
 
   assert.equal(
     settingsTestResultMessage(

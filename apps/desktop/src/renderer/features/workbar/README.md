@@ -52,12 +52,18 @@ remounted when the active session changes.
 
 ## Lifecycle invariants
 
-- Review, Tasks, Browser, Files and Inspector tabs are persisted globally.
-- Terminal and Side Chat tabs, preview state and resource metadata are
-  transient.
+- Review, Work Board, Browser, Files and Inspector tabs are persisted globally.
+- Terminal and Side Chat tabs and their resource metadata are transient.
 - `WORKBAR_TOOL_DEFINITIONS` is the authority for persistence, singleton
-  behavior and default placement; storage and controller code consume it
-  rather than maintaining parallel kind lists.
+  behavior, default placement, icon and shortcut; storage, controller and UI
+  code consume it rather than maintaining parallel kind lists.
+- A face is opened and closed only from the strip's `[+]` menu, which lists
+  every registered tool and marks the open ones. Tabs carry no close control:
+  `Tab` renders `endContent` inside its own `<button>`, so a per-tab close
+  would nest a button in a button. Tabs are never reordered, so the strip's
+  order is the order the faces were opened in.
+- How many Terminals or Side Chats exist is each face's own business; only a
+  deliberate open adds a tab.
 - Closing or leaving the owner session stops Terminal resources.
 - A Terminal start is tagged with its source generation. If it resolves after
   a Session switch or controller disposal, the returned resource is stopped

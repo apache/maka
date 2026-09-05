@@ -151,7 +151,6 @@ apps/desktop/src/renderer/styles/prompt-rail.css
 apps/desktop/src/renderer/styles/prompt-suggestions.css
 apps/desktop/src/renderer/styles/quote-side-panel.css
 apps/desktop/src/renderer/styles/search-modal.css
-apps/desktop/src/renderer/styles/session-todo-panel.css
 apps/desktop/src/renderer/styles/settings.css
 apps/desktop/src/renderer/styles/settings/bot.css
 apps/desktop/src/renderer/styles/settings/connection.css
@@ -233,7 +232,6 @@ packages/ui/src/session-list-panel.tsx
 packages/ui/src/session-rail-context.tsx
 packages/ui/src/session-rename-dialog.tsx
 packages/ui/src/session-sidebar-nav.tsx
-packages/ui/src/session-todo-panel.tsx
 packages/ui/src/skill-inspector.tsx
 packages/ui/src/skills-panel.tsx
 packages/ui/src/styles.css

@@ -60,6 +60,7 @@
     "release:cli:eval": "node scripts/release-cli-eval-package.mjs",
     "check:app-shell-hooks": "node scripts/check-app-shell-hooks.mjs",
     "check:tui-copy": "node scripts/check-tui-copy.mjs",
+    "check:locale-hygiene": "node scripts/check-locale-hygiene.mjs",
     "check:asf-headers": "node scripts/asf-license-headers.mjs check",
     "write:asf-headers": "node scripts/asf-license-headers.mjs write",
     "release:asf:source": "node scripts/asf-source-release.mjs create",

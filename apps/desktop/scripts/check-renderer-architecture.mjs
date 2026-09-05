@@ -1249,6 +1249,8 @@ export function analyzeRendererSource(source, file = 'fixture.ts') {
   const moduleReexports = [];
   let importDeclarations = 0;
   let importSpecifiers = 0;
+  const importDeclarationsBySource = {};
+  const importSpecifiersBySource = {};
   let unresolvedDependencies = 0;
 
   function recordBridgePath(path) {
@@ -1261,9 +1263,14 @@ export function analyzeRendererSource(source, file = 'fixture.ts') {
 
   function visit(node, parent) {
     if (node.type === 'ImportDeclaration' && !typeOnlySourceDependency(node)) {
+      const specifierCount = node.specifiers.filter((specifier) => specifier.importKind !== 'type').length;
       importDeclarations += 1;
-      importSpecifiers += node.specifiers.filter((specifier) => specifier.importKind !== 'type').length;
+      importSpecifiers += specifierCount;
       const source = staticString(node.source);
+      if (source !== undefined) {
+        importDeclarationsBySource[source] = (importDeclarationsBySource[source] ?? 0) + 1;
+        importSpecifiersBySource[source] = (importSpecifiersBySource[source] ?? 0) + specifierCount;
+      }
       if (source !== undefined && node.importKind !== 'type') {
         for (const specifier of node.specifiers) {
           if (specifier.importKind === 'type') continue;
@@ -1544,7 +1551,9 @@ export function analyzeRendererSource(source, file = 'fixture.ts') {
     environmentCapabilities: sortedObject(environmentCapabilities),
     hookCalls: sortedObject(hookCalls),
     importDeclarations,
+    importDeclarationsBySource: sortedObject(importDeclarationsBySource),
     importSpecifiers,
+    importSpecifiersBySource: sortedObject(importSpecifiersBySource),
     lifecycleMethods: sortedObject(lifecycleMethods),
     moduleImports: moduleImports.map((entry, index) => ({
       ...entry,
@@ -1651,11 +1660,20 @@ function capabilityDebtMetrics(analysis) {
   };
 }
 
-function debtMetrics(analysis) {
+// Imports from a sanctioned target (a validated copy catalog, or for AppShell
+// files a shell / public application / public feature module) are the edges
+// the migration wants a legacy file to take on; they cost no import debt, so
+// a legacy file is never pushed to inline a helper it could import.
+function debtMetrics(analysis, isSanctionedSource) {
+  const unsanctioned = (bySource) =>
+    Object.entries(bySource).reduce(
+      (total, [source, count]) => (isSanctionedSource(source) ? total : total + count),
+      0,
+    );
   return {
-    importDeclarations: analysis.importDeclarations,
+    importDeclarations: unsanctioned(analysis.importDeclarationsBySource),
     ...capabilityDebtMetrics(analysis),
-    importSpecifiers: analysis.importSpecifiers,
+    importSpecifiers: unsanctioned(analysis.importSpecifiersBySource),
     nonTriviaTokens: analysis.nonTriviaTokens,
   };
 }
@@ -2247,15 +2265,15 @@ function validateMetric(path, metric, actual, expected, violations) {
   }
 }
 
-function validateDebtFile(desktopRoot, path, expected, violations, metrics = ROOT_DEBT_METRICS) {
-  const absolutePath = resolve(desktopRoot, path);
-  if (!existsSync(absolutePath)) {
+function validateDebtFile(desktopRoot, path, expected, violations, section) {
+  if (!existsSync(resolve(desktopRoot, path))) {
     violations.push(`${path}: debt ledger entry points to a missing file`);
     return;
   }
-  const analysis = analyzeRendererSource(readFileSync(absolutePath, 'utf8'), path);
-  for (const metric of metrics) {
-    validateMetric(path, metric, analysis[metric], expected[metric], violations);
+  const rootSection = section === 'legacyAppShell' || section === 'rootDebt';
+  const actual = rootSection ? debtForPath(desktopRoot, path, section) : capabilityDebtForPath(desktopRoot, path);
+  for (const metric of rootSection ? ROOT_DEBT_METRICS : CAPABILITY_DEBT_METRICS) {
+    validateMetric(path, metric, actual[metric], expected[metric], violations);
   }
 }
 
@@ -2282,7 +2300,7 @@ function validateLegacyLedger(desktopRoot, config, violations) {
   }
 
   for (const [path, expected] of Object.entries(config.legacyAppShell.files)) {
-    validateDebtFile(desktopRoot, path, expected, violations);
+    validateDebtFile(desktopRoot, path, expected, violations, 'legacyAppShell');
   }
   const actualClosure = collectRootDependencyClosure(desktopRoot, expectedFiles, violations, 'AppShell');
   const expectedClosure = Object.keys(config.legacyAppShell.closure).sort();
@@ -2299,10 +2317,10 @@ function validateLegacyLedger(desktopRoot, config, violations) {
     if (!isRootClosureDebtSource(path) || DECLARATION_FILE.test(path)) {
       violations.push(`${path}: AppShell closure debt must point to a non-owner Desktop source`);
     }
-    validateDebtFile(desktopRoot, path, expected, violations, CAPABILITY_DEBT_METRICS);
+    validateDebtFile(desktopRoot, path, expected, violations, 'legacyAppShellClosure');
   }
   for (const [path, expected] of Object.entries(config.rootDebt)) {
-    validateDebtFile(desktopRoot, path, expected, violations);
+    validateDebtFile(desktopRoot, path, expected, violations, 'rootDebt');
   }
   const appShellDebtPaths = new Set([...expectedFiles, ...expectedClosure]);
   const rootDebtPaths = Object.keys(config.rootDebt).sort();
@@ -2322,7 +2340,7 @@ function validateLegacyLedger(desktopRoot, config, violations) {
     if (!isRootClosureDebtSource(path) || DECLARATION_FILE.test(path)) {
       violations.push(`${path}: renderer root closure debt must point to a non-owner Desktop source`);
     }
-    validateDebtFile(desktopRoot, path, expected, violations, CAPABILITY_DEBT_METRICS);
+    validateDebtFile(desktopRoot, path, expected, violations, 'rootDebtClosure');
   }
 
   const ownedPaths = new Map();
@@ -2981,7 +2999,7 @@ function validateCopyCatalog(desktopRoot, relativePath) {
     if (metricTotal(value) > 0) return `catalog carries ${metric} (${describeMetric(value)})`;
   }
   const forbidden = inspection.runtimeDependencies.find(
-    (dependency) => dependency.startsWith('.') || dependency.startsWith(DESKTOP_SELF_PREFIX),
+    (dependency) => !isBarePackageSpecifier(dependency),
   );
   if (forbidden !== undefined) {
     return `runtime import ${forbidden} is not a bare package specifier`;
@@ -3008,9 +3026,17 @@ function validateCopyCatalogFiles(desktopRoot, violations) {
   }
 }
 
+function isBarePackageSpecifier(dependency) {
+  return !dependency.startsWith('.') && !dependency.startsWith(DESKTOP_SELF_PREFIX);
+}
+
 function withoutSanctionedDependencies(desktopRoot, section, importerPath, dependencyPaths) {
+  // A validated catalog is already restricted to bare package runtime imports;
+  // pricing them again would push copy helpers back inline into the catalog.
+  const importerIsCatalog = isValidatedCopyCatalog(desktopRoot, importerPath);
   const filtered = {};
   for (const [dependency, count] of Object.entries(dependencyPaths)) {
+    if (importerIsCatalog && isBarePackageSpecifier(dependency)) continue;
     if (isSanctionedDependencyTarget(desktopRoot, section, importerPath, dependency)) continue;
     filtered[dependency] = count;
   }
@@ -3043,8 +3069,11 @@ function allowsMigrationDependency({ base, current, dependency, desktopRoot, pat
   return swapZones.includes(zoneFor(normalizePath(relative(desktopRoot, target))).kind);
 }
 
-function debtForPath(desktopRoot, path) {
-  return debtMetrics(analyzeRendererSource(readFileSync(resolve(desktopRoot, path), 'utf8'), path));
+function debtForPath(desktopRoot, path, section) {
+  return debtMetrics(
+    analyzeRendererSource(readFileSync(resolve(desktopRoot, path), 'utf8'), path),
+    (source) => isSanctionedDependencyTarget(desktopRoot, section, path, source),
+  );
 }
 
 function capabilityDebtForPath(desktopRoot, path) {
@@ -3091,7 +3120,7 @@ export function generateArchitectureConfig(desktopRoot, config) {
   const imports = collectLegacyImportEdges(desktopRoot);
   const rootDebt = {};
   for (const path of Object.keys(config.rootDebt ?? {}).sort()) {
-    if (existsSync(resolve(desktopRoot, path))) rootDebt[path] = debtForPath(desktopRoot, path);
+    if (existsSync(resolve(desktopRoot, path))) rootDebt[path] = debtForPath(desktopRoot, path, 'rootDebt');
   }
   const appShellDebtPaths = new Set([...appShellFiles, ...closureFiles]);
   const rootDebtClosureFiles = collectRootDependencyClosure(
@@ -3111,7 +3140,7 @@ export function generateArchitectureConfig(desktopRoot, config) {
     legacyPlatformImports: imports.platform,
     controllerOwners: controllerOwnersOf(config),
     legacyAppShell: {
-      files: Object.fromEntries(appShellFiles.map((path) => [path, debtForPath(desktopRoot, path)])),
+      files: Object.fromEntries(appShellFiles.map((path) => [path, debtForPath(desktopRoot, path, 'legacyAppShell')])),
       closure: Object.fromEntries(closureFiles.map((path) => [path, capabilityDebtForPath(desktopRoot, path)])),
     },
     rootDebt,

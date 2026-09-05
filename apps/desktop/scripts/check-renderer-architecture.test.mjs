@@ -2229,9 +2229,15 @@ describe('renderer architecture checker fixtures', () => {
         return <AlphaHost scope={defaultSessionScope} />;
       }
     `;
-    const currentDebt = debtForSource(appShellSource, appShellPath);
+    const currentDebt = {
+      ...debtForSource(appShellSource, appShellPath),
+      importDeclarations: 0,
+      importSpecifiers: 0,
+    };
     const baseDebt = {
       ...currentDebt,
+      importDeclarations: 2,
+      importSpecifiers: 2,
       dependencyPaths: {
         './legacy-alpha-owner.js': 1,
         './legacy-session-owner.js': 1,
@@ -2270,6 +2276,37 @@ describe('renderer architecture checker fixtures', () => {
       },
     );
   });
+
+  for (const [targetPath, pricing] of [
+    ['src/renderer/application/contracts/fixture-diagnostics.ts', 'free'],
+    ['src/renderer/application/sessions/fixture-service.ts', 'priced'],
+  ]) {
+    it(`${pricing === 'free' ? 'exempts' : 'prices'} AppShell import specifiers from ${targetPath}`, async () => {
+      const specifier = `./${targetPath.slice('src/renderer/'.length).replace(/\.ts$/u, '.js')}`;
+      await withDesktopFixture(
+        {
+          [TRANSITIVE_APP_SHELL_PATH]: `
+            import { reportFixture } from '${specifier}';
+            export const AppShell = reportFixture('shell');
+          `,
+          [targetPath]: `export function reportFixture(scope: string): string { return scope; }`,
+        },
+        (desktopRoot) => {
+          const currentConfig = generateArchitectureConfig(desktopRoot, transitiveAppShellSeedConfig());
+          const baseConfig = structuredClone(currentConfig);
+          Object.assign(baseConfig.legacyAppShell.files[TRANSITIVE_APP_SHELL_PATH], {
+            importDeclarations: 0,
+            importSpecifiers: 0,
+            dependencyPaths: {},
+          });
+          const priced = violationsFor(desktopRoot, currentConfig, baseConfig).some((violation) =>
+            violation.startsWith(`${TRANSITIVE_APP_SHELL_PATH}: importSpecifiers debt increased`),
+          );
+          assert.equal(priced, pricing === 'priced');
+        },
+      );
+    });
+  }
 
   it('rejects replacing legacy AppShell debt with a feature private import', async () => {
     const appShellPath = 'src/renderer/app-shell.tsx';
@@ -2827,6 +2864,29 @@ describe('validated copy catalog dependencies', () => {
           violationsFor(desktopRoot, currentConfig, baseWithoutCatalog(currentConfig)),
           [],
         );
+      },
+    );
+  });
+
+  it('does not price a catalog\'s own bare package runtime import', async () => {
+    await withDesktopFixture(
+      transitiveAppShellFiles(
+        `
+          import { FIXTURE_COPY } from './locales/fixture-copy.js';
+          export const legacySessionHelper = FIXTURE_COPY.en.notice;
+        `,
+        {
+          [CATALOG_PATH]: catalogSource(`
+            import { lookupCopy } from '@maka/core/ui-locale';
+            export const noticeFor = (code: string) => lookupCopy(FIXTURE_COPY.en, code);
+          `),
+        },
+      ),
+      (desktopRoot) => {
+        const currentConfig = generateArchitectureConfig(desktopRoot, catalogSeedConfig());
+        const baseConfig = structuredClone(currentConfig);
+        baseConfig.legacyAppShell.closure[CATALOG_PATH].dependencyPaths = {};
+        assert.deepEqual(violationsFor(desktopRoot, currentConfig, baseConfig), []);
       },
     );
   });
