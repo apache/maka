@@ -186,5 +186,16 @@ unreadable, or one that never existed here, stays unresolved.
 as an experiment baseline or target resolver behind WorkHub's coordination layer;
 it is not the final architecture or authority boundary of WorkHub.
 
+## Current implementation map
+
+| Stage | Current module |
+| --- | --- |
+| Action Intent | [`workhub-creation-intent.ts`](../packages/core/src/workhub-creation-intent.ts) |
+| Session Resolver | [`workhub-session-resolver.ts`](../packages/core/src/workhub-session-resolver.ts) |
+| Action Policy | [`workhub-route-policy.ts`](../apps/desktop/src/renderer/workhub-route-policy.ts) |
+| Action Proposal | [`workhub-coordination.ts`](../packages/runtime-host/src/protocol/workhub-coordination.ts) |
+| Action Gate | [`workhub-coordination-action-gate.ts`](../packages/runtime-host/src/server/workhub-coordination-action-gate.ts) |
+| Projection | [`workhub-coordination-port.ts`](../apps/desktop/src/renderer/workhub-coordination-port.ts) |
+
 _Avoid_: copied execution transcripts, self-routing, a second Session/WorkHub
 storage substrate, or treating model/routing output as execution authority.
