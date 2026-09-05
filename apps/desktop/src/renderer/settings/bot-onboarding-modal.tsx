@@ -256,6 +256,14 @@ function statusCopy(
   const shared = getBotSettingsCopy(locale).onboarding;
   if (starting) return shared.generating;
   if (error) return error;
+  if (snapshot?.retryHealth) {
+    const seconds = Math.max(1, Math.ceil(snapshot.retryHealth.nextRetryAfterMs / 1_000));
+    return shared.retrying(
+      snapshot.retryHealth.category,
+      snapshot.retryHealth.consecutiveFailures,
+      seconds,
+    );
+  }
   switch (snapshot?.state) {
     case 'waiting': return copy.waiting;
     case 'scanned': return copy.scanned;

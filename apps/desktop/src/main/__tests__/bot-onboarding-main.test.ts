@@ -484,6 +484,12 @@ describe('BotOnboardingService', () => {
     const afterFirst = await test.service.poll(started.sessionId);
     assert.equal(afterFirst.state, 'waiting', 'a single transient blip must not kill the session');
     assert.equal(attempts, 1);
+    assert.deepEqual(afterFirst.retryHealth, {
+      category: 'timeout',
+      consecutiveFailures: 1,
+      nextRetryAt: 13_000,
+      nextRetryAfterMs: 7_000,
+    });
 
     let last = afterFirst;
     for (let i = 0; i < 12 && last.state !== 'error'; i += 1) {
@@ -491,6 +497,86 @@ describe('BotOnboardingService', () => {
       last = await test.service.poll(started.sessionId);
     }
     assert.equal(last.state, 'error', 'repeated consecutive transient failures must go terminal');
+    assert.equal(last.retryHealth, undefined, 'terminal sessions must not advertise another retry');
+  });
+
+  it('projects only a finite redacted category and clears retry health after recovery', async () => {
+    let attempts = 0;
+    const adapter: BotOnboardingProviderAdapter = {
+      async start() { return startResult(); },
+      async poll() {
+        attempts += 1;
+        if (attempts === 1) {
+          throw new Error('HTTP 503 https://provider.example/poll?token=super-secret credential=hidden');
+        }
+        return { status: 'pending' };
+      },
+    };
+    const test = harness(adapter);
+    const started = await test.service.start({ provider: 'dingtalk' });
+    test.advance(5_000);
+    const backingOff = await test.service.poll(started.sessionId);
+    assert.deepEqual(backingOff.retryHealth, {
+      category: 'server',
+      consecutiveFailures: 1,
+      nextRetryAt: 13_000,
+      nextRetryAfterMs: 7_000,
+    });
+    assert.equal(JSON.stringify(backingOff).includes('super-secret'), false);
+    assert.equal(JSON.stringify(backingOff).includes('provider.example'), false);
+
+    test.advance(7_000);
+    const recovered = await test.service.poll(started.sessionId);
+    assert.equal(recovered.state, 'waiting');
+    assert.equal(recovered.retryHealth, undefined);
+  });
+
+  it('clears retry health on provider terminal responses and cancellation', async () => {
+    let attempts = 0;
+    const adapter: BotOnboardingProviderAdapter = {
+      async start() { return startResult(); },
+      async poll() {
+        attempts += 1;
+        if (attempts === 1) throw new Error('HTTP 429 rate limited');
+        return { status: 'denied', error: 'Provider denied authorization' };
+      },
+    };
+    const test = harness(adapter);
+    const first = await test.service.start({ provider: 'dingtalk' });
+    test.advance(5_000);
+    const backingOff = await test.service.poll(first.sessionId);
+    assert.equal(backingOff.retryHealth?.category, 'rate_limited');
+    assert.equal(test.service.cancel(first.sessionId).retryHealth, undefined);
+
+    attempts = 0;
+    const second = await test.service.start({ provider: 'dingtalk' });
+    test.advance(5_000);
+    assert.equal((await test.service.poll(second.sessionId)).retryHealth?.category, 'rate_limited');
+    test.advance(7_000);
+    const denied = await test.service.poll(second.sessionId);
+    assert.equal(denied.state, 'denied');
+    assert.equal(denied.retryHealth, undefined);
+    assert.equal((await test.service.poll(second.sessionId)).retryHealth, undefined);
+  });
+
+  it('does not project a late transient failure after session supersession', async () => {
+    const pending = deferred<never>();
+    let starts = 0;
+    const adapter: BotOnboardingProviderAdapter = {
+      async start() { starts += 1; return startResult(); },
+      async poll() { return pending.promise; },
+    };
+    const test = harness(adapter);
+    const first = await test.service.start({ provider: 'dingtalk' });
+    test.advance(5_000);
+    const stalePoll = test.service.poll(first.sessionId);
+    await test.service.start({ provider: 'dingtalk' });
+    assert.equal(starts, 2);
+    pending.reject(new Error('network token=late-super-secret'));
+    const superseded = await stalePoll;
+    assert.equal(superseded.state, 'cancelled');
+    assert.equal(superseded.retryHealth, undefined);
+    assert.equal(JSON.stringify(superseded).includes('late-super-secret'), false);
   });
 
   it('fails immediately on a fatal (non-transient) poll error', async () => {
@@ -516,6 +602,7 @@ describe('BotOnboardingService', () => {
     test.advance(1_001);
     const expired = await test.service.poll(started.sessionId);
     assert.equal(expired.state, 'expired');
+    assert.equal(expired.retryHealth, undefined);
     assert.equal(polls, 0);
   });
 
