@@ -51,7 +51,6 @@ import type { BackendSendInput } from '@maka/core/backend-types';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { UserQuestionResponse } from '@maka/core/user-question';
-import { DEFAULT_TOOL_MODE, isToolMode, type ToolMode } from '@maka/core/tool-mode';
 import {
   resolveEffectiveOrchestration,
   type EffectiveOrchestration,
@@ -72,9 +71,6 @@ import type {
   ModelFailureKind,
   ToolCallPart,
 } from './model-protocol.js';
-import Ajv, { type AnySchema, type ErrorObject, type ValidateFunction } from 'ajv';
-import Ajv2019 from 'ajv/dist/2019.js';
-import Ajv2020 from 'ajv/dist/2020.js';
 import { z } from 'zod';
 
 import { AsyncEventQueue } from './async-queue.js';
@@ -178,6 +174,11 @@ import {
   isProviderSandboxBoundaryAttempt,
   repairMakaToolCall,
 } from './ai-sdk-tool-repair.js';
+import {
+  buildNestableToolSnapshot,
+  buildToolSchemaPlan,
+  validateCodeModeToolInput,
+} from './tool-schema-builder.js';
 
 export interface AiSdkSessionState {
   contextProviderDroppingReported: boolean;
@@ -409,166 +410,6 @@ function mergeTextProviderOptions(
     merged.openai = openai as NonNullable<ModelMessage['providerOptions']>[string];
   }
   return merged;
-}
-
-function projectToolModePlan(
-  plan: ToolAvailabilityPlan,
-  toolMode: ToolMode,
-  execTool: MakaTool,
-): ToolAvailabilityPlan {
-  if (toolMode === 'direct') return plan;
-  const withExec = (names: readonly string[]): string[] =>
-    [...new Set([...names, execTool.name])].sort((a, b) => a.localeCompare(b));
-  const invalid = plan.providerTools.filter((tool) => tool.name === INVALID_TOOL_NAME);
-  const visible = [
-    ...plan.providerTools.filter((tool) => tool.name !== INVALID_TOOL_NAME),
-    execTool,
-  ].sort((a, b) => a.name.localeCompare(b.name));
-  return {
-    ...plan,
-    providerTools: [...visible, ...invalid],
-    activeTools: withExec(plan.activeTools),
-    ...(plan.projectActiveTools
-      ? {
-          projectActiveTools: (options) => ({
-            activeTools: withExec(plan.projectActiveTools?.(options).activeTools ?? []),
-          }),
-        }
-      : {}),
-    currentRepairToolNames: () => withExec(plan.currentRepairToolNames()),
-    diagnostics: (activeTools, visibleToolSchemaChars) => {
-      const baseActive = activeTools.filter((name) => name !== execTool.name);
-      const baseChars = toolSchemaCharsForDiagnostics(plan.providerTools, baseActive);
-      const diagnostic = plan.diagnostics(baseActive, baseChars);
-      if (!diagnostic) return undefined;
-      const execSchemaChars = Math.max(0, visibleToolSchemaChars - baseChars);
-      return {
-        ...diagnostic,
-        visibleToolCount: (diagnostic.visibleToolCount ?? baseActive.length) + 1,
-        fullToolCount:
-          (diagnostic.fullToolCount ?? baseActive.length + (diagnostic.hiddenToolCount ?? 0)) + 1,
-        visibleToolSchemaChars,
-        fullToolSchemaChars:
-          (diagnostic.fullToolSchemaChars ??
-            baseChars + (diagnostic.toolSchemaCharReduction ?? 0)) + execSchemaChars,
-      };
-    },
-  };
-}
-
-function nestableToolSnapshot(
-  providerTools: readonly MakaTool[],
-  activeToolNames: readonly string[],
-): ReadonlyMap<string, MakaTool> {
-  const active = new Set(activeToolNames);
-  return new Map(
-    providerTools
-      .filter(
-        (tool) =>
-          active.has(tool.name) &&
-          tool.name !== INVALID_TOOL_NAME &&
-          tool.name !== 'exec' &&
-          tool.providerTool === undefined &&
-          tool.nesting !== 'direct_only',
-      )
-      .map((tool) => [tool.name, tool] as const),
-  );
-}
-
-const codeModeJsonSchemaOptions = {
-  allErrors: true,
-  strict: false,
-  validateFormats: false,
-} as const;
-const codeModeDraft7Validator = new Ajv(codeModeJsonSchemaOptions);
-const codeModeDraft2019Validator = new Ajv2019(codeModeJsonSchemaOptions);
-const codeModeDraft2020Validator = new Ajv2020(codeModeJsonSchemaOptions);
-const codeModeCompiledSchemas = new WeakMap<object, ValidateFunction>();
-
-async function validateCodeModeToolInput(tool: MakaTool, input: unknown): Promise<unknown> {
-  const parameters = tool.parameters as {
-    safeParseAsync?: (
-      value: unknown,
-    ) => Promise<{ success: true; data: unknown } | { success: false; error: unknown }>;
-    safeParse?: (
-      value: unknown,
-    ) => { success: true; data: unknown } | { success: false; error: unknown };
-    validate?: (
-      value: unknown,
-    ) =>
-      | { success: true; value: unknown }
-      | { success: false; error: unknown }
-      | Promise<{ success: true; value: unknown } | { success: false; error: unknown }>;
-    jsonSchema?: unknown;
-  };
-  const parserResult = parameters.safeParseAsync
-    ? await parameters.safeParseAsync(input)
-    : parameters.safeParse?.(input);
-  if (parserResult) {
-    if (parserResult.success) return parserResult.data;
-    throw invalidCodeModeToolArguments(tool.name, parserResult.error);
-  }
-
-  if (parameters.validate) {
-    const validationResult = await parameters.validate(input);
-    if (validationResult.success) return validationResult.value;
-    throw invalidCodeModeToolArguments(tool.name, validationResult.error);
-  }
-
-  const schema = await parameters.jsonSchema;
-  const validator = compileCodeModeJsonSchema(schema ?? tool.parameters);
-  if (!validator || validator(input)) return input;
-  throw invalidCodeModeToolArguments(tool.name, validator.errors);
-}
-
-function compileCodeModeJsonSchema(schema: unknown): ValidateFunction | undefined {
-  if (typeof schema === 'boolean') return codeModeDraft2020Validator.compile(schema);
-  if (typeof schema !== 'object' || schema === null || Array.isArray(schema)) return undefined;
-  const cached = codeModeCompiledSchemas.get(schema);
-  if (cached) return cached;
-  const declaredDialect = (schema as { readonly $schema?: unknown }).$schema;
-  const dialect = typeof declaredDialect === 'string' ? declaredDialect : '';
-  const validator = dialect.includes('draft-07')
-    ? codeModeDraft7Validator
-    : dialect.includes('2019-09')
-      ? codeModeDraft2019Validator
-      : codeModeDraft2020Validator;
-  const schemaForCompile = dialect.startsWith('https://json-schema.org/draft-07/schema')
-    ? { ...schema, $schema: dialect.replace('https://', 'http://') }
-    : schema;
-  const compiled = validator.compile(schemaForCompile as AnySchema);
-  codeModeCompiledSchemas.set(schema, compiled);
-  return compiled;
-}
-
-function invalidCodeModeToolArguments(toolName: string, error: unknown): Error {
-  return new Error(`Invalid arguments for tool "${toolName}": ${schemaErrorSummary(error)}`);
-}
-
-function schemaErrorSummary(error: unknown): string {
-  if (error && typeof error === 'object' && Array.isArray((error as { issues?: unknown }).issues)) {
-    const issues = (error as { issues: Array<{ path?: unknown; message?: unknown }> }).issues;
-    return issues
-      .slice(0, 5)
-      .map((issue) => {
-        const path = Array.isArray(issue.path) ? issue.path.join('.') : '';
-        const message = typeof issue.message === 'string' ? issue.message : 'invalid value';
-        return path ? `${path}: ${message}` : message;
-      })
-      .join('; ')
-      .slice(0, 1000);
-  }
-  if (Array.isArray(error)) {
-    return (error as ErrorObject[])
-      .slice(0, 5)
-      .map((issue) => {
-        const path = issue.instancePath || issue.schemaPath;
-        return `${path || 'input'} ${issue.message ?? 'is invalid'}`;
-      })
-      .join('; ')
-      .slice(0, 1000);
-  }
-  return 'input does not match the declared schema';
 }
 
 function joinPromptFragments(fragments: readonly (string | undefined)[]): string | undefined {
@@ -1084,21 +925,20 @@ export class AiSdkTurn {
               'agent_output',
             ])
           : new Set<string>();
-    const requestedToolMode: unknown =
-      input.toolMode === undefined ? DEFAULT_TOOL_MODE : input.toolMode;
-    if (!isToolMode(requestedToolMode)) {
-      throw new Error(`Invalid tool mode: ${String(requestedToolMode)}`);
-    }
-    const toolMode = requestedToolMode;
-    if (toolMode === 'code_mode' && this.deps.backend.tools.some((tool) => tool.name === 'exec')) {
-      throw new Error('Tool name "exec" is reserved for Code Mode.');
-    }
-    const plan = projectToolModePlan(
-      this.deps.toolAvailabilityRuntime.prepare(this.activeTools, requiredOrchestrationTools),
+    const {
       toolMode,
+      availability: plan,
+      providerTools,
+      modelTools,
+    } = buildToolSchemaPlan({
+      boundTools: this.deps.backend.tools,
+      availability: this.deps.toolAvailabilityRuntime.prepare(
+        this.activeTools,
+        requiredOrchestrationTools,
+      ),
+      requestedToolMode: input.toolMode,
       codeModeExecTool,
-    );
-    const providerTools = plan.providerTools;
+    });
     let activeToolResultPruneDiagnosticPatch: ActiveToolResultPruneDiagnosticPatch = {};
     let midTurnCompactDiagnosticPatch: Partial<ContextBudgetDiagnostic> | undefined;
     // Tool names the repair path matches a mis-cased call against — follows the
@@ -1113,17 +953,6 @@ export class AiSdkTurn {
     const currentRepairToolNames = () => boundaryAwareToolNames(plan.currentRepairToolNames());
     if (plan.gating) {
       toolRuntime.setGating(plan.gating);
-    }
-
-    const modelTools: ModelToolSet = {};
-    for (const t of providerTools) {
-      modelTools[t.name] = t.providerTool
-        ? { kind: 'provider', providerTool: t.providerTool }
-        : {
-            kind: 'function',
-            description: t.description,
-            inputSchema: t.parameters,
-          };
     }
 
     // Resolve the stable Provider envelope before automatic Compaction freezes
@@ -1540,7 +1369,7 @@ export class AiSdkTurn {
                 : activeToolsForRequest;
             this.codeModeTools =
               toolMode === 'code_mode'
-                ? nestableToolSnapshot(providerTools, codeModeActiveTools)
+                ? buildNestableToolSnapshot(providerTools, codeModeActiveTools)
                 : undefined;
             const requestWatchdog = watchdogState.current;
             // Read here, beside the messages it describes: `attemptMessages` is
