@@ -1049,6 +1049,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
       return;
     }
 
+    let notedTerminal = false;
     try {
       if (run.isStopped()) return;
       if (!begin.backend.compactHistory) {
@@ -1093,6 +1094,18 @@ export class RuntimeKernel implements RuntimeKernelLike {
       if (run.isStopped()) return;
       await run.recordStoredSessionEvent(tokenUsageEvent);
       if (run.isStopped()) return;
+      yield tokenUsageEvent;
+      if (run.isStopped()) return;
+      await run.acceptMappedEvent(
+        completeEvent,
+        mapSessionEventToRuntimeEvent(completeEvent, eventContext),
+        { requireTerminalWrite: true },
+      );
+      // The terminal RuntimeEvent is now durably committed, so this compaction
+      // Turn is authoritatively `completed` — a later stop cannot turn it into a
+      // cancelled Turn. Only now is the durable note written: a stop that wins
+      // before the terminal commit returns above, leaving no note, so an
+      // interrupted compaction leaves no durable row. `unchanged` writes nothing.
       if (result.outcome.kind === 'failed') {
         const note: SystemNoteMessage = {
           type: 'system_note',
@@ -1101,19 +1114,42 @@ export class RuntimeKernel implements RuntimeKernelLike {
           ts: this.deps.now(),
           kind: 'context_compaction_failed_open',
         };
-        await this.deps.store.appendMessage(sessionId, note).catch(() => {});
+        await this.appendDurableCompactionNote(sessionId, note);
+        notedTerminal = true;
+      } else if (result.outcome.kind === 'compacted') {
+        // Explicit compaction runs on its own turn and never enters the
+        // send-flow note block, so write the durable "compacted" note here. The
+        // next user send passively replays this standalone checkpoint, which
+        // `shouldAppendContextCompactedNote` now suppresses, so there is no
+        // duplicate.
+        const note: SystemNoteMessage = {
+          type: 'system_note',
+          id: this.deps.newId(),
+          turnId: run.turnId,
+          ts: this.deps.now(),
+          kind: 'context_compacted',
+        };
+        await this.appendDurableCompactionNote(sessionId, note);
+        notedTerminal = true;
       }
-      yield tokenUsageEvent;
-      if (run.isStopped()) return;
-      await run.acceptMappedEvent(
-        completeEvent,
-        mapSessionEventToRuntimeEvent(completeEvent, eventContext),
-        { requireTerminalWrite: true },
-      );
-      if (run.isStopped()) return;
       yield completeEvent;
     } catch (error) {
       await run.recordFailure(error);
+      // A thrown compaction still owns a durable fail-open row — but not when the
+      // throw is a stop / cancellation, which must leave no durable row (matches
+      // the terminal-committed guard above). recordFailure writes the failed
+      // turn_state either way; the internal compaction Turn has no user/timeline
+      // for a failure banner, so append the note unless already written or stopped.
+      if (!notedTerminal && !run.isStopped()) {
+        const note: SystemNoteMessage = {
+          type: 'system_note',
+          id: this.deps.newId(),
+          turnId: run.turnId,
+          ts: this.deps.now(),
+          kind: 'context_compaction_failed_open',
+        };
+        await this.appendDurableCompactionNote(sessionId, note);
+      }
       throw error;
     } finally {
       const failures = new FailureCollector();
@@ -1121,6 +1157,33 @@ export class RuntimeKernel implements RuntimeKernelLike {
       await failures.capture(() => owners.releaseMessage());
       failures.throwIfAny(`Runtime compaction cleanup failed for ${run.runId}`);
     }
+  }
+
+  /**
+   * Append a terminal context-compaction transcript note durably.
+   *
+   * The terminal RuntimeEvent (the canonical outcome) is already committed by
+   * the time this runs, so a note-write failure must NOT fail the successful
+   * compaction. But a single silent attempt could leave a completed compaction
+   * with no transcript row and no later repair — terminal transcript reads carry
+   * no live overlay and passive checkpoint replay suppresses the note. So retry
+   * transient store failures here, reusing the SAME note (stable id) so a
+   * recovered attempt can never duplicate the row. Returns whether it landed.
+   */
+  private async appendDurableCompactionNote(
+    sessionId: string,
+    note: SystemNoteMessage,
+  ): Promise<boolean> {
+    const MAX_ATTEMPTS = 3;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        await this.deps.store.appendMessage(sessionId, note);
+        return true;
+      } catch {
+        if (attempt === MAX_ATTEMPTS) return false;
+      }
+    }
+    return false;
   }
 
   private async requireContextCompactionBackend(

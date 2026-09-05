@@ -455,11 +455,56 @@ export interface TurnViewModel {
 export function overlayLiveTurn(
   turns: readonly TurnViewModel[],
   liveTurn: LiveTurnProjection | undefined,
+  locale: UiLocale,
 ): readonly TurnViewModel[] {
   if (!liveTurn) return turns;
   const targetIndex = turns.findIndex(
     (turn) => turn.turnId === liveTurn.turnId,
   );
+  // A running host-owned context-compaction Turn emits no assistant content.
+  // The Runtime persists a `turn_state:running` row for it, so a settled turn
+  // with this turnId usually already exists (empty). Surface a single
+  // "compacting" system row: merge the note into that existing turn, or
+  // synthesize one if it has not settled yet. The note is deduped by id so
+  // reprojection stays idempotent, and it disappears when the Turn settles
+  // (the live projection drops to undefined and the durable `context_compacted`
+  // note takes over).
+  if (liveTurn.rootExecutionKind === "context_compact" && liveTurn.steps.length === 0) {
+    const noteId = `context-compaction:${liveTurn.turnId}`;
+    if (targetIndex >= 0) {
+      const existing = turns[targetIndex]!;
+      if (existing.notes.some((note) => note.id === noteId)) return turns;
+      const note: ChatItem = {
+        id: noteId,
+        role: "system",
+        text: getConversationCopy(locale).messages.systemNotes.contextCompacting,
+        ts: existing.startedAt,
+      };
+      return turns.map((turn, index) =>
+        index === targetIndex ? { ...turn, notes: [...turn.notes, note] } : turn,
+      );
+    }
+    const startedAt = liveTurn.startedAt ?? 0;
+    return [
+      ...turns,
+      {
+        turnId: liveTurn.turnId,
+        status: "running" as const,
+        partialOutputRetained: false,
+        tools: [],
+        notes: [
+          {
+            id: noteId,
+            role: "system",
+            text: getConversationCopy(locale).messages.systemNotes.contextCompacting,
+            ts: startedAt,
+          },
+        ],
+        timeline: [],
+        startedAt,
+      } satisfies TurnViewModel,
+    ];
+  }
   if (
     targetIndex >= 0
     && liveTurn.steps.length === 0

@@ -102,7 +102,15 @@ export async function readCanonicalTurnSnapshot(
   // No terminal event means the run is still open. Whether it is parked is the
   // pending-interaction store's answer, not something the run restates.
   const parked = await hasPendingInteraction(stores, sessionId, runId);
-  return { sessionId, turnId, runId, status: parked ? 'waiting_for_user' : 'running' };
+  return {
+    sessionId,
+    turnId,
+    runId,
+    status: parked ? 'waiting_for_user' : 'running',
+    ...(run.opening.root.kind === 'context_compact'
+      ? { rootExecutionKind: 'context_compact' as const }
+      : {}),
+  };
 }
 
 /** Is this run waiting on a request the user has not answered? */

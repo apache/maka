@@ -434,8 +434,20 @@ export function ChatView(props: {
   // being in-flight are separate signals. Wait indicators alone still mark
   // streaming, but delayed flags can lag one frame past complete; terminal
   // evidence must outrank them so copy/regenerate stay actionable.
-  const liveInFlight = !!(props.liveTurn && !props.liveTurn.terminal);
-  const streamingActive = liveInFlight || (!props.liveTurn?.terminal && !!props.runningStatus);
+  // A live context-compaction Turn is not an assistant stream: it renders one
+  // system row (see overlayLiveTurn), not a streaming tail. Keeping it out of
+  // liveInFlight/streamingActive stops chat-turn from adding an empty assistant
+  // article, the generic "pondering" spinner, and a footer placeholder on top.
+  const isCompactionLive = props.liveTurn?.rootExecutionKind === 'context_compact';
+  // overlayLiveTurn renders one "compacting" system row for a live compaction
+  // Turn that has no assistant steps — including in a session with no settled
+  // chat messages yet. The empty-state decision (below) keys off `chat.length`,
+  // which does not see that overlaid row, so it must treat this as visible
+  // content or the row is hidden behind the empty hero.
+  const hasLiveCompactionRow = isCompactionLive && (props.liveTurn?.steps.length ?? 0) === 0;
+  const liveInFlight = !!(props.liveTurn && !props.liveTurn.terminal) && !isCompactionLive;
+  const streamingActive =
+    liveInFlight || (!props.liveTurn?.terminal && !!props.runningStatus && !isCompactionLive);
   const tailTurnId = liveInFlight
     ? props.liveTurn!.turnId
     : (streamingActive ? turns[turns.length - 1]?.turnId : undefined);
@@ -695,7 +707,8 @@ export function ChatView(props: {
     chat.length === 0
     && transientMessages.length === 0
     && !streamingActive
-    && !hasVisibleConversationItem;
+    && !hasVisibleConversationItem
+    && !hasLiveCompactionRow;
   const emptyContent = props.messageLoading
     ? (
         <div className="maka-chat-message-loading">

@@ -188,6 +188,14 @@ export type TurnProviderRetry =
 export type LiveTurnSnapshot = TurnSnapshotBase & {
   status: Exclude<TurnRunStatus, 'completed' | 'failed' | 'cancelled'>;
   providerRetry?: TurnProviderRetry;
+  /**
+   * Set when this live Turn is a host-owned explicit context-compaction run, so
+   * the renderer can show a "compacting" transcript row while it is in flight.
+   * Sourced from `AgentRunHeader.rootExecutionKind`; a `context_compact` Turn
+   * emits no assistant text, and this survives a Desktop reconnect because the
+   * Host re-projects the live snapshot.
+   */
+  rootExecutionKind?: 'context_compact';
 };
 
 export type TurnSnapshot =
@@ -653,6 +661,13 @@ function requirePositiveCount(value: unknown, label: string): number {
   return count;
 }
 
+function requireContextCompactRootExecutionKind(value: unknown): 'context_compact' {
+  if (value !== 'context_compact') {
+    throw invalidProtocolFrame('Invalid Turn rootExecutionKind');
+  }
+  return value;
+}
+
 export function decodeTurnSnapshot(value: unknown): TurnSnapshot {
   const record = requireRecord(value, 'Turn snapshot');
   const base = {
@@ -725,13 +740,16 @@ export function decodeTurnSnapshot(value: unknown): TurnSnapshot {
     record,
     'non-terminal Turn snapshot',
     ['sessionId', 'turnId', 'runId', 'status'],
-    ['providerRetry'],
+    ['providerRetry', 'rootExecutionKind'],
   );
   return {
     ...base,
     status,
     ...(record.providerRetry !== undefined
       ? { providerRetry: decodeTurnProviderRetry(record.providerRetry) }
+      : {}),
+    ...(record.rootExecutionKind !== undefined
+      ? { rootExecutionKind: requireContextCompactRootExecutionKind(record.rootExecutionKind) }
       : {}),
   };
 }

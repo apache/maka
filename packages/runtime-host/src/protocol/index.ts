@@ -101,7 +101,10 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 112 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 113 as const;
+// 113: Live Turn snapshots carry an optional `rootExecutionKind:'context_compact'`
+// so a running context-compaction Turn can render a transcript row. Epoch-112
+// peers reject the added optional field on the strict live snapshot shape.
 // 112: Owners can query the Host execution environment through an extensible,
 // bounded resource-envelope contract. Older Hosts do not implement the query.
 // 111: Client Capability tool schemas may use draft-07 tuple additionalItems.

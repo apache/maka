@@ -89,6 +89,10 @@ export function createTranscriptProjection(): TranscriptProjection {
   // Tracked separately from `lastMessages` because a refresh can leave the
   // settled projection untouched, which must not force the live overlay to run.
   let liveTurnsFrom: readonly TurnViewModel[] | undefined;
+  // The locale the overlay last ran with. The live "compacting" row is localized
+  // inside overlayLiveTurn, so a locale switch that leaves the settled turns
+  // reference unchanged (identity reconciliation) must still re-run the overlay.
+  let lastOverlayLocale: UiLocale | undefined;
   let overlayEntries: ReadonlyMap<string, ShellRunOverlayEntry> = new Map();
   let lastTurns: readonly TurnViewModel[] = NO_TURNS;
 
@@ -101,6 +105,7 @@ export function createTranscriptProjection(): TranscriptProjection {
     settledTurns = NO_TURNS;
     liveTurns = NO_TURNS;
     liveTurnsFrom = undefined;
+    lastOverlayLocale = undefined;
     overlayEntries = new Map();
     lastTurns = NO_TURNS;
   }
@@ -137,10 +142,15 @@ export function createTranscriptProjection(): TranscriptProjection {
       lastMessages = input.messages;
       lastLocale = input.locale;
     }
-    if (liveTurnsFrom !== settledTurns || input.liveTurn !== lastLiveTurn) {
-      liveTurns = overlayLiveTurn(settledTurns, input.liveTurn);
+    if (
+      liveTurnsFrom !== settledTurns ||
+      input.liveTurn !== lastLiveTurn ||
+      input.locale !== lastOverlayLocale
+    ) {
+      liveTurns = overlayLiveTurn(settledTurns, input.liveTurn, input.locale);
       liveTurnsFrom = settledTurns;
       lastLiveTurn = input.liveTurn;
+      lastOverlayLocale = input.locale;
     }
     if (updatesMoved) {
       overlayEntries = foldShellRunUpdates(updates);

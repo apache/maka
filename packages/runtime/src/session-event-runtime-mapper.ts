@@ -135,6 +135,9 @@ export function mapSessionEventToRuntimeEvent(
   if (isHostProjectionSessionEvent(event)) {
     // These are Host/kernel projection facts, not backend events. The live
     // ingress drops them, so reaching this line bypassed that authority boundary.
+    // `context_compaction_started` is one of these: synthesized by the Runtime
+    // Host session projector for the renderer's live "compacting" row, never
+    // produced by a backend or the kernel.
     throw new Error(`${event.type} is not a backend event`);
   }
   if (isLegacyPermissionSessionEvent(event)) {
@@ -154,6 +157,7 @@ function isHostProjectionSessionEvent(event: SessionEvent): event is Extract<
     type:
       | 'queue_update'
       | 'message_admission'
+      | 'context_compaction_started'
       | 'client_capability_request'
       | 'client_capability_decision_ack';
   }
@@ -161,6 +165,7 @@ function isHostProjectionSessionEvent(event: SessionEvent): event is Extract<
   return (
     event.type === 'queue_update' ||
     event.type === 'message_admission' ||
+    event.type === 'context_compaction_started' ||
     event.type === 'client_capability_request' ||
     event.type === 'client_capability_decision_ack'
   );

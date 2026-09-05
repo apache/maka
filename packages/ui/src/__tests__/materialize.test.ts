@@ -101,7 +101,7 @@ describe("steering timeline", () => {
       content: { text: "inserted instruction" },
     });
 
-    const [overlaid] = overlayLiveTurn(settled, live);
+    const [overlaid] = overlayLiveTurn(settled, live, "en");
     assert.deepEqual(timelineText(overlaid), ["text:before", "user:inserted instruction"]);
 
     const persisted = materializeTurns([
@@ -109,7 +109,7 @@ describe("steering timeline", () => {
       beforeAssistant,
       { type: "user", id: "steer-1", turnId: "t1", ts: 2, text: "inserted instruction" },
     ], "en");
-    const [deduplicated] = overlayLiveTurn(persisted, live);
+    const [deduplicated] = overlayLiveTurn(persisted, live, "en");
     assert.deepEqual(timelineText(deduplicated), ["text:before", "user:inserted instruction"]);
   });
 
@@ -134,7 +134,7 @@ describe("steering timeline", () => {
       text: "before",
     });
 
-    const [overlaid] = overlayLiveTurn(persisted, live);
+    const [overlaid] = overlayLiveTurn(persisted, live, "en");
 
     assert.deepEqual(timelineText(overlaid), ["text:before", "user:inserted instruction"]);
   });
@@ -180,7 +180,7 @@ describe("steering timeline", () => {
       text: "after",
     });
 
-    const [overlaid] = overlayLiveTurn(persisted, live);
+    const [overlaid] = overlayLiveTurn(persisted, live, "en");
     assert.deepEqual(timelineText(overlaid), ["tools:", "user:steer", "text:after"]);
     assert.deepEqual(
       overlaid?.timeline.flatMap((item) =>
@@ -367,7 +367,7 @@ describe("flat timeline under tool projection (#1307 P1 regression)", () => {
           ],
         },
       ],
-    });
+    }, "en");
     const liveTurn = turns.find((turn) => turn.turnId === "t2");
     assert.deepEqual(
       liveTurn?.timeline.map((item: TurnTimelineItem) => item.kind),
@@ -378,7 +378,7 @@ describe("flat timeline under tool projection (#1307 P1 regression)", () => {
 
 describe("live content over persisted partial rows", () => {
   test("does not create an empty renderer turn for a waiting send", () => {
-    assert.deepEqual(overlayLiveTurn([], armLiveTurn("t1")), []);
+    assert.deepEqual(overlayLiveTurn([], armLiveTurn("t1"), "en"), []);
   });
 
   test("replaces persisted thinking with its live projection instead of rendering it twice", () => {
@@ -418,7 +418,7 @@ describe("live content over persisted partial rows", () => {
           tools: [],
         },
       ],
-    });
+    }, "en");
     const thinking = turns[0]?.timeline.filter(
       (item) => item.kind === "thinking",
     );
@@ -525,7 +525,7 @@ describe("live tool status over persisted", () => {
           ],
         },
       ],
-    });
+    }, "en");
     const tools = turns
       .find((turn) => turn.turnId === "t1")
       ?.timeline.find((item: TurnTimelineItem) => item.kind === "tools");
@@ -581,7 +581,7 @@ describe("live tool status over persisted", () => {
           ],
         },
       ],
-    });
+    }, "en");
     const tools = turns
       .find((turn) => turn.turnId === "t1")
       ?.timeline.find((item: TurnTimelineItem) => item.kind === "tools");
@@ -629,7 +629,7 @@ describe("live tool status over persisted", () => {
       args: undefined,
       ts: 5,
     });
-    const turns = overlayLiveTurn(settled, live);
+    const turns = overlayLiveTurn(settled, live, "en");
 
     const toolGroup = turns
       .find((turn) => turn.turnId === "t1")
@@ -702,7 +702,7 @@ describe("live tool status over persisted", () => {
       reason: "user_stop",
       ts: 6,
     });
-    const tools = overlayLiveTurn(settled, aborted!)
+    const tools = overlayLiveTurn(settled, aborted!, "en")
       .find((turn) => turn.turnId === "t1")
       ?.timeline.find((item: TurnTimelineItem) => item.kind === "tools");
     assert.equal(
