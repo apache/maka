@@ -186,7 +186,14 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
         pinned = distance <= PIN_THRESHOLD_PX;
         ownAnchoring();
         publish();
-        for (const listener of [...readerListeners]) listener();
+        // Only a stable-geometry scroll is a clean reader signal. A geometry
+        // change that reaches here is content settling under the pin, not the
+        // reader asking for earlier history — firing the listeners on it would
+        // request history while still following the tail (a short transcript
+        // sits inside the "near the start" band at its own tail).
+        if (!moved) {
+          for (const listener of [...readerListeners]) listener();
+        }
       };
       lastScrollHeight = target.scrollHeight;
       lastClientHeight = target.clientHeight;

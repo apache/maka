@@ -312,6 +312,29 @@ test('only the reader\'s own movement reaches a reader-scroll listener', () => {
   });
 });
 
+test('a geometry-changing event under the pin does not reach a reader-scroll listener', () => {
+  withObservers(() => {
+    const root = fakeRoot();
+    const authority = createTranscriptScrollAuthority();
+    let heard = 0;
+    authority.subscribeToReaderScroll(() => {
+      heard += 1;
+    });
+    authority.attach(root as unknown as HTMLElement);
+
+    // Content settles under the pin: the offset is off the last write and the
+    // geometry changed in the same event, but it tracks the tail. This must not
+    // read as the reader asking for earlier history — a short transcript sits
+    // inside the "near the start" band at its own tail, so firing here would
+    // load history while still following.
+    root.grow(300);
+    root.scrollTop = 2_700;
+    root.emitScroll();
+    assert.equal(heard, 0);
+    assert.equal(authority.getSnapshot().pinned, true);
+  });
+});
+
 test('the pin owns overflow anchoring, off while pinned and back on release', () => {
   withObservers(() => {
     const root = fakeRoot();
