@@ -71,7 +71,8 @@ policy 的 SHA-256，再叠加以下 Windows 控制：
 - 通过 `PROC_THREAD_ATTRIBUTE_JOB_LIST` 在创建时原子附加、close 时杀整棵树的 Job Object；
 - 禁止 handle inheritance；
 - 只给编译后的 read/write root 添加 AppContainer ACE，并使用持久 recovery ledger；
-- ACL 修改前递归拒绝 reparse point；
+- ACL 修改前默认递归拒绝 reparse point；W1 filesystem worker 可以为一个只读 Glob root
+  显式启用不跟随分解，但 root 自身仍严格拒绝 reparse，嵌套 reparse entry 不获得 grant；
 - 从规范化 command 构造封闭、排序后的环境；
 - 只允许 SYSTEM 和当前用户的本地命名管道，以及有长度上限的 frame。
 
@@ -169,7 +170,8 @@ Maka 外已失陷的同用户进程。sandboxed code 从第一条指令开始按
 **已强制（未标注者由 #2961 合并强制）：**
 
 - 默认拒绝文件系统，读/写 grant 分离（§6.1）；
-- ACL 修改前拒绝 reparse point 与多硬链接对象（§5/§6.1）；
+- ACL 修改前拒绝 reparse point 与多硬链接对象（§5/§6.1）；唯一例外是 W1 Glob 可为一个
+  只读 root 显式启用分解，绕开嵌套 reparse entry，但不会授权或遍历它们；
 - 每次启动使用 request-derived 独立 AppContainer SID + 版本化 ledger + startup reconcile（§6.1/§7.1）；
 - 不授予网络 capability 的 AppContainer token（§6.2）；
 - 创建时原子附加、close 时杀整棵树的 kill-on-close Job（§6.3）；
@@ -226,7 +228,7 @@ sequenceDiagram
   M-->>H: native path + one-shot manifest
   H->>B: --broker-local manifest
   B->>B: delete manifest; bind PID, nonce, launch digest
-  B->>B: recover ledger; reject reparse tree; grant SID ACE
+  B->>B: recover ledger; reject or partition reparse tree; grant SID ACE
   B->>J: create kill-on-close Job
   B->>C: create AppContainer process with atomic Job attribute
   C-->>B: bounded exit result
@@ -237,8 +239,12 @@ sequenceDiagram
 ### 7.1 Setup 与持久状态
 
 首个实现不需要 elevated setup。Windows 为每次 launch 创建 request-derived Maka AppContainer profile，打包
-native binary 只给当前 launch 允许的 root 授予其独立 SID。修改前递归拒绝 `FILE_ATTRIBUTE_REPARSE_POINT`，用 `create_new` 和
-`sync_all` 持久化版本化 ledger，并在接收新请求前 reconcile 全部遗留 ledger。正常结束先移除 SID ACE，再
+native binary 只给当前 launch 允许的 root 授予其独立 SID。修改前默认递归拒绝
+`FILE_ATTRIBUTE_REPARSE_POINT`。只有只读 W1 Glob 生成的 manifest 可以把它唯一的递归 root 标记为
+不跟随：Broker 对含嵌套 reparse entry 的目录使用 exact grant，对干净子目录保留 recursive grant，
+并且不给 reparse entry 或其 target 授权。被标记的 root 自身以及任何多硬链接文件仍然 fail closed。
+该分解在超过 4,096 个物理授权、100,000 个文件系统条目或根目录以下 256 层嵌套目录时 fail closed。
+随后用 `create_new` 和 `sync_all` 持久化版本化 ledger，并在接收新请求前 reconcile 全部遗留 ledger。正常结束先移除 SID ACE，再
 删除 ledger。全局 kernel mutex 只覆盖 ledger/ACL 修改；每个 launch 在 child settlement 完成前持有独立的
 request-specific kernel lease，因此 recovery 会跳过仍在使用的 ledger，同时不同 launch 仍可并发执行。
 
@@ -330,7 +336,7 @@ Windows sandbox job 必须运行真实 child-process 正反测试：
 
 | 类别 | 打包证据 |
 | --- | --- |
-| 文件别名 | outside 拒绝，加递归 junction 与多硬链接准入拒绝 |
+| 文件别名 | outside 拒绝、raw 递归 junction 与多硬链接准入拒绝，以及产品 Glob 在嵌套 junction 旁成功且不跟随它 |
 | 网络通道 | 无网络 capability 时拒绝 TCP connect |
 | IPC | 拒绝宿主 named pipe，并只继承显式 handle 列表 |
 | descendant | child 创建被 fail-closed 拒绝，或已创建 descendant 仍持有 AppContainer token 与 kill-on-close Job |
