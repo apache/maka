@@ -19,12 +19,12 @@
 
 # Workspace Version Authority v1：Baseline 事实权威
 
-- 状态：authority foundation 已合并；schema 9 reader/migration、RuntimeEvents、projection reader/rebuild 继续受支持，当前没有生产 baseline writer consumer
-- 更新日期：2026-08-29
+- 状态：authority foundation 已合并；当前 schema 15 继续支持 baseline facts、root binding、successor/mutation facts 与 projection reader/rebuild，仍没有生产 baseline 或 mutation consumer
+- 更新日期：2026-09-04
 - 主要不变量：经专用 writer 提交的一个 workspace epoch，其 baseline canonical facts 与三个 SQLite projection 对外只能全可见或全不可见
 - 事实权威：immutable RuntimeEvents
 - artifact owner：后续 Gitoxide data plane；本切片不执行 Git 命令
-- 主要发布证明平台：Linux、macOS；Windows 当前仅验证 SQLite 事务与多进程路径
+- 主要发布证明平台：Linux CI 与 Windows recovery gate；macOS 当前没有独立 recovery gate
 
 ## 1. 本切片为什么存在
 
@@ -47,8 +47,10 @@ epoch opened RuntimeEvent
 可删除、可重建、每次读取都要与 canonical facts 交叉验证的 projection。若维护操作或外部损坏只删除
 projection，公开 reader 会 fail closed，直到显式 rebuild；这种损坏态不被伪装成合法的“全不可见”。
 
-本节定义的 baseline transaction 只接受 baseline；独立的 successor/mutation authority extension 不属于这个
-历史切片。它不创建 internal repository、不创建 worktree、不调用工具，也不改变 Desktop/CLI 行为。
+本节定义的 baseline transaction 只接受 baseline；后续实现的
+[`Managed Mutation Lifecycle Authority v1`](./runtime-managed-workspace-mutation-lifecycle-authority-v1.zh-CN.md)
+独立拥有 successor/mutation extension，不属于这个历史切片。两者当前都不创建 internal repository、
+不创建 worktree，也不改变 Desktop/CLI 行为。
 
 authority slice 本身只证明事实合同、SQLite 原子写入与 projection 可重建性。旧 Git-CLI-shaped
 Baseline Open composition 从未获得生产调用方，现已删除；后续生产 writer 必须由 Gitoxide data plane
@@ -57,19 +59,21 @@ policy hash 都不构成证据。
 
 ## 2. Owner、边界、失败状态与回滚
 
+下表只描述 baseline transaction 的契约。successor/mutation writer 的 mutation ledger、每个 successor 的 tool T1/outcome 证据校验、active mutation reservations 的派生，以及 `runtime_managed_mutation_reservations` projection 的重建与独立事务边界，由 [Managed Mutation Lifecycle Authority v1](./runtime-managed-workspace-mutation-lifecycle-authority-v1.zh-CN.md) 单独定义；本表的 canonical source、disposable state 与回滚行均只覆盖 baseline 部分。
+
 | 项目 | 决策 |
 |---|---|
 | 协议 owner | `@maka/core` 的 strict fact contract 与 pure scanner |
-| baseline 写入 owner | storage-internal WeakMap writer；不属于 package API，当前没有 production baseline producer；独立 successor/mutation writer 不由旧 owner 提供 |
+| 写入 owner | baseline 与 successor/mutation writer 都是 storage-internal seam，不属于 package API；本表仅约束 baseline writer，successor/mutation writer 的契约与事务边界由 mutation lifecycle authority 定义（见本节开头）；当前没有 production producer/consumer |
 | 原子性边界 | 单个 `BEGIN IMMEDIATE ... COMMIT` SQLite transaction |
 | canonical source | store-owned authority stream 中的两条 immutable RuntimeEvents |
 | disposable state | `runtime_workspace_epochs`、`runtime_workspace_versions`、`runtime_workspace_heads` |
 | 正常失败 | exact retry 返回 existing；payload/identity drift 返回 conflict |
 | 损坏失败 | malformed fact、orphan、projection mismatch、partial snapshot 污染全部 fail closed |
 | 运行时回滚 | 事务未提交时五部分全部回滚；已提交时五部分全部可读 |
-| 版本回滚 | schema 9 数据库不能由只支持 schema 8 的旧 binary 打开；降级必须使用升级前备份 |
+| 版本回滚 | 当前 schema 15 数据库不能由只支持旧 schema 的 binary 打开；降级必须使用升级前备份 |
 
-逻辑回滚可以停止调用本 writer，但必须保留 schema 9 reader/migration；不能通过删除 capability marker
+逻辑回滚可以停止调用本 writer，但必须保留 schema 7/9 及后续 reader/migration；不能通过删除 capability marker
 伪装成旧格式。
 
 ## 3. Authority stream
@@ -195,12 +199,13 @@ event，因此 caller 没有机会夹带另一条 semantic lane。该 seam 所�
 
 ## 6. Baseline writer 状态
 
-`commitWorkspaceBaselineInternal` 继续作为 schema 9 authority 的 storage-internal 测试 seam，用于证明
+`commitWorkspaceBaselineInternal` 继续作为当前 schema 15 中 root-bound baseline authority 的
+storage-internal 测试 seam，用于证明
 atomic bundle、exact retry、conflict、crash rollback 与 projection rebuild。旧 Git executable receipt →
 writer composition 已删除；后续 Gitoxide producer 必须重新建立 artifact admission，不能复用或恢复旧
 owner、receipt 或 worktree materialization path。
 
-## 7. Schema 7–8 与 projection
+## 7. Schema 7–15 与 projection
 
 Schema 7 从 schema 6 增加 workspace authority facts/projections 并写入 capability：
 
@@ -208,17 +213,20 @@ Schema 7 从 schema 6 增加 workspace authority facts/projections 并写入 cap
 runtime_workspace_version_authority @ 1
 ```
 
-三张 projection：
+三张 workspace version projection、一张 active mutation reservation projection，以及 durable root binding：
 
 | 表 | 含义 |
 |---|---|
 | `runtime_workspace_epochs` | epoch identity、source 与 materialization policy |
-| `runtime_workspace_versions` | accepted baseline commit/tree 与因果引用 |
-| `runtime_workspace_heads` | 当前 epoch head；M0 必须等于 baseline |
+| `runtime_workspace_versions` | accepted baseline 与 schema 13 起的 tool-mutation successor commit/tree 及因果引用 |
+| `runtime_workspace_heads` | 当前 epoch head；baseline 从 revision 1 开始，successor 接受后递增 |
+| `runtime_managed_mutation_reservations` | schema 14 起的 active T1 reservation；由 managed-mutation facts 重建，terminal 或 successor 接受后释放 |
 | `runtime_storage_root_binding` | singleton durable rootId；阻止单独复制/移动 `runtime.sqlite` 后被另一 storage root 静默认领 |
 
 Schema 9 增加 `runtime_storage_root_binding(singleton=1, root_id, protocol_version=1)`。当时 schema 8 仍含
-旧 Eval harness 的 event table；schema 12 已删除该表。M0 在任何
+旧 Eval harness 的 event table；schema 12 已删除该表。Schema 13 扩展 version projection 以接受
+`tool_mutation` successor，schema 14 增加 `changed_paths_json` 与 durable mutation reservation，schema 15
+只扩展 continuation projection，不改变 workspace fact 合同。Baseline writer 在任何
 workspace fact 写入前，通过 storage-internal binder 将它绑定到 authenticated root owner 的 durable
 `rootId`；已绑定数据库只接受 exact rootId。没有 binding 但已经含任何 Session、RuntimeEvent、claim 或
 workspace fact 等逻辑数据的实验数据库必须显式 adopt/清理，不能自动认领；只有除 schema/capability metadata
@@ -232,13 +240,14 @@ workspace fact 等逻辑数据的实验数据库必须显式 adopt/清理，不�
 构造 store 时缺少 capability、capability 版本未知或数据库 schema 比 binary 新，全部拒绝打开；不静默
 降级到 JSONL 或无 authority 模式。
 
-读取 epoch/version/head 时，store 先从全部 immutable RuntimeEvents 重建 canonical baseline 集合，再与
-三张 projection 做完整比较。整次 canonical scan、projection compare 与目标 lookup 必须位于同一个
+读取 epoch/version/head 或 active mutation reservation 时，store 先从全部 immutable RuntimeEvents 重建
+canonical workspace ledger，包括 baseline、所有 causal successor 与 managed mutation T1/terminal facts，再与
+四张 projection 做完整比较。整次 canonical scan、projection compare 与目标 lookup 必须位于同一个
 SQLite read transaction/snapshot；否则并发 writer 可能让读者拼接两个合法时刻并误报 corruption。
 不能只信 projection，也不能用冗余 `event_kind` 过滤 canonical rows。
 
-显式 rebuild 先在内存中严格扫描所有事实，只有 canonical ledger 完整时才在一个事务中替换 projection。
-扫描失败不会先清空旧 projection；事务插入失败也会保留旧状态。
+显式 rebuild 先在内存中严格扫描所有事实，只有 canonical ledger 完整时才在一个事务中替换 epoch、version、
+head 与 active mutation reservation projection。扫描失败不会先清空旧 projection；事务插入失败也会保留旧状态。
 
 ## 8. 幂等、并发与 crash matrix
 
@@ -248,7 +257,8 @@ SQLite read transaction/snapshot；否则并发 writer 可能让读者拼接两�
 | 两进程提交相同 baseline | 一个 created、一个 existing |
 | 两进程提交冲突 baseline | 只接受一个；另一个 conflict |
 | reader 扫描期间另一进程提交 baseline | reader 在旧 snapshot 返回 absent；下一次读取看到完整 baseline |
-| schema 6/7 两进程同时升级 | 在 migration lock 内重读版本，每个 pending migration 只执行一次 |
+| schema 10 两进程同时升级到 current | 在 migration lock 内重读版本，每个 pending migration 只执行一次 |
+| populated schema 12 升级到 current 后提交 successor | 保留 baseline，并接受 successor、递增 head revision |
 | epoch event insert 后崩溃 | facts/projections 全无 |
 | version event insert 后崩溃 | facts/projections 全无 |
 | epoch projection insert 后崩溃 | facts/projections 全无 |
@@ -260,18 +270,21 @@ SQLite read transaction/snapshot；否则并发 writer 可能让读者拼接两�
 | authority partial snapshot 出现 | fail closed，不把 mutable state 当 canonical fact |
 
 事务内五个 failpoint 已有定向 rollback 测试。真实子进程 kill harness 覆盖“事务内被杀”和“commit
-后被杀”；它在 Linux/macOS CI 承担发布证明，Windows 本地不反向宣称同等 crash durability。
+后被杀”；Linux CI 与 Windows recovery gate 都运行该 suite。macOS 当前没有独立 recovery gate，
+不能仅凭跨平台代码反向宣称同等恢复证据。
 
 ## 9. 平台能力矩阵
 
 | 能力 | Linux | macOS | Windows |
 |---|---|---|---|
 | strict fact/lane | 支持 | 支持 | 支持 |
-| SQLite bundle 原子性 | 支持 | 支持 | 支持 |
-| 多进程 exact/conflict arbitration | 支持 | 支持 | 已有定向测试 |
-| schema 6/7→8 并发升级 | 支持 | 支持 | 已有定向测试 |
-| 真实 SIGKILL crash harness | 发布门槛 | 发布门槛 | 当前不承诺 |
+| SQLite bundle 原子性 | 支持 | 实现预期；无独立 recovery gate | 支持 |
+| 多进程 exact/conflict arbitration | 支持 | 实现预期；无独立 recovery gate | 非阻塞的定时 Windows 证据 |
+| schema 10→current 并发升级 | 支持 | 实现预期；无独立 recovery gate | 非阻塞的定时 Windows 证据 |
+| 真实进程终止 crash harness | Linux CI | 当前无独立 recovery gate | Windows recovery gate |
 | Git object/worktree 语义 | 后续切片 | 后续切片 | 后续能力矩阵 |
+
+Windows 的多进程仲裁与 schema 10→current 并发升级证据来自 `windows-baseline.yml` 的定时（schedule/manual）lane，其 job 与存储步骤均为 `continue-on-error`，不阻塞 PR；阻塞式的 `windows-recovery.yml` 不运行 `sqlite-recovery-concurrency.test.js`，其 PR 路径过滤也不包含 SQLite workspace-authority 的实现与测试。workspace-authority 的阻塞式 CI 证据目前仅由 Linux `test` 检查提供。
 
 本表只描述 authority persistence，不能推导 managed worktree 已跨平台可用。
 
@@ -289,8 +302,9 @@ SQLite read transaction/snapshot；否则并发 writer 可能让读者拼接两�
 - continuation boundary 绑定 workspace version；
 - Desktop/CLI 设置、默认启用或自动恢复。
 
-本文不定义 mutation。Successor/mutation fact 必须由其独立 authority 与真实 Durable Write 的 T1/T2、
-tool outcome 引用、session retention 和 head CAS 一起冻结。
+本文的 baseline transaction 不定义 mutation。Successor/mutation fact 由
+[`Managed Mutation Lifecycle Authority v1`](./runtime-managed-workspace-mutation-lifecycle-authority-v1.zh-CN.md)
+与真实 Durable Write 的 T1/T2、tool outcome 引用、session retention 和 head CAS 一起冻结。
 
 ## 11. 后续生产接线
 
@@ -307,5 +321,5 @@ opaque invocation capability、bounded invocation → opaque repository admissio
 
 这些基础设施尚未建立 signed packaged-release trust root，也没有 Desktop/CLI/T1 消费者，因此不能据此
 恢复 managed mode。后续 production writer 必须从真实 Gitoxide artifact admission 出发，并继续复用本
-文档定义的 schema 9 RuntimeEvents 与 projection authority；接线前仍需先拍板 ignored dependencies/scratch、
+文档定义、并由 schema 13–14 扩展至 successor/mutation 的 RuntimeEvents 与 projection authority；接线前仍需先拍板 ignored dependencies/scratch、
 identity marker、symlink/LFS/submodule/case/filemode 平台政策。

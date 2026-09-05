@@ -1,7 +1,8 @@
 ---
 document_status: implementation-contract
-status: draft-stacked-foundation
+status: merged-stacked-foundation
 date: 2026-08-08
+last_verified: 2026-09-04
 milestone: M1.3-storage-authority
 base: upstream/main@08bcf324b
 ---
@@ -28,15 +29,15 @@ base: upstream/main@08bcf324b
 
 跟踪：[Managed dependencies #4326](https://github.com/apache/maka/issues/4326)
 
-## 1. 本 PR 只证明一个不变量
+## 1. 当前 foundation 只证明一个不变量
 
 > 同一个 canonical dependency environment identity 最多对应一棵由 Maka 发布、由 artifact 权限域之外的 durable receipt 证明、可在崩溃后收敛重开的依赖树；任何身份、路径、内容或平台证据不可证明时 fail closed。
 
-本 PR 的 owner 是 `ManagedDependencyEnvironmentAuthority`。它拥有 environment identity、artifact publication、SQLite receipt、lease、pending reservation 与 GC。注入的 producer 只获得一次性 staging 中的 `outputRoot` 与 `scratchRoot`，不获得 storage root、canonical artifact path 或 receipt database。
+当前实现的 owner 是 `ManagedDependencyEnvironmentAuthority`。它拥有 environment identity、artifact publication、SQLite receipt、lease、pending reservation 与 GC。注入的 producer 只获得一次性 staging 中的 `outputRoot` 与 `scratchRoot`，不获得 storage root、canonical artifact path 或 receipt database。
 
 同一个 canonical storage root 在同一时刻只能存在一个该 authority：同进程由 module-private owner claim 拒绝重复实例，跨进程由稳定 lock artifact 上的 OS exclusive lock 拒绝第二个 owner。lock 在 receipt database 或 artifact 被读取、修复、发布、租用、GC 之前取得，只在 authority 完整关闭或初始化失败时释放；active lease 导致的 close 拒绝不会释放 owner。
 
-本 PR 不包含：
+当前实现不包含：
 
 - bundled npm 的实现与网络策略；
 - `node_modules/.bin` symlink 的 producer 配额扫描；
@@ -44,7 +45,9 @@ base: upstream/main@08bcf324b
 - Desktop/CLI/Runtime Host 接线；
 - release packaging、audit 或 SBOM。
 
-因此该 PR 是 stacked foundation，在出现下一个生产 owner consumer 前保持 Draft；不得单独宣称 M1.3 用户能力闭环。
+实现已由 [#2485](https://github.com/apache/maka/pull/2485) 合并，但仍是没有生产 consumer 的 stacked
+foundation；后续接线由 [#4326](https://github.com/apache/maka/issues/4326) 跟踪，不得单独宣称 M1.3
+用户能力闭环。
 
 ## 2. 权威与原子性边界
 
@@ -61,7 +64,7 @@ canonical identity validation
   -> process owner claim + cross-process OS lock
   -> pending reservation
   -> producer-owned random staging
-  -> producer provision resolves (PR 2 must prove its process tree has exited)
+  -> producer provision resolves (the future producer slice must prove its process tree has exited)
   -> deep-copy node_modules into new authority-owned inodes
   -> delete the producer-owned tree
   -> one authoritative tree seal:
@@ -104,7 +107,7 @@ Windows 上只读 dependency file 是合法输入。authority 只在自己的 un
 - acquire 开始即安装 pending reservation，直到正式 lease 建立或失败清理；GC 不得删除 pending/inflight/leased digest。
 - cache cost 为内容字节数加每个 entry 的固定治理成本，避免大量空文件绕过软配额。
 - GC 串行执行；一次 GC rejection 可报告给当前调用者，但不能永久毒化后续 GC task chain。
-- authority startup 遇到 malformed receipt 或 unowned cache entry 时整体 fail closed。Quarantine 会引入新的 durable lifecycle，不在本 PR 静默增加。
+- authority startup 遇到 malformed receipt 或 unowned cache entry 时整体 fail closed。Quarantine 会引入新的 durable lifecycle，不在本 authority 静默增加。
 
 ## 5. Crash 与对抗矩阵
 
@@ -155,13 +158,15 @@ Windows 上只读 dependency file 是合法输入。authority 只在自己的 un
 | `9a42a761c` | `fix(runtime-host): transport packaged dependency authority` | PR 4     | Desktop/CLI/Runtime Host 生命周期与关闭顺序                              |
 | `980143a3b` | `docs(architecture): split M1.3 authority boundaries`  | 文档证据 | 不迁移旧总文档；由每个平铺 PR 维护自己的 owner/rollback 合同             |
 
-后续平铺顺序固定为：
+原定平铺边界现在由 #2485 与 #4326 记录：
 
-1. PR 1：本文件定义的 storage authority；
-2. PR 2：producer boundary，必须证明 producer 进程树退出后 `provision()` 才 resolve，并包含真实 npm `.bin` symlink 的配额与取消/超时测试；
-3. PR 3：bundled npm runtime 供应链、发布审计与许可证材料；
-4. PR 4：唯一生产 consumer，把真实 baseline、environment lease 和 Read/Glob/Grep worker 串成闭环。
+1. 已合并 #2485：本文件定义的 storage authority；
+2. 待 #4326：producer boundary，必须证明 producer 进程树退出后 `provision()` 才 resolve，并包含真实 npm `.bin` symlink 的配额与取消/超时测试；
+3. 待 #4326：bundled npm runtime 供应链、发布审计与许可证材料；
+4. 待 #4326：唯一生产 consumer，把真实 baseline、environment lease 和 Read/Glob/Grep worker 串成闭环。
 
-PR 1–3 只是堆叠地基；PR 4 合并前不能把 M1.3 描述为用户可用。PR 2 不得通过拒绝所有 POSIX symlink 规避 `.bin`：producer inventory 应计量合法 link，最终 storage authority 与 worker 仍负责 target containment；Windows 继续拒绝 reparse point。
+Storage authority 与后续 producer/supply-chain 切片都只是堆叠地基；生产 consumer 合并前不能把 M1.3
+描述为用户可用。Producer slice 不得通过拒绝所有 POSIX symlink 规避 `.bin`：producer inventory 应计量
+合法 link，最终 storage authority 与 worker 仍负责 target containment；Windows 继续拒绝 reparse point。
 
-验证时必须执行 storage build、focused authority tests、真实 Windows ADS test，以及三个 child-process crash failpoint。后续 PR 不得通过放宽本 authority 的 fail-closed 规则来提高采用率。
+验证时必须执行 storage build、focused authority tests、真实 Windows ADS test，以及四个 child-process crash failpoint。后续 PR 不得通过放宽本 authority 的 fail-closed 规则来提高采用率。
