@@ -414,7 +414,7 @@ describe('WorkHub Coordination Action Gate', () => {
     };
 
     const first = await gate.act(input, CONTEXT);
-    effects.resumeOutcome = { outcome: 'parked' };
+    effects.resumeOutcome = { outcome: 'parked', parkReason: 'safety_check_failed' };
     const replay = await new WorkHubCoordinationActionGate(effects).act(input, CONTEXT);
 
     assert.deepEqual(replay, first);
@@ -511,7 +511,8 @@ describe('WorkHub Coordination Action Gate', () => {
     ] as const) {
       const effects = fakeEffects([session('payments', { name: 'Payments' })]);
       delegatedTo(effects, 'payments');
-      effects.resumeOutcome = { outcome };
+      effects.resumeOutcome =
+        outcome === 'parked' ? { outcome, parkReason: 'safety_check_failed' } : { outcome };
 
       const result = await new WorkHubCoordinationActionGate(effects).act(
         {
@@ -526,6 +527,7 @@ describe('WorkHub Coordination Action Gate', () => {
         disposition: 'resume_work',
         outcome,
         targetSessionId: 'payments',
+        ...(outcome === 'parked' ? { parkReason: 'safety_check_failed' } : {}),
         ...(targetTurnId ? { targetTurnId } : {}),
       });
     }
@@ -2773,11 +2775,10 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
     resumeOutcome: {
       outcome: 'resume_started' as const,
       targetTurnId: 'resumed-turn',
-      targetRunId: 'resumed-run',
     } as {
       outcome: 'resume_started' | 'already_running' | 'parked';
+      parkReason?: 'safety_check_failed';
       targetTurnId?: string;
-      targetRunId?: string;
     },
     async readResumeRequest(actionId: string) {
       return resumeRequests.get(actionId);
@@ -2794,6 +2795,7 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
           ...(existingResolution.targetTurnId
             ? { targetTurnId: existingResolution.targetTurnId }
             : {}),
+          ...(existingResolution.parkReason ? { parkReason: existingResolution.parkReason } : {}),
         };
       }
       if ('request' in input) {
@@ -2837,10 +2839,12 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
         resumesDelegationId: requested.resumesDelegationId,
         targetSessionId: requested.targetSessionId,
         outcome: this.resumeOutcome.outcome,
+        ...(this.resumeOutcome.outcome === 'parked'
+          ? { parkReason: this.resumeOutcome.parkReason ?? 'safety_check_failed' }
+          : {}),
         ...(this.resumeOutcome.targetTurnId
           ? { targetTurnId: this.resumeOutcome.targetTurnId }
           : {}),
-        ...(this.resumeOutcome.targetRunId ? { targetRunId: this.resumeOutcome.targetRunId } : {}),
       };
       resumeResolutions.set(actionId, resolved);
       return {
@@ -2848,6 +2852,7 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
         outcome: resolved.outcome,
         targetSessionId: resolved.targetSessionId,
         ...(resolved.targetTurnId ? { targetTurnId: resolved.targetTurnId } : {}),
+        ...(resolved.parkReason ? { parkReason: resolved.parkReason } : {}),
       };
     },
     async readActionClaim(actionId: string) {
@@ -3050,8 +3055,8 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
     resumeCalls: WorkHubDelegationResumeInput[];
     resumeOutcome: {
       outcome: 'resume_started' | 'already_running' | 'parked';
+      parkReason?: 'safety_check_failed';
       targetTurnId?: string;
-      targetRunId?: string;
     };
   };
 }

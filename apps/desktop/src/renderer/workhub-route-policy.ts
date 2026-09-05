@@ -90,7 +90,7 @@ export type WorkHubStopClarificationReason =
  * original text as work, and stop-shaped text is exactly what must not be
  * delivered to a Session that way, so the reason carries the whole answer.
  */
-export type WorkHubStopRouteDecision =
+export type WorkHubNamedActionRouteDecision =
   | { kind: 'not_requested' }
   | { kind: 'clarification'; reason: WorkHubStopClarificationReason }
   | { kind: 'target'; target: WorkHubRouteTarget };
@@ -99,7 +99,7 @@ export interface WorkHubRoutePolicy {
   resolveStop(input: {
     text: string;
     sessions: WorkHubRoutableSession[];
-  }): WorkHubStopRouteDecision;
+  }): WorkHubNamedActionRouteDecision;
   /**
    * Resume reads the same way a stop does and refuses on the same terms. The
    * two share one resolver and one tail rule so `Resume Payments` and
@@ -108,7 +108,7 @@ export interface WorkHubRoutePolicy {
   resolveResume(input: {
     text: string;
     sessions: WorkHubRoutableSession[];
-  }): WorkHubStopRouteDecision;
+  }): WorkHubNamedActionRouteDecision;
   resolve(input: {
     text: string;
     sessions: WorkHubRoutableSession[];
@@ -158,27 +158,17 @@ const MAX_RELATED_CLARIFICATION_OPTIONS = 4;
  */
 function resolveNamedDelegationAction(
   sessionResolver: WorkHubSessionResolver,
-  action: { readonly cue: boolean; readonly imperative: boolean; readonly target?: string },
+  action: { readonly requested: boolean; readonly target?: string },
   sessions: WorkHubRoutableSession[],
-  reasons: {
-    /**
-     * What an unnamed reference means. A stop must say so: it is destructive,
-     * and `Stop it` has to be answered rather than delivered as work. A resume
-     * must not: `继续这个工作` is how a user carries on with the Session they
-     * are already in, and answering it would take an ordinary instruction away
-     * from ordinary routing. Resuming nothing costs nothing, so it falls
-     * through and only an explicitly named resume becomes an action.
-     */
-    readonly unnamed: WorkHubStopClarificationReason | 'not_requested';
-    readonly ambiguous: WorkHubStopClarificationReason;
-  },
-): WorkHubStopRouteDecision {
-  if (!action.cue) return { kind: 'not_requested' };
-  const reference = action.imperative ? action.target : undefined;
+  ambiguousReason: WorkHubStopClarificationReason,
+  unnamedReason?: WorkHubStopClarificationReason,
+): WorkHubNamedActionRouteDecision {
+  if (!action.requested) return { kind: 'not_requested' };
+  const reference = action.target;
   if (!reference) {
-    return reasons.unnamed === 'not_requested'
-      ? { kind: 'not_requested' }
-      : { kind: 'clarification', reason: reasons.unnamed };
+    return unnamedReason
+      ? { kind: 'clarification', reason: unnamedReason }
+      : { kind: 'not_requested' };
   }
   const sessionByRef = new Map(sessions.map((session) => [session.target.sessionId, session]));
   const resolution = sessionResolver.resolve({
@@ -199,7 +189,7 @@ function resolveNamedDelegationAction(
   // One candidate only. A ranked resolver may return several; neither action
   // picks a winner from a ranking it cannot justify.
   if (resolution.kind === 'ambiguous' || admissible.length > 1) {
-    return { kind: 'clarification', reason: reasons.ambiguous };
+    return { kind: 'clarification', reason: ambiguousReason };
   }
   const resolved = sessionByRef.get(admissible[0]!.ref);
   if (!resolved) return { kind: 'not_requested' };
@@ -237,22 +227,25 @@ function createWorkHubRoutePolicyVisit(
     // reference still fails closed, and a resolved Session that is not uniquely
     // stoppable says why.
     resolveStop({ text, sessions }) {
+      const action = readWorkHubRequestIntent(text).stop;
       return resolveNamedDelegationAction(
         sessionResolver,
-        readWorkHubRequestIntent(text).stop,
+        { requested: action.cue, ...(action.imperative ? { target: action.target } : {}) },
         sessions,
-        { unnamed: 'stop_target_required', ambiguous: 'stop_target_ambiguous' },
+        'stop_target_ambiguous',
+        'stop_target_required',
       );
     },
     // Resume asks the same question of the same words, so it asks it with the
     // same code. Two copies of this would be two chances for `Resume Payments`
     // and `Stop Payments` to disagree about which Session they name.
     resolveResume({ text, sessions }) {
+      const action = readWorkHubRequestIntent(text).resume;
       return resolveNamedDelegationAction(
         sessionResolver,
-        readWorkHubRequestIntent(text).resume,
+        { requested: action.imperative, ...(action.target ? { target: action.target } : {}) },
         sessions,
-        { unnamed: 'not_requested', ambiguous: 'resume_target_ambiguous' },
+        'resume_target_ambiguous',
       );
     },
     resolve({ text, sessions, originPromptBySessionId, explicitTarget }) {

@@ -1111,7 +1111,6 @@ describe('Host WorkHub Coordination coordinator', () => {
           return {
             outcome: 'resume_started',
             targetTurnId: 'resumed-turn',
-            targetRunId: 'resumed-run',
           };
         },
       });
@@ -1153,8 +1152,8 @@ describe('Host WorkHub Coordination coordinator', () => {
         'payments-run',
       );
       assert.equal(
-        (await store.readWorkHubResumeResolution('resume-action'))?.targetRunId,
-        'resumed-run',
+        (await store.readWorkHubResumeResolution('resume-action'))?.targetTurnId,
+        'resumed-turn',
       );
     } finally {
       await store.close?.();
@@ -1171,6 +1170,86 @@ describe('Host WorkHub Coordination coordinator', () => {
       if (replay.ok && replay.result.disposition === 'resume_work') {
         assert.equal(replay.result.outcome, 'resume_started');
         assert.equal(replay.result.targetTurnId, 'resumed-turn');
+      }
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('reports recovery without durably parking a resume action', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-workhub-resume-recovering-'));
+    const store = createSessionStore(root);
+    try {
+      const target = await store.create({
+        cwd: root,
+        name: 'Payments',
+        llmConnectionSlug: 'test-connection',
+        model: 'test-model',
+        permissionMode: 'ask',
+      });
+      let recovering = true;
+      const workhub = coordinator(root, store, () => undefined, undefined, undefined, undefined, {
+        assign: (input) => persistTestAssignment(store, input, 'payments-turn'),
+        planResume: async () =>
+          recovering
+            ? { kind: 'recovering' }
+            : {
+                kind: 'ready',
+                sourceTurnId: 'payments-turn',
+                sourceRunId: 'payments-run',
+                sourceRuntimeEventHighWater: 9,
+                targetTurnId: 'resumed-turn',
+              },
+        resumeDelegation: async () => ({
+          outcome: 'resume_started',
+          targetTurnId: 'resumed-turn',
+        }),
+      });
+      assert.equal((await workhub.handlers['workhub.coordination.resolve']({}, CONTEXT)).ok, true);
+      const candidates = await workhub.handlers['workhub.coordination.candidates']({}, CONTEXT);
+      assert.equal(candidates.ok, true);
+      if (!candidates.ok) return;
+      const candidate = candidates.result.candidates.find(
+        ({ sessionId }) => sessionId === target.id,
+      )!;
+      assert.equal(
+        (
+          await workhub.handlers['workhub.coordination.act'](
+            {
+              actionId: 'source-action',
+              userText: 'Fix payment retry',
+              candidateSetId: candidates.result.candidateSetId,
+              proposal: { disposition: 'delegate_existing', candidateRef: candidate.candidateRef },
+            },
+            CONTEXT,
+          )
+        ).ok,
+        true,
+      );
+
+      const input = {
+        actionId: 'resume-after-recovery',
+        userText: 'Resume Payments',
+        proposal: {
+          disposition: 'resume_work' as const,
+          expects: { targetSessionId: target.id },
+        },
+      };
+      assert.deepEqual(await workhub.handlers['workhub.coordination.act'](input, CONTEXT), {
+        ok: false,
+        error: {
+          code: 'operation_unavailable',
+          message: 'WorkHub is still recovering the delegated execution',
+        },
+      });
+      assert.equal(await store.readWorkHubResumeRequest(input.actionId), undefined);
+
+      recovering = false;
+      const retried = await workhub.handlers['workhub.coordination.act'](input, CONTEXT);
+      assert.equal(retried.ok, true);
+      if (retried.ok && retried.result.disposition === 'resume_work') {
+        assert.equal(retried.result.outcome, 'resume_started');
       }
     } finally {
       await store.close?.();
@@ -1982,7 +2061,6 @@ function coordinator(
       resumeDelegation: async () => ({
         outcome: 'resume_started' as const,
         targetTurnId: 'resumed-turn',
-        targetRunId: 'resumed-run',
       }),
       retireDelegation: async () => ({ outcome: 'cancelled_pending' }),
       ...sessionActions,

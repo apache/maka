@@ -40,7 +40,7 @@ import {
   WorkHubSendLease,
   type WorkHubSendAttempt,
 } from './workhub-send-lease.js';
-import { WorkHubCoordinationFailure } from './workhub-coordination-port.js';
+import { isWorkHubCoordinationFailure } from './workhub-coordination-port.js';
 
 export interface WorkHubConversationTurn {
   requestId: string;
@@ -95,7 +95,7 @@ export function workHubSubmissionClearsDraft(
 }
 
 export function workHubSurfaceFailure(error: unknown): WorkHubSurfaceFailure {
-  if (error instanceof WorkHubCoordinationFailure) {
+  if (isWorkHubCoordinationFailure(error)) {
     if (error.code === 'operation_conflict') return 'action_changed';
     if (error.code === 'not_found' || error.code === 'session_archived') {
       return 'candidates_changed';
@@ -467,7 +467,7 @@ export function WorkHubSurface(props: {
 
 function isTerminalWorkHubSurfaceFailure(error: unknown): boolean {
   return (
-    error instanceof WorkHubCoordinationFailure &&
+    isWorkHubCoordinationFailure(error) &&
     (error.code === 'operation_conflict' ||
       error.code === 'not_found' ||
       error.code === 'session_archived' ||
@@ -583,7 +583,7 @@ export function WorkHubCoordinationTurnView(props: {
   return (
     <WorkHubMessageFrame
       text={props.turn.text}
-      state={props.turn.stop?.outcome ?? (assignment?.linkState === 'active'
+      state={props.turn.stop?.outcome ?? props.turn.resume?.outcome ?? (assignment?.linkState === 'active'
         ? assignment.feedbackState
         : assignment?.linkState ?? props.turn.state)}
       linkState={assignment?.linkState}

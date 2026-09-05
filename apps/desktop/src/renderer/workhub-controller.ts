@@ -27,6 +27,7 @@ import {
   createWorkHubRoutePolicy,
   type WorkHubRouteEvidence,
   type WorkHubStopClarificationReason,
+  type WorkHubNamedActionRouteDecision,
 } from './workhub-route-policy.js';
 import type {
   OperationError,
@@ -219,6 +220,10 @@ export type WorkHubSubmission = (
       target: WorkHubSessionTarget;
       outcome: Extract<WorkHubCoordinationActResult, { disposition: 'resume_work' }>['outcome'];
       targetTurnId?: string;
+      parkReason?: Extract<
+        WorkHubCoordinationActResult,
+        { disposition: 'resume_work' }
+      >['parkReason'];
     }
 ) & { strategyId: WorkHubRoutingStrategyId };
 
@@ -331,6 +336,69 @@ export function createWorkHubController(deps: {
       evidence,
       ...(correction ? { correctedFrom: correction.from } : {}),
     };
+  };
+  const submitNamedDelegationAction = async (
+    input: WorkHubSubmitInput,
+    decision: WorkHubNamedActionRouteDecision,
+    kind: 'resume' | 'stop',
+  ): Promise<Extract<WorkHubSubmission, { kind: 'clarification' | 'resume' | 'stop' }> | undefined> => {
+    if (decision.kind === 'not_requested') return undefined;
+    if (decision.kind === 'clarification') {
+      return {
+        kind: 'clarification',
+        strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+        requestId: input.requestId,
+        text: input.text,
+        options: [],
+        reason: decision.reason,
+      };
+    }
+    const { target } = decision;
+    try {
+      const admitted = await coordination.act({
+        actionId: input.requestId,
+        userText: input.text,
+        proposal: {
+          disposition: kind === 'resume' ? 'resume_work' : 'stop_work',
+          expects: { targetSessionId: target.sessionId },
+        },
+        ...(kind === 'stop' ? { confirmation: { kind: 'user_stop' as const } } : {}),
+      });
+      if (kind === 'resume' && admitted.disposition === 'resume_work') {
+        return {
+          kind,
+          strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+          requestId: input.requestId,
+          target,
+          outcome: admitted.outcome,
+          ...(admitted.targetTurnId ? { targetTurnId: admitted.targetTurnId } : {}),
+          ...(admitted.parkReason ? { parkReason: admitted.parkReason } : {}),
+        };
+      }
+      if (kind === 'stop' && admitted.disposition === 'stop_work') {
+        return {
+          kind,
+          strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+          requestId: input.requestId,
+          target,
+          outcome: admitted.outcome,
+          ...(admitted.targetTurnId ? { targetTurnId: admitted.targetTurnId } : {}),
+        };
+      }
+      throw new Error('WorkHub Action Gate returned an unexpected disposition');
+    } catch (error) {
+      if (error instanceof WorkHubCoordinationFailure && error.code === 'operation_conflict') {
+        return {
+          kind: 'clarification',
+          strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+          requestId: input.requestId,
+          text: input.text,
+          options: [],
+          reason: kind === 'resume' ? 'resume_target_unavailable' : 'stop_target_unavailable',
+        };
+      }
+      throw error;
+    }
   };
   return {
     async openConversation(handler, onError) {
@@ -467,116 +535,14 @@ export function createWorkHubController(deps: {
         text: input.text,
         sessions: ordinary,
       });
-      if (resumeDecision.kind !== 'not_requested') {
-        if (resumeDecision.kind === 'clarification') {
-          return {
-            kind: 'clarification',
-            strategyId: WORKHUB_ROUTING_STRATEGY_ID,
-            requestId: input.requestId,
-            text: input.text,
-            options: [],
-            reason: resumeDecision.reason,
-          };
-        }
-        const { target } = resumeDecision;
-        let resumed;
-        try {
-          resumed = await coordination.act({
-            actionId: input.requestId,
-            userText: input.text,
-            // No confirmation: resume ends nothing. Which delegation it carries
-            // on, and whether the Host can, is decided where the stop is.
-            proposal: {
-              disposition: 'resume_work',
-              expects: { targetSessionId: target.sessionId },
-            },
-          });
-        } catch (error) {
-          if (error instanceof WorkHubCoordinationFailure && error.code === 'operation_conflict') {
-            return {
-              kind: 'clarification',
-              strategyId: WORKHUB_ROUTING_STRATEGY_ID,
-              requestId: input.requestId,
-              text: input.text,
-              options: [],
-              reason: 'resume_target_unavailable',
-            };
-          }
-          throw error;
-        }
-        if (resumed.disposition !== 'resume_work') {
-          throw new Error('WorkHub Action Gate returned an unexpected disposition');
-        }
-        return {
-          kind: 'resume',
-          strategyId: WORKHUB_ROUTING_STRATEGY_ID,
-          requestId: input.requestId,
-          target,
-          outcome: resumed.outcome,
-          ...(resumed.targetTurnId ? { targetTurnId: resumed.targetTurnId } : {}),
-        };
-      }
+      const resume = await submitNamedDelegationAction(input, resumeDecision, 'resume');
+      if (resume) return resume;
       const stopDecision = submissionPolicy.resolveStop({
         text: input.text,
         sessions: ordinary,
       });
-      if (stopDecision.kind !== 'not_requested') {
-        if (stopDecision.kind === 'clarification') {
-          return {
-            kind: 'clarification',
-            strategyId: WORKHUB_ROUTING_STRATEGY_ID,
-            requestId: input.requestId,
-            text: input.text,
-            options: [],
-            reason: stopDecision.reason,
-          };
-        }
-        const { target } = stopDecision;
-        let admitted;
-        try {
-          admitted = await coordination.act({
-            actionId: input.requestId,
-            userText: input.text,
-            proposal: {
-              disposition: 'stop_work',
-              // Only the Session the reference resolved to. Which delegation
-              // that Session still owns is the Host's to decide, under the
-              // lease that ends it.
-              expects: { targetSessionId: target.sessionId },
-            },
-            confirmation: { kind: 'user_stop' },
-          });
-        } catch (error) {
-          // The Gate refusing the stop is an answer, not a fault: it is the
-          // only party that can say the Session owns no single stoppable
-          // delegation. Anything else is a real failure and still throws.
-          if (
-            error instanceof WorkHubCoordinationFailure &&
-            error.code === 'operation_conflict'
-          ) {
-            return {
-              kind: 'clarification',
-              strategyId: WORKHUB_ROUTING_STRATEGY_ID,
-              requestId: input.requestId,
-              text: input.text,
-              options: [],
-              reason: 'stop_target_unavailable',
-            };
-          }
-          throw error;
-        }
-        if (admitted.disposition !== 'stop_work') {
-          throw new Error('WorkHub Action Gate returned an unexpected disposition');
-        }
-        return {
-          kind: 'stop',
-          strategyId: WORKHUB_ROUTING_STRATEGY_ID,
-          requestId: input.requestId,
-          target,
-          outcome: admitted.outcome,
-          ...(admitted.targetTurnId ? { targetTurnId: admitted.targetTurnId } : {}),
-        };
-      }
+      const stop = await submitNamedDelegationAction(input, stopDecision, 'stop');
+      if (stop) return stop;
       const candidateSet = await coordination.candidates();
       const candidateBySessionId = new Map(
         candidateSet.candidates.map((candidate) => [candidate.sessionId, candidate]),

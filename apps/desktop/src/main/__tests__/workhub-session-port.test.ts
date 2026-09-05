@@ -334,7 +334,7 @@ test('resume projection survives reload and exposes its durable outcome', () => 
     actionFingerprint: `sha256:${'b'.repeat(64)}`, coordinationTurnId: 'resume-action',
     resumesActionId: 'source-action', resumesDelegationId: 'payments-delegation',
     targetSessionId: 'payments', outcome: 'resume_started',
-    targetTurnId: 'resumed-turn', targetRunId: 'resumed-run',
+    targetTurnId: 'resumed-turn',
   };
 
   assert.deepEqual(projectWorkHubCoordinationTurns([requested]), [{

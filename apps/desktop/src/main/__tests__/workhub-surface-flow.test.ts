@@ -210,6 +210,37 @@ test('durable delegation renders terminal link state instead of stale execution 
   }
 });
 
+test('a parked resume owns the durable frame state', () => {
+  const turn: WorkHubCoordinationTurn = {
+    messageId: 'resume-parked',
+    turnId: 'resume-parked',
+    text: 'Resume Payments',
+    state: 'completed',
+    resume: {
+      targetSessionId: 'payments',
+      targetSessionName: 'Payments',
+      outcome: 'parked',
+    },
+    updatedAt: 10,
+  };
+  const markup = renderToStaticMarkup(
+    createElement(LocaleProvider, {
+      locale: 'en',
+      children: createElement(AstryxLocaleProvider, {
+        children: createElement(WorkHubCoordinationTurnView, {
+          turn,
+          projection: { sessions: [], turns: [] },
+          locale: 'en',
+          onOpenSession: () => undefined,
+        }),
+      }),
+    }),
+  );
+
+  assert.match(markup, /data-state="parked"/u);
+  assert.doesNotMatch(markup, /data-state="completed"/u);
+});
+
 test('durable creation explicitly announces the new work', () => {
   const turn: WorkHubCoordinationTurn = {
     messageId: 'created-assignment',

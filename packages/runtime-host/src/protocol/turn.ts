@@ -35,6 +35,10 @@ import {
   decodeSkillInvocationResult,
   type SkillInvocationResult,
 } from '@maka/core/skill-invocation';
+import {
+  SAFE_BOUNDARY_RESUME_PARK_REASONS,
+  type SafeBoundaryResumeParkReason,
+} from '@maka/core/runtime-invocation';
 import { invalidProtocolFrame } from './errors.js';
 import {
   assertExactKeys,
@@ -113,20 +117,9 @@ export interface TurnResumeStartInput {
   sourceRuntimeEventHighWater: number;
 }
 
-export const TURN_RESUME_PARK_REASONS = [
-  'resume_candidate_missing',
-  'source_run_unreadable',
-  'safety_check_failed',
-  'continuation_already_exists',
-  'continuation_repair_required',
-  'continuation_started_indeterminate',
-  'resume_feature_disabled',
-  'continuation_authority_unavailable',
-  'safety_observation_unavailable',
-  'session_busy',
-] as const;
+export const TURN_RESUME_PARK_REASONS = SAFE_BOUNDARY_RESUME_PARK_REASONS;
 
-export type TurnResumeParkReason = (typeof TURN_RESUME_PARK_REASONS)[number];
+export type TurnResumeParkReason = SafeBoundaryResumeParkReason;
 
 export type TurnResumePlan =
   | {

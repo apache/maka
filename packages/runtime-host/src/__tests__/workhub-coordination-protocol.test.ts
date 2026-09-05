@@ -189,6 +189,107 @@ test('WorkHub Coordination answer and summary inputs are closed and bounded', ()
   );
 });
 
+test('WorkHub Coordination resume has closed input and outcome shapes', () => {
+  assert.deepEqual(
+    decodeWorkHubCoordinationActInput({
+      actionId: 'action-resume',
+      userText: 'Resume Payments',
+      proposal: {
+        disposition: 'resume_work',
+        expects: { targetSessionId: 'payments' },
+      },
+    }),
+    {
+      actionId: 'action-resume',
+      userText: 'Resume Payments',
+      proposal: {
+        disposition: 'resume_work',
+        expects: { targetSessionId: 'payments' },
+      },
+    },
+  );
+
+  for (const invalid of [
+    {
+      actionId: 'action-resume-confirmed',
+      userText: 'Resume Payments',
+      proposal: { disposition: 'resume_work', expects: { targetSessionId: 'payments' } },
+      confirmation: { kind: 'user_stop' },
+    },
+    {
+      actionId: 'action-resume-missing-target',
+      userText: 'Resume Payments',
+      proposal: { disposition: 'resume_work' },
+    },
+    {
+      actionId: 'action-resume-injected',
+      userText: 'Resume Payments',
+      proposal: {
+        disposition: 'resume_work',
+        expects: { targetSessionId: 'payments' },
+        targetSessionId: 'injected',
+      },
+    },
+  ]) {
+    assert.throws(
+      () => decodeWorkHubCoordinationActInput(invalid),
+      (error) => error instanceof RuntimeHostProtocolError,
+    );
+  }
+
+  for (const result of [
+    {
+      disposition: 'resume_work',
+      outcome: 'resume_started',
+      targetSessionId: 'payments',
+      targetTurnId: 'turn-2',
+    },
+    {
+      disposition: 'resume_work',
+      outcome: 'already_running',
+      targetSessionId: 'payments',
+    },
+    {
+      disposition: 'resume_work',
+      outcome: 'parked',
+      targetSessionId: 'payments',
+      parkReason: 'safety_check_failed',
+    },
+  ]) {
+    assert.deepEqual(decodeWorkHubCoordinationActResult(result), result);
+  }
+
+  for (const invalid of [
+    {
+      disposition: 'resume_work',
+      outcome: 'parked',
+      targetSessionId: 'payments',
+    },
+    {
+      disposition: 'resume_work',
+      outcome: 'parked',
+      targetSessionId: 'payments',
+      parkReason: 'invented',
+    },
+    {
+      disposition: 'resume_work',
+      outcome: 'already_running',
+      targetSessionId: 'payments',
+      parkReason: 'safety_check_failed',
+    },
+    {
+      disposition: 'resume_work',
+      outcome: 'resume_started',
+      targetSessionId: 'payments',
+    },
+  ]) {
+    assert.throws(
+      () => decodeWorkHubCoordinationActResult(invalid),
+      (error) => error instanceof RuntimeHostProtocolError,
+    );
+  }
+});
+
 test('WorkHub Coordination candidates are bounded and carry opaque proposal identities', () => {
   assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 110);
   const result = decodeWorkHubCoordinationCandidatesResult({

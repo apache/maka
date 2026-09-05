@@ -1383,68 +1383,55 @@ export async function createExecutionRuntimeHostComposition(
             turnId: disposition.turnId,
             runId: disposition.runId,
           };
-          if (isActiveWorkHubRoot(coordinator, identity)) return 'not_retired';
+          const latest = await coordinator.readLatestRootTurnLineage(identity);
+          if (isActiveWorkHubRoot(coordinator, latest)) return 'not_retired';
           // The same restart window as `stopOwnedWorkHubRoot`: an unregistered
           // root is not evidence that its work ended.
-          const snapshot = await coordinator.read(identity);
+          const snapshot = await coordinator.read(latest);
           return isHostedExecutionTerminal(snapshot) ? 'retired' : 'recovering';
         },
         // Resolve only the execution lineage owned by this delegation. A
         // Session-wide latest-failure query could otherwise continue unrelated
         // work started directly in the same Session.
-        planResume: async (assignment, previous, context) => {
-          let source:
-            | { readonly sessionId: string; readonly turnId: string; readonly runId: string }
-            | undefined;
-          if (
-            previous?.outcome === 'resume_started' &&
-            previous.targetTurnId &&
-            previous.targetRunId
-          ) {
-            source = {
-              sessionId: assignment.targetSessionId,
-              turnId: previous.targetTurnId,
-              runId: previous.targetRunId,
-            };
-          } else {
-            const disposition = await messages.readMessageExecutionDisposition(
-              assignment.targetSessionId,
-              assignment.targetMessageId,
-            );
-            if (disposition.kind !== 'owned_root') return { kind: 'parked' as const };
-            source = {
-              sessionId: assignment.targetSessionId,
-              turnId: disposition.turnId,
-              runId: disposition.runId,
-            };
+        planResume: async (assignment, context) => {
+          const disposition = await messages.readMessageExecutionDisposition(
+            assignment.targetSessionId,
+            assignment.targetMessageId,
+          );
+          if (disposition.kind === 'recovering') return { kind: 'recovering' as const };
+          if (disposition.kind !== 'owned_root') {
+            return { kind: 'parked' as const, parkReason: 'resume_candidate_missing' as const };
           }
-          let snapshot;
-          try {
-            snapshot = await coordinator.read(source);
-          } catch {
-            return { kind: 'parked' as const };
-          }
-          if (
-            snapshot.status === 'admitted' ||
-            snapshot.status === 'created' ||
-            snapshot.status === 'running'
-          ) {
+          const source = await coordinator.readLatestRootTurnLineage({
+            sessionId: assignment.targetSessionId,
+            turnId: disposition.turnId,
+            runId: disposition.runId,
+          });
+          if (isActiveWorkHubRoot(coordinator, source)) {
             return { kind: 'already_running' as const };
           }
+          const snapshot = await coordinator.read(source);
+          if (!isHostedExecutionTerminal(snapshot)) return { kind: 'recovering' as const };
           if (snapshot.status !== 'failed' && snapshot.status !== 'cancelled') {
-            return { kind: 'parked' as const };
+            return { kind: 'parked' as const, parkReason: 'resume_candidate_missing' as const };
           }
           const plan = await coordinator.handlers['turn.resume.query'](
             { sessionId: assignment.targetSessionId, sourceRunId: source.runId },
             context,
           );
+          if (!plan.ok) throw new WorkHubActionEffectFailure(plan.error.code, plan.error.message);
+          if (plan.result.disposition === 'parked') {
+            return { kind: 'parked' as const, parkReason: plan.result.reason };
+          }
           if (
-            !plan.ok ||
-            plan.result.disposition === 'parked' ||
             plan.result.sourceRunId !== source.runId ||
             plan.result.sourceTurnId !== source.turnId
-          )
-            return { kind: 'parked' as const };
+          ) {
+            throw new WorkHubActionEffectFailure(
+              'operation_conflict',
+              'WorkHub resume source lineage changed during planning',
+            );
+          }
           return {
             kind: 'ready' as const,
             sourceTurnId: plan.result.sourceTurnId,
@@ -1459,8 +1446,12 @@ export async function createExecutionRuntimeHostComposition(
             !request.sourceRunId ||
             request.sourceRuntimeEventHighWater === undefined ||
             !request.targetTurnId
-          )
-            return { outcome: 'parked' as const };
+          ) {
+            throw new WorkHubActionEffectFailure(
+              'persistence_failed',
+              'WorkHub durable resume plan is incomplete',
+            );
+          }
           const started = await coordinator.handlers['turn.resume.start'](
             {
               sessionId: request.targetSessionId,
@@ -1470,13 +1461,15 @@ export async function createExecutionRuntimeHostComposition(
             },
             context,
           );
-          if (!started.ok || started.result.kind === 'parked') {
-            return { outcome: 'parked' as const };
+          if (!started.ok) {
+            throw new WorkHubActionEffectFailure(started.error.code, started.error.message);
+          }
+          if (started.result.kind === 'parked') {
+            return { outcome: 'parked' as const, parkReason: started.result.plan.reason };
           }
           return {
             outcome: 'resume_started' as const,
             targetTurnId: started.result.turn.turnId,
-            targetRunId: started.result.turn.runId,
           };
         },
         retireDelegation: async (assignment, retirement) => {
@@ -1498,11 +1491,11 @@ export async function createExecutionRuntimeHostComposition(
             return { outcome: 'not_owned' as const, targetTurnId: disposition.turnId };
           }
           if (disposition.kind === 'owned_root') {
-            const identity = {
+            const identity = await coordinator.readLatestRootTurnLineage({
               sessionId: assignment.targetSessionId,
               turnId: disposition.turnId,
               runId: disposition.runId,
-            };
+            });
             return retirement.cause === 'direct_stop'
               ? stopOwnedWorkHubRoot(coordinator, identity, retirement.cancellationClaimId)
               : stopReplacedWorkHubRoot(coordinator, identity);

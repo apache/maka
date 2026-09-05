@@ -1133,34 +1133,34 @@ test('a resume names one Session, and reads like a stop everywhere else', () => 
   // existing Session, in either language.
   for (const [text, target] of [
     ['Resume Payments', 'Payments'],
-    ['Continue Payments', 'Payments'],
-    ['Restart Payments', 'Payments'],
-    ['继续支付任务', '支付任务'],
     ['恢复支付任务', '支付任务'],
-    ['请继续支付任务', '支付任务'],
     ['接着跑支付任务', '支付任务'],
   ] as const) {
-    assert.deepEqual(
-      readWorkHubRequestIntent(text).resume,
-      { cue: true, imperative: true, target },
-      text,
-    );
+    assert.deepEqual(readWorkHubRequestIntent(text).resume, { imperative: true, target }, text);
   }
 
-  // Anaphora carries the cue and claims no target, so the surface asks which
-  // work instead of guessing — the same shape `Stop it` produces.
-  for (const text of ['Resume it', '继续它']) {
-    assert.deepEqual(readWorkHubRequestIntent(text).resume, { cue: true, imperative: false }, text);
+  for (const text of ['Resume it', '恢复它']) {
+    assert.deepEqual(readWorkHubRequestIntent(text).resume, { imperative: false }, text);
   }
 
-  // A question, a negation and an unterminated quote are not commands.
-  for (const text of ['Should I resume Payments?', 'Do not resume Payments', 'Resume "Payments']) {
-    assert.equal(readWorkHubRequestIntent(text).resume.cue, false, text);
+  // Ambiguous verbs remain ordinary Session instructions rather than being
+  // consumed as WorkHub resume commands.
+  for (const text of [
+    'Continue Payments',
+    'Restart Payments',
+    '继续支付任务',
+    '请继续支付任务',
+    '重新开始支付任务',
+    'Should I resume Payments?',
+    'Do not resume Payments',
+    'Resume "Payments',
+  ]) {
+    assert.equal(readWorkHubRequestIntent(text).resume.imperative, false, text);
   }
 
   // Stop and resume are separate speech acts; neither reads as the other, and
   // ordinary work is neither.
-  assert.equal(readWorkHubRequestIntent('Stop Payments').resume.cue, false);
+  assert.equal(readWorkHubRequestIntent('Stop Payments').resume.imperative, false);
   assert.equal(readWorkHubRequestIntent('Resume Payments').stop.cue, false);
-  assert.equal(readWorkHubRequestIntent('Fix the login bug').resume.cue, false);
+  assert.equal(readWorkHubRequestIntent('Fix the login bug').resume.imperative, false);
 });

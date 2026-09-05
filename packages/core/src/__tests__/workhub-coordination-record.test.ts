@@ -300,7 +300,6 @@ describe('WorkHub Coordination stored records', () => {
       targetSessionId: 'payments',
       outcome: 'resume_started',
       targetTurnId: 'resumed-turn',
-      targetRunId: 'resumed-run',
     } as const;
 
     assert.deepEqual(decodeCanonicalMessage(requested), requested);
@@ -308,9 +307,9 @@ describe('WorkHub Coordination stored records', () => {
     for (const invalid of [
       { ...requested, sourceRunId: undefined },
       { ...requested, sourceRuntimeEventHighWater: -1 },
-      { ...requested, plan: 'parked' },
-      { ...resolved, targetRunId: undefined },
-      { ...resolved, outcome: 'parked' },
+      { ...requested, plan: 'parked', parkReason: undefined },
+      { ...resolved, targetTurnId: undefined },
+      { ...resolved, outcome: 'parked', parkReason: undefined },
       { ...resolved, sourceRunId: 'injected' },
     ]) {
       assert.throws(() => decodeCanonicalMessage(invalid), /Invalid stored message schema/u);
@@ -318,8 +317,8 @@ describe('WorkHub Coordination stored records', () => {
     const parked = {
       ...resolved,
       outcome: 'parked' as const,
+      parkReason: 'safety_check_failed' as const,
       targetTurnId: undefined,
-      targetRunId: undefined,
     };
     assert.deepEqual(decodeCanonicalMessage(parked), parked);
   });

@@ -784,7 +784,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
     actionId: string,
   ): Promise<WorkHubDelegationResumeRequestedMessage | undefined> {
     const message = await this.readWorkHubCoordinationMessage(
-      `whr_${workHubIdentitySuffix(actionId)}`,
+      `whu_${workHubIdentitySuffix(actionId)}`,
     );
     return message?.type === 'workhub_coordination' &&
       message.kind === 'delegation_resume_requested'

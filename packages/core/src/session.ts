@@ -49,6 +49,10 @@ import {
 import { markPersisted, type PersistedValue } from './persisted-value.js';
 import type { SubagentWorkspaceBinding } from './subagent-workspace.js';
 import { decodeTurnOrigin, type TurnOrigin } from './turn-origin.js';
+import {
+  SAFE_BOUNDARY_RESUME_PARK_REASONS,
+  type SafeBoundaryResumeParkReason,
+} from './runtime-invocation.js';
 
 export { DEEP_RESEARCH_SESSION_LABEL, isDeepResearchSession } from './deep-research.js';
 
@@ -1078,8 +1082,6 @@ export interface WorkHubDelegationStopResolvedMessage {
   targetTurnId?: string;
 }
 
-export type WorkHubDelegationResumeOutcome = 'resume_started' | 'already_running' | 'parked';
-
 /** Durable resume plan written before attempting a continuation. */
 export interface WorkHubDelegationResumeRequestedMessage {
   type: 'workhub_coordination';
@@ -1098,6 +1100,7 @@ export interface WorkHubDelegationResumeRequestedMessage {
   targetSessionName: string;
   userText: string;
   plan: 'ready' | 'already_running' | 'parked';
+  parkReason?: SafeBoundaryResumeParkReason;
   sourceTurnId?: string;
   sourceRunId?: string;
   sourceRuntimeEventHighWater?: number;
@@ -1118,9 +1121,9 @@ export interface WorkHubDelegationResumeResolvedMessage {
   resumesActionId: string;
   resumesDelegationId: string;
   targetSessionId: string;
-  outcome: WorkHubDelegationResumeOutcome;
+  outcome: 'resume_started' | 'already_running' | 'parked';
+  parkReason?: SafeBoundaryResumeParkReason;
   targetTurnId?: string;
-  targetRunId?: string;
 }
 
 /**
@@ -1453,7 +1456,7 @@ const WORKHUB_DELEGATION_RESUME_REQUESTED_MESSAGE_SHAPE =
       'userText',
       'plan',
     ],
-    ['sourceTurnId', 'sourceRunId', 'sourceRuntimeEventHighWater', 'targetTurnId'],
+    ['parkReason', 'sourceTurnId', 'sourceRunId', 'sourceRuntimeEventHighWater', 'targetTurnId'],
   );
 const WORKHUB_DELEGATION_RESUME_RESOLVED_MESSAGE_SHAPE =
   defineObjectShape<WorkHubDelegationResumeResolvedMessage>()(
@@ -1472,7 +1475,7 @@ const WORKHUB_DELEGATION_RESUME_RESOLVED_MESSAGE_SHAPE =
       'targetSessionId',
       'outcome',
     ],
-    ['targetTurnId', 'targetRunId'],
+    ['parkReason', 'targetTurnId'],
   );
 const WORKHUB_DELEGATION_CREATE_SHAPE = defineObjectShape<WorkHubDelegationCreateSpec>()(
   ['title', 'workspace'],
@@ -1666,6 +1669,7 @@ function decodeMessage(
 function isWorkHubCoordinationMessage(message: Record<string, unknown>): boolean {
   if (message.kind === 'delegation_resume_requested') {
     const ready = message.plan === 'ready';
+    const parked = message.plan === 'parked';
     return (
       hasMessageEnvelope(message, true) &&
       hasExactShape(message, WORKHUB_DELEGATION_RESUME_REQUESTED_MESSAGE_SHAPE) &&
@@ -1684,6 +1688,9 @@ function isWorkHubCoordinationMessage(message: Record<string, unknown>): boolean
       typeof message.userText === 'string' &&
       message.userText.trim().length > 0 &&
       (ready || message.plan === 'already_running' || message.plan === 'parked') &&
+      (parked
+        ? (SAFE_BOUNDARY_RESUME_PARK_REASONS as readonly unknown[]).includes(message.parkReason)
+        : message.parkReason === undefined) &&
       (ready
         ? typeof message.sourceTurnId === 'string' &&
           message.sourceTurnId.length > 0 &&
@@ -1702,6 +1709,7 @@ function isWorkHubCoordinationMessage(message: Record<string, unknown>): boolean
   }
   if (message.kind === 'delegation_resume_resolved') {
     const started = message.outcome === 'resume_started';
+    const parked = message.outcome === 'parked';
     return (
       hasMessageEnvelope(message, true) &&
       hasExactShape(message, WORKHUB_DELEGATION_RESUME_RESOLVED_MESSAGE_SHAPE) &&
@@ -1714,12 +1722,13 @@ function isWorkHubCoordinationMessage(message: Record<string, unknown>): boolean
       typeof message.targetSessionId === 'string' &&
       message.targetSessionId.length > 0 &&
       (started || message.outcome === 'already_running' || message.outcome === 'parked') &&
+      (parked
+        ? (SAFE_BOUNDARY_RESUME_PARK_REASONS as readonly unknown[]).includes(message.parkReason)
+        : message.parkReason === undefined) &&
       (started
         ? typeof message.targetTurnId === 'string' &&
-          message.targetTurnId.length > 0 &&
-          typeof message.targetRunId === 'string' &&
-          message.targetRunId.length > 0
-        : message.targetTurnId === undefined && message.targetRunId === undefined)
+          message.targetTurnId.length > 0
+        : message.targetTurnId === undefined)
     );
   }
   if (message.kind === 'delegation_stop_requested') {

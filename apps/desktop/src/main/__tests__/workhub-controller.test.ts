@@ -24,6 +24,7 @@ import type { WorkHubCoordinationActInput } from '@maka/runtime-host/protocol';
 import {
   createWorkHubController as createGatedWorkHubController,
   WORKHUB_ROUTING_STRATEGY_ID,
+  WorkHubCoordinationFailure,
   type WorkHubSessionFacts,
   type WorkHubSessionPort,
   type WorkHubCoordinationTurn,
@@ -32,7 +33,6 @@ import {
   createWorkHubRoutePolicy,
   workHubNewSessionName,
 } from '../../renderer/workhub-route-policy.js';
-import { WorkHubCoordinationFailure } from '../../renderer/workhub-coordination-port.js';
 
 const appShellUrl = [
   new URL('../../renderer/app-shell.tsx', import.meta.url),
@@ -458,6 +458,37 @@ test('a named resume submits and reports what the Host did', async () => {
     userText: 'Resume Payments',
     proposal: { disposition: 'resume_work', expects: { targetSessionId: 'payments' } },
   }]);
+  await handle.close();
+});
+
+test('a parked resume preserves the Host park reason', async () => {
+  const controller = createGatedWorkHubController({
+    sessions: port([session('payments', { sessionName: 'Payments' })]),
+    coordination: {
+      open: async (handler) => {
+        handler([], []);
+        return { close: async () => undefined };
+      },
+      record: async (input) => ({ turnId: input.turnId }),
+      candidates: async () => assert.fail('a resume must not read route candidates'),
+      act: async () => ({
+        disposition: 'resume_work',
+        outcome: 'parked',
+        targetSessionId: 'payments',
+        parkReason: 'safety_check_failed',
+      }),
+    },
+  });
+  const handle = await controller.openConversation(() => undefined, () => undefined);
+
+  assert.deepEqual(await controller.submit({ requestId: 'resume-parked', text: 'Resume Payments' }), {
+    kind: 'resume',
+    strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+    requestId: 'resume-parked',
+    target: { sessionId: 'payments' },
+    outcome: 'parked',
+    parkReason: 'safety_check_failed',
+  });
   await handle.close();
 });
 

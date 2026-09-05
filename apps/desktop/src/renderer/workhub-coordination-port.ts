@@ -38,7 +38,12 @@ import type {
 } from '@maka/runtime-host/protocol';
 import { boundedWorkHubTimelineText, WorkHubCoordinationFailure } from './workhub-controller.js';
 
-export { WorkHubCoordinationFailure };
+export function isWorkHubCoordinationFailure(
+  error: unknown,
+): error is WorkHubCoordinationFailure {
+  return error instanceof WorkHubCoordinationFailure;
+}
+
 import type { WorkHubDesktopTranscriptBridge } from './workhub-session-port.js';
 
 const WORKHUB_COORDINATION_TURN_LIMIT = 40;

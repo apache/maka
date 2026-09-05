@@ -34,6 +34,21 @@ import type {
 } from './runtime-event.js';
 import { isTerminalRuntimeEvent } from './runtime-event.js';
 
+export const SAFE_BOUNDARY_RESUME_PARK_REASONS = [
+  'resume_candidate_missing',
+  'source_run_unreadable',
+  'safety_check_failed',
+  'continuation_already_exists',
+  'continuation_repair_required',
+  'continuation_started_indeterminate',
+  'resume_feature_disabled',
+  'continuation_authority_unavailable',
+  'safety_observation_unavailable',
+  'session_busy',
+] as const;
+
+export type SafeBoundaryResumeParkReason = (typeof SAFE_BOUNDARY_RESUME_PARK_REASONS)[number];
+
 export interface RuntimeInvocationRecord {
   sessionId: string;
   invocationId: string;
