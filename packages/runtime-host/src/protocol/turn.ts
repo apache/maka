@@ -18,6 +18,7 @@
  */
 
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
+import { TURN_FAILURE_MESSAGE_MAX_BYTES as CORE_TURN_FAILURE_MESSAGE_MAX_BYTES } from '@maka/core/diagnostic-log';
 import {
   decodeMessageContent as decodeCanonicalMessageContent,
   DIRECTORY_REFERENCE_MAX_COUNT,
@@ -48,7 +49,7 @@ import {
 } from './codec.js';
 import { defineOperation } from './operation-spec.js';
 
-export const TURN_FAILURE_MESSAGE_MAX_BYTES = 256;
+export const TURN_FAILURE_MESSAGE_MAX_BYTES = CORE_TURN_FAILURE_MESSAGE_MAX_BYTES;
 
 export interface TurnStartInput {
   sessionId: string;

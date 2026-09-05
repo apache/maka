@@ -497,7 +497,7 @@ function terminalRuntimeEvent(input: {
         ? {
             content: {
               kind: 'error' as const,
-              message: turnState.failureMessage,
+              message: `Turn failed: ${turnState.errorClass ?? failureClass ?? 'unknown'}`,
               ...(turnState.errorClass ? { reason: turnState.errorClass } : {}),
               details: { providerSummary: turnState.failureMessage },
             },

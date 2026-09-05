@@ -290,7 +290,7 @@ export class RuntimeHostSessionProjector {
         ts: terminal.ts,
         recoverable: false,
         reason,
-        message: terminal.failureMessage ?? `Turn failed: ${reason}`,
+        message: `Turn failed: ${reason}`,
         ...(terminal.failureMessage
           ? { details: { providerSummary: terminal.failureMessage } }
           : {}),
@@ -332,7 +332,7 @@ export class RuntimeHostSessionProjector {
           ts,
           recoverable: false,
           reason,
-          message: turn.failureMessage ?? `Turn failed: ${reason}`,
+          message: `Turn failed: ${reason}`,
           ...(turn.failureMessage ? { details: { providerSummary: turn.failureMessage } } : {}),
         },
       ];
@@ -489,7 +489,7 @@ export class RuntimeHostSessionProjector {
         ts: this.#now(),
         recoverable: false,
         reason: root.failureClass,
-        message: root.failureMessage ?? `Turn failed: ${root.failureClass}`,
+        message: `Turn failed: ${root.failureClass}`,
         ...(root.failureMessage ? { details: { providerSummary: root.failureMessage } } : {}),
       });
     } else {

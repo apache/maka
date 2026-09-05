@@ -388,6 +388,46 @@ test('projects structured context-budget failure detail to the Desktop event', (
   ]);
 });
 
+test('keeps the classified failure message separate from provider diagnostics', () => {
+  const projector = new RuntimeHostSessionProjector(
+    snapshot(),
+    createRuntimeHostSessionProjectionSeed([], snapshot()),
+    () => 10,
+  );
+
+  const events = projector.accept({
+    kind: 'subscription.session_projection',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 1,
+    snapshot: snapshot({
+      projectionRevision: 2,
+      rootTurn: {
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        runId: 'run-1',
+        status: 'failed',
+        terminalEventId: 'terminal-1',
+        failureClass: 'rate_limit',
+        failureMessage: '429 from provider (requestId=req-123)',
+      },
+    }),
+  }).events;
+
+  assert.deepEqual(events, [
+    {
+      type: 'error',
+      id: 'terminal-1',
+      turnId: 'turn-1',
+      ts: 10,
+      recoverable: false,
+      reason: 'rate_limit',
+      message: 'Turn failed: rate_limit',
+      details: { providerSummary: '429 from provider (requestId=req-123)' },
+    },
+  ]);
+});
+
 test('reseeds a scheduled retry with remainingMs recomputed from the stored schedule time', () => {
   // #3393: a reconnect mid-wait must not restart the countdown. The snapshot
   // keeps the host-clock schedule time; the projector re-derives the skew-free
