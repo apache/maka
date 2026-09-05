@@ -22,6 +22,7 @@ import { describe, test } from 'node:test';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type { CreateSessionInput, SessionListFilter } from '@maka/core/runtime-inputs';
 import type { RuntimeEvent, RuntimeEventActions } from '@maka/core/runtime-event';
+import { runtimeEventHasModelVisibleContent } from '@maka/core/runtime-event';
 import type { SessionHeader, SessionSummary, StoredMessage, TurnRecord } from '@maka/core/session';
 import { deriveTurnRecords } from '@maka/core/session';
 import {
@@ -2076,6 +2077,108 @@ describe('system note projection', () => {
       [],
     );
     assert.partialDeepStrictEqual(backfilled.diagnostics, [{ code: 'skipped_high_risk_message' }]);
+  });
+});
+
+describe('legacy transcript conversion keeps every row', () => {
+  const convert = (messages: readonly StoredMessage[]) =>
+    backfillRuntimeEventsFromStoredMessages({
+      run: { sessionId, invocationId, runId, turnId },
+      outcome: { status: 'completed', ts },
+      messages,
+      modelHistory: 'full',
+      now: () => ts,
+    });
+
+  test('keeps a tool result whose call is not in the turn, out of model replay', () => {
+    const orphan: StoredMessage = {
+      type: 'tool_result',
+      id: 'legacy-orphan-result',
+      turnId,
+      ts,
+      toolUseId: 'tool-gone',
+      isError: false,
+      content: { kind: 'text', text: 'done' },
+    };
+
+    const converted = convert([orphan]);
+    const response = converted.events.find((event) => event.content?.kind === 'function_response');
+    assert.strictEqual(response?.modelVisibility, 'hidden');
+    assert.strictEqual(runtimeEventHasModelVisibleContent(response as RuntimeEvent), false);
+
+    const projected = projectRuntimeEventsToStoredMessages(converted.events, {
+      invocations: [invocation],
+    });
+    assert.partialDeepStrictEqual(
+      projected.messages.filter((message) => message.type === 'tool_result'),
+      [{ id: 'legacy-orphan-result', toolUseId: 'tool-gone' }],
+    );
+  });
+
+  test('keeps a provider-native call whose opaque output was not retained', () => {
+    const converted = convert([
+      {
+        type: 'tool_call',
+        id: 'tool-native',
+        turnId,
+        ts,
+        toolName: 'WebSearch',
+        args: { query: 'maka' },
+        providerExecuted: true,
+      },
+    ]);
+
+    const call = converted.events.find((event) => event.content?.kind === 'function_call');
+    assert.strictEqual(call?.modelVisibility, 'hidden');
+    assert.partialDeepStrictEqual(converted.diagnostics, [
+      { code: 'skipped_provider_native_replay_gap' },
+    ]);
+
+    const projected = projectRuntimeEventsToStoredMessages(converted.events, {
+      invocations: [invocation],
+    });
+    assert.partialDeepStrictEqual(
+      projected.messages.filter((message) => message.type === 'tool_call'),
+      [{ id: 'tool-native', toolName: 'WebSearch' }],
+    );
+  });
+
+  test('converts a permission decision on its own evidence', () => {
+    const decision: StoredMessage = {
+      type: 'permission_decision',
+      id: 'request-1',
+      turnId,
+      ts,
+      toolUseId: 'tool-1',
+      toolName: 'Bash',
+      decision: 'allow',
+      hint: 'rm -rf build',
+    };
+
+    const converted = convert([decision]);
+    assert.deepStrictEqual(converted.diagnostics, []);
+
+    const projected = projectRuntimeEventsToStoredMessages(converted.events, {
+      invocations: [invocation],
+    });
+    assert.deepStrictEqual(
+      projected.messages.filter((message) => message.type === 'permission_decision'),
+      [decision],
+    );
+  });
+
+  test('ends a turn whose transcript never said how it ended', () => {
+    const converted = backfillRuntimeEventsFromStoredMessages({
+      run: { sessionId, invocationId, runId, turnId },
+      messages: [{ type: 'user', id: 'legacy-user', turnId, ts, text: 'hello' }],
+      modelHistory: 'full',
+      now: () => ts,
+    });
+
+    const terminal = converted.events.filter((event) => event.actions?.endInvocation);
+    assert.partialDeepStrictEqual(terminal, [{ status: 'failed' }]);
+    assert.strictEqual(terminal[0]?.actions?.stateDelta?.failureClass, 'missing_terminal_event');
+    assert.partialDeepStrictEqual(converted.diagnostics, [{ code: 'synthesized_terminal_event' }]);
   });
 });
 

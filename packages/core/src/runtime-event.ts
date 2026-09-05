@@ -387,6 +387,12 @@ export interface RuntimeEventTokenUsage extends TokenUsageFields {}
  */
 export interface RuntimeEventPermissionDecision extends PermissionResponse {
   toolName?: string;
+  /**
+   * What the prompt told the user they were approving. Normally read off the
+   * paired request; carried here when the decision is the only surviving
+   * evidence that the prompt happened.
+   */
+  hint?: string;
 }
 
 export const TOOL_BOUNDARY_PROTOCOL_V1 = 't1_after_preflight_v1' as const;
@@ -829,7 +835,7 @@ const PERMISSION_CLOSURE_ACCEPTED_SHAPE =
   defineObjectShape<RuntimeEventPermissionClosureAccepted>()(['requestId', 'reason'], []);
 const RUNTIME_PERMISSION_DECISION_SHAPE = defineObjectShape<RuntimeEventPermissionDecision>()(
   ['requestId', 'decision'],
-  ['rememberForTurn', 'reviewer', 'rationale', 'riskLevel', 'toolName'],
+  ['rememberForTurn', 'reviewer', 'rationale', 'riskLevel', 'toolName', 'hint'],
 );
 const UTF8 = new TextEncoder();
 const RUNTIME_TOOL_DISPATCH_SHAPE = defineObjectShape<RuntimeEventToolDispatch>()(
@@ -1298,7 +1304,8 @@ function isRuntimeEventPermissionDecision(value: unknown): value is RuntimeEvent
     (value.toolName === undefined ||
       (typeof value.toolName === 'string' &&
         value.toolName.length > 0 &&
-        UTF8.encode(value.toolName).byteLength <= INTERACTION_TOOL_NAME_MAX_BYTES))
+        UTF8.encode(value.toolName).byteLength <= INTERACTION_TOOL_NAME_MAX_BYTES)) &&
+    isOptionalString(value.hint)
   );
 }
 

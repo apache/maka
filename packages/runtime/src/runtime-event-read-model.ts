@@ -1019,6 +1019,9 @@ function projectPermissionDecision(
     );
     return false;
   }
+  // The prompt's own wording when the request survived, and the decision's copy
+  // of it when the decision is all that is left.
+  const hint = request?.hint ?? decision.hint;
   messages.push({
     type: 'permission_decision',
     id: decision.requestId,
@@ -1033,7 +1036,7 @@ function projectPermissionDecision(
     ...(decision.reviewer !== undefined ? { reviewer: decision.reviewer } : {}),
     ...(decision.rationale !== undefined ? { rationale: decision.rationale } : {}),
     ...(decision.riskLevel !== undefined ? { riskLevel: decision.riskLevel } : {}),
-    ...(request?.hint !== undefined ? { hint: request.hint } : {}),
+    ...(hint !== undefined ? { hint } : {}),
   });
   return true;
 }
