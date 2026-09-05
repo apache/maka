@@ -145,8 +145,9 @@ export function registerRuntimeHostArtifactsIpc(
           artifact.sizeBytes,
         );
         return { ok: true, saved: artifact.name };
-      } catch {
-        return { ok: false, reason: "write_failed" };
+      } catch (error) {
+        if (error instanceof ArtifactMaterializationError) return { ok: false, reason: error.reason };
+        return { ok: false, reason: "target_write_failed" };
       }
     },
   );
@@ -216,13 +217,20 @@ async function materializeArtifact(
     dirname(targetPath),
     `.${sanitizeArtifactName(artifactId)}.${randomUUID()}.tmp`,
   );
+  const backupPath = join(
+    dirname(targetPath),
+    `.${sanitizeArtifactName(artifactId)}.${randomUUID()}.bak`,
+  );
   const handle = await open(stagingPath, "wx");
   let offset = 0;
+  let destinationBackedUp = false;
+  let writingStaging = false;
   try {
     const totalBytes = await client.streamArtifact(
       sessionId,
       artifactId,
       async (chunk) => {
+        writingStaging = true;
         let written = 0;
         while (written < chunk.byteLength) {
           const result = await handle.write(
@@ -235,18 +243,52 @@ async function materializeArtifact(
           written += result.bytesWritten;
         }
         offset += written;
+        writingStaging = false;
       },
     );
     if (totalBytes !== expectedBytes || offset !== expectedBytes) {
-      throw new Error("Artifact size changed during export");
+      throw new ArtifactMaterializationError("size_mismatch");
     }
     await handle.sync();
     await handle.close();
-    await rm(targetPath, { force: true });
-    await rename(stagingPath, targetPath);
+    try {
+      await rename(targetPath, backupPath);
+      destinationBackedUp = true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw new ArtifactMaterializationError("replace_failed", error);
+      }
+    }
+    try {
+      await rename(stagingPath, targetPath);
+    } catch (error) {
+      if (destinationBackedUp) {
+        await rename(backupPath, targetPath).catch(() => undefined);
+        destinationBackedUp = false;
+      }
+      throw new ArtifactMaterializationError("replace_failed", error);
+    }
+    if (destinationBackedUp) {
+      destinationBackedUp = false;
+      await rm(backupPath, { force: true });
+    }
   } catch (error) {
     await handle.close().catch(() => undefined);
     await rm(stagingPath, { force: true }).catch(() => undefined);
+    if (destinationBackedUp) await rename(backupPath, targetPath).catch(() => undefined);
+    if (!(error instanceof ArtifactMaterializationError)) {
+      throw new ArtifactMaterializationError(writingStaging ? "target_write_failed" : "source_failed", error);
+    }
     throw error;
+  }
+}
+
+class ArtifactMaterializationError extends Error {
+  constructor(
+    readonly reason: "source_failed" | "size_mismatch" | "target_write_failed" | "replace_failed",
+    cause?: unknown,
+  ) {
+    super(`Artifact materialization failed: ${reason}`, { cause });
+    this.name = "ArtifactMaterializationError";
   }
 }
