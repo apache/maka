@@ -64,6 +64,10 @@ import {
   type ToolUsageQuery,
 } from './telemetry-repo.js';
 import { createSqlitePricingStore, createSqliteTelemetryRepo } from './sqlite-usage-store.js';
+import {
+  createOtlpTelemetryExporter,
+  type OtlpTelemetryExporter,
+} from './otlp-telemetry-exporter.js';
 
 const readerBrand: unique symbol = Symbol('InteractiveUsageStoresReader');
 const writerBrand: unique symbol = Symbol('InteractiveUsageStoresWriter');
@@ -292,7 +296,13 @@ export async function openInteractiveUsageStoresForWrite(
   if (opening) return opening;
   const pending = runWithStorageRootLease(lease, 'interactive', 'write', async (root) => {
     const repos = await openRepos(root, true);
-    const stores = createWriterFacade(lease, repos.telemetry, repos.modelCalls, repos.pricing);
+    const stores = createWriterFacade(
+      lease,
+      repos.telemetry,
+      repos.modelCalls,
+      repos.pricing,
+      createOtlpTelemetryExporter(),
+    );
     writers.add(stores);
     writerByLease.set(lease, stores);
     return stores;
@@ -333,6 +343,7 @@ function createWriterFacade(
   telemetry: TelemetryRepo,
   modelCalls: ModelCallLedger,
   pricing: PricingStore,
+  exporter: OtlpTelemetryExporter | undefined,
 ): InteractiveUsageStoresWriter {
   const run = <T>(operation: () => T | Promise<T>): Promise<T> =>
     runWithStorageRootLease(lease, 'interactive', 'write', async () => operation());
@@ -417,6 +428,7 @@ function createWriterFacade(
       run(() => telemetry.flush()),
       run(() => modelCalls.flush()),
       run(() => pricing.flush()),
+      exporter?.flush() ?? Promise.resolve(),
     ]);
     throwDeduplicatedFailures('Interactive usage store flush failed', [
       ...failures,
@@ -436,6 +448,7 @@ function createWriterFacade(
           telemetry.close(),
           modelCalls.close(),
           pricing.close(),
+          exporter?.close() ?? Promise.resolve(),
         ]);
         throwDeduplicatedFailures('Interactive usage stores close failed', [
           ...failures,
@@ -462,9 +475,15 @@ function createWriterFacade(
       latestLlmRuntimeProbe: (connectionSlug, modelId) =>
         read(() => telemetry.latestLlmRuntimeProbe(connectionSlug, modelId)),
       recordLlmCall: (record) =>
-        admitSessionUsageMutation(record.sessionId, () => telemetry.insertLlmCall(record)),
+        admitSessionUsageMutation(record.sessionId, async () => {
+          await run(() => telemetry.insertLlmCall(record));
+          void exporter?.exportLlmCall(record);
+        }),
       recordToolInvocation: (record) =>
-        admitSessionUsageMutation(record.sessionId, () => telemetry.insertToolInvocation(record)),
+        admitSessionUsageMutation(record.sessionId, async () => {
+          await run(() => telemetry.insertToolInvocation(record));
+          void exporter?.exportToolInvocation(record);
+        }),
     },
     modelCalls: {
       modelCallAttempts: (range, sessionId) => read(() => modelCalls.read(range, sessionId)),

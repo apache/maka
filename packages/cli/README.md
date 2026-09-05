@@ -56,6 +56,26 @@ The release gate validates the following installed-package matrix:
 Other combinations that satisfy the Node.js minimum may work, but are not part of the current
 release gate. Real Eval executor validation currently runs on Linux x64 with Node.js 24.
 
+## Optional OpenTelemetry traces
+
+Maka can export bounded model-call and tool-invocation traces to an OTLP/HTTP collector. The
+exporter is disabled unless an endpoint is configured in the Runtime Host environment:
+
+```sh
+export OTEL_EXPORTER_OTLP_ENDPOINT=https://otel.example.com
+export OTEL_EXPORTER_OTLP_HEADERS='authorization=Bearer%20token'
+export OTEL_SERVICE_NAME=maka
+maka
+```
+
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` overrides the generic endpoint when a collector uses a
+separate traces URL. `OTEL_RESOURCE_ATTRIBUTES` adds URL-encoded `key=value` resource attributes.
+
+Exported spans contain provider/model identifiers, model-call kind, tool name, duration, status,
+token counts, cost, byte counts, and bounded error classes. Prompts, message contents, tool
+arguments/results, credentials, and session paths are never exported. Export failures are
+best-effort and do not fail a turn or change the local Usage ledger.
+
 ## Install
 
 Install the current beta explicitly from the `next` dist-tag:
