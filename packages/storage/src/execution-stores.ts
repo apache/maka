@@ -26,7 +26,13 @@ import type {
   RuntimeInvocationRecord,
   RuntimeInvocationSearchResult,
 } from '@maka/core/runtime-invocation';
-import type { SessionHeader, SessionSummary, StoredMessage, TurnRecord } from '@maka/core/session';
+import type {
+  SessionExternalOrigin,
+  SessionHeader,
+  SessionSummary,
+  StoredMessage,
+  TurnRecord,
+} from '@maka/core/session';
 import type { SessionListFilter } from '@maka/core/runtime-inputs';
 import {
   createSqliteAgentRunStore,

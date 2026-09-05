@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
@@ -275,6 +275,67 @@ describe('ClaudeCodeSessionAdapter', () => {
     });
   });
 
+  test('excludes sidechain records from a mixed transcript import', async () => {
+    await withClaudeHome(async (home) => {
+      const sessionId = 'aaaaaaaa-0000-4000-8000-000000000008';
+      await seed(home, sessionId, [
+        userRecord('main request'),
+        { ...userRecord('sidechain request'), isSidechain: true },
+        {
+          ...assistantRecord({ text: 'sidechain reply', stopReason: 'end_turn' }),
+          isSidechain: true,
+        },
+        assistantRecord({ text: 'main reply', stopReason: 'end_turn' }),
+      ]);
+
+      const messages = await read(home, sessionId);
+      assert.deepEqual(
+        messages
+          .filter(
+            (message): message is Extract<StoredMessage, { type: 'user' | 'assistant' }> =>
+              message.type === 'user' || message.type === 'assistant',
+          )
+          .map((message) => message.text),
+        ['main request', 'main reply'],
+      );
+    });
+  });
+
+  test('drops transcripts without a non-empty cwd from catalog and import', async () => {
+    await withClaudeHome(async (home) => {
+      const directory = join(home, 'projects', '-workspace-project');
+      await mkdir(directory, { recursive: true });
+      const missingCwdId = 'aaaaaaaa-0000-4000-8000-000000000040';
+      const wrongTypeCwdId = 'aaaaaaaa-0000-4000-8000-000000000041';
+      const records = (cwd: unknown) =>
+        [
+          JSON.stringify({
+            type: 'user',
+            ...(cwd === undefined ? {} : { cwd }),
+            message: { role: 'user', content: 'unsafe identity' },
+          }),
+          JSON.stringify({
+            type: 'assistant',
+            ...(cwd === undefined ? {} : { cwd }),
+            message: {
+              role: 'assistant',
+              id: 'msg_missing_cwd',
+              model: 'claude-opus-5',
+              content: [{ type: 'text', text: 'reply' }],
+              stop_reason: 'end_turn',
+            },
+          }),
+        ].join('\n') + '\n';
+      await writeFile(join(directory, `${missingCwdId}.jsonl`), records(undefined));
+      await writeFile(join(directory, `${wrongTypeCwdId}.jsonl`), records({ value: 1 }));
+
+      const adapter = new ClaudeCodeSessionAdapter({ claudeHome: home });
+      assert.deepEqual(await adapter.listSessions(), []);
+      await assert.rejects(() => adapter.readSession(missingCwdId), /could not be read/u);
+      await assert.rejects(() => adapter.readSession(wrongTypeCwdId), /could not be read/u);
+    });
+  });
+
   test('a text query filters the source, before paging', async () => {
     // The catalog pages 16 at a time over a source with 1128 sessions here, so
     // the term has to reach the adapter. A filter applied to an assembled page
@@ -342,6 +403,90 @@ describe('ClaudeCodeSessionAdapter', () => {
 
       await rm(join(home, 'projects', CWD.replace(/\//gu, '-'), `${id}.jsonl`));
       assert.deepEqual(await adapter.listSessions(), []);
+    });
+  });
+
+  test('prunes deleted transcript cache entries through catalog listing', async () => {
+    await withClaudeHome(async (home) => {
+      const id = 'aaaaaaaa-0000-4000-8000-000000000034';
+      const path = join(home, 'projects', CWD.replace(/\//gu, '-'), `${id}.jsonl`);
+      await seed(home, id, [
+        userRecord('catalog cache'),
+        assistantRecord({ text: 'ok', stopReason: 'end_turn' }),
+      ]);
+      const adapter = new ClaudeCodeSessionAdapter({ claudeHome: home });
+
+      assert.equal((await adapter.listCatalogEntries()).length, 1);
+      const originalTimes = await stat(path);
+      await rm(path);
+      assert.deepEqual(await adapter.listCatalogEntries(), []);
+
+      // Recreate the same path with the same size and timestamps. A catalog
+      // listing must have pruned the deleted cache entry; otherwise the old
+      // summary would be served as if the new transcript were unchanged.
+      await seed(home, id, [
+        userRecord('catalog title'),
+        assistantRecord({ text: 'ok', stopReason: 'end_turn' }),
+      ]);
+      await utimes(path, originalTimes.atime, originalTimes.mtime);
+      assert.equal((await adapter.listCatalogEntries())[0]?.title, 'catalog title');
+    });
+  });
+
+  test('pages bounded catalog results at the source', async () => {
+    await withClaudeHome(async (home) => {
+      for (let index = 0; index < 20; index += 1) {
+        const id = `aaaaaaaa-0000-4000-8000-${String(100 + index).padStart(12, '0')}`;
+        await seed(home, id, [
+          userRecord(`session ${index}`),
+          assistantRecord({ text: 'ok', stopReason: 'end_turn' }),
+        ]);
+      }
+      const adapter = new ClaudeCodeSessionAdapter({ claudeHome: home });
+      const first = await adapter.listSessions({ limit: 3 });
+      const second = await adapter.listSessions({ cursor: 3, limit: 3 });
+
+      assert.equal(first.length, 3);
+      assert.equal(second.length, 3);
+      assert.deepEqual(new Set([...first, ...second].map((session) => session.id)).size, 6);
+    });
+  });
+
+  test('stops opening Claude transcripts once the requested page is full', async () => {
+    await withClaudeHome(async (home) => {
+      const directory = join(home, 'projects', CWD.replace(/\//gu, '-'));
+      const ids = Array.from(
+        { length: 4 },
+        (_, index) => `aaaaaaaa-0000-4000-8000-${String(200 + index).padStart(12, '0')}`,
+      );
+      const baseTime = Date.now() - 60_000;
+      for (const [index, id] of ids.entries()) {
+        await seed(home, id, [
+          userRecord(index === ids.length - 1 ? 'old tail' : `page ${index}`),
+          assistantRecord({ text: 'ok', stopReason: 'end_turn' }),
+        ]);
+        const path = join(directory, `${id}.jsonl`);
+        const time = new Date(baseTime - index * 10_000);
+        await utimes(path, time, time);
+      }
+
+      const adapter = new ClaudeCodeSessionAdapter({ claudeHome: home });
+      assert.equal((await adapter.listSessions({ limit: 2 })).length, 2);
+
+      const tailPath = join(directory, `${ids.at(-1)}.jsonl`);
+      const originalTimes = await stat(tailPath);
+      await writeFile(
+        tailPath,
+        [userRecord('new tail'), assistantRecord({ text: 'ok', stopReason: 'end_turn' })]
+          .map((record) => JSON.stringify({ ...record, cwd: CWD }))
+          .join('\n') + '\n',
+      );
+      await utimes(tailPath, originalTimes.atime, originalTimes.mtime);
+
+      assert.deepEqual(
+        (await adapter.listSessions({ text: 'new tail', limit: 1 })).map((session) => session.name),
+        ['new tail'],
+      );
     });
   });
 

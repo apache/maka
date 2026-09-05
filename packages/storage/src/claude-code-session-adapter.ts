@@ -30,15 +30,24 @@
 // between `/Users/a/b` and `/Users/a-b`. Every record carries its own `cwd`,
 // and that is what a project-scoped query reads.
 import { existsSync } from 'node:fs';
-import { readFile, readdir, stat } from 'node:fs/promises';
+import { readFile, readdir, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve, sep } from 'node:path';
 import {
+  FOREIGN_SESSION_DIGEST_MAX_READ_BYTES,
+  FOREIGN_SESSION_SCAN_MAX_SESSIONS,
   claudeAssistantText,
+  claudeToolFilePaths,
   claudeUserAuthoredText,
+  createDigestAccumulator,
+  finishDigest,
   isSyntheticClaudeUserText,
+  pushDigestFile,
+  pushDigestMessage,
   pickClaudeTitle,
   sanitizeForeignTitle,
+  type ForeignSessionDigest,
+  type ForeignSessionSummary,
 } from '@maka/core/foreign-session';
 import { externalSessionMatchesQuery } from '@maka/core/external-session';
 import type {
@@ -52,6 +61,11 @@ import {
   resolveTranscriptLineage,
   type TranscriptRecord,
 } from './claude-code-transcript-lineage.js';
+import {
+  readUtf8Tail,
+  type ExternalSourceCatalogEntry,
+  type ExternalSourceCatalogQuery,
+} from './external-source-catalog.js';
 
 export const CLAUDE_CODE_SESSION_ADAPTER_ID = 'claude-code';
 
@@ -60,10 +74,9 @@ export const CLAUDE_CODE_SESSION_ADAPTER_ID = 'claude-code';
  *  to exhaust the Host's memory during an import the user asked for. */
 export const CLAUDE_TRANSCRIPT_MAX_BYTES = 64 * 1024 * 1024;
 
-/** Session ids are the transcript's filename stem, and reach the filesystem.
- *  A uuid is what Claude Code writes; anything else is refused rather than
- *  joined onto a path. */
-const SESSION_ID_PATTERN = /^[0-9a-fA-F-]{1,128}$/u;
+/** Session ids are transcript filename stems and reach the filesystem. Keep
+ *  the source's opaque id safe without requiring a UUID in test/legacy data. */
+const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/u;
 
 export interface ClaudeCodeSessionAdapterOptions {
   /** Overrides `~/.claude`. */
@@ -74,11 +87,30 @@ export interface ClaudeCodeSessionAdapterOptions {
 interface ParsedTranscript {
   readonly records: readonly TranscriptRecord[];
   readonly cwd: string;
+  readonly gitBranch?: string;
   readonly title: string;
   readonly createdAt?: number;
   readonly updatedAt?: number;
   readonly isSidechain: boolean;
 }
+
+interface ClaudeCodeCatalogEntry extends ExternalSourceCatalogEntry {
+  readonly source: 'claude-code';
+}
+
+interface ClaudeCodeSummary extends Omit<ExternalSessionSummary, 'updatedAt'> {
+  readonly updatedAt: number;
+  readonly gitBranch?: string;
+  readonly transcriptPath: string;
+}
+
+interface TranscriptFileQuery {
+  readonly maxCandidates?: number;
+  readonly maxAgeMs?: number;
+  readonly nowMs?: number;
+}
+
+const CLAUDE_CATALOG_CANDIDATE_LIMIT = FOREIGN_SESSION_SCAN_MAX_SESSIONS;
 
 export class ClaudeCodeSessionAdapter implements ExternalSessionAdapter {
   readonly id = CLAUDE_CODE_SESSION_ADAPTER_ID;
@@ -88,10 +120,10 @@ export class ClaudeCodeSessionAdapter implements ExternalSessionAdapter {
    * Summaries already derived from a transcript, keyed by path and invalidated
    * by the file's own mtime and size.
    *
-   * Listing reads and parses every transcript: 1128 of them take about a
-   * second here, and the catalog is listed once per search term. Without this,
-   * a pause in typing starts another full parse of files that have not changed
-   * since the last one — the cost is paid again for an answer already known.
+   * Listing reads transcripts until its bounded matching page is full, and the
+   * catalog is listed once per search term. Without this, a pause in typing
+   * starts another parse of files that have not changed since the last one —
+   * the cost is paid again for an answer already known.
    *
    * Keyed on what the filesystem reports rather than a timer: a transcript
    * that Claude Code appended to must be re-read, and one that did not change
@@ -99,7 +131,7 @@ export class ClaudeCodeSessionAdapter implements ExternalSessionAdapter {
    */
   readonly #summaries = new Map<
     string,
-    { mtimeMs: number; size: number; summary?: ExternalSessionSummary }
+    { mtimeMs: number; size: number; summary?: ClaudeCodeSummary }
   >();
 
   constructor(options: ClaudeCodeSessionAdapterOptions = {}) {
@@ -111,26 +143,15 @@ export class ClaudeCodeSessionAdapter implements ExternalSessionAdapter {
     return existsSync(this.#projectsRoot());
   }
 
-  async listSessions(query?: ExternalSessionQuery): Promise<readonly ExternalSessionSummary[]> {
-    const summaries: ExternalSessionSummary[] = [];
-    const live = new Set<string>();
-    for (const file of await this.#transcriptFiles()) {
-      live.add(file.path);
-      const summary = await this.#summaryOf(file.path, file.sessionId);
-      if (!summary) continue;
-      // The shared matcher, not a local cwd comparison: filtering happens here
-      // rather than after paging, and every source has to answer a query the
-      // same way or the catalog lies about which one dropped the term.
-      if (!externalSessionMatchesQuery(summary, query)) continue;
-      summaries.push(summary);
-    }
-    // A transcript the source no longer lists must not keep its entry alive,
-    // or a long-lived Host grows one per deleted session.
-    for (const path of this.#summaries.keys()) {
-      if (!live.has(path)) this.#summaries.delete(path);
-    }
-    summaries.sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0));
-    return summaries;
+  async listSessions(query: ExternalSessionQuery = {}): Promise<readonly ExternalSessionSummary[]> {
+    const summaries = await this.#listSummaries(query);
+    return summaries.map((summary) => ({
+      id: summary.id,
+      name: summary.name,
+      cwd: summary.cwd,
+      ...(summary.createdAt !== undefined ? { createdAt: summary.createdAt } : {}),
+      updatedAt: summary.updatedAt,
+    }));
   }
 
   /**
@@ -139,7 +160,7 @@ export class ClaudeCodeSessionAdapter implements ExternalSessionAdapter {
    * `undefined` is cached too: a sidechain transcript or an unreadable one is
    * a stable answer, and re-deriving it every list would defeat the point.
    */
-  async #summaryOf(path: string, sessionId: string): Promise<ExternalSessionSummary | undefined> {
+  async #summaryOf(path: string, sessionId: string): Promise<ClaudeCodeSummary | undefined> {
     let mtimeMs: number;
     let size: number;
     try {
@@ -163,8 +184,14 @@ export class ClaudeCodeSessionAdapter implements ExternalSessionAdapter {
             id: sessionId,
             name: parsed.title || sessionId,
             cwd: parsed.cwd,
+            ...(parsed.gitBranch !== undefined ? { gitBranch: parsed.gitBranch } : {}),
             ...(parsed.createdAt !== undefined ? { createdAt: parsed.createdAt } : {}),
-            ...(parsed.updatedAt !== undefined ? { updatedAt: parsed.updatedAt } : {}),
+            // Some legacy/minimal transcripts carry no timestamp at all. The
+            // file mtime is still a source-owned freshness signal and keeps
+            // the handoff staleness policy from treating a readable session as
+            // the Unix epoch.
+            updatedAt: parsed.updatedAt ?? mtimeMs,
+            transcriptPath: path,
           }
         : undefined;
     this.#summaries.set(path, { mtimeMs, size, ...(summary ? { summary } : {}) });
@@ -177,7 +204,8 @@ export class ClaudeCodeSessionAdapter implements ExternalSessionAdapter {
       (candidate) => candidate.sessionId === sessionId,
     );
     if (!file) throw new Error(`Claude Code transcript not found: ${sessionId}`);
-    const parsed = await this.#parse(file.path, sessionId);
+    const path = await this.#resolveTranscriptPath(file.path, sessionId);
+    const parsed = await this.#parse(path, sessionId);
     if (!parsed) throw new Error(`Claude Code transcript could not be read: ${sessionId}`);
     if (parsed.isSidechain) {
       throw new Error(`Claude Code transcript is a sub-agent sidechain: ${sessionId}`);
@@ -189,11 +217,145 @@ export class ClaudeCodeSessionAdapter implements ExternalSessionAdapter {
     };
   }
 
+  async listCatalogEntries(
+    query: ExternalSourceCatalogQuery = {},
+  ): Promise<readonly ClaudeCodeCatalogEntry[]> {
+    const summaries = await this.#listSummaries(query);
+    return summaries.map(
+      (summary): ClaudeCodeCatalogEntry => ({
+        source: 'claude-code',
+        id: summary.id,
+        title: summary.name,
+        cwd: summary.cwd,
+        ...(summary.gitBranch !== undefined ? { gitBranch: summary.gitBranch } : {}),
+        ...(summary.createdAt !== undefined ? { createdAtMs: summary.createdAt } : {}),
+        updatedAtMs: summary.updatedAt,
+        transcriptPath: summary.transcriptPath,
+      }),
+    );
+  }
+
+  async #listSummaries(query: ExternalSessionQuery): Promise<ClaudeCodeSummary[]> {
+    if (query.limit !== undefined && query.limit <= 0) {
+      await this.#pruneSummaryCache();
+      return [];
+    }
+    const cursor = query.cursor ?? 0;
+    const pageEnd = query.limit === undefined ? undefined : cursor + query.limit;
+    const summaries: ClaudeCodeSummary[] = [];
+    const files = await this.#transcriptFiles({
+      maxCandidates: CLAUDE_CATALOG_CANDIDATE_LIMIT,
+      maxAgeMs: query.maxAgeMs,
+      nowMs: query.nowMs,
+    });
+    try {
+      for (const file of files) {
+        const summary = await this.#summaryOf(file.path, file.sessionId);
+        if (!summary || !externalSessionMatchesQuery(summary, query)) continue;
+        summaries.push(summary);
+        if (pageEnd !== undefined && summaries.length >= pageEnd) break;
+      }
+    } finally {
+      await this.#pruneSummaryCache();
+    }
+    // Preserve #transcriptFiles() order. Re-sorting a partial prefix by a
+    // timestamp found inside each transcript makes cursor pages overlap when
+    // the next request opens a longer prefix.
+    return query.limit === undefined
+      ? summaries.slice(cursor)
+      : summaries.slice(cursor, cursor + query.limit);
+  }
+
+  async #pruneSummaryCache(): Promise<void> {
+    for (const path of this.#summaries.keys()) {
+      try {
+        await stat(path);
+      } catch {
+        this.#summaries.delete(path);
+      }
+    }
+  }
+
+  async readDigest(summary: ForeignSessionSummary): Promise<ForeignSessionDigest> {
+    if (summary.source !== 'claude-code') {
+      throw new Error('Claude Code adapter received another source');
+    }
+    const path = await this.#resolveTranscriptPath(summary.transcriptPath, summary.id);
+    const { text, truncated } = await readUtf8Tail(path, FOREIGN_SESSION_DIGEST_MAX_READ_BYTES);
+    const records: TranscriptRecord[] = [];
+    let malformedLines = 0;
+    for (const line of text.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const value = JSON.parse(trimmed) as unknown;
+        if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+          throw new Error('record is not an object');
+        }
+        records.push(value as TranscriptRecord);
+      } catch {
+        malformedLines += 1;
+      }
+    }
+    const lineage = resolveTranscriptLineage(records);
+    const acc = createDigestAccumulator();
+    for (const record of lineage.records) {
+      if (record.isSidechain === true) continue;
+      if (record.type === 'user') {
+        const textValue = claudeUserAuthoredText(record);
+        if (textValue !== undefined) pushDigestMessage(acc, 'user', textValue);
+      } else if (record.type === 'assistant') {
+        const textValue = claudeAssistantText(record);
+        if (textValue !== undefined) pushDigestMessage(acc, 'assistant', textValue);
+        for (const path of claudeToolFilePaths(record)) pushDigestFile(acc, path);
+      }
+    }
+    if (truncated) {
+      acc.warnings.push(
+        `transcript exceeded ${FOREIGN_SESSION_DIGEST_MAX_READ_BYTES} bytes; only its tail was read`,
+      );
+      acc.warnings.push(
+        'Claude transcript lineage may be incomplete because rewind and compaction ancestors are outside the available transcript window',
+      );
+    }
+    if (lineage.abandoned > 0) {
+      acc.warnings.push(`${lineage.abandoned} records from withdrawn Claude prompts were skipped`);
+    }
+    if (lineage.duplicates > 0) {
+      acc.warnings.push(`${lineage.duplicates} duplicate Claude transcript records were skipped`);
+    }
+    if (malformedLines > 0) {
+      acc.warnings.push(`${malformedLines} malformed transcript lines were skipped`);
+    }
+    return finishDigest(acc, {
+      source: summary.source,
+      id: summary.id,
+      title: summary.title,
+      cwd: summary.cwd,
+      gitBranch: summary.gitBranch,
+      updatedAtMs: summary.updatedAtMs,
+    });
+  }
+
   #projectsRoot(): string {
     return join(this.#home, 'projects');
   }
 
-  async #transcriptFiles(): Promise<ReadonlyArray<{ path: string; sessionId: string }>> {
+  async #resolveTranscriptPath(candidatePath: string, expectedId: string): Promise<string> {
+    const root = await realpath(this.#projectsRoot());
+    const candidate = await realpath(resolve(candidatePath));
+    if (candidate !== root && !candidate.startsWith(root + sep)) {
+      throw new Error('Foreign transcript escaped its source root');
+    }
+    if (basename(candidate, '.jsonl') !== expectedId || !(await stat(candidate)).isFile()) {
+      throw new Error(`Claude Code transcript not found: ${expectedId}`);
+    }
+    return candidate;
+  }
+
+  async #transcriptFiles(
+    options: TranscriptFileQuery = {},
+  ): Promise<ReadonlyArray<{ path: string; sessionId: string; mtimeMs: number }>> {
     const root = this.#projectsRoot();
     let projects: string[];
     try {
@@ -209,7 +371,11 @@ export class ClaudeCodeSessionAdapter implements ExternalSessionAdapter {
     // list and read must pick the same one or a user selects one summary and
     // imports the other.
     const bySessionId = new Map<string, { path: string; sessionId: string; mtimeMs: number }>();
-    for (const project of projects) {
+    let inspectedCandidates = 0;
+    // Keep the filesystem scan bounded before opening transcript contents. A
+    // portable directory listing does not expose a globally mtime-ordered
+    // stream, so updatedAt orders only the deterministic bounded window.
+    scan: for (const project of projects.sort()) {
       let entries: string[];
       try {
         entries = (await readdir(join(root, project), { withFileTypes: true }))
@@ -218,7 +384,11 @@ export class ClaudeCodeSessionAdapter implements ExternalSessionAdapter {
       } catch {
         continue;
       }
-      for (const name of entries) {
+      for (const name of entries.sort()) {
+        if (options.maxCandidates !== undefined && inspectedCandidates >= options.maxCandidates) {
+          break scan;
+        }
+        inspectedCandidates += 1;
         const sessionId = name.slice(0, -'.jsonl'.length);
         if (!SESSION_ID_PATTERN.test(sessionId)) continue;
         const path = join(root, project, name);
@@ -229,6 +399,13 @@ export class ClaudeCodeSessionAdapter implements ExternalSessionAdapter {
         try {
           mtimeMs = (await stat(path)).mtimeMs;
         } catch {
+          continue;
+        }
+        if (
+          options.maxAgeMs !== undefined &&
+          options.nowMs !== undefined &&
+          options.nowMs - mtimeMs > options.maxAgeMs
+        ) {
           continue;
         }
         const existing = bySessionId.get(sessionId);
@@ -244,7 +421,10 @@ export class ClaudeCodeSessionAdapter implements ExternalSessionAdapter {
         }
       }
     }
-    return [...bySessionId.values()].map(({ path, sessionId }) => ({ path, sessionId }));
+    const files = [...bySessionId.values()]
+      .sort((left, right) => right.mtimeMs - left.mtimeMs || left.path.localeCompare(right.path))
+      .map(({ path, sessionId, mtimeMs }) => ({ path, sessionId, mtimeMs }));
+    return files;
   }
 
   async #parse(path: string, sessionId: string): Promise<ParsedTranscript | undefined> {
@@ -264,7 +444,9 @@ export class ClaudeCodeSessionAdapter implements ExternalSessionAdapter {
 
     const records: TranscriptRecord[] = [];
     let cwd = '';
-    let isSidechain = false;
+    let gitBranch: string | undefined;
+    let hasConversationRecord = false;
+    let allConversationRecordsAreSidechain = true;
     let createdAt: number | undefined;
     let updatedAt: number | undefined;
     const titles: {
@@ -291,8 +473,14 @@ export class ClaudeCodeSessionAdapter implements ExternalSessionAdapter {
       const typed = record as TranscriptRecord;
       records.push(typed);
 
-      if (typed.isSidechain === true) isSidechain = true;
+      if (typed.type === 'user' || typed.type === 'assistant') {
+        hasConversationRecord = true;
+        if (typed.isSidechain !== true) allConversationRecordsAreSidechain = false;
+      }
       if (typeof typed.cwd === 'string' && typed.cwd && !cwd) cwd = typed.cwd;
+      if (typeof typed.gitBranch === 'string' && typed.gitBranch && gitBranch === undefined) {
+        gitBranch = typed.gitBranch;
+      }
       const ts = timestampMs(typed);
       if (ts !== undefined) {
         createdAt ??= ts;
@@ -305,14 +493,15 @@ export class ClaudeCodeSessionAdapter implements ExternalSessionAdapter {
       }
     }
 
-    if (records.length === 0) return undefined;
+    if (records.length === 0 || cwd.trim().length === 0) return undefined;
     return {
       records,
       cwd,
+      ...(gitBranch !== undefined ? { gitBranch } : {}),
       title: pickClaudeTitle(titles),
       ...(createdAt !== undefined ? { createdAt } : {}),
       ...(updatedAt !== undefined ? { updatedAt } : {}),
-      isSidechain,
+      isSidechain: hasConversationRecord && allConversationRecordsAreSidechain,
     };
   }
 }
@@ -398,7 +587,9 @@ export function convertTranscript(
   sessionId: string,
   rawRecords: readonly TranscriptRecord[],
 ): readonly StoredMessage[] {
-  const records = resolveTranscriptLineage(rawRecords).records;
+  const records = resolveTranscriptLineage(rawRecords).records.filter(
+    (record) => record.isSidechain !== true,
+  );
   // Every fragment of one assistant response, keyed by `message.id`. A
   // response is emitted once, from all of its fragments, at the position of
   // the first — so a later fragment's text is part of the reply rather than

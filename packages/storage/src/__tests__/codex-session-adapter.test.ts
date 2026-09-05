@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
@@ -384,6 +384,92 @@ describe('CodexSessionAdapter', () => {
     });
   });
 
+  test('builds the handoff from presentation events when response mirrors are absent', async () => {
+    await withCodexHome(async (codexHome) => {
+      const sessionId = 'codex-item-completed-no-mirrors';
+      const fixture = await readFile(ITEM_COMPLETED_FIXTURE, 'utf8');
+      const presentationOnly = fixture
+        .split('\n')
+        .filter((line) => {
+          if (line.trim().length === 0) return true;
+          const record = JSON.parse(line) as { type?: unknown };
+          return record.type !== 'response_item';
+        })
+        .join('\n');
+      await seedRawRollout(
+        codexHome,
+        sessionId,
+        presentationOnly.replaceAll('codex-item-completed', sessionId),
+      );
+
+      const adapter = new CodexSessionAdapter({ codexHome });
+      const [entry] = await adapter.listCatalogEntries();
+      assert.ok(entry);
+      const digest = await adapter.readDigest({
+        source: 'codex',
+        id: entry.id,
+        title: entry.title,
+        cwd: entry.cwd,
+        updatedAtMs: entry.updatedAtMs,
+        transcriptPath: entry.transcriptPath,
+      });
+
+      assert.deepEqual(digest.userMessages, ['Analyze the image. Use OpenCV.js.']);
+      assert.deepEqual(digest.assistantTexts, ['Use canvas. Then process the pixels.']);
+    });
+  });
+
+  test('falls back to response-item messages when presentation events are absent', async () => {
+    await withCodexHome(async (codexHome) => {
+      const sessionId = 'codex-response-item-fallback';
+      const fixture = await readFile(CURRENT_FIXTURE, 'utf8');
+      const responseOnly = fixture
+        .split('\n')
+        .filter((line) => {
+          if (line.trim().length === 0) return true;
+          const record = JSON.parse(line) as { type?: unknown };
+          return record.type !== 'event_msg';
+        })
+        .join('\n')
+        .replaceAll('codex-session-1', sessionId);
+      await seedRawRollout(codexHome, sessionId, responseOnly);
+
+      const adapter = new CodexSessionAdapter({ codexHome });
+      const session = await adapter.readSession(sessionId);
+      assert.deepEqual(
+        session.messages
+          .filter((message) => message.type === 'user' || message.type === 'assistant')
+          .map((message) => message.text),
+        ['synthetic model input', 'I found the issue.'],
+      );
+    });
+  });
+
+  test('merges response-only presentation records without duplicating event mirrors', async () => {
+    await withCodexHome(async (codexHome) => {
+      const sessionId = 'codex-mixed-presentation';
+      const fixture = await readFile(CURRENT_FIXTURE, 'utf8');
+      const mixed = fixture
+        .split('\n')
+        .filter((line) => {
+          if (line.trim().length === 0) return true;
+          const record = JSON.parse(line) as { type?: unknown; payload?: { type?: unknown } };
+          return !(record.type === 'event_msg' && record.payload?.type === 'user_message');
+        })
+        .join('\n')
+        .replaceAll('codex-session-1', sessionId);
+      await seedRawRollout(codexHome, sessionId, mixed);
+
+      const session = await new CodexSessionAdapter({ codexHome }).readSession(sessionId);
+      assert.deepEqual(
+        session.messages
+          .filter((message) => message.type === 'user' || message.type === 'assistant')
+          .map((message) => message.text),
+        ['synthetic model input', '', 'I found the issue.'],
+      );
+    });
+  });
+
   test('filesystem fallback excludes internal subagent rollouts', async () => {
     await withCodexHome(async (codexHome) => {
       await seedMinimalRollout(
@@ -410,6 +496,227 @@ describe('CodexSessionAdapter', () => {
         ['codex-root-fallback'],
       );
       await assert.rejects(adapter.readSession(subagentId), /not found/);
+    });
+  });
+
+  test('filters internal sources before applying the catalog limit', async () => {
+    await withCodexHome(async (codexHome) => {
+      const rootId = 'codex-root-before-limit';
+      const rootPath = await seedMinimalRollout(
+        codexHome,
+        rootId,
+        false,
+        '/workspace/root',
+        'Root',
+      );
+      const subagentRows = [];
+      for (const [index, updatedAtMs] of [4_000, 3_000, 2_000].entries()) {
+        const id = `codex-subagent-before-limit-${index}`;
+        const rolloutPath = await seedMinimalRollout(
+          codexHome,
+          id,
+          false,
+          '/workspace/root',
+          `Internal ${index}`,
+        );
+        subagentRows.push({
+          id,
+          rolloutPath,
+          cwd: '/workspace/root',
+          name: `Internal ${index}`,
+          createdAtMs: updatedAtMs,
+          updatedAtMs,
+          archived: false,
+          source: '{"subagent":{"thread_spawn":{}}}',
+        });
+      }
+      await seedStateDatabase(codexHome, [
+        ...subagentRows,
+        {
+          id: rootId,
+          rolloutPath: rootPath,
+          cwd: '/workspace/root',
+          name: 'Root task',
+          createdAtMs: 1_000,
+          updatedAtMs: 1_000,
+          archived: false,
+          source: 'cli',
+        },
+      ]);
+
+      const [entry] = await new CodexSessionAdapter({ codexHome }).listCatalogEntries({ limit: 1 });
+      assert.equal(entry?.id, rootId);
+    });
+  });
+
+  test('pages the filesystem fallback before opening later candidates', async () => {
+    await withCodexHome(async (codexHome) => {
+      const ids = Array.from(
+        { length: 4 },
+        (_, index) => `codex-fallback-page-${String(index).padStart(3, '0')}`,
+      );
+      const baseTime = Date.now() - 10_000;
+      for (const [index, id] of ids.entries()) {
+        const path = await seedMinimalRollout(
+          codexHome,
+          id,
+          false,
+          '/workspace/root',
+          `Page ${index}`,
+        );
+        const timestamp = new Date(baseTime + index * 1_000);
+        await utimes(path, timestamp, timestamp);
+      }
+
+      const adapter = new CodexSessionAdapter({ codexHome });
+      assert.deepEqual(
+        (await adapter.listSessions({ limit: 2 })).map((session) => session.id),
+        ids.slice().reverse().slice(0, 2),
+      );
+      assert.deepEqual(
+        (await adapter.listSessions({ cursor: 2, limit: 2 })).map((session) => session.id),
+        ids.slice().reverse().slice(2),
+      );
+    });
+  });
+
+  test('bounds stale filesystem candidates before the freshness filter can expand the scan', async () => {
+    await withCodexHome(async (codexHome) => {
+      const staleIds = Array.from(
+        { length: 50 },
+        (_, index) => `codex-fallback-stale-${String(index).padStart(3, '0')}`,
+      );
+      const nowMs = Date.now();
+      for (const id of staleIds) {
+        const path = await seedMinimalRollout(codexHome, id, false, '/workspace/stale', 'Stale');
+        const staleTime = new Date(nowMs - 2_000);
+        await utimes(path, staleTime, staleTime);
+      }
+      await seedMinimalRollout(
+        codexHome,
+        'codex-fallback-archived-target',
+        true,
+        '/workspace/fresh',
+        'Fresh target',
+      );
+
+      const adapter = new CodexSessionAdapter({ codexHome });
+      assert.deepEqual(
+        (await adapter.listSessions({ includeArchived: true, maxAgeMs: 1_000, nowMs })).map(
+          (session) => session.id,
+        ),
+        [],
+      );
+    });
+  });
+
+  test('bounds invalid database rows before resolving rollout paths', async () => {
+    await withCodexHome(async (codexHome) => {
+      const targetId = 'codex-paged-target';
+      const targetPath = await seedMinimalRollout(
+        codexHome,
+        targetId,
+        false,
+        '/workspace/target',
+        'Target task',
+      );
+      const invalidRows = Array.from({ length: 101 }, (_, index) => ({
+        id: `codex-invalid-${index}`,
+        rolloutPath: join(codexHome, 'sessions', `missing-${index}.jsonl`),
+        cwd: '/workspace/other',
+        name: `Invalid ${index}`,
+        createdAtMs: 10_000 + index,
+        updatedAtMs: 10_000 + index,
+        archived: false,
+        source: 'cli',
+      }));
+      await seedStateDatabase(codexHome, [
+        ...invalidRows,
+        {
+          id: targetId,
+          rolloutPath: targetPath,
+          cwd: '/workspace/target',
+          name: 'Target task',
+          createdAtMs: 1,
+          updatedAtMs: 1,
+          archived: false,
+          source: 'cli',
+        },
+      ]);
+
+      const adapter = new CodexSessionAdapter({ codexHome });
+      assert.deepEqual(
+        (await adapter.listCatalogEntries({ limit: 1 })).map((entry) => entry.id),
+        [],
+      );
+      const imported = await adapter.readSession(targetId);
+      assert.equal(imported.sourceSessionId, targetId);
+      assert.equal(imported.metadata.cwd, '/workspace/target');
+    });
+  });
+
+  test('uses the same newest rollout when a Codex id has duplicate candidates', async () => {
+    await withCodexHome(async (codexHome) => {
+      const sessionId = 'codex-duplicate-id';
+      const oldDirectory = join(codexHome, 'sessions', '2026', '08', '07');
+      const newDirectory = join(codexHome, 'sessions', '2026', '08', '08');
+      const oldPath = join(oldDirectory, `rollout-old-${sessionId}.jsonl`);
+      const newPath = join(newDirectory, `rollout-new-${sessionId}.jsonl`);
+      await mkdir(oldDirectory, { recursive: true });
+      await mkdir(newDirectory, { recursive: true });
+      await writeFile(oldPath, minimalRollout(sessionId, '/old', 'Old copy'));
+      await writeFile(newPath, minimalRollout(sessionId, '/new', 'New copy'));
+      await utimes(oldPath, 1, 1);
+      await utimes(newPath, 2, 2);
+
+      const adapter = new CodexSessionAdapter({ codexHome });
+      assert.deepEqual(await adapter.listSessions(), [
+        {
+          id: sessionId,
+          name: 'New copy',
+          cwd: '/new',
+          createdAt: Date.parse('2026-08-08T00:00:00.000Z'),
+          updatedAt: 2_000,
+          archived: false,
+        },
+      ]);
+      const imported = await adapter.readSession(sessionId);
+      assert.equal(imported.metadata.cwd, '/new');
+      assert.equal(imported.messages.find((message) => message.type === 'user')?.text, 'New copy');
+    });
+  });
+
+  test('does not import a filesystem-only rollout when a state database is authoritative', async () => {
+    await withCodexHome(async (codexHome) => {
+      const visibleId = 'codex-state-visible';
+      const hiddenId = 'codex-state-hidden';
+      const visiblePath = await seedMinimalRollout(
+        codexHome,
+        visibleId,
+        false,
+        '/workspace/root',
+        'Visible',
+      );
+      await seedMinimalRollout(codexHome, hiddenId, false, '/workspace/root', 'Hidden');
+      await seedStateDatabase(codexHome, [
+        {
+          id: visibleId,
+          rolloutPath: visiblePath,
+          cwd: '/workspace/root',
+          name: 'Visible',
+          createdAtMs: 1_000,
+          updatedAtMs: 1_000,
+          archived: false,
+          source: 'cli',
+        },
+      ]);
+
+      const adapter = new CodexSessionAdapter({ codexHome });
+      assert.deepEqual(
+        (await adapter.listSessions()).map((session) => session.id),
+        [visibleId],
+      );
+      await assert.rejects(adapter.readSession(hiddenId), /not found/);
     });
   });
 

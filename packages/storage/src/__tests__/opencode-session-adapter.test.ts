@@ -130,6 +130,53 @@ describe('OpenCodeSessionAdapter', () => {
     });
   });
 
+  test('pages the newest bounded source candidates before applying the result page', async () => {
+    await withOpenCodeHome(async (home) => {
+      const fixture = await seed(home);
+      const db = new DatabaseSync(join(home, 'opencode.db'));
+      try {
+        const baseTime = fixture.session.time_updated + 1;
+        const insert = db.prepare(
+          'INSERT INTO session (id, parent_id, directory, title, time_created, time_updated, time_archived) VALUES (?, NULL, ?, ?, ?, ?, NULL)',
+        );
+        for (let index = 0; index < 110; index += 1) {
+          insert.run(
+            `new-${String(index).padStart(3, '0')}`,
+            '/other',
+            `New ${index}`,
+            baseTime + index,
+            baseTime + index,
+          );
+        }
+        const insertChild = db.prepare(
+          'INSERT INTO session (id, parent_id, directory, title, time_created, time_updated, time_archived) VALUES (?, ?, ?, ?, ?, ?, NULL)',
+        );
+        for (let index = 0; index < 110; index += 1) {
+          insertChild.run(
+            `child-${String(index).padStart(3, '0')}`,
+            'parent-session',
+            '/other',
+            `Child ${index}`,
+            baseTime + 1_000 + index,
+            baseTime + 1_000 + index,
+          );
+        }
+      } finally {
+        db.close();
+      }
+      const adapter = new OpenCodeSessionAdapter({ opencodeHome: home });
+      assert.deepEqual(
+        (await adapter.listSessions({ limit: 1 })).map((session) => session.id),
+        ['new-109'],
+      );
+      assert.deepEqual(
+        (await adapter.listSessions({ cursor: 100, limit: 1 })).map((session) => session.id),
+        [],
+      );
+      assert.notEqual(fixture.session.id, 'new-109');
+    });
+  });
+
   test('child sessions are neither listed nor readable as conversations', async () => {
     await withOpenCodeHome(async (home) => {
       const fixture = await seed(home, (f) => {

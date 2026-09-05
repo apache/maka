@@ -24,6 +24,7 @@ import type {
 } from '@maka/core/external-session';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
 import type { SessionExternalOrigin, SessionHeader, StoredMessage } from '@maka/core/session';
+import { FOREIGN_SESSION_SCAN_MAX_AGE_MS } from '@maka/core/foreign-session';
 import type { ExternalSessionImportLookupResult } from '@maka/storage/session-store';
 import type { SessionCatalogRecord } from '@maka/storage/execution-stores';
 import { ExternalSessionImporter } from '@maka/storage/external-sessions';
@@ -168,10 +169,11 @@ export class HostExternalSessionCoordinator {
         ? (await this.#workspaceResolver.resolve(input.workspace)).cwd
         : undefined;
       const offset = input.cursor === undefined ? 0 : Number(input.cursor);
+      const nowMs = Date.now();
       const sessions =
-        // The term reaches the adapter rather than being applied to the page
-        // below: paging happens after this call, so filtering afterwards would
-        // search the 16 rows already fetched instead of the source.
+        // The adapter owns filtering, ordering, freshness, and the bounded
+        // source scan. Ask for one extra item so the Host can tell whether a
+        // next wire page exists without materializing the entire source.
         (
           await adapter.listSessions({
             ...(cwd === undefined ? {} : { cwd }),
@@ -179,11 +181,15 @@ export class HostExternalSessionCoordinator {
               ? {}
               : { includeArchived: input.includeArchived }),
             ...(input.text === undefined ? {} : { text: input.text }),
+            ...(offset === 0 ? {} : { cursor: offset }),
+            limit: EXTERNAL_SESSION_PAGE_MAX_ITEMS + 1,
+            maxAgeMs: FOREIGN_SESSION_SCAN_MAX_AGE_MS,
+            nowMs,
           })
         )
           .map(toWireSummary)
           .filter((summary): summary is ExternalSessionCatalogItem => summary !== undefined);
-      const candidates = sessions.slice(offset, offset + EXTERNAL_SESSION_PAGE_MAX_ITEMS);
+      const candidates = sessions.slice(0, EXTERNAL_SESSION_PAGE_MAX_ITEMS);
       const imports = await this.#sessions.lookupExternalSessionImports(
         input.adapterId,
         candidates.map(({ id }) => id),
@@ -201,13 +207,13 @@ export class HostExternalSessionCoordinator {
           },
         };
       });
-      const page = boundedCatalogPage(enrichedCandidates, offset, sessions.length);
+      const page = boundedCatalogPage(enrichedCandidates, offset, offset + sessions.length);
       const nextOffset = offset + page.length;
       return {
         ok: true,
         result: {
           sessions: page,
-          nextCursor: nextOffset < sessions.length ? String(nextOffset) : null,
+          nextCursor: page.length > 0 && page.length < sessions.length ? String(nextOffset) : null,
         },
       };
     } catch (error) {

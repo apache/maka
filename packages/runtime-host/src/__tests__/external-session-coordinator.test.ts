@@ -18,16 +18,27 @@
  */
 
 import assert from 'node:assert/strict';
+import { DatabaseSync } from 'node:sqlite';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import {
   ExternalSessionAdapterRegistry,
+  type ExternalSessionQuery,
   type ExternalSessionAdapter,
 } from '@maka/core/external-session';
-import { type SessionHeader } from '@maka/core/session';
+import type { SessionExternalOrigin, SessionHeader, StoredMessage } from '@maka/core/session';
+import {
+  FOREIGN_SESSION_SCAN_MAX_AGE_MS,
+  FOREIGN_SESSION_SCAN_MAX_SESSIONS,
+} from '@maka/core/foreign-session';
 import { headerToSummary } from '@maka/runtime/session-manager';
 import type { SessionCatalogRecord } from '@maka/storage/execution-stores';
+import { createExternalSessionAdapterRegistry } from '@maka/storage/external-sessions';
 import {
   EXTERNAL_SESSION_IMPORTED_SESSION_IDS_MAX_ITEMS,
+  EXTERNAL_SESSION_PAGE_MAX_ITEMS,
   EXTERNAL_SESSION_RESULT_MAX_BYTES,
 } from '../protocol/index.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
@@ -42,7 +53,7 @@ const context: ConnectionContext = {
 };
 
 test('discovers detected adapters and pages bounded source summaries', async () => {
-  const adapter = adapterFixture({ count: 20 });
+  const adapter = adapterFixture({ count: 40 });
   const unavailable = adapterFixture({ id: 'unavailable', detected: false });
   const invalidId = adapterFixture({ id: 'invalid.source' });
   const fixture = coordinatorFixture([adapter, unavailable, invalidId]);
@@ -67,14 +78,23 @@ test('discovers detected adapters and pages bounded source summaries', async () 
   );
   assert.equal(second.ok, true);
   if (!second.ok) assert.fail('Expected the second catalog page');
-  assert.equal(second.result.sessions.length, 4);
-  assert.equal(second.result.nextCursor, null);
+  assert.equal(second.result.sessions.length, 16);
+  assert.equal(second.result.nextCursor, '32');
+
+  const third = await fixture.coordinator.handlers['external-session.catalog.query'](
+    { adapterId: 'codex', cursor: second.result.nextCursor ?? undefined },
+    context,
+  );
+  assert.equal(third.ok, true);
+  if (!third.ok) assert.fail('Expected the third catalog page');
+  assert.equal(third.result.sessions.length, 8);
+  assert.equal(third.result.nextCursor, null);
 });
 
 test('resolves a Project filter before calling the Host adapter', async () => {
   const adapter = adapterFixture();
-  const filters: unknown[] = [];
-  adapter.listSessions = async (input) => {
+  const filters: ExternalSessionQuery[] = [];
+  adapter.listSessions = async (input = {}) => {
     filters.push(input);
     return [];
   };
@@ -90,7 +110,88 @@ test('resolves a Project filter before calling the Host adapter', async () => {
   );
 
   assert.equal(result.ok, true);
-  assert.deepEqual(filters, [{ cwd: '/resolved-project', includeArchived: true }]);
+  assert.equal(filters.length, 1);
+  assert.equal(filters[0]?.cwd, '/resolved-project');
+  assert.equal(filters[0]?.includeArchived, true);
+  assert.equal(filters[0]?.limit, EXTERNAL_SESSION_PAGE_MAX_ITEMS + 1);
+  assert.equal(filters[0]?.maxAgeMs, FOREIGN_SESSION_SCAN_MAX_AGE_MS);
+  assert.equal(typeof filters[0]?.nowMs, 'number');
+});
+
+test('keeps a real Codex source page bounded before the Host projects it', async () => {
+  const codexHome = await mkdtemp(join(tmpdir(), 'maka-host-codex-'));
+  try {
+    const sessionsDirectory = join(codexHome, 'sessions', '2026', '08', '31');
+    await mkdir(sessionsDirectory, { recursive: true });
+    const targetId = 'codex-host-bounded-target';
+    const targetPath = join(sessionsDirectory, `rollout-2026-08-31T00-00-00-${targetId}.jsonl`);
+    await writeFile(targetPath, '{}\n', 'utf8');
+
+    const nowMs = Date.now();
+    const database = new DatabaseSync(join(codexHome, 'state_5.sqlite'));
+    try {
+      database.exec(`
+        CREATE TABLE threads (
+          id TEXT PRIMARY KEY,
+          rollout_path TEXT NOT NULL,
+          cwd TEXT,
+          name TEXT,
+          created_at_ms INTEGER,
+          updated_at_ms INTEGER,
+          archived INTEGER,
+          source TEXT
+        )
+      `);
+      const insert = database.prepare(
+        'INSERT INTO threads (id, rollout_path, cwd, name, created_at_ms, updated_at_ms, archived, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      );
+      for (let index = 0; index < FOREIGN_SESSION_SCAN_MAX_SESSIONS; index += 1) {
+        insert.run(
+          `codex-host-orphan-${String(index).padStart(3, '0')}`,
+          join(codexHome, 'sessions', `missing-${index}.jsonl`),
+          '/workspace/other',
+          `Orphan ${index}`,
+          nowMs - index * 1_000,
+          nowMs - index * 1_000,
+          0,
+          'cli',
+        );
+      }
+      insert.run(
+        targetId,
+        targetPath,
+        '/workspace/target',
+        'Target that must stay outside the bounded scan',
+        nowMs - 200_000,
+        nowMs - 200_000,
+        0,
+        'cli',
+      );
+    } finally {
+      database.close();
+    }
+
+    const registry = createExternalSessionAdapterRegistry({ codex: { codexHome } });
+    const fixture = coordinatorFixture([registry.require('codex')]);
+    const outcome = await fixture.coordinator.handlers['external-session.catalog.query'](
+      { adapterId: 'codex' },
+      context,
+    );
+
+    assert.deepEqual(outcome, {
+      ok: true,
+      result: { sessions: [], nextCursor: null },
+    });
+    assert.deepEqual(fixture.lookupCalls, [
+      {
+        adapterId: 'codex',
+        sourceSessionIds: [],
+        recentSessionIdLimit: EXTERNAL_SESSION_IMPORTED_SESSION_IDS_MAX_ITEMS,
+      },
+    ]);
+  } finally {
+    await rm(codexHome, { recursive: true, force: true });
+  }
 });
 
 test('projects zero import state for never-imported source Sessions with one batch lookup', async () => {
@@ -238,6 +339,31 @@ test('stops catalog pages before the encoded result limit', async () => {
   assert.equal(fixture.lookupCalls[0]?.sourceSessionIds.length, 16);
 });
 
+test('does not repeat a cursor when the first candidate cannot fit the result limit', async () => {
+  const fixture = coordinatorFixture([adapterFixture()], {
+    lookupExternalSessionImports: async () => [
+      {
+        sourceSessionId: 'source-0',
+        livePublishedImportCount: 1,
+        recentSessionIds: Array.from(
+          { length: 1_000 },
+          (_, index) => `imported-${index}-${'x'.repeat(100)}`,
+        ),
+      },
+    ],
+  });
+
+  const outcome = await fixture.coordinator.handlers['external-session.catalog.query'](
+    { adapterId: 'codex' },
+    context,
+  );
+
+  assert.deepEqual(outcome, {
+    ok: true,
+    result: { sessions: [], nextCursor: null },
+  });
+});
+
 test('imports through the generic importer and treats repeats as independent copies', async () => {
   const fixture = coordinatorFixture([adapterFixture()]);
 
@@ -305,6 +431,10 @@ test('coalesces a repeat import issued while the first is still running', async 
   // Same task, and only one of them was ever created. Both callers are told
   // about it, so the one that clicked twice still gets taken to the result.
   assert.equal(first.result.session.id, second.result.session.id);
+  assert.deepEqual(fixture.creates[0]?.externalOrigin, {
+    adapterId: 'codex',
+    sourceSessionId: 'source-0',
+  });
   assert.equal(fixture.creates.length, 1);
   assert.equal(fixture.drainRequests(), 0);
 
@@ -610,13 +740,18 @@ function adapterFixture(
   return {
     id: options.id ?? 'codex',
     detect: async () => options.detected ?? true,
-    listSessions: async () =>
-      Array.from({ length: count }, (_, index) => ({
+    listSessions: async (query = {}) => {
+      const sessions = Array.from({ length: count }, (_, index) => ({
         id: `source-${index}`,
         name: `Source ${index}`,
         cwd: '/external',
         updatedAt: index,
-      })),
+      }));
+      const cursor = query.cursor ?? 0;
+      return query.limit === undefined
+        ? sessions.slice(cursor)
+        : sessions.slice(cursor, cursor + query.limit);
+    },
     readSession:
       options.readSession ??
       (async (sourceSessionId) => ({
