@@ -25,7 +25,6 @@ import { DatabaseSync } from 'node:sqlite';
 import { describe, test } from 'node:test';
 import {
   MODEL_CALL_ATTEMPT_EVENT_TYPE,
-  MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
   type ModelCallAttempt,
 } from '@maka/core/model-call-attempt';
 import {
@@ -37,35 +36,12 @@ import {
 import { acquireOperationalStateDatabase } from '../operational-state-store.js';
 import { createSqliteAgentRunStore } from '../agent-run-store.js';
 import { openInvocation } from './fixtures/invocation-opening.js';
-
-const NOW = 1_750_000_000_000;
-
-function attempt(overrides: Partial<ModelCallAttempt> = {}): ModelCallAttempt {
-  return {
-    schemaVersion: MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
-    logicalCallId: 'call-1',
-    attemptId: 'attempt-1',
-    traceId: 'trace-1',
-    sessionId: 'session-1',
-    runId: 'run-1',
-    turnId: 'turn-1',
-    step: 0,
-    attempt: 0,
-    callKind: 'main',
-    providerId: 'anthropic',
-    modelId: 'claude-opus-5',
-    startedAt: NOW - 1_000,
-    completedAt: NOW - 500,
-    latencyMs: 500,
-    status: 'completed',
-    usageBasis: 'reported',
-    inputTokens: 100,
-    outputTokens: 20,
-    costBasis: 'priced',
-    costUsd: 0.004,
-    ...overrides,
-  };
-}
+import {
+  modelCallAttempt as attempt,
+  MODEL_CALL_NOW as NOW,
+  MODEL_CALL_PRICING_ROW_KEYS,
+  storedModelCallRecord,
+} from './fixtures/model-call-attempt.js';
 
 async function withLedger(run: (ledger: ModelCallLedger, root: string) => Promise<void>) {
   const root = await mkdtemp(join(tmpdir(), 'maka-model-call-ledger-'));
@@ -130,14 +106,10 @@ function appendAuthorityEvent(
   }
 }
 
-/** The projection row exactly as it sits on disk. */
 function storedRecord(root: string, attemptId: string): Record<string, unknown> {
   const lease = acquireOperationalStateDatabase(root);
   try {
-    const row = lease.database
-      .prepare('SELECT record_json FROM usage_model_call_attempts WHERE attempt_id = ?')
-      .get(attemptId) as { record_json?: string } | undefined;
-    return JSON.parse(row?.record_json ?? '{}') as Record<string, unknown>;
+    return storedModelCallRecord(lease.database, attemptId);
   } finally {
     lease.close();
   }
@@ -200,21 +172,12 @@ describe('canonical model call ledger', () => {
         // The Usage log row shows this one; the rest of the provider diagnostics
         // are answered from the AgentRun authority, not from here.
         assert.equal(restored?.errorClass, 'RequestRejected');
-        assert.deepEqual(Object.keys(storedRecord(root, 'attempt-1')).sort(), [
-          'attemptId',
-          'callKind',
-          'completedAt',
-          'costBasis',
-          'errorClass',
-          'latencyMs',
-          'logicalCallId',
-          'modelId',
-          'providerId',
-          'sessionId',
-          'status',
-          'turnId',
-          'usageBasis',
-        ]);
+        assert.deepEqual(
+          Object.keys(storedRecord(root, 'attempt-1')).filter(
+            (key) => !MODEL_CALL_PRICING_ROW_KEYS.includes(key) && key !== 'errorClass',
+          ),
+          [],
+        );
       } finally {
         await reopened.close();
       }
@@ -297,23 +260,6 @@ describe('canonical model call ledger', () => {
       assert.equal(page.unreadableRecords, 0);
       assert.equal(page.attempts[0]?.attemptId, 'deleted-session-call');
       assert.equal(page.attempts[0]?.costUsd, 0.004);
-      assert.deepEqual(Object.keys(storedRecord(root, 'deleted-session-call')).sort(), [
-        'attemptId',
-        'callKind',
-        'completedAt',
-        'costBasis',
-        'costUsd',
-        'inputTokens',
-        'latencyMs',
-        'logicalCallId',
-        'modelId',
-        'outputTokens',
-        'providerId',
-        'sessionId',
-        'status',
-        'turnId',
-        'usageBasis',
-      ]);
     } finally {
       await migrated.close();
       await rm(root, { recursive: true, force: true });

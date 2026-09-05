@@ -124,12 +124,18 @@ export function migrateSqliteUsageDatabase(db: DatabaseSync): void {
  * reader hold a row to it.
  */
 function narrowModelCallProjectionRows(db: DatabaseSync): void {
-  // Keyed pages rather than one `all()`: the rows this exists to shrink are the
-  // large ones, and a workspace can hold hundreds of thousands of them.
+  // `schemaVersion` is the discriminator, and a sound one in both directions: it
+  // is required on an attempt and absent from the pricing shape, whose decoder
+  // rejects unknown keys. So SQLite selects exactly the rows still to fold, and
+  // once none are left this costs one scan instead of a row-at-a-time trip
+  // through JS. Keyed pages rather than one `all()` because the rows this exists
+  // to shrink are the large ones, and a workspace can hold many of them.
   const page = db.prepare(`
     SELECT attempt_id, record_json
     FROM usage_model_call_attempts
     WHERE attempt_id > ?
+      AND json_valid(record_json)
+      AND json_type(record_json, '$.schemaVersion') IS NOT NULL
     ORDER BY attempt_id
     LIMIT 500
   `);
@@ -147,11 +153,11 @@ function narrowModelCallProjectionRows(db: DatabaseSync): void {
           projectModelCallPricingRecord(decodeModelCallAttempt(JSON.parse(row.record_json))),
         );
       } catch {
-        // Already narrow, or corrupt. Neither is rewritable from itself, and a
-        // corrupt row must survive to be reported by a read rather than dropped.
+        // Wide-shaped but not a valid attempt. It is not rewritable from itself
+        // and must survive to be reported by a read rather than dropped.
         continue;
       }
-      if (narrowed !== row.record_json) update.run(narrowed, row.attempt_id);
+      update.run(narrowed, row.attempt_id);
     }
     cursor = rows[rows.length - 1]?.attempt_id ?? cursor;
   }

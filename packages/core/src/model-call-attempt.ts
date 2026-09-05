@@ -24,6 +24,7 @@ import {
   isOptionalFiniteNumber,
   isOptionalString,
   isRecord,
+  pickShape,
 } from './record-schema.js';
 import { MODEL_CALL_KINDS, type ModelCallKind, type PricingConfig } from './usage-stats/types.js';
 
@@ -608,20 +609,20 @@ function hasValidPricingFields(value: Record<string, unknown>): boolean {
  * Cross-field rules that keep a total honest. Checked wherever a priced record
  * is decoded, so the read model cannot state something the authority forbids.
  */
-function assertPricingInvariants(value: Record<string, unknown>, label: string): void {
+function assertPricingInvariants(value: Record<string, unknown>): void {
   // `costBasis` and `costUsd` travel together in both directions. A price we
   // could not resolve must never be published as an amount, and a priced record
   // must carry one — otherwise coverage counts it as priced while the sum skips
   // it, and "every call priced, total $0" reads as genuinely free. Zero stays
   // legal, and is the only way to say a call cost nothing.
   if (value.costBasis === 'unpriced' && value.costUsd !== undefined) {
-    throw new Error(`${label} unpriced record carries a cost`);
+    throw new Error('Model call record: unpriced record carries a cost');
   }
   if (value.costBasis === 'priced' && value.costUsd === undefined) {
-    throw new Error(`${label} priced record carries no cost`);
+    throw new Error('Model call record: priced record carries no cost');
   }
   if (value.usageBasis === 'missing' && TOKEN_FIELDS.some((f) => value[f] !== undefined)) {
-    throw new Error(`${label} reports missing usage but carries tokens`);
+    throw new Error('Model call record: reports missing usage but carries tokens');
   }
 }
 
@@ -667,7 +668,7 @@ export function decodeModelCallAttempt(value: unknown): ModelCallAttempt {
   if (value.historyCompactRoute !== undefined && value.callKind !== 'history_compact') {
     throw new Error('ModelCallAttempt non-compaction call carries historyCompactRoute');
   }
-  assertPricingInvariants(value, 'ModelCallAttempt');
+  assertPricingInvariants(value);
   return value as unknown as ModelCallAttempt;
 }
 
@@ -676,33 +677,14 @@ export function decodeModelCallAttempt(value: unknown): ModelCallAttempt {
  *
  * The single definition of a projection row's shape: the ledger writes rows
  * through it and the schema migration folds pre-existing rows through the same
- * function, so one table cannot hold two shapes.
+ * function, so one table cannot hold two shapes. It projects through the shape
+ * rather than naming the fields again, so a field the interface gains cannot be
+ * dropped here without the shape refusing to compile.
  */
 export function projectModelCallPricingRecord(
   attempt: ModelCallPricingRecord,
 ): ModelCallPricingRecord {
-  const record: ModelCallPricingRecord = {
-    logicalCallId: attempt.logicalCallId,
-    attemptId: attempt.attemptId,
-    sessionId: attempt.sessionId,
-    turnId: attempt.turnId,
-    callKind: attempt.callKind,
-    ...(attempt.connectionSlug !== undefined ? { connectionSlug: attempt.connectionSlug } : {}),
-    providerId: attempt.providerId,
-    modelId: attempt.modelId,
-    completedAt: attempt.completedAt,
-    latencyMs: attempt.latencyMs,
-    status: attempt.status,
-    ...(attempt.errorClass !== undefined ? { errorClass: attempt.errorClass } : {}),
-    usageBasis: attempt.usageBasis,
-    costBasis: attempt.costBasis,
-    ...(attempt.costUsd !== undefined ? { costUsd: attempt.costUsd } : {}),
-  };
-  for (const field of TOKEN_FIELDS) {
-    const tokens = attempt[field];
-    if (tokens !== undefined) record[field] = tokens;
-  }
-  return record;
+  return pickShape(attempt, MODEL_CALL_PRICING_RECORD_SHAPE);
 }
 
 /**
@@ -719,17 +701,8 @@ export function decodeModelCallPricingRecord(value: unknown): ModelCallPricingRe
   ) {
     throw new Error('Invalid ModelCallPricingRecord schema');
   }
-  assertPricingInvariants(value, 'ModelCallPricingRecord');
+  assertPricingInvariants(value);
   return value as unknown as ModelCallPricingRecord;
-}
-
-export function isModelCallAttempt(value: unknown): value is ModelCallAttempt {
-  try {
-    decodeModelCallAttempt(value);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 /**
@@ -846,21 +819,4 @@ export function summarizeModelCallCoverage(
     else coverage.usageMissingAttempts += 1;
   }
   return coverage;
-}
-
-/**
- * Sums cost across attempts. Returns the total alongside the coverage that
- * qualifies it, because a bare number cannot express "plus an unknown amount
- * from unpriced calls".
- */
-export function sumModelCallCostUsd(attempts: readonly ModelCallPricingRecord[]): {
-  costUsd: number;
-  coverage: ModelCallCoverage;
-} {
-  const unique = dedupeModelCallAttempts(attempts);
-  let costUsd = 0;
-  for (const attempt of unique) {
-    if (attempt.costBasis === 'priced' && attempt.costUsd !== undefined) costUsd += attempt.costUsd;
-  }
-  return { costUsd, coverage: summarizeModelCallCoverage(unique) };
 }

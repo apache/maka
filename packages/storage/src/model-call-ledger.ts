@@ -44,6 +44,14 @@ import {
  * — a failed upsert, a crash between the two — and that is recoverable: the
  * authority still holds every record, so re-projecting the run restores it.
  *
+ * That recovery covers live Sessions only. Deleting a Session drops its
+ * `core_agent_runs` rows and cascades both their events and this projection's
+ * checkpoints, while these rows are deliberately left standing — spend does not
+ * disappear from all-time totals because a conversation was deleted. For those
+ * rows the projection is the last copy, so nothing may rebuild this table by
+ * clearing it and replaying the stream. See
+ * `ConversationOperationalStateStore.purge`.
+ *
  * A row holds {@link ModelCallPricingRecord} and nothing else. Selecting the
  * whole authority record instead would copy request-shape and provider
  * diagnostics no cost question reads — evidence the AgentRun stream and the
