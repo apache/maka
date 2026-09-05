@@ -87,6 +87,11 @@ const REFUSAL_PATH = process.env.MAKACU_MOCK_REFUSAL_PATH || 'none';
 // what separates a policy refusal from an application saying no.
 const NO_WOULD_REQUIRE = process.env.MAKACU_MOCK_NO_WOULD_REQUIRE === '1';
 const REFUSAL_OUTCOME = process.env.MAKACU_MOCK_REFUSAL_OUTCOME || 'refused';
+const SNAPSHOT_SPENT = process.env.MAKACU_MOCK_SNAPSHOT_SPENT === '1'
+  ? 1
+  : process.env.MAKACU_MOCK_SNAPSHOT_SPENT === '0'
+    ? 0
+    : undefined;
 const OK_OUTCOME = process.env.MAKACU_MOCK_OK_OUTCOME || 'ok';
 const SESSION_ERROR = process.env.MAKACU_MOCK_SESSION_ERROR || '';
 const WINDOW_LIST_ERROR = process.env.MAKACU_MOCK_WINDOW_LIST_ERROR || '';
@@ -212,7 +217,10 @@ function snapshot(includeImage) {
 function dispatchReply(id, params) {
   if (DISPATCH_ERROR) {
     if (BARE_REFUSAL) { domainError(id, DISPATCH_ERROR, {}); return; }
-    domainError(id, DISPATCH_ERROR, NO_WOULD_REQUIRE ? {} : { wouldRequirePath: 'cg_event_global' }, {
+    domainError(id, DISPATCH_ERROR, {
+      ...(NO_WOULD_REQUIRE ? {} : { wouldRequirePath: 'cg_event_global' }),
+      ...(SNAPSHOT_SPENT === undefined ? {} : { snapshotSpent: SNAPSHOT_SPENT }),
+    }, {
       toolCallId: params.toolCallId,
       outcome: REFUSAL_OUTCOME,
       tier: TIER,
@@ -403,6 +411,7 @@ function makeBackend(
     /** Omit `wouldRequirePath`, which is how an application's own refusal looks. */
     noWouldRequirePath?: boolean;
     refusalOutcome?: string;
+    snapshotSpent?: 0 | 1;
     okOutcome?: string;
     sessionError?: string;
     windowListError?: string;
@@ -441,6 +450,8 @@ function makeBackend(
   process.env.MAKACU_MOCK_REFUSAL_PATH = opts.refusalPath ?? 'none';
   process.env.MAKACU_MOCK_NO_WOULD_REQUIRE = opts.noWouldRequirePath ? '1' : '';
   process.env.MAKACU_MOCK_REFUSAL_OUTCOME = opts.refusalOutcome ?? 'refused';
+  process.env.MAKACU_MOCK_SNAPSHOT_SPENT =
+    opts.snapshotSpent === undefined ? '' : String(opts.snapshotSpent);
   process.env.MAKACU_MOCK_OK_OUTCOME = opts.okOutcome ?? 'ok';
   process.env.MAKACU_MOCK_SESSION_ERROR = opts.sessionError ?? '';
   process.env.MAKACU_MOCK_WINDOW_LIST_ERROR = opts.windowListError ?? '';
@@ -1407,6 +1418,83 @@ describe('maka-cu backend', () => {
       RUN_CONTEXT,
     );
     assert.equal(!retry.outcome.ok && retry.outcome.error, 'dispatch_refused');
+  });
+
+  it('drops a refused frame only when the executor says the snapshot was spent', async () => {
+    const spent = makeBackend({
+      dispatchError: 'dispatch_refused',
+      snapshotSpent: 1,
+    });
+    const spentObservation = await observeFixture(spent.backend);
+    const spentResult = await spent.backend.runSemantic!(
+      { type: 'click_element', observationId: spentObservation.observationId, elementId: 'el_2' },
+      signal(),
+      RUN_CONTEXT,
+    );
+    assert.equal(!spentResult.outcome.ok && spentResult.outcome.error, 'dispatch_refused');
+    const spentRetry = await spent.backend.runSemantic!(
+      { type: 'click_element', observationId: spentObservation.observationId, elementId: 'el_1' },
+      signal(),
+      RUN_CONTEXT,
+    );
+    assert.equal(!spentRetry.outcome.ok && spentRetry.outcome.error, 'stale_frame');
+
+    const live = makeBackend({
+      dispatchError: 'dispatch_refused',
+      snapshotSpent: 0,
+    });
+    const liveObservation = await observeFixture(live.backend);
+    const liveResult = await live.backend.runSemantic!(
+      { type: 'click_element', observationId: liveObservation.observationId, elementId: 'el_2' },
+      signal(),
+      RUN_CONTEXT,
+    );
+    assert.equal(!liveResult.outcome.ok && liveResult.outcome.error, 'dispatch_refused');
+    const liveRetry = await live.backend.runSemantic!(
+      { type: 'click_element', observationId: liveObservation.observationId, elementId: 'el_1' },
+      signal(),
+      RUN_CONTEXT,
+    );
+    assert.equal(!liveRetry.outcome.ok && liveRetry.outcome.error, 'dispatch_refused');
+  });
+
+  it('spends a frame for another failure code when the executor reports snapshotSpent:1', async () => {
+    const { backend } = makeBackend({
+      dispatchError: 'element_not_actionable',
+      snapshotSpent: 1,
+    });
+    const observation = await observeFixture(backend);
+    const result = await backend.runSemantic!(
+      { type: 'click_element', observationId: observation.observationId, elementId: 'el_2' },
+      signal(),
+      RUN_CONTEXT,
+    );
+    assert.equal(!result.outcome.ok && result.outcome.error, 'unsupported_action');
+
+    const retry = await backend.runSemantic!(
+      { type: 'click_element', observationId: observation.observationId, elementId: 'el_1' },
+      signal(),
+      RUN_CONTEXT,
+    );
+    assert.equal(!retry.outcome.ok && retry.outcome.error, 'stale_frame');
+  });
+
+  it('keeps an unknown native ax path as unknown with the protocol effect', async () => {
+    const { backend } = makeBackend({
+      dispatchError: 'outcome_unknown',
+      refusalOutcome: 'unknown',
+      refusalPath: 'ax_action',
+      snapshotSpent: 1,
+    });
+    const observation = await observeFixture(backend);
+    const result = await backend.runSemantic!(
+      { type: 'click_element', observationId: observation.observationId, elementId: 'el_2' },
+      signal(),
+      RUN_CONTEXT,
+    );
+    assert.equal(!result.outcome.ok && result.outcome.error, 'outcome_unknown');
+    assert.equal(result.outcome.evidence?.path, 'ax_action');
+    assert.equal(result.outcome.evidence?.effect, 'unverifiable');
   });
 
   it('discards the frame when the echoed digest was not the recorded one', async () => {

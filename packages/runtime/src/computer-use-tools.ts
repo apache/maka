@@ -378,6 +378,9 @@ export interface ComputerUseToolSet extends Array<MakaTool> {
  * no observation, and the model has to come back and ask.
  */
 const REOBSERVABLE_FAILURES = new Set<ComputerUseErrorCode>([
+  // An unknown outcome may already have changed the application. The old
+  // frame is never safe to reuse, even when the executor reported path:none.
+  'outcome_unknown',
   'target_changed',
   'target_missing',
   'target_occluded',
@@ -1168,7 +1171,11 @@ export function buildComputerUseTools(deps: {
    * against is still a description of what is there.
    */
   function dispatchedNothing(result: CuRunResult | undefined): boolean {
-    return result?.outcome.ok === false && result.outcome.evidence?.path === 'none';
+    return (
+      result?.outcome.ok === false &&
+      result.outcome.error !== 'outcome_unknown' &&
+      result.outcome.evidence?.path === 'none'
+    );
   }
 
   /** Retire the action but keep the frame, for a refusal that never ran. */
@@ -1853,6 +1860,11 @@ export function buildComputerUseTools(deps: {
                   record,
                   await capture(true).catch(() => capture(false)),
                 );
+                // The final frame is the sequence's public Fresh observation.
+                // Commit it to the session too; otherwise the returned frame
+                // looks current while the Host remains latched in
+                // reobserve_required and rejects the next action.
+                state.freshObservationSucceeded();
               }
             } catch {
               final = undefined;
