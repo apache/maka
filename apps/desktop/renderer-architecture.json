@@ -222,7 +222,6 @@
     "src/renderer/use-app-shell-session-workspace.ts",
     "src/renderer/use-composer-attachments.ts",
     "src/renderer/use-deep-research-run.ts",
-    "src/renderer/use-delayed-flag.ts",
     "src/renderer/use-external-store-selector.ts",
     "src/renderer/use-new-task-choice.ts",
     "src/renderer/use-onboarding-snapshot.ts",
@@ -4167,25 +4166,6 @@
           "react": 1
         }
       },
-      "src/renderer/use-delayed-flag.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {
-          "window.clearTimeout": 1,
-          "window.setTimeout": 1
-        },
-        "hookCalls": {
-          "useEffect": 2,
-          "useRef": 1,
-          "useState": 1
-        },
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "./model-wait-state.js": 1,
-          "react": 1
-        }
-      },
       "src/renderer/use-external-store-selector.ts": {
         "bridgePaths": {},
         "environmentCapabilities": {},
@@ -4352,7 +4332,7 @@
         "actionFactories": [],
         "dependencyPaths": {
           "./model-wait-state.js": 1,
-          "./use-delayed-flag.js": 1
+          "@maka/ui": 1
         }
       },
       "src/renderer/use-shell-memory-pill.ts": {

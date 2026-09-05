@@ -18,8 +18,7 @@
  */
 
 /**
- * Pure model-wait derivation + rising-edge debounce for the two turn-wait cues
- * (#646).
+ * Pure model-wait derivation for the two turn-wait cues (#646).
  *
  * A turn has two kinds of "nothing is streaming right now" lulls, and they must
  * read differently:
@@ -34,20 +33,15 @@
  *     this split fixes).
  *
  * The single dimension that separates them is the turn PHASE: `'waiting'` until
- * the first content event, `'streamed'` after. Kept free of React so the timing
- * is unit-tested with an injected scheduler (fake timers).
+ * the first content event, `'streamed'` after. Kept free of React so the
+ * derivation is unit-tested directly. The rising-edge debounce that reveals
+ * these cues (`createDelayedFlag` / `useDelayedFlag`) and the running-status
+ * line's `RUNNING_STATUS_DELAY_MS` live in `@maka/ui` so the side-conversation
+ * feature can share them.
  */
 
 /** Rising-edge delay before the first-token processing indicator appears. Tunable. */
 export const MODEL_PROCESSING_DELAY_MS = 200;
-
-/**
- * Rising-edge delay before the transcript's running status line appears.
- *
- * Same no-flash rule as the cue above, but keyed off the turn being active
- * rather than off a lull, because that line stays up for the whole turn.
- */
-export const RUNNING_STATUS_DELAY_MS = 200;
 
 /**
  * Rising-edge delay before the mid-turn "继续中…" hint appears. Longer than the
@@ -116,75 +110,4 @@ export function deriveModelWait(input: ModelWaitInputs): ModelWaitKind {
   const idle = !input.hasStreamingText && !input.hasThinkingText && !input.hasInFlightTools;
   if (!idle || input.turnPhase === undefined) return 'none';
   return input.turnPhase === 'waiting' ? 'processing' : 'continuing';
-}
-
-export interface DelayedFlagScheduler {
-  setTimeout(handler: () => void, ms: number): unknown;
-  clearTimeout(handle: unknown): void;
-}
-
-export interface DelayedFlag {
-  /** Feed the current condition; drives the flag through the delay. */
-  setCondition(active: boolean): void;
-  /** Current visible flag. */
-  get(): boolean;
-  /** Cancel any pending timer (unmount / teardown). */
-  dispose(): void;
-}
-
-/**
- * A rising-edge–delayed boolean. The flag turns true only after the condition
- * stays true for `delayMs`; if the condition drops before the delay elapses the
- * flag never turns true (the fast-response no-flash rule). Falling to false is
- * immediate. The scheduler is injected so the timing is testable with fake
- * timers instead of a real 200ms wall-clock wait.
- */
-export function createDelayedFlag(opts: {
-  delayMs: number;
-  scheduler: DelayedFlagScheduler;
-  onChange?: (visible: boolean) => void;
-}): DelayedFlag {
-  const { delayMs, scheduler, onChange } = opts;
-  let condition = false;
-  let visible = false;
-  let timer: unknown = null;
-
-  function clearTimer(): void {
-    if (timer !== null) {
-      scheduler.clearTimeout(timer);
-      timer = null;
-    }
-  }
-
-  function emit(next: boolean): void {
-    if (next === visible) return;
-    visible = next;
-    onChange?.(visible);
-  }
-
-  return {
-    setCondition(active: boolean): void {
-      if (active === condition) return;
-      condition = active;
-      if (active) {
-        // Rising edge: arm once. Already-visible (re-entrant true) keeps state.
-        if (!visible && timer === null) {
-          timer = scheduler.setTimeout(() => {
-            timer = null;
-            emit(true);
-          }, delayMs);
-        }
-      } else {
-        // Falling edge: cancel a pending reveal and hide immediately.
-        clearTimer();
-        emit(false);
-      }
-    },
-    get(): boolean {
-      return visible;
-    },
-    dispose(): void {
-      clearTimer();
-    },
-  };
 }

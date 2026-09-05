@@ -26,8 +26,10 @@ import {
   ClientCapabilityPrompt,
   finalAssistantReplyText,
   FormInteractionPrompt,
+  RUNNING_STATUS_DELAY_MS,
   SandboxBoundaryPrompt,
   UserQuestionPrompt,
+  useDelayedFlag,
   useToast,
   useUiLocale,
   type ChatModelChoice,
@@ -55,28 +57,6 @@ import type {
 import type { CompanionForkVisibilityEvent } from './quote-companion-visibility';
 import { readScrollMotionBehavior } from '../../../../scroll-motion-policy';
 import { useWorkbarServices } from '../../services-context.js';
-
-const RUNNING_STATUS_DELAY_MS = 200;
-
-/**
- * A boolean that turns true only after `condition` has held for `delayMs`, and
- * false the moment it drops — the rising-edge delay that keeps a fast turn from
- * flashing the running-status line. A feature-local copy of the shell's
- * useDelayedFlag: the renderer-legacy original is walled off from feature code
- * by the architecture budget, and this is only a few lines of timer plumbing.
- */
-function useDelayedFlag(condition: boolean, delayMs: number): boolean {
-  const [visible, setVisible] = useState(false);
-  useEffect(() => {
-    if (!condition) {
-      setVisible(false);
-      return;
-    }
-    const handle = window.setTimeout(() => setVisible(true), delayMs);
-    return () => window.clearTimeout(handle);
-  }, [condition, delayMs]);
-  return visible;
-}
 
 /**
  * The side-conversation workbar tab: a transient read-only fork of the main session.
