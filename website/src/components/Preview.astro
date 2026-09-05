@@ -21,9 +21,13 @@
 // else on the page reaches the card. The image is a render of the homepage
 // hero in the page's language, made by scripts/readme-hero.mjs, and the
 // crawlers need its URL to be absolute.
+import type { ImageMetadata } from 'astro';
 import socialEn from '../assets/social.en.png';
 import socialZhCN from '../assets/social.zh-CN.png';
-import type { Copy } from '../copy/types';
+import type { Copy, Locale } from '../copy/types';
+
+const images: Record<Locale, ImageMetadata> = { en: socialEn, 'zh-CN': socialZhCN };
+const ogLocales: Record<Locale, string> = { en: 'en_US', 'zh-CN': 'zh_CN' };
 
 interface Props {
   copy: Copy;
@@ -33,8 +37,10 @@ interface Props {
 }
 
 const { copy, url, title, description } = Astro.props;
-const image = copy.locale === 'en' ? socialEn : socialZhCN;
+const image = images[copy.locale];
 const src = new URL(image.src, Astro.site);
+// The card's alt: what the site says it is, then what the picture shows.
+const alt = `${copy.positioning} ${copy.sceneAlt}`;
 ---
 
 <meta property="og:type" content="website" />
@@ -42,13 +48,13 @@ const src = new URL(image.src, Astro.site);
 <meta property="og:url" content={url} />
 <meta property="og:title" content={title} />
 <meta property="og:description" content={description} />
-<meta property="og:locale" content={copy.locale === 'en' ? 'en_US' : 'zh_CN'} />
+<meta property="og:locale" content={ogLocales[copy.locale]} />
 <meta property="og:image" content={src} />
 <meta property="og:image:width" content={String(image.width)} />
 <meta property="og:image:height" content={String(image.height)} />
-<meta property="og:image:alt" content={copy.socialImageAlt} />
+<meta property="og:image:alt" content={alt} />
 <meta name="twitter:card" content="summary_large_image" />
 <meta name="twitter:title" content={title} />
 <meta name="twitter:description" content={description} />
 <meta name="twitter:image" content={src} />
-<meta name="twitter:image:alt" content={copy.socialImageAlt} />
+<meta name="twitter:image:alt" content={alt} />

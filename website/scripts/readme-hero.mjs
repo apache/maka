@@ -18,10 +18,12 @@
  */
 
 /**
- * Renders the README hero images from the built site, so the README shows
- * the same headline and RuntimeEvents scene as maka.apache.org. Run
+ * Renders the README hero images and the social preview images from the
+ * built site, so the README and every link card show the same headline and
+ * RuntimeEvents scene as maka.apache.org. Run
  * `npm --workspace @maka/website run readme-hero` after changing the hero
- * copy or styles and commit the PNGs it writes to `.github/assets/`.
+ * copy or styles and commit the PNGs it writes to `.github/assets/` and
+ * `website/src/assets/`.
  */
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
@@ -31,7 +33,7 @@ import { fileURLToPath } from 'node:url';
 
 import { chromium } from '@playwright/test';
 
-import { heroText, socialText } from './hero-text.mjs';
+import { headlineText, heroText } from './hero-text.mjs';
 
 const dist = fileURLToPath(new URL('../dist/', import.meta.url));
 const assets = fileURLToPath(new URL('../../.github/assets/', import.meta.url));
@@ -107,12 +109,13 @@ if (!executable || !existsSync(executable)) {
 }
 
 const manifest = {};
+const headlines = {};
 const browser = await chromium.launch();
 try {
   for (const locale of ['en', 'zh-CN']) {
     const html = readFileSync(join(dist, locale, 'index.html'), 'utf8');
     manifest[locale] = heroText(html);
-    (manifest.social ??= {})[locale] = socialText(html);
+    headlines[locale] = headlineText(html);
     for (const colorScheme of ['light', 'dark']) {
       const page = await browser.newPage({
         viewport: { width: 1600, height: 1000 },
@@ -142,8 +145,10 @@ try {
     console.log(path);
     await page.close();
   }
-  // The copy these images and the social previews were made from, so the site
-  // test can tell when the pages have moved on and the committed images have not.
+  // The copy these images were made from, so the site test can tell when the
+  // pages have moved on and the committed images have not. The README heroes
+  // show the scene; the social previews show the headline above it.
+  manifest.headline = headlines;
   const path = join(assets, 'readme-hero.json');
   writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`);
   console.log(path);

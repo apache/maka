@@ -34,12 +34,12 @@ const entities = {
   '&nbsp;': ' ',
 };
 
-// The social preview image keeps the headline and the scene, so its record
-// is the headline's text followed by the scene's.
-export function socialText(html) {
+// The social preview image keeps the headline above the scene, so it has
+// this on top of what the README hero has.
+export function headlineText(html) {
   const [, headline] = html.match(/<h1 class="display">(.*?)<\/h1>/su) ?? [];
   if (!headline) throw new Error('no hero headline in the page');
-  return `${text(headline)} ${heroText(html)}`;
+  return text(headline);
 }
 
 const text = (html) =>
