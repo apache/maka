@@ -18,12 +18,27 @@
  */
 
 import { generalizedErrorMessageForLocale, redactSecrets } from '@maka/core/redaction';
-import { type ConnectionTestResult } from '@maka/core/llm-connections';
+import {
+  connectionEnabledModelIds,
+  type ConnectionTestResult,
+} from '@maka/core/llm-connections';
 import { type UiLocale } from '@maka/core/ui-locale';
 import { getProviderSettingsCopy } from './settings-provider-copy.js';
 import { cleanErrorMessage } from '../../application/contracts/connection-error-cleaner.js';
 
 export type CredentialPresenceStatus = boolean | 'loading' | 'error';
+
+/**
+ * Read the model count displayed by connection rows. Keep the legacy settings
+ * panel on the feature boundary while preserving the core read-time migration
+ * rule for connections written before enabledModelIds existed.
+ */
+export function connectionEnabledModelCount(connection: {
+  defaultModel?: unknown;
+  enabledModelIds?: unknown;
+}): number {
+  return connectionEnabledModelIds(connection).length;
+}
 
 export function providerPanelActionErrorMessage(error: unknown, locale: UiLocale = 'zh-CN'): string {
   const shared = getProviderSettingsCopy(locale).shared;

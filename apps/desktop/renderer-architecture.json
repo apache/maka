@@ -3209,7 +3209,6 @@
           "./settings-route-focus": 1,
           "./settings-route-header": 1,
           "@astryxdesign/core": 1,
-          "@maka/core/llm-connections": 1,
           "@maka/core/provider-registry": 1,
           "@maka/ui": 1,
           "@maka/ui/icons": 1,

@@ -32,6 +32,7 @@ export type {
   RuntimeHostSettingsConnectionsBridge,
 } from './ports.js';
 export {
+  connectionEnabledModelCount,
   connectionLastTestMessageDisplay,
   connectionTestFailureMessage,
   providerPanelActionErrorMessage,

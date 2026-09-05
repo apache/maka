@@ -35,7 +35,6 @@ import {
 } from '@astryxdesign/core';
 import { ICON_SIZE, ChevronRight, Cpu } from '@maka/ui/icons';
 import {
-  connectionEnabledModelIds,
   type IdentifiedLlmConnection,
   type ProjectedLlmConnection,
   type ProviderType,
@@ -59,6 +58,7 @@ import { SettingsRouteHeader } from './settings-route-header';
 import { ProviderLogo, providerDisplay } from './provider-display';
 import { oauthPanelSubtitle } from './provider-oauth-section';
 import {
+  connectionEnabledModelCount,
   getProviderSettingsCopy,
   providerPanelActionErrorMessage,
   ConnectionSaveUncertaintyObserver,
@@ -649,7 +649,7 @@ function ProvidersPanelContent({ bridge, apiKeyOnboardingBridge, initialPage = '
 function connectionSubtitle(connection: IdentifiedLlmConnection, locale: UiLocale): string {
   const copy = getProviderSettingsCopy(locale).panel;
   const providerName = providerDisplay(connection.providerType, locale).name;
-  const enabledCount = connectionEnabledModelIds(connection).length;
+  const enabledCount = connectionEnabledModelCount(connection);
   const parts = [providerName];
   if (enabledCount > 1) parts.push(copy.modelCount(enabledCount));
   if (connection.defaultModel) parts.push(connection.defaultModel);
