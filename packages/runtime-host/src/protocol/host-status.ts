@@ -80,6 +80,13 @@ export type HostPeerEndpoint = SignedPeerReachabilityLeaseV1;
 export interface HostDiagnosticsResult extends HostStatusResult {
   compositionModules: readonly string[];
   residencies: readonly { label: string; count: number }[];
+  /**
+   * The Host's authoritative answer to "would a maintenance drain interrupt
+   * active work right now", computed by the same authority that gates
+   * `host.upgrade.prepare`. Absent from older Hosts; readers must treat a
+   * missing value as unknown rather than as idle.
+   */
+  upgradeBlockingActivity?: boolean;
   protocolVersion: number;
   compatibilityEpoch: number;
   pid: number;
@@ -151,6 +158,7 @@ function decodeHostDiagnosticsResult(value: unknown): HostDiagnosticsResult {
     'activeOperations',
     'activeResidencies',
     ...(valueRecord.peerEndpoint === undefined ? [] : ['peerEndpoint']),
+    ...(valueRecord.upgradeBlockingActivity === undefined ? [] : ['upgradeBlockingActivity']),
     'compositionModules',
     'residencies',
     'protocolVersion',
@@ -174,6 +182,11 @@ function decodeHostDiagnosticsResult(value: unknown): HostDiagnosticsResult {
   }
   return {
     ...decodeHostStatusFields(record),
+    ...(record.upgradeBlockingActivity === undefined
+      ? {}
+      : {
+          upgradeBlockingActivity: requireUpgradeBlockingActivity(record.upgradeBlockingActivity),
+        }),
     compositionModules: record.compositionModules.map((moduleId) =>
       requireString(moduleId, 'Runtime Host composition module id', 64),
     ),
@@ -200,6 +213,13 @@ function decodeHostDiagnosticsResult(value: unknown): HostDiagnosticsResult {
       ),
     ),
   };
+}
+
+function requireUpgradeBlockingActivity(value: unknown): boolean {
+  if (typeof value !== 'boolean') {
+    throw invalidProtocolFrame('Invalid Runtime Host upgrade blocking activity');
+  }
+  return value;
 }
 
 export function decodeHostActivitySnapshot(value: unknown): HostActivitySnapshot {

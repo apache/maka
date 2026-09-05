@@ -195,7 +195,6 @@ import {
 } from "./runtime-host-startup-recovery.js";
 import {
   buildRuntimeHostActiveQuitDialog,
-  buildRuntimeHostQuitFailureDialog,
 } from "./runtime-host-quit-copy.js";
 import { prepareRuntimeHostQuit } from "./runtime-host-quit.js";
 import { createRuntimeHostUpgradePrompts } from "./runtime-host-upgrade-dialog.js";
@@ -1983,12 +1982,6 @@ async function prepareRuntimeHostDesktopQuit(): Promise<'ready' | 'cancelled'> {
       const dialog = buildRuntimeHostActiveQuitDialog(locale);
       const { response } = await showDesktopMessageBox(dialog.options, { locale });
       return dialog.decisions[response] === 'quit';
-    },
-    recoverFailure: async (error) => {
-      const locale = await desktopLocale.resolve();
-      const dialog = buildRuntimeHostQuitFailureDialog(error, locale);
-      const { response } = await showDesktopMessageBox(dialog.options, { locale });
-      return dialog.decisions[response] ?? 'cancel';
     },
   });
   if (preparation === 'ready') mainWindowController.browserWindow()?.destroy();

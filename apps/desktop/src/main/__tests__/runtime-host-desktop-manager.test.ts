@@ -260,8 +260,7 @@ test('does not treat an in-flight replacement as retired after admission times o
     retirement,
     (error: unknown) =>
       error instanceof DesktopLocalHostRetirementError &&
-      error.facts.pid === undefined &&
-      !error.facts.forceTerminationAvailable,
+      error.facts.pid === undefined,
   );
 
   releaseReconnect();
@@ -308,8 +307,54 @@ test('retires the owned ephemeral Host before Desktop quit', async () => {
     'wait:42',
   ]);
   await owner.close();
-  assert.equal(events.at(-1), 'release-launches');
+  assert.ok(!events.includes('release-launches'));
   assert.ok(!events.includes('resume-launches'));
+});
+
+test('probes owned Host activity for the quit consent dialog without retiring it', async () => {
+  const active = candidateHarness({ upgradeBlockingActivity: true });
+  const owner = await startRuntimeHostDesktopManager(
+    {} as DesktopRuntimeHostCandidateStartInput,
+    { startCandidate: async () => ready(active.candidate) },
+  );
+
+  assert.deepEqual(await owner.probeOwnedLocalHostActivity(), { kind: 'active_tasks' });
+  assert.equal(active.prepareRetirementCalls, 0);
+  await owner.close();
+});
+
+test('probe treats a missing activity field as clear and never retires', async () => {
+  const current = candidateHarness();
+  const owner = await startRuntimeHostDesktopManager(
+    {} as DesktopRuntimeHostCandidateStartInput,
+    { startCandidate: async () => ready(current.candidate) },
+  );
+
+  assert.deepEqual(await owner.probeOwnedLocalHostActivity(), { kind: 'clear' });
+  assert.equal(current.prepareRetirementCalls, 0);
+  await owner.close();
+});
+
+test('probe reports not_owned for a Host this Desktop does not own', async () => {
+  const external = candidateHarness({ ownership: 'external' });
+  const owner = await startRuntimeHostDesktopManager(
+    {} as DesktopRuntimeHostCandidateStartInput,
+    { startCandidate: async () => ready(external.candidate) },
+  );
+
+  assert.deepEqual(await owner.probeOwnedLocalHostActivity(), { kind: 'not_owned' });
+  await owner.close();
+});
+
+test('probe failure never blocks quit', async () => {
+  const wedged = candidateHarness({ diagnosticsError: new Error('connection lost') });
+  const owner = await startRuntimeHostDesktopManager(
+    {} as DesktopRuntimeHostCandidateStartInput,
+    { startCandidate: async () => ready(wedged.candidate) },
+  );
+
+  assert.deepEqual(await owner.probeOwnedLocalHostActivity(), { kind: 'clear' });
+  await owner.close();
 });
 
 test('does not retire the local Host twice when an update handoff triggers quit', async () => {
@@ -461,7 +506,7 @@ test('retires unadopted candidates before draining the tracked Host', async () =
   if (retirement.kind === 'retired') retirement.resume();
   assert.equal(events.at(-1), 'resume-launches');
   await owner.close();
-  assert.equal(events.at(-1), 'release-launches');
+  assert.ok(!events.includes('release-launches'));
 });
 
 test('resumes candidate launches when active tasks block the update', async () => {
@@ -486,7 +531,7 @@ test('resumes candidate launches when active tasks block the update', async () =
   });
   assert.deepEqual(events, ['pause', 'retire', 'resume']);
   await owner.close();
-  assert.equal(events.at(-1), 'release');
+  assert.ok(!events.includes('release'));
 });
 
 test('preserves Host facts when authorized retirement is refused', async () => {
@@ -509,57 +554,6 @@ test('preserves Host facts when authorized retirement is refused', async () => {
       error.cause.message === 'Runtime Host refused authorized retirement',
   );
   await owner.close();
-});
-
-test('fences replacement launches while force-terminating the exact failed retirement', async () => {
-  const events: string[] = [];
-  const current = candidateHarness({
-    ownedProcess: {
-      pid: 42,
-      exited: new Promise(() => {}),
-    },
-  });
-  const owner = await startRuntimeHostDesktopManager({
-    rootPath: '/test-root',
-    candidateLaunchBarrier: {
-      connect: async () => assert.fail('mocked candidate startup bypasses the barrier'),
-      pause: () => events.push('pause'),
-      retireExcept: async (pid: number) => {
-        events.push(`retire:${pid}`);
-      },
-      resume: () => events.push('resume'),
-      release: () => events.push('release'),
-    },
-  } as unknown as DesktopRuntimeHostCandidateStartInput, {
-    startCandidate: async () => ready(current.candidate),
-    forceTerminateHost: async (identity, stillOwnsProcess) => {
-      assert.deepEqual(identity, {
-        rootPath: '/test-root',
-        rootId: 'test-host',
-        hostEpoch: 'test-host-epoch',
-        pid: 42,
-      });
-      assert.equal(stillOwnsProcess(), true);
-      events.push('terminate');
-      return true;
-    },
-  });
-
-  assert.equal(
-    await owner.forceTerminateOwnedLocalHost({
-      hostId: 'test-host',
-      hostEpoch: 'test-host-epoch',
-      lifecycleMode: 'ephemeral',
-      rootPath: '/test-root',
-      pid: 42,
-      forceTerminationAvailable: true,
-    }),
-    true,
-  );
-  assert.deepEqual(events, ['pause', 'retire:42', 'terminate']);
-  assert.equal((await owner.retireOwnedLocalHost('refuse_active_work')).kind, 'retired');
-  await owner.close();
-  assert.equal(events.at(-1), 'release');
 });
 
 test('resumes candidate launches when candidate retirement fails', async () => {
@@ -1812,6 +1806,8 @@ function candidateHarness(
     delayDisconnect?: boolean;
     disconnectOnPrepare?: boolean;
     activeTasks?: boolean | 'always';
+    upgradeBlockingActivity?: boolean;
+    diagnosticsError?: Error;
     ownership?: 'owned_ephemeral' | 'supervised' | 'external';
     ownedProcess?: RuntimeHostSpawnedProcess;
     hostId?: string;
@@ -1846,7 +1842,13 @@ function candidateHarness(
         return lifecycleState;
       },
       async queryHostDiagnostics() {
-        return { pid: 42 };
+        if (options.diagnosticsError) throw options.diagnosticsError;
+        return {
+          pid: 42,
+          ...(options.upgradeBlockingActivity === undefined
+            ? {}
+            : { upgradeBlockingActivity: options.upgradeBlockingActivity }),
+        };
       },
       async prepareHostRetirement(mode: string) {
         prepareRetirementCalls += 1;
