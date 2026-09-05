@@ -1726,8 +1726,7 @@ function isWorkHubCoordinationMessage(message: Record<string, unknown>): boolean
         ? (SAFE_BOUNDARY_RESUME_PARK_REASONS as readonly unknown[]).includes(message.parkReason)
         : message.parkReason === undefined) &&
       (started
-        ? typeof message.targetTurnId === 'string' &&
-          message.targetTurnId.length > 0
+        ? typeof message.targetTurnId === 'string' && message.targetTurnId.length > 0
         : message.targetTurnId === undefined)
     );
   }
