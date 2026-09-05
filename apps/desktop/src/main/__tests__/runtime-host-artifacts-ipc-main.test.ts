@@ -18,11 +18,11 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { registerRuntimeHostArtifactsIpc } from "../runtime-host-artifacts-ipc-main.js";
+import { materializeArtifact, registerRuntimeHostArtifactsIpc } from "../runtime-host-artifacts-ipc-main.js";
 
 type Handler = (event: unknown, ...args: any[]) => unknown;
 type StreamArtifact = (
@@ -189,4 +189,93 @@ test("Attachment byte IPC stops a stream that exceeds its preview admission", as
     await read({}, "session-1", "artifact-drifted"),
     { ok: false, reason: "too_large" },
   );
+});
+
+test("A failed final replacement leaves the previous destination intact", async () => {
+  const root = await mkdtemp(join(tmpdir(), "maka-host-artifact-ipc-"));
+  const savedPath = join(root, "saved.bin");
+  await writeFile(savedPath, "ORIGINAL");
+  const content = Buffer.from("REPLACEMENT");
+  const client = {
+    async streamArtifact(
+      _sessionId: string,
+      _artifactId: string,
+      writeChunk: (chunk: Uint8Array) => Promise<void>,
+    ) {
+      await writeChunk(content);
+      return content.byteLength;
+    },
+  };
+
+  try {
+    await assert.rejects(
+      materializeArtifact(
+        client as never,
+        "session-1",
+        "artifact-1",
+        savedPath,
+        content.byteLength,
+        async () => {
+          throw Object.assign(new Error("injected EIO"), { code: "EIO" });
+        },
+      ),
+    );
+    assert.equal(await readFile(savedPath, "utf8"), "ORIGINAL");
+    assert.deepEqual(await readdir(root), ["saved.bin"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("app:saveArtifactAs replaces an existing destination on success", async () => {
+  const root = await mkdtemp(join(tmpdir(), "maka-host-artifact-ipc-"));
+  const savedPath = join(root, "saved.bin");
+  await writeFile(savedPath, "ORIGINAL");
+  const content = Buffer.from("REPLACEMENT");
+  const handlers = new Map<string, Handler>();
+  const artifact = {
+    id: "artifact-1",
+    sessionId: "session-1",
+    turnId: "turn-1",
+    createdAt: 1,
+    name: "result.bin",
+    kind: "image",
+    sizeBytes: content.byteLength,
+    mimeType: "image/png",
+    status: "live",
+  } as const;
+
+  try {
+    registerRuntimeHostArtifactsIpc({
+      ipcMain: {
+        handle: (channel, handler) => handlers.set(channel, handler as Handler),
+      },
+      client: {
+        hostEpoch: "host-1",
+        async getArtifact() {
+          return artifact;
+        },
+        async streamArtifact(
+          _sessionId: string,
+          _artifactId: string,
+          writeChunk: (chunk: Uint8Array) => Promise<void>,
+        ) {
+          await writeChunk(content);
+          return content.byteLength;
+        },
+      } as never,
+      mainWindowController: {
+        showSaveDialog: async () => ({ canceled: false, filePath: savedPath }),
+      } as never,
+      showItemInFolder() {},
+    });
+
+    assert.deepEqual(
+      await handlers.get("app:saveArtifactAs")?.({}, "session-1", "artifact-1"),
+      { ok: true, saved: "result.bin" },
+    );
+    assert.equal(await readFile(savedPath, "utf8"), "REPLACEMENT");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

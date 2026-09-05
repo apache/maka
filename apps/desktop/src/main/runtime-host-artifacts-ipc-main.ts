@@ -182,12 +182,25 @@ export function registerRuntimeHostAttachmentPreviewIpc(
   );
 }
 
-async function materializeArtifact(
+/**
+ * Streams the artifact to a staging file beside the destination, then
+ * replaces the destination in one atomic step. Exported for the
+ * fault-injection test of #4832: `replaceDestination` lets a test fail the
+ * final replacement to prove the previous destination survives; production
+ * always uses `rename`, which replaces an existing destination atomically on
+ * every platform (no unlink first — that would lose the destination if the
+ * rename failed).
+ */
+export async function materializeArtifact(
   client: DesktopRuntimeHostClient,
   sessionId: string,
   artifactId: string,
   targetPath: string,
   expectedBytes: number,
+  replaceDestination: (stagingPath: string, targetPath: string) => Promise<void> =
+    async (stagingPath, targetPath) => {
+      await rename(stagingPath, targetPath);
+    },
 ): Promise<void> {
   await mkdir(dirname(targetPath), { recursive: true });
   const stagingPath = join(
@@ -220,8 +233,10 @@ async function materializeArtifact(
     }
     await handle.sync();
     await handle.close();
-    await rm(targetPath, { force: true });
-    await rename(stagingPath, targetPath);
+    // rename(2) replaces an existing destination in one atomic step on every
+    // platform; unlinking the destination first would turn any rename
+    // failure into a lost destination (#4832).
+    await replaceDestination(stagingPath, targetPath);
   } catch (error) {
     await handle.close().catch(() => undefined);
     await rm(stagingPath, { force: true }).catch(() => undefined);
