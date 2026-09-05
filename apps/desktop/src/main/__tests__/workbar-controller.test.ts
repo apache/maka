@@ -594,6 +594,51 @@ describe('useWorkbarController', () => {
     assert.equal(controller().host.quotes?.some((panel) => panel.id === panelId), true);
   });
 
+  it('cleans Side Chat when a new task clears the active Session', async () => {
+    const { root } = installReactRenderer();
+    const parent = session('parent');
+    const services = createFakeWorkbarServices();
+
+    await act(async () => renderController(root, services, input(parent, [], [parent])));
+    await act(async () => controller().commands.openTool('side-chat'));
+    const panelId = controller().host.quotes?.[0]?.id;
+    assert.ok(panelId);
+
+    await act(async () => renderController(root, services, input(undefined, [], [parent])));
+
+    assert.equal(controller().host.activeId, undefined);
+    assert.equal(controller().host.quotes?.some((panel) => panel.id === panelId), false);
+    assert.equal(
+      controller().host.panelsState.right.tabs.some(
+        (candidate) => candidate.id === `side-chat:${panelId}`,
+      ),
+      false,
+    );
+  });
+
+  it('cleans Side Chat for an uncataloged unrelated Session', async () => {
+    const { root } = installReactRenderer();
+    const parent = session('parent');
+    const unrelated = session('unrelated');
+    const services = createFakeWorkbarServices();
+
+    await act(async () => renderController(root, services, input(parent, [], [parent])));
+    await act(async () => controller().commands.openTool('side-chat'));
+    const panelId = controller().host.quotes?.[0]?.id;
+    assert.ok(panelId);
+
+    await act(async () => renderController(root, services, input(unrelated, [], [parent])));
+
+    assert.equal(controller().host.activeId, unrelated.id);
+    assert.equal(controller().host.quotes?.some((panel) => panel.id === panelId), false);
+    assert.equal(
+      controller().host.panelsState.right.tabs.some(
+        (candidate) => candidate.id === `side-chat:${panelId}`,
+      ),
+      false,
+    );
+  });
+
   it('keeps the family surface mounted when one of multiple source panels closes', async () => {
     const { root } = installReactRenderer();
     const parent = session('parent');

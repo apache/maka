@@ -141,6 +141,18 @@ function terminalResourceKey(sessionId: string, ref: string): string {
   return `${sessionId}\u0000${ref}`;
 }
 
+function pendingActiveSessionBelongsToKnownFamily(
+  activeSession: SessionSummary | undefined,
+  knownSessions: readonly SessionSummary[],
+): boolean {
+  if (!activeSession || knownSessions.some((session) => session.id === activeSession.id)) {
+    return false;
+  }
+  const parentSessionId =
+    activeSession.subagent?.parentSessionId ?? activeSession.subagentParent?.parentSessionId;
+  return parentSessionId !== undefined && knownSessions.some((session) => session.id === parentSessionId);
+}
+
 function projectWorkbarPanelsForSession(
   panels: SessionWorkbarPanelsState,
   activeSessionId: string | undefined,
@@ -199,12 +211,22 @@ export function useWorkbarController(
     lastKnownFamilySessionRef.current = input.activeSession;
     lastKnownFamilySessionsRef.current = input.sessions;
   }
-  const familySessionForSideChat = activeSessionIsCataloged
-    ? input.activeSession
-    : (lastKnownFamilySessionRef.current ?? input.activeSession);
-  const familySessionsForSideChat = activeSessionIsCataloged
-    ? input.sessions
-    : lastKnownFamilySessionsRef.current;
+  const canUseLastKnownFamily = pendingActiveSessionBelongsToKnownFamily(
+    input.activeSession,
+    lastKnownFamilySessionsRef.current,
+  );
+  const familySessionForSideChat =
+    activeSessionIsCataloged || canUseLastKnownFamily
+      ? activeSessionIsCataloged
+        ? input.activeSession
+        : lastKnownFamilySessionRef.current
+      : input.activeSession;
+  const familySessionsForSideChat =
+    activeSessionIsCataloged || canUseLastKnownFamily
+      ? activeSessionIsCataloged
+        ? input.sessions
+        : lastKnownFamilySessionsRef.current
+      : input.sessions;
   const resourceGenerationRef = useRef(0);
   useLayoutEffect(() => {
     resourceGenerationRef.current += 1;
