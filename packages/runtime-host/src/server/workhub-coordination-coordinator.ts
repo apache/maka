@@ -44,6 +44,7 @@ import {
 import type { SessionAuthorityStore, SessionHeaderSnapshot } from '@maka/storage/session-store';
 import type {
   OperationOutcome,
+  WorkHubCoordinationActResult,
   WorkHubCoordinationActInput,
   WorkHubCoordinationAnswerInput,
   WorkHubCoordinationRecordInput,
@@ -65,6 +66,7 @@ import {
   WorkHubActionGateFailure,
   WorkHubCoordinationActionGate,
   type WorkHubActionGateEffects,
+  type WorkHubDelegationResumeInput,
 } from './workhub-coordination-action-gate.js';
 
 const CREATE_FINGERPRINT = `sha256:${createHash('sha256')
@@ -115,6 +117,37 @@ type CoordinationExecutions = Pick<
   'startWorkHubCoordinationMessage' | 'hasRootTurnAdmission'
 >;
 
+type WorkHubResumePlan =
+  | { readonly kind: 'already_running' | 'parked' }
+  | {
+      readonly kind: 'ready';
+      readonly sourceTurnId: string;
+      readonly sourceRunId: string;
+      readonly sourceRuntimeEventHighWater: number;
+      readonly targetTurnId: string;
+    };
+
+interface WorkHubResumeResult {
+  readonly outcome: 'resume_started' | 'already_running' | 'parked';
+  readonly targetTurnId?: string;
+  readonly targetRunId?: string;
+}
+
+type CoordinationSessionActions = Pick<
+  WorkHubActionGateEffects,
+  'assign' | 'readDelegationRetirement' | 'retireDelegation'
+> & {
+  planResume(
+    assignment: WorkHubDelegationAssignedMessage,
+    previous: WorkHubDelegationResumeResolvedMessage | undefined,
+    context: ConnectionContext,
+  ): Promise<WorkHubResumePlan>;
+  resumeDelegation(
+    request: WorkHubDelegationResumeRequestedMessage,
+    context: ConnectionContext,
+  ): Promise<WorkHubResumeResult>;
+};
+
 export type CoordinationCreateTarget = Omit<CreateSessionInput, 'cwd' | 'name' | 'projectId'>;
 
 export interface HostWorkHubCoordinationCoordinatorOptions {
@@ -123,14 +156,7 @@ export interface HostWorkHubCoordinationCoordinatorOptions {
   readonly admission: SessionAdmissionGate;
   readonly continuity: Pick<SessionContinuityCoordinator, 'refreshCanonical'>;
   readonly executions: CoordinationExecutions;
-  readonly sessionActions: Pick<
-    WorkHubActionGateEffects,
-    | 'assign'
-    | 'readDelegationRetirement'
-    | 'retireDelegation'
-    | 'planResume'
-    | 'resumeDelegation'
-  >;
+  readonly sessionActions: CoordinationSessionActions;
   readonly resolveCreateTarget: () => Promise<CoordinationCreateTarget>;
   readonly requestDrain: () => void;
 }
@@ -190,8 +216,6 @@ export class HostWorkHubCoordinationCoordinator {
       readStopRequest: (delegationId) => this.#stores.readWorkHubStopRequest(delegationId),
       readStopResolution: (delegationId) => this.#stores.readWorkHubStopResolution(delegationId),
       readResumeRequest: (actionId) => this.#stores.readWorkHubResumeRequest(actionId),
-      readResumeResolution: (actionId) => this.#stores.readWorkHubResumeResolution(actionId),
-      listResumeResolutions: (delegationId) => this.#listResumeResolutions(delegationId),
       answer: async (input, context) => {
         const outcome = await this.#answer({ turnId: input.turnId, text: input.text }, context);
         if (!outcome.ok) {
@@ -213,12 +237,9 @@ export class HostWorkHubCoordinationCoordinator {
       abortReplacement: (input) => this.#abortReplacement(input),
       prepareStop: (input) => this.#prepareStop(input),
       resolveStop: (input) => this.#resolveStop(input),
-      prepareResume: (input) => this.#prepareResume(input),
-      resolveResume: (input) => this.#resolveResume(input),
       readDelegationRetirement: options.sessionActions.readDelegationRetirement,
       retireDelegation: options.sessionActions.retireDelegation,
-      planResume: options.sessionActions.planResume,
-      resumeDelegation: options.sessionActions.resumeDelegation,
+      resume: (input, context) => this.#resume(input, context, options.sessionActions),
     });
   }
 
@@ -400,68 +421,86 @@ export class HostWorkHubCoordinationCoordinator {
     });
   }
 
-  #prepareResume(
-    input: Parameters<WorkHubActionGateEffects['prepareResume']>[0],
-  ): Promise<WorkHubDelegationResumeRequestedMessage> {
-    const suffix = createHash('sha256').update(input.actionId, 'utf8').digest('hex').slice(0, 48);
-    return this.#commitCoordinationFact({
-      admissionSessionIds: [WORKHUB_COORDINATION_SESSION_ID, input.targetSessionId],
-      read: () => this.#stores.readWorkHubResumeRequest(input.actionId),
-      build: (existing) => ({
-        type: 'workhub_coordination',
-        id: `whr_${suffix}`,
-        turnId: input.actionId,
-        ts: existing?.ts ?? Date.now(),
-        schemaVersion: WORKHUB_COORDINATION_RESUME_SCHEMA_VERSION,
-        kind: 'delegation_resume_requested',
-        actionId: input.actionId,
-        actionFingerprint: input.actionFingerprint,
-        coordinationTurnId: input.actionId,
-        resumesActionId: input.resumesActionId,
-        resumesDelegationId: input.resumesDelegationId,
-        targetSessionId: input.targetSessionId,
-        targetMessageId: input.targetMessageId,
-        targetSessionName: input.targetSessionName,
-        userText: input.userText,
-        plan: input.plan.kind,
-        ...(input.plan.kind === 'ready'
-          ? {
-              sourceTurnId: input.plan.sourceTurnId,
-              sourceRunId: input.plan.sourceRunId,
-              sourceRuntimeEventHighWater: input.plan.sourceRuntimeEventHighWater,
-              targetTurnId: input.plan.targetTurnId,
-            }
-          : {}),
-      }),
-      conflictMessage: 'WorkHub resume identity belongs to a different plan',
-      beforeAppend: async () => {
-        const source = (await this.#listActiveAssignments()).find(
-          ({ actionId, delegationId }) =>
-            actionId === input.resumesActionId && delegationId === input.resumesDelegationId,
-        );
-        if (!source || source.targetSessionId !== input.targetSessionId) {
-          throw new WorkHubActionGateFailure(
-            'action_conflict',
-            'WorkHub resume source is no longer active',
+  async #resume(
+    input: WorkHubDelegationResumeInput,
+    context: ConnectionContext,
+    actions: CoordinationSessionActions,
+  ): Promise<Extract<WorkHubCoordinationActResult, { disposition: 'resume_work' }>> {
+    let request: WorkHubDelegationResumeRequestedMessage;
+    if ('request' in input) {
+      request = input.request;
+    } else {
+      const previous = (await this.#stores.readMessagesSnapshot(WORKHUB_COORDINATION_SESSION_ID))
+        .filter(
+          (message): message is WorkHubDelegationResumeResolvedMessage =>
+            message.type === 'workhub_coordination' &&
+            message.kind === 'delegation_resume_resolved' &&
+            message.resumesDelegationId === input.source.delegationId &&
+            message.outcome === 'resume_started',
+        )
+        .at(-1);
+      const plan = await actions.planResume(input.source, previous, context);
+      const suffix = createHash('sha256').update(input.actionId, 'utf8').digest('hex').slice(0, 48);
+      request = await this.#commitCoordinationFact({
+        admissionSessionIds: [WORKHUB_COORDINATION_SESSION_ID, input.source.targetSessionId],
+        read: () => this.#stores.readWorkHubResumeRequest(input.actionId),
+        build: (existing) => ({
+          type: 'workhub_coordination',
+          id: `whr_${suffix}`,
+          turnId: input.actionId,
+          ts: existing?.ts ?? Date.now(),
+          schemaVersion: WORKHUB_COORDINATION_RESUME_SCHEMA_VERSION,
+          kind: 'delegation_resume_requested',
+          actionId: input.actionId,
+          actionFingerprint: input.actionFingerprint,
+          coordinationTurnId: input.actionId,
+          resumesActionId: input.source.actionId,
+          resumesDelegationId: input.source.delegationId,
+          targetSessionId: input.source.targetSessionId,
+          targetMessageId: input.source.targetMessageId,
+          targetSessionName: input.targetSessionName,
+          userText: input.userText,
+          plan: plan.kind,
+          ...(plan.kind === 'ready'
+            ? {
+                sourceTurnId: plan.sourceTurnId,
+                sourceRunId: plan.sourceRunId,
+                sourceRuntimeEventHighWater: plan.sourceRuntimeEventHighWater,
+                targetTurnId: plan.targetTurnId,
+              }
+            : {}),
+        }),
+        conflictMessage: 'WorkHub resume identity belongs to a different plan',
+        beforeAppend: async () => {
+          const source = (await this.#listActiveAssignments()).find(
+            ({ actionId, delegationId }) =>
+              actionId === input.source.actionId && delegationId === input.source.delegationId,
           );
-        }
-      },
-      unknownOutcomeMessage: 'WorkHub resume plan outcome is unknown',
-    });
-  }
+          if (!source || source.targetSessionId !== input.source.targetSessionId) {
+            throw new WorkHubActionGateFailure(
+              'action_conflict',
+              'WorkHub resume source is no longer active',
+            );
+          }
+        },
+        unknownOutcomeMessage: 'WorkHub resume plan outcome is unknown',
+      });
+    }
 
-  #resolveResume(
-    input: Parameters<WorkHubActionGateEffects['resolveResume']>[0],
-  ): Promise<WorkHubDelegationResumeResolvedMessage> {
-    const request = input.request;
+    const existing = await this.#stores.readWorkHubResumeResolution(request.actionId);
+    if (existing) return coordinationResumeResult(existing);
+    const resumed: WorkHubResumeResult =
+      request.plan === 'ready'
+        ? await actions.resumeDelegation(request, context)
+        : { outcome: request.plan };
     const suffix = createHash('sha256').update(request.actionId, 'utf8').digest('hex').slice(0, 48);
-    return this.#commitCoordinationFact({
+    const resolution = await this.#commitCoordinationFact({
       read: () => this.#stores.readWorkHubResumeResolution(request.actionId),
-      build: (existing) => ({
+      build: (durable) => ({
         type: 'workhub_coordination',
         id: `whn_${suffix}`,
         turnId: request.actionId,
-        ts: existing?.ts ?? Date.now(),
+        ts: durable?.ts ?? Date.now(),
         schemaVersion: WORKHUB_COORDINATION_RESUME_SCHEMA_VERSION,
         kind: 'delegation_resume_resolved',
         actionId: request.actionId,
@@ -470,9 +509,9 @@ export class HostWorkHubCoordinationCoordinator {
         resumesActionId: request.resumesActionId,
         resumesDelegationId: request.resumesDelegationId,
         targetSessionId: request.targetSessionId,
-        outcome: input.outcome,
-        ...(input.targetTurnId ? { targetTurnId: input.targetTurnId } : {}),
-        ...(input.targetRunId ? { targetRunId: input.targetRunId } : {}),
+        outcome: resumed.outcome,
+        ...(resumed.targetTurnId ? { targetTurnId: resumed.targetTurnId } : {}),
+        ...(resumed.targetRunId ? { targetRunId: resumed.targetRunId } : {}),
       }),
       conflictMessage: 'WorkHub resume already has a different resolution',
       beforeAppend: async () => {
@@ -483,17 +522,7 @@ export class HostWorkHubCoordinationCoordinator {
       },
       unknownOutcomeMessage: 'WorkHub resume resolution outcome is unknown',
     });
-  }
-
-  async #listResumeResolutions(
-    delegationId: string,
-  ): Promise<readonly WorkHubDelegationResumeResolvedMessage[]> {
-    return (await this.#stores.readMessagesSnapshot(WORKHUB_COORDINATION_SESSION_ID)).filter(
-      (message): message is WorkHubDelegationResumeResolvedMessage =>
-        message.type === 'workhub_coordination' &&
-        message.kind === 'delegation_resume_resolved' &&
-        message.resumesDelegationId === delegationId,
-    );
+    return coordinationResumeResult(resolution);
   }
 
   #abortReplacement(
@@ -933,6 +962,17 @@ function validCoordinationHeader(header: SessionHeader): boolean {
 
 function digest(value: unknown): `sha256:${string}` {
   return `sha256:${createHash('sha256').update(JSON.stringify(value)).digest('hex')}`;
+}
+
+function coordinationResumeResult(
+  resolution: WorkHubDelegationResumeResolvedMessage,
+): Extract<WorkHubCoordinationActResult, { disposition: 'resume_work' }> {
+  return {
+    disposition: 'resume_work',
+    outcome: resolution.outcome,
+    targetSessionId: resolution.targetSessionId,
+    ...(resolution.targetTurnId ? { targetTurnId: resolution.targetTurnId } : {}),
+  };
 }
 
 function workHubDestructiveClaimIdentitySuffix(delegationId: string): string {
