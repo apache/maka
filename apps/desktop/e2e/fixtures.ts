@@ -783,7 +783,7 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
       seed: false,
       readinessSelector: '.maka-turn-failed-diagnostic',
       e2eFixtureScenario: 'chat-provider-failure',
-      locale: 'zh',
+      locale: 'zh-CN',
       showWindow: true,
     }, use);
   },
