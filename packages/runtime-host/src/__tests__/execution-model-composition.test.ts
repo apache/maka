@@ -116,6 +116,7 @@ import {
 } from '../server/oauth-execution-authority.js';
 import type { HostSkillCatalogCoordinator } from '../server/skill-catalog-coordinator.js';
 import { AgentGraphProviderScenario } from './fixtures/agent-graph-provider-scenario.js';
+import { readLedgerMessages } from './fixtures/ledger-transcript.js';
 
 const MODEL_ID = 'hosted-real-model';
 const API_KEY = 'hosted-provider-key';
@@ -1979,7 +1980,7 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     ]);
     assert.match(JSON.stringify(compactRequests[0]?.body), /context summarization assistant/);
 
-    const messages = await execution.sessionStore.readMessagesSnapshot(session.id);
+    const messages = await readLedgerMessages(execution.runtimeEventStore, session.id);
     const assistant = messages.find(
       (message) => message.type === 'assistant' && message.turnId === turnIds[0],
     );
@@ -2445,7 +2446,7 @@ test('production Host executes a durable runnable child with an exact tool ceili
     assert.equal(childRuns.length, 1);
     assert.equal(childRuns[0] && runtimeInvocationOutcome(childRuns[0]), 'completed');
     assert.equal(childRuns[0]?.opening.lineage?.parentRunId, undefined);
-    const childMessages = await execution.sessionStore.readMessagesSnapshot(child.id);
+    const childMessages = await readLedgerMessages(execution.runtimeEventStore, child.id);
     assert.equal(
       childMessages.find((message) => message.type === 'assistant')?.text,
       CHILD_AGENT_RESULT_TEXT,
@@ -2661,7 +2662,7 @@ test('production Host publishes and retires an implementation child patch', asyn
     assert.equal(childRuns.length, 1);
     assert.equal(childRuns[0] && runtimeInvocationOutcome(childRuns[0]), 'completed');
     assert.equal(childRuns[0]?.opening.lineage?.parentRunId, undefined);
-    const childMessages = await execution.sessionStore.readMessagesSnapshot(child.id);
+    const childMessages = await readLedgerMessages(execution.runtimeEventStore, child.id);
     assert.equal(
       childMessages.find((message) => message.type === 'assistant')?.text,
       CHILD_AGENT_RESULT_TEXT,

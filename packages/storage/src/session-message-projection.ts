@@ -18,6 +18,7 @@
  */
 
 import type { StoredMessage, UserMessage } from '@maka/core/session';
+import type { SessionTurnContribution } from './session-store.js';
 
 export function projectSessionCatalogMessages(messages: readonly StoredMessage[]): {
   readonly lastMessageAt?: number;
@@ -86,4 +87,44 @@ function truncatePreview(text: string, maxLength = 96): string {
   const chars = Array.from(text);
   if (chars.length <= maxLength) return text;
   return `${chars.slice(0, maxLength - 1).join('')}…`;
+}
+
+/**
+ * One Turn's summary, folded message by message in transcript order.
+ *
+ * Both transcript authorities fold the same way: the sqlite catalog over its
+ * own rows, and the ledger reader over the messages a run projects.
+ */
+export function foldTurnContribution(
+  current: SessionTurnContribution | undefined,
+  turnId: string,
+  sequence: number,
+  message: StoredMessage,
+): SessionTurnContribution {
+  const contribution = current ?? {
+    turnId,
+    firstSequence: sequence,
+    latestState: null,
+    userPromptPreview: null,
+    hasAssistantMessage: false,
+    hasAssistantOutput: false,
+    hasToolResult: false,
+    hasFailedToolResult: false,
+    hasAbortNote: false,
+  };
+  const userPrompt = message.type === 'user' ? (message.displayText ?? message.text).trim() : '';
+  return {
+    ...contribution,
+    latestState: message.type === 'turn_state' ? { sequence, message } : contribution.latestState,
+    userPromptPreview: contribution.userPromptPreview ?? (userPrompt || null),
+    hasAssistantMessage: contribution.hasAssistantMessage || message.type === 'assistant',
+    hasAssistantOutput:
+      contribution.hasAssistantOutput ||
+      (message.type === 'assistant' && message.text.trim().length > 0),
+    hasToolResult: contribution.hasToolResult || message.type === 'tool_result',
+    hasFailedToolResult:
+      contribution.hasFailedToolResult || (message.type === 'tool_result' && message.isError),
+    hasAbortNote:
+      contribution.hasAbortNote || (message.type === 'system_note' && message.kind === 'abort'),
+  };
 }

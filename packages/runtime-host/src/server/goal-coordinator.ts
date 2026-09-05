@@ -75,6 +75,8 @@ type GoalStores = Pick<ExecutionStoresWriter<'interactive'>, 'sessionStore' | 'a
 export interface HostGoalCoordinatorOptions {
   readonly store: InteractiveGoalAuthorityWriter;
   readonly stores: GoalStores;
+  /** The Session transcript as its ledger projects it; the Goal reads its tail. */
+  readonly readSessionMessages: (sessionId: string) => Promise<readonly StoredMessage[]>;
   readonly sessionAdmission: SessionAdmissionGate;
   readonly evaluator: GoalEvaluatorResource;
   readonly executions: Pick<HostedExecutionAuthority, 'reconcile' | 'subscribe'>;
@@ -156,7 +158,7 @@ export class HostGoalCoordinator {
       goalManager: this.manager,
       evaluator: options.evaluator,
       getRecentContext: async (sessionId) => {
-        const messages = await this.#stores.sessionStore.readMessagesSnapshot(sessionId);
+        const messages = await options.readSessionMessages(sessionId);
         tokenCache.set(sessionId, tokenCount(messages));
         return recentContext(messages);
       },

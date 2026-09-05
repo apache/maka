@@ -25,6 +25,7 @@ import test from 'node:test';
 import { seedInvocation, testInvocationOpening } from '@maka/runtime/test-only/invocation-fixture';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { StoredMessage } from '@maka/core/session';
 import {
   type ExecutionStoresWriter,
   openInteractiveExecutionStoresForWrite,
@@ -50,12 +51,43 @@ test('keeps durable history separate from the canonical active overlay', async (
       model: 'fake-model',
       permissionMode: 'ask',
     });
-    await stores.sessionStore.appendMessage(session.id, {
-      type: 'system_note',
-      id: 'history-1',
-      ts: 1,
-      kind: 'session_start',
+    // An ended Turn is what the durable half is made of; the running one below
+    // belongs to the overlay and must not appear in a durable page.
+    await seedInvocation(stores.runtimeEventStore, {
+      sessionId: session.id,
+      runId: 'run-0',
+      turnId: 'turn-0',
+      openedAt: 0,
     });
+    await stores.runtimeEventStore.appendRuntimeEvent(
+      session.id,
+      'run-0',
+      runtimeEvent(session.id, {
+        id: 'user-event-0',
+        invocationId: 'run-0',
+        runId: 'run-0',
+        turnId: 'turn-0',
+        ts: 0.1,
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: 'settled' },
+        refs: { storedMessageId: 'user-0' },
+      }),
+    );
+    await stores.runtimeEventStore.appendRuntimeEvent(
+      session.id,
+      'run-0',
+      runtimeEvent(session.id, {
+        id: 'terminal-0',
+        invocationId: 'run-0',
+        runId: 'run-0',
+        turnId: 'turn-0',
+        ts: 0.2,
+        role: 'system',
+        author: 'system',
+        status: 'completed',
+      }),
+    );
     await seedInvocation(stores.runtimeEventStore, {
       sessionId: session.id,
       runId: 'run-1',
@@ -219,10 +251,16 @@ test('keeps durable history separate from the canonical active overlay', async (
       maxBytes: 1024,
       maxMessages: 10,
     });
-    assert.equal(durable.throughSequence, 0);
+    assert.equal(durable.throughSequence, 1);
     assert.deepEqual(
-      durable.fragments.map((fragment) => JSON.parse(fragment.data.toString('utf8'))),
-      [{ type: 'system_note', id: 'history-1', ts: 1, kind: 'session_start' }],
+      durable.fragments.map((fragment) => {
+        const message = JSON.parse(fragment.data.toString('utf8')) as StoredMessage;
+        return { type: message.type, id: message.id };
+      }),
+      [
+        { type: 'turn_state', id: 'terminal-0' },
+        { type: 'user', id: 'user-0' },
+      ],
     );
   } finally {
     await owner.close();

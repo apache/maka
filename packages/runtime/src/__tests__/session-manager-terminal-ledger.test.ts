@@ -74,7 +74,6 @@ describe('SessionManager terminal ledger invariants', () => {
       sessionId: session.id,
       header: session,
       userInput: { turnId: 'turn-1', text: 'hello' },
-      store,
       runtimeEventStore,
       newId: nextId(),
       now: nextNow(10_000),
@@ -142,7 +141,6 @@ describe('SessionManager terminal ledger invariants', () => {
       sessionId: session.id,
       header: session,
       userInput: { turnId: 'turn-1', text: 'hello' },
-      store,
       runtimeEventStore,
       newId: nextId(),
       now: nextNow(10_100),
@@ -486,7 +484,6 @@ describe('SessionManager terminal ledger invariants', () => {
       sessionId: session.id,
       header: session,
       userInput: { turnId: 'turn-1', text: 'hello' },
-      store,
       runStore,
       runtimeEventStore: runStore,
       newId: nextId(),
@@ -546,7 +543,6 @@ describe('SessionManager terminal ledger invariants', () => {
       sessionId: session.id,
       header: session,
       userInput: { turnId: 'turn-1', text: 'hello' },
-      store,
       runStore,
       runtimeEventStore: runStore,
       newId: nextId(),
@@ -616,7 +612,6 @@ describe('SessionManager terminal ledger invariants', () => {
       sessionId: session.id,
       header: session,
       userInput: { turnId: 'turn-1', text: 'hello' },
-      store,
       runStore,
       runtimeEventStore: runStore,
       newId: nextId(),
@@ -688,7 +683,6 @@ describe('SessionManager terminal ledger invariants', () => {
       sessionId: session.id,
       header: session,
       userInput: { turnId: 'turn-1', text: 'hello' },
-      store,
       runStore,
       runtimeEventStore: runStore,
       newId: nextId(),
@@ -730,7 +724,6 @@ describe('SessionManager terminal ledger invariants', () => {
       sessionId: session.id,
       header: session,
       userInput: { turnId: 'turn-1', text: 'hello' },
-      store,
       runStore,
       runtimeEventStore: runStore,
       newId,
@@ -767,7 +760,6 @@ describe('SessionManager terminal ledger invariants', () => {
       sessionId: session.id,
       header: session,
       userInput: { turnId: 'turn-2', text: 'again' },
-      store,
       runStore,
       runtimeEventStore: runStore,
       newId,
@@ -830,7 +822,6 @@ describe('SessionManager terminal ledger invariants', () => {
       sessionId: session.id,
       header: session,
       userInput: { turnId: 'turn-1', text: 'hello' },
-      store,
       runStore,
       runtimeEventStore: runStore,
       newId: nextId(),
@@ -1102,7 +1093,6 @@ describe('SessionManager terminal ledger invariants', () => {
             schemaVersion: 1,
           },
           userInput: { turnId: 'turn-1', text: 'hello' },
-          store,
           runStore,
           newId: nextId(),
           now: nextNow(25_200),
@@ -1113,7 +1103,6 @@ describe('SessionManager terminal ledger invariants', () => {
             unregisterRun: () => {},
             updateHeader: (sessionId, patch) => store.updateHeader(sessionId, patch),
             updateStatus: async () => {},
-            appendTurnState: async () => {},
           },
         }),
       /RuntimeEventStore/,
@@ -1128,7 +1117,6 @@ describe('SessionManager terminal ledger invariants', () => {
       sessionId: session.id,
       header: session,
       userInput: { turnId: 'turn-1', text: 'hello' },
-      store,
       runStore,
       runtimeEventStore: runStore,
       newId: nextId(),
@@ -1140,7 +1128,6 @@ describe('SessionManager terminal ledger invariants', () => {
         unregisterRun: () => {},
         updateHeader: (sessionId, patch) => store.updateHeader(sessionId, patch),
         updateStatus: async () => {},
-        appendTurnState: async () => {},
       },
     });
     const terminalEvent = runtimeEvent({
@@ -1180,7 +1167,6 @@ describe('SessionManager terminal ledger invariants', () => {
       sessionId: session.id,
       header: session,
       userInput: { turnId: 'turn-1', text: 'hello' },
-      store,
       runStore,
       runtimeEventStore: runStore,
       newId: nextId(),
@@ -1192,7 +1178,6 @@ describe('SessionManager terminal ledger invariants', () => {
         unregisterRun: () => {},
         updateHeader: (sessionId, patch) => store.updateHeader(sessionId, patch),
         updateStatus: async () => {},
-        appendTurnState: async () => {},
       },
     });
 
@@ -1224,7 +1209,6 @@ describe('SessionManager terminal ledger invariants', () => {
       sessionId: session.id,
       header: session,
       userInput: { turnId: 'turn-1', text: 'hello' },
-      store,
       runStore,
       runtimeEventStore: runStore,
       newId: nextId(),
@@ -1247,7 +1231,6 @@ describe('SessionManager terminal ledger invariants', () => {
         },
         updateHeader: (sessionId, patch) => store.updateHeader(sessionId, patch),
         updateStatus: async () => {},
-        appendTurnState: async () => {},
       },
     });
 
@@ -1286,7 +1269,6 @@ describe('SessionManager terminal ledger invariants', () => {
       sessionId: session.id,
       header: session,
       userInput: { turnId: 'turn-1', text: 'hello' },
-      store,
       runStore,
       runtimeEventStore: runStore,
       newId: nextId(),
@@ -1309,7 +1291,6 @@ describe('SessionManager terminal ledger invariants', () => {
         },
         updateHeader: (sessionId, patch) => store.updateHeader(sessionId, patch),
         updateStatus: async () => {},
-        appendTurnState: async () => {},
       },
     });
 
@@ -1342,7 +1323,6 @@ describe('SessionManager terminal ledger invariants', () => {
       sessionId: session.id,
       header: session,
       userInput: { turnId: 'turn-1', text: 'hello' },
-      store,
       runStore,
       runtimeEventStore: runStore,
       newId: nextId(),
@@ -1365,7 +1345,6 @@ describe('SessionManager terminal ledger invariants', () => {
         },
         updateHeader: (sessionId, patch) => store.updateHeader(sessionId, patch),
         updateStatus: async () => {},
-        appendTurnState: async () => {},
       },
     });
     await run.begin();
@@ -1405,7 +1384,6 @@ describe('SessionManager terminal ledger invariants', () => {
       sessionId: session.id,
       header: session,
       userInput: { turnId: 'turn-1', text: 'hello' },
-      store,
       runStore,
       runtimeEventStore: runStore,
       newId: nextId(),
@@ -1428,7 +1406,6 @@ describe('SessionManager terminal ledger invariants', () => {
         },
         updateHeader: (sessionId, patch) => store.updateHeader(sessionId, patch),
         updateStatus: async () => {},
-        appendTurnState: async () => {},
       },
     });
     await run.begin();
@@ -1483,7 +1460,6 @@ describe('SessionManager terminal ledger invariants', () => {
       sessionId: session.id,
       header: session,
       userInput: { turnId: 'turn-1', text: 'hello' },
-      store,
       runStore,
       runtimeEventStore: runStore,
       newId: nextId(),
@@ -1506,7 +1482,6 @@ describe('SessionManager terminal ledger invariants', () => {
         },
         updateHeader: (sessionId, patch) => store.updateHeader(sessionId, patch),
         updateStatus: async () => {},
-        appendTurnState: async () => {},
       },
     });
     await run.begin();
@@ -1562,7 +1537,6 @@ describe('SessionManager terminal ledger invariants', () => {
       sessionId: session.id,
       header: session,
       userInput: { turnId: 'turn-1', text: 'hello' },
-      store,
       runStore,
       runtimeEventStore: runStore,
       newId: nextId(),
@@ -1585,7 +1559,6 @@ describe('SessionManager terminal ledger invariants', () => {
         },
         updateHeader: (sessionId, patch) => store.updateHeader(sessionId, patch),
         updateStatus: async () => {},
-        appendTurnState: async () => {},
       },
     });
     await run.begin();
@@ -2580,7 +2553,6 @@ function inertAgentRunHooks(store: TinySessionStore) {
     updateHeader: (sessionId: string, patch: Partial<SessionHeader>) =>
       store.updateHeader(sessionId, patch),
     updateStatus: async () => {},
-    appendTurnState: async () => {},
   };
 }
 

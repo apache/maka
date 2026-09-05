@@ -83,10 +83,7 @@ export {
   normalizeRootTurnAdmissionPayload,
   rootTurnAdmissionRecordFits,
 } from './agent-run-store.js';
-export {
-  isSessionNotFoundError,
-  SessionReadMarkerMessageNotFoundError,
-} from './session-store.js';
+export { isSessionNotFoundError } from './session-store.js';
 export {
   SessionMetadataConflictError,
   SessionMetadataVersionConflictError,
@@ -131,6 +128,10 @@ export type {
   SessionTranscriptRecordScanRequest,
   SessionTranscriptStoragePage,
   SessionTranscriptStorageFragment,
+  SessionTurnContribution,
+  SessionTurnContributionPage,
+  SessionTurnLandmark,
+  SessionTurnLandmarkSnapshot,
 } from './session-store.js';
 
 export type ExecutionSessionWriter = SessionAuthorityStore;
@@ -229,6 +230,10 @@ export interface ExecutionRuntimeEventReader {
   ): Promise<BoundedEvidenceReadResult<RuntimeEvent>>;
   readImmutableRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]>;
   readSessionRuntimeEvents(sessionId: string): Promise<RuntimeEvent[]>;
+  /** Session-wide events with the ordinal that fixes their transcript order. */
+  readSessionRuntimeEventEntries(
+    sessionId: string,
+  ): Promise<ReadonlyArray<{ ordinal: number; event: RuntimeEvent }>>;
 }
 
 interface ExecutionStoresReaderBase<K extends StorageRootKind> {
@@ -428,27 +433,10 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
       readCatalogRecord: (sessionId) => run(() => sessionStore.readCatalogRecord(sessionId)),
       probeSessionRemoval: (sessionId) => run(() => sessionStore.probeSessionRemoval(sessionId)),
       readMessagesSnapshot: (sessionId) => run(() => sessionStore.readMessagesSnapshot(sessionId)),
-      readTranscriptPageSnapshot: (sessionId, request) =>
-        run(() => sessionStore.readTranscriptPageSnapshot(sessionId, request)),
-      readTranscriptRecordsSnapshot: (sessionId, request) =>
-        run(() => sessionStore.readTranscriptRecordsSnapshot(sessionId, request)),
       readTranscriptMessagesSnapshot: (sessionId, request) =>
         run(() => sessionStore.readTranscriptMessagesSnapshot(sessionId, request)),
       readTranscriptHighWaterSnapshot: (sessionId) =>
         run(() => sessionStore.readTranscriptHighWaterSnapshot(sessionId)),
-      readTurnContributionsSnapshot: (sessionId, throughSequence, position, maxContributions) =>
-        run(() =>
-          sessionStore.readTurnContributionsSnapshot(
-            sessionId,
-            throughSequence,
-            position,
-            maxContributions,
-          ),
-        ),
-      readTurnLandmarksSnapshot: (sessionId, maxLandmarks) =>
-        run(() => sessionStore.readTurnLandmarksSnapshot(sessionId, maxLandmarks)),
-      readMessagesForRecovery: (sessionId) =>
-        run(() => sessionStore.readMessagesForRecovery(sessionId)),
       listTurnsSnapshot: (sessionId) => run(() => sessionStore.listTurnsSnapshot(sessionId)),
       readHeader: (sessionId) => run(() => sessionStore.readHeader(sessionId)),
       readMessages: (sessionId) => run(() => sessionStore.readMessages(sessionId)),
@@ -457,6 +445,8 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => sessionStore.appendMessage(sessionId, message)),
       appendMessages: (sessionId, messages) =>
         run(() => sessionStore.appendMessages(sessionId, messages)),
+      commitMessageCatalogProjection: (sessionId, message) =>
+        run(() => sessionStore.commitMessageCatalogProjection(sessionId, message)),
       commitMessageAdmission: (admission) =>
         run(() => sessionStore.commitMessageAdmission(admission)),
       readMessageAdmission: (sessionId, messageId) =>
@@ -480,8 +470,6 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => sessionStore.updateHeaderVersioned(sessionId, patch, expectedRevision)),
       updateSessionConfiguration: (sessionId, input) =>
         run(() => sessionStore.updateSessionConfiguration(sessionId, input)),
-      markSessionReadThroughMessage: (sessionId, messageId) =>
-        run(() => sessionStore.markSessionReadThroughMessage(sessionId, messageId)),
       setFlagged: (sessionId, isFlagged) =>
         run(() => sessionStore.setFlagged(sessionId, isFlagged)),
       rename: (sessionId, name) => run(() => sessionStore.rename(sessionId, name)),
@@ -698,6 +686,8 @@ async function openExecutionStoresForRead<K extends StorageRootKind, E extends o
         run(() => runtimeEventStore.readInvocation(sessionId, invocationId)),
       readSessionRuntimeEvents: (sessionId) =>
         run(() => runtimeEventStore.readSessionRuntimeEvents(sessionId)),
+      readSessionRuntimeEventEntries: (sessionId) =>
+        run(() => runtimeEventStore.readSessionRuntimeEventEntries(sessionId)),
     },
   };
   freezeExecutionStoresFacade(stores);

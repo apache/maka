@@ -60,16 +60,15 @@ import type {
   SessionHeaderPatch,
   SessionStatus,
   RuntimeSystemNoteKind,
-  StoredMessage,
-  TurnRecord,
   UserMessage,
+  AssistantMessage,
 } from '@maka/core/session';
 import type { UserMessageInput } from '@maka/core/runtime-inputs';
 import {
   resolveEffectiveOrchestration,
   type EffectiveOrchestration,
 } from '@maka/core/orchestration';
-import { messageContentsEqual, type SessionEvent } from '@maka/core/events';
+import type { SessionEvent } from '@maka/core/events';
 import type { AgentBackend, BackendSendInput } from '@maka/core/backend-types';
 import type { RunTraceEvent } from './run-trace.js';
 import type { StopSessionInput } from './session-manager.js';
@@ -92,8 +91,8 @@ import {
   type RuntimeContinuationStartAdmissionProof,
 } from './runtime-continuation-admission.js';
 import { DEFAULT_TOOL_MODE, isToolMode, type ToolMode } from '@maka/core/tool-mode';
-import { materializeRuntimeEventTranscriptProjection } from './runtime-ledger-repair.js';
 import { cloneAndFreezeRuntimeSnapshot } from './runtime-snapshot.js';
+import { projectRuntimeEventUserMessage } from './runtime-event-read-model.js';
 
 export interface AgentRunActiveSession {
   sessionId: string;
@@ -117,12 +116,15 @@ export interface AgentRunHooks {
     blockedReason?: SessionBlockedReason,
     ts?: number,
   ): Promise<void>;
-  appendTurnState(
+  /**
+   * The catalog facts a durable message carries — its time, the Session list's
+   * preview line, and the connection lock a Session takes on its first user
+   * message. The transcript write used to commit these on its way to disk; the
+   * ledger is not that store, so the run commits them here instead.
+   */
+  commitMessageProjection?(
     sessionId: string,
-    turnId: string,
-    status: TurnRecord['status'],
-    lineage?: AgentRunLineage,
-    options?: { ts?: number; errorClass?: string; abortSource?: string },
+    message: UserMessage | AssistantMessage,
   ): Promise<void>;
 }
 
@@ -150,7 +152,6 @@ export interface AgentRunInput {
   runId?: string;
   userMessageId?: string | null;
   durability?: AgentRunDurability;
-  store: AgentRunSessionStore;
   runStore?: AgentRunStore;
   runtimeEventStore?: RuntimeEventStore;
   newId: () => string;
@@ -171,11 +172,6 @@ export interface AgentRunInput {
   effectiveToolMode?: ToolMode;
   /** Set only when this run's backend tool path is guarded by canonical T1. */
   toolBoundaryProtocol?: ToolBoundaryProtocol;
-}
-
-export interface AgentRunSessionStore {
-  appendMessage(sessionId: string, message: StoredMessage): Promise<void>;
-  readMessages(sessionId: string): Promise<StoredMessage[]>;
 }
 
 export type RuntimeContinuationFailpoint =
@@ -237,6 +233,7 @@ export class AgentRun {
   private runStoreAvailable = true;
   private runtimeEventStoreAvailable = true;
   private runtimeEventStoreFailure: unknown;
+  private lastAssistantPreview: AssistantMessage | undefined;
   private runtimePartialStreamKey: string | undefined;
   private runtimePartialBuffer: RuntimeEvent[] = [];
   private runtimePartialBufferBytes = 0;
@@ -617,8 +614,10 @@ export class AgentRun {
         requireTerminalWrite: options.requireTerminalWrite ?? Boolean(this.input.runtimeEventStore),
       });
       await this.recordSessionEvent(sessionEvent, options);
+      await this.commitMessageProjection(this.lastAssistantPreview);
       return;
     }
+    this.rememberAssistantPreview(runtimeEvent);
     if (this.requiresDurablePersistence() && isInteractionResumeAck(sessionEvent)) {
       // A hosted continuation may resume execution only after its identity-only
       // settlement fact is durable. Session status advances next, and the queue
@@ -645,13 +644,48 @@ export class AgentRun {
       const steering =
         runtimeEvent.content?.kind === 'text' && runtimeEvent.content.steering === true;
       await this.recordRuntimeEvents([runtimeEvent], steering ? { requireDurableWrite: true } : {});
-
-      await materializeRuntimeEventTranscriptProjection(
-        this.input.store,
-        this.sessionId,
-        runtimeEvent,
-      );
+      if (steering) {
+        await this.commitMessageProjection(
+          projectRuntimeEventUserMessage(runtimeEvent, runtimeEvent.id),
+        );
+      }
     }
+  }
+
+  /**
+   * A user message is fail-CLOSED: it also takes the Session's connection lock,
+   * and no other path re-derives that latch now that the transcript is not a
+   * second authority. An assistant preview is fail-open — losing it costs a
+   * stale sidebar entry, never the turn.
+   */
+  private async commitMessageProjection(
+    message: UserMessage | AssistantMessage | undefined,
+  ): Promise<void> {
+    const commit = this.input.hooks.commitMessageProjection;
+    if (!commit || !message) return;
+    const committed = commit.call(this.input.hooks, this.sessionId, message);
+    if (message.type === 'user') return committed;
+    await committed.catch(() => {});
+  }
+
+  /**
+   * The assistant text the Session list shows once the Turn ends.
+   *
+   * Kept as the run goes so the catalog costs one write per Turn rather than
+   * one per streamed step, and read only after the terminal fact is durable —
+   * a Turn that never spoke leaves the previous preview standing.
+   */
+  private rememberAssistantPreview(event: RuntimeEvent): void {
+    if (event.role !== 'model' || event.content?.kind !== 'text') return;
+    if (!event.content.text?.trim()) return;
+    this.lastAssistantPreview = {
+      type: 'assistant',
+      id: event.id,
+      turnId: event.turnId,
+      ts: event.ts,
+      text: event.content.text,
+      modelId: this.header.model,
+    };
   }
 
   async begin(): Promise<AgentRunBeginResult> {
@@ -660,35 +694,9 @@ export class AgentRun {
     let initialRuntimeEventId: string;
 
     const userMessageTs = this.input.now();
-    if (this.input.userMessageId === null) {
-      initialRuntimeEventId = this.input.newId();
-    } else {
-      const userMessageId = this.input.userMessageId ?? this.input.newId();
-      initialRuntimeEventId = userMessageId;
-      const userMsg = cloneAndFreezeRuntimeSnapshot<UserMessage>({
-        type: 'user',
-        id: userMessageId,
-        turnId: this.turnId,
-        ts: userMessageTs,
-        text: this.input.userInput.text,
-        ...(this.input.userInput.displayText !== undefined
-          ? { displayText: this.input.userInput.displayText }
-          : {}),
-        ...(this.input.userInput.attachments
-          ? { attachments: this.input.userInput.attachments }
-          : {}),
-        ...(this.input.userInput.directoryReferences
-          ? { directoryReferences: this.input.userInput.directoryReferences }
-          : {}),
-        ...(this.input.userInput.quotes ? { quotes: this.input.userInput.quotes } : {}),
-        ...(this.input.userInput.inlineReferences
-          ? { inlineReferences: this.input.userInput.inlineReferences }
-          : {}),
-        ...(this.input.userInput.origin ? { origin: this.input.userInput.origin } : {}),
-      });
-      await appendUserMessageOnce(this.input.store, this.sessionId, userMsg);
-    }
-    await this.input.hooks.appendTurnState(this.sessionId, this.turnId, 'running', this.lineage);
+    // The caller's durable message id becomes the initial event's id, so a
+    // same-id append with different content is refused by the store.
+    initialRuntimeEventId = this.input.userMessageId ?? this.input.newId();
     this.lastTs = userMessageTs;
 
     const initialRuntimeEvent = cloneAndFreezeRuntimeSnapshot(
@@ -697,6 +705,9 @@ export class AgentRun {
     await this.recordRuntimeEvents([initialRuntimeEvent], {
       requireDurableWrite: this.requiresDurablePersistence(),
     });
+    await this.commitMessageProjection(
+      projectRuntimeEventUserMessage(initialRuntimeEvent, initialRuntimeEvent.id),
+    );
 
     this.active = await this.input.hooks.reserveRun(this.sessionId, this.header, this);
 
@@ -738,10 +749,6 @@ export class AgentRun {
     const startedAt = this.input.now();
     this.lastTs = startedAt;
 
-    await this.input.hooks.appendTurnState(this.sessionId, this.turnId, 'running', this.lineage, {
-      ts: startedAt,
-    });
-
     this.active = await this.input.hooks.reserveRun(this.sessionId, this.header, this);
 
     await this.input.hooks.updateStatus(this.sessionId, 'running', undefined, startedAt);
@@ -780,10 +787,6 @@ export class AgentRun {
       throw new ContinuationStartCommitError(error);
     }
     await this.input.continuationFailpoint?.('after_continuation_start_committed');
-
-    await this.input.hooks.appendTurnState(this.sessionId, this.turnId, 'running', this.lineage, {
-      ts: startedAt,
-    });
 
     this.active = await this.input.hooks.reserveRun(this.sessionId, this.header, this);
     await this.input.hooks.updateStatus(this.sessionId, 'running', undefined, startedAt);
@@ -916,42 +919,12 @@ export class AgentRun {
       };
       await updateSessionStatus();
     }
-    if (turnStatus && !this.stopped) {
-      const appendTurnState = this.input.hooks.appendTurnState(
-        this.sessionId,
-        this.turnId,
-        turnStatus.status,
-        this.lineage,
-        {
-          ts: ev.ts,
-          errorClass: turnStatus.errorClass,
-          ...(turnStatus.status === 'aborted' && this.abortSource
-            ? { abortSource: this.abortSource }
-            : {}),
-        },
-      );
-      if (terminalSessionEvent || ev.type === 'error') {
-        await appendTurnState.catch((error) =>
-          this.enqueueTraceWriteFailure(error, 'terminal session projection'),
-        );
-      } else {
-        await appendTurnState;
-      }
-    }
     if (ev.type === 'error') {
       if (this.stopped) {
         this.finalStatus = { status: 'aborted' };
       } else {
         this.turnFailed = true;
         this.finalStatus = transition ?? { status: 'blocked', blockedReason: 'unknown' };
-
-        await this.input.hooks
-          .appendTurnState(this.sessionId, this.turnId, 'failed', this.lineage, {
-            ts: ev.ts,
-            errorClass: ev.reason ?? ev.code ?? 'unknown',
-          })
-          .catch((error) => this.enqueueTraceWriteFailure(error, 'terminal session projection'));
-
         this.markRunFailed(ev.reason ?? ev.code ?? 'unknown', ev.message);
       }
     }
@@ -1060,13 +1033,6 @@ export class AgentRun {
       return;
     }
     this.finalStatus = { status: 'blocked', blockedReason: 'unknown' };
-
-    await this.input.hooks
-      .appendTurnState(this.sessionId, this.turnId, 'failed', this.lineage, {
-        errorClass: error instanceof Error ? error.name : 'unknown',
-      })
-      .catch(() => {});
-
     this.markRunFailed(error instanceof Error ? error.name : 'unknown', errorMessage(error));
   }
 
@@ -1721,27 +1687,6 @@ function redactTraceString(value: string): string {
 
 function errorMessage(error: unknown): string {
   return redactTraceString(error instanceof Error ? error.message : String(error));
-}
-
-async function appendUserMessageOnce(
-  store: AgentRunSessionStore,
-  sessionId: string,
-  message: UserMessage,
-): Promise<void> {
-  const existing = (await store.readMessages(sessionId)).find(
-    (candidate) => candidate.id === message.id,
-  );
-  if (!existing) {
-    await store.appendMessage(sessionId, message);
-    return;
-  }
-  if (
-    existing.type !== 'user' ||
-    existing.turnId !== message.turnId ||
-    !messageContentsEqual(existing, message)
-  ) {
-    throw new Error(`Durable UserMessage identity ${message.id} has conflicting content`);
-  }
 }
 
 function isInteractionResumeAck(event: SessionEvent): boolean {

@@ -33,6 +33,7 @@ import {
   type WorkHubDelegationStopResolvedMessage,
   type WorkHubDelegationSupersededMessage,
 } from '@maka/core/session';
+import { createSqliteAgentRunStore } from '../agent-run-store.js';
 import { createSessionStore, isSessionNotFoundError } from '../session-store.js';
 
 test('atomically commits one WorkHub assignment and target admission', async () => {
@@ -82,11 +83,7 @@ test('atomically commits one WorkHub assignment and target admission', async () 
     ]);
     const coordination = await store.readHeaderSnapshot(WORKHUB_COORDINATION_SESSION_ID);
     assert.equal(coordination.lastMessageAt, request.assignment.ts);
-    await store.markMessagesHandedOff({
-      sessionId: target.id,
-      messageIds: [request.admission.messageId],
-      turnId: request.admission.turnId,
-    });
+    await handOffToRootTurn(store, root, request);
     const replayAfterConsumption = await store.assignWorkHubMessage(request);
     assert.equal(replayAfterConsumption.kind, 'existing');
     assert.deepEqual(replayAfterConsumption.assignment, request.assignment);
@@ -126,11 +123,7 @@ test('scans every target Message lifecycle once and preserves Coordination order
       assignmentRequest('unrelated-action', unrelated.id, 'Login', 'unrelated-turn'),
     );
     await store.assignWorkHubMessage(middle);
-    await store.markMessagesHandedOff({
-      sessionId: target.id,
-      messageIds: [middle.admission.messageId],
-      turnId: middle.admission.turnId,
-    });
+    await handOffToRootTurn(store, root, middle);
     await store.assignWorkHubMessage(newest);
     assert.equal(
       await store.claimMessageAdmissionCancellation(
@@ -169,11 +162,7 @@ test('keeps target assignments reachable when their Message lifecycle changes', 
       .sort((left, right) => left.admission.messageId.localeCompare(right.admission.messageId));
     for (const request of requests) await store.assignWorkHubMessage(request);
 
-    await store.markMessagesHandedOff({
-      sessionId: target.id,
-      messageIds: [requests[1]!.admission.messageId],
-      turnId: requests[1]!.admission.turnId,
-    });
+    await handOffToRootTurn(store, root, requests[1]!);
     assert.equal(
       await store.claimMessageAdmissionCancellation(
         target.id,
@@ -720,6 +709,49 @@ async function createCoordinationSession(
 
 function terminalSuffix(delegationId: string): string {
   return createHash('sha256').update(delegationId, 'utf8').digest('hex').slice(0, 48);
+}
+
+/**
+ * Hand a Message off the way a Turn does: the Root admission that consumed it
+ * is what keeps its identity durable once the pending admission is retired.
+ */
+async function handOffToRootTurn(
+  store: ReturnType<typeof createSessionStore>,
+  root: string,
+  request: AssignmentRequest,
+): Promise<void> {
+  const runStore = createSqliteAgentRunStore(root);
+  try {
+    await runStore.admitRootTurn({
+      sessionId: request.admission.sessionId,
+      turnId: request.admission.turnId,
+      proposedRunId: request.admission.runId,
+      proposedUserMessageId: request.admission.messageId,
+      execution: {
+        kind: 'external_message',
+        inputDigest: request.admission.submittedContentDigest,
+      },
+      previousRootTurnId: null,
+      normalizedInput: request.admission.content,
+      sourceMessages: [
+        {
+          messageId: request.admission.messageId,
+          content: request.admission.content,
+          submittedContentDigest: request.admission.submittedContentDigest,
+          placement: request.admission.placement,
+          disposition: request.admission.disposition,
+        },
+      ],
+      admittedAt: request.admission.admittedAt,
+    });
+  } finally {
+    runStore.close?.();
+  }
+  await store.markMessagesHandedOff({
+    sessionId: request.admission.sessionId,
+    messageIds: [request.admission.messageId],
+    turnId: request.admission.turnId,
+  });
 }
 
 type AssignmentRequest = ReturnType<typeof assignmentRequest>;

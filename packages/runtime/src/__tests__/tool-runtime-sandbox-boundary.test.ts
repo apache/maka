@@ -55,7 +55,6 @@ describe('ToolRuntime session sandbox boundary', () => {
           header: header(),
           connection: { providerType: 'openai', slug: 'test' } as never,
           modelId: 'test',
-          appendMessage: async () => {},
           newId: nextId(),
           now: () => 1,
           getPermissionPauseTarget: () => null,
@@ -73,7 +72,6 @@ describe('ToolRuntime session sandbox boundary', () => {
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
-      appendMessage: async () => {},
       readExecutionBoundary: async () => ({
         kind: 'managed',
         profile: createWorkspaceWritePermissionProfile(),
@@ -117,7 +115,6 @@ describe('ToolRuntime session sandbox boundary', () => {
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
-      appendMessage: async () => {},
       readExecutionBoundary: async () => managed,
       createSandboxBoundaryRequest: async (input) => {
         created = {
@@ -239,7 +236,6 @@ describe('ToolRuntime session sandbox boundary', () => {
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
-      appendMessage: async () => {},
       readExecutionBoundary: async () => managed,
       newId: nextId(),
       now: () => 1,
@@ -321,7 +317,6 @@ describe('ToolRuntime session sandbox boundary', () => {
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
-      appendMessage: async () => {},
       readExecutionBoundary: async () => ({
         kind: 'managed',
         profile: createWorkspaceWritePermissionProfile(),
@@ -379,7 +374,6 @@ describe('ToolRuntime session sandbox boundary', () => {
       header: header(root),
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
-      appendMessage: async () => {},
       readExecutionBoundary: async () => ({
         kind: 'managed',
         profile: createWorkspaceWritePermissionProfile(),
@@ -458,7 +452,6 @@ describe('ToolRuntime session sandbox boundary', () => {
       header: header(root),
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
-      appendMessage: async () => {},
       readExecutionBoundary: async () => ({
         kind: 'managed',
         profile: createWorkspaceWritePermissionProfile(),
@@ -518,7 +511,6 @@ describe('ToolRuntime session sandbox boundary', () => {
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
-      appendMessage: async () => {},
       readExecutionBoundary: async () => managed,
       createSandboxBoundaryRequest: async (input) => {
         created = {
@@ -594,7 +586,6 @@ describe('ToolRuntime session sandbox boundary', () => {
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
-      appendMessage: async () => {},
       readExecutionBoundary: async () => managed,
       createSandboxBoundaryRequest: async () => {
         markCreateStarted();
@@ -659,7 +650,6 @@ describe('ToolRuntime session sandbox boundary', () => {
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
-      appendMessage: async () => {},
       readExecutionBoundary: async () => ({
         kind: 'managed',
         profile: createWorkspaceWritePermissionProfile(),
@@ -722,7 +712,6 @@ describe('ToolRuntime session sandbox boundary', () => {
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
-      appendMessage: async () => {},
       readExecutionBoundary: async () => ({
         kind: 'managed',
         profile: createWorkspaceWritePermissionProfile(),
@@ -796,7 +785,6 @@ describe('ToolRuntime session sandbox boundary', () => {
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
-      appendMessage: async () => {},
       readExecutionBoundary: async () => ({
         kind: 'managed',
         profile: createWorkspaceWritePermissionProfile(),
@@ -877,7 +865,6 @@ describe('ToolRuntime session sandbox boundary', () => {
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
-      appendMessage: async () => {},
       readExecutionBoundary: async () => ({
         kind: 'managed',
         profile: createWorkspaceWritePermissionProfile(),
@@ -933,7 +920,6 @@ describe('ToolRuntime session sandbox boundary', () => {
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
-      appendMessage: async () => {},
       readExecutionBoundary: async () => ({
         kind: 'managed',
         profile: createWorkspaceWritePermissionProfile(),
@@ -1002,7 +988,6 @@ describe('ToolRuntime session sandbox boundary', () => {
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
-      appendMessage: async () => {},
       readExecutionBoundary: async () => ({
         kind: 'managed',
         profile: createWorkspaceWritePermissionProfile(),

@@ -172,7 +172,10 @@ import { HostSessionRetirementCoordinator } from './session-retirement-coordinat
 import { HostSessionRevisionCoordinator } from './session-revision-coordinator.js';
 import { HostSessionEffectCoordinator } from './session-effect-coordinator.js';
 import { SessionContinuityCoordinator } from './session-continuity-coordinator.js';
-import { createSessionTranscriptReader } from './session-transcript-reader.js';
+import {
+  createSessionTranscriptReader,
+  type SessionTranscriptReader,
+} from './session-transcript-reader.js';
 import { HostSkillCatalogCoordinator } from './skill-catalog-coordinator.js';
 import { SkillCatalogRepository } from './skill-catalog-repository.js';
 import { HostSessionTodoCoordinator } from './session-todo-coordinator.js';
@@ -272,6 +275,7 @@ export async function createExecutionRuntimeHostComposition(
   let sessionEffects: HostSessionEffectCoordinator | undefined;
   let memoryExtraction: HostMemoryExtractionCoordinator | undefined;
   let unsubscribeTranscriptChanges: (() => void) | undefined;
+  let transcriptReader: SessionTranscriptReader | undefined;
   let unsubscribeUsageChanges: (() => void) | undefined;
   let workspaceExecution: RuntimeHostWorkspaceExecutionComposition | undefined;
   let goalExecutions: HostGoalExecutionCoordinator | undefined;
@@ -613,12 +617,18 @@ export async function createExecutionRuntimeHostComposition(
     const canonicalPermissionOutcomes = new HostCanonicalPermissionOutcomeReader({
       store: stores.interactionStore,
     });
+    transcriptReader = createSessionTranscriptReader({
+      stores,
+      canonicalPermissionOutcomes,
+      ensureTranscriptLedger: (sessionId) =>
+        requireSessionManager(manager).ensureTranscriptLedgerForRead(sessionId),
+    });
     continuity = new SessionContinuityCoordinator(
       context.hostEpoch,
       (sessionId) => canonicalProjectionReader.read(sessionId),
       sessionAdmission,
       context.requestDrain,
-      createSessionTranscriptReader({ stores, canonicalPermissionOutcomes }),
+      transcriptReader,
       (sessionId) => hostChanges.publishSessionCatalog(sessionId),
       context.sessionAccessAuthority,
     );
@@ -962,6 +972,10 @@ export async function createExecutionRuntimeHostComposition(
       if (!preview.ok) throw new Error(preview.message);
       return preview.value;
     };
+    const recapReadModel = new RuntimeReadModel({
+      runtimeEventStore: stores.runtimeEventStore,
+      canonicalPermissionOutcomes,
+    });
     const sessionEffectCoordinator = new HostSessionEffectCoordinator({
       model: createHostSessionEffectModel({
         runtimePolicy: runtimePolicyStores,
@@ -969,10 +983,14 @@ export async function createExecutionRuntimeHostComposition(
         usage: openedUsageStores,
         requestDrain: context.requestDrain,
       }),
-      readModel: new RuntimeReadModel({
-        runtimeEventStore: stores.runtimeEventStore,
-        canonicalPermissionOutcomes,
-      }),
+      readModel: {
+        getSessionView: async (sessionId) => {
+          // A Session whose transcript predates the ledger projects an empty
+          // view, and a recap of nothing reads as a successful recap.
+          await requireSessionManager(manager).ensureTranscriptLedgerForRead(sessionId);
+          return recapReadModel.getSessionView(sessionId);
+        },
+      },
       artifacts: openedArtifactStore,
       sessions: stores.sessionStore,
       readSessionHeader: (sessionId) => stores.sessionStore.readHeaderSnapshot(sessionId),
@@ -1314,6 +1332,7 @@ export async function createExecutionRuntimeHostComposition(
     goal = new HostGoalCoordinator({
       store: openedGoalStore,
       stores,
+      readSessionMessages: (sessionId) => requireSessionManager(manager).getMessages(sessionId),
       executions: coordinator,
       sessionAdmission,
       evaluator: createHostGoalEvaluator({
@@ -1346,6 +1365,7 @@ export async function createExecutionRuntimeHostComposition(
     });
     const sessionCatalog = new HostSessionCatalogCoordinator({
       stores: stores.sessionStore,
+      turnIndex: requireTranscriptReader(transcriptReader),
       runtimePolicy: runtimePolicyStores,
       manager,
       admission: sessionAdmission,
@@ -2317,6 +2337,13 @@ function requireDailyReview(
 function requireSessionManager(manager: SessionManager | undefined): SessionManager {
   if (!manager) throw new Error('Runtime Host SessionManager is not composed');
   return manager;
+}
+
+function requireTranscriptReader(
+  reader: SessionTranscriptReader | undefined,
+): SessionTranscriptReader {
+  if (!reader) throw new Error('Runtime Host transcript reader is not composed');
+  return reader;
 }
 
 function requireGraphCoordinator(

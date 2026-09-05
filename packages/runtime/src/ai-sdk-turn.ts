@@ -45,7 +45,6 @@ import type {
   AssistantThinkingPart,
   RuntimeSystemNoteKind,
   SessionHeader,
-  TokenUsageMessage,
 } from '@maka/core/session';
 import type { BackendSendInput } from '@maka/core/backend-types';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
@@ -103,7 +102,6 @@ import {
   type RepairableAiSdkToolCall,
 } from './model-adapter.js';
 import { persistedOpenAiResponsesStepMessages } from './openai-responses-continuation.js';
-import { nonCanonicalContentOrder } from './runtime-event-read-model.js';
 import {
   composeRequestProjection,
   type DispatchRequestShape,
@@ -923,36 +921,6 @@ export class AiSdkTurn {
         return;
       }
       const stepId = currentStepMessageId;
-      const thinkingText = stepThinkingParts.map((part) => part.text).join('');
-      const contentOrder = nonCanonicalContentOrder(stepContentOrder);
-      const msg: AssistantMessage = {
-        type: 'assistant',
-        id: stepId,
-        turnId,
-        ts: this.deps.now(),
-        text: stepText,
-        ...(stepTextProviderOptions !== undefined
-          ? { providerOptions: stepTextProviderOptions }
-          : {}),
-        ...(contentOrder ? { contentOrder } : {}),
-        modelId: this.deps.backend.modelId,
-        ...(hasThinking
-          ? {
-              thinking: {
-                text: thinkingText,
-                ...(stepThinkingParts.length === 1 && stepThinkingParts[0]!.signature !== undefined
-                  ? { signature: stepThinkingParts[0]!.signature }
-                  : {}),
-                ...(stepThinkingParts.length === 1 &&
-                stepThinkingParts[0]!.providerOptions !== undefined
-                  ? { providerOptions: stepThinkingParts[0]!.providerOptions }
-                  : {}),
-                ...(stepThinkingParts.length > 1 ? { parts: stepThinkingParts } : {}),
-              },
-            }
-          : {}),
-      };
-      await this.deps.backend.appendMessage(msg);
       if (hasThinking) {
         for (const part of stepThinkingParts) {
           queue.push({
@@ -2503,14 +2471,6 @@ export class AiSdkTurn {
                   }
                 : {}),
             };
-            const tu: TokenUsageMessage = {
-              type: 'token_usage',
-              id: this.deps.newId(),
-              turnId,
-              ts: this.deps.now(),
-              ...usageFields,
-            };
-            await this.deps.backend.appendMessage(tu).catch(() => {});
             // Settlement fallback: a mid-turn or request-hook fold is only
             // known here. Notes already written at decision time are skipped
             // by the flags inside.

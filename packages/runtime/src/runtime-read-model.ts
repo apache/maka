@@ -30,7 +30,6 @@ import type {
 import {
   activePresentationRuntimeEvents,
   classifyRuntimeEventTerminalFact,
-  compareRuntimeReadModelMessages,
   isHardRuntimeEventReadModelDiagnostic,
   projectRuntimeEventsToStoredMessages,
   type RuntimeEventReadModelDiagnostic,

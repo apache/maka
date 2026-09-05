@@ -46,6 +46,7 @@
     "./session-bundle-policy": "./dist/session-bundle-policy.js",
     "./session-copy-cleanup": "./dist/session-copy-cleanup.js",
     "./session-todo-authority": "./dist/session-todo-authority.js",
+    "./session-message-projection": "./dist/session-message-projection.js",
     "./session-store": "./dist/session-store.js",
     "./settings-store": "./dist/settings-store.js",
     "./shell-run-authority": "./dist/shell-run-authority.js",

@@ -608,9 +608,8 @@ export class HostSessionRevisionCoordinator {
         copyCurrent:
           kind === 'branch' && slice.beforeTs === undefined && input.sourceTurnId !== undefined,
       });
-      if (copiedMessages.length > 0) {
-        await this.#stores.sessionStore.appendMessages(input.targetSessionId, [...copiedMessages]);
-      }
+      // `cloneConversationRuntimeLedger` already wrote the copy's own spine, and
+      // the copy reads back off that: nothing here writes a second transcript.
       await this.#stores.sessionStore.updateHeader(input.targetSessionId, {
         conversationCopy: {
           ...createInput.conversationCopy!,

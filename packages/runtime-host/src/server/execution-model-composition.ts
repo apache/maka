@@ -343,9 +343,6 @@ async function buildHostAiSdkBackend(
             permissionMode: input.context.header.permissionMode,
           }),
         },
-        appendMessage:
-          input.context.appendMessage ??
-          ((message) => input.context.store.appendMessage(input.context.sessionId, message)),
         ...(input.context.recordSystemNote
           ? { recordSystemNote: input.context.recordSystemNote }
           : {}),

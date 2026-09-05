@@ -82,6 +82,7 @@ import {
   type StoredMessage,
   type TurnRecord,
   type TurnStateMessage,
+  type AssistantMessage,
   type UserMessage,
   type WorkHubDelegationAssignedMessage,
   type WorkHubDelegationReplacementAbortedMessage,
@@ -97,12 +98,7 @@ import type {
   MessageAdmissionStore,
   PendingMessageAdmission,
 } from './message-admission-store.js';
-import {
-  isVisibleSessionMessage,
-  lastMessagePreviewForMessages,
-  latestVisibleMessageAt,
-  projectSessionCatalogMessages,
-} from './session-message-projection.js';
+import { projectSessionCatalogMessages } from './session-message-projection.js';
 export { projectSessionCatalogMessages };
 
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
@@ -125,18 +121,6 @@ export class SessionNotFoundError extends Error {
 
 export function isSessionNotFoundError(error: unknown): error is SessionNotFoundError {
   return error instanceof SessionNotFoundError;
-}
-
-export class SessionReadMarkerMessageNotFoundError extends Error {
-  readonly name = 'SessionReadMarkerMessageNotFoundError';
-  readonly code = 'session_read_marker_message_not_found';
-
-  constructor(
-    readonly sessionId: string,
-    readonly messageId: string,
-  ) {
-    super(`Session read marker message does not exist: ${messageId}`);
-  }
 }
 
 export interface SessionHeaderSnapshot {
@@ -318,33 +302,19 @@ export interface SessionStore {
   listForRecovery(): Promise<SessionHeader[]>;
   /** Read only the durable header without triggering connection-lock self-healing. */
   readHeaderSnapshot(sessionId: string): Promise<SessionHeader>;
-  /** Read durable messages without triggering connection-lock self-healing. */
   readMessagesSnapshot(sessionId: string): Promise<StoredMessage[]>;
-  /** Read one byte-bounded page directly from the durable append-only ledger. */
-  readTranscriptPageSnapshot(
-    sessionId: string,
-    request: SessionTranscriptPageRequest,
-  ): Promise<SessionTranscriptStoragePage>;
   readTranscriptHighWaterSnapshot(sessionId: string): Promise<number | null>;
-  readTurnContributionsSnapshot(
-    sessionId: string,
-    throughSequence: number | null,
-    position: number,
-    maxContributions: number,
-  ): Promise<SessionTurnContributionPage>;
-  readTurnLandmarksSnapshot(
-    sessionId: string,
-    maxLandmarks: number,
-  ): Promise<SessionTurnLandmarkSnapshot>;
-  /** Read durable messages for startup recovery. */
-  readMessagesForRecovery(sessionId: string): Promise<StoredMessage[]>;
-  /** Derive durable turns without triggering connection-lock self-healing. */
   listTurnsSnapshot(sessionId: string): Promise<TurnRecord[]>;
   readHeader(sessionId: string): Promise<SessionHeader>;
   readMessages(sessionId: string): Promise<StoredMessage[]>;
   listTurns(sessionId: string): Promise<TurnRecord[]>;
   appendMessage(sessionId: string, message: StoredMessage): Promise<void>;
   appendMessages(sessionId: string, messages: StoredMessage[]): Promise<void>;
+  /** Commit the Session-list facts a durable message carries. */
+  commitMessageCatalogProjection(
+    sessionId: string,
+    message: UserMessage | AssistantMessage,
+  ): Promise<void>;
   updateHeader(sessionId: string, patch: SessionHeaderPatch): Promise<SessionHeader>;
   setFlagged(sessionId: string, isFlagged: boolean): Promise<void>;
   rename(sessionId: string, name: string): Promise<void>;
@@ -354,11 +324,6 @@ export interface SessionStore {
 }
 
 export interface SessionAuthorityStore extends SessionStore, MessageAdmissionStore {
-  /** Decode a bounded ledger range for an authority-owned wire projection. */
-  readTranscriptRecordsSnapshot(
-    sessionId: string,
-    request: SessionTranscriptRecordScanRequest,
-  ): Promise<SessionTranscriptRecordScanPage>;
   /** Read a bounded set of durable messages at an inclusive transcript watermark. */
   readTranscriptMessagesSnapshot(
     sessionId: string,
@@ -469,10 +434,6 @@ export interface SessionAuthorityStore extends SessionStore, MessageAdmissionSto
   updateSessionConfiguration(
     sessionId: string,
     input: UpdateSessionConfigurationRequest,
-  ): Promise<SessionHeaderSnapshot>;
-  markSessionReadThroughMessage(
-    sessionId: string,
-    messageId: string,
   ): Promise<SessionHeaderSnapshot>;
   probeSessionRemoval(sessionId: string): Promise<ProbeSessionRemovalResult>;
   setSessionsArchivedVersioned(
@@ -898,41 +859,9 @@ class SqliteSessionStore implements SessionAuthorityStore {
 
   async list(filter?: SessionListFilter): Promise<SessionSummary[]> {
     await this.ensureReady();
-    const records = (await this.metadata.list(filter, 'ordinary')).filter(
-      (record) => record.header.conversationCopy?.state !== 'preparing',
-    );
-    const withPreviews: Array<{
-      record: SessionMetadataRecord;
-      previewMessages: StoredMessage[];
-    }> = [];
-    for (const record of records) {
-      const previewMessages = await this.metadata.readPreviewMessages(record.header.id);
-      withPreviews.push({ record, previewMessages });
-    }
-    withPreviews.sort((a, b) => {
-      const aLastMessageAt = maxTimestamp(
-        a.record.header.lastMessageAt,
-        latestVisibleMessageAt(a.previewMessages),
-      );
-      const bLastMessageAt = maxTimestamp(
-        b.record.header.lastMessageAt,
-        latestVisibleMessageAt(b.previewMessages),
-      );
-      const tsDelta = (bLastMessageAt ?? 0) - (aLastMessageAt ?? 0);
-      return tsDelta !== 0 ? tsDelta : a.record.header.id.localeCompare(b.record.header.id);
-    });
-
-    const summaries: SessionSummary[] = [];
-    for (let index = 0; index < withPreviews.length; index += 1) {
-      const { record, previewMessages } = withPreviews[index]!;
-      const { header } = record;
-      let messages = previewMessages.slice(-10);
-      if (index < 3) {
-        messages = (await this.metadata.readMessages(header.id)).slice(-10);
-      }
-      summaries.push(toSummary(header, messages));
-    }
-    return summaries;
+    return (await this.metadata.list(filter, 'ordinary'))
+      .filter((record) => record.header.conversationCopy?.state !== 'preparing')
+      .map((record) => toCatalogSummary(record.header, record.lastMessagePreview));
   }
 
   async listCatalogPage(
@@ -965,11 +894,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
   }
 
   async listForRecovery(): Promise<SessionHeader[]> {
-    const headers = await this.listHeaders();
-    for (const header of headers) {
-      await this.metadata.readMessagesForRecovery(header.id);
-    }
-    return headers;
+    return this.listHeaders();
   }
 
   async listHeaders(): Promise<SessionHeader[]> {
@@ -1006,14 +931,6 @@ class SqliteSessionStore implements SessionAuthorityStore {
     return this.metadata.readMessages(sessionId);
   }
 
-  async readTranscriptPageSnapshot(
-    sessionId: string,
-    request: SessionTranscriptPageRequest,
-  ): Promise<SessionTranscriptStoragePage> {
-    await this.ensureReady();
-    return this.metadata.readTranscriptPage(sessionId, request);
-  }
-
   async readTranscriptMessagesSnapshot(
     sessionId: string,
     request: SessionTranscriptMessageLookupRequest,
@@ -1022,45 +939,9 @@ class SqliteSessionStore implements SessionAuthorityStore {
     return this.metadata.readTranscriptMessages(sessionId, request);
   }
 
-  async readTranscriptRecordsSnapshot(
-    sessionId: string,
-    request: SessionTranscriptRecordScanRequest,
-  ): Promise<SessionTranscriptRecordScanPage> {
-    await this.ensureReady();
-    return this.metadata.readTranscriptRecords(sessionId, request);
-  }
-
   async readTranscriptHighWaterSnapshot(sessionId: string): Promise<number | null> {
     await this.ensureReady();
     return this.metadata.readTranscriptHighWater(sessionId);
-  }
-
-  async readTurnContributionsSnapshot(
-    sessionId: string,
-    throughSequence: number | null,
-    position: number,
-    maxContributions: number,
-  ): Promise<SessionTurnContributionPage> {
-    await this.ensureReady();
-    return this.metadata.readTurnContributions(
-      sessionId,
-      throughSequence,
-      position,
-      maxContributions,
-    );
-  }
-
-  async readTurnLandmarksSnapshot(
-    sessionId: string,
-    maxLandmarks: number,
-  ): Promise<SessionTurnLandmarkSnapshot> {
-    await this.ensureReady();
-    return this.metadata.readTurnLandmarks(sessionId, maxLandmarks);
-  }
-
-  async readMessagesForRecovery(sessionId: string): Promise<StoredMessage[]> {
-    await this.ensureReady();
-    return this.metadata.readMessagesForRecovery(sessionId);
   }
 
   async listTurnsSnapshot(sessionId: string): Promise<TurnRecord[]> {
@@ -1092,6 +973,15 @@ class SqliteSessionStore implements SessionAuthorityStore {
       projectSessionCatalogMessages(messages),
     );
     for (const listener of this.transcriptChangeListeners) listener(sessionId);
+  }
+
+  /** @see SqliteSessionMetadataStore.commitMessageCatalogProjection */
+  async commitMessageCatalogProjection(
+    sessionId: string,
+    message: UserMessage | AssistantMessage,
+  ): Promise<void> {
+    await this.ensureReady();
+    await this.metadata.commitMessageCatalogProjection(sessionId, message);
   }
 
   async commitMessageAdmission(
@@ -1175,42 +1065,6 @@ class SqliteSessionStore implements SessionAuthorityStore {
   ): Promise<SessionHeaderSnapshot> {
     await this.ensureReady();
     return projectHeaderSnapshot(await this.metadata.updateSessionConfiguration(sessionId, input));
-  }
-
-  async markSessionReadThroughMessage(
-    sessionId: string,
-    messageId: string,
-  ): Promise<SessionHeaderSnapshot> {
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      const record = await this.readHeaderRecordSnapshot(sessionId);
-      const messages = await this.readMessagesSnapshot(sessionId);
-      const visibleMessages = messages.filter(isVisibleSessionMessage);
-      const targetIndex = visibleMessages.findIndex((message) => message.id === messageId);
-      if (targetIndex < 0) {
-        throw new SessionReadMarkerMessageNotFoundError(sessionId, messageId);
-      }
-      const currentIndex =
-        record.header.lastReadMessageId === undefined
-          ? -1
-          : visibleMessages.findIndex((message) => message.id === record.header.lastReadMessageId);
-      const hasUnread = targetIndex < visibleMessages.length - 1;
-      if (
-        targetIndex < currentIndex ||
-        (targetIndex === currentIndex && record.header.hasUnread === hasUnread)
-      ) {
-        return record;
-      }
-      try {
-        return await this.updateHeaderVersioned(
-          sessionId,
-          { lastReadMessageId: messageId, hasUnread },
-          record.revision,
-        );
-      } catch (error) {
-        if (!(error instanceof SessionMetadataVersionConflictError) || attempt === 2) throw error;
-      }
-    }
-    throw new Error('Session read marker retry loop did not terminate');
   }
 
   async probeSessionRemoval(sessionId: string): Promise<ProbeSessionRemovalResult> {
@@ -1392,6 +1246,11 @@ function buildSessionHeader(
     collaborationMode: input.collaborationMode ?? 'agent',
     orchestrationMode: input.orchestrationMode ?? 'default',
     ...(input.thinkingLevel !== undefined ? { thinkingLevel: input.thinkingLevel } : {}),
+    // Born on the ledger: a Session created here records its execution facts as
+    // RuntimeEvents from its first turn, so there is no transcript to convert.
+    // Only an imported transcript (staged at 0) and a Session written before
+    // this field existed have anything for the converter to do.
+    transcriptLedgerVersion: 1,
     schemaVersion: 1,
   };
   assertValidSessionLineage(header);
@@ -1639,10 +1498,8 @@ function projectStableSessionCreateProbe(
     : probe;
 }
 
-function toSummary(header: SessionHeader, messages: StoredMessage[] = []): SessionSummary {
-  const preview = lastMessagePreviewForMessages(messages);
-  const derivedLastMessageAt = latestVisibleMessageAt(messages);
-  const lastMessageAt = maxTimestamp(header.lastMessageAt, derivedLastMessageAt);
+function toSummary(header: SessionHeader): SessionSummary {
+  const lastMessageAt = header.lastMessageAt;
   return {
     id: header.id,
     cwd: header.cwd,
@@ -1653,7 +1510,6 @@ function toSummary(header: SessionHeader, messages: StoredMessage[] = []): Sessi
     labels: header.labels,
     hasUnread: header.hasUnread,
     lastMessageAt,
-    ...(preview ? { lastMessagePreview: preview } : {}),
     status: header.status,
     ...(header.blockedReason ? { blockedReason: header.blockedReason } : {}),
     ...(header.statusUpdatedAt !== undefined ? { statusUpdatedAt: header.statusUpdatedAt } : {}),
@@ -1695,12 +1551,6 @@ function toCatalogSummary(
     ...toSummary(header),
     ...(lastMessagePreview === undefined ? {} : { lastMessagePreview }),
   };
-}
-
-function maxTimestamp(left: number | undefined, right: number | undefined): number | undefined {
-  if (left === undefined) return right;
-  if (right === undefined) return left;
-  return Math.max(left, right);
 }
 
 function normalizeSessionName(name: string): string {

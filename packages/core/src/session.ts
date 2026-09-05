@@ -283,7 +283,7 @@ export interface SessionHeader {
   /** Immutable Connection entity identity. Optional only on legacy Session records. */
   llmConnectionId?: string;
   llmConnectionSlug: string;
-  /** True after first UserMessage is flushed. Storage self-heals (§5.2). */
+  /** True once the Session's first UserMessage is durable. One-way. */
   connectionLocked: boolean;
   /** Sticky session default model id, captured when the session is created. */
   model: string;
@@ -790,11 +790,8 @@ export function userFacingText(message: Pick<UserMessage, 'text' | 'displayText'
 }
 
 /**
- * Closed policy for system notes that are part of the user-visible transcript.
- *
- * It is the same list as the notes the runtime writes, and that is the point: a
- * note exists to tell the reader something happened to their turn. One nothing
- * rendered was a fact with an owner elsewhere, written twice.
+ * Closed policy for system notes that are part of the user-visible transcript:
+ * exactly the notes the runtime writes.
  */
 export function isUserVisibleSessionSystemNote(kind: string): boolean {
   return isRuntimeSystemNoteKind(kind);
@@ -1159,10 +1156,8 @@ export const RUNTIME_SYSTEM_NOTE_KINDS = [
 
 /**
  * Notes only legacy transcripts carry, still decoded so those rows stay
- * readable. Each stated a fact that already had an owner — the Session header
- * and the invocation's own opening fact hold the mode, the model and the copy
- * lineage; the terminal event holds the abort and its source — so writing them
- * a second time bought a row nothing rendered.
+ * readable. Nothing writes them: the Session header and the invocation's
+ * opening and terminal facts already own what each of them said.
  */
 export const RETIRED_SYSTEM_NOTE_KINDS = [
   'session_start',

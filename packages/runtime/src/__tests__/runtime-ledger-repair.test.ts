@@ -104,8 +104,6 @@ test('repairs imported transcript turns into provider-neutral canonical history'
     const repair = new RuntimeLedgerRepair({
       runtimeEventStore: runtimeEvents,
       readMessages: (sessionId) => sessions.readMessages(sessionId),
-      appendMessage: (sessionId, message) => sessions.appendMessage(sessionId, message),
-      newId,
       now: () => 100,
     });
 
@@ -286,8 +284,6 @@ test('an imported snapshot cutoff survives materialization as aborted', async ()
     const repair = new RuntimeLedgerRepair({
       runtimeEventStore: runtimeEvents,
       readMessages: (sessionId) => sessions.readMessages(sessionId),
-      appendMessage: (sessionId, message) => sessions.appendMessage(sessionId, message),
-      newId,
       now: () => 100,
     });
 
@@ -343,8 +339,6 @@ test('does not import Host-handed-off transcript messages as synthetic runs', as
     const repair = new RuntimeLedgerRepair({
       runtimeEventStore: runtimeEvents,
       readMessages: (sessionId) => sessions.readMessages(sessionId),
-      appendMessage: (sessionId, message) => sessions.appendMessage(sessionId, message),
-      newId: () => `host-repair-${++sequence}`,
       now: () => 100,
     });
 
@@ -395,8 +389,6 @@ test('an imported turn with no terminal state is repaired to failed', async () =
     const repair = new RuntimeLedgerRepair({
       runtimeEventStore: runtimeEvents,
       readMessages: (sessionId) => sessions.readMessages(sessionId),
-      appendMessage: (sessionId, message) => sessions.appendMessage(sessionId, message),
-      newId,
       now: () => 100,
     });
 
@@ -472,8 +464,6 @@ test("converts Maka's own legacy transcript whole, and resumes an interrupted co
     const repair = new RuntimeLedgerRepair({
       runtimeEventStore: runtimeEvents,
       readMessages: (sessionId) => sessions.readMessages(sessionId),
-      appendMessage: (sessionId, message) => sessions.appendMessage(sessionId, message),
-      newId: () => 'unused',
       now: () => 100,
     });
 
@@ -645,8 +635,6 @@ test('a resolved Claude transcript replays as the conversation the user kept', a
     const repair = new RuntimeLedgerRepair({
       runtimeEventStore: runtimeEvents,
       readMessages: (sessionId) => sessions.readMessages(sessionId),
-      appendMessage: (sessionId, message) => sessions.appendMessage(sessionId, message),
-      newId,
       now: () => 100,
     });
     await repair.materializeTranscriptLedger(session);

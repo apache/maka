@@ -20,7 +20,6 @@
 import { createHash } from 'node:crypto';
 import { deriveTurnRecords } from '@maka/core/session';
 import { DEFAULT_TOOL_MODE } from '@maka/core/tool-mode';
-import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeEvent, RuntimeEventInvocationOpenedContent } from '@maka/core/runtime-event';
 import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
 import {
@@ -35,35 +34,12 @@ import type { SessionHeader } from '@maka/core/session';
 import type { StoredMessage, TurnRecord } from '@maka/core/session';
 import { backfillRuntimeEventsFromStoredMessages } from './runtime-event-backfill.js';
 import type { RuntimeEventBackfillOutcome } from './runtime-event-backfill.js';
-import { projectRuntimeEventUserMessage } from './runtime-event-read-model.js';
 
 export interface RuntimeLedgerRepairDeps {
   runtimeEventStore: RuntimeEventStore;
+  /** The legacy transcript this converter reads; nothing writes back to it. */
   readMessages(sessionId: string): Promise<StoredMessage[]>;
-  appendMessage(sessionId: string, message: StoredMessage): Promise<void>;
-  newId: () => string;
   now: () => number;
-}
-
-interface RuntimeEventTranscriptProjectionDeps {
-  readMessages(sessionId: string): Promise<StoredMessage[]>;
-  appendMessage(sessionId: string, message: StoredMessage): Promise<void>;
-}
-
-export async function materializeRuntimeEventTranscriptProjection(
-  deps: RuntimeEventTranscriptProjectionDeps,
-  sessionId: string,
-  event: RuntimeEvent,
-  knownMessageIds?: Set<string>,
-): Promise<boolean> {
-  const message = steeringMessageFromRuntimeEvent(event);
-  if (!message) return false;
-  const messageIds =
-    knownMessageIds ?? new Set((await deps.readMessages(sessionId)).map((item) => item.id));
-  if (messageIds.has(message.id)) return false;
-  await deps.appendMessage(sessionId, message);
-  messageIds.add(message.id);
-  return true;
 }
 
 export class RuntimeLedgerRepair {
@@ -82,14 +58,24 @@ export class RuntimeLedgerRepair {
    */
   async materializeTranscriptLedger(header: SessionHeader): Promise<void> {
     const sessionId = header.id;
-    return this.withRepairQueue(sessionId, 'transcript-runs', async () => {
+    return this.withRepairQueue(sessionId, async () => {
       const messages = await this.deps.readMessages(sessionId);
       const ledgerMessages = messages.filter(
         (message) => message.type !== 'user' || message.steeringEventId === undefined,
       );
-      const endedTurnIds = new Set(
+      // A turn the ledger already owns is not converted again. Its own run is
+      // the authority even when it never ended — a crashed turn is settled by
+      // recovery on that run, and a second, transcript-derived invocation for
+      // the same turn would make the Session read as two. The one exception is
+      // this converter's own run: an interrupted import re-derives it, and the
+      // deterministic ids let the store dedupe what already landed.
+      const ownedTurnIds = new Set(
         (await this.listInlineInvocations(sessionId))
-          .filter((invocation) => invocation.terminalEvent)
+          .filter(
+            (invocation) =>
+              invocation.terminalEvent ||
+              invocation.runId !== transcriptRunId(sessionId, invocation.turnId),
+          )
           .map((invocation) => invocation.turnId),
       );
       const messagesByTurn = groupMessagesByTurn(ledgerMessages);
@@ -101,7 +87,7 @@ export class RuntimeLedgerRepair {
       const firstOpenedAt = Math.max(0, header.createdAt - turns.length);
 
       for (const [index, turn] of turns.entries()) {
-        if (endedTurnIds.has(turn.turnId)) continue;
+        if (ownedTurnIds.has(turn.turnId)) continue;
         const turnMessages = messagesByTurn.get(turn.turnId) ?? [];
         const runId = transcriptRunId(sessionId, turn.turnId);
         const openedAt = firstOpenedAt + index;
@@ -128,38 +114,13 @@ export class RuntimeLedgerRepair {
     });
   }
 
-  async repairSteeringMessagesOnce(sessionId: string): Promise<number> {
-    return this.withRepairQueue(sessionId, 'steering-transcript', async () => {
-      const messages = await this.deps.readMessages(sessionId);
-      const messageIds = new Set(messages.map((message) => message.id));
-      const inlineRunIds = new Set(
-        (await this.listInlineInvocations(sessionId)).map((invocation) => invocation.runId),
-      );
-      let repaired = 0;
-      for (const event of await this.deps.runtimeEventStore.readSessionRuntimeEvents(sessionId)) {
-        if (!inlineRunIds.has(event.runId)) continue;
-        if (
-          await materializeRuntimeEventTranscriptProjection(this.deps, sessionId, event, messageIds)
-        ) {
-          repaired += 1;
-        }
-      }
-      return repaired;
-    });
-  }
-
   private async listInlineInvocations(sessionId: string): Promise<RuntimeInvocationRecord[]> {
     return (await this.deps.runtimeEventStore.listSessionInvocations(sessionId)).filter(
       (invocation) => isSessionInlineInvocation(invocation.opening),
     );
   }
 
-  private async withRepairQueue<T>(
-    sessionId: string,
-    runId: string,
-    operation: () => Promise<T>,
-  ): Promise<T> {
-    const key = `${sessionId}:${runId}`;
+  private async withRepairQueue<T>(key: string, operation: () => Promise<T>): Promise<T> {
     const previous = this.queues.get(key) ?? Promise.resolve();
     const current = previous.then(operation, operation);
     const cleanup = current.then(
@@ -278,18 +239,4 @@ function groupMessagesByTurn(messages: readonly StoredMessage[]): Map<string, St
     grouped.set(turnId, bucket);
   }
   return grouped;
-}
-
-function steeringMessageFromRuntimeEvent(event: RuntimeEvent): StoredMessage | undefined {
-  const messageId = event.refs?.providerEventId;
-  if (
-    event.role !== 'user' ||
-    event.content?.kind !== 'text' ||
-    event.content.steering !== true ||
-    typeof messageId !== 'string' ||
-    messageId.length === 0
-  ) {
-    return undefined;
-  }
-  return projectRuntimeEventUserMessage(event, messageId);
 }

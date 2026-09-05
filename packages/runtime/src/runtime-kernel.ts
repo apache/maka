@@ -45,9 +45,6 @@ import type {
   SessionHeader,
   SessionHeaderPatch,
   SessionStatus,
-  StoredMessage,
-  TurnRecord,
-  TurnStateMessage,
 } from '@maka/core/session';
 import { isDeepStrictEqual } from 'node:util';
 import type { UserMessageInput } from '@maka/core/runtime-inputs';
@@ -64,6 +61,7 @@ import {
   type AgentRunActiveSession,
   type AgentRunBeginResult,
   type AgentRunDurability,
+  type AgentRunHooks,
   type AgentRunLineage,
   type RuntimeContinuationFailpoint,
 } from './agent-run.js';
@@ -93,12 +91,7 @@ import type {
 } from './session-manager.js';
 import type { TurnShellPlan } from './shell-detect.js';
 import type { ShellRunProcessManager } from './shell-run-manager.js';
-import {
-  buildStatusPatch,
-  buildTurnStateMessage,
-  normalizeStopSessionSource,
-  turnHasRetainedOutput as messagesHaveRetainedOutput,
-} from './session-projection-helpers.js';
+import { buildStatusPatch, normalizeStopSessionSource } from './session-projection-helpers.js';
 import { buildToolsForAgentDefinition } from './agent-catalog.js';
 import { loadLatestHistoryCompactCheckpointFromRunLedger } from './history-compact-ledger.js';
 import { loadModelProjectionTransitionsFromRunLedger } from './model-projection-transition-ledger.js';
@@ -321,16 +314,6 @@ interface StopOperation {
   abortSource: string | undefined;
   ts: number;
   statusProjected: boolean;
-  turnProjections: Map<
-    string,
-    {
-      id: string;
-      turnId: string;
-      lineage: AgentRunLineage;
-      message?: TurnStateMessage;
-      projected: boolean;
-    }
-  >;
   targets: Map<number, StopTarget>;
   queue: Promise<void>;
 }
@@ -657,7 +640,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
         runId: options.runId,
         userMessageId: options.userMessageId,
         durability: options.durability,
-        store: this.deps.store,
         runStore: this.deps.runStore,
         runtimeEventStore: this.deps.runtimeEventStore,
         ...(this.deps.toolBoundaryProtocol
@@ -681,8 +663,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
           updateHeader: (targetSessionId, patch) => this.updateHeader(targetSessionId, patch),
           updateStatus: (targetSessionId, status, blockedReason, ts) =>
             this.updateStatus(targetSessionId, status, blockedReason, ts),
-          appendTurnState: (targetSessionId, turnId, status, lineage, options) =>
-            this.appendTurnState(targetSessionId, turnId, status, lineage, options),
+          ...this.messageProjectionHook(),
         },
       });
       if (options.admitTurn && (await options.admitTurn()) === 'cancelled') {
@@ -833,7 +814,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
       runLineage: { parentRunId: continuation.sourceRunId },
       runId: continuation.runId,
       invocationId: continuation.invocationId,
-      store: this.deps.store,
       runStore: this.deps.runStore,
       runtimeEventStore: this.deps.runtimeEventStore,
       ...(continuationToolBoundaryProtocol
@@ -916,8 +896,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
         updateHeader: (targetSessionId, patch) => this.updateHeader(targetSessionId, patch),
         updateStatus: (targetSessionId, status, blockedReason, ts) =>
           this.updateStatus(targetSessionId, status, blockedReason, ts),
-        appendTurnState: (targetSessionId, turnId, status, lineage, options) =>
-          this.appendTurnState(targetSessionId, turnId, status, lineage, options),
+        ...this.messageProjectionHook(),
       },
     });
 
@@ -993,7 +972,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
       userInput: { turnId, text: '' },
       rootExecutionKind: 'context_compact',
       ...(input.hostedRoot ? { runId: input.hostedRoot.runId } : {}),
-      store: this.deps.store,
       runStore: this.deps.runStore,
       runtimeEventStore: this.deps.runtimeEventStore,
       ...(this.deps.toolBoundaryProtocol
@@ -1017,8 +995,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
         updateHeader: (targetSessionId, patch) => this.updateHeader(targetSessionId, patch),
         updateStatus: (targetSessionId, status, blockedReason, ts) =>
           this.updateStatus(targetSessionId, status, blockedReason, ts),
-        appendTurnState: (targetSessionId, nextTurnId, status, lineage, options) =>
-          this.appendTurnState(targetSessionId, nextTurnId, status, lineage, options),
+        ...this.messageProjectionHook(),
       },
     });
 
@@ -1802,15 +1779,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
         delivery: { kind: 'pending' },
       } satisfies StopTarget);
     const needsRun = !target.runs.has(run.runId);
-    const projection =
-      needsRun && run.isSessionInline() && !operation.turnProjections.has(run.runId)
-        ? {
-            id: this.deps.newId(),
-            turnId: run.turnId,
-            lineage: run.lineage,
-            projected: false,
-          }
-        : undefined;
 
     if (!existingOperation) this.stopOperations.set(sessionId, operation);
     if (!existingTarget) {
@@ -1825,7 +1793,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
         sessionInline: run.isSessionInline(),
         stopCompleted: false,
       });
-      if (projection) operation.turnProjections.set(run.runId, projection);
     }
     return operation;
   }
@@ -1837,7 +1804,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
       abortSource,
       ts,
       statusProjected: false,
-      turnProjections: new Map(),
       targets: new Map(),
       queue: Promise.resolve(),
     };
@@ -1917,24 +1883,11 @@ export class RuntimeKernel implements RuntimeKernelLike {
       await this.updateStatus(sessionId, 'aborted', undefined, operation.ts);
       operation.statusProjected = true;
     }
-    for (const projection of operation.turnProjections.values()) {
-      if (projection.projected) continue;
-      projection.message ??= buildTurnStateMessage({
-        id: projection.id,
-        turnId: projection.turnId,
-        ts: operation.ts,
-        status: 'aborted',
-        lineage: projection.lineage,
-        ...(operation.abortSource ? { abortSource: operation.abortSource } : {}),
-        partialOutputRetained: await this.turnHasRetainedOutput(sessionId, projection.turnId),
-      });
-      await this.appendStopProjection(sessionId, projection.message);
-      projection.projected = true;
-    }
-    // The Session projection above now reads as aborted. The ledger has to say
-    // the same thing before this stop reports success: a Run left non-terminal
-    // here stays that way, because the stream that would have finalized it is
-    // exactly the one the stop could not wake.
+    // The ledger has to say this turn was aborted before the stop reports
+    // success: a Run left non-terminal here stays that way, because the stream
+    // that would have finalized it is exactly the one the stop could not wake.
+    // Nothing else records the abort — the transcript reads it back off this
+    // terminal fact.
     //
     // Without a Host interaction authority, Runtime owns terminal settlement.
     // A Hosted Run's terminal fact belongs to the Host, which also parks
@@ -1956,7 +1909,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
     }
     const completed =
       operation.statusProjected &&
-      [...operation.turnProjections.values()].every((projection) => projection.projected) &&
       [...operation.targets.values()].every(
         (target) =>
           target.delivery.kind !== 'pending' &&
@@ -1974,19 +1926,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
       if (target.delivery.kind === 'failed') failures.add(target.delivery.error);
     }
     failures.throwIfAny(`Stop cleanup failed for session ${sessionId}`);
-  }
-
-  private async appendStopProjection(sessionId: string, message: StoredMessage): Promise<void> {
-    const existing = (await this.deps.store.readMessages(sessionId)).find(
-      (candidate) => candidate.id === message.id,
-    );
-    if (existing) {
-      if (!isDeepStrictEqual(existing, message)) {
-        throw new Error(`stop projection ${message.id} conflicts with an existing message`);
-      }
-      return;
-    }
-    await this.deps.store.appendMessage(sessionId, message);
   }
 
   async respondToSandboxBoundary(
@@ -2738,32 +2677,16 @@ export class RuntimeKernel implements RuntimeKernelLike {
     return next;
   }
 
-  private async appendTurnState(
-    sessionId: string,
-    turnId: string,
-    status: TurnRecord['status'],
-    lineage: AgentRunLineage = {},
-    options: { id?: string; ts?: number; errorClass?: string; abortSource?: string } = {},
-  ): Promise<void> {
-    const ts = options.ts ?? this.deps.now();
-    await this.deps.store.appendMessage(
-      sessionId,
-      buildTurnStateMessage({
-        id: options.id ?? this.deps.newId(),
-        turnId,
-        ts,
-        status,
-        lineage,
-        ...(options.abortSource ? { abortSource: options.abortSource } : {}),
-        ...(options.errorClass !== undefined ? { errorClass: options.errorClass } : {}),
-        partialOutputRetained: await this.turnHasRetainedOutput(sessionId, turnId),
-      }),
-    );
-  }
-
-  private async turnHasRetainedOutput(sessionId: string, turnId: string): Promise<boolean> {
-    const messages = await this.deps.store.readMessages(sessionId).catch(() => []);
-    return messagesHaveRetainedOutput(messages, turnId);
+  /** Present only when the store keeps a Session catalog to project into. */
+  private messageProjectionHook(): Pick<AgentRunHooks, 'commitMessageProjection'> {
+    const commit = this.deps.store.commitMessageCatalogProjection;
+    if (!commit) return {};
+    return {
+      commitMessageProjection: async (sessionId, message) => {
+        await commit.call(this.deps.store, sessionId, message);
+        this.updateCachedHeader(sessionId, await this.deps.store.readHeader(sessionId));
+      },
+    };
   }
 }
 

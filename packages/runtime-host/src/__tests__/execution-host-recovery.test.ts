@@ -209,47 +209,42 @@ test('startup recovery replays an admitted regenerate with its source lineage', 
   });
 });
 
-test('startup recovery materializes legacy terminal Root sources exactly once', async () => {
+// A Root folded from several queued Messages ran as one prompt, so the ledger
+// carries that one prompt — under an id derived from its Run, which is what
+// makes a second recovery pass write nothing new.
+function legacyRootPrompt(legacy: {
+  runId: string;
+  turnId: string;
+  sources: readonly { content: { text: string }; admittedAt: number }[];
+}) {
+  return {
+    id: `${legacy.runId}-admitted-prompt`,
+    turnId: legacy.turnId,
+    ts: legacy.sources[0]!.admittedAt,
+    text: legacy.sources.map((source) => source.content.text).join('\n\n'),
+  };
+}
+
+test('startup recovery retires a legacy terminal Root without reopening its sealed Run', async () => {
   await withExecutionRoot(async (fixture) => {
     const legacy = await fixture.seedLegacyRootWithoutSourceTranscripts();
-    assert.deepEqual(
-      (await fixture.readSessionUserMessages()).filter((message) =>
-        legacy.sources.some((source) => source.messageId === message.id),
-      ),
-      [],
-    );
+    assert.deepEqual(await fixture.readSessionUserMessages(), []);
 
     const firstHost = await fixture.startHost();
     await fixture.stopHost(firstHost);
-    assert.deepEqual(
-      (await fixture.readSessionUserMessages())
-        .filter((message) => legacy.sources.some((source) => source.messageId === message.id))
-        .map(({ id, turnId, ts, text }) => ({ id, turnId, ts, text })),
-      legacy.sources.map((source) => ({
-        id: source.messageId,
-        turnId: legacy.turnId,
-        ts: source.admittedAt,
-        text: source.content.text,
-      })),
-    );
-
     const secondHost = await fixture.startHost();
     await fixture.stopHost(secondHost);
-    assert.deepEqual(
-      (await fixture.readSessionUserMessages())
-        .filter((message) => legacy.sources.some((source) => source.messageId === message.id))
-        .map(({ id, turnId, ts, text }) => ({ id, turnId, ts, text })),
-      legacy.sources.map((source) => ({
-        id: source.messageId,
-        turnId: legacy.turnId,
-        ts: source.admittedAt,
-        text: source.content.text,
-      })),
-    );
+
+    // A sealed Run is immutable, so its ledger stays exactly as the crash left
+    // it; recovery's job here is only to retire the admission it outlived.
+    assert.deepEqual(await fixture.readSessionUserMessages(), []);
+    const ledger = await fixture.readTurn(legacy.turnId);
+    assert.equal(ledger.runs.length, 1);
+    assert.equal(ledger.terminalEvents.length, 1);
   });
 });
 
-test('startup recovery replays a legacy Root without a Run before materializing its sources', async () => {
+test('startup recovery replays a legacy Root without a Run before recording its prompt', async () => {
   await withExecutionRoot(async (fixture) => {
     const legacy = await fixture.seedLegacyRootWithoutSourceTranscripts('missing');
 
@@ -259,15 +254,8 @@ test('startup recovery replays a legacy Root without a Run before materializing 
     await fixture.stopHost(secondHost);
 
     assert.deepEqual(
-      (await fixture.readSessionUserMessages())
-        .filter((message) => legacy.sources.some((source) => source.messageId === message.id))
-        .map(({ id, turnId, ts, text }) => ({ id, turnId, ts, text })),
-      legacy.sources.map((source) => ({
-        id: source.messageId,
-        turnId: legacy.turnId,
-        ts: source.admittedAt,
-        text: source.content.text,
-      })),
+      (await fixture.readSessionUserMessages()).map(({ turnId, text }) => ({ turnId, text })),
+      [{ turnId: legacy.turnId, text: legacyRootPrompt(legacy).text }],
     );
     const ledger = await fixture.readTurn(legacy.turnId);
     assert.equal(ledger.runs.length, 1);
@@ -275,7 +263,7 @@ test('startup recovery replays a legacy Root without a Run before materializing 
   });
 });
 
-test('startup recovery closes a legacy non-terminal Run before materializing its sources', async () => {
+test('startup recovery closes a legacy non-terminal Run before recording its prompt', async () => {
   await withExecutionRoot(async (fixture) => {
     const legacy = await fixture.seedLegacyRootWithoutSourceTranscripts('created');
 
@@ -285,15 +273,13 @@ test('startup recovery closes a legacy non-terminal Run before materializing its
     await fixture.stopHost(secondHost);
 
     assert.deepEqual(
-      (await fixture.readSessionUserMessages())
-        .filter((message) => legacy.sources.some((source) => source.messageId === message.id))
-        .map(({ id, turnId, ts, text }) => ({ id, turnId, ts, text })),
-      legacy.sources.map((source) => ({
-        id: source.messageId,
-        turnId: legacy.turnId,
-        ts: source.admittedAt,
-        text: source.content.text,
+      (await fixture.readSessionUserMessages()).map(({ id, turnId, ts, text }) => ({
+        id,
+        turnId,
+        ts,
+        text,
       })),
+      [legacyRootPrompt(legacy)],
     );
     const ledger = await fixture.readTurn(legacy.turnId);
     assert.equal(ledger.runs.length, 1);
