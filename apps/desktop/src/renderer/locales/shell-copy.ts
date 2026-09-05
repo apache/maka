@@ -27,6 +27,8 @@ import { type SlashCommandIdForSurface } from '@maka/core/slash-command-catalog'
 
 import { type GoalStatus } from '@maka/core/goal';
 import { redactSecrets } from '@maka/core/redaction';
+import type { SessionControlBlockedCode } from '@maka/runtime/session-manager';
+import type { AttachmentIngestBlockedCode } from '@maka/core/attachments';
 
 export const STATIC_COMMAND_IDS = [
   'action:new-chat',
@@ -2398,26 +2400,6 @@ export function localizedShellErrorMessage(error: unknown, fallback: string, loc
   console.error('[desktop] operation failed:', redactSecrets(detail));
   return fallback;
 }
-
-export type AttachmentIngestBlockedCode =
-  | 'count_exceeded'
-  | 'size_exceeded'
-  | 'payload_invalid'
-  | 'item_too_large'
-  | 'items_invalid'
-  | 'count_limit'
-  | 'duplicate_source'
-  | 'source_expired';
-
-export type SessionControlBlockedCode =
-  | 'permission_turn_running'
-  | 'permission_tool_pending'
-  | 'boundary_turn_running'
-  | 'boundary_request_pending'
-  | 'collaboration_turn_running'
-  | 'collaboration_tool_pending'
-  | 'plan_mode_plan_running'
-  | 'plan_mode_awaiting_approval';
 
 export function sessionSettingFailureCopy(
   locale: UiLocale,
