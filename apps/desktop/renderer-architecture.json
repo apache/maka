@@ -1642,7 +1642,9 @@
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
-        "dependencyPaths": {}
+        "dependencyPaths": {
+          "@maka/core/ui-locale": 1
+        }
       },
       "src/renderer/locales/settings-daily-review-copy.ts": {
         "bridgePaths": {},
@@ -1743,7 +1745,9 @@
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
-        "dependencyPaths": {}
+        "dependencyPaths": {
+          "@maka/core/ui-locale": 1
+        }
       },
       "src/renderer/locales/settings-usage-copy.ts": {
         "bridgePaths": {},
@@ -2700,6 +2704,7 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
+          "../locales/settings-bot-copy": 1,
           "../locales/settings-health-copy": 1,
           "./runtime-host-settings-target.js": 1,
           "./settings-error-copy": 1,
@@ -2908,6 +2913,7 @@
         "actionFactories": [],
         "dependencyPaths": {
           "../locales/permission-center-copy": 1,
+          "../locales/settings-bot-copy": 1,
           "./runtime-host-settings-target.js": 1,
           "./settings-error-copy": 1,
           "./settings-section": 1,
