@@ -162,7 +162,7 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   recordToolInvocation?: ToolTelemetryRecorder;
   /** Optional Phase 2 SQLite T1/T2 boundary for real tool execution. */
   runtimeCommitSink?: RuntimeCommitSink;
-  /** Durable session-lifetime cumulative usage checkpoint after each completed provider step. */
+  /** Durable cumulative usage after completed steps and explicitly metered failed requests. */
   recordUsageCheckpoint?: (
     usage: NormalizedAiSdkUsage & { costUsd?: number },
   ) => void | Promise<void>;

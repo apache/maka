@@ -25,7 +25,11 @@ import { join, resolve } from 'node:path';
 import { describe, test } from 'node:test';
 import type { ModelMessage, ModelStreamResult } from '../model-protocol.js';
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
-import { APICallError, type LanguageModelV4StreamPart } from '@ai-sdk/provider';
+import {
+  APICallError,
+  type LanguageModelV4StreamPart,
+  type LanguageModelV4Usage,
+} from '@ai-sdk/provider';
 import type { RuntimeInvocationRootAuthority } from '@maka/core/runtime-event';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type { AttachmentByteReader } from '@maka/core/attachments';
@@ -8119,25 +8123,20 @@ describe('AiSdkBackend usage telemetry', () => {
     );
   });
 
-  test('does not record fabricated zero telemetry when provider usage is unavailable', async () => {
+  test('does not record fabricated zero telemetry when completed response usage is unavailable', async () => {
     const events: SessionEvent[] = [];
     const model = new MockLanguageModelV4({
       doStream: {
         stream: simulateReadableStream({
           chunks: [
             { type: 'stream-start', warnings: [] },
+            { type: 'text-start', id: 'text-1' },
+            { type: 'text-delta', id: 'text-1', delta: 'Done.' },
+            { type: 'text-end', id: 'text-1' },
             {
               type: 'finish',
               finishReason: { unified: 'stop', raw: 'stop' },
-              usage: {
-                inputTokens: {
-                  total: undefined,
-                  noCache: undefined,
-                  cacheRead: undefined,
-                  cacheWrite: undefined,
-                },
-                outputTokens: { total: undefined, text: undefined, reasoning: undefined },
-              } as never,
+              usage: unavailableUsage(),
             },
           ],
           initialDelayInMs: null,
@@ -10664,7 +10663,11 @@ describe('AiSdkBackend RunTrace', () => {
       return {
         events: (async function* () {
           input.onStreamActivity();
-          yield { kind: 'finish' as const, finishReason: 'stop' };
+          yield {
+            kind: 'finish' as const,
+            finishReason: 'stop',
+            disposition: 'authoritative' as const,
+          };
           finishConsumed.release();
           await new Promise<void>((_resolve, reject) => {
             const abort = () => reject(input.abortSignal.reason ?? new Error('aborted'));
@@ -10677,6 +10680,7 @@ describe('AiSdkBackend RunTrace', () => {
           finishReason: 'stop',
           request: { messages: [] },
           continuation: 'none',
+          hasResponseEvidence: false,
         }),
       };
     };
@@ -14111,6 +14115,7 @@ describe('AiSdkBackend thinking persistence', () => {
         },
         request: { messages: [] },
         continuation: 'none',
+        hasResponseEvidence: true,
       }),
     });
 
@@ -15660,6 +15665,18 @@ function emptyUsage() {
   };
 }
 
+function unavailableUsage(): LanguageModelV4Usage {
+  return {
+    inputTokens: {
+      total: undefined,
+      noCache: undefined,
+      cacheRead: undefined,
+      cacheWrite: undefined,
+    },
+    outputTokens: { total: undefined, text: undefined, reasoning: undefined },
+  };
+}
+
 function imageReplayBackend(
   model: MockLanguageModelV4,
   options: { supportsVision: boolean; readAttachmentBytes: AttachmentByteReader },
@@ -16372,3 +16389,692 @@ function runtimeExecute(
       })
     ).result;
 }
+
+describe('AiSdkBackend provider finish recovery', () => {
+  test('retries an empty stop after a settled tool without replaying the tool or spending its step budget', async () => {
+    const durable = durableTurnHarness('turn-empty-stop-after-tool', 'read notes.md');
+    const appended: StoredMessage[] = [];
+    const usageCheckpoints: Array<{ inputTokens: number; outputTokens: number }> = [];
+    let calls = 0;
+    let executions = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        const chunks: LanguageModelV4StreamPart[] =
+          calls === 1
+            ? [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'tool-1',
+                  toolName: 'Read',
+                  input: JSON.stringify({ path: 'notes.md' }),
+                },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                  usage: {
+                    inputTokens: { total: 3, noCache: 3, cacheRead: 0, cacheWrite: 0 },
+                    outputTokens: { total: 1, text: 0, reasoning: 1 },
+                  },
+                },
+              ]
+            : calls === 2
+              ? [
+                  { type: 'stream-start', warnings: [] },
+                  {
+                    type: 'finish',
+                    finishReason: { unified: 'stop', raw: 'stop' },
+                    usage: unavailableUsage(),
+                  },
+                ]
+              : [
+                  { type: 'stream-start', warnings: [] },
+                  { type: 'text-start', id: 'text-final' },
+                  { type: 'text-delta', id: 'text-final', delta: 'Recovered' },
+                  { type: 'text-end', id: 'text-final' },
+                  {
+                    type: 'finish',
+                    finishReason: { unified: 'stop', raw: 'stop' },
+                    usage: {
+                      inputTokens: { total: 5, noCache: 5, cacheRead: 0, cacheWrite: 0 },
+                      outputTokens: { total: 2, text: 2, reasoning: 0 },
+                    },
+                  },
+                ];
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async (message) => {
+        appended.push(message);
+      },
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [
+        {
+          ...testTool('Read', z.object({ path: z.string() })),
+          impl: async () => {
+            executions += 1;
+            return { ok: true };
+          },
+        },
+      ],
+      maxSteps: 2,
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      recordUsageCheckpoint: async (usage) => {
+        usageCheckpoints.push(usage);
+      },
+      newId: idGenerator(),
+      now: monotonicClock(),
+      providerRetrySleep: async () => {},
+    });
+
+    const events = await drainDurably(backend.send(durable.input()), durable);
+
+    assert.equal(calls, 3);
+    assert.equal(executions, 1);
+    assert.deepEqual(
+      appended
+        .filter((message): message is AssistantMessage => message.type === 'assistant')
+        .map((message) => message.text),
+      ['Recovered'],
+    );
+    assert.deepEqual(model.doStreamCalls[2]?.prompt, model.doStreamCalls[1]?.prompt);
+    assert.match(JSON.stringify(model.doStreamCalls[2]?.prompt), /"ok":true/);
+    assert.deepEqual(
+      events
+        .filter((event) => event.type === 'provider_retry')
+        .map(({ phase, attempt, maxAttempts, reason }) => ({
+          phase,
+          attempt,
+          maxAttempts,
+          reason,
+        })),
+      [
+        { phase: 'scheduled', attempt: 2, maxAttempts: 2, reason: 'provider_unavailable' },
+        { phase: 'started', attempt: 2, maxAttempts: 2, reason: 'provider_unavailable' },
+      ],
+    );
+    assert.deepEqual(
+      usageCheckpoints.map(({ inputTokens, outputTokens }) => ({ inputTokens, outputTokens })),
+      [
+        { inputTokens: 3, outputTokens: 1 },
+        { inputTokens: 8, outputTokens: 3 },
+      ],
+    );
+    assert.equal(
+      events.some((event) => event.type === 'error'),
+      false,
+    );
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+  });
+
+  test('fails metering closed when an after-step stop overtakes an empty-stop retry', async () => {
+    const durable = durableTurnHarness('turn-empty-stop-after-step-stop', 'read notes.md');
+    let backend!: AiSdkBackend;
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        if (calls === 2) await backend.stop('user_stop', 'after_step');
+        const chunks: LanguageModelV4StreamPart[] =
+          calls === 1
+            ? [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'tool-1',
+                  toolName: 'Read',
+                  input: JSON.stringify({ path: 'notes.md' }),
+                },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                  usage: {
+                    inputTokens: { total: 3, noCache: 3, cacheRead: 0, cacheWrite: 0 },
+                    outputTokens: { total: 1, text: 0, reasoning: 1 },
+                  },
+                },
+              ]
+            : [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'stop', raw: 'stop' },
+                  usage: unavailableUsage(),
+                },
+              ];
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [testTool('Read', z.object({ path: z.string() }))],
+      maxSteps: 2,
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+      providerRetrySleep: async () => {},
+    });
+
+    const events = await drainDurably(backend.send(durable.input()), durable);
+
+    assert.equal(calls, 2);
+    assert.equal(
+      events.some((event) => event.type === 'provider_retry'),
+      false,
+    );
+    assert.equal(
+      events.some((event) => event.type === 'token_usage'),
+      false,
+      'the metered tool step is only a partial total after the unmetered empty stop',
+    );
+    assert.equal(events.find((event) => event.type === 'error')?.reason, 'provider_unavailable');
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+  });
+
+  test('classifies exhausted empty stop retries as provider unavailable', async () => {
+    const durable = durableTurnHarness('turn-empty-stop-exhausted', 'continue');
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: 'stream-start', warnings: [] },
+              {
+                type: 'finish',
+                finishReason: { unified: 'stop', raw: 'stop' },
+                usage: unavailableUsage(),
+              },
+            ],
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      maxSteps: 1,
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+      providerRetrySleep: async () => {},
+    });
+
+    const events = await drainDurably(backend.send(durable.input()), durable);
+    const error = events.find(
+      (event): event is Extract<SessionEvent, { type: 'error' }> => event.type === 'error',
+    );
+
+    assert.equal(calls, 2);
+    assert.equal(error?.reason, 'provider_unavailable');
+    assert.equal(error?.message, 'Provider returned an empty stop without output or usable usage');
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+  });
+
+  test('routes an output-free network_error finish through the network retry path', async () => {
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        const chunks: LanguageModelV4StreamPart[] =
+          calls === 1
+            ? [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'other', raw: 'network_error' },
+                  usage: unavailableUsage(),
+                },
+              ]
+            : [
+                { type: 'stream-start', warnings: [] },
+                { type: 'text-start', id: 'text-1' },
+                { type: 'text-delta', id: 'text-1', delta: 'Recovered' },
+                { type: 'text-end', id: 'text-1' },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'stop', raw: 'stop' },
+                  usage: emptyUsage(),
+                },
+              ];
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      maxSteps: 1,
+      newId: idGenerator(),
+      now: monotonicClock(),
+      providerRetrySleep: async () => {},
+    });
+
+    const events: SessionEvent[] = [];
+    for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
+      events.push(event);
+    }
+
+    assert.equal(calls, 2);
+    assert.deepEqual(
+      events
+        .filter((event) => event.type === 'provider_retry')
+        .map(({ phase, attempt, maxAttempts, reason }) => ({
+          phase,
+          attempt,
+          maxAttempts,
+          reason,
+        })),
+      [
+        { phase: 'scheduled', attempt: 2, maxAttempts: 10, reason: 'network' },
+        { phase: 'started', attempt: 2, maxAttempts: 10, reason: 'network' },
+      ],
+    );
+    assert.equal(
+      events.some((event) => event.type === 'error'),
+      false,
+    );
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+  });
+
+  test('preserves valid usage from a retried network_error finish', async () => {
+    const usageCheckpoints: Array<{ inputTokens: number; outputTokens: number }> = [];
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        const chunks: LanguageModelV4StreamPart[] =
+          calls === 1
+            ? [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'other', raw: 'network_error' },
+                  usage: {
+                    inputTokens: { total: 4, noCache: 4, cacheRead: 0, cacheWrite: 0 },
+                    outputTokens: { total: 1, text: 1, reasoning: 0 },
+                  },
+                },
+              ]
+            : [
+                { type: 'stream-start', warnings: [] },
+                { type: 'text-start', id: 'text-1' },
+                { type: 'text-delta', id: 'text-1', delta: 'Recovered' },
+                { type: 'text-end', id: 'text-1' },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'stop', raw: 'stop' },
+                  usage: {
+                    inputTokens: { total: 5, noCache: 5, cacheRead: 0, cacheWrite: 0 },
+                    outputTokens: { total: 2, text: 2, reasoning: 0 },
+                  },
+                },
+              ];
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      maxSteps: 1,
+      recordUsageCheckpoint: async (usage) => {
+        usageCheckpoints.push(usage);
+      },
+      newId: idGenerator(),
+      now: monotonicClock(),
+      providerRetrySleep: async () => {},
+    });
+
+    const events: SessionEvent[] = [];
+    for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
+      events.push(event);
+    }
+    const usage = events.find(
+      (event): event is Extract<SessionEvent, { type: 'token_usage' }> =>
+        event.type === 'token_usage',
+    );
+
+    assert.equal(calls, 2);
+    assert.deepEqual(
+      usageCheckpoints.map(({ inputTokens, outputTokens }) => ({ inputTokens, outputTokens })),
+      [
+        { inputTokens: 4, outputTokens: 1 },
+        { inputTokens: 9, outputTokens: 3 },
+      ],
+    );
+    assert.equal(usage?.input, 9);
+    assert.equal(usage?.output, 3);
+    assert.equal(usage?.runtimeSteps, 1);
+    assert.equal(
+      events.some((event) => event.type === 'error'),
+      false,
+    );
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+  });
+
+  test('does not retry a network_error finish after partial output', async () => {
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: 'stream-start', warnings: [] },
+              { type: 'text-start', id: 'text-1' },
+              { type: 'text-delta', id: 'text-1', delta: 'Partial' },
+              {
+                type: 'finish',
+                finishReason: { unified: 'other', raw: 'network_error' },
+                usage: unavailableUsage(),
+              },
+            ],
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      providerRetrySleep: async () => {},
+    });
+
+    const events: SessionEvent[] = [];
+    for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
+      events.push(event);
+    }
+
+    assert.equal(calls, 1);
+    assert.equal(
+      events.some((event) => event.type === 'provider_retry'),
+      false,
+    );
+    assert.equal(events.find((event) => event.type === 'error')?.reason, 'network');
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+  });
+
+  test('fails metering closed when a partial network_error follows a metered tool step', async () => {
+    const durable = durableTurnHarness('turn-partial-network-after-tool', 'read notes.md');
+    const usageCheckpoints: Array<{ inputTokens: number; outputTokens: number }> = [];
+    let calls = 0;
+    let executions = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        const chunks: LanguageModelV4StreamPart[] =
+          calls === 1
+            ? [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'tool-1',
+                  toolName: 'Read',
+                  input: JSON.stringify({ path: 'notes.md' }),
+                },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                  usage: {
+                    inputTokens: { total: 3, noCache: 3, cacheRead: 0, cacheWrite: 0 },
+                    outputTokens: { total: 1, text: 0, reasoning: 1 },
+                  },
+                },
+              ]
+            : [
+                { type: 'stream-start', warnings: [] },
+                { type: 'text-start', id: 'text-1' },
+                { type: 'text-delta', id: 'text-1', delta: 'Partial' },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'other', raw: 'network_error' },
+                  usage: unavailableUsage(),
+                },
+              ];
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [
+        {
+          ...testTool('Read', z.object({ path: z.string() })),
+          impl: async () => {
+            executions += 1;
+            return { ok: true };
+          },
+        },
+      ],
+      maxSteps: 2,
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      recordUsageCheckpoint: async (usage) => {
+        usageCheckpoints.push(usage);
+      },
+      newId: idGenerator(),
+      now: monotonicClock(),
+      providerRetrySleep: async () => {},
+    });
+
+    const events = await drainDurably(backend.send(durable.input()), durable);
+
+    assert.equal(calls, 2);
+    assert.equal(executions, 1);
+    assert.deepEqual(
+      usageCheckpoints.map(({ inputTokens, outputTokens }) => ({ inputTokens, outputTokens })),
+      [{ inputTokens: 3, outputTokens: 1 }],
+    );
+    assert.equal(
+      events.some((event) => event.type === 'provider_retry'),
+      false,
+    );
+    assert.equal(
+      events.some((event) => event.type === 'token_usage'),
+      false,
+    );
+    assert.equal(events.find((event) => event.type === 'error')?.reason, 'network');
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+  });
+
+  test('fails metering closed when the exhausted network_error retry loses usage', async () => {
+    const usageCheckpoints: Array<{ inputTokens: number; outputTokens: number }> = [];
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: 'stream-start', warnings: [] },
+              {
+                type: 'finish',
+                finishReason: { unified: 'other', raw: 'network_error' },
+                usage:
+                  calls < 10
+                    ? {
+                        inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                        outputTokens: { total: 1, text: 1, reasoning: 0 },
+                      }
+                    : unavailableUsage(),
+              },
+            ],
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      maxSteps: 1,
+      recordUsageCheckpoint: async (usage) => {
+        usageCheckpoints.push(usage);
+      },
+      newId: idGenerator(),
+      now: monotonicClock(),
+      providerRetrySleep: async () => {},
+    });
+
+    const events: SessionEvent[] = [];
+    for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
+      events.push(event);
+    }
+
+    assert.equal(calls, 10);
+    assert.equal(usageCheckpoints.length, 9);
+    assert.deepEqual(
+      usageCheckpoints.at(-1)
+        ? {
+            inputTokens: usageCheckpoints.at(-1)!.inputTokens,
+            outputTokens: usageCheckpoints.at(-1)!.outputTokens,
+          }
+        : undefined,
+      { inputTokens: 9, outputTokens: 9 },
+    );
+    assert.equal(
+      events.some((event) => event.type === 'token_usage'),
+      false,
+    );
+    assert.equal(events.find((event) => event.type === 'error')?.reason, 'network');
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+  });
+
+  test('does not retry a network_error finish after metadata-only response evidence', async () => {
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: 'stream-start', warnings: [] },
+              { type: 'text-start', id: 'text-1' },
+              {
+                type: 'text-end',
+                id: 'text-1',
+                providerMetadata: { openai: { itemId: 'message-1' } },
+              },
+              {
+                type: 'finish',
+                finishReason: { unified: 'other', raw: 'network_error' },
+                usage: unavailableUsage(),
+              },
+            ],
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      providerRetrySleep: async () => {},
+    });
+
+    const events: SessionEvent[] = [];
+    for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
+      events.push(event);
+    }
+
+    assert.equal(calls, 1);
+    assert.equal(
+      events.some((event) => event.type === 'provider_retry'),
+      false,
+    );
+    assert.equal(events.find((event) => event.type === 'error')?.reason, 'network');
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+  });
+});

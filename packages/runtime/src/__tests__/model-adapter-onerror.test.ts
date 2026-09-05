@@ -27,10 +27,21 @@ import {
 } from '@ai-sdk/provider';
 
 import { ModelAdapter, settleModelStepOutcome } from '../model-adapter.js';
+import type { ModelStepOutcome, ModelStreamEvent } from '../model-protocol.js';
 
 const ZERO_USAGE: LanguageModelV4Usage = {
   inputTokens: { total: 0, noCache: 0, cacheRead: 0, cacheWrite: 0 },
   outputTokens: { total: 0, text: 0, reasoning: 0 },
+};
+
+const UNAVAILABLE_USAGE: LanguageModelV4Usage = {
+  inputTokens: {
+    total: undefined,
+    noCache: undefined,
+    cacheRead: undefined,
+    cacheWrite: undefined,
+  },
+  outputTokens: { total: undefined, text: undefined, reasoning: undefined },
 };
 
 function newAdapter(): ModelAdapter {
@@ -73,7 +84,9 @@ describe('settleModelStepOutcome', () => {
       failure,
       sawFinish: true,
       finishReason: 'content-filter',
+      finishDisposition: 'authoritative',
       request: {},
+      hasResponseEvidence: false,
     });
 
     assert.equal(outcome.kind, 'retryable-failure');
@@ -81,13 +94,30 @@ describe('settleModelStepOutcome', () => {
     assert.equal(outcome.failure, failure);
   });
 
+  test('preserves the missing terminal finish diagnostic after authoritative step evidence', () => {
+    const outcome = settleModelStepOutcome({
+      aborted: false,
+      sawFinish: false,
+      finishReason: 'stop',
+      finishDisposition: 'authoritative',
+      request: {},
+      hasResponseEvidence: true,
+    });
+
+    assert.equal(outcome.kind, 'truncated');
+    if (outcome.kind !== 'truncated') return;
+    assert.equal(outcome.failure.message, 'Provider stream ended without finishing (stop)');
+  });
+
   test('classifies a raw error finish without widening provider retry policy', () => {
     const outcome = settleModelStepOutcome({
       aborted: false,
       sawFinish: true,
       finishReason: 'error',
+      finishDisposition: 'authoritative',
       rawFinishReason: '503',
       request: {},
+      hasResponseEvidence: false,
     });
 
     assert.equal(outcome.kind, 'terminal-failure');
@@ -295,6 +325,7 @@ describe('ModelAdapter.startStream onError', () => {
       failure: failures[0],
       request: { messages: [{ role: 'user', content: 'hi' }] },
       continuation: 'none',
+      hasResponseEvidence: false,
     });
   });
 
@@ -377,6 +408,7 @@ describe('ModelAdapter.startStream onError', () => {
       },
       request: { messages: [{ role: 'user', content: 'hi' }] },
       continuation: 'none',
+      hasResponseEvidence: false,
     });
   });
 
@@ -391,6 +423,105 @@ describe('ModelAdapter.startStream onError', () => {
     if (outcome.kind !== 'truncated') return;
     assert.equal(outcome.failure.message, 'Provider stream ended without finishing (other)');
     assert.equal(outcome.continuation, 'none');
+  });
+
+  test('settles an empty stop without usable usage as truncated', async () => {
+    const { events, outcome } = await observe([
+      { type: 'stream-start', warnings: [] },
+      {
+        type: 'finish',
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: UNAVAILABLE_USAGE,
+      },
+    ]);
+
+    assert.equal(outcome.kind, 'truncated');
+    if (outcome.kind !== 'truncated') return;
+    assert.deepEqual(outcome.failure, {
+      type: 'model_failure',
+      kind: 'provider_unavailable',
+      message: 'Provider returned an empty stop without output or usable usage',
+      retryable: false,
+    });
+    assert.equal(outcome.continuation, 'none');
+    assert.equal(outcome.hasResponseEvidence, false);
+    assert.deepEqual(boundaryDispositions(events), [
+      { kind: 'step-finish', disposition: 'incomplete' },
+      { kind: 'finish', disposition: 'incomplete' },
+    ]);
+  });
+
+  test('keeps an empty stop with authoritative zero usage completed', async () => {
+    const { events, outcome } = await observe([
+      { type: 'stream-start', warnings: [] },
+      {
+        type: 'finish',
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: ZERO_USAGE,
+      },
+    ]);
+
+    assert.equal(outcome.kind, 'completed');
+    if (outcome.kind !== 'completed') return;
+    assert.equal(outcome.finishReason, 'stop');
+    assert.equal(outcome.usage?.totalTokens, 0);
+    assert.equal(outcome.hasResponseEvidence, false);
+    assert.deepEqual(boundaryDispositions(events), [
+      { kind: 'step-finish', disposition: 'authoritative' },
+      { kind: 'finish', disposition: 'authoritative' },
+    ]);
+  });
+
+  test('keeps nonempty text completed when provider usage is unavailable', async () => {
+    const { events, outcome } = await observe([
+      { type: 'stream-start', warnings: [] },
+      { type: 'text-start', id: 'text-1' },
+      { type: 'text-delta', id: 'text-1', delta: 'Done.' },
+      { type: 'text-end', id: 'text-1' },
+      {
+        type: 'finish',
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: UNAVAILABLE_USAGE,
+      },
+    ]);
+
+    assert.equal(outcome.kind, 'completed');
+    if (outcome.kind !== 'completed') return;
+    assert.equal(outcome.finishReason, 'stop');
+    assert.equal(outcome.usage, undefined);
+    assert.equal(outcome.hasResponseEvidence, true);
+    assert.deepEqual(boundaryDispositions(events), [
+      { kind: 'step-finish', disposition: 'authoritative' },
+      { kind: 'finish', disposition: 'authoritative' },
+    ]);
+  });
+
+  test('settles an explicit provider network_error finish as retryable', async () => {
+    const { events, outcome } = await observe([
+      { type: 'stream-start', warnings: [] },
+      {
+        type: 'finish',
+        finishReason: { unified: 'other', raw: 'network_error' },
+        usage: UNAVAILABLE_USAGE,
+      },
+    ]);
+
+    assert.equal(outcome.kind, 'retryable-failure');
+    if (outcome.kind !== 'retryable-failure') return;
+    assert.deepEqual(outcome.failure, {
+      type: 'model_failure',
+      kind: 'network',
+      code: 'network_error',
+      message: 'Network error',
+      retryable: true,
+    });
+    assert.equal(outcome.continuation, 'none');
+    assert.equal(outcome.hasResponseEvidence, false);
+    assert.equal(events.find((event) => event.kind === 'finish')?.finishReason, 'network-error');
+    assert.deepEqual(boundaryDispositions(events), [
+      { kind: 'step-finish', disposition: 'retryable-network-failure' },
+      { kind: 'finish', disposition: 'retryable-network-failure' },
+    ]);
   });
 
   test('preserves a provider reason hidden by the SDK other bucket', async () => {
@@ -423,6 +554,23 @@ describe('ModelAdapter.startStream onError', () => {
     if (outcome.kind !== 'terminal-failure') return;
     assert.equal(outcome.failure.kind, 'unknown');
     assert.equal(outcome.failure.message, 'Provider stopped the stream on a content filter');
+  });
+
+  test('keeps a provider error finish on the existing terminal error policy', async () => {
+    const { events, outcome } = await observe([
+      { type: 'stream-start', warnings: [] },
+      {
+        type: 'finish',
+        finishReason: { unified: 'other', raw: 'error' },
+        usage: ZERO_USAGE,
+      },
+    ]);
+
+    assert.equal(events.find((event) => event.kind === 'finish')?.finishReason, 'error');
+    assert.equal(outcome.kind, 'terminal-failure');
+    if (outcome.kind !== 'terminal-failure') return;
+    assert.equal(outcome.failure.kind, 'provider_unavailable');
+    assert.equal(outcome.failure.message, 'Provider stopped the stream with an error');
   });
 
   test('settles an aborted request as aborted', async () => {
@@ -502,6 +650,13 @@ async function settle(
   chunks: LanguageModelV4StreamPart[],
   abortSignal = new AbortController().signal,
 ) {
+  return (await observe(chunks, abortSignal)).outcome;
+}
+
+async function observe(
+  chunks: LanguageModelV4StreamPart[],
+  abortSignal = new AbortController().signal,
+): Promise<{ events: ModelStreamEvent[]; outcome: ModelStepOutcome }> {
   const model = new MockLanguageModelV4({
     doStream: async () => ({ stream: convertArrayToReadableStream(chunks) }),
   });
@@ -514,8 +669,15 @@ async function settle(
     abortSignal,
     repairToolCall: async () => null,
   });
-  for await (const _event of result.events) void _event;
-  return await result.outcome;
+  const events: ModelStreamEvent[] = [];
+  for await (const event of result.events) events.push(event);
+  return { events, outcome: await result.outcome };
+}
+
+function boundaryDispositions(events: readonly ModelStreamEvent[]) {
+  return events
+    .filter((event) => event.kind === 'step-finish' || event.kind === 'finish')
+    .map(({ kind, disposition }) => ({ kind, disposition }));
 }
 
 async function requireAlreadySettled<T>(promise: Promise<T>): Promise<T> {
