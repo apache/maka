@@ -1977,18 +1977,19 @@ export const OversizedTurnHoldsAReadingAnchorOnColdScroll: Story = {
         grewBy: root.scrollHeight - heightBefore,
       });
     }
-    // Measured branch baseline, held as a ratchet. On main this story reads 0
-    // by construction — no sub-turn boundary exists to materialize — while this
-    // branch measured a worst step of 244px, tracking materialization exactly:
-    // the one step with zero growth read a 0px error, and the 10×-off
-    // first-paint estimates (answer 96px vs ~1022px real, folded card 320px vs
-    // 24–32px) account for the rest. Whether that level is acceptable, or the
-    // estimates get corrected first, is the open review question; this bound
-    // only keeps it from getting worse unnoticed.
+    // On main this story reads 0 by construction — no sub-turn boundary exists
+    // to materialize. On this branch the error tracks materialization exactly:
+    // a zero-growth step read 0px, and with the folded-disclosure estimate at
+    // 320px against a 24–32px collapsed row, steps measured up to 244px — a
+    // reader-visible stall of a 240px scroll step. With the collapsed estimate
+    // corrected, the residual is the answer blocks' estimate error, which stays
+    // well under half a step. The bound is half a step: loose enough for
+    // per-run variance, tight enough that a stalled or reversed step can never
+    // pass again.
     expect(
       worstUnexpected,
       `worst unexpected reading-anchor move: ${Math.round(worstUnexpected)}px; steps: ${JSON.stringify(steps)}`,
-    ).toBeLessThanOrEqual(280);
+    ).toBeLessThanOrEqual(120);
   },
 };
 

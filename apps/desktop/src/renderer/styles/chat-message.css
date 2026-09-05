@@ -143,13 +143,22 @@
   contain-intrinsic-block-size: auto 96px;
 }
 
-/* Reasoning runs, Processing children, linked-agent lists, and tool/activity
-   cards are routinely multi-line. Their 320px first-paint estimate lets native
-   overflow anchoring absorb more of the intrinsic-size correction. It remains
-   an estimate rather than a clamp: the block grows to its measured size after
+/* Container blocks — a Processing sequence, a linked-agent list — hold many
+   entries, so their first-paint estimate stays multi-line. It remains an
+   estimate rather than a clamp: the block grows to its measured size after
    paint. */
 .maka-chat-message-list [data-maka-transcript-boundary="large"] {
   contain-intrinsic-block-size: auto 320px;
+}
+
+/* Collapsed disclosures are the exception among the "large" sites: a folded
+   reasoning run or tool/activity card renders as one summary row measuring
+   24–32px, and a 320px estimate materializes as a ~290px collapse under a
+   reader scrolling up cold — the anchor-jump the cold-scroll story gates.
+   Estimate them at their collapsed height; `auto` still remembers the real
+   expanded size once a reader opens one. */
+.maka-chat-message-list :is(.maka-deep-thinking, .maka-tool-activity-card)[data-maka-transcript-boundary='large'] {
+  contain-intrinsic-block-size: auto 32px;
 }
 
 /* Expanded activity headers stay reachable while their own detail is being
