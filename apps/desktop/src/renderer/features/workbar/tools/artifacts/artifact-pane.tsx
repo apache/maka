@@ -621,8 +621,14 @@ function saveArtifactFailureCopy(reason: string, copy: ArtifactCopy): string {
       return copy.pane.saveFailures.not_allowed;
     case 'deleted':
       return copy.pane.saveFailures.deleted;
-    case 'write_failed':
-      return copy.pane.saveFailures.write_failed;
+    case 'source_failed':
+      return copy.pane.saveFailures.source_failed;
+    case 'size_mismatch':
+      return copy.pane.saveFailures.size_mismatch;
+    case 'target_write_failed':
+      return copy.pane.saveFailures.target_write_failed;
+    case 'replace_failed':
+      return copy.pane.saveFailures.replace_failed;
     default:
       return copy.pane.saveFailures.default;
   }

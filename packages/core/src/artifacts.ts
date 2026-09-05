@@ -221,7 +221,10 @@ export type ArtifactSaveFailureReason =
   | 'not_found'
   | 'not_allowed'
   | 'deleted'
-  | 'write_failed';
+  | 'source_failed'
+  | 'size_mismatch'
+  | 'target_write_failed'
+  | 'replace_failed';
 
 export type ArtifactSaveResult =
   | { ok: true; saved: string }
