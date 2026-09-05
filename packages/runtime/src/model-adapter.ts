@@ -1280,6 +1280,7 @@ function normalizeModelFailure(error: unknown): ModelFailure {
     kind: modelFailureKind(errorClass),
     retryable: retry.retryable,
     ...(retry.retryAfterMs !== undefined ? { retryAfterMs: retry.retryAfterMs } : {}),
+    ...(retry.recoveryReason !== undefined ? { recoveryReason: retry.recoveryReason } : {}),
     ...(code !== undefined ? { code } : {}),
     message: presentation.message ?? generalizedErrorMessage(error),
   };

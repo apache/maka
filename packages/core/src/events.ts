@@ -1208,6 +1208,7 @@ export type ProviderRetryReason =
   | 'provider_unavailable'
   | 'rate_limit'
   | 'timeout'
+  | 'incomplete_stream'
   | 'unknown';
 
 /**

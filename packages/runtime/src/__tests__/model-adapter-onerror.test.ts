@@ -298,6 +298,44 @@ describe('ModelAdapter.startStream onError', () => {
     });
   });
 
+  test('marks a protocol-incomplete stream error without changing retryability or provider code', async () => {
+    const message =
+      'stream error: stream disconnected before completion: stream closed before response.completed';
+    const model = new MockLanguageModelV4({
+      doStream: async () => ({
+        stream: convertArrayToReadableStream<LanguageModelV4StreamPart>([
+          { type: 'stream-start', warnings: [] },
+          { type: 'error', error: { code: 'invalid_request_error', message } },
+        ]),
+      }),
+    });
+    const result = await newAdapter().startStream({
+      model,
+      messages: [{ role: 'user', content: 'hi' }],
+      tools: {},
+      activeTools: [],
+      onStreamActivity: () => {},
+      abortSignal: new AbortController().signal,
+      repairToolCall: async () => null,
+    });
+
+    const failures = [];
+    for await (const event of result.events) {
+      if (event.kind === 'error') failures.push(event.failure);
+    }
+
+    assert.equal(failures.length, 1);
+    assert.equal(failures[0]?.retryable, false);
+    assert.equal(failures[0]?.code, 'invalid_request_error');
+    assert.equal(
+      (failures[0] as (typeof failures)[number] & { recoveryReason?: string })?.recoveryReason,
+      'incomplete_stream',
+    );
+    assert.match(failures[0]?.message ?? '', /stream closed before response\.completed/);
+    const outcome = await result.outcome;
+    assert.equal(outcome.kind, 'terminal-failure');
+  });
+
   test('does not hide provider retries inside one adapter call', async () => {
     let providerCalls = 0;
     const model = new MockLanguageModelV4({

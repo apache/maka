@@ -76,6 +76,21 @@ describe('provider retry copy', () => {
       /capacity/,
     );
   });
+
+  it('describes protocol-incomplete stream recovery independently', () => {
+    assert.match(
+      getConversationCopy('zh-CN').messages.providerRetryReason.incomplete_stream,
+      /提前结束/,
+    );
+    assert.match(
+      getConversationCopy('zh-TW').messages.providerRetryReason.incomplete_stream,
+      /提前結束/,
+    );
+    assert.match(
+      getConversationCopy('en').messages.providerRetryReason.incomplete_stream,
+      /ended early/,
+    );
+  });
 });
 
 describe('applyLiveTurnEvent', () => {
