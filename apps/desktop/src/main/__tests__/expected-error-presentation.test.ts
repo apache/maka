@@ -62,6 +62,20 @@ test('maps attachment-ingest tokens per locale at the shared entry', () => {
   );
 });
 
+test('unknown and inherited reason tokens retain the caller fallback', (context) => {
+  context.mock.method(console, 'error', () => undefined);
+  for (const locale of ['zh-CN', 'zh-TW', 'en'] as const) {
+    for (const namespace of ['session_control_blocked', 'attachment_ingest']) {
+      for (const code of ['future_code', 'constructor']) {
+        const token = `${namespace}:${code}`;
+        for (const error of [token, new Error(token)]) {
+          assert.equal(localizedShellErrorMessage(error, 'fallback', locale), 'fallback');
+        }
+      }
+    }
+  }
+});
+
 test('routes structured collaboration failures through each locale catalog', () => {
   const cases = [
     [{ kind: 'error', reason: 'invalid_code' } as const, 'invalidCode'],

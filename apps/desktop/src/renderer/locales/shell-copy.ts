@@ -2385,7 +2385,12 @@ export function getShellCopy(locale: UiLocale): ShellCopy {
 }
 
 export function localizedShellErrorMessage(error: unknown, fallback: string, locale: UiLocale): string {
-  const blocked = sessionControlBlockedMessage(error, locale);
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+  const maps = getShellCopy(locale).sessionSettingsActions;
+  // Stable reason tokens survive the Runtime and Electron IPC wrappers.
+  const blocked =
+    lookupCopy(maps.sessionControlBlocked, message.match(/session_control_blocked:([a-z_]+)/u)?.[1]) ??
+    lookupCopy(maps.attachmentIngestBlocked, message.match(/attachment_ingest:([a-z_]+)/u)?.[1]);
   if (blocked) return blocked;
   // Diagnostics are inlined: a depended-on copy catalog may only hold bare
   // package runtime imports.
@@ -2413,18 +2418,6 @@ export type SessionControlBlockedCode =
   | 'collaboration_tool_pending'
   | 'plan_mode_plan_running'
   | 'plan_mode_awaiting_approval';
-
-// The Runtime rejects a blocked session-control switch with a stable
-// `session_control_blocked:<code>` token that survives every IPC wrapper the
-// message passes through (same convention as the CLI's reason tokens).
-function sessionControlBlockedMessage(error: unknown, locale: UiLocale): string | undefined {
-  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
-  const maps = getShellCopy(locale).sessionSettingsActions;
-  return (
-    lookupCopy(maps.sessionControlBlocked, message.match(/session_control_blocked:([a-z_]+)/u)?.[1]) ??
-    lookupCopy(maps.attachmentIngestBlocked, message.match(/attachment_ingest:([a-z_]+)/u)?.[1])
-  );
-}
 
 export function sessionSettingFailureCopy(
   locale: UiLocale,
