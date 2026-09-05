@@ -24,7 +24,7 @@ test('bot onboarding shows bounded retry health while preserving the QR', async 
   linkColorWindow: page,
 }, testInfo) => {
   const status = page.locator('.settingsBotOnboardingStatus');
-  const expectedStatuses = (['zh', 'en'] as const).map((locale) =>
+  const expectedStatuses = (['zh-CN', 'en'] as const).map((locale) =>
     getBotSettingsCopy(locale).onboarding.retrying('server', 1, 3),
   );
   await expect(status).toHaveAttribute('data-state', 'waiting');
