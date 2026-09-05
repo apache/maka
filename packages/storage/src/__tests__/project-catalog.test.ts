@@ -35,7 +35,11 @@ import {
   resolveProjectLocation,
 } from '../project-catalog.js';
 import { createSessionStore } from '../session-store.js';
-import { createGitRepositoryWithWorktree } from './fixtures/git-repository.js';
+import {
+  BROKEN_GIT_SHAPES,
+  createBrokenGitMetadata,
+  createGitRepositoryWithWorktree,
+} from './fixtures/git-repository.js';
 
 const execFileAsync = promisify(execFile);
 const trackedCatalogs = new Map<ProjectCatalog, string>();
@@ -111,6 +115,30 @@ test('an incomplete enclosing .git directory does not turn a nested folder into 
       identity: `folder:${await realpath(folder)}`,
       kind: 'folder',
     });
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('broken ancestor Git metadata does not turn a nested folder into a repository', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-invalid-ancestor-'));
+  try {
+    for (const shape of BROKEN_GIT_SHAPES) {
+      const root = join(base, shape);
+      const folder = join(root, 'folder');
+      await mkdir(folder, { recursive: true });
+      await createBrokenGitMetadata(root, shape);
+
+      assert.deepEqual(
+        await resolveProjectLocation({ path: folder }),
+        {
+          canonicalPath: await realpath(folder),
+          identity: `folder:${await realpath(folder)}`,
+          kind: 'folder',
+        },
+        shape,
+      );
+    }
   } finally {
     await rm(base, { recursive: true, force: true });
   }
