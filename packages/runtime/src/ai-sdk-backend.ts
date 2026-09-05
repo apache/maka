@@ -25,7 +25,12 @@
  */
 
 import type { SessionEvent } from '@maka/core/events';
-import type { BackendKind, SessionHeader, StoredMessage } from '@maka/core/session';
+import type {
+  BackendKind,
+  RuntimeSystemNoteKind,
+  SessionHeader,
+  StoredMessage,
+} from '@maka/core/session';
 import type {
   AgentBackend,
   BackendCompactHistoryInput,
@@ -173,6 +178,11 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   readChildAgentOutput?: ToolRuntimeInput['readChildAgentOutput'];
   /** Optional diagnostic trace hook for explaining a runtime turn without changing renderer events. */
   recordRunTrace?: RunTraceRecorder;
+  /**
+   * Writes one runtime note — something that happened inside this invocation —
+   * to the invocation's RuntimeEvent ledger, which is where its record lives.
+   */
+  recordSystemNote?: (kind: RuntimeSystemNoteKind, turnId: string, data?: unknown) => Promise<void>;
   /**
    * Commits one settled provider request: the canonical attempt and, when it
    * is the completed main call, the derived latest-context row it authorises.

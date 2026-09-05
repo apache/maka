@@ -2932,7 +2932,9 @@ describe('SessionManager child-session runtime primitive', () => {
       runtimeEventStore: runStore,
       backends,
       childTools: [testTool('Read'), testTool('Glob'), testTool('Grep')],
-      newId: nextId(),
+      // Its own id space: a restarted host mints fresh ids, it does not replay
+      // the sequence the dead process was on.
+      newId: nextId('restarted'),
       now: nextNow(196),
     });
     await drain(
@@ -3453,7 +3455,7 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
     if (complete?.type !== 'complete') throw new Error('expected complete');
     assert.strictEqual(complete.contextCompactionOutcome?.kind, 'compacted');
 
-    const messages = await store.readMessages(session.id);
+    const messages = await manager.getMessages(session.id);
     assert.strictEqual(
       messages.some((message) => message.type === 'user' && message.text.includes('compact')),
       false,
@@ -3618,7 +3620,7 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
     await drain(manager.sendMessage(session.id, { turnId: 'turn-1', text: 'hello' }));
     await drain(manager.compactSession(session.id, { turnId: 'turn-compact' }));
 
-    const warnings = (await store.readMessages(session.id)).filter(
+    const warnings = (await manager.getMessages(session.id)).filter(
       (message) =>
         message.type === 'system_note' &&
         message.turnId === 'turn-compact' &&
@@ -4591,13 +4593,6 @@ describe('SessionManager permission mode updates', () => {
     assert.strictEqual(summary.permissionMode, 'ask');
     assert.deepStrictEqual(summary.labels, ['kept']);
     assert.deepStrictEqual((await store.readHeader(session.id)).labels, ['kept']);
-
-    const messages = await store.readMessages(session.id);
-    const modeNote = messages.find(
-      (message) => message.type === 'system_note' && message.kind === 'mode_change',
-    );
-    if (modeNote?.type !== 'system_note') throw new Error('mode_change note was not written');
-    assert.deepStrictEqual(modeNote.data, { from: 'explore', to: 'ask' });
   });
 
   test('starts a new turn without workspace identity when safety inspection fails', async () => {
@@ -9447,11 +9442,6 @@ describe('SessionManager permission mode updates', () => {
     assert.strictEqual(backend?.stopCalls, 1);
     const messages = await store.readMessages(session.id);
     assert.strictEqual(
-      messages.filter((message) => message.type === 'system_note' && message.kind === 'abort')
-        .length,
-      1,
-    );
-    assert.strictEqual(
       messages.filter(
         (message) =>
           message.type === 'turn_state' &&
@@ -9649,7 +9639,7 @@ describe('SessionManager permission mode updates', () => {
       [Symbol.asyncIterator]();
     await turn.next();
     store.failAfterNextAppendMessage = (message) =>
-      message.type === 'system_note' && message.kind === 'abort';
+      message.type === 'turn_state' && message.status === 'aborted';
 
     await expectRejects(
       manager.stopSession(session.id, { source: 'stop_button' }),
@@ -9666,11 +9656,6 @@ describe('SessionManager permission mode updates', () => {
           message.turnId === 'turn-1' &&
           message.status === 'aborted',
       ).length,
-      1,
-    );
-    assert.strictEqual(
-      messages.filter((message) => message.type === 'system_note' && message.kind === 'abort')
-        .length,
       1,
     );
     sendGate.release();
@@ -9721,11 +9706,6 @@ describe('SessionManager permission mode updates', () => {
           message.turnId === 'turn-retained-stop' &&
           message.status === 'aborted',
       ).length,
-      1,
-    );
-    assert.strictEqual(
-      messages.filter((message) => message.type === 'system_note' && message.kind === 'abort')
-        .length,
       1,
     );
   });
@@ -10616,12 +10596,6 @@ describe('SessionManager permission mode updates', () => {
     const [turn] = await store.listTurns(session.id);
     assert.strictEqual(turn?.status, 'aborted');
     assert.strictEqual(turn?.abortSource, 'renderer.stop_button');
-    const abortNote = (await store.readMessages(session.id)).find(
-      (message) => message.type === 'system_note' && message.kind === 'abort',
-    );
-    assert.strictEqual(abortNote?.type, 'system_note');
-    if (abortNote?.type !== 'system_note') throw new Error('abort note missing');
-    assert.deepStrictEqual(abortNote.data, { source: 'renderer.stop_button' });
   });
 
   test('stopSession persists abortSource on a terminal RuntimeEvent emitted during backend stop', async () => {

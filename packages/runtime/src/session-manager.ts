@@ -52,11 +52,11 @@ import type {
   SessionStatus,
   SessionSummary,
   StoredMessage,
+  RuntimeSystemNoteKind,
   SubagentSessionParent,
   TurnRecord,
   UserMessage,
   PermissionDecisionMessage,
-  SystemNoteMessage,
   PersistedBackendKind,
 } from '@maka/core/session';
 import type {
@@ -697,6 +697,11 @@ export interface BackendFactoryContext {
    * provider call, including metering and its prepared-request observation.
    */
   recordModelCallAttempt?: (commit: ModelCallCommit<ModelCallAttempt>) => Promise<void>;
+  /**
+   * Writes one runtime note — something that happened inside the running
+   * invocation — to that invocation's RuntimeEvent ledger.
+   */
+  recordSystemNote?: (kind: RuntimeSystemNoteKind, turnId: string, data?: unknown) => Promise<void>;
   /** Immutable Run policy snapshot; provider dispatch waits for this durable commit. */
   recordRunComposition?: (runId: string, snapshot: RunCompositionSnapshot) => Promise<void>;
   loadHistoryCompactCheckpoint?: () => Promise<HistoryCompactCheckpoint | undefined>;
@@ -1478,15 +1483,10 @@ export class SessionManager {
         messagesReadable = false;
       }
 
-      if (session.revisionState === 'preparing' && messagesReadable) {
-        if (hasRevisionUserMessage(messages)) {
-          await recoverOr(policy, () => this.commitRevisionVersion(session.id), undefined);
-        } else {
-          await recoverOr(policy, () => this.remove(session.id), undefined);
-          recovered.add(session.id);
-          continue;
-        }
-      }
+      // A revision copy still `preparing` is settled by the Host's revision
+      // coordinator, which reads the admission ledger and runs before this
+      // recovery. Deciding it a second time here — off a transcript scan, and
+      // ending in `remove()` — could only ever contradict it.
 
       let continuationClaimRecovered = false;
       const continuationAuthority = runtimeContinuationAuthority(this.deps.runtimeEventStore);
@@ -1638,15 +1638,6 @@ export class SessionManager {
     });
     const next = await this.deps.store.readHeader(sessionId);
     this.runtimeKernel.updateCachedHeader(sessionId, next);
-    await this.deps.store
-      .appendMessage(sessionId, {
-        type: 'system_note',
-        id: this.deps.newId(),
-        ts: this.deps.now(),
-        kind: 'mode_change',
-        data: { from: previous.permissionMode, to: mode },
-      } satisfies SystemNoteMessage)
-      .catch(() => undefined);
     return headerToSummary(next);
   }
 
@@ -1863,13 +1854,6 @@ export class SessionManager {
     const next = await this.deps.store.updateHeader(sessionId, {
       collaborationMode: mode,
     });
-    await this.deps.store.appendMessage(sessionId, {
-      type: 'system_note',
-      id: this.deps.newId(),
-      ts: this.deps.now(),
-      kind: 'mode_change',
-      data: { dimension: 'collaboration', from, to: mode },
-    } satisfies SystemNoteMessage);
     this.runtimeKernel.updateCachedHeader(sessionId, next);
     await this.runtimeKernel.disposeBackend(sessionId);
     return headerToSummary(next);
@@ -1886,13 +1870,6 @@ export class SessionManager {
       throw new Error('Cannot change orchestration mode while a tool call awaits confirmation.');
     }
     const next = await this.deps.store.updateHeader(sessionId, { orchestrationMode: mode });
-    await this.deps.store.appendMessage(sessionId, {
-      type: 'system_note',
-      id: this.deps.newId(),
-      ts: this.deps.now(),
-      kind: 'mode_change',
-      data: { dimension: 'orchestration', from, to: mode },
-    } satisfies SystemNoteMessage);
     this.runtimeKernel.updateCachedHeader(sessionId, next);
     return headerToSummary(next);
   }
@@ -1935,7 +1912,7 @@ export class SessionManager {
     }
     if (!replay) await this.runtimeKernel.disposeBackend(sessionId);
     const result = await this.requirePlanStore().abandonProposal(input);
-    await this.finalizePlanAbandonment(sessionId, operationId, replay);
+    await this.finalizePlanAbandonment(sessionId);
     return result;
   }
 
@@ -4206,41 +4183,13 @@ export class SessionManager {
     this.runtimeKernel.updateCachedHeader(sessionId, next);
   }
 
-  private async finalizePlanAbandonment(
-    sessionId: string,
-    operationId: string | undefined,
-    replay: boolean,
-  ): Promise<void> {
+  private async finalizePlanAbandonment(sessionId: string): Promise<void> {
     const header = await this.deps.store.readHeader(sessionId);
-    const from = header.collaborationMode ?? 'agent';
-    const changed = from !== 'agent';
-    const next = changed
-      ? await this.deps.store.updateHeader(sessionId, { collaborationMode: 'agent' })
-      : header;
+    const next =
+      (header.collaborationMode ?? 'agent') === 'agent'
+        ? header
+        : await this.deps.store.updateHeader(sessionId, { collaborationMode: 'agent' });
     this.runtimeKernel.updateCachedHeader(sessionId, next);
-
-    if (!changed && !replay) return;
-    if (!operationId) {
-      await this.deps.store.appendMessage(sessionId, {
-        type: 'system_note',
-        id: this.deps.newId(),
-        ts: this.deps.now(),
-        kind: 'mode_change',
-        data: { dimension: 'collaboration', from, to: 'agent' },
-      } satisfies SystemNoteMessage);
-      return;
-    }
-
-    const noteId = planAbandonmentNoteId(operationId);
-    const messages = await this.deps.store.readMessages(sessionId);
-    if (messages.some((message) => message.id === noteId)) return;
-    await this.deps.store.appendMessage(sessionId, {
-      type: 'system_note',
-      id: noteId,
-      ts: this.deps.now(),
-      kind: 'mode_change',
-      data: { dimension: 'collaboration', from: 'plan', to: 'agent' },
-    } satisfies SystemNoteMessage);
   }
 
   private requirePlanStore(): PlanStore {
@@ -4709,10 +4658,6 @@ export class SessionManager {
     await this.appendTurnState(sessionId, decision.turnId, status, decision.lineage, options);
     return true;
   }
-}
-
-function planAbandonmentNoteId(operationId: string): string {
-  return `plan-abandonment-${createHash('sha256').update(operationId).digest('hex')}`;
 }
 
 function resumeFeatureDisabledPlan(): SafeBoundaryContinuationPlan {
@@ -5186,23 +5131,6 @@ interface InterruptedTurnRecovery {
       | 'parentSessionId'
     >
   >;
-}
-
-function hasRevisionUserMessage(messages: readonly StoredMessage[]): boolean {
-  let boundary = -1;
-  for (let index = 0; index < messages.length; index += 1) {
-    const message = messages[index]!;
-    if (
-      message.type === 'system_note' &&
-      message.kind === 'session_start' &&
-      message.data &&
-      typeof message.data === 'object' &&
-      'revisionRootSessionId' in message.data
-    ) {
-      boundary = index;
-    }
-  }
-  return boundary >= 0 && messages.slice(boundary + 1).some((message) => message.type === 'user');
 }
 
 function interruptedTurnRecoveries(messages: readonly StoredMessage[]): InterruptedTurnRecovery[] {

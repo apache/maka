@@ -1712,7 +1712,7 @@ async function verifyDurableBranch(
     // projects the copied turn as ended, exactly as the source reads.
     assert.deepEqual(
       messages.map((message) => message.type),
-      ['user', 'assistant', 'tool_call', 'tool_result', 'system_note', 'turn_state'],
+      ['user', 'assistant', 'tool_call', 'tool_result', 'turn_state'],
     );
     const user = messages.find((message) => message.type === 'user');
     assert.ok(user?.attachments?.[0]);

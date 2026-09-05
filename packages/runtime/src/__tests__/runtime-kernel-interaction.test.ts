@@ -260,11 +260,6 @@ describe('RuntimeKernel Interaction close cleanup', () => {
       ).length,
       1,
     );
-    assert.equal(
-      messages.filter((message) => message.type === 'system_note' && message.kind === 'abort')
-        .length,
-      1,
-    );
 
     const blockedActivation = fixture.kernel
       .startTurn(SESSION_ID, { turnId: 'turn-before-runner-settled', text: 'must not send' })
@@ -374,11 +369,6 @@ describe('RuntimeKernel Interaction close cleanup', () => {
           message.turnId === 'turn-generation-1' &&
           message.status === 'aborted',
       ).length,
-      1,
-    );
-    assert.equal(
-      firstMessages.filter((message) => message.type === 'system_note' && message.kind === 'abort')
-        .length,
       1,
     );
 

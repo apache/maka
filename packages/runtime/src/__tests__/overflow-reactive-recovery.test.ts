@@ -587,6 +587,17 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
       if (!options.slowAppendMessage) return;
       for (let i = 0; i < 5; i += 1) await flushMacrotask();
     },
+    // A note is a runtime event now. The fixture records it in the shape the
+    // read model projects back, so these assertions still read the row a
+    // transcript would show.
+    recordSystemNote: async (kind, turnId, data) => {
+      messages.push({
+        type: 'system_note',
+        kind,
+        turnId,
+        ...(data !== undefined ? { data } : {}),
+      });
+    },
     connection: {
       ...connection(),
       ...(options.providerNative

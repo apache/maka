@@ -19,7 +19,7 @@
 
 import type { RuntimeInvocationOutcome } from '@maka/core/runtime-invocation';
 import type { RunIdentity } from './terminal-run-commit.js';
-import { isTurnScopedSystemNoteKind } from '@maka/core/session';
+import { isRuntimeSystemNoteKind } from '@maka/core/session';
 import type {
   PermissionDecisionMessage,
   StoredMessage,
@@ -365,7 +365,7 @@ export function backfillRuntimeEventsFromStoredMessages(
       // something about the Session, and the Session transcript keeps it.
       case 'system_note':
         if (conversationTextOnly) break;
-        if (!isTurnScopedSystemNoteKind(message.kind)) {
+        if (!isRuntimeSystemNoteKind(message.kind)) {
           diagnostics.push({
             code: 'skipped_high_risk_message',
             message:

@@ -59,8 +59,8 @@ import type {
   SessionHeader,
   SessionHeaderPatch,
   SessionStatus,
+  RuntimeSystemNoteKind,
   StoredMessage,
-  SystemNoteMessage,
   TurnRecord,
   UserMessage,
 } from '@maka/core/session';
@@ -843,10 +843,29 @@ export class AgentRun {
     };
   }
 
-  async recordStoredSessionEvent(ev: SessionEvent): Promise<void> {
-    if (ev.type === 'token_usage') {
-      await this.input.store.appendMessage(this.sessionId, { ...ev } satisfies StoredMessage);
-    }
+  /**
+   * Record something the runtime needs to tell the reader about this turn.
+   *
+   * It is a fact of the invocation, so it goes where the invocation's facts go.
+   * Never model-visible: the note describes what happened to the conversation,
+   * it is not part of it.
+   */
+  async recordSystemNote(kind: RuntimeSystemNoteKind, data?: unknown): Promise<void> {
+    await this.recordRuntimeEvents([
+      {
+        id: this.input.newId(),
+        invocationId: this.invocationId,
+        runId: this.runId,
+        sessionId: this.sessionId,
+        turnId: this.turnId,
+        ts: this.input.now(),
+        partial: false,
+        role: 'system',
+        author: 'system',
+        modelVisibility: 'hidden',
+        content: { kind: 'system_note', note: kind, ...(data !== undefined ? { data } : {}) },
+      },
+    ]);
   }
 
   async recordSessionEvent(
@@ -1083,17 +1102,6 @@ export class AgentRun {
       });
     } catch {
       // The user-visible turn already completed; preserve existing behavior.
-    }
-    if (this.sawCompletion) {
-      await this.input.store
-        .appendMessage(this.sessionId, {
-          type: 'system_note',
-          id: this.input.newId(),
-          turnId: this.turnId,
-          ts: lastTs,
-          kind: 'session_resume',
-        } satisfies SystemNoteMessage)
-        .catch(() => {});
     }
     await this.finishRun(this.finalStatus, lastTs);
   }

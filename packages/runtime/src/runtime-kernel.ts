@@ -46,7 +46,6 @@ import type {
   SessionHeaderPatch,
   SessionStatus,
   StoredMessage,
-  SystemNoteMessage,
   TurnRecord,
   TurnStateMessage,
 } from '@maka/core/session';
@@ -332,8 +331,6 @@ interface StopOperation {
       projected: boolean;
     }
   >;
-  abortNote: SystemNoteMessage;
-  abortNoteProjected: boolean;
   targets: Map<number, StopTarget>;
   queue: Promise<void>;
 }
@@ -1085,24 +1082,18 @@ export class RuntimeKernel implements RuntimeKernelLike {
         runId: run.runId,
         turnId: run.turnId,
       });
+      // Ahead of the usage row, because the ledger seals on its terminal fact:
+      // a note queued behind one this compaction may already own would be
+      // refused, and the reader would never learn the summary was skipped.
+      if (result.outcome.kind === 'failed') {
+        await run.recordSystemNote('context_compaction_failed_open').catch(() => {});
+      }
       await run.acceptMappedEvent(
         tokenUsageEvent,
         mapSessionEventToRuntimeEvent(tokenUsageEvent, eventContext),
         { requireTerminalWrite: true },
       );
       if (run.isStopped()) return;
-      await run.recordStoredSessionEvent(tokenUsageEvent);
-      if (run.isStopped()) return;
-      if (result.outcome.kind === 'failed') {
-        const note: SystemNoteMessage = {
-          type: 'system_note',
-          id: this.deps.newId(),
-          turnId: run.turnId,
-          ts: this.deps.now(),
-          kind: 'context_compaction_failed_open',
-        };
-        await this.deps.store.appendMessage(sessionId, note).catch(() => {});
-      }
       yield tokenUsageEvent;
       if (run.isStopped()) return;
       await run.acceptMappedEvent(
@@ -1847,14 +1838,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
       ts,
       statusProjected: false,
       turnProjections: new Map(),
-      abortNote: {
-        type: 'system_note',
-        id: this.deps.newId(),
-        ts,
-        kind: 'abort',
-        ...(abortSource ? { data: { source: abortSource } } : {}),
-      },
-      abortNoteProjected: false,
       targets: new Map(),
       queue: Promise.resolve(),
     };
@@ -1948,10 +1931,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
       await this.appendStopProjection(sessionId, projection.message);
       projection.projected = true;
     }
-    if (!operation.abortNoteProjected) {
-      await this.appendStopProjection(sessionId, operation.abortNote);
-      operation.abortNoteProjected = true;
-    }
     // The Session projection above now reads as aborted. The ledger has to say
     // the same thing before this stop reports success: a Run left non-terminal
     // here stays that way, because the stream that would have finalized it is
@@ -1977,7 +1956,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
     }
     const completed =
       operation.statusProjected &&
-      operation.abortNoteProjected &&
       [...operation.turnProjections.values()].every((projection) => projection.projected) &&
       [...operation.targets.values()].every(
         (target) =>
@@ -2298,6 +2276,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
   }): Pick<
     BackendFactoryContext,
     | 'recordRunTrace'
+    | 'recordSystemNote'
     | 'recordModelCallAttempt'
     | 'recordRunComposition'
     | 'loadHistoryCompactCheckpoint'
@@ -2316,6 +2295,8 @@ export class RuntimeKernel implements RuntimeKernelLike {
       recordRunTrace: (event) => {
         runFor(event.turnId)?.recordRunTrace(event);
       },
+      recordSystemNote: (kind, turnId, data) =>
+        runFor(turnId)?.recordSystemNote(kind, data) ?? Promise.resolve(),
       ...(this.deps.runStore
         ? {
             // Resolved by runId rather than turnId: the canonical record names

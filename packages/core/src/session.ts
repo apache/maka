@@ -789,20 +789,15 @@ export function userFacingText(message: Pick<UserMessage, 'text' | 'displayText'
   return message.displayText ?? message.text;
 }
 
-const USER_VISIBLE_SESSION_SYSTEM_NOTES = new Set([
-  'context_compacted',
-  'context_compaction_failed_open',
-  'context_provider_dropping',
-  'context_window_suggestion',
-  'context_window_overrun',
-  'context_reported_window_exceeded',
-  'context_overflow_after_compaction',
-  'step_limit',
-]);
-
-/** Closed policy for system notes that are part of the user-visible transcript. */
+/**
+ * Closed policy for system notes that are part of the user-visible transcript.
+ *
+ * It is the same list as the notes the runtime writes, and that is the point: a
+ * note exists to tell the reader something happened to their turn. One nothing
+ * rendered was a fact with an owner elsewhere, written twice.
+ */
 export function isUserVisibleSessionSystemNote(kind: string): boolean {
-  return USER_VISIBLE_SESSION_SYSTEM_NOTES.has(kind);
+  return isRuntimeSystemNoteKind(kind);
 }
 
 export interface AssistantMessage {
@@ -1148,14 +1143,10 @@ export interface TurnRecord {
 }
 
 /**
- * Every note kind a transcript can carry.
- *
- * The list is split by who owns the fact, not by how it renders. A turn-scoped
- * note is part of what one invocation did, so the RuntimeEvent ledger records
- * it; a session-scoped note happens between turns, where there is no invocation
- * to belong to, and the Session transcript records it.
+ * The notes the runtime writes: things that happened inside one invocation and
+ * are part of what that invocation did. Their record is its RuntimeEvent ledger.
  */
-export const TURN_SCOPED_SYSTEM_NOTE_KINDS = [
+export const RUNTIME_SYSTEM_NOTE_KINDS = [
   'context_compacted',
   'context_compaction_failed_open',
   'context_provider_dropping',
@@ -1164,30 +1155,35 @@ export const TURN_SCOPED_SYSTEM_NOTE_KINDS = [
   'context_reported_window_exceeded',
   'context_overflow_after_compaction',
   'step_limit',
-  'error',
-  'abort',
 ] as const;
 
-export const SESSION_SCOPED_SYSTEM_NOTE_KINDS = [
+/**
+ * Notes only legacy transcripts carry, still decoded so those rows stay
+ * readable. Each stated a fact that already had an owner — the Session header
+ * and the invocation's own opening fact hold the mode, the model and the copy
+ * lineage; the terminal event holds the abort and its source — so writing them
+ * a second time bought a row nothing rendered.
+ */
+export const RETIRED_SYSTEM_NOTE_KINDS = [
   'session_start',
   'session_resume',
   'mode_change',
   'model_change',
+  'error',
+  'abort',
 ] as const;
 
-export type TurnScopedSystemNoteKind = (typeof TURN_SCOPED_SYSTEM_NOTE_KINDS)[number];
-export type SystemNoteKind =
-  | TurnScopedSystemNoteKind
-  | (typeof SESSION_SCOPED_SYSTEM_NOTE_KINDS)[number];
+export type RuntimeSystemNoteKind = (typeof RUNTIME_SYSTEM_NOTE_KINDS)[number];
+export type SystemNoteKind = RuntimeSystemNoteKind | (typeof RETIRED_SYSTEM_NOTE_KINDS)[number];
 
-export function isTurnScopedSystemNoteKind(kind: string): kind is TurnScopedSystemNoteKind {
-  return (TURN_SCOPED_SYSTEM_NOTE_KINDS as readonly string[]).includes(kind);
+export function isRuntimeSystemNoteKind(kind: string): kind is RuntimeSystemNoteKind {
+  return (RUNTIME_SYSTEM_NOTE_KINDS as readonly string[]).includes(kind);
 }
 
 export interface SystemNoteMessage {
   type: 'system_note';
   id: string;
-  /** Session-level notes omit turnId. */
+  /** Retired session-level notes omit turnId. */
   turnId?: string;
   ts: number;
   kind: SystemNoteKind;
@@ -1431,21 +1427,9 @@ const ASSISTANT_THINKING_SHAPE = defineObjectShape<AssistantThinking>()(
   ['text'],
   ['signature', 'providerOptions', 'parts'],
 );
-const SYSTEM_NOTE_KINDS = new Set([
-  'session_start',
-  'session_resume',
-  'mode_change',
-  'model_change',
-  'context_compacted',
-  'context_compaction_failed_open',
-  'context_provider_dropping',
-  'context_window_suggestion',
-  'context_window_overrun',
-  'context_reported_window_exceeded',
-  'context_overflow_after_compaction',
-  'step_limit',
-  'error',
-  'abort',
+const SYSTEM_NOTE_KINDS = new Set<string>([
+  ...RUNTIME_SYSTEM_NOTE_KINDS,
+  ...RETIRED_SYSTEM_NOTE_KINDS,
 ]);
 
 export function decodeCanonicalMessage(value: unknown): StoredMessage {
