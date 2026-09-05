@@ -651,7 +651,7 @@ function decodeMessageQueueEntrySnapshot(value: unknown): MessageQueueEntrySnaps
   const base = {
     entryId: requireEntityId(record.entryId, 'entryId'),
     messageId: requireEntityId(record.messageId, 'messageId'),
-    content: decodeMessageContent(record.content),
+    content: decodeMessageAdmissionContent(record.content),
     placement: requireMessagePlacement(record.placement),
   };
   if (record.state === 'queued' || record.state === 'retracted') {

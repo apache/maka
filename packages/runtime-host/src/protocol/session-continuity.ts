@@ -42,7 +42,7 @@ import {
 } from './message.js';
 import { defineOperation } from './operation-spec.js';
 import {
-  decodeMessageContent,
+  decodeMessageAdmissionContent,
   decodeTurnSnapshot,
   type MessageContent,
   type TurnSnapshot,
@@ -775,7 +775,7 @@ function decodeSessionSteeringEvent(record: Record<string, unknown>): SessionSte
     turnId: requireEntityId(record.turnId, 'turnId'),
     ts: requireCount(record.ts, 'Session steering event timestamp'),
     messageId: requireEntityId(record.messageId, 'messageId'),
-    content: decodeMessageContent(record.content),
+    content: decodeMessageAdmissionContent(record.content),
   };
 }
 

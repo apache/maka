@@ -854,6 +854,37 @@ describe('runtimeEventHasModelVisibleContent', () => {
     for (const event of hidden)
       assert.strictEqual(runtimeEventHasModelVisibleContent(event), false);
   });
+
+  test('counts structured user context as model-visible with empty inline text (#4804)', () => {
+    const visible = [
+      baseEvent({
+        role: 'user',
+        content: { kind: 'text', text: '', quotes: [{ text: 'pasted reference-sized excerpt' }] },
+      }),
+      baseEvent({
+        role: 'user',
+        content: {
+          kind: 'text',
+          text: '',
+          attachments: [
+            {
+              kind: 'code',
+              name: 'a.ts',
+              mimeType: 'text/typescript',
+              bytes: 10,
+              ref: { kind: 'workspace_file', relativePath: 'a.ts' },
+            },
+          ],
+        },
+      }),
+    ];
+    for (const event of visible)
+      assert.strictEqual(runtimeEventHasModelVisibleContent(event), true);
+    assert.strictEqual(
+      runtimeEventHasModelVisibleContent(baseEvent({ content: { kind: 'text', text: '' } })),
+      false,
+    );
+  });
 });
 
 describe('RuntimeEvent reference validation', () => {
