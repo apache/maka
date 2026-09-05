@@ -89,7 +89,7 @@ function WorkbarToolSurface(props: { kind: 'terminal' | 'browser' | 'files'; hid
           sessionId="runtime-surface"
           hidden={props.hidden ?? false}
           onDismissPanel={noop}
-          panelsState={createSessionWorkbarPanelsState(props.backgroundFiles ? openStaticSessionWorkbarTab(right, 'tasks') : right)}
+          panelsState={createSessionWorkbarPanelsState(props.backgroundFiles ? openStaticSessionWorkbarTab(right, 'review') : right)}
           rightCollapsed={false}
           bottomOpen={false}
           onActivateTab={noop}
