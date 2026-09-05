@@ -240,7 +240,6 @@ export function createSqliteArtifactStoreWriteAuthority(
 
 class SqliteArtifactStore implements ArtifactAuthorityStore {
   private artifactRoot: string;
-  private records: ArtifactRecord[] = [];
   private queue: Promise<void> = Promise.resolve();
 
   constructor(
@@ -285,8 +284,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     const relativePath = `${acceptedInput.sessionId}/${id}-${name}`;
     validateRelativeArtifactPath(relativePath);
     return this.enqueueMutation(async () => {
-      await this.prepareMutationUnlocked();
-      const existing = this.records.find((record) => record.id === id);
+      const existing = this.metadataRepository.getById(id);
       if (existing) {
         return this.replayExistingArtifactUnlocked(existing, acceptedInput, {
           id,
@@ -341,43 +339,37 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
       }
       requestedLinkedArtifactIds.set(linked.sessionId, artifactIds);
     }
-    const records = await this.enqueue(async () => {
-      await this.load();
-      const selected = this.records
-        .filter(
-          (record) =>
-            record.sessionId === input.sourceSessionId &&
-            turnIds.has(record.turnId) &&
-            !excludedArtifactIds.has(record.id),
-        )
-        .map((record) => ({ ...record }));
-      for (const [sessionId, artifactIds] of requestedLinkedArtifactIds) {
-        for (const artifactId of artifactIds) {
-          const record = this.records.find(
-            (candidate) => candidate.sessionId === sessionId && candidate.id === artifactId,
-          );
-          // A linked child result names every Artifact its turn held, and the
-          // ledger naming them cannot be rewritten. One that is no longer
-          // there is copied as nothing rather than failing the copy -- the
-          // caller is asking for what a past turn had, not asserting that all
-          // of it survived.
-          if (record) selected.push({ ...record });
+    const records = await this.enqueue(async () =>
+      this.metadataRepository.withReadSnapshot(() => {
+        const sourceRecords = this.metadataRepository.listBySession(input.sourceSessionId);
+        const selected = sourceRecords
+          .filter((record) => turnIds.has(record.turnId) && !excludedArtifactIds.has(record.id))
+          .map((record) => ({ ...record }));
+        for (const [sessionId, artifactIds] of requestedLinkedArtifactIds) {
+          for (const artifactId of artifactIds) {
+            const record = this.metadataRepository.getById(artifactId);
+            // A linked child result names every Artifact its turn held, and the
+            // ledger naming them cannot be rewritten. One that is no longer
+            // there is copied as nothing rather than failing the copy -- the
+            // caller is asking for what a past turn had, not asserting that all
+            // of it survived.
+            if (record?.sessionId === sessionId) selected.push({ ...record });
+          }
         }
-      }
-      const selectedIds = new Set(selected.map((record) => record.id));
-      for (const record of this.records) {
-        if (
-          record.sessionId === input.sourceSessionId &&
-          includedArtifactIds.has(record.id) &&
-          !excludedArtifactIds.has(record.id) &&
-          !selectedIds.has(record.id)
-        ) {
-          selected.push({ ...record });
-          selectedIds.add(record.id);
+        const selectedIds = new Set(selected.map((record) => record.id));
+        for (const record of sourceRecords) {
+          if (
+            includedArtifactIds.has(record.id) &&
+            !excludedArtifactIds.has(record.id) &&
+            !selectedIds.has(record.id)
+          ) {
+            selected.push({ ...record });
+            selectedIds.add(record.id);
+          }
         }
-      }
-      return selected;
-    });
+        return selected;
+      }),
+    );
 
     const artifactIds = new Map<string, string>();
     const relativePaths = new Map<string, string>();
@@ -413,8 +405,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     assertCanonicalArtifactEntityId(targetId, 'id');
     validateRelativeArtifactPath(relativePath);
     return this.enqueueMutation(async () => {
-      await this.prepareMutationUnlocked();
-      if (this.records.some((record) => record.id === targetId)) {
+      if (this.metadataRepository.getById(targetId)) {
         throw new Error(`Artifact target already exists: ${targetId}`);
       }
       return this.publishNewArtifactUnlocked(
@@ -453,9 +444,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
         throw new Error(`Artifact source changed while copying: ${draft.id}`);
       }
       const record: ArtifactRecord = { ...draft, sizeBytes: size.size };
-      const nextRecords = [...this.records, record];
       await this.writeMetadataUnlocked({ upserts: [record] });
-      this.records = nextRecords;
       return { ...record };
     } catch (error) {
       await removeFileDurably(target, targetDirectory).catch(() => undefined);
@@ -466,10 +455,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
   async purgeSessionArtifacts(sessionId: string): Promise<void> {
     assertCanonicalArtifactEntityId(sessionId, 'sessionId');
     await this.enqueueMutation(async () => {
-      await this.prepareMutationUnlocked();
-      await this.purgeRecordsUnlocked(
-        this.records.filter((record) => record.sessionId === sessionId),
-      );
+      await this.purgeRecordsUnlocked(this.metadataRepository.listBySession(sessionId));
     });
   }
 
@@ -525,7 +511,6 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     assertPageBound(options.limit, false, 'limit');
     const { offset, limit } = options;
     return this.enqueue(async () => {
-      await this.load();
       const snapshot = this.sessionSnapshot(sessionId);
       return {
         revision: snapshot.revision,
@@ -539,17 +524,16 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     assertCanonicalArtifactEntityId(sessionId, 'sessionId');
     assertArtifactTurnKey(turnId);
     return this.enqueue(async () => {
-      await this.load();
-      const snapshot = this.sessionSnapshot(sessionId);
-      return snapshot.records
+      return this.metadataRepository
+        .listBySession(sessionId)
         .filter((record) => record.turnId === turnId)
+        .sort(compareArtifactRecords)
         .map((record) => ({ ...record }));
     });
   }
 
   async getInSession(sessionId: string, artifactId: string): Promise<ArtifactSessionEntry> {
     return this.enqueue(async () => {
-      await this.load();
       const snapshot = this.sessionSnapshot(sessionId);
       const record = snapshot.records.find((candidate) => candidate.id === artifactId);
       return {
@@ -618,8 +602,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     maxBytes?: number;
   }): Promise<DurableArtifactBinaryReadResult> {
     return this.enqueue(async () => {
-      await this.load();
-      const record = this.records.find((item) => item.id === input.artifactId);
+      const record = this.metadataRepository.getById(input.artifactId);
       if (!record) return { ok: false, reason: 'not_found' };
       if (record.sessionId !== input.sessionId) {
         return { ok: false, reason: 'session_mismatch' };
@@ -657,10 +640,8 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     source: ArtifactSource,
   ): Promise<void> {
     return this.enqueueMutation(async () => {
-      await this.prepareMutationUnlocked();
-      const snapshot = this.sessionSnapshot(sessionId);
-      const existing = snapshot.records.find((record) => record.id === artifactId);
-      if (!existing || existing.source !== source) {
+      const existing = this.metadataRepository.getById(artifactId);
+      if (!existing || existing.sessionId !== sessionId || existing.source !== source) {
         throw new Error('Artifact does not belong to the expected Session authority');
       }
       await this.purgeRecordsUnlocked([existing]);
@@ -672,10 +653,8 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     artifactId: string,
   ): Promise<ArtifactUserDeleteResult> {
     return this.enqueueMutation(async () => {
-      await this.prepareMutationUnlocked();
-      const snapshot = this.sessionSnapshot(sessionId);
-      const existing = snapshot.records.find((record) => record.id === artifactId);
-      if (!existing) return { kind: 'not_found' };
+      const existing = this.metadataRepository.getById(artifactId);
+      if (!existing || existing.sessionId !== sessionId) return { kind: 'not_found' };
       if (!canUserDeleteArtifact(existing)) return { kind: 'protected' };
       await this.purgeRecordsUnlocked([existing]);
       return { kind: 'deleted' };
@@ -711,7 +690,9 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
       }
       entries.set(entry.comparisonIdentity, { unlinkPath: entry.unlinkPath, record });
     }
-    const guardRecords = this.records.filter((record) => !ids.has(record.id));
+    const guardRecords = this.metadataRepository
+      .readAllForPurgeSafety()
+      .filter((record) => !ids.has(record.id));
     for (const record of guardRecords) {
       const exactTarget = relativePaths.get(record.relativePath);
       if (exactTarget) {
@@ -776,7 +757,6 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     ids: ReadonlySet<string>,
     paths: readonly string[],
   ): Promise<void> {
-    const nextRecords = this.records.filter((record) => !ids.has(record.id));
     const changedDirectories = new Set<string>();
     try {
       for (const path of paths) {
@@ -789,7 +769,6 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     // Keep the paths discoverable until physical cleanup is durable. Session
     // retirement already owns the pending cleanup intent and retries on reopen.
     await this.writeMetadataUnlocked({ deleteIds: [...ids] });
-    this.records = nextRecords;
   }
 
   private async prepareReadInSessionUnlocked(
@@ -797,10 +776,8 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     artifactId: string,
     maxBytes: number,
   ): Promise<PreparedArtifactRead | ArtifactReadFailure> {
-    await this.load();
-    const snapshot = this.sessionSnapshot(sessionId);
-    const record = snapshot.records.find((candidate) => candidate.id === artifactId);
-    if (!record) return { ok: false, reason: 'not_found' };
+    const record = this.metadataRepository.getById(artifactId);
+    if (!record || record.sessionId !== sessionId) return { ok: false, reason: 'not_found' };
     return this.prepareRecordRead(record, maxBytes);
   }
 
@@ -816,42 +793,24 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     return { ok: true, path: resolved.path, record, maxBytes };
   }
 
-  private async load(): Promise<void> {
-    this.records = this.metadataRepository.readAll();
-  }
-
   private async writeMetadataUnlocked(changes: ArtifactMetadataChanges): Promise<void> {
     this.metadataRepository.applyChanges(changes);
-  }
-
-  private async prepareMutationUnlocked(): Promise<void> {
-    await this.reloadForMutationUnlocked();
-  }
-
-  private async reloadForMutationUnlocked(): Promise<void> {
-    this.records = this.metadataRepository.readAll();
   }
 
   private bindMutationRoot(canonicalRoot: string): void {
     if (this.workspaceRoot === canonicalRoot) return;
     this.workspaceRoot = canonicalRoot;
     this.artifactRoot = join(canonicalRoot, 'artifacts');
-    this.records = [];
   }
 
   /**
    * Orders one session's records and stamps the revision readers compare on.
    *
-   * Sealed on the way out rather than kept in a map. A revision hashes every
-   * record in its session, and every reader reloads the whole store from the
-   * database before it reads one, so a kept snapshot never survived to be read
-   * -- sealing all of them on load only charged each reader for the sessions it
-   * did not ask about.
+   * The revision still hashes the complete Session, including records outside
+   * the requested page. One indexed read supplies both the records and revision.
    */
   private sessionSnapshot(sessionId: string): ArtifactSessionSnapshot {
-    const records = this.records
-      .filter((record) => record.sessionId === sessionId)
-      .sort(compareArtifactRecords);
+    const records = this.metadataRepository.listBySession(sessionId).sort(compareArtifactRecords);
     return { records, revision: artifactListRevision(records) };
   }
 

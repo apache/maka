@@ -42,7 +42,43 @@ class SqliteArtifactMetadataRepository {
     this.#lease = acquireOperationalStateDatabase(resolve(workspaceRoot));
   }
 
-  readAll(): ArtifactRecord[] {
+  getById(id: string): ArtifactRecord | null {
+    this.assertOpen();
+    const row = this.#lease.database
+      .prepare(`
+        SELECT artifact_id, session_id, created_at, relative_path, record_json
+        FROM artifact_records
+        WHERE artifact_id = ?
+      `)
+      .get(id) as ArtifactMetadataRow | undefined;
+    return row ? decodeIndexedRow(row) : null;
+  }
+
+  listBySession(sessionId: string): ArtifactRecord[] {
+    this.assertOpen();
+    const rows = this.#lease.database
+      .prepare(`
+        SELECT artifact_id, session_id, created_at, relative_path, record_json
+        FROM artifact_records
+        WHERE session_id = ?
+        ORDER BY created_at, artifact_id
+      `)
+      .all(sessionId) as ArtifactMetadataRow[];
+    return rows.flatMap((row) => {
+      const record = decodeIndexedRow(row);
+      return record ? [record] : [];
+    });
+  }
+
+  /** Compose synchronous queries against one committed database snapshot. */
+  withReadSnapshot<T>(read: () => T): T {
+    this.assertOpen();
+    return this.#lease.transaction('read', read);
+  }
+
+  // Purge must still check references through filesystem aliases across Sessions.
+  // Keep this scan explicit; ordinary reads and publication use the indexes above.
+  readAllForPurgeSafety(): ArtifactRecord[] {
     this.assertOpen();
     const rows = this.#lease.database
       .prepare(`
@@ -101,6 +137,30 @@ class SqliteArtifactMetadataRepository {
   private assertOpen(): void {
     if (this.#closed) throw new Error('Artifact metadata repository is closed');
   }
+}
+
+type ArtifactMetadataRow = {
+  readonly artifact_id: string;
+  readonly session_id: string;
+  readonly created_at: number;
+  readonly relative_path: string;
+  readonly record_json: string;
+};
+
+function decodeIndexedRow(row: ArtifactMetadataRow): ArtifactRecord | null {
+  const record = decodeArtifactRecordJsons([row.record_json])[0];
+  // An indexed projection must not admit JSON belonging to a different identity
+  // or Session. Invalid rows remain unavailable, like other malformed metadata.
+  if (
+    !record ||
+    record.id !== row.artifact_id ||
+    record.sessionId !== row.session_id ||
+    record.createdAt !== row.created_at ||
+    record.relativePath !== row.relative_path
+  ) {
+    return null;
+  }
+  return record;
 }
 
 function decodeRows(rows: readonly { record_json: string }[]): ArtifactRecord[] {
