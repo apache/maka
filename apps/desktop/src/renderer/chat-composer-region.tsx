@@ -313,6 +313,8 @@ export function ChatComposerRegion({
           mentionSkillsUnavailable={mentions?.mentionSkillsUnavailable}
           mentionSkillsLoading={mentions?.mentionSkillsLoading}
           onSearchMentionFiles={mentions?.searchMentionFiles}
+          sessionReferences={mentions?.sessionReferences}
+          onPickSessionReference={mentions?.onPickSessionReference}
           {...directoryComposerProps}
           onPickDirectory={
             directoryPickerEnabled ? directoryComposerProps.onPickDirectory : undefined
