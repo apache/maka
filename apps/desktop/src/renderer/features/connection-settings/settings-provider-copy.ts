@@ -214,7 +214,7 @@ const zhCopy = {
     cardAria: (name: string, description: string) => `添加模型供应商：${name}，${description}`,
   },
   add: {
-    invalidSlug: '连接标识格式不正确', duplicateSlug: '连接标识已存在', cloudflareAccount: '请填写 Cloudflare Account ID', endpointRequired: '这个供应商需要填写服务地址',
+    slugIssues: { required: '请填写连接标识', format: '连接标识只能包含小写字母、数字和连字符', too_long: '连接标识不能超过 64 个字符' }, duplicateSlug: '连接标识已存在', cloudflareAccount: '请填写 Cloudflare Account ID', endpointRequired: '这个供应商需要填写服务地址',
     accountLogin: '请到账号连接完成登录；登录成功后会自动创建模型连接。',
     apiKeyPlaceholder: '输入或粘贴 API Key', cancel: '取消', accountTitle: '使用账号连接登录',
     advancedRequest: '高级请求设置', expandAdvancedRequest: '展开高级请求设置', collapseAdvancedRequest: '收起高级请求设置',
@@ -378,7 +378,7 @@ const zhTwCopy = {
     cardAria: (name: string, description: string) => `新增模型供應商：${name}，${description}`,
   },
   add: {
-    invalidSlug: '連線標識格式不正確', duplicateSlug: '連線標識已存在', cloudflareAccount: '請填寫 Cloudflare Account ID', endpointRequired: '這個供應商需要填寫服務地址',
+    slugIssues: { required: '請填寫連線標識', format: '連線標識只能包含小寫字母、數字和連字號', too_long: '連線標識不能超過 64 個字元' }, duplicateSlug: '連線標識已存在', cloudflareAccount: '請填寫 Cloudflare Account ID', endpointRequired: '這個供應商需要填寫服務地址',
     accountLogin: '請到帳號連線完成登入；登入成功後會自動建立模型連線。',
     apiKeyPlaceholder: '輸入或貼上 API Key', cancel: '取消', accountTitle: '使用帳號連線登入',
     advancedRequest: '高階請求設定', expandAdvancedRequest: '展開高階請求設定', collapseAdvancedRequest: '收起高階請求設定',
@@ -543,7 +543,7 @@ const enCopy: ProviderSettingsCopy = {
     cardAria: (name: string, description: string) => `Add model provider: ${name}; ${description}`,
   },
   add: {
-    invalidSlug: 'The connection identifier format is invalid', duplicateSlug: 'Connection identifier already exists', cloudflareAccount: 'Enter the Cloudflare Account ID', endpointRequired: 'This provider requires a service URL',
+    slugIssues: { required: 'Enter a connection identifier', format: 'Connection identifiers use lowercase letters, digits, and hyphens', too_long: 'Connection identifiers are at most 64 characters' }, duplicateSlug: 'Connection identifier already exists', cloudflareAccount: 'Enter the Cloudflare Account ID', endpointRequired: 'This provider requires a service URL',
     accountLogin: 'Complete sign-in under account connections. A model connection is created automatically afterward.',
     apiKeyPlaceholder: 'Enter or paste API key', cancel: 'Cancel', accountTitle: 'Sign in with an account connection',
     advancedRequest: 'Advanced request settings', expandAdvancedRequest: 'Show advanced request settings', collapseAdvancedRequest: 'Hide advanced request settings',

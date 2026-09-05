@@ -62,12 +62,14 @@
     "src/renderer/live-turn-reconciler.tsx",
     "src/renderer/live-turn-snapshot.ts",
     "src/renderer/local-memory-digest.ts",
+    "src/renderer/locales/agent-graph-copy.ts",
     "src/renderer/locales/artifact-copy.ts",
     "src/renderer/locales/browser-copy.ts",
     "src/renderer/locales/conversation-copy.ts",
     "src/renderer/locales/external-session-import-copy.ts",
     "src/renderer/locales/mcp-copy.ts",
     "src/renderer/locales/onboarding-copy.ts",
+    "src/renderer/locales/peer-mesh-copy.ts",
     "src/renderer/locales/permission-center-copy.ts",
     "src/renderer/locales/plan-mode-copy.ts",
     "src/renderer/locales/session-collaboration-copy.ts",
@@ -87,6 +89,7 @@
     "src/renderer/locales/settings-web-search-copy.ts",
     "src/renderer/locales/shell-copy.ts",
     "src/renderer/locales/shell-remaining-copy.ts",
+    "src/renderer/locales/task-readiness-copy.ts",
     "src/renderer/main.tsx",
     "src/renderer/mcp-brand-contrast.ts",
     "src/renderer/mcp-brand-marks.tsx",
@@ -1067,6 +1070,7 @@
         "dependencyPaths": {
           "./agent-graph-panel-visibility.js": 1,
           "./agent-graph-refresh.js": 1,
+          "./locales/agent-graph-copy.js": 1,
           "@astryxdesign/core/Banner": 1,
           "@astryxdesign/core/Button": 1,
           "@astryxdesign/core/EmptyState": 1,
@@ -1532,6 +1536,15 @@
         "actionFactories": [],
         "dependencyPaths": {}
       },
+      "src/renderer/locales/agent-graph-copy.ts": {
+        "bridgePaths": {},
+        "environmentCapabilities": {},
+        "hookCalls": {},
+        "lifecycleMethods": {},
+        "unresolvedDependencies": 0,
+        "actionFactories": [],
+        "dependencyPaths": {}
+      },
       "src/renderer/locales/artifact-copy.ts": {
         "bridgePaths": {},
         "environmentCapabilities": {},
@@ -1578,6 +1591,15 @@
         "dependencyPaths": {}
       },
       "src/renderer/locales/onboarding-copy.ts": {
+        "bridgePaths": {},
+        "environmentCapabilities": {},
+        "hookCalls": {},
+        "lifecycleMethods": {},
+        "unresolvedDependencies": 0,
+        "actionFactories": [],
+        "dependencyPaths": {}
+      },
+      "src/renderer/locales/peer-mesh-copy.ts": {
         "bridgePaths": {},
         "environmentCapabilities": {},
         "hookCalls": {},
@@ -1751,6 +1773,15 @@
         }
       },
       "src/renderer/locales/shell-remaining-copy.ts": {
+        "bridgePaths": {},
+        "environmentCapabilities": {},
+        "hookCalls": {},
+        "lifecycleMethods": {},
+        "unresolvedDependencies": 0,
+        "actionFactories": [],
+        "dependencyPaths": {}
+      },
+      "src/renderer/locales/task-readiness-copy.ts": {
         "bridgePaths": {},
         "environmentCapabilities": {},
         "hookCalls": {},

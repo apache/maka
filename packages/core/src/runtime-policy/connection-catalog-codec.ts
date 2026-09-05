@@ -756,7 +756,7 @@ export function normalizeConnectionModelDiscoveryResult(
 export function decodeConnectionSlug(value: unknown): string {
   if (typeof value !== 'string') throw domainError('connection slug must be a string');
   const error = validateSlug(value);
-  if (error) throw domainError(`connection slug: ${error}`);
+  if (error) throw domainError(`connection slug ${error}`);
   return value;
 }
 
