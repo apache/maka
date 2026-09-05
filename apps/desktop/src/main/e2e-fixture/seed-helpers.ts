@@ -36,6 +36,7 @@ export const TURN_SESSION_ID = 'e2e-fixture-turn';
 export const AGENT_GRAPH_SESSION_ID = 'e2e-fixture-agent-graph';
 export const PROMPT_RAIL_SESSION_ID = 'e2e-fixture-prompt-rail';
 export const PARTIAL_HISTORY_SESSION_ID = 'e2e-fixture-partial-history';
+export const OVERSIZED_TURN_SESSION_ID = 'e2e-fixture-oversized-turn';
 /** Exceeds both the 64-tick rail and the bounded active transcript range. */
 export const PROMPT_RAIL_PROMPT_COUNT = 120;
 export const LONG_SIDEBAR_SESSION_PREFIX = 'e2e-fixture-sidebar-long-';

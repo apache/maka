@@ -483,7 +483,9 @@ async function withE2eWindow(
     });
     let page: Page;
     try {
-      page = await app.firstWindow();
+      // Parallel CI workers and cold Windows hosts can finish process launch
+      // before the first BrowserWindow crosses Playwright's 30s default.
+      page = await app.firstWindow({ timeout: 60_000 });
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       const logs = mainLogs.length > 0 ? `\nElectron main console:\n${mainLogs.join('\n')}` : '';
@@ -514,7 +516,12 @@ async function withE2eWindow(
     try {
       if (app) await closeElectronApplication(app, 5_000);
     } finally {
-      await rm(userDataDir, { recursive: true, force: true });
+      await rm(userDataDir, {
+        recursive: true,
+        force: true,
+        maxRetries: 5,
+        retryDelay: 100,
+      });
     }
   }
 }
@@ -573,6 +580,7 @@ type E2eTestFixtures = {
   promptRailWindow: Page;
   threadSearchWindow: Page;
   partialHistoryWindow: Page;
+  oversizedTurnWindow: Page;
   requestHeaderRowWindow: Page;
   permissionCenterWindow: Page;
   newTaskTargetWindow: Page;
@@ -774,6 +782,17 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
       readinessSelector: '[data-turn-id]',
       e2eFixtureScenario: 'chat-partial-history',
       locale: 'zh-CN',
+      showWindow: true,
+    }, use);
+  },
+  // One Turn larger than the transcript byte budget. Shown because the test
+  // reads Chromium's actual content-visibility state while crossing it.
+  oversizedTurnWindow: async ({}, use) => {
+    await withE2eWindow({
+      seed: false,
+      readinessSelector: '[data-turn-id="turn-oversized-fixture"]',
+      e2eFixtureScenario: 'chat-oversized-turn',
+      locale: 'zh',
       showWindow: true,
     }, use);
   },
