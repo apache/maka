@@ -1067,6 +1067,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     };
     while (true) {
       let result: DesktopRuntimeHostCandidateStartResult;
+      const ipcMain = this.#ipcMain.createTarget(target.epoch);
       try {
         result = await this.startCandidate(
           {
@@ -1080,7 +1081,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
                   },
                 }
               : {}),
-            ipcMain: this.#ipcMain.createTarget(target.epoch),
+            ipcMain,
             isTargetActive: () => this.#ipcMain.isActive(target.epoch),
             isTargetValid: () => target.valid,
             // Import progress belongs to the initial connection only. Override
@@ -1100,7 +1101,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
         throw error;
       }
       if (result.kind === 'ready') {
-        this.#ipcMain.completeRegistration(target.epoch);
+        ipcMain.completeRegistration();
         target.hostId = result.candidate.client.hostId;
         const previous = target.lastCandidate;
         const retainedOwnedProcess =

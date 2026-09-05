@@ -52,9 +52,14 @@ interface HandlerWaiter {
   readonly reject: (error: Error) => void;
 }
 
+interface HandlerOwner {
+  readonly channels: Set<string>;
+  complete: boolean;
+}
+
 interface BoundHandler {
   readonly epoch: string;
-  readonly owner: symbol;
+  readonly owner: HandlerOwner;
   readonly listener: IpcHandler;
   readonly reconcile?: ReconcileIpcHandler;
   readonly reconciliationUnavailable?: ReconciliationUnavailableIpcHandler;
@@ -122,10 +127,10 @@ export class RuntimeHostReconnectingIpcMain {
     this.#replacementWaitTimeoutMs = replacementWaitTimeoutMs;
   }
 
-  createTarget(epoch: string): RuntimeHostTargetIpcMain {
+  createTarget(epoch: string): RuntimeHostTargetIpcMain & { completeRegistration(): void } {
     if (this.#closed) throw new Error("Desktop Runtime Host IPC router is closed");
     if (!epoch) throw new Error("Desktop Runtime Host target epoch is required");
-    const owner = Symbol(epoch);
+    const owner: HandlerOwner = { channels: new Set(), complete: false };
     return {
       epoch,
       isActive: () => this.#activeEpochs.has(epoch),
@@ -136,6 +141,10 @@ export class RuntimeHostReconnectingIpcMain {
       handleReconciledControl: (channel, handlers) =>
         this.#handleReconciledControl(epoch, owner, channel, handlers),
       removeHandler: (channel) => this.#removeHandler(owner, channel),
+      completeRegistration: () => {
+        owner.complete = true;
+        this.#completeRegistration(epoch, owner.channels);
+      },
     };
   }
 
@@ -144,13 +153,10 @@ export class RuntimeHostReconnectingIpcMain {
     this.#activeEpochs.add(epoch);
   }
 
-  /** Called only after a candidate has registered its complete IPC surface. */
-  completeRegistration(epoch: string): void {
-    const channels = new Set<string>();
-    for (const [channel, slot] of this.#slots) {
-      if (slot.handlers.has(epoch)) channels.add(channel);
-    }
-    // Retain supported channels through disconnects: only those can be restored.
+  #completeRegistration(epoch: string, channels: ReadonlySet<string>): void {
+    if (this.#closed) throw new Error("Desktop Runtime Host IPC router is closed");
+    // Registration history belongs to the candidate, not its live handlers:
+    // connection teardown can remove them before startup returns to the manager.
     this.#supportedChannels.set(epoch, channels);
     for (const [channel, slot] of this.#slots) {
       if (channels.has(channel)) continue;
@@ -189,7 +195,7 @@ export class RuntimeHostReconnectingIpcMain {
 
   #handle(
     epoch: string,
-    owner: symbol,
+    owner: HandlerOwner,
     channel: string,
     listener: IpcHandler,
     reconnectableRead: boolean,
@@ -198,6 +204,7 @@ export class RuntimeHostReconnectingIpcMain {
     reconciliationUnavailable?: ReconciliationUnavailableIpcHandler,
   ): void {
     if (this.#closed) throw new Error("Desktop Runtime Host IPC router is closed");
+    if (owner.complete) throw new Error("Desktop Runtime Host candidate IPC registration is complete");
     let slot = this.#slots.get(channel);
     if (!slot) {
       const created: HandlerSlot = {
@@ -230,6 +237,7 @@ export class RuntimeHostReconnectingIpcMain {
       ...(reconciliationUnavailable ? { reconciliationUnavailable } : {}),
     };
     slot.handlers.set(epoch, handler);
+    owner.channels.add(channel);
     for (const waiter of [...slot.waiters]) {
       if (waiter.epoch !== epoch) continue;
       slot.waiters.delete(waiter);
@@ -239,7 +247,7 @@ export class RuntimeHostReconnectingIpcMain {
 
   #handleReconciledControl<Context, Result>(
     epoch: string,
-    owner: symbol,
+    owner: HandlerOwner,
     channel: string,
     handlers: ReconciledControlHandlers<Context, Result>,
   ): void {
@@ -255,7 +263,7 @@ export class RuntimeHostReconnectingIpcMain {
     );
   }
 
-  #removeHandler(owner: symbol, channel: string): void {
+  #removeHandler(owner: HandlerOwner, channel: string): void {
     const slot = this.#slots.get(channel);
     if (!slot) return;
     for (const [epoch, handler] of slot.handlers) {

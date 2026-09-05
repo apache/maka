@@ -52,6 +52,7 @@ import {
   type DesktopRuntimeHostCandidateStartInput,
 } from '../runtime-host-desktop-candidate.js';
 import { RuntimeHostSessionObservationRegistry } from '../runtime-host-session-observation-registry.js';
+import { RuntimeHostReconnectingIpcMain } from '../runtime-host-reconnecting-ipc-main.js';
 import { desktopSessionResourceKey } from '../../shared/runtime-host-identity.js';
 import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
@@ -353,6 +354,42 @@ test('tears down the whole candidate when the Host connection closes', async () 
   await candidate.closed;
 
   assert.equal(host.closeCalls, 1);
+});
+
+test('preserves supported IPC when the connection closes before candidate startup returns', { timeout: 5_000 }, async (t) => {
+  const ipc = ipcHarness();
+  const router = new RuntimeHostReconnectingIpcMain(ipc);
+  t.after(() => router.close());
+  const firstHost = connectionHarness('closed-during-start');
+  const replaceCapabilities = firstHost.connection.replaceClientCapabilities;
+  firstHost.connection.replaceClientCapabilities = async (...args) => {
+    const result = await replaceCapabilities(...args);
+    // The final initialization response succeeds, immediately followed by EOF.
+    firstHost.disconnect();
+    return result;
+  };
+  const firstTarget = router.createTarget(TEST_TARGET_EPOCH);
+  const first = await createDesktopRuntimeHostCandidate(firstHost.connection, {
+    ...deps(ipc), ipcMain: firstTarget,
+  });
+  t.after(() => first.close());
+  firstTarget.completeRegistration();
+  router.activate(TEST_TARGET_EPOCH);
+  const pending = ipc.invoke('sessions:list').then(
+    (value) => ({ value }),
+    (error: unknown) => ({ error }),
+  );
+
+  const secondHost = connectionHarness('replacement');
+  const secondTarget = router.createTarget(TEST_TARGET_EPOCH);
+  const second = await createDesktopRuntimeHostCandidate(secondHost.connection, {
+    ...deps(ipc), ipcMain: secondTarget,
+  });
+  t.after(() => second.close());
+  secondTarget.completeRegistration();
+  const result = await pending;
+  assert.ok('value' in result, `supported read was rejected: ${'error' in result ? result.error : ''}`);
+  assert.deepEqual((result.value as SessionCatalogProjection[]).map(({ id }) => id), ['session-replacement']);
 });
 
 test('disposes candidate-scoped product IPC state on reconnect teardown', async () => {

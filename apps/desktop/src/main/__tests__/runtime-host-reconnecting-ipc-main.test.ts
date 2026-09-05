@@ -43,7 +43,11 @@ test("unsupported Guest IPC fails immediately while an Owner channel still survi
   t.after(() => router.close());
   const owner = router.createTarget("owner");
   owner.handleReconnectableRead!("onboarding:getSnapshot", async () => "owner");
-  router.completeRegistration("owner");
+  owner.completeRegistration();
+  assert.throws(
+    () => owner.handleReconnectableRead!("late-channel", async () => "late"),
+    /registration is complete/,
+  );
   router.activate("owner");
   router.activate("guest");
   // A request during first connection can wait until its actual surface is known.
@@ -51,7 +55,7 @@ test("unsupported Guest IPC fails immediately while an Owner channel still survi
     ipc.invoke("onboarding:getSnapshot", scope("guest")),
     RuntimeHostHandlerUnsupportedError,
   );
-  router.completeRegistration("guest");
+  router.createTarget("guest").completeRegistration();
   await early;
   await assert.rejects(
     ipc.invoke("onboarding:getSnapshot", scope("guest")),
@@ -61,7 +65,7 @@ test("unsupported Guest IPC fails immediately while an Owner channel still survi
   const recovering = ipc.invoke("onboarding:getSnapshot", scope("owner"));
   const replacement = router.createTarget("owner");
   replacement.handleReconnectableRead!("onboarding:getSnapshot", async () => "replacement");
-  router.completeRegistration("owner");
+  replacement.completeRegistration();
   assert.equal(await recovering, "replacement");
 });
 
@@ -69,9 +73,9 @@ test("reconciliation becomes unavailable when the replacement no longer supports
   const ipc = ipcHarness();
   const router = new RuntimeHostReconnectingIpcMain(ipc);
   t.after(() => router.close());
-  const target = router.createTarget("owner") as ReconciledControlTarget;
+  const target = router.createTarget("owner");
   let dispatches = 0;
-  target.handleReconciledControl("goal:arm", {
+  target.handleReconciledControl!("goal:arm", {
     dispatch: async () => {
       dispatches += 1;
       return { kind: "reconcile", context: { sessionId: "session-1" } };
@@ -79,12 +83,12 @@ test("reconciliation becomes unavailable when the replacement no longer supports
     reconcile: async () => assert.fail("The closed candidate must not reconcile"),
     reconciliationUnavailable: async (context) => ({ kind: "unavailable", context }),
   });
-  router.completeRegistration("owner");
+  target.completeRegistration();
   router.activate("owner");
   const result = ipc.invoke("goal:arm", scope("owner"));
   await new Promise<void>((resolve) => setImmediate(resolve));
   target.removeHandler("goal:arm");
-  router.completeRegistration("owner");
+  router.createTarget("owner").completeRegistration();
   assert.deepEqual(await result, {
     kind: "unavailable", context: { sessionId: "session-1" },
   });
