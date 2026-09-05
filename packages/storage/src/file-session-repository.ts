@@ -1002,7 +1002,7 @@ function decodeState(bytes: Uint8Array): PersistentState {
     assertUnique(state.sessions, (entry) => entry.sessionId, 'Session identity');
     assertUnique(
       state.commits,
-      (entry) => `${entry.sessionId}\u0000${entry.commitId}`,
+      (entry) => JSON.stringify([entry.sessionId, entry.commitId]),
       'Commit identity',
     );
     assertUnique(state.forks, (entry) => entry.forkId, 'Fork identity');

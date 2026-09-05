@@ -18,7 +18,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { readFile, rm, writeFile } from 'node:fs/promises';
+import { open, readFile, rm, type FileHandle } from 'node:fs/promises';
 import {
   isNonEmptyUnicodeString,
   isSha256Digest,
@@ -493,7 +493,15 @@ class InMemorySessionRepository implements SessionRepository {
     // The first claim is the linearization point for the source binding. It
     // must prove the named revision is still current and readable before a
     // retry can rely on this durable Fork record.
-    const source = await this.resolveForkSource(admitted.source);
+    const initial = this.sessions.get(admitted.source.sessionId);
+    if (!initial || initial.head.ref.revision !== admitted.source.revision) {
+      throw repositoryError(
+        'source_revision_not_available',
+        'Fork source Session revision is not available',
+      );
+    }
+    const source = copyCommittedSessionRevision(initial.head);
+    await this.assertCheckpointReadable(source.checkpoint);
 
     // Source verification may yield. Reconcile another claimant that won while
     // it was in progress rather than overwriting its durable idempotency fact.
@@ -508,6 +516,19 @@ class InMemorySessionRepository implements SessionRepository {
       return copyForkOperation(claimedWhileReading);
     }
 
+    // Only a new claim needs a current source. Keep this final check and the
+    // insertion synchronous, after reconciling any already admitted operation.
+    const afterVerification = this.sessions.get(admitted.source.sessionId);
+    if (
+      !afterVerification ||
+      afterVerification.head.ref.revision !== admitted.source.revision ||
+      afterVerification.agentId !== source.agentId
+    ) {
+      throw repositoryError(
+        'source_revision_not_available',
+        'Fork source Session revision is no longer current',
+      );
+    }
     const pending: InternalPendingForkOperation = {
       state: 'pending',
       forkId: admitted.forkId,
@@ -601,35 +622,6 @@ class InMemorySessionRepository implements SessionRepository {
         'Fork target Agent must match its verified source Agent',
       );
     }
-  }
-
-  private async resolveForkSource(source: SessionRevisionRef): Promise<CommittedSessionRevision> {
-    const initial = this.sessions.get(source.sessionId);
-    if (!initial || initial.head.ref.revision !== source.revision) {
-      throw repositoryError(
-        'source_revision_not_available',
-        'Fork source Session revision is not available',
-      );
-    }
-
-    const committed = copyCommittedSessionRevision(initial.head);
-    await this.assertCheckpointReadable(committed.checkpoint);
-
-    // A source head advance while asynchronous object verification ran makes
-    // this request ineligible. Later retries of an admitted fork use the
-    // durable claim above and intentionally do not revalidate this condition.
-    const afterVerification = this.sessions.get(source.sessionId);
-    if (
-      !afterVerification ||
-      afterVerification.head.ref.revision !== source.revision ||
-      afterVerification.agentId !== committed.agentId
-    ) {
-      throw repositoryError(
-        'source_revision_not_available',
-        'Fork source Session revision is no longer current',
-      );
-    }
-    return committed;
   }
 
   private async assertCheckpointReadable(
@@ -731,10 +723,18 @@ class InMemoryImmutableObjectStore implements ImmutableObjectStore {
         'Immutable object exceeds materialization byte limit',
       );
     }
+    let handle: FileHandle | undefined;
     try {
-      await writeFile(request.destination, stored.bytes, { flag: 'wx', mode: 0o600 });
+      handle = await open(request.destination, 'wx', 0o600);
+      await handle.writeFile(stored.bytes);
+      await handle.close();
+      handle = undefined;
     } catch (error) {
-      await rm(request.destination, { force: true }).catch(() => {});
+      // An exclusive-open failure gives us no ownership of the existing path.
+      if (handle) {
+        await handle.close().catch(() => {});
+        await rm(request.destination, { force: true }).catch(() => {});
+      }
       throw repositoryError('io_failure', 'Immutable object could not be materialized', error);
     }
   }
