@@ -36,9 +36,8 @@ import type {
 /**
  * Usage projections over the canonical model-call ledger.
  *
- * They read {@link ModelCallPricingRecord}, not the whole attempt: what a cost
- * answer needs is the whole reason the ledger's read model exists, so the
- * narrower type is what the read path is allowed to depend on.
+ * They read {@link ModelCallPricingRecord}, not the whole attempt: the read path
+ * may only depend on what a cost answer needs.
  *
  * Pure: the caller supplies the records and owns their materialization. This is
  * the aggregation the Usage surface reads once the read path moves off the

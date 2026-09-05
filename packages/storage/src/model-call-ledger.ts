@@ -52,11 +52,9 @@ import {
  * clearing it and replaying the stream. See
  * `ConversationOperationalStateStore.purge`.
  *
- * A row holds {@link ModelCallPricingRecord} and nothing else. Selecting the
- * whole authority record instead would copy request-shape and provider
- * diagnostics no cost question reads — evidence the AgentRun stream and the
- * Session Inspector already answer from — into rows that then grow with the
- * conversation rather than with spend.
+ * A row holds {@link ModelCallPricingRecord} and nothing else. Request shape and
+ * provider diagnostics are answered from the AgentRun stream; copied here they
+ * would make a row grow with the conversation rather than with spend.
  *
  * Recovery compares the AgentRun stream's durable sequence with this
  * projection's applied-through checkpoint. There is no second "dirty" fact to

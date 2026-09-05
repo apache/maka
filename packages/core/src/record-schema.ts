@@ -69,12 +69,8 @@ export function hasExactShape(value: Record<string, unknown>, shape: ExactObject
 }
 
 /**
- * Narrows a record to the keys a shape allows, dropping absent and `undefined`
- * ones so the result serializes the way {@link hasExactShape} reads it back.
- *
- * The shape is already the one key list a type addition cannot slip past, so
- * projecting through it keeps a narrowing from becoming a second list that
- * silently forgets a field.
+ * Narrows a record to the keys a shape allows. `undefined` entries are dropped
+ * so the result serializes the way {@link hasExactShape} reads it back.
  */
 export function pickShape<T extends object>(value: T, shape: ExactObjectShape): T {
   const picked: Record<string, unknown> = {};

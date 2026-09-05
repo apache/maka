@@ -176,11 +176,8 @@ export interface PreparedRequestObservation {
  * What a Usage answer is made of: the fields, and only the fields, that pricing,
  * filtering, and the Usage log row read off an attempt.
  *
- * {@link ModelCallAttempt} extends this, so the authority record can be handed
- * to any pricing consumer unchanged. The reason it is spelled out separately is
- * the Usage read model: that table stores this subset, and a projection row that
- * simply equalled the authority row would copy request-shape evidence no cost
- * question can use into a second place that has to be kept in step.
+ * The Usage read model stores exactly this. {@link ModelCallAttempt} extends it,
+ * so the authority record still satisfies every pricing consumer.
  */
 export interface ModelCallPricingRecord {
   /**
@@ -675,11 +672,9 @@ export function decodeModelCallAttempt(value: unknown): ModelCallAttempt {
 /**
  * Narrows an attempt to what the Usage read model stores.
  *
- * The single definition of a projection row's shape: the ledger writes rows
- * through it and the schema migration folds pre-existing rows through the same
- * function, so one table cannot hold two shapes. It projects through the shape
- * rather than naming the fields again, so a field the interface gains cannot be
- * dropped here without the shape refusing to compile.
+ * The one place a projection row's shape is decided: the ledger writes rows
+ * through it and the schema migration folds pre-existing rows through it, so the
+ * table cannot hold two shapes.
  */
 export function projectModelCallPricingRecord(
   attempt: ModelCallPricingRecord,
@@ -689,9 +684,8 @@ export function projectModelCallPricingRecord(
 
 /**
  * Strict codec for a stored Usage read-model row, held to the exact projected
- * shape. A row carrying anything else is not a row this projection wrote, and
- * reporting it as unreadable is the honest answer — the alternative is a cost
- * report built on a record nobody validated.
+ * shape. A row of any other shape is not one this projection wrote, and is
+ * reported as unreadable rather than trusted.
  */
 export function decodeModelCallPricingRecord(value: unknown): ModelCallPricingRecord {
   if (

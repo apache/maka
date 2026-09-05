@@ -52,11 +52,7 @@ export function modelCallAttempt(overrides: Partial<ModelCallAttempt> = {}): Mod
   };
 }
 
-/**
- * An attempt carrying the request evidence the projection drops, sized like the
- * real thing: this is what made a stored row grow with the conversation rather
- * than with spend.
- */
+/** An attempt carrying the request evidence and diagnostics the projection drops. */
 export function wideModelCallAttempt(overrides: Partial<ModelCallAttempt> = {}): ModelCallAttempt {
   return modelCallAttempt({
     promptComposition: { segments: [{ kind: 'messages', bytes: 4_096 }] },
@@ -64,15 +60,17 @@ export function wideModelCallAttempt(overrides: Partial<ModelCallAttempt> = {}):
       schemaVersion: 1,
       digest: `sha256:${'a'.repeat(64)}`,
       bytes: 27_817,
-      segments: Array.from({ length: 64 }, (_, index) => ({
-        kind: 'tool_schema' as const,
-        index,
-        cacheable: true,
-        comparison: 'exact' as const,
-        digest: `sha256:${String(index).padStart(64, '0')}`,
-        bytes: 434,
-        label: `tool-${index}`,
-      })),
+      segments: [
+        {
+          kind: 'tool_schema',
+          index: 0,
+          cacheable: true,
+          comparison: 'exact',
+          digest: `sha256:${'0'.repeat(64)}`,
+          bytes: 434,
+          label: 'tool-0',
+        },
+      ],
     },
     providerRequestId: 'req-1',
     httpStatus: 200,

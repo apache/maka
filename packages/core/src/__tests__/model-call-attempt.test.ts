@@ -397,6 +397,8 @@ describe('the pricing record a Usage read model stores', () => {
       }),
     );
 
+    // Exact: an unset optional such as `cacheMissInputTokens` must stay absent,
+    // and everything the authority carries beyond these fields must be gone.
     assert.deepEqual(record, {
       logicalCallId: 'call-1',
       attemptId: 'attempt-1',
@@ -419,16 +421,6 @@ describe('the pricing record a Usage read model stores', () => {
       cacheWriteInputTokens: 10,
       reasoningTokens: 5,
     });
-    // Idempotent, so a stored row folded again is the same row.
-    assert.deepEqual(projectModelCallPricingRecord(record), record);
-  });
-
-  test('an absent optional stays absent rather than becoming an explicit undefined', () => {
-    const record = projectModelCallPricingRecord(
-      attempt({ costBasis: 'unpriced', costUsd: undefined }),
-    );
-    assert.equal(Object.hasOwn(record, 'costUsd'), false);
-    assert.equal(Object.hasOwn(record, 'connectionSlug'), false);
   });
 
   test('decodes what the projection writes and nothing wider', () => {

@@ -115,21 +115,16 @@ export function migrateSqliteUsageDatabase(db: DatabaseSync): void {
  * Folds rows written before the projection was narrowed through the same
  * function that writes new ones.
  *
- * Rebuilding from the authority instead would have been the usual move for a
- * read model, but it is not equivalent here: deleting a Session drops its
- * `core_agent_runs` rows and cascades the events, while these rows stay, so a
- * wipe-and-replay would silently erase the spend of every deleted Session from
- * the all-time totals. Re-projecting each row in place keeps the ledger's
- * answers identical and leaves one shape in the table, which is what lets the
- * reader hold a row to it.
+ * Not rebuilt from the authority, the usual move for a read model: rows whose
+ * Session was deleted no longer have an authority to replay from, so a
+ * wipe-and-replay would erase their spend. See the header of
+ * `model-call-ledger.ts`.
  */
 function narrowModelCallProjectionRows(db: DatabaseSync): void {
-  // `schemaVersion` is the discriminator, and a sound one in both directions: it
-  // is required on an attempt and absent from the pricing shape, whose decoder
-  // rejects unknown keys. So SQLite selects exactly the rows still to fold, and
-  // once none are left this costs one scan instead of a row-at-a-time trip
-  // through JS. Keyed pages rather than one `all()` because the rows this exists
-  // to shrink are the large ones, and a workspace can hold many of them.
+  // `schemaVersion` discriminates the two shapes in both directions: required on
+  // an attempt, rejected by the pricing decoder. So SQLite selects exactly the
+  // rows still to fold, and a converged table costs one scan instead of a
+  // row-at-a-time trip through JS.
   const page = db.prepare(`
     SELECT attempt_id, record_json
     FROM usage_model_call_attempts

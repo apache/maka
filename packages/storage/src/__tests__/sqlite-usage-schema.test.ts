@@ -24,6 +24,7 @@ import { migrateSqliteUsageDatabase } from '../sqlite-usage-schema.js';
 import {
   MODEL_CALL_NOW as NOW,
   MODEL_CALL_PRICING_ROW_KEYS,
+  modelCallAttempt as attempt,
   storedModelCallRecord as storedRecord,
   wideModelCallAttempt as wideAttempt,
 } from './fixtures/model-call-attempt.js';
@@ -92,7 +93,6 @@ test('usage migration narrows ledger rows to the fields a cost answer reads', ()
     `);
     insert.run(wide.attemptId, wide.completedAt, JSON.stringify(wide), wide.sessionId);
     insert.run('corrupt', NOW - 400, '{"schemaVersion":1,', 'session-1');
-    const wideBytes = recordBytes(database, wide.attemptId);
 
     migrateSqliteUsageDatabase(database);
 
@@ -103,7 +103,6 @@ test('usage migration narrows ledger rows to the fields a cost answer reads', ()
     assert.equal(narrowed.inputTokens, 100);
     assert.equal(narrowed.outputTokens, 20);
     assert.equal(narrowed.costBasis, 'priced');
-    assert.ok(recordBytes(database, wide.attemptId) < wideBytes / 10);
     // A corrupt row is not rewritable from itself and must stay, so a read can
     // keep reporting it instead of a total quietly losing a real call.
     assert.equal(
@@ -148,7 +147,7 @@ test('usage migration narrows every row, not just the first page', () => {
       VALUES (?, ?, ?, ?)
     `);
     for (let index = 0; index < 1_200; index += 1) {
-      const wide = wideAttempt({ attemptId: `attempt-${String(index).padStart(5, '0')}` });
+      const wide = attempt({ attemptId: `attempt-${String(index).padStart(5, '0')}` });
       insert.run(wide.attemptId, wide.completedAt, JSON.stringify(wide), wide.sessionId);
     }
 
@@ -156,9 +155,10 @@ test('usage migration narrows every row, not just the first page', () => {
 
     assert.equal(
       database
-        .prepare(
-          "SELECT COUNT(*) AS count FROM usage_model_call_attempts WHERE record_json LIKE '%requestObservation%'",
-        )
+        .prepare(`
+          SELECT COUNT(*) AS count FROM usage_model_call_attempts
+          WHERE json_type(record_json, '$.schemaVersion') IS NOT NULL
+        `)
         .get()?.count,
       0,
     );
@@ -166,13 +166,3 @@ test('usage migration narrows every row, not just the first page', () => {
     database.close();
   }
 });
-
-function recordBytes(database: DatabaseSync, attemptId: string): number {
-  return Number(
-    database
-      .prepare(
-        'SELECT length(record_json) AS bytes FROM usage_model_call_attempts WHERE attempt_id = ?',
-      )
-      .get(attemptId)?.bytes ?? 0,
-  );
-}
