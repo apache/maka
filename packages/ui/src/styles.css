@@ -805,6 +805,19 @@
 /* Astryx `Banner` paints the failed-turn surface; this only sets the block
    rhythm between it and the timeline entry above it. */
 .maka-turn-failed-banner { margin-block: var(--space-1) var(--space-0-5); }
+.maka-turn-failed-diagnostic {
+  margin-block: var(--space-0-5) var(--space-1);
+  padding-inline: var(--space-1);
+  color: var(--muted-foreground);
+  font-size: 0.8rem;
+}
+.maka-turn-failed-diagnostic summary { cursor: pointer; }
+.maka-turn-failed-diagnostic pre {
+  margin-block: var(--space-0-5) 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+}
 
 .maka-turn-lineage-row,
 .maka-turn-footer {

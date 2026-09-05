@@ -397,6 +397,8 @@ export const TurnView = memo(function TurnView(props: {
    * is the outcome, this is the execution state, and both can be true.
    */
   failedExecutionStateLabel?: string;
+  /** Bounded provider response detail shown collapsed beneath the category. */
+  failedDiagnostic?: string;
   safeResumeAction?: {
     pending: boolean;
     detail?: string;
@@ -683,35 +685,43 @@ export const TurnView = memo(function TurnView(props: {
                   is one — it explains why the button did nothing, which
                   outranks execution state on the one turn that can have both. */}
               {ownsTurnChrome && turn.status === 'failed' && props.failedReasonLabel && (
-                <Banner
-                  status={props.failedSeverity ?? 'error'}
-                  container="section"
-                  className="maka-turn-failed-banner"
-                  title={props.failedReasonLabel}
-                  {...(props.safeResumeAction?.detail ?? props.failedExecutionStateLabel
-                    ? {
-                        description:
-                          props.safeResumeAction?.detail ?? props.failedExecutionStateLabel,
-                      }
-                    : {})}
-                  {...(props.safeResumeAction
-                    ? {
-                        endContent: (
-                          <UiButton
-                            variant="ghost"
-                            size="sm"
-                            isDisabled={props.safeResumeAction.pending}
-                            onClick={props.safeResumeAction.onResume}
-                            label={
-                              props.safeResumeAction.pending
-                                ? copy.safeResumePending
-                                : copy.safeResume
-                            }
-                          />
-                        ),
-                      }
-                    : {})}
-                />
+                <>
+                  <Banner
+                    status={props.failedSeverity ?? 'error'}
+                    container="section"
+                    className="maka-turn-failed-banner"
+                    title={props.failedReasonLabel}
+                    {...(props.safeResumeAction?.detail ?? props.failedExecutionStateLabel
+                      ? {
+                          description:
+                            props.safeResumeAction?.detail ?? props.failedExecutionStateLabel,
+                        }
+                      : {})}
+                    {...(props.safeResumeAction
+                      ? {
+                          endContent: (
+                            <UiButton
+                              variant="ghost"
+                              size="sm"
+                              isDisabled={props.safeResumeAction.pending}
+                              onClick={props.safeResumeAction.onResume}
+                              label={
+                                props.safeResumeAction.pending
+                                  ? copy.safeResumePending
+                                  : copy.safeResume
+                              }
+                            />
+                          ),
+                        }
+                      : {})}
+                  />
+                  {props.failedDiagnostic && (
+                    <details className="maka-turn-failed-diagnostic">
+                      <summary>{copy.failedDiagnostic}</summary>
+                      <pre>{props.failedDiagnostic}</pre>
+                    </details>
+                  )}
+                </>
               )}
               {ownsTurnChrome && props.liveStreaming && (
                 <>

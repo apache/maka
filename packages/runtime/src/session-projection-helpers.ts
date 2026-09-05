@@ -18,6 +18,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { providerFailureSummaryFromDetails } from '@maka/core/diagnostic-log';
 import { failureClassFromCompleteStopReason, type SessionEvent } from '@maka/core/events';
 import type { RuntimeInvocationOutcome } from '@maka/core/runtime-invocation';
 import type {
@@ -47,6 +48,7 @@ export interface BuildTurnStateMessageInput {
   status: TurnRecord['status'];
   lineage?: TurnStateLineage;
   errorClass?: string;
+  failureMessage?: string;
   abortSource?: string;
   partialOutputRetained: boolean;
 }
@@ -81,6 +83,9 @@ export function buildTurnStateMessage(input: BuildTurnStateMessageInput): TurnSt
     ...(input.status === 'aborted' ? { abortedAt: input.ts } : {}),
     ...(input.status === 'aborted' && input.abortSource ? { abortSource: input.abortSource } : {}),
     ...(input.status === 'failed' ? { errorClass: input.errorClass ?? 'unknown' } : {}),
+    ...(input.status === 'failed' && input.failureMessage
+      ? { failureMessage: input.failureMessage }
+      : {}),
     partialOutputRetained: input.partialOutputRetained,
   };
 }
@@ -164,12 +169,18 @@ export function statusFromEvent(
 
 export function turnStatusFromEvent(
   event: SessionEvent,
-): { status: TurnRecord['status']; errorClass?: string } | undefined {
+): { status: TurnRecord['status']; errorClass?: string; failureMessage?: string } | undefined {
   switch (event.type) {
     case 'abort':
       return { status: 'aborted' };
-    case 'error':
-      return { status: 'failed', errorClass: event.reason ?? event.code ?? 'unknown' };
+    case 'error': {
+      const failureMessage = providerFailureMessageFromEvent(event);
+      return {
+        status: 'failed',
+        errorClass: event.reason ?? event.code ?? 'unknown',
+        ...(failureMessage ? { failureMessage } : {}),
+      };
+    }
     case 'complete': {
       if (event.stopReason === 'user_stop') return { status: 'aborted' };
       const errorClass = failureClassFromCompleteStopReason(event.stopReason);
@@ -179,6 +190,13 @@ export function turnStatusFromEvent(
     default:
       return undefined;
   }
+}
+
+/** Extract the adapter's bounded provider summary without exposing arbitrary details. */
+export function providerFailureMessageFromEvent(
+  event: Extract<SessionEvent, { type: 'error' }>,
+): string | undefined {
+  return providerFailureSummaryFromDetails(event.details);
 }
 
 function blockedReasonFromErrorReason(reason: string | undefined): SessionBlockedReason {

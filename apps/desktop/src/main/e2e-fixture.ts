@@ -51,6 +51,7 @@ import {
   partialHistorySession,
   promptRailMessages,
   promptRailSession,
+  providerFailureMessages,
   turnMessages,
   turnSession,
   agentGraphSession,
@@ -71,6 +72,7 @@ const E2E_FIXTURE_SCENARIOS = new Set<E2eFixtureScenario>([
   'turn-narrative-browser',
   'chat-prompt-rail',
   'chat-partial-history',
+  'chat-provider-failure',
   'settings-data',
   'settings-bots-onboarding',
   'settings-general',
@@ -194,6 +196,8 @@ export function getE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState 
       return { ...state, activeSessionId: PROMPT_RAIL_SESSION_ID, workbarCollapsed: true };
     case 'chat-partial-history':
       return { ...state, activeSessionId: PARTIAL_HISTORY_SESSION_ID, workbarCollapsed: true };
+    case 'chat-provider-failure':
+      return { ...state, activeSessionId: TURN_SESSION_ID, workbarCollapsed: true };
     case 'settings-data':
       return { ...state, activeSessionId: TURN_SESSION_ID, openSettingsSection: 'data' };
     case 'settings-bots-onboarding':
@@ -245,7 +249,7 @@ export async function seedE2eFixture(input: {
   await writeSession(
     input.workspaceRoot,
     scenario === 'agent-graph-layout' ? agentGraphSession(now) : turnSession(now),
-    turnMessages(now),
+    scenario === 'chat-provider-failure' ? providerFailureMessages(now) : turnMessages(now),
   );
 
   if (scenario === 'agent-graph-layout') await seedAgentGraphLayout(input.workspaceRoot, now);

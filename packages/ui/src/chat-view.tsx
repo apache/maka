@@ -828,6 +828,9 @@ export function ChatView(props: {
                       failedExecutionStateLabel={
                         turnPresentation?.failedExecutionStateLabels[turn.turnId]
                       }
+                      failedDiagnostic={turnPresentation?.failedReasonLabels[turn.turnId]
+                        ? turn.failureMessage
+                        : undefined}
                       safeResumeAction={turnPresentation?.resumeCandidateTurnId === turn.turnId
                         ? props.safeResumeAction
                         : undefined}

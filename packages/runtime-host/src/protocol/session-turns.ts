@@ -17,8 +17,8 @@
  * under the License.
  */
 
+import { TURN_FAILURE_MESSAGE_MAX_BYTES, truncateUtf8 } from '@maka/core/diagnostic-log';
 import { decodeCanonicalMessage, type TurnRecord, type TurnStateMessage } from '@maka/core/session';
-import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import {
   requireCount,
   requireEncodedByteLimit,
@@ -32,6 +32,7 @@ import { defineOperation } from './operation-spec.js';
 export const SESSION_TURN_QUERY_MAX_CONTRIBUTIONS = 128;
 export const SESSION_TURN_QUERY_RESULT_MAX_BYTES = 192 * 1024;
 export const SESSION_TURN_DIAGNOSTIC_MAX_BYTES = 128;
+export const SESSION_TURN_FAILURE_MESSAGE_MAX_BYTES = TURN_FAILURE_MESSAGE_MAX_BYTES;
 export const SESSION_TURN_PROMPT_PREVIEW_MAX_BYTES = 256;
 export const SESSION_TURN_LANDMARK_MAX_ITEMS = 64;
 export const SESSION_TURN_LANDMARK_LABEL_MAX_BYTES = 96;
@@ -179,6 +180,14 @@ function projectTurnStateMessageForWire(message: TurnStateMessage): TurnStateMes
     ...(message.errorClass
       ? { errorClass: truncateUtf8(message.errorClass, SESSION_TURN_DIAGNOSTIC_MAX_BYTES) }
       : {}),
+    ...(message.failureMessage
+      ? {
+          failureMessage: truncateUtf8(
+            message.failureMessage,
+            SESSION_TURN_FAILURE_MESSAGE_MAX_BYTES,
+          ),
+        }
+      : {}),
     partialOutputRetained: message.partialOutputRetained,
   };
 }
@@ -205,6 +214,7 @@ export function projectSessionTurnContribution(contribution: SessionTurnContribu
       ...(state.abortedAt !== undefined ? { abortedAt: state.abortedAt } : {}),
       ...(state.abortSource ? { abortSource: state.abortSource } : {}),
       ...(state.errorClass ? { errorClass: state.errorClass } : {}),
+      ...(state.failureMessage ? { failureMessage: state.failureMessage } : {}),
       partialOutputRetained: state.partialOutputRetained || partialOutputRetained,
     };
   }
@@ -422,6 +432,13 @@ function decodeSessionTurnContribution(value: unknown): SessionTurnContribution 
         message.errorClass,
         'Session turn error class',
         SESSION_TURN_DIAGNOSTIC_MAX_BYTES,
+      );
+    }
+    if (message.failureMessage !== undefined) {
+      requireUtf8String(
+        message.failureMessage,
+        'Session turn failure message',
+        SESSION_TURN_FAILURE_MESSAGE_MAX_BYTES,
       );
     }
     latestState = {

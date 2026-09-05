@@ -22,6 +22,7 @@ import type { AssistantStepContentKind, StoredMessage, TurnStatus } from '@maka/
 import type { RuntimeEvent, RuntimeEventStatus } from '@maka/core/runtime-event';
 import type { ToolActivityKind, ToolResultContent } from '@maka/core/events';
 import { markPersisted } from '@maka/core/persisted-value';
+import { providerFailureSummaryFromDetails } from '@maka/core/diagnostic-log';
 import {
   SANDBOX_BOUNDARY_REQUEST_STATUSES,
   validateSandboxBoundaryExpansion,
@@ -1172,6 +1173,7 @@ function projectTerminalTurnState(
   }
   const abortSource = status === 'aborted' ? abortSourceFromRuntime(event) : undefined;
   const failureClass = status === 'failed' ? failureClassFromRuntimeEvent(event) : undefined;
+  const failureMessage = status === 'failed' ? failureMessageFromRuntimeEvent(event) : undefined;
   const partialOutputRetained = messages.some(
     (message) =>
       message.turnId === event.turnId &&
@@ -1194,6 +1196,7 @@ function projectTerminalTurnState(
     ...(status === 'aborted' ? { abortedAt: event.ts } : {}),
     ...(abortSource ? { abortSource } : {}),
     ...(status === 'failed' ? { errorClass: failureClass ?? 'unknown' } : {}),
+    ...(failureMessage ? { failureMessage } : {}),
     partialOutputRetained,
   });
   if (failureClass === 'tool_step_cap_reached') {
@@ -1209,6 +1212,11 @@ function projectTerminalTurnState(
   // observation to make. Repeating it here would only turn a transcript row that
   // already reads `unknown` into an unreadable Session.
   return true;
+}
+
+function failureMessageFromRuntimeEvent(event: RuntimeEvent): string | undefined {
+  const content = event.content;
+  return content?.kind === 'error' ? providerFailureSummaryFromDetails(content.details) : undefined;
 }
 
 function attachPendingThinking(
@@ -1606,6 +1614,7 @@ function semanticMessage(message: StoredMessage): unknown {
         abortedAt: message.abortedAt,
         abortSource: message.abortSource,
         errorClass: message.errorClass,
+        failureMessage: message.failureMessage,
         partialOutputRetained: message.partialOutputRetained,
       };
     case 'system_note':

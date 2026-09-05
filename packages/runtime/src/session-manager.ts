@@ -4300,7 +4300,12 @@ export class SessionManager {
     turnId: string,
     status: TurnRecord['status'],
     lineage: AgentRunLineage = {},
-    options: { ts?: number; errorClass?: string; abortSource?: string } = {},
+    options: {
+      ts?: number;
+      errorClass?: string;
+      failureMessage?: string;
+      abortSource?: string;
+    } = {},
   ): Promise<void> {
     const ts = options.ts ?? this.deps.now();
     await this.deps.store.appendMessage(
@@ -4313,6 +4318,7 @@ export class SessionManager {
         lineage,
         ...(options.abortSource ? { abortSource: options.abortSource } : {}),
         ...(options.errorClass !== undefined ? { errorClass: options.errorClass } : {}),
+        ...(options.failureMessage !== undefined ? { failureMessage: options.failureMessage } : {}),
         partialOutputRetained: await this.turnHasRetainedOutput(sessionId, turnId),
       }),
     );

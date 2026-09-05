@@ -26,6 +26,7 @@ import {
   projectSessionTurnContribution,
   projectSessionTurnContributionForWire,
   SESSION_TURN_DIAGNOSTIC_MAX_BYTES,
+  SESSION_TURN_FAILURE_MESSAGE_MAX_BYTES,
   SESSION_TURN_LANDMARK_RESULT_MAX_BYTES,
 } from '../protocol/session-turns.js';
 
@@ -107,6 +108,47 @@ test('bounds turn diagnostics before publishing a contribution', () => {
       contributions: [contribution],
       nextPosition: null,
     }),
+  );
+});
+
+test('persists and bounds the provider failure summary in the Turn projection', () => {
+  const contribution = projectSessionTurnContributionForWire({
+    turnId: 'turn-1',
+    firstSequence: 0,
+    latestState: {
+      sequence: 0,
+      message: {
+        type: 'turn_state',
+        id: 'state-1',
+        turnId: 'turn-1',
+        ts: 1,
+        status: 'failed',
+        partialOutputRetained: false,
+        errorClass: 'rate_limit',
+        failureMessage: `provider says ${'x'.repeat(10_000)}`,
+      },
+    },
+    userPromptPreview: null,
+    hasAssistantMessage: false,
+    hasAssistantOutput: false,
+    hasToolResult: false,
+    hasFailedToolResult: false,
+    hasAbortNote: false,
+  });
+
+  assert.ok(
+    Buffer.byteLength(contribution.latestState!.message.failureMessage!, 'utf8') <=
+      SESSION_TURN_FAILURE_MESSAGE_MAX_BYTES,
+  );
+  const decoded = decodeSessionTurnsQueryResult({
+    sessionId: 'session-1',
+    throughSequence: 0,
+    contributions: [contribution],
+    nextPosition: null,
+  });
+  assert.equal(
+    decoded.contributions[0]!.latestState!.message.failureMessage,
+    contribution.latestState!.message.failureMessage,
   );
 });
 

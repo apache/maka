@@ -18,9 +18,10 @@
  */
 
 import { type ContextCompactionOutcome } from '@maka/core/events';
-import { truncateUtf8 } from '@maka/core/diagnostic-log';
+import { providerFailureSummaryFromDetails, truncateUtf8 } from '@maka/core/diagnostic-log';
 import { redactSecrets } from '@maka/core/redaction';
 import { readRunInvocation } from '@maka/core/runtime-event-store';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import { classifyTerminalRuntimeLedger } from '@maka/runtime/terminal-run-commit';
 import type { ExecutionStoresWriter } from '@maka/storage/execution-stores';
@@ -71,7 +72,10 @@ export async function readCanonicalTurnSnapshot(
       const failureMessage =
         fact.terminalEvent.content?.kind === 'error'
           ? truncateUtf8(
-              redactSecrets(fact.terminalEvent.content.message),
+              redactSecrets(
+                providerFailureSummaryFromRuntimeEvent(fact.terminalEvent) ??
+                  fact.terminalEvent.content.message,
+              ),
               TURN_FAILURE_MESSAGE_MAX_BYTES,
               '…',
             )
@@ -121,6 +125,11 @@ async function hasPendingInteraction(
   );
 }
 
+function providerFailureSummaryFromRuntimeEvent(event: RuntimeEvent): string | undefined {
+  return providerFailureSummaryFromDetails(
+    event.content?.kind === 'error' ? event.content.details : undefined,
+  );
+}
 function readContextCompactionOutcome(value: unknown): ContextCompactionOutcome | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const outcome = value as Record<string, unknown>;

@@ -19,6 +19,17 @@
 
 import { redactSecrets } from './redaction.js';
 
+/** Shared byte budget for provider diagnostics carried in Turn state. */
+export const TURN_FAILURE_MESSAGE_MAX_BYTES = 256;
+
+export function providerFailureSummaryFromDetails(details: unknown): string | undefined {
+  if (!details || Array.isArray(details) || typeof details !== 'object') return undefined;
+  const summary = (details as { providerSummary?: unknown }).providerSummary;
+  return typeof summary === 'string' && summary.length > 0
+    ? truncateUtf8(redactSecrets(summary), TURN_FAILURE_MESSAGE_MAX_BYTES, '…')
+    : undefined;
+}
+
 export type DiagnosticLogLevel = 'debug' | 'info' | 'log' | 'warn' | 'error';
 
 interface DiagnosticLogEntry {
