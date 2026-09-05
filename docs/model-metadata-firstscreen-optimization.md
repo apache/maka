@@ -1,3 +1,15 @@
+---
+doc_id: model-metadata-firstscreen-optimization
+title: "perf(desktop): remove models.dev metadata from the renderer startup path"
+language: en
+source_language: en
+implementation_status: current
+document_status: current
+translation_status: synced
+last_verified: 2026-09-04
+owners:
+  - maka-backend
+---
 <!--
   Licensed to the Apache Software Foundation (ASF) under one
   or more contributor license agreements.  See the NOTICE file
@@ -23,6 +35,10 @@
 <summary><strong>English</strong></summary>
 
 ## Problem
+
+> **Status (verified 2026-09-04):** this optimization is implemented — every one of the five startup
+> import paths listed below is cut in the current source. The Problem is kept as the 2026-08-04
+> record of the pre-optimization state.
 
 Most users configure only a few providers, but Maka currently loads metadata for every provider and hundreds of models on startup. This data should remain behind the main-process authority boundary, with the renderer receiving only the lightweight projection needed for the current UI.
 
@@ -75,7 +91,7 @@ Full metadata remains available to the main process and lazy-loaded SettingsModa
 Acceptance criteria:
 
 - The startup entry and all of its static transitive dependencies exclude `model-metadata.generated.ts`, `model-metadata.ts`, `provider-registry.ts`, `model-catalog.ts`, and `model-thinking.ts`.
-- The startup path no longer statically depends on the renderer's `model-catalog-choices.ts` or `chat-model-selection.ts`.
+- The startup path no longer statically depends on the renderer's `model-catalog-choices.ts`; `shell-chat-model-selection.ts` deliberately remains on the static path as the lightweight selector behind `useShellChatModel` — this optimization removes the heavy metadata modules, not that selector.
 - Searching startup chunks for `claude-opus|gpt-5\.|gemini-2\.` returns zero; full metadata exists only on lazy Settings paths.
 - Model choices, headings, provider logos, and active/new-chat thinking levels remain correct.
 - OnboardingHero still shows the four recommended providers with their names, descriptions, and logos.
@@ -96,6 +112,8 @@ Acceptance criteria:
 <summary><strong>简体中文</strong></summary>
 
 ## 问题
+
+> **状态（2026-09-04 核验）：** 该优化已落地——下面列出的五条首屏依赖链在当前源码中均已切断。Problem 一节保留的是 2026-08-04 优化前状态的记录。
 
 大多数用户只配置少数几个 provider，但 Maka 当前会在启动时加载全部 provider 和数百个模型的元数据。完整目录应留在 main process 的权威边界内，renderer 只接收当前界面所需的轻量投影。
 
@@ -148,7 +166,7 @@ Session health notice 在 event 触发的异步刷新完成前继续使用上一
 验收标准：
 
 - 首屏入口及其所有静态传递依赖不包含 `model-metadata.generated.ts`、`model-metadata.ts`、`provider-registry.ts`、`model-catalog.ts` 或 `model-thinking.ts`。
-- 首屏不再静态依赖 renderer 的 `model-catalog-choices.ts` 和 `chat-model-selection.ts`。
+- 首屏不再静态依赖 renderer 的 `model-catalog-choices.ts`；`shell-chat-model-selection.ts` 作为 `useShellChatModel` 背后的轻量选择器有意保留在静态路径上——本优化移除的是重量级元数据模块，不含这个选择器。
 - 构建产物的首屏 chunk 中检索 `claude-opus|gpt-5\.|gemini-2\.` 为 0；完整元数据只存在于设置页懒加载路径。
 - model picker 的模型、heading、provider logo，以及 active/new-chat thinking level 选项保持正确。
 - OnboardingHero 正常显示 4 个推荐 provider 的名称、描述和 logo。
