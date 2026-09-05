@@ -1776,24 +1776,28 @@ export const ReaderScrolledUpIsNotPulledBack: Story = {
     expect(before, JSON.stringify(tailMetrics())).toBeGreaterThan(100);
     await waitFor(() => expect(dockOffered()).toBe(true));
 
-    const anchorTurnId = document.querySelector<HTMLElement>('[data-turn-id]')?.dataset.turnId;
-    if (!anchorTurnId) throw new Error('the transcript has no mounted turn');
+    const viewport = root.getBoundingClientRect();
+    const anchorTurnId = [...root.querySelectorAll<HTMLElement>('[data-transcript-turn-id]')]
+      .find((turn) => {
+        const bounds = turn.getBoundingClientRect();
+        return bounds.bottom > viewport.top && bounds.top < viewport.bottom;
+      })?.dataset.transcriptTurnId;
+    if (!anchorTurnId) throw new Error('the transcript has no visible turn');
     const anchorTop = turnTop(anchorTurnId);
 
     appendTurn?.();
 
-    // The turn the reader was on is still where it was. Everything that
-    // arrived, arrived below them.
-    //
-    // Both conditions retry together, because `distance` crosses `before`
-    // while the arriving Turn is still laid out at its `content-visibility`
-    // estimate — reading the anchor on that frame reads an intermediate
-    // layout, and on a slow renderer it is still 16px out. Retrying cannot
-    // launder a real failure: a reader who was pulled back is at the tail, so
-    // `distance` never gets above `before` again.
+    // Track the first visible turn. The first mounted turn can be thousands
+    // of pixels above the reader; native anchoring correctly moves that turn
+    // when intervening content-visibility estimates resolve while holding the
+    // reader still. Keep both checks together as the arriving turn settles.
     await waitFor(() => {
       expect(tailMetrics().distance).toBeGreaterThan(before);
-      expect(Math.abs(turnTop(anchorTurnId) - anchorTop)).toBeLessThanOrEqual(4);
+      const afterTop = turnTop(anchorTurnId);
+      expect(
+        Math.abs(afterTop - anchorTop),
+        JSON.stringify({ anchorTurnId, anchorTop, afterTop, ...tailMetrics() }),
+      ).toBeLessThanOrEqual(4);
     });
   },
 };
