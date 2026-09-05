@@ -460,7 +460,7 @@ describe('SQLite Artifact store', () => {
     });
   });
 
-  test('user delete physically removes every artifact source within its Session', async () => {
+  test('user deletion respects the current artifact source while owner cleanup remains possible', async () => {
     await withWorkspace(async (root) => {
       const authority = createArtifactStoreWriteAuthority(root);
       const { store } = authority;
@@ -475,13 +475,18 @@ describe('SQLite Artifact store', () => {
 
       assert.equal(
         (await store.deleteUserArtifactInSession(input.sessionId, input.id)).kind,
-        'deleted',
+        'protected',
       );
-      assert.equal(await getArtifact(store, input.id), null);
+      assert.equal((await getArtifact(store, input.id))?.source, 'deep_research');
+      assert.deepEqual(await store.readTextInSession(input.sessionId, input.id), {
+        ok: true,
+        text: 'protected replacement',
+      });
       assert.deepEqual(await store.deleteUserArtifactInSession('different-session', input.id), {
         kind: 'not_found',
       });
 
+      await store.purgeSessionArtifacts(input.sessionId);
       assert.deepEqual(await store.deleteUserArtifactInSession(input.sessionId, input.id), {
         kind: 'not_found',
       });
@@ -652,7 +657,7 @@ describe('SQLite Artifact store', () => {
       const input = deepResearchArtifactInput('stable-revive', '# Revivable');
       const store = createArtifactStore(root);
       const first = await store.create(input);
-      await store.deleteUserArtifactInSession(input.sessionId, first.id);
+      await store.deleteOwnedArtifactInSession(input.sessionId, first.id, input.source);
       assert.equal(await getArtifact(store, first.id), null);
 
       const recreated = await createArtifactStore(root).create(input);

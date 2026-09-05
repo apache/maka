@@ -54,7 +54,7 @@ const QUERY_ERRORS = [
   'not_found',
   'persistence_failed',
 ] as const;
-const DELETE_ERRORS = QUERY_ERRORS;
+const DELETE_ERRORS = [...QUERY_ERRORS, 'operation_conflict'] as const;
 const ARTIFACT_REQUIRED_FIELDS = [
   'id',
   'sessionId',

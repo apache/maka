@@ -142,18 +142,19 @@ export interface ArtifactRecord extends ArtifactDescriptor {
 }
 
 interface ArtifactSourcePolicy {
+  readonly userDeletable: boolean;
   readonly userVisible: boolean;
   readonly sharedReadable: boolean;
 }
 
 const ARTIFACT_SOURCE_POLICIES = {
-  tool_result: { userVisible: false, sharedReadable: true },
-  tool_result_projection: { userVisible: false, sharedReadable: true },
-  tool_result_archive: { userVisible: false, sharedReadable: false },
-  subagent_writeback: { userVisible: true, sharedReadable: false },
-  deep_research: { userVisible: true, sharedReadable: false },
-  user_upload: { userVisible: false, sharedReadable: true },
-  session_effect: { userVisible: false, sharedReadable: false },
+  tool_result: { userDeletable: true, userVisible: false, sharedReadable: true },
+  tool_result_projection: { userDeletable: false, userVisible: false, sharedReadable: true },
+  tool_result_archive: { userDeletable: false, userVisible: false, sharedReadable: false },
+  subagent_writeback: { userDeletable: false, userVisible: true, sharedReadable: false },
+  deep_research: { userDeletable: false, userVisible: true, sharedReadable: false },
+  user_upload: { userDeletable: true, userVisible: false, sharedReadable: true },
+  session_effect: { userDeletable: false, userVisible: false, sharedReadable: false },
 } as const satisfies Record<ArtifactSource, ArtifactSourcePolicy>;
 
 const CHILD_RESULT_OUTPUT_SOURCES = new Set<ArtifactSource>([
@@ -165,6 +166,11 @@ const CHILD_RESULT_OUTPUT_SOURCES = new Set<ArtifactSource>([
 
 export function isArtifactUserVisible(record: Pick<ArtifactRecord, 'source'>): boolean {
   return ARTIFACT_SOURCE_POLICIES[record.source].userVisible;
+}
+
+/** Visibility does not grant permission to destroy evidence owned by a runtime workflow. */
+export function canUserDeleteArtifact(record: Pick<ArtifactRecord, 'source'>): boolean {
+  return ARTIFACT_SOURCE_POLICIES[record.source].userDeletable;
 }
 
 export function isArtifactSharedSessionReadable(record: Pick<ArtifactRecord, 'source'>): boolean {

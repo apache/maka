@@ -479,6 +479,15 @@ export class HostArtifactCoordinator {
           error: { code: 'not_found', message: 'Artifact was not found' },
         };
       }
+      if (deleted.kind === 'protected') {
+        return {
+          ok: false,
+          error: {
+            code: 'operation_conflict',
+            message: 'Runtime-owned evidence cannot be deleted independently of its workflow',
+          },
+        };
+      }
       return {
         ok: true,
         result: encodeArtifactDeleteResult({ kind: 'deleted' }),

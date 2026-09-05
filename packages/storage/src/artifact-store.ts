@@ -42,6 +42,7 @@ import {
   ArtifactRecord,
   ArtifactSource,
   ArtifactTextReadResult,
+  canUserDeleteArtifact,
   isArtifactTurnKey,
   isCanonicalArtifactEntityId,
 } from '@maka/core/artifacts';
@@ -171,6 +172,7 @@ export interface DurableArtifactAttachmentReader {
 
 export type ArtifactUserDeleteResult =
   | { readonly kind: 'deleted' }
+  | { readonly kind: 'protected' }
   | { readonly kind: 'not_found' };
 
 export interface ArtifactAuthorityStore extends DurableArtifactAttachmentReader {
@@ -684,6 +686,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
       const snapshot = this.sessionSnapshot(sessionId);
       const existing = snapshot.records.find((record) => record.id === artifactId);
       if (!existing) return { kind: 'not_found' };
+      if (!canUserDeleteArtifact(existing)) return { kind: 'protected' };
       await this.purgeRecordsUnlocked([existing]);
       return { kind: 'deleted' };
     });

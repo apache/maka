@@ -60,7 +60,7 @@ import {
   Copy,
   Trash2,
 } from '@maka/ui/icons';
-import type { ArtifactDescriptor, ArtifactKind } from '@maka/core/artifacts';
+import { canUserDeleteArtifact, type ArtifactDescriptor, type ArtifactKind } from '@maka/core/artifacts';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { formatRelativeTimestamp } from '@maka/core/relative-time';
 import { generalizedErrorMessageForLocale, redactSecrets } from '@maka/core/redaction';
@@ -353,6 +353,7 @@ export function ArtifactPane(props: {
   async function deleteArtifact(artifactId: string) {
     const actionSessionId = sessionId;
     const record = activeRecords.find((entry) => entry.id === artifactId);
+    if (!record || !canUserDeleteArtifact(record)) return;
     const name = record?.name ?? copy.pane.fallbackName;
     const ok = await toast.confirm({
       title: copy.pane.deleteTitle(name),
@@ -559,15 +560,14 @@ export function ArtifactPane(props: {
                       onClick: () => void runArtifactAction(`${previewRecord.id}:copy`, () => copyText(previewRecord.id)),
                     }]
                   : []),
-                { type: 'divider' as const },
-                {
+                ...(canUserDeleteArtifact(previewRecord) ? [{ type: 'divider' as const }, {
                   label: copy.pane.delete,
                   icon: <Trash2 size={ICON_SIZE.control} aria-hidden="true" />,
                   onClick: () => void runArtifactAction(
                     `${previewRecord.id}:delete`,
                     () => deleteArtifact(previewRecord.id),
                   ),
-                },
+                }] : []),
               ]}
             />
           </header>

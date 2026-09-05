@@ -22,6 +22,8 @@ import { describe, test } from 'node:test';
 import {
   ARTIFACT_ENTITY_ID_MAX_CHARS,
   ARTIFACT_TURN_KEY_MAX_CHARS,
+  ARTIFACT_SOURCES,
+  canUserDeleteArtifact,
   isArtifactChildResultOutput,
   isArtifactSharedSessionReadable,
   isArtifactUserVisible,
@@ -57,6 +59,15 @@ describe('Artifact turn key', () => {
 });
 
 describe('Artifact source policy', () => {
+  test('keeps workflow-owned evidence out of independent user deletion', () => {
+    for (const source of ARTIFACT_SOURCES) {
+      assert.equal(
+        canUserDeleteArtifact({ source }),
+        source === 'tool_result' || source === 'user_upload',
+        source,
+      );
+    }
+  });
   test('includes produced outputs in child results without leaking internal artifacts', () => {
     assert.equal(isArtifactChildResultOutput({ source: 'tool_result' }), true);
     assert.equal(isArtifactChildResultOutput({ source: 'subagent_writeback' }), true);

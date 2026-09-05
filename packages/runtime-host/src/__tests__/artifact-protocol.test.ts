@@ -255,9 +255,8 @@ describe('Artifact protocol', () => {
       () => failure('artifact.query', 'operation_conflict', 'Protected runtime evidence'),
       isInvalidFrame,
     );
-    assert.throws(
-      () => failure('artifact.delete', 'operation_conflict', 'Protected runtime evidence'),
-      isInvalidFrame,
+    assert.doesNotThrow(() =>
+      failure('artifact.delete', 'operation_conflict', 'Protected runtime evidence'),
     );
     assert.throws(() => failure('artifact.delete', 'outcome_unknown', 'Unknown'), isInvalidFrame);
   });

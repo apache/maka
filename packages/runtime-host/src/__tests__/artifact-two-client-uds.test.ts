@@ -182,11 +182,10 @@ test('production Host ignores Artifact publication residue and preserves deletes
 
       for (const [index, artifact] of PROTECTED_ARTIFACTS.entries()) {
         const client = index % 2 === 0 ? desktop : tui;
-        const deleted = await client.request('artifact.delete', {
-          sessionId,
-          artifactId: artifact.id,
-        });
-        assert.deepEqual(deleted, { kind: 'deleted' });
+        await assert.rejects(
+          client.request('artifact.delete', { sessionId, artifactId: artifact.id }),
+          operationError('operation_conflict'),
+        );
       }
 
       const stale = await tui.request('artifact.query', {
@@ -218,7 +217,17 @@ test('production Host ignores Artifact publication residue and preserves deletes
     successor = await startHost(root, capability.rootId);
     const observer = await connectClient(root);
     try {
-      for (const artifactId of [...PROTECTED_ARTIFACTS.map(({ id }) => id), deleteA, deleteB]) {
+      for (const { id: artifactId } of PROTECTED_ARTIFACTS) {
+        assert.ok((await getArtifact(observer, sessionId, artifactId)).artifact);
+        const read = await observer.request('artifact.query', {
+          kind: 'read_text',
+          sessionId,
+          artifactId,
+        });
+        assert.equal(read.kind, 'text');
+        assert.ok(read.kind === 'text' && read.preview.ok);
+      }
+      for (const artifactId of [deleteA, deleteB]) {
         const getResult = await getArtifact(observer, sessionId, artifactId);
         const readResult = await observer.request('artifact.query', {
           kind: 'read_text',
