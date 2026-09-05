@@ -1,5 +1,9 @@
 {
   "epoch": 112,
-  "files": ["packages/runtime-host/src/protocol/turn.ts"],
-  "reason": "Admission-only widening (#4804): an empty-text Message that carries a quote or an attachment is now accepted; the Host emits no new frame shape and no previously valid frame is rejected, so peers on earlier epochs interoperate unchanged."
+  "files": [
+    "packages/runtime-host/src/protocol/turn.ts",
+    "packages/runtime-host/src/protocol/message.ts",
+    "packages/runtime-host/src/protocol/session-continuity.ts"
+  ],
+  "reason": "Admission-only widening (#4804): an empty-text Message that carries a quote or an attachment is now accepted at submit and read back the same way by the queue-entry and steering decoders; the Host emits no new frame shape and no previously valid frame is rejected, so peers on earlier epochs interoperate unchanged."
 }
