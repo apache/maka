@@ -18,6 +18,8 @@
  */
 
 import assert from 'node:assert/strict';
+import fsPromises from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import { createHash } from 'node:crypto';
 import {
   link,
@@ -895,6 +897,68 @@ describe('SQLite Artifact store', () => {
       await assert.rejects(() => stat(join(root, 'artifacts', record.relativePath)), {
         code: 'ENOENT',
       });
+    });
+  });
+
+  test('a partial purge retains its cleanup obligations across reopen', async (t) => {
+    await withWorkspace(async (root) => {
+      const authority = createArtifactStoreWriteAuthority(root);
+      const first = await authority.store.create(artifactInput('purge-first', 'first', 1));
+      const second = await authority.store.create(artifactInput('purge-second', 'second', 2));
+      const target = await fsPromises.realpath(join(root, 'artifacts', second.relativePath));
+      const originalRm = fsPromises.rm;
+      const injected = t.mock.method(
+        fsPromises,
+        'rm',
+        async (...[path, options]: Parameters<typeof originalRm>) => {
+          if (path === target)
+            throw Object.assign(new Error('injected unlink failure'), { code: 'EIO' });
+          return originalRm(path, options);
+        },
+      );
+      syncBuiltinESMExports();
+      try {
+        await assert.rejects(authority.store.purgeSessionArtifacts(first.sessionId), {
+          code: 'EIO',
+        });
+      } finally {
+        injected.mock.restore();
+        syncBuiltinESMExports();
+      }
+      authority.close();
+      const reopened = createArtifactStore(root);
+      assert.equal((await listArtifacts(reopened, first.sessionId)).length, 2);
+      if (process.platform !== 'win32') {
+        const originalOpen = fsPromises.open;
+        const syncFailure = t.mock.method(
+          fsPromises,
+          'open',
+          async (...args: Parameters<typeof originalOpen>) => {
+            if (args[0] === dirname(target)) {
+              throw Object.assign(new Error('injected directory sync failure'), { code: 'EIO' });
+            }
+            return originalOpen(...args);
+          },
+        );
+        syncBuiltinESMExports();
+        try {
+          // The second attempt sees no payloads, but still owes the directory sync.
+          for (let attempt = 0; attempt < 2; attempt++) {
+            await assert.rejects(reopened.purgeSessionArtifacts(first.sessionId), { code: 'EIO' });
+            assert.equal((await listArtifacts(reopened, first.sessionId)).length, 2);
+          }
+        } finally {
+          syncFailure.mock.restore();
+          syncBuiltinESMExports();
+        }
+      }
+      await reopened.purgeSessionArtifacts(first.sessionId);
+      assert.deepEqual(await listArtifacts(reopened, first.sessionId), []);
+      for (const record of [first, second]) {
+        await assert.rejects(stat(join(root, 'artifacts', record.relativePath)), {
+          code: 'ENOENT',
+        });
+      }
     });
   });
 

@@ -465,8 +465,12 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
 
   async purgeSessionArtifacts(sessionId: string): Promise<void> {
     assertCanonicalArtifactEntityId(sessionId, 'sessionId');
-    const records = await this.listSessionRecords(sessionId);
-    if (records.length > 0) await this.purgeArtifacts(records.map((record) => record.id));
+    await this.enqueueMutation(async () => {
+      await this.prepareMutationUnlocked();
+      await this.purgeRecordsUnlocked(
+        this.records.filter((record) => record.sessionId === sessionId),
+      );
+    });
   }
 
   private async replayExistingArtifactUnlocked(
@@ -511,20 +515,6 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     }
 
     return { ...existing };
-  }
-
-  private async listSessionRecords(sessionId: string): Promise<ArtifactRecord[]> {
-    return this.enqueue(async () => {
-      await this.load();
-      return (
-        this.records
-          .filter((record) => record.sessionId === sessionId)
-          // Secondary `id` sort for determinism when fixture artifacts share
-          // a frozen createdAt (PR108k-yj e2e-fixture determinism).
-          .sort(compareArtifactRecords)
-          .map((record) => ({ ...record }))
-      );
-    });
   }
 
   async listPage(
@@ -692,15 +682,6 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     });
   }
 
-  private async purgeArtifacts(artifactIds: readonly string[]): Promise<void> {
-    const acceptedArtifactIds = Object.freeze([...artifactIds]);
-    await this.enqueueMutation(async () => {
-      await this.prepareMutationUnlocked();
-      const ids = new Set(acceptedArtifactIds);
-      await this.purgeRecordsUnlocked(this.records.filter((record) => ids.has(record.id)));
-    });
-  }
-
   private async purgeRecordsUnlocked(records: readonly ArtifactRecord[]): Promise<void> {
     if (records.length === 0) return;
     const ids = new Set(records.map((record) => record.id));
@@ -796,8 +777,6 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     paths: readonly string[],
   ): Promise<void> {
     const nextRecords = this.records.filter((record) => !ids.has(record.id));
-    await this.writeMetadataUnlocked({ deleteIds: [...ids] });
-    this.records = nextRecords;
     const changedDirectories = new Set<string>();
     try {
       for (const path of paths) {
@@ -807,6 +786,10 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     } finally {
       for (const directory of changedDirectories) await syncDirectory(directory);
     }
+    // Keep the paths discoverable until physical cleanup is durable. Session
+    // retirement already owns the pending cleanup intent and retries on reopen.
+    await this.writeMetadataUnlocked({ deleteIds: [...ids] });
+    this.records = nextRecords;
   }
 
   private async prepareReadInSessionUnlocked(
@@ -1130,7 +1113,13 @@ async function resolveArtifactRemovalEntry(
   try {
     const parent = await realpath(dirname(target));
     const entry = join(parent, basename(target));
-    const entryStat = await lstat(entry, { bigint: true });
+    const entryStat = await lstat(entry, { bigint: true }).catch((error) => {
+      if (isNotFound(error)) return undefined;
+      throw error;
+    });
+    // A previous attempt may have unlinked the file but failed to sync its
+    // parent. Retain that parent in the next purge's durability barrier.
+    if (!entryStat) return { unlinkPath: entry, comparisonIdentity: `path:${entry}` };
     if (entryStat.isSymbolicLink()) {
       return {
         unlinkPath: entry,
