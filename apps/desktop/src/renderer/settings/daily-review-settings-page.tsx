@@ -21,6 +21,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Banner } from '@astryxdesign/core';
 import type { DailyReviewConfig } from '@maka/core/daily-review';
 import type { LlmConnection, ProjectedLlmConnection } from '@maka/core/llm-connections';
+import type { UiLocale } from '@maka/core/ui-locale';
 import { Selector, Switch, TextInput, useMountedRef, useUiLocale } from '@maka/ui';
 import { buildCatalogDailyReviewModelOptions } from '../model-catalog-choices';
 import { getDailyReviewSettingsCopy, type DailyReviewSettingsCopy } from '../locales/settings-daily-review-copy';
@@ -39,7 +40,7 @@ function buildDailyReviewModelOptions(
   connections: readonly ProjectedLlmConnection[],
   currentModelKey: string,
   copy: DailyReviewSettingsCopy,
-  locale: 'zh-CN' | 'zh-TW' | 'en',
+  locale: UiLocale,
 ): Array<{ value: string; label: string }> {
   return [
     { value: DAILY_REVIEW_DEFAULT_MODEL_VALUE, label: copy.defaultModel },

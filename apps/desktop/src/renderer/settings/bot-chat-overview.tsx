@@ -20,6 +20,7 @@
 import type { ReactNode } from 'react';
 import { ICON_SIZE, ChevronRight } from '@maka/ui/icons';
 import type { BotChannelSettings, BotProvider } from '@maka/core/bot-chat-settings';
+import type { UiLocale } from '@maka/core/ui-locale';
 import type { BotStatus } from '@maka/runtime/bots';
 import { BOT_PROVIDERS } from '@maka/core/settings';
 import { EmptyState, Item, StatusDot } from '@astryxdesign/core';
@@ -145,7 +146,7 @@ function botOverviewDetail(
   currentError: string | undefined,
   fallback: string,
   liveOperational: boolean,
-  locale: 'zh-CN' | 'zh-TW' | 'en',
+  locale: UiLocale,
 ): ReactNode {
   const copy = getBotSettingsCopy(locale).overview;
   const identity = status?.identity?.username ?? status?.identity?.displayName;

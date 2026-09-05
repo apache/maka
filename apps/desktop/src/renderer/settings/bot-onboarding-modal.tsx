@@ -23,6 +23,7 @@ import type {
   BotOnboardingProvider,
   BotOnboardingSnapshot,
 } from '@maka/core/bot-onboarding';
+import type { UiLocale } from '@maka/core/ui-locale';
 import { Spinner } from '@astryxdesign/core';
 import {
   Button,
@@ -251,7 +252,7 @@ function statusCopy(
   starting: boolean,
   error: string | null,
   copy: BotSettingsCopy['onboarding']['providers'][BotOnboardingProvider],
-  locale: 'zh-CN' | 'zh-TW' | 'en' = 'zh-CN',
+  locale: UiLocale = 'zh-CN',
 ): string {
   const shared = getBotSettingsCopy(locale).onboarding;
   if (starting) return shared.generating;

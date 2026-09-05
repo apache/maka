@@ -37,6 +37,7 @@ export type SettingsProjectsCopy = {
     configureManuallyDescription: string;
     thisComputerRemoteAccess: string;
     thisComputerRemoteAccessHelp: string;
+    remoteAccessEnabling: string;
     remoteAccessOn: string;
     remoteAccessOff: string;
     enableRemoteAccess: string;
@@ -319,6 +320,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE_BASE = {
       configureManuallyDescription: '为已有 Host 填写 TLS、SSH 或 Direct peer 参数',
       thisComputerRemoteAccess: '远程访问',
       thisComputerRemoteAccessHelp: '通过实验性端到端直连访问此 Host；可自动发现公共协调节点来辅助打洞',
+      remoteAccessEnabling: '正在开启远程访问…',
       remoteAccessOn: '已开启',
       remoteAccessOff: '未开启',
       enableRemoteAccess: '开启',
@@ -625,6 +627,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE_BASE = {
       configureManually: '手動設定',
       thisComputerRemoteAccess: '遠端存取',
       thisComputerRemoteAccessHelp: '透過實驗性端對端直接連線存取此 Host；可自動探索公用協調節點以協助穿透 NAT',
+      remoteAccessEnabling: '正在開啟遠端存取…',
       remoteAccessOn: '已開啟',
       remoteAccessOff: '未開啟',
       enableRemoteAccess: '開啟',
@@ -933,6 +936,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE_BASE = {
       configureManuallyDescription: 'Enter TLS, SSH, or Direct peer details for an existing Host',
       thisComputerRemoteAccess: 'Remote access',
       thisComputerRemoteAccessHelp: 'Reach this Host through experimental end-to-end direct connections, with automatic public coordination discovery',
+      remoteAccessEnabling: 'Enabling remote access…',
       remoteAccessOn: 'On',
       remoteAccessOff: 'Off',
       enableRemoteAccess: 'Enable',
@@ -1242,6 +1246,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       configureManuallyDescription: "기존 호스트에 대한 TLS, SSH 또는 직접 피어 세부 정보를 입력하세요.",
       thisComputerRemoteAccess: "원격 액세스",
       thisComputerRemoteAccessHelp: "자동 공개 조정 검색을 통해 실험적인 엔드투엔드 직접 연결을 통해 이 호스트에 도달",
+      remoteAccessEnabling: "원격 액세스를 활성화하는 중…",
       remoteAccessOn: "~에",
       remoteAccessOff: "끄다",
       enableRemoteAccess: "할 수 있게 하다",
