@@ -72,11 +72,6 @@ export const ARTIFACT_TEXT_PREVIEW_LIMIT_BYTES = 10 * 1024 * 1024;
 export const ARTIFACT_BINARY_PREVIEW_LIMIT_BYTES = 50 * 1024 * 1024;
 
 const ARTIFACT_PURGE_RESOLVE_CONCURRENCY = 8;
-interface ArtifactSessionSnapshot {
-  readonly records: readonly ArtifactRecord[];
-  readonly revision: ArtifactListRevision;
-}
-
 type ArtifactReadFailure = {
   readonly ok: false;
   readonly reason: 'not_found' | 'too_large' | 'read_failed' | 'not_allowed';
@@ -110,6 +105,7 @@ export interface CreateArtifactInput {
   id?: string;
 }
 
+/** Opaque persisted change token; equal content after a mutation need not reuse a revision. */
 export type ArtifactListRevision = `sha256:${string}`;
 
 export interface ArtifactListPage {
@@ -511,12 +507,18 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     assertPageBound(options.limit, false, 'limit');
     const { offset, limit } = options;
     return this.enqueue(async () => {
-      const snapshot = this.sessionSnapshot(sessionId);
-      return {
-        revision: snapshot.revision,
-        records: snapshot.records.slice(offset, offset + limit).map((record) => ({ ...record })),
-        total: snapshot.records.length,
-      };
+      return this.metadataRepository.withReadSnapshot(() => {
+        // Pagination still validates/sorts the target Session to preserve its
+        // filtering and locale-aware ordering. Revision lookup itself is bounded.
+        const records = this.metadataRepository
+          .listBySession(sessionId)
+          .sort(compareArtifactRecords);
+        return {
+          revision: this.metadataRepository.getSessionRevision(sessionId),
+          records: records.slice(offset, offset + limit).map((record) => ({ ...record })),
+          total: records.length,
+        };
+      });
     });
   }
 
@@ -534,12 +536,13 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
 
   async getInSession(sessionId: string, artifactId: string): Promise<ArtifactSessionEntry> {
     return this.enqueue(async () => {
-      const snapshot = this.sessionSnapshot(sessionId);
-      const record = snapshot.records.find((candidate) => candidate.id === artifactId);
-      return {
-        revision: snapshot.revision,
-        record: record ? { ...record } : null,
-      };
+      return this.metadataRepository.withReadSnapshot(() => {
+        const record = this.metadataRepository.getById(artifactId);
+        return {
+          revision: this.metadataRepository.getSessionRevision(sessionId),
+          record: record?.sessionId === sessionId ? { ...record } : null,
+        };
+      });
     });
   }
 
@@ -803,17 +806,6 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     this.artifactRoot = join(canonicalRoot, 'artifacts');
   }
 
-  /**
-   * Orders one session's records and stamps the revision readers compare on.
-   *
-   * The revision still hashes the complete Session, including records outside
-   * the requested page. One indexed read supplies both the records and revision.
-   */
-  private sessionSnapshot(sessionId: string): ArtifactSessionSnapshot {
-    const records = this.metadataRepository.listBySession(sessionId).sort(compareArtifactRecords);
-    return { records, revision: artifactListRevision(records) };
-  }
-
   private enqueueSerialized<T>(operation: () => Promise<T>): Promise<T> {
     const next = this.queue.then(operation, operation);
     this.queue = next.then(
@@ -945,10 +937,6 @@ function optionalCanonicalText(value: string | undefined): string | undefined {
 
 function sha256(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex');
-}
-
-function artifactListRevision(records: readonly ArtifactRecord[]): ArtifactListRevision {
-  return `sha256:${createHash('sha256').update(JSON.stringify(records)).digest('hex')}`;
 }
 
 function compareArtifactRecords(a: ArtifactRecord, b: ArtifactRecord): number {

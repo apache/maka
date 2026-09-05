@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import type { ArtifactRecord } from '@maka/core/artifacts';
 import { decodeArtifactRecordJsons } from './artifact-metadata-codec.js';
@@ -29,6 +30,8 @@ export interface ArtifactMetadataChanges {
   readonly upserts?: readonly ArtifactRecord[];
   readonly deleteIds?: readonly string[];
 }
+
+const EMPTY_SESSION_REVISION = `sha256:${createHash('sha256').update('[]').digest('hex')}` as const;
 
 export function createSqliteArtifactMetadataRepository(workspaceRoot: string) {
   return new SqliteArtifactMetadataRepository(workspaceRoot);
@@ -67,6 +70,30 @@ class SqliteArtifactMetadataRepository {
     return rows.flatMap((row) => {
       const record = decodeIndexedRow(row);
       return record ? [record] : [];
+    });
+  }
+
+  /** An opaque change token, not a digest of the Session's current record set. */
+  getSessionRevision(sessionId: string): `sha256:${string}` {
+    return this.withReadSnapshot(() => {
+      const row = this.#lease.database
+        .prepare('SELECT revision_token FROM artifact_session_revisions WHERE session_id = ?')
+        .get(sessionId) as { revision_token: string } | undefined;
+      if (!row) {
+        const present = this.#lease.database
+          .prepare('SELECT 1 FROM artifact_records WHERE session_id = ? LIMIT 1')
+          .get(sessionId);
+        if (present) throw new Error('Artifact Session revision is missing');
+        return EMPTY_SESSION_REVISION;
+      }
+      if (!/^[a-f0-9]{64}$/.test(row.revision_token)) {
+        throw new Error('Artifact Session revision is invalid');
+      }
+      // Preserve the wire shape while hashing only a fixed-size persisted token.
+      return `sha256:${createHash('sha256')
+        .update('artifact-session-revision-v1\0')
+        .update(row.revision_token)
+        .digest('hex')}` as const;
     });
   }
 

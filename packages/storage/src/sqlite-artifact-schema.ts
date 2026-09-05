@@ -20,7 +20,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { decodeArtifactRecordJsons } from './artifact-metadata-codec.js';
 
-export const SQLITE_ARTIFACT_SCHEMA_VERSION = 3;
+export const SQLITE_ARTIFACT_SCHEMA_VERSION = 4;
 
 export function migrateSqliteArtifactDatabase(db: DatabaseSync): void {
   const columns = db.prepare('PRAGMA table_info(artifact_records)').all() as Array<{
@@ -63,6 +63,7 @@ export function migrateSqliteArtifactDatabase(db: DatabaseSync): void {
     CREATE UNIQUE INDEX IF NOT EXISTS artifact_records_relative_path
       ON artifact_records(relative_path);
   `);
+  migrateSessionRevisions(db);
   const insert = db.prepare(`
     INSERT INTO artifact_records VALUES (?, ?, ?, ?, ?)
   `);
@@ -75,4 +76,68 @@ export function migrateSqliteArtifactDatabase(db: DatabaseSync): void {
       JSON.stringify(record),
     );
   }
+}
+
+function migrateSessionRevisions(db: DatabaseSync): void {
+  const existing = db
+    .prepare(
+      "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'artifact_session_revisions'",
+    )
+    .get();
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS artifact_session_revisions (
+      session_id TEXT PRIMARY KEY,
+      revision_token TEXT NOT NULL CHECK (
+        length(revision_token) = 64 AND revision_token NOT GLOB '*[^0-9a-f]*'
+      )
+    );
+  `);
+  if (!existing) {
+    // One-time v3 -> v4 backfill reads the covering Session index, not record_json.
+    // The enclosing operational migration commits the state and triggers together.
+    db.exec(`
+      INSERT INTO artifact_session_revisions(session_id, revision_token)
+      SELECT session_id, lower(hex(randomblob(32))) FROM artifact_records GROUP BY session_id;
+    `);
+  }
+  // SQLite owns invalidation, including writes made by another connection/process.
+  // Each changed row touches at most two Session keys. No Session scan or hash is
+  // moved onto the mutation path. The empty-Session check stops at the first index entry.
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS artifact_revision_after_insert
+    AFTER INSERT ON artifact_records
+    BEGIN
+      INSERT INTO artifact_session_revisions(session_id, revision_token)
+      VALUES (NEW.session_id, lower(hex(randomblob(32))))
+      ON CONFLICT(session_id) DO UPDATE SET revision_token = excluded.revision_token;
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS artifact_revision_after_update
+    AFTER UPDATE ON artifact_records
+    WHEN OLD.artifact_id IS NOT NEW.artifact_id
+      OR OLD.session_id IS NOT NEW.session_id
+      OR OLD.created_at IS NOT NEW.created_at
+      OR OLD.relative_path IS NOT NEW.relative_path
+      OR OLD.record_json IS NOT NEW.record_json
+    BEGIN
+      UPDATE artifact_session_revisions SET revision_token = lower(hex(randomblob(32)))
+      WHERE session_id = OLD.session_id AND OLD.session_id IS NOT NEW.session_id;
+      INSERT INTO artifact_session_revisions(session_id, revision_token)
+      VALUES (NEW.session_id, lower(hex(randomblob(32))))
+      ON CONFLICT(session_id) DO UPDATE SET revision_token = excluded.revision_token;
+      DELETE FROM artifact_session_revisions
+      WHERE session_id = OLD.session_id
+        AND NOT EXISTS (SELECT 1 FROM artifact_records WHERE session_id = OLD.session_id LIMIT 1);
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS artifact_revision_after_delete
+    AFTER DELETE ON artifact_records
+    BEGIN
+      UPDATE artifact_session_revisions SET revision_token = lower(hex(randomblob(32)))
+      WHERE session_id = OLD.session_id;
+      DELETE FROM artifact_session_revisions
+      WHERE session_id = OLD.session_id
+        AND NOT EXISTS (SELECT 1 FROM artifact_records WHERE session_id = OLD.session_id LIMIT 1);
+    END;
+  `);
 }

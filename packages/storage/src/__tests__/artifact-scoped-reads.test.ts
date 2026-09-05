@@ -18,7 +18,6 @@
  */
 
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -183,7 +182,7 @@ for (const backgroundCount of [100, 12_000]) {
           ['target-7', 'target-6'],
         );
       });
-      await expectReads('get with Session revision', 10, async () => {
+      await expectReads('get with Session revision', 1, async () => {
         assert.deepEqual(
           (await store.getInSession('target-session', 'target-0')).record,
           target[0],
@@ -319,7 +318,7 @@ test('conversation copy selects source and linked metadata from the same committ
   }
 });
 
-test('Session ordering and revision keep locale ID ties, independent of SQLite ordering', async () => {
+test('Session ordering keeps locale ID ties and shares its persisted revision with point reads', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-artifact-order-'));
   const authority = createSqliteArtifactStoreWriteAuthority(root);
   try {
@@ -339,12 +338,11 @@ test('Session ordering and revision keep locale ID ties, independent of SQLite o
       );
     }
     const sorted = records.sort((left, right) => left.id.localeCompare(right.id));
-    const revision = `sha256:${createHash('sha256').update(JSON.stringify(sorted)).digest('hex')}`;
     const page = await authority.store.listPage('session', { offset: 1, limit: 2 });
     assert.deepEqual(page.records, sorted.slice(1, 3));
     assert.equal(page.total, 4);
-    assert.equal(page.revision, revision);
-    assert.equal((await authority.store.getInSession('session', 'a')).revision, revision);
+    assert.match(page.revision, /^sha256:[a-f0-9]{64}$/);
+    assert.equal((await authority.store.getInSession('session', 'a')).revision, page.revision);
     assert.deepEqual(await authority.store.listTurnArtifacts('session', 'turn'), sorted);
   } finally {
     authority.close();
