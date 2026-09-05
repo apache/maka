@@ -1,3 +1,13 @@
+---
+doc_id: frontend.architecture-astryx-review-2026-08-09
+title: "Frontend architecture and Astryx coverage review"
+language: en
+source_language: en
+implementation_status: historical
+document_status: historical
+translation_status: source-only
+last_verified: 2026-09-05
+---
 <!--
   Licensed to the Apache Software Foundation (ASF) under one
   or more contributor license agreements.  See the NOTICE file
@@ -23,11 +33,24 @@
 **HEAD:** `0ad579d33` (`feat(ui): align high-traffic chrome with Astryx primitives (#2580)` on `main`)  
 **Scope:** `apps/desktop/src/renderer/**`, `packages/ui/src/**`  
 **Method:** file-level inventory regen + pattern scan + deep reads of shell/settings/modules/ui; prior art `docs/astryx-full-surface-audit.md`, `DESIGN.md`, `docs/astryx-surface-file-inventory.md`  
-**Evidence log:** goal scratch `frontend-review-scan.log` (inventory totals, greps, spot-checks, inventory unit tests)
+**Original evidence:** the committed audit at `0ad579d33` and follow-up implementation at `d68e9d775`; the scratch scan log named by the original review was not committed.
 
 ---
 
-## Executive verdict
+> **Historical review record.** The findings, file sizes, inventory counts, and backlog below describe the audited commit and the follow-up branch, not current `main`. Current file-level coverage is generated in [astryx-surface-file-inventory.md](./astryx-surface-file-inventory.md); current renderer ownership is recorded in `apps/desktop/renderer-architecture.json` and the feature README files.
+
+## Current status checked on 2026-09-05
+
+- The generated inventory now covers **249 files: 0 blockers, 0 reimplementations, 1 polish item, and 248 aligned files**. The remaining polish row is the raw draft editor in `packages/ui/src/composer-message-queue.tsx`.
+- `WorkbarController` is now a real boundary at `apps/desktop/src/renderer/features/workbar/controller/use-workbar-controller.ts`, and `WorkbarHost` owns the rendered surface. The A3 direction below therefore landed; its old `session-workbar*` anchors no longer exist.
+- Module Hub, Goals, Task Entry, Session Navigation, Session Collaboration, and Workbar have feature boundaries below `AppShell`. `apps/desktop/renderer-architecture.json` still classifies `app-shell.tsx` as the `app-shell-integration-knot`; at 3,293 lines, the broader A1 concentration remains current.
+- Settings still accepts section requests through `use-settings-modal.ts`, persisted section state, and the `maka:jumpToSettingsSection` event in `settings-surface.tsx`. The A4 convergence remains planned.
+- `packages/ui/src/composer.tsx` is now 2,284 lines, so the A5 concentration remains current. The tool-output implementation named in A6 now lives in `packages/ui/src/tool-activity/tool-result-preview.tsx`.
+- Astryx patches are versioned with the installed dependency. `patches/README.md` is the stable authority; do not use the `0.3.0` filename from the historical table as a current path.
+
+Reproduce the current file-level result with `npm run astryx:surface-inventory`.
+
+## Executive verdict at the audited commit
 
 The product already has a **correct intended layering**:
 
@@ -45,7 +68,7 @@ Remaining risk is not “missing Buttons.” It is:
 
 ---
 
-## 1. Layering map (as shipped)
+## 1. Layering map at the audited commit
 
 ```
 Electron frame
@@ -84,7 +107,7 @@ Electron frame
 
 ---
 
-## 2. Architecture review (simplification / elevation)
+## 2. Architecture review at the audited commit
 
 Severity: **blocker** = structural cost that blocks every feature; **high** = clear multi-surface tax; **polish** = cleanups that can wait.
 
@@ -166,7 +189,7 @@ Severity: **blocker** = structural cost that blocks every feature; **high** = cl
 
 ---
 
-## 3. Astryx style / component coverage gaps
+## 3. Astryx style / component coverage gaps at the audited commit
 
 ### 3.1 Inventory baseline
 
@@ -208,7 +231,6 @@ These were **not** invent-from-whole-cloth “logo false positives” in the abs
 | **medium (P2)** | Keyboard help raw `<h3>` | `keyboard-help.tsx` | **Fixed** → `Heading level={3}` |
 | **medium (P2)** | Web tool result raw `<a>` | `tool-result-preview.tsx` | **Fixed** → Astryx `Link` |
 | **medium (P1/P2)** | Deep Research plate washes | `deep-research.css` | **Fixed** → wash tokens |
-| **medium (P2)** | Keyboard help raw `<h3>` | `keyboard-help.tsx` | `Heading` / `Text` |
 | **low (P3)** | Quote chip / remove / turn footer / lineage re-chrome Astryx Button | `packages/ui/src/styles.css`, `quote-ref-chip.tsx`, `chat-turn.tsx` | shrink overrides; prefer Badge/Token for lineage |
 | **low (P3)** | Workbar tab busy uses `Loader2` | `session-workbar.tsx` | `Spinner` if it means loading |
 
@@ -230,7 +252,7 @@ These were **not** invent-from-whole-cloth “logo false positives” in the abs
 | **intentional** | Tool/agent/web preview card chrome | `primitives/chat.tsx`, `styles.css` tool families | content DS, not form controls |
 | **intentional** | Chat empty heroes | `chat-empty-hero.tsx` | welcome surface ≠ EmptyState |
 | **intentional** | ChatReasoning lab eject | `astryx-chat-reasoning.tsx` | keep until stable peer |
-| **intentional** | Astryx patches | `patches/@astryxdesign+core+0.3.0.patch`, `patches/README.md` | conversationKey / tool row / List aria / UA-CH |
+| **intentional** | Astryx patches | `patches/README.md` and the dependency-versioned Astryx patch named there | conversationKey / tool row / List aria / UA-CH at the audited commit |
 
 ### 3.3 Loading kit sprawl (architecture × Astryx)
 
@@ -249,7 +271,7 @@ Empty/error largely share Astryx. **Loading** still has 6+ dialects:
 
 ---
 
-## 4. Prioritized backlog (actionable)
+## 4. Original prioritized backlog (historical)
 
 ### P0 — Architecture (no visual swap required)
 
@@ -298,7 +320,7 @@ Empty/error largely share Astryx. **Loading** still has 6+ dialects:
 
 ---
 
-## 5. Spot-check log (verification)
+## 5. Original spot-check log
 
 Claims re-checked on disk at review time:
 
@@ -317,7 +339,7 @@ Claims re-checked on disk at review time:
 
 ---
 
-## 6. Summary for decision-makers
+## 6. Summary recorded at the audited commit
 
 | Question | Answer |
 |----------|--------|
@@ -326,6 +348,6 @@ Claims re-checked on disk at review time:
 | Biggest remaining architectural win? | **De-god AppShell** (P0) — multi-week; not done in this pass. |
 | What to leave alone? | ChatReasoning eject, tool preview content cards, providers multi-level IA, residual quote/turn Button geometry until a dedicated chrome pass. |
 
-## 7. Implementation note (follow-up branch)
+## 7. Historical implementation note
 
 P1 elevation/wash, off-rhythm heights, and P2 Toolbar/Kbd/Heading/Link were implemented on branch `fix/astryx-review-debt-2026-08-09` after the analysis-only review. Architecture P0 (AppShell controllers) remains backlog.
