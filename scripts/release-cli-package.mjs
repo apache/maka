@@ -298,21 +298,31 @@ function buildRuntimeWorkspaces(options) {
 }
 
 function checkProductionAudit() {
-  const audit = spawnSync(
-    'npm',
-    ['audit', '--omit=dev', '--workspace', 'maka-agent', '--json'],
-    npmSpawnOptions({
-      cwd: repoRoot,
-      encoding: 'utf8',
-      env: releaseNpmEnvironment(process.env, join(repoRoot, '.npmrc')),
-      maxBuffer: 64 * 1024 * 1024,
-    }),
-  );
-  const report = JSON.parse(audit.stdout || '{}');
-  const vulnerabilities = report.metadata?.vulnerabilities;
-  if (audit.error || audit.status !== 0 || vulnerabilities?.total !== 0) {
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const audit = spawnSync(
+      'npm',
+      ['audit', '--omit=dev', '--workspace', 'maka-agent', '--json'],
+      npmSpawnOptions({
+        cwd: repoRoot,
+        encoding: 'utf8',
+        env: releaseNpmEnvironment(process.env, join(repoRoot, '.npmrc')),
+        maxBuffer: 64 * 1024 * 1024,
+      }),
+    );
+    const report = JSON.parse(audit.stdout || '{}');
+    const vulnerabilities = report.metadata?.vulnerabilities;
+    if (!audit.error && audit.status === 0 && vulnerabilities?.total === 0) return;
+    const transient =
+      (typeof report.statusCode === 'number' && report.statusCode >= 500) ||
+      ['EAI_AGAIN', 'ECONNRESET', 'ETIMEDOUT'].includes(audit.error?.code);
+    if (attempt === 1 && transient && !vulnerabilities?.total) {
+      console.warn(
+        `[release-cli] npm audit unavailable: ${report.message ?? audit.error}; retrying`,
+      );
+      continue;
+    }
     throw new Error(
-      `CLI production dependency audit failed: ${JSON.stringify(vulnerabilities ?? report.error ?? audit.error)}`,
+      `CLI production dependency audit failed: ${JSON.stringify(vulnerabilities ?? report.message ?? report.error ?? audit.error)}`,
     );
   }
 }

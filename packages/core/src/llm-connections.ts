@@ -458,6 +458,11 @@ export function reconcileConnectionAfterModelFetch(
      * caller that knows the provider's naming supplies the table.
      */
     readonly aliases?: Readonly<Record<string, string>>;
+    /**
+     * The provider guarantees this is the account's complete usable catalog.
+     * Missing ids are therefore unavailable, unlike ordinary partial snapshots.
+     */
+    readonly authoritative?: boolean;
   },
 ): {
   defaultModel: string;
@@ -490,6 +495,22 @@ export function reconcileConnectionAfterModelFetch(
       ),
     ),
   ];
+  if (options?.authoritative) {
+    // The first account-scoped fetch replaces the provider fallback guess: no
+    // user chose those bootstrap ids, and every usable model should be offered.
+    // Later refreshes preserve explicit user choices only while they remain in
+    // the account catalog; newly introduced models stay opt-in.
+    const enabledModelIds = connection.hasModelInventory
+      ? previousEnabled.filter((id) => live.has(id))
+      : liveIds;
+    if (enabledModelIds.length === 0 && previousEnabled.length > 0 && liveIds.length > 0) {
+      enabledModelIds.push(liveIds[0]!);
+    }
+    const defaultModel = enabledModelIds.includes(previousDefault)
+      ? previousDefault
+      : (enabledModelIds[0] ?? '');
+    return { defaultModel, enabledModelIds };
+  }
   // Seed a first choice only for a connection that has never had a list to
   // pick from: four providers ship no `fallbackModels`, so for them discovery
   // is the only place a first default can come from.

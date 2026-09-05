@@ -114,7 +114,7 @@ type RawGitHubCopilotModel = {
   name?: string;
   model_picker_enabled?: boolean;
   supported_endpoints?: string[];
-  policy?: { state?: string };
+  policy?: unknown;
   capabilities?: {
     limits?: {
       max_context_window_tokens?: number;
@@ -523,7 +523,12 @@ function toGitHubCopilotModelInfo(model: RawGitHubCopilotModel): ModelInfo[] {
     typeof model.id !== 'string' ||
     !model.id ||
     model.model_picker_enabled !== true ||
-    model.policy?.state === 'disabled' ||
+    // GitHub historically returned enabled/disabled/unconfigured policy gates.
+    // A policy-free model needs no acknowledgement; when the gate is present,
+    // Maka can use the model only after another client has enabled it. Maka has
+    // no policy-acceptance flow, so fail closed over unconfigured and unknown
+    // states instead of advertising a model that inference will reject.
+    !isGitHubCopilotModelPolicyEnabled(model.policy) ||
     model.capabilities?.supports?.tool_calls !== true
   )
     return [];
@@ -570,6 +575,12 @@ function toGitHubCopilotModelInfo(model: RawGitHubCopilotModel): ModelInfo[] {
       capabilities: { vision, reasoning, functionCalling: true },
     },
   ];
+}
+
+function isGitHubCopilotModelPolicyEnabled(policy: unknown): boolean {
+  if (policy === undefined) return true;
+  if (!policy || typeof policy !== 'object' || Array.isArray(policy)) return false;
+  return (policy as Record<string, unknown>).state === 'enabled';
 }
 
 async function fetchCohereModels(
