@@ -108,7 +108,12 @@ export interface HostInteractionCoordinatorOptions {
     admission: SessionAdmissionLease,
   ) => Promise<void>;
   readonly onPoison: (error: RuntimeInteractionFailStopError) => void;
-  readonly onSandboxBoundarySettled: (sessionId: string) => Promise<void> | void;
+  /** Resolve the root Session while the settled Session still holds admission. */
+  readonly resolveSandboxBoundaryRootSession: (
+    sessionId: string,
+  ) => Promise<string | undefined> | string | undefined;
+  /** Notify the root graph supervisor after the answer releases admission. */
+  readonly onSandboxBoundaryGraphWake: (rootSessionId: string) => Promise<void> | void;
 }
 
 interface RunClosure {
@@ -205,7 +210,8 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
   readonly #preflightSessionSnapshot: HostInteractionCoordinatorOptions['preflightSessionSnapshot'];
   readonly #refreshCanonicalContinuity: HostInteractionCoordinatorOptions['refreshCanonicalContinuity'];
   readonly #onPoison: HostInteractionCoordinatorOptions['onPoison'];
-  readonly #onSandboxBoundarySettled: HostInteractionCoordinatorOptions['onSandboxBoundarySettled'];
+  readonly #resolveSandboxBoundaryRootSession: HostInteractionCoordinatorOptions['resolveSandboxBoundaryRootSession'];
+  readonly #onSandboxBoundaryGraphWake: HostInteractionCoordinatorOptions['onSandboxBoundaryGraphWake'];
   readonly #runs = new Map<string, BoundRun>();
   readonly #live = new Map<string, LiveEntry>();
   #accepting = true;
@@ -220,7 +226,8 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
     this.#preflightSessionSnapshot = options.preflightSessionSnapshot;
     this.#refreshCanonicalContinuity = options.refreshCanonicalContinuity;
     this.#onPoison = options.onPoison;
-    this.#onSandboxBoundarySettled = options.onSandboxBoundarySettled;
+    this.#resolveSandboxBoundaryRootSession = options.resolveSandboxBoundaryRootSession;
+    this.#onSandboxBoundaryGraphWake = options.onSandboxBoundaryGraphWake;
   }
 
   bindRun(identity: RuntimeInteractionRunIdentity): RuntimeInteractionRunOwner {
@@ -886,7 +893,19 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
     await this.#refreshCanonicalContinuity(request.sessionId, admission);
     this.#throwIfPoisoned();
     await this.#applySandboxBoundaryDecisionAndDelete(entry, settlement);
-    await this.#onSandboxBoundarySettled(request.sessionId);
+    // The answer owns Session admission. Resolve graph-wake lineage while that
+    // admission is held, then detach only the notification which may need to
+    // acquire the activity lease held by the wake turn parked on this answer.
+    // Awaiting that notification here deadlocks the Session (#3328, #3866).
+    const resolvedRootSessionId = await this.#resolveSandboxBoundaryRootSession(request.sessionId);
+    void Promise.resolve()
+      .then(() => {
+        if (!resolvedRootSessionId) return;
+        return this.#onSandboxBoundaryGraphWake(resolvedRootSessionId);
+      })
+      .catch((error: unknown) => {
+        this.#poison(error);
+      });
     const result = projectSandboxBoundaryInteraction(settlement.request);
     if (result.status !== 'answered') {
       throw this.#poison(

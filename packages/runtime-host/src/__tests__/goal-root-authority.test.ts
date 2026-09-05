@@ -617,7 +617,8 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
     onPoison: () => {
       requestedDrain = true;
     },
-    onSandboxBoundarySettled: async () => {},
+    resolveSandboxBoundaryRootSession: async () => undefined,
+    onSandboxBoundaryGraphWake: async () => {},
   });
   const backends = new BackendRegistry();
   backends.register('ai-sdk', (context) => new FakeBackend(context));
