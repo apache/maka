@@ -1952,22 +1952,33 @@ export const OversizedTurnHoldsAReadingAnchorOnColdScroll: Story = {
     // correction itself as a jump. Only `|viewport move − intended step|` is a
     // jump the reader experiences.
     let worstUnexpected = 0;
+    const steps: Array<Record<string, number>> = [];
     for (let step = 0; step < 8 && root.scrollTop > 0; step += 1) {
       const anchor = visibleAnchor();
       const topBefore = anchor.getBoundingClientRect().top;
       const intended = Math.min(240, root.scrollTop);
-      root.scrollTop -= intended;
+      const heightBefore = root.scrollHeight;
+      // `behavior: 'instant'` overrides the shell's smooth scrolling: the shell
+      // animates over many frames, and a step measured before the animation
+      // lands reads a still anchor as a 240px jump.
+      root.scrollTo({ top: root.scrollTop - intended, behavior: 'instant' });
       root.dispatchEvent(new Event('scroll'));
       await painted(4);
       const moved = anchor.getBoundingClientRect().top - topBefore;
       worstUnexpected = Math.max(worstUnexpected, Math.abs(moved - intended));
+      steps.push({
+        step,
+        intended,
+        moved: Math.round(moved),
+        scrollTop: Math.round(root.scrollTop),
+        grewBy: root.scrollHeight - heightBefore,
+      });
     }
     // Conservative tolerance pending a main-vs-branch calibration run; the
-    // worst unexpected move is logged in the message so the number can be read
-    // off CI and tightened.
+    // per-step record is in the message so the numbers read off CI directly.
     expect(
       worstUnexpected,
-      `worst unexpected reading-anchor move: ${worstUnexpected}px`,
+      `worst unexpected reading-anchor move: ${Math.round(worstUnexpected)}px; steps: ${JSON.stringify(steps)}`,
     ).toBeLessThanOrEqual(24);
   },
 };
