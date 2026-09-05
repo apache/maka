@@ -61,7 +61,7 @@ last_verified: 2026-09-05
 ## 3. `!important` 使用规则
 
 - 默认例外包括无障碍辅助规则（例如 `.maka-visually-hidden`）、reduced-motion / e2e-fixture 覆盖，以及集中管理的原生 cursor 策略。
-- `reference-shell.css`、`styles/settings/usage.css` 与 `packages/ui/src/styles.css` 中仍有少量兼容或产品覆盖。它们是显式债务或有边界的组件修复，不能作为继续增加覆盖的先例。
+- `reference-shell.css`、`styles/settings/usage.css`、`styles/shell-layout.css`、`styles/sidebar.css` 与 `packages/ui/src/styles.css` 中仍有少量兼容或产品覆盖。shell layout 覆盖让 SideNav 宽度跟随执行动画的外层容器；sidebar 覆盖用于协调 SideNav 的间距、边框与未分层的 StyleX 规则。它们是显式债务或有边界的组件修复，不能作为继续增加覆盖的先例。
 - 新增的非默认用法必须紧邻说明注释：指出与哪条规则冲突、为什么常规组件或 layer 职责无法表达，以及何时可以删除。约定使用 `Justified:` 作为标记。
 - 如果 primitive API 或语义类可以直接表达，优先在该职责层解决，不要继续叠更多 `!important`。
 

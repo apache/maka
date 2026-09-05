@@ -61,7 +61,7 @@ Keep layer ownership at the closest existing seam instead of adding a higher-pri
 ## 3. `!important`
 
 - Default exceptions are accessibility helpers such as `.maka-visually-hidden`, reduced-motion and e2e-fixture overrides, and the centralized native-cursor policy.
-- Narrow compatibility and product overrides remain in `reference-shell.css`, `styles/settings/usage.css`, and `packages/ui/src/styles.css`. They are explicit debt or bounded component fixes, not precedent for another override.
+- Narrow compatibility and product overrides remain in `reference-shell.css`, `styles/settings/usage.css`, `styles/shell-layout.css`, `styles/sidebar.css`, and `packages/ui/src/styles.css`. The shell layout override keeps SideNav width following its animated wrapper; sidebar overrides reconcile SideNav spacing and borders with unlayered StyleX rules. They are explicit debt or bounded component fixes, not precedent for another override.
 - Every new use outside the default exceptions needs an adjacent comment that names the competing rule, explains why the normal component or layer seam cannot express the fix, and states when the override can be removed. `Justified:` is the conventional marker.
 - Prefer fixing the primitive API or semantic class when it can express the behavior directly.
 
