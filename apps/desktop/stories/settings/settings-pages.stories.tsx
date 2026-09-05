@@ -1658,6 +1658,29 @@ type SettingsStoryProps = {
   frameWidth?: number | string;
 };
 
+async function tabTo(target: HTMLElement, limit = 120) {
+  for (let index = 0; index < limit; index += 1) {
+    await userEvent.tab();
+    if (document.activeElement === target) return;
+  }
+  throw new Error('Tab order never reached the target control');
+}
+
+function focusedRowOutline() {
+  const active = document.activeElement as HTMLElement | null;
+  const row = active?.closest<HTMLElement>('.astryx-item');
+  if (!row) return null;
+  const style = getComputedStyle(row);
+  return { outlineStyle: style.outlineStyle, outlineWidth: style.outlineWidth };
+}
+
+function fieldChrome(element: HTMLElement) {
+  const field = element.parentElement;
+  if (!field) throw new Error('Settings field chrome is missing');
+  const style = getComputedStyle(field);
+  return `${style.borderColor} | ${style.boxShadow}`;
+}
+
 /**
  * The provider has to sit above the body: 已归档任务's story bridge confirms
  * through the same toast surface the shell's row action uses, and a hook cannot
@@ -1810,6 +1833,61 @@ export const SubagentEditor: Story = {
 export const General: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="general" />,
+};
+// Real path: 设置 → 通用 → 默认模型. The popover remains a DOM descendant
+// of its Item after entering the top layer, so focused search must not ring
+// the whole settings row.
+export const GeneralPickerOpenFocusRing: Story = {
+  decorators: [withSettingsBridge],
+  render: () => <SettingsStory section="general" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const trigger = await canvas.findByRole('button', { name: '默认模型' });
+    await userEvent.click(trigger);
+    await waitFor(() => {
+      const active = document.activeElement as HTMLElement | null;
+      expect(document.querySelector('[popover]:popover-open')).not.toBeNull();
+      expect(active?.closest('[popover]:popover-open')).not.toBeNull();
+    });
+    const active = document.activeElement as HTMLElement;
+    const row = active.closest<HTMLElement>('.astryx-item');
+    expect(row).not.toBeNull();
+    expect(row ? getComputedStyle(row).outlineStyle : null).toBe('none');
+  },
+};
+
+// Real path: keyboard navigation through 设置 → 通用. The field carries the
+// visible focus treatment; its containing Item does not add a second ring.
+export const GeneralKeyboardFocusRing: Story = {
+  decorators: [withSettingsBridge],
+  render: () => <SettingsStory section="general" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const tone = await canvas.findByRole('textbox', { name: '助手语气偏好' });
+    const trigger = canvas.getByRole('button', { name: '默认模型' });
+    const resting = fieldChrome(trigger);
+    tone.focus();
+    await tabTo(trigger);
+    expect(focusedRowOutline()?.outlineStyle).toBe('none');
+    await waitFor(() => expect(fieldChrome(trigger)).not.toBe(resting));
+  },
+};
+
+// Real path: Windows High Contrast keyboard navigation through 设置 → 通用.
+// The field loses its own paint there, so the Item retains the focus ring.
+export const GeneralForcedColorsFocusRing: Story = {
+  decorators: [withSettingsBridge],
+  render: () => <SettingsStory section="general" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const tone = await canvas.findByRole('textbox', { name: '助手语气偏好' });
+    const trigger = canvas.getByRole('button', { name: '默认模型' });
+    const resting = fieldChrome(trigger);
+    tone.focus();
+    await tabTo(trigger);
+    expect(fieldChrome(trigger)).toBe(resting);
+    expect(focusedRowOutline()?.outlineStyle).toBe('solid');
+  },
 };
 // Real path: 设置 → 通用 in a wide, short Desktop window. The main pane owns
 // overflow even when the pointer is over its blank right gutter.
@@ -2306,6 +2384,27 @@ export const BotChatNeedsAttention: Story = {
     expect(colors.link).toEqual(colors.solid);
     expect(colors.link).not.toEqual(colors.accent);
     expect(colors.rendered).toEqual(colors.link);
+  },
+};
+// Real path: keyboard navigation through 设置 → 远程接入. A catalog Item owns
+// its invisible tab stop, so the row ring is the focus indicator and remains.
+export const BotChatCatalogRowFocusRing: Story = {
+  decorators: [withBotAttentionBridge],
+  render: () => <SettingsStory section="bot-chat" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const nav = canvas.getByRole('button', { name: '远程接入' });
+    await waitForStoryCondition(
+      () => canvasElement.querySelector('.settingsRemoteAccessCatalogRow > button') !== null,
+      'Remote Access catalog row did not render',
+    );
+    nav.focus();
+    for (let index = 0; index < 120; index += 1) {
+      await userEvent.tab();
+      if (document.activeElement?.matches('.settingsRemoteAccessCatalogRow > button')) break;
+    }
+    expect(document.activeElement?.matches('.settingsRemoteAccessCatalogRow > button')).toBe(true);
+    expect(focusedRowOutline()).toEqual({ outlineStyle: 'solid', outlineWidth: '2px' });
   },
 };
 // Real path: 设置 → 每日回顾.
