@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { createContext } from 'react';
+import { createContext, useContext, type ReactNode } from 'react';
 import type { AppUpdateStatus } from '../ports.js';
 
 export interface AppUpdateAboutProjection {
@@ -26,19 +26,15 @@ export interface AppUpdateAboutProjection {
   readonly checkForUpdates: () => Promise<AppUpdateStatus>;
 }
 
-const missingProvider = async (): Promise<AppUpdateStatus> => {
-  throw new Error('AppUpdateProvider is missing');
-};
-
-const inactiveAboutProjection: AppUpdateAboutProjection = {
-  status: null,
-  checking: false,
-  checkForUpdates: missingProvider,
-};
-
-const AppUpdateAboutProjectionContext = createContext<AppUpdateAboutProjection>(
-  inactiveAboutProjection,
-);
+const AppUpdateAboutProjectionContext = createContext<AppUpdateAboutProjection | null>(null);
 
 export const AppUpdateAboutProjectionProvider = AppUpdateAboutProjectionContext.Provider;
-export const AppUpdateAboutProjectionConsumer = AppUpdateAboutProjectionContext.Consumer;
+
+/** Reads the About projection; a mount outside `AppUpdateProvider` is a bug, not a quiet idle. */
+export function AppUpdateAboutProjectionConsumer(props: {
+  readonly children: (projection: AppUpdateAboutProjection) => ReactNode;
+}): ReactNode {
+  const projection = useContext(AppUpdateAboutProjectionContext);
+  if (!projection) throw new Error('AppUpdateProvider is missing');
+  return props.children(projection);
+}

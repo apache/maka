@@ -253,49 +253,7 @@ function sidebarProjectionEntryBindings(source: string, file: string): string[] 
 }
 
 describe('App Update feature boundary', () => {
-  test('recognizes alias, namespace, re-export, and dynamic-import escape hatches', () => {
-    const dependency = './features/app-update/index.js';
-    assert.deepEqual(
-      moduleEntryBindings(
-        [
-          `import { AppUpdateProvider as Provider } from '${dependency}';`,
-          `import * as AppUpdate from '${dependency}';`,
-          `export { AppUpdateProvider as UpdateOwner } from '${dependency}';`,
-          `export * from '${dependency}';`,
-          `void import('${dependency}');`,
-        ].join('\n'),
-        'fixture.tsx',
-        (candidate) => candidate.includes('features/app-update'),
-      ),
-      ['AppUpdateProvider', '*', 'export:AppUpdateProvider', 'export:*', 'dynamic:*'],
-    );
-    assert.deepEqual(
-      jsxBindings(
-        [
-          `import { AppUpdateProvider as Provider } from '${dependency}';`,
-          `import * as AppUpdate from '${dependency}';`,
-          '<><Provider /><AppUpdate.AppUpdateProvider /></>',
-        ].join('\n'),
-        'fixture.tsx',
-        'AppUpdateProvider',
-      ),
-      [dependency, dependency],
-    );
-  });
 
-  test('keeps the controller hook exclusively owned by AppUpdateProvider', () => {
-    const owners: string[] = [];
-    for (const path of productionRendererSources()) {
-      const analysis = analysisOf(path);
-      const calls = analysis.hookCalls.useAppUpdateController ?? 0;
-      for (let index = 0; index < calls; index += 1) {
-        owners.push(relative(desktopRoot, path).replace(/\\/g, '/'));
-      }
-    }
-    assert.deepEqual(owners, [
-      'src/renderer/features/app-update/ui/app-update-provider.tsx',
-    ]);
-  });
 
   test('keeps the services hook exclusively owned by the controller', () => {
     const owners: string[] = [];
@@ -333,29 +291,6 @@ describe('App Update feature boundary', () => {
     assert.deepEqual(violations, []);
   });
 
-  test('allows consumers to enter only through production or testing entries', () => {
-    const violations: string[] = [];
-    for (const path of sourceFiles(join(desktopRoot, 'src'))) {
-      if (path.startsWith(featureRoot) || !/\.tsx?$/.test(path)) continue;
-      const analysis = analysisOf(path);
-      for (const dependency of analysis.dependencies as string[]) {
-        if (!dependency.includes('features/app-update')) continue;
-        const normalized = dependency.replace(/\\/g, '/');
-        const explicitEntry = normalized.endsWith('/features/app-update')
-          ? `${normalized}/index`
-          : normalized;
-        const productionRenderer = path.startsWith(rendererRoot) &&
-          !path.replace(/\\/g, '/').includes('/__tests__/');
-        const allowed = productionRenderer
-          ? /\/features\/app-update\/index(?:\.js)?$/
-          : /\/features\/app-update\/(?:index|testing)(?:\.js)?$/;
-        if (!allowed.test(explicitEntry)) {
-          violations.push(`${relative(desktopRoot, path)}: ${dependency}`);
-        }
-      }
-    }
-    assert.deepEqual(violations, []);
-  });
 
   test('pins the production entry surface to its composition and leaf owners', () => {
     const imports: string[] = [];

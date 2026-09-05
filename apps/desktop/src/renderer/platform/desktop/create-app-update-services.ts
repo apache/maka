@@ -27,6 +27,12 @@ export function createDesktopAppUpdateServices(
   bridge: DesktopAppUpdateBridge = window.maka,
 ): AppUpdateServices {
   return {
-    appUpdate: bridge.app,
+    appUpdate: {
+      updateStatus: () => bridge.app.updateStatus(),
+      checkForUpdates: () => bridge.app.checkForUpdates(),
+      retryUpdateDownload: () => bridge.app.retryUpdateDownload(),
+      installUpdate: (input) => bridge.app.installUpdate(input),
+      subscribeUpdateStatus: (handler) => bridge.app.subscribeUpdateStatus(handler),
+    },
   };
 }

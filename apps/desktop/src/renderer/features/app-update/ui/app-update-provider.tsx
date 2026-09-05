@@ -33,8 +33,8 @@ import {
 import { useAppUpdateController } from '../controller/use-app-update-controller.js';
 import {
   getAppUpdateCopy,
-  localizedAppUpdateErrorMessage,
 } from '../locales/app-update-copy.js';
+import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
 import {
   isAppUpdateInstallFailure,
   requestDownloadedAppUpdate,
@@ -103,7 +103,7 @@ export function AppUpdateProvider(props: { readonly children?: ReactNode }) {
         .catch((error) => {
           toast.error(
             copy.installFailedTitle,
-            localizedAppUpdateErrorMessage(error, copy.installFailedFallback, locale),
+            generalizedErrorMessageForLocale(error, copy.installFailedFallback, locale),
           );
         })
         .finally(() => {
@@ -121,7 +121,7 @@ export function AppUpdateProvider(props: { readonly children?: ReactNode }) {
       .catch((error) => {
         toast.error(
           copy.retryFailedTitle,
-          localizedAppUpdateErrorMessage(error, copy.retryFailedFallback, locale),
+          generalizedErrorMessageForLocale(error, copy.retryFailedFallback, locale),
         );
       });
   }, [controller.commands, copy, locale, reminder, toast]);

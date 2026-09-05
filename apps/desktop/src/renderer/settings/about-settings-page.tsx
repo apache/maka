@@ -77,9 +77,8 @@ function AboutUpdateRow(props: {
   readonly locale: ReturnType<typeof useUiLocale>;
   readonly toast: ToastApi;
   readonly mountedRef: RefObject<boolean>;
-  readonly isDevBuild: boolean;
 }) {
-  const { update, copy, locale, toast, mountedRef, isDevBuild } = props;
+  const { update, copy, locale, toast, mountedRef } = props;
   const checkUpdateGuard = useActionGuard<'check'>();
 
   async function checkForUpdates() {
@@ -107,7 +106,6 @@ function AboutUpdateRow(props: {
   return (
     <HStack gap={3} justify="between" wrap="wrap">
       <Text type="body">{aboutUpdateStatusDetail(update.status, copy, {
-        isDevBuild,
         errorDetail: (message) => settingsActionErrorMessage(message, locale),
       })}</Text>
       <Button
@@ -241,7 +239,6 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
                   locale={locale}
                   toast={toast}
                   mountedRef={aboutPageMountedRef}
-                  isDevBuild={isDevBuild}
                 />
               )}
             </AppUpdateAboutProjectionConsumer>

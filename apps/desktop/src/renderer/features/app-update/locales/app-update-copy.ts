@@ -17,7 +17,6 @@
  * under the License.
  */
 
-import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 export interface AppUpdateCopy {
@@ -70,12 +69,4 @@ const COPY_BY_LOCALE = {
 
 export function getAppUpdateCopy(locale: UiLocale): AppUpdateCopy {
   return COPY_BY_LOCALE[locale];
-}
-
-export function localizedAppUpdateErrorMessage(
-  error: unknown,
-  fallback: string,
-  locale: UiLocale,
-): string {
-  return generalizedErrorMessageForLocale(error, fallback, locale);
 }

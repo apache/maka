@@ -45,7 +45,7 @@ test('buildMode decides before updateChannel, whose dev value is a placeholder',
 
 test('the nightly steady states each read as themselves', () => {
   const detail = (status: Parameters<typeof aboutUpdateStatusDetail>[0]) =>
-    aboutUpdateStatusDetail(status, copy, { isDevBuild: false });
+    aboutUpdateStatusDetail(status, copy);
 
   assert.equal(
     detail({

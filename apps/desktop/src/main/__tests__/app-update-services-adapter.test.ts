@@ -24,17 +24,53 @@ import {
   type DesktopAppUpdateBridge,
 } from '../../renderer/platform/desktop/create-app-update-services.js';
 
-test('the Desktop adapter narrows the authoritative app bridge without wrapping it', () => {
+test('the Desktop adapter forwards exactly the five update capabilities to the app bridge', async () => {
+  const calls: string[] = [];
   const app = {
-    updateStatus: async () => ({ state: 'idle' as const, currentVersion: '1.0.0' }),
-    checkForUpdates: async () => ({ state: 'checking' as const, currentVersion: '1.0.0' }),
-    retryUpdateDownload: async () => ({ state: 'idle' as const, currentVersion: '1.0.0' }),
-    installUpdate: async () => ({ ok: true as const }),
-    subscribeUpdateStatus: () => () => undefined,
+    updateStatus: async () => {
+      calls.push('updateStatus');
+      return { state: 'idle' as const, currentVersion: '1.0.0' };
+    },
+    checkForUpdates: async () => {
+      calls.push('checkForUpdates');
+      return { state: 'checking' as const, currentVersion: '1.0.0' };
+    },
+    retryUpdateDownload: async () => {
+      calls.push('retryUpdateDownload');
+      return { state: 'idle' as const, currentVersion: '1.0.0' };
+    },
+    installUpdate: async (input: { allowInterruptActiveTasks: boolean }) => {
+      calls.push(`installUpdate:${String(input.allowInterruptActiveTasks)}`);
+      return { ok: true as const };
+    },
+    subscribeUpdateStatus: () => {
+      calls.push('subscribeUpdateStatus');
+      return () => undefined;
+    },
+    openArtifactPath: async () => undefined,
   };
   const bridge = { app } as unknown as DesktopAppUpdateBridge;
 
   const services = createDesktopAppUpdateServices(bridge);
 
-  assert.equal(services.appUpdate, app);
+  await services.appUpdate.updateStatus();
+  await services.appUpdate.checkForUpdates();
+  await services.appUpdate.retryUpdateDownload();
+  await services.appUpdate.installUpdate({ allowInterruptActiveTasks: true });
+  services.appUpdate.subscribeUpdateStatus(() => undefined)();
+
+  assert.deepEqual(calls, [
+    'updateStatus',
+    'checkForUpdates',
+    'retryUpdateDownload',
+    'installUpdate:true',
+    'subscribeUpdateStatus',
+  ]);
+  assert.deepEqual(Object.keys(services.appUpdate).sort(), [
+    'checkForUpdates',
+    'installUpdate',
+    'retryUpdateDownload',
+    'subscribeUpdateStatus',
+    'updateStatus',
+  ]);
 });

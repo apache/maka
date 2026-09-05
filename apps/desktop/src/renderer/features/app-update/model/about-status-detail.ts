@@ -48,10 +48,7 @@ export interface AboutUpdateStatusCopy {
 export function aboutUpdateStatusDetail(
   status: AppUpdateStatus | null,
   copy: AboutUpdateStatusCopy,
-  options: {
-    readonly isDevBuild: boolean;
-    readonly errorDetail?: (message: string) => string;
-  },
+  options: { readonly errorDetail?: (message: string) => string } = {},
 ): string {
   if (!status || status.state === 'idle') return copy.updateIdle;
   if (status.state === 'checking') return copy.checkingForUpdates;
