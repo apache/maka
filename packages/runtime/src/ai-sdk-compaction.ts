@@ -383,22 +383,37 @@ export class AiSdkCompaction {
           : {}),
         ...(automaticMemoryBoundary ? { memoryExtractionBoundary: automaticMemoryBoundary } : {}),
         ...(previousCheckpoint ? { previousCheckpoint } : {}),
-        summarize: async ({ coveredRuntimeEvents, newlyFoldedRuntimeEvents, previousCheckpoint }) =>
-          await this.summarizeWithFailureCircuit(summarizer, {
+        summarize: async ({
+          coveredRuntimeEvents,
+          newlyFoldedRuntimeEvents,
+          previousCheckpoint,
+        }) => {
+          // Coverage identity stays pinned on the raw events (that is the view
+          // replay matches), but the model-visible summary reads the EFFECTIVE
+          // prefix: a summary produced from raw events could quote a body a
+          // durable projection transition removed, and the checkpoint block
+          // would then restore it on every later replay (#4845 review).
+          const effectiveCovered = await this.foldEffectiveModelHistory(coveredRuntimeEvents);
+          const effectiveNewlyFolded =
+            newlyFoldedRuntimeEvents.length === coveredRuntimeEvents.length
+              ? effectiveCovered
+              : effectiveCovered.slice(effectiveCovered.length - newlyFoldedRuntimeEvents.length);
+          return await this.summarizeWithFailureCircuit(summarizer, {
             sessionId: this.sessionId,
             turnId: input.turnId,
             runId: input.runId,
             source: {
-              foldedRuntimeEvents: [...coveredRuntimeEvents],
+              foldedRuntimeEvents: effectiveCovered,
               ...(input.runtimeContextInvocations
                 ? { invocations: input.runtimeContextInvocations }
                 : {}),
             },
-            newlyFoldedRuntimeEvents: [...newlyFoldedRuntimeEvents],
+            newlyFoldedRuntimeEvents: effectiveNewlyFolded,
             ...(previousCheckpoint ? { previousCheckpoint } : {}),
             abortSignal: historyCompactAbortController.signal,
             ...(tracker ? { providerRequestTracker: tracker } : {}),
-          }),
+          });
+        },
       });
       if (historyCompactAbortController.signal.aborted) {
         return { outcome: { kind: 'failed', reason: 'aborted' } };
@@ -543,8 +558,14 @@ export class AiSdkCompaction {
    */
   public async foldEffectiveModelHistory(events: readonly RuntimeEvent[]): Promise<RuntimeEvent[]> {
     const loaded = await this.loadModelProjectionTransitions();
-    if (loaded.transitions.length === 0) return [...events];
-    return reduceEffectiveModelProjections(events, loaded.transitions).events;
+    if (loaded.transitions.length === 0 && loaded.unreadableTargets.size === 0) {
+      return [...events];
+    }
+    // Forward the unreadable set: a target whose transition record this build
+    // cannot decode must fold to the withholding sentinel here too, or this
+    // path becomes the one consumer that replays the body a record removed.
+    return reduceEffectiveModelProjections(events, loaded.transitions, loaded.unreadableTargets)
+      .events;
   }
 
   /**
@@ -1105,16 +1126,24 @@ export class AiSdkCompaction {
           }
         : {}),
       summarize: async ({ coveredRuntimeEvents, newlyFoldedRuntimeEvents, previousCheckpoint }) => {
+        // Same contract as the standalone path: coverage identity is raw, the
+        // summary input is the effective (transition-folded) prefix, so a
+        // summary can never quote a body a durable transition removed (#4845).
+        const effectiveCovered = await this.foldEffectiveModelHistory(coveredRuntimeEvents);
+        const effectiveNewlyFolded =
+          newlyFoldedRuntimeEvents.length === coveredRuntimeEvents.length
+            ? effectiveCovered
+            : effectiveCovered.slice(effectiveCovered.length - newlyFoldedRuntimeEvents.length);
         return await this.summarizeWithFailureCircuit(summarizer, {
           sessionId: this.sessionId,
           turnId,
           ...(input.origin.runId ? { runId: input.origin.runId } : {}),
           source: {
-            foldedRuntimeEvents: [...coveredRuntimeEvents],
+            foldedRuntimeEvents: effectiveCovered,
             invocations: state.priorInvocations,
           },
           ...(previousCheckpoint ? { previousCheckpoint } : {}),
-          newlyFoldedRuntimeEvents: [...newlyFoldedRuntimeEvents],
+          newlyFoldedRuntimeEvents: effectiveNewlyFolded,
           ...(abortSignal ? { abortSignal } : {}),
           ...(midTurnTracker ? { providerRequestTracker: midTurnTracker } : {}),
         });
