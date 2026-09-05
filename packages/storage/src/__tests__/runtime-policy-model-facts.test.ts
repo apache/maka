@@ -23,6 +23,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { RuntimePolicyCoordinator } from '../runtime-policy/coordinator.js';
+import { ConnectionCatalogDocumentOwner } from '../runtime-policy/connection-catalog-document.js';
 
 test('runtime policy catalog overlays enabled custom model facts without changing the raw catalog', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-runtime-facts-'));
@@ -254,6 +255,85 @@ test('model fetch keeps enabled facts-backed models when provider inventory fill
       const model = execution.connection.models?.find((entry) => entry.id === 'custom-model');
       assert.equal(model?.contextWindow, 64_000);
     }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('github copilot model fetch prunes fallback ids outside the live catalog', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-runtime-facts-copilot-refresh-'));
+  try {
+    const catalog = new ConnectionCatalogDocumentOwner();
+    const connectionId = '00000000-0000-4000-8000-00000000c0de';
+    const current = {
+      schemaVersion: 1 as const,
+      revision: 1,
+      defaultTarget: { connectionId, modelId: 'copilot-fallback' },
+      connections: [
+        {
+          connectionId,
+          revision: 1,
+          slug: 'github-copilot',
+          name: 'GitHub Copilot',
+          providerType: 'github-copilot' as const,
+          enabled: true,
+          enabledModelIds: ['copilot-fallback'],
+          models: [{ id: 'copilot-fallback' }],
+          modelSource: 'fallback' as const,
+        },
+      ],
+    };
+
+    const refreshed = await catalog.writeModelFetchResult(
+      root,
+      current,
+      { connectionId, revision: 1 },
+      { models: [{ id: 'live-model' }], source: 'fetched', fetchedAt: 1 },
+    );
+
+    const projected = refreshed.connections[0];
+    assert.deepEqual(projected?.enabledModelIds, []);
+    assert.deepEqual(projected?.models.map((model) => model.id), ['live-model']);
+    assert.equal(refreshed.defaultTarget, null);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('github copilot model fetch clears a withdrawn default without picking a replacement', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-runtime-facts-copilot-default-'));
+  try {
+    const catalog = new ConnectionCatalogDocumentOwner();
+    const connectionId = '00000000-0000-4000-8000-00000000c0df';
+    const current = {
+      schemaVersion: 1 as const,
+      revision: 1,
+      defaultTarget: { connectionId, modelId: 'copilot-fallback' },
+      connections: [
+        {
+          connectionId,
+          revision: 1,
+          slug: 'github-copilot',
+          name: 'GitHub Copilot',
+          providerType: 'github-copilot' as const,
+          enabled: true,
+          enabledModelIds: ['copilot-fallback', 'retained-live'],
+          models: [{ id: 'copilot-fallback' }, { id: 'retained-live' }],
+          modelSource: 'fallback' as const,
+        },
+      ],
+    };
+
+    const refreshed = await catalog.writeModelFetchResult(
+      root,
+      current,
+      { connectionId, revision: 1 },
+      { models: [{ id: 'retained-live' }], source: 'fetched', fetchedAt: 1 },
+    );
+
+    const projected = refreshed.connections[0];
+    assert.deepEqual(projected?.enabledModelIds, ['retained-live']);
+    assert.equal(refreshed.defaultTarget, null);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

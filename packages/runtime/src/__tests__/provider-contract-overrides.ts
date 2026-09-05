@@ -352,8 +352,29 @@ async function runGitHubCopilotDiscovery(): Promise<void> {
         copilotModel('claude-sonnet-4.6', ['/v1/messages']),
         copilotModel('gemini-3.1-pro-preview', ['/chat/completions']),
         {
+          id: 'policy-free',
+          name: 'policy-free display',
+          model_picker_enabled: true,
+          supported_endpoints: ['/chat/completions'],
+          capabilities: {
+            limits: {
+              max_prompt_tokens: 400_000,
+              max_output_tokens: 128_000,
+            },
+            supports: {
+              tool_calls: true,
+              vision: true,
+              reasoning_effort: ['low', 'medium', 'high'],
+            },
+          },
+        },
+        {
           ...copilotModel('disabled-by-policy', ['/chat/completions']),
           policy: { state: 'disabled' },
+        },
+        {
+          ...copilotModel('not-configured', ['/chat/completions']),
+          policy: { state: 'unconfigured' },
         },
         {
           ...copilotModel('hidden-from-picker', ['/chat/completions']),
@@ -383,32 +404,40 @@ async function runGitHubCopilotDiscovery(): Promise<void> {
   );
 
   assert.deepEqual(models, [
-    {
-      id: 'gpt-5.4',
-      displayName: 'gpt-5.4 display',
-      contextWindow: 400_000,
-      maxOutputTokens: 128_000,
-      apiProtocol: 'openai-responses',
-      capabilities: { vision: true, reasoning: true, functionCalling: true },
-    },
-    {
-      id: 'claude-sonnet-4.6',
-      displayName: 'claude-sonnet-4.6 display',
-      contextWindow: 400_000,
-      maxOutputTokens: 128_000,
-      apiProtocol: 'anthropic-messages',
-      capabilities: { vision: true, reasoning: true, functionCalling: true },
-    },
-    {
-      id: 'gemini-3.1-pro-preview',
-      displayName: 'gemini-3.1-pro-preview display',
-      contextWindow: 400_000,
-      maxOutputTokens: 128_000,
-      apiProtocol: 'openai-chat',
-      capabilities: { vision: true, reasoning: true, functionCalling: true },
-    },
-  ]);
-}
+      {
+        id: 'gpt-5.4',
+        displayName: 'gpt-5.4 display',
+        contextWindow: 400_000,
+        maxOutputTokens: 128_000,
+        apiProtocol: 'openai-responses',
+        capabilities: { vision: true, reasoning: true, functionCalling: true },
+      },
+      {
+        id: 'claude-sonnet-4.6',
+        displayName: 'claude-sonnet-4.6 display',
+        contextWindow: 400_000,
+        maxOutputTokens: 128_000,
+        apiProtocol: 'anthropic-messages',
+        capabilities: { vision: true, reasoning: true, functionCalling: true },
+      },
+      {
+        id: 'gemini-3.1-pro-preview',
+        displayName: 'gemini-3.1-pro-preview display',
+        contextWindow: 400_000,
+        maxOutputTokens: 128_000,
+        apiProtocol: 'openai-chat',
+        capabilities: { vision: true, reasoning: true, functionCalling: true },
+      },
+      {
+        id: 'policy-free',
+        displayName: 'policy-free display',
+        contextWindow: 400_000,
+        maxOutputTokens: 128_000,
+        apiProtocol: 'openai-chat',
+        capabilities: { vision: true, reasoning: true, functionCalling: true },
+      },
+    ]);
+  }
 
 function copilotModel(id: string, supportedEndpoints: string[]): Record<string, unknown> {
   return {

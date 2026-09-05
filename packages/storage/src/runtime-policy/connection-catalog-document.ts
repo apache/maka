@@ -471,13 +471,32 @@ export class ConnectionCatalogDocumentOwner {
         aliases: modelIdAliasesForProvider(previous.providerType),
       },
     );
+    // GitHub Copilot 的 `/models` 是账户当前可用目录，刷新时不能把旧
+    // fallback 选择再次保留下来，否则选择器会回流不可用模型。
+    const isGitHubCopilot = previous.providerType === 'github-copilot';
+    const liveModelIds = isGitHubCopilot ? new Set(result.models.map(({ id }) => id)) : undefined;
+    const enabledModelIds = isGitHubCopilot
+      ? reconciled.enabledModelIds.filter((modelId) => liveModelIds?.has(modelId))
+      : reconciled.enabledModelIds;
+    const defaultModel =
+      isGitHubCopilot && liveModelIds && !liveModelIds.has(reconciled.defaultModel)
+        ? ''
+        : reconciled.defaultModel;
+    // 目录里没有的 default 只应被清掉，不应顺手换成另一个 live 模型。
+    // Copilot 的可用集是账户当前事实，不是可自动补位的偏好列表。
     // Discovery MOVES a target: a provider's model rename carries the default
     // across by alias. A default outside the selection the reconciler just
     // decided is its own bug — fail closed where it is still attributable.
     const defaultTarget = currentDefaultTarget
-      ? { connectionId: previous.connectionId, modelId: reconciled.defaultModel }
+      ? defaultModel
+        ? { connectionId: previous.connectionId, modelId: defaultModel }
+        : null
       : current.defaultTarget;
-    if (currentDefaultTarget && !reconciled.enabledModelIds.includes(reconciled.defaultModel)) {
+    if (
+      currentDefaultTarget &&
+      !isGitHubCopilot &&
+      !reconciled.enabledModelIds.includes(reconciled.defaultModel)
+    ) {
       throw codecError(
         'invalid_document',
         'Model discovery reconciled a default outside its own selection',
@@ -489,14 +508,14 @@ export class ConnectionCatalogDocumentOwner {
     // next read.
     const relayModelProfiles = pruneRelayModelProfiles(
       previous.relayModelProfiles,
-      reconciled.enabledModelIds,
+      enabledModelIds,
     );
     const { relayModelProfiles: _staleProfiles, ...previousWithoutProfiles } = previous;
     const discovered: ConnectionCatalogEntry = {
       ...previousWithoutProfiles,
       ...(relayModelProfiles ? { relayModelProfiles } : {}),
       revision: nextRevision(previous.revision),
-      enabledModelIds: reconciled.enabledModelIds,
+      enabledModelIds,
       models: result.models,
       modelSource: result.source,
       modelsFetchedAt: result.fetchedAt,
