@@ -69,7 +69,6 @@ import {
   OperationOutput,
   SessionCatalogItem,
   SessionCatalogProjection,
-  SessionUpdateResult,
   SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
   WorkspaceTarget,
   type GoalControlAction,
@@ -79,6 +78,11 @@ import {
 } from '@maka/runtime-host/protocol';
 import { RuntimeHostSessionChannel } from './runtime-host-session-channel.js';
 import type { RuntimeHostSessionChannelOpenResult } from './runtime-host-session-channel.js';
+import {
+  getRuntimeHostSession,
+  requireRuntimeHostSessionProjection as requireSession,
+  updateRuntimeHostSession,
+} from './runtime-host-session-update.js';
 import type {
   InspectCwdChanges,
   MakaAttachedSessionTurn,
@@ -689,12 +693,16 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
 
   async renameSession(name: string): Promise<string> {
     const sessionId = this.#requireSession('rename');
-    const session = await updateRuntimeHostSession(this.#connection, sessionId, (current) =>
-      this.#request('session.metadata.update', {
-        sessionId,
-        expectedRevision: current.revision,
-        patch: { name },
-      }),
+    const session = await updateRuntimeHostSession(
+      this.#connection,
+      sessionId,
+      (current) =>
+        this.#request('session.metadata.update', {
+          sessionId,
+          expectedRevision: current.revision,
+          patch: { name },
+        }),
+      { operation: 'session.metadata.update' },
     );
     return session.name;
   }
@@ -797,12 +805,16 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   }
 
   #commitCwdRelocation(sessionId: string, cwd: string): Promise<SessionCatalogProjection> {
-    return updateRuntimeHostSession(this.#connection, sessionId, (current) =>
-      this.#request('session.workspace.relocate', {
-        sessionId,
-        expectedRevision: current.revision,
-        workspace: { kind: 'host_path', path: cwd },
-      }),
+    return updateRuntimeHostSession(
+      this.#connection,
+      sessionId,
+      (current) =>
+        this.#request('session.workspace.relocate', {
+          sessionId,
+          expectedRevision: current.revision,
+          workspace: { kind: 'host_path', path: cwd },
+        }),
+      { operation: 'session.workspace.relocate' },
     );
   }
 
@@ -1323,12 +1335,16 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       orchestrationMode?: OrchestrationMode;
     },
   ): Promise<SessionCatalogProjection> {
-    return updateRuntimeHostSession(this.#connection, sessionId, (current) =>
-      this.#request('session.configuration.update', {
-        sessionId,
-        expectedRevision: current.revision,
-        patch,
-      }),
+    return updateRuntimeHostSession(
+      this.#connection,
+      sessionId,
+      (current) =>
+        this.#request('session.configuration.update', {
+          sessionId,
+          expectedRevision: current.revision,
+          patch,
+        }),
+      { operation: 'session.configuration.update' },
     );
   }
 
@@ -1685,15 +1701,6 @@ interface LoadedSessionConfiguration {
   boundaryDisplayMode: PermissionMode | undefined;
 }
 
-async function getRuntimeHostSession(
-  connection: RuntimeHostSessionDriverConnection,
-  sessionId: string,
-): Promise<SessionCatalogProjection | null> {
-  const result = await connection.request('session.catalog.query', { kind: 'get', sessionId });
-  if (result.kind !== 'session') throw new Error('Runtime Host returned an invalid Session lookup');
-  return result.session === null ? null : requireSession(result.session);
-}
-
 function representableSession(item: SessionCatalogItem): SessionCatalogProjection[] {
   return 'kind' in item ? [] : [item];
 }
@@ -1753,11 +1760,6 @@ function visibleTranscriptMessages(
   return boundary < 0 ? messages : messages.slice(boundary + 1);
 }
 
-function requireSession(item: SessionCatalogItem): SessionCatalogProjection {
-  if (!('kind' in item)) return item;
-  throw new Error(`Runtime Host Session is not representable by this CLI: ${item.id}`);
-}
-
 function inspectRuntimeHostSessionResumeAvailability(
   summary: SessionSummary,
   location: NonNullable<RuntimeHostMakaSessionDriverInput['executionLocation']>,
@@ -1780,20 +1782,6 @@ async function assertSessionResumeAvailable(
       summary.cwd ? `Session cwd no longer exists: ${summary.cwd}` : availability.reason,
     );
   }
-}
-
-async function updateRuntimeHostSession(
-  connection: RuntimeHostSessionDriverConnection,
-  sessionId: string,
-  update: (current: SessionCatalogProjection) => Promise<SessionUpdateResult>,
-): Promise<SessionCatalogProjection> {
-  for (let attempt = 0; attempt < MAX_CATALOG_ATTEMPTS; attempt += 1) {
-    const current = await getRuntimeHostSession(connection, sessionId);
-    if (!current) throw new Error(`Session not found: ${sessionId}`);
-    const result = await update(current);
-    if (result.kind === 'committed') return requireSession(result.session);
-  }
-  throw new Error(`Session kept changing while updating: ${sessionId}`);
 }
 
 async function loadCurrentMessages(
