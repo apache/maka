@@ -237,6 +237,21 @@ export function oversizedTurnMessages(now: number): StoredMessage[] {
     '- 下一步继续验证',
   ].join('\n');
   const toolOutput = 'synthetic output line\n'.repeat(600);
+  // Reasoning is the block #4256 reports as the dominant cost, and it is unlike
+  // collapsed tool output: `ChatReasoning` keeps its body mounted and only swaps
+  // a wrapper class, so a folded reasoning run still lays out. Give each step a
+  // multi-paragraph run so the `.maka-deep-thinking` boundary carries real,
+  // mounted content rather than free collapsed-stdout bytes.
+  const reasoning = [
+    '先确认这一步的输入边界：空样例、超长样例、并发样例三类分别对照期望结果，',
+    '逐项记录偏差，再对合成输出做一次去抖动检查，确保占位高度不随展开态漂移。',
+    '',
+    '- 输入域：空 / 超长 / 并发',
+    '- 期望：确定性、可重放',
+    '- 检查：占位高度稳定，无跨帧跳变',
+    '',
+    '综合以上，本步没有回归，可以进入下一组合成检查。',
+  ].join('\n');
   for (let index = 1; index <= 48; index += 1) {
     const ts = now - (49 - index) * 10_000;
     messages.push({
@@ -245,6 +260,7 @@ export function oversizedTurnMessages(now: number): StoredMessage[] {
       turnId,
       ts,
       text: `### 合成步骤 ${index}\n\n${prose.repeat(12)}`,
+      thinking: { text: `${reasoning}\n\n${reasoning}\n\n${reasoning}` },
       modelId: 'glm-5.1',
     });
     messages.push({
