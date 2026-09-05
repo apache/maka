@@ -6220,6 +6220,233 @@ describe('AiSdkBackend model history', () => {
     assert.doesNotMatch(prompt, /FOLD_OLD_USER_ALPHA/);
   });
 
+  test('a checkpoint summary cannot echo a body a durable transition removed (#4845)', async () => {
+    // Coverage identity is pinned on raw events, but the summarizer must read
+    // the EFFECTIVE (transition-folded) prefix: an echoing summarizer fed raw
+    // events would quote the archived body into the checkpoint block and every
+    // later replay would restore what the transition removed.
+    const model = completionModel();
+    const transitions: ModelProjectionTransition[] = [];
+    const recorded: HistoryCompactCheckpoint[] = [];
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      contextBudget: {
+        name: 'checkpoint-effective-summary-test',
+        charsPerToken: 1,
+        staleToolResultPrune: {
+          enabled: true,
+          maxResultEstimatedTokens: 1,
+          minRecentTurnsFull: 0,
+        },
+        historyCompact: { enabled: true },
+      },
+      summarizeHistoryCompact: async (input) =>
+        // Echo the covered span verbatim into a structurally valid summary.
+        structuredSummary(
+          `ECHO ${input.source.foldedRuntimeEvents
+            .map((event) => JSON.stringify(event.content))
+            .join(' ')}`,
+        ),
+      recordHistoryCompactCheckpoint: (checkpoint) => {
+        recorded.push(checkpoint);
+      },
+      loadHistoryCompactCheckpoint: () => recorded.at(-1),
+      toolResultArchive: testToolResultArchive({
+        archiveToolResult: async (event) => ({ artifactId: `artifact-${event.runtimeEventId}` }),
+      }),
+      loadModelProjectionTransitions: async () => ({
+        transitions: [...transitions],
+        unreadableTargets: new Set<string>(),
+        unscopedUnreadable: 0,
+      }),
+      recordModelProjectionTransition: async (transition) => {
+        transitions.push(transition);
+      },
+    });
+    const priorEvents = [
+      runtimeTextEvent({
+        id: 'echo-old-user',
+        turnId: 'turn-old',
+        role: 'user',
+        author: 'user',
+        text: 'ECHO_OLD_USER '.repeat(60),
+      }),
+      runtimeEvent({
+        id: 'echo-call',
+        turnId: 'turn-old',
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'function_call',
+          id: 'tool-echo-1',
+          name: 'Read',
+          args: { path: 'secret.ts' },
+        },
+      }),
+      runtimeEvent({
+        id: 'echo-result',
+        turnId: 'turn-old',
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id: 'tool-echo-1',
+          name: 'Read',
+          result: { body: 'RAW_TRANSITIONED_TOOL_BODY '.repeat(40) },
+          isError: false,
+        },
+      }),
+    ];
+
+    await drain(
+      backend.send({
+        turnId: 'turn-seed',
+        text: 'seed the archive transition',
+        context: [],
+        runtimeContext: structuredClone(priorEvents),
+      }),
+    );
+    assert.equal(transitions.length, 1);
+
+    const compact = await backend.compactHistory({
+      turnId: 'turn-compact',
+      runId: 'run-compact',
+      runtimeContext: structuredClone(priorEvents),
+    });
+    assert.equal(compact.outcome.kind, 'compacted');
+    assert.equal(recorded.length, 1);
+
+    // The summary was written from the effective view: it carries the archive
+    // placeholder's identity, not the transitioned body.
+    const summary = recorded[0]?.version === 2 ? recorded[0].summary : '';
+    assert.match(summary, /artifact-echo-result/);
+    assert.doesNotMatch(summary, /RAW_TRANSITIONED_TOOL_BODY/);
+
+    const replayBackend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      contextBudget: {
+        name: 'checkpoint-effective-summary-test',
+        charsPerToken: 1,
+        staleToolResultPrune: {
+          enabled: true,
+          maxResultEstimatedTokens: 1,
+          minRecentTurnsFull: 0,
+        },
+        historyCompact: { enabled: true },
+      },
+      loadHistoryCompactCheckpoint: () => recorded.at(-1),
+      toolResultArchive: testToolResultArchive({}),
+      loadModelProjectionTransitions: async () => ({
+        transitions: [...transitions],
+        unreadableTargets: new Set<string>(),
+        unscopedUnreadable: 0,
+      }),
+    });
+    await drain(
+      replayBackend.send({
+        turnId: 'turn-after-compact',
+        text: 'after compact',
+        context: [],
+        runtimeContext: structuredClone(priorEvents),
+      }),
+    );
+
+    const lastCall = model.doStreamCalls.at(-1);
+    const prompt = JSON.stringify(
+      lastCall?.prompt.map((message) => ({ role: message.role, content: message.content })),
+    );
+    assert.match(prompt, /ECHO /);
+    assert.doesNotMatch(prompt, /RAW_TRANSITIONED_TOOL_BODY/);
+  });
+
+  test('pre-turn replay withholds a tool result whose transition record is unreadable (#4845)', async () => {
+    // prepareContextBudgetPolicy folds with the unreadable-target set so an
+    // undecodable record withholds the body behind the failure sentinel; the
+    // post-match fold of the projected [block, tail] must do the same or it
+    // becomes the one consumer that replays the removed body.
+    const model = completionModel();
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      contextBudget: {
+        name: 'unreadable-target-replay-test',
+        charsPerToken: 1,
+        staleToolResultPrune: { enabled: false },
+        historyCompact: { enabled: true },
+      },
+      loadModelProjectionTransitions: async () => ({
+        transitions: [],
+        unreadableTargets: new Set<string>(['unreadable-result::tool_result']),
+        unscopedUnreadable: 0,
+      }),
+    });
+
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: 'current user',
+        context: [],
+        runtimeContext: [
+          runtimeEvent({
+            id: 'unreadable-call',
+            turnId: 'turn-prev',
+            role: 'model',
+            author: 'agent',
+            content: {
+              kind: 'function_call',
+              id: 'tool-unreadable-1',
+              name: 'Read',
+              args: { path: 'a.ts' },
+            },
+          }),
+          runtimeEvent({
+            id: 'unreadable-result',
+            turnId: 'turn-prev',
+            role: 'tool',
+            author: 'tool',
+            content: {
+              kind: 'function_response',
+              id: 'tool-unreadable-1',
+              name: 'Read',
+              result: { body: 'RAW_UNREADABLE_TARGET_BODY' },
+              isError: false,
+            },
+          }),
+        ],
+      }),
+    );
+
+    const prompt = JSON.stringify(compactPrompt(model));
+    assert.match(prompt, /could not be projected safely/);
+    assert.doesNotMatch(prompt, /RAW_UNREADABLE_TARGET_BODY/);
+  });
+
   test('keeps RuntimeEvent replay when a tool result is unmatched (orphan dropped, rest replayed)', async () => {
     // `unmatched_tool_result` is a non-blocking diagnostic: the materializer
     // drops the orphan itself (a standalone tool message is an Anthropic 400)

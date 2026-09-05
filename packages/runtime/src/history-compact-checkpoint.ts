@@ -29,13 +29,16 @@ import {
   type SectionedSummaryFormat,
 } from './history-compact-summary-validation.js';
 
-// v2: coverage and source digest are taken over EFFECTIVE model history (the
-// durable Tool Result projection), not raw RuntimeEvent evidence. A v1
-// checkpoint's digest was computed over a different source, so it fails the
-// shape check and its session re-summarizes rather than replaying a
-// coverage claim this policy never made.
+// v3: coverage identity and the source digest stay pinned on the RAW ledger
+// prefix — the immutable view every creation path (standalone and mid-turn)
+// and both match sites (pre-turn replay and the mid-turn durable projection)
+// share — while the model-visible summary is produced from the EFFECTIVE,
+// transition-folded prefix. A v2 checkpoint's summary could quote a Tool
+// Result body a durable projection transition had already removed, so it is
+// superseded on load and the session re-summarizes rather than replaying a
+// coverage claim whose summary this policy never audited (#4845).
 export const HISTORY_COMPACT_SOURCE_POLICY_VERSION =
-  'maka.compactable_runtime_event_projection.v2' as const;
+  'maka.compactable_runtime_event_projection.v3' as const;
 export interface HistoryCompactCheckpointSource {
   schemaVersion: 1;
   kind: 'runtime_event_projection';
