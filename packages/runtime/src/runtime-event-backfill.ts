@@ -19,6 +19,7 @@
 
 import type { RuntimeInvocationOutcome } from '@maka/core/runtime-invocation';
 import type { RunIdentity } from './terminal-run-commit.js';
+import { isTurnScopedSystemNoteKind } from '@maka/core/session';
 import type {
   PermissionDecisionMessage,
   StoredMessage,
@@ -356,18 +357,38 @@ export function backfillRuntimeEventsFromStoredMessages(
       case 'turn_state':
         break;
 
+      // A note that names a turn is that invocation's own fact, so it converts.
+      // A session-level kind that somehow carries a turnId is not: it says
+      // something about the Session, and the Session transcript keeps it.
       case 'system_note':
         if (conversationTextOnly) break;
-        diagnostics.push({
-          code: 'skipped_high_risk_message',
-          message:
-            'system_note is not recovered into a run ledger because session-level notes may not belong to this run',
-          detail: {
-            messageId: message.id,
-            kind: message.kind,
-            runId: input.run.runId,
-            turnId: input.run.turnId,
+        if (!isTurnScopedSystemNoteKind(message.kind)) {
+          diagnostics.push({
+            code: 'skipped_high_risk_message',
+            message:
+              'session-level system_note is not recovered into a run ledger because it does not belong to this run',
+            detail: {
+              messageId: message.id,
+              kind: message.kind,
+              runId: input.run.runId,
+              turnId: input.run.turnId,
+            },
+          });
+          break;
+        }
+        events.push({
+          ...base,
+          id: newId(),
+          role: 'system',
+          author: 'system',
+          modelVisibility: 'hidden',
+          content: {
+            kind: 'system_note',
+            note: message.kind,
+            ...(message.data !== undefined ? { data: structuredClone(message.data) } : {}),
           },
+          actions: { stateDelta: recoveryState(now, message) },
+          refs: { storedMessageId: message.id },
         });
         break;
     }

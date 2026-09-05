@@ -251,6 +251,9 @@ export function projectRuntimeEventsToStoredMessages(
         case 'thinking':
           projected = projectThinking(event, state, messages) || projected;
           break;
+        case 'system_note':
+          projected = projectSystemNote(event, state, messages) || projected;
+          break;
         case 'invocation_opened':
           // The opening fact records route, configuration and lineage once per
           // invocation. Every reader joins it by invocationId; it has no chat row.
@@ -1208,6 +1211,29 @@ function projectTerminalTurnState(
   // An omitted failure class or abort source is `classifyRuntimeEventTerminalFact`'s
   // observation to make. Repeating it here would only turn a transcript row that
   // already reads `unknown` into an unreadable Session.
+  return true;
+}
+
+/**
+ * The note row of an invocation that wrote one.
+ *
+ * There is nothing to reconcile: the event carries the kind and the payload the
+ * row is made of, so the row is the event said back in the transcript's shape.
+ */
+function projectSystemNote(
+  event: RuntimeEvent,
+  state: ProjectionState,
+  messages: StoredMessage[],
+): boolean {
+  if (event.content?.kind !== 'system_note') return false;
+  messages.push({
+    type: 'system_note',
+    id: stableMessageId(event, state, 'system_note'),
+    turnId: event.turnId,
+    ts: event.ts,
+    kind: event.content.note,
+    ...(event.content.data !== undefined ? { data: structuredClone(event.content.data) } : {}),
+  });
   return true;
 }
 

@@ -1995,6 +1995,90 @@ const ACTION_COVERAGE_SAMPLES: ActionCoverageSamples = {
   runtimeProtocol: { action: { toolBoundary: 't1_after_preflight_v1' } },
 };
 
+describe('system note projection', () => {
+  test('projects a turn-scoped note back into its transcript row', () => {
+    const out = projectRuntimeEventsToStoredMessages(
+      [
+        ev({
+          id: 'evt-note',
+          content: {
+            kind: 'system_note',
+            note: 'context_compacted',
+            data: { removedMessages: 12 },
+          },
+          modelVisibility: 'hidden',
+          refs: { storedMessageId: 'legacy-note' },
+        }),
+      ],
+      { invocations: [invocation] },
+    );
+
+    assert.deepStrictEqual(out.diagnostics, []);
+    assert.deepStrictEqual(out.messages, [
+      {
+        type: 'system_note',
+        id: 'legacy-note',
+        turnId,
+        ts,
+        kind: 'context_compacted',
+        data: { removedMessages: 12 },
+      },
+    ]);
+  });
+
+  test('converts a legacy turn-scoped note and reads back the same row', () => {
+    const note: StoredMessage = {
+      type: 'system_note',
+      id: 'legacy-step-limit',
+      turnId,
+      ts,
+      kind: 'step_limit',
+      data: { steps: 40 },
+    };
+
+    const backfilled = backfillRuntimeEventsFromStoredMessages({
+      run: { sessionId, invocationId, runId, turnId },
+      outcome: { status: 'completed', ts },
+      messages: [note],
+      modelHistory: 'full',
+      now: () => ts,
+    });
+
+    assert.deepStrictEqual(backfilled.diagnostics, []);
+    const projected = projectRuntimeEventsToStoredMessages(backfilled.events, {
+      invocations: [invocation],
+    });
+    assert.deepStrictEqual(
+      projected.messages.filter((message) => message.type === 'system_note'),
+      [note],
+    );
+  });
+
+  test('leaves a session-level note out of the run ledger', () => {
+    const backfilled = backfillRuntimeEventsFromStoredMessages({
+      run: { sessionId, invocationId, runId, turnId },
+      messages: [
+        {
+          type: 'system_note',
+          id: 'legacy-mode-change',
+          turnId,
+          ts,
+          kind: 'mode_change',
+          data: { from: 'ask', to: 'bypass' },
+        },
+      ],
+      modelHistory: 'full',
+      now: () => ts,
+    });
+
+    assert.deepStrictEqual(
+      backfilled.events.filter((event) => event.content?.kind === 'system_note'),
+      [],
+    );
+    assert.partialDeepStrictEqual(backfilled.diagnostics, [{ code: 'skipped_high_risk_message' }]);
+  });
+});
+
 describe('RuntimeEventActions projection coverage', () => {
   for (const [field, sample] of Object.entries(ACTION_COVERAGE_SAMPLES)) {
     test(`actions.${field} projects without an unclaimed-event diagnostic`, () => {

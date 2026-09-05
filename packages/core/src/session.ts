@@ -1147,27 +1147,50 @@ export interface TurnRecord {
   partialOutputRetained: boolean;
 }
 
+/**
+ * Every note kind a transcript can carry.
+ *
+ * The list is split by who owns the fact, not by how it renders. A turn-scoped
+ * note is part of what one invocation did, so the RuntimeEvent ledger records
+ * it; a session-scoped note happens between turns, where there is no invocation
+ * to belong to, and the Session transcript records it.
+ */
+export const TURN_SCOPED_SYSTEM_NOTE_KINDS = [
+  'context_compacted',
+  'context_compaction_failed_open',
+  'context_provider_dropping',
+  'context_window_suggestion',
+  'context_window_overrun',
+  'context_reported_window_exceeded',
+  'context_overflow_after_compaction',
+  'step_limit',
+  'error',
+  'abort',
+] as const;
+
+export const SESSION_SCOPED_SYSTEM_NOTE_KINDS = [
+  'session_start',
+  'session_resume',
+  'mode_change',
+  'model_change',
+] as const;
+
+export type TurnScopedSystemNoteKind = (typeof TURN_SCOPED_SYSTEM_NOTE_KINDS)[number];
+export type SystemNoteKind =
+  | TurnScopedSystemNoteKind
+  | (typeof SESSION_SCOPED_SYSTEM_NOTE_KINDS)[number];
+
+export function isTurnScopedSystemNoteKind(kind: string): kind is TurnScopedSystemNoteKind {
+  return (TURN_SCOPED_SYSTEM_NOTE_KINDS as readonly string[]).includes(kind);
+}
+
 export interface SystemNoteMessage {
   type: 'system_note';
   id: string;
   /** Session-level notes omit turnId. */
   turnId?: string;
   ts: number;
-  kind:
-    | 'session_start'
-    | 'session_resume'
-    | 'mode_change'
-    | 'model_change'
-    | 'context_compacted'
-    | 'context_compaction_failed_open'
-    | 'context_provider_dropping'
-    | 'context_window_suggestion'
-    | 'context_window_overrun'
-    | 'context_reported_window_exceeded'
-    | 'context_overflow_after_compaction'
-    | 'step_limit'
-    | 'error'
-    | 'abort';
+  kind: SystemNoteKind;
   /**
    * Shape depends on `kind`. `context_compaction_failed_open` carries
    * `{ failOpenReason?: string }` — the reason the fold was refused (e.g.
