@@ -119,9 +119,13 @@ test('Session recap retries preserve the original result across a v1 upgrade', a
       assert.equal(record.source, 'session_effect');
       assert.equal(
         (await upgraded.deleteUserArtifactInSession('session-1', record.id)).kind,
-        'deleted',
+        'protected',
       );
     }
+    assert.deepEqual(
+      await successor.handlers['session.recap.generate'](input, connectionContext),
+      generated,
+    );
     await successor.close();
     upgraded.close();
   });
