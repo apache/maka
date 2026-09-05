@@ -354,7 +354,7 @@ export const SavingDefaultModel: Story = {
   render: () => (
     <div style={{ width: 260 }}>
       <ModelPicker
-        groups={modelMenuGroups(CHOICES)}
+        groups={modelMenuGroups(CHOICES, useUiLocale())}
         value={modelChoiceValue(CHOICES[4]!.connectionSlug, CHOICES[4]!.model)}
         leadingOption={{ value: '', label: '未设置' }}
         renderProviderMark={providerMark}

@@ -110,6 +110,9 @@ export interface ToolActivityCopy {
     genericAction: string;
     genericTitle: string;
     genericDescription: string;
+    fallbackLabel: string;
+    namedAction: (label: string) => string;
+    namedTitle: (label: string) => string;
     count: (count: number) => string;
     technicalDetails: string;
     groupId: string;
@@ -255,6 +258,9 @@ const TOOL_ACTIVITY_COPY = {
       genericAction: '启用工具能力',
       genericTitle: '工具能力已启用',
       genericDescription: '现在可以使用这组工具。',
+      fallbackLabel: '工具',
+      namedAction: (label) => `启用 ${label}`,
+      namedTitle: (label) => `${label} 已启用`,
       count: (n) => `${n} 项能力可用`,
       technicalDetails: '技术详情',
       groupId: '工具组',
@@ -357,6 +363,9 @@ const TOOL_ACTIVITY_COPY = {
     loadTools: {
       displayName: '啟用能力',
       genericAction: '啟用工具能力',
+      fallbackLabel: '工具',
+      namedAction: (label) => `啟用 ${label}`,
+      namedTitle: (label) => `${label} 已啟用`,
       genericTitle: '工具能力已啟用',
       genericDescription: '現在可以使用這組工具。',
       count: (n) => `${n} 項能力可用`,
@@ -460,6 +469,9 @@ const TOOL_ACTIVITY_COPY = {
       genericAction: 'Enable tool capabilities',
       genericTitle: 'Tool capabilities enabled',
       genericDescription: 'This tool group is ready to use.',
+      fallbackLabel: 'Tools',
+      namedAction: (label) => `Enable ${label}`,
+      namedTitle: (label) => `${label} enabled`,
       count: (n) => `${n} ${n === 1 ? 'capability' : 'capabilities'} available`,
       technicalDetails: 'Technical details',
       groupId: 'Group',

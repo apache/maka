@@ -133,7 +133,16 @@ interface ChatComposerRegionProps
     sessionId: string | undefined;
     model: string | undefined;
     providerType: string | undefined;
-    children: (usage: { readonly usageTokens: number } | undefined) => ReactNode;
+    /**
+     * The snapshot's reading as a PAIR: the metered tokens and the window the
+     * same request was metered against. Dropping the window would leave the
+     * gauge to divide the snapshot's numerator by whatever window the live
+     * catalog currently reports — one row's tokens against another row's
+     * ceiling.
+     */
+    children: (
+      usage: { readonly usageTokens: number; readonly contextWindow?: number } | undefined,
+    ) => ReactNode;
   }>;
   directoryComposerProps: Pick<
     ComponentProps<typeof Composer>,
@@ -296,14 +305,20 @@ export function ChatComposerRegion({
   // The composer body as a function of the gauge's live reading, so the probe
   // — when mounted — can feed it the per-settled-request snapshot (#4717), and
   // the anchor prop remains the reading it falls back to.
-  const renderComposer = (liveContextUsage: { readonly usageTokens: number } | undefined) => (
+  const renderComposer = (
+    liveContextUsage: { readonly usageTokens: number; readonly contextWindow?: number } | undefined,
+  ) => (
     <ComposerGoalProjectionConsumer>
       {(goalProjection) => (
         <Composer
           ref={composerRef}
           {...composerRest}
           contextUsage={contextUsage && liveContextUsage
-            ? { ...contextUsage, usageTokens: liveContextUsage.usageTokens }
+            ? {
+                ...contextUsage,
+                usageTokens: liveContextUsage.usageTokens,
+                meteredContextWindow: liveContextUsage.contextWindow,
+              }
             : contextUsage}
           // AppShell carries staged attachments into both queued and steering
           // follow-ups. Other Composer hosts remain gated by default because a

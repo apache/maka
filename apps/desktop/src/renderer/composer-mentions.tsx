@@ -56,7 +56,7 @@ export interface ComposerMentions {
 
 /** Which backend surface the popups should describe. */
 export interface ComposerMentionsSurface {
-  /** Invalidates Runtime's invocable projection after installed Skills settle. */
+  /** Handed over by the Module Hub boundary to invalidate Runtime's projection. */
   skillCatalogRevision: number;
   sessionId?: string;
   projectPath?: string;
@@ -65,6 +65,12 @@ export interface ComposerMentionsSurface {
   newSessionPermissionMode?: ChatDefaultPermissionMode;
   newTaskTarget?: DesktopNewTaskTarget;
 }
+
+/** The surface AppShell assembles; the Module Hub boundary supplies the revision. */
+export type ComposerMentionsSurfaceInput = Omit<
+  ComposerMentionsSurface,
+  'skillCatalogRevision'
+>;
 
 /**
  * Owns the composer mention popup wiring so app-shell.tsx keeps no inline
@@ -294,6 +300,22 @@ export function ComposerMentionsProvider({
     [mentionSkills, mentionSkillsUnavailable, mentionSkillsLoading, searchMentionFiles],
   );
   return <ComposerMentionsContext.Provider value={value}>{children}</ComposerMentionsContext.Provider>;
+}
+
+/**
+ * How the provider mounts under the Skill catalog revision the Module Hub
+ * boundary hands over: the shell passes the surface it assembled, the boundary
+ * supplies the revision and the frame it already built, and the provider's
+ * `skillCatalogRevision` stays a required, compiler-checked prop.
+ */
+export function renderComposerMentionsProvider(
+  surface: ComposerMentionsSurfaceInput,
+): (skillCatalogRevision: number, children: ReactNode) => ReactNode {
+  return (skillCatalogRevision, children) => (
+    <ComposerMentionsProvider {...surface} skillCatalogRevision={skillCatalogRevision}>
+      {children}
+    </ComposerMentionsProvider>
+  );
 }
 
 export function useComposerMentionsContext(): ComposerMentions | undefined {

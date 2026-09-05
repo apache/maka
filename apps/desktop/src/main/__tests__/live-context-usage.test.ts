@@ -134,7 +134,9 @@ describe('createLiveContextUsageTracker', () => {
     assert.equal(query.pending.length, 1);
     query.pending[0]!.resolve(available());
     await Promise.resolve();
-    assert.deepEqual(seen, [{ usageTokens: 79_436, contextWindow: 128_000 }]);
+    // The leading `undefined` is the aim itself: whatever stood on screen
+    // before cannot answer for this target, so it clears before the read.
+    assert.deepEqual(seen, [undefined, { usageTokens: 79_436, contextWindow: 128_000 }]);
     tracker.dispose();
   });
 
@@ -183,6 +185,7 @@ describe('createLiveContextUsageTracker', () => {
     query.pending[1]!.resolve(available({ inputTokens: 52_000 }));
     await Promise.resolve();
     assert.deepEqual(seen, [
+      undefined,
       { usageTokens: 40_000, contextWindow: 128_000 },
       { usageTokens: 52_000, contextWindow: 128_000 },
     ]);
@@ -228,7 +231,7 @@ describe('createLiveContextUsageTracker', () => {
     await Promise.resolve();
     query.pending[0]!.resolve(available({ inputTokens: 10_000 }));
     await Promise.resolve();
-    assert.deepEqual(seen, [{ usageTokens: 60_000, contextWindow: 128_000 }]);
+    assert.deepEqual(seen, [undefined, { usageTokens: 60_000, contextWindow: 128_000 }]);
     tracker.dispose();
   });
 
@@ -251,7 +254,63 @@ describe('createLiveContextUsageTracker', () => {
     query.pending[1]!.reject(new Error('host not ready'));
     await Promise.resolve();
     await Promise.resolve();
-    assert.deepEqual(seen, [{ usageTokens: 79_436, contextWindow: 128_000 }]);
+    assert.deepEqual(seen, [undefined, { usageTokens: 79_436, contextWindow: 128_000 }]);
+    tracker.dispose();
+  });
+
+  it('clears the previous target’s reading before the first read on a new one', async () => {
+    const timer = fakeTimer();
+    const query = scriptedQuery();
+    const seen: unknown[] = [];
+    const tracker = createLiveContextUsageTracker({
+      query: query.query,
+      delayMs: 400,
+      schedule: timer.schedule,
+      cancel: timer.cancel,
+      onChange: (usage) => seen.push(usage),
+    });
+    tracker.setTarget({ sessionId: 's1', route: ROUTE });
+    query.pending[0]!.resolve(available());
+    await Promise.resolve();
+
+    // Switching sessions makes the standing number unanswerable: it must
+    // leave the screen BEFORE the new target's first read lands…
+    tracker.setTarget({ sessionId: 's2', route: ROUTE });
+    assert.deepEqual(seen, [undefined, { usageTokens: 79_436, contextWindow: 128_000 }, undefined]);
+
+    // …and a rejected first read on the new target keeps it cleared, rather
+    // than pinning the previous session's number in place indefinitely.
+    query.pending[1]!.reject(new Error('host not ready'));
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.deepEqual(seen, [undefined, { usageTokens: 79_436, contextWindow: 128_000 }, undefined]);
+    tracker.dispose();
+  });
+
+  it('keeps the standing value when re-aimed at the same target', async () => {
+    const timer = fakeTimer();
+    const query = scriptedQuery();
+    const seen: unknown[] = [];
+    const tracker = createLiveContextUsageTracker({
+      query: query.query,
+      delayMs: 400,
+      schedule: timer.schedule,
+      cancel: timer.cancel,
+      onChange: (usage) => seen.push(usage),
+    });
+    tracker.setTarget({ sessionId: 's1', route: ROUTE });
+    query.pending[0]!.resolve(available());
+    await Promise.resolve();
+
+    // An identical re-aim is not a target change: the value still answers the
+    // question, so clearing it would only flicker. The re-read happens, and a
+    // failure keeps the value standing as always.
+    tracker.setTarget({ sessionId: 's1', route: { ...ROUTE } });
+    assert.equal(query.pending.length, 2);
+    query.pending[1]!.reject(new Error('host not ready'));
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.deepEqual(seen, [undefined, { usageTokens: 79_436, contextWindow: 128_000 }]);
     tracker.dispose();
   });
 
@@ -271,7 +330,8 @@ describe('createLiveContextUsageTracker', () => {
     assert.equal(timer.scheduled, 0);
     query.pending[0]!.resolve(available());
     await Promise.resolve();
-    assert.deepEqual(seen, [undefined]);
+    // Once for aiming, once for the target going away.
+    assert.deepEqual(seen, [undefined, undefined]);
     tracker.dispose();
   });
 
@@ -293,7 +353,9 @@ describe('createLiveContextUsageTracker', () => {
     await Promise.resolve();
     query.pending[0]!.resolve(available({ inputTokens: 99_000 }));
     await Promise.resolve();
-    assert.deepEqual(seen, [{ usageTokens: 5_000, contextWindow: 128_000 }]);
+    // Aiming, then leaving s1 clears its (never-landed) reading, then s2's
+    // lands; the stale s1 read resolving late must not overwrite it.
+    assert.deepEqual(seen, [undefined, undefined, { usageTokens: 5_000, contextWindow: 128_000 }]);
     tracker.dispose();
   });
 
@@ -318,7 +380,9 @@ describe('createLiveContextUsageTracker', () => {
     query.pending[1]!.resolve(available());
     await Promise.resolve();
     assert.deepEqual(seen, [
+      undefined,
       { usageTokens: 79_436, contextWindow: 128_000 },
+      undefined,
       undefined,
     ]);
     tracker.dispose();
@@ -341,6 +405,7 @@ describe('createLiveContextUsageTracker', () => {
     assert.equal(timer.scheduled, 0);
     query.pending[0]!.resolve(available());
     await Promise.resolve();
-    assert.deepEqual(seen, []);
+    // Only the aiming clear lands; the disposed tracker's read is dropped.
+    assert.deepEqual(seen, [undefined]);
   });
 });

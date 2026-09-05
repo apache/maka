@@ -35,8 +35,17 @@ import {
 } from '@maka/ui';
 import { type ComponentProps, type ReactNode, useState } from 'react';
 import { WorkbarTitlebarActions } from '../src/renderer/features/workbar';
-import { ModuleHubHost } from '../src/renderer/features/module-hub/index';
-import { createFakeModuleHubHostModel } from '../src/renderer/features/module-hub/testing';
+import {
+  createModuleHubCommandPort,
+  ModuleHubHost,
+  ModuleHubHostView,
+  ModuleHubProvider,
+  ModuleHubServicesProvider,
+} from '../src/renderer/features/module-hub';
+import {
+  createFakeModuleHubHostModel,
+  createFakeModuleHubServices,
+} from '../src/renderer/features/module-hub/testing';
 import { AppShellDetailPanel } from '../src/renderer/app-shell-detail-panel';
 import { McpPage } from '../src/renderer/mcp-page';
 import { withScopedMakaBridge } from './maka-bridge';
@@ -812,7 +821,38 @@ function ModuleHubHostSurface(props: {
       : 'cron';
   return (
     <ModuleSurface agentsView={agentsView}>
-      <ModuleHubHost model={model} />
+      <ModuleHubHostView model={model} />
+    </ModuleSurface>
+  );
+}
+
+function ProductionModuleHubHostSurface() {
+  const [commandPort] = useState(createModuleHubCommandPort);
+  const [services] = useState(() => {
+    const defaults = createFakeModuleHubServices();
+    return createFakeModuleHubServices({
+      skills: {
+        ...defaults.skills,
+        list: async () => INSTALLED_SKILLS,
+        listBundledCatalog: async () => BUNDLED_SKILLS,
+      },
+    });
+  });
+  return (
+    <ModuleSurface agentsView="skills">
+      <ModuleHubServicesProvider services={services}>
+        <ModuleHubProvider
+          selection={{ section: 'extensions', module: 'skills' }}
+          selectModule={noop}
+          useSkillInChat={noop}
+          openSession={noop}
+          appendComposerText={noop}
+          captureActiveComposerClaim={() => undefined}
+          commandPort={commandPort}
+        >
+          <ModuleHubHost />
+        </ModuleHubProvider>
+      </ModuleHubServicesProvider>
     </ModuleSurface>
   );
 }
@@ -854,15 +894,12 @@ export const ExtensionsSkillsEmpty: Story = {
   render: () => <ExtensionsSkillsSurface />,
 };
 
-// Feature-slice composition coverage: the production Host, not a direct leaf.
+// Full production composition: public Provider → Context → public Host.
 export const HostExtensionsSkills: Story = {
-  render: () => (
-    <ModuleHubHostSurface
-      selection={{ section: 'extensions', module: 'skills' }}
-    />
-  ),
+  render: () => <ProductionModuleHubHostSurface />,
 };
 
+// Focused view seams keep the other route variants deterministic.
 export const HostExtensionsMcp: Story = {
   decorators: [withEmptyMcpBridge],
   render: () => (

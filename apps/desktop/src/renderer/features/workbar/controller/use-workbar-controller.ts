@@ -721,10 +721,6 @@ export function useWorkbarController(
       onActivateTab: layout.activateWorkbarTab,
       onCloseTab: closeTab,
       onCloseTabs: closeTabs,
-      onReorderTab: layout.reorderWorkbarTab,
-      onMoveTab: layout.moveWorkbarTab,
-      onMoveTabToPanel: layout.moveWorkbarTabToPanel,
-      onPinTab: layout.pinWorkbarTab,
       onOpenLauncher: (placement) => {
         layout.openWorkbarLauncher(placement);
         revealPlacement(placement);
