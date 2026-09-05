@@ -24,6 +24,10 @@ import {
 } from '@maka/storage/root-authority';
 import { readHostRegistration } from '../control/registration.js';
 import type { HostRegistration } from '../protocol/index.js';
+import {
+  readRuntimeHostProcessIdentity,
+  type RuntimeHostProcessIdentity,
+} from './process-identity.js';
 
 const TERMINATION_SETTLE_MS = 2_000;
 
@@ -34,10 +38,29 @@ export interface RegisteredRuntimeHostIdentity {
   readonly pid: number;
 }
 
-interface RegisteredRuntimeHostTerminationDependencies {
-  readonly terminateProcess: typeof terminateProcessTree;
+interface RuntimeHostExitDependencies {
   readonly isProcessAlive: (pid: number) => boolean;
   readonly settleMs: number;
+}
+
+interface RegisteredRuntimeHostTerminationDependencies extends RuntimeHostExitDependencies {
+  readonly terminateProcess: typeof terminateProcessTree;
+}
+
+export interface ObservedRegisteredRuntimeHostTerminationAuthority {
+  readonly processIdentity: RuntimeHostProcessIdentity;
+  readonly isCurrent: () => boolean;
+}
+
+export interface ObservedRegisteredRuntimeHost {
+  readonly rootPath: string;
+  readonly registration: HostRegistration;
+}
+
+interface ObservedRegisteredRuntimeHostTerminationDependencies extends RuntimeHostExitDependencies {
+  readonly readProcessIdentity: typeof readRuntimeHostProcessIdentity;
+  readonly readRegistration: typeof readHostRegistration;
+  readonly signalProcess: (pid: number) => boolean;
 }
 
 const defaultDependencies: RegisteredRuntimeHostTerminationDependencies = {
@@ -46,10 +69,18 @@ const defaultDependencies: RegisteredRuntimeHostTerminationDependencies = {
   settleMs: TERMINATION_SETTLE_MS,
 };
 
+const defaultObservedDependencies: ObservedRegisteredRuntimeHostTerminationDependencies = {
+  isProcessAlive,
+  readProcessIdentity: readRuntimeHostProcessIdentity,
+  readRegistration: readHostRegistration,
+  signalProcess: forceKillProcess,
+  settleMs: TERMINATION_SETTLE_MS,
+};
+
 /**
  * Force-terminates only the exact local ephemeral Host still registered for
  * the expected State Root. Callers must reserve this for explicit recovery
- * after graceful retirement fails.
+ * and keep their authorization current until the signal is sent.
  */
 export function forceTerminateRegisteredRuntimeHost(
   identity: RegisteredRuntimeHostIdentity,
@@ -103,6 +134,69 @@ export async function forceTerminateRegisteredRuntimeHostWithDependencies(
   return waitForExit(identity.pid, dependencies);
 }
 
+/**
+ * Stops an ephemeral Host that Desktop did not launch in this process. Unlike
+ * the owned-process path above, its authority is limited to the exact root PID
+ * whose OS process lifetime was observed across a valid handshake.
+ */
+export function forceTerminateObservedRegisteredRuntimeHost(
+  observed: ObservedRegisteredRuntimeHost,
+  authority: ObservedRegisteredRuntimeHostTerminationAuthority,
+): Promise<boolean> {
+  return forceTerminateObservedRegisteredRuntimeHostWithDependencies(
+    observed,
+    authority,
+    defaultObservedDependencies,
+  );
+}
+
+export async function forceTerminateObservedRegisteredRuntimeHostWithDependencies(
+  observed: ObservedRegisteredRuntimeHost,
+  authority: ObservedRegisteredRuntimeHostTerminationAuthority,
+  dependencies: ObservedRegisteredRuntimeHostTerminationDependencies,
+): Promise<boolean> {
+  const { registration } = observed;
+  if (
+    registration.lifecycleMode !== 'ephemeral' ||
+    !authority.isCurrent() ||
+    authority.processIdentity.startIdentity.length === 0
+  ) {
+    return false;
+  }
+  const capability = await resolveStorageRoot({ path: observed.rootPath, kind: 'interactive' });
+  if (capability.rootId !== registration.rootId) return false;
+  const { controlDirectory } = await prepareStorageRootControlDirectory(capability);
+  const signalTarget = await dependencies.readRegistration(controlDirectory);
+  if (!signalTarget) return true;
+  if (!matchesObservedRegistration(signalTarget, registration) || !authority.isCurrent()) {
+    return false;
+  }
+  if (!dependencies.isProcessAlive(registration.pid)) return true;
+  const processIdentity = await dependencies.readProcessIdentity(registration.pid);
+  if (
+    processIdentity?.startIdentity !== authority.processIdentity.startIdentity ||
+    !authority.isCurrent()
+  ) {
+    return false;
+  }
+  const signaled = dependencies.signalProcess(registration.pid);
+  if (!signaled && dependencies.isProcessAlive(registration.pid)) return false;
+  return waitForExit(registration.pid, dependencies);
+}
+
+function matchesObservedRegistration(
+  current: HostRegistration,
+  observed: HostRegistration,
+): boolean {
+  return (
+    current.rootId === observed.rootId &&
+    current.hostEpoch === observed.hostEpoch &&
+    current.pid === observed.pid &&
+    current.lifecycleMode === observed.lifecycleMode &&
+    current.createdAt === observed.createdAt
+  );
+}
+
 function matchesIdentity(
   registration: HostRegistration | undefined,
   identity: RegisteredRuntimeHostIdentity,
@@ -117,7 +211,7 @@ function matchesIdentity(
 
 async function waitForExit(
   pid: number,
-  dependencies: RegisteredRuntimeHostTerminationDependencies,
+  dependencies: RuntimeHostExitDependencies,
 ): Promise<boolean> {
   const deadline = Date.now() + dependencies.settleMs;
   while (dependencies.isProcessAlive(pid)) {
@@ -137,5 +231,14 @@ function isProcessAlive(pid: number): boolean {
       'code' in error &&
       (error as NodeJS.ErrnoException).code === 'ESRCH'
     );
+  }
+}
+
+function forceKillProcess(pid: number): boolean {
+  try {
+    process.kill(pid, 'SIGKILL');
+    return true;
+  } catch {
+    return false;
   }
 }

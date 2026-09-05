@@ -50,7 +50,7 @@ function statusHasSpinner(toolStatuses: readonly ('running' | 'completed')[]): b
   return document.querySelector('.maka-turn-processing .astryx-spinner') !== null;
 }
 
-function runningStatusText(locale: 'en' | 'zh'): string {
+function runningStatusText(locale: 'en' | 'zh-CN'): string {
   const turn: TurnViewModel = {
     turnId: 'turn-1',
     status: 'running',
@@ -78,6 +78,6 @@ test('keeps the turn spinner when a collapsed group hides the running tool', () 
 });
 
 test('describes provider silence without inventing semantic progress', () => {
-  assert.equal(runningStatusText('zh'), '等待模型输出…');
+  assert.equal(runningStatusText('zh-CN'), '等待模型输出…');
   assert.equal(runningStatusText('en'), 'Waiting for model output…');
 });

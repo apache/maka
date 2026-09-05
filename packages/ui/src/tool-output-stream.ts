@@ -99,7 +99,7 @@ export interface ApplyToolOutputChunkOptions {
   maxChunks?: number;
   maxTotalChars?: number;
   maxChunkChars?: number;
-  locale?: UiLocale;
+  locale: UiLocale;
 }
 
 export interface ApplyToolOutputChunkResult {
@@ -142,12 +142,12 @@ export interface ApplyToolOutputChunkResult {
 export function applyToolOutputChunk(
   prevChunks: ToolOutputChunk[] | undefined,
   rawChunk: ToolOutputChunk,
-  options: ApplyToolOutputChunkOptions = {},
+  options: ApplyToolOutputChunkOptions,
 ): ApplyToolOutputChunkResult {
   const maxChunks = options.maxChunks ?? TOOL_STREAM_MAX_CHUNKS;
   const maxTotalChars = options.maxTotalChars ?? TOOL_STREAM_MAX_TOTAL_CHARS;
   const maxChunkChars = options.maxChunkChars ?? TOOL_STREAM_MAX_CHUNK_CHARS;
-  const truncatedChunkMarker = getSharedUiCopy(options.locale ?? 'zh').stream.toolChunkTruncated;
+  const truncatedChunkMarker = getSharedUiCopy(options.locale).stream.toolChunkTruncated;
 
   const list = prevChunks ?? [];
 

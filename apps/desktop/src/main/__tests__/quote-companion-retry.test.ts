@@ -376,6 +376,83 @@ test('first send after a completed turn forks through the settled turn', async (
   assert.equal(probe.getAttribute('data-error'), '');
 });
 
+test('a first send shows the question bubble immediately but arms Stop only once the fork exists', async () => {
+  // `branchFromTurn` is the Host round trip a first send waits on. Holding it
+  // open lets us observe the panel while the fork is still being created.
+  const branch = deferred<{ ok: true; session: SessionSummary }>();
+  const rendered = await renderOwnershipProbe({
+    listTurns: async () => [settledTurn('done-turn')],
+    branchFromTurn: () => branch.promise,
+    send: async () => ({ ok: true as const, turnId: 'first-turn' }),
+  });
+  const probe = rendered.container.firstElementChild;
+  assert.ok(probe);
+  // Nothing sent yet: no fork, no bubble, not streaming.
+  assert.equal(probe.getAttribute('data-companion-id'), '');
+  assert.equal(probe.getAttribute('data-transient-count'), '0');
+  assert.equal(probe.getAttribute('data-streaming'), 'false');
+
+  // Kick off the send but leave fork creation pending (branch unresolved).
+  let sendResult!: Promise<boolean>;
+  await act(async () => {
+    sendResult = rendered.send('why does this fail?');
+    await Promise.resolve();
+  });
+  await waitUntil(() => probe.getAttribute('data-transient-count') === '1');
+
+  // The fork has NOT committed yet, but the question bubble is already on screen
+  // — the instant feedback #4654 asked for, and what the panel's running-status
+  // line rides on (`streaming || transientMessages.length > 0`) before a turn
+  // exists. Crucially `streaming` is still false, so the Composer does NOT render
+  // a Stop button during the window where `stop()` is a no-op (companionIdRef is
+  // only set at commitFork). Arming the admission early would show a dead Stop.
+  assert.equal(probe.getAttribute('data-companion-id'), '');
+  assert.equal(probe.getAttribute('data-transient-text'), 'why does this fail?');
+  assert.equal(probe.getAttribute('data-streaming'), 'false');
+
+  // Once the fork commits and the send goes in flight, the admission arms:
+  // streaming turns true, so Stop appears exactly when it can act on the turn.
+  await act(async () => {
+    branch.resolve({ ok: true as const, session: session('side-conversation') });
+    assert.equal(await sendResult, true);
+    await Promise.resolve();
+  });
+  await awaitCompanion(rendered.container);
+  await waitUntil(() => probe.getAttribute('data-streaming') === 'true');
+  assert.equal(probe.getAttribute('data-error'), '');
+  assert.equal(probe.getAttribute('data-transient-count'), '1');
+
+  // The running state rides the whole turn and only retires on completion.
+  await act(async () => {
+    rendered.emit(completeEvent('c1', 'first-turn', 2));
+    await Promise.resolve();
+  });
+  await waitUntil(() => probe.getAttribute('data-streaming') === 'false');
+});
+
+test('a failed first send retires the optimistic bubble without ever arming Stop', async () => {
+  // The fork never materializes: `branchFromTurn` throws. The optimistic bubble
+  // must be unwound so nothing is stranded with no turn to reconcile it away, and
+  // Stop must never have appeared (the admission is armed only in onBeforeSend).
+  const rendered = await renderOwnershipProbe({
+    listTurns: async () => [settledTurn('done-turn')],
+    branchFromTurn: async () => {
+      throw new Error('fork setup exploded');
+    },
+  });
+  const probe = rendered.container.firstElementChild;
+  assert.ok(probe);
+
+  await act(async () => {
+    assert.equal(await rendered.send('why does this fail?'), false);
+    await Promise.resolve();
+  });
+  assert.equal(probe.getAttribute('data-companion-id'), '');
+  assert.equal(probe.getAttribute('data-transient-count'), '0');
+  assert.equal(probe.getAttribute('data-streaming'), 'false');
+  assert.equal(probe.getAttribute('data-live-turn-id'), '');
+});
+
 test('dispatches /compact to the committed companion fork without sending model input', async () => {
   const compactCalls: string[] = [];
   let sendCalls = 0;
@@ -1968,6 +2045,8 @@ function QuoteCompanionOwnershipProbe(props: {
     'data-processing': String(companion.processing),
     'data-model-ready': String(companion.modelReady),
     'data-permission-mode': companion.permissionMode ?? '',
+    'data-transient-count': String(companion.transientMessages.length),
+    'data-transient-text': companion.transientMessages[0]?.text ?? '',
   });
 }
 

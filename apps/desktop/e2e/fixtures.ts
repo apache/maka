@@ -202,7 +202,7 @@ async function seedE2eConnection(userDataDir: string): Promise<void> {
   }
 }
 
-async function seedE2eLocale(userDataDir: string, locale: 'zh' | 'en'): Promise<void> {
+async function seedE2eLocale(userDataDir: string, locale: 'zh-CN' | 'zh-TW' | 'en'): Promise<void> {
   const workspaceRoot = path.join(userDataDir, 'workspaces', 'default');
   await createSettingsStore(workspaceRoot).update({
     personalization: { uiLocale: locale },
@@ -426,7 +426,7 @@ async function withE2eWindow(
     seed: boolean;
     readinessSelector: string;
     e2eFixtureScenario?: string;
-    locale?: 'zh' | 'en';
+    locale?: 'zh-CN' | 'zh-TW' | 'en';
     /** Opt this window back into animated scrolling; see `scroll-motion-policy`. */
     scrollMotion?: 'auto' | 'smooth';
     /** #1312: force app:info's platform so the window boots natively into that platform's `data-os` cascade. */
@@ -571,8 +571,10 @@ type E2eTestFixtures = {
   parentRemovalWindow: Page;
   railRenderWindow: Page;
   promptRailWindow: Page;
+  threadSearchWindow: Page;
   partialHistoryWindow: Page;
   requestHeaderRowWindow: Page;
+  permissionCenterWindow: Page;
   newTaskTargetWindow: Page;
   directoryReferenceWindow: { page: Page; folder: string };
   accessibilityNarrativeWindow: Page;
@@ -602,7 +604,7 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
   }, { scope: 'worker', auto: true }],
   directoryReferenceWindow: async ({}, use) => {
     await withE2eWindow(
-      { seed: true, readinessSelector: COMPOSER_INPUT, locale: 'zh', showWindow: true },
+      { seed: true, readinessSelector: COMPOSER_INPUT, locale: 'zh-CN', showWindow: true },
       async (page, { userDataDir, app }) => {
         const folder = path.join(userDataDir, 'referenced-source');
         await mkdir(path.join(folder, 'nested'), { recursive: true });
@@ -619,7 +621,7 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
   },
   // Seeded: a pre-staged connection clears onboarding so the composer is ready.
   window: async ({}, use) => {
-    await withE2eWindow({ seed: true, readinessSelector: COMPOSER_INPUT, locale: 'zh' }, use);
+    await withE2eWindow({ seed: true, readinessSelector: COMPOSER_INPUT, locale: 'zh-CN' }, use);
   },
   agentGraphWindow: async ({}, use) => {
     await withE2eWindow(
@@ -627,7 +629,7 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
         seed: false,
         readinessSelector: '.maka-agent-graph-panel',
         e2eFixtureScenario: 'agent-graph-layout',
-        locale: 'zh',
+        locale: 'zh-CN',
         showWindow: true,
       },
       use,
@@ -637,7 +639,7 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
     await withE2eWindow({
       seed: false,
       readinessSelector: '[data-maka-contract="onboarding-card"]',
-      locale: 'zh',
+      locale: 'zh-CN',
       showWindow: true,
     }, use);
   },
@@ -646,7 +648,7 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
       {
         seed: true,
         readinessSelector: COMPOSER_INPUT,
-        locale: 'zh',
+        locale: 'zh-CN',
         gitReviewExtraFiles: 0,
       },
       async (page, context) => {
@@ -662,7 +664,7 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
     await withE2eWindow({
       seed: true,
       readinessSelector: COMPOSER_INPUT,
-      locale: 'zh',
+      locale: 'zh-CN',
       invocableSkills: true,
     }, use);
   },
@@ -679,7 +681,7 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
     await withE2eWindow({
       seed: true,
       readinessSelector: COMPOSER_INPUT,
-      locale: 'zh',
+      locale: 'zh-CN',
       newTaskProject: true,
       showWindow: true,
     }, use);
@@ -693,7 +695,7 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
       seed: false,
       readinessSelector: '[data-maka-contract="search-modal"][open]',
       e2eFixtureScenario: 'sidebar-search-modal-open',
-      locale: 'zh',
+      locale: 'zh-CN',
     }, use);
   },
   parentRemovalWindow: async ({}, use) => {
@@ -701,7 +703,7 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
       {
         seed: true,
         readinessSelector: COMPOSER_INPUT,
-        locale: 'zh',
+        locale: 'zh-CN',
         parentRemovalSessions: true,
       },
       use,
@@ -712,7 +714,7 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
       {
         seed: true,
         readinessSelector: COMPOSER_INPUT,
-        locale: 'zh',
+        locale: 'zh-CN',
         railRenderSessions: true,
       },
       use,
@@ -733,7 +735,7 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
       // Every other fixture window names its locale; without one the renderer
       // takes the host's, so any test that reaches a control by its label
       // passes on a Chinese desktop and cannot find it on an English CI runner.
-      locale: 'zh',
+      locale: 'zh-CN',
       showWindow: true,
     }, async (page, { app }) => {
       const viewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
@@ -752,6 +754,18 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
       await setPromptRailWindowVisible(promptRailWorker, false);
     }
   },
+  // The same seeded transcript, on a window of its own. Search reads the Host
+  // through the bridge and renders nothing, so it needs neither the warm
+  // window's compositor nor its between-test reset — and taking it off the
+  // reused window is what retires the readiness gate's cross-test bleed (#4707).
+  threadSearchWindow: async ({}, use) => {
+    await withE2eWindow({
+      seed: false,
+      readinessSelector: '[data-turn-id]',
+      e2eFixtureScenario: 'chat-prompt-rail',
+      locale: 'zh-CN',
+    }, use);
+  },
   // A transcript larger than the bounded Desktop range. Clicking an unloaded
   // prompt exercises the real load-around path and its partial-history UI.
   partialHistoryWindow: async ({}, use) => {
@@ -759,7 +773,7 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
       seed: false,
       readinessSelector: '[data-turn-id]',
       e2eFixtureScenario: 'chat-partial-history',
-      locale: 'zh',
+      locale: 'zh-CN',
       showWindow: true,
     }, use);
   },
@@ -772,19 +786,28 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
       seed: false,
       readinessSelector: '.settingsSurface',
       e2eFixtureScenario: 'settings-models',
-      locale: 'zh',
+      locale: 'zh-CN',
       showWindow: true,
     }, use);
   },
-  // A data-backed conversation with settled tool evidence and a populated
-  // task ledger. Shown because the accessibility journey follows real native
+  permissionCenterWindow: async ({}, use) => {
+    await withE2eWindow({
+      seed: false,
+      readinessSelector: '.settingsCapabilityGroup',
+      e2eFixtureScenario: 'settings-permissions',
+      locale: 'zh-CN',
+      showWindow: true,
+    }, use);
+  },
+  // A data-backed conversation with settled tool evidence and the workbar open
+  // beside it. Shown because the accessibility journey follows real native
   // focus order through the transcript into the composer controls.
   accessibilityNarrativeWindow: async ({}, use) => {
     await withE2eWindow({
       seed: false,
       readinessSelector: '[data-turn-id]',
       e2eFixtureScenario: 'turn-narrative',
-      locale: 'zh',
+      locale: 'zh-CN',
       showWindow: true,
     }, use);
   },

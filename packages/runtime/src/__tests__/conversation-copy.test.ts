@@ -43,6 +43,7 @@ import {
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
 import { createWorkspaceRuntimeStore } from '@maka/storage/runtime-event-persistence';
+import { sectionedSummary } from './history-compact-test-fixtures.js';
 import { OPERATIONAL_STATE_DATABASE_NAME } from '@maka/storage/operational-state-store';
 import { createSqliteRuntimeStore } from '@maka/storage/sqlite-runtime-store';
 import {
@@ -1001,16 +1002,31 @@ test('conversation copy rewrites owned references without changing opaque tool p
     preserved.type === 'user' ? preserved.attachments?.[0]?.ref : undefined,
     messages[0]?.type === 'user' ? messages[0].attachments?.[0]?.ref : undefined,
   );
-  for (const message of [messages[2]!, messages[3]!]) {
-    assert.throws(
-      () =>
-        rewriteConversationCopyMessage(message, {
-          ...references,
-          artifactIds: new Map(),
-        }),
-      /missing Artifact artifact-source/,
-    );
-  }
+  // An archived tool result's Artifact holds that result's own bytes, and the
+  // two are removed together, so a copy that lost it has lost what a reader
+  // will ask for.
+  assert.throws(
+    () =>
+      rewriteConversationCopyMessage(messages[2]!, {
+        ...references,
+        artifactIds: new Map(),
+      }),
+    /missing Artifact artifact-source/,
+  );
+  // A child result is the opposite case: it lists every Artifact its turn
+  // held, in a ledger that cannot be rewritten, so an id in it outlives what
+  // it named. The copy carries what is still there and drops the rest, rather
+  // than making a whole Session uncopyable over a reclaimed byte nobody reads.
+  const reclaimed = rewriteConversationCopyMessage(messages[3]!, {
+    ...references,
+    artifactIds: new Map(),
+  });
+  assert.deepEqual(
+    reclaimed.type === 'tool_result' && reclaimed.content.kind === 'agent_swarm'
+      ? reclaimed.content.items[0]?.artifactIds
+      : undefined,
+    [],
+  );
   assert.throws(
     () =>
       rewriteConversationCopyMessage(messages[3]!, {
@@ -1602,6 +1618,96 @@ test('conversation copy rewrites the nested identity of a model call attempt', a
   }
 });
 
+test('conversation copy survives a capture the store has already reclaimed', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-conversation-reclaimed-capture-'));
+  try {
+    const runStore = createSqliteAgentRunStore(root);
+    const runtimeEventStore = createWorkspaceRuntimeStore(root);
+    await seedRun(runtimeEventStore, {
+      runId: 'run-source',
+      invocationId: 'invocation-source',
+      turnId: 'turn-1',
+      cwd: root,
+    });
+    for (const event of [
+      runtimeEvent({
+        id: 'event-user',
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: 'copy this turn' },
+      }),
+      runtimeEvent({ id: 'event-terminal', ts: 2, status: 'completed' }),
+    ]) {
+      await runtimeEventStore.appendRuntimeEvent('session-source', 'run-source', event);
+    }
+    await runStore.appendEvent('session-source', 'run-source', {
+      type: 'model_call_attempt_recorded',
+      id: 'attempt-source',
+      runId: 'run-source',
+      sessionId: 'session-source',
+      turnId: 'turn-1',
+      ts: 2,
+      data: {
+        schemaVersion: 1,
+        logicalCallId: 'logical-source',
+        attemptId: 'attempt-source',
+        traceId: 'trace-source',
+        sessionId: 'session-source',
+        runId: 'run-source',
+        turnId: 'turn-1',
+        step: 0,
+        attempt: 0,
+        callKind: 'main',
+        providerId: 'provider',
+        modelId: 'model',
+        captureArtifactId: 'artifact-gone',
+        startedAt: 1,
+        completedAt: 2,
+        latencyMs: 1,
+        status: 'completed',
+        usageBasis: 'reported',
+        inputTokens: 10,
+        outputTokens: 5,
+        costBasis: 'priced',
+        costUsd: 0.01,
+      },
+    });
+    const source = await new RuntimeReadModel({
+      runtimeEventStore,
+    }).getSessionView('session-source');
+
+    // The sweep purged the capture Artifact, so the copy never sees it. Before
+    // the join keys were made droppable this threw and no Session holding a
+    // historical model call could be branched or copied again.
+    await cloneConversationRuntimeLedger({
+      plan: await prepareTestCopyPlan(source, source.messages, runStore, runtimeEventStore),
+      copiedMessages: source.messages,
+      referenceMap: {
+        mode: 'exact',
+        linkedChildren: { mode: 'reject' },
+        sourceSessionId: 'session-source',
+        targetSessionId: 'session-target',
+        artifactIds: new Map(),
+        relativePaths: new Map(),
+      },
+      runStore,
+      runtimeEventStore,
+      newId: () => crypto.randomUUID(),
+    });
+    const [targetRun] = await runtimeEventStore.listSessionInvocations('session-target');
+    assert.ok(targetRun);
+    const events = await runStore.readEvents('session-target', targetRun.runId);
+    const attempt = events.find((event) => event.type === 'model_call_attempt_recorded');
+    assert.ok(attempt, 'the attempt itself still copies');
+    assert.equal(attempt.data?.captureArtifactId, undefined);
+    // Still a valid accounting authority without the join.
+    const decoded = decodeModelCallAttempt(attempt.data);
+    assert.equal(decoded.attemptId, attempt.id);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('conversation copy repairs a model call attempt stranded by a pre-fix copy', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-conversation-model-call-legacy-'));
   try {
@@ -1821,8 +1927,7 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
     const checkpoint = buildHistoryCompactCheckpoint({
       sessionId: 'session-source',
       coveredRuntimeEvents: sourceEvents.filter(isHistoryCompactContentEvent),
-      summary: 'The source turn called one opaque tool.',
-      summaryFormat: 'legacy_freeform',
+      summary: sectionedSummary('The source turn called one opaque tool.'),
       highWaterSeq: 3,
     });
     const providerCheckpoint = buildHistoryCompactCheckpoint({
@@ -1989,28 +2094,36 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
     const source = await new RuntimeReadModel({
       runtimeEventStore,
     }).getSessionView('session-source');
-    await assert.rejects(
-      async () =>
-        cloneConversationRuntimeLedger({
-          plan: await prepareTestCopyPlan(source, source.messages, runStore, runtimeEventStore),
-          copiedMessages: source.messages,
-          referenceMap: {
-            mode: 'exact',
-            linkedChildren: { mode: 'reject' },
-            sourceSessionId: 'session-source',
-            targetSessionId: 'session-missing-artifact',
-            artifactIds: new Map([['artifact-source', 'artifact-target']]),
-            relativePaths: new Map(),
-          },
-          runStore,
-          runtimeEventStore,
-          newId: () => crypto.randomUUID(),
-        }),
-      /missing Artifact artifact-deleted/,
+    // The child result names an Artifact the copy has no mapping for, because
+    // it was reclaimed after the ledger recorded it. The copy carries the run
+    // and drops that one id, rather than making the Session uncopyable.
+    const withReclaimed = await cloneConversationRuntimeLedger({
+      plan: await prepareTestCopyPlan(source, source.messages, runStore, runtimeEventStore),
+      copiedMessages: source.messages,
+      referenceMap: {
+        mode: 'exact',
+        linkedChildren: { mode: 'reject' },
+        sourceSessionId: 'session-source',
+        targetSessionId: 'session-missing-artifact',
+        artifactIds: new Map([['artifact-source', 'artifact-target']]),
+        relativePaths: new Map(),
+      },
+      runStore,
+      runtimeEventStore,
+      newId: () => crypto.randomUUID(),
+    });
+    const reclaimedResult = withReclaimed.copiedMessages.find(
+      (message) => message.type === 'tool_result' && message.content.kind === 'subagent',
     );
     assert.deepEqual(
-      await runtimeEventStore.listSessionInvocations('session-missing-artifact'),
+      reclaimedResult?.type === 'tool_result' && reclaimedResult.content.kind === 'subagent'
+        ? reclaimedResult.content.artifactIds
+        : undefined,
       [],
+    );
+    assert.equal(
+      (await runtimeEventStore.listSessionInvocations('session-missing-artifact')).length,
+      1,
     );
     // A copied run and its copied invocation share one fresh identity, so the
     // copy mints one id here rather than two.
@@ -2288,8 +2401,7 @@ test('conversation copy rebuilds an inline checkpoint without legacy child event
     const checkpoint = buildHistoryCompactCheckpoint({
       sessionId: 'session-source',
       coveredRuntimeEvents: sourceEvents.filter(isHistoryCompactContentEvent),
-      summary: 'Both retained turns are complete.',
-      summaryFormat: 'legacy_freeform',
+      summary: sectionedSummary('Both retained turns are complete.'),
       highWaterSeq: 5,
     });
     await runStore.appendEvent('session-source', 'run-2', {
@@ -2403,8 +2515,7 @@ test('conversation copy drops a checkpoint from a superseded source policy inste
     const current = buildHistoryCompactCheckpoint({
       sessionId: 'session-source',
       coveredRuntimeEvents: sourceEvents.filter(isHistoryCompactContentEvent),
-      summary: 'Everything so far is complete.',
-      summaryFormat: 'legacy_freeform',
+      summary: sectionedSummary('Everything so far is complete.'),
       highWaterSeq: 5,
     });
     const legacyPolicyCheckpoint = {
@@ -2575,8 +2686,7 @@ test('conversation copy rebuilds a resumed child checkpoint over its child run c
     const checkpoint = buildHistoryCompactCheckpoint({
       sessionId: 'session-source',
       coveredRuntimeEvents: childSourceEvents,
-      summary: 'The resumed child retained both child turns.',
-      summaryFormat: 'legacy_freeform',
+      summary: sectionedSummary('The resumed child retained both child turns.'),
       highWaterSeq: 8,
     });
     await runStore.appendEvent('session-source', 'run-child-2', {

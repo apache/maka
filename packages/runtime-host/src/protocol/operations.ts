@@ -31,6 +31,7 @@ import { EXTERNAL_SESSION_OPERATION_SPECS } from './external-session.js';
 import { CLIENT_CAPABILITY_OPERATION_SPECS } from './client-capability.js';
 import { invalidProtocolFrame } from './errors.js';
 import { HOST_BOOTSTRAP_OPERATION_SPECS } from './host-status.js';
+import { HOST_RESOURCE_OPERATION_SPECS } from './host-resources.js';
 import { HOSTED_EXECUTION_OPERATION_SPECS } from './hosted-execution.js';
 import { GOAL_OPERATION_SPECS } from './goal.js';
 import { INTERACTION_OPERATION_SPECS } from './interaction.js';
@@ -161,6 +162,7 @@ export * from './agent-graph.js';
 export * from './execution-inspect.js';
 export * from './client-capability.js';
 export * from './goal.js';
+export * from './host-resources.js';
 export * from './memory.js';
 export * from './network-proxy.js';
 export * from './oauth.js';
@@ -185,6 +187,7 @@ export * from './workspace.js';
 
 export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   HOST_BOOTSTRAP_OPERATION_SPECS,
+  HOST_RESOURCE_OPERATION_SPECS,
   PEER_MESH_OPERATION_SPECS,
   HOSTED_EXECUTION_OPERATION_SPECS,
   ACCESS_AUTHORITY_OPERATION_SPECS,
@@ -276,6 +279,7 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'goal.control',
   'goal.query',
   'host.diagnostics.query',
+  'host.resources.query',
   'host.status',
   'interaction.answer',
   'interaction.query',

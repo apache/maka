@@ -137,7 +137,9 @@ function parseThemeFlag(raw: string | undefined): 'light' | 'dark' | 'auto' | nu
 
 function parseLocaleFlag(raw: string | undefined): UiLocale | null {
   const normalized = raw?.trim().toLowerCase();
-  return normalized === 'zh' || normalized === 'en' ? normalized : null;
+  if (normalized === 'zh-cn') return 'zh-CN';
+  if (normalized === 'zh-tw') return 'zh-TW';
+  return normalized === 'en' ? 'en' : null;
 }
 
 function parseTimezoneFlag(raw: string | undefined): string | null {
@@ -178,7 +180,10 @@ export function getE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState 
     case 'settings-models':
       return { ...state, activeSessionId: TURN_SESSION_ID, openSettingsSection: 'models' };
     case 'turn-narrative':
-      return { ...state, activeSessionId: TURN_SESSION_ID, workbarCollapsed: false, workbarTab: 'tasks' };
+      // Any open face will do — the scenario is about focus order through the
+      // transcript, and the workbar is here only so the panel is on screen.
+      // This was the Task face until it was retired.
+      return { ...state, activeSessionId: TURN_SESSION_ID, workbarCollapsed: false, workbarTab: 'review' };
     case 'turn-narrative-browser':
       return { ...state, activeSessionId: TURN_SESSION_ID, workbarCollapsed: false, workbarTab: 'browser' };
     case 'chat-prompt-rail':
@@ -245,24 +250,6 @@ export async function seedE2eFixture(input: {
 
   if (scenario === 'agent-graph-layout') await seedAgentGraphLayout(input.workspaceRoot, now);
 
-  if (scenario === 'turn-narrative' || scenario === 'turn-narrative-browser') {
-    const owner = await tryAcquireInteractiveRootOwner(storageRoot);
-    if (!owner) throw new Error('Unable to acquire the E2E fixture SessionTodo root');
-    try {
-      const todos = await openInteractiveSessionTodoStoreForWrite(owner.lease);
-      try {
-        await todos.replaceAll(TURN_SESSION_ID, [
-          { content: '补齐桌面端无障碍覆盖', status: 'in_progress' },
-          { content: '核对模型选择器的键盘路径', status: 'pending' },
-          { content: '确认工具结果可以展开阅读', status: 'completed' },
-        ]);
-      } finally {
-        todos.close();
-      }
-    } finally {
-      await owner.close();
-    }
-  }
 
   if (scenario === 'chat-prompt-rail') {
     await writeSession(input.workspaceRoot, promptRailSession(now), promptRailMessages(now));

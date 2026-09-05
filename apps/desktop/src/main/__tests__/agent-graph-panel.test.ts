@@ -696,3 +696,81 @@ describe('AgentGraphPanel dismiss', () => {
     await act(async () => harness.root.unmount());
   });
 });
+
+describe('AgentGraphPanel collapse initialization', () => {
+  it('collapses a completed graph each time its session is opened', async () => {
+    const sessionA = snapshot({
+      rootSessionId: 'session-a',
+      graphId: 'graph-a',
+      status: 'completed',
+    });
+    const sessionB = snapshot({
+      rootSessionId: 'session-b',
+      graphId: 'graph-b',
+      status: 'active',
+    });
+    const harness = installGraphRenderer(sessionA, [sessionB]);
+
+    await harness.renderSession('session-a');
+    assert.equal(
+      harness.container.querySelector('.maka-agent-graph-panel')?.getAttribute('data-collapsed'),
+      'true',
+    );
+
+    await harness.renderSession('session-b');
+    assert.equal(
+      harness.container.querySelector('.maka-agent-graph-panel')?.getAttribute('data-collapsed'),
+      'false',
+    );
+
+    await harness.renderSession('session-a');
+    assert.equal(
+      harness.container.querySelector('.maka-agent-graph-panel')?.getAttribute('data-collapsed'),
+      'true',
+    );
+    await act(async () => harness.root.unmount());
+  });
+
+  it('keeps non-completed graphs expanded on open', async () => {
+    for (const status of ['active', 'waiting', 'closing', 'failed', 'stopped'] as const) {
+      const harness = await renderPanel(snapshot({ graphId: `graph-${status}`, status }));
+      assert.equal(
+        harness.container.querySelector('.maka-agent-graph-panel')?.getAttribute('data-collapsed'),
+        'false',
+        status,
+      );
+      await act(async () => harness.root.unmount());
+    }
+  });
+
+  it('does not auto-collapse when the open graph completes', async () => {
+    const active = snapshot({ graphId: 'graph-1', status: 'active' });
+    const harness = await renderPanel(active);
+
+    await harness.setSnapshot({ ...active, status: 'completed' });
+
+    assert.equal(
+      harness.container.querySelector('.maka-agent-graph-panel')?.getAttribute('data-collapsed'),
+      'false',
+    );
+    await act(async () => harness.root.unmount());
+  });
+
+  it('preserves a manual expansion across completed snapshot refreshes', async () => {
+    const completed = snapshot({ graphId: 'graph-1', status: 'completed' });
+    const harness = await renderPanel(completed);
+    const toggle = harness.container.querySelector('.maka-agent-graph-collapse-toggle');
+    assert.ok(toggle);
+
+    await act(async () => {
+      (toggle as HTMLElement).click();
+    });
+    await harness.setSnapshot({ ...completed, scheduleRevision: 2 });
+
+    assert.equal(
+      harness.container.querySelector('.maka-agent-graph-panel')?.getAttribute('data-collapsed'),
+      'false',
+    );
+    await act(async () => harness.root.unmount());
+  });
+});

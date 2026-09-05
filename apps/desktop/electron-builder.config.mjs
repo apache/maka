@@ -90,6 +90,11 @@ const baseDesktopBuilderConfig = {
     'dist/**/*',
     'dist-renderer/**/*',
     'package.json',
+    // Keep node-gyp's checkout-specific projects and link intermediates out.
+    // Native addons, the Unix spawn helper and ConPTY's DLL/helper are runtime files.
+    '!**/node_modules/node-pty/build/!(Release){,/**}',
+    '!**/node_modules/node-pty/build/Release/!(*.node|spawn-helper|conpty){,/**}',
+    '!**/node_modules/node-pty/node-addon-api{,/**}',
     '!node_modules/@maka/{mcp,runtime,runtime-host}/package.json',
     '!**/__tests__/**',
     // FakeBackend and the Desktop E2E candidate bootstrap live under

@@ -53,6 +53,7 @@ export function SessionRail(props: SessionRailStoryProps) {
     worktreeSessionIds: props.worktreeSessionIds,
     groups: props.groups,
     groupVariant: props.groupVariant ?? props.viewMode ?? 'conversation',
+    sessionProjectName: props.sessionProjectName,
     sessionMeta: props.sessionMeta,
     onSelectSession: props.onSelectSession ?? (() => undefined),
     rowActions: props.rowActions,

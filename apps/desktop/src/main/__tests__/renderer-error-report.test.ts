@@ -64,7 +64,7 @@ test('bounds and redacts the browser-only renderer error report', () => {
 
 test('keeps raw exceptions out of the localized crash surface', () => {
   for (const [locale, title] of [
-    ['zh', 'Maka 渲染层崩溃了'],
+    ['zh-CN', 'Maka 渲染层崩溃了'],
     ['en', 'The Maka renderer crashed'],
   ] as const) {
     const markup = renderToStaticMarkup(

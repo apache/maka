@@ -91,6 +91,7 @@ on:
       - 'packages/runtime-host/src/protocol/host-status.ts'
       - 'packages/runtime-host/src/protocol/skill-catalog.ts'
       - 'packages/runtime-host/src/server/access-credential-store.ts'
+      - 'packages/runtime-host/src/server/host-resource-probe.ts'
       - 'packages/runtime-host/src/server/skill-catalog-repository.ts'
       - 'packages/runtime-host/src/server/skill-catalog-transaction.ts'
       - 'packages/runtime/src/__tests__/runtime-continuation-crash.test.ts'

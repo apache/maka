@@ -368,9 +368,9 @@ function copyDependencyClosure(cli) {
   };
   visit(cli, stageRoot);
 
-  const evalUndici = findDependency(cli, 'undici', '8.10.0');
+  const evalUndici = findDependency(cli, 'undici', '8.10.1');
   if (!evalUndici?.path || !existsSync(evalUndici.path)) {
-    throw new Error('The installed CLI closure does not contain undici@8.10.0');
+    throw new Error('The installed CLI closure does not contain undici@8.10.1');
   }
   copyThirdPartyPackage(realpathSync(evalUndici.path), join(stageRoot, 'node_modules/undici'));
   copiedDestinations.set(join(stageRoot, 'node_modules/undici'), realpathSync(evalUndici.path));
@@ -664,7 +664,7 @@ function writeReleaseManifest(cli, publishable) {
       `CLI manifest and installed lockfile disagree: ${source.version} vs ${cli.version}`,
     );
   }
-  const undici = findDependency(cli, 'undici', '8.10.0');
+  const undici = findDependency(cli, 'undici', '8.10.1');
   const dependencies = { ...source.dependencies, undici: undici.version };
   const updateCompatibility = source.maka?.managedRuntimeHostUpdateCompatibility;
   if (!Number.isSafeInteger(updateCompatibility) || updateCompatibility < 1) {

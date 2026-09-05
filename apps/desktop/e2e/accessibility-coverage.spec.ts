@@ -72,7 +72,7 @@ test('every settings page exposes named actionable controls', async ({ window: p
   const sectionLabels = (await navigation.getByRole('button').allTextContents())
     .map((label) => label.trim().replace(/\s*Beta$/, ''))
     .filter((label) => label.length > 0 && label !== '返回应用');
-  const expectedSectionLabels = groupedNav('zh')
+  const expectedSectionLabels = groupedNav('zh-CN')
     .flatMap(({ items }) => items)
     .filter(({ enabled }) => enabled)
     .map(({ label }) => label);
@@ -142,18 +142,21 @@ test('module pages and global overlays expose named actionable controls', async 
   await page.keyboard.press('Escape');
 });
 
-test('data-backed conversation exposes ordered todos and keyboard access to tools, models, and Graph', async ({
+test('data-backed conversation exposes an open workbar face and keyboard access to tools, models, and Graph', async ({
   accessibilityNarrativeWindow: page,
 }) => {
   const cdp = await page.context().newCDPSession(page);
   await expect(page.getByRole('region', { name: /对话：/ })).toBeVisible();
-  const todoRegion = page.getByRole('region', { name: '任务待办' });
-  await expect(todoRegion).toBeVisible();
-  await expect(todoRegion.getByRole('listitem')).toHaveText([
-    '补齐桌面端无障碍覆盖',
-    '核对模型选择器的键盘路径',
-    '确认工具结果可以展开阅读',
-  ]);
+  // The scenario opens a face beside the transcript so the AX sweep below sees
+  // the workbar's own tree, not an empty column. Which face is incidental — it
+  // was the Task face until that face was retired — so this asserts the strip
+  // reports one, rather than reaching into the face's contents.
+  const workbar = page.getByRole('complementary', { name: '任务工作栏' });
+  await expect(workbar).toBeVisible();
+  await expect(workbar.getByRole('tab', { name: '变更' })).toHaveAttribute(
+    'aria-selected',
+    'true',
+  );
   await assertAxHealth(cdp, 'conversation/data-backed');
 
   await expect(page.getByRole('main')).toHaveCount(1);
@@ -277,20 +280,29 @@ test('composer and workbar entry points expose named actionable controls', async
   await expect(page.getByRole('list', { name: '打开工具' })).toBeVisible();
   await assertAxHealth(cdp, 'workbar/launcher');
 
-  const workbarPanels = [
-    '侧边对话',
-    '变更',
-    '终端',
-    '浏览器',
-    '生成文件',
-    '待办',
-    '追踪',
-  ] as const;
-  for (const panel of workbarPanels) {
-    await page
-      .getByRole('list', { name: '打开工具' })
-      .getByRole('button', { name: new RegExp(`^${panel}(?: |$)`) })
-      .click();
+  // Registry order, minus the Task face this shell retired. The launcher is
+  // the empty state, so it opens the first face and then goes away; every face
+  // after it is opened from the [+] menu, which is the only entry point once a
+  // face is on screen. The faces stay open behind one another — the strip is a
+  // `tablist` now, so each one has to keep reporting its own tab.
+  const workbarPanels = ['侧边对话', '变更', '终端', '浏览器', '生成文件', '追踪'] as const;
+  for (const [index, panel] of workbarPanels.entries()) {
+    if (index === 0) {
+      await page
+        .getByRole('list', { name: '打开工具' })
+        .getByRole('button', { name: new RegExp(`^${panel}(?: |$)`) })
+        .click();
+    } else {
+      await page.getByRole('button', { name: '打开或关闭工作栏的面' }).first().click();
+      const faceMenu = page.getByRole('menu');
+      await expect(faceMenu).toBeVisible();
+      await assertAxHealth(cdp, `workbar/face-menu/${panel}`);
+      await faceMenu.getByRole('menuitem', { name: panel, exact: true }).click();
+      // The menu stays open on select, so that one pick can close a face as
+      // well as open one. Dismiss it before reading the panel underneath.
+      await page.keyboard.press('Escape');
+      await expect(faceMenu).toBeHidden();
+    }
     const activeTab = page.getByRole('tab', { name: new RegExp(panel) });
     await expect(activeTab).toBeVisible();
     await expect(activeTab).toHaveAttribute('aria-selected', 'true');
@@ -298,14 +310,8 @@ test('composer and workbar entry points expose named actionable controls', async
       await expect(page.getByRole('region', { name: '任务终端' })).toBeVisible();
     } else if (panel === '浏览器') {
       await expect(page.getByRole('region', { name: '嵌入式浏览器' })).toBeVisible();
-    } else if (panel === '待办') {
-      await expect(page.getByRole('region', { name: '任务待办' })).toBeVisible();
     }
     await assertAxHealth(cdp, `workbar/${panel}`);
-    if (panel !== workbarPanels.at(-1)) {
-      await page.getByRole('button', { name: '打开工作栏标签' }).first().click();
-      await expect(page.getByRole('list', { name: '打开工具' })).toBeVisible();
-    }
   }
 });
 

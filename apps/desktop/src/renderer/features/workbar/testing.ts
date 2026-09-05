@@ -40,6 +40,8 @@ export {
   usageRingArcs,
 } from './tools/inspector/session-inspector-panel.js';
 export * from './tools/inspector/session-inspector-overview-model.js';
+export * from './tools/inspector/session-trace-refresh.js';
+export * from './tools/inspector/live-context-usage.js';
 export * from './tools/side-chat/quote-companion-panel-state.js';
 export * from './tools/side-chat/quote-companion-core.js';
 export * from './tools/side-chat/quote-companion-context-compaction.js';
@@ -81,10 +83,6 @@ export function createFakeWorkbarServices(
       write: async () => null,
       subscribePtyData: noopSubscription,
       subscribeResync: noopSubscription,
-    },
-    todo: {
-      read: async () => [],
-      subscribeChanges: noopSubscription,
     },
     browser: {
       setActiveSession: () => undefined,

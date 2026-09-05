@@ -209,16 +209,6 @@ test('Agent Graph revision references reject incomplete or mismatched provenance
       code: 'operation_unavailable',
     },
     {
-      name: 'deleted Artifact',
-      input: { artifactStatus: 'deleted' },
-      code: 'operation_unavailable',
-    },
-    {
-      name: 'missing Artifact',
-      input: { artifactMissing: true },
-      code: 'operation_unavailable',
-    },
-    {
       name: 'active child Session',
       input: { childActive: true },
       code: 'session_busy',
@@ -229,6 +219,21 @@ test('Agent Graph revision references reject incomplete or mismatched provenance
     assert.equal(outcome.ok, false, policyCase.name);
     if (!outcome.ok) assert.equal(outcome.code, policyCase.code, policyCase.name);
   }
+});
+
+test('Agent Graph revision references outlive the Artifacts they name', async () => {
+  // A child result lists every Artifact its turn held, in a ledger that can
+  // never be rewritten -- so an id in it outlives what it named. The retired
+  // provider-request captures are reclaimed on their own, and a user may
+  // delete a child's Artifact; neither may cost the Session its ability to
+  // take a revision. What this checks is that a reference does not reach
+  // outside its own child and lineage, which `wrong Artifact turn` above
+  // still fails on.
+  const reclaimed = await prepare({ artifactMissing: true });
+  assert.equal(reclaimed.ok, true);
+
+  const userDeleted = await prepare({ artifactStatus: 'deleted' });
+  assert.equal(userDeleted.ok, true);
 });
 
 test('Agent Graph revision references reject invalid ownership boundaries', async () => {

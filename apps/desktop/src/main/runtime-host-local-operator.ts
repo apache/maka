@@ -62,6 +62,8 @@ import {
 const SETUP_TIMEOUT_MS = 10 * 60_000;
 const SETUP_FRAME_PENDING_MAX = 20 * 1024;
 const STDERR_MAX_BYTES = 64 * 1024;
+const SETUP_CLEANUP_MAX_RETRIES = 10;
+const SETUP_CLEANUP_RETRY_DELAY_MS = 100;
 const WINDOWS_NPM_RESOLUTION_SCRIPT = String.raw`
 const { statSync } = require('node:fs');
 const path = require('node:path').win32;
@@ -199,6 +201,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
   readonly spawnProcess?: typeof spawn;
   readonly setupTimeoutMs?: number;
   readonly terminateProcess?: typeof terminateChildProcessTree;
+  readonly removeSetupWorkingDirectory?: (path: string) => Promise<void>;
 } = {}): {
   runSetup(
     setup: DesktopRuntimeHostLocalSetupInput,
@@ -267,6 +270,15 @@ export function createDesktopRuntimeHostLocalOperator(input: {
   let closed = false;
   const closing = new AbortController();
   const terminate = input.terminateProcess ?? terminateChildProcessTree;
+  const removeSetupWorkingDirectory =
+    input.removeSetupWorkingDirectory ??
+    ((path: string) =>
+      rm(path, {
+        recursive: true,
+        force: true,
+        maxRetries: SETUP_CLEANUP_MAX_RETRIES,
+        retryDelay: SETUP_CLEANUP_RETRY_DELAY_MS,
+      }));
 
   return {
     async runSetup(setup, onProgress) {
@@ -302,7 +314,12 @@ export function createDesktopRuntimeHostLocalOperator(input: {
           active,
         });
       } finally {
-        await rm(workingDirectory, { recursive: true, force: true });
+        try {
+          await removeSetupWorkingDirectory(workingDirectory);
+        } catch {
+          // The private scratch directory is not part of the setup transaction.
+          // Its cleanup must not replace the operator's framed result or error.
+        }
       }
     },
     runPeer(command) {

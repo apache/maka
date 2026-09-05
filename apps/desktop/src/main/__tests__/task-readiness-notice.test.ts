@@ -63,8 +63,22 @@ test('confirmed repair and unavailable states block, while loading uncertainty d
 
 test('model blockers stay owned by existing connection recovery surfaces', () => {
   assert.equal(
-    deriveTaskReadinessNotice(snapshot('repair_required', 'model_target'), 'zh'),
+    deriveTaskReadinessNotice(snapshot('repair_required', 'model_target'), 'zh-CN'),
     undefined,
+  );
+});
+
+test('Traditional Chinese readiness notices use Taiwan terminology', () => {
+  assert.deepEqual(deriveTaskReadinessNotice(snapshot('unavailable', 'runtime'), 'zh-TW'), {
+    tone: 'destructive',
+    title: 'Maka 執行服務暫時無法使用。',
+    description: '任務尚未送出。重新檢查執行服務後再試。',
+    actionLabel: '重新檢查',
+    action: 'retry',
+  });
+  assert.equal(
+    deriveTaskReadinessNotice(snapshot('repair_required', 'workspace'), 'zh-TW')?.actionLabel,
+    '選擇工作區',
   );
 });
 

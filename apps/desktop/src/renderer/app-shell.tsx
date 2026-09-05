@@ -29,7 +29,6 @@ import {
   type Dispatch,
   type SetStateAction,
 } from 'react';
-import type { ProjectRecord } from '@maka/core/project';
 import type {
   FollowUpMode,
   InlineReference,
@@ -91,7 +90,7 @@ import {
   useWorkbarController,
 } from './features/workbar';
 import * as Goals from './features/goals';
-import { ModuleHubHost, useModuleHubController } from './features/module-hub';
+import * as ModuleHub from './features/module-hub';
 import {
   SessionNavigationProvider,
   createSessionOpenCommand,
@@ -207,7 +206,10 @@ import { loadComposerDefaults, saveComposerDefaults } from './composer-defaults'
 import { useTurnActionRegistry } from './use-turn-action-registry';
 import { useComposerAttachments } from './use-composer-attachments';
 import { useAppShellComposerQuotes } from './use-app-shell-composer-quotes';
-import { ComposerMentionsProvider, type ComposerMentionsSurface } from './composer-mentions';
+import {
+  type ComposerMentionsSurfaceInput,
+  renderComposerMentionsProvider,
+} from './composer-mentions';
 import { useAppShellSessionWorkspace } from './use-app-shell-session-workspace';
 import { useShellMemoryPill } from './use-shell-memory-pill';
 import { useShellConnections } from './use-shell-connections';
@@ -1361,7 +1363,7 @@ function AppShellContent({
     },
     [activeId, activeStreamingLive, shellCopy.slashCommands, turnActive],
   );
-  const refreshProjectSkillsRef = useRef<() => Promise<void>>(async () => {});
+  const moduleHubCommands = useMemo(ModuleHub.createModuleHubCommandPort, []);
   const {
     projectInfo,
     projects,
@@ -1388,7 +1390,7 @@ function AppShellContent({
     sessionProjectId: sharedSessionActive ? undefined : activeSession?.projectId,
     sessionProfileKind: sharedSessionActive ? undefined : activeDesktopSession?.profileKind,
     onProjectSelected: (ownerSessionId) => {
-      void refreshProjectSkillsRef.current();
+      void moduleHubCommands.refreshProjectSkills();
       if (ownerSessionId && activeIdRef.current === ownerSessionId) openNewTaskSurface();
     },
     toastApi,
@@ -1411,16 +1413,6 @@ function AppShellContent({
       append: (text: string) => composer.appendText(text),
     };
   }, []);
-  const moduleHub = useModuleHubController({
-    selection: navSelection,
-    selectModule: setNavSelection,
-    ...(projectCapabilities.viewClientPath ? { openSkillsFolder } : {}),
-    useSkillInChat,
-    openSession: (sessionId) => openSessionInChatRef.current(sessionId),
-    appendComposerText: (text) => composerRef.current?.appendText(text),
-    captureActiveComposerClaim,
-  });
-  refreshProjectSkillsRef.current = moduleHub.commands.refreshProjectSkills;
   const workHubProjectsRef = useRef(projects);
   workHubProjectsRef.current = projects;
   const workHubCoordinationGeneration = workHubCoordinationGenerationRef.current;
@@ -1563,8 +1555,7 @@ function AppShellContent({
   // resolved project path as a refresh key for new-chat project changes. Only
   // the SURFACE is named here — the projection itself is owned by
   // `ComposerMentionsProvider` below, so its reloads do not re-render the shell.
-  const composerMentionsSurface: ComposerMentionsSurface = {
-    skillCatalogRevision: moduleHub.selectors.skillCatalogRevision,
+  const composerMentionsSurface: ComposerMentionsSurfaceInput = {
     sessionId: ownerActiveId,
     projectPath: activeId
       ? ownerActiveId
@@ -2606,7 +2597,7 @@ function AppShellContent({
     openHelp,
     openScheduledTaskCreate: () => {
       closePalette();
-      moduleHub.commands.openScheduledTaskCreate();
+      moduleHubCommands.openScheduledTaskCreate();
     },
     openProjectFolder,
     openSessionInChat,
@@ -2616,9 +2607,9 @@ function AppShellContent({
     openSkillsFolder,
     openWorkspaceFolder,
     refreshConnections: defaultHostConnections.refreshConnections,
-    copyTodayDailyReview: moduleHub.commands.copyTodayDailyReview,
-    pasteTodayDailyReview: moduleHub.commands.pasteTodayDailyReview,
-    saveTodayDailyReview: moduleHub.commands.saveTodayDailyReview,
+    copyTodayDailyReview: moduleHubCommands.copyTodayDailyReview,
+    pasteTodayDailyReview: moduleHubCommands.pasteTodayDailyReview,
+    saveTodayDailyReview: moduleHubCommands.saveTodayDailyReview,
     setNavSelection,
     setPermissionMode,
     setThemePref,
@@ -2635,14 +2626,27 @@ function AppShellContent({
         : 'im_hub';
 
   return (
-    // Goal state lives below the shell and wakes only its three readers. Composer
-    // mentions still wrap the frame so one projection serves every composer.
+    // Goal state and Module Hub ownership both live below the shell. Composer
+    // mentions still wrap the frame so one projection serves every composer,
+    // including side-chat panels, without rebuilding the frame on catalog moves.
     <Goals.GoalProvider
       activeSessionId={ownerActiveId}
       canOpenDialog={activeBoundarySurface.localInteractionAvailable}
       reportError={showSessionError}
     >
-    <ComposerMentionsProvider {...composerMentionsSurface}>
+    <ModuleHub.ModuleHubProvider
+      selection={navSelection}
+      selectModule={setNavSelection}
+      openSkillsFolder={projectCapabilities.viewClientPath ? openSkillsFolder : undefined}
+      useSkillInChat={useSkillInChat}
+      openSession={openSessionInChat}
+      appendComposerText={(text) => composerRef.current?.appendText(text)}
+      captureActiveComposerClaim={captureActiveComposerClaim}
+      commandPort={moduleHubCommands}
+    >
+    <ModuleHub.ModuleHubSkillCatalogRevisionBoundary
+      render={renderComposerMentionsProvider(composerMentionsSurface)}
+    >
     <SessionCollaboration.SessionTurnRequestInboxProvider
       sessions={sessions}
       onOpenSession={openSession}
@@ -2771,34 +2775,38 @@ function AppShellContent({
         aria-hidden={shellObscured ? 'true' : undefined}
         inert={shellObscured ? true : undefined}
         sideNav={
-          <SessionNavigationProvider
-            rail={sessionRail}
-            projects={localProjects}
-            streamingSessionIds={streamingSessionIds}
-            staleSessionIds={staleSessionIds}
-            SessionBadge={SessionCollaboration.SessionTurnRequestBadge}
-            ports={sessionNavigationPorts}
-            commandsRef={sessionNavigationCommandsRef}
-            onExitWorkHub={exitWorkHub}
-            onSelectSession={openSession}
-            workHubActive={workHubActive}
-            selection={navSelection}
-            scheduledTasks={moduleHub.selectors.scheduledTasks}
-            moduleMemory={navigationState.moduleMemory}
-            onSelect={setNavSelection}
-            onOpenSettings={openSettings}
-            updateReminder={updateReminder}
-            onOpenUpdate={openUpdateDownload}
-            onNew={() => void createSession()}
-            workHubEntry={workHubEnabled ? {
-              active: workHubActive,
-              label: 'WorkHub',
-              onSelect: openWorkHub,
-            } : undefined}
-            projectActions={projectRowActions}
-          >
-            {SESSION_RAIL}
-          </SessionNavigationProvider>
+          <ModuleHub.ModuleHubScheduledTasksBoundary
+            render={(scheduledTasks) => (
+              <SessionNavigationProvider
+                scheduledTasks={scheduledTasks}
+                rail={sessionRail}
+                projects={localProjects}
+                streamingSessionIds={streamingSessionIds}
+                staleSessionIds={staleSessionIds}
+                SessionBadge={SessionCollaboration.SessionTurnRequestBadge}
+                ports={sessionNavigationPorts}
+                commandsRef={sessionNavigationCommandsRef}
+                onExitWorkHub={exitWorkHub}
+                onSelectSession={openSession}
+                workHubActive={workHubActive}
+                selection={navSelection}
+                moduleMemory={navigationState.moduleMemory}
+                onSelect={setNavSelection}
+                onOpenSettings={openSettings}
+                updateReminder={updateReminder}
+                onOpenUpdate={openUpdateDownload}
+                onNew={() => void createSession()}
+                workHubEntry={workHubEnabled ? {
+                  active: workHubActive,
+                  label: 'WorkHub',
+                  onSelect: openWorkHub,
+                } : undefined}
+                projectActions={projectRowActions}
+              >
+                {SESSION_RAIL}
+              </SessionNavigationProvider>
+            )}
+          />
         }
       >
         <AppShellDetailPanel agentsView={agentsView}>
@@ -2813,7 +2821,7 @@ function AppShellContent({
           <MakaUriContext.Provider value={dispatchMakaUri}>
           <div className="maka-detail-with-artifacts">
             <div className="mainColumn" data-home-surface={homeSurfaceActive ? 'true' : undefined}>
-              <ModuleHubHost model={moduleHub.host} />
+              <ModuleHub.ModuleHubHost />
               {workHubEnabled && workHubActive && navSelection.section === 'sessions' ? (
                 workHubCoordinationSessionId ? (
                   <WorkHubSurface
@@ -2867,7 +2875,7 @@ function AppShellContent({
                     {workHubEnabled && navSelection.section === 'sessions' && activeId ? (
                       <Button
                         className="workhub-return"
-                        label={uiLocale === 'zh' ? '返回 WorkHub' : 'Return to WorkHub'}
+                        label={uiLocale !== 'en' ? '返回 WorkHub' : 'Return to WorkHub'}
                         variant="secondary"
                         size="sm"
                         onClick={openWorkHub}
@@ -2959,6 +2967,7 @@ function AppShellContent({
                   activeProviderType={activeConnection?.providerType}
                   latestRequestUsageTokens={selectLatestRequestUsage(messages, activeTranscriptRange, activeModel, activeSessionForModelControls)}
                   onOpenContextUsage={() => workbar.commands.openTool('inspector')}
+                  LiveContextUsageProbe={workbar.LiveContextUsageProbe}
                   modelChoices={chatModelChoices}
                   modelSwitchHasHistory={modelSwitchHasHistory}
                   hideUnavailableCurrentModel={sessionHealthNotice?.onClickTarget === 'model_picker'}
@@ -3277,7 +3286,8 @@ function AppShellContent({
       />
     </div>
     </SessionCollaboration.SessionTurnRequestInboxProvider>
-    </ComposerMentionsProvider>
+    </ModuleHub.ModuleHubSkillCatalogRevisionBoundary>
+    </ModuleHub.ModuleHubProvider>
     </Goals.GoalProvider>
   );
 }

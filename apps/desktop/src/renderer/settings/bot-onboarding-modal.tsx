@@ -251,7 +251,7 @@ function statusCopy(
   starting: boolean,
   error: string | null,
   copy: BotSettingsCopy['onboarding']['providers'][BotOnboardingProvider],
-  locale: 'zh' | 'en' = 'zh',
+  locale: 'zh-CN' | 'zh-TW' | 'en' = 'zh-CN',
 ): string {
   const shared = getBotSettingsCopy(locale).onboarding;
   if (starting) return shared.generating;
@@ -263,12 +263,12 @@ function statusCopy(
     // PR1197 review (P0-3): honour the honest "saved but not connected" notice
     // instead of claiming a healthy connection.
     case 'connected': return snapshot.warning
-      ? (locale === 'zh' ? snapshot.warning : shared.connectedWarning)
+      ? (locale === 'zh-CN' ? snapshot.warning : shared.connectedWarning)
       : shared.connected(getBotSettingsCopy(locale).providers[snapshot.provider].label);
     case 'expired': return shared.expired;
     case 'denied': return shared.denied;
     case 'cancelled': return shared.cancelled;
-    case 'error': return locale === 'zh' ? (snapshot.error ?? shared.failed) : shared.failed;
+    case 'error': return locale === 'zh-CN' ? (snapshot.error ?? shared.failed) : shared.failed;
     default: return shared.preparing;
   }
 }

@@ -2347,6 +2347,44 @@ test('Client Capability tool descriptors preserve only known activity kinds', ()
   );
 });
 
+test('Client Capability tuple schemas accept only boolean or schema additionalItems', () => {
+  const input = (additionalItems: unknown) => ({
+    registrationId: 'registration-1',
+    offers: [
+      {
+        offerId: 'desktop_computer_use',
+        version: '0',
+        affinity: 'session',
+        hostPathAccess: 'cwd',
+        label: 'Computer Use',
+        tools: [
+          {
+            serverId: 'desktop_computer_use',
+            name: 'maka_computer',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                position: {
+                  type: 'array',
+                  items: [{ type: 'number' }, { type: 'number' }],
+                  additionalItems,
+                },
+              },
+            },
+          },
+        ],
+      },
+    ],
+  });
+
+  assert.deepEqual(decodeClientCapabilityReplaceInput(input(false)), input(false));
+  assert.deepEqual(
+    decodeClientCapabilityReplaceInput(input({ type: 'number' })),
+    input({ type: 'number' }),
+  );
+  assert.throws(() => decodeClientCapabilityReplaceInput(input('no')), isInvalidFrame);
+});
+
 test('Client Capability progress frames require bounded monotonic coordinates', () => {
   assert.deepEqual(
     decodeClientFrame({

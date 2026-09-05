@@ -32,7 +32,7 @@ import {
   isComputerTool,
 } from '../tool-activity/computer-action-label.js';
 
-function renderToStaticMarkup(node: ReactNode, locale: 'zh' | 'en' = 'zh'): string {
+function renderToStaticMarkup(node: ReactNode, locale: 'zh-CN' | 'en' = 'zh-CN'): string {
   return renderReactToStaticMarkup(createElement(LocaleProvider, {
     locale,
     children: node,
@@ -126,7 +126,7 @@ describe('tool activity presentation', () => {
     };
 
     assert.equal(isComputerTool(item), true);
-    assert.equal(computerActionLabel(item, 'zh'), '观察「计算器」窗口');
+    assert.equal(computerActionLabel(item, 'zh-CN'), '观察「计算器」窗口');
     const markup = renderToStaticMarkup(
       createElement(ToolTrow, { items: [item] }),
     );
@@ -166,7 +166,7 @@ describe('tool activity presentation', () => {
     assert.match(markup, /「计算器」窗口/);
     assert.match(markup, />7\/11</);
     assert.equal(
-      computerRunningLabel([observed, sequence], 'zh'),
+      computerRunningLabel([observed, sequence], 'zh-CN'),
       '正在操作「计算器」窗口 · 连续操作第 7/11 步',
     );
   });

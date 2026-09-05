@@ -49,7 +49,7 @@ export type { ChatModelChoice } from '@maka/core/chat-model-choice';
 
 export function modelChoiceDescription(
   choice: Pick<ChatModelChoice, 'description' | 'knowledgeCutoff'>,
-  locale: UiLocale = 'zh',
+  locale: UiLocale,
 ): string | undefined {
   const description = choice.description?.trim();
   const knowledge = choice.knowledgeCutoff?.trim();
@@ -85,7 +85,7 @@ export interface ModelMenuGroup {
  * account email `connection.name` carries for `claude-subscription` /
  * `openai-codex`.
  */
-export function modelMenuGroups(choices: ChatModelChoice[], locale: UiLocale = 'zh'): ModelMenuGroup[] {
+export function modelMenuGroups(choices: ChatModelChoice[], locale: UiLocale): ModelMenuGroup[] {
   const copy = getSharedUiCopy(locale).providers;
   const localizedLabels: Partial<Record<ProviderType, string>> = {
     'MiniMax-cn': copy.minimaxChina,

@@ -133,6 +133,75 @@ test('local setup forwards the exact development archive evidence', async (t) =>
   assert.equal(environment?.[RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY_ENV], integrity);
 });
 
+test('local setup scratch cleanup cannot replace its framed outcome', async (t) => {
+  const frames = [
+    {
+      schemaVersion: 1 as const,
+      sequence: 0,
+      kind: 'complete' as const,
+      version: '0.2.0',
+      serviceId: 'b'.repeat(64),
+      deploymentId: '00000000-0000-4000-8000-000000000001',
+      operator: OPERATOR,
+      rootPath: '/tmp/maka/root',
+      rootId: 'a'.repeat(64),
+      endpoint: 'ws://127.0.0.1:7443/runtime-host',
+      credentialId: 'credential-1',
+      credential: 'secret-access-token',
+    },
+    {
+      schemaVersion: 1 as const,
+      sequence: 0,
+      kind: 'error' as const,
+      error: { code: 'setup_failed', message: 'primary setup failure' },
+    },
+  ];
+  let invocation = 0;
+  let cleanupCount = 0;
+  const spawnProcess = (() => {
+    const child = new EventEmitter() as ReturnType<typeof spawn>;
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    const frame = frames[invocation++];
+    Object.assign(child, { pid: 1234, stdout, stderr, kill: () => true });
+    process.nextTick(() => {
+      stdout.end(encodeRuntimeHostSetupFrame(frame));
+      stderr.end();
+      child.emit('close', frame.kind === 'complete' ? 0 : 1, null);
+    });
+    return child;
+  }) as typeof spawn;
+  const operator = createDesktopRuntimeHostLocalOperator({
+    environment: { PATH: process.env.PATH },
+    spawnProcess,
+    removeSetupWorkingDirectory: async (path) => {
+      cleanupCount += 1;
+      await rm(path, { recursive: true, force: true });
+      throw new Error('scratch cleanup failed');
+    },
+  });
+  t.after(() => operator.close());
+  const setup = {
+    setupPackage: { kind: 'npm' as const, specifier: 'maka-agent@0.2.0' },
+    clientDataRoot: '/tmp/maka/client',
+    rootPath: '/tmp/maka/root',
+    principalId: 'desktop-owner:pairing',
+    expectedTarget: {
+      serviceId: 'b'.repeat(64),
+      rootPath: '/tmp/maka/root',
+      rootId: 'a'.repeat(64),
+    },
+  };
+
+  const complete = await operator.runSetup(setup, () => undefined);
+  assert.equal(complete.kind, 'complete');
+  await assert.rejects(
+    operator.runSetup(setup, () => undefined),
+    /primary setup failure/u,
+  );
+  assert.equal(cleanupCount, 2);
+});
+
 test('Windows npm discovery cannot outlive setup cancellation', async (t) => {
   const originalPlatform = process.platform;
   const fixtureRoot = await mkdtemp(join(tmpdir(), 'maka-windows-npm-lookup-'));
