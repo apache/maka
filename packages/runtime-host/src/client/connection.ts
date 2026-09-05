@@ -92,6 +92,9 @@ const DEFAULT_LIVENESS_INTERVAL_MS = 2_000;
 // A bounded round trip tolerates short transport/Host stalls. Unrelated inbound
 // traffic must never extend it: receiving events does not prove requests work.
 const DEFAULT_LIVENESS_TIMEOUT_MS = 8_000;
+// Peer byte-stream recovery owns a bounded 30-second reattachment budget.
+// Its independent path probes detect failures; Host probes still bound a hung Host.
+const PEER_LIVENESS_TIMEOUT_MS = 45_000;
 const MAX_WEBSOCKET_FRAGMENTS = 256;
 const MAX_WEBSOCKET_BUFFERED_CHUNKS = 256;
 
@@ -192,6 +195,7 @@ export interface ConnectRuntimeHostMessageTransportInput {
   readonly onHostStatus?: (status: HostStatusResult) => void;
   readonly connectionResource?: RuntimeHostConnectionResource;
   readonly peerPath?: RuntimeHostPeerConnectionPath;
+  readonly getPeerPath?: () => RuntimeHostPeerConnectionPath | undefined;
 }
 
 export interface RuntimeHostConnectionResource {
@@ -350,7 +354,10 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
   readonly selectedProtocol: number;
   readonly compositionId: string;
   readonly compositionRevision: string;
-  readonly peerPath: RuntimeHostPeerConnectionPath | undefined;
+  readonly #getPeerPath: () => RuntimeHostPeerConnectionPath | undefined;
+  get peerPath(): RuntimeHostPeerConnectionPath | undefined {
+    return this.#getPeerPath();
+  }
   readonly closed: Promise<void>;
   readonly #transport: RuntimeHostMessageTransport;
   readonly #pendingRequests = new Map<string, PendingRequest>();
@@ -391,6 +398,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
       onHostStatus?: (status: HostStatusResult) => void;
       connectionResource?: RuntimeHostConnectionResource;
       peerPath?: RuntimeHostPeerConnectionPath;
+      getPeerPath?: () => RuntimeHostPeerConnectionPath | undefined;
     },
   ) {
     this.#livenessIntervalMs = options?.livenessIntervalMs ?? DEFAULT_LIVENESS_INTERVAL_MS;
@@ -403,7 +411,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     this.selectedProtocol = accepted.selectedProtocol;
     this.compositionId = accepted.compositionId;
     this.compositionRevision = accepted.compositionRevision;
-    this.peerPath = options?.peerPath;
+    this.#getPeerPath = options?.getPeerPath ?? (() => options?.peerPath);
     const connectionResource = options?.connectionResource;
     if (connectionResource) {
       const abortForResourceClosure = (cause: Error) =>
@@ -553,7 +561,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     return this.#requestOperation(
       'host.status',
       {},
-      timeoutMs ?? DEFAULT_LIVENESS_TIMEOUT_MS,
+      timeoutMs ?? (this.peerPath ? PEER_LIVENESS_TIMEOUT_MS : DEFAULT_LIVENESS_TIMEOUT_MS),
       (status) => this.#validateHostStatusIdentity(status),
       'connection',
     );
@@ -848,10 +856,13 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
   #startLivenessProbe(): void {
     if (this.#terminalError || this.#livenessProbePending) return;
     this.#livenessProbePending = true;
-    this.#livenessProbeDeadline = setTimeout(() => {
-      this.#livenessProbeDeadline = undefined;
-      this.#fail(requestTimeoutError('host.status'));
-    }, DEFAULT_LIVENESS_TIMEOUT_MS);
+    this.#livenessProbeDeadline = setTimeout(
+      () => {
+        this.#livenessProbeDeadline = undefined;
+        this.#fail(requestTimeoutError('host.status'));
+      },
+      this.peerPath ? PEER_LIVENESS_TIMEOUT_MS : DEFAULT_LIVENESS_TIMEOUT_MS,
+    );
     void this.#requestOperation(
       'host.status',
       {},
@@ -1082,6 +1093,7 @@ export async function connectRuntimeHostMessageTransport(
       onHostStatus: input.onHostStatus,
       connectionResource: input.connectionResource,
       ...(input.peerPath ? { peerPath: input.peerPath } : {}),
+      ...(input.getPeerPath ? { getPeerPath: input.getPeerPath } : {}),
     });
     if (result.kind === 'connected') {
       resourceTransferred = true;
@@ -1421,6 +1433,7 @@ interface ExchangeRuntimeHostHandshakeInput {
   readonly onHostStatus?: (status: HostStatusResult) => void;
   readonly connectionResource?: RuntimeHostConnectionResource;
   readonly peerPath?: RuntimeHostPeerConnectionPath;
+  readonly getPeerPath?: () => RuntimeHostPeerConnectionPath | undefined;
 }
 
 interface LegacySurfaceClientHello extends ClientHello {
@@ -1502,6 +1515,7 @@ async function exchangeRuntimeHostHandshake(
       onHostStatus: input.onHostStatus,
       connectionResource: input.connectionResource,
       ...(input.peerPath ? { peerPath: input.peerPath } : {}),
+      ...(input.getPeerPath ? { getPeerPath: input.getPeerPath } : {}),
     }),
   };
 }

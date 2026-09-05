@@ -429,6 +429,36 @@ test('bounds and separates the peer credential preface from Runtime Host frames'
   );
   assert.equal(result.accepted, true);
   assert.deepEqual(result.remainder, frame);
+  const resume = { sessionId: 'a'.repeat(64), generation: 2, received: 65_536 };
+  const resumed = await readRuntimeHostPeerAuthentication(
+    streamWith(
+      Buffer.concat([
+        Buffer.from(`${JSON.stringify({ v: 2, credential: 'token', resume })}\n`),
+        frame,
+      ]),
+    ),
+  );
+  assert.deepEqual(resumed.resume, resume);
+  assert.deepEqual(resumed.remainder, frame);
+  const resumedResult = await readRuntimeHostPeerAuthenticationResult(
+    streamWith(Buffer.from('{"v":2,"accepted":true,"resume":{"received":65536}}\n')),
+  );
+  assert.equal(resumedResult.resume?.received, 65_536);
+  for (const invalid of [
+    { ...resume, generation: 0 },
+    { ...resume, received: -1 },
+    { ...resume, sessionId: 'short' },
+    { ...resume, extra: true },
+  ]) {
+    await assert.rejects(
+      readRuntimeHostPeerAuthentication(
+        streamWith(
+          Buffer.from(`${JSON.stringify({ v: 2, credential: 'token', resume: invalid })}\n`),
+        ),
+      ),
+      /preface is invalid/u,
+    );
+  }
 });
 
 async function waitForRequestCount(

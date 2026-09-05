@@ -187,8 +187,9 @@ pub enum EngineCommand {
         result: oneshot::Sender<bool>,
     },
     #[cfg(test)]
-    CloseDirectConnections {
+    SetDirectConnectionsEnabled {
         peer_id: PeerId,
+        enabled: bool,
         result: oneshot::Sender<()>,
     },
 }
@@ -835,6 +836,8 @@ async fn run_endpoint_async(
     let mut incoming_webrtc_upgrades = JoinSet::new();
     let mut outgoing_webrtc_upgrades = JoinSet::new();
     let mut failed_listeners = Vec::new();
+    #[cfg(test)]
+    let mut blocked_direct_peers = HashSet::new();
 
     loop {
         tokio::select! {
@@ -844,10 +847,15 @@ async fn run_endpoint_async(
                     let _ = result.send(stream_control.has_connection(peer_id, &direct.retiring_connections, &HashSet::new()));
                 }
                 #[cfg(test)]
-                Some(EngineCommand::CloseDirectConnections { peer_id, result }) => {
-                    for (connection, _) in stream_control.eligible_connections(peer_id, &HashSet::new(), &HashSet::new()) {
-                        direct.retiring_connections.insert(connection);
-                        let _ = swarm.close_connection(connection);
+                Some(EngineCommand::SetDirectConnectionsEnabled { peer_id, enabled, result }) => {
+                    if enabled {
+                        blocked_direct_peers.remove(&peer_id);
+                    } else {
+                        blocked_direct_peers.insert(peer_id);
+                        for (connection, _) in stream_control.eligible_connections(peer_id, &HashSet::new(), &HashSet::new()) {
+                            direct.retiring_connections.insert(connection);
+                            let _ = swarm.close_connection(connection);
+                        }
                     }
                     let _ = result.send(());
                 }
@@ -1423,6 +1431,11 @@ async fn run_endpoint_async(
                 }
             }
             event = swarm.select_next_some() => {
+                #[cfg(test)]
+                if let SwarmEvent::ConnectionEstablished { peer_id, connection_id, endpoint, .. } = &event
+                    && !endpoint.is_relayed() && blocked_direct_peers.contains(peer_id) {
+                    direct.retiring_connections.insert(*connection_id);
+                }
                 if let SwarmEvent::ListenerClosed { listener_id, .. } = &event
                     && let Some(address) = configured_listeners.remove(listener_id) {
                     failed_listeners.push((address, Instant::now() + COORDINATION_RETRY_INTERVAL));
@@ -4885,8 +4898,9 @@ mod tests {
         let (result, closed) = oneshot::channel();
         source
             .commands
-            .send(EngineCommand::CloseDirectConnections {
+            .send(EngineCommand::SetDirectConnectionsEnabled {
                 peer_id: target.peer_id,
+                enabled: false,
                 result,
             })
             .await
@@ -4909,6 +4923,17 @@ mod tests {
             transit_stream.path,
             PeerConnectionPath::Transit { .. }
         ));
+        let (result, enabled) = oneshot::channel();
+        source
+            .commands
+            .send(EngineCommand::SetDirectConnectionsEnabled {
+                peer_id: target.peer_id,
+                enabled: true,
+                result,
+            })
+            .await
+            .unwrap();
+        enabled.await.unwrap();
         let (result, updated) = oneshot::channel();
         source
             .commands
