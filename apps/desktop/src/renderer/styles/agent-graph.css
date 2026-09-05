@@ -133,7 +133,7 @@
   list-style: none;
 }
 
-.maka-agent-graph-operators li {
+.maka-agent-graph-operators > li {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: center;
@@ -144,11 +144,8 @@
   background: var(--foreground-2);
 }
 
-.maka-agent-graph-status-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: var(--radius-pill);
-  background: var(--muted-foreground);
+.maka-agent-graph-operators > li[data-selected="true"] {
+  box-shadow: inset 0 0 0 var(--border-width-hairline) var(--accent);
 }
 
 @keyframes maka-agent-graph-dot-pulse {
@@ -162,23 +159,181 @@
   }
 }
 
-.maka-agent-graph-operators li[data-status="running"] .maka-agent-graph-status-dot,
-.maka-agent-graph-operators li[data-status="runnable"] .maka-agent-graph-status-dot {
-  background: var(--status-running);
-}
-
-.maka-agent-graph-panel[data-live="true"] .maka-agent-graph-operators li[data-status="running"] .maka-agent-graph-status-dot,
-.maka-agent-graph-panel[data-live="true"] .maka-agent-graph-operators li[data-status="runnable"] .maka-agent-graph-status-dot {
+.maka-agent-graph-panel[data-live="true"] .maka-agent-graph-status-dot[data-status="running"],
+.maka-agent-graph-panel[data-live="true"] .maka-agent-graph-status-dot[data-status="runnable"] {
   animation: maka-agent-graph-dot-pulse 1.6s ease-in-out infinite;
 }
 
-.maka-agent-graph-operators li[data-status="completed"] .maka-agent-graph-status-dot {
-  background: var(--success);
+.maka-agent-graph-view-switch {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-1);
+  margin-bottom: var(--space-2);
 }
 
-.maka-agent-graph-operators li[data-status="failed"] .maka-agent-graph-status-dot,
-.maka-agent-graph-operators li[data-status="aborted"] .maka-agent-graph-status-dot {
-  background: var(--destructive);
+.maka-agent-graph-topology-viewport {
+  height: 168px;
+  overflow: auto;
+  border: var(--border-width-hairline) solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--background);
+}
+
+.maka-agent-graph-topology-canvas {
+  position: relative;
+  min-width: 100%;
+}
+
+.maka-agent-graph-topology-edges {
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.maka-agent-graph-edge {
+  fill: none;
+  stroke: var(--border-strong);
+  stroke-width: 1.5;
+}
+
+.maka-agent-graph-topology-edges marker path {
+  fill: var(--border-strong);
+}
+
+.maka-agent-graph-node {
+  position: absolute;
+  display: grid;
+  align-content: start;
+  gap: var(--space-1);
+  padding: var(--space-2);
+  overflow: hidden;
+  text-align: start;
+  color: var(--foreground);
+  border: var(--border-width-hairline) solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--surface-raised);
+  cursor: pointer;
+}
+
+.maka-agent-graph-node[data-selected="true"] {
+  border-color: var(--accent);
+}
+
+.maka-agent-graph-node:hover:not([data-selected="true"]) {
+  border-color: var(--border-strong);
+}
+
+.maka-agent-graph-node:focus-visible {
+  outline: var(--focus-ring-width) solid var(--focus-ring);
+  outline-offset: var(--focus-ring-offset);
+}
+
+.maka-agent-graph-node-heading {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.maka-agent-graph-node-heading strong,
+.maka-agent-graph-node-heading span,
+.maka-agent-graph-node-work,
+.maka-agent-graph-node .maka-agent-graph-wait {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.maka-agent-graph-node-heading strong {
+  font: var(--maka-text-label);
+}
+
+.maka-agent-graph-node-heading > span:last-child,
+.maka-agent-graph-node-work,
+.maka-agent-graph-node .maka-agent-graph-wait {
+  font: var(--maka-text-supporting);
+}
+
+.maka-agent-graph-node-heading > span:last-child,
+.maka-agent-graph-node-work {
+  color: var(--muted-foreground);
+}
+
+.maka-agent-graph-details {
+  display: grid;
+  gap: var(--space-1);
+  margin-top: var(--space-2);
+  padding: var(--space-2);
+  border: var(--border-width-hairline) solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--foreground-2);
+  font: var(--maka-text-supporting);
+  color: var(--muted-foreground);
+}
+
+.maka-agent-graph-operators > li > .maka-agent-graph-details {
+  grid-column: 1 / -1;
+}
+
+.maka-agent-graph-details-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  color: var(--foreground);
+}
+
+.maka-agent-graph-details p {
+  margin: 0;
+}
+
+.maka-agent-graph-details-collection {
+  display: grid;
+  gap: var(--space-0-5);
+}
+
+.maka-agent-graph-details-collection > strong {
+  color: var(--foreground);
+}
+
+.maka-agent-graph-details-collection ul {
+  display: grid;
+  gap: var(--space-0-5);
+  margin: 0;
+  padding-inline-start: var(--space-4);
+}
+
+.maka-agent-graph-details-collection li {
+  overflow-wrap: anywhere;
+}
+
+.maka-agent-graph-details-metadata {
+  display: grid;
+  gap: var(--space-0-5);
+  margin: var(--space-0-5) 0 0;
+}
+
+.maka-agent-graph-details-metadata > div {
+  display: grid;
+  grid-template-columns: minmax(7rem, auto) minmax(0, 1fr);
+  gap: var(--space-1);
+}
+
+.maka-agent-graph-details-metadata dt {
+  font: var(--maka-text-code);
+}
+
+.maka-agent-graph-details-metadata dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--muted-foreground);
+  overflow-wrap: anywhere;
+}
+
+.maka-agent-graph-details > button {
+  justify-self: start;
 }
 
 .maka-agent-graph-operator-copy {
@@ -197,6 +352,13 @@
 
 .maka-agent-graph-operator-copy strong {
   font: var(--maka-text-label);
+}
+
+.maka-agent-graph-operator-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
 }
 
 .maka-agent-graph-operator-copy span,
@@ -239,12 +401,21 @@
 }
 
 @media (max-width: 720px) {
-  .maka-agent-graph-operators li {
+  .maka-agent-graph-operators > li {
     grid-template-columns: auto minmax(0, 1fr) auto;
   }
 
-  .maka-agent-graph-operator-status {
-    display: none;
+  .maka-agent-graph-operators > li > button {
+    grid-row: 2;
+  }
+
+  .maka-agent-graph-operators > li > button:first-of-type {
+    grid-column: 2;
+    justify-self: start;
+  }
+
+  .maka-agent-graph-operators > li > button:last-of-type {
+    grid-column: 3;
   }
 }
 

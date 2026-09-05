@@ -20,7 +20,7 @@
 import { deferred } from '@maka/core/test-only/async-primitives';
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import { createAgentGraphRefreshScheduler } from '../../renderer/agent-graph-refresh.js';
+import { createAgentGraphRefreshScheduler } from '../../renderer/features/agent-graph/testing.js';
 async function tick(): Promise<void> {
   await new Promise((resolve) => setImmediate(resolve));
 }

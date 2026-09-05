@@ -6,7 +6,7 @@ Generated against `@astryxdesign/core@0.5.2` (194 component exports).
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 247 files — blocker 0, reimplementation 0, polish 1, aligned 246.
+**Totals:** 249 files — blocker 0, reimplementation 0, polish 1, aligned 248.
 
 ## Exclusions (explicit)
 
@@ -27,7 +27,6 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 
 | Path | Role | Astryx used | Gap / note | Severity |
 |------|------|-------------|------------|----------|
-| `apps/desktop/src/renderer/agent-graph-panel.tsx` | shell-chrome-or-panel | Banner, Button, EmptyState, IconButton, Selector, Spinner | aligned — uses Astryx (Banner, Button, EmptyState, IconButton, Selector, Spinner) | aligned |
 | `apps/desktop/src/renderer/app-shell-chrome-actions.tsx` | shell-chrome-or-panel | Icon, IconButton, Tooltip | aligned — uses Astryx (Icon, IconButton, Tooltip) | aligned |
 | `apps/desktop/src/renderer/app-shell-detail-panel.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/app-shell-overlays.tsx` | shell-chrome-or-panel | Spinner | aligned — uses Astryx (Spinner) | aligned |
@@ -43,6 +42,9 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/composition/desktop-feature-services.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/custom-pet-companion.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/error-boundary.tsx` | other | Button, Card | aligned — uses Astryx (Button, Card) | aligned |
+| `apps/desktop/src/renderer/features/agent-graph/services-context.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `apps/desktop/src/renderer/features/agent-graph/ui/agent-graph-panel.tsx` | shell-chrome-or-panel | Banner, Button, EmptyState, IconButton, SegmentedControl, SegmentedControlItem, Selector, Spinner | aligned — uses Astryx (Banner, Button, EmptyState, IconButton, SegmentedControl, SegmentedControlItem, Selector, Spinner) | aligned |
+| `apps/desktop/src/renderer/features/agent-graph/ui/agent-graph-topology.tsx` | other | StatusDot | aligned — one native button avoids the Astryx overflow-hidden ellipsis wrapper so card children remain grid items | aligned |
 | `apps/desktop/src/renderer/features/connection-settings/onboarding-step-form.tsx` | dialog-overlay | VStack | aligned — uses Astryx (VStack) | aligned |
 | `apps/desktop/src/renderer/features/connection-settings/services-context.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/goals/services-context.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
@@ -277,7 +279,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 
 ## Severity legend
 
-- **blocker** — raw interactive control with an Astryx twin available (`button`/`input`/`select`).
+- **blocker** — raw interactive control with an Astryx twin available (`button`/`input`/`select`), unless a reviewed callsite-specific exception above documents an incompatible composition constraint and locks the permitted count.
 - **reimplementation** — a public `@maka/ui` export shadows a shipped Astryx component (same name, not a re-export). A neutral signal for review, not proof of a semantic re-implementation.
 - **polish** — off-rhythm control heights or softer smells; not wrong primitive choice.
-- **aligned** — no blocker smell found; Astryx usage noted when present.
+- **aligned** — no blocker smell found, or a reviewed callsite-specific exception applies; Astryx usage noted when present.

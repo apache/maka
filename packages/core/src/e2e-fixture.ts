@@ -38,6 +38,7 @@ export type E2eFixtureScenario =
   | 'module-daily-review'
   | 'scheduled-tasks'
   | 'agent-graph-layout'
+  | 'agent-graph-topology'
   | 'sidebar-search-modal-open';
 
 export interface E2eFixtureState {

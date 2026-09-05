@@ -55,6 +55,10 @@ import {
   turnSession,
   agentGraphSession,
 } from './e2e-fixture/scenarios-chat.js';
+import {
+  agentGraphTopologySession,
+  seedAgentGraphTopology,
+} from './e2e-fixture/scenarios-agent-graph.js';
 import { seedMcpFixture, seedSkillsMarketFixture } from './e2e-fixture/scenarios-modules.js';
 import { longSidebarSessions } from './e2e-fixture/scenarios-sessions.js';
 import {
@@ -81,6 +85,7 @@ const E2E_FIXTURE_SCENARIOS = new Set<E2eFixtureScenario>([
   'module-daily-review',
   'scheduled-tasks',
   'agent-graph-layout',
+  'agent-graph-topology',
   'sidebar-search-modal-open',
 ]);
 
@@ -219,6 +224,8 @@ export function getE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState 
       return { ...state, activeSessionId: TURN_SESSION_ID, sidebarSection: 'automations', sidebarCollapsed: false };
     case 'agent-graph-layout':
       return { ...state, activeSessionId: AGENT_GRAPH_SESSION_ID };
+    case 'agent-graph-topology':
+      return { ...state, activeSessionId: TURN_SESSION_ID, workbarCollapsed: true };
     case 'sidebar-search-modal-open':
       return {
         ...state,
@@ -244,11 +251,18 @@ export async function seedE2eFixture(input: {
   await writeConnections(input.workspaceRoot, now, scenario);
   await writeSession(
     input.workspaceRoot,
-    scenario === 'agent-graph-layout' ? agentGraphSession(now) : turnSession(now),
+    scenario === 'agent-graph-layout'
+      ? agentGraphSession(now)
+      : scenario === 'agent-graph-topology'
+        ? agentGraphTopologySession(now)
+        : turnSession(now),
     turnMessages(now),
   );
 
   if (scenario === 'agent-graph-layout') await seedAgentGraphLayout(input.workspaceRoot, now);
+  if (scenario === 'agent-graph-topology') {
+    await seedAgentGraphTopology(input.workspaceRoot, now);
+  }
 
 
   if (scenario === 'chat-prompt-rail') {

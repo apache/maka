@@ -1,9 +1,6 @@
 {
   "version": 1,
   "legacyRendererFiles": [
-    "src/renderer/agent-graph-panel-visibility.ts",
-    "src/renderer/agent-graph-panel.tsx",
-    "src/renderer/agent-graph-refresh.ts",
     "src/renderer/app-shell-app-update.ts",
     "src/renderer/app-shell-chat-actions.ts",
     "src/renderer/app-shell-chrome-actions.tsx",
@@ -713,7 +710,7 @@
         "nonTriviaTokens": 1408
       },
       "src/renderer/app-shell.tsx": {
-        "importDeclarations": 81,
+        "importDeclarations": 80,
         "bridgePaths": {
           "window.maka.app.installUpdate": 1,
           "window.maka.app.retryUpdateDownload": 1,
@@ -803,7 +800,6 @@
         "actionFactories": [],
         "dependencyPaths": {
           "../preload/transcript-contract.js": 1,
-          "./agent-graph-panel": 1,
           "./app-shell-app-update": 1,
           "./app-shell-chat-actions": 1,
           "./app-shell-chrome-actions": 1,
@@ -830,6 +826,7 @@
           "./desktop-execution-boundary-surface": 1,
           "./desktop-slash-command": 1,
           "./error-boundary": 1,
+          "./features/agent-graph": 1,
           "./features/conversation": 1,
           "./features/goals": 1,
           "./features/module-hub": 1,
@@ -895,7 +892,7 @@
           "@maka/ui/icons": 1,
           "react": 1
         },
-        "importSpecifiers": 124,
+        "importSpecifiers": 123,
         "nonTriviaTokens": 15588
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
@@ -1030,53 +1027,6 @@
         "dependencyPaths": {}
       },
       "src/preload/transcript-contract.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {}
-      },
-      "src/renderer/agent-graph-panel-visibility.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {}
-      },
-      "src/renderer/agent-graph-panel.tsx": {
-        "bridgePaths": {
-          "window.maka.graphs.getSnapshot": 1,
-          "window.maka.graphs.listCurrentEpochs": 1,
-          "window.maka.graphs.listEpochs": 2,
-          "window.maka.graphs.stop": 1,
-          "window.maka.graphs.subscribe": 1
-        },
-        "environmentCapabilities": {},
-        "hookCalls": {
-          "useEffect": 2,
-          "useRef": 4,
-          "useState": 9
-        },
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "./agent-graph-panel-visibility.js": 1,
-          "./agent-graph-refresh.js": 1,
-          "@astryxdesign/core/Banner": 1,
-          "@astryxdesign/core/Button": 1,
-          "@astryxdesign/core/EmptyState": 1,
-          "@astryxdesign/core/Spinner": 1,
-          "@maka/ui": 1,
-          "@maka/ui/icons": 1,
-          "react": 1
-        }
-      },
-      "src/renderer/agent-graph-refresh.ts": {
         "bridgePaths": {},
         "environmentCapabilities": {},
         "hookCalls": {},

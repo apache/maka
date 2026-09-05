@@ -18,6 +18,7 @@
  */
 
 import type { ReactNode } from 'react';
+import { AgentGraphServicesProvider } from '../features/agent-graph';
 import { ConnectionSettingsServicesProvider } from '../features/connection-settings';
 import { GoalServicesProvider } from '../features/goals';
 import { ModuleHubServicesProvider } from '../features/module-hub';
@@ -27,6 +28,7 @@ import { SessionNavigationServicesProvider } from '../features/session-navigatio
 import { SessionSettingsServicesProvider } from '../features/session-settings';
 import { TaskEntryServicesProvider } from '../features/task-entry';
 import { WorkbarServicesProvider } from '../features/workbar';
+import { createDesktopAgentGraphServices } from '../platform/desktop/create-agent-graph-services';
 import { createDesktopGoalServices } from '../platform/desktop/create-goal-services';
 import { createDesktopConnectionSettingsServices } from '../platform/desktop/create-connection-settings-services';
 import { createDesktopModuleHubServices } from '../platform/desktop/create-module-hub-services';
@@ -39,6 +41,7 @@ import { createDesktopWorkbarServices } from '../platform/desktop/create-workbar
 
 export function createDesktopFeatureServices() {
   return {
+    agentGraph: createDesktopAgentGraphServices(),
     connectionSettings: createDesktopConnectionSettingsServices(),
     goal: createDesktopGoalServices(),
     moduleHub: createDesktopModuleHubServices(),
@@ -56,6 +59,7 @@ export function DesktopFeatureServicesProvider(props: {
   readonly children?: ReactNode;
 }) {
   return (
+    <AgentGraphServicesProvider services={props.services.agentGraph}>
     <ConnectionSettingsServicesProvider services={props.services.connectionSettings}>
       <RuntimeHostManagementServicesProvider services={props.services.runtimeHostManagement}>
         <SessionCollaborationServicesProvider services={props.services.sessionCollaboration}>
@@ -75,5 +79,6 @@ export function DesktopFeatureServicesProvider(props: {
         </SessionCollaborationServicesProvider>
       </RuntimeHostManagementServicesProvider>
     </ConnectionSettingsServicesProvider>
+    </AgentGraphServicesProvider>
   );
 }
