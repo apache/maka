@@ -38,7 +38,13 @@
  */
 export type SubscriptionActionResult =
   | { ok: true }
-  | { ok: false; reason: SubscriptionActionFailureReason; message: string };
+  | {
+      ok: false;
+      reason: SubscriptionActionFailureReason;
+      /** Stable machine code the presenter maps to per-locale copy. */
+      code?: string;
+      message: string;
+    };
 
 export type SubscriptionActionFailureReason =
   | 'authorization_pending' // no startAuthorization called yet

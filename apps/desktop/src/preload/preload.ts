@@ -2943,10 +2943,10 @@ const makaBridge = {
     reset(host?: DesktopRuntimeHostRef): Promise<LocalMemoryState> {
       return invokeSelectedRuntimeHost(host, 'memory:reset');
     },
-    restoreLatestBackup(host?: DesktopRuntimeHostRef): Promise<{ ok: true; state: LocalMemoryState } | { ok: false; state: LocalMemoryState; message: string }> {
+    restoreLatestBackup(host?: DesktopRuntimeHostRef): Promise<{ ok: true; state: LocalMemoryState } | { ok: false; state: LocalMemoryState; code: string; message: string }> {
       return invokeSelectedRuntimeHost(host, 'memory:restoreLatestBackup');
     },
-    restoreBackup(kind: 'save' | 'reset' | 'restore', host?: DesktopRuntimeHostRef): Promise<{ ok: true; state: LocalMemoryState } | { ok: false; state: LocalMemoryState; message: string }> {
+    restoreBackup(kind: 'save' | 'reset' | 'restore', host?: DesktopRuntimeHostRef): Promise<{ ok: true; state: LocalMemoryState } | { ok: false; state: LocalMemoryState; code: string; message: string }> {
       return invokeSelectedRuntimeHost(host, 'memory:restoreBackup', kind);
     },
     setEnabled(enabled: boolean, host?: DesktopRuntimeHostRef): Promise<LocalMemoryState> {
@@ -2955,13 +2955,13 @@ const makaBridge = {
     setAgentReadEnabled(enabled: boolean, host?: DesktopRuntimeHostRef): Promise<LocalMemoryState> {
       return invokeSelectedRuntimeHost(host, 'memory:setAgentReadEnabled', enabled);
     },
-    openFile(host?: DesktopRuntimeHostRef): Promise<{ ok: true } | { ok: false; message: string }> {
+    openFile(host?: DesktopRuntimeHostRef): Promise<{ ok: true } | { ok: false; code: string; message: string }> {
       return invokeSelectedRuntimeHost(host, 'memory:openFile');
     },
-    openLatestBackup(host?: DesktopRuntimeHostRef): Promise<{ ok: true } | { ok: false; message: string }> {
+    openLatestBackup(host?: DesktopRuntimeHostRef): Promise<{ ok: true } | { ok: false; code: string; message: string }> {
       return invokeSelectedRuntimeHost(host, 'memory:openLatestBackup');
     },
-    openBackup(kind: 'save' | 'reset' | 'restore', host?: DesktopRuntimeHostRef): Promise<{ ok: true } | { ok: false; message: string }> {
+    openBackup(kind: 'save' | 'reset' | 'restore', host?: DesktopRuntimeHostRef): Promise<{ ok: true } | { ok: false; code: string; message: string }> {
       return invokeSelectedRuntimeHost(host, 'memory:openBackup', kind);
     },
   },

@@ -45,9 +45,18 @@ type MemoryTextKey =
   | 'entryRestoreFailed' | 'promptCopied' | 'promptCopiedDetail'
   | 'restoreDraftAction' | 'archiveDraftAction' | 'restoreAction' | 'archiveAction';
 
+export type MemoryResultCode =
+  | 'no_backup' | 'invalid_backup_kind' | 'memory_unavailable' | 'backup_not_found'
+  | 'remote_host_owned' | 'not_regular_file' | 'open_failed' | 'file_not_found'
+  | 'disabled' | 'incognito_active' | 'safe_mode' | 'oversize'
+  | 'revision_conflict' | 'backup_revision_conflict' | 'invalid_state'
+  | 'invalid_content' | 'invalid_scope' | 'not_found' | 'not_pending'
+  | 'upload_not_found' | 'upload_incomplete' | 'upload_conflict';
+
 export type MemorySettingsCopy = {
   intlLocale: string;
   text: Record<MemoryTextKey, string>;
+  results: Record<MemoryResultCode, string>;
   origins: Record<NonNullable<LocalMemoryState['latestEntry']>['origin'], string>;
   entryStatuses: Record<LocalMemoryState['entries'][number]['status'], string>;
   backupKinds: Record<NonNullable<LocalMemoryState['latestBackup']>['kind'], string>;
@@ -91,43 +100,148 @@ const enText = {
 } satisfies Record<MemoryTextKey, string>;
 
 const SETTINGS_MEMORY_COPY = {
-  'zh-CN': makeCopy('zh-CN', zhText, {
+  'zh-CN': {
+    intlLocale: 'zh-CN',
+    text: zhText,
+    countActive: (count, draft) => draft ? `草稿 ${count} 条生效` : `${count} 条生效`,
+    countArchived: (count, draft) => draft ? `草稿 ${count} 条已归档` : `${count} 条已归档`,
+    saveSummary: (active, archived) => archived > 0
+      ? `当前 ${active} 条生效 / ${archived} 条已归档；已保留上一版备份。`
+      : `当前 ${active} 条生效；已保留上一版备份。`,
+    backupSummary: (active, archived) => archived > 0
+      ? `${active} 条生效 / ${archived} 条已归档`
+      : `${active} 条生效`,
+    countEntries: (count) => `${count} 条记忆`,
+    countMatches: (filtered, total) => `${filtered} / ${total} 条匹配`,
+    listAria: (title) => `${title}列表`,
+    entryActionsAria: (title) => `${title} 记忆操作`,
+    entryActionAria: (action, identity) => `${action}：${identity}`,
+    openBackupAria: (label) => `打开备份候选 ${label}`,
+    restoreBackupAria: (label) => `恢复备份候选 ${label}`,
+    copyBackupAria: (label) => `复制备份候选引用 ${label}`,
+    draftStatusAria: (action) => `${action}，保存前不会写入 MEMORY.md`,
+    restoreLatestDescription: (label) => `会先备份当前 MEMORY.md，再用最近一次备份覆盖当前文件。将恢复：${label}`,
+    restoreCandidateDescription: (label) => `会先备份当前 MEMORY.md，再用选中的备份覆盖当前文件。将恢复：${label}`,
+    redactedDetail: (summary) => `写入前已替换疑似 token、API key 或密码；${summary}`,
+    openBackupFailed: (kind) => `打开${kind}失败`,
+    previewTruncated: (limit) => `预览已按 ${limit} 字符上限截断`,
+    previewUsage: (length, limit) => `预览 ${length} / ${limit} 字符`,
+    previewLimit: (limit) => `prompt 上限 ${limit} 字符`,
+    results: {
+      no_backup: '当前没有可用的 MEMORY.md 备份。', invalid_backup_kind: '备份类型无法识别。',
+      memory_unavailable: '本地记忆服务当前不可用。', backup_not_found: '找不到对应的备份文件。',
+      remote_host_owned: '记忆文件由远程 Runtime Host 管理，无法在本机打开。', not_regular_file: '记忆路径不是允许打开的常规文件。',
+      open_failed: '系统无法打开记忆文件。', file_not_found: '找不到记忆文件。',
+      disabled: '本地记忆已关闭。', incognito_active: '隐身模式下不可用。',
+      safe_mode: 'MEMORY.md 内容过大，已进入安全模式。', oversize: 'MEMORY.md 超出安全上限，请先删减旧内容。',
+      revision_conflict: '记忆内容刚被其他操作修改，请重试。', backup_revision_conflict: '备份内容刚被其他操作修改，请重试。',
+      invalid_state: 'Runtime Host 返回了无效的记忆状态。',
+      invalid_content: 'MEMORY.md 内容无效，请检查格式后重试。', invalid_scope: '当前记忆操作的作用域无效。',
+      not_found: '找不到对应的记忆条目。', not_pending: '对应的记忆条目不在待确认状态。',
+      upload_not_found: '记忆上传会话不存在或已过期。', upload_incomplete: '记忆内容尚未上传完整。',
+      upload_conflict: '另一个记忆上传正在进行，请重试。',
+    },
     origins: { manual: '手动记录', imported: '导入记录', extracted: '确认提取', unknown: '手写条目' }, entryStatuses: { draft: '草稿', review_required: '待确认', active: '生效', archived: '已归档', rejected: '已拒绝', unknown: '未识别' }, backupKinds: { reset: '重置前备份', restore: '恢复前备份', save: '保存前备份' }, memoryStatuses: { ok: '本地文件已就绪', disabled: '已关闭', safe_mode: '安全模式', incognito_blocked: '隐身禁用', error: '读取失败' }, promptBlocked: { disabled: '本地记忆已关闭。', incognito: '隐身模式下不会提供本地记忆。', safeMode: 'MEMORY.md 过大，当前不会提供。', agentRead: '模型上下文读取未开启。' }, backupOversize: '备份过大，无法预览条目', previewOversize: '草稿过大，条目预览已暂停；保存前请先删减 MEMORY.md 内容。', previewTruncationMarker: '[本地记忆已按长度截断]',
-  }),
-  'zh-TW': makeCopy('zh-TW', zhTwText, {
+  },
+  'zh-TW': {
+    intlLocale: 'zh-TW',
+    text: zhTwText,
+    countActive: (count, draft) => draft ? `草稿 ${count} 則生效` : `${count} 則生效`,
+    countArchived: (count, draft) => draft ? `草稿 ${count} 則已歸檔` : `${count} 則已歸檔`,
+    saveSummary: (active, archived) => archived > 0
+      ? `目前 ${active} 則生效 / ${archived} 則已歸檔；已保留上一版備份。`
+      : `目前 ${active} 則生效；已保留上一版備份。`,
+    backupSummary: (active, archived) => archived > 0
+      ? `${active} 則生效 / ${archived} 則已歸檔`
+      : `${active} 則生效`,
+    countEntries: (count) => `${count} 則記憶`,
+    countMatches: (filtered, total) => `${filtered} / ${total} 則符合`,
+    listAria: (title) => `${title}清單`,
+    entryActionsAria: (title) => `${title} 記憶操作`,
+    entryActionAria: (action, identity) => `${action}：${identity}`,
+    openBackupAria: (label) => `開啟備份候選 ${label}`,
+    restoreBackupAria: (label) => `還原備份候選 ${label}`,
+    copyBackupAria: (label) => `複製備份候選引用 ${label}`,
+    draftStatusAria: (action) => `${action}，儲存前不會寫入 MEMORY.md`,
+    restoreLatestDescription: (label) => `會先備份目前的 MEMORY.md，再以最近一次備份覆蓋目前檔案。將還原：${label}`,
+    restoreCandidateDescription: (label) => `會先備份目前的 MEMORY.md，再以選取的備份覆蓋目前檔案。將還原：${label}`,
+    redactedDetail: (summary) => `寫入前已遮蔽疑似 token、API key 或密碼；${summary}`,
+    openBackupFailed: (kind) => `開啟${kind}失敗`,
+    previewTruncated: (limit) => `預覽已依 ${limit} 字元上限截斷`,
+    previewUsage: (length, limit) => `預覽 ${length} / ${limit} 字元`,
+    previewLimit: (limit) => `prompt 上限 ${limit} 字元`,
+    results: {
+      no_backup: '目前沒有可用的 MEMORY.md 備份。', invalid_backup_kind: '備份類型無法識別。',
+      memory_unavailable: '本機記憶服務目前無法使用。', backup_not_found: '找不到對應的備份檔案。',
+      remote_host_owned: '記憶檔案由遠端 Runtime Host 管理，無法在本機開啟。', not_regular_file: '記憶路徑不是允許開啟的一般檔案。',
+      open_failed: '系統無法開啟記憶檔案。', file_not_found: '找不到記憶檔案。',
+      disabled: '本機記憶已關閉。', incognito_active: '隱身模式下無法使用。',
+      safe_mode: 'MEMORY.md 內容過大，已進入安全模式。', oversize: 'MEMORY.md 超出安全上限，請先刪減舊內容。',
+      revision_conflict: '記憶內容剛被其他操作修改，請重試。', backup_revision_conflict: '備份內容剛被其他操作修改，請重試。',
+      invalid_state: 'Runtime Host 回傳了無效的記憶狀態。',
+      invalid_content: 'MEMORY.md 內容無效，請檢查格式後重試。', invalid_scope: '目前記憶操作的作用域無效。',
+      not_found: '找不到對應的記憶條目。', not_pending: '對應的記憶條目不在待確認狀態。',
+      upload_not_found: '記憶上傳工作階段不存在或已過期。', upload_incomplete: '記憶內容尚未上傳完整。',
+      upload_conflict: '另一個記憶上傳正在進行，請重試。',
+    },
     origins: { manual: '手動記錄', imported: '匯入記錄', extracted: '確認提取', unknown: '手寫條目' }, entryStatuses: { draft: '草稿', review_required: '待確認', active: '生效', archived: '已歸檔', rejected: '已拒絕', unknown: '未識別' }, backupKinds: { reset: '重置前備份', restore: '恢復前備份', save: '儲存前備份' }, memoryStatuses: { ok: '本地檔案已就緒', disabled: '已關閉', safe_mode: '安全模式', incognito_blocked: '隱身停用', error: '讀取失敗' }, promptBlocked: { disabled: '本地記憶已關閉。', incognito: '隱身模式下不會提供本地記憶。', safeMode: 'MEMORY.md 過大，目前不會提供。', agentRead: '模型上下文讀取未開啟。' }, backupOversize: '備份過大，無法預覽條目', previewOversize: '草稿過大，條目預覽已暫停；儲存前請先刪減 MEMORY.md 內容。', previewTruncationMarker: '[本地記憶已按長度截斷]',
-  }),
-  en: makeCopy('en-US', enText, {
+  },
+  en: {
+    intlLocale: 'en-US',
+    text: enText,
+    countActive: (count, draft) => draft
+      ? `Draft · ${count} active ${count === 1 ? 'entry' : 'entries'}`
+      : `${count} active ${count === 1 ? 'entry' : 'entries'}`,
+    countArchived: (count, draft) => draft
+      ? `Draft · ${count} archived ${count === 1 ? 'entry' : 'entries'}`
+      : `${count} archived ${count === 1 ? 'entry' : 'entries'}`,
+    saveSummary: (active, archived) => archived > 0
+      ? `${active} active ${active === 1 ? 'entry' : 'entries'} / ${archived} archived ${archived === 1 ? 'entry' : 'entries'}; the previous version was backed up.`
+      : `${active} active ${active === 1 ? 'entry' : 'entries'}; the previous version was backed up.`,
+    backupSummary: (active, archived) => archived > 0
+      ? `${active} active ${active === 1 ? 'entry' : 'entries'} / ${archived} archived ${archived === 1 ? 'entry' : 'entries'}`
+      : `${active} active ${active === 1 ? 'entry' : 'entries'}`,
+    countEntries: (count) => count === 1 ? `${count} memory` : `${count} memories`,
+    countMatches: (filtered, total) => `${filtered} / ${total} matching`,
+    listAria: (title) => `${title} list`,
+    entryActionsAria: (title) => `${title} memory actions`,
+    entryActionAria: (action, identity) => `${action}: ${identity}`,
+    openBackupAria: (label) => `Open backup candidate ${label}`,
+    restoreBackupAria: (label) => `Restore backup candidate ${label}`,
+    copyBackupAria: (label) => `Copy backup candidate reference ${label}`,
+    draftStatusAria: (action) => `${action}; MEMORY.md is not written until you save`,
+    restoreLatestDescription: (label) => `The current MEMORY.md will be backed up before the latest backup replaces it. Restore: ${label}`,
+    restoreCandidateDescription: (label) => `The current MEMORY.md will be backed up before the selected backup replaces it. Restore: ${label}`,
+    redactedDetail: (summary) => `Suspected tokens, API keys, or passwords were redacted before writing; ${summary}`,
+    openBackupFailed: (kind) => `Failed to open ${kind}`,
+    previewTruncated: (limit) => `Preview truncated at the ${limit}-character limit`,
+    previewUsage: (length, limit) => `Preview ${length} / ${limit} characters`,
+    previewLimit: (limit) => `Prompt limit: ${limit} characters`,
+    results: {
+      no_backup: 'No MEMORY.md backup is available.', invalid_backup_kind: 'Unrecognized backup kind.',
+      memory_unavailable: 'Local memory is currently unavailable.', backup_not_found: 'The backup file was not found.',
+      remote_host_owned: 'Memory files are owned by the remote Runtime Host and cannot be opened locally.', not_regular_file: 'The memory path is not an allowed regular file.',
+      open_failed: 'The system could not open the memory file.', file_not_found: 'The memory file was not found.',
+      disabled: 'Local memory is disabled.', incognito_active: 'Unavailable in incognito mode.',
+      safe_mode: 'MEMORY.md is too large and entered safe mode.', oversize: 'MEMORY.md exceeds the safety limit. Remove older content first.',
+      revision_conflict: 'Memory was just changed by another operation. Try again.', backup_revision_conflict: 'The backup was just changed by another operation. Try again.',
+      invalid_state: 'The Runtime Host returned an invalid memory state.',
+      invalid_content: 'MEMORY.md content is invalid. Check its format and try again.', invalid_scope: 'The memory operation has an invalid scope.',
+      not_found: 'The memory entry was not found.', not_pending: 'The memory entry is not pending review.',
+      upload_not_found: 'The memory upload session does not exist or has expired.', upload_incomplete: 'The memory content has not finished uploading.',
+      upload_conflict: 'Another memory upload is in progress. Try again.',
+    },
     origins: { manual: 'Manual entry', imported: 'Imported entry', extracted: 'Confirmed extraction', unknown: 'Handwritten entry' }, entryStatuses: { draft: 'Draft', review_required: 'Needs review', active: 'Active', archived: 'Archived', rejected: 'Rejected', unknown: 'Unrecognized' }, backupKinds: { reset: 'Before reset', restore: 'Before restore', save: 'Before save' }, memoryStatuses: { ok: 'Local file ready', disabled: 'Off', safe_mode: 'Safe mode', incognito_blocked: 'Disabled in incognito', error: 'Read failed' }, promptBlocked: { disabled: 'Local memory is disabled.', incognito: 'Local memory is never added in incognito mode.', safeMode: 'MEMORY.md is too large and will not be added.', agentRead: 'Model context access is disabled.' }, backupOversize: 'Backup is too large to preview entries', previewOversize: 'The draft is too large, so entry preview is paused. Reduce MEMORY.md before saving.', previewTruncationMarker: '[Local memory truncated to the length limit]',
-  }),
+  },
 } satisfies UiCatalog<MemorySettingsCopy>;
 
 export function getMemorySettingsCopy(locale: UiLocale): MemorySettingsCopy { return SETTINGS_MEMORY_COPY[locale]; }
 
-function makeCopy(intlLocale: string, text: Record<MemoryTextKey, string>, values: Pick<MemorySettingsCopy, 'origins' | 'entryStatuses' | 'backupKinds' | 'memoryStatuses' | 'promptBlocked' | 'backupOversize' | 'previewOversize' | 'previewTruncationMarker'>): MemorySettingsCopy {
-  const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
-  const isZh = intlLocale !== 'en-US';
-  const isZhTw = intlLocale === 'zh-TW';
-  const zh = (simplified: string, traditional: string) => isZhTw ? traditional : simplified;
-  return {
-    intlLocale, text, ...values,
-    countActive: (count, draft) => isZh ? `${draft ? '草稿 ' : ''}${count} ${zh('条生效', '則生效')}` : `${draft ? 'Draft · ' : ''}${plural(count, 'active entry', 'active entries')}`,
-    countArchived: (count, draft) => isZh ? `${draft ? '草稿 ' : ''}${count} ${zh('条已归档', '則已歸檔')}` : `${draft ? 'Draft · ' : ''}${plural(count, 'archived entry', 'archived entries')}`,
-    saveSummary: (active, archived) => isZh ? `${zh('当前', '目前')} ${active} ${zh('条生效', '則生效')}${archived > 0 ? ` / ${archived} ${zh('条已归档', '則已歸檔')}` : ''}；${zh('已保留上一版备份。', '已保留上一版備份。')}` : `${plural(active, 'active entry', 'active entries')}${archived > 0 ? ` / ${plural(archived, 'archived entry', 'archived entries')}` : ''}; the previous version was backed up.`,
-    backupSummary: (active, archived) => isZh ? `${active} ${zh('条生效', '則生效')}${archived > 0 ? ` / ${archived} ${zh('条已归档', '則已歸檔')}` : ''}` : `${plural(active, 'active entry', 'active entries')}${archived > 0 ? ` / ${plural(archived, 'archived entry', 'archived entries')}` : ''}`,
-    countEntries: (count) => isZh ? `${count} ${zh('条记忆', '則記憶')}` : plural(count, 'memory', 'memories'),
-    countMatches: (filtered, total) => isZh ? `${filtered} / ${total} ${zh('条匹配', '則符合')}` : `${filtered} / ${total} matching`,
-    listAria: (title) => isZh ? `${title}${zh('列表', '清單')}` : `${title} list`,
-    entryActionsAria: (title) => isZh ? `${title} ${zh('记忆操作', '記憶操作')}` : `${title} memory actions`,
-    entryActionAria: (action, identity) => isZh ? `${action}：${identity}` : `${action}: ${identity}`,
-    openBackupAria: (label) => isZh ? `${zh('打开备份候选', '開啟備份候選')} ${label}` : `Open backup candidate ${label}`, restoreBackupAria: (label) => isZh ? `${zh('恢复备份候选', '還原備份候選')} ${label}` : `Restore backup candidate ${label}`, copyBackupAria: (label) => isZh ? `${zh('复制备份候选引用', '複製備份候選引用')} ${label}` : `Copy backup candidate reference ${label}`,
-    draftStatusAria: (action) => isZh ? `${action}，${zh('保存前不会写入', '儲存前不會寫入')} MEMORY.md` : `${action}; MEMORY.md is not written until you save`,
-    restoreLatestDescription: (label) => isZh ? `${zh('会先备份当前 MEMORY.md，再用最近一次备份覆盖当前文件。将恢复', '會先備份目前的 MEMORY.md，再以最近一次備份覆蓋目前檔案。將還原')}：${label}` : `The current MEMORY.md will be backed up before the latest backup replaces it. Restore: ${label}`,
-    restoreCandidateDescription: (label) => isZh ? `${zh('会先备份当前 MEMORY.md，再用选中的备份覆盖当前文件。将恢复', '會先備份目前的 MEMORY.md，再以選取的備份覆蓋目前檔案。將還原')}：${label}` : `The current MEMORY.md will be backed up before the selected backup replaces it. Restore: ${label}`,
-    redactedDetail: (summary) => isZh ? `${zh('写入前已替换疑似', '寫入前已遮蔽疑似')} token、API key ${zh('或密码', '或密碼')}；${summary}` : `Suspected tokens, API keys, or passwords were redacted before writing; ${summary}`,
-    openBackupFailed: (kind) => isZh ? `${zh('打开', '開啟')}${kind}${zh('失败', '失敗')}` : `Failed to open ${kind}`,
-    previewTruncated: (limit) => isZh ? `${zh('预览已按', '預覽已依')} ${limit} ${zh('字符上限截断', '字元上限截斷')}` : `Preview truncated at the ${limit}-character limit`,
-    previewUsage: (length, limit) => isZh ? `${zh('预览', '預覽')} ${length} / ${limit} ${zh('字符', '字元')}` : `Preview ${length} / ${limit} characters`,
-    previewLimit: (limit) => isZh ? `prompt ${zh('上限', '上限')} ${limit} ${zh('字符', '字元')}` : `Prompt limit: ${limit} characters`,
-  };
+export function memoryResultMessage(
+  result: { code?: string },
+  copy: MemorySettingsCopy,
+  fallback: string,
+): string {
+  const results: Readonly<Record<string, string | undefined>> = copy.results;
+  return (result.code && results[result.code]) || fallback;
 }

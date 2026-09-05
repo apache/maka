@@ -20,9 +20,11 @@
 import type { StatusSemantic } from '@maka/ui';
 import type {
   CapabilityReadinessState,
+  CapabilityReasonCode,
   CapabilitySnapshot,
   OsPermissionId,
   OsPermissionState,
+  RuntimeProbeState,
 } from '@maka/core/capabilities';
 
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
@@ -94,6 +96,11 @@ export type PermissionCenterCopy = {
   /** macOS drag-to-grant onboarding (accessibility / screen recording). */
   dragGrant: string;
   dragGranting: string;
+  reasons: Record<Exclude<CapabilityReasonCode, 'cu_backend_status'>, string>;
+  // Single-backend assumption: CU_BACKEND_IDS is ['maka-cu'], so the backend
+  // name stays a literal in copy. Revisit when a second backend lands.
+  cuBackendStatus(missingPermissionLabels: readonly string[], health: RuntimeProbeState): string;
+  reasonFallback: string;
 };
 
 const PERMISSION_CENTER_COPY = {
@@ -143,6 +150,40 @@ const PERMISSION_CENTER_COPY = {
     requiredPermissions: '所需系统权限', requiredPermissionsAria: (label) => `${label}所需系统权限列表`, guidance: '处理建议', guidanceAria: (label) => `${label}处理建议列表`,
     auditSection: '审计记录', noAudit: '暂无审计记录', auditAria: (label) => `${label}审计记录列表`,
     impact: '影响功能', opening: '打开中…', openSettings: '前往系统设置', requesting: '请求中…', request: '请求授权', dragGrant: '引导授权', dragGranting: '引导中…',
+    reasons: {
+      disabled: '该能力当前已关闭。',
+      'missing platform credentials': '未配置平台凭据',
+      'macOS TCC only': '仅 macOS TCC 权限适用',
+      'no Electron API for per-target Apple Events TCC status': 'Electron 暂不支持读取逐 App 的 Apple Events 授权状态',
+      cu_artifact_missing: '未找到通过完整性检查的 Computer Use 执行器 artifact。',
+      cu_backend_unavailable: 'Computer Use 后端当前不可用。',
+      cu_executor_undistributable: '未找到通过完整性检查且可分发的 maka-cu executor。',
+      cu_executor_stopped: 'maka-cu executor 已停止。',
+      cu_executor_start_failed: 'maka-cu executor 启动失败或已退出。',
+      cu_executor_recovering: 'maka-cu executor 正在启动或恢复。',
+      cu_executor_ready: 'maka-cu executor 已就绪。',
+      cu_executor_lazy_start: 'maka-cu 已可用，将在首次调用时启动。',
+      activity_recorder_partial: 'Daily Review 已聚合本地任务 / 工具 / 模型活动；当前不包含屏幕与应用级录制',
+      activity_recorder_probe_hint: '打开 Daily Review 可查看本地活动聚合结果',
+      memory_partial: '本地 MEMORY.md 已可见；自动抽取/写入仍需用户确认',
+      memory_no_probe: '透明本地记忆为文件读写能力，不做后台探测',
+      accessibility_status_ambiguous: 'macOS 不区分辅助功能权限是未授权还是未申请',
+      screen_recording_status_mac_only: '屏幕录制权限状态仅能在 macOS 上读取',
+      notifications_status_unreadable_macos: 'Electron 无法可靠读取 macOS 通知授权状态，请在系统设置中确认',
+      notifications_status_unreadable: 'Electron 无法可靠读取当前系统的通知授权状态',
+      notifications_unsupported: 'Electron 通知能力不可用',
+      permission_probe_failed: '权限探测失败',
+    },
+    cuBackendStatus: (missing, health) =>
+      'maka-cu artifact 已通过本地完整性检查。'
+      + (missing.length > 0 ? `等待${missing.join('、')}权限。` : '')
+      + ({
+        not_available: 'maka-cu service 启动失败、已退出或已停止。',
+        degraded: 'maka-cu service 正在启动或恢复。',
+        healthy: '操作与截图 service 已就绪；按目标与动作类别授权后可操作本机应用。',
+        not_run: 'service 将在首次调用时启动；按目标与动作类别授权后可操作本机应用。',
+      } satisfies Record<RuntimeProbeState, string>)[health],
+    reasonFallback: '状态详情请查看运行日志。',
   },
   'zh-TW': {
     readiness: {
@@ -190,6 +231,40 @@ const PERMISSION_CENTER_COPY = {
     requiredPermissions: '所需系統權限', requiredPermissionsAria: (label) => `${label}所需系統權限列表`, guidance: '處理建議', guidanceAria: (label) => `${label}處理建議列表`,
     auditSection: '審計記錄', noAudit: '暫無審計記錄', auditAria: (label) => `${label}審計記錄列表`,
     impact: '影響功能', opening: '開啟中…', openSettings: '前往系統設定', requesting: '請求中…', request: '請求授權', dragGrant: '引導授權', dragGranting: '引導中…',
+    reasons: {
+      disabled: '此能力目前已關閉。',
+      'missing platform credentials': '未設定平台憑據',
+      'macOS TCC only': '僅 macOS TCC 權限適用',
+      'no Electron API for per-target Apple Events TCC status': 'Electron 暫不支援讀取逐 App 的 Apple Events 授權狀態',
+      cu_artifact_missing: '找不到通過完整性檢查的 Computer Use 執行器 artifact。',
+      cu_backend_unavailable: 'Computer Use 後端目前無法使用。',
+      cu_executor_undistributable: '找不到通過完整性檢查且可分發的 maka-cu executor。',
+      cu_executor_stopped: 'maka-cu executor 已停止。',
+      cu_executor_start_failed: 'maka-cu executor 啟動失敗或已退出。',
+      cu_executor_recovering: 'maka-cu executor 正在啟動或恢復。',
+      cu_executor_ready: 'maka-cu executor 已就緒。',
+      cu_executor_lazy_start: 'maka-cu 已可用，將在首次呼叫時啟動。',
+      activity_recorder_partial: 'Daily Review 已彙整本機任務 / 工具 / 模型活動；目前不包含螢幕與應用程式層級錄製',
+      activity_recorder_probe_hint: '開啟 Daily Review 可檢視本機活動彙整結果',
+      memory_partial: '本機 MEMORY.md 已可見；自動擷取/寫入仍需使用者確認',
+      memory_no_probe: '透明本機記憶為檔案讀寫能力，不做背景探測',
+      accessibility_status_ambiguous: 'macOS 不區分輔助使用權限是未授權還是未申請',
+      screen_recording_status_mac_only: '螢幕錄製權限狀態僅能在 macOS 上讀取',
+      notifications_status_unreadable_macos: 'Electron 無法可靠讀取 macOS 通知授權狀態，請在系統設定中確認',
+      notifications_status_unreadable: 'Electron 無法可靠讀取目前系統的通知授權狀態',
+      notifications_unsupported: 'Electron 通知能力無法使用',
+      permission_probe_failed: '權限探測失敗',
+    },
+    cuBackendStatus: (missing, health) =>
+      'maka-cu artifact 已通過本機完整性檢查。'
+      + (missing.length > 0 ? `等待${missing.join('、')}權限。` : '')
+      + ({
+        not_available: 'maka-cu service 啟動失敗、已退出或已停止。',
+        degraded: 'maka-cu service 正在啟動或恢復。',
+        healthy: '操作與截圖 service 已就緒；依目標與動作類別授權後可操作本機應用程式。',
+        not_run: 'service 將在首次呼叫時啟動；依目標與動作類別授權後可操作本機應用程式。',
+      } satisfies Record<RuntimeProbeState, string>)[health],
+    reasonFallback: '狀態詳情請查看執行日誌。',
   },
   en: {
     readiness: {
@@ -237,6 +312,40 @@ const PERMISSION_CENTER_COPY = {
     requiredPermissions: 'Required system permissions', requiredPermissionsAria: (label) => `${label} required system permissions`, guidance: 'Suggested actions', guidanceAria: (label) => `${label} suggested actions`,
     auditSection: 'Audit records', noAudit: 'No audit records', auditAria: (label) => `${label} audit records`,
     impact: 'Affects', opening: 'Opening…', openSettings: 'Open System Settings', requesting: 'Requesting…', request: 'Request permission', dragGrant: 'Guide me', dragGranting: 'Opening…',
+    reasons: {
+      disabled: 'This capability is turned off.',
+      'missing platform credentials': 'Platform credentials are not configured',
+      'macOS TCC only': 'Only macOS TCC permissions apply',
+      'no Electron API for per-target Apple Events TCC status': 'Electron cannot read per-app Apple Events authorization status',
+      cu_artifact_missing: 'No Computer Use executor artifact passed the integrity check.',
+      cu_backend_unavailable: 'The Computer Use backend is currently unavailable.',
+      cu_executor_undistributable: 'No distributable maka-cu executor passed the integrity check.',
+      cu_executor_stopped: 'The maka-cu executor has stopped.',
+      cu_executor_start_failed: 'The maka-cu executor failed to start or has exited.',
+      cu_executor_recovering: 'The maka-cu executor is starting or recovering.',
+      cu_executor_ready: 'The maka-cu executor is ready.',
+      cu_executor_lazy_start: 'maka-cu is available and starts on first use.',
+      activity_recorder_partial: 'Daily Review aggregates local task, tool, and model activity; screen and app-level recording is not included.',
+      activity_recorder_probe_hint: 'Open Daily Review to see the local activity summary.',
+      memory_partial: 'The local MEMORY.md is visible; automatic extraction and writes still require confirmation.',
+      memory_no_probe: 'Transparent local memory is plain file access, so no background probe runs.',
+      accessibility_status_ambiguous: 'macOS does not distinguish denied from never-requested Accessibility permission',
+      screen_recording_status_mac_only: 'Screen Recording permission status can only be read on macOS',
+      notifications_status_unreadable_macos: 'Electron cannot reliably read macOS notification authorization; check System Settings',
+      notifications_status_unreadable: 'Electron cannot reliably read notification authorization on this system',
+      notifications_unsupported: 'Electron notifications are unavailable',
+      permission_probe_failed: 'Permission probe failed',
+    },
+    cuBackendStatus: (missing, health) =>
+      'The maka-cu artifact passed the local integrity check. '
+      + (missing.length > 0 ? `Waiting for ${missing.join(', ')} permission. ` : '')
+      + ({
+        not_available: 'The maka-cu service failed to start, exited, or was stopped.',
+        degraded: 'The maka-cu service is starting or recovering.',
+        healthy: 'The action and screenshot service is ready; grant by target and action category to operate local apps.',
+        not_run: 'The service starts on first use; grant by target and action category to operate local apps.',
+      } satisfies Record<RuntimeProbeState, string>)[health],
+    reasonFallback: 'See the runtime logs for details.',
   },
 } satisfies UiCatalog<PermissionCenterCopy>;
 

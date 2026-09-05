@@ -71,7 +71,7 @@ describe('importGitHubCopilotLocalCredential', () => {
     assert.equal(imported.result.ok, false);
     if (!imported.result.ok) {
       assert.equal(imported.result.reason, 'token_exchange_failed');
-      assert.match(imported.result.message, /不支持 classic PAT/);
+      assert.equal(imported.result.code, 'copilot_classic_pat_unsupported');
       assert.equal(imported.result.message.includes('ghp_classic_pat'), false);
     }
     assert.equal(imported.secret, undefined);
@@ -83,7 +83,7 @@ describe('importGitHubCopilotLocalCredential', () => {
     });
 
     assert.equal(imported.result.ok, false);
-    if (!imported.result.ok) assert.match(imported.result.message, /凭据类型不受支持/);
+    if (!imported.result.ok) assert.equal(imported.result.code, 'copilot_credential_type_unsupported');
     assert.equal(imported.secret, undefined);
   });
 
@@ -95,7 +95,7 @@ describe('importGitHubCopilotLocalCredential', () => {
     });
 
     assert.equal(imported.result.ok, false);
-    if (!imported.result.ok) assert.match(imported.result.message, /未找到可导入/);
+    if (!imported.result.ok) assert.equal(imported.result.code, 'copilot_local_credential_missing');
     assert.equal(imported.secret, undefined);
   });
 });

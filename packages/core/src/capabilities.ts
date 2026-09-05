@@ -103,6 +103,47 @@ export type CapabilityId =
   | 'memory_write'
   | `bot:${BotProvider}`;
 
+/**
+ * Stable machine codes for capability and OS-permission reasons. Producers
+ * emit these instead of locale-bound prose; presenters own the code→copy map
+ * per locale. Bot capabilities pass their bridge status reasons through as-is
+ * (`rate-limited`, `gateway-closed-4004`, …), so signal `reason` fields stay
+ * `string` — this union types the desktop producers and the presenter maps.
+ */
+export const CAPABILITY_REASON_CODES = [
+  'disabled',
+  'missing platform credentials',
+  'macOS TCC only',
+  'no Electron API for per-target Apple Events TCC status',
+  'cu_artifact_missing',
+  'cu_backend_status',
+  'cu_backend_unavailable',
+  'cu_executor_undistributable',
+  'cu_executor_stopped',
+  'cu_executor_start_failed',
+  'cu_executor_recovering',
+  'cu_executor_ready',
+  'cu_executor_lazy_start',
+  'activity_recorder_partial',
+  'activity_recorder_probe_hint',
+  'memory_partial',
+  'memory_no_probe',
+  'accessibility_status_ambiguous',
+  'screen_recording_status_mac_only',
+  'notifications_status_unreadable_macos',
+  'notifications_status_unreadable',
+  'notifications_unsupported',
+  'permission_probe_failed',
+] as const;
+
+export type CapabilityReasonCode = (typeof CAPABILITY_REASON_CODES)[number];
+
+export function isCapabilityReasonCode(value: unknown): value is CapabilityReasonCode {
+  return (
+    typeof value === 'string' && (CAPABILITY_REASON_CODES as readonly string[]).includes(value)
+  );
+}
+
 export interface OsPermissionSnapshot {
   id: OsPermissionId;
   status: OsPermissionState;

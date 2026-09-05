@@ -175,6 +175,7 @@ test('does not project or open remote Runtime Host file paths', async () => {
   assert.deepEqual(projected.backups.map(({ path }) => path), ['']);
   assert.deepEqual(opened, {
     ok: false,
+    code: 'remote_host_owned',
     message: 'Memory files are owned by the remote Runtime Host',
   });
 });

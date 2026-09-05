@@ -56,8 +56,8 @@ export async function importGitHubCopilotLocalCredential(
         result: {
           ok: false,
           reason: 'token_exchange_failed',
-          message:
-            'GitHub Copilot 不支持 classic PAT；请使用兼容 OAuth 登录或具有 Copilot Requests 权限的 fine-grained PAT。',
+          code: 'copilot_classic_pat_unsupported',
+          message: 'GitHub Copilot does not accept classic PATs.',
         },
       };
     }
@@ -66,7 +66,8 @@ export async function importGitHubCopilotLocalCredential(
         result: {
           ok: false,
           reason: 'token_exchange_failed',
-          message: '当前 GitHub 凭据类型不受支持；请使用兼容 OAuth 登录或 fine-grained PAT。',
+          code: 'copilot_credential_type_unsupported',
+          message: 'Unsupported GitHub credential type.',
         },
       };
     }
@@ -79,7 +80,8 @@ export async function importGitHubCopilotLocalCredential(
       result: {
         ok: false,
         reason: 'token_exchange_failed',
-        message: '未找到可导入的 GitHub 凭据；请先使用 gh 登录或配置兼容凭据。',
+        code: 'copilot_local_credential_missing',
+        message: 'No importable GitHub credential found.',
       },
     };
   }

@@ -1064,6 +1064,7 @@ const startLocalRuntimeHostManager = () => startRuntimeHostDesktopManager(
               const chatId = requireScheduledTaskEffectString(input.chatId, "chatId");
               const title = requireScheduledTaskEffectString(input.title, "title");
               const body = typeof input.body === "string" ? input.body.trim() : "";
+              // Bot-channel notices follow the bot audience language; localization tracked under #2672
               const text = [`【定时任务】${title}`, ...(body ? ["", body] : [])].join("\n");
               const sent = await botRegistry.sendMessage(platform, chatId, text);
               if (!sent) throw new Error("ScheduledTask bot channel is unavailable");
@@ -1496,6 +1497,7 @@ function registerHostClientIpc(
   });
   registerRuntimeHostRendererIpc({ ipcMain: scopedIpc, client });
   registerRuntimeHostArtifactsIpc({
+    uiLocale: () => desktopLocale.current(),
     ipcMain: scopedIpc,
     client,
     mainWindowController,
@@ -1532,6 +1534,7 @@ function registerHostClientIpc(
     module: runtimeHostSettings,
   });
   registerRuntimeHostConfigIpc({
+    uiLocale: () => desktopLocale.current(),
     ipcMain: scopedIpc,
     client,
     mainWindowController,

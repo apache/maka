@@ -70,6 +70,7 @@ import type { ConnectionsBridge } from '../../src/renderer/settings/providers-pa
 import type { ProjectRecord } from '@maka/core/project';
 import type { ArchivedTasksBridge } from '../../src/renderer/settings/tasks-settings-page';
 import type {
+  DesktopLocalRuntimeHostRemoteAccessSnapshot,
   DesktopRuntimeHostProfileChangedEvent,
   DesktopRuntimeHostProfileSnapshot,
   DesktopSessionSummary,
@@ -747,6 +748,9 @@ const makaBridge = {
     setEnabled: async () => runtimeHostProfiles,
     setDefault: async () => runtimeHostProfiles,
     subscribeChanges: () => () => undefined,
+  },
+  localRuntimeHostRemoteAccess: {
+    getSnapshot: async (): Promise<DesktopLocalRuntimeHostRemoteAccessSnapshot> => ({ state: 'off' }),
   },
   // Projects always mounts the Runtime Host management dialog shell, even
   // before a remote profile is selected. Keep the shared Settings fixture in

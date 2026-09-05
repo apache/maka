@@ -185,11 +185,20 @@ export function jobLabel(job) {
   return `${job.storyId} (${job.colorScheme}/${job.palette})`;
 }
 
-async function smokeStory(page, baseUrl, job, options = {}) {
+export function isExpectedConsoleError(storyId, message) {
+  return (
+    storyId === 'product-settings-pages--general-host-settings-error' &&
+    message === '[settings] operation failed: Runtime Host settings read failed in this story.'
+  );
+}
+
+export async function smokeStory(page, baseUrl, job, options = {}) {
   const prefix = `[${jobLabel(job)}]`;
   const browserFailures = [];
   const onConsole = (message) => {
-    if (message.type() === 'error') browserFailures.push(`console.error: ${message.text()}`);
+    if (message.type() === 'error' && !isExpectedConsoleError(job.storyId, message.text())) {
+      browserFailures.push(`console.error: ${message.text()}`);
+    }
   };
   const onPageError = (error) => {
     browserFailures.push(`uncaught page error: ${describeBrowserValue(error)}`);
