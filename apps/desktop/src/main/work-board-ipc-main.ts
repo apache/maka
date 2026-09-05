@@ -169,10 +169,10 @@ function requireWorkBoardId(id: unknown): string {
 function workBoardFailure(error: unknown): {
   readonly error: { readonly code: WorkBoardStoreErrorCode | 'unknown' };
 } {
-  if (error instanceof WorkBoardStoreError) {
+  if (error instanceof WorkBoardStoreError && error.code !== 'corrupt_record') {
     return { error: { code: error.code } };
   }
   const detail = error instanceof Error ? error.stack ?? error.message : String(error);
   console.error('[work-board] operation failed:', redactSecrets(detail));
-  return { error: { code: 'unknown' } };
+  return { error: { code: error instanceof WorkBoardStoreError ? error.code : 'unknown' } };
 }

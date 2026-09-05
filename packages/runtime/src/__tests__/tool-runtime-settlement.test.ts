@@ -30,8 +30,65 @@ import type { SessionEvent } from '@maka/core/events';
 import { type SessionHeader } from '@maka/core/session';
 import { buildForegroundBashTool, buildManagedBashTool } from '../shell-tools.js';
 import { ToolRuntime, type MakaTool, type ToolRuntimeInput } from '../tool-runtime.js';
+import { buildWebSearchTool } from '../web-search-tool.js';
 
 describe('ToolRuntime settlement', () => {
+  for (const [label, message] of [
+    ['missing', undefined],
+    ['empty', ''],
+    ['blank', '   '],
+    ['nonempty', 'Search provider rate limit exceeded.'],
+  ] as const) {
+    it(`settles WebSearch errors with ${label} messages as canonical failures`, async () => {
+      const events: SessionEvent[] = [];
+      const statuses: string[] = [];
+      const runtime = makeRuntime({
+        recordToolInvocation: (record) => {
+          statuses.push(record.status);
+        },
+      });
+      const settlement = await runtime.settleToolCall({
+        tool: buildWebSearchTool({
+          search: async () => ({
+            ok: false,
+            reason: 'rate_limited',
+            ...(message === undefined ? {} : { message }),
+          }),
+        }),
+        turnId: 'turn-1',
+        stepId: 'step-1',
+        toolCallId: 'search-1',
+        input: { query: ' current news ' },
+        abortSignal: new AbortController().signal,
+        eventSink: {
+          push: (event) => events.push(event),
+          pushAndWaitUntilConsumed: async (event) => {
+            events.push(event);
+          },
+        },
+      });
+
+      const resultEvent = events.find((event) => event.type === 'tool_result');
+      assert.equal(resultEvent?.isError, true);
+      assert.deepEqual(statuses, ['error']);
+      const expected = {
+        kind: 'web_search_error',
+        ok: false,
+        provider: 'tavily',
+        query: 'current news',
+        reason: 'rate_limited',
+        message: message?.trim() ? message : 'Web search failed (rate_limited).',
+      };
+      assert.deepEqual(settlement.result, expected);
+      assert.deepEqual(resultEvent.content, expected);
+      assert.deepEqual(settledProjection(events), {
+        version: 1,
+        kind: 'json',
+        value: expected,
+      });
+    });
+  }
+
   it('rejects Client Capability Host admission without preparation in every boundary', async () => {
     let calls = 0;
     const clientTool: MakaTool = {
@@ -645,7 +702,12 @@ function makeRuntime(
   overrides: Partial<
     Pick<
       ToolRuntimeInput,
-      'readExecutionBoundary' | 'spawnChildSession' | 'runId' | 'invocationId' | 'runtimeCommitSink'
+      | 'readExecutionBoundary'
+      | 'spawnChildSession'
+      | 'runId'
+      | 'invocationId'
+      | 'runtimeCommitSink'
+      | 'recordToolInvocation'
     >
   > = {},
 ): ToolRuntime {

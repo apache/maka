@@ -93,6 +93,6 @@ function webSearchError(reason: WebSearchErrorReason, message?: string, query?: 
     provider: 'tavily' as const,
     ...(query ? { query } : {}),
     reason,
-    ...(message ? { message } : {}),
+    message: message?.trim() ? message : `Web search failed (${reason}).`,
   };
 }
