@@ -272,6 +272,7 @@ struct PendingConnect {
     rejected_connections: HashSet<ConnectionId>,
     dials: HashMap<ConnectionId, DialOrigin>,
     direct_routes: Vec<Multiaddr>,
+    identified_routes: Vec<Multiaddr>,
     coordination_relays: Vec<Multiaddr>,
     coordination_relay_peers: Vec<PeerId>,
     transit_relay_peers: HashSet<PeerId>,
@@ -920,6 +921,7 @@ async fn run_endpoint_async(
                         rejected_connections: HashSet::new(),
                         dials: HashMap::new(),
                         direct_routes: started.direct_routes,
+                        identified_routes: Vec::new(),
                         coordination_relays: options.coordination_relays,
                         coordination_relay_peers: started.coordination_relay_peers,
                         transit_relay_peers: started.transit_relay_peers,
@@ -2601,8 +2603,8 @@ fn handle_swarm_event(
                 .values_mut()
                 .filter(|pending| pending.peer_id == peer_id && pending.result.is_none())
             {
-                if pending.direct_routes != routes {
-                    pending.direct_routes.clone_from(&routes);
+                if pending.identified_routes != routes {
+                    pending.identified_routes.clone_from(&routes);
                     pending.next_route_attempt = Instant::now();
                 }
             }
@@ -3743,6 +3745,16 @@ fn webrtc_debug(message: std::fmt::Arguments<'_>) {
     }
 }
 
+// Identify can advertise only private listeners behind NAT. It supplements,
+// never replaces, caller-provided mapped addresses. Keep its own latest set so
+// withdrawing an advertised interface does not accumulate stale candidates.
+fn direct_dial_routes(configured: &[Multiaddr], identified: &[Multiaddr]) -> Vec<Multiaddr> {
+    bounded_unique(
+        configured.iter().chain(identified).cloned().collect(),
+        MAX_CONNECT_ROUTES_PER_CLASS,
+    )
+}
+
 fn maintain_direct_routes(
     swarm: &mut Swarm<Behaviour>,
     direct: &mut DirectConnectState,
@@ -3829,8 +3841,11 @@ fn retry_connect_routes(
             .dials
             .values()
             .any(|origin| *origin == DialOrigin::Direct)
-            && let Some(connection_id) =
-                dial_direct_targets(swarm, peer_id, connect.direct_routes.clone())
+            && let Some(connection_id) = dial_direct_targets(
+                swarm,
+                peer_id,
+                direct_dial_routes(&connect.direct_routes, &connect.identified_routes),
+            )
         {
             connect.dials.insert(connection_id, DialOrigin::Direct);
         }
@@ -3959,6 +3974,28 @@ fn native_error(error: impl std::fmt::Display) -> PeerError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn private_identify_refresh_preserves_mapped_routes_without_retaining_old_interfaces() {
+        let mapped: Multiaddr = "/ip4/203.0.113.10/udp/41000/quic-v1".parse().unwrap();
+        let old: Multiaddr = "/ip4/172.30.72.10/udp/41000/quic-v1".parse().unwrap();
+        let current: Multiaddr = "/ip4/172.30.72.11/udp/41000/quic-v1".parse().unwrap();
+        assert_eq!(
+            direct_dial_routes(std::slice::from_ref(&mapped), std::slice::from_ref(&old)),
+            vec![mapped.clone(), old]
+        );
+        assert_eq!(
+            direct_dial_routes(
+                std::slice::from_ref(&mapped),
+                std::slice::from_ref(&current)
+            ),
+            vec![mapped, current.clone()]
+        );
+        assert_eq!(
+            direct_dial_routes(&[], std::slice::from_ref(&current)),
+            vec![current]
+        );
+    }
 
     #[test]
     fn path_health_recovers_from_jitter_and_prefers_a_responsive_alternative() {
@@ -4238,6 +4275,7 @@ mod tests {
                 rejected_connections: HashSet::new(),
                 dials: HashMap::new(),
                 direct_routes: Vec::new(),
+                identified_routes: Vec::new(),
                 coordination_relays: Vec::new(),
                 coordination_relay_peers: Vec::new(),
                 transit_relay_peers: HashSet::new(),
@@ -4275,6 +4313,7 @@ mod tests {
             rejected_connections: HashSet::new(),
             dials: HashMap::new(),
             direct_routes: Vec::new(),
+            identified_routes: Vec::new(),
             coordination_relays: Vec::new(),
             coordination_relay_peers: vec![first_relay],
             transit_relay_peers: HashSet::new(),
@@ -4329,6 +4368,7 @@ mod tests {
             rejected_connections: HashSet::new(),
             dials: HashMap::new(),
             direct_routes: Vec::new(),
+            identified_routes: Vec::new(),
             coordination_relays: Vec::new(),
             coordination_relay_peers: vec![removed_relay],
             transit_relay_peers: HashSet::new(),
