@@ -28,6 +28,7 @@ import {
 } from 'react';
 import type { ClientCapabilityResponse } from '@maka/core/client-capability-grant';
 import type { QuoteRef } from '@maka/core/events';
+import type { InteractionFormResponse } from '@maka/core/interaction';
 import type { SessionSummary } from '@maka/core/session';
 import { Composer, useUiLocale } from '@maka/ui';
 import type { ChatModelChoice } from '@maka/ui';
@@ -63,6 +64,7 @@ import {
 import { recoverOrphanedCompanionCopies } from '../tools/side-chat/quote-companion-core.js';
 import { useSideConversationWorkspace } from '../tools/side-chat/use-side-conversation-workspace.js';
 import { useWorkbarLayoutState } from './use-workbar-layout-state.js';
+import { LiveContextUsageProbe } from '../tools/inspector/live-context-usage-probe.js';
 
 interface OpenToolOptions {
   initialPrompt?: string;
@@ -76,6 +78,7 @@ export interface WorkbarControllerCommands {
   ): void;
   openSideChatWithQuote(quote: QuoteRef): void;
   respondToClientCapability(response: ClientCapabilityResponse): Promise<void>;
+  respondToUserForm(sessionId: string, response: InteractionFormResponse): Promise<void>;
   toggleRight(): void;
 }
 
@@ -100,6 +103,14 @@ export interface WorkbarController {
   host: WorkbarHostModel;
   commands: WorkbarControllerCommands;
   selectors: WorkbarControllerSelectors;
+  /**
+   * The composer context gauge's live overlay (#4717), handed to the shell on
+   * the controller so the shell gains no import edge to the inspector's
+   * subscription: the app shell is a debt-ratcheted legacy file, and every
+   * named import it adds is new debt the ratchet forbids. The probe's readers
+   * stay inside this feature; the shell only forwards the reference.
+   */
+  readonly LiveContextUsageProbe: typeof LiveContextUsageProbe;
 }
 
 function assertNever(value: never): never {
@@ -655,8 +666,20 @@ export function useWorkbarController(
   );
 
   const commands = useMemo<WorkbarControllerCommands>(
-    () => ({ openTool, openSideChatWithQuote, respondToClientCapability, toggleRight }),
-    [openSideChatWithQuote, openTool, respondToClientCapability, toggleRight],
+    () => ({
+      openTool,
+      openSideChatWithQuote,
+      respondToClientCapability,
+      respondToUserForm: sideChat.respondToUserForm,
+      toggleRight,
+    }),
+    [
+      openSideChatWithQuote,
+      openTool,
+      respondToClientCapability,
+      sideChat.respondToUserForm,
+      toggleRight,
+    ],
   );
 
   const activeSideChatTabIds = useMemo(
@@ -680,6 +703,7 @@ export function useWorkbarController(
 
   return {
     commands,
+    LiveContextUsageProbe,
     selectors: {
       rightCollapsed: layout.workbarCollapsed,
       hiddenSessionIds: hiddenCompanionForkIds,
@@ -697,10 +721,6 @@ export function useWorkbarController(
       onActivateTab: layout.activateWorkbarTab,
       onCloseTab: closeTab,
       onCloseTabs: closeTabs,
-      onReorderTab: layout.reorderWorkbarTab,
-      onMoveTab: layout.moveWorkbarTab,
-      onMoveTabToPanel: layout.moveWorkbarTabToPanel,
-      onPinTab: layout.pinWorkbarTab,
       onOpenLauncher: (placement) => {
         layout.openWorkbarLauncher(placement);
         revealPlacement(placement);

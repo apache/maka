@@ -75,6 +75,7 @@ export * from './configuration-change.js';
 export * from './connection-catalog-change.js';
 export * from './goal.js';
 export * from './hosted-execution.js';
+export * from './host-resources.js';
 export * from './plan.js';
 export * from './peer-mesh.js';
 export * from './project-catalog.js';
@@ -100,7 +101,35 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 105 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 113 as const;
+// 113: Client Capability tool schemas add `patternProperties` and draft-07 tuple
+// `additionalItems`; validation and projection share one per-keyword shape table.
+// Older peers reject these keywords and fail the handshake.
+// 112: Owners can query the Host execution environment through an extensible,
+// bounded resource-envelope contract. Older Hosts do not implement the query.
+// 111: Client Capability tool schemas may use draft-07 tuple additionalItems.
+// Older Hosts reject the keyword, so peers must agree before capabilities are admitted.
+// 110: Runtime Host is the sole schema-migration authority for its State Root.
+// Epoch 109 Desktop builds could migrate the event-only AgentRun schema while
+// an older service Host still held the root, leaving that Host querying a
+// removed column. Reject the affected mixed generation before either process
+// admits domain work; the installation owner can then replace the Host.
+// 109: accepted Client Capability invocations may carry one bounded nested form
+// Interaction request/result round trip.
+// 108: Session Interaction snapshots, forwarded Runtime events, and Agent Graph
+// activity may carry the provider-neutral `form` request/answer contract.
+// 107: `token_usage` anchors record the model and connection that produced
+// them. The record decodes against a closed allowlist, so an older client
+// rejects the two new keys and, with them, the Session that carries them.
+// 106: Session transcripts gain five `system_note` kinds
+// (`context_provider_dropping`, `context_window_suggestion`,
+// `context_window_overrun`, `context_reported_window_exceeded`,
+// `context_overflow_after_compaction`) and
+// `token_usage` records reshape `lastRequestAnchor` to
+// `{ inputTokens, outputTokens }`, all behind closed allowlists in
+// @maka/core. An older client that handshakes would fail
+// `decodeStoredMessage` on the first transcript carrying them, so the pair
+// must refuse each other at the handshake instead (#4559).
 // 105: Usage summaries may carry the recorded call-time total and per-Session
 // tool-invocation totals. Older Clients reject the unknown fields, so a newer
 // Host's usage summary is unreadable to them.

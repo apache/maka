@@ -109,12 +109,55 @@ export interface PreparedRequestObservationSegment {
   label?: string;
 }
 
+export type PromptCompositionSegmentKind =
+  | 'system_instructions'
+  | 'tool_definitions'
+  | 'messages'
+  | 'other';
+
+/**
+ * One part of a prepared request, measured in bytes of serialized request.
+ *
+ * Bytes only. `bytes / 4` is a rule of thumb over serialized JSON — wrong in a
+ * direction nobody here can correct for, badly so for an attachment's base64 —
+ * so the estimate is made where it is shown and labelled `≈` there. A figure
+ * rounded into this contract could no longer be labelled at all (#2323).
+ */
+export interface PromptCompositionSegment {
+  kind: PromptCompositionSegmentKind;
+  bytes: number;
+}
+
+/** One tool's schema, sized on its own, so a reader knows which to remove. */
+export interface PromptCompositionTool {
+  name: string;
+  bytes: number;
+}
+
+/**
+ * What a prepared request was made of, folded at the moment it was prepared.
+ *
+ * This is the whole durable answer to "what filled the context". The per-part
+ * detail it folds is not kept: every reader wanted these buckets, so storing
+ * the parts meant writing hundreds of rows per call for a fold nobody could
+ * do differently.
+ */
+export interface PromptComposition {
+  segments: PromptCompositionSegment[];
+  /** The largest named tool schemas, largest first; bounded at the fold. */
+  tools?: PromptCompositionTool[];
+  /** Everything past the named rows, so the bytes still account for every tool. */
+  remainingTools?: { count: number; bytes: number };
+  /** Tool schemas the payload did not name, so their bytes are still counted. */
+  unlabelledToolBytes?: number;
+}
+
 /**
  * Bounded, secret-free observation of one prepared semantic model request.
  *
- * This is not the provider wire body. The full secret-free serialization stays
- * in the private request artifact referenced by `captureArtifactId` when that
- * sink is available.
+ * Historical only: `promptComposition` replaced it. Attempts recorded before
+ * that still carry it, and folding their segments is the only way to say what
+ * those requests were made of, so it stays decodable.
  */
 export interface PreparedRequestObservation {
   schemaVersion: typeof PREPARED_REQUEST_OBSERVATION_SCHEMA_VERSION;
@@ -165,9 +208,18 @@ export interface ModelCallAttempt {
   providerId: string;
   modelId: string;
   contextWindow?: number;
-  /** Join key for the private prepared-request artifact, when best-effort persistence won the race. */
+  /**
+   * Join key for the private prepared-request artifact.
+   *
+   * Historical only: nothing writes it any more. Every capture was a copy of
+   * the conversation the run already stores, and the copies grew with the
+   * conversation. Attempts recorded before that sink was removed still carry
+   * the key, so it stays decodable.
+   */
   captureArtifactId?: string;
-  /** Semantic request actually prepared for this dispatched physical attempt. */
+  /** What the request prepared for this dispatched physical attempt was made of. */
+  promptComposition?: PromptComposition;
+  /** Replaced by `promptComposition`; still read on attempts recorded before it. */
   requestObservation?: PreparedRequestObservation;
 
   startedAt: number;
@@ -226,6 +278,7 @@ const MODEL_CALL_ATTEMPT_SHAPE = defineObjectShape<ModelCallAttempt>()(
     'historyCompactRoute',
     'contextWindow',
     'captureArtifactId',
+    'promptComposition',
     'requestObservation',
     'timeToFirstTokenMs',
     'finishReason',
@@ -272,6 +325,48 @@ const PREPARED_REQUEST_SEGMENT_KINDS: readonly PreparedRequestObservationSegment
   'message',
   'provider_options',
 ];
+
+const PROMPT_COMPOSITION_SHAPE = defineObjectShape<PromptComposition>()(
+  ['segments'],
+  ['tools', 'remainingTools', 'unlabelledToolBytes'],
+);
+
+const PROMPT_COMPOSITION_SEGMENT_SHAPE = defineObjectShape<PromptCompositionSegment>()(
+  ['kind', 'bytes'],
+  [],
+);
+
+const PROMPT_COMPOSITION_TOOL_SHAPE = defineObjectShape<PromptCompositionTool>()(
+  ['name', 'bytes'],
+  [],
+);
+
+const PROMPT_COMPOSITION_REMAINING_TOOLS_SHAPE = defineObjectShape<{
+  count: number;
+  bytes: number;
+}>()(['count', 'bytes'], []);
+
+/**
+ * The fold's buckets, in the order a composition lists them.
+ *
+ * The order is part of the contract, not presentation: a reader comparing two
+ * compositions compares them position by position, and the projection
+ * validator rejects a record whose segments arrive out of this order.
+ */
+export const PROMPT_COMPOSITION_SEGMENT_KINDS: readonly PromptCompositionSegmentKind[] = [
+  'system_instructions',
+  'tool_definitions',
+  'messages',
+  'other',
+];
+
+/**
+ * The fold names one tool per row, so the row count is what bounds this record.
+ * Generous enough for a normal registry, small enough that a pathological one
+ * cannot make an attempt unbounded. Exported because the fold that produces
+ * these rows has to cut at the same number the decoder accepts.
+ */
+export const PROMPT_COMPOSITION_MAX_TOOLS = 64;
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
@@ -336,6 +431,54 @@ function isPreparedRequestObservationSegment(
     (value.representedSegments === undefined || value.comparison === 'opaque') &&
     isOptionalBoundedText(value.role) &&
     isOptionalBoundedText(value.label)
+  );
+}
+
+function isPromptComposition(value: unknown): value is PromptComposition {
+  if (!isRecord(value) || !hasExactShape(value, PROMPT_COMPOSITION_SHAPE)) return false;
+  if (!Array.isArray(value.segments) || !value.segments.every(isPromptCompositionSegment)) {
+    return false;
+  }
+  // One kind per row: a fold that named the same bucket twice would let a
+  // reader's total disagree with the store's.
+  const kinds = value.segments.map((segment) => segment.kind);
+  if (new Set(kinds).size !== kinds.length) return false;
+  if (value.tools !== undefined) {
+    if (!Array.isArray(value.tools) || value.tools.length > PROMPT_COMPOSITION_MAX_TOOLS) {
+      return false;
+    }
+    if (!value.tools.every(isPromptCompositionTool)) return false;
+  }
+  if (
+    value.remainingTools !== undefined &&
+    !(
+      isRecord(value.remainingTools) &&
+      hasExactShape(value.remainingTools, PROMPT_COMPOSITION_REMAINING_TOOLS_SHAPE) &&
+      isNonNegativeInteger(value.remainingTools.count) &&
+      isNonNegativeInteger(value.remainingTools.bytes)
+    )
+  ) {
+    return false;
+  }
+  return value.unlabelledToolBytes === undefined || isNonNegativeInteger(value.unlabelledToolBytes);
+}
+
+function isPromptCompositionSegment(value: unknown): value is PromptCompositionSegment {
+  return (
+    isRecord(value) &&
+    hasExactShape(value, PROMPT_COMPOSITION_SEGMENT_SHAPE) &&
+    (PROMPT_COMPOSITION_SEGMENT_KINDS as readonly unknown[]).includes(value.kind) &&
+    isNonNegativeInteger(value.bytes)
+  );
+}
+
+function isPromptCompositionTool(value: unknown): value is PromptCompositionTool {
+  return (
+    isRecord(value) &&
+    hasExactShape(value, PROMPT_COMPOSITION_TOOL_SHAPE) &&
+    typeof value.name === 'string' &&
+    value.name.length <= PREPARED_REQUEST_OBSERVATION_TEXT_MAX_LENGTH &&
+    isNonNegativeInteger(value.bytes)
   );
 }
 
@@ -419,6 +562,7 @@ export function decodeModelCallAttempt(value: unknown): ModelCallAttempt {
     isNonEmptyString(value.modelId) &&
     isOptionalNonNegativeNumber(value.contextWindow) &&
     isOptionalString(value.captureArtifactId) &&
+    (value.promptComposition === undefined || isPromptComposition(value.promptComposition)) &&
     (value.requestObservation === undefined ||
       isPreparedRequestObservation(value.requestObservation)) &&
     isFiniteNumber(value.startedAt) &&

@@ -125,7 +125,10 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
       const status = await window.maka.app.checkForUpdates();
       if (aboutPageMountedRef.current) setUpdateStatus(status);
       if (status.state === 'error') {
-        toast.error(copy.updateCheckFailed, copy.updateCheckFailedDetail(status.message));
+        toast.error(
+          copy.updateCheckFailed,
+          copy.updateCheckFailedDetail(settingsActionErrorMessage(status.message, locale)),
+        );
       }
     } catch (error) {
       if (aboutPageMountedRef.current) {
@@ -198,7 +201,10 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
               window floor the sentence needs the full width. */}
           {isDevBuild ? null : (
             <HStack gap={3} justify="between" wrap="wrap">
-              <Text type="body">{aboutUpdateStatusDetail(updateStatus, copy)}</Text>
+              <Text type="body">{aboutUpdateStatusDetail(updateStatus, copy, {
+                isDevBuild,
+                errorDetail: (message) => settingsActionErrorMessage(message, locale),
+              })}</Text>
               <Button
                 variant="secondary"
                 size="sm"

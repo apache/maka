@@ -17,19 +17,20 @@
  * under the License.
  */
 
-import { generalizedErrorMessageChinese } from '@maka/core/redaction';
+import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
 import { type UiLocale } from '@maka/core/ui-locale';
 import { redactSecrets } from '@maka/ui';
 import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
 
-export function settingsActionErrorMessage(error: unknown, locale: UiLocale = 'zh'): string {
+export function settingsActionErrorMessage(error: unknown, locale: UiLocale): string {
   const raw = error instanceof Error
     ? error.message
     : typeof error === 'string'
       ? error
       : '';
-  const classified = locale === 'zh' ? generalizedErrorMessageChinese(new Error(raw), '') : '';
+  const classified = generalizedErrorMessageForLocale(new Error(raw), '', locale);
   if (classified) return classified;
   const redacted = redactSecrets(raw).trim();
-  return redacted || getSettingsSharedCopy(locale).unknownError;
+  if (locale === 'zh-CN' && redacted && /[\u4E00-\u9FFF]/.test(redacted)) return redacted;
+  return getSettingsSharedCopy(locale).unknownError;
 }

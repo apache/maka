@@ -33,7 +33,6 @@ function createBridgeRecorder(): {
     'sessions.subscribeEvents',
     'shellRuns.subscribePtyData',
     'shellRuns.subscribeResync',
-    'todo.subscribeChanges',
     'browser.setActiveSession',
     'browser.setViewport',
     'browser.onState',
@@ -70,7 +69,6 @@ function createBridgeRecorder(): {
       gitReview: domain('gitReview'),
       sessions: domain('sessions'),
       shellRuns: domain('shellRuns'),
-      todo: domain('todo'),
       browser: domain('browser'),
       artifacts: domain('artifacts'),
       app: domain('app'),
@@ -121,9 +119,6 @@ describe('createDesktopWorkbarServices', () => {
     await services.terminal.write({ sessionId: 's', ref: 'term', input: 'ls' });
     services.terminal.subscribePtyData(eventHandler)();
     services.terminal.subscribeResync(eventHandler)();
-
-    await services.todo.read('s');
-    services.todo.subscribeChanges(eventHandler)();
 
     services.browser.setActiveSession('s');
     services.browser.setViewport({ sessionId: 's', rect: null });
@@ -182,6 +177,7 @@ describe('createDesktopWorkbarServices', () => {
     await services.sideChat.respondToSandboxBoundary('fork', {} as never);
     await services.sideChat.respondToClientCapability('fork', {} as never);
     await services.sideChat.respondToUserQuestion('fork', {} as never);
+    await services.sideChat.respondToUserForm('fork', {} as never);
     services.sideChat.subscribeEvents('fork', eventHandler)();
 
     assert.deepEqual(
@@ -196,8 +192,6 @@ describe('createDesktopWorkbarServices', () => {
         'shellRuns.write',
         'shellRuns.subscribePtyData',
         'shellRuns.subscribeResync',
-        'todo.read',
-        'todo.subscribeChanges',
         'browser.setActiveSession',
         'browser.setViewport',
         'browser.navigate',
@@ -237,6 +231,7 @@ describe('createDesktopWorkbarServices', () => {
         'sessions.respondToSandboxBoundary',
         'sessions.respondToClientCapability',
         'sessions.respondToUserQuestion',
+        'sessions.respondToUserForm',
         'sessions.subscribeEvents',
       ],
     );

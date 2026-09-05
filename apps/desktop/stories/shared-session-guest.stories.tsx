@@ -76,6 +76,7 @@ function services(
     cancelImport: async () => 'cancelled',
     readInvitationClipboard: async () => '',
     listMounts: async () => [],
+    subscribeMountChanges: () => () => undefined,
     removeMount: async () => undefined,
     requestTurn: async () => REQUESTS[0],
     getTurnRequests: query,

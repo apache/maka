@@ -26,6 +26,7 @@
 
 import type { Sha256Digest } from './oauth-subscription.js';
 import { redactSecrets } from './redaction.js';
+import { truncateUtf16Safe } from './text-sanitize.js';
 
 export type { Sha256Digest };
 
@@ -307,8 +308,7 @@ export function buildLocalMemoryPromptBody(
   const body = blocks.join('\n\n').trim();
   if (body.length === 0) return undefined;
   if (body.length <= LOCAL_MEMORY_PROMPT_MAX_CHARS) return body;
-  const truncated = body.slice(0, LOCAL_MEMORY_PROMPT_MAX_CHARS);
-  const boundarySafe = /[\uD800-\uDBFF]$/.test(truncated) ? truncated.slice(0, -1) : truncated;
+  const boundarySafe = truncateUtf16Safe(body, LOCAL_MEMORY_PROMPT_MAX_CHARS);
   return `${boundarySafe.trimEnd()}\n\n${LOCAL_MEMORY_PROMPT_TRUNCATION_MARKER}`;
 }
 

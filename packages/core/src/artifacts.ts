@@ -166,6 +166,8 @@ const ARTIFACT_SOURCE_POLICIES = {
   synthesis_cache_block: { userDeletable: true, userVisible: false, sharedReadable: false },
   history_compact_block: { userDeletable: true, userVisible: false, sharedReadable: false },
   history_compact_source: { userDeletable: true, userVisible: false, sharedReadable: false },
+  // Historical only: nothing produces these any more. The policy stays so the
+  // records already on disk keep decoding and stay deletable.
   provider_request_capture: { userDeletable: true, userVisible: false, sharedReadable: false },
   subagent_writeback: { userDeletable: false, userVisible: true, sharedReadable: false },
   deep_research: { userDeletable: false, userVisible: true, sharedReadable: false },

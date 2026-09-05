@@ -53,6 +53,7 @@ import type {
   ShellRunUpdate,
 } from '@maka/core/events';
 import type { UserQuestionResponse } from '@maka/core/user-question';
+import type { InteractionFormResponse } from '@maka/core/interaction';
 import type { RuntimeHostProfileKind } from '@maka/runtime-host/profile-kind';
 import type { PermissionMode } from '@maka/core/permission';
 import type { CollaborationMode } from '@maka/core/collaboration';
@@ -595,6 +596,9 @@ export interface DesktopRuntimeHostManagementProgress {
     | import('@maka/runtime-host/operator').RuntimeHostServiceUpdatePhase;
 }
 
+export type DesktopRuntimeHostResources =
+  import('@maka/runtime-host/protocol').HostResourcesResult;
+
 export interface DesktopRuntimeHostDirectPeerSnapshot {
   readonly state: 'unsupported' | 'not_configured' | 'disabled' | 'enabled';
   readonly peerId?: string;
@@ -765,6 +769,7 @@ export interface MakaBridge {
     /** Reads only after the user invokes the invitation paste action. */
     readInvitationClipboard(): Promise<string>;
     listMounts(): Promise<readonly DesktopGuestSessionMountSummary[]>;
+    subscribeMountChanges(handler: () => void): () => void;
     removeMount(mountId: string): Promise<void>;
     requestTurn(
       sessionId: string,
@@ -875,6 +880,7 @@ export interface MakaBridge {
       policy: import('@maka/runtime-host/operator').RuntimeHostManagedUpdatePolicy,
     ): Promise<DesktopRuntimeHostUpdatePolicySnapshot>;
     reconcileUpdate(profileId: string): Promise<DesktopRuntimeHostUpdateReconciliationResponse>;
+    getResources(profileId: string): Promise<DesktopRuntimeHostResources | undefined>;
     getDirectPeer(profileId: string): Promise<DesktopRuntimeHostDirectPeerSnapshot>;
     configureDirectPeer(
       profileId: string,
@@ -1034,11 +1040,6 @@ export interface MakaBridge {
   workHub: {
     /** Resolve the active Runtime Host's stable coordination conversation. */
     resolveCoordinationSession(): Promise<string>;
-    /** Answer an ordinary question inside the persistent Coordination Session. */
-    answer(
-      coordinationSessionId: string,
-      input: { turnId: string; text: string },
-    ): Promise<{ turnId: string }>;
     /** Persist one deterministic clarification or routing summary. */
     record(
       coordinationSessionId: string,
@@ -1053,11 +1054,6 @@ export interface MakaBridge {
       coordinationSessionId: string,
       input: Omit<OperationInput<'workhub.coordination.act'>, 'create'>,
     ): Promise<OperationOutcome<'workhub.coordination.act'>>;
-    /** Create an ordinary Session on the exact Host owning the resolved conversation. */
-    createSession(
-      coordinationSessionId: string,
-      input: { name: string },
-    ): Promise<DesktopSessionSummary>;
   };
   sessions: {
     list(filter?: SessionListFilter): Promise<DesktopSessionSummary[]>;
@@ -1218,6 +1214,7 @@ export interface MakaBridge {
       response: ClientCapabilityResponse,
     ): Promise<void>;
     respondToUserQuestion(sessionId: string, response: UserQuestionResponse): Promise<void>;
+    respondToUserForm(sessionId: string, response: InteractionFormResponse): Promise<void>;
     saveConversationToFile(input: {
       markdown: string;
       defaultName: string;

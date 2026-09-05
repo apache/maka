@@ -18,8 +18,8 @@
  */
 
 import { createHash } from 'node:crypto';
-import type { AgentRunHeader } from '@maka/core/agent-run';
 import { failureClassFromCompleteStopReason, type SessionEvent } from '@maka/core/events';
+import type { RuntimeInvocationOutcome } from '@maka/core/runtime-invocation';
 import type {
   SessionBlockedReason,
   SessionHeader,
@@ -122,7 +122,13 @@ export function workHubDirectStopAbortSource(actionId: string | undefined): stri
   return `workhub.direct_stop.${suffix}`;
 }
 
-export function isTerminalRunStatus(status: AgentRunHeader['status']): boolean {
+/**
+ * What a live run says about itself before its events close it. Only the
+ * outcomes are durable; the other two describe a run still in flight.
+ */
+export type RunLifecycleStatus = RuntimeInvocationOutcome | 'running' | 'waiting_for_user';
+
+export function isTerminalRunStatus(status: RunLifecycleStatus): boolean {
   return status === 'completed' || status === 'failed' || status === 'cancelled';
 }
 
@@ -134,11 +140,13 @@ export function statusFromEvent(
     case 'sandbox_boundary_request':
       return { status: 'waiting_for_user', blockedReason: 'permission_required' };
     case 'user_question_request':
+    case 'form_request':
       return { status: 'waiting_for_user' };
     case 'sandbox_boundary_decision_ack':
       if (options.allowInteractionResume === false) return undefined;
       return { status: 'running' };
     case 'user_question_answer_ack':
+    case 'form_answer_ack':
       if (options.allowInteractionResume === false) return undefined;
       return { status: 'running' };
     case 'error':

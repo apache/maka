@@ -104,7 +104,7 @@ export interface DailyReviewCopy {
 }
 
 const DAILY_REVIEW_COPY = {
-  zh: {
+  'zh-CN': {
     archive: {
       section: { summary: '任务摘要', gaps: '遗漏提醒', usage: '使用洞察', code: '代码建议' },
       status: { ok: '已生成', no_model: '缺少模型', no_data: '无数据', failed: '生成失败', skipped: '已跳过' },
@@ -137,6 +137,41 @@ const DAILY_REVIEW_COPY = {
     errorFallback: '每日回顾暂时不可用，请稍后重试。',
     markdown: {
       separator: '：', title: (dayLabel) => `# Maka · 每日回顾 · ${dayLabel}`, conversations: '任务', requests: '模型调用', tokens: 'Token', cost: '费用', errors: '错误', activeConversations: '活跃任务', modelUsage: '模型使用', toolCalls: '工具调用', requestCount: (count) => `${count} 次`,
+    },
+  },
+  'zh-TW': {
+    archive: {
+      section: { summary: '任務摘要', gaps: '遺漏提醒', usage: '使用洞察', code: '程式碼建議' },
+      status: { ok: '已生成', no_model: '缺少模型', no_data: '無資料', failed: '生成失敗', skipped: '已跳過' },
+      trigger: { cron: '定時', manual: '手動' },
+      title: (date, mode) => `${date} · ${mode}`,
+      range: { 1: '單日', 7: '7 天', 30: '30 天' },
+      generated: (trigger, time) => `${trigger}生成 ${time}`,
+      sessionCount: (count) => `${count} 任務`,
+      defaultModel: '預設任務模型',
+      opening: '正在開啟這份報告…',
+      noContent: '這份報告沒有生成正文內容。',
+      noContentHelp: '這一天沒有歸檔內容。',
+    },
+    date: {
+      today: '今天', yesterday: '昨天', daysAgo: (count) => `${count} 天前`, recent7Days: '最近 7 天', recent30Days: '最近 30 天', shiftedRange: (range, days) => `${range}（往前 ${days} 天）`,
+      unit: { day: '天', week: '周', month: '月' }, earlier: (unit) => `檢視更早一${unit}`, later: (unit) => `檢視更晚一${unit}`,
+    },
+    emptyOverview: {
+      todayTitle: '等待記錄今天活動', rangeTitle: (label) => `${label}無活動`, todayBody: '今天還沒有發起任務，也沒有呼叫模型。', rangeBody: (label) => `${label}範圍內沒有發起任務，也沒有呼叫模型。`,
+    },
+    export: {
+      ariaLabel: '回顧匯出操作', copyTitle: '複製為 Markdown 摘要，方便分享 / 貼到筆記', copying: '複製中…', copy: '複製', appendTitle: '追加到目前輸入框草稿', appending: '追加中…', append: '貼到輸入框', saveTitle: '儲存為 Markdown 檔案', saving: '儲存中…', save: '儲存',
+    },
+    page: {
+      title: '每日回顧', generateAnalysis: '生成分析', retryAnalysis: '重新生成', viewAnalysis: '檢視分析', backToActivity: '返回活動', timeRange: '時間範圍', rangeOptions: [['1', '今日'], ['7', '最近 7 天'], ['30', '最近 30 天']], rangeSwitch: '時間範圍切換',
+    },
+    overview: {
+      ariaLabel: (label) => `${label}概覽`, refreshFailed: (error) => `每日回顧重新整理失敗：${error}`, retry: '重試', conversations: '任務', requests: '請求', tokens: 'Token', cost: '費用', activeConversations: '活躍任務',
+    },
+    errorFallback: '每日回顧暫時不可用，請稍後重試。',
+    markdown: {
+      separator: '：', title: (dayLabel) => `# Maka · 每日回顧 · ${dayLabel}`, conversations: '任務', requests: '請求', tokens: 'Token', cost: '費用', errors: '錯誤', activeConversations: '活躍任務', modelUsage: '模型使用', toolCalls: '工具呼叫', requestCount: (count) => `${count} 次`,
     },
   },
   en: {

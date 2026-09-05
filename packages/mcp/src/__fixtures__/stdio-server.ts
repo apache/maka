@@ -132,6 +132,7 @@ server.setRequestHandler(ListToolsRequestSchema, async ({ params }) => {
             },
           },
         },
+        tool('echo', 'Echo text', true),
       ],
     };
   }
@@ -160,6 +161,11 @@ server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
     return {
       content: [{ type: 'text', text: String(params.arguments?.value ?? '') }],
       structuredContent: { echoed: params.arguments?.value },
+    };
+  }
+  if (params.name === 'annotated') {
+    return {
+      content: [{ type: 'text', text: `annotated:${String(params.arguments?.fallback ?? '')}` }],
     };
   }
   if (params.name === 'rich') {

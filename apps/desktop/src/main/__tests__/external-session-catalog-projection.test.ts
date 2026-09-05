@@ -54,9 +54,10 @@ test('projects imported Session ids into the same Desktop identity space as Sess
   assert.equal(catalogItem.importState.importedSessionIds[0], summary.id);
 });
 
-function session(id: string): SessionSummary {
+function session(id: string): SessionSummary & { revision: number } {
   return {
     id,
+    revision: 1,
     name: 'Imported',
     isFlagged: false,
     isArchived: false,

@@ -263,11 +263,11 @@ function agentRunDocument(sessionId = 'session-1', agentRunId = 'run-1'): AgentR
     agentRun: {
       sessionId,
       agentRunId,
+      invocationId: agentRunId,
       turnId: 'turn-1',
       status: 'completed',
-      createdAt: 1,
-      updatedAt: 2,
-      completedAt: 2,
+      openedAt: 1,
+      endedAt: 2,
     },
     sources: {
       operationalEventCount: 0,
@@ -275,8 +275,6 @@ function agentRunDocument(sessionId = 'session-1', agentRunId = 'run-1'): AgentR
       health: {
         runtimeLedger: 'missing',
         runtimeTerminalPresent: false,
-        operationalTerminalPresent: false,
-        statusConsistency: 'incomplete',
       },
     },
     tools: {

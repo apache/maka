@@ -23,7 +23,8 @@ import type {
   AgentGraphClientOperator,
   AgentGraphClientSnapshot,
 } from '@maka/runtime/stream-graph-read-model';
-import { AgentGraphPanel, getAgentGraphPanelCopy } from '../src/renderer/agent-graph-panel';
+import { AgentGraphPanel } from '../src/renderer/agent-graph-panel';
+import { getAgentGraphPanelCopy } from '../src/renderer/locales/agent-graph-copy';
 import { withScopedMakaBridge } from './maka-bridge';
 
 // Fidelity convention (#1433): every story names the real app path that
@@ -39,7 +40,7 @@ import { withScopedMakaBridge } from './maka-bridge';
 
 const ROOT_SESSION_ID = 'session-graph';
 const GRAPH_ID = 'graph-storybook';
-const LOCALE = 'zh';
+const LOCALE = 'zh-CN';
 const copy = getAgentGraphPanelCopy(LOCALE);
 
 const meta = {

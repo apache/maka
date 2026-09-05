@@ -19,10 +19,7 @@
 
 import {
   decodeAgentRunEvent as decodeCanonicalAgentRunEvent,
-  decodeAgentRunHeader as decodeCanonicalAgentRunHeader,
-  decodePersistedAgentRunHeader,
   type AgentRunEvent,
-  type AgentRunHeader,
 } from '@maka/core/agent-run';
 
 import {
@@ -38,34 +35,6 @@ import { markPersisted } from '@maka/core/persisted-value';
 
 export function decodeStoredMessage(value: unknown): StoredMessage {
   return decodePersistedStoredMessage(markPersisted<StoredMessage>(value));
-}
-
-export function decodeAgentRunHeader(
-  value: unknown,
-  expected: { sessionId: string; runId: string },
-): AgentRunHeader {
-  try {
-    const header = decodePersistedAgentRunHeader(markPersisted<AgentRunHeader>(value));
-    if (header.sessionId !== expected.sessionId || header.runId !== expected.runId) {
-      throw new Error('AgentRun header identity does not match its path');
-    }
-    return header;
-  } catch (error) {
-    throw new Error(`Invalid AgentRun header for run ${expected.runId}: malformed fields`, {
-      cause: error,
-    });
-  }
-}
-
-export function decodeCurrentAgentRunHeader(
-  value: unknown,
-  expected: { sessionId: string; runId: string },
-): AgentRunHeader {
-  const header = decodeCanonicalAgentRunHeader(value);
-  if (header.sessionId !== expected.sessionId || header.runId !== expected.runId) {
-    throw new Error('AgentRun header identity does not match its path');
-  }
-  return header;
 }
 
 export function decodeAgentRunEvent(
@@ -85,7 +54,7 @@ export function decodeAgentRunEvent(
 
 export function decodeRuntimeEvent(
   value: unknown,
-  expected: Pick<AgentRunHeader, 'sessionId' | 'runId' | 'turnId' | 'invocationId'>,
+  expected: { sessionId: string; runId: string; turnId: string; invocationId?: string },
 ): RuntimeEvent {
   const event = decodeCanonicalRuntimeEvent(value);
   if (

@@ -40,7 +40,9 @@ import {
 import { PROVIDER_REGISTRY } from '@maka/core/llm-connections';
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import { decodeRunCompositionSnapshot } from '@maka/core/run-composition';
-import type { AgentRunHeader } from '@maka/core/agent-run';
+import { readInvocation, testInvocationRecord } from '@maka/runtime/test-only/invocation-fixture';
+import { runtimeInvocationOutcome } from '@maka/core/runtime-invocation';
+import { agentRunCompositionFromEvents } from '@maka/core/agent-run';
 import type { BackendCompactHistoryInput } from '@maka/core/backend-types';
 import { decodeCanonicalToolResultContent } from '@maka/core/tool-result-record-schema';
 import { type ModelCallAttempt, type ModelCallKind } from '@maka/core/model-call-attempt';
@@ -328,7 +330,7 @@ test('production Host executes Bash against the current live sandbox boundary', 
       ),
       context,
     );
-    const firstRun = await execution.agentRunStore.readRun(session.id, firstTerminal.runId);
+    const firstRun = await readInvocation(execution, session.id, firstTerminal.runId);
     const firstRunEvents = await execution.agentRunStore.readEvents(
       session.id,
       firstTerminal.runId,
@@ -1041,38 +1043,58 @@ test('Codex OAuth history compaction falls back to a text checkpoint after nativ
       turnId: 'turn-compact',
       runId: 'run-compact',
       runtimeContext,
-      runtimeContextRunHeaders: [
-        {
+      runtimeContextInvocations: [
+        testInvocationRecord({
+          sessionId: 'backend-creation-session',
           runId: 'compact-source-run',
-          sessionId: 'backend-creation-session',
           turnId: 'turn-old-model',
-          status: 'completed',
-          backendKind: 'ai-sdk',
-          llmConnectionId: '11111111-1111-4111-8111-111111111111',
-          llmConnectionSlug: 'backend-creation-connection',
-          modelId: 'gpt-5.2',
-          cwd: '/workspace',
-          permissionMode: 'bypass',
-          createdAt: 1,
-          updatedAt: 2,
-          completedAt: 2,
-        } satisfies AgentRunHeader,
-        {
-          runId: 'compact-same-route-run',
+          openedAt: 1,
+          closedAt: 2,
+          outcome: 'completed',
+          opening: {
+            route: {
+              provenance: 'runtime',
+              backendKind: 'ai-sdk',
+              llmConnectionId: '11111111-1111-4111-8111-111111111111',
+              llmConnectionSlug: 'backend-creation-connection',
+              modelId: 'gpt-5.2',
+            },
+            configuration: {
+              cwd: '/workspace',
+              permissionMode: 'bypass',
+              collaborationMode: 'agent',
+              orchestrationMode: 'default',
+              orchestrationSource: 'session',
+              toolMode: 'direct',
+            },
+          },
+        }),
+        testInvocationRecord({
           sessionId: 'backend-creation-session',
+          runId: 'compact-same-route-run',
           turnId: 'turn-current-route-model',
-          status: 'completed',
-          backendKind: 'ai-sdk',
-          llmConnectionId: '11111111-1111-4111-8111-111111111111',
-          llmConnectionSlug: 'backend-creation-connection',
-          modelId,
-          providerStateIdentity,
-          cwd: '/workspace',
-          permissionMode: 'bypass',
-          createdAt: 2,
-          updatedAt: 3,
-          completedAt: 3,
-        } satisfies AgentRunHeader,
+          openedAt: 2,
+          closedAt: 3,
+          outcome: 'completed',
+          opening: {
+            route: {
+              provenance: 'runtime',
+              backendKind: 'ai-sdk',
+              llmConnectionId: '11111111-1111-4111-8111-111111111111',
+              llmConnectionSlug: 'backend-creation-connection',
+              modelId,
+              providerStateIdentity,
+            },
+            configuration: {
+              cwd: '/workspace',
+              permissionMode: 'bypass',
+              collaborationMode: 'agent',
+              orchestrationMode: 'default',
+              orchestrationSource: 'session',
+              toolMode: 'direct',
+            },
+          },
+        }),
       ],
     } satisfies BackendCompactHistoryInput;
     const result = await backend.compactHistory(compactInput);
@@ -1779,6 +1801,16 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     });
     assert.equal(configured.kind, 'committed');
     await publishConnectionModel(policy, connection.connectionId, MODEL_ID);
+    // The fetched /models value is metadata only. This explicit model-facts
+    // declaration is the Maka compaction target used by the long-session flow.
+    await writeFile(
+      join(root, 'model-facts.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        overrides: { [`moonshot:${MODEL_ID}`]: { contextWindow: 3_072 } },
+      }),
+      'utf8',
+    );
     let policySnapshot = await policy.runtimePolicy.getSnapshot();
     const personalized = await policy.runtimePolicy.mutate({
       expectedRevision: policySnapshot.revision,
@@ -1860,8 +1892,8 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     assert.equal(remembered.result.kind, 'committed');
 
     const turnIds: string[] = [];
-    // Cross the history high-water without making the text-only compact input
-    // exceed this fixture's 2,304-token summarizer budget.
+    // Cross the explicitly declared Maka window without making the text-only
+    // compact input exceed this fixture's 2,304-token summarizer budget.
     for (let index = 0; index < 5; index += 1) {
       const turnId = randomUUID();
       turnIds.push(turnId);
@@ -1888,6 +1920,9 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     const hostedCheckpoints = await loadHistoryCompactCheckpointsFromRunLedger(
       execution.agentRunStore,
       session.id,
+      (await execution.runtimeEventStore.listSessionInvocations(session.id)).map(
+        (invocation) => invocation.runId,
+      ),
     );
     const hostedMemoryBoundary = hostedCheckpoints.find(
       (checkpoint) => checkpoint.memoryExtractionBoundary,
@@ -1994,7 +2029,7 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     const capturedRequestCount = mainRequests.length + compactRequests.length;
     const attempts = await waitForCanonicalAttempts(usageStores, session.id, capturedRequestCount);
     assert.equal(attempts.length, capturedRequestCount);
-    assert.ok(attempts.every((attempt) => attempt.requestObservation));
+    assert.ok(attempts.every((attempt) => attempt.promptComposition));
     const contextDiagnostics = await composition.handlers['context.diagnostics.query'](
       { sessionId: session.id },
       connectionContext,
@@ -2012,22 +2047,6 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     }
 
     const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
-    const captureArtifacts = await waitForCaptureArtifacts(
-      artifacts,
-      session.id,
-      capturedRequestCount,
-    );
-    assert.equal(captureArtifacts.length, capturedRequestCount);
-    let summaryCaptureFound = false;
-    for (const artifact of captureArtifacts) {
-      const read = await artifacts.readTextInSession(session.id, artifact.id);
-      if (read.ok && /context summarization assistant/.test(read.text)) {
-        summaryCaptureFound = true;
-        break;
-      }
-    }
-    assert.equal(summaryCaptureFound, true);
-
     const streamRequestsBeforeArtifactFailure = provider.requests.filter(
       (request) => request.body.stream === true,
     ).length;
@@ -2191,20 +2210,22 @@ test('production Host executes and durably supervises an Agent Graph over a real
     graphStore = createAgentGraphControlStore(root);
     const graphId = agentGraphIdForRootSession(session.id);
     let updates = await graphStore.listAgentGraphScheduleUpdates(graphId);
-    let runs = await execution.agentRunStore.listSessionRuns(session.id);
+    let runs = await execution.runtimeEventStore.listSessionInvocations(session.id);
     for (let attempt = 0; attempt < 400; attempt += 1) {
-      const wakeRuns = runs.filter((run) => run.agentGraphWakeAttemptId !== undefined);
+      const wakeRuns = runs.filter(
+        (run) => run.opening.root.kind === 'agent_graph_supervisor_wake',
+      );
       if (
         updates.at(-1)?.finish &&
         wakeRuns.length > 0 &&
-        wakeRuns.every((run) => ['completed', 'failed', 'cancelled'].includes(run.status)) &&
+        wakeRuns.every((run) => runtimeInvocationOutcome(run) !== undefined) &&
         liveResidencies === 0
       ) {
         break;
       }
       await new Promise<void>((resolve) => setTimeout(resolve, 10));
       updates = await graphStore.listAgentGraphScheduleUpdates(graphId);
-      runs = await execution.agentRunStore.listSessionRuns(session.id);
+      runs = await execution.runtimeEventStore.listSessionInvocations(session.id);
     }
 
     const finish = updates.at(-1)?.finish;
@@ -2215,22 +2236,26 @@ test('production Host executes and durably supervises an Agent Graph over a real
         lastUpdate: updates.at(-1),
         runs: runs.map((run) => ({
           runId: run.runId,
-          status: run.status,
-          wakeAttemptId: run.agentGraphWakeAttemptId,
+          status: runtimeInvocationOutcome(run) ?? 'running',
+          root: run.opening.root,
         })),
         requests: providerRequestTrace(provider.requests),
       }),
     );
     assert.equal(finish?.resultIds.length, 1);
     const rootRun = runs.find((run) => run.runId === initialTerminal.runId);
-    assert.equal(rootRun?.runComposition?.composerId, 'maka.interactive');
-    assert.equal(rootRun?.runComposition?.contextWindow, 32_768);
-    assert.match(rootRun?.runComposition?.baseSystemPromptHash ?? '', /^sha256:[a-f0-9]{64}$/u);
-    assert.ok(rootRun?.runComposition?.toolNames.includes('view_agent_graph'));
-    const wakeRuns = runs.filter((run) => run.agentGraphWakeAttemptId !== undefined);
+    assert.ok(rootRun);
+    const rootComposition = agentRunCompositionFromEvents(
+      await execution.agentRunStore.readEvents(session.id, rootRun.runId),
+    );
+    assert.equal(rootComposition?.composerId, 'maka.interactive');
+    assert.equal(rootComposition?.contextWindow, 32_768);
+    assert.match(rootComposition?.baseSystemPromptHash ?? '', /^sha256:[a-f0-9]{64}$/u);
+    assert.ok(rootComposition?.toolNames.includes('view_agent_graph'));
+    const wakeRuns = runs.filter((run) => run.opening.root.kind === 'agent_graph_supervisor_wake');
     assert.ok(wakeRuns.length > 0);
-    assert.ok(wakeRuns.every((run) => run.status === 'completed'));
-    assert.ok(wakeRuns.every((run) => run.orchestrationMode === 'graph'));
+    assert.ok(wakeRuns.every((run) => runtimeInvocationOutcome(run) === 'completed'));
+    assert.ok(wakeRuns.every((run) => run.opening.configuration.orchestrationMode === 'graph'));
     assert.equal(liveResidencies, 0);
 
     const sessions = await execution.sessionStore.listForRecovery();
@@ -2240,9 +2265,11 @@ test('production Host executes and durably supervises an Agent Graph over a real
     assert.ok(child);
     assert.equal(child?.subagentRuntime?.profile, 'local_read');
     assert.equal(child?.subagentParent?.parentSessionId, session.id);
-    const childRuns = child ? await execution.agentRunStore.listSessionRuns(child.id) : [];
+    const childRuns = child
+      ? await execution.runtimeEventStore.listSessionInvocations(child.id)
+      : [];
     assert.equal(childRuns.length, 1);
-    assert.equal(childRuns[0]?.status, 'completed');
+    assert.equal(childRuns[0] && runtimeInvocationOutcome(childRuns[0]), 'completed');
 
     const graphRequests = provider.requests.filter(
       (request) =>
@@ -2369,7 +2396,7 @@ test('production Host executes a durable runnable child with an exact tool ceili
       ),
       context,
     );
-    const parentRun = await execution.agentRunStore.readRun(parent.id, terminal.runId);
+    const parentRun = await readInvocation(execution, parent.id, terminal.runId);
     const parentRunEvents = await execution.agentRunStore.readEvents(parent.id, terminal.runId);
     assert.equal(
       terminal.status,
@@ -2415,10 +2442,10 @@ test('production Host executes a durable runnable child with an exact tool ceili
     if (!child) return;
     assert.equal(child.subagentWorkspace, undefined);
     assert.equal(child.cwd, project);
-    const childRuns = await execution.agentRunStore.listSessionRuns(child.id);
+    const childRuns = await execution.runtimeEventStore.listSessionInvocations(child.id);
     assert.equal(childRuns.length, 1);
-    assert.equal(childRuns[0]?.status, 'completed');
-    assert.equal(childRuns[0]?.parentRunId, undefined);
+    assert.equal(childRuns[0] && runtimeInvocationOutcome(childRuns[0]), 'completed');
+    assert.equal(childRuns[0]?.opening.lineage?.parentRunId, undefined);
     const childMessages = await execution.sessionStore.readMessagesSnapshot(child.id);
     assert.equal(
       childMessages.find((message) => message.type === 'assistant')?.text,
@@ -2426,8 +2453,7 @@ test('production Host executes a durable runnable child with an exact tool ceili
     );
     const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
     const childArtifacts = await artifacts.listTurnArtifacts(child.id, childRuns[0]!.turnId);
-    assert.equal(childArtifacts.length, 1);
-    assert.equal(childArtifacts[0]?.source, 'provider_request_capture');
+    assert.equal(childArtifacts.length, 0, 'a child turn no longer stores anything of its own');
     const parentRuntimeEvents = await execution.runtimeEventStore.readRuntimeEvents(
       parent.id,
       terminal.runId,
@@ -2440,7 +2466,7 @@ test('production Host executes a durable runnable child with an exact tool ceili
     const typedSpawnResult = decodeCanonicalToolResultContent(spawnResult.content.result);
     assert.equal(typedSpawnResult.kind, 'subagent');
     assert.deepEqual(
-      (typedSpawnResult as { artifactIds?: readonly string[] }).artifactIds,
+      (typedSpawnResult as { artifactIds?: readonly string[] }).artifactIds ?? [],
       childArtifacts.map((artifact) => artifact.id),
     );
   } finally {
@@ -2567,7 +2593,7 @@ test('production Host publishes and retires an implementation child patch', asyn
       ),
       context,
     );
-    const parentRun = await execution.agentRunStore.readRun(parent.id, terminal.runId);
+    const parentRun = await readInvocation(execution, parent.id, terminal.runId);
     const parentRunEvents = await execution.agentRunStore.readEvents(parent.id, terminal.runId);
     assert.equal(
       terminal.status,
@@ -2632,10 +2658,10 @@ test('production Host publishes and retires an implementation child patch', asyn
     assert.equal(child.cwd, child.subagentWorkspace?.worktreePath);
     assert.equal(await fileExists(join(project, 'implementation.txt')), false);
     assert.equal(await fileExists(join(child.cwd, 'implementation.txt')), true);
-    const childRuns = await execution.agentRunStore.listSessionRuns(child.id);
+    const childRuns = await execution.runtimeEventStore.listSessionInvocations(child.id);
     assert.equal(childRuns.length, 1);
-    assert.equal(childRuns[0]?.status, 'completed');
-    assert.equal(childRuns[0]?.parentRunId, undefined);
+    assert.equal(childRuns[0] && runtimeInvocationOutcome(childRuns[0]), 'completed');
+    assert.equal(childRuns[0]?.opening.lineage?.parentRunId, undefined);
     const childMessages = await execution.sessionStore.readMessagesSnapshot(child.id);
     assert.equal(
       childMessages.find((message) => message.type === 'assistant')?.text,
@@ -2643,11 +2669,7 @@ test('production Host publishes and retires an implementation child patch', asyn
     );
     const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
     const childArtifacts = await artifacts.listTurnArtifacts(child.id, childRuns[0]!.turnId);
-    assert.equal(childArtifacts.length, childRequests.length + 2);
-    assert.equal(
-      childArtifacts.filter((artifact) => artifact.source === 'provider_request_capture').length,
-      childRequests.length,
-    );
+    assert.equal(childArtifacts.length, 2);
     assert.ok(
       childArtifacts.some(
         (artifact) => artifact.source === 'tool_result' && artifact.name === 'implementation.txt',
@@ -2842,7 +2864,7 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
       connection: {
         slug: 'goal-evaluator-provider',
         name: 'Goal evaluator provider',
-        providerType: 'moonshot',
+        providerType: 'opencode-go',
         baseUrl: provider.baseUrl,
         enabled: true,
         enabledModelIds: [MODEL_ID],
@@ -2947,6 +2969,7 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
       requestDrain: () => assert.fail('Daily Review telemetry must not drain the Host'),
       newId: () => 'daily-review-call-1',
     });
+    const dailyReviewRequestsBefore = provider.requests.length;
     assert.deepEqual(
       await dailyReview.generate({
         modelKey: `goal-evaluator-provider::${MODEL_ID}`,
@@ -2964,6 +2987,9 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
     assert.ok(dailyReviewLog);
     assert.equal(dailyReviewLog.callId, 'daily_review_daily-review-call-1');
     assert.equal(dailyReviewLog.sessionId, undefined);
+    const dailyReviewRequest = provider.requests[dailyReviewRequestsBefore];
+    assert.ok(dailyReviewRequest);
+    assert.equal(dailyReviewRequest.sessionHeader, 'daily-review-call-1');
 
     const memoryModel = createHostMemoryExtractionModel({
       runtimePolicy: policy,
@@ -3011,6 +3037,8 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
     const [proposalRequest, canonicalizeRequest] = provider.requests.slice(memoryRequestsBefore);
     assert.ok(proposalRequest);
     assert.ok(canonicalizeRequest);
+    assert.equal(proposalRequest.sessionHeader, session.id);
+    assert.equal(canonicalizeRequest.sessionHeader, session.id);
     assert.deepEqual(toolNames(proposalRequest.body), ['memory_remember']);
     assert.match(JSON.stringify(proposalRequest.body), /SOURCE_SYSTEM_SENTINEL/);
     assert.match(JSON.stringify(proposalRequest.body), /SOURCE_USER_SENTINEL/);
@@ -3856,22 +3884,6 @@ async function waitForCanonicalAttempts(
   );
 }
 
-async function waitForCaptureArtifacts(
-  artifacts: Awaited<ReturnType<typeof openInteractiveArtifactStoreForWrite>>,
-  sessionId: string,
-  expectedRequests: number,
-) {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const page = await artifacts.listPage(sessionId, { offset: 0, limit: 100 });
-    const captures = page.records.filter(
-      (artifact) => artifact.source === 'provider_request_capture',
-    );
-    if (captures.length >= expectedRequests) return captures;
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error(`Hosted request artifacts did not reach ${expectedRequests}`);
-}
-
 async function waitForAutomaticMemoryRequestsToSettle(
   requests: readonly ProviderRequest[],
 ): Promise<void> {
@@ -4326,6 +4338,7 @@ interface ProviderRequest {
   readonly url: string;
   readonly authorization: string | undefined;
   readonly customHeader: string | undefined;
+  readonly sessionHeader: string | undefined;
   readonly body: Record<string, unknown>;
 }
 
@@ -4438,6 +4451,7 @@ async function handleProviderRequest(
     url: request.url ?? '',
     authorization: request.headers.authorization,
     customHeader: request.headers['x-maka-test'] as string | undefined,
+    sessionHeader: request.headers['x-opencode-session'] as string | undefined,
     body,
   });
   if (request.url === '/v1/responses') {

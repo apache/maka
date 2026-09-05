@@ -123,7 +123,10 @@ jobs:
           cache: npm
 
       - name: Install publisher dependencies
-        run: npm ci --ignore-scripts
+        run: npm ci --ignore-scripts --no-audit
+
+      - name: Block shipped advisories without blocking on audit availability
+        run: node scripts/audit-shipped-dependencies.mjs --allow-unavailable
 
       - name: Select the publication npm toolchain
         run: npm install --global --no-audit --no-fund "$(node -p 'require("./package.json").packageManager')"

@@ -123,7 +123,7 @@ describe('Maka Pi TUI transcript', () => {
     assert.match(english, /Type a message to start/);
     assert.match(english, /\/session\s+Switch or resume a session/);
 
-    const chinese = renderMakaPiTranscript(state, { ...meta(), uiLocale: 'zh' }, 100)
+    const chinese = renderMakaPiTranscript(state, { ...meta(), uiLocale: 'zh-CN' }, 100)
       .map(stripAnsi)
       .join('\n');
     assert.match(chinese, /陪你把事做完/);
@@ -156,7 +156,7 @@ describe('Maka Pi TUI transcript', () => {
     assert.equal(renderFor('darwin').at(-1), '⌥+↑ take queued messages back to re-edit');
     assert.equal(renderFor('linux').at(-1), 'Alt+↑ take queued messages back to re-edit');
     assert.equal(
-      renderMakaPiPendingQueue(state, 80, 'linux', 'zh').map(stripAnsi).at(-1),
+      renderMakaPiPendingQueue(state, 80, 'linux', 'zh-CN').map(stripAnsi).at(-1),
       'Alt+↑ 取回队列以重新编辑',
     );
   });
@@ -224,7 +224,7 @@ describe('Maka Pi TUI transcript', () => {
     assert.equal(
       stripAnsi(
         renderMakaPiStatusLine(
-          { ...meta(), uiLocale: 'zh', sideConversation: { view: 'side' } },
+          { ...meta(), uiLocale: 'zh-CN', sideConversation: { view: 'side' } },
           200,
         ),
       ),
@@ -243,7 +243,7 @@ describe('Maka Pi TUI transcript', () => {
           renderMakaPiStatusLine(
             {
               ...meta(),
-              uiLocale: 'zh',
+              uiLocale: 'zh-CN',
               sideConversation: { view: 'side', parentStatus },
             },
             200,
@@ -255,7 +255,7 @@ describe('Maka Pi TUI transcript', () => {
     assert.match(
       stripAnsi(
         renderMakaPiStatusLine(
-          { ...meta(), uiLocale: 'zh', sideConversation: { view: 'parent' } },
+          { ...meta(), uiLocale: 'zh-CN', sideConversation: { view: 'parent' } },
           200,
         ),
       ),
@@ -2090,7 +2090,7 @@ describe('Maka Pi TUI transcript', () => {
     assert.ok(visibleLines.every((line) => !line.includes(' a ')));
   });
 
-  test('queues sandbox boundary and user-question requests in arrival order', () => {
+  test('queues sandbox boundary, question, and form requests in arrival order', () => {
     const state = createMakaPiTranscriptState();
     applyMakaSessionEventToTranscript(
       state,
@@ -2109,6 +2109,17 @@ describe('Maka Pi TUI transcript', () => {
     applyMakaSessionEventToTranscript(
       state,
       event({
+        type: 'form_request',
+        requestId: 'form-1',
+        toolUseId: 'tool-3',
+        message: 'Configure deployment',
+        requester: { name: 'deploy', source: 'Acme MCP' },
+        fields: [{ kind: 'boolean', name: 'notify', label: 'Notify', required: false }],
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
         type: 'user_question_request',
         requestId: 'question-1',
         toolUseId: 'tool-2',
@@ -2119,7 +2130,7 @@ describe('Maka Pi TUI transcript', () => {
     assert.equal(state.pendingInteraction?.requestId, 'boundary-1');
     assert.deepEqual(
       state.queuedInteractions.map((item) => item.requestId),
-      ['question-1'],
+      ['form-1', 'question-1'],
     );
 
     applyMakaSessionEventToTranscript(
@@ -2133,7 +2144,25 @@ describe('Maka Pi TUI transcript', () => {
         revision: 1,
       }),
     );
+    assert.equal(state.pendingInteraction?.requestId, 'form-1');
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'form_answer_ack',
+        requestId: 'form-1',
+        toolUseId: 'tool-3',
+      }),
+    );
     assert.equal(state.pendingInteraction?.requestId, 'question-1');
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'user_question_answer_ack',
+        requestId: 'question-1',
+        toolUseId: 'tool-2',
+      }),
+    );
+    assert.equal(state.pendingInteraction, undefined);
     assert.deepEqual(state.queuedInteractions, []);
   });
 

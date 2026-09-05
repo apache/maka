@@ -88,15 +88,11 @@ export function describeLoadToolResult(
     };
   }
 
-  const label = suppliedLabel ?? (locale === 'en' ? 'Tools' : '工具');
+  const label = suppliedLabel ?? copy.fallbackLabel;
   return {
     kind,
-    actionLabel: suppliedLabel
-      ? locale === 'en' ? `Enable ${suppliedLabel}` : `启用 ${suppliedLabel}`
-      : copy.genericAction,
-    title: suppliedLabel
-      ? locale === 'en' ? `${suppliedLabel} enabled` : `${suppliedLabel} 已启用`
-      : copy.genericTitle,
+    actionLabel: suppliedLabel ? copy.namedAction(suppliedLabel) : copy.genericAction,
+    title: suppliedLabel ? copy.namedTitle(suppliedLabel) : copy.genericTitle,
     description: suppliedDescription ?? copy.genericDescription,
     label,
     countLabel: copy.count(n),

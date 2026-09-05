@@ -33,6 +33,8 @@ owners:
 
 状态：Current（2026-08-31）
 
+跟踪：[Bot onboarding V1 后续加固 #4327](https://github.com/apache/maka/issues/4327)
+
 ## 1. 目标与边界
 
 Maka 的 IM 接入同时支持两条路径：

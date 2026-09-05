@@ -23,6 +23,7 @@ import {
   type RuntimeHostRemoteTransport,
   type RuntimeHostProfileCatalog,
 } from '@maka/runtime-host/client';
+import type { RuntimeHostPosixOperatorCommand } from '@maka/runtime-host/operator';
 import { resolveMakaClientDataRoot } from '@maka/storage/workspace-root';
 
 const DEFAULT_CREDENTIAL_ENV = 'MAKA_RUNTIME_HOST_ACCESS_CREDENTIAL';
@@ -42,7 +43,7 @@ export type RuntimeHostProfileCommand =
       readonly id: string;
       readonly name: string;
       readonly distribution: string;
-      readonly operatorPath: string;
+      readonly operator: RuntimeHostPosixOperatorCommand;
       readonly expectedRootId: string;
     }
   | { readonly kind: 'remove'; readonly id: string };
@@ -84,7 +85,7 @@ export async function runRuntimeHostProfileCommand(
           name: command.name,
           kind: 'environment',
           provider: { kind: 'wsl', distribution: command.distribution },
-          operatorPath: command.operatorPath,
+          operator: command.operator,
           rootId: command.expectedRootId,
         }
       : {

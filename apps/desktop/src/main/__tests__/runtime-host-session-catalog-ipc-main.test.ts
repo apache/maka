@@ -41,6 +41,10 @@ test('maps Runtime Host live run state without collapsing unknown and known-empt
   assert.deepEqual(running.runningTurnIds, ['turn-live']);
 });
 
+test('preserves the Session revision in Owner Desktop Host summaries', () => {
+  assert.equal(toDesktopHostSessionSummary(projection({ revision: 7 })).revision, 7);
+});
+
 test('session creation forwards the caller name for a mode that carries none', async () => {
   const creates: SessionCreateInput[] = [];
   const ipc = ipcHarness();

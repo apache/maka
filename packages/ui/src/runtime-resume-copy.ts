@@ -70,7 +70,7 @@ interface ResumeParkCopy {
 }
 
 const RESUME_PARK_COPY = {
-  zh: {
+  'zh-CN': {
     title: '暂时无法继续这一轮',
     fallbackDescription: '当前任务不满足继续的条件。',
     missingCandidateTitle: '没有可恢复的任务',
@@ -105,6 +105,43 @@ const RESUME_PARK_COPY = {
       continuation_started_indeterminate: '续跑已经开始，但尚未形成可证明的终态。',
       continuation_authority_unavailable: '当前存储不支持安全的续跑所有权。',
       resume_feature_disabled: '继续中断任务的功能尚未启用。',
+    },
+  },
+  'zh-TW': {
+    title: '暫時無法繼續這一輪',
+    fallbackDescription: '目前任務不滿足繼續的條件。',
+    missingCandidateTitle: '沒有可恢復的任務',
+    missingCandidateDescription: '任務已是最新狀態。',
+    reasons: {
+      dangling_tool_state: '上次工具執行中斷，記錄已保留，暫時不能自動繼續。',
+      pending_permission: '上次執行仍在等待權限確認。',
+      background_operation_pending: '仍有後台操作沒有結束，暫時不能繼續。',
+      workspace_identity_mismatch: '目前工作區與中斷時不一致。',
+      workspace_identity_missing: '無法確認中斷時的工作區。',
+      workspace_cwd_mismatch: '目前工作目錄與中斷時不一致。',
+      workspace_ref_missing: '中斷時的工作區已無法使用。',
+      tool_catalog_mismatch: '可用工具已變更，無法安全繼續。',
+      checkpoint_restore_failed: '工作區檢查點恢復失敗。',
+      source_run_unreadable: '上次執行的記錄無法完整讀取。',
+      runtime_ledger_unreadable: '上次執行的帳本無法完整讀取。',
+      runtime_ledger_empty: '上次執行沒有可回放的記錄。',
+      terminal_repair_failed: '上次執行記錄修復失敗。',
+      provider_resume_head_unsupported: '目前模型不支援這個恢復起點。',
+      provider_resume_boundary_unsupported: '目前模型不支援這個恢復邊界。',
+      provider_replay_non_suffix_gap: '上次模型輸出的中斷位置無法安全裁剪。',
+      provider_replay_unsupported: '上次執行歷史無法按目前模型協定安全回放。',
+      runtime_lineage_cycle: '續跑鏈存在循環引用，已停止恢復。',
+      runtime_lineage_depth_exceeded: '續跑鏈過長，已停止自動恢復。',
+      runtime_lineage_missing: '續跑鏈缺少必要的歷史記錄。',
+      runtime_lineage_start_mismatch: '續跑鏈的起點記錄不一致，已停止恢復。',
+      runtime_lineage_replay_mismatch: '續跑鏈記錄的模型上下文與目前重建結果不一致。',
+      runtime_lineage_claim_mismatch: '續跑鏈缺少匹配的恢復所有權記錄，已停止恢復。',
+      source_prefix_digest_mismatch: '上次執行的不可變邊界已變更。',
+      continuation_already_exists: '該中斷任務已經建立過續跑。',
+      continuation_claim_repair_required: '恢復所有權已保留，但續跑記錄需要先修復。',
+      continuation_started_indeterminate: '續跑已經開始，但尚未形成可證明的終態。',
+      continuation_authority_unavailable: '目前儲存不支援安全的續跑所有權。',
+      resume_feature_disabled: '繼續中斷任務的功能尚未啟用。',
     },
   },
   en: {

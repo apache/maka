@@ -39,7 +39,7 @@ function buildDailyReviewModelOptions(
   connections: readonly ProjectedLlmConnection[],
   currentModelKey: string,
   copy: DailyReviewSettingsCopy,
-  locale: 'zh' | 'en',
+  locale: 'zh-CN' | 'zh-TW' | 'en',
 ): Array<{ value: string; label: string }> {
   return [
     { value: DAILY_REVIEW_DEFAULT_MODEL_VALUE, label: copy.defaultModel },

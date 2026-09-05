@@ -56,7 +56,7 @@ export const ASSISTANT_MAX_TOTAL_CHARS = 256 * 1024;
 
 export interface ApplyAssistantOptions extends ApplyStreamOptions {
   /** Resolved UI locale for user-visible truncation markers. */
-  locale?: UiLocale;
+  locale: UiLocale;
 }
 
 export type ApplyAssistantResult = ApplyStreamResult;
@@ -65,9 +65,9 @@ export type ApplyAssistantResult = ApplyStreamResult;
 export function applyAssistantDelta(
   prev: string,
   rawDelta: string,
-  options: ApplyAssistantOptions = {},
+  options: ApplyAssistantOptions,
 ): ApplyAssistantResult {
-  const copy = getSharedUiCopy(options.locale ?? 'zh').stream;
+  const copy = getSharedUiCopy(options.locale).stream;
   return applyStreamDelta(prev, rawDelta, {
     maxDeltaChars: options.maxDeltaChars ?? ASSISTANT_MAX_DELTA_CHARS,
     maxTotalChars: options.maxTotalChars ?? ASSISTANT_MAX_TOTAL_CHARS,
@@ -83,11 +83,11 @@ export function applyAssistantDelta(
 /** Apply a `text_complete` final payload (replace, total cap only). */
 export function applyAssistantComplete(
   rawText: string,
-  options: Pick<ApplyAssistantOptions, 'maxTotalChars' | 'locale'> = {},
+  options: Pick<ApplyAssistantOptions, 'maxTotalChars' | 'locale'>,
 ): ApplyAssistantResult {
   return applyStreamComplete(rawText, {
     maxTotalChars: options.maxTotalChars ?? ASSISTANT_MAX_TOTAL_CHARS,
     recovery: 'head',
-    totalMarker: getSharedUiCopy(options.locale ?? 'zh').stream.assistantTailTruncated,
+    totalMarker: getSharedUiCopy(options.locale).stream.assistantTailTruncated,
   });
 }

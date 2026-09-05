@@ -97,7 +97,7 @@ export type PermissionCenterCopy = {
 };
 
 const PERMISSION_CENTER_COPY = {
-  zh: {
+  'zh-CN': {
     readiness: {
       not_configured: { label: '等待配置', detail: '需要先打开开关或补齐配置才能启用。', tone: 'neutral' },
       denied: { label: '系统拒绝', detail: '所需系统权限被拒绝或当前平台不支持。', tone: 'error' },
@@ -143,6 +143,53 @@ const PERMISSION_CENTER_COPY = {
     requiredPermissions: '所需系统权限', requiredPermissionsAria: (label) => `${label}所需系统权限列表`, guidance: '处理建议', guidanceAria: (label) => `${label}处理建议列表`,
     auditSection: '审计记录', noAudit: '暂无审计记录', auditAria: (label) => `${label}审计记录列表`,
     impact: '影响功能', opening: '打开中…', openSettings: '前往系统设置', requesting: '请求中…', request: '请求授权', dragGrant: '引导授权', dragGranting: '引导中…',
+  },
+  'zh-TW': {
+    readiness: {
+      not_configured: { label: '等待設定', detail: '需要先開啟開關或補齊設定才能啟用。', tone: 'neutral' },
+      denied: { label: '系統拒絕', detail: '所需系統權限被拒絕或目前平臺不支援。', tone: 'error' },
+      enabled: { label: '執行可用', detail: '目前快照標記為可用，具體層級見下方。', tone: 'success' },
+      degraded: { label: '部分可用', detail: '已有一部分能力可用，但仍有執行態、權限或子功能需要處理。', tone: 'attention' },
+      paused: { label: '已暫停', detail: '功能開關被顯式關閉，但設定仍保留。', tone: 'neutral' },
+    },
+    osPermissions: {
+      accessibility: { label: '輔助功能', purpose: 'Computer Use 需要它來讀取視窗焦點 / 模擬鍵盤滑鼠。', impact: 'Computer Use · 自動化鍵鼠操作' },
+      screen_recording: { label: '螢幕錄製', purpose: 'Computer Use 需要它來讀取視窗內容；未來螢幕活動錄製也會使用。', impact: 'Computer Use · 截圖上下文' },
+      notifications: { label: '通知', purpose: '權限申請、回顧完成等系統通知需要它。', impact: '權限申請提醒 · 每日回顧完成通知' },
+      automation: { label: '自動化（Apple Events）', purpose: 'Computer Use 控制其他 App 需要逐 target 授權。', impact: 'Computer Use · 跨 App 自動化' },
+    },
+    osStates: {
+      unsupported: { label: '目前平臺不支援', tone: 'neutral' }, unknown: { label: '無法讀取狀態', tone: 'neutral' },
+      not_determined: { label: '等待授權', tone: 'attention' }, denied: { label: '已拒絕', tone: 'error' }, granted: { label: '已授權', tone: 'success' },
+    },
+    loading: '正在載入權限快照', readFailed: '無法讀取權限快照', noData: '權限服務未返回資料。', readAgain: '重新讀取',
+    actionFailed: '權限操作失敗',
+    actionFailures: {
+      invalid_id: '內部錯誤：權限 id 無法識別。',
+      unsupported_platform: '目前作業系統不支援這個權限操作。',
+      unsupported_permission: '目前平臺沒有提供這個權限的直串接口。',
+      denied: '你沒有授予這項權限；可以前往系統設定重新開啟。',
+      already_open: '另一個權限引導仍在進行，請先完成或關閉它。',
+      open_settings_failed: '無法開啟系統設定，請手動前往「隱私與安全性」。',
+      failed: '權限操作未成功，請稍後重試。',
+    },
+    title: '權限與能力', subtitle: '檢視 Maka 需要的系統權限和目前授權狀態，直接從這裡前往「系統設定 → 隱私與安全性」完成授權或撤銷，不必自己翻選單。',
+    lastRead: '最近讀取：', detectAgain: '重新檢測', summaryAria: '按授權狀態篩選系統權限', summaryFilterAria: (label, count, selected) => selected ? `${label} ${count} 項，目前篩選；再次按下顯示全部` : `僅顯示${label}權限，共 ${count} 項`, granted: '已授權', pending: '等待授權', denied: '已拒絕', other: '未知 / 不支援',
+    osSection: '系統權限', osSectionHelp: 'Maka 讀到的 OS 級權限狀態。點選右側按鈕可以直接前往「系統設定 → 隱私與安全性」對應分割槽。', osListAria: '系統權限列表',
+    capabilitiesSection: '功能能力', capabilitiesHelp: '每個能力的就緒狀態由「功能開關 · 設定 · 系統權限 · 執行態探測」共同決定。',
+    capabilityListAria: '功能能力列表',
+    footnote: 'Maka 不會自動授予 Accessibility、Automation 或 Screen Recording。高風險自動化能力必須保持逐項審批、可審計、可撤銷。這裡只讀取系統權限與功能能力的目前快照，授權變更仍需在「系統設定 → 隱私與安全性」完成。',
+    layers: {
+      aria: (label) => `${label}能力狀態明細`, feature: '功能開關', configuration: '設定', approval: '操作審批', memory: '記憶寫入', runtime: '執行態探測',
+      featureStates: { enabled: '已開啟', partial: '部分可用', disabled: '已關閉', not_available: '未開放' },
+      configurationStates: { not_required: '不需要設定', missing: '等待補齊設定', present: '已填寫' },
+      approvalStates: { not_required: '不需要審批', required_per_action: '每次呼叫都需審批', required_scoped_lease: '按目標與動作類別授權', pending: '審批掛起', approved: '目前任務已批准', denied: '目前任務已拒絕' },
+      memoryStates: { not_applicable: '不涉及記憶寫入', disabled: '記憶寫入已關閉', draft_required: '需要先草擬 memory 協議', accepted: '記憶寫入已接受' },
+      runtimeStates: { not_available: '尚無執行態探測', not_run: '探測未執行', healthy: '探測透過', degraded: '探測降級' },
+    },
+    requiredPermissions: '所需系統權限', requiredPermissionsAria: (label) => `${label}所需系統權限列表`, guidance: '處理建議', guidanceAria: (label) => `${label}處理建議列表`,
+    auditSection: '審計記錄', noAudit: '暫無審計記錄', auditAria: (label) => `${label}審計記錄列表`,
+    impact: '影響功能', opening: '開啟中…', openSettings: '前往系統設定', requesting: '請求中…', request: '請求授權', dragGrant: '引導授權', dragGranting: '引導中…',
   },
   en: {
     readiness: {

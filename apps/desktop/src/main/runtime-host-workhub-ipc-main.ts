@@ -31,7 +31,6 @@ import type { ReconnectableReadIpcMain } from './ipc-reconnect-policy.js';
 type RuntimeHostWorkHubClient = Pick<
   DesktopRuntimeHostClient,
   | 'actWorkHubCoordination'
-  | 'answerWorkHubCoordination'
   | 'listWorkHubCoordinationCandidates'
   | 'recordWorkHubCoordination'
   | 'resolveWorkHubCoordinationSession'
@@ -52,9 +51,6 @@ export function registerRuntimeHostWorkHubIpc(
 ): void {
   ipcMain.handle('workhub:resolveCoordinationSession', () =>
     client.resolveWorkHubCoordinationSession(),
-  );
-  ipcMain.handle('workhub:answer', (_event, input) =>
-    client.answerWorkHubCoordination(input),
   );
   ipcMain.handle('workhub:record', (_event, input) =>
     client.recordWorkHubCoordination(input),

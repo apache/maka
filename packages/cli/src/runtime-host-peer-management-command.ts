@@ -51,7 +51,7 @@ import {
 import { manageRuntimeHostManagedLifecycle } from './runtime-host-managed-lifecycle-manager.js';
 import {
   resolveRuntimeHostManagedPeerKeyPath,
-  resolveRuntimeHostPeerNativePath,
+  resolveRuntimeHostNativePath,
 } from './runtime-host-peer-artifact.js';
 import {
   assertRuntimeHostManagedOperatorConfig,
@@ -122,7 +122,7 @@ async function runCanonicalRuntimeHostPeerManagementLocked(
     convergeOperator: (currentConfig, desiredConfig) =>
       convergeRuntimeHostManagedOperator(currentConfig, desiredConfig),
     verifyOperator: verifyRuntimeHostManagedOperator,
-    resolveProvider: (requested) => resolveRuntimeHostLifecycleProvider(rootId, requested),
+    resolveProvider: resolveRuntimeHostLifecycleProvider,
   };
   const resolved = await resolveRecoverableRuntimeHostManagedDeployment(rootId, lifecycleDeps, {
     ...(options.expectedTarget ? { expectedTarget: options.expectedTarget } : {}),
@@ -195,7 +195,7 @@ async function runCanonicalRuntimeHostPeerManagementLocked(
       config.launch.package.integrity,
     );
     const peerId = await ensureRuntimeHostPeerIdentity({
-      nativePath: await resolveRuntimeHostPeerNativePath(layout.cliPath),
+      nativePath: await resolveRuntimeHostNativePath(layout.cliPath),
       keyPath: stagedKeyPath,
     });
     desired = {
@@ -311,7 +311,7 @@ async function prepareCanonicalPeer(
   );
   const keyPath = current?.keyPath ?? resolveRuntimeHostManagedPeerKeyPath(config.deploymentRoot);
   const peerId = await ensureRuntimeHostPeerIdentity({
-    nativePath: await resolveRuntimeHostPeerNativePath(layout.cliPath),
+    nativePath: await resolveRuntimeHostNativePath(layout.cliPath),
     keyPath,
   });
   if (current && current.peerId !== peerId) {

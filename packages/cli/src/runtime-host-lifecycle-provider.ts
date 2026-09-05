@@ -41,6 +41,7 @@ export interface RuntimeHostSupervisorStatus {
   readonly enabled: boolean;
   readonly active: boolean;
   readonly state: RuntimeHostSupervisorState;
+  /** The supervised Runtime Host/State Root owner, never an intermediate launcher. */
   readonly pid: number | null;
   readonly lastExitCode: number | null;
 }

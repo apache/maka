@@ -21,6 +21,9 @@ import assert from 'node:assert/strict';
 import type { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import test from 'node:test';
 import {
@@ -34,6 +37,13 @@ import {
   createDesktopRuntimeHostLocalOperator,
   runtimeHostLocalSetupCommand,
 } from '../runtime-host-local-operator.js';
+
+const OPERATOR = {
+  kind: 'node' as const,
+  platform: 'posix' as const,
+  nodePath: '/usr/bin/node',
+  modulePath: '/tmp/maka/operator.mjs',
+};
 
 test('local setup installs one managed service for the Desktop root with Direct peer enabled', () => {
   assert.deepEqual(
@@ -90,7 +100,7 @@ test('local setup forwards the exact development archive evidence', async (t) =>
         version: '0.2.0-development',
         serviceId: 'b'.repeat(64),
         deploymentId: '00000000-0000-4000-8000-000000000001',
-        operatorPath: '/tmp/maka/operator',
+        operator: OPERATOR,
         rootPath: '/tmp/maka/root',
         rootId: 'a'.repeat(64),
         endpoint: 'ws://127.0.0.1:7443/runtime-host',
@@ -121,6 +131,124 @@ test('local setup forwards the exact development archive evidence', async (t) =>
   }, () => undefined);
 
   assert.equal(environment?.[RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY_ENV], integrity);
+});
+
+test('local setup scratch cleanup cannot replace its framed outcome', async (t) => {
+  const frames = [
+    {
+      schemaVersion: 1 as const,
+      sequence: 0,
+      kind: 'complete' as const,
+      version: '0.2.0',
+      serviceId: 'b'.repeat(64),
+      deploymentId: '00000000-0000-4000-8000-000000000001',
+      operator: OPERATOR,
+      rootPath: '/tmp/maka/root',
+      rootId: 'a'.repeat(64),
+      endpoint: 'ws://127.0.0.1:7443/runtime-host',
+      credentialId: 'credential-1',
+      credential: 'secret-access-token',
+    },
+    {
+      schemaVersion: 1 as const,
+      sequence: 0,
+      kind: 'error' as const,
+      error: { code: 'setup_failed', message: 'primary setup failure' },
+    },
+  ];
+  let invocation = 0;
+  let cleanupCount = 0;
+  const spawnProcess = (() => {
+    const child = new EventEmitter() as ReturnType<typeof spawn>;
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    const frame = frames[invocation++];
+    Object.assign(child, { pid: 1234, stdout, stderr, kill: () => true });
+    process.nextTick(() => {
+      stdout.end(encodeRuntimeHostSetupFrame(frame));
+      stderr.end();
+      child.emit('close', frame.kind === 'complete' ? 0 : 1, null);
+    });
+    return child;
+  }) as typeof spawn;
+  const operator = createDesktopRuntimeHostLocalOperator({
+    environment: { PATH: process.env.PATH },
+    spawnProcess,
+    removeSetupWorkingDirectory: async (path) => {
+      cleanupCount += 1;
+      await rm(path, { recursive: true, force: true });
+      throw new Error('scratch cleanup failed');
+    },
+  });
+  t.after(() => operator.close());
+  const setup = {
+    setupPackage: { kind: 'npm' as const, specifier: 'maka-agent@0.2.0' },
+    clientDataRoot: '/tmp/maka/client',
+    rootPath: '/tmp/maka/root',
+    principalId: 'desktop-owner:pairing',
+    expectedTarget: {
+      serviceId: 'b'.repeat(64),
+      rootPath: '/tmp/maka/root',
+      rootId: 'a'.repeat(64),
+    },
+  };
+
+  const complete = await operator.runSetup(setup, () => undefined);
+  assert.equal(complete.kind, 'complete');
+  await assert.rejects(
+    operator.runSetup(setup, () => undefined),
+    /primary setup failure/u,
+  );
+  assert.equal(cleanupCount, 2);
+});
+
+test('Windows npm discovery cannot outlive setup cancellation', async (t) => {
+  const originalPlatform = process.platform;
+  const fixtureRoot = await mkdtemp(join(tmpdir(), 'maka-windows-npm-lookup-'));
+  const resolver = join(fixtureRoot, 'hang.cjs');
+  await writeFile(
+    resolver,
+    'Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);\n',
+  );
+  Object.defineProperty(process, 'platform', { value: 'win32' });
+  t.after(async () => {
+    Object.defineProperty(process, 'platform', { value: originalPlatform });
+    await rm(fixtureRoot, { recursive: true, force: true });
+  });
+
+  let setupSpawned = false;
+  const operator = createDesktopRuntimeHostLocalOperator({
+    environment: { PATH: process.env.PATH, NODE_OPTIONS: `--require=${resolver}` },
+    setupTimeoutMs: 60_000,
+    spawnProcess: (() => {
+      setupSpawned = true;
+      throw new Error('npm must not start after cancellation');
+    }) as typeof spawn,
+  });
+  t.after(() => operator.close());
+  const cancellation = new AbortController();
+  const startedAt = Date.now();
+  const setup = operator.runSetup(
+    {
+      setupPackage: { kind: 'npm', specifier: 'maka-agent@0.2.0' },
+      clientDataRoot: '/tmp/maka/client',
+      rootPath: '/tmp/maka/root',
+      principalId: 'desktop-owner:pairing',
+      expectedTarget: {
+        serviceId: 'b'.repeat(64),
+        rootPath: '/tmp/maka/root',
+        rootId: 'a'.repeat(64),
+      },
+      signal: cancellation.signal,
+    },
+    () => undefined,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  cancellation.abort(new Error('setup cancelled'));
+
+  await assert.rejects(setup, /setup cancelled/u);
+  assert.equal(setupSpawned, false);
+  assert.ok(Date.now() - startedAt < 1_000);
 });
 
 test('local update runs the selected package against the exact managed deployment', async (t) => {
@@ -174,6 +302,15 @@ test('local update runs the selected package against the exact managed deploymen
   });
   t.after(() => operator.close());
   const deploymentId = '00000000-0000-4000-8000-000000000001';
+  const operatorArgs = () => {
+    if (process.platform !== 'win32') {
+      assert.equal(executable, 'npm');
+      return args;
+    }
+    assert.match(executable ?? '', /[\\/]node\.exe$/ui);
+    assert.match(args?.[0] ?? '', /[\\/]npm-cli\.js$/u);
+    return args?.slice(1);
+  };
 
   await operator.runUpdate(
     {
@@ -190,8 +327,7 @@ test('local update runs the selected package against the exact managed deploymen
     (phase) => phases.push(phase),
   );
 
-  assert.equal(executable, 'npm');
-  assert.deepEqual(args, [
+  assert.deepEqual(operatorArgs(), [
     'exec', '--yes', '--package', 'maka-agent@0.3.0', '--',
     'maka', 'runtime-host', 'service', 'update', '--framed',
     '--target', '0.3.0',
@@ -229,7 +365,7 @@ test('local update runs the selected package against the exact managed deploymen
     () => undefined,
   );
 
-  assert.deepEqual(args, [
+  assert.deepEqual(operatorArgs(), [
     'exec', '--yes', '--package', '/tmp/maka-agent-development.tgz', '--',
     'maka', 'runtime-host', 'service', 'update', '--framed',
     '--managed-root-id', 'a'.repeat(64),
@@ -308,7 +444,7 @@ test('local Peer Mesh join keeps invitations off argv and accepts bounded large 
   const invitation = JSON.stringify({ secret: 'one-time-mesh-secret' });
 
   const result = await operator.runPeerMesh({
-    operatorPath: '/tmp/maka/operator',
+    operator: OPERATOR,
     action: 'join',
     target: {
       serviceId: 'b'.repeat(64),
@@ -320,6 +456,7 @@ test('local Peer Mesh join keeps invitations off argv and accepts bounded large 
   });
 
   assert.deepEqual(args, [
+    OPERATOR.modulePath,
     'mesh', 'join', '--framed',
     '--expected-service-id', 'b'.repeat(64),
     '--expected-root-path', '/tmp/maka/root',

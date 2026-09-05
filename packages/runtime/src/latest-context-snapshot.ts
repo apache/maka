@@ -24,11 +24,13 @@ import {
 } from '@maka/core/agent-run';
 
 export { LATEST_CONTEXT_PROJECTION_TYPE };
-import type {
-  ContextDiagnosticsCompaction,
-  ContextDiagnosticsComposition,
-} from './context-diagnostics.js';
-import { foldPromptComposition, type SizedRequestSegment } from './prompt-composition.js';
+import {
+  PROMPT_COMPOSITION_MAX_TOOLS,
+  PROMPT_COMPOSITION_SEGMENT_KINDS,
+  type PromptComposition,
+  type PromptCompositionSegmentKind,
+} from '@maka/core/model-call-attempt';
+import type { ContextDiagnosticsCompaction } from './context-diagnostics.js';
 
 /**
  * One request's context, frozen by the transaction that committed it (#2323).
@@ -64,7 +66,7 @@ export interface LatestContextSnapshot {
    * prepared-request observation — a request explains itself or says nothing,
    * never borrows another request's breakdown.
    */
-  composition?: ContextDiagnosticsComposition;
+  composition?: PromptComposition;
   /** The boundary that applied when this request was built, if any. */
   compaction?: ContextDiagnosticsCompaction;
 }
@@ -78,10 +80,9 @@ export interface LatestContextSnapshot {
  */
 export function latestContextProjectionInput(
   attempt: LatestContextFacts,
-  segments: readonly SizedRequestSegment[] | undefined,
+  composition: PromptComposition | undefined,
   compaction: ContextDiagnosticsCompaction | undefined,
 ): LatestContextProjectionInput {
-  const composition = segments ? foldPromptComposition(segments) : undefined;
   const snapshot: LatestContextSnapshot = {
     schemaVersion: LATEST_CONTEXT_SNAPSHOT_SCHEMA_VERSION,
     attemptId: attempt.attemptId,
@@ -142,7 +143,7 @@ export function readLatestContextSnapshot(
     !isOptionalCount(record.cacheReadInputTokens) ||
     (record.contextWindow !== undefined &&
       (!isCount(record.contextWindow) || record.contextWindow === 0)) ||
-    (record.composition !== undefined && !isContextDiagnosticsComposition(record.composition)) ||
+    (record.composition !== undefined && !isPromptComposition(record.composition)) ||
     (record.compaction !== undefined && !isContextDiagnosticsCompaction(record.compaction))
   ) {
     return undefined;
@@ -150,7 +151,7 @@ export function readLatestContextSnapshot(
   return record as unknown as LatestContextSnapshot;
 }
 
-function isContextDiagnosticsComposition(value: unknown): value is ContextDiagnosticsComposition {
+function isPromptComposition(value: unknown): value is PromptComposition {
   const composition = shapedRecord(
     value,
     ['segments'],
@@ -160,23 +161,24 @@ function isContextDiagnosticsComposition(value: unknown): value is ContextDiagno
     !composition ||
     !Array.isArray(composition.segments) ||
     composition.segments.length === 0 ||
-    composition.segments.length > 4 ||
-    !composition.segments.every(isContextDiagnosticsSegment) ||
+    composition.segments.length > PROMPT_COMPOSITION_SEGMENT_KINDS.length ||
+    !composition.segments.every(isPromptCompositionSegment) ||
     (composition.tools !== undefined &&
       (!Array.isArray(composition.tools) ||
         composition.tools.length === 0 ||
-        composition.tools.length > 64 ||
-        !composition.tools.every(isContextDiagnosticsTool))) ||
+        composition.tools.length > PROMPT_COMPOSITION_MAX_TOOLS ||
+        !composition.tools.every(isPromptCompositionTool))) ||
     (composition.remainingTools !== undefined &&
-      !isContextDiagnosticsRemainder(composition.remainingTools)) ||
+      !isPromptCompositionRemainder(composition.remainingTools)) ||
     !isOptionalCount(composition.unlabelledToolBytes) ||
     (composition.unlabelledToolBytes !== undefined && composition.unlabelledToolBytes === 0)
   ) {
     return false;
   }
-  const valid = composition as unknown as ContextDiagnosticsComposition;
-  const segmentOrder = ['system_instructions', 'tool_definitions', 'messages', 'other'];
-  const order = valid.segments.map((segment) => segmentOrder.indexOf(segment.kind));
+  const valid = composition as unknown as PromptComposition;
+  const order = valid.segments.map((segment) =>
+    PROMPT_COMPOSITION_SEGMENT_KINDS.indexOf(segment.kind),
+  );
   if (order.some((value, index) => index > 0 && value <= order[index - 1]!)) return false;
 
   const toolDefinitions = valid.segments.find((segment) => segment.kind === 'tool_definitions');
@@ -202,25 +204,22 @@ function isContextDiagnosticsComposition(value: unknown): value is ContextDiagno
     : describedToolBytes === 0 && valid.remainingTools === undefined;
 }
 
-function isContextDiagnosticsSegment(value: unknown): boolean {
+function isPromptCompositionSegment(value: unknown): boolean {
   const segment = shapedRecord(value, ['kind', 'bytes'], []);
   return Boolean(
     segment &&
-      (segment.kind === 'system_instructions' ||
-        segment.kind === 'tool_definitions' ||
-        segment.kind === 'messages' ||
-        segment.kind === 'other') &&
+      PROMPT_COMPOSITION_SEGMENT_KINDS.includes(segment.kind as PromptCompositionSegmentKind) &&
       isCount(segment.bytes) &&
       segment.bytes > 0,
   );
 }
 
-function isContextDiagnosticsTool(value: unknown): boolean {
+function isPromptCompositionTool(value: unknown): boolean {
   const tool = shapedRecord(value, ['name', 'bytes'], []);
   return Boolean(tool && isBoundedString(tool.name, 512) && isCount(tool.bytes) && tool.bytes > 0);
 }
 
-function isContextDiagnosticsRemainder(value: unknown): boolean {
+function isPromptCompositionRemainder(value: unknown): boolean {
   const remainder = shapedRecord(value, ['count', 'bytes'], []);
   return Boolean(
     remainder &&

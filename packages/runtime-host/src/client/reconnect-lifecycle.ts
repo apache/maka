@@ -51,7 +51,7 @@ export interface RuntimeHostReconnectLifecycle<T extends RuntimeHostReconnectRes
   subscribe(listener: (current: T | undefined) => void): () => void;
   wake(): void;
   suspend(): Promise<RuntimeHostReconnectSuspension<T>>;
-  quiesce(): Promise<RuntimeHostReconnectQuiescence<T>>;
+  quiesce(signal?: AbortSignal): Promise<RuntimeHostReconnectQuiescence<T>>;
   close(): Promise<void>;
 }
 
@@ -77,7 +77,8 @@ export async function startRuntimeHostReconnectLifecycle<
 >(input: {
   readonly initial?: T;
   readonly connect: (signal: AbortSignal) => Promise<T>;
-  readonly retryInitialFailure?: boolean;
+  /** A predicate applies until the first successful connection, not to later reconnects. */
+  readonly retryInitialFailure?: boolean | ((error: Error) => boolean);
   readonly initialSignal?: AbortSignal;
   readonly onReconnectError?: (error: Error) => void;
   readonly onFatalError?: (error: Error) => void;
@@ -101,7 +102,8 @@ class RuntimeHostReconnectLifecycleImpl<T extends RuntimeHostReconnectResource>
   readonly closed: Promise<void>;
   readonly #initial: T | undefined;
   readonly #connect: (signal: AbortSignal) => Promise<T>;
-  readonly #retryInitialFailure: boolean;
+  readonly #retryInitialFailure: boolean | ((error: Error) => boolean);
+  #connectedOnce = false;
   readonly #initialSignal: AbortSignal | undefined;
   readonly #onReconnectError: ((error: Error) => void) | undefined;
   readonly #onFatalError: ((error: Error) => void) | undefined;
@@ -132,7 +134,7 @@ class RuntimeHostReconnectLifecycleImpl<T extends RuntimeHostReconnectResource>
   constructor(input: {
     readonly initial?: T;
     readonly connect: (signal: AbortSignal) => Promise<T>;
-    readonly retryInitialFailure?: boolean;
+    readonly retryInitialFailure?: boolean | ((error: Error) => boolean);
     readonly initialSignal?: AbortSignal;
     readonly onReconnectError?: (error: Error) => void;
     readonly onFatalError?: (error: Error) => void;
@@ -185,7 +187,9 @@ class RuntimeHostReconnectLifecycleImpl<T extends RuntimeHostReconnectResource>
     } catch (error) {
       const failure = asError(error);
       if (
-        this.#retryInitialFailure &&
+        (typeof this.#retryInitialFailure === 'function'
+          ? this.#retryInitialFailure(failure)
+          : this.#retryInitialFailure) &&
         !this.#closed &&
         !this.#abort.signal.aborted &&
         !this.#initialSignal?.aborted &&
@@ -251,7 +255,8 @@ class RuntimeHostReconnectLifecycleImpl<T extends RuntimeHostReconnectResource>
     return this.#suspension(this.#current);
   }
 
-  async quiesce(): Promise<RuntimeHostReconnectQuiescence<T>> {
+  async quiesce(signal?: AbortSignal): Promise<RuntimeHostReconnectQuiescence<T>> {
+    signal?.throwIfAborted();
     while (!this.#current) {
       if (this.#closed || this.#terminalError) {
         throw new Error('Runtime Host reconnect lifecycle is closed');
@@ -259,8 +264,9 @@ class RuntimeHostReconnectLifecycleImpl<T extends RuntimeHostReconnectResource>
       if (this.#quiesced) {
         throw new Error('Runtime Host reconnect lifecycle is already quiesced');
       }
-      await this.waitForCurrent();
+      await this.waitForCurrent(undefined, signal);
     }
+    signal?.throwIfAborted();
     if (this.#closed || this.#terminalError) {
       throw new Error('Runtime Host reconnect lifecycle is closed');
     }
@@ -297,6 +303,7 @@ class RuntimeHostReconnectLifecycleImpl<T extends RuntimeHostReconnectResource>
       return;
     }
     this.#installedAt = this.#now();
+    this.#connectedOnce = true;
     this.#setCurrent(resource);
     void resource.closed.then(
       () => this.#disconnected(resource),
@@ -360,7 +367,12 @@ class RuntimeHostReconnectLifecycleImpl<T extends RuntimeHostReconnectResource>
       } catch (error) {
         if (this.#closed || this.#quiesced || signal.aborted) return;
         const failure = asError(error);
-        if (failure instanceof RuntimeHostPermanentReconnectError) {
+        if (
+          failure instanceof RuntimeHostPermanentReconnectError ||
+          (!this.#connectedOnce &&
+            typeof this.#retryInitialFailure === 'function' &&
+            !this.#retryInitialFailure(failure))
+        ) {
           this.#failPermanently(failure);
           return;
         }

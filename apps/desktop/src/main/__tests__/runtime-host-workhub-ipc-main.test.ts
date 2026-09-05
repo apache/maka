@@ -25,7 +25,6 @@ import { registerRuntimeHostWorkHubIpc } from '../runtime-host-workhub-ipc-main.
 test('projects WorkHub coordination resolution through its dedicated IPC domain', async () => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   let resolveCalls = 0;
-  const answers: unknown[] = [];
   const records: unknown[] = [];
   const actions: unknown[] = [];
   const changes: unknown[] = [];
@@ -35,10 +34,6 @@ test('projects WorkHub coordination resolution through its dedicated IPC domain'
       resolveWorkHubCoordinationSession: async () => {
         resolveCalls += 1;
         return { sessionId: 'maka_workhub_coordination' };
-      },
-      answerWorkHubCoordination: async (input: { turnId: string; text: string }) => {
-        answers.push(input);
-        return { turnId: input.turnId };
       },
       recordWorkHubCoordination: async (input: {
         turnId: string;
@@ -80,10 +75,6 @@ test('projects WorkHub coordination resolution through its dedicated IPC domain'
   assert.deepEqual(await handler({}), { sessionId: 'maka_workhub_coordination' });
   assert.equal(resolveCalls, 1);
   assert.deepEqual(
-    await handlers.get('workhub:answer')?.({}, { turnId: 'answer', text: 'Question' }),
-    { turnId: 'answer' },
-  );
-  assert.deepEqual(
     await handlers.get('workhub:record')?.({}, {
       turnId: 'record',
       userText: 'Request',
@@ -91,7 +82,6 @@ test('projects WorkHub coordination resolution through its dedicated IPC domain'
     }),
     { turnId: 'record' },
   );
-  assert.deepEqual(answers, [{ turnId: 'answer', text: 'Question' }]);
   assert.deepEqual(records, [{
     turnId: 'record',
     userText: 'Request',

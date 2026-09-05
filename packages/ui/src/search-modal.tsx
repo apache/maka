@@ -19,8 +19,6 @@
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { SearchErrorReason, SearchRequest, SearchResult } from '@maka/core/search';
-import type { UiLocale } from '@maka/core/ui-locale';
-import { generalizedErrorMessage, generalizedErrorMessageChinese } from '@maka/core/redaction';
 import {
   CommandPalette as AstryxCommandPalette,
   CommandPaletteFooter,
@@ -29,6 +27,7 @@ import {
   type SearchableItem,
 } from '@astryxdesign/core';
 import { AstryxLocaleProvider } from './astryx-i18n.js';
+import { lookupCopy } from '@maka/core/ui-locale';
 import { getShellControlsCopy } from './shell-controls-copy.js';
 import { useUiLocale } from './locale-context.js';
 
@@ -55,11 +54,8 @@ interface ThreadSearchSourceInput {
   canNavigate: boolean;
   resultsLabel: string;
   onQueryChange(query: string): void;
-  onErrorChange(
-    error: { reason: SearchErrorReason; message: string } | null,
-  ): void;
+  onErrorChange(error: { reason: SearchErrorReason } | null): void;
   onItemsChange(items: SearchItem[]): void;
-  thrownErrorMessage(error: unknown): string;
 }
 
 export function createThreadSearchSource(
@@ -88,10 +84,8 @@ export function createThreadSearchSource(
         });
         if (generation !== requestGeneration) return [];
         if (!Array.isArray(response)) {
-          input.onErrorChange({
-            reason: response.reason,
-            message: response.message,
-          });
+          console.error('[search] thread search failed', response);
+          input.onErrorChange({ reason: response.reason });
           input.onItemsChange([]);
           return [];
         }
@@ -112,10 +106,8 @@ export function createThreadSearchSource(
         return items;
       } catch (caught) {
         if (generation !== requestGeneration) return [];
-        input.onErrorChange({
-          reason: 'provider_error',
-          message: input.thrownErrorMessage(caught),
-        });
+        console.error('[search] thread search failed', caught);
+        input.onErrorChange({ reason: 'provider_error' });
         input.onItemsChange([]);
         return [];
       }
@@ -123,14 +115,11 @@ export function createThreadSearchSource(
   };
 }
 
-function searchModalThrownErrorMessage(
-  error: unknown,
-  locale: UiLocale,
-  fallback: string,
+export function searchErrorText(
+  reason: SearchErrorReason,
+  copy: ReturnType<typeof getShellControlsCopy>['search'],
 ): string {
-  return locale === 'zh'
-    ? generalizedErrorMessageChinese(error, fallback)
-    : generalizedErrorMessage(error, fallback);
+  return lookupCopy(copy.errorByReason, reason) ?? copy.errorFallback;
 }
 
 /**
@@ -153,10 +142,7 @@ export function SearchModal(props: {
     }),
     [copy.resultsLabel],
   );
-  const [error, setError] = useState<{
-    reason: SearchErrorReason;
-    message: string;
-  } | null>(null);
+  const [error, setError] = useState<{ reason: SearchErrorReason } | null>(null);
   const [activeQuery, setActiveQuery] = useState('');
   const itemByIdRef = useRef(new Map<string, SearchItem>());
   const pendingNavigationRef = useRef<{
@@ -193,26 +179,12 @@ export function SearchModal(props: {
             items.map((item) => [item.id, item]),
           );
         },
-        thrownErrorMessage: (caught) =>
-          searchModalThrownErrorMessage(
-            caught,
-            locale,
-            copy.errorFallback,
-          ),
       }),
-    [
-      copy.errorFallback,
-      copy.resultsLabel,
-      locale,
-      props.deps,
-      props.onNavigateToSession,
-    ],
+    [copy.resultsLabel, props.deps, props.onNavigateToSession],
   );
 
   const emptySearchText = error
-    ? error.reason === 'incognito_active'
-      ? copy.privacyDetail
-      : error.message
+    ? searchErrorText(error.reason, copy)
     : copy.empty;
 
   return (

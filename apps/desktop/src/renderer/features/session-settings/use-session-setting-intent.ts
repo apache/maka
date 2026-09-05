@@ -19,7 +19,6 @@
 
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { PermissionMode } from '@maka/core/permission';
-import type { SessionSummary } from '@maka/core/session';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import {
   isChatDefaultPermissionMode,
@@ -35,6 +34,7 @@ import {
   type SessionModelConfigurationIntent,
   type SessionModelTarget,
 } from './session-model-configuration-intent.js';
+import type { DesktopSessionSummary } from '../../../shared/desktop-session-projection.js';
 import { useSessionSettingsServices } from './services-context.js';
 
 type SessionSettingValues = {
@@ -47,7 +47,7 @@ type SessionSettingValues = {
 export function useSessionSettingIntent<Owner extends { sessionId?: string }>(input: {
   catalogRevision: number;
   isActiveSession(sessionId: string): boolean;
-  sessions: readonly SessionSummary[];
+  sessions: readonly DesktopSessionSummary[];
   newTaskPermissionMode: ChatDefaultPermissionMode;
   refreshCatalog(): Promise<unknown>;
   saveComposerDefaults(model: SessionModelTarget): void;
@@ -74,6 +74,8 @@ export function useSessionSettingIntent<Owner extends { sessionId?: string }>(in
     const failure = input.writeFailureCopy(setting, error);
     input.showSessionError(sessionId, failure.title, failure.description);
   };
+  const catalogSessionRevision = (sessionId: string) =>
+    input.sessions.find((session) => session.id === sessionId)?.revision;
   const intent = useSharedSessionSettingIntent<SessionSettingValues>({
     catalogRevision: input.catalogRevision,
     refreshCatalog: input.refreshCatalog,
@@ -93,25 +95,38 @@ export function useSessionSettingIntent<Owner extends { sessionId?: string }>(in
           if (committed && configuration.changedSetting === 'model') {
             input.saveComposerDefaults(configuration.modelTarget);
           }
-          return committed;
+          return { committed, sessionRevision: summary.revision };
         },
+        catalogSessionRevision,
         onWriteError: (sessionId, error, attempted) =>
           reportWriteError(sessionId, error, attempted.changedSetting),
       },
       permissionMode: {
-        write: async (sessionId, mode) =>
-          (await services.setPermissionMode(sessionId, mode)).permissionMode === mode,
+        write: async (sessionId, mode) => {
+          const summary = await services.setPermissionMode(sessionId, mode);
+          return {
+            committed: summary.permissionMode === mode,
+            sessionRevision: summary.revision,
+          };
+        },
+        catalogSessionRevision,
         onWriteError: (sessionId, error) => reportWriteError(sessionId, error, 'permission'),
       },
       planMode: {
+        // Exiting a pending proposal returns Plan state rather than a Session
+        // summary, so this policy channel has no authoritative Session revision.
         write: input.planMode.write,
         onWriteError: (sessionId, error) => reportWriteError(sessionId, error, 'plan'),
       },
       orchestrationMode: {
         write: async (sessionId, mode) => {
-          await services.setOrchestrationMode(sessionId, mode);
-          return true;
+          const summary = await services.setOrchestrationMode(sessionId, mode);
+          return {
+            committed: summary.orchestrationMode === mode,
+            sessionRevision: summary.revision,
+          };
         },
+        catalogSessionRevision,
         onWriteError: (sessionId, error) =>
           reportWriteError(sessionId, error, 'orchestration'),
       },

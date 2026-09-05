@@ -140,7 +140,11 @@ export class AgentGraphProviderScenario {
           requireRecord(output.execution, 'agent output execution').kind,
           'child_session',
         );
-        assert.equal(requireRecord(output.header, 'agent output header').status, 'completed');
+        const invocation = requireRecord(output.invocation, 'agent output invocation');
+        assert.equal(
+          requireRecord(invocation.terminalEvent, 'agent output terminal event').status,
+          'completed',
+        );
         const result = requireRecord(output.result, 'agent output payload');
         assert.equal(result.status, 'completed');
         assert.equal(result.text, this.childResultText);

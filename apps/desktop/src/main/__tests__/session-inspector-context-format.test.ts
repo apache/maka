@@ -22,7 +22,7 @@ import { test } from 'node:test';
 import { compactNumberFormatter } from '../../renderer/features/workbar/testing.js';
 
 test('formats context-window capacity with stable K/M units in every UI locale', () => {
-  for (const locale of ['en', 'zh'] as const) {
+  for (const locale of ['en', 'zh-CN', 'zh-TW'] as const) {
     const format = compactNumberFormatter(locale);
 
     assert.equal(format(256_000), '256K');

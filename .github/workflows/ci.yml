@@ -102,6 +102,8 @@ jobs:
       - name: Test the epoch guard
         run: node --test --test-concurrency=1 scripts/protocol-epoch-check.test.mjs
 
+      - name: Test Storybook audit contracts
+        run: node --test scripts/ax-tree-audit.test.mjs scripts/storybook-visual-smoke.test.mjs
       - name: Test Computer Use script contracts
         run: node --test scripts/ax-tree-audit.test.mjs scripts/computer-use/lab-root.test.mjs
 
@@ -131,6 +133,21 @@ jobs:
       # the other install-free checks.
       - name: Check ASF source headers
         run: npm run check:asf-headers
+
+      # Locale hygiene ratchet (node built-ins only, so it runs install-free): a new UI locale must only ever mean a new
+      # UiCatalog key, so locale-literal branches, silent locale defaults,
+      # and payload sniffing may shrink but never grow.
+      - name: Check locale hygiene
+        if: steps.plan.outputs.code == 'true'
+        env:
+          BASE_SHA: ${{ github.event_name == 'push' && github.event.before || github.event.pull_request.base.sha }}
+        run: |
+          node --test scripts/check-locale-hygiene.test.mjs
+          if [[ -n "$BASE_SHA" && ! "$BASE_SHA" =~ ^0+$ ]]; then
+            npm run check:locale-hygiene -- --base "$BASE_SHA"
+          else
+            npm run check:locale-hygiene
+          fi
 
       # Everything below this line may need an installed toolchain, so each
       # step names the selections it belongs to. `setup-node` itself is
@@ -179,6 +196,10 @@ jobs:
         run: |
           npm run check:tui-copy
           node --test scripts/check-tui-copy.test.mjs
+
+      - name: Test staged Biome hook
+        if: steps.plan.outputs.code == 'true'
+        run: node --test scripts/biome-staged-check.test.mjs
 
       # The header audit above remains install-free. The complete source gate
       # also exercises generation and therefore runs after its pinned formatter

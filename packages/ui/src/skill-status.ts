@@ -117,26 +117,6 @@ export function formatSkillRuntimeLabel(skill: SkillEntry, copy: SkillsCopy): st
 export function formatSkillLibraryDescription(skill: SkillEntry, copy: SkillsCopy): string | undefined {
   const raw = skill.description?.trim();
   if (!raw) return undefined;
-  if (/[\u3400-\u9fff]/.test(raw)) return raw;
-
-  const source = `${skill.id} ${skill.name} ${raw}`.toLowerCase();
-  if (source.includes('docx') || source.includes('word') || source.includes('google docs')) {
-    return copy.description.document;
-  }
-  if (source.includes('ppt') || source.includes('powerpoint') || source.includes('slide') || source.includes('presentation')) {
-    return copy.description.presentation;
-  }
-  if (source.includes('spreadsheet') || source.includes('excel') || source.includes('csv') || source.includes('xlsx')) {
-    return copy.description.spreadsheet;
-  }
-  if (source.includes('image') || source.includes('photo') || source.includes('bitmap')) {
-    return copy.description.image;
-  }
-  if (source.includes('browser') || source.includes('chrome') || source.includes('web target')) {
-    return copy.description.browser;
-  }
-  if (source.includes('macos') || source.includes('swiftui') || source.includes('appkit')) {
-    return copy.description.macos;
-  }
-  return copy.description.fallback;
+  if (skill.sourceType !== 'bundled' || skill.userModified) return raw;
+  return copy.bundledDescription[skill.id] ?? raw;
 }

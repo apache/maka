@@ -150,11 +150,17 @@ export function parseGoalEvaluation(raw: string): GoalEvaluation {
   if (!jsonMatch) return fallback;
   try {
     const parsed = JSON.parse(jsonMatch[0]) as Record<string, unknown>;
+    // Missing flags keep their defaults; invalid flags are not a real judgment.
+    for (const field of ['met', 'impossible', 'progress', 'waiting']) {
+      if (parsed[field] !== undefined && typeof parsed[field] !== 'boolean') {
+        return { ...fallback, reason: `Evaluator returned a non-boolean ${field}` };
+      }
+    }
     return {
-      met: Boolean(parsed.met),
-      impossible: Boolean(parsed.impossible),
-      progress: Boolean(parsed.progress),
-      waiting: Boolean(parsed.waiting),
+      met: parsed.met === true,
+      impossible: parsed.impossible === true,
+      progress: parsed.progress === true,
+      waiting: parsed.waiting === true,
       evaluatorFailed: false,
       reason:
         typeof parsed.reason === 'string' && parsed.reason.trim()

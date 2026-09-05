@@ -63,7 +63,7 @@ import {
 import type { ArtifactDescriptor, ArtifactKind } from '@maka/core/artifacts';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { formatRelativeTimestamp } from '@maka/core/relative-time';
-import { generalizedErrorMessage, generalizedErrorMessageChinese, redactSecrets } from '@maka/core/redaction';
+import { generalizedErrorMessageForLocale, redactSecrets } from '@maka/core/redaction';
 import {
   Badge,
   Banner,
@@ -631,11 +631,8 @@ function saveArtifactFailureCopy(reason: string, copy: ArtifactCopy): string {
 function artifactActionErrorMessage(error: unknown, locale: UiLocale, copy: ArtifactCopy): string {
   const raw = redactSecrets(error instanceof Error ? error.message : String(error ?? '')).trim();
   if (!raw) return copy.pane.actionFailed;
-  const classified = locale === 'zh'
-    ? generalizedErrorMessageChinese(new Error(raw), '')
-    : generalizedErrorMessage(new Error(raw), '');
-  if (classified) return classified;
-  return locale === 'zh' && /[\u4e00-\u9fff]/.test(raw) ? raw : copy.pane.actionFailed;
+  const classified = generalizedErrorMessageForLocale(new Error(raw), '', locale);
+  return classified || copy.pane.actionFailed;
 }
 
 function KindIcon(props: { kind: ArtifactKind }) {

@@ -84,6 +84,7 @@ describe('managed Runtime Host selected update', () => {
     let output = '';
     let managedReads = 0;
     let pruned = false;
+    const projection: string[] = [];
     const exitCode = await runManagedRuntimeHostUpdateCli(
       {
         ...OPTIONS,
@@ -106,10 +107,17 @@ describe('managed Runtime Host selected update', () => {
             assert.deepEqual(options?.expectedOwner, expectedHost);
             return { kind: 'active', config: current } as never;
           },
-          verifyProjection: async () => {},
+          convergeControlProjection: async (config) => {
+            assert.equal(config, current);
+            projection.push('converge');
+          },
+          verifyProjection: async () => {
+            projection.push('verify');
+          },
           assertOperatorConfig: () => {},
           manageLifecycle: async () => {
             managedReads += 1;
+            if (managedReads === 2) assert.equal(pruned, false);
             return status as never;
           },
           replaceLifecycle: async (input) => {
@@ -129,6 +137,7 @@ describe('managed Runtime Host selected update', () => {
     assert.equal(exitCode, 0);
     assert.equal(managedReads, 2);
     assert.equal(pruned, true);
+    assert.deepEqual(projection, ['converge', 'verify']);
     assert.doesNotMatch(output, /"phase":"staging"/u);
     const result = decodeRuntimeHostServiceManagementFrame(output.trim().split('\n').at(-1) ?? '');
     assert.equal(

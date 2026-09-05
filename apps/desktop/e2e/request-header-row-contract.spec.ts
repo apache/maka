@@ -37,7 +37,7 @@ import { getProviderSettingsCopy } from '../src/renderer/features/connection-set
  * surfaces as they first render, and this editor is three clicks deep.
  */
 
-const copy = getProviderSettingsCopy('zh').detail;
+const copy = getProviderSettingsCopy('zh-CN').detail;
 
 test('the request header remove button centres on its field', async ({
   requestHeaderRowWindow: page,

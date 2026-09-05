@@ -301,7 +301,6 @@ export interface CompactionDecisionDiagnostic {
 export interface ContextBudgetDiagnostic {
   enabled: boolean;
   policyName?: string;
-  maxHistoryEstimatedTokens?: number;
   estimatedTokensBefore: number;
   estimatedTokensAfter: number;
   keptTurns: number;

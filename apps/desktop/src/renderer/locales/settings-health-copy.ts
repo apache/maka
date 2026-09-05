@@ -18,7 +18,15 @@
  */
 
 import type { StatusSemantic } from '@maka/ui';
-import type { HealthSignal, HealthSignalLayer, HealthSignalSource, HealthSignalStatus } from '@maka/core/health';
+import type {
+  HealthConnectionTestErrorClass,
+  HealthSignal,
+  HealthSignalDetail,
+  HealthSignalLayer,
+  HealthSignalMessageCode,
+  HealthSignalSource,
+  HealthSignalStatus,
+} from '@maka/core/health';
 
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
@@ -75,6 +83,17 @@ const layersZh: HealthCenterCopy['layers'] = {
   storage: { label: '存储', description: '工作区文件、JSONL、SQLite 等本地存储健康度。' },
 };
 
+const layersZhTw: HealthCenterCopy['layers'] = {
+  configuration: { label: '設定', description: '設定頁中的必填項目是否完整。' },
+  validation: { label: '驗證', description: '憑證與端點的連線測試結果；驗證通過不代表傳送路徑可用。' },
+  permission: { label: '系統權限', description: '所需的 OS 與 TCC 權限是否已授權。' },
+  feature: { label: '功能狀態', description: '功能是否已明確啟用，以及目前是否可用。' },
+  action_approval: { label: '操作核准', description: '工具呼叫與高風險操作的核准原則狀態。' },
+  memory_acceptance: { label: '記憶寫入', description: '是否已接受記憶寫入約定，以及是否已啟用寫入。' },
+  runtime_probe: { label: '執行狀態探測', description: '最近一次實際傳送、串流或事件接收的探測結果。' },
+  storage: { label: '儲存空間', description: '工作區檔案、JSONL、SQLite 和其他本機儲存空間的健康狀態。' },
+};
+
 const layersEn: HealthCenterCopy['layers'] = {
   configuration: { label: 'Configuration', description: 'Whether required settings are complete.' },
   validation: { label: 'Validation', description: 'Credential and endpoint connectivity results. A passing validation does not prove the send path works.' },
@@ -87,7 +106,7 @@ const layersEn: HealthCenterCopy['layers'] = {
 };
 
 const SETTINGS_HEALTH_COPY = {
-  zh: {
+  'zh-CN': {
     loading: '正在加载健康快照', readFailed: '无法读取健康快照', noData: '健康服务未返回数据。', readAgain: '重新读取',
     title: '健康中心', subtitle: '各项能力当前的运行状况检查。',
     badge: '只读快照', lastRead: '最近一次读取：', refresh: '刷新', summaryAria: '按状态筛选健康信号', summaryFilterAria: (label, count, selected) => selected ? `${label} ${count} 项，当前筛选；再次按下显示全部` : `仅显示${label}健康信号，共 ${count} 项`,
@@ -99,12 +118,31 @@ const SETTINGS_HEALTH_COPY = {
     footnote: '本页不直接执行测试、修复或权限变更；它只汇总当前已记录的健康信号。需要处理问题时，请进入对应设置页或重新触发相关功能。',
     layers: layersZh,
     statuses: { ok: { label: '正常', tone: 'neutral' }, info: { label: '提示', tone: 'neutral' }, warning: { label: '警告', tone: 'attention' }, error: { label: '错误', tone: 'error' }, unknown: { label: '未知', tone: 'neutral' } },
-    scopes: { app: '应用', llm_connection: 'LLM 连接', bot: '机器人', capability: '能力', storage: '存储' },
-    sources: { connection_test: '连接测试', capability_snapshot: '能力快照', permission_snapshot: '权限快照', runtime_probe: '运行态探测', settings: '设置', storage: '本地存储' },
+    scopes: { llm_connection: 'LLM 连接', bot: '机器人', capability: '能力' },
+    sources: { connection_test: '连接测试', capability_snapshot: '能力快照', permission_snapshot: '权限快照', runtime_probe: '运行态探测', settings: '设置' },
     source: '来源：', blocksSend: '阻塞发送', blocksCapability: '阻塞能力',
-    signalLabel: (signal) => signal.label,
-    signalMessage: (signal) => signal.message,
-    signalDetail: (signal) => signal.detail,
+    signalLabel: (signal) => (signal.id.endsWith(':runtime') ? `${signal.label} 运行态` : signal.label),
+    signalMessage: (signal) => signalMessagesZh[signal.message],
+    signalDetail: (signal) => signalDetailZh(signal.detail),
+  },
+  'zh-TW': {
+    loading: '正在載入健康快照', readFailed: '無法讀取健康快照', noData: '健康服務未返回資料。', readAgain: '重新讀取',
+    title: '健康中心', subtitle: '各項能力目前的執行狀況檢查。',
+    badge: '只讀快照', lastRead: '最近一次讀取：', refresh: '重新整理', summaryAria: '按狀態篩選健康訊號', summaryFilterAria: (label, count, selected) => selected ? `${label} ${count} 項，目前篩選；再次按下顯示全部` : `僅顯示${label}健康訊號，共 ${count} 項`,
+    blockers: {
+      send: (count, totalCount) => `全部健康訊號中，${count}/${totalCount} 條會阻塞傳送`,
+      capability: (count, totalCount) => `全部健康訊號中，${count}/${totalCount} 條會阻塞能力`,
+    },
+    layerAria: (label) => `${label}健康訊號`, layerListAria: (label) => `${label}健康訊號列表`,
+    footnote: '本頁不直接執行測試、修復或權限變更；它只彙總目前已記錄的健康訊號。需要處理問題時，請進入對應設定頁或重新觸發相關功能。',
+    layers: layersZhTw,
+    statuses: { ok: { label: '正常', tone: 'neutral' }, info: { label: '提示', tone: 'neutral' }, warning: { label: '警告', tone: 'attention' }, error: { label: '錯誤', tone: 'error' }, unknown: { label: '未知', tone: 'neutral' } },
+    scopes: { llm_connection: 'LLM 連線', bot: '機器人', capability: '能力' },
+    sources: { connection_test: '連線測試', capability_snapshot: '能力快照', permission_snapshot: '權限快照', runtime_probe: '執行態探測', settings: '設定' },
+    source: '來源：', blocksSend: '阻塞傳送', blocksCapability: '阻塞能力',
+    signalLabel: (signal) => (signal.id.endsWith(':runtime') ? `${signal.label} 執行狀態` : signal.label),
+    signalMessage: (signal) => signalMessagesZhTw[signal.message],
+    signalDetail: (signal) => signalDetailZhTw(signal.detail),
   },
   en: {
     loading: 'Loading health snapshot', readFailed: 'Could not read health snapshot', noData: 'The health service returned no data.', readAgain: 'Read again',
@@ -118,12 +156,12 @@ const SETTINGS_HEALTH_COPY = {
     footnote: 'This page does not run tests, repairs, or permission changes. It only summarizes recorded health signals. Open the relevant settings page or retry the related feature to address an issue.',
     layers: layersEn,
     statuses: { ok: { label: 'Healthy', tone: 'neutral' }, info: { label: 'Info', tone: 'neutral' }, warning: { label: 'Warning', tone: 'attention' }, error: { label: 'Error', tone: 'error' }, unknown: { label: 'Unknown', tone: 'neutral' } },
-    scopes: { app: 'App', llm_connection: 'LLM connection', bot: 'Bot', capability: 'Capability', storage: 'Storage' },
-    sources: { connection_test: 'Connection test', capability_snapshot: 'Capability snapshot', permission_snapshot: 'Permission snapshot', runtime_probe: 'Runtime probe', settings: 'Settings', storage: 'Local storage' },
+    scopes: { llm_connection: 'LLM connection', bot: 'Bot', capability: 'Capability' },
+    sources: { connection_test: 'Connection test', capability_snapshot: 'Capability snapshot', permission_snapshot: 'Permission snapshot', runtime_probe: 'Runtime probe', settings: 'Settings' },
     source: 'Source: ', blocksSend: 'Blocks sending', blocksCapability: 'Blocks capability',
-    signalLabel: englishSignalLabel,
-    signalMessage: englishSignalMessage,
-    signalDetail: englishSignalDetail,
+    signalLabel: (signal) => (signal.id.endsWith(':runtime') ? `${signal.label} runtime` : signal.label),
+    signalMessage: (signal) => signalMessagesEn[signal.message],
+    signalDetail: (signal) => signalDetailEn(signal.detail),
   },
 } satisfies UiCatalog<HealthCenterCopy>;
 
@@ -131,57 +169,191 @@ export function getHealthCenterCopy(locale: UiLocale): HealthCenterCopy {
   return SETTINGS_HEALTH_COPY[locale];
 }
 
-function englishSignalLabel(signal: HealthSignal): string {
-  if (signal.id.endsWith(':runtime')) return `${signal.label.replace(/\s*运行态$/, '')} runtime`;
-  return signal.label;
+const signalMessagesZh: Record<HealthSignalMessageCode, string> = {
+  connection_disabled: '连接已关闭。',
+  awaiting_default_model: '等待选择默认模型。',
+  validation_passed: '凭据与端点验证已通过。',
+  needs_reauth: '连接需要重新修复认证。',
+  validation_failed: '上次连接验证失败。',
+  no_models_enabled: '没有启用任何模型。',
+  not_default_source: '不是工作区的默认模型来源。',
+  awaiting_validation: '等待验证连接。',
+  runtime_probe_pending: '等待完成发送运行态探测。',
+  send_completed: '最近一次发送已完成。',
+  send_aborted: '最近一次发送已由用户停止。',
+  send_failed: '最近一次发送失败。',
+  capability_ok: '能力门禁已满足。',
+  capability_paused: '能力已关闭或暂停。',
+  capability_not_configured: '等待补齐能力配置。',
+  capability_denied: '能力被必要系统权限阻塞。',
+  capability_degraded: '能力运行态探测处于降级状态。',
+};
+
+const signalMessagesZhTw: Record<HealthSignalMessageCode, string> = {
+  connection_disabled: '連線已關閉。',
+  awaiting_default_model: '等待選擇預設模型。',
+  validation_passed: '憑證與端點驗證已通過。',
+  needs_reauth: '連線需要重新完成驗證。',
+  validation_failed: '上次連線驗證失敗。',
+  no_models_enabled: '尚未啟用任何模型。',
+  not_default_source: '不是工作區的預設模型來源。',
+  awaiting_validation: '等待驗證連線。',
+  runtime_probe_pending: '等待完成傳送執行狀態探測。',
+  send_completed: '最近一次傳送已完成。',
+  send_aborted: '最近一次傳送已由使用者停止。',
+  send_failed: '最近一次傳送失敗。',
+  capability_ok: '能力門檻已滿足。',
+  capability_paused: '能力已關閉或暫停。',
+  capability_not_configured: '等待完成能力設定。',
+  capability_denied: '能力受到必要系統權限阻擋。',
+  capability_degraded: '能力執行狀態探測目前處於降級狀態。',
+};
+
+const signalMessagesEn: Record<HealthSignalMessageCode, string> = {
+  connection_disabled: 'Connection is disabled.',
+  awaiting_default_model: 'Select a default model.',
+  validation_passed: 'Credentials and endpoint validation passed.',
+  needs_reauth: 'The connection needs authentication repair.',
+  validation_failed: 'The latest connection validation failed.',
+  no_models_enabled: 'No models are enabled on this connection.',
+  not_default_source: 'Not the workspace default model source.',
+  awaiting_validation: 'Waiting to validate the connection.',
+  runtime_probe_pending: 'Waiting for a send-path runtime probe.',
+  send_completed: 'The latest send completed.',
+  send_aborted: 'The latest send was stopped by the user.',
+  send_failed: 'The latest send failed.',
+  capability_ok: 'Capability requirements are satisfied.',
+  capability_paused: 'The capability is disabled or paused.',
+  capability_not_configured: 'Capability configuration is incomplete.',
+  capability_denied: 'The capability is blocked by a required system permission.',
+  capability_degraded: 'The capability runtime probe is degraded.',
+};
+
+const connectionTestErrorMessages = {
+  'zh-CN': {
+    auth: '鉴权失败',
+    timeout: '请求超时',
+    provider_unavailable: '模型服务返回错误',
+    network: '网络错误',
+    unknown: '连接测试失败',
+  },
+  'zh-TW': {
+    auth: '驗證失敗',
+    timeout: '請求逾時',
+    provider_unavailable: '模型服務傳回錯誤',
+    network: '網路錯誤',
+    unknown: '連線測試失敗',
+  },
+  en: {
+    auth: 'Authentication failed',
+    timeout: 'Request timed out',
+    provider_unavailable: 'Model service returned an error',
+    network: 'Network error',
+    unknown: 'Connection test failed',
+  },
+} satisfies UiCatalog<Record<HealthConnectionTestErrorClass, string>>;
+
+function signalDetailZh(detail: HealthSignalDetail | undefined): string | undefined {
+  if (!detail) return undefined;
+  switch (detail.kind) {
+    case 'validation_scope_note':
+      return '这是连接验证结果，不代表发送、流式输出或中断通路已经运行通过。';
+    case 'no_models_enabled_hint':
+      return '在 设置 · 模型 的连接详情里启用至少一个模型后才能使用该连接。';
+    case 'not_default_source_hint':
+      return '在任务中显式选择该连接的模型即可正常使用;新对话的默认模型在 设置 · 通用 配置。';
+    case 'runtime_probe_layers_note':
+      return '凭据验证与真实发送、流式输出、中断通路是两层健康信号。';
+    case 'runtime_probe_result':
+      return [
+        `模型=${detail.modelId}`,
+        `延迟=${detail.latencyMs}ms`,
+        ...(detail.errorClass ? [`错误类型=${localizedRuntimeErrorClass(detail.errorClass, 'zh-CN')}`] : []),
+      ].join(' · ');
+    case 'capability_reason':
+      // Interim: capability-snapshot still emits zh-CN prose; code it as a
+      // CapabilityReasonCode to drop this sniff.
+      return /[\u3400-\u9fff]/u.test(detail.reason) ? detail.reason : '状态详情请见对应设置页。';
+    case 'last_test_error_class':
+      return connectionTestErrorMessages['zh-CN'][detail.errorClass];
+    case 'last_test_message':
+      return '连接测试状态暂时无法显示，请重新测试。';
+    default:
+      return unhandledDetail(detail);
+  }
 }
 
-function englishSignalMessage(signal: HealthSignal): string {
-  if (signal.scope === 'llm_connection') {
-    if (signal.layer === 'configuration') {
-      // Three-way split matching the producer's configuration states
-      // (packages/core/src/health.ts) — the message string is the anchor,
-      // the same way the runtime_probe branch below parses the producer's
-      // detail. Falling back on status alone described an enabled
-      // non-default connection as disabled.
-      if (signal.message === '不是工作区的默认模型来源。') {
-        return 'Not the workspace default model source.';
-      }
-      if (signal.message === '没有启用任何模型。') {
-        return 'No models are enabled on this connection.';
-      }
-      return signal.status === 'info' ? 'Connection is disabled.' : 'Select a default model.';
-    }
-    if (signal.layer === 'runtime_probe') {
-      return { ok: 'The latest send completed.', info: 'The latest send was stopped by the user.', warning: 'The latest send failed.', error: 'The latest send failed.', unknown: 'Waiting for a send-path runtime probe.' }[signal.status];
-    }
-    return { ok: 'Credentials and endpoint validation passed.', info: 'Connection validation needs attention.', warning: 'The latest connection validation failed.', error: 'The connection needs authentication repair.', unknown: 'Waiting to validate the connection.' }[signal.status];
+function signalDetailZhTw(detail: HealthSignalDetail | undefined): string | undefined {
+  if (!detail) return undefined;
+  switch (detail.kind) {
+    case 'validation_scope_note':
+      return '這是連線驗證結果，不代表傳送、串流輸出或中斷路徑已實際執行成功。';
+    case 'no_models_enabled_hint':
+      return '請在「設定・模型」的連線詳細資料中啟用至少一個模型，才能使用此連線。';
+    case 'not_default_source_hint':
+      return '在任務中明確選擇此連線的模型即可使用；新對話的預設模型可在「設定・一般」中設定。';
+    case 'runtime_probe_layers_note':
+      return '憑證驗證與實際傳送、串流輸出、中斷路徑是兩層不同的健康訊號。';
+    case 'runtime_probe_result':
+      return [
+        `模型=${detail.modelId}`,
+        `延遲=${detail.latencyMs}ms`,
+        ...(detail.errorClass ? [`錯誤類型=${localizedRuntimeErrorClass(detail.errorClass, 'zh-TW')}`] : []),
+      ].join(' · ');
+    case 'capability_reason':
+      return '狀態詳細資料請參閱對應的設定頁。';
+    case 'last_test_error_class':
+      return connectionTestErrorMessages['zh-TW'][detail.errorClass];
+    case 'last_test_message':
+      return '連線測試狀態暫時無法顯示，請重新測試。';
+    default:
+      return unhandledDetail(detail);
   }
-  if (signal.scope === 'capability' || signal.scope === 'bot') {
-    return { ok: 'Capability requirements are satisfied.', info: 'The capability is disabled or paused.', warning: 'Capability configuration is incomplete.', error: 'The capability is blocked or degraded.', unknown: 'Capability state is unknown.' }[signal.status];
-  }
-  return { ok: 'The health check passed.', info: 'Review this health signal.', warning: 'This health signal needs attention.', error: 'This health signal reports an error.', unknown: 'Health state is unknown.' }[signal.status];
 }
 
-function englishSignalDetail(signal: HealthSignal): string | undefined {
-  if (!signal.detail) return undefined;
-  if (signal.scope === 'llm_connection' && signal.layer === 'validation' && signal.status === 'ok') {
-    return 'This validates the connection only; it does not prove send, streaming, or interruption paths have run successfully.';
-  }
-  if (signal.scope === 'llm_connection' && signal.layer === 'runtime_probe') {
-    const model = signal.detail.match(/模型=([^·]+)/)?.[1]?.trim();
-    const latency = signal.detail.match(/延迟=([^·]+)/)?.[1]?.trim();
-    const errorClass = signal.detail.match(/错误类型=([^·]+)/)?.[1]?.trim();
-    const parts = [model && `Model=${model}`, latency && `Latency=${latency}`, errorClass && `Error type=${errorClass}`].filter(Boolean);
-    return parts.length > 0 ? parts.join(' · ') : 'Runtime details are available in Usage settings.';
-  }
-  if (signal.scope === 'llm_connection' && signal.layer === 'configuration') {
-    if (signal.message === '不是工作区的默认模型来源。') {
-      return 'Models on this connection stay usable when selected explicitly in a task; the default model for new chats lives in Settings · General.';
-    }
-    if (signal.message === '没有启用任何模型。') {
+function signalDetailEn(detail: HealthSignalDetail | undefined): string | undefined {
+  if (!detail) return undefined;
+  switch (detail.kind) {
+    case 'validation_scope_note':
+      return 'This validates the connection only; it does not prove send, streaming, or interruption paths have run successfully.';
+    case 'no_models_enabled_hint':
       return "Enable at least one model in this connection's detail view under Settings · Models.";
-    }
+    case 'not_default_source_hint':
+      return 'Models on this connection stay usable when selected explicitly in a task; the default model for new chats lives in Settings · General.';
+    case 'runtime_probe_layers_note':
+      return 'Credential validation and real send, streaming, and interruption paths are two separate health layers.';
+    case 'runtime_probe_result':
+      return [
+        `Model=${detail.modelId}`,
+        `Latency=${detail.latencyMs}ms`,
+        ...(detail.errorClass ? [`Error type=${localizedRuntimeErrorClass(detail.errorClass, 'en')}`] : []),
+      ].join(' · ');
+    case 'capability_reason':
+      return 'See the corresponding settings page for details.';
+    case 'last_test_error_class':
+      return connectionTestErrorMessages.en[detail.errorClass];
+    case 'last_test_message':
+      return 'The connection test status is temporarily unavailable. Test again.';
+    default:
+      return unhandledDetail(detail);
   }
-  return 'See the corresponding settings page for details.';
+}
+
+const unknownRuntimeErrorClass = {
+  'zh-CN': '未知错误',
+  'zh-TW': '未知錯誤',
+  en: 'Unknown error',
+} satisfies UiCatalog<string>;
+
+// Runtime probes carry the turn's failure class (rate_limit, context_overflow,
+// …), a wider vocabulary than connection tests; unmapped classes stay visible.
+function localizedRuntimeErrorClass(errorClass: string, locale: UiLocale): string {
+  const messages: Readonly<Record<string, string | undefined>> = connectionTestErrorMessages[locale];
+  const normalized = errorClass.toLowerCase();
+  if (normalized === 'unknown') return unknownRuntimeErrorClass[locale];
+  return messages[normalized] ?? errorClass;
+}
+
+function unhandledDetail(_detail: never): undefined {
+  return undefined;
 }

@@ -142,6 +142,8 @@ RuntimeEvent 保存了 AI 交互的 canonical message semantics，但当前并�
 
 因此，本章所说的“状态空间回放”首先是**交互语义与 Runtime 状态的可重建性**。如果未来要承诺 bit-exact deterministic replay，还需要对运行配置、prompt、tool catalog、投影策略和 provider request shape 做版本化或快照化。这不是削弱 Event Log 的价值，反而说明它提供了正确的基础：message facts 保持稳定，request materialization 可以独立演进。
 
+跟踪：[Recovery-grade RuntimeEvent ledger #615](https://github.com/apache/maka/issues/615)
+
 ## 两条思想来源
 
 这个设计有两条明确的思想脉络。
@@ -154,7 +156,7 @@ Maka 并不是在进程内实现了 Kafka，也没有声称 RuntimeEventStore �
 
 > **Log is the source of truth; state is a materialized view.**
 
-这一原则直接解释了后文最重要的 terminal invariant：Run header 不能凭自己宣布完成，它必须得到 terminal RuntimeEvent 的支持。
+这一原则直接解释了后文最重要的 terminal invariant：除了这次 Run 自己的 terminal RuntimeEvent，没有别的东西能宣布它结束。
 
 ## 三种生命周期身份，加一个关联字段
 
@@ -167,6 +169,8 @@ Maka 并不是在进程内实现了 Kafka，也没有声称 RuntimeEventStore �
 | Run | 这一次具体执行尝试是谁？状态是什么？ | `runId` / `AgentRun` |
 
 RuntimeEvent 仍保留 `invocationId` 作为兼容与事件关联字段。生产主链把它绑定到 Run 身份；它不再对应单独的 Invocation 生命周期对象或 Runner 层。
+
+跟踪：[RuntimeInvocation event spine #4311](https://github.com/apache/maka/issues/4311)
 
 这里最重要的判断是：**Turn 不是 Run，聊天消息也不是执行状态。** 一个用户可见的回合需要一个系统可追踪的执行封套；否则，系统只能知道“出现过一些消息”，却无法可靠回答“这次执行是否真正结束”。
 
@@ -217,13 +221,12 @@ flowchart LR
 
 `AgentRun` 让一次执行在持久世界里有身份和生命周期。开始运行时，它会：
 
-1. 创建 `AgentRunHeader`，初始状态为 `created`；
+1. 把这次 invocation 的开场事实作为 RuntimeEvent 提交；
 2. 对顶层 Run 写入用户消息和 `running` Turn 投影；
 3. 写入本轮初始用户 `RuntimeEvent`；
 4. 锁定本 Session 的连接配置；
 5. 确保 Backend 已创建并注册为活跃 Run；
-6. 将 Run 标记为 `running`；
-7. 从此前的 RuntimeEvent ledger 构造模型历史。
+6. 从此前的 RuntimeEvent ledger 构造模型历史。
 
 运行过程中，`AgentRun` 同时接收旧的 `SessionEvent` 与新的 `RuntimeEvent`，并把它们写入各自所属的投影或账本。结束时，它注销活跃 Run、收敛 Session/Turn 状态，并提交最终 Run 状态。
 
@@ -317,12 +320,12 @@ AI SDK 的 step 是这个循环的自然节拍。Maka 会按 step 持久化 assi
 
 ## 一份语义事实，两类辅助状态
 
-Maka 当前同时维护三类持久数据。它们不是三个地位相同的“真相”，也不是重复保存同一份聊天。`RuntimeEventStore` 是 AI 交互的 canonical semantic log；另外两类存储承担产品投影与运行运维状态。
+Maka 当前同时维护三类持久数据。它们不是三个地位相同的“真相”，也不是重复保存同一份聊天。`RuntimeEventStore` 是 AI 交互的 canonical semantic log；另外两类存储承担产品投影，以及 Runtime 做过什么的运维记录。
 
 | 存储 | 主要内容 | 它最适合回答的问题 |
 |---|---|---|
 | `SessionStore` | 用户、assistant、工具和 turn-state 等 `StoredMessage` | UI 与兼容接口要展示什么？活跃流有哪些即时投影？ |
-| `AgentRunStore` | Run header 与 operational Run events | 这次 Run 何时开始、当前状态、在哪个模型或工具阶段失败？ |
+| `AgentRunStore` | operational Run events | 这次 Run 在哪个模型或工具阶段做了什么、又在哪里失败？ |
 | `RuntimeEventStore` | canonical RuntimeEvent 与有界 partial snapshots | Agent 交互发生过哪些语义事实，其他状态应如何重建？ |
 
 当前实现由 SQLite 承载，而不是每个 Run 一个目录：`AgentRunStore` 与 `RuntimeEventStore` 都建立在同一份 operational state 数据库之上，RuntimeEvent 落在 `runtime_events` 表。顺序由该表的 `event_seq` 承担，并以 `(invocation_id, event_seq)` 唯一约束保证一次 Invocation 内序号不重复——“有序日志”在存储层就是这条约束。四个身份各占一列，因此“这个 Session 的这次 Run 的这个 Turn 发生了什么”是一次索引查询。
@@ -337,18 +340,15 @@ Maka 当前同时维护三类持久数据。它们不是三个地位相同的“
 
 Runtime 最容易出现的一类故障，是不同存储对“是否结束”给出不同答案。例如：
 
-- Run header 写成 completed，但 RuntimeEvent ledger 没有 terminal event；
 - 用户已经 stop，但迟到的 complete 又把 Session 写回 active；
 - Backend 流耗尽，却从未说明它是成功还是失败；
-- terminal event 已写入，但进程在更新 Run header 前崩溃。
+- 已经结束的 Run，又有第二个写入方想再结束它一次。
 
 Maka 当前保护的核心不变量是：
 
-> 一个终止的 Run 必须有且只有一个有效 terminal RuntimeEvent；终止的 Run header 必须能够由这个 terminal fact 支撑。
+> 一个 Run 只结束一次，而它的 terminal RuntimeEvent 是唯一说它结束了的事实。
 
-因此，`AgentRun` 在提交 terminal Run header 前，先要求 terminal RuntimeEvent 成功落盘。没有终态的 Backend stream 会被合成为 `missing_terminal_event` 失败；重复终态由 Kernel 合并；状态不匹配、来自其他 Run 或标记为 partial 的 terminal event 都会被拒绝。
-
-如果 terminal RuntimeEvent 已经存在，但 Run header 因中断仍是 `running`，read model 可以把 terminal event 作为更强事实来解释运行结果，并在恢复时修复 header。反过来，如果 header 声称已经结束却没有可信 terminal fact，系统不会盲目信任 header，而会保守地修复为 `missing_terminal_event` 失败。
+因为结果没有第二份记录要同步，崩溃也就不可能留下一份说“已完成”、另一份说“还在跑”的状态。没有终态的 Backend stream 会被合成为 `missing_terminal_event` 失败；重复终态由 Kernel 合并；状态不匹配、来自其他 Run 或标记为 partial 的 terminal event 都会被拒绝。
 
 这条不变量让恢复不必“猜模型当时准备做什么”。系统只需要判断哪些事实已经 durable，然后把各个投影收敛到同一个可解释终态。
 
@@ -356,7 +356,7 @@ Maka 当前保护的核心不变量是：
 
 ### 用户停止
 
-`RuntimeKernel.stopSession()` 会先把所有活跃 `AgentRun` 标记为 stopped，再调用 Backend 的 `stop()`。`AiSdkBackend` 会中止 provider stream、结束正在等待的 sandbox boundary 或用户提问，并产生 abort/complete 事件。即使 provider 随后发送迟到的 complete 或 error，RuntimeKernel 与 AgentRun 也不会允许它覆盖已经确定的 aborted 语义。停止来源，例如 renderer stop button，会进入 terminal fact 与 Run header，供诊断使用。
+`RuntimeKernel.stopSession()` 会先把所有活跃 `AgentRun` 标记为 stopped，再调用 Backend 的 `stop()`。`AiSdkBackend` 会中止 provider stream、结束正在等待的 sandbox boundary 或用户提问，并产生 abort/complete 事件。即使 provider 随后发送迟到的 complete 或 error，RuntimeKernel 与 AgentRun 也不会允许它覆盖已经确定的 aborted 语义。停止来源，例如 renderer stop button，会进入 terminal fact，供诊断使用。
 
 ### Provider 或 Runtime 错误
 
@@ -387,9 +387,11 @@ Maka 当前保护的核心不变量是：
 - `AiSdkBackend` 仍然很重，同时组织 history、context budget、tool availability、step loop、usage 与 telemetry；
 - `SessionEvent Runtime mapper` 仍承担 legacy-to-canonical adapter 角色，而不是 Backend 原生产 canonical events；
 - `SessionStore` 与 RuntimeEvent projection 需要在 active/in-flight 场景中协同；
-- 启动恢复是确定性终结与修复，不是从任意位置热续跑。续跑走另一条路：`safe_boundary_continuation` 从一个经过校验的安全边界接着跑，Run header 上是 `continuationSource`，由 `RuntimeKernel` 完成准入和 dispatch；两者的区别见[第八章](./runtime-resume-architecture.zh-CN.md)。
+- 启动恢复是确定性终结与修复，不是从任意位置热续跑。续跑走另一条路：`safe_boundary_continuation` 从一个经过校验的安全边界接着跑，它在 invocation 开场事实里记着自己的续跑来源，由 `RuntimeKernel` 完成准入和 dispatch；两者的区别见[第八章](./runtime-resume-architecture.zh-CN.md)。
 
 这些不是应该隐藏的实现细节，而是当前架构的真实边界。未来拆分 Backend 或加入 checkpoint 时，首要目标不是减少文件行数，而是保持 request shape、工具可见性、事件顺序和 terminal invariant 不变。
+
+跟踪：[`AiSdkBackend` decomposition #3909](https://github.com/apache/maka/issues/3909)
 
 ## 代码阅读地图
 

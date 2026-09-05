@@ -567,6 +567,17 @@ export function projectRuntimeHostInteractionRequest(
       },
     ];
   }
+  if (interaction.request.kind === 'form') {
+    return [
+      {
+        type: 'form_request',
+        ...base,
+        message: interaction.request.message,
+        requester: structuredClone(interaction.request.requester),
+        fields: structuredClone(interaction.request.fields),
+      },
+    ];
+  }
   if (interaction.request.kind === 'sandbox_boundary') {
     return [
       {

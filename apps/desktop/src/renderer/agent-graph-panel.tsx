@@ -19,10 +19,7 @@
 
 import { useEffect, useId, useMemo, useRef, useState, type JSX } from 'react';
 import type { UiLocale } from '@maka/core/ui-locale';
-import type {
-  AgentGraphClientOperator,
-  AgentGraphClientSnapshot,
-} from '@maka/runtime/stream-graph-read-model';
+import type { AgentGraphClientSnapshot } from '@maka/runtime/stream-graph-read-model';
 import type { AgentGraphEpochDirectory } from '@maka/runtime-host/client';
 import type { AgentGraphEpochSummary } from '@maka/runtime-host/protocol';
 import { IconButton, Selector, type SelectorOptionType } from '@maka/ui';
@@ -33,6 +30,7 @@ import { EmptyState } from '@astryxdesign/core/EmptyState';
 import { Spinner } from '@astryxdesign/core/Spinner';
 import {
   dismissAgentGraphPanel,
+  isAgentGraphLive,
   isAgentGraphPanelDismissible,
   reconcileAgentGraphPanelDismissals,
   shouldShowAgentGraphPanel,
@@ -42,6 +40,7 @@ import {
   createAgentGraphRefreshScheduler,
   type AgentGraphRefreshScheduler,
 } from './agent-graph-refresh.js';
+import { getAgentGraphPanelCopy } from './locales/agent-graph-copy.js';
 
 const noopAgentGraphRefreshScheduler: AgentGraphRefreshScheduler = {
   requestRefresh() {},
@@ -49,129 +48,6 @@ const noopAgentGraphRefreshScheduler: AgentGraphRefreshScheduler = {
   isCurrent: () => false,
   dispose() {},
 };
-
-type GraphPanelCopy = {
-  title: string;
-  loading: string;
-  retry: string;
-  collapse: string;
-  expand: string;
-  dismiss: string;
-  stop: string;
-  stopping: string;
-  stopFailed: string;
-  loadFailed: string;
-  openSession: string;
-  operators: string;
-  selectedResults: string;
-  epoch: string;
-  currentEpoch: string;
-  historicalEpoch: string;
-  cappedEpochs(count: number): string;
-  noOperators: string;
-  hiddenOperators(count: number): string;
-  progress(settled: number, total: number, hasOmitted: boolean): string;
-  status(status: AgentGraphClientSnapshot['status']): string;
-  operatorStatus(status: AgentGraphClientOperator['status']): string;
-  wait(operator: AgentGraphClientOperator): string | undefined;
-};
-
-export function getAgentGraphPanelCopy(locale: UiLocale): GraphPanelCopy {
-  if (locale === 'zh') {
-    return {
-      title: 'Agent Graph',
-      loading: '正在读取 Graph 状态…',
-      retry: '重试',
-      collapse: '收起 Agent Graph',
-      expand: '展开 Agent Graph',
-      dismiss: '关闭 Agent Graph',
-      stop: '停止 Graph',
-      stopping: '停止中…',
-      stopFailed: '停止 Graph 失败，请重试。',
-      loadFailed: 'Graph 状态刷新失败。',
-      openSession: '打开子任务',
-      operators: 'Operators',
-      selectedResults: '已选择结果',
-      epoch: 'Graph 运行轮次',
-      currentEpoch: '当前',
-      historicalEpoch: '历史记录（只读）',
-      cappedEpochs: (count) => `仅显示最近 ${count} 次运行`,
-      noOperators: '等待主 Agent 创建 operator…',
-      hiddenOperators: (count) => `另有 ${count} 个 operator`,
-      progress: (settled, total, hasOmitted) =>
-        hasOmitted ? `可见 ${settled}/${total} 已结束` : `${settled}/${total} 已结束`,
-      status: (status) =>
-        ({
-          empty: '等待调度',
-          active: '运行中',
-          closing: '收尾中',
-          waiting: '等待中',
-          stopped: '已停止',
-          failed: '失败',
-          completed: '已完成',
-        })[status],
-      operatorStatus: (status) =>
-        ({
-          not_started: '未启动',
-          waiting: '等待',
-          runnable: '可运行',
-          running: '运行中',
-          blocked: '受阻',
-          completed: '完成',
-          failed: '失败',
-          aborted: '中止',
-          cancelled: '取消',
-        })[status],
-      wait: waitReasonZh,
-    };
-  }
-  return {
-    title: 'Agent Graph',
-    loading: 'Loading graph state…',
-    retry: 'Retry',
-    collapse: 'Collapse Agent Graph',
-    expand: 'Expand Agent Graph',
-    dismiss: 'Dismiss Agent Graph',
-    stop: 'Stop graph',
-    stopping: 'Stopping…',
-    stopFailed: 'Could not stop the graph. Try again.',
-    loadFailed: 'Could not refresh graph state.',
-    openSession: 'Open child task',
-    operators: 'Operators',
-    selectedResults: 'Selected results',
-    epoch: 'Graph run',
-    currentEpoch: 'Current',
-    historicalEpoch: 'History (read-only)',
-    cappedEpochs: (count) => `Showing the newest ${count} runs`,
-    noOperators: 'Waiting for the main agent to create an operator…',
-    hiddenOperators: (count) => `${count} more operator${count === 1 ? '' : 's'}`,
-    progress: (settled, total, hasOmitted) =>
-      hasOmitted ? `${settled}/${total} visible settled` : `${settled}/${total} settled`,
-    status: (status) =>
-      ({
-        empty: 'Awaiting schedule',
-        active: 'Running',
-        closing: 'Finishing',
-        waiting: 'Waiting',
-        stopped: 'Stopped',
-        failed: 'Failed',
-        completed: 'Completed',
-      })[status],
-    operatorStatus: (status) =>
-      ({
-        not_started: 'Not started',
-        waiting: 'Waiting',
-        runnable: 'Runnable',
-        running: 'Running',
-        blocked: 'Blocked',
-        completed: 'Completed',
-        failed: 'Failed',
-        aborted: 'Aborted',
-        cancelled: 'Cancelled',
-      })[status],
-    wait: waitReasonEn,
-  };
-}
 
 export function AgentGraphPanel(props: {
   rootSessionId: string;
@@ -192,7 +68,7 @@ export function AgentGraphPanel(props: {
     pending: false,
     error: false,
   });
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState<boolean>();
   const [dismissedBySession, setDismissedBySession] = useState<AgentGraphPanelDismissals>({});
   const contentId = useId();
   const refreshRef = useRef<AgentGraphRefreshScheduler>(noopAgentGraphRefreshScheduler);
@@ -204,6 +80,8 @@ export function AgentGraphPanel(props: {
     stopState.rootSessionId === props.rootSessionId && stopState.graphId === selectedGraphId;
   const stopPending = stopFeedbackMatchesSelection && stopState.pending;
   const stopError = stopFeedbackMatchesSelection && stopState.error;
+  // One liveness judgment gates both animated signals.
+  const graphLive = !error && snapshot !== undefined && isAgentGraphLive(snapshot.status);
 
   useEffect(() => {
     setSnapshot(undefined);
@@ -220,7 +98,7 @@ export function AgentGraphPanel(props: {
       pending: false,
       error: false,
     });
-    setCollapsed(false);
+    setCollapsed(undefined);
     setLoading(props.enabled);
     let cachedDirectory: AgentGraphEpochDirectory | undefined;
 
@@ -256,6 +134,7 @@ export function AgentGraphPanel(props: {
           setEpochs(nextEpochs);
           setEpochsTruncated(directory.truncated);
           setSelectedGraphId(graphId);
+          setCollapsed((current) => current ?? next.status === 'completed');
           setSnapshot(next);
           setError(false);
         }
@@ -350,7 +229,7 @@ export function AgentGraphPanel(props: {
     !loading &&
     snapshot !== undefined &&
     snapshot.graphId === selectedGraphId &&
-    ['active', 'waiting', 'closing'].includes(snapshot.status);
+    isAgentGraphLive(snapshot.status);
   const dismissAvailable =
     selectedEpoch?.current === true &&
     !loading &&
@@ -363,6 +242,7 @@ export function AgentGraphPanel(props: {
       className="maka-agent-graph-panel"
       aria-label={copy.title}
       data-collapsed={collapsed ? 'true' : 'false'}
+      data-live={graphLive ? 'true' : 'false'}
     >
       <header className="maka-agent-graph-heading">
         <div className="maka-agent-graph-heading-copy">
@@ -393,6 +273,14 @@ export function AgentGraphPanel(props: {
           ) : null}
           {snapshot ? (
             <span className="maka-agent-graph-progress">
+              {graphLive ? (
+                <Spinner
+                  size="sm"
+                  shade="subtle"
+                  className="maka-agent-graph-heartbeat"
+                  aria-hidden="true"
+                />
+              ) : null}
               {copy.status(snapshot.status)} ·{' '}
               {copy.progress(
                 progress.settled,
@@ -537,32 +425,4 @@ function sameEpochPage(
       previous.current === entry.current
     );
   });
-}
-
-function firstWait(operator: AgentGraphClientOperator) {
-  return operator.readiness.find((readiness) => readiness.status === 'waiting')?.waitingFor[0];
-}
-
-function waitReasonEn(operator: AgentGraphClientOperator): string | undefined {
-  const wait = firstWait(operator);
-  if (!wait) return undefined;
-  if (wait.kind === 'input_route') {
-    return `Waiting for input from ${wait.upstreamOperatorIds.join(', ')}`;
-  }
-  if (wait.kind === 'activation_missing') {
-    return `Waiting for ${wait.operatorId} activation`;
-  }
-  return `Waiting for ${wait.operatorId} to settle`;
-}
-
-function waitReasonZh(operator: AgentGraphClientOperator): string | undefined {
-  const wait = firstWait(operator);
-  if (!wait) return undefined;
-  if (wait.kind === 'input_route') {
-    return `等待 ${wait.upstreamOperatorIds.join('、')} 的输入`;
-  }
-  if (wait.kind === 'activation_missing') {
-    return `等待 ${wait.operatorId} activation`;
-  }
-  return `等待 ${wait.operatorId} 结束`;
 }

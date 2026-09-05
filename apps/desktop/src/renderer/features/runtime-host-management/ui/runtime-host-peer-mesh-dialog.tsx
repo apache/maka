@@ -55,6 +55,7 @@ import {
   RefreshCcw,
   Workflow,
 } from '@maka/ui/icons';
+import { getPeerMeshCopy, type PeerMeshCopy } from '../../../locales/peer-mesh-copy.js';
 import { useRuntimeHostManagementServices } from '../services-context.js';
 import {
   PeerMeshOperationOutcomeUnknownError,
@@ -126,7 +127,7 @@ export function RuntimeHostPeerMeshDialog(props: {
   readonly onClose: () => void;
 }) {
   const locale = useUiLocale();
-  const copy = peerMeshCopy(locale);
+  const copy = getPeerMeshCopy(locale);
   const toast = useToast();
   const services = useRuntimeHostManagementServices().peerMesh;
   const [snapshot, setSnapshot] = useState<PeerMeshQueryResult>();
@@ -855,7 +856,7 @@ export function RuntimeHostPeerMeshDialog(props: {
 function PeerMeshAdvancedSettings(props: {
   readonly localPeerId?: string;
   readonly connectivity?: DesktopConnectivityControls;
-  readonly copy: ReturnType<typeof peerMeshCopy>;
+  readonly copy: PeerMeshCopy;
   readonly onCopyPeerId: (peerId: string) => void;
 }) {
   const { connectivity } = props;
@@ -1007,7 +1008,7 @@ function PeerMeshAdvancedSettings(props: {
 
 function Overview(props: {
   readonly snapshot: PeerMeshQueryResult | undefined;
-  readonly copy: ReturnType<typeof peerMeshCopy>;
+  readonly copy: PeerMeshCopy;
   readonly working: boolean;
   readonly localPeerLabel: string;
   readonly onInvite: (meshId: string) => void;
@@ -1232,7 +1233,7 @@ function Overview(props: {
 function UnavailableEndpoint(props: {
   readonly setup: ManagedHostPeerSetup;
   readonly working: boolean;
-  readonly copy: ReturnType<typeof peerMeshCopy>;
+  readonly copy: PeerMeshCopy;
   readonly onEnable: () => void;
   readonly onInspect?: () => void;
   readonly onRefresh: () => void;
@@ -1315,7 +1316,7 @@ function UnavailableEndpoint(props: {
 function JoinView(props: {
   readonly value: string;
   readonly working: boolean;
-  readonly copy: ReturnType<typeof peerMeshCopy>;
+  readonly copy: PeerMeshCopy;
   readonly onChange: (value: string) => void;
 }) {
   return (
@@ -1347,7 +1348,7 @@ function JoinView(props: {
 
 function InvitationView(props: {
   readonly invitation: Extract<PeerMeshDialogView, { readonly kind: 'invitation' }>;
-  readonly copy: ReturnType<typeof peerMeshCopy>;
+  readonly copy: PeerMeshCopy;
 }) {
   return (
     <div className="settingsPeerMeshFocusedView">
@@ -1398,7 +1399,7 @@ function InvitationView(props: {
 function MeshCard(props: {
   readonly mesh: PeerMeshProjection;
   readonly transit: PeerMeshQueryResult['transit'];
-  readonly copy: ReturnType<typeof peerMeshCopy>;
+  readonly copy: PeerMeshCopy;
   readonly working: boolean;
   readonly onInvite: () => void;
   readonly onRemove: (peerId: string) => void;
@@ -1698,7 +1699,7 @@ function TransitMetric(props: { readonly label: string; readonly value: string }
 
 function PeerIdText(props: {
   readonly peerId: string;
-  readonly copy: ReturnType<typeof peerMeshCopy>;
+  readonly copy: PeerMeshCopy;
   readonly onCopy: (peerId: string) => void;
 }) {
   return (
@@ -1717,7 +1718,7 @@ function PeerIdText(props: {
 
 function MeshIdText(props: {
   readonly meshId: string;
-  readonly copy: ReturnType<typeof peerMeshCopy>;
+  readonly copy: PeerMeshCopy;
   readonly onCopy: (meshId: string) => void;
 }) {
   return (
@@ -1801,338 +1802,4 @@ function fingerprint(meshId: string): string {
 
 function abbreviate(peerId: string): string {
   return peerId.length <= 22 ? peerId : `${peerId.slice(0, 11)}…${peerId.slice(-7)}`;
-}
-
-function peerMeshCopy(locale: string) {
-  const zh = locale.startsWith('zh');
-  return zh
-    ? {
-        title: 'Peer Mesh',
-        experimental: '实验性',
-        failed: 'Peer Mesh 操作失败',
-        invalidResult: 'Peer Mesh 返回了无效结果',
-        unknownError: 'Peer Mesh 操作失败',
-        outcomeUnknown: 'Host 可能已完成此操作。已刷新当前状态，请确认后再重试。',
-        invitationOutcomeUnknown:
-          'Host 可能已创建邀请码，但代码未能返回且无法恢复。它会自动过期；创建新邀请前请先检查待使用邀请数量。',
-        outcomeUnknownRefreshFailed:
-          'Host 可能已完成此操作，但当前状态也未能刷新。请恢复连接并刷新后再重试。',
-        unavailable: '当前 endpoint 不支持 Peer Mesh',
-        loading: '正在读取 Mesh 状态…',
-        checkingPeerConnection: '正在检查此 Runtime Host 的 Peer 连接…',
-        peerConnectionDisabled: '此 Runtime Host 尚未开启 Peer 连接',
-        peerConnectionDisabledHint:
-          '开启后，此 Host 才能创建或加入 Mesh；现有 SSH 连接会继续保留。',
-        peerConnectionDisableProfileFirst:
-          '此 Host 的 Direct peer 连接正在使用中，请先在 Host 列表中将它停用。',
-        enablePeerConnection: '开启 Peer 连接',
-        peerConnectionStarting: 'Peer 连接已开启，Mesh endpoint 正在就绪',
-        peerConnectionStartingHint: '通常只需几秒；也可以立即重新检查。',
-        peerConnectionUpgradeRequired: '此 Runtime Host 版本尚不支持 Peer Mesh 管理',
-        peerConnectionUpgradeRequiredHint: '请先更新此 Host，再回来开启 Peer 连接。',
-        working: {
-          refresh: '正在刷新 Peer Mesh…',
-          create: '正在创建 Mesh…',
-          join: '正在加入 Mesh…',
-          invite: '正在准备邀请…',
-          'add-host': '正在将 Runtime Host 加入 Mesh…',
-          'enable-peer': '正在为 Runtime Host 开启 Peer 连接…',
-          update: '正在更新 Mesh…',
-          rename: '正在保存名称…',
-        },
-        settling: '正在确认最终状态…',
-        endpoint: '管理对象',
-        desktopEndpoint: 'Desktop Client',
-        hostEndpoint: '本机 Runtime Host',
-        desktopEndpointHelp: '此 Client 用于连接 Mesh 中的 Runtime Host。',
-        hostEndpointHelp: '此 Host 加入后，其他成员才能连接本机分享的任务。',
-        advancedSettings: '高级设置',
-        technicalDetails: '身份与连接配置',
-        connectivityAutomatic: '自动连接（推荐）',
-        connectivityKnownRoutesOnly: '仅使用已知路径',
-        connectivityCustom: '自定义地址发现',
-        restartRequired: '需要重启',
-        adaptiveConnectivity: '自适应连接',
-        adaptiveConnectivityHelp:
-          'Maka 会自动竞速可用的直连方式，并在获准时使用成员转发；这里不需要选择具体协议。',
-        connectivityPolicyLoading: '正在读取连接策略…',
-        connectivityPolicyLoadFailed: '无法读取连接策略',
-        connectivityPolicySaveFailed: '无法保存连接策略',
-        restoreDefaultConnectivityPolicy: '恢复默认设置',
-        connectivityPolicyRestartRequired:
-          '重启 Maka 后，已保存的连接策略变更会应用到新连接。',
-        publicAddressDiscovery: '公网地址发现',
-        publicStunDefault: '公共 STUN（推荐）',
-        publicStunDisabled: '不使用公共 STUN',
-        publicStunCustom: '自定义 STUN',
-        customStunUrls: 'STUN 地址',
-        customStunUrlsInvalid:
-          '请输入以逗号分隔的 stun:主机[:端口] 地址，最多 8 个。',
-        publicStunDefaultHelp:
-          '使用 Cloudflare 公共 STUN 尽力发现公网映射。它不承载 Maka 流量，但提供方可观察源 IP 和请求时间；Maka 不保证其可用性。',
-        publicStunDisabledHelp:
-          '仅尝试本地地址和其他已知直连路径；跨 NAT 的直连成功率可能降低。',
-        publicStunCustomHelp:
-          '使用逗号分隔的 stun: 地址。STUN 只发现网络地址，不承载 Session 内容。',
-        saveConnectivityPolicy: '保存更改',
-        peerId: 'Peer ID',
-        peerIdHelp: '此 endpoint 在 Mesh 中的技术身份；点击 ID 可复制完整值。',
-        meshId: 'Mesh ID',
-        meshIdHelp: '用于诊断和识别此 Mesh；点击 ID 可复制完整值。',
-        thisRuntimeHost: '本机 Runtime Host',
-        thisDesktop: '本机 Desktop',
-        displayName: '在 Mesh 中显示的名称',
-        meshDisplayName: 'Mesh 名称',
-        unnamedMesh: '未命名 Mesh',
-        rename: '修改名称',
-        renameMesh: '修改 Mesh 名称',
-        save: '保存',
-        peerIdCopied: 'Peer ID 已复制',
-        meshIdCopied: 'Mesh ID 已复制',
-        copyPeerId: (value: string) => `复制完整 Peer ID：${value}`,
-        copyMeshId: (value: string) => `复制完整 Mesh ID：${value}`,
-        empty: '建立你的第一个 Mesh',
-        emptyHint: '创建新 Mesh，或通过一次性邀请码加入。',
-        meshes: 'Mesh',
-        mesh: 'Mesh',
-        members: '成员',
-        activeMeshCount: (value: number) => `${value} 个使用中`,
-        showClosedMeshes: (value: number) => `显示已关闭（${value}）`,
-        noActiveMeshes: '没有使用中的 Mesh',
-        noActiveMeshesHint: '已关闭的 Mesh 默认隐藏；可通过上方筛选查看。',
-        authority: '管理者',
-        member: '成员',
-        closed: '已关闭',
-        memberCount: (value: number) => `${value} 个成员`,
-        pending: (value: number) => `${value} 个待使用邀请`,
-        transit: '成员转发',
-        transitHelp: '允许此 Mesh 的成员通过本机建立连接；会使用本机带宽。',
-        transitToggle: '为此 Mesh 提供转发',
-        transitStatus: '成员转发状态',
-        transitLimitsLabel: '成员转发限制',
-        transitLimits: (value: PeerMeshQueryResult['transit']) =>
-          value
-            ? `固定上限：每个成员 ${value.maxCircuitsPerPeer} 条连接，每条最长 ${formatHours(value.maxCircuitDurationSeconds)}，最多 ${formatMebibytes(value.maxCircuitBytes)}。一次只能为一个 Mesh 开启。`
-            : '成员转发使用固定资源上限，一次只能为一个 Mesh 开启。',
-        allowedMembers: '允许成员',
-        reservations: 'Reservation',
-        circuits: '连接',
-        routeState: {
-          local: '本机',
-          connecting: '正在连接',
-          reachable: '可达',
-          reconnecting: '正在恢复连接',
-          needs_repair: '需要新邀请码修复',
-        },
-        endpointKind: {
-          client: 'Client',
-          host: 'Runtime Host',
-          unknown: '未标识 Peer',
-        },
-        endpointKindHelp: {
-          client: 'Client 是操作界面：它连接 Host、浏览任务并发起操作，本身不持有任务。',
-          host: 'Runtime Host 持有任务和运行状态，并执行经过授权的工作。',
-          unknown: '此 Peer 尚未报告它是 Client 还是 Runtime Host，通常来自旧版本。',
-        },
-        joinTitle: '加入 Mesh',
-        joinHint: '粘贴另一个 Peer 生成的一次性邀请码。',
-        joinCode: '邀请码',
-        join: '加入',
-        joinMesh: '加入 Mesh',
-        invite: '邀请成员',
-        invitationTitle: '邀请成员',
-        invitationFor: (value: string) => `Mesh ${value}`,
-        invitationWarning: '该代码只能使用一次；获得代码的人可以让一个 peer 加入此 Mesh。',
-        invitationDirectOnly:
-          '尚未连接到协调节点。此邀请码只包含直接地址，跨 NAT 时可能无法连接。',
-        invitationExpires: (value: string) => `有效期至 ${value}`,
-        invitationCopied: '邀请码已复制',
-        copyInvitation: '复制邀请码',
-        create: '创建 Mesh',
-        refresh: '刷新',
-        back: '返回',
-        leave: '退出 Mesh',
-        closeMesh: '关闭 Mesh',
-        remove: '移除成员',
-        cancel: '取消',
-        closeConfirm: '关闭这个 Mesh？',
-        leaveConfirm: '退出这个 Mesh？',
-        removeConfirm: '移除这个成员？',
-        meshActions: 'Mesh 操作',
-        memberActions: (peerId: string) => `${peerId} 的操作`,
-        addLocalHost: '添加本机 Runtime Host',
-        localRuntimeHost: 'Runtime Host',
-        localHostMissing: '本机 Runtime Host 尚未加入',
-        localHostMissingHint: '加入后，其他成员才能通过此 Mesh 连接本机分享的任务。',
-      }
-    : {
-        title: 'Peer Mesh',
-        experimental: 'Experimental',
-        failed: 'Peer Mesh operation failed',
-        invalidResult: 'Peer Mesh returned an invalid result',
-        unknownError: 'Peer Mesh operation failed',
-        outcomeUnknown:
-          'The Host may have completed this operation. Its current state was refreshed; review it before trying again.',
-        invitationOutcomeUnknown:
-          'The Host may have created an invitation, but its one-time code was not returned and cannot be recovered. It will expire automatically; review the pending invitation count before creating another.',
-        outcomeUnknownRefreshFailed:
-          'The Host may have completed this operation, but its current state could not be refreshed. Reconnect and refresh before trying again.',
-        unavailable: 'Peer Mesh is unavailable for this endpoint',
-        loading: 'Loading Mesh status…',
-        checkingPeerConnection: "Checking this Runtime Host's peer connection…",
-        peerConnectionDisabled: 'Peer connectivity is not enabled for this Runtime Host',
-        peerConnectionDisabledHint:
-          'Enable it so this Host can create or join Meshes. The existing SSH connection remains available.',
-        peerConnectionDisableProfileFirst:
-          "This Host's Direct peer connection is in use. Disable it in the Host list before changing the listener.",
-        enablePeerConnection: 'Enable peer connectivity',
-        peerConnectionStarting: 'Peer connectivity is enabled; the Mesh endpoint is starting',
-        peerConnectionStartingHint: 'This normally takes a few seconds. You can also check again.',
-        peerConnectionUpgradeRequired: 'This Runtime Host version cannot manage Peer Mesh',
-        peerConnectionUpgradeRequiredHint: 'Update this Host before enabling peer connectivity.',
-        working: {
-          refresh: 'Refreshing Peer Mesh…',
-          create: 'Creating Mesh…',
-          join: 'Joining Mesh…',
-          invite: 'Preparing invitation…',
-          'add-host': 'Adding the Runtime Host to the Mesh…',
-          'enable-peer': 'Enabling peer connectivity for the Runtime Host…',
-          update: 'Updating Mesh…',
-          rename: 'Saving name…',
-        },
-        settling: 'Confirming the final state…',
-        endpoint: 'Manage endpoint',
-        desktopEndpoint: 'Desktop Client',
-        hostEndpoint: 'Local Runtime Host',
-        desktopEndpointHelp: 'This Client connects to Runtime Hosts in the Mesh.',
-        hostEndpointHelp: 'Add this Host so other members can reach tasks shared from this device.',
-        advancedSettings: 'Advanced settings',
-        technicalDetails: 'Identity and connectivity details',
-        connectivityAutomatic: 'Automatic connectivity (recommended)',
-        connectivityKnownRoutesOnly: 'Known routes only',
-        connectivityCustom: 'Custom address discovery',
-        restartRequired: 'Restart required',
-        adaptiveConnectivity: 'Adaptive connectivity',
-        adaptiveConnectivityHelp:
-          'Maka races available direct paths automatically and uses approved member transit when needed. You do not choose a transport protocol here.',
-        connectivityPolicyLoading: 'Loading connectivity policy…',
-        connectivityPolicyLoadFailed: 'Could not load connectivity policy',
-        connectivityPolicySaveFailed: 'Could not save connectivity policy',
-        restoreDefaultConnectivityPolicy: 'Restore defaults',
-        connectivityPolicyRestartRequired:
-          'Restart Maka to apply saved connectivity-policy changes to new connections.',
-        publicAddressDiscovery: 'Public address discovery',
-        publicStunDefault: 'Public STUN (recommended)',
-        publicStunDisabled: 'No public STUN',
-        publicStunCustom: 'Custom STUN',
-        customStunUrls: 'STUN addresses',
-        customStunUrlsInvalid:
-          'Enter up to 8 comma-separated stun:host[:port] addresses.',
-        publicStunDefaultHelp:
-          'Uses Cloudflare public STUN on a best-effort basis to discover public mappings. It never carries Maka traffic, but the provider can observe source IPs and request timing; Maka provides no availability guarantee.',
-        publicStunDisabledHelp:
-          'Only local addresses and other known direct paths are attempted; direct connectivity across NAT may be reduced.',
-        publicStunCustomHelp:
-          'Enter comma-separated stun: addresses. STUN discovers network addresses and never carries Session content.',
-        saveConnectivityPolicy: 'Save changes',
-        peerId: 'Peer ID',
-        peerIdHelp: 'Technical identity for this endpoint. Select the ID to copy its full value.',
-        meshId: 'Mesh ID',
-        meshIdHelp: 'Used to identify and diagnose this Mesh. Select the ID to copy its full value.',
-        thisRuntimeHost: 'This Runtime Host',
-        thisDesktop: 'This Desktop',
-        displayName: 'Name shown in the Mesh',
-        meshDisplayName: 'Mesh name',
-        unnamedMesh: 'Unnamed Mesh',
-        rename: 'Rename',
-        renameMesh: 'Rename Mesh',
-        save: 'Save',
-        peerIdCopied: 'Peer ID copied',
-        meshIdCopied: 'Mesh ID copied',
-        copyPeerId: (value: string) => `Copy full Peer ID: ${value}`,
-        copyMeshId: (value: string) => `Copy full Mesh ID: ${value}`,
-        empty: 'Build your first Mesh',
-        emptyHint: 'Create a new Mesh or join one with a one-time invitation.',
-        meshes: 'Meshes',
-        mesh: 'Mesh',
-        members: 'Members',
-        activeMeshCount: (value: number) => `${value} active`,
-        showClosedMeshes: (value: number) => `Show closed (${value})`,
-        noActiveMeshes: 'No active Meshes',
-        noActiveMeshesHint: 'Closed Meshes are hidden by default. Use the filter above to show them.',
-        authority: 'Owner',
-        member: 'Member',
-        closed: 'Closed',
-        memberCount: (value: number) => value === 1 ? '1 member' : `${value} members`,
-        pending: (value: number) => `${value} pending invites`,
-        transit: 'Member transit',
-        transitHelp: 'Let members of this Mesh connect through this device using its bandwidth.',
-        transitToggle: 'Provide transit for this Mesh',
-        transitStatus: 'Member transit status',
-        transitLimitsLabel: 'Member transit limits',
-        transitLimits: (value: PeerMeshQueryResult['transit']) =>
-          value
-            ? `Fixed limits: ${value.maxCircuitsPerPeer} circuits per member, ${formatHours(value.maxCircuitDurationSeconds)} per circuit, and ${formatMebibytes(value.maxCircuitBytes)}. Only one Mesh can be served at a time.`
-            : 'Member transit uses fixed resource limits. Only one Mesh can be served at a time.',
-        allowedMembers: 'Allowed members',
-        reservations: 'Reservations',
-        circuits: 'Circuits',
-        routeState: {
-          local: 'Local',
-          connecting: 'Connecting',
-          reachable: 'Reachable',
-          reconnecting: 'Reconnecting',
-          needs_repair: 'Needs a new invitation',
-        },
-        endpointKind: {
-          client: 'Client',
-          host: 'Runtime Host',
-          unknown: 'Unidentified peer',
-        },
-        endpointKindHelp: {
-          client: 'A Client is the interface that connects to Hosts, browses tasks, and starts actions. It does not own tasks.',
-          host: 'A Runtime Host owns tasks and runtime state, and executes authorized work.',
-          unknown: 'This peer has not reported whether it is a Client or Runtime Host, usually because it uses an older build.',
-        },
-        joinTitle: 'Join a Mesh',
-        joinHint: 'Paste a one-time invitation created by another peer.',
-        joinCode: 'Invitation',
-        join: 'Join',
-        joinMesh: 'Join Mesh',
-        invite: 'Invite member',
-        invitationTitle: 'Invite a member',
-        invitationFor: (value: string) => `Mesh ${value}`,
-        invitationWarning:
-          'This code works once. Anyone holding it can admit one peer to this Mesh.',
-        invitationDirectOnly:
-          'No coordination peer is available yet. This invitation contains direct routes only and may not work across NATs.',
-        invitationExpires: (value: string) => `Expires ${value}`,
-        invitationCopied: 'Invitation copied',
-        copyInvitation: 'Copy invitation',
-        create: 'Create Mesh',
-        refresh: 'Refresh',
-        back: 'Back',
-        leave: 'Leave Mesh',
-        closeMesh: 'Close Mesh',
-        remove: 'Remove member',
-        cancel: 'Cancel',
-        closeConfirm: 'Close this Mesh?',
-        leaveConfirm: 'Leave this Mesh?',
-        removeConfirm: 'Remove this member?',
-        meshActions: 'Mesh actions',
-        memberActions: (peerId: string) => `Actions for ${peerId}`,
-        addLocalHost: 'Add local Runtime Host',
-        localRuntimeHost: 'Runtime Host',
-        localHostMissing: 'Local Runtime Host has not joined',
-        localHostMissingHint:
-          'Add it so other members can reach tasks shared from this device through the Mesh.',
-      };
-}
-
-function formatHours(seconds: number): string {
-  return `${seconds / 3_600}h`;
-}
-
-function formatMebibytes(bytes: number): string {
-  return `${bytes / (1024 * 1024)} MiB`;
 }

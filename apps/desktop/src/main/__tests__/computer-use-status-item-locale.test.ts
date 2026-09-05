@@ -50,7 +50,7 @@ test('rebuilds an active Computer Use menu when its resolved locale changes', ()
   assert.deepEqual(menus.at(-1)?.map((row) => row.label), ['Stop Using Safari']);
 
   locale.observe(mergeSettings(createDefaultSettings(), {
-    personalization: { uiLocale: 'zh' },
+    personalization: { uiLocale: 'zh-CN' },
   }));
   assert.deepEqual(menus.at(-1)?.map((row) => row.label), ['停止操作 Safari']);
 

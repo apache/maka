@@ -17,7 +17,13 @@
  * under the License.
  */
 
+import type { SearchErrorReason } from '@maka/core/search';
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+
+export type ThreadSearchErrorReason = Extract<
+  SearchErrorReason,
+  'incognito_active' | 'invalid_query' | 'aborted' | 'disabled' | 'provider_error'
+>;
 
 type ShellControlsCopy = {
   shared: {
@@ -37,24 +43,17 @@ type ShellControlsCopy = {
     title: string;
     conversationsLabel: string;
     placeholder: string;
-    clearLabel: string;
-    statusRegionLabel: string;
     unavailable: string;
-    privacyTitle: string;
-    privacyDetail: string;
-    errorTitle: string;
+    errorByReason: Record<ThreadSearchErrorReason, string>;
     errorFallback: string;
     introduction: string;
-    searching: string;
     empty: string;
-    results(count: number): string;
-    truncatedResults(count: number): string;
     resultsLabel: string;
   };
 };
 
 const SHELL_CONTROLS_COPY_BY_LOCALE = {
-  zh: {
+  'zh-CN': {
     shared: { close: '关闭' },
     navigation: {
       mainLabel: '主导航',
@@ -70,19 +69,48 @@ const SHELL_CONTROLS_COPY_BY_LOCALE = {
       title: '搜索',
       conversationsLabel: '搜索任务',
       placeholder: '搜索任务标题和内容…',
-      clearLabel: '清空搜索',
-      statusRegionLabel: '搜索状态和结果',
       unavailable: '当前环境无法连接搜索后端，请稍后重试。',
-      privacyTitle: '隐私模式已关闭搜索。',
-      privacyDetail: '关闭隐私模式后可以继续按关键词查找历史任务。',
-      errorTitle: '搜索暂时无法完成。',
+      errorByReason: {
+        incognito_active: '关闭隐私模式后可以继续按关键词查找历史任务。',
+        invalid_query: '搜索词无效，请缩短内容或移除凭据后重试。',
+        aborted: '搜索已取消。',
+        disabled: '搜索当前不可用。',
+        provider_error: '搜索服务出错，请重试。',
+      },
       errorFallback: '搜索服务需要刷新，请重试。',
       introduction: '开始输入以按关键词查找历史任务。结果只包含任务标题和内容文本，不进入网络。',
-      searching: '正在搜索…',
       empty: '没有匹配的任务标题或内容。换个关键词试试。',
-      results: (count: number) => `找到 ${count} 条匹配`,
-      truncatedResults: (count: number) => `结果较多，已显示前 ${count} 条`,
       resultsLabel: '搜索结果',
+    },
+  },
+  'zh-TW': {
+    shared: { close: '關閉' },
+    navigation: {
+      mainLabel: '主導航',
+      newTask: '新任務',
+      automations: '定時任務',
+      extensions: '擴充套件',
+      settings: '設定',
+      updateDownloaded: (version: string) => `新版本 ${version} 已下載，重啟後安裝`,
+      updateFailed: (version: string) => `新版本 ${version} 更新失敗，點選重試或手動下載`,
+      pendingTasks: (count: number) => `定時任務，${count} 條進行中`,
+    },
+    search: {
+      title: '搜尋',
+      conversationsLabel: '搜尋任務',
+      placeholder: '搜尋任務標題和內容…',
+      unavailable: '目前環境無法連線搜尋後端，請稍後重試。',
+      errorByReason: {
+        incognito_active: '關閉隱私模式後可以繼續按關鍵詞查詢歷史任務。',
+        invalid_query: '搜尋詞無效，請縮短內容或移除憑證後重試。',
+        aborted: '搜尋已取消。',
+        disabled: '搜尋目前無法使用。',
+        provider_error: '搜尋服務發生錯誤，請重試。',
+      },
+      errorFallback: '搜尋服務需要重新整理，請重試。',
+      introduction: '開始輸入以按關鍵詞查詢歷史任務。結果只包含任務標題和內容文本，不進入網路。',
+      empty: '沒有符合的任務標題或內容。換個關鍵詞試試。',
+      resultsLabel: '搜尋結果',
     },
   },
   en: {
@@ -101,19 +129,18 @@ const SHELL_CONTROLS_COPY_BY_LOCALE = {
       title: 'Search',
       conversationsLabel: 'Search tasks',
       placeholder: 'Search task titles and content…',
-      clearLabel: 'Clear search',
-      statusRegionLabel: 'Search status and results',
       unavailable: 'Search is unavailable in the current environment. Try again later.',
-      privacyTitle: 'Search is disabled in privacy mode.',
-      privacyDetail: 'Turn off privacy mode to search previous tasks by keyword.',
-      errorTitle: 'Search could not be completed.',
+      errorByReason: {
+        incognito_active: 'Turn off privacy mode to search previous tasks by keyword.',
+        invalid_query: 'Invalid search query. Shorten it or remove credential material and try again.',
+        aborted: 'Search was canceled.',
+        disabled: 'Search is unavailable right now.',
+        provider_error: 'Search failed. Try again.',
+      },
       errorFallback: 'Search needs to be refreshed. Try again.',
       introduction:
         'Start typing to search previous tasks by keyword. Results include local task titles and content only and are not sent over the network.',
-      searching: 'Searching…',
       empty: 'No matching task titles or content. Try another keyword.',
-      results: (count: number) => `${count} ${count === 1 ? 'match' : 'matches'}`,
-      truncatedResults: (count: number) => `Many results; showing the first ${count}`,
       resultsLabel: 'Search results',
     },
   },

@@ -39,7 +39,7 @@ import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 function renderWithLocale(child: ReactNode): string {
   return renderToStaticMarkup(
     createElement(LocaleProvider, {
-      locale: 'zh',
+      locale: 'zh-CN',
       children: createElement(ChatSurfaceLayout, { composer: null, children: child }),
     }),
   );
@@ -303,7 +303,7 @@ describe('single live-turn handoff', () => {
       liveTurnBySessionRef.current = liveTurns.get();
     };
     const handlers = createAppShellSessionEventHandlers({
-      uiLocale: 'zh',
+      uiLocale: 'zh-CN',
       activeIdRef: { current: 'session-1' },
       liveTurnBySessionRef,
       refreshMessages: async (sessionId, options) => {
@@ -356,7 +356,7 @@ describe('single live-turn handoff', () => {
     const frames: Array<() => void> = [];
     let publications = 0;
     const handlers = createAppShellSessionEventHandlers({
-      uiLocale: 'zh',
+      uiLocale: 'zh-CN',
       activeIdRef: { current: 'session-1' },
       liveTurnBySessionRef,
       refreshMessages: async () => true,
@@ -410,7 +410,7 @@ describe('single live-turn handoff', () => {
     const displayBatch = createAppShellSessionDisplayBatch();
     let publications = 0;
     const handlers = createAppShellSessionEventHandlers({
-      uiLocale: 'zh',
+      uiLocale: 'zh-CN',
       activeIdRef: { current: 'session-1' },
       liveTurnBySessionRef,
       refreshMessages: async () => true,
@@ -477,7 +477,7 @@ describe('single live-turn handoff', () => {
     const interactions = createStateSetter<InteractionQueues>({});
     const frames: Array<() => void> = [];
     const handlers = createAppShellSessionEventHandlers({
-      uiLocale: 'zh',
+      uiLocale: 'zh-CN',
       activeIdRef: { current: 'session-1' },
       liveTurnBySessionRef,
       refreshMessages: async () => true,
@@ -515,7 +515,7 @@ describe('single live-turn handoff', () => {
     const frames: Array<() => void> = [];
     let publications = 0;
     const handlers = createAppShellSessionEventHandlers({
-      uiLocale: 'zh',
+      uiLocale: 'zh-CN',
       activeIdRef: { current: 'session-1' },
       liveTurnBySessionRef,
       refreshMessages: async () => true,
@@ -578,7 +578,7 @@ describe('single live-turn handoff', () => {
     const displayBatch = createAppShellSessionDisplayBatch();
     let publications = 0;
     const deps = {
-      uiLocale: 'zh' as const,
+      uiLocale: 'zh-CN' as const,
       activeIdRef: { current: 'session-1' },
       liveTurnBySessionRef,
       refreshMessages: async () => true,
@@ -625,7 +625,7 @@ describe('single live-turn handoff', () => {
       ref.current = liveTurns.get();
     };
     const handlers = createAppShellSessionEventHandlers({
-      uiLocale: 'zh',
+      uiLocale: 'zh-CN',
       activeIdRef: { current: 'session-1' },
       liveTurnBySessionRef: ref,
       refreshMessages: async () => true,
@@ -655,6 +655,48 @@ describe('single live-turn handoff', () => {
     assert.equal(interactions.get()['session-1']?.[0]?.requestId, 'request-1');
   });
 
+  it('queues and retires a form at the Host answer acknowledgement', () => {
+    const liveTurns = createStateSetter<Record<string, LiveTurnProjection>>({
+      'session-1': armLiveTurn('turn-1'),
+    });
+    const ref = { current: liveTurns.get() };
+    const interactions = createStateSetter<InteractionQueues>({});
+    const handlers = createAppShellSessionEventHandlers({
+      uiLocale: 'en',
+      activeIdRef: { current: 'session-1' },
+      liveTurnBySessionRef: ref,
+      refreshMessages: async () => true,
+      refreshSessions: async () => [],
+      setLiveTurnBySession: liveTurns.set,
+      setInteractionBySession: interactions.set,
+      showModelSetupToast: () => {},
+      toastApi: { error: () => {} },
+    });
+    handlers.handleEvent('session-1', {
+      type: 'form_request',
+      id: 'form-event',
+      turnId: 'turn-1',
+      ts: 1,
+      requestId: 'form-1',
+      toolUseId: 'tool-1',
+      message: 'Configure deployment',
+      requester: { name: 'deploy' },
+      fields: [{ kind: 'boolean', name: 'confirm', label: 'Confirm', required: true }],
+    });
+    assert.equal(interactions.get()['session-1']?.[0]?.requestId, 'form-1');
+
+    handlers.handleEvent('session-1', {
+      type: 'form_answer_ack',
+      id: 'form-ack',
+      turnId: 'turn-1',
+      ts: 2,
+      requestId: 'form-1',
+      toolUseId: 'tool-1',
+    });
+    assert.deepEqual(interactions.get()['session-1'], []);
+    assert.equal(liveTurns.get()['session-1']?.terminal, undefined);
+  });
+
   it('hands an aborted projection over only after persisted messages cover it', async () => {
     const liveTurns = createStateSetter<Record<string, LiveTurnProjection>>({
       'session-1': {
@@ -682,7 +724,7 @@ describe('single live-turn handoff', () => {
       resolveRefresh = resolve;
     });
     const handlers = createAppShellSessionEventHandlers({
-      uiLocale: 'zh',
+      uiLocale: 'zh-CN',
       activeIdRef: { current: 'session-1' },
       liveTurnBySessionRef: ref,
       refreshMessages: async () => refresh,
@@ -731,7 +773,7 @@ describe('single live-turn handoff', () => {
       | { sessionId: string; turnId: string; eventId: string }
       | undefined;
     const handlers = createAppShellSessionEventHandlers({
-      uiLocale: 'zh',
+      uiLocale: 'zh-CN',
       activeIdRef: { current: 'session-1' },
       liveTurnBySessionRef: ref,
       refreshMessages: async () => false,
@@ -804,7 +846,7 @@ describe('single live-turn handoff', () => {
     const ref = { current: liveTurns.get() };
     const interactions = createStateSetter<InteractionQueues>({});
     const handlers = createAppShellSessionEventHandlers({
-      uiLocale: 'zh',
+      uiLocale: 'zh-CN',
       activeIdRef: { current: 'session-1' },
       liveTurnBySessionRef: ref,
       refreshMessages: async () => true,
@@ -844,7 +886,7 @@ describe('single live-turn handoff', () => {
       resolveRefresh = resolve;
     });
     const handlers = createAppShellSessionEventHandlers({
-      uiLocale: 'zh',
+      uiLocale: 'zh-CN',
       activeIdRef: { current: 'session-1' },
       liveTurnBySessionRef: ref,
       refreshMessages: async () => refresh,

@@ -24,9 +24,9 @@ import {
 } from '@astryxdesign/core/i18n';
 import type { Overrides } from '@astryxdesign/core/i18n';
 import { getSharedUiCopy } from './shared-ui-copy.js';
-import { ASTRYX_COPY_ZH } from './astryx-copy.js';
+import { ASTRYX_COPY_ZH, ASTRYX_COPY_ZH_TW } from './astryx-copy.js';
 import { useUiLocale } from './locale-context.js';
-import type { UiLocale } from './locale-helpers.js';
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 /**
  * Astryx ships no `zh` message catalog: its built-in strings ("Copy code",
@@ -65,7 +65,7 @@ export function AstryxLocaleProvider({
   // on the overrides object, so a fresh map every render would re-render
   // every Astryx i18n consumer on every AppShell render.
   const overrides = useMemo(() => {
-    const base = astryxMessageOverrides(locale)?.[locale];
+    const base = astryxMessageOverrides(locale)[locale];
     const inherited = ambient.locale === locale
       ? ambient.overrides?.[locale]
       : undefined;
@@ -89,25 +89,27 @@ export function AstryxLocaleProvider({
   );
 }
 
-export function astryxMessageOverrides(locale: UiLocale): Overrides | undefined {
-  if (locale === 'en') {
-    // en otherwise resolves to Astryx's shipped defaults. These two are the
-    // sole exceptions: the drawer toggle's aria-label doubles as its visible
-    // hover tooltip (composer.css renders attr(aria-label)), and the shipped
-    // "Collapse {label}" / "Expand {label}" read as state names there — the
-    // click affordance is the tooltip's whole point.
-    return {
-      en: {
-        '@astryx.chatComposerDrawer.collapse': 'Click to collapse {label}',
-        '@astryx.chatComposerDrawer.expand': 'Click to expand {label}',
-      },
-    };
-  }
+const OVERRIDES_BY_LOCALE = {
+  // The drawer aria-label also serves as a tooltip; all other English copy uses Astryx defaults.
+  en: {
+    en: {
+      '@astryx.chatComposerDrawer.collapse': 'Click to collapse {label}',
+      '@astryx.chatComposerDrawer.expand': 'Click to expand {label}',
+    },
+  },
+  'zh-CN': chineseOverrides('zh-CN', ASTRYX_COPY_ZH),
+  'zh-TW': chineseOverrides('zh-TW', ASTRYX_COPY_ZH_TW),
+} satisfies UiCatalog<Overrides>;
+
+export function astryxMessageOverrides(locale: UiLocale): Overrides {
+  return OVERRIDES_BY_LOCALE[locale];
+}
+
+// The catalogues live off-barrel in astryx-copy.ts because nothing outside
+// this map consumes them.
+function chineseOverrides(locale: 'zh-CN' | 'zh-TW', astryx: typeof ASTRYX_COPY_ZH): Overrides {
   const shared = getSharedUiCopy(locale);
   const form = shared.formControls;
-  // `locale` is narrowed to 'zh' past the early return; the catalogue lives
-  // off-barrel in astryx-copy.ts because nothing outside this map consumes it.
-  const astryx = ASTRYX_COPY_ZH;
   return {
     [locale]: {
       '@astryx.codeBlock.copyCode': shared.markdown.copyCode,

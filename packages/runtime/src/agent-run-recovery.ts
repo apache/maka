@@ -21,7 +21,9 @@ import {
   SANDBOX_BOUNDARY_RESTART_CLOSURE_CLASS,
   isSandboxBoundaryRestartClosure,
 } from '@maka/core/sandbox-boundary';
-import type { AgentRunEvent, AgentRunHeader } from '@maka/core/agent-run';
+import type { AgentRunEvent } from '@maka/core/agent-run';
+import type { RuntimeInvocationLineage } from '@maka/core/runtime-event';
+import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type { SandboxBoundaryRequest } from '@maka/core/sandbox-boundary';
 
 export interface AgentRunRecoveryDecision {
@@ -34,78 +36,49 @@ export interface AgentRunRecoveryDecision {
   lineage: AgentRunRecoveryLineage;
 }
 
-type AgentRunRecoveryLineage = Partial<
-  Pick<
-    AgentRunHeader,
-    | 'parentRunId'
-    | 'parentTurnId'
-    | 'retriedFromTurnId'
-    | 'regeneratedFromTurnId'
-    | 'branchOfTurnId'
-    | 'parentSessionId'
-  >
+type AgentRunRecoveryLineage = Pick<
+  RuntimeInvocationLineage,
+  | 'parentRunId'
+  | 'parentTurnId'
+  | 'retriedFromTurnId'
+  | 'regeneratedFromTurnId'
+  | 'branchOfTurnId'
+  | 'parentSessionId'
 >;
 
+/**
+ * Why a run the events never closed has to be failed closed.
+ *
+ * The caller has already established that there is no terminal event, so the
+ * outcome is settled before this runs. All that is left is to say what the run
+ * was doing when the host went away, and only its own ledger can say that.
+ */
 export function classifyAgentRunRecovery(
-  header: AgentRunHeader,
+  invocation: RuntimeInvocationRecord,
   events: readonly AgentRunEvent[],
-): AgentRunRecoveryDecision | undefined {
-  if (isTerminalRunStatus(header.status)) return undefined;
-
+): AgentRunRecoveryDecision {
   const lastEvent = lastNonCorruptEvent(events);
   const hasCorruptEvent = events.some((event) => event.type === 'event_corrupt');
   const lastEventType = lastEvent?.type;
 
-  if (lastEventType === 'model_stream_completed' && !hasTerminalRunEvent(events)) {
-    return failedDecision(
-      header,
-      'app_restarted',
-      diagnostic('model_stream_completed_without_runtime_terminal', lastEventType, hasCorruptEvent),
-    );
-  }
-
-  if (
-    header.status === 'waiting_for_user' ||
-    lastEventType === 'permission_requested' ||
-    lastEventType === 'permission_failed'
-  ) {
-    return failedDecision(
-      header,
-      'app_restarted',
-      diagnostic('stale_user_wait', lastEventType, hasCorruptEvent),
-    );
-  }
-
-  if (lastEventType === 'tool_started') {
-    return failedDecision(
-      header,
-      'app_restarted',
-      diagnostic('tool_interrupted', lastEventType, hasCorruptEvent),
-    );
-  }
-
-  if (
-    header.status === 'created' ||
-    header.status === 'running' ||
-    lastEventType === undefined ||
-    lastEventType === 'run_created' ||
-    lastEventType === 'run_started' ||
-    lastEventType === 'turn_started' ||
-    lastEventType === 'model_resolved' ||
-    lastEventType === 'model_stream_started' ||
-    lastEventType === 'run_status_changed'
-  ) {
-    return failedDecision(
-      header,
-      'app_restarted',
-      diagnostic('run_interrupted', lastEventType, hasCorruptEvent),
-    );
-  }
+  const reason =
+    lastEventType === 'model_stream_completed'
+      ? 'model_stream_completed_without_runtime_terminal'
+      : lastEventType === 'permission_requested' || lastEventType === 'permission_failed'
+        ? 'stale_user_wait'
+        : lastEventType === 'tool_started'
+          ? 'tool_interrupted'
+          : lastEventType === undefined ||
+              lastEventType === 'turn_started' ||
+              lastEventType === 'model_resolved' ||
+              lastEventType === 'model_stream_started'
+            ? 'run_interrupted'
+            : 'non_terminal_run_recovered';
 
   return failedDecision(
-    header,
+    invocation,
     'app_restarted',
-    diagnostic('non_terminal_run_recovered', lastEventType, hasCorruptEvent),
+    diagnostic(reason, lastEventType, hasCorruptEvent),
   );
 }
 
@@ -148,31 +121,18 @@ export function attributeSandboxBoundaryRestartClosure(
 }
 
 function failedDecision(
-  header: AgentRunHeader,
+  invocation: RuntimeInvocationRecord,
   failureClass: string,
   diagnostic?: Record<string, unknown>,
 ): AgentRunRecoveryDecision {
   return {
-    runId: header.runId,
-    turnId: header.turnId,
+    runId: invocation.runId,
+    turnId: invocation.turnId,
     status: 'failed',
     failureClass,
     diagnostic,
-    lineage: headerLineage(header),
+    lineage: openingLineage(invocation),
   };
-}
-
-function isTerminalRunStatus(status: AgentRunHeader['status']): boolean {
-  return status === 'completed' || status === 'failed' || status === 'cancelled';
-}
-
-function hasTerminalRunEvent(events: readonly AgentRunEvent[]): boolean {
-  return events.some(
-    (event) =>
-      event.type === 'run_completed' ||
-      event.type === 'run_failed' ||
-      event.type === 'run_cancelled',
-  );
 }
 
 function lastNonCorruptEvent(events: readonly AgentRunEvent[]): AgentRunEvent | undefined {
@@ -197,15 +157,17 @@ function diagnostic(
   };
 }
 
-function headerLineage(header: AgentRunHeader): AgentRunRecoveryLineage {
+function openingLineage(invocation: RuntimeInvocationRecord): AgentRunRecoveryLineage {
+  const lineage = invocation.opening.lineage;
+  if (!lineage) return {};
   return {
-    ...(header.parentRunId ? { parentRunId: header.parentRunId } : {}),
-    ...(header.parentTurnId ? { parentTurnId: header.parentTurnId } : {}),
-    ...(header.retriedFromTurnId ? { retriedFromTurnId: header.retriedFromTurnId } : {}),
-    ...(header.regeneratedFromTurnId
-      ? { regeneratedFromTurnId: header.regeneratedFromTurnId }
+    ...(lineage.parentRunId ? { parentRunId: lineage.parentRunId } : {}),
+    ...(lineage.parentTurnId ? { parentTurnId: lineage.parentTurnId } : {}),
+    ...(lineage.retriedFromTurnId ? { retriedFromTurnId: lineage.retriedFromTurnId } : {}),
+    ...(lineage.regeneratedFromTurnId
+      ? { regeneratedFromTurnId: lineage.regeneratedFromTurnId }
       : {}),
-    ...(header.branchOfTurnId ? { branchOfTurnId: header.branchOfTurnId } : {}),
-    ...(header.parentSessionId ? { parentSessionId: header.parentSessionId } : {}),
+    ...(lineage.branchOfTurnId ? { branchOfTurnId: lineage.branchOfTurnId } : {}),
+    ...(lineage.parentSessionId ? { parentSessionId: lineage.parentSessionId } : {}),
   };
 }

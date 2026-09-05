@@ -30,6 +30,7 @@ import type {
   ConnectOrSpawnRuntimeHostInput,
   RuntimeHostConnection,
 } from '@maka/runtime-host/client';
+import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 import {
   SESSION_CONTINUITY_SCHEMA_VERSION,
   type ClientCapabilityCallFrame,
@@ -51,6 +52,7 @@ import {
   type DesktopRuntimeHostCandidateStartInput,
 } from '../runtime-host-desktop-candidate.js';
 import { RuntimeHostSessionObservationRegistry } from '../runtime-host-session-observation-registry.js';
+import { RuntimeHostReconnectingIpcMain } from '../runtime-host-reconnecting-ipc-main.js';
 import { desktopSessionResourceKey } from '../../shared/runtime-host-identity.js';
 import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
@@ -185,11 +187,12 @@ test('owns one complete Desktop candidate generation and can restart cleanly', a
   assert.equal(ipc.size, 0);
 });
 
-test('registers only shared observation IPC and consumes scoped catalog changes for a Guest', async () => {
+test('routes Guest catalog changes through the mount projection authority', async () => {
   const ipc = ipcHarness();
   const sharedResource = sharedShellRunUpdate('session-guest');
   const host = connectionHarness('guest', { runtimeResourceUpdate: sharedResource });
   const changes: Array<{ reason: string; sessionId?: string }> = [];
+  let catalogChanges = 0;
   const rendererEvents: Array<{ channel: string; payload: unknown }> = [];
   const candidate = await createCandidate(
     host.connection,
@@ -197,6 +200,9 @@ test('registers only shared observation IPC and consumes scoped catalog changes 
       ...deps(ipc),
       emitSessionsChanged: (_scope, reason, sessionId) => {
         changes.push({ reason, ...(sessionId === undefined ? {} : { sessionId }) });
+      },
+      onGuestSessionCatalogChanged: () => {
+        catalogChanges += 1;
       },
       renderer: {
         send(channel, _scope, payload) {
@@ -210,10 +216,7 @@ test('registers only shared observation IPC and consumes scoped catalog changes 
     'session_guest',
   );
 
-  assert.deepEqual(
-    ((await ipc.invoke('sessions:list')) as SessionCatalogProjection[]).map(({ id }) => id),
-    ['session-guest'],
-  );
+  assert.equal(ipc.channels.includes('sessions:list'), false);
   assert.equal(ipc.channels.includes('sessions:observe'), true);
   assert.equal(ipc.channels.includes('sessions:transcript:open'), true);
   assert.equal(ipc.channels.includes('sessions:send'), false);
@@ -242,7 +245,8 @@ test('registers only shared observation IPC and consumes scoped catalog changes 
     ),
   );
   host.publishSessionCatalogChange('session-guest');
-  assert.deepEqual(changes, [{ reason: 'updated', sessionId: 'session-guest' }]);
+  assert.equal(catalogChanges, 1);
+  assert.deepEqual(changes, []);
 
   await candidate.close();
 });
@@ -350,6 +354,42 @@ test('tears down the whole candidate when the Host connection closes', async () 
   await candidate.closed;
 
   assert.equal(host.closeCalls, 1);
+});
+
+test('preserves supported IPC when the connection closes before candidate startup returns', { timeout: 5_000 }, async (t) => {
+  const ipc = ipcHarness();
+  const router = new RuntimeHostReconnectingIpcMain(ipc);
+  t.after(() => router.close());
+  const firstHost = connectionHarness('closed-during-start');
+  const replaceCapabilities = firstHost.connection.replaceClientCapabilities;
+  firstHost.connection.replaceClientCapabilities = async (...args) => {
+    const result = await replaceCapabilities(...args);
+    // The final initialization response succeeds, immediately followed by EOF.
+    firstHost.disconnect();
+    return result;
+  };
+  const firstTarget = router.createTarget(TEST_TARGET_EPOCH);
+  const first = await createDesktopRuntimeHostCandidate(firstHost.connection, {
+    ...deps(ipc), ipcMain: firstTarget,
+  });
+  t.after(() => first.close());
+  firstTarget.completeRegistration();
+  router.activate(TEST_TARGET_EPOCH);
+  const pending = ipc.invoke('sessions:list').then(
+    (value) => ({ value }),
+    (error: unknown) => ({ error }),
+  );
+
+  const secondHost = connectionHarness('replacement');
+  const secondTarget = router.createTarget(TEST_TARGET_EPOCH);
+  const second = await createDesktopRuntimeHostCandidate(secondHost.connection, {
+    ...deps(ipc), ipcMain: secondTarget,
+  });
+  t.after(() => second.close());
+  secondTarget.completeRegistration();
+  const result = await pending;
+  assert.ok('value' in result, `supported read was rejected: ${'error' in result ? result.error : ''}`);
+  assert.deepEqual((result.value as SessionCatalogProjection[]).map(({ id }) => id), ['session-replacement']);
 });
 
 test('disposes candidate-scoped product IPC state on reconnect teardown', async () => {
@@ -564,10 +604,60 @@ test('closes the claimed Host connection when native capability construction fai
           releaseComputerUseSession() {},
         }),
       ),
-    /tool schema must be an object/,
+    /tool schema root must be an object/,
   );
 
   assert.equal(ipc.size, 0);
+  assert.equal(host.closeCalls, 1);
+});
+
+test('isolates an invalid dynamic MCP tool without dropping the Host connection', async () => {
+  // Per-tool isolation: one bad tool is skipped and the provider still
+  // constructs, so the Host connection stays alive.
+  const ipc = ipcHarness();
+  const host = connectionHarness('invalid-capability');
+  const invalidTool = {
+    ...nativeTool(),
+    parameters: z.string(),
+  } as unknown as MakaTool;
+  const healthyTool = {
+    ...nativeTool(),
+    name: 'healthy_mcp',
+    impl: async () => 'healthy',
+  };
+
+  const candidate = await createDesktopRuntimeHostCandidate(
+    host.connection,
+    deps(ipc, {
+      browserTools: [],
+      resolveBrowserUrl: () => 'https://example.com/',
+      releaseBrowserSession() {},
+      computerUseTools: emptyComputerUseTools(),
+      releaseComputerUseSession() {},
+      additionalGroups: () => [
+        {
+          offerId: 'desktop_mcp',
+          label: 'MCP',
+          description: 'MCP tools',
+          tools: [invalidTool, healthyTool],
+        },
+      ],
+    }),
+  );
+
+  assert.equal(host.capabilityRegistrations, 1);
+  assert.equal(host.closeCalls, 0);
+  assert.deepEqual(
+    await host.invokeCapability({
+      ...capabilityFrame('session-invalid-capability'),
+      offerId: 'desktop_mcp',
+      serverId: 'desktop_mcp',
+      toolName: 'healthy_mcp',
+    }),
+    { content: [{ type: 'text', text: 'healthy' }] },
+  );
+
+  await candidate.close();
   assert.equal(host.closeCalls, 1);
 });
 
@@ -857,7 +947,7 @@ test('drops a stale shared Session observation when Guest access is gone', async
   });
   const firstCandidate = await createCandidate(
     firstHost.connection,
-    deps(firstIpc),
+    { ...deps(firstIpc), onGuestSessionCatalogChanged: () => undefined },
     observations,
     'external',
     'remote',
@@ -877,6 +967,7 @@ test('drops a stale shared Session observation when Guest access is gone', async
       emitSessionsChanged: (_scope, reason, sessionId) => {
         changes.push({ reason, ...(sessionId === undefined ? {} : { sessionId }) });
       },
+      onGuestSessionCatalogChanged: () => undefined,
     },
     observations,
     'external',
@@ -887,6 +978,69 @@ test('drops a stale shared Session observation when Guest access is gone', async
   assert.deepEqual(observations.trackedSessionIds(), []);
   assert.deepEqual(changes, [{ reason: 'deleted', sessionId: 'session-1' }]);
   await candidate.close();
+  await observations.close();
+});
+
+test('forgets an observed Session the Host no longer serves instead of blocking every reconnect', async () => {
+  const observations = new RuntimeHostSessionObservationRegistry();
+  const firstIpc = ipcHarness();
+  const firstHost = connectionHarness('missing-session-source', {
+    sessionId: 'session-1',
+    subscriptionSnapshot: continuitySnapshot(),
+  });
+  const firstCandidate = await createDesktopRuntimeHostCandidate(
+    firstHost.connection,
+    deps(firstIpc),
+    observations,
+  );
+  await firstIpc.invoke('sessions:observe', 'session-1', 'observer-1');
+  await firstCandidate.close();
+
+  // The replacement Host no longer serves session-1: subscription.open
+  // deterministically answers not_found.
+  const changes: Array<{ reason: string; sessionId?: string }> = [];
+  const missingHost = connectionHarness('missing-session-host', {
+    sessionId: 'session-1',
+    subscriptionError: new RuntimeHostOperationError(
+      'subscription.open',
+      'not_found',
+      'Runtime Host Session was not found',
+    ),
+  });
+  const secondCandidate = await createDesktopRuntimeHostCandidate(
+    missingHost.connection,
+    {
+      ...deps(ipcHarness()),
+      emitSessionsChanged: (_scope, reason, sessionId) => {
+        changes.push({ reason, ...(sessionId === undefined ? {} : { sessionId }) });
+      },
+    },
+    observations,
+  );
+
+  // The stale active registration is forgotten instead of failing the
+  // candidate start, and the renderer is told to drop the Session view.
+  assert.deepEqual(observations.observedSessionIds(), []);
+  assert.ok(
+    changes.some(
+      ({ reason, sessionId }) => reason === 'deleted' && sessionId === 'session-1',
+    ),
+  );
+  await secondCandidate.close();
+
+  // A later reconnect observes new Sessions on the same registry.
+  const thirdIpc = ipcHarness();
+  const thirdHost = connectionHarness('missing-session-recovered', {
+    sessionId: 'session-2',
+  });
+  const thirdCandidate = await createDesktopRuntimeHostCandidate(
+    thirdHost.connection,
+    deps(thirdIpc),
+    observations,
+  );
+  await thirdIpc.invoke('sessions:observe', 'session-2', 'observer-2');
+  assert.deepEqual(observations.observedSessionIds(), ['session-2']);
+  await thirdCandidate.close();
   await observations.close();
 });
 
@@ -1214,6 +1368,7 @@ function connectionHarness(
       return provider.call(frame, {
         signal: new AbortController().signal,
         accept: async () => undefined,
+        requestInteraction: async () => assert.fail('Unexpected provider interaction'),
       });
     },
     disconnect: () => resolveClosed?.(),

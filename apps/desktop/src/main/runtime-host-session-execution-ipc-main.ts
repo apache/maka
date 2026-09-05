@@ -31,6 +31,7 @@ import {
 } from '@maka/core/session';
 import { type ActiveInteractionRequestEvent, type AttachmentRef } from '@maka/core/events';
 import { type PermissionMode } from '@maka/core/permission';
+import { decodeInteractionFormResponse } from '@maka/core/interaction';
 import { type SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { AttachmentApprovalRegistry } from "./attachment-approval.js";
 import {
@@ -659,6 +660,28 @@ export function registerRuntimeHostSessionExecutionIpc(
         sessionId,
         interactionId: response.requestId,
         answer: { kind: "client_capability", decision: response.decision },
+      });
+      deps.observer.publishInteractionAnswer(answered, pending);
+    },
+  );
+  ipcMain.handle(
+    "sessions:respondToUserForm",
+    async (_event, sessionId: string, input: unknown) => {
+      const response = decodeInteractionFormResponse(input);
+      const pending = await requireInteraction(
+        deps.observer,
+        sessionId,
+        response.requestId,
+      );
+      if (pending.request.kind !== "form") {
+        throw new Error("Interaction is not a form request");
+      }
+      const answered = await deps.client.answerInteraction({
+        sessionId,
+        interactionId: response.requestId,
+        answer: response.action === "accept"
+          ? { kind: "form", action: "accept", values: response.values }
+          : { kind: "form", action: response.action },
       });
       deps.observer.publishInteractionAnswer(answered, pending);
     },

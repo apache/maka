@@ -19,7 +19,7 @@
 
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import type { CollaborationMode } from '@maka/core/collaboration';
-import type { DesktopNewTaskTarget } from '../preload/bridge-contract.js';
+import type * as DesktopBridge from '../preload/bridge-contract.js';
 import type { InlineReference, QuoteRef } from '@maka/core/events';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
@@ -28,7 +28,6 @@ import type { StoredMessage } from '@maka/core/session';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { TurnOrchestration } from '@maka/core/runtime-inputs';
 import type { UiLocale } from '@maka/core/ui-locale';
-import type { DesktopSessionSummary } from '../preload/bridge-contract.js';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import { DEFAULT_SESSION_NAME } from '@maka/core/session-name';
 import {
@@ -92,6 +91,11 @@ type PendingNewChatModel = {
 } | null;
 
 type PendingNewChatThinkingLevel = ThinkingLevel | null;
+type DesktopNewTaskTarget = DesktopBridge.DesktopNewTaskTarget;
+type DesktopSessionSummary = DesktopBridge.DesktopSessionSummary;
+type InteractionFormResponse = Parameters<
+  DesktopBridge.MakaBridge['sessions']['respondToUserForm']
+>[1];
 
 type ToastApi = {
   error(
@@ -142,6 +146,7 @@ export interface AppShellChatActions {
   ): Promise<boolean>;
   respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void>;
   respondToUserQuestion(response: UserQuestionResponse): Promise<void>;
+  respondToUserForm(response: InteractionFormResponse): Promise<void>;
   refreshMessages(sessionId: string, options?: RefreshMessagesOptions): Promise<boolean>;
   retryMessages(sessionId: string): Promise<void>;
 }
@@ -179,6 +184,7 @@ export function createAppShellChatActions(deps: {
   onInteractionChanged?: (sessionId: string) => void;
   /** A boundary decision settled: the session's execution boundary may have moved. */
   onExecutionBoundaryChanged?: (sessionId: string) => void;
+  respondToUserForm: DesktopBridge.MakaBridge['sessions']['respondToUserForm'];
   showModelSetupToast: (
     description: string,
     reason?: string,
@@ -224,6 +230,7 @@ export function createAppShellChatActions(deps: {
     setInteractionBySession,
     onInteractionChanged,
     onExecutionBoundaryChanged,
+    respondToUserForm: submitUserForm,
     showModelSetupToast,
     toastApi,
     newChatModel,
@@ -689,45 +696,20 @@ export function createAppShellChatActions(deps: {
     }
   }
 
-  async function respondToSandboxBoundary(response: SandboxBoundaryResponse) {
+  async function respondToInteraction<Response extends { requestId: string }>(
+    response: Response,
+    submit: (sessionId: string, response: Response) => Promise<void>,
+    onApplied?: (sessionId: string) => void,
+  ) {
     const sessionId = activeIdRef.current;
     if (!sessionId) return;
     try {
-      await window.maka.sessions.respondToSandboxBoundary(sessionId, response);
+      await submit(sessionId, response);
       onInteractionChanged?.(sessionId);
-      // #1611: the answer has been applied to the authoritative boundary, so
-      // the permission label must stop describing the pre-decision one. The
-      // ack event covers decisions settled on other surfaces; this covers the
-      // one the user just made here, without waiting for the round trip.
-      onExecutionBoundaryChanged?.(sessionId);
+      onApplied?.(sessionId);
       setInteractionBySession((current) =>
         dequeueInteractionByRequestId(current, sessionId, response.requestId),
       );
-    } catch (error) {
-      // Same fire-and-forget call site as stop(), wrap so a failed
-      // permission response (main process busy / session dropped)
-      // surfaces instead of dying as UnhandledPromiseRejection.
-      if (activeIdRef.current !== sessionId) return;
-      if (isSessionWorkspaceUnavailableError(error)) {
-        showSessionWorkspaceUnavailableToast(toastApi, uiLocale, { sessionId });
-      } else {
-        toastApi.error(
-          copy.responseFailedTitle,
-          localizedShellErrorMessage(error, copy.responseFailedFallback, uiLocale),
-          undefined,
-          { sessionId },
-        );
-      }
-    }
-  }
-
-  async function respondToUserQuestion(response: UserQuestionResponse) {
-    const sessionId = activeIdRef.current;
-    if (!sessionId) return;
-    try {
-      await window.maka.sessions.respondToUserQuestion(sessionId, response);
-      onInteractionChanged?.(sessionId);
-      setInteractionBySession((current) => dequeueInteractionByRequestId(current, sessionId, response.requestId));
     } catch (error) {
       if (activeIdRef.current !== sessionId) return;
       if (isSessionWorkspaceUnavailableError(error)) {
@@ -806,8 +788,15 @@ export function createAppShellChatActions(deps: {
   return {
     send,
     enqueueMessage,
-    respondToSandboxBoundary,
-    respondToUserQuestion,
+    respondToSandboxBoundary: (response) =>
+      respondToInteraction(
+        response,
+        window.maka.sessions.respondToSandboxBoundary,
+        onExecutionBoundaryChanged,
+      ),
+    respondToUserQuestion: (response) =>
+      respondToInteraction(response, window.maka.sessions.respondToUserQuestion),
+    respondToUserForm: (response) => respondToInteraction(response, submitUserForm),
     refreshMessages,
     retryMessages,
   };

@@ -38,7 +38,7 @@ type PreflightItem = {
  * File blobs are sized by the browser File object; approval-token attachments
  * are sized by the pending size stamped at pick time (main re-stats).
  */
-export function preflightAttachmentItems(items: readonly PreflightItem[], locale: UiLocale = 'zh'): void {
+export function preflightAttachmentItems(items: readonly PreflightItem[], locale: UiLocale): void {
   const copy = getDesktopConversationCopy(locale).attachments;
   if (items.length > MAX_ATTACHMENT_COUNT) throw new Error(copy.tooMany);
   const seen = new Set<string>();

@@ -99,6 +99,9 @@ const commentStyles = {
     close: '-->',
     prefixPattern: /^(?:<!doctype html>\n|---\n[\s\S]*?\n---\n)/i,
   },
+  // An Astro component opens with its frontmatter fence, and the header is the
+  // first thing inside it.
+  astro: { open: '/*', line: ' *', close: ' */', prefixPattern: /^---\n/ },
 };
 
 /**
@@ -106,6 +109,7 @@ const commentStyles = {
  * for each. A covered file must carry the header; nothing else may.
  */
 const coveredExtensions = new Map([
+  ['.astro', 'astro'],
   ['.cjs', 'block'],
   ['.css', 'block'],
   ['.html', 'html'],
@@ -130,6 +134,7 @@ const coveredExtensions = new Map([
 /** Covered files whose name carries no extension. */
 const coveredNames = new Map([
   ['Dockerfile', 'hash'],
+  ['pre-commit', 'hash'],
   // A POSIX shell script that the Eval egress sidecar invokes by name.
   ['network-policy', 'hash'],
 ]);
@@ -223,6 +228,7 @@ export const exclusionRules = [
       'docs/windows-test-inventory.md',
       'native/gitoxide-helper/Cargo.lock',
       'native/runtime-host-peer/Cargo.lock',
+      'native/runtime-host-windows-task-launcher/Cargo.lock',
       'packages/runtime/src/bundled-skill-catalog.generated.ts',
     ),
   },
@@ -306,6 +312,14 @@ const provenanceMarkers = [
  * they may carry the ASF header anyway.
  */
 const reviewedProvenance = new Map([
+  [
+    'website/src/copy/en.ts',
+    'Website footer copy. The copyright line it carries is the ASF’s own, as the site footer must show it.',
+  ],
+  [
+    'website/test/site.test.mjs',
+    'Website test. It quotes the ASF copyright line to assert the built footer carries it.',
+  ],
   [
     '.github/ASF_SOURCE_HEADERS.md',
     'Documents the marker patterns; the match is the policy describing its own rule.',
@@ -617,6 +631,38 @@ export function auditTree({ root = defaultRepoRoot } = {}) {
   return { ...result, mode: listing.mode, root };
 }
 
+export function auditStaged({ root = defaultRepoRoot } = {}) {
+  const output = execFileSync('git', ['diff', '--cached', '--name-only', '--diff-filter=A', '-z'], {
+    cwd: root,
+    encoding: 'utf8',
+    maxBuffer: maxCommandBuffer,
+  });
+  const files = output.split('\0').filter(Boolean);
+  const result = auditSourceFiles({ files, mode: 'staged' });
+  for (const path of files) {
+    const classification = classifyPath(path);
+    if (classification.status !== 'covered') continue;
+    const contents = execFileSync('git', ['show', `:${path}`], {
+      cwd: root,
+      encoding: 'utf8',
+      maxBuffer: maxCommandBuffer,
+    });
+    const status = classifyHeader(contents, classification.style, {
+      textAsData: licenseTextAsData.has(path),
+    });
+    if (status === 'absent') result.missing.push(path);
+    else if (status === 'duplicated') result.duplicated.push(path);
+    else if (status === 'unrecognized') result.unrecognized.push(path);
+    if (
+      !reviewedProvenance.has(path) &&
+      provenanceMarkers.some((marker) => marker.test(contents))
+    ) {
+      result.unreviewedProvenance.push(path);
+    }
+  }
+  return { ...result, mode: 'staged', root };
+}
+
 export function writeHeaders({ root = defaultRepoRoot } = {}) {
   const { files } = listSourceFiles(root);
   const changed = [];
@@ -651,8 +697,8 @@ function reportExclusions(result) {
   }
 }
 
-function runCheck({ report, root }) {
-  const result = auditTree({ root });
+function runCheck({ report, root, staged = false }) {
+  const result = staged ? auditStaged({ root }) : auditTree({ root });
   const excluded = [...result.excludedByRule.values()].reduce(
     (total, paths) => total + paths.length,
     0,
@@ -730,6 +776,10 @@ function main() {
   if (!statSync(root).isDirectory()) throw new Error(`Not a directory: ${root}`);
   if (command === 'check') {
     runCheck({ report, root });
+    return;
+  }
+  if (command === 'check-staged') {
+    runCheck({ report, root, staged: true });
     return;
   }
   if (command === 'write') {

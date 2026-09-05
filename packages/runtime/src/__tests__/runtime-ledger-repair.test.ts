@@ -29,6 +29,11 @@ import { createSessionStore } from '@maka/storage/session-store';
 import { createSqliteRuntimeStore } from '@maka/storage/sqlite-runtime-store';
 import { buildRuntimeEventModelReplayPlan } from '../model-history.js';
 import { buildPriorRuntimeContext } from '../prior-run-context.js';
+import {
+  buildInvocationOpenedEvent,
+  runtimeInvocationOutcome,
+} from '@maka/core/runtime-invocation';
+import { runtimeInvocationFailureClass } from '../runtime-event-read-model.js';
 import { backfillRuntimeEventsFromStoredMessages } from '../runtime-event-backfill.js';
 import { RuntimeLedgerRepair } from '../runtime-ledger-repair.js';
 
@@ -97,11 +102,9 @@ test('repairs imported transcript turns into provider-neutral canonical history'
     );
     assert.equal(session.transcriptLedgerVersion, 0);
     const repair = new RuntimeLedgerRepair({
-      runStore: runs,
       runtimeEventStore: runtimeEvents,
       readMessages: (sessionId) => sessions.readMessages(sessionId),
       appendMessage: (sessionId, message) => sessions.appendMessage(sessionId, message),
-      appendTurnState: async () => undefined,
       newId,
       now: () => 100,
     });
@@ -109,11 +112,11 @@ test('repairs imported transcript turns into provider-neutral canonical history'
     await repair.materializeTranscriptLedger(session);
     await repair.materializeTranscriptLedger(session);
 
-    const [importedRun] = await runs.listSessionRuns(session.id);
+    const [importedRun] = await runtimeEvents.listSessionInvocations(session.id);
     assert.ok(importedRun);
     assert.equal(importedRun.turnId, 'turn-1');
-    assert.equal(importedRun.status, 'completed');
-    assert.ok(importedRun.createdAt < session.createdAt);
+    assert.equal(runtimeInvocationOutcome(importedRun), 'completed');
+    assert.ok(importedRun.openedAt < session.createdAt);
 
     const importedEvents = await runtimeEvents.readRuntimeEvents(session.id, importedRun.runId);
     assert.deepEqual(
@@ -151,16 +154,22 @@ test('repairs imported transcript turns into provider-neutral canonical history'
         partialOutputRetained: true,
       },
     ];
-    const continuedRun = await runs.createRun({
-      ...importedRun,
+    const continuedRun = {
+      sessionId: session.id,
       runId: 'continued-run',
       invocationId: 'continued-invocation',
       turnId: 'turn-2',
-      status: 'completed',
-      createdAt: session.createdAt + 1,
-      updatedAt: session.createdAt + 3,
-      completedAt: session.createdAt + 3,
-    });
+    };
+    await runtimeEvents.appendRuntimeEvent(
+      session.id,
+      continuedRun.runId,
+      buildInvocationOpenedEvent({
+        id: newId(),
+        run: continuedRun,
+        openedAt: session.createdAt + 1,
+        opening: importedRun.opening,
+      }),
+    );
     for (const event of backfillRuntimeEventsFromStoredMessages({
       run: continuedRun,
       messages: continuedMessages,
@@ -171,25 +180,27 @@ test('repairs imported transcript turns into provider-neutral canonical history'
     }
 
     const currentRunId = 'current-run';
-    await runs.createRun({
-      ...continuedRun,
-      runId: currentRunId,
-      invocationId: 'current-invocation',
-      turnId: 'turn-3',
-      status: 'running',
-      createdAt: session.createdAt + 4,
-      updatedAt: session.createdAt + 4,
-      completedAt: undefined,
-    });
+    await runtimeEvents.appendRuntimeEvent(
+      session.id,
+      currentRunId,
+      buildInvocationOpenedEvent({
+        id: newId(),
+        run: {
+          sessionId: session.id,
+          runId: currentRunId,
+          invocationId: 'current-invocation',
+          turnId: 'turn-3',
+        },
+        openedAt: session.createdAt + 4,
+        opening: importedRun.opening,
+      }),
+    );
     const prior = await buildPriorRuntimeContext({
       sessionId: session.id,
       currentRunId,
       currentTurnId: 'turn-3',
-      runStore: runs,
       runtimeEventStore: runtimeEvents,
-      runStoreAvailable: true,
       runtimeEventStoreAvailable: true,
-      readMessages: () => sessions.readMessages(session.id),
     });
     assert.deepEqual(
       buildRuntimeEventModelReplayPlan(prior?.events ?? []).items.map((item) =>
@@ -273,24 +284,22 @@ test('an imported snapshot cutoff survives materialization as aborted', async ()
       { adapterId: 'claude-code', sourceSessionId: 'cut-1' },
     );
     const repair = new RuntimeLedgerRepair({
-      runStore: runs,
       runtimeEventStore: runtimeEvents,
       readMessages: (sessionId) => sessions.readMessages(sessionId),
       appendMessage: (sessionId, message) => sessions.appendMessage(sessionId, message),
-      appendTurnState: async () => undefined,
       newId,
       now: () => 100,
     });
 
     await repair.materializeTranscriptLedger(session);
 
-    const [run] = await runs.listSessionRuns(session.id);
+    const [run] = await runtimeEvents.listSessionInvocations(session.id);
     assert.ok(run);
     // `cancelled`, not `failed`: the Ledger accepted the recorded abort. Before
     // the adapter emitted one, this same transcript materialized as
     // `failed / missing_terminal_event`.
-    assert.equal(run.status, 'cancelled');
-    assert.notEqual(run.failureClass, 'missing_terminal_event');
+    assert.equal(runtimeInvocationOutcome(run), 'cancelled');
+    assert.notEqual(runtimeInvocationFailureClass(run), 'missing_terminal_event');
   } finally {
     await runtimeEvents.close?.();
     await rm(root, { recursive: true, force: true });
@@ -332,18 +341,16 @@ test('does not import Host-handed-off transcript messages as synthetic runs', as
       { adapterId: 'test', sourceSessionId: 'host-session' },
     );
     const repair = new RuntimeLedgerRepair({
-      runStore: runs,
       runtimeEventStore: runtimeEvents,
       readMessages: (sessionId) => sessions.readMessages(sessionId),
       appendMessage: (sessionId, message) => sessions.appendMessage(sessionId, message),
-      appendTurnState: async () => undefined,
       newId: () => `host-repair-${++sequence}`,
       now: () => 100,
     });
 
     await repair.materializeTranscriptLedger(session);
 
-    assert.deepEqual(await runs.listSessionRuns(session.id), []);
+    assert.deepEqual(await runtimeEvents.listSessionInvocations(session.id), []);
   } finally {
     runtimeEvents.close();
     runs.close?.();
@@ -386,21 +393,19 @@ test('an imported turn with no terminal state is repaired to failed', async () =
       { adapterId: 'claude-code', sourceSessionId: 'missing-1' },
     );
     const repair = new RuntimeLedgerRepair({
-      runStore: runs,
       runtimeEventStore: runtimeEvents,
       readMessages: (sessionId) => sessions.readMessages(sessionId),
       appendMessage: (sessionId, message) => sessions.appendMessage(sessionId, message),
-      appendTurnState: async () => undefined,
       newId,
       now: () => 100,
     });
 
     await repair.materializeTranscriptLedger(session);
 
-    const [run] = await runs.listSessionRuns(session.id);
+    const [run] = await runtimeEvents.listSessionInvocations(session.id);
     assert.ok(run);
-    assert.equal(run.status, 'failed');
-    assert.equal(run.failureClass, 'missing_terminal_event');
+    assert.equal(runtimeInvocationOutcome(run), 'failed');
+    assert.equal(runtimeInvocationFailureClass(run), 'missing_terminal_event');
   } finally {
     await runtimeEvents.close?.();
     await rm(root, { recursive: true, force: true });
@@ -554,17 +559,15 @@ test('a resolved Claude transcript replays as the conversation the user kept', a
       { adapterId: 'claude-code', sourceSessionId: SOURCE_SESSION_ID },
     );
     const repair = new RuntimeLedgerRepair({
-      runStore: runs,
       runtimeEventStore: runtimeEvents,
       readMessages: (sessionId) => sessions.readMessages(sessionId),
       appendMessage: (sessionId, message) => sessions.appendMessage(sessionId, message),
-      appendTurnState: async () => undefined,
       newId,
       now: () => 100,
     });
     await repair.materializeTranscriptLedger(session);
 
-    const [run] = await runs.listSessionRuns(session.id);
+    const [run] = await runtimeEvents.listSessionInvocations(session.id);
     assert.ok(run);
     const events = await runtimeEvents.readRuntimeEvents(session.id, run.runId);
     const replay = buildRuntimeEventModelReplayPlan(events).items;
@@ -613,8 +616,8 @@ test('a resolved Claude transcript replays as the conversation the user kept', a
     assert.deepEqual(shape, ['call:toolu_a', 'call:toolu_b', 'result:toolu_a', 'result:toolu_b']);
 
     // And the turn is terminal on its own evidence, not repaired into one.
-    assert.equal(run.status, 'completed');
-    assert.notEqual(run.failureClass, 'missing_terminal_event');
+    assert.equal(runtimeInvocationOutcome(run), 'completed');
+    assert.notEqual(runtimeInvocationFailureClass(run), 'missing_terminal_event');
   } finally {
     runtimeEvents.close();
     runs.close?.();

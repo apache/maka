@@ -19,6 +19,8 @@
 
 # Gitoxide repository admission capability v1
 
+完整的 Phase 3/4 workspace continuity 路线见 [Runtime Resume Phase 3/4 Workspace Checkpoint Design](./runtime-resume-phase3-phase4-workspace-checkpoint-design.zh-CN.md)，其交付状态由该设计文档链接的 tracker 统一维护。
+
 状态：Gitoxide repository admission / source-import 的可合并 enabling infrastructure；source import data
 plane 作为同一 PR 内的独立 authority layer 消费该 capability，产品接线仍未完成。
 

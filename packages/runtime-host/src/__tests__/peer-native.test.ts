@@ -44,7 +44,7 @@ test('preserves transit route failures from the native boundary', () => {
   assert.equal(error.message, 'no approved route');
 });
 
-test('shares one peer endpoint, serializes same-peer connects, and cancels independently', async () => {
+test('shares one endpoint with independent application and Mesh dial lanes', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'maka-peer-abort-'));
   const nativePath = join(directory, 'peer.cjs');
   try {
@@ -80,7 +80,7 @@ module.exports = {
       reachabilitySnapshot: { generation: 0, listenAddresses: [], activeCoordinationRelays: [] },
       get connectivitySnapshot() { return connectivity; },
       transitSnapshot: { allowedPeerCount: 0, activeReservationCount: 0, activeCircuitCount: 0, maxReservationCount: 32, maxCircuitCount: 8, maxCircuitsPerPeer: 2, maxCircuitDurationSeconds: 7_200, maxCircuitBytes: 256 * 1024 * 1024 },
-      watchReachability: async () => ({ generation: 0, listenAddresses: [], activeCoordinationRelays: [] }),
+      watchReachability: async () => 0,
       watchConnectivity: async (afterGeneration) => connectivity.generation === afterGeneration
         ? new Promise((resolve) => { finishConnectivity = resolve; })
         : connectivity,
@@ -184,18 +184,16 @@ module.exports = {
     const application = client.connect(peerConnectInput('shared'));
     await waitForRequestCount(native.default.stats, 2);
     const queuedAbort = new AbortController();
-    const cancelled = client.connectMeshControl(peerConnectInput('shared'), queuedAbort.signal);
+    const cancelled = client.connect(peerConnectInput('shared'), queuedAbort.signal);
     queuedAbort.abort();
     await assert.rejects(cancelled, /aborted/u);
     const control = client.connectMeshControl(peerConnectInput('shared'));
-    await waitForImmediate();
-    assert.equal(native.default.stats.requests.length, 2);
-    native.default.resolveConnect(2);
-    await application;
     await waitForRequestCount(native.default.stats, 3);
     assert.equal(native.default.stats.requests.length, 3);
     native.default.resolveConnect(3);
     await control;
+    native.default.resolveConnect(2);
+    await application;
 
     const preparedBeforeReopen = preparedPeerIds.length;
     const reopenPhases: string[] = [];
@@ -375,7 +373,7 @@ module.exports = {
 	    reachabilitySnapshot: { generation: 0, listenAddresses: [], activeCoordinationRelays: [] },
 	    connectivitySnapshot: { generation: 0, connectedPeerIds: [] },
     transitSnapshot: { allowedPeerCount: 0, activeReservationCount: 0, activeCircuitCount: 0, maxReservationCount: 32, maxCircuitCount: 8, maxCircuitsPerPeer: 2, maxCircuitDurationSeconds: 7_200, maxCircuitBytes: 256 * 1024 * 1024 },
-	    watchReachability: async () => ({ generation: 0, listenAddresses: [], activeCoordinationRelays: [] }),
+	    watchReachability: async () => 0,
 	    watchConnectivity: async () => ({ generation: 0, connectedPeerIds: [] }),
     connect: async () => stream,
     connectMeshControl: async () => stream,
@@ -431,6 +429,55 @@ test('bounds and separates the peer credential preface from Runtime Host frames'
   );
   assert.equal(result.accepted, true);
   assert.deepEqual(result.remainder, frame);
+  const resume = { sessionId: 'a'.repeat(64), generation: 2, received: 65_536 };
+  const resumed = await readRuntimeHostPeerAuthentication(
+    streamWith(
+      Buffer.concat([
+        Buffer.from(`${JSON.stringify({ v: 2, credential: 'token', resume })}\n`),
+        frame,
+      ]),
+    ),
+  );
+  assert.deepEqual(resumed.resume, resume);
+  assert.deepEqual(resumed.remainder, frame);
+  const resumedResult = await readRuntimeHostPeerAuthenticationResult(
+    streamWith(Buffer.from('{"v":2,"accepted":true,"resume":{"received":65536}}\n')),
+  );
+  assert.equal(resumedResult.resume?.received, 65_536);
+  await assert.rejects(
+    readRuntimeHostPeerAuthenticationResult(
+      streamWith(Buffer.from('{"v":2,"accepted":false,"reason":"capacity_exceeded"}\n')),
+    ),
+    (error: unknown) =>
+      error instanceof RuntimeHostPeerError && error.code === 'peer_capacity_exceeded',
+  );
+  for (const invalid of [
+    { v: 2, accepted: true, reason: 'capacity_exceeded' },
+    { v: 2, accepted: false, reason: 'unknown' },
+    { v: 2, accepted: false, reason: 'capacity_exceeded', resume: { received: 0 } },
+  ]) {
+    await assert.rejects(
+      readRuntimeHostPeerAuthenticationResult(
+        streamWith(Buffer.from(`${JSON.stringify(invalid)}\n`)),
+      ),
+      /result is invalid/u,
+    );
+  }
+  for (const invalid of [
+    { ...resume, generation: 0 },
+    { ...resume, received: -1 },
+    { ...resume, sessionId: 'short' },
+    { ...resume, extra: true },
+  ]) {
+    await assert.rejects(
+      readRuntimeHostPeerAuthentication(
+        streamWith(
+          Buffer.from(`${JSON.stringify({ v: 2, credential: 'token', resume: invalid })}\n`),
+        ),
+      ),
+      /preface is invalid/u,
+    );
+  }
 });
 
 async function waitForRequestCount(

@@ -19,6 +19,8 @@
 
 # Work Board Phase 1 — capture/list MVP
 
+Tracking: [Work Board delivery #2560](https://github.com/apache/maka/issues/2560)
+
 ## Surface
 
 A compact Work Board tab in the session workbar, next to Tasks, with:

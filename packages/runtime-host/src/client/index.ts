@@ -45,6 +45,14 @@ export {
   type RuntimeHostRetirementPreparation,
 } from './host-retirement.js';
 export {
+  forceTerminateObservedRegisteredRuntimeHost,
+  forceTerminateRegisteredRuntimeHost,
+  type ObservedRegisteredRuntimeHost,
+  type ObservedRegisteredRuntimeHostTerminationAuthority,
+  type RegisteredRuntimeHostIdentity,
+} from './registered-host-termination.js';
+export type { RuntimeHostProcessIdentity } from './process-identity.js';
+export {
   LOCAL_RUNTIME_HOST_PROFILE,
   RUNTIME_HOST_ACCESS_CREDENTIAL_MAX_BYTES,
   createClientRuntimeHostCredentialStore,
@@ -53,10 +61,12 @@ export {
   createRuntimeHostCapabilityProviderCredentialStore,
   createRuntimeHostProfileCredentialStore,
   connectRuntimeHostProfile,
+  sameEnvironmentRuntimeHostDeployment,
   connectRemoteRuntimeHostProfile,
   decodeEnvironmentRuntimeHostProfile,
   decodePersistedRuntimeHostProfile,
   decodeRemoteRuntimeHostProfile,
+  migrateRuntimeHostProfileOperatorCommand,
   remoteRuntimeHostUnavailableError,
   runtimeHostProfileAccess,
   runtimeHostProfileTargetFingerprint,
@@ -87,6 +97,7 @@ export {
 export {
   RuntimeHostSshOperatorActivationError,
   activateRuntimeHostSshOperator,
+  runtimeHostSshOperatorRemoteCommand,
   type RuntimeHostSshOperatorActivationInput,
 } from './ssh-operator-activation.js';
 export {
@@ -122,7 +133,6 @@ export {
   connectRuntimeHostWslEnvironment,
   listRuntimeHostWslDistributions,
   normalizeRuntimeHostWslDistribution,
-  normalizeRuntimeHostWslOperatorPath,
   resolveSystemRuntimeHostWslExecutable,
   type RuntimeHostWslEnvironmentInput,
   type RuntimeHostWslProcessFactory,
@@ -177,7 +187,7 @@ export {
   type IssueRuntimeHostOwnerConnectionCodeInput,
   type RuntimeHostOwnerConnectionCode,
 } from './owner-connection-code.js';
-export { ensureRuntimeHostPeerIdentity } from '../transport/peer-native.js';
+export { ensureRuntimeHostPeerIdentity, RuntimeHostPeerError } from '../transport/peer-native.js';
 export {
   createRuntimeHostPeerClient,
   createRuntimeHostPeerClientFromEnvironment,

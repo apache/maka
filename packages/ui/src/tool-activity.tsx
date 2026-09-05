@@ -649,10 +649,7 @@ function astryxToolStatus(item: ToolActivityItem): ChatToolCallItem['status'] {
 function toolCallErrorMessage(item: ToolActivityItem, locale: UiLocale): string | undefined {
   if (item.status !== 'errored') return undefined;
   if (isRequiresBypassToolResult(item.result)) {
-    const copy = getToolActivityCopy(locale).requiresBypass;
-    return locale === 'zh'
-      ? `${copy.title}。${copy.description}`
-      : `${copy.title}. ${copy.description}`;
+    return getToolActivityCopy(locale).requiresBypass.errorMessage;
   }
   return summarizeErrorText(formatUserVisibleToolText(
     redactSecrets(extractErrorText(item.result, locale)),
