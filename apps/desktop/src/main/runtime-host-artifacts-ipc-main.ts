@@ -220,6 +220,7 @@ async function materializeArtifact(
   const handle = await open(stagingPath, "wx");
   let offset = 0;
   let writingStaging = false;
+  let streamCompleted = false;
   try {
     const totalBytes = await client.streamArtifact(
       sessionId,
@@ -241,6 +242,7 @@ async function materializeArtifact(
         writingStaging = false;
       },
     );
+    streamCompleted = true;
     if (totalBytes !== expectedBytes || offset !== expectedBytes) {
       throw new ArtifactMaterializationError("size_mismatch");
     }
@@ -255,7 +257,10 @@ async function materializeArtifact(
     await handle.close().catch(() => undefined);
     await rm(stagingPath, { force: true }).catch(() => undefined);
     if (!(error instanceof ArtifactMaterializationError)) {
-      throw new ArtifactMaterializationError(writingStaging ? "target_write_failed" : "source_failed", error);
+      throw new ArtifactMaterializationError(
+        writingStaging || streamCompleted ? "target_write_failed" : "source_failed",
+        error,
+      );
     }
     throw error;
   }
