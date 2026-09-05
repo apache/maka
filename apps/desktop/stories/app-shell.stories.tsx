@@ -18,7 +18,7 @@
  */
 
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { expect, waitFor, within } from 'storybook/test';
+import { expect, userEvent, waitFor, within } from 'storybook/test';
 import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
 import type { ComponentProps } from 'react';
 import type { ProjectRecord } from '@maka/core/project';
@@ -1474,6 +1474,73 @@ export const PlanAndSwarmModeOn: Story = {
   render: () => (
     <ComposedShell composer={{ planModeActive: true, orchestrationMode: 'swarm' }} />
   ),
+};
+
+function PlusMenuRefreshHarness() {
+  const [planModeActive, setPlanModeActive] = useState(false);
+  const [skillsLoading, setSkillsLoading] = useState(false);
+
+  return (
+    <ComposedShell
+      composer={{
+        planModeActive,
+        mentionSkills: skillsLoading ? [] : baseComposerProps.mentionSkills,
+        mentionSkillsUnavailable: false,
+        mentionSkillsLoading: skillsLoading,
+        onPlanModeChange(active) {
+          setPlanModeActive(active);
+          setSkillsLoading(true);
+          window.setTimeout(() => setSkillsLoading(false), 150);
+        },
+      }}
+    />
+  );
+}
+
+// Real path: toggling Plan while the Runtime invocable-Skill projection is
+// refreshing. The settled presentation stays in place, but activation is held
+// until the new catalog arrives, so the open panel neither jumps nor writes a
+// stray slash into the composer.
+export const PlusMenuDuringSkillRefresh: Story = {
+  render: () => <PlusMenuRefreshHarness />,
+  play: async ({ canvasElement }) => {
+    const page = within(canvasElement.ownerDocument.body);
+    await userEvent.click(page.getByRole('button', { name: '添加上下文' }));
+    const menu = page.getByRole('menu', { name: '添加上下文' });
+    const planRow = within(menu).getByRole('menuitemcheckbox', { name: 'Plan' });
+    const skillsRow = within(menu).getByRole('menuitem', { name: /选择技能/ });
+    const height = menu.getBoundingClientRect().height;
+
+    await userEvent.click(planRow);
+    await expect(planRow).toHaveAttribute('aria-checked', 'true');
+    await expect(skillsRow).toHaveAttribute('aria-busy', 'true');
+    await expect(skillsRow).not.toHaveAttribute('aria-disabled', 'true');
+    await expect(menu).not.toHaveTextContent('当前没有可用技能');
+    expect(Math.abs(menu.getBoundingClientRect().height - height)).toBeLessThanOrEqual(0.5);
+
+    await userEvent.click(skillsRow);
+    await expect(menu).toBeVisible();
+    const editor = canvasElement.querySelector<HTMLElement>(
+      '.maka-composer-editor [contenteditable="true"]',
+    );
+    if (!editor) throw new Error('composer editor is missing');
+    await expect(editor).toHaveTextContent('');
+    await expect(page.queryByRole('listbox', { name: /技能/ })).not.toBeInTheDocument();
+
+    await waitFor(() => {
+      const settledRow = within(
+        page.getByRole('menu', { name: '添加上下文' }),
+      ).getByRole('menuitem', { name: /选择技能/ });
+      expect(settledRow).not.toHaveAttribute('aria-busy');
+    });
+    const settledRow = within(
+      page.getByRole('menu', { name: '添加上下文' }),
+    ).getByRole('menuitem', { name: /选择技能/ });
+    await userEvent.click(settledRow);
+    await expect(await page.findByRole('listbox', { name: /技能/ }, {
+      timeout: 5_000,
+    })).toBeVisible();
+  },
 };
 
 // Real path: a mode is on AND context is staged for the next send. The point of
