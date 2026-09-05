@@ -42,6 +42,8 @@ import {
   ComposerMentionsProvider,
   useComposerMentionsContext,
 } from '../src/renderer/composer-mentions';
+import { ConversationServicesProvider } from '../src/renderer/features/conversation';
+import { createDesktopConversationServices } from '../src/renderer/platform/desktop/create-conversation-services';
 import { desktopSlashCommandAvailability } from '../src/renderer/desktop-slash-command';
 import { getShellCopy } from '../src/renderer/locales/shell-copy';
 import { withScopedMakaBridge } from './maka-bridge';
@@ -97,6 +99,11 @@ const makaBridge = {
     subscribeChanges: () => () => {},
   },
   sessions: {
+    list: async () => [],
+    // Session references are intentionally not part of this slash-menu story.
+    // The real adapter still requires the bridge method at its service boundary;
+    // no story interaction reaches it without the Composer's quote callback.
+    readSnapshot: async () => ({}),
     subscribeChanges(listener: (event: { sessionId: string; reason: string }) => void) {
       publishSessionUpdate = () => listener({ sessionId: SESSION_ID, reason: 'updated' });
       return () => {
@@ -107,6 +114,10 @@ const makaBridge = {
   mcp: { subscribeChanges: () => () => {} },
   workspace: { searchFiles: async () => ({ ok: true, files: [] }) },
 };
+
+const conversationServices = createDesktopConversationServices(
+  makaBridge as unknown as Parameters<typeof createDesktopConversationServices>[0],
+);
 
 function SlashMenuComposer({
   hasSession,
@@ -145,18 +156,20 @@ function SlashMenuHarness({
 }): React.ReactElement {
   return (
     <div style={{ display: 'flex', alignItems: 'flex-end', height: 520, padding: 24 }}>
-      <ComposerMentionsProvider
-        skillCatalogRevision={0}
-        sessionId={hasSession ? SESSION_ID : undefined}
-        projectPath="/workspace/maka-agent"
-        newTaskTarget={
-          hasSession
-            ? undefined
-            : { profileId: 'profile-local', hostId: 'host-local', projectId: 'project-maka' }
-        }
-      >
-        <SlashMenuComposer hasSession={hasSession} streaming={streaming} />
-      </ComposerMentionsProvider>
+      <ConversationServicesProvider services={conversationServices}>
+        <ComposerMentionsProvider
+          skillCatalogRevision={0}
+          sessionId={hasSession ? SESSION_ID : undefined}
+          projectPath="/workspace/maka-agent"
+          newTaskTarget={
+            hasSession
+              ? undefined
+              : { profileId: 'profile-local', hostId: 'host-local', projectId: 'project-maka' }
+          }
+        >
+          <SlashMenuComposer hasSession={hasSession} streaming={streaming} />
+        </ComposerMentionsProvider>
+      </ConversationServicesProvider>
     </div>
   );
 }
