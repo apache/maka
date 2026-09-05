@@ -143,10 +143,13 @@ describe('Computer Use host health', () => {
 
   it('selects the shared maka.cu/2 backend for a pinned Windows helper', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'maka-cu-host-windows-'));
+    const hosts: Array<ReturnType<typeof createComputerUseHost>> = [];
     try {
-      const binaryPath = join(directory, 'maka-cu-windows.exe');
+      const helperDirectory = join(directory, 'bin', 'maka-cu-windows');
+      const binaryPath = join(helperDirectory, 'maka-cu-windows.exe');
       const manifestPath = join(directory, 'bundled-tools.json');
       const bytes = Buffer.from('windows-native-release-artifact');
+      await mkdir(helperDirectory, { recursive: true });
       await writeFile(binaryPath, bytes);
       await chmod(binaryPath, 0o755);
       const hash = createHash('sha256').update(bytes).digest('hex');
@@ -158,7 +161,7 @@ describe('Computer Use host health', () => {
         },
       }));
 
-      const selected = createComputerUseHost({
+      const validForDevelopment = createComputerUseHost({
         isPackaged: false,
         resourcesPath: directory,
         manifestPath,
@@ -166,19 +169,103 @@ describe('Computer Use host health', () => {
         platform: 'win32',
         physicalInputRecentlyActive: () => false,
       });
+      hosts.push(validForDevelopment);
+      assert.equal(validForDevelopment.selected.backendId, 'maka-cu');
+
+      const blockedForDistribution = createComputerUseHost({
+        isPackaged: true,
+        resourcesPath: directory,
+        manifestPath,
+        binaryPath,
+        platform: 'win32',
+        physicalInputRecentlyActive: () => false,
+      });
+      hosts.push(blockedForDistribution);
+      assert.equal(blockedForDistribution.selected.backendId, 'none');
+
+      await writeFile(manifestPath, JSON.stringify({
+        windowsCu: {
+          binarySha256: hash,
+          files: [{ name: 'maka-cu-windows.exe', sizeBytes: bytes.length, sha256: hash }],
+          distributionReady: true,
+        },
+      }));
+      const selected = createComputerUseHost({
+        isPackaged: true,
+        resourcesPath: directory,
+        manifestPath,
+        binaryPath,
+        platform: 'win32',
+        physicalInputRecentlyActive: () => false,
+      });
+      hosts.push(selected);
       assert.equal(selected.selected.backendId, 'maka-cu');
 
-      await mkdir(join(directory, 'unexpected-directory'));
-      const withUnexpectedDirectory = createComputerUseHost({
-        isPackaged: false,
+      const tamperedBytes = Buffer.from(bytes);
+      tamperedBytes[0] ^= 0xff;
+      await writeFile(binaryPath, tamperedBytes);
+      const withTamperedFile = createComputerUseHost({
+        isPackaged: true,
         resourcesPath: directory,
         manifestPath,
         binaryPath,
         platform: 'win32',
         physicalInputRecentlyActive: () => false,
       });
+      hosts.push(withTamperedFile);
+      assert.equal(withTamperedFile.selected.backendId, 'none');
+
+      await rm(binaryPath);
+      const withMissingFile = createComputerUseHost({
+        isPackaged: true,
+        resourcesPath: directory,
+        manifestPath,
+        binaryPath,
+        platform: 'win32',
+        physicalInputRecentlyActive: () => false,
+      });
+      hosts.push(withMissingFile);
+      assert.equal(withMissingFile.selected.backendId, 'none');
+
+      await writeFile(binaryPath, bytes);
+      await chmod(binaryPath, 0o755);
+      const restored = createComputerUseHost({
+        isPackaged: true,
+        resourcesPath: directory,
+        manifestPath,
+        binaryPath,
+        platform: 'win32',
+        physicalInputRecentlyActive: () => false,
+      });
+      hosts.push(restored);
+      assert.equal(restored.selected.backendId, 'maka-cu');
+
+      await writeFile(join(helperDirectory, 'unexpected.dll'), Buffer.from('unexpected'));
+      const withUnexpectedFile = createComputerUseHost({
+        isPackaged: true,
+        resourcesPath: directory,
+        manifestPath,
+        binaryPath,
+        platform: 'win32',
+        physicalInputRecentlyActive: () => false,
+      });
+      hosts.push(withUnexpectedFile);
+      assert.equal(withUnexpectedFile.selected.backendId, 'none');
+
+      await rm(join(helperDirectory, 'unexpected.dll'));
+      await mkdir(join(helperDirectory, 'unexpected-directory'));
+      const withUnexpectedDirectory = createComputerUseHost({
+        isPackaged: true,
+        resourcesPath: directory,
+        manifestPath,
+        binaryPath,
+        platform: 'win32',
+        physicalInputRecentlyActive: () => false,
+      });
+      hosts.push(withUnexpectedDirectory);
       assert.equal(withUnexpectedDirectory.selected.backendId, 'none');
     } finally {
+      for (const host of hosts) host.selected.backend?.dispose?.();
       await rm(directory, { recursive: true, force: true });
     }
   });
