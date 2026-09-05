@@ -76,6 +76,10 @@
 # expand at their insertion points. Functions therefore read exclusively from
 # the $maka* variables assigned in customInit.
 
+# The archive and uninstaller bytes are stable; their build-time mtimes are not.
+# Their installation does not depend on preserving those input file dates.
+SetDateSave off
+
 !ifndef BUILD_UNINSTALLER
 
 !include LogicLib.nsh

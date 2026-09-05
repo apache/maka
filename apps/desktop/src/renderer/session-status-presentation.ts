@@ -97,7 +97,7 @@ export function normalizeSessionSummaryForDisplay<T extends SessionSummary>(sess
  * the UI; they just fall through to the catch-all until the mapping
  * is extended.
  */
-export function describeTurnErrorClass(errorClass: string | undefined, locale: UiLocale = 'zh-CN'): string {
+export function describeTurnErrorClass(errorClass: string | undefined, locale: UiLocale): string {
   const copy = getDesktopConversationCopy(locale).turnError;
   if (!errorClass) return copy.unknown;
   const reasonDescription = describeSessionErrorReason(errorClass, locale);
@@ -169,7 +169,7 @@ export interface FailedTurnExecutionState {
  */
 export function describeFailedTurnExecutionState(
   state: FailedTurnExecutionState,
-  locale: UiLocale = 'zh-CN',
+  locale: UiLocale,
 ): string | undefined {
   const copy = getDesktopConversationCopy(locale).turnError.executionState;
   if (state.erroredToolCount > 0) return copy.erroredTool;

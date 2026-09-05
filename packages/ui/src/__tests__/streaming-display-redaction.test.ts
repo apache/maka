@@ -22,7 +22,7 @@ import { describe, it } from 'node:test';
 import { redactSecrets } from '../redact.js';
 import { applyAssistantComplete, applyAssistantDelta } from '../assistant-stream.js';
 import { applyThinkingComplete, applyThinkingDelta } from '../thinking-stream.js';
-import { applyLiveTurnEvent } from '../live-turn-projection.js';
+import { applyLiveTurnEvent } from './live-turn-zh.js';
 import {
   appendStreamingDisplayRedaction,
   createStreamingDisplayRedactionState,
@@ -164,12 +164,14 @@ describe('streaming display redaction', () => {
     for (const apply of [applyAssistantDelta, applyThinkingDelta]) {
       const initialState = createStreamingDisplayRedactionState();
       const opener = apply('', 'Authorization:', {
+        locale: 'zh-CN' as const,
         maxDeltaChars: 128,
         maxTotalChars: 512,
         redactionState: initialState,
       });
       const secret = `Bearer ${'s'.repeat(5_000)}`;
       const truncated = apply(opener.text, secret, {
+        locale: 'zh-CN' as const,
         maxDeltaChars: 128,
         maxTotalChars: 512,
         redactionState: opener.redactionState,
@@ -183,6 +185,7 @@ describe('streaming display redaction', () => {
       );
 
       const total = apply('', 'safe '.repeat(200), {
+        locale: 'zh-CN' as const,
         maxDeltaChars: 2_000,
         maxTotalChars: 128,
         redactionState: createStreamingDisplayRedactionState(),

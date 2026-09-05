@@ -78,6 +78,10 @@ const GRAPH_SIDE_CONVERSATION_REMOVAL_TARGET_ID = 'graph-side-conversation-remov
 const ARCHIVED_SIDE_CONVERSATION_TARGET_ID = 'archived-side-conversation-target';
 const ACTIVE_SOURCE_SIDE_CONVERSATION_TARGET_ID = 'active-source-side-conversation-target';
 
+function sectionedSummary(goal: string): string {
+  return `## Goal\n${goal}\n\n## Progress\n- done\n\n## Next Steps\n1. continue\n\n## Critical Context\n- (none)`;
+}
+
 test('two Clients share exact retryable Session branch and revision authority', {
   skip: process.platform === 'win32' ? 'Windows SQLite shutdown lifecycle' : false,
   timeout: 120_000,
@@ -1642,8 +1646,7 @@ async function seedDurableOrderCheckpoint(
     const checkpoint = buildHistoryCompactCheckpoint({
       sessionId: sourceSessionId,
       coveredRuntimeEvents,
-      summary: 'The first turn completed.',
-      summaryFormat: 'legacy_freeform',
+      summary: sectionedSummary('The first turn completed.'),
       highWaterSeq: 2,
     });
     await execution.agentRunStore.appendEvent(sourceSessionId, 'run-turn-1', {

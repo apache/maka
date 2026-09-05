@@ -25,7 +25,7 @@ import { getDesktopConversationCopy } from './locales/conversation-copy.js';
  * runtime. Unknown reasons intentionally return undefined so callers can use
  * their existing safe fallback instead of displaying raw provider text.
  */
-export function describeSessionErrorReason(reason: string | undefined, locale: UiLocale = 'zh-CN'): string | undefined {
+export function describeSessionErrorReason(reason: string | undefined, locale: UiLocale): string | undefined {
   const copy = getDesktopConversationCopy(locale).turnError;
   switch (reason?.toLowerCase()) {
     case 'context_overflow':

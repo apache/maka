@@ -409,6 +409,9 @@ export class RuntimeHostKernel {
     void this.#serveConnection(connection).finally(() => {
       this.#handshakingTransports.delete(transport);
       this.#transportAuthorities.delete(transport);
+      // A handshake that never completes keeps the Host visible to the idle
+      // timer while it is in flight; once it settles, idle must re-evaluate.
+      this.#scheduleIdleIfNeeded();
     });
   }
 
@@ -518,7 +521,7 @@ export class RuntimeHostKernel {
       hello.generation !== undefined &&
       hello.generation !== this.#options.generation;
     if (generationMismatch && hello.takeover?.expectedHostEpoch === this.hostEpoch) {
-      if (authority.principalKind === 'local_owner' && this.#isTrueIdle()) {
+      if (authority.principalKind === 'local_owner' && this.#isTrueIdle(transport)) {
         this.#requestDrain();
         return {
           kind: 'draining',
@@ -545,7 +548,7 @@ export class RuntimeHostKernel {
         ...(this.#options.generation === undefined ? {} : { generation: this.#options.generation }),
         state: admittedState,
         replacement:
-          this.#lifecycle.kind === 'ephemeral' && this.#isTrueIdle()
+          this.#lifecycle.kind === 'ephemeral' && this.#isSettledForReplacementAdvice()
             ? 'wait_for_idle_exit'
             : 'blocked_by_residency',
         ...(generationMismatch && authority.principalKind === 'local_owner'
@@ -672,7 +675,9 @@ export class RuntimeHostKernel {
   #retainUntilProcessExit(): void {
     if (this.#retainedUntilProcessExit) return;
     this.#retainedUntilProcessExit = true;
-    this.#residencies.acquire('process-retention');
+    // Not work in flight: the marker only blocks idle exit, so it must not
+    // stall the drain it accompanies.
+    this.#residencies.acquire('process-retention', 'idle');
     this.#cancelIdle();
   }
 
@@ -872,7 +877,7 @@ export class RuntimeHostKernel {
     // requires explicit interruption authority before retirement.
     if (this.#acceptedTransports.size > 1) return true;
     if (this.#activeCommandOperations > 1) return true;
-    return this.#residencies.snapshot().some(({ label }) => label !== 'process-retention');
+    return this.#residencies.drainCount > 0;
   }
 
   #beginCompositionDrain(): void {
@@ -899,8 +904,9 @@ export class RuntimeHostKernel {
     if (this.#shutdownRequested) return;
     // One timer authority per lifecycle phase: until the first connection is
     // accepted, only #initialConnectionDeadline governs (it defers under an
-    // in-flight handshake, which #isTrueIdle() cannot see); afterwards the
-    // idle timer owns the idleGraceMs exit.
+    // in-flight handshake up to a bounded number of times); afterwards the
+    // idle timer owns the idleGraceMs exit, with in-flight handshakes visible
+    // to #isTrueIdle().
     if (!this.#hasAcceptedConnection) return;
     if (!this.#isTrueIdle() || this.#idleTimer) return;
     this.#idleTimer = setTimeout(() => {
@@ -910,7 +916,28 @@ export class RuntimeHostKernel {
     }, this.#lifecycle.idleGraceMs);
   }
 
-  #isTrueIdle(): boolean {
+  #isTrueIdle(exceptHandshaking?: RuntimeHostMessageTransport): boolean {
+    // A transport mid-handshake keeps the Host busy, except the one whose
+    // admission is being decided right now: counting it would make every
+    // true-idle takeover observe itself as activity.
+    const handshaking =
+      exceptHandshaking !== undefined && this.#handshakingTransports.has(exceptHandshaking)
+        ? this.#handshakingTransports.size - 1
+        : this.#handshakingTransports.size;
+    return (
+      this.#state === 'ready' &&
+      this.#acceptedTransports.size === 0 &&
+      handshaking === 0 &&
+      this.#activeOperations === 0 &&
+      this.#residencies.activeCount === 0
+    );
+  }
+
+  // The replacement advice in a rejection is what a stale Client acts on.
+  // In-flight handshakes resolve within milliseconds and must not flip that
+  // advice, so unlike the idle timer and the takeover decision it ignores
+  // the handshaking set entirely.
+  #isSettledForReplacementAdvice(): boolean {
     return (
       this.#state === 'ready' &&
       this.#acceptedTransports.size === 0 &&
