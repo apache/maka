@@ -370,6 +370,13 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => sessionStore.createStableSession(request, initialBoundary)),
       assignWorkHubMessage: (request) => run(() => sessionStore.assignWorkHubMessage(request)),
       readWorkHubAssignment: (actionId) => run(() => sessionStore.readWorkHubAssignment(actionId)),
+      readActiveWorkHubAssignmentsByTarget: (targetSessionIds, maxAssignmentsPerTarget) =>
+        run(() =>
+          sessionStore.readActiveWorkHubAssignmentsByTarget(
+            targetSessionIds,
+            maxAssignmentsPerTarget,
+          ),
+        ),
       readWorkHubReplacement: (delegationId) =>
         run(() => sessionStore.readWorkHubReplacement(delegationId)),
       readWorkHubReplacementAbort: (delegationId) =>

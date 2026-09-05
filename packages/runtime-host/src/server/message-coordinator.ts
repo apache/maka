@@ -566,6 +566,16 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     );
   }
 
+  readMessageExecutionDispositionAdmitted(
+    sessionId: string,
+    messageId: string,
+    admission: SessionAdmissionLease,
+  ): Promise<HostMessageExecutionDisposition> {
+    return this.#sessionAdmission.runAdmitted(sessionId, admission, () =>
+      this.#resolveMessageExecution(sessionId, messageId),
+    );
+  }
+
   async #resolveMessageExecution(
     sessionId: string,
     messageId: string,
