@@ -21,6 +21,17 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { formatTextWithInlineRefs } from '../model-history.js';
 
+test('quote-only messages keep their pasted text in model context', () => {
+  const formatted = formatTextWithInlineRefs({
+    kind: 'text',
+    text: '',
+    quotes: [{ text: 'QUOTE_ONLY_MARKER', label: 'Pasted text' }],
+  });
+
+  assert.match(formatted, /QUOTE_ONLY_MARKER/);
+  assert.match(formatted, /<quoted_excerpt label="Pasted text">/);
+});
+
 test('replay uses the same reference form and escapes path markup as untrusted data', () => {
   const formatted = formatTextWithInlineRefs({
     kind: 'text',

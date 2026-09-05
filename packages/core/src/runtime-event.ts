@@ -1479,7 +1479,16 @@ export function runtimeEventHasModelVisibleContent(event: RuntimeEvent): boolean
   if (!content) return false;
   switch (content.kind) {
     case 'text':
-      return content.text.length > 0;
+      // Text events may carry model-visible inline context even when their
+      // authored body is empty. Quotes, attachments, and directory references
+      // are folded into provider text by formatTextWithInlineRefs; treating
+      // those events as empty drops the current user turn from durable replay.
+      return (
+        content.text.length > 0 ||
+        (content.quotes?.length ?? 0) > 0 ||
+        (content.attachments?.length ?? 0) > 0 ||
+        (content.directoryReferences?.length ?? 0) > 0
+      );
     case 'thinking':
     case 'function_call':
     case 'function_response':

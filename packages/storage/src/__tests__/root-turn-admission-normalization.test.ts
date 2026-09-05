@@ -21,6 +21,37 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { normalizeRootTurnAdmissionPayload } from '../agent-run-store.js';
 
+test('root admission accepts a quote-only message but still rejects empty content', () => {
+  const content = {
+    text: '',
+    quotes: [{ text: 'pasted message', label: 'Pasted text' }],
+  } as const;
+
+  assert.deepEqual(normalizeRootTurnAdmissionPayload(content, []).normalizedInput, content);
+  assert.throws(() => normalizeRootTurnAdmissionPayload({ text: '' }, []));
+});
+
+test('root admission accepts an attachment-only message', () => {
+  const content = {
+    text: '',
+    attachments: [
+      {
+        kind: 'image' as const,
+        name: 'image.png',
+        mimeType: 'image/png',
+        bytes: 3,
+        ref: {
+          kind: 'session_file' as const,
+          sessionId: 'session-1',
+          relativePath: 'attachments/image.png',
+        },
+      },
+    ],
+  };
+
+  assert.deepEqual(normalizeRootTurnAdmissionPayload(content, []).normalizedInput, content);
+});
+
 test('root admission preserves an explicit empty inline-reference marker from its sources', () => {
   const content = { text: 'plain', inlineReferences: [] } as const;
   const normalized = normalizeRootTurnAdmissionPayload(content, [

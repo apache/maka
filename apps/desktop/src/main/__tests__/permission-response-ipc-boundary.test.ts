@@ -238,6 +238,30 @@ describe('permission response IPC boundary', () => {
       text: '',
       skillIds: ['writer'],
     });
+    assert.deepEqual(
+      normalizeSessionSendCommand({
+        type: 'send',
+        text: '',
+        quotes: [{ text: 'pasted message', label: 'Pasted text' }],
+      }),
+      {
+        type: 'send',
+        text: '',
+        quotes: [{ text: 'pasted message', label: 'Pasted text' }],
+      },
+    );
+    assert.deepEqual(
+      normalizeSessionSendCommand({
+        type: 'send',
+        text: '',
+        attachmentItems: [{ approvalId: 'image-approval', name: 'image.png' }],
+      }),
+      {
+        type: 'send',
+        text: '',
+        attachmentItems: [{ approvalId: 'image-approval', name: 'image.png' }],
+      },
+    );
   });
 
   it('rejects malformed or oversized send payloads', () => {
@@ -275,7 +299,7 @@ describe('permission response IPC boundary', () => {
     }
   });
 
-  it('rejects empty send text without skills', () => {
+  it('rejects empty send text without skills, quotes, or attachments', () => {
     assert.throws(
       () => normalizeSessionSendCommand({ type: 'send', text: '' }),
       /Invalid send text/,

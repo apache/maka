@@ -1544,7 +1544,11 @@ function normalizeRootTurnMessageContent(
     }
     throw new Error(`Invalid ${description}`);
   }
-  if (normalized.text.length === 0 || (normalized.attachments?.length ?? 0) > maxAttachments) {
+  const hasModelContent =
+    normalized.text.length > 0 ||
+    (normalized.quotes?.length ?? 0) > 0 ||
+    (normalized.attachments?.length ?? 0) > 0;
+  if (!hasModelContent || (normalized.attachments?.length ?? 0) > maxAttachments) {
     throw new Error(`Invalid ${description}`);
   }
   for (const [index, attachment] of (normalized.attachments ?? []).entries()) {

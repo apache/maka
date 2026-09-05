@@ -1827,6 +1827,16 @@ describe('Runtime Host bootstrap protocol', () => {
       });
     const directory = { hostId: 'host-a', path: '/workspace/source' };
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 56);
+    const quoteOnly = { text: '', quotes: [{ text: 'pasted message' }] };
+    assert.doesNotThrow(() => submit(quoteOnly));
+    assert.deepEqual(decodeMessageContent(quoteOnly), quoteOnly);
+    const attachmentOnly = {
+      text: '',
+      attachments: [attachmentRef({ kind: 'workspace_file', relativePath: 'image.png' })],
+    };
+    assert.doesNotThrow(() => submit(attachmentOnly));
+    assert.deepEqual(decodeMessageContent(attachmentOnly), attachmentOnly);
+    assert.throws(() => submit({ text: '' }), isInvalidFrame);
     assert.doesNotThrow(() => submit({ text: 'valid', directoryReferences: [directory] }));
     for (const directoryReferences of [
       Array.from({ length: 5 }, () => directory),

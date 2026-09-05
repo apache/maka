@@ -167,6 +167,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
   const copyText = getConversationCopy(locale).messages;
   const nonImageAttachments = props.attachments?.filter((attachment) => attachment.kind !== 'image') ?? [];
   const imageAttachments = props.attachments?.filter((attachment) => attachment.kind === 'image') ?? [];
+  const hasText = props.text.length > 0;
   const editActionLabel = props.editDisabled
     ? (props.editDisabledReason ?? copyText.editMessageDisabledRunning)
     : copyText.editMessage;
@@ -251,18 +252,22 @@ const UserMessageBody = memo(function UserMessageBody(props: {
           ))}
         </HStack>
       ) : null}
-      <ChatMessageBubble
-        className="maka-chat-message-bubble maka-chat-message-bubble-user"
-        metadata={userMetadata}
-      >
-        {props.inlineReferences ? (
-          <InlineReferenceText text={props.text} references={props.inlineReferences} />
-        ) : (
-          <ChatTokenizedText tokens={legacySentSkillTokens(props.text)}>
-            {props.text}
-          </ChatTokenizedText>
-        )}
-      </ChatMessageBubble>
+      {hasText ? (
+        <ChatMessageBubble
+          className="maka-chat-message-bubble maka-chat-message-bubble-user"
+          metadata={userMetadata}
+        >
+          {props.inlineReferences ? (
+            <InlineReferenceText text={props.text} references={props.inlineReferences} />
+          ) : (
+            <ChatTokenizedText tokens={legacySentSkillTokens(props.text)}>
+              {props.text}
+            </ChatTokenizedText>
+          )}
+        </ChatMessageBubble>
+      ) : (
+        userMetadata
+      )}
     </>
   );
 });

@@ -1390,6 +1390,98 @@ describe('AiSdkBackend sandbox boundary convergence', () => {
 });
 
 describe('AiSdkBackend model history', () => {
+  test('sends quote-only current turns through the durable replay projection', async () => {
+    const quote = { text: 'QUOTE_ONLY_DURABLE_MARKER', label: 'Pasted text' };
+    const durable = durableTurnHarness('turn-quote-only', '');
+    const quotedAnchor: RuntimeEvent = {
+      ...durable.anchor,
+      content: { kind: 'text', text: '', quotes: [quote] },
+    };
+    durable.ledger.splice(0, 1, quotedAnchor);
+    const model = textCompletionModel('received quote');
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    const events = await drainDurably(
+      backend.send(
+        durable.input({
+          quotes: [quote],
+          headAnchorRuntimeEvent: quotedAnchor,
+        }),
+      ),
+      durable,
+    );
+
+    assert.equal(
+      events.some((event) => event.type === 'error'),
+      false,
+    );
+    assert.equal(model.doStreamCalls.length, 1);
+    assert.match(JSON.stringify(model.doStreamCalls[0]?.prompt), /QUOTE_ONLY_DURABLE_MARKER/);
+  });
+
+  test('sends attachment-only current turns through the durable replay projection', async () => {
+    const attachment = {
+      kind: 'image' as const,
+      name: 'image.png',
+      mimeType: 'image/png',
+      bytes: 3,
+      ref: {
+        kind: 'session_file' as const,
+        sessionId: 'session-1',
+        relativePath: 'attachments/image.png',
+      },
+    };
+    const durable = durableTurnHarness('turn-attachment-only', '');
+    const attachmentAnchor: RuntimeEvent = {
+      ...durable.anchor,
+      content: { kind: 'text', text: '', attachments: [attachment] },
+    };
+    durable.ledger.splice(0, 1, attachmentAnchor);
+    const model = textCompletionModel('received attachment');
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    const events = await drainDurably(
+      backend.send(
+        durable.input({
+          attachments: [attachment],
+          headAnchorRuntimeEvent: attachmentAnchor,
+        }),
+      ),
+      durable,
+    );
+
+    assert.equal(
+      events.some((event) => event.type === 'error'),
+      false,
+    );
+    assert.equal(model.doStreamCalls.length, 1);
+    assert.match(JSON.stringify(model.doStreamCalls[0]?.prompt), /image\.png/);
+  });
+
   test('records structured sandbox failure metadata on tool failure traces', async () => {
     const traces: RunTraceEvent[] = [];
     const messages: ToolResultMessage[] = [];

@@ -209,7 +209,17 @@ export function normalizeSessionSendCommand(input: unknown): NormalizedSendSessi
   const displayText =
     value.displayText === undefined ? undefined : normalizeSendText(value.displayText);
   const skillIds = normalizeSessionSkillIds(value.skillIds);
-  if (!text.trim() && skillIds.length === 0) {
+  const quotes = normalizeOptionalQuotes(value.quotes);
+  const retainedAttachments = normalizeOptionalRetainedAttachments(value.retainedAttachments);
+  const hasAttachmentInput =
+    (Array.isArray(value.attachmentItems) && value.attachmentItems.length > 0) ||
+    (retainedAttachments.retainedAttachments?.length ?? 0) > 0;
+  if (
+    !text.trim() &&
+    skillIds.length === 0 &&
+    quotes.quotes === undefined &&
+    !hasAttachmentInput
+  ) {
     throw new Error('Invalid send text');
   }
   return {
@@ -220,12 +230,12 @@ export function normalizeSessionSendCommand(input: unknown): NormalizedSendSessi
     ...(displayText !== undefined ? { displayText } : {}),
     ...(skillIds.length > 0 ? { skillIds } : {}),
     ...(value.attachmentItems !== undefined ? { attachmentItems: value.attachmentItems } : {}),
-    ...normalizeOptionalRetainedAttachments(value.retainedAttachments),
+    ...retainedAttachments,
     ...(value.turnOrchestration !== undefined
       ? { turnOrchestration: normalizeTurnOrchestration(value.turnOrchestration) }
       : {}),
     ...normalizeOptionalDirectoryReferences(value.directoryReferences),
-    ...normalizeOptionalQuotes(value.quotes),
+    ...quotes,
     ...normalizeOptionalWorkspaceFileReferences(
       value.workspaceFileReferences,
       displayText ?? text,
