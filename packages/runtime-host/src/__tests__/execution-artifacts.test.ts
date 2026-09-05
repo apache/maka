@@ -27,6 +27,7 @@ import { MAX_ATTACHMENT_BYTES } from '@maka/core/attachments';
 import { openInteractiveArtifactStoreForWrite } from '@maka/storage/artifact-stores';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import { createHostExecutionArtifactServices } from '../server/execution-artifacts.js';
+import { restoreArtifactV1Shape } from './fixtures/artifact-v1.js';
 
 test('Hosted execution publishes contained Tool Artifacts and durable result archives', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-host-execution-artifacts-'));
@@ -97,6 +98,24 @@ test('Hosted execution publishes contained Tool Artifacts and durable result arc
       { ok: true, serializedResult },
     );
     await store.close();
+    restoreArtifactV1Shape(join(base, 'root'));
+    const upgraded = await openInteractiveArtifactStoreForWrite(owner.lease);
+    try {
+      const successor = createHostExecutionArtifactServices({
+        artifacts: upgraded,
+        requestDrain: () => assert.fail('reading an upgraded archive must not drain'),
+      });
+      assert.deepEqual(
+        await successor.toolResultArchive.services.readToolResultArchive({
+          ...archiveInput,
+          kind: 'maka.archived_tool_result',
+          artifactId: archived.artifactId,
+        }),
+        { ok: true, serializedResult },
+      );
+    } finally {
+      upgraded.close();
+    }
   } finally {
     await owner.close();
     await rm(base, { recursive: true, force: true });

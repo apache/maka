@@ -18,7 +18,8 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { DatabaseSync } from 'node:sqlite';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, test } from 'node:test';
@@ -44,6 +45,96 @@ import {
 after(removeTrackedControlDirectories);
 
 describe('interactive artifact store authority', () => {
+  test('reads retained v1 payloads after upgrade without reviving retired rows', async () => {
+    await withInteractiveOwner(async (owner, root, track) => {
+      const initial = await openInteractiveArtifactStoreForWrite(owner.lease);
+      initial.close();
+      const db = new DatabaseSync(join(root, 'runtime.sqlite'));
+      db.exec(`
+        DROP TABLE artifact_records;
+        CREATE TABLE artifact_records (
+          storage_key TEXT PRIMARY KEY, artifact_id TEXT NOT NULL,
+          session_id TEXT NOT NULL, created_at INTEGER NOT NULL CHECK(created_at >= 0),
+          status TEXT NOT NULL CHECK(status IN ('live', 'deleted')),
+          relative_path TEXT NOT NULL, record_json TEXT NOT NULL
+        );
+        CREATE INDEX artifact_records_session_order ON artifact_records(session_id, created_at, storage_key);
+        CREATE UNIQUE INDEX artifact_records_relative_path ON artifact_records(relative_path);
+        UPDATE operational_schema_migrations SET version = 1 WHERE scope = 'artifact';
+      `);
+      const retained = [
+        'tool_result',
+        'tool_result_projection',
+        'tool_result_archive',
+        'subagent_writeback',
+        'deep_research',
+        'user_upload',
+        'session_effect',
+      ];
+      const image = Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aN1sAAAAASUVORK5CYII=',
+        'base64',
+      );
+      await mkdir(join(root, 'artifacts', 'session-1'), { recursive: true });
+      for (const source of [...retained, 'fixture', 'deleted', 'malformed']) {
+        const path = `session-1/${source}-result.txt`;
+        const content =
+          source === 'tool_result_projection' || source === 'user_upload'
+            ? image
+            : `original ${source}`;
+        const record = {
+          id: source,
+          sessionId: 'session-1',
+          turnId: 'turn-1',
+          createdAt: 1,
+          name: 'result.txt',
+          kind: 'file',
+          sizeBytes: Buffer.byteLength(content),
+          relativePath: path,
+          source: source === 'deleted' ? 'tool_result' : source,
+          status: source === 'deleted' ? 'deleted' : 'live',
+        };
+        await writeFile(join(root, 'artifacts', path), content);
+        db.prepare('INSERT INTO artifact_records VALUES (?, ?, ?, ?, ?, ?, ?)').run(
+          source,
+          source,
+          'session-1',
+          1,
+          record.status,
+          path,
+          source === 'malformed' ? '{' : JSON.stringify(record),
+        );
+      }
+      db.close();
+      for (let reopen = 0; reopen < 2; reopen += 1) {
+        const store = track(await openInteractiveArtifactStoreForWrite(owner.lease));
+        assert.deepEqual(
+          (await store.listTurnArtifacts('session-1', 'turn-1')).map((r) => r.id).sort(),
+          [...retained].sort(),
+        );
+        for (const source of retained) {
+          if (source === 'tool_result_projection' || source === 'user_upload') {
+            assert.deepEqual(
+              await store.readDurableAttachmentBinary({
+                sessionId: 'session-1',
+                artifactId: source,
+              }),
+              { ok: true, base64: image.toString('base64'), mimeType: 'image/png' },
+            );
+            continue;
+          }
+          const result = await store.readTextInSession('session-1', source);
+          assert.equal(result.ok, true);
+          if (result.ok) assert.equal(result.text, `original ${source}`);
+        }
+        for (const id of ['fixture', 'deleted', 'malformed']) {
+          assert.equal((await store.getInSession('session-1', id)).record, null);
+        }
+        store.close();
+      }
+    });
+  });
+
   test('requires authentic leases and writer facades', async () => {
     await assert.rejects(
       () =>

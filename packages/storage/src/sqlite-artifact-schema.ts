@@ -18,6 +18,7 @@
  */
 
 import type { DatabaseSync } from 'node:sqlite';
+import { decodeArtifactRecordJsons } from './artifact-metadata-codec.js';
 
 export const SQLITE_ARTIFACT_SCHEMA_VERSION = 3;
 
@@ -25,7 +26,26 @@ export function migrateSqliteArtifactDatabase(db: DatabaseSync): void {
   const columns = db.prepare('PRAGMA table_info(artifact_records)').all() as Array<{
     name?: unknown;
   }>;
+  const retained: string[] = [];
   if (columns.some(({ name }) => name === 'status' || name === 'storage_key')) {
+    const rows = db.prepare('SELECT * FROM artifact_records').all();
+    for (const row of rows) {
+      if (columns.some(({ name }) => name === 'status') && row.status !== 'live') continue;
+      try {
+        const parsed = JSON.parse(String(row.record_json));
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
+        if (parsed.status !== undefined && parsed.status !== 'live') continue;
+        delete parsed.status;
+        if (
+          parsed.id !== row.artifact_id ||
+          parsed.sessionId !== row.session_id ||
+          parsed.createdAt !== row.created_at ||
+          parsed.relativePath !== row.relative_path
+        )
+          continue;
+        retained.push(JSON.stringify(parsed));
+      } catch {}
+    }
     db.exec('DROP TABLE artifact_records');
   }
   db.exec(`
@@ -43,4 +63,16 @@ export function migrateSqliteArtifactDatabase(db: DatabaseSync): void {
     CREATE UNIQUE INDEX IF NOT EXISTS artifact_records_relative_path
       ON artifact_records(relative_path);
   `);
+  const insert = db.prepare(`
+    INSERT INTO artifact_records VALUES (?, ?, ?, ?, ?)
+  `);
+  for (const record of decodeArtifactRecordJsons(retained)) {
+    insert.run(
+      record.id,
+      record.sessionId,
+      record.createdAt,
+      record.relativePath,
+      JSON.stringify(record),
+    );
+  }
 }

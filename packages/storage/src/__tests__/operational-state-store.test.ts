@@ -166,7 +166,7 @@ test('a non-owner rejects an older schema without migrating it behind the Runtim
   }
 });
 
-test('opens existing Sessions after retiring v1 Artifact metadata', async () => {
+test('preserves live supported v1 Artifacts when opening existing Sessions', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-operational-artifact-v1-retirement-'));
   const databasePath = join(root, 'runtime.sqlite');
   try {
@@ -199,7 +199,7 @@ test('opens existing Sessions after retiring v1 Artifact metadata', async () => 
         1,
         'live',
         'session-1/legacy-artifact-result.txt',
-        '{"id":"legacy-artifact"}'
+        '{"id":"legacy-artifact","sessionId":"session-1","turnId":"turn-1","createdAt":1,"name":"result.txt","kind":"file","sizeBytes":4,"relativePath":"session-1/legacy-artifact-result.txt","source":"tool_result_archive","status":"live"}'
       );
       UPDATE operational_schema_migrations SET version = 1 WHERE scope = 'artifact';
     `);
@@ -220,7 +220,7 @@ test('opens existing Sessions after retiring v1 Artifact metadata', async () => 
           count: number;
         }
       ).count,
-      0,
+      1,
     );
     assert.equal(
       (
