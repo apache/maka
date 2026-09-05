@@ -164,7 +164,7 @@ import { HostPluginPlatform } from './plugin-platform.js';
 import { RootAdmissionOwner } from './root-admission-owner.js';
 import { RootTurnCoordinator } from './root-turn-coordinator.js';
 import { RuntimePolicyActivationGate } from './runtime-policy-activation-gate.js';
-import { resolveSandboxBoundaryGraphWake } from './sandbox-boundary-graph-wake.js';
+import { resolveSandboxBoundaryRootSession } from './sandbox-boundary-graph-wake.js';
 import { HostRuntimePolicyCoordinator } from './runtime-policy-coordinator.js';
 import { startHostModelMetadataRefresh } from './model-metadata-refresh.js';
 import { HostRuntimeResourceCoordinator } from './runtime-resource-coordinator.js';
@@ -680,9 +680,9 @@ export async function createExecutionRuntimeHostComposition(
         beginDrain();
         context.requestDrain();
       },
-      resolveSandboxBoundaryGraphWake: async (sessionId) => {
+      resolveSandboxBoundaryRootSession: async (sessionId) => {
         try {
-          return await resolveSandboxBoundaryGraphWake(sessionId, stores.sessionStore, {
+          return await resolveSandboxBoundaryRootSession(sessionId, stores.sessionStore, {
             listGraphIds: (rootSessionId) =>
               requireGraphCoordinator(graphCoordinator).listGraphIds(rootSessionId),
           });
@@ -691,8 +691,8 @@ export async function createExecutionRuntimeHostComposition(
           throw error;
         }
       },
-      onSandboxBoundarySettled: (sessionId) =>
-        requireGraphSupervisorWake(graphSupervisorWake).notifyPermissionResponse(sessionId),
+      onSandboxBoundaryGraphWake: (rootSessionId) =>
+        requireGraphSupervisorWake(graphSupervisorWake).notifyPermissionResponse(rootSessionId),
     });
     memory = new HostMemoryCoordinator({
       store: memoryStore,
