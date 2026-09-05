@@ -48,6 +48,8 @@ export interface RunRuntimeHostTuiInput {
   readonly resumeCwd?: string;
   readonly hostProfileId?: string;
   readonly projectId?: string;
+  /** CLI package version, threaded to the fullscreen TUI trial's channel default. */
+  readonly buildVersion?: string;
   readonly onProcessExit: (exitCode: number, error?: Error) => void;
 }
 
@@ -73,6 +75,7 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
       input.cwd,
       input.locale,
       input.hostProfileId,
+      input.buildVersion,
     );
     if (!configured) throw error;
     context = await createRuntimeHostTuiContext(contextInput);
@@ -116,6 +119,7 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
       listShellRunUpdates: (sessionId) => context.driver.listShellRunUpdates(sessionId),
       onProcessExit: input.onProcessExit,
       cliCommand: input.cliCommand,
+      buildVersion: input.buildVersion,
       resumeSessionId: input.resumeSessionId,
       resumeCwd: input.resumeCwd,
       ...(runtimeHostProfileUsesHostWorkspace(context.profile.kind) && input.resumeSessionId
@@ -209,6 +213,7 @@ async function runFirstRunOnboarding(
   cwd: string,
   locale: UiLocale,
   hostProfileId?: string,
+  buildVersion?: string,
 ): Promise<boolean> {
   const connected = await connectRuntimeHostCli({
     clientDataRoot,
@@ -230,6 +235,7 @@ async function runFirstRunOnboarding(
         activities: new SessionActivityRegistry(),
       } satisfies MakaPiTuiTurnActivitySurface,
       onboarding: createRuntimeHostOnboardingSurface(connected.connection),
+      ...(buildVersion ? { buildVersion } : {}),
     });
     return (await readRuntimeHostConnectionCatalog(connected.connection)).defaultTarget !== null;
   } finally {
