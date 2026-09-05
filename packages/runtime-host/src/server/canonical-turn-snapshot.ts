@@ -125,9 +125,7 @@ async function hasPendingInteraction(
   );
 }
 
-function providerFailureSummaryFromRuntimeEvent(
-  event: RuntimeEvent,
-): string | undefined {
+function providerFailureSummaryFromRuntimeEvent(event: RuntimeEvent): string | undefined {
   return providerFailureSummaryFromDetails(
     event.content?.kind === 'error' ? event.content.details : undefined,
   );
