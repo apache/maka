@@ -121,8 +121,6 @@ export type SettingsProjectsCopy = {
     saveAndEnable: string;
     defaultBadge: string;
     experimentalBadge: string;
-    copyPeerId(value: string): string;
-    peerIdCopied: string;
     peerIdCopyFailed: string;
     peerPathDirect: string;
     peerPathTransit: string;
@@ -429,8 +427,6 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       saveAndEnable: '保存并启用',
       defaultBadge: '默认',
       experimentalBadge: '实验性',
-      copyPeerId: (value: string) => `复制完整 Peer ID：${value}`,
-      peerIdCopied: 'Peer ID 已复制',
       peerIdCopyFailed: '无法复制 Peer ID',
       peerPathDirect: '直连',
       peerPathTransit: '成员转发',
@@ -744,8 +740,6 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       credentialHelp: '在遠端機器使用 desktop-client preset 簽發',
       saveAndEnable: '儲存並啟用',
       defaultBadge: '預設',
-      copyPeerId: (value: string) => `複製完整 Peer ID：${value}`,
-      peerIdCopied: 'Peer ID 已複製',
       peerIdCopyFailed: '無法複製 Peer ID',
       peerPathDirect: '直接連線',
       peerPathTransit: '成員轉送',
@@ -1061,8 +1055,6 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       saveAndEnable: 'Save and enable',
       defaultBadge: 'Default',
       experimentalBadge: 'Experimental',
-      copyPeerId: (value: string) => `Copy full Peer ID: ${value}`,
-      peerIdCopied: 'Peer ID copied',
       peerIdCopyFailed: 'Could not copy Peer ID',
       peerPathDirect: 'Direct',
       peerPathTransit: 'Member transit',

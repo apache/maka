@@ -42,8 +42,6 @@ import {
 } from './agent-graph-refresh.js';
 import { getAgentGraphPanelCopy } from './locales/agent-graph-copy.js';
 
-export { getAgentGraphPanelCopy };
-
 const noopAgentGraphRefreshScheduler: AgentGraphRefreshScheduler = {
   requestRefresh() {},
   invalidateAndRefresh() {},

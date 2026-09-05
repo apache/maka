@@ -39,6 +39,16 @@ test('Traditional Chinese Peer Mesh copy does not use the Simplified Chinese bra
   assert.equal(copy.joinHint, '貼上另一個 Peer 產生的一次性邀請碼。');
 });
 
+test('Traditional Chinese Peer Mesh route states use exact localized labels', () => {
+  assert.deepEqual(getPeerMeshCopy('zh-TW').routeState, {
+    local: '本機',
+    connecting: '正在連線',
+    reachable: '可連線',
+    reconnecting: '正在恢復連線',
+    needs_repair: '需要新邀請碼修復',
+  });
+});
+
 test('Traditional Chinese connection copy uses 回傳, 回應, and 發送', () => {
   const conversation = getDesktopConversationCopy('zh-TW');
   assert.equal(conversation.quoteCompanion.errors.respondFailed, '回應失敗，請稍後重試。');

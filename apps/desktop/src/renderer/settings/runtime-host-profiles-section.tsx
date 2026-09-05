@@ -49,6 +49,7 @@ import {
 } from "@maka/ui";
 import { Cpu, ICON_SIZE } from "@maka/ui/icons";
 import { getSettingsProjectsCopy } from "../locales/settings-projects-copy.js";
+import { getPeerMeshCopy } from "../locales/peer-mesh-copy.js";
 import type { UiLocale } from "@maka/core/ui-locale";
 
 import { PasswordInput } from "./password-input.js";
@@ -94,6 +95,7 @@ export function RuntimeHostProfilesSection(props: {
 }) {
   const locale = useUiLocale();
   const copy = getSettingsProjectsCopy(locale).runtimeHost;
+  const peerMeshCopy = getPeerMeshCopy(locale);
   const pairingActionCopy: RuntimeHostPairingActionCopy = {
     retry: copy.resolvePairingRecovery,
     retryFailed: copy.resolvePairingRecoveryFailed,
@@ -670,8 +672,8 @@ export function RuntimeHostProfilesSection(props: {
                               <PeerMeshPeerIdButton
                                 peerId={profile.transport.reachability.lease.peerId}
                                 displayValue={abbreviatePeerId(profile.transport.reachability.lease.peerId)}
-                                copyLabel={copy.copyPeerId(profile.transport.reachability.lease.peerId)}
-                                copiedTitle={copy.peerIdCopied}
+                                copyLabel={peerMeshCopy.copyPeerId(profile.transport.reachability.lease.peerId)}
+                                copiedTitle={peerMeshCopy.peerIdCopied}
                                 failedTitle={copy.peerIdCopyFailed}
                                 errorMessage={(error) => settingsActionErrorMessage(error, locale)}
                                 className="settingsRuntimeHostPeerId"
@@ -699,7 +701,9 @@ export function RuntimeHostProfilesSection(props: {
                           <span>
                             <Badge
                               variant="neutral"
-                              label={peerPathLabel(entry.peerPath, locale)}
+                              label={entry.peerPath.kind === 'direct'
+                                ? copy.peerPathDirect
+                                : copy.peerPathTransit}
                             />
                           </span>
                         </Tooltip>
@@ -856,20 +860,6 @@ function peerPathDetail(
         ? 'TCP'
         : copy.peerPathTransportOther;
   return `${copy.peerPathDirect} · ${transport}`;
-}
-
-function peerPathLabel(
-  path: RuntimeHostPeerConnectionPath,
-  locale: UiLocale,
-): string {
-  const copy = getSettingsProjectsCopy(locale).runtimeHost;
-  if (path.kind === 'transit') {
-    return copy.peerPathTransit;
-  }
-  if (path.transport === 'webrtc') return 'WebRTC';
-  if (path.transport === 'quic') return 'QUIC';
-  if (path.transport === 'tcp') return 'TCP';
-  return copy.peerPathDirect;
 }
 
 function abbreviatePeerId(peerId: string): string {

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { PeerMeshQueryResult } from '@maka/runtime-host/protocol';
+import type { PeerMeshMemberProjection, PeerMeshQueryResult } from '@maka/runtime-host/protocol';
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 export interface PeerMeshCopy {
@@ -112,10 +112,7 @@ export interface PeerMeshCopy {
   readonly allowedMembers: string;
   readonly reservations: string;
   readonly circuits: string;
-  readonly routeState: Record<
-    'local' | 'connecting' | 'reachable' | 'reconnecting' | 'needs_repair',
-    string
-  >;
+  readonly routeState: Record<PeerMeshMemberProjection['state'], string>;
   readonly endpointKind: Record<'client' | 'host' | 'unknown', string>;
   readonly endpointKindHelp: Record<'client' | 'host' | 'unknown', string>;
   readonly joinTitle: string;

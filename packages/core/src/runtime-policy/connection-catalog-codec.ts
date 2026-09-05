@@ -26,6 +26,7 @@ import {
   validateSlug,
   type ModelModality,
   type ProviderType,
+  type SlugValidationIssue,
 } from '../llm-connections.js';
 import {
   CONNECTION_MODEL_DESCRIPTION_MAX_LENGTH,
@@ -756,7 +757,14 @@ export function normalizeConnectionModelDiscoveryResult(
 export function decodeConnectionSlug(value: unknown): string {
   if (typeof value !== 'string') throw domainError('connection slug must be a string');
   const error = validateSlug(value);
-  if (error) throw domainError(`connection slug ${error}`);
+  if (error) {
+    const messages = {
+      required: 'Slug is required',
+      format: 'Slug must be lowercase letters, digits, and hyphens',
+      too_long: 'Slug must be 64 characters or fewer',
+    } satisfies Record<SlugValidationIssue, string>;
+    throw domainError(`connection slug: ${messages[error]}`);
+  }
   return value;
 }
 

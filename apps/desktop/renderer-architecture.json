@@ -3391,6 +3391,7 @@
         "dependencyPaths": {
           "../features/runtime-host-management": 1,
           "../features/session-collaboration": 1,
+          "../locales/peer-mesh-copy.js": 1,
           "../locales/session-collaboration-copy.js": 1,
           "../locales/settings-projects-copy.js": 1,
           "./password-input.js": 1,
