@@ -38,6 +38,8 @@ import type {
 } from '@maka/runtime-host/protocol';
 import { boundedWorkHubTimelineText, WorkHubCoordinationFailure } from './workhub-controller.js';
 
+export { WorkHubCoordinationFailure };
+
 import type { WorkHubDesktopTranscriptBridge } from './workhub-session-port.js';
 
 const WORKHUB_COORDINATION_TURN_LIMIT = 40;

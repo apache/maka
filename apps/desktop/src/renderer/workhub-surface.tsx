@@ -28,7 +28,6 @@ import { Button } from '@astryxdesign/core/Button';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { ChatSurfaceLayout, Composer } from '@maka/ui';
 import {
-  WorkHubCoordinationFailure,
   type WorkHubController,
   type WorkHubCoordinationTurn,
   type WorkHubDelegationLinkState,
@@ -37,6 +36,7 @@ import {
   type WorkHubSubmission,
   type WorkHubSubmitInput,
 } from './workhub-controller.js';
+import { WorkHubCoordinationFailure } from './workhub-coordination-port.js';
 import {
   WorkHubSendLease,
   type WorkHubSendAttempt,
