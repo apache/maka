@@ -1392,7 +1392,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
         orchestration: run.effectiveOrchestration,
         toolMode: run.toolMode,
         text: '',
-        context: [],
         runtimeContext: continuation.runtimeContext,
         runtimeContextInvocations: admissionRoute.invocations,
         continuation: continuationMetadata,

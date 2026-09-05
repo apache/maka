@@ -45,7 +45,7 @@ A story earns its place by rendering pixels no other story renders. A second lev
 Two facts decide it, and both were guessed wrong once:
 
 - **Where a story renders.** CI mounts every story exactly once at 1280 wide in light. It does not maintain a viewport, theme or screenshot matrix. Responsive and theme behaviour belongs in a focused component contract or the real desktop E2E harness.
-- **Whether `play` reaches the state.** Local Storybook can use `play` to drive a story into the state a reviewer needs to see. CI deliberately mounts stories with `embed=true`, so it does not execute those interactions or treat them as product tests.
+- **Whether `play` reaches the state.** `play` drives a story into the state a reviewer needs to see, and CI runs it — so the state it lands on is the state the smoke reads, and a story that only differs by a `play` step is a second state, not a variant.
 
 Extra stories still cost: a reviewer scanning the sidebar cannot tell which entry is the page, and duplicates re-render the same pixels every run while claiming coverage they do not add. Where a state matters but renders nothing new, pin it somewhere that runs — a `packages/ui` test or an e2e journey.
 
@@ -61,11 +61,15 @@ When a component has two hosts, one frame is not both. `capability-audit-strip.s
 
 If the runtime computes a field, ask the runtime for it. A story that hardcodes what a classifier would have returned is asserting a fact rather than showing one, and nothing fails when the classifier moves.
 
-## A `play` function is a local review driver, not a CI test
+## A `play` function runs in CI, and its assertions are real
 
-The render smoke uses Storybook's embedded mode, which mounts the story but disables autoplay. That keeps the Storybook lane responsible for one thing: every production-backed story must render without runtime, console or page errors. It does not turn keyboard, pointer, focus, geometry or state-transition interactions into a second desktop E2E suite.
+The render smoke waits for Storybook's `storyFinished` event before it reads the accessibility tree, so every `play` function executes and a failed assertion inside one fails the lane. This paragraph used to say the opposite — that the smoke mounts with autoplay disabled — and it was wrong: nothing passes `embed`, and #4766 landed 18 stories whose assertions are the coverage.
 
-Put behavioural and computed-style contracts where they can name what they check — a `packages/ui` test or a real Electron E2E journey. Use `play` only when a local reviewer needs help navigating to a visual state; do not put product assertions in it.
+That makes `play` the right home for a behavioural contract whose subject is the browser: a live Selection, a caret between text nodes, an undo transaction, a portal's identity across a re-render. None of those exist in a `packages/ui` DOM shim, and none of them need Electron.
+
+It is still not a place for geometry or theme matrices. CI mounts every story once, at 1280 wide, in light; a contract that depends on any other viewport or scheme belongs in a `packages/ui` test or the desktop E2E harness. And a rule that is pure state — which commands a Session offers, what a query parses to — belongs in a unit test, where it costs milliseconds instead of a browser.
+
+Write the assertion so it can only pass for the reason it names. A story that mounts the surface and then observes it cannot see anything that happened during the mount, so a probe that must be installed first (a constructor count, an event before the first paint) belongs in a test that owns the global.
 
 ## A story that renders nothing is not a story
 

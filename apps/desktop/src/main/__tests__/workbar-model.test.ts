@@ -74,15 +74,15 @@ describe('Workbar topology', () => {
     state = reduceWorkbarPanels(state, {
       type: 'open',
       placement: 'right',
-      tab: { id: 'workbar:tasks', kind: 'tasks' },
+      tab: { id: 'workbar:work-board', kind: 'work-board' },
     });
     state = reduceWorkbarPanels(state, {
       type: 'move-to-panel',
-      tabId: 'workbar:tasks',
+      tabId: 'workbar:work-board',
       target: 'bottom',
     });
     assert.deepEqual(state.right.tabs.map((tab) => tab.id), ['workbar:review']);
-    assert.deepEqual(state.bottom.tabs.map((tab) => tab.id), ['workbar:tasks']);
+    assert.deepEqual(state.bottom.tabs.map((tab) => tab.id), ['workbar:work-board']);
     assert.equal(state.focusedPanel, 'bottom');
   });
 
@@ -109,7 +109,7 @@ describe('Workbar topology', () => {
     state = reduceWorkbarLayout(state, {
       type: 'open',
       placement: 'bottom',
-      tab: { id: 'workbar:tasks', kind: 'tasks' },
+      tab: { id: 'workbar:work-board', kind: 'work-board' },
     });
     assert.equal(state.bottomOpen, true);
     state = reduceWorkbarLayout(state, {
@@ -121,7 +121,7 @@ describe('Workbar topology', () => {
     state = reduceWorkbarLayout(state, {
       type: 'close',
       placement: 'bottom',
-      tabIds: ['workbar:tasks'],
+      tabIds: ['workbar:work-board'],
     });
     assert.equal(state.bottomOpen, false);
   });
@@ -138,7 +138,6 @@ describe('Workbar topology', () => {
           ownerSessionId: 'session-a',
         },
         { id: 'side-chat:panel-a', kind: 'side-chat', ordinal: 2 },
-        { id: 'workbar:files', kind: 'files', preview: true },
       ]),
     );
     assert.deepEqual(persistableSessionWorkbarPanels(state).right.tabs, [
@@ -183,6 +182,36 @@ describe('Workbar topology', () => {
     assert.deepEqual(readSessionWorkbarPanels(), createSessionWorkbarPanelsState());
   });
 
+  it('drops a retired tool kind left in v3 storage', () => {
+    // An install that had the Task face open before it was retired still has
+    // `workbar:tasks` in v3 storage. The kind no longer exists, so the tab has
+    // no panel to render; it must be dropped rather than restored as a tab
+    // whose content is null, and the panel must open on what is left.
+    cleanups.push(
+      installMemoryLocalStorage({
+        'maka-session-workbar-panels-v3': JSON.stringify({
+          version: 3,
+          right: {
+            version: 2,
+            tabs: [
+              { id: 'workbar:tasks', kind: 'tasks' },
+              { id: 'workbar:review', kind: 'review' },
+            ],
+            activeTabId: 'workbar:tasks',
+          },
+          bottom: { version: 2, tabs: [], activeTabId: null },
+          focusedPanel: 'right',
+        }),
+      }),
+    );
+    const state = readSessionWorkbarPanels();
+    assert.deepEqual(
+      state.right.tabs.map((tab) => tab.id),
+      ['workbar:review'],
+    );
+    assert.equal(state.right.activeTabId, 'workbar:review');
+  });
+
   it('round-trips v3 layout while filtering transient tab data', () => {
     cleanups.push(installMemoryLocalStorage());
     const layout = {
@@ -196,7 +225,6 @@ describe('Workbar topology', () => {
               resourceRef: 'run:round-trip',
               ownerSessionId: 'session-a',
             },
-            { id: 'workbar:files', kind: 'files', preview: true },
           ],
           'workbar:review',
         ),

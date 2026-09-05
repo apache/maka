@@ -23,9 +23,19 @@ import type { ModuleHubHostModel } from "./controller/use-module-hub-controller.
 
 export { ModuleHubServicesProvider } from "./services-context.js";
 export type { ModuleHubServices } from "./ports.js";
+export {
+  createModuleHubCommandPort,
+  ModuleHubProvider,
+  ModuleHubScheduledTasksBoundary,
+  ModuleHubSkillCatalogRevisionBoundary,
+  type ModuleHubCommands,
+} from "./ui/module-hub-provider.js";
 export { startModuleHubLifecycle } from "./controller/module-hub-lifecycle.js";
 export { resolveModuleHubHostRoute } from "./controller/module-hub-route.js";
-export type { ModuleHubHostModel } from "./controller/use-module-hub-controller.js";
+export {
+  useModuleHubController,
+  type ModuleHubHostModel,
+} from "./controller/use-module-hub-controller.js";
 export {
   createDailyReviewBridge,
   useDailyReviewController,

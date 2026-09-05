@@ -590,16 +590,6 @@ const capabilitySnapshot: CapabilitySnapshotCollection = {
 
 const healthSignals: HealthSignal[] = [
   {
-    id: 'app:config',
-    label: '应用配置',
-    scope: 'app',
-    layer: 'configuration',
-    status: 'ok',
-    source: 'settings',
-    checkedAt: NOW - 60_000,
-    message: '配置文件可读写，schema 版本为最新。',
-  },
-  {
     id: 'conn:zai-live',
     label: 'Z.AI Live',
     scope: 'llm_connection',
@@ -607,8 +597,8 @@ const healthSignals: HealthSignal[] = [
     status: 'ok',
     source: 'connection_test',
     checkedAt: NOW - 12 * 60_000,
-    message: '连接测试通过，延迟 210ms。',
-    detail: '验证通过只代表凭据可用，实际可用性仍需运行态探测确认。',
+    message: 'validation_passed',
+    detail: { kind: 'validation_scope_note' },
   },
   {
     id: 'conn:openai-review',
@@ -618,8 +608,8 @@ const healthSignals: HealthSignal[] = [
     status: 'error',
     source: 'connection_test',
     checkedAt: NOW - 3 * 60_000,
-    message: '连接测试失败：HTTP 401 invalid_api_key。',
-    detail: '凭据已失效或被吊销，请在「模型」页重新填写 API Key 后再次测试。',
+    message: 'needs_reauth',
+    detail: { kind: 'last_test_message' },
     blocksSend: true,
   },
   {
@@ -630,7 +620,7 @@ const healthSignals: HealthSignal[] = [
     status: 'info',
     source: 'capability_snapshot',
     checkedAt: NOW - 60_000,
-    message: '功能已开启，但仍以逐次审批模式运行。',
+    message: 'capability_paused',
     relatedCapabilityId: 'computer_use',
   },
   {
@@ -641,20 +631,10 @@ const healthSignals: HealthSignal[] = [
     status: 'warning',
     source: 'runtime_probe',
     checkedAt: NOW - 5 * 60_000,
-    message: '探测超时，已回落到只读观察模式。',
-    detail: 'maka-cu 未在 3000ms 内完成握手；下一次探测会在功能被调用时自动触发。',
+    message: 'capability_degraded',
+    detail: { kind: 'capability_reason', reason: 'maka-cu service 启动失败、已退出或已停止。' },
     relatedCapabilityId: 'computer_use',
     blocksCapability: true,
-  },
-  {
-    id: 'storage:sessions',
-    label: '会话存储',
-    scope: 'storage',
-    layer: 'storage',
-    status: 'ok',
-    source: 'storage',
-    checkedAt: NOW - 60_000,
-    message: 'SQLite 库可写，WAL 检查点正常。',
   },
 ];
 
@@ -2625,8 +2605,8 @@ export const HealthCenter: Story = {
       expect(errorFilter).toHaveAttribute('aria-pressed', 'true');
       expect(canvas.getByText('OpenAI Review')).toBeInTheDocument();
       expect(canvas.queryByText('Z.AI Live')).not.toBeInTheDocument();
-      expect(canvas.getByText('全部健康信号中，1/6 条会阻塞发送')).toBeInTheDocument();
-      expect(canvas.getByText('全部健康信号中，1/6 条会阻塞能力')).toBeInTheDocument();
+      expect(canvas.getByText('全部健康信号中，1/4 条会阻塞发送')).toBeInTheDocument();
+      expect(canvas.getByText('全部健康信号中，1/4 条会阻塞能力')).toBeInTheDocument();
     });
     await userEvent.click(errorFilter);
     await waitFor(() => {

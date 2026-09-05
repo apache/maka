@@ -191,12 +191,7 @@ const zhCopy = {
     filterMatches: (count: number) => (count === 0 ? '没有匹配的结果' : `${count} 个匹配结果`),
     connectionStatuses: { retired: '已停用 · 请删除', reauth: '需要重新登录', disabledFailed: '暂不可用 · 上次连接失败', disabled: '暂不可用', failed: '上次连接失败' },
     lastTest: {
-      '连接已验证': '连接已验证', '鉴权失败': '鉴权失败', '请求超时': '请求超时', '网络错误': '网络错误', '模型服务返回错误': '模型服务返回错误', '连接测试失败': '连接测试失败',
-      'connection verified': '连接已验证', 'authentication failed': '鉴权失败', 'request timed out': '请求超时', 'network error': '网络错误', 'provider returned an error': '模型服务返回错误', 'connection test failed': '连接测试失败',
-      'claude oauth 未登录。': 'Claude OAuth 未登录。', 'claude oauth 本地凭据读取失败。': 'Claude OAuth 本地凭据读取失败。', 'claude oauth 需要重新登录。': 'Claude OAuth 需要重新登录。', 'claude oauth 已登录。': 'Claude OAuth 已登录。', 'claude oauth 已退出登录。': 'Claude OAuth 已退出登录。',
-      'codex oauth 未登录。': 'Codex OAuth 未登录。', 'codex oauth 本地凭据读取失败。': 'Codex OAuth 本地凭据读取失败。', 'codex oauth 需要重新登录。': 'Codex OAuth 需要重新登录。', 'codex oauth 已登录。': 'Codex OAuth 已登录。', 'codex oauth 已退出登录。': 'Codex OAuth 已退出登录。',
-      '当前账号无可用 codex 模型。': '当前账号无可用 Codex 模型。', 'codex 模型列表获取失败。': 'Codex 模型列表获取失败。',
-      'github copilot 需要重新导入 github cli 登录。': 'GitHub Copilot 需要重新导入 GitHub CLI 登录。', 'github copilot 无法读取当前账号可用模型，请重新验证登录。': 'GitHub Copilot 无法读取当前账号可用模型，请重新验证登录。', 'github copilot 登录已导入。': 'GitHub Copilot 登录已导入。', 'github copilot 连接未能保存，请重新导入登录。': 'GitHub Copilot 连接未能保存，请重新导入登录。', 'github copilot 已移除本地登录。': 'GitHub Copilot 已移除本地登录。',
+      auth: '鉴权失败', timeout: '请求超时', provider_unavailable: '模型服务返回错误', network: '网络错误', invalid_response: '模型服务返回错误', unknown: '连接测试失败',
     },
   },
   panel: {
@@ -360,12 +355,7 @@ const zhTwCopy = {
     filterMatches: (count: number) => (count === 0 ? '沒有符合的結果' : `${count} 個符合結果`),
     connectionStatuses: { retired: '已停用 · 請刪除', reauth: '需要重新登入', disabledFailed: '暫不可用 · 上次連線失敗', disabled: '暫不可用', failed: '上次連線失敗' },
     lastTest: {
-      '连接已验证': '連線已驗證', '鉴权失败': '鑑權失敗', '请求超时': '請求超時', '网络错误': '網路錯誤', '模型服务返回错误': '模型服務回傳錯誤', '连接测试失败': '連線測試失敗',
-      'connection verified': '連線已驗證', 'authentication failed': '鑑權失敗', 'request timed out': '請求超時', 'network error': '網路錯誤', 'provider returned an error': '模型服務回傳錯誤', 'connection test failed': '連線測試失敗',
-      'claude oauth 未登录。': 'Claude OAuth 未登入。', 'claude oauth 本地凭据读取失败。': 'Claude OAuth 本地憑據讀取失敗。', 'claude oauth 需要重新登录。': 'Claude OAuth 需要重新登入。', 'claude oauth 已登录。': 'Claude OAuth 已登入。', 'claude oauth 已退出登录。': 'Claude OAuth 已退出登入。',
-      'codex oauth 未登录。': 'Codex OAuth 未登入。', 'codex oauth 本地凭据读取失败。': 'Codex OAuth 本地憑據讀取失敗。', 'codex oauth 需要重新登录。': 'Codex OAuth 需要重新登入。', 'codex oauth 已登录。': 'Codex OAuth 已登入。', 'codex oauth 已退出登录。': 'Codex OAuth 已退出登入。',
-      '当前账号无可用 codex 模型。': '目前帳號無可用 Codex 模型。', 'codex 模型列表获取失败。': 'Codex 模型列表取得失敗。',
-      'github copilot 需要重新导入 github cli 登录。': 'GitHub Copilot 需要重新匯入 GitHub CLI 登入。', 'github copilot 无法读取当前账号可用模型，请重新验证登录。': 'GitHub Copilot 無法讀取目前帳號可用模型，請重新驗證登入。', 'github copilot 登录已导入。': 'GitHub Copilot 登入已匯入。', 'github copilot 连接未能保存，请重新导入登录。': 'GitHub Copilot 連線未能儲存，請重新匯入登入。', 'github copilot 已移除本地登录。': 'GitHub Copilot 已移除本地登入。',
+      auth: '鑑權失敗', timeout: '請求超時', provider_unavailable: '模型服務回傳錯誤', network: '網路錯誤', invalid_response: '模型服務回傳錯誤', unknown: '連線測試失敗',
     },
   },
   panel: {
@@ -530,12 +520,7 @@ const enCopy: ProviderSettingsCopy = {
     filterMatches: (count: number) => (count === 0 ? 'No matches' : count === 1 ? '1 match' : `${count} matches`),
     connectionStatuses: { retired: 'Retired · delete it', reauth: 'Sign-in required', disabledFailed: 'Unavailable · last connection failed', disabled: 'Unavailable', failed: 'Last connection failed' },
     lastTest: {
-      '连接已验证': 'Connection verified', '鉴权失败': 'Authentication failed', '请求超时': 'Request timed out', '网络错误': 'Network error', '模型服务返回错误': 'Model service returned an error', '连接测试失败': 'Connection test failed',
-      'connection verified': 'Connection verified', 'authentication failed': 'Authentication failed', 'request timed out': 'Request timed out', 'network error': 'Network error', 'provider returned an error': 'Model service returned an error', 'connection test failed': 'Connection test failed',
-      'claude oauth 未登录。': 'Claude OAuth is signed out.', 'claude oauth 本地凭据读取失败。': 'Could not read local Claude OAuth credentials.', 'claude oauth 需要重新登录。': 'Claude OAuth requires sign-in.', 'claude oauth 已登录。': 'Claude OAuth is signed in.', 'claude oauth 已退出登录。': 'Claude OAuth signed out.',
-      'codex oauth 未登录。': 'Codex OAuth is signed out.', 'codex oauth 本地凭据读取失败。': 'Could not read local Codex OAuth credentials.', 'codex oauth 需要重新登录。': 'Codex OAuth requires sign-in.', 'codex oauth 已登录。': 'Codex OAuth is signed in.', 'codex oauth 已退出登录。': 'Codex OAuth signed out.',
-      '当前账号无可用 codex 模型。': 'No Codex models are available for this account.', 'codex 模型列表获取失败。': 'Failed to fetch the Codex model list.',
-      'github copilot 需要重新导入 github cli 登录。': 'GitHub Copilot requires the GitHub CLI sign-in to be imported again.', 'github copilot 无法读取当前账号可用模型，请重新验证登录。': 'GitHub Copilot could not read models available to this account. Verify sign-in again.', 'github copilot 登录已导入。': 'GitHub Copilot sign-in imported.', 'github copilot 连接未能保存，请重新导入登录。': 'The GitHub Copilot connection could not be saved. Import sign-in again.', 'github copilot 已移除本地登录。': 'Local GitHub Copilot sign-in removed.',
+      auth: 'Authentication failed', timeout: 'Request timed out', provider_unavailable: 'Model service returned an error', network: 'Network error', invalid_response: 'Model service returned an error', unknown: 'Connection test failed',
     },
   },
   panel: {
