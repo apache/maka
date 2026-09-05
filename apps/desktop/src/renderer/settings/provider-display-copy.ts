@@ -244,6 +244,10 @@ export const PROVIDER_DISPLAY_COPY = {
     'zh-TW': { name: 'DeepInfra', description: '開源模型託管推理 · OpenAI 相容', badge: 'API' },
     en: { name: 'DeepInfra', description: 'Hosted open-model inference · OpenAI-compatible', badge: 'API' },
   },
+  atlascloud: {
+    zh: { name: 'Atlas Cloud', description: '开源模型托管推理 · OpenAI 兼容', badge: 'API' },
+    en: { name: 'Atlas Cloud', description: 'Hosted open-model inference · OpenAI-compatible', badge: 'API' },
+  },
   cohere: {
     'zh-CN': { name: 'Cohere', description: 'Cohere 官方接入', badge: 'API' },
     'zh-TW': { name: 'Cohere', description: 'Cohere 官方 API 連線', badge: 'API' },

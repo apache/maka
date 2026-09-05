@@ -417,6 +417,20 @@ function buildStaticModelMetadata(active: ModelsDevMetadata): ModelsDevMetadata 
         thinkingOptions: { efforts: ['none', 'low', 'medium', 'high'], toggle: true },
       },
     },
+    atlascloud: {
+      // vision is pinned false rather than left undeclared: Atlas Cloud's
+      // OpenAI-compatible /v1/chat/completions rejects an image_url content
+      // part with HTTP 400 even for its vision-branded models (verified
+      // 2026-09-05 against qwen/qwen3.8-max and qwen/qwen3-vl-235b-a22b-
+      // thinking; a text-only parts array on the same models returns 200).
+      // Declaring vision here would make the runtime send attachments the
+      // endpoint cannot accept.
+      'qwen/qwen3.8-max': {
+        displayName: 'Qwen3.8 Max',
+        lifecycle: 'active',
+        capabilities: { chat: true, reasoning: true, functionCalling: true, vision: false },
+      },
+    },
     groq: {
       // Groq documents reasoning_effort only for the gpt-oss family
       // (low/medium/high) and qwen3.6-27b (none/default); see
