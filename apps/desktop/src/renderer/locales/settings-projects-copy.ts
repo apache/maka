@@ -17,38 +17,8 @@
  * under the License.
  */
 
+import type { RuntimeHostServiceErrorCode } from '@maka/runtime-host/operator';
 import { type UiCatalog, type UiLocale, lookupCopy } from '@maka/core/ui-locale';
-
-// Mirrors RuntimeHostServiceErrorCode from @maka/runtime-host/operator; expected-failure-copy.test.ts pins the two together.
-export type RuntimeHostManagementErrorCode =
-  | 'active_tasks'
-  | 'not_installed'
-  | 'unsupported_platform'
-  | 'service_manager_unavailable'
-  | 'linger_disabled'
-  | 'invalid_config'
-  | 'invalid_launch'
-  | 'target_mismatch'
-  | 'configuration_changed'
-  | 'configuration_incomplete'
-  | 'retirement_failed'
-  | 'update_requires_retirement'
-  | 'update_incomplete'
-  | 'service_manager_operation_failed'
-  | 'uninstall_incomplete'
-  | 'deployment_io_failed'
-  | 'deployment_commit_unknown'
-  | 'target_unavailable'
-  | 'registry_unavailable'
-  | 'invalid_registry_metadata'
-  | 'package_download_failed'
-  | 'package_integrity_mismatch'
-  | 'invalid_package'
-  | 'invalid_update_policy'
-  | 'update_policy_write_failed'
-  | 'update_policy_commit_outcome_unknown'
-  | 'update_policy_changed'
-  | 'update_not_admitted';
 
 export type SettingsProjectsCopy = {
   runtimeHost: {
@@ -266,7 +236,7 @@ export type SettingsProjectsCopy = {
     uninstallConfirm: string;
     uninstallRetained(path: string): string;
     managementActionFailed: string;
-    managementError: Record<RuntimeHostManagementErrorCode | 'unknown', string>;
+    managementError: Record<RuntimeHostServiceErrorCode | 'unknown', string>;
     managementReconnectFailed: string;
     manageAccess: string;
     accessTitle: string;

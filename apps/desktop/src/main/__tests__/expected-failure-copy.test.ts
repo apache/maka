@@ -23,7 +23,6 @@ import {
   getProviderSettingsCopy,
   providerPanelActionErrorMessage,
 } from '../../renderer/features/connection-settings/index.js';
-import type { RuntimeHostServiceErrorCode } from '@maka/runtime-host/operator';
 import {
   getSettingsProjectsCopy,
   runtimeHostManagementErrorMessage,
@@ -59,20 +58,6 @@ test('Runtime Host management codes render per locale and unknown codes fall bac
   ]) {
     assert.deepEqual(rendered(code), unknownFallback);
   }
-});
-
-type ManagementErrorCopy = SettingsProjectsCopy['runtimeHost']['managementError'];
-type OperatorErrorCopy = Record<RuntimeHostServiceErrorCode | 'unknown', string>;
-
-// The catalog cannot import the operator type (renderer dependency ratchet), so tsc pins the two
-// unions here: each assignment compiles only while its source keys cover the target's.
-const presentsEveryOperatorCode = (copy: ManagementErrorCopy): OperatorErrorCopy => copy;
-const presentsOnlyOperatorCodes = (copy: OperatorErrorCopy): ManagementErrorCopy => copy;
-
-test('presenter maps exactly the codes the operator commits to', () => {
-  const copy = getSettingsProjectsCopy('en').runtimeHost.managementError;
-  assert.equal(presentsEveryOperatorCode(copy), copy);
-  assert.equal(presentsOnlyOperatorCodes(copy), copy);
 });
 
 test('provider action errors never echo a raw Chinese message', () => {
