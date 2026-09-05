@@ -1310,7 +1310,7 @@ test('probes an otherwise idle accepted Runtime Host connection', { timeout: 2_0
   );
 });
 
-test('accepts Session traffic as liveness while a route status observation is delayed', {
+test('tolerates a short Host stall without abandoning the connection', {
   timeout: 5_000,
 }, async () => {
   const observed = deferred<HostStatusResult>();
@@ -1333,9 +1333,8 @@ test('accepts Session traffic as liveness while a route status observation is de
       assert.ok(!('kind' in probe));
       assert.equal(probe.operation, 'host.status');
 
-      // Keep the status request pending past its original two-second deadline.
-      // A valid Session frame in between proves the same authenticated
-      // transport is alive and must extend that deadline.
+      // A transient pause beyond the old two-second deadline is recoverable.
+      // Only the eventual matching response completes the probe.
       await delay(1_100);
       await writeProtocolFrame(transport, {
         kind: 'session.catalog.changed',
@@ -1358,6 +1357,59 @@ test('accepts Session traffic as liveness while a route status observation is de
     {
       livenessIntervalMs: 20,
       onHostStatus: observed.resolve,
+    },
+  );
+});
+
+test('closes an unresponsive request path even while Host notifications continue', {
+  timeout: 12_000,
+}, async () => {
+  let received = 0;
+  let probes = 0;
+  await withProtocolPeer(
+    async (transport, hostEpoch, rootId) => {
+      await transport.read(1_000);
+      await writeProtocolFrame(transport, {
+        kind: 'accepted',
+        rootId,
+        hostEpoch,
+        connectionId: 'one-way-host',
+        selectedProtocol: RUNTIME_HOST_PROTOCOL_VERSION,
+        compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+        compositionId: 'maka.interactive',
+        compositionRevision: '1',
+        state: 'ready',
+      });
+      let revision = 0;
+      const notifications = setInterval(() => {
+        void writeProtocolFrame(transport, {
+          kind: 'session.catalog.changed',
+          revision: ++revision,
+          sessionId: 'shared-session',
+        }).catch(() => undefined);
+      }, 10);
+      try {
+        const probe = decodeClientFrame(await transport.read(1_000));
+        assert.ok(!('kind' in probe));
+        assert.equal(probe.operation, 'host.status');
+        await transport.closed;
+      } finally {
+        clearInterval(notifications);
+      }
+    },
+    async (connection) => {
+      connection.subscribeSessionCatalogChanges(() => {
+        received += 1;
+      });
+      await connection.closed;
+      assert.ok(received > 10, 'inbound events must remain active during the failed probe');
+      assert.equal(probes, 0, 'one-way events cannot acknowledge a probe');
+    },
+    {
+      livenessIntervalMs: 20,
+      onLivenessProbe: () => {
+        probes += 1;
+      },
     },
   );
 });

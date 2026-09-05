@@ -53,7 +53,6 @@ export * from './tools/terminal/session-terminal-hydration.js';
 export * from './tools/terminal/session-terminal-query.js';
 export * from './tools/terminal/session-terminal-frame.js';
 export * from './tools/inspector/use-session-trace.js';
-export * from './tools/tasks/use-session-todo.js';
 export * from './controller/use-workbar-controller.js';
 export { SideChatCloseConfirmation } from './ui/side-chat-close-confirmation.js';
 
@@ -84,10 +83,6 @@ export function createFakeWorkbarServices(
       write: async () => null,
       subscribePtyData: noopSubscription,
       subscribeResync: noopSubscription,
-    },
-    todo: {
-      read: async () => [],
-      subscribeChanges: noopSubscription,
     },
     browser: {
       setActiveSession: () => undefined,
