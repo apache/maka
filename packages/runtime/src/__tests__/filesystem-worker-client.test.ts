@@ -57,6 +57,7 @@ import {
   type FilesystemWorkerRequest,
   type FilesystemWorkerResult,
 } from '../filesystem-worker/protocol.js';
+import { windowsGlobTraversalDepth } from '../filesystem-worker/windows-glob-pattern.js';
 import { LinuxBubblewrapBackend } from '../sandbox/linux-sandbox.js';
 import { MacosSeatbeltBackend } from '../sandbox/macos-seatbelt.js';
 import { SandboxManager } from '../sandbox/sandbox-manager.js';
@@ -75,6 +76,16 @@ afterEach(async () => {
 test('Read image payloads fit within the filesystem worker response limit', () => {
   const base64Bytes = 4 * Math.ceil(MAX_READ_IMAGE_BYTES / 3);
   assert.ok(base64Bytes + 1024 < FILESYSTEM_WORKER_MAX_RESPONSE_BYTES);
+});
+
+test('derives a conservative finite Windows Glob traversal depth', () => {
+  assert.equal(windowsGlobTraversalDepth('main.go'), 0);
+  assert.equal(windowsGlobTraversalDepth('*'), 0);
+  assert.equal(windowsGlobTraversalDepth('src/*.ts'), 1);
+  assert.equal(windowsGlobTraversalDepth('./src/main.ts'), 1);
+  assert.equal(windowsGlobTraversalDepth('packages/*/main.ts'), 2);
+  assert.equal(windowsGlobTraversalDepth('{src,docs}/*.md'), 1);
+  assert.equal(windowsGlobTraversalDepth('src/**/*.ts'), undefined);
 });
 
 describe('filesystem worker client permission snapshots', () => {
@@ -487,6 +498,96 @@ describe('filesystem worker Linux path context', () => {
   });
 });
 
+describe('filesystem worker Windows Glob path context', () => {
+  test('marks only the approved Glob subtree for non-following broker admission', async () => {
+    const workspace = await temporaryDirectory('maka-windows-worker-glob-');
+    const { client, transforms } = fakeClient({ platform: 'win32' });
+
+    await client.execute({
+      operation: { kind: 'glob', path: workspace, pattern: '**/*.ts' },
+      cwd: workspace,
+      mode: 'ask',
+      expectedIdentity: 'unchecked',
+    });
+
+    assert.deepEqual(transforms[0]?.command.pathContext.windowsNonFollowingReadRoot, {
+      enforcementPath: workspace,
+      sourcePath: workspace,
+    });
+  });
+
+  test('preserves the un-followed Glob root beside its canonical authority', async () => {
+    const workspace = await temporaryDirectory('maka-windows-worker-glob-root-link-');
+    const target = join(workspace, 'target');
+    const rootLink = join(workspace, 'root-link');
+    await mkdir(target);
+    await symlink(target, rootLink, process.platform === 'win32' ? 'junction' : 'dir');
+    const { client, transforms, requests } = fakeClient({ platform: 'win32' });
+
+    await client.execute({
+      operation: { kind: 'glob', path: rootLink, pattern: '**/*.ts' },
+      cwd: workspace,
+      mode: 'ask',
+      expectedIdentity: 'unchecked',
+    });
+
+    assert.equal(requests[0]?.operation.path, target);
+    assert.deepEqual(transforms[0]?.command.pathContext.windowsNonFollowingReadRoot, {
+      enforcementPath: target,
+      sourcePath: rootLink,
+    });
+  });
+
+  test('bounds broker planning for a root-only Glob pattern', async () => {
+    const workspace = await temporaryDirectory('maka-windows-worker-glob-bounded-');
+    const { client, transforms } = fakeClient({ platform: 'win32' });
+
+    await client.execute({
+      operation: { kind: 'glob', path: workspace, pattern: 'main.go', limit: 1 },
+      cwd: workspace,
+      mode: 'ask',
+      expectedIdentity: 'unchecked',
+    });
+
+    assert.deepEqual(transforms[0]?.command.pathContext.windowsNonFollowingReadRoot, {
+      enforcementPath: workspace,
+      sourcePath: workspace,
+      maxDepth: 0,
+    });
+  });
+
+  test('does not mark other operations or a non-Windows Glob', async () => {
+    const workspace = await temporaryDirectory('maka-worker-non-following-scope-');
+    const file = join(workspace, 'main.ts');
+    await writeFile(file, 'export const value = true;\n');
+    const windows = fakeClient({ platform: 'win32' });
+
+    await windows.client.execute({
+      operation: { kind: 'read', path: file },
+      cwd: workspace,
+      mode: 'ask',
+      expectedIdentity: 'unchecked',
+    });
+    await windows.client.execute({
+      operation: grepOperation(workspace),
+      cwd: workspace,
+      mode: 'ask',
+      expectedIdentity: 'unchecked',
+    });
+    assert.equal(windows.transforms[0]?.command.pathContext.windowsNonFollowingReadRoot, undefined);
+    assert.equal(windows.transforms[1]?.command.pathContext.windowsNonFollowingReadRoot, undefined);
+
+    const mac = fakeClient({ platform: 'darwin' });
+    await mac.client.execute({
+      operation: { kind: 'glob', path: workspace, pattern: '**/*.ts' },
+      cwd: workspace,
+      mode: 'ask',
+      expectedIdentity: 'unchecked',
+    });
+    assert.equal(mac.transforms[0]?.command.pathContext.windowsNonFollowingReadRoot, undefined);
+  });
+});
+
 function fakeClient(
   options: {
     operationErrorCode?: FilesystemWorkerErrorCode;
@@ -502,22 +603,27 @@ function fakeClient(
   const requests: FilesystemWorkerRequest[] = [];
   const transforms: SandboxTransformRequest[] = [];
   const platform = options.platform ?? 'darwin';
-  const sandboxManager =
+  const sandboxManager: SandboxManager =
     platform === 'linux'
       ? new SandboxManager([
           new LinuxBubblewrapBackend({
             capability: { available: true, bwrapPath: '/usr/bin/bwrap' },
           }),
         ])
-      : new SandboxManager([new MacosSeatbeltBackend()]);
+      : platform === 'win32'
+        ? windowsRecordingSandboxManager(transforms)
+        : new SandboxManager([new MacosSeatbeltBackend()]);
   const processInputs: FilesystemWorkerProcessRunInput[] = [];
   const client = new FilesystemWorkerClient({
-    sandboxManager: Object.assign(Object.create(sandboxManager), {
-      transform(request: SandboxTransformRequest): SandboxTransformResult {
-        transforms.push(request);
-        return sandboxManager.transform(request);
-      },
-    }) as SandboxManager,
+    sandboxManager:
+      platform === 'win32'
+        ? sandboxManager
+        : (Object.assign(Object.create(sandboxManager), {
+            transform(request: SandboxTransformRequest): SandboxTransformResult {
+              transforms.push(request);
+              return sandboxManager.transform(request);
+            },
+          }) as SandboxManager),
     platform,
     newId: () => `request-${requests.length + 1}`,
     getLaunchSpec: async () => {
@@ -566,6 +672,27 @@ function fakeClient(
     },
   });
   return { client, requests, transforms, processInputs };
+}
+
+function windowsRecordingSandboxManager(transforms: SandboxTransformRequest[]): SandboxManager {
+  return {
+    transform(request: SandboxTransformRequest): SandboxTransformResult {
+      transforms.push(request);
+      return {
+        ok: true,
+        exec: {
+          argv: ['maka-windows-sandbox.exe'],
+          cwd: request.command.cwd,
+          env: request.command.env,
+          sandboxType: 'windows',
+          effectiveProfile: request.command.profile,
+        },
+        sandboxType: 'windows',
+        requiresSandbox: true,
+        preference: request.preference ?? 'auto',
+      };
+    },
+  } as unknown as SandboxManager;
 }
 
 function fakeResult(request: FilesystemWorkerRequest): FilesystemWorkerResult {

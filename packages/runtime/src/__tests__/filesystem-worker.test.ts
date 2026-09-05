@@ -18,10 +18,13 @@
  */
 
 import { strict as assert } from 'node:assert';
+import type { Dirent } from 'node:fs';
 import {
+  glob as nodeGlob,
   lstat,
   mkdtemp,
   mkdir,
+  readdir,
   readFile,
   realpath,
   rm,
@@ -30,7 +33,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, parse } from 'node:path';
+import { join, parse, sep } from 'node:path';
 import { afterEach, describe, test } from 'node:test';
 
 import { executeFilesystemWorkerRequest } from '../filesystem-worker/operations.js';
@@ -203,6 +206,295 @@ describe('filesystem worker operations', () => {
     if (!response.ok) {
       assert.equal(response.error.code, 'grep_unavailable');
       assert.match(response.error.message, /Windows sandbox preview/);
+    }
+  });
+
+  test('keeps Windows sandbox Glob out of directory links for broad and explicit patterns', async () => {
+    const root = await temporaryDirectory('maka-worker-glob-links-');
+    const outside = await temporaryDirectory('maka-worker-glob-outside-');
+    const project = join(root, 'project with spaces [glob]');
+    const sourceDirectory = join(project, 'src');
+    const linkParent = join(project, 'node_modules', '@sunrioa');
+    const link = join(linkParent, 'rin-sdk');
+    const magicLink = join(linkParent, 'module[1]');
+    const braceLink = join(linkParent, 'bracea');
+    await mkdir(sourceDirectory, { recursive: true });
+    await mkdir(linkParent, { recursive: true });
+    await writeFile(join(project, 'root.txt'), 'root', 'utf8');
+    await writeFile(join(sourceDirectory, 'main [1].ts'), 'export const safe = true;\n', 'utf8');
+    await writeFile(join(outside, 'secret.ts'), 'export const secret = true;\n', 'utf8');
+    await writeFile(join(outside, 'package.json'), '{}\n', 'utf8');
+    const linkType = process.platform === 'win32' ? 'junction' : 'dir';
+    await symlink(outside, link, linkType);
+    await symlink(outside, magicLink, linkType);
+    await symlink(outside, braceLink, linkType);
+
+    let visitedDirectories: string[] = [];
+    const runGlob = async (pattern: string, limit?: number): Promise<string[]> => {
+      visitedDirectories = [];
+      const response = await executeFilesystemWorkerRequest(
+        await requestFor(
+          { kind: 'glob', cwd: root, path: project, pattern, ...(limit ? { limit } : {}) },
+          {
+            enforcementPath: project,
+            access: 'read',
+            scope: 'subtree',
+            targetType: 'directory',
+          },
+        ),
+        {
+          windowsSandboxed: true,
+          windowsGlobReadDirectory: async (path) => {
+            visitedDirectories.push(path);
+            return readdir(path, { withFileTypes: true });
+          },
+        },
+      );
+      assert.equal(response.ok, true);
+      if (!response.ok || response.result.kind !== 'glob') return [];
+      return response.result.files.map((file) => file.replaceAll('\\', '/'));
+    };
+
+    assert.deepEqual(await runGlob('node_modules/@sunrioa/rin-sdk/**/*'), []);
+    assert.deepEqual(await runGlob('node_modules/@sunrioa/rin-sdk'), []);
+    assert.deepEqual(await runGlob('node_modules/@sunrioa/rin-sdk/package.json'), []);
+    assert.deepEqual(await runGlob('node_modules/*/rin-sdk/**/*'), []);
+    assert.equal(
+      visitedDirectories.some((path) => path === link || path.startsWith(`${link}${sep}`)),
+      false,
+    );
+
+    const broad = await runGlob('**/*');
+    assert.ok(broad.includes('root.txt'));
+    assert.ok(broad.includes('src/main [1].ts'));
+    assert.equal(
+      broad.some(
+        (file) =>
+          file === 'node_modules/@sunrioa/rin-sdk' ||
+          file.startsWith('node_modules/@sunrioa/rin-sdk/') ||
+          file === 'node_modules/@sunrioa/module[1]' ||
+          file.startsWith('node_modules/@sunrioa/module[1]/') ||
+          file === 'node_modules/@sunrioa/bracea' ||
+          file.startsWith('node_modules/@sunrioa/bracea/'),
+      ),
+      false,
+    );
+    assert.equal(
+      visitedDirectories.some((path) =>
+        [link, magicLink, braceLink].some(
+          (candidate) => path === candidate || path.startsWith(`${candidate}${sep}`),
+        ),
+      ),
+      false,
+    );
+
+    assert.deepEqual(await runGlob('src/**/*.ts'), ['src/main [1].ts']);
+    assert.deepEqual(await runGlob('{node_modules/@sunrioa/rin-sdk/**/*,src/**/*.ts}', 1), [
+      'src/main [1].ts',
+    ]);
+    assert.deepEqual(await runGlob('{node_modules/@sunrioa/brace{a,b}/**,src/**/*.ts}'), [
+      'src/main [1].ts',
+    ]);
+  });
+
+  test('prunes a directory replaced by a junction after its parent Dirent was cached', async () => {
+    const root = await temporaryDirectory('maka-worker-glob-replacement-');
+    const outside = await temporaryDirectory('maka-worker-glob-replacement-outside-');
+    const child = join(root, 'queued-child');
+    await mkdir(child);
+    await writeFile(join(child, 'safe.ts'), 'safe', 'utf8');
+    await writeFile(join(outside, 'secret.ts'), 'secret', 'utf8');
+    const visitedDirectories: string[] = [];
+    let replaced = false;
+
+    const response = await executeFilesystemWorkerRequest(
+      await requestFor(
+        { kind: 'glob', cwd: root, path: root, pattern: '**/*.ts' },
+        {
+          enforcementPath: root,
+          access: 'read',
+          scope: 'subtree',
+          targetType: 'directory',
+        },
+      ),
+      {
+        windowsSandboxed: true,
+        windowsGlobReadDirectory: async (path) => {
+          visitedDirectories.push(path);
+          const entries = await readdir(path, { withFileTypes: true });
+          if (path === root && !replaced) {
+            replaced = true;
+            await rm(child, { recursive: true });
+            await symlink(outside, child, process.platform === 'win32' ? 'junction' : 'dir');
+          }
+          return entries;
+        },
+      },
+    );
+
+    assert.equal(response.ok, true);
+    if (response.ok) assert.deepEqual(response.result, { kind: 'glob', files: [] });
+    assert.equal(replaced, true);
+    assert.equal(visitedDirectories.includes(child), false);
+  });
+
+  test('returns a bounded root-only match beside more than 100k ordinary entries', async () => {
+    const root = await temporaryDirectory('maka-worker-glob-large-root-');
+    const entries = Array.from({ length: 100_001 }, (_, index) =>
+      fakeWindowsDirent(`peer-${index}.txt`),
+    );
+    entries.push(fakeWindowsDirent('nested-junction', true), fakeWindowsDirent('main.go'));
+    const visitedDirectories: string[] = [];
+
+    const response = await executeFilesystemWorkerRequest(
+      await requestFor(
+        { kind: 'glob', cwd: root, path: root, pattern: 'main.go', limit: 1 },
+        {
+          enforcementPath: root,
+          access: 'read',
+          scope: 'subtree',
+          targetType: 'directory',
+        },
+      ),
+      {
+        windowsSandboxed: true,
+        windowsGlobReadDirectory: async (path) => {
+          visitedDirectories.push(path);
+          if (path !== root) throw new Error(`unexpected directory read: ${path}`);
+          return entries;
+        },
+      },
+    );
+
+    assert.equal(response.ok, true);
+    if (response.ok) assert.deepEqual(response.result, { kind: 'glob', files: ['main.go'] });
+    assert.deepEqual(visitedDirectories, [root]);
+  });
+
+  test('preserves Windows Glob matching semantics in the non-following walker', async () => {
+    const root = await temporaryDirectory('maka-worker-glob-semantics-');
+    await mkdir(join(root, 'src', 'nested'), { recursive: true });
+    await mkdir(join(root, 'docs'), { recursive: true });
+    await writeFile(join(root, 'root.txt'), 'root', 'utf8');
+    await writeFile(join(root, '.hidden.ts'), 'hidden', 'utf8');
+    await writeFile(join(root, 'src', 'main.ts'), 'main', 'utf8');
+    await writeFile(join(root, 'src', 'nested', 'deep.ts'), 'deep', 'utf8');
+    await writeFile(join(root, 'src', 'nested', 'readme.md'), 'readme', 'utf8');
+    await writeFile(join(root, 'docs', 'guide.md'), 'guide', 'utf8');
+
+    const runGlob = async (pattern: string): Promise<string[]> => {
+      const response = await executeFilesystemWorkerRequest(
+        await requestFor(
+          { kind: 'glob', cwd: root, path: root, pattern },
+          {
+            enforcementPath: root,
+            access: 'read',
+            scope: 'subtree',
+            targetType: 'directory',
+          },
+        ),
+        { windowsSandboxed: true },
+      );
+      assert.equal(response.ok, true);
+      if (!response.ok || response.result.kind !== 'glob') return [];
+      return response.result.files.map((file) => file.replaceAll('\\', '/')).sort();
+    };
+
+    const cases: ReadonlyArray<readonly [string, readonly string[]]> = [
+      ['*', ['docs', 'root.txt', 'src']],
+      [
+        '**',
+        [
+          '.',
+          'docs',
+          'docs/guide.md',
+          'root.txt',
+          'src',
+          'src/main.ts',
+          'src/nested',
+          'src/nested/deep.ts',
+          'src/nested/readme.md',
+        ],
+      ],
+      ['**/', ['.', 'docs', 'src', 'src/nested']],
+      [
+        'src/**',
+        ['src', 'src/main.ts', 'src/nested', 'src/nested/deep.ts', 'src/nested/readme.md'],
+      ],
+      ['src/**/*.ts', ['src/main.ts', 'src/nested/deep.ts']],
+      ['{src/**/*.ts,docs/*.md}', ['docs/guide.md', 'src/main.ts', 'src/nested/deep.ts']],
+      ['SRC/**/*.TS', ['src/main.ts', 'src/nested/deep.ts']],
+      ['.hidden.ts', ['.hidden.ts']],
+    ];
+    for (const [pattern, expected] of cases) {
+      assert.deepEqual(await runGlob(pattern), [...expected].sort(), pattern);
+    }
+  });
+
+  test('preserves Node Glob ordering and bounded prefixes without directory links', async () => {
+    const root = await temporaryDirectory('maka-worker-glob-node-parity-');
+    await mkdir(join(root, 'src', 'nested'), { recursive: true });
+    await mkdir(join(root, 'foo', 'bar', 'end'), { recursive: true });
+    await mkdir(join(root, 'foo', 'bar', 'baz'), { recursive: true });
+    await mkdir(join(root, '.dotdir'), { recursive: true });
+    await mkdir(join(root, 'foo', '.dotdir', 'child'), { recursive: true });
+    await writeFile(join(root, 'file'), 'file', 'utf8');
+    await writeFile(join(root, '.dot'), 'dot', 'utf8');
+    await writeFile(join(root, '.dotdir', 'child'), 'child', 'utf8');
+    await writeFile(join(root, 'foo', '.dot'), 'dot', 'utf8');
+    await writeFile(join(root, 'foo', '.dotdir', 'child', 'value'), 'value', 'utf8');
+    await writeFile(join(root, 'foo', 'bar', 'end', 'value'), 'value', 'utf8');
+    await writeFile(join(root, 'foo', 'bar', 'baz', 'end'), 'end', 'utf8');
+    await writeFile(join(root, 'src', 'foo'), 'foo', 'utf8');
+    await writeFile(join(root, 'src', 'main.ts'), 'main', 'utf8');
+    await writeFile(join(root, 'src', 'nested', 'deep.ts'), 'deep', 'utf8');
+
+    const runWindowsGlob = async (pattern: string, limit?: number): Promise<string[]> => {
+      const response = await executeFilesystemWorkerRequest(
+        await requestFor(
+          { kind: 'glob', cwd: root, path: root, pattern, ...(limit ? { limit } : {}) },
+          {
+            enforcementPath: root,
+            access: 'read',
+            scope: 'subtree',
+            targetType: 'directory',
+          },
+        ),
+        { windowsSandboxed: true },
+      );
+      assert.equal(response.ok, true);
+      if (!response.ok || response.result.kind !== 'glob') return [];
+      return response.result.files.map((file) => file.replaceAll('\\', '/'));
+    };
+
+    const patterns = [
+      './src/**/*.ts',
+      './*',
+      './foo/',
+      './**',
+      'foo/.',
+      'foo/*/.',
+      'src/?(foo)',
+      'foo/**/?(end)',
+      '**/.*/**',
+      'file/**',
+      'src/**/',
+      '{src/**/*.ts,foo/**/end/**}',
+      '**/*',
+    ];
+    for (const pattern of patterns) {
+      const expected: string[] = [];
+      for await (const file of nodeGlob(pattern, { cwd: root, followSymlinks: false })) {
+        expected.push(file.replaceAll('\\', '/'));
+      }
+      assert.deepEqual(await runWindowsGlob(pattern), expected, pattern);
+      for (const limit of [1, 2, 5]) {
+        assert.deepEqual(
+          await runWindowsGlob(pattern, limit),
+          expected.slice(0, limit),
+          `${pattern} limit=${limit}`,
+        );
+      }
     }
   });
 
@@ -623,6 +915,14 @@ describe('filesystem worker operations', () => {
     assert.equal(response.result.diff, undefined);
   });
 });
+
+function fakeWindowsDirent(name: string, symbolicLink = false): Dirent {
+  return {
+    name,
+    isDirectory: () => false,
+    isSymbolicLink: () => symbolicLink,
+  } as unknown as Dirent;
+}
 
 async function requestFor(
   operation: FilesystemWorkerOperation,

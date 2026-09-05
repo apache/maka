@@ -18,9 +18,10 @@
  */
 
 import { spawn } from 'node:child_process';
-import { promises as fs } from 'node:fs';
+import { promises as fs, type BigIntStats, type Dirent } from 'node:fs';
 import { glob as nodeGlob } from 'node:fs/promises';
-import { dirname, isAbsolute, parse, resolve } from 'node:path';
+import { dirname, isAbsolute, join, parse, resolve } from 'node:path';
+import { GLOBSTAR } from 'minimatch';
 import { isPathInside } from '../path-containment.js';
 import { sandboxPathApi } from './sandbox-paths.js';
 import { sandboxBoundaryExpansionAllowsPath } from '@maka/core/sandbox-boundary';
@@ -53,6 +54,7 @@ import {
   type FilesystemWorkerTarget,
 } from './protocol.js';
 import { isLikelySandboxDenial } from '../sandbox/detect.js';
+import { compileWindowsGlobPattern, type WindowsGlobPatternPart } from './windows-glob-pattern.js';
 
 // Canonicalisation must match the sandbox the worker runs in: realpath-based
 // on POSIX, lexical + reparse-rejecting inside the Windows AppContainer where
@@ -68,6 +70,8 @@ export interface FilesystemWorkerOperationDependencies {
   runGrep?: FilesystemWorkerGrepRunner;
   /** Set when the worker runs inside the Windows AppContainer sandbox. */
   windowsSandboxed?: boolean;
+  /** Test seam for proving that sandboxed Windows Glob never enters a directory link. */
+  windowsGlobReadDirectory?: (path: string) => Promise<Dirent[]>;
 }
 
 export interface FilesystemWorkerGrepRunInput {
@@ -378,10 +382,24 @@ export async function executeFilesystemOperation(
         'read',
         operationBoundary,
       );
-      const files: string[] = [];
       const limit = operation.limit ?? DEFAULT_GLOB_LIMIT;
-      for await (const file of nodeGlob(operation.pattern, { cwd: path })) {
-        files.push(typeof file === 'string' ? file : (file as { name: string }).name);
+      if (dependencies.windowsSandboxed) {
+        return {
+          kind: 'glob',
+          files: await windowsNonFollowingGlob(
+            path,
+            operation.pattern,
+            limit,
+            dependencies.windowsGlobReadDirectory,
+          ),
+        };
+      }
+      const files: string[] = [];
+      for await (const file of nodeGlob(operation.pattern, {
+        cwd: path,
+        followSymlinks: false,
+      })) {
+        files.push(file);
         if (files.length >= limit) break;
       }
       return { kind: 'glob', files };
@@ -647,6 +665,290 @@ function assertContainedGlobPattern(pattern: string): void {
   if (isAbsolute(pattern) || pattern.split(/[\\/]+/).includes('..')) {
     throw operationError('path_denied', 'Glob pattern must stay inside its search root.');
   }
+}
+
+interface WindowsGlobBranchState {
+  readonly id: number;
+  readonly pattern: readonly WindowsGlobPatternPart[];
+  readonly indexes: readonly number[];
+}
+
+interface WindowsGlobPathState {
+  readonly absolutePath: string;
+  readonly relativePath: string;
+  readonly isDirectory: boolean;
+  readonly branches: readonly WindowsGlobBranchState[];
+}
+
+async function windowsNonFollowingGlob(
+  root: string,
+  pattern: string,
+  limit: number,
+  readDirectory?: (path: string) => Promise<Dirent[]>,
+): Promise<string[]> {
+  const initialBranches = compileWindowsGlobPattern(pattern).map((compiled, id) => ({
+    id,
+    pattern: compiled,
+    indexes: [0],
+  }));
+  const files: string[] = [];
+  const emitted = new Set<string>();
+  const emit = (relativePath: string): boolean => {
+    if (emitted.has(relativePath)) return false;
+    emitted.add(relativePath);
+    files.push(relativePath);
+    return files.length >= limit;
+  };
+
+  const pending: WindowsGlobPathState[] = [
+    { absolutePath: root, relativePath: '.', isDirectory: true, branches: initialBranches },
+  ];
+  while (pending.length > 0) {
+    const currentPath = pending.pop();
+    if (!currentPath) break;
+    let entries: Dirent[] | undefined;
+    const readEntries = async (): Promise<Dirent[]> => {
+      if (entries) return entries;
+      entries =
+        (await readWindowsNonFollowingDirectory(root, currentPath.absolutePath, readDirectory)) ??
+        [];
+      return entries;
+    };
+    const childPaths = new Map<string, WindowsGlobPathState>();
+
+    // Keep Node Glob's branch and LIFO traversal order so a bounded result is
+    // the same prefix users receive outside the Windows sandbox.
+    for (const branch of currentPath.branches) {
+      const last = branch.pattern.length - 1;
+      const isLast = windowsGlobPatternIsLast(branch, currentPath.isDirectory);
+      const isFirst = branch.indexes.includes(0);
+
+      if (isFirst && branch.pattern[0] === '.') {
+        addWindowsGlobSubpattern(childPaths, currentPath, {
+          ...branch,
+          indexes: [1],
+        });
+        continue;
+      }
+
+      const finalPart = branch.pattern[last];
+      if (isLast && typeof finalPart === 'string') {
+        if (finalPart === '' || finalPart === '.') {
+          if (currentPath.isDirectory && emit(currentPath.relativePath)) return files;
+        } else if (currentPath.isDirectory) {
+          const entry = (await readEntries()).find(
+            (candidate) =>
+              !candidate.isSymbolicLink() &&
+              candidate.name.toLowerCase() === finalPart.toLowerCase(),
+          );
+          if (entry) {
+            const relativePath = join(currentPath.relativePath, entry.name);
+            if (emit(relativePath)) return files;
+          }
+        }
+        if (branch.indexes.length === 1 && branch.indexes[0] === last) continue;
+      } else if (
+        isLast &&
+        finalPart === GLOBSTAR &&
+        (currentPath.relativePath !== '.' ||
+          branch.pattern[0] === '.' ||
+          (last === 0 && currentPath.isDirectory)) &&
+        emit(currentPath.relativePath)
+      ) {
+        return files;
+      }
+
+      if (!currentPath.isDirectory) continue;
+
+      for (const entry of await readEntries()) {
+        // libuv reports every Windows FILE_ATTRIBUTE_REPARSE_POINT as a link
+        // Dirent, including junctions and reparse types that lstat may otherwise
+        // present as ordinary directories. Never return or enter one.
+        if (entry.isSymbolicLink()) continue;
+
+        const relativePath = join(currentPath.relativePath, entry.name);
+        const absolutePath = join(currentPath.absolutePath, entry.name);
+        const subIndexes = new Set<number>();
+        for (const index of branch.indexes) {
+          const part = branch.pattern[index];
+          const nextIndex = index + 1;
+          const nextMatches = windowsGlobPartMatches(branch.pattern, nextIndex, entry.name);
+
+          if (part === GLOBSTAR) {
+            let nextNonGlobIndex = nextIndex;
+            while (branch.pattern[nextNonGlobIndex] === GLOBSTAR) nextNonGlobIndex += 1;
+            const matchesDot =
+              entry.name.startsWith('.') &&
+              windowsGlobPartMatches(branch.pattern, nextNonGlobIndex, entry.name);
+            if (entry.name.startsWith('.') && !matchesDot) continue;
+
+            if (entry.isDirectory()) {
+              subIndexes.add(index);
+            } else if (index === last && emit(relativePath)) {
+              return files;
+            }
+
+            if (nextMatches && nextIndex === last && !isLast) {
+              if (emit(relativePath)) return files;
+            } else if (nextMatches && entry.isDirectory()) {
+              subIndexes.add(index + 2);
+            }
+            if ((nextMatches || branch.pattern[0] === '.') && entry.isDirectory()) {
+              subIndexes.add(nextIndex);
+            }
+          }
+
+          if (typeof part === 'string') {
+            if (windowsGlobPartMatches(branch.pattern, index, entry.name) && index !== last) {
+              subIndexes.add(nextIndex);
+            } else if (
+              part === '.' &&
+              windowsGlobPartMatches(branch.pattern, nextIndex, entry.name)
+            ) {
+              if (nextIndex === last) {
+                if (emit(relativePath)) return files;
+              } else {
+                subIndexes.add(nextIndex + 1);
+              }
+            }
+          }
+
+          if (part instanceof RegExp && windowsGlobPartMatches(branch.pattern, index, entry.name)) {
+            if (index === last) {
+              if (emit(relativePath)) return files;
+            } else if (entry.isDirectory()) {
+              subIndexes.add(nextIndex);
+            }
+          }
+        }
+
+        if (subIndexes.size > 0) {
+          addWindowsGlobSubpattern(
+            childPaths,
+            {
+              absolutePath,
+              relativePath,
+              isDirectory: entry.isDirectory(),
+              branches: [],
+            },
+            { ...branch, indexes: [...subIndexes] },
+          );
+        }
+      }
+    }
+    for (const child of childPaths.values()) pending.push(child);
+  }
+  return files;
+}
+
+function windowsGlobPatternIsLast(branch: WindowsGlobBranchState, isDirectory: boolean): boolean {
+  const last = branch.pattern.length - 1;
+  return (
+    branch.indexes.includes(last) ||
+    (branch.pattern[last] === '' &&
+      isDirectory &&
+      branch.indexes.includes(last - 1) &&
+      branch.pattern.at(-2) === GLOBSTAR)
+  );
+}
+
+function windowsGlobPartMatches(
+  pattern: readonly WindowsGlobPatternPart[],
+  index: number,
+  component: string,
+): boolean {
+  const part = pattern[index];
+  if (part === GLOBSTAR) return true;
+  if (typeof part === 'string') return part.toLowerCase() === component.toLowerCase();
+  if (part instanceof RegExp) {
+    part.lastIndex = 0;
+    return part.test(component);
+  }
+  return false;
+}
+
+function addWindowsGlobSubpattern(
+  paths: Map<string, WindowsGlobPathState>,
+  path: Omit<WindowsGlobPathState, 'branches'> & {
+    readonly branches?: readonly WindowsGlobBranchState[];
+  },
+  branch: WindowsGlobBranchState,
+): void {
+  const existing = paths.get(path.relativePath);
+  if (!existing) {
+    paths.set(path.relativePath, { ...path, branches: [branch] });
+    return;
+  }
+
+  const branchIndex = existing.branches.findIndex((candidate) => candidate.id === branch.id);
+  if (branchIndex === -1) {
+    paths.set(path.relativePath, { ...existing, branches: [...existing.branches, branch] });
+    return;
+  }
+
+  const branches = [...existing.branches];
+  const previous = branches[branchIndex];
+  branches[branchIndex] = {
+    ...previous,
+    indexes: [...new Set([...previous.indexes, ...branch.indexes])],
+  };
+  paths.set(path.relativePath, { ...existing, branches });
+}
+
+async function readWindowsNonFollowingDirectory(
+  root: string,
+  path: string,
+  readDirectory?: (path: string) => Promise<Dirent[]>,
+): Promise<Dirent[] | undefined> {
+  let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
+  try {
+    const beforeOpen = await fs.lstat(path, { bigint: true });
+    if (!isOrdinaryDirectory(beforeOpen)) return changedWindowsGlobDirectory(root, path);
+
+    // A parent Dirent is only a hint. Keep a directory handle open while the
+    // path is read and compare its identity before and after readdir so a
+    // directory-to-junction replacement cannot contribute target entries.
+    handle = await fs.open(path, 'r');
+    const opened = await handle.stat({ bigint: true });
+    if (!sameDirectoryIdentity(beforeOpen, opened)) {
+      return changedWindowsGlobDirectory(root, path);
+    }
+    const beforeRead = await fs.lstat(path, { bigint: true });
+    if (!isOrdinaryDirectory(beforeRead) || !sameDirectoryIdentity(opened, beforeRead)) {
+      return changedWindowsGlobDirectory(root, path);
+    }
+
+    const entries = await (readDirectory
+      ? readDirectory(path)
+      : fs.readdir(path, { withFileTypes: true }));
+    const afterRead = await fs.lstat(path, { bigint: true });
+    if (!isOrdinaryDirectory(afterRead) || !sameDirectoryIdentity(opened, afterRead)) {
+      return changedWindowsGlobDirectory(root, path);
+    }
+    return entries;
+  } catch (error) {
+    if (path !== root && isNonFollowingPrunableError(error)) return undefined;
+    throw error;
+  } finally {
+    await handle?.close();
+  }
+}
+
+function isOrdinaryDirectory(metadata: BigIntStats): boolean {
+  return metadata.isDirectory() && !metadata.isSymbolicLink();
+}
+
+function sameDirectoryIdentity(left: BigIntStats, right: BigIntStats): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function changedWindowsGlobDirectory(root: string, path: string): undefined {
+  if (path !== root) return undefined;
+  throw operationError('path_changed', 'Windows Glob root changed during directory traversal.');
+}
+
+function isNonFollowingPrunableError(error: unknown): boolean {
+  return ['EACCES', 'ELOOP', 'ENOENT', 'ENOTDIR', 'EPERM'].includes(nodeErrorCode(error) ?? '');
 }
 
 async function targetTypeOf(path: string): Promise<FilesystemWorkerTarget['targetType']> {

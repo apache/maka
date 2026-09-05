@@ -82,7 +82,9 @@ launch policy, then launches the target with layered Windows controls:
   the tree on close;
 - handle inheritance disabled;
 - AppContainer ACEs for only the compiled read/write roots, with a persisted recovery ledger;
-- recursive reparse-point rejection before ACL mutation;
+- recursive reparse-point rejection before ACL mutation by default; the W1 filesystem worker may
+  explicitly mark one read-only Glob root for non-following decomposition, where the root itself
+  stays strict and nested reparse entries receive no grant;
 - a closed, sorted environment from the normalized command;
 - bounded local named-pipe framing protected to SYSTEM and the current user.
 
@@ -252,7 +254,9 @@ designed but explicitly deferred as later gates, tracked by Phase 4 in
 Enforced (merged in #2961 unless tagged with a follow-up PR):
 
 - default-deny filesystem with distinct read/write roots compiled from the exact profile (§6.1);
-- recursive reparse-point rejection and multi-hard-link rejection before ACL mutation (§5, §6.1);
+- recursive reparse-point rejection and multi-hard-link rejection before ACL mutation (§5, §6.1),
+  with one explicit read-only W1 Glob exception that decomposes the admitted root around nested
+  reparse entries without granting or traversing them;
 - a fresh request-derived AppContainer SID, per-launch ACL grants in a versioned recovery ledger,
   and stale-ledger reconciliation at startup (§6.1, §7.1);
 - an AppContainer token with no network capabilities (§6.2);
@@ -374,7 +378,7 @@ sequenceDiagram
   M-->>H: native path + one-shot manifest
   H->>B: --broker-local manifest
   B->>B: delete manifest; bind PID, nonce, and launch digest
-  B->>B: recover ledger; reject reparse trees; grant SID ACEs
+  B->>B: recover ledger; reject or partition reparse trees; grant SID ACEs
   B->>J: create kill-on-close Job
   B->>C: create AppContainer process with atomic Job attribute
   C-->>B: bounded exit result
@@ -386,9 +390,22 @@ sequenceDiagram
 
 The first implementation needs no elevated setup. Windows creates a request-derived Maka
 AppContainer profile, and the packaged native binary grants its unique SID only the roots admitted
-for the current launch. Before mutation it recursively rejects `FILE_ATTRIBUTE_REPARSE_POINT`, persists a
-versioned ledger with `create_new` and `sync_all`, and reconciles every stale ledger before accepting
-a new request. A global kernel mutex covers only ledger/ACL mutation; each launch holds a separate
+for the current launch. Before mutation it recursively rejects `FILE_ATTRIBUTE_REPARSE_POINT` by
+default. A manifest produced specifically for the read-only W1 Glob operation may mark its single
+recursive root as non-following: the broker then records an exact grant for directories containing a
+nested reparse entry, recursive grants for clean child directories, and no grant for the reparse
+entry or its target. The manifest binds both the canonical authority and the original final path
+entry; before ACL mutation the broker opens both with `FILE_FLAG_OPEN_REPARSE_POINT`, rejects a root
+reparse point, and requires matching volume/file identity. The worker also compares an opened
+directory handle with non-following path metadata before and after each `readdir`, pruning a child
+whose cached `Dirent` was replaced. A finite Glob pattern binds its maximum traversal depth, so a
+root-only pattern receives one exact directory grant without scanning its children; GLOBSTAR keeps
+the full decomposition. The marked root itself and every multi-hard-link file included in a
+recursive grant still fail closed. Decomposition fails closed above 4,096 physical grants, 100,000
+directory/reparse planning entries, or 256 nested directory levels below the root. Ordinary file
+count does not consume the directory planning budget. The broker persists a versioned ledger with `create_new` and `sync_all`, and
+reconciles every stale ledger before accepting a new request. A global kernel mutex covers only
+ledger/ACL mutation; each launch holds a separate
 request-specific kernel lease through child settlement, so recovery skips live ledgers while disjoint
 launches execute concurrently. Normal settlement removes the SID ACE and then deletes the ledger.
 
@@ -487,7 +504,7 @@ For the W1 preview, the packaged verifier maps the supported attack surface to e
 
 | Category | Packaged evidence |
 | --- | --- |
-| Filesystem aliases | outside denial plus recursive junction and multi-hard-link admission refusal |
+| Filesystem aliases | outside denial; raw recursive junction and multi-hard-link refusal; root-junction refusal; cached-directory replacement pruning; a bounded root-only Glob; and a product Glob that succeeds beside a nested junction without following it |
 | Network channels | TCP connect denial without network capabilities |
 | IPC | host named-pipe denial and an explicit inherited-handle list |
 | Descendants | child creation is denied fail-closed, or a created descendant retains the AppContainer token and kill-on-close Job |

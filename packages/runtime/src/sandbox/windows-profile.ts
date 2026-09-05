@@ -31,6 +31,11 @@ export interface WindowsSandboxPolicy {
   readonly exactWriteRoots: readonly string[];
   readonly network: 'restricted' | 'enabled';
   readonly environment: Readonly<Record<string, string>>;
+  readonly nonFollowingReadRoot?: {
+    readonly enforcementPath: string;
+    readonly sourcePath: string;
+    readonly maxDepth?: number;
+  };
 }
 
 export function compileWindowsSandboxPolicy(command: SandboxCommand): WindowsSandboxPolicy {
@@ -97,6 +102,33 @@ export function compileWindowsSandboxPolicy(command: SandboxCommand): WindowsSan
     exactReadRoots.push(canonicalCwd);
   }
 
+  const nonFollowingReadRoot = pathContext.windowsNonFollowingReadRoot
+    ? {
+        enforcementPath: canonicalWindowsPath(
+          pathContext.windowsNonFollowingReadRoot.enforcementPath,
+        ),
+        sourcePath: canonicalWindowsPath(pathContext.windowsNonFollowingReadRoot.sourcePath),
+        ...(pathContext.windowsNonFollowingReadRoot.maxDepth !== undefined
+          ? { maxDepth: pathContext.windowsNonFollowingReadRoot.maxDepth }
+          : {}),
+      }
+    : undefined;
+  if (nonFollowingReadRoot && writeRoots.length > 0) {
+    throw new Error('Windows non-following read roots require a read-only sandbox profile.');
+  }
+  if (nonFollowingReadRoot) {
+    if (!containsPath(readRoots, nonFollowingReadRoot.enforcementPath)) {
+      throw new Error(
+        `Windows non-following root is not a declared read root: ${nonFollowingReadRoot.enforcementPath}`,
+      );
+    }
+    if (containsPath(exactReadRoots, nonFollowingReadRoot.enforcementPath)) {
+      throw new Error(
+        `Windows non-following root must be recursive, not exact: ${nonFollowingReadRoot.enforcementPath}`,
+      );
+    }
+  }
+
   return {
     readRoots,
     writeRoots,
@@ -104,6 +136,7 @@ export function compileWindowsSandboxPolicy(command: SandboxCommand): WindowsSan
     exactWriteRoots,
     network: profile.network.kind,
     environment: windowsEnvironment(command.env),
+    ...(nonFollowingReadRoot ? { nonFollowingReadRoot } : {}),
   };
 }
 
@@ -139,6 +172,10 @@ function addUnique(target: string[], path: string): void {
   if (!target.some((existing) => existing.toLowerCase() === path.toLowerCase())) {
     target.push(path);
   }
+}
+
+function containsPath(paths: readonly string[], path: string): boolean {
+  return paths.some((existing) => existing.toLowerCase() === path.toLowerCase());
 }
 
 function isValidWindowsEnvironmentName(name: string): boolean {

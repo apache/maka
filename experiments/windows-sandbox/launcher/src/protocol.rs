@@ -40,15 +40,29 @@ pub struct LaunchRequest {
     pub exact_write_roots: Vec<String>,
     pub network: NetworkMode,
     pub environment: BTreeMap<String, String>,
-    /// Optional child-wait deadline. Appended last and skipped when absent so
-    /// manifests written before this field keep an identical launch digest.
+    /// Optional child-wait deadline. Kept in its historical position and
+    /// skipped when absent so older manifests retain an identical digest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
+    /// One read-only recursive root whose operation does not follow nested
+    /// reparse points. The broker may decompose it into narrower ACL grants.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub non_following_read_root: Option<String>,
+    /// Original final path entry before client realpath canonicalization. The
+    /// broker opens this entry without following and requires it to identify
+    /// the same ordinary directory as `non_following_read_root`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub non_following_read_root_source: Option<String>,
+    /// Static maximum directory depth needed by a finite Glob pattern. An
+    /// absent value means GLOBSTAR traversal is unbounded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub non_following_read_root_max_depth: Option<u32>,
 }
 
 pub const MIN_LAUNCH_TIMEOUT_MS: u64 = 1_000;
 pub const MAX_LAUNCH_TIMEOUT_MS: u64 = 600_000;
 pub const DEFAULT_LAUNCH_TIMEOUT_MS: u64 = 30_000;
+pub const MAX_NON_FOLLOWING_READ_ROOT_DEPTH: u32 = 256;
 
 /// `request_id` reserved for the internal Windows readiness probe. Its own
 /// AppContainer profile/SID is derived from this exact identity, and
@@ -131,6 +145,37 @@ impl LaunchRequest {
         validate_roots(&self.write_roots, "writeRoots")?;
         validate_roots(&self.exact_read_roots, "exactReadRoots")?;
         validate_roots(&self.exact_write_roots, "exactWriteRoots")?;
+        if let Some(root) = self.non_following_read_root.as_deref() {
+            validate_path(root, "nonFollowingReadRoot")?;
+            if !contains_path(&self.read_roots, root) {
+                return Err("nonFollowingReadRoot must name a declared readRoot".to_owned());
+            }
+            if contains_path(&self.exact_read_roots, root) {
+                return Err("nonFollowingReadRoot must name a recursive readRoot".to_owned());
+            }
+            if !self.write_roots.is_empty() || !self.exact_write_roots.is_empty() {
+                return Err("nonFollowingReadRoot requires a read-only launch".to_owned());
+            }
+            let source = self
+                .non_following_read_root_source
+                .as_deref()
+                .ok_or_else(|| {
+                    "nonFollowingReadRoot requires nonFollowingReadRootSource".to_owned()
+                })?;
+            validate_path(source, "nonFollowingReadRootSource")?;
+            if self
+                .non_following_read_root_max_depth
+                .is_some_and(|depth| depth > MAX_NON_FOLLOWING_READ_ROOT_DEPTH)
+            {
+                return Err(format!(
+                    "nonFollowingReadRootMaxDepth must not exceed {MAX_NON_FOLLOWING_READ_ROOT_DEPTH}"
+                ));
+            }
+        } else if self.non_following_read_root_source.is_some() {
+            return Err("nonFollowingReadRootSource requires nonFollowingReadRoot".to_owned());
+        } else if self.non_following_read_root_max_depth.is_some() {
+            return Err("nonFollowingReadRootMaxDepth requires nonFollowingReadRoot".to_owned());
+        }
         if let Some(timeout_ms) = self.timeout_ms {
             if !(MIN_LAUNCH_TIMEOUT_MS..=MAX_LAUNCH_TIMEOUT_MS).contains(&timeout_ms) {
                 return Err(format!(
@@ -202,6 +247,10 @@ fn validate_roots(roots: &[String], field: &str) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn contains_path(paths: &[String], path: &str) -> bool {
+    paths.iter().any(|entry| entry.eq_ignore_ascii_case(path))
 }
 
 fn validate_path(value: &str, field: &str) -> Result<(), String> {
