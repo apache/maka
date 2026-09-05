@@ -570,6 +570,7 @@ type E2eTestFixtures = {
   projectSidebarWindow: Page;
   parentRemovalWindow: Page;
   railRenderWindow: Page;
+  agentGraphTopologyWindow: Page;
   promptRailWindow: Page;
   threadSearchWindow: Page;
   partialHistoryWindow: Page;
@@ -719,6 +720,15 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
       },
       use,
     );
+  },
+  agentGraphTopologyWindow: async ({}, use) => {
+    await withE2eWindow({
+      seed: false,
+      readinessSelector: '[data-testid="agent-graph-topology"]',
+      e2eFixtureScenario: 'agent-graph-topology',
+      locale: 'en',
+      showWindow: true,
+    }, use);
   },
   // Keep this scenario's real Electron + Host composition warm for the worker,
   // while the test-scoped wrapper below restores Host and renderer state

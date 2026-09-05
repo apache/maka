@@ -24,7 +24,11 @@ import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { AgentGraphClientSnapshot } from '@maka/runtime/stream-graph-read-model';
 import type { AgentGraphEpochSummary } from '@maka/runtime-host/protocol';
-import { AgentGraphPanel } from '../../renderer/agent-graph-panel.js';
+import {
+  AgentGraphPanel,
+  AgentGraphServicesProvider,
+  type AgentGraphServices,
+} from '../../renderer/features/agent-graph/testing.js';
 
 type GraphListener = () => void;
 
@@ -112,10 +116,13 @@ function installGraphRenderer(
   renderSession(sessionId: string): Promise<void>;
   holdNextEpochList(sessionId: string): DeferredRead;
   holdNextSnapshot(graphId: string): DeferredRead;
+  holdNextInspection(operatorId: string): DeferredRead;
   holdNextStop(sessionId: string): DeferredRead;
   setCurrentWithoutNotification(next: AgentGraphClientSnapshot): void;
   notify(): void;
   epochReadCounts(): { full: number; current: number };
+  inspectionReadCount(operatorId: string): number;
+  scrollIntoViewTargets(): readonly string[];
   stopCalls: Array<{ sessionId: string; expectedGraphId: string }>;
 } {
   const { document, window } = parseHTML('<div id="root"></div>');
@@ -140,6 +147,12 @@ function installGraphRenderer(
     cancelAnimationFrame: (handle: number) => clearTimeout(handle),
     IS_REACT_ACT_ENVIRONMENT: true,
   });
+  const scrollIntoViewTargets: string[] = [];
+  window.HTMLElement.prototype.scrollIntoView = function () {
+    scrollIntoViewTargets.push(
+      `${this.getAttribute('class') ?? this.tagName}:${this.textContent ?? ''}`,
+    );
+  };
 
   const snapshots = new Map(
     [initial, ...historical].map((entry) => [entry.graphId, entry] as const),
@@ -153,10 +166,12 @@ function installGraphRenderer(
   const listeners = new Set<GraphListener>();
   const epochListGates = new Map<string, DeferredReadGate>();
   const snapshotGates = new Map<string, DeferredReadGate>();
+  const inspectionGates = new Map<string, DeferredReadGate>();
   const stopGates = new Map<string, DeferredReadGate>();
   const stopCalls: Array<{ sessionId: string; expectedGraphId: string }> = [];
   let fullEpochReads = 0;
   let currentEpochReads = 0;
+  const inspectionReads = new Map<string, number>();
   const epochDirectory = (sessionId: string) => {
     const currentGraphId = currentGraphIds.get(sessionId);
     const entries = [...snapshots.values()]
@@ -175,7 +190,7 @@ function installGraphRenderer(
       truncated: false,
     };
   };
-  (window as unknown as { maka: unknown }).maka = {
+  const services: AgentGraphServices = {
     graphs: {
       listEpochs: async (sessionId: string) => {
         fullEpochReads += 1;
@@ -205,8 +220,51 @@ function installGraphRenderer(
         }
         return next;
       },
-      inspectOperator: async () => {
-        throw new Error('inspectOperator is unused by AgentGraphPanel');
+      inspectOperator: async (sessionId: string, operatorId: string, graphId?: string) => {
+        inspectionReads.set(operatorId, (inspectionReads.get(operatorId) ?? 0) + 1);
+        const gate = inspectionGates.get(operatorId);
+        if (gate) {
+          inspectionGates.delete(operatorId);
+          gate.markStarted();
+          await gate.waitForRelease;
+        }
+        const snapshot = graphId ? snapshots.get(graphId) : undefined;
+        const operator = snapshot?.operators.find((candidate) => candidate.operatorId === operatorId);
+        if (!snapshot || snapshot.rootSessionId !== sessionId || !operator) {
+          throw new Error(`missing graph operator ${operatorId}`);
+        }
+        return {
+          schemaVersion: 1,
+          rootSessionId: sessionId,
+          graphId: snapshot.graphId,
+          snapshotVersion: snapshot.snapshotVersion,
+          operator,
+          inboundEdges: snapshot.edges.filter((edge) => edge.toOperatorId === operatorId),
+          outboundEdges: snapshot.edges.filter((edge) => edge.fromOperatorId === operatorId),
+          work: snapshot.work.filter((work) => operator.scheduledWorkIds.includes(work.workId)),
+          claims: snapshot.claims.filter((claim) => claim.operatorId === operatorId),
+          activations: operator.currentActivation
+            ? [
+                {
+                  ...operator.currentActivation,
+                  lastRecordId:
+                    operator.currentActivation.terminalRecordId ??
+                    `record-${operator.currentActivation.activationId}`,
+                },
+              ]
+            : [],
+          recentRecords: snapshot.recentActivity.filter(
+            (record) => record.operatorId === operatorId,
+          ),
+          omitted: {
+            inboundEdges: operator.omitted.inboundEdgeIds,
+            outboundEdges: operator.omitted.outboundEdgeIds,
+            work: operator.omitted.scheduledWorkIds,
+            claims: 0,
+            activations: 0,
+            records: 0,
+          },
+        };
       },
       subscribe: (_sessionId: string, listener: GraphListener) => {
         listeners.add(listener);
@@ -229,6 +287,7 @@ function installGraphRenderer(
       },
     },
   };
+  (window as unknown as { maka: unknown }).maka = services;
 
   const container = document.querySelector('#root');
   assert.ok(container);
@@ -257,15 +316,25 @@ function installGraphRenderer(
     epochReadCounts() {
       return { full: fullEpochReads, current: currentEpochReads };
     },
+    inspectionReadCount(operatorId) {
+      return inspectionReads.get(operatorId) ?? 0;
+    },
+    scrollIntoViewTargets() {
+      return [...scrollIntoViewTargets];
+    },
     async renderSession(sessionId) {
       await act(async () => {
         root.render(
-          createElement(AgentGraphPanel, {
-            rootSessionId: sessionId,
-            enabled: true,
-            locale: 'en',
-            onOpenSession: () => undefined,
-          }),
+          createElement(
+            AgentGraphServicesProvider,
+            { services },
+            createElement(AgentGraphPanel, {
+              rootSessionId: sessionId,
+              enabled: true,
+              locale: 'en',
+              onOpenSession: () => undefined,
+            }),
+          ),
         );
         await Promise.resolve();
       });
@@ -278,6 +347,11 @@ function installGraphRenderer(
     holdNextSnapshot(graphId) {
       const gate = deferredReadGate();
       snapshotGates.set(graphId, gate);
+      return gate;
+    },
+    holdNextInspection(operatorId) {
+      const gate = deferredReadGate();
+      inspectionGates.set(operatorId, gate);
       return gate;
     },
     holdNextStop(sessionId) {
@@ -295,12 +369,16 @@ async function renderPanel(
   const harness = installGraphRenderer(initial);
   await act(async () => {
     harness.root.render(
-      createElement(AgentGraphPanel, {
-        rootSessionId: 'session-1',
-        enabled: true,
-        locale: 'en',
-        onOpenSession: () => undefined,
-      }),
+      createElement(
+        AgentGraphServicesProvider,
+        { services: (window as unknown as { maka: AgentGraphServices }).maka },
+        createElement(AgentGraphPanel, {
+          rootSessionId: 'session-1',
+          enabled: true,
+          locale: 'en',
+          onOpenSession: () => undefined,
+        }),
+      ),
     );
     await Promise.resolve();
   });
@@ -308,6 +386,277 @@ async function renderPanel(
 }
 
 describe('AgentGraphPanel dismiss', () => {
+  it('renders dependency topology, inspects a node, and keeps the list alternative', async () => {
+    const graph = snapshot({
+      graphId: 'graph-topology',
+      status: 'active',
+      operators: [
+        {
+          ...graphOperator('a', ['work-a', 'work-snapshot-omitted']),
+          currentActivation: {
+            activationId: 'activation-a',
+            status: 'running' as const,
+            recordCount: 2,
+            firstEventTime: 1,
+            lastEventTime: 2,
+            run: { sessionId: 'session-a', agentRunId: 'run-a', turnId: 'turn-a' },
+          },
+          omitted: {
+            ...graphOperator('a', ['work-a', 'work-snapshot-omitted']).omitted,
+            scheduledWorkIds: 2,
+          },
+        },
+        {
+          ...graphOperator('b', ['work-b']),
+          status: 'waiting',
+          readiness: [
+            {
+              readinessId: 'wait-b',
+              status: 'waiting',
+              waitingFor: [
+                { kind: 'input_route', upstreamOperatorIds: ['a'] },
+                { kind: 'activation_missing', operatorId: 'c', activationId: 'activation-c' },
+              ],
+              omittedWaitingFor: 2,
+            },
+          ],
+          omitted: {
+            ...graphOperator('b', ['work-b']).omitted,
+            readiness: 1,
+            readinessWaits: 2,
+          },
+        },
+      ],
+      edges: [{ edgeId: 'edge-a-b', fromOperatorId: 'a', toOperatorId: 'b' }],
+      work: [
+        graphWork('work-a', 'a', 'Collect inputs'),
+        graphWork('work-b', 'b', 'Synthesize result'),
+      ],
+      claims: [
+        {
+          claimId: 'claim-a',
+          intentId: 'intent-a',
+          operatorId: 'a',
+          childSessionId: 'session-a',
+          run: { sessionId: 'session-a', agentRunId: 'run-a', turnId: 'turn-a' },
+          admissionState: 'executing',
+          claimedAt: 1,
+        },
+      ],
+      recentActivity: [
+        {
+          recordId: 'record-a',
+          operatorId: 'a',
+          activationId: 'activation-a',
+          eventTime: 2,
+          facets: ['tool_call'],
+          signals: [{ kind: 'attention', reason: 'permission_request' }],
+          run: { sessionId: 'session-a', agentRunId: 'run-a', turnId: 'turn-a' },
+        },
+      ],
+    });
+    const harness = await renderPanel(graph);
+
+    assert.ok(harness.container.querySelector('[data-testid="agent-graph-topology"]'));
+    assert.equal(harness.container.querySelectorAll('.maka-agent-graph-edge').length, 1);
+    const node = harness.container.querySelector('.maka-agent-graph-node');
+    assert.ok(node);
+    assert.equal(node.tagName, 'BUTTON');
+    assert.equal(node.children[0]?.getAttribute('class'), 'maka-agent-graph-node-heading');
+    assert.equal(node.querySelector('[role="img"]')?.getAttribute('aria-hidden'), 'true');
+    assert.match(node.textContent ?? '', /Running/);
+    assert.equal(node.getAttribute('aria-pressed'), 'false');
+    assert.match(node.getAttribute('aria-label') ?? '', /agent-a\. Running\. Collect inputs/);
+    assert.match(node.getAttribute('aria-label') ?? '', /3 more work items omitted/);
+    const waitingNode = harness.container.querySelectorAll('.maka-agent-graph-node')[1];
+    assert.match(waitingNode?.getAttribute('aria-label') ?? '', /Waiting for input from a/);
+    assert.match(waitingNode?.getAttribute('aria-label') ?? '', /1 more wait/);
+    assert.match(waitingNode?.getAttribute('aria-label') ?? '', /2 waits omitted/);
+    assert.match(waitingNode?.getAttribute('aria-label') ?? '', /1 readiness check omitted/);
+    assert.match(waitingNode?.textContent ?? '', /Waiting for input from a/);
+    await act(async () => {
+      (node as HTMLElement).click();
+      await Promise.resolve();
+    });
+    assert.equal(node.getAttribute('aria-pressed'), 'true');
+    assert.ok(harness.container.querySelector('[aria-label="Operator details: agent-a"]'));
+    assert.match(harness.container.textContent ?? '', /0 inbound · 1 outbound/);
+    assert.match(harness.container.textContent ?? '', /Work/);
+    assert.match(harness.container.textContent ?? '', /Dependencies/);
+    assert.match(harness.container.textContent ?? '', /To agent-b/);
+    assert.match(harness.container.textContent ?? '', /activation-a/);
+    assert.match(harness.container.textContent ?? '', /firstEventTime/);
+    assert.match(harness.container.textContent ?? '', /lastRecordId/);
+    assert.match(harness.container.textContent ?? '', /claim-a/);
+    assert.match(harness.container.textContent ?? '', /intent-a/);
+    assert.match(harness.container.textContent ?? '', /run\.agentRunIdrun-a/);
+    assert.match(harness.container.textContent ?? '', /run\.turnIdturn-a/);
+    assert.match(harness.container.textContent ?? '', /tool call · record-a/);
+    assert.match(harness.container.textContent ?? '', /attention: permission request/);
+    const eventTime = harness.container.querySelector('time');
+    assert.equal(
+      eventTime?.getAttribute('datetime') ?? eventTime?.getAttribute('dateTime'),
+      '1970-01-01T00:00:00.001Z',
+    );
+    assert.match(harness.container.textContent ?? '', /2 more omitted/);
+    assert.equal(harness.inspectionReadCount('a'), 1);
+    const viewport = harness.container.querySelector('.maka-agent-graph-topology-viewport') as
+      | (HTMLElement & { scrollLeft: number })
+      | null;
+    assert.ok(viewport);
+    Object.defineProperty(viewport, 'clientWidth', { value: 240 });
+    viewport.scrollLeft = 10;
+
+    await harness.setSnapshot({
+      ...graph,
+      snapshotVersion: '2',
+      operators: [graphOperator('upstream', []), ...graph.operators],
+      edges: [
+        ...graph.edges,
+        { edgeId: 'edge-upstream-a', fromOperatorId: 'upstream', toOperatorId: 'a' },
+      ],
+    });
+    assert.equal(harness.inspectionReadCount('a'), 2);
+    assert.match(harness.container.textContent ?? '', /1 inbound · 1 outbound/);
+    assert.equal(viewport.scrollLeft, 268);
+
+    await act(async () => {
+      (node as HTMLElement).click();
+      await Promise.resolve();
+    });
+    assert.equal(node.getAttribute('aria-pressed'), 'false');
+    assert.equal(harness.container.querySelector('[aria-label="Operator details: agent-a"]'), null);
+
+    const listButton = [...harness.container.querySelectorAll('button')].find(
+      (button) => button.textContent === 'List',
+    );
+    assert.ok(listButton);
+    await act(async () => (listButton as HTMLElement).click());
+    assert.ok(harness.container.querySelector('[data-testid="agent-graph-list"]'));
+    assert.match(harness.container.textContent ?? '', /Feeds agent-b/);
+    assert.match(harness.container.textContent ?? '', /Depends on agent-a/);
+    const detailsButton = [...harness.container.querySelectorAll('button')].find(
+      (button) => button.getAttribute('aria-label') === 'View agent-a details',
+    );
+    assert.ok(detailsButton);
+    assert.equal(detailsButton.getAttribute('aria-expanded'), 'false');
+    await act(async () => {
+      (detailsButton as HTMLElement).click();
+      await Promise.resolve();
+    });
+    assert.equal(detailsButton.getAttribute('aria-expanded'), 'true');
+    const details = harness.container.querySelector(
+      'section[aria-label="Operator details: agent-a"]',
+    );
+    assert.ok(details);
+    assert.equal(detailsButton.getAttribute('aria-controls'), details.id);
+    await act(async () => {
+      (detailsButton as HTMLElement).click();
+      await Promise.resolve();
+    });
+    assert.equal(detailsButton.getAttribute('aria-expanded'), 'false');
+    assert.equal(
+      harness.container.querySelector('section[aria-label="Operator details: agent-a"]'),
+      null,
+    );
+    await act(async () => harness.root.unmount());
+  });
+
+  it('keeps inspected details visible while a live refresh is pending', async () => {
+    const graph = snapshot({
+      graphId: 'graph-inspection-refresh',
+      status: 'active',
+      operators: [graphOperator('a', ['work-a'])],
+      work: [graphWork('work-a', 'a', 'Initial inspection detail')],
+    });
+    const harness = await renderPanel(graph);
+    const node = harness.container.querySelector('.maka-agent-graph-node');
+    assert.ok(node);
+    await act(async () => {
+      (node as HTMLElement).click();
+      await Promise.resolve();
+    });
+    const details = harness.container.querySelector(
+      '[aria-label="Operator details: agent-a"]',
+    );
+    assert.ok(details);
+    assert.match(details.textContent ?? '', /Initial inspection detail/);
+
+    const inspection = harness.holdNextInspection('a');
+    await harness.setSnapshot({
+      ...graph,
+      snapshotVersion: '2',
+      work: [graphWork('work-a', 'a', 'Refreshed inspection detail')],
+    });
+    await inspection.started;
+
+    assert.equal(details.getAttribute('aria-busy'), 'true');
+    assert.match(details.textContent ?? '', /Initial inspection detail/);
+    assert.doesNotMatch(details.textContent ?? '', /Refreshed inspection detail/);
+
+    await act(async () => {
+      inspection.release();
+      await Promise.resolve();
+    });
+    assert.equal(details.getAttribute('aria-busy'), 'false');
+    assert.match(details.textContent ?? '', /Refreshed inspection detail/);
+    await act(async () => harness.root.unmount());
+  });
+
+  it('keeps keyboard order visual and reveals a retained selection', async () => {
+    const harness = await renderPanel(
+      snapshot({
+        graphId: 'graph-selection',
+        status: 'active',
+        operators: [graphOperator('c', []), graphOperator('b', []), graphOperator('a', [])],
+        edges: [
+          { edgeId: 'edge-a-b', fromOperatorId: 'a', toOperatorId: 'b' },
+          { edgeId: 'edge-b-c', fromOperatorId: 'b', toOperatorId: 'c' },
+        ],
+      }),
+    );
+    assert.deepEqual(
+      [...harness.container.querySelectorAll('.maka-agent-graph-node strong')].map(
+        (node) => node.textContent,
+      ),
+      ['agent-a', 'agent-b', 'agent-c'],
+    );
+
+    const listButton = [...harness.container.querySelectorAll('button')].find(
+      (button) => button.textContent === 'List',
+    );
+    assert.ok(listButton);
+    await act(async () => (listButton as HTMLElement).click());
+    const operatorRow = [...harness.container.querySelectorAll('.maka-agent-graph-operators li')].find(
+      (row) => row.querySelector('strong')?.textContent === 'agent-c',
+    );
+    const detailsButton = [...(operatorRow?.querySelectorAll('button') ?? [])].find(
+      (button) => button.getAttribute('aria-label') === 'View agent-c details',
+    );
+    assert.ok(detailsButton);
+    await act(async () => {
+      (detailsButton as HTMLElement).click();
+      await Promise.resolve();
+    });
+    const detailsRevealCount = selectedDetailsRevealCount(harness);
+
+    const topologyButton = [...harness.container.querySelectorAll('button')].find(
+      (button) => button.textContent === 'Topology',
+    );
+    assert.ok(topologyButton);
+    await act(async () => (topologyButton as HTMLElement).click());
+    assert.equal(selectedDetailsRevealCount(harness), detailsRevealCount);
+
+    const collapseButton = harness.container.querySelector('[aria-label="Collapse Agent Graph"]');
+    assert.ok(collapseButton);
+    await act(async () => (collapseButton as HTMLElement).click());
+    const expandButton = harness.container.querySelector('[aria-label="Expand Agent Graph"]');
+    assert.ok(expandButton);
+    await act(async () => (expandButton as HTMLElement).click());
+    assert.equal(selectedDetailsRevealCount(harness), detailsRevealCount);
+    await act(async () => harness.root.unmount());
+  });
+
   it('keeps the new session loading when a disposed read settles later', async () => {
     const sessionA = snapshot({ graphId: 'graph-a', status: 'active' });
     const sessionB = snapshot({
@@ -388,17 +737,7 @@ describe('AgentGraphPanel dismiss', () => {
     const current = snapshot({ graphId: 'graph-2', status: 'active' });
     const previous = snapshot({ graphId: 'graph-1', status: 'completed' });
     const harness = installGraphRenderer(current, [previous]);
-    await act(async () => {
-      harness.root.render(
-        createElement(AgentGraphPanel, {
-          rootSessionId: 'session-1',
-          enabled: true,
-          locale: 'en',
-          onOpenSession: () => undefined,
-        }),
-      );
-      await Promise.resolve();
-    });
+    await harness.renderSession('session-1');
 
     const selector = harness.container.querySelector('[role="combobox"]');
     assert.ok(selector);
@@ -587,17 +926,7 @@ describe('AgentGraphPanel dismiss', () => {
     const current = snapshot({ graphId: 'graph-2', status: 'active' });
     const previous = snapshot({ graphId: 'graph-1', status: 'completed' });
     const harness = installGraphRenderer(current, [previous]);
-    await act(async () => {
-      harness.root.render(
-        createElement(AgentGraphPanel, {
-          rootSessionId: 'session-1',
-          enabled: true,
-          locale: 'en',
-          onOpenSession: () => undefined,
-        }),
-      );
-      await Promise.resolve();
-    });
+    await harness.renderSession('session-1');
 
     const selector = harness.container.querySelector('[role="combobox"]');
     assert.ok(selector);
@@ -774,3 +1103,45 @@ describe('AgentGraphPanel collapse initialization', () => {
     await act(async () => harness.root.unmount());
   });
 });
+function graphOperator(operatorId: string, scheduledWorkIds: string[]) {
+  return {
+    operatorId,
+    childSessionId: `session-${operatorId}`,
+    provisionId: `provision-${operatorId}`,
+    agentId: `agent-${operatorId}`,
+    provisionedAt: 1,
+    status: 'running' as const,
+    inboundEdgeIds: [],
+    outboundEdgeIds: [],
+    scheduledWorkIds,
+    readiness: [],
+    omitted: {
+      inboundEdgeIds: 0,
+      outboundEdgeIds: 0,
+      scheduledWorkIds: 0,
+      readiness: 0,
+      readinessWaits: 0,
+    },
+  };
+}
+
+function graphWork(workId: string, operatorId: string, instructionPreview: string) {
+  return {
+    workId,
+    target: { kind: 'operator' as const, operatorId },
+    inputIds: [],
+    status: 'requested' as const,
+    instructionPreview,
+    instructionTruncated: false,
+    revision: 1,
+    committedAt: 1,
+  };
+}
+
+function selectedDetailsRevealCount(
+  harness: Pick<ReturnType<typeof installGraphRenderer>, 'scrollIntoViewTargets'>,
+): number {
+  return harness
+    .scrollIntoViewTargets()
+    .filter((target) => target.startsWith('maka-agent-graph-details-heading:')).length;
+}

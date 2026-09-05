@@ -1,4 +1,3 @@
-apps/desktop/src/renderer/agent-graph-panel.tsx
 apps/desktop/src/renderer/app-shell-chrome-actions.tsx
 apps/desktop/src/renderer/app-shell-detail-panel.tsx
 apps/desktop/src/renderer/app-shell-overlays.tsx
@@ -14,6 +13,9 @@ apps/desktop/src/renderer/composer-mentions.tsx
 apps/desktop/src/renderer/composition/desktop-feature-services.tsx
 apps/desktop/src/renderer/custom-pet-companion.tsx
 apps/desktop/src/renderer/error-boundary.tsx
+apps/desktop/src/renderer/features/agent-graph/services-context.tsx
+apps/desktop/src/renderer/features/agent-graph/ui/agent-graph-panel.tsx
+apps/desktop/src/renderer/features/agent-graph/ui/agent-graph-topology.tsx
 apps/desktop/src/renderer/features/connection-settings/onboarding-step-form.tsx
 apps/desktop/src/renderer/features/connection-settings/services-context.tsx
 apps/desktop/src/renderer/features/goals/services-context.tsx

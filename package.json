@@ -94,7 +94,7 @@
     "package:linux": "node scripts/package-linux.mjs",
     "verify:linux": "node scripts/verify-linux.mjs",
     "astryx:theme": "node scripts/build-astryx-theme.mjs",
-    "astryx:surface-inventory": "node scripts/check-astryx-surface-inventory.mjs",
+    "astryx:surface-inventory": "node --test scripts/generate-astryx-surface-inventory.test.mjs && node scripts/check-astryx-surface-inventory.mjs",
     "astryx:surface-inventory:write": "node scripts/generate-astryx-surface-inventory.mjs",
     "astryx:surface-inventory:test": "node --test scripts/generate-astryx-surface-inventory.test.mjs",
     "sync:model-metadata": "node scripts/sync-model-metadata.mjs",

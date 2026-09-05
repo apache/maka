@@ -17,25 +17,27 @@
  * under the License.
  */
 
-import type { Meta, StoryObj } from '@storybook/react-vite';
+import type { Decorator, Meta, StoryObj } from '@storybook/react-vite';
 import { expect, waitFor } from 'storybook/test';
 import type {
   AgentGraphClientOperator,
   AgentGraphClientSnapshot,
 } from '@maka/runtime/stream-graph-read-model';
-import { AgentGraphPanel, getAgentGraphPanelCopy } from '../src/renderer/agent-graph-panel';
-import { withScopedMakaBridge } from './maka-bridge';
+import {
+  AgentGraphPanel,
+  AgentGraphServicesProvider,
+  getAgentGraphPanelCopy,
+  type AgentGraphServices,
+} from '../src/renderer/features/agent-graph/stories';
 
 // Fidelity convention (#1433): every story names the real app path that
 // reaches it. See apps/desktop/stories/FIDELITY.md.
 //
 // Real host: app-shell.tsx mounts <AgentGraphPanel> in the conversation column
 // when the active session runs in `graph` orchestration mode. The panel reads
-// its snapshot from `window.maka.graphs` itself (not props or context), so each
-// story installs a scoped bridge that serves one pinned snapshot rather than
-// driving a live graph. The panel renders operators as a flat list — it draws
-// no edges or hierarchy — so tree depth and cycles have no distinct rendering
-// and are not enumerated here.
+// its snapshot through the Agent Graph feature service, so each story installs
+// a scoped service that serves one pinned snapshot rather than driving a live
+// graph.
 
 const ROOT_SESSION_ID = 'session-graph';
 const GRAPH_ID = 'graph-storybook';
@@ -93,7 +95,7 @@ function operator(
   return {
     childSessionId: `child-${overrides.operatorId}`,
     provisionId: `prov-${overrides.operatorId}`,
-    agentId: 'code-reviewer',
+    agentId: overrides.operatorId,
     provisionedAt: 1,
     inboundEdgeIds: [],
     outboundEdgeIds: [],
@@ -110,11 +112,11 @@ function operator(
   };
 }
 
-// A scoped `window.maka.graphs` bridge that serves one pinned snapshot. `fail`
+// A scoped Graph service that serves one pinned snapshot. `fail`
 // makes getSnapshot reject, exercising the panel's load-error banner. The full
 // method set is required: the panel calls `subscribe` outside its try/catch, so
-// a missing bridge would throw into React rather than settle into the UI.
-function graphBridge(snap: AgentGraphClientSnapshot, fail = false) {
+// a missing service method would throw into React rather than settle into the UI.
+function graphServices(snap: AgentGraphClientSnapshot, fail = false): AgentGraphServices {
   const directory = {
     epochs: [{ epoch: 1, graphId: snap.graphId, createdAt: 1, current: true }],
     truncated: false,
@@ -134,6 +136,14 @@ function graphBridge(snap: AgentGraphClientSnapshot, fail = false) {
       stop: async () => undefined,
     },
   };
+}
+
+function withAgentGraphServices(services: AgentGraphServices): Decorator {
+  return (Story) => (
+    <AgentGraphServicesProvider services={services}>
+      <Story />
+    </AgentGraphServicesProvider>
+  );
 }
 
 // Production mounts <AgentGraphPanel> in the conversation composer slot
@@ -163,7 +173,7 @@ function panel() {
 // operator yet — the panel's own empty state, not a spinner and not an error.
 export const EmptyGraph: Story = {
   decorators: [
-    withScopedMakaBridge(graphBridge(snapshot({ status: 'empty', scheduleRevision: 0 }))),
+    withAgentGraphServices(graphServices(snapshot({ status: 'empty', scheduleRevision: 0 }))),
   ],
   render: panel,
   play: async ({ canvasElement }) => {
@@ -176,8 +186,8 @@ export const EmptyGraph: Story = {
 // still running.
 export const FailedGraph: Story = {
   decorators: [
-    withScopedMakaBridge(
-      graphBridge(
+    withAgentGraphServices(
+      graphServices(
         snapshot({
           status: 'failed',
           operators: [
@@ -193,7 +203,9 @@ export const FailedGraph: Story = {
   play: async ({ canvasElement }) => {
     await waitFor(() =>
       expect(
-        canvasElement.querySelector('.maka-agent-graph-operators li[data-status="failed"]'),
+        [...canvasElement.querySelectorAll('.maka-agent-graph-node')].find((node) =>
+          node.textContent?.includes(copy.operatorStatus('failed')),
+        ),
       ).not.toBeNull(),
     );
   },
@@ -203,8 +215,8 @@ export const FailedGraph: Story = {
 // input, so it sits blocked with the amber "waiting for …" line.
 export const BlockedOnUpstream: Story = {
   decorators: [
-    withScopedMakaBridge(
-      graphBridge(
+    withAgentGraphServices(
+      graphServices(
         snapshot({
           status: 'active',
           operators: [
@@ -230,21 +242,22 @@ export const BlockedOnUpstream: Story = {
   play: async ({ canvasElement }) => {
     await waitFor(() => {
       expect(
-        canvasElement.querySelector('.maka-agent-graph-operators li[data-status="blocked"]'),
+        [...canvasElement.querySelectorAll('.maka-agent-graph-node')].find((node) =>
+          node.textContent?.includes(copy.operatorStatus('blocked')),
+        ),
       ).not.toBeNull();
       expect(canvasElement.querySelector('.maka-agent-graph-wait')).not.toBeNull();
     });
   },
 };
 
-// Real path: a wide fan-out — many operators provisioned at once, the breadth a
+// Real path: many independent operators provisioned at once, the breadth a
 // small graph never shows. The read-model only elides operators past 256 (far
-// beyond a story's scale), so this shows a genuine many-operator list rather
-// than a fabricated omitted count (review feedback).
+// beyond a story's scale), so this shows a genuine many-operator graph.
 export const ManyOperators: Story = {
   decorators: [
-    withScopedMakaBridge(
-      graphBridge(
+    withAgentGraphServices(
+      graphServices(
         snapshot({
           status: 'active',
           operators: Array.from({ length: 28 }, (_, index) =>
@@ -269,7 +282,7 @@ export const ManyOperators: Story = {
 // Real path: reading the graph snapshot fails (the IPC read rejects); the panel
 // raises its error Banner with a Retry action instead of a blank pane.
 export const LoadError: Story = {
-  decorators: [withScopedMakaBridge(graphBridge(snapshot({ status: 'active' }), true))],
+  decorators: [withAgentGraphServices(graphServices(snapshot({ status: 'active' }), true))],
   render: panel,
   play: async ({ canvasElement }) => {
     await waitFor(() => expect(canvasElement.textContent).toContain(copy.loadFailed));
