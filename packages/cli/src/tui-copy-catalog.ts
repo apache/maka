@@ -453,7 +453,7 @@ export const TUI_COPY_RESOURCES = {
     en: {
       modelPickerTitle: 'Select Model',
       modelSwitchCacheWarning:
-        '⚠ Switching models may rebuild the prompt cache; the next request may be slower or cost more.',
+        '\u26a0 Switching models may rebuild the prompt cache; the next request may be slower or cost more.',
       modelSearchHint:
         'Search models / providers / connections · ↑↓ select · Enter confirm · Esc cancel',
       searchLabel: 'Search',
@@ -472,6 +472,9 @@ export const TUI_COPY_RESOURCES = {
       },
       defaultThinkingLevel: 'Default',
       thinkingPickerTitle: 'Select Thinking Level',
+      contextTarget: 'Context target',
+      contextTargetAuto: 'Auto',
+      contextTargetScope: 'Saved for all tasks using this connection and model.',
       currentMarker: 'current',
       defaultMarker: 'default',
       setupTitle: 'Set Up Provider',
@@ -553,7 +556,8 @@ export const TUI_COPY_RESOURCES = {
     },
     'zh-CN': {
       modelPickerTitle: '选择模型',
-      modelSwitchCacheWarning: '⚠ 切换模型可能需要重建提示缓存；下一次请求可能更慢或成本更高。',
+      modelSwitchCacheWarning:
+        '\u26a0 切换模型可能需要重建提示缓存；下一次请求可能更慢或成本更高。',
       modelSearchHint: '搜索模型 / 服务商 / 连接 · ↑↓ 选择 · Enter 确认 · Esc 取消',
       searchLabel: '搜索',
       noMatchingModels: '没有匹配的模型',
@@ -571,6 +575,9 @@ export const TUI_COPY_RESOURCES = {
       },
       defaultThinkingLevel: '默认',
       thinkingPickerTitle: '选择思考级别',
+      contextTarget: '上下文目标',
+      contextTargetAuto: '自动',
+      contextTargetScope: '已保存，适用于此连接使用该模型的所有任务。',
       currentMarker: '当前',
       defaultMarker: '默认',
       setupTitle: '配置模型提供商',
@@ -642,7 +649,8 @@ export const TUI_COPY_RESOURCES = {
     },
     'zh-TW': {
       modelPickerTitle: '選擇模型',
-      modelSwitchCacheWarning: '⚠ 切換模型可能需要重建提示快取；下一次請求可能較慢或成本較高。',
+      modelSwitchCacheWarning:
+        '\u26a0 切換模型可能需要重建提示快取；下一次請求可能較慢或成本較高。',
       modelSearchHint: '搜尋模型 / 服務商 / 連線 · ↑↓ 選擇 · Enter 確認 · Esc 取消',
       searchLabel: '搜尋',
       noMatchingModels: '沒有符合的模型',
@@ -660,6 +668,9 @@ export const TUI_COPY_RESOURCES = {
       },
       defaultThinkingLevel: '預設',
       thinkingPickerTitle: '選擇思考級別',
+      contextTarget: '上下文目標',
+      contextTargetAuto: '自動',
+      contextTargetScope: '已儲存，適用於此連線使用該模型的所有任務。',
       currentMarker: '目前',
       defaultMarker: '預設',
       setupTitle: '設定模型服務商',
@@ -741,7 +752,7 @@ export const TUI_COPY_RESOURCES = {
       },
       commands: {
         compact: 'Compact session context',
-        context: 'Show latest request context usage',
+        context: 'Show context usage, or set target: /context 256k|512k|1m|auto',
         copy: 'Copy the last reply (or /copy all) to the clipboard',
         exit: 'Exit Maka',
         goal: 'Show autonomous goal status',
@@ -792,7 +803,7 @@ export const TUI_COPY_RESOURCES = {
       },
       commands: {
         compact: '压缩会话上下文',
-        context: '查看最近一次请求的上下文用量',
+        context: '查看上下文用量，或设置目标：/context 256k|512k|1m|auto',
         copy: '复制最后一条回复（或 /copy all）到剪贴板',
         exit: '退出 Maka',
         goal: '查看自主目标状态',
@@ -843,7 +854,7 @@ export const TUI_COPY_RESOURCES = {
       },
       commands: {
         compact: '壓縮會話上下文',
-        context: '檢視最近一次請求的上下文用量',
+        context: '檢視上下文用量，或設定目標：/context 256k|512k|1m|auto',
         copy: '複製最後一則回覆（或 /copy all）到剪貼簿',
         exit: '退出 Maka',
         goal: '檢視自主目標狀態',

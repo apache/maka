@@ -1153,6 +1153,7 @@
         "actionFactories": [],
         "dependencyPaths": {
           "./composer-mentions.js": 1,
+          "./features/connection-settings/index.js": 1,
           "./new-task-reload-intent.js": 1,
           "@maka/ui": 1,
           "react": 1

@@ -47,6 +47,7 @@ import {
   toggleAllThinkingExpansion,
   toggleAllToolExpansion,
   type MakaPiToolEntry,
+  type MakaPiTranscriptMetadata,
 } from '../pi-transcript.js';
 
 function toolStatus(entry: MakaPiToolEntry | undefined): string | undefined {
@@ -181,6 +182,18 @@ describe('Maka Pi TUI transcript', () => {
       renderMakaPiTranscript(state, meta(), 80).map(stripAnsi).join('\n'),
       /Goal continuation \(autonomous\).*Goal continuation\] The goal is not yet met/s,
     );
+  });
+
+  test('status line merges an explicit context target into thinking and hides Auto', () => {
+    const render = (overrides: Partial<MakaPiTranscriptMetadata>) =>
+      stripAnsi(renderMakaPiStatusLine({ ...meta(), ...overrides }, 160));
+    assert.match(render({ declaredContextWindow: 256_000 }), /thinking:default\[256k\]/);
+    assert.match(
+      render({ thinkingLevel: 'high', declaredContextWindow: 512_000 }),
+      /thinking:high\[512k\]/,
+    );
+    assert.doesNotMatch(render({}), /thinking:default|\[auto\]/i);
+    assert.match(render({ thinkingLevel: 'high' }), /thinking:high/);
   });
 
   test('status line shows a live goal and hides terminal or absent goals', () => {

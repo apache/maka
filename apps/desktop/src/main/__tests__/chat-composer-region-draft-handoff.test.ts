@@ -22,7 +22,8 @@ import { afterEach, test } from 'node:test';
 import { act, createElement, createRef } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
-import { AstryxLocaleProvider, type ComposerHandle, LocaleProvider } from '@maka/ui';
+import { AstryxLocaleProvider, type ComposerHandle, LocaleProvider, ToastProvider } from '@maka/ui';
+import { ConnectionSettingsServicesProvider } from '../../renderer/features/connection-settings/index.js';
 import { ChatComposerRegion } from '../../renderer/chat-composer-region.js';
 import {
   markNewTaskReloadIntent,
@@ -109,27 +110,31 @@ async function mountRegion(): Promise<{
           {
             locale: 'en',
             children: createElement(AstryxLocaleProvider, {
-              children: createElement(ChatComposerRegion, {
-              composerRef: composer,
-              onOpenContextUsage: () => undefined,
-              directoryComposerProps: {},
-              directoryPickerEnabled: false,
-
-              active: true,
-              onboardingComposerHidden: false,
-              activeInteraction: undefined,
-              activeId,
-              newTaskDraftKey,
-              newTaskSendPending,
-              stopPendingBySession: {},
-              respondToSandboxBoundary: () => {},
-              respondToClientCapability: () => {},
-              respondToUserQuestion: () => {},
-              respondToUserForm: () => {},
-              stop: () => {},
-              onSend: () => {},
-              onStop: () => {},
-            }),
+              children: createElement(ToastProvider, {
+                children: createElement(ConnectionSettingsServicesProvider, {
+                  services: { forHost: () => { throw new Error('No Host selected in draft test'); } },
+                  children: createElement(ChatComposerRegion, {
+                    composerRef: composer,
+                    onOpenContextUsage: () => undefined,
+                    directoryComposerProps: {},
+                    directoryPickerEnabled: false,
+                    active: true,
+                    onboardingComposerHidden: false,
+                    activeInteraction: undefined,
+                    activeId,
+                    newTaskDraftKey,
+                    newTaskSendPending,
+                    stopPendingBySession: {},
+                    respondToSandboxBoundary: () => {},
+                    respondToClientCapability: () => {},
+                    respondToUserQuestion: () => {},
+                    respondToUserForm: () => {},
+                    stop: () => {},
+                    onSend: () => {},
+                    onStop: () => {},
+                  }),
+                }),
+              }),
             }),
           },
         ),

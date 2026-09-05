@@ -4064,6 +4064,69 @@ describe('Maka Pi TUI runner', () => {
     );
   });
 
+  test('/context sets and clears the selected model target without sending an agent turn', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver();
+    const updates: Array<{
+      connectionId: string;
+      connectionSlug: string;
+      model: string;
+      target: number | undefined;
+    }> = [];
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'gpt-5',
+      connectionSlug: 'openai',
+      permissionMode: 'ask',
+      terminal,
+      modelChoices: [
+        {
+          connectionId: 'connection-openai',
+          connectionSlug: 'openai',
+          connectionName: 'OpenAI',
+          providerType: 'openai',
+          model: 'gpt-5',
+          isDefaultConnection: true,
+          thinkingLevels: ['high'],
+          contextWindow: 1_000_000,
+        },
+      ],
+      setModelContextTarget: async (update) => {
+        updates.push(update);
+      },
+    });
+    try {
+      terminal.input('/context 256k');
+      terminal.input('\r');
+      await waitFor(() =>
+        plainTerminalOutput(terminal.output()).includes('Context target: 256,000'),
+      );
+      assert.deepEqual(updates, [
+        {
+          connectionId: 'connection-openai',
+          connectionSlug: 'openai',
+          model: 'gpt-5',
+          target: 256_000,
+        },
+      ]);
+      terminal.input('/context auto');
+      terminal.input('\r');
+      await waitFor(() => plainTerminalOutput(terminal.output()).includes('Context target: Auto'));
+      assert.equal(updates[1]?.target, undefined);
+      terminal.input('/context wrong');
+      terminal.input('\r');
+      await waitFor(() => plainTerminalOutput(terminal.output()).includes('Usage: /context'));
+      assert.equal(updates.length, 2);
+      assert.deepEqual(driver.prompts, []);
+      assert.deepEqual(driver.thinkingLevelUpdates, []);
+    } finally {
+      exitMaka(terminal);
+      await run;
+    }
+  });
+
   test('rejects unsupported /thinking levels with usage instead of sending an update', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver();

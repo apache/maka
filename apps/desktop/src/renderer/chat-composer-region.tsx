@@ -30,7 +30,12 @@ import {
   UserQuestionPrompt,
 } from '@maka/ui';
 import type { ComposerHandle } from '@maka/ui';
+import type { DesktopSessionSummary } from '../shared/desktop-session-projection.js';
 import { useComposerMentionsContext } from './composer-mentions.js';
+import {
+  ModelContextTargetBoundary,
+  type ModelContextTargetControl,
+} from './features/connection-settings/index.js';
 import {
   readNewTaskReloadDraft,
   readNewTaskReloadIntent,
@@ -96,7 +101,10 @@ interface ChatComposerRegionProps
     | 'pendingDirectories'
     | 'onRemoveDirectory'
     | 'onPickDirectory'
+    | 'activeSession'
   > {
+  activeSession?: ComponentProps<typeof Composer>['activeSession'] &
+    Partial<Pick<DesktopSessionSummary, 'profileId' | 'runtimeHostId'>>;
   composerRef: RefObject<ComposerHandle | null>;
   active: boolean;
   onboardingComposerHidden: boolean;
@@ -237,12 +245,19 @@ export function ChatComposerRegion({
           choice.model === composerRest.activeModel,
       )
     : undefined;
-  const contextUsage = activeId
+  const contextUsageBase = activeId
     ? {
         usageTokens: latestRequestUsageTokens,
         declaredContextWindow: activeModelChoice?.declaredContextWindow,
         metadataContextWindow: activeModelChoice?.contextWindow,
         onOpen: onOpenContextUsage,
+      }
+    : undefined;
+  const activeSessionWithHost = composerRest.activeSession;
+  const contextTargetHost = activeSessionWithHost?.profileId && activeSessionWithHost.runtimeHostId
+    ? {
+        profileId: activeSessionWithHost.profileId,
+        hostId: activeSessionWithHost.runtimeHostId,
       }
     : undefined;
   const previousNewTaskDraftKey = useRef(newTaskDraftKey);
@@ -307,19 +322,24 @@ export function ChatComposerRegion({
   // the anchor prop remains the reading it falls back to.
   const renderComposer = (
     liveContextUsage: { readonly usageTokens: number; readonly contextWindow?: number } | undefined,
+    contextTarget: ModelContextTargetControl,
   ) => (
     <ComposerGoalProjectionConsumer>
       {(goalProjection) => (
         <Composer
           ref={composerRef}
           {...composerRest}
-          contextUsage={contextUsage && liveContextUsage
+          contextUsage={contextUsageBase
             ? {
-                ...contextUsage,
-                usageTokens: liveContextUsage.usageTokens,
-                meteredContextWindow: liveContextUsage.contextWindow,
+                ...contextUsageBase,
+                ...(liveContextUsage ? {
+                  usageTokens: liveContextUsage.usageTokens,
+                  meteredContextWindow: liveContextUsage.contextWindow,
+                } : {}),
+                ...(contextTarget.onChange ? { onTargetChange: contextTarget.onChange } : {}),
+                ...(contextTarget.pending ? { targetChangePending: true } : {}),
               }
-            : contextUsage}
+            : undefined}
           // AppShell carries staged attachments into both queued and steering
           // follow-ups. Other Composer hosts remain gated by default because a
           // text-only running-turn submission would leave attachments behind.
@@ -396,17 +416,28 @@ export function ChatComposerRegion({
           />
         )}
       </div>
-      {LiveContextUsageProbe ? (
-        <LiveContextUsageProbe
-          sessionId={activeId}
-          model={composerRest.activeModel}
-          providerType={composerRest.activeProviderType}
-        >
-          {renderComposer}
-        </LiveContextUsageProbe>
-      ) : (
-        renderComposer(undefined)
-      )}
+      <ModelContextTargetBoundary
+        host={contextTargetHost}
+        connection={activeModelChoice
+          ? {
+              connectionId: activeModelChoice.connectionId,
+              slug: activeModelChoice.connectionSlug,
+            }
+          : undefined}
+        modelId={activeModelChoice?.model}
+      >
+        {(contextTarget) => LiveContextUsageProbe ? (
+          <LiveContextUsageProbe
+            sessionId={activeId}
+            model={composerRest.activeModel}
+            providerType={composerRest.activeProviderType}
+          >
+            {(usage) => renderComposer(usage, contextTarget)}
+          </LiveContextUsageProbe>
+        ) : (
+          renderComposer(undefined, contextTarget)
+        )}
+      </ModelContextTargetBoundary>
     </>
   );
 }

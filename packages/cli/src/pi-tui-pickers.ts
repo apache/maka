@@ -76,6 +76,9 @@ interface TuiPickerCopy {
   readonly thinkingLevels: Readonly<Record<ThinkingLevel, string>>;
   readonly defaultThinkingLevel: string;
   readonly thinkingPickerTitle: string;
+  readonly contextTarget: string;
+  readonly contextTargetAuto: string;
+  readonly contextTargetScope: string;
   readonly currentMarker: string;
   readonly defaultMarker: string;
   readonly setupTitle: string;

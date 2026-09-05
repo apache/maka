@@ -185,6 +185,11 @@ export interface ConversationCopy {
     thinkingUnsupported: string;
     changeThinkingLevel: string;
     defaultLevel: string;
+    contextTarget: string;
+    contextTargetAuto: string;
+    contextTargetAutoHelp: string;
+    contextTargetModelMax: (label: string) => string;
+    changeContextTarget: string;
     level: Record<ThinkingLevel, string>;
     switching: string;
     model: string;
@@ -496,6 +501,10 @@ const CONVERSATION_COPY = {
     },
     model: {
       thinkingLevel: '思考级别', thinkingUnsupported: '当前模型不支持思考级别切换', changeThinkingLevel: '切换当前模型的思考级别', defaultLevel: '默认',
+      contextTarget: '上下文目标', contextTargetAuto: '自动',
+      contextTargetAutoHelp: '不设置主动压缩目标',
+      contextTargetModelMax: (label) => `${label}（模型上限）`,
+      changeContextTarget: '适用于此连接使用该模型的所有任务。较小的目标会更早触发上下文压缩。',
       // Short single-token labels — trigger + popout size to content.
       // Canonical per-chat ladder: 默认 (model default, overriding Settings) / 关 / 低 / 中 / 高 / 超高
       // (minimal/max when offered).
@@ -648,6 +657,10 @@ const CONVERSATION_COPY = {
     },
     model: {
       thinkingLevel: '思考級別', thinkingUnsupported: '目前模型不支援思考級別切換', changeThinkingLevel: '切換目前模型的思考級別', defaultLevel: '預設',
+      contextTarget: '上下文目標', contextTargetAuto: '自動',
+      contextTargetAutoHelp: '不設定主動壓縮目標',
+      contextTargetModelMax: (label) => `${label}（模型上限）`,
+      changeContextTarget: '適用於此連線使用該模型的所有任務。較小的目標會更早觸發上下文壓縮。',
       // Short single-token labels — trigger + popout size to content.
       // Canonical per-chat ladder: 預設 (model default, overriding Settings) / 關 / 低 / 中 / 高 / 超高
       // (minimal/max when offered).
@@ -829,6 +842,10 @@ const CONVERSATION_COPY = {
     },
     model: {
       thinkingLevel: 'Thinking level', thinkingUnsupported: 'This model does not support thinking-level changes', changeThinkingLevel: 'Change the current model thinking level', defaultLevel: 'Model default',
+      contextTarget: 'Context target', contextTargetAuto: 'Auto',
+      contextTargetAutoHelp: 'No proactive compaction target',
+      contextTargetModelMax: (label) => `${label} (model maximum)`,
+      changeContextTarget: 'Applies to all tasks using this model on this connection. Smaller targets trigger earlier context compaction.',
       level: { off: 'Off', minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Maximum' },
       switching: 'Switching', model: 'Model', switchAriaLabel: 'Switch model for this task',
       switchWarning: 'Switching may rebuild the provider prompt cache, making the next request slower or more expensive.',

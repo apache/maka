@@ -84,6 +84,14 @@ If no model connection exists, Maka opens the provider setup flow. Select a prov
 key, choose the enabled models, and save. Run `/setup` later to add or update a provider and `/model`
 to switch models.
 
+Use `/context` to inspect the latest request's context usage. To set an earlier compaction
+target for the selected model, run `/context 256k`, `/context 512k`, or `/context 1m` (decimal
+tokens, up to the model's known maximum). `/context auto` removes the override. The setting
+is shared with Desktop and applies to all tasks using that model on the connected Runtime Host
+and connection, including later `maka run` invocations. Change it while no turn is running.
+Smaller targets can reduce subsequent input-token usage by compacting history earlier; they are
+not hard request-size limits.
+
 API keys and workspace state stay in the local `Maka` profile. The current credential vault is a
 local plaintext file protected by the operating-system account boundary; on POSIX systems Maka
 enforces owner-only directory and file modes. It is not an OS keychain. See the repository

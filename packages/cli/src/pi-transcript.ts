@@ -214,6 +214,7 @@ export interface MakaPiTranscriptMetadata {
   orchestrationMode?: 'default' | 'swarm' | 'graph';
   thinkingLevel?: ThinkingLevel;
   thinkingLevels?: readonly ThinkingLevel[];
+  declaredContextWindow?: number;
   sessionId?: string | null;
   busy?: boolean;
   usage?: MakaPiUsageSummary;
@@ -1704,9 +1705,16 @@ export function renderMakaPiStatusLine(metadata: MakaPiTranscriptMetadata, width
     });
   }
   // #1064: omit thinking:default — it is noise before the user explicitly
-  // changes the level. Only a non-default, explicitly set level shows.
-  if (metadata.thinkingLevel) {
-    parts.push({ text: ansi.dim(`thinking:${metadata.thinkingLevel}`), dropRank: 3 });
+  // changes the level or sets a context target. Share one compact segment.
+  if (metadata.thinkingLevel || metadata.declaredContextWindow !== undefined) {
+    const target =
+      metadata.declaredContextWindow === undefined
+        ? ''
+        : `[${formatTokenCount(metadata.declaredContextWindow)}]`;
+    parts.push({
+      text: ansi.dim(`thinking:${metadata.thinkingLevel ?? 'default'}${target}`),
+      dropRank: 3,
+    });
   }
   if (metadata.orchestrationMode === 'swarm') {
     parts.push({ text: ansi.accent('swarm'), dropRank: 4 });

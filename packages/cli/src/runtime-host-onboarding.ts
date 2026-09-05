@@ -111,6 +111,9 @@ export function projectRuntimeHostModelChoices(catalog: ConnectionCatalogSnapsho
         displayName: entry.displayName,
         isDefaultConnection: catalog.defaultTarget?.connectionId === connection.connectionId,
         contextWindow: entry.contextWindow,
+        ...(connection.relayModelProfiles?.[entry.id]?.contextWindow === undefined
+          ? {}
+          : { declaredContextWindow: connection.relayModelProfiles[entry.id].contextWindow }),
         thinkingLevels: entry.thinkingLevels,
       });
     }
