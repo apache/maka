@@ -17,10 +17,16 @@
  * under the License.
  */
 
-import type { AppUpdateStatus, DesktopAppInfo } from '../../preload/bridge-contract.js';
+import type { DesktopAppInfo } from '../../preload/bridge-contract.js';
 import type { SettingsPreferencesCopy } from '../locales/settings-preferences-copy.js';
 
 type AboutCopy = SettingsPreferencesCopy['about'];
+
+// Only channel facts live here. The status line's copy mapping,
+// `aboutUpdateStatusDetail`, moved to the App Update feature
+// (features/app-update/model/about-status-detail.ts) because it reads updater
+// state, which that feature owns; channel facts stay because they are About
+// copy about the install itself, not update state.
 
 export interface AboutChannelFacts {
   /** One sentence saying what following this channel means. */
@@ -57,34 +63,4 @@ export function aboutChannelFacts(
         ? { label: copy.devBuild, color: 'gray' }
         : null,
   };
-}
-
-/**
- * Map updater state to About-page detail copy (pure for unit tests).
- *
- * There is no dev-build branch: a dev checkout renders no status line at all,
- * so the "development builds do not check GitHub releases" sentence this used
- * to return would only have restated the channel sentence above it.
- */
-export function aboutUpdateStatusDetail(
-  status: AppUpdateStatus | null,
-  copy: AboutCopy,
-  options: {
-    readonly isDevBuild: boolean;
-    readonly errorDetail?: (message: string) => string;
-  },
-): string {
-  if (!status || status.state === 'idle') return copy.updateIdle;
-  if (status.state === 'checking') return copy.checkingForUpdates;
-  if (status.state === 'not-available') return copy.updateNotAvailable;
-  if (status.state === 'available') return copy.updateAvailable(status.latestVersion);
-  if (status.state === 'downloading') {
-    return copy.updateDownloading(status.latestVersion, Math.round(status.progress.percent));
-  }
-  if (status.state === 'verifying') return copy.updateVerifying(status.latestVersion);
-  if (status.state === 'downloaded') return copy.updateDownloaded(status.latestVersion);
-  if (status.state === 'installing') return copy.updateInstalling(status.latestVersion);
-  return copy.updateCheckFailedDetail(
-    options.errorDetail ? options.errorDetail(status.message) : status.message,
-  );
 }

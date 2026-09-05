@@ -19,10 +19,8 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import {
-  aboutChannelFacts,
-  aboutUpdateStatusDetail,
-} from '../../renderer/settings/about-update-status.js';
+import { aboutUpdateStatusDetail } from '../../renderer/features/app-update/index.js';
+import { aboutChannelFacts } from '../../renderer/settings/about-update-status.js';
 import { getSettingsPreferencesCopy } from '../../renderer/locales/settings-preferences-copy.js';
 
 const copy = getSettingsPreferencesCopy('zh-CN').about;
@@ -47,7 +45,7 @@ test('buildMode decides before updateChannel, whose dev value is a placeholder',
 
 test('the nightly steady states each read as themselves', () => {
   const detail = (status: Parameters<typeof aboutUpdateStatusDetail>[0]) =>
-    aboutUpdateStatusDetail(status, copy, { isDevBuild: false });
+    aboutUpdateStatusDetail(status, copy);
 
   assert.equal(
     detail({
