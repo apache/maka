@@ -39,6 +39,7 @@ import {
   providerAuthSupportsApiKey,
   reconcileConnectionAfterModelFetch,
   validateConnectionBaseUrl,
+  validateSlug,
   type IdentifiedLlmConnection,
   type ProviderType,
 } from '../llm-connections.js';
@@ -62,6 +63,17 @@ function chatModelChoicesFor(
     })),
   );
 }
+
+test('slug validation returns stable issues and preserves format and length boundaries', () => {
+  for (const slug of ['', '  ']) assert.equal(validateSlug(slug), 'required');
+  for (const slug of ['A-slug', 'with space', '-slug', 'slug-', 'a']) {
+    assert.equal(validateSlug(slug), 'format', slug);
+  }
+  assert.equal(validateSlug('a'.repeat(65)), 'too_long');
+  for (const slug of ['ab', 'valid-slug-1', 'a'.repeat(64)]) {
+    assert.equal(validateSlug(slug), null, slug);
+  }
+});
 
 test('Atlas Cloud is wired as a ready OpenAI-compatible provider', () => {
   assert.deepEqual(PROVIDER_REGISTRY.atlascloud, {

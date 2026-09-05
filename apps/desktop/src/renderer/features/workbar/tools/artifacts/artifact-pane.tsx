@@ -632,8 +632,7 @@ function artifactActionErrorMessage(error: unknown, locale: UiLocale, copy: Arti
   const raw = redactSecrets(error instanceof Error ? error.message : String(error ?? '')).trim();
   if (!raw) return copy.pane.actionFailed;
   const classified = generalizedErrorMessageForLocale(new Error(raw), '', locale);
-  if (classified) return classified;
-  return locale === 'zh-CN' && /[\u4e00-\u9fff]/.test(raw) ? raw : copy.pane.actionFailed;
+  return classified || copy.pane.actionFailed;
 }
 
 function KindIcon(props: { kind: ArtifactKind }) {

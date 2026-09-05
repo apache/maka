@@ -32,6 +32,7 @@ import {
   CLIENT_CAPABILITY_MAX_TOOLS_PER_OFFER,
   decodeClientCapabilityReplaceInput,
   decodeClientCapabilityToolDescriptor,
+  projectToolInputSchema,
   type ClientCapabilityCallFrame,
   type ClientCapabilityCallResult,
   type ClientCapabilityContentBlock,
@@ -394,7 +395,7 @@ async function invokeNativeTool(
   }
   const signal = AbortSignal.any([options.signal, invocation.signal]);
   signal.throwIfAborted();
-  const args = await parseToolArguments(binding.tool, frame.arguments);
+  const args = await parseNativeToolArguments(binding.tool.parameters, frame.arguments);
   signal.throwIfAborted();
   const sessionId =
     frame.offerId === BROWSER_OFFER_ID || frame.offerId === COMPUTER_USE_OFFER_ID
@@ -502,16 +503,17 @@ function prepareCapabilityGroups(
       const identity = isIdentifiedEntry(entry)
         ? { serverId: entry.serverId, toolName: entry.toolName }
         : undefined;
-      const declaredSchema = declaredToolInputSchema(tool);
       let descriptor: ClientCapabilityToolDescriptor;
       try {
+        const declaredSchema = declaredToolInputSchema(tool);
         descriptor = Object.freeze(
           decodeClientCapabilityToolDescriptor(
             capabilityToolDescriptor(group.offerId, tool, declaredSchema, identity),
           ),
         );
       } catch (error) {
-        if (!group.dynamic) throw error;
+        const dynamic = group.dynamic || group.offerId === 'desktop_mcp';
+        if (!dynamic) throw error;
         onDiagnostic?.(
           `Desktop omitted ${group.offerId} tool ${tool.name}: ${error instanceof Error ? error.message : String(error)}`,
         );
@@ -658,7 +660,7 @@ function declaredToolInputSchema(tool: MakaTool): Record<string, unknown> {
       })
     : cloneDeclaredJsonSchema(tool);
   delete schema.$schema;
-  return schema;
+  return Object.freeze(projectToolInputSchema(schema));
 }
 
 function cloneDeclaredJsonSchema(tool: MakaTool): Record<string, unknown> {
@@ -669,16 +671,20 @@ function cloneDeclaredJsonSchema(tool: MakaTool): Record<string, unknown> {
       `Desktop native capability tool has an invalid schema: ${tool.name}`,
     );
   }
-  return structuredClone(schema);
+  const projected = Object.hasOwn(schema, 'type')
+    ? schema
+    : { ...schema, type: 'object' };
+  return structuredClone(projected);
 }
 
-async function parseToolArguments(tool: MakaTool, args: unknown): Promise<unknown> {
-  if (tool.parameters instanceof z.ZodType) {
-    return tool.parameters.parseAsync(args);
+async function parseNativeToolArguments(parameters: unknown, args: unknown): Promise<unknown> {
+  if (parameters instanceof z.ZodType) {
+    return parameters.parseAsync(args);
   }
-  // The only non-Zod parameters are JSON-Schema declarations (MCP tools via
-  // jsonSchema()), which carry no client-side validator: validation is the
-  // producing server's responsibility.
+  // MCP servers remain the authority for their full JSON Schema. The Client
+  // Capability publication is a deliberately smaller protocol projection, so
+  // compiling the external schema again here would duplicate that authority
+  // and execute untrusted regular expressions on the main thread.
   return args;
 }
 

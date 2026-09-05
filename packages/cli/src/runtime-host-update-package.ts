@@ -24,6 +24,7 @@ import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createGunzip } from 'node:zlib';
+import type { RuntimeHostServiceErrorCode } from '@maka/runtime-host/operator';
 import { isRuntimeHostNpmDeploymentIdentity } from '@maka/runtime-host/operator/update-package-evidence';
 import type { RuntimeHostUpdateCandidate } from './runtime-host-registry-update.js';
 
@@ -45,7 +46,10 @@ const MANIFEST_MAX_BYTES = 64 * 1024;
 
 export class RuntimeHostUpdatePackageError extends Error {
   constructor(
-    readonly code: 'package_download_failed' | 'package_integrity_mismatch' | 'invalid_package',
+    readonly code: Extract<
+      RuntimeHostServiceErrorCode,
+      'package_download_failed' | 'package_integrity_mismatch' | 'invalid_package'
+    >,
     message: string,
     options?: ErrorOptions,
   ) {

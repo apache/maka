@@ -92,6 +92,8 @@ const MAX_REMEMBERED_RELAY_FAILURES: u8 = 3;
 const MAX_RELAY_ADDRESSES_PER_PEER: usize = 4;
 const MAX_PUBLISHED_COORDINATION_RELAY_ADDRESSES: usize = 16;
 const TRANSIT_FALLBACK_DELAY: Duration = Duration::from_millis(250);
+const STREAM_OPEN_HEDGE_DELAY: Duration = Duration::from_millis(250);
+const MAX_PARALLEL_STREAM_OPENS: usize = 2;
 const MAX_TRANSIT_RESERVATIONS: usize = 32;
 const MAX_TRANSIT_CIRCUITS: usize = 8;
 const MAX_TRANSIT_CIRCUITS_PER_PEER: usize = 2;
@@ -268,7 +270,7 @@ struct PendingConnect {
     result: Option<oneshot::Sender<Result<PeerStream, PeerError>>>,
     stream_kind: StreamKind,
     deadline: Instant,
-    opening: Option<PendingStreamOpen>,
+    openings: Vec<PendingStreamOpen>,
     rejected_connections: HashSet<ConnectionId>,
     dials: HashMap<ConnectionId, DialOrigin>,
     direct_routes: Vec<Multiaddr>,
@@ -298,6 +300,7 @@ struct WebRtcRelayAttempt {
 
 struct PendingStreamOpen {
     connection_id: ConnectionId,
+    started: Instant,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -917,7 +920,7 @@ async fn run_endpoint_async(
                         result: Some(result),
                         stream_kind,
                         deadline: Instant::now() + options.deadline,
-                        opening: None,
+                        openings: Vec::new(),
                         rejected_connections: HashSet::new(),
                         dials: HashMap::new(),
                         direct_routes: started.direct_routes,
@@ -1270,15 +1273,12 @@ async fn run_endpoint_async(
                         continue;
                     }
                 };
-                if waiter
-                    .opening
-                    .as_ref()
-                    .is_none_or(|opening| opening.connection_id != connection_id)
-                {
+                let Some(opening_index) = waiter.openings.iter()
+                    .position(|opening| opening.connection_id == connection_id) else {
                     direct.pending.insert(request_id, waiter);
                     continue;
-                }
-                waiter.opening.take();
+                };
+                waiter.openings.swap_remove(opening_index);
                 if !waiter.webrtc_attempted_relays.is_empty() {
                     webrtc_debug(format_args!(
                         "application stream result peer={} request={} success={}",
@@ -1537,6 +1537,14 @@ async fn run_endpoint_async(
                 let expired = direct.pending.iter()
                     .filter_map(|(request_id, item)| (item.result.is_some() && item.deadline <= now).then_some(*request_id))
                     .collect::<Vec<_>>();
+                // An established spare may precede the stalled open. Do not
+                // depend on another Swarm event to start its hedged attempt.
+                for request_id in direct.pending.keys().copied().collect::<Vec<_>>() {
+                    maybe_open_peer_stream(
+                        request_id, &mut direct.pending, &direct.retiring_connections,
+                        &direct.health, stream_control.clone(), mesh_control.clone(), opened_tx.clone(),
+                    );
+                }
                 for request_id in expired {
                     if let Some(waiter) = direct.pending.remove(&request_id) {
                         let error = pending_connect_deadline_error(&waiter);
@@ -2065,14 +2073,14 @@ fn retain_current_webrtc_relay_attempts(
             _ => None,
         })
         .collect::<Vec<_>>();
-    if waiter
-        .opening
-        .as_ref()
-        .is_some_and(|opening| stale_dials.contains(&opening.connection_id))
-        && let Some(opening) = waiter.opening.take()
-    {
-        opening.task.abort();
-    }
+    waiter.openings.retain(|opening| {
+        if stale_dials.contains(&opening.connection_id) {
+            opening.task.abort();
+            false
+        } else {
+            true
+        }
+    });
     for connection_id in &stale_dials {
         remove_pending_dial(waiter, *connection_id);
         retiring_connections.insert(*connection_id);
@@ -2229,13 +2237,22 @@ fn maybe_open_peer_stream(
             .chain(waiter.transit_relay_peers.iter().copied())
             .collect(),
     };
-    let excluded = retiring_connections
+    let mut excluded = retiring_connections
         .union(&waiter.rejected_connections)
         .copied()
         .collect::<HashSet<_>>();
-    if waiter.result.is_none() || waiter.opening.is_some() {
+    // Hedge only stream establishment, never application requests. Keep the
+    // original candidate alive: a slow but healthy path retains its full budget.
+    if waiter.result.is_none()
+        || waiter.openings.len() >= MAX_PARALLEL_STREAM_OPENS
+        || waiter
+            .openings
+            .iter()
+            .any(|opening| opening.started.elapsed() < STREAM_OPEN_HEDGE_DELAY)
+    {
         return;
     }
+    excluded.extend(waiter.openings.iter().map(|opening| opening.connection_id));
     let stream_kind = waiter.stream_kind;
     let candidates = match stream_kind {
         StreamKind::Application => {
@@ -2261,8 +2278,9 @@ fn maybe_open_peer_stream(
         StreamKind::Application => application_control,
         StreamKind::MeshControl => mesh_control,
     };
-    waiter.opening = Some(PendingStreamOpen {
+    waiter.openings.push(PendingStreamOpen {
         connection_id,
+        started: Instant::now(),
         task: tokio::spawn(async move {
             let result = tokio::select! {
                 _ = cancellation.cancelled() => return,
@@ -2410,14 +2428,14 @@ fn handle_swarm_event(
             for connect in direct.pending.values_mut() {
                 remove_pending_dial(connect, connection_id);
                 connect.rejected_connections.remove(&connection_id);
-                if connect
-                    .opening
-                    .as_ref()
-                    .is_some_and(|opening| opening.connection_id == connection_id)
-                    && let Some(opening) = connect.opening.take()
-                {
-                    opening.task.abort();
-                }
+                connect.openings.retain(|opening| {
+                    if opening.connection_id == connection_id {
+                        opening.task.abort();
+                        false
+                    } else {
+                        true
+                    }
+                });
             }
             direct.active.remove(&connection_id);
             if let Some(relay) = coordination_relays.get_mut(&peer_id) {
@@ -2476,14 +2494,14 @@ fn handle_swarm_event(
             for connect in direct.pending.values_mut() {
                 remove_pending_dial(connect, connection_id);
                 connect.rejected_connections.remove(&connection_id);
-                if connect
-                    .opening
-                    .as_ref()
-                    .is_some_and(|opening| opening.connection_id == connection_id)
-                    && let Some(opening) = connect.opening.take()
-                {
-                    opening.task.abort();
-                }
+                connect.openings.retain(|opening| {
+                    if opening.connection_id == connection_id {
+                        opening.task.abort();
+                        false
+                    } else {
+                        true
+                    }
+                });
             }
             let mut failed_automatic = None;
             for (peer_id, relay) in coordination_relays.iter_mut() {
@@ -2809,9 +2827,7 @@ fn reconcile_pending_transit_connects(
         for connection_id in retired_webrtc_dials {
             let _ = swarm.close_connection(connection_id);
         }
-        if let Some(opening) = waiter.opening.take() {
-            opening.task.abort();
-        }
+        abort_pending_openings(waiter);
         retired_dials.extend(take_pending_dials_by_origin(waiter, DialOrigin::Transit));
         waiter.next_route_attempt = now;
         waiter.transit_after = now;
@@ -2890,7 +2906,7 @@ fn fail_pending_connect(
 }
 
 fn abort_pending_openings(waiter: &mut PendingConnect) {
-    if let Some(opening) = waiter.opening.take() {
+    for opening in waiter.openings.drain(..) {
         opening.task.abort();
     }
 }
@@ -3823,11 +3839,20 @@ fn retry_connect_routes(
         if connect.next_route_attempt > now {
             continue;
         }
-        let excluded = direct
+        let mut excluded = direct
             .retiring_connections
             .union(&connect.rejected_connections)
             .copied()
             .collect::<HashSet<_>>();
+        // A transport in the table is not proof that a new stream can make
+        // progress. A stalled open must not suppress dialing its alternatives.
+        excluded.extend(
+            connect
+                .openings
+                .iter()
+                .filter(|opening| now.duration_since(opening.started) >= STREAM_OPEN_HEDGE_DELAY)
+                .map(|opening| opening.connection_id),
+        );
         let allowed_relays = if connect.result.is_some() {
             connect.transit_relay_peers.clone()
         } else {
@@ -3955,9 +3980,9 @@ fn retire_direct_dials(
                 .is_some_and(|health| health.rtt.is_some() && health.failures == 0)
             || direct.pending.values().any(|pending| {
                 pending
-                    .opening
-                    .as_ref()
-                    .is_some_and(|opening| opening.connection_id == connection_id)
+                    .openings
+                    .iter()
+                    .any(|opening| opening.connection_id == connection_id)
             })
         {
             continue;
@@ -4214,6 +4239,108 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[tokio::test]
+    async fn stalled_stream_open_hedges_without_cancelling_the_slow_path_or_using_unapproved_transit()
+     {
+        let peer_id = PeerId::random();
+        let relay = PeerId::random();
+        let (mut behaviour, control, _) = application_stream::Behaviour::new(
+            StreamProtocol::new(APPLICATION_PROTOCOL),
+            8,
+            Some(Arc::new(RwLock::new(HashSet::new()))),
+        );
+        let mut handlers = Vec::new();
+        for (id, address) in [
+            (1, "/ip4/127.0.0.1/udp/1/quic-v1".to_owned()),
+            (2, "/ip4/127.0.0.1/tcp/1".to_owned()),
+            (3, format!("/ip4/127.0.0.1/tcp/2/p2p/{relay}/p2p-circuit")),
+        ] {
+            let address: Multiaddr = address.parse().unwrap();
+            handlers.push(
+                behaviour
+                    .handle_established_inbound_connection(
+                        ConnectionId::new_unchecked(id),
+                        peer_id,
+                        &address,
+                        &address,
+                    )
+                    .unwrap(),
+            );
+        }
+        let now = Instant::now();
+        let (result, _response) = oneshot::channel();
+        let waiter = PendingConnect {
+            attempt_id: ConnectAttemptId(1),
+            peer_id,
+            result: Some(result),
+            stream_kind: StreamKind::Application,
+            deadline: now + Duration::from_secs(30),
+            openings: Vec::new(),
+            rejected_connections: HashSet::new(),
+            dials: HashMap::new(),
+            direct_routes: Vec::new(),
+            identified_routes: Vec::new(),
+            coordination_relays: Vec::new(),
+            coordination_relay_peers: Vec::new(),
+            transit_relay_peers: HashSet::new(),
+            transit_after: now,
+            next_route_attempt: now,
+            retry_coordination: false,
+            webrtc_attempted_relays: HashSet::new(),
+            next_webrtc_attempt_id: 0,
+            webrtc_active_attempt: None,
+            cancellation: CancellationToken::new(),
+        };
+        let mut pending = HashMap::from([(1, waiter)]);
+        let (opened, _results) = mpsc::channel(8);
+        let attempt = |pending: &mut HashMap<u32, PendingConnect>| {
+            maybe_open_peer_stream(
+                1,
+                pending,
+                &HashSet::new(),
+                &HashMap::new(),
+                control.clone(),
+                control.clone(),
+                opened.clone(),
+            );
+        };
+        attempt(&mut pending);
+        assert_eq!(pending[&1].openings.len(), 1);
+        assert_eq!(
+            pending[&1].openings[0].connection_id,
+            ConnectionId::new_unchecked(1)
+        );
+        attempt(&mut pending);
+        assert_eq!(pending[&1].openings.len(), 1);
+        pending.get_mut(&1).unwrap().openings[0].started = now - STREAM_OPEN_HEDGE_DELAY;
+        attempt(&mut pending);
+        assert_eq!(pending[&1].openings.len(), 2);
+        assert_eq!(
+            pending[&1].openings[1].connection_id,
+            ConnectionId::new_unchecked(2)
+        );
+        for opening in &mut pending.get_mut(&1).unwrap().openings {
+            opening.started = now - STREAM_OPEN_HEDGE_DELAY;
+        }
+        attempt(&mut pending);
+        assert_eq!(pending[&1].openings.len(), 2);
+        assert!(
+            pending[&1]
+                .openings
+                .iter()
+                .all(|opening| !opening.task.is_finished())
+        );
+        // Once both direct paths are rejected, the unapproved relay cannot win.
+        abort_pending_openings(pending.get_mut(&1).unwrap());
+        pending.get_mut(&1).unwrap().rejected_connections.extend([
+            ConnectionId::new_unchecked(1),
+            ConnectionId::new_unchecked(2),
+        ]);
+        attempt(&mut pending);
+        assert!(pending[&1].openings.is_empty());
+        drop(handlers);
+    }
+
     #[test]
     fn application_streams_commit_on_the_best_established_path() {
         let relay_peer_id = PeerId::random();
@@ -4271,7 +4398,7 @@ mod tests {
                 result: Some(result),
                 stream_kind: StreamKind::Application,
                 deadline: now,
-                opening: None,
+                openings: Vec::new(),
                 rejected_connections: HashSet::new(),
                 dials: HashMap::new(),
                 direct_routes: Vec::new(),
@@ -4309,7 +4436,7 @@ mod tests {
             result: Some(result),
             stream_kind: StreamKind::Application,
             deadline: now + Duration::from_secs(30),
-            opening: None,
+            openings: Vec::new(),
             rejected_connections: HashSet::new(),
             dials: HashMap::new(),
             direct_routes: Vec::new(),
@@ -4364,7 +4491,7 @@ mod tests {
             result: Some(result),
             stream_kind: StreamKind::Application,
             deadline: now + Duration::from_secs(30),
-            opening: None,
+            openings: Vec::new(),
             rejected_connections: HashSet::new(),
             dials: HashMap::new(),
             direct_routes: Vec::new(),
@@ -4390,8 +4517,9 @@ mod tests {
         waiter
             .dials
             .insert(removed_connection_id, DialOrigin::WebRtc(removed_attempt));
-        waiter.opening = Some(PendingStreamOpen {
+        waiter.openings.push(PendingStreamOpen {
             connection_id: removed_connection_id,
+            started: Instant::now(),
             task: tokio::spawn(std::future::pending()),
         });
         waiter.coordination_relay_peers = vec![replacement_relay];
@@ -4403,7 +4531,7 @@ mod tests {
 
         assert!(removed_cancellation.is_cancelled());
         assert!(!is_current_webrtc_relay_attempt(&waiter, removed_attempt));
-        assert!(waiter.opening.is_none());
+        assert!(waiter.openings.is_empty());
         assert!(!waiter.dials.contains_key(&removed_connection_id));
         assert!(retiring_connections.contains(&removed_connection_id));
         let replacement = next_webrtc_relay_peer(

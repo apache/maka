@@ -22,17 +22,19 @@ import { describe, it } from 'node:test';
 import { createElement, type ReactNode } from 'react';
 import { renderToStaticMarkup as renderReactToStaticMarkup } from 'react-dom/server';
 import { computerUseModelCallArgs } from '@maka/core/computer-use';
+import { UI_LOCALES, type UiCatalog, type UiLocale } from '@maka/core/ui-locale';
 import { ToolCallDetail, ToolTrow } from '../tool-activity.js';
 import type { ToolActivityItem } from '../materialize.js';
 import { LocaleProvider } from '../locale-context.js';
 import { ToolResultPreview } from '../tool-activity/tool-result-preview.js';
+import { getToolActivityCopy } from '../tool-activity/copy.js';
 import {
   computerActionLabel,
   computerRunningLabel,
   isComputerTool,
 } from '../tool-activity/computer-action-label.js';
 
-function renderToStaticMarkup(node: ReactNode, locale: 'zh-CN' | 'en' = 'zh-CN'): string {
+function renderToStaticMarkup(node: ReactNode, locale: UiLocale = 'zh-CN'): string {
   return renderReactToStaticMarkup(createElement(LocaleProvider, {
     locale,
     children: node,
@@ -73,6 +75,20 @@ describe('tool activity presentation', () => {
     assert.doesNotMatch(zh, /Client Capability tools require/);
     assert.match(en, /Bypass mode required/);
     assert.match(en, /Switch and retry/);
+
+    const errorMessages = {
+      'zh-CN': '需要“绕过”模式。此操作会直接控制本机应用，无法在沙箱模式下执行。',
+      'zh-TW': '需要“繞過”模式。此操作會直接控制本機應用，無法在沙箱模式下執行。',
+      en: 'Bypass mode required. This action controls a local app directly and cannot run inside the sandbox.',
+    } satisfies UiCatalog<string>;
+    for (const locale of UI_LOCALES) {
+      const row = renderToStaticMarkup(createElement(ToolTrow, { items: [item] }), locale);
+      assert.ok(row.includes(`title="${errorMessages[locale]}"`), `${locale}: full bypass error`);
+      assert.doesNotMatch(row, /Client Capability tools require/);
+      const copy = getToolActivityCopy(locale).requiresBypass;
+      assert.ok(copy.errorMessage.startsWith(copy.title), `${locale}: tooltip opens with the banner title`);
+      assert.ok(copy.errorMessage.endsWith(copy.description), `${locale}: tooltip ends with the banner description`);
+    }
   });
 
   it('keeps generic requires-bypass failures verbatim', () => {

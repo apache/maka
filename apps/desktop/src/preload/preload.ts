@@ -411,6 +411,12 @@ async function runtimeHostScopeList(): Promise<readonly DesktopTargetScope[]> {
   }
 }
 
+async function readyOwnerRuntimeHostScopes(): Promise<readonly DesktopTargetScope[]> {
+  return (await runtimeHostScopeList()).filter(
+    (scope) => runtimeHostMetadataFor(scope)?.profileAccess === 'owner',
+  );
+}
+
 async function runtimeHostSessionRef(sessionId: string): Promise<{
   readonly scope: DesktopTargetScope;
   readonly sessionId: string;
@@ -811,7 +817,7 @@ function projectOnboardingSendOutcomes(
 async function loadDesktopOnboardingSnapshot(): Promise<OnboardingSnapshot> {
   const catalogSeed = desktopSessionCatalogRefresher.beginSeed();
   const defaultScope = await activeRuntimeHostRef();
-  const readyScopes = await runtimeHostScopeList();
+  const readyScopes = await readyOwnerRuntimeHostScopes();
   const scopes = [
     defaultScope,
     ...readyScopes.filter(
@@ -1464,9 +1470,7 @@ const makaBridge = {
       );
     },
     async getPendingTurnRequests() {
-      const scopes = (await runtimeHostScopeList()).filter(
-        (scope) => runtimeHostMetadataFor(scope)?.profileAccess === 'owner',
-      );
+      const scopes = await readyOwnerRuntimeHostScopes();
       return collectAvailablePendingTurnRequests(
         scopes.map(async (scope) => {
           const result = await ipcRenderer.invoke(
@@ -2883,7 +2887,8 @@ const makaBridge = {
   // PR110b: onboarding snapshot + milestone IPCs. Renderer polls
   // `getSnapshot()` on app load and re-polls on existing invalidations.
   // Onboarding state and connection setup belong to the default Host; bounded
-  // Session summaries and send outcomes are merged from every ready Host.
+  // Owner send outcomes are merged from ready Owner Hosts; Guest summaries
+  // come from the separate, authorized mount catalog.
   onboarding: {
     getSnapshot(): Promise<OnboardingSnapshot> {
       return loadDesktopOnboardingSnapshot();
@@ -2994,10 +2999,10 @@ const makaBridge = {
     },
   },
   search: {
-    // Search each ready Host independently; a remote profile sends the query
-    // over that Host's authenticated connection, never through telemetry.
+    // Search each ready Owner Host independently; Guests cannot search a workspace.
+    // Remote queries use that Host's authenticated connection, never telemetry.
     async thread(request: SearchRequest): Promise<SearchResult[] | { ok: false; reason: SearchErrorReason; message: string }> {
-      const scopes = await runtimeHostScopeList();
+      const scopes = await readyOwnerRuntimeHostScopes();
       return collectThreadSearchResponses(
         scopes.map(async (scope) => {
           const result = await ipcRenderer.invoke('search:thread', scope, request) as

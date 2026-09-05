@@ -78,9 +78,7 @@ export function resolveUiMessageCatalog<T>(catalog: UiMessageCatalog<T>): UiCata
   return Object.fromEntries(
     UI_LOCALES.map((locale) => [
       locale,
-      locale === 'en'
-        ? catalog.en
-        : mergeUiMessages(catalog.en, catalog[locale] as DeepPartial<T> | undefined),
+      mergeUiMessages(catalog.en, catalog[locale] as DeepPartial<T> | undefined),
     ]),
   ) as UiCatalog<T>;
 }

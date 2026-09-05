@@ -75,6 +75,7 @@ export {
   RUNTIME_HOST_SERVICE_MANAGEMENT_FRAME_PREFIX,
   decodeRuntimeHostServiceManagementFrame,
   encodeRuntimeHostServiceManagementFrame,
+  type RuntimeHostServiceErrorCode,
   type RuntimeHostServiceManagementAction,
   type RuntimeHostServiceManagementFrame,
   type RuntimeHostManagedUpdatePolicy,

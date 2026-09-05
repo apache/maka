@@ -638,8 +638,18 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
   }
 
   async close(): Promise<void> {
-    this.#clientCapabilities.close(new Error('Runtime Host connection closed by Client'));
-    this.#transport.abort();
+    if (!this.peerPath) {
+      this.#clientCapabilities.close(new Error('Runtime Host connection closed by Client'));
+      this.#transport.abort();
+      await this.closed;
+      return;
+    }
+    // An intentional peer close must send logical FIN. Aborting its raw path
+    // instead leaves the Host retaining a recoverable session and its quota.
+    this.#fail(
+      new RuntimeHostTransportError('closed', 'Runtime Host connection closed by Client'),
+      true,
+    );
     await this.closed;
   }
 
@@ -946,7 +956,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     ).catch((failure: unknown) => this.#fail(asError(failure)));
   }
 
-  #fail(error: Error): void {
+  #fail(error: Error, gracefulPeerClose = false): void {
     if (this.#terminalError) return;
     this.#terminalError = error;
     if (this.#livenessTimer) clearTimeout(this.#livenessTimer);
@@ -983,7 +993,8 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     this.#configurationChangeListeners.clear();
     this.#sessionCatalogChangeListeners.clear();
     this.#scheduledTaskChangeListeners.clear();
-    this.#transport.abort();
+    if (gracefulPeerClose) this.#transport.closeAfterFlush();
+    else this.#transport.abort();
   }
 }
 
