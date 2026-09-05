@@ -188,7 +188,7 @@ const zhTwCopy = {
     connectedRefreshFailed: (message: string) => `連線已完成，但狀態重新整理失敗：${message}`, close: (title: string) => `關閉${title}`,
     generatingAria: '正在生成二維碼', privacy: '憑證僅儲存在本機，不會傳給 renderer 或 Maka 雲端。', openBrowser: '無法掃碼？在瀏覽器中開啟',
     done: '完成', regenerate: '重新生成', refreshQr: '重新整理二維碼', cancel: '取消', generating: '正在生成安全二維碼…', connecting: '授權完成，正在儲存憑證並啟動連線…',
-    connected: (name: string) => `${name} 已連線`, connectedWarning: '憑證已儲存，但連線尚未成功啟動。', expired: '二維碼已過期，請重新生成', denied: '授權已取消，請重新生成二維碼', cancelled: '掃碼串接已取消', failed: '掃碼串接失敗，請重試', preparing: '準備掃碼串接…',
+    connected: (name: string) => `${name} 已連線`, connectedWarning: '憑證已儲存，但連線尚未成功啟動。', retrying: (category: string, count: number, seconds: number) => `${retryCategoryZhTw(category)}；連續失敗 ${count} 次，約 ${seconds} 秒後自動重試。`, expired: '二維碼已過期，請重新生成', denied: '授權已取消，請重新生成二維碼', cancelled: '掃碼串接已取消', failed: '掃碼串接失敗，請重試', preparing: '準備掃碼串接…',
   },
   wechat: {
     token: '微信 Bot Token', tokenPlaceholder: '本機 wechat-bridge Bearer Token', collapseAdvanced: '收起進階設定', expandAdvanced: '進階設定（公眾號 / 本機 bridge 地址）',
@@ -246,6 +246,16 @@ function retryCategoryZh(category: string): string {
     case 'rate_limited': return '服务请求频率受限';
     case 'server': return '服务端暂时异常';
     default: return '服务暂时异常';
+  }
+}
+
+function retryCategoryZhTw(category: string): string {
+  switch (category) {
+    case 'timeout': return '請求逾時';
+    case 'network': return '網路暫時異常';
+    case 'rate_limited': return '服務請求頻率受限';
+    case 'server': return '服務端暫時異常';
+    default: return '服務暫時異常';
   }
 }
 
