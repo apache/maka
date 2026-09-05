@@ -294,6 +294,13 @@
       "owner": "src/renderer/features/module-hub/ui/module-hub-provider.tsx",
       "ownerSymbol": "ModuleHubProvider",
       "count": 1
+    },
+    {
+      "implementation": "src/renderer/features/task-entry/controller/use-task-entry-controller.ts",
+      "symbol": "useTaskEntryController",
+      "owner": "src/renderer/features/task-entry/ui/task-entry-provider.tsx",
+      "ownerSymbol": "TaskEntryRoot",
+      "count": 1
     }
   ],
   "legacyAppShell": {
@@ -792,7 +799,6 @@
           "useStableActions": 6,
           "useState": 17,
           "useSystemUiLocale": 1,
-          "useTaskEntryController": 1,
           "useTaskSubmissionReadiness": 1,
           "useToast": 1,
           "useTurnActionRegistry": 1,
@@ -896,7 +902,7 @@
           "react": 1
         },
         "importSpecifiers": 124,
-        "nonTriviaTokens": 15588
+        "nonTriviaTokens": 15568
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 2,

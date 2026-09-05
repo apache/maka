@@ -21,6 +21,12 @@ import type { TaskEntryServices } from './ports.js';
 
 export { TaskEntryServicesProvider } from './services-context.js';
 export {
+  TaskEntryRoot,
+  TaskEntryWorkspacePickerConsumer,
+  useTaskEntryHostModel,
+} from './ui/task-entry-provider.js';
+export type { TaskEntryShellProjection } from './ui/task-entry-provider.js';
+export {
   useTaskEntryController,
   type TaskEntryController,
 } from './controller/use-task-entry-controller.js';
