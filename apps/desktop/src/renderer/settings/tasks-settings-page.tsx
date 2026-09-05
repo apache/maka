@@ -21,8 +21,8 @@ import { useCallback, useMemo, useState } from 'react';
 import type { ProjectRecord } from '@maka/core/project';
 import { formatCompactTimestamp } from '@maka/core/relative-time';
 import { runtimeHostProfileUsesHostWorkspace } from '@maka/runtime-host/profile-kind';
-import { Button, EmptyState, MoreMenu, useMountedRef, useToast, useUiLocale } from '@maka/ui';
-import { Archive, ICON_SIZE, Search } from '@maka/ui/icons';
+import { Button, EmptyState, IconButton, useMountedRef, useToast, useUiLocale } from '@maka/ui';
+import { Archive, ICON_SIZE, Search, Trash2, Unarchive } from '@maka/ui/icons';
 import { HStack, StackItem } from '@astryxdesign/core';
 import { List, ListItem } from '@astryxdesign/core/List';
 import { TextInput } from '@astryxdesign/core/TextInput';
@@ -236,25 +236,27 @@ export function TasksSettingsPage(props: ArchivedTasksBridge) {
                   startContent={<Archive size={ICON_SIZE.control} aria-hidden="true" />}
                   endContent={
                     <>
-                      <Button
-                        variant="secondary"
+                      <IconButton
+                        variant="ghost"
                         size="sm"
                         isDisabled={purging}
                         clickAction={() => props.onRestore(session.id)}
-                        label={copy.restore}
-                        // Every row's button reads 恢复; only the accessible
-                        // name can say which task it restores.
-                        aria-label={copy.restoreTask(session.name)}
+                        label={copy.unarchiveTask(session.name)}
+                        tooltip={copy.unarchive}
+                        icon={<Unarchive size={ICON_SIZE.control} aria-hidden="true" />}
                       />
                       {/* No 打开 here. An archived task has no rail row to
                           land on, and giving it one would make "the open task
                           is always visible in the rail" an invariant the rail
-                          does not otherwise hold. Restore first. */}
-                      <MoreMenu
-                        label={copy.moreActions(session.name)}
+                          does not otherwise hold. Unarchive first. */}
+                      <IconButton
+                        variant="ghost"
                         size="sm"
                         isDisabled={purging}
-                        items={[{ label: copy.delete, onClick: () => props.onDelete(session.id) }]}
+                        clickAction={() => props.onDelete(session.id)}
+                        label={copy.deleteTask(session.name)}
+                        tooltip={copy.delete}
+                        icon={<Trash2 size={ICON_SIZE.control} aria-hidden="true" />}
                       />
                     </>
                   }
