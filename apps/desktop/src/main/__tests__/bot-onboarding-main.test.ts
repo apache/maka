@@ -27,9 +27,9 @@ import {
   type UpdateAppSettingsInput,
 } from '@maka/core/settings';
 import { BotRegistry } from '@maka/runtime/bots';
-import { createRequire } from 'node:module';
 import { UI_LOCALES } from '@maka/core/ui-locale';
 import { botStatusReasonMessage, getBotSettingsCopy } from '../../renderer/locales/settings-bot-copy.js';
+import { loadRuntimeUndici } from './runtime-undici.js';
 import type { SettingsStore } from '@maka/storage/settings-store';
 import {
   BotOnboardingService,
@@ -109,7 +109,7 @@ function startResult() {
 
 describe('BotOnboardingService', () => {
   it('preserves a failed live Stream probe through the onboarding warning and localized presenter', async () => {
-    const { MockAgent, getGlobalDispatcher, setGlobalDispatcher } = createRequire(import.meta.resolve('@maka/runtime/bots'))('undici') as typeof import('undici');
+    const { MockAgent, getGlobalDispatcher, setGlobalDispatcher } = loadRuntimeUndici();
     const previous = getGlobalDispatcher();
     const agent = new MockAgent();
     agent.disableNetConnect();

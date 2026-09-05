@@ -28,8 +28,8 @@ import { createDefaultSettings, mergeSettings, type SettingsTestResult, type Upd
 import type { SettingsStore } from '@maka/storage/settings-store';
 import type { IpcMain } from 'electron';
 import { registerSettingsBotsIpc } from '../settings-bots-ipc-main.js';
-import { createRequire } from 'node:module';
 import { botStatusReasonMessage, getBotSettingsCopy } from '../../renderer/locales/settings-bot-copy.js';
+import { loadRuntimeUndici } from './runtime-undici.js';
 
 test("missing proxy credentials have actionable bilingual copy", () => {
   const result = {
@@ -98,7 +98,7 @@ test('missing credentials retain provider-specific fields through the adapter in
 });
 
 test('Telegram credential rejection is distinct from transient and malformed responses', async () => {
-  const { MockAgent, getGlobalDispatcher, setGlobalDispatcher } = createRequire(import.meta.resolve('@maka/runtime/bots'))('undici') as typeof import('undici');
+  const { MockAgent, getGlobalDispatcher, setGlobalDispatcher } = loadRuntimeUndici();
   const previous = getGlobalDispatcher();
   const agent = new MockAgent();
   agent.disableNetConnect();

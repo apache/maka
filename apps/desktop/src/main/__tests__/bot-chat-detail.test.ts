@@ -177,10 +177,12 @@ function renderAllowedUsersDescriptions(locale: UiLocale, allowedUserIds: readon
 }
 
 test('real bridge failures render localized detail and overview output in all locales', async () => {
-  const require = createRequire(import.meta.resolve('@maka/runtime/bots'));
-  const { WebClient } = require('@slack/web-api') as typeof import('@slack/web-api');
+  const load = createRequire(import.meta.resolve('@maka/runtime/bots'));
+  const { WebClient } = load('@slack/web-api') as {
+    WebClient: { prototype: { apiCall(method: string, options?: unknown): Promise<unknown> } };
+  };
   type SlackSocket = EventEmitter & { start(): Promise<unknown>; disconnect(): Promise<void> };
-  const { SocketModeClient } = require('@slack/socket-mode') as { SocketModeClient: new () => SlackSocket };
+  const { SocketModeClient } = load('@slack/socket-mode') as { SocketModeClient: new () => SlackSocket };
   const slack = new SlackBotBridge({ ...createDefaultBotChannel('slack'), enabled: true, token: 'bot-secret', appSecret: 'app-secret' });
   let socket: InstanceType<typeof SocketModeClient> | undefined;
   const auth = mock.method(WebClient.prototype, 'apiCall', async () => ({ ok: true, user_id: 'bot' }));
