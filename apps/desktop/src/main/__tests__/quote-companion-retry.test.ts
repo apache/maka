@@ -134,8 +134,10 @@ async function renderProbe(
     modelChoices?: readonly ChatModelChoice[];
     ready?: (container: Element) => boolean;
     onSend?: (send: (text: string) => Promise<boolean>) => void;
+    onQueue?: (queue: (text: string) => Promise<boolean>) => void;
     onSteer?: (steer: (text: string) => Promise<boolean>) => void;
     onStop?: (stop: () => Promise<void>) => void;
+    onDeleteQueuedEntry?: (deleteEntry: (entryId: string) => Promise<void>) => void;
     onSetPermissionMode?: (set: (mode: PermissionMode) => Promise<boolean>) => void;
     confirmBypass?: () => Promise<boolean>;
     onContextCompactionError?: (sessionId: string, error: unknown) => void;
@@ -159,8 +161,10 @@ async function renderProbe(
   const children = options.ownership
     ? createElement(QuoteCompanionOwnershipProbe, {
         onSend: options.onSend ?? (() => undefined),
+        onQueue: options.onQueue,
         onSteer: options.onSteer,
         onStop: options.onStop,
+        onDeleteQueuedEntry: options.onDeleteQueuedEntry,
         onSetPermissionMode: options.onSetPermissionMode,
         onContextCompactionError: options.onContextCompactionError,
         pendingQuotes: options.pendingQuotes,
@@ -199,8 +203,10 @@ async function renderOwnershipProbe(
   } = {},
 ) {
   let send!: (text: string) => Promise<boolean>;
+  let queue!: (text: string) => Promise<boolean>;
   let steer!: (text: string) => Promise<boolean>;
   let stop!: () => Promise<void>;
+  let deleteQueuedEntry!: (entryId: string) => Promise<void>;
   let setPermissionMode!: (mode: PermissionMode) => Promise<boolean>;
   let eventHandler: ((event: SessionEvent) => void) | undefined;
   const subscribeEvents = sideChat.subscribeEvents;
@@ -219,8 +225,10 @@ async function renderOwnershipProbe(
     {
       ownership: true,
       onSend: (value) => (send = value),
+      onQueue: (value) => (queue = value),
       onSteer: (value) => (steer = value),
       onStop: (value) => (stop = value),
+      onDeleteQueuedEntry: (value) => (deleteQueuedEntry = value),
       onSetPermissionMode: (value) => (setPermissionMode = value),
       ...options,
     },
@@ -228,8 +236,10 @@ async function renderOwnershipProbe(
   return {
     ...rendered,
     send: (text: string) => send(text),
+    queue: (text: string) => queue(text),
     steer: (text: string) => steer(text),
     stop: () => stop(),
+    deleteQueuedEntry: (entryId: string) => deleteQueuedEntry(entryId),
     setPermissionMode: (mode: PermissionMode) => setPermissionMode(mode),
     emit(event: SessionEvent) {
       assert.ok(eventHandler);
@@ -477,7 +487,7 @@ test('dispatches /compact to the committed companion fork without sending model 
       sendCalls += 1;
       return { ok: false as const, reason: 'seed only' };
     },
-    steer: async () => {
+    submitFollowUp: async () => {
       steerCalls += 1;
       return { kind: 'started' as const, turnId: 'unexpected-steer' };
     },
@@ -501,6 +511,10 @@ test('dispatches the exact /compact Composer command before steering or ordinary
         calls.push('compact');
         return true;
       },
+      queue: async () => {
+        calls.push('queue');
+        return true;
+      },
       steer: async () => {
         calls.push('steer');
         return true;
@@ -513,6 +527,31 @@ test('dispatches the exact /compact Composer command before steering or ordinary
     true,
   );
   assert.deepEqual(calls, ['compact']);
+});
+
+test('routes running Side Conversation submissions like the main conversation', async () => {
+  const calls: string[] = [];
+  const input = {
+    text: 'follow up',
+    streaming: true,
+    compact: async () => true,
+    queue: async (text: string) => {
+      calls.push(`queue:${text}`);
+      return true;
+    },
+    steer: async (text: string) => {
+      calls.push(`steer:${text}`);
+      return true;
+    },
+    send: async () => {
+      calls.push('send');
+      return true;
+    },
+  };
+
+  assert.equal(await dispatchQuoteCompanionInput(input), true);
+  assert.equal(await dispatchQuoteCompanionInput({ ...input, followUpMode: 'steer' }), true);
+  assert.deepEqual(calls, ['queue:follow up', 'steer:follow up']);
 });
 
 test('keeps an async companion compaction exclusive until its terminal event', async () => {
@@ -1528,7 +1567,7 @@ test('keeps the active Side Conversation streaming when Stop retracts a queued s
   let steerCalls = 0;
   const { container, emit, send, steer, stop } = await renderOwnershipProbe({
     send: async () => ({ ok: true as const, turnId: 'old-turn' }),
-    steer: async (_sessionId, _text, requestedAdmissionId) => {
+    submitFollowUp: async (_sessionId, _placement, _text, requestedAdmissionId) => {
       steerCalls += 1;
       admissionId = requestedAdmissionId;
       return pendingSteer.promise;
@@ -1581,7 +1620,7 @@ test('stops the active Side Conversation after retracting its queued steer', asy
   const stoppedTargets: SideChatStopTarget[] = [];
   const { send, steer, stop } = await renderOwnershipProbe({
     send: async () => ({ ok: true as const, turnId: 'old-turn' }),
-    steer: async (_sessionId, _text, requestedAdmissionId) => {
+    submitFollowUp: async (_sessionId, _placement, _text, requestedAdmissionId) => {
       admissionId = requestedAdmissionId;
       return pendingSteer.promise;
     },
@@ -1631,7 +1670,7 @@ test('does not let an older Stop failure release a newer active Turn Stop', asyn
   const stoppedTargets: SideChatStopTarget[] = [];
   const { emit, send, steer, stop } = await renderOwnershipProbe({
     send: async () => ({ ok: true as const, turnId: 'old-turn' }),
-    steer: async (_sessionId, _text, requestedAdmissionId) => {
+    submitFollowUp: async (_sessionId, _placement, _text, requestedAdmissionId) => {
       admissionId = requestedAdmissionId;
       return pendingSteer.promise;
     },
@@ -1690,7 +1729,7 @@ test('continues projecting the active Turn while a steer awaits Host admission',
   let admissionId: string | undefined;
   const { container, emit, send, steer } = await renderOwnershipProbe({
     send: async () => ({ ok: true as const, turnId: 'old-turn' }),
-    steer: async (_sessionId, _text, requestedAdmissionId) => {
+    submitFollowUp: async (_sessionId, _placement, _text, requestedAdmissionId) => {
       admissionId = requestedAdmissionId;
       return pendingSteer.promise;
     },
@@ -1706,6 +1745,11 @@ test('continues projecting the active Turn while a steer awaits Host admission',
     await Promise.resolve();
   });
   await waitUntil(() => admissionId !== undefined);
+  assert.equal(container.firstElementChild?.getAttribute('data-transient-count'), '2');
+  assert.equal(
+    container.firstElementChild?.getAttribute('data-transient-texts'),
+    'initial prompt|queue this steer',
+  );
   await act(async () => {
     emit(textDeltaEvent('old-turn-text', 'old-turn', 1, 'still streaming'));
     await Promise.resolve();
@@ -1720,6 +1764,221 @@ test('continues projecting the active Turn while a steer awaits Host admission',
     assert.equal(await steerResult, true);
     await Promise.resolve();
   });
+});
+
+test('keeps an outcome-unknown Side Conversation steer addressable by message identity', async () => {
+  let admissionId: string | undefined;
+  const stoppedTargets: SideChatStopTarget[] = [];
+  const { send, steer, stop } = await renderOwnershipProbe({
+    send: async () => ({ ok: true as const, turnId: 'old-turn' }),
+    submitFollowUp: async (_sessionId, placement, _text, requestedAdmissionId) => {
+      assert.equal(placement, 'current_turn');
+      admissionId = requestedAdmissionId;
+      return { kind: 'outcome_unknown' as const, messageId: requestedAdmissionId as string };
+    },
+    stop: async (_sessionId, target) => {
+      stoppedTargets.push(target);
+      return undefined;
+    },
+  });
+
+  await act(async () => {
+    assert.equal(await send('initial prompt'), true);
+    await Promise.resolve();
+  });
+  await act(async () => {
+    assert.equal(await steer('uncertain steer'), true);
+    await stop();
+    await Promise.resolve();
+  });
+
+  assert.deepEqual(stoppedTargets, [{ kind: 'admission', messageId: admissionId }]);
+});
+
+test('recovers a queued Side Conversation steer from the Host queue projection', async () => {
+  let admissionId: string | undefined;
+  const pendingSteer = deferred<{ kind: 'queued'; messageId: string }>();
+  const { container, emit, send, steer } = await renderOwnershipProbe({
+    send: async () => ({ ok: true as const, turnId: 'old-turn' }),
+    submitFollowUp: async (_sessionId, _placement, _text, requestedAdmissionId) => {
+      admissionId = requestedAdmissionId;
+      return pendingSteer.promise;
+    },
+  });
+
+  await act(async () => {
+    assert.equal(await send('initial prompt'), true);
+    await Promise.resolve();
+  });
+  let steerResult!: Promise<boolean>;
+  await act(async () => {
+    steerResult = steer('queued follow-up');
+    await Promise.resolve();
+  });
+  await waitUntil(() => admissionId !== undefined);
+  await act(async () => {
+    emit(
+      queueUpdateEvent('queued-steer', 'old-turn', 1, [
+        {
+          entryId: 'queued-steer-entry',
+          messageId: admissionId as string,
+          content: { text: 'queued follow-up' },
+          placement: 'current_turn',
+          state: 'queued',
+        },
+      ]),
+    );
+    pendingSteer.resolve({ kind: 'queued', messageId: admissionId as string });
+    assert.equal(await steerResult, true);
+    await Promise.resolve();
+  });
+
+  assert.equal(
+    container.firstElementChild?.getAttribute('data-transient-texts'),
+    'initial prompt|queued follow-up',
+  );
+  assert.equal(container.firstElementChild?.getAttribute('data-queue-texts'), 'queued follow-up');
+
+  await act(async () => {
+    emit({
+      type: 'steering_message',
+      id: 'steering-consumed',
+      turnId: 'old-turn',
+      ts: 2,
+      messageId: admissionId as string,
+      content: { text: 'queued follow-up' },
+    });
+    await Promise.resolve();
+  });
+
+  assert.equal(container.firstElementChild?.getAttribute('data-transient-texts'), 'initial prompt');
+  assert.equal(container.firstElementChild?.getAttribute('data-queue-texts'), '');
+});
+
+test('retracts a queued Side Conversation message without stopping the active turn', async () => {
+  let messageId: string | undefined;
+  const retracted: string[] = [];
+  const { container, emit, send, queue, deleteQueuedEntry } = await renderOwnershipProbe({
+    send: async () => ({ ok: true as const, turnId: 'old-turn' }),
+    submitFollowUp: async (_sessionId, _placement, _text, requestedMessageId) => {
+      messageId = requestedMessageId;
+      return { kind: 'queued' as const, messageId: requestedMessageId as string };
+    },
+    retractQueueEntry: async (_sessionId, entryId) => {
+      retracted.push(entryId);
+    },
+  });
+
+  await act(async () => {
+    assert.equal(await send('initial prompt'), true);
+    await Promise.resolve();
+  });
+  await act(async () => {
+    assert.equal(await queue('remove me'), true);
+    emit(
+      queueUpdateEvent('queued-follow-up', 'old-turn', 1, [], [
+        {
+          entryId: 'follow-up-entry',
+          messageId: messageId as string,
+          content: { text: 'remove me' },
+          placement: 'next_turn',
+          state: 'queued',
+        },
+      ]),
+    );
+    await Promise.resolve();
+  });
+
+  await act(async () => {
+    await deleteQueuedEntry('follow-up-entry');
+    await Promise.resolve();
+  });
+
+  assert.deepEqual(retracted, ['follow-up-entry']);
+  assert.equal(container.firstElementChild?.getAttribute('data-transient-texts'), 'initial prompt');
+  assert.equal(container.firstElementChild?.getAttribute('data-live-turn-id'), 'old-turn');
+  assert.equal(container.firstElementChild?.getAttribute('data-streaming'), 'true');
+});
+
+test('queues multiple Side Conversation follow-ups while the active turn keeps streaming', async () => {
+  const submissions: Array<{ placement: string; text: string; messageId?: string }> = [];
+  const { container, send, queue } = await renderOwnershipProbe({
+    send: async () => ({ ok: true as const, turnId: 'old-turn' }),
+    submitFollowUp: async (_sessionId, placement, text, messageId) => {
+      submissions.push({ placement, text, messageId });
+      return { kind: 'queued' as const, messageId: messageId as string };
+    },
+  });
+
+  await act(async () => {
+    assert.equal(await send('initial prompt'), true);
+    await Promise.resolve();
+  });
+  await act(async () => {
+    assert.equal(await queue('first follow-up'), true);
+    await Promise.resolve();
+  });
+  await act(async () => {
+    assert.equal(await queue('second follow-up'), true);
+    await Promise.resolve();
+  });
+
+  assert.deepEqual(
+    submissions.map(({ placement, text }) => ({ placement, text })),
+    [
+      { placement: 'next_turn', text: 'first follow-up' },
+      { placement: 'next_turn', text: 'second follow-up' },
+    ],
+  );
+  assert.equal(
+    container.firstElementChild?.getAttribute('data-transient-texts'),
+    'initial prompt|first follow-up|second follow-up',
+  );
+  assert.equal(container.firstElementChild?.getAttribute('data-live-turn-id'), 'old-turn');
+  assert.equal(container.firstElementChild?.getAttribute('data-streaming'), 'true');
+});
+
+test('adopts a queued Side Conversation follow-up that starts after the active turn settles', async () => {
+  let followUpMessageId: string | undefined;
+  const pendingFollowUp = deferred<{ kind: 'started'; turnId: string }>();
+  const { container, emit, send, queue } = await renderOwnershipProbe({
+    send: async () => ({ ok: true as const, turnId: 'old-turn' }),
+    submitFollowUp: async (_sessionId, placement, _text, messageId) => {
+      assert.equal(placement, 'next_turn');
+      followUpMessageId = messageId;
+      return pendingFollowUp.promise;
+    },
+    readSettledMessages: async () => ({ messages: [], settled: true }),
+  });
+
+  await act(async () => {
+    assert.equal(await send('initial prompt'), true);
+    await Promise.resolve();
+  });
+  let followUpResult!: Promise<boolean>;
+  await act(async () => {
+    followUpResult = queue('start after settlement');
+    await Promise.resolve();
+  });
+  await waitUntil(() => followUpMessageId !== undefined);
+  await act(async () => {
+    emit(completeEvent('old-complete', 'old-turn', 1));
+    pendingFollowUp.resolve({ kind: 'started', turnId: 'new-turn' });
+    assert.equal(await followUpResult, true);
+    await Promise.resolve();
+  });
+
+  assert.equal(container.firstElementChild?.getAttribute('data-live-turn-id'), 'new-turn');
+  assert.equal(container.firstElementChild?.getAttribute('data-streaming'), 'true');
+  assert.equal(
+    container.firstElementChild?.getAttribute('data-transient-texts'),
+    'initial prompt|start after settlement',
+  );
+  await act(async () => {
+    emit(textDeltaEvent('new-turn-text', 'new-turn', 2, 'new answer'));
+    await Promise.resolve();
+  });
+  assert.equal(container.firstElementChild?.getAttribute('data-live-text'), 'new answer');
 });
 
 test('fails a send when observation seed rejects and resubscribes for retry', async () => {
@@ -2012,8 +2271,10 @@ function QuoteCompanionProbe(props: {
 
 function QuoteCompanionOwnershipProbe(props: {
   onSend: (send: (text: string) => Promise<boolean>) => void;
+  onQueue?: (queue: (text: string) => Promise<boolean>) => void;
   onSteer?: (steer: (text: string) => Promise<boolean>) => void;
   onStop?: (stop: () => Promise<void>) => void;
+  onDeleteQueuedEntry?: (deleteEntry: (entryId: string) => Promise<void>) => void;
   onSetPermissionMode?: (set: (mode: PermissionMode) => Promise<boolean>) => void;
   onContextCompactionError?: (sessionId: string, error: unknown) => void;
   pendingQuotes?: readonly StagedCompanionQuote[];
@@ -2033,8 +2294,10 @@ function QuoteCompanionOwnershipProbe(props: {
     onContextCompactionError: props.onContextCompactionError,
   });
   props.onSend(companion.send);
+  props.onQueue?.(companion.queue);
   props.onSteer?.(companion.steer);
   props.onStop?.(companion.stop);
+  props.onDeleteQueuedEntry?.(companion.deleteQueuedEntry);
   props.onSetPermissionMode?.(companion.setPermissionMode);
   return createElement('div', {
     'data-companion-id': companion.companionSession?.id ?? '',
@@ -2047,6 +2310,8 @@ function QuoteCompanionOwnershipProbe(props: {
     'data-permission-mode': companion.permissionMode ?? '',
     'data-transient-count': String(companion.transientMessages.length),
     'data-transient-text': companion.transientMessages[0]?.text ?? '',
+    'data-transient-texts': companion.transientMessages.map((message) => message.text).join('|'),
+    'data-queue-texts': companion.queuedMessages?.map((entry) => entry.content.text).join('|') ?? '',
   });
 }
 

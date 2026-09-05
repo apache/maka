@@ -166,7 +166,12 @@ describe('createDesktopWorkbarServices', () => {
       text: 'hello',
     });
     await services.sideChat.stop('fork');
-    await services.sideChat.steer('fork', 'more');
+    await services.sideChat.submitFollowUp('fork', 'next_turn', 'later', 'message-next');
+    await services.sideChat.submitFollowUp('fork', 'current_turn', 'more');
+    await services.sideChat.retractQueueEntry('fork', 'entry-1');
+    await services.sideChat.promoteQueueEntry('fork', 'entry-2');
+    await services.sideChat.updateQueueEntry('fork', 'entry-3', 4, 'updated');
+    await services.sideChat.reorderQueueEntries('fork', ['entry-3', 'entry-2']);
     await services.sideChat.setPermissionMode('fork', 'ask');
     await services.sideChat.regenerateTurn('fork', {
       sourceTurnId: 'turn-2',
@@ -223,6 +228,11 @@ describe('createDesktopWorkbarServices', () => {
         'sessions.send',
         'sessions.stop',
         'sessions.submitMessage',
+        'sessions.submitMessage',
+        'sessions.retractQueueEntry',
+        'sessions.promoteQueueEntry',
+        'sessions.updateQueueEntry',
+        'sessions.reorderQueueEntries',
         'sessions.setPermissionMode',
         'sessions.regenerateTurn',
         'sessions.respondToSandboxBoundary',
@@ -249,5 +259,18 @@ describe('createDesktopWorkbarServices', () => {
       's',
       { requiredAssistantMessageId: 'message' },
     ]);
+    const followUpCalls = calls.filter((call) => call.name === 'sessions.submitMessage');
+    assert.deepEqual(followUpCalls[0]?.args, [
+      'fork',
+      'next_turn',
+      { messageId: 'message-next', text: 'later' },
+    ]);
+    assert.equal(followUpCalls[1]?.args[0], 'fork');
+    assert.equal(followUpCalls[1]?.args[1], 'current_turn');
+    assert.equal((followUpCalls[1]?.args[2] as { text?: string })?.text, 'more');
+    assert.equal(
+      typeof (followUpCalls[1]?.args[2] as { messageId?: unknown })?.messageId,
+      'string',
+    );
   });
 });

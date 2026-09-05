@@ -891,7 +891,11 @@ function bridge(options: {
       }),
       send: async () => ({ ok: true, turnId: 'story-side-chat-turn' }),
       stop: async () => undefined,
-      steer: async () => ({ kind: 'started', turnId: 'story-side-chat-turn' }),
+      submitFollowUp: async () => ({ kind: 'started', turnId: 'story-side-chat-turn' }),
+      retractQueueEntry: async () => undefined,
+      promoteQueueEntry: async () => undefined,
+      updateQueueEntry: async () => undefined,
+      reorderQueueEntries: async () => undefined,
       setPermissionMode: async (_sessionId, mode) => ({
         ...SIDE_CHAT_SESSION,
         permissionMode: mode,

@@ -34,6 +34,7 @@ import type {
   ClientCapabilityRequestEvent,
   ContextCompactionOutcome,
   FormRequestEvent,
+  MessageQueueEntryProjection,
   QuoteRef,
   SessionEvent,
   UserQuestionRequestEvent,
@@ -165,6 +166,9 @@ export interface UseQuoteCompanionResult {
    *  before the durable transcript echoes them back. Reconciled away once the
    *  durable message with the same id lands. Pass straight to `ChatView`. */
   transientMessages: readonly TransientUserMessageProjection[];
+  /** Host-authoritative pending steering and follow-up messages. */
+  queuedMessages: readonly MessageQueueEntryProjection[];
+  queuedMessageRevision: number | undefined;
   liveTurn: LiveTurnProjection | undefined;
   streaming: boolean;
   processing: boolean;
@@ -188,6 +192,16 @@ export interface UseQuoteCompanionResult {
   send: (text: string, attachmentItems?: WorkbarIngestInput[]) => Promise<boolean>;
   /** Insert text into the active companion turn at the next model step. */
   steer: (text: string) => Promise<boolean>;
+  /** Queue text for the next companion turn while the current turn continues. */
+  queue: (text: string) => Promise<boolean>;
+  promoteQueuedEntry: (entryId: string) => Promise<void>;
+  updateQueuedEntry: (
+    entryId: string,
+    expectedQueueRevision: number,
+    text: string,
+  ) => Promise<void>;
+  deleteQueuedEntry: (entryId: string) => Promise<void>;
+  reorderQueuedEntries: (entryIds: readonly string[]) => Promise<void>;
   setPermissionMode: (mode: PermissionMode) => Promise<boolean>;
   regenerate: (turnId: string) => Promise<boolean>;
   stop: () => Promise<void>;
@@ -283,6 +297,10 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const [pendingUserMessages, setPendingUserMessages] = useState<
     TransientUserMessageProjection[]
   >([]);
+  const [queuedMessages, setQueuedMessages] = useState<MessageQueueEntryProjection[]>([]);
+  const [queuedMessageRevision, setQueuedMessageRevision] = useState<number | undefined>(
+    undefined,
+  );
   const [liveTurn, setLiveTurn] = useState<LiveTurnProjection | undefined>(undefined);
   const liveTurnRef = useRef(liveTurn);
   liveTurnRef.current = liveTurn;
@@ -371,6 +389,60 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       return next.length === current.length ? current : next;
     });
   }, []);
+
+  const dropQueuedMessage = useCallback((messageId: string) => {
+    setQueuedMessages((current) => {
+      const next = current.filter((entry) => entry.messageId !== messageId);
+      return next.length === current.length ? current : next;
+    });
+  }, []);
+
+  const adoptOwnedTurn = useCallback((turnId: string) => {
+    hasContentRef.current = true;
+    setHasContent(true);
+    activeTurnIdRef.current = turnId;
+    ownTurnIdsRef.current.add(turnId);
+    setOwnTurnTick((tick) => tick + 1);
+    setLiveTurn((current) =>
+      current?.turnId === turnId ? current : armLiveTurn(turnId),
+    );
+  }, []);
+
+  const projectMessageQueue = useCallback(
+    (event: Extract<SessionEvent, { type: 'queue_update' }>) => {
+      const entries = [
+        ...(event.steeringEntries ?? []).filter((entry) => entry.state === 'queued'),
+        ...(event.followupEntries ?? []),
+      ].map((entry) => structuredClone(entry));
+      setQueuedMessages(entries);
+      setQueuedMessageRevision(event.queueRevision);
+
+      const queued = [...(event.steeringEntries ?? []), ...(event.followupEntries ?? [])]
+        .filter((entry) => entry.state === 'queued')
+        .map<TransientUserMessageProjection>((entry) => ({
+          id: entry.messageId,
+          transientPlacement: entry.placement,
+          ...(entry.placement === 'current_turn' ? { hostTurnId: event.turnId } : {}),
+          ts: event.ts,
+          text: entry.content.displayText ?? entry.content.text,
+          ...(entry.content.attachments ? { attachments: [...entry.content.attachments] } : {}),
+          ...(entry.content.directoryReferences
+            ? { directoryReferences: entry.content.directoryReferences }
+            : {}),
+          ...(entry.content.quotes ? { quotes: [...entry.content.quotes] } : {}),
+          ...(entry.content.inlineReferences
+            ? { inlineReferences: [...entry.content.inlineReferences] }
+            : {}),
+        }));
+      if (queued.length === 0) return;
+      const queuedIds = new Set(queued.map((message) => message.id));
+      setPendingUserMessages((current) => [
+        ...current.filter((message) => !queuedIds.has(message.id)),
+        ...queued,
+      ]);
+    },
+    [],
+  );
 
   const applyOwnedEvent = useCallback(
     (forkId: string, event: SessionEvent) => {
@@ -565,7 +637,35 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       forkId,
       (event: SessionEvent) => {
         if (!mountedRef.current) return;
+        if (event.type === 'queue_update') {
+          projectMessageQueue(event);
+          return;
+        }
         const admission = pendingAdmissionRef.current;
+        if (event.type === 'steering_message') {
+          dropOptimisticUserMessage(event.messageId);
+          dropQueuedMessage(event.messageId);
+          if (event.turnId !== activeTurnIdRef.current) adoptOwnedTurn(event.turnId);
+          applyOwnedEvent(forkId, event);
+          return;
+        } else if (event.type === 'message_admission' && event.outcome === 'retracted') {
+          dropOptimisticUserMessage(event.messageId);
+          dropQueuedMessage(event.messageId);
+          if (admission?.messageId === event.messageId) {
+            admission.events.push(event);
+            resolveAdmission(forkId, admission, admission.messageId, true);
+          }
+          return;
+        } else if (event.type === 'message_admission' && event.outcome === 'admitted') {
+          dropQueuedMessage(event.messageId);
+          if (admission?.messageId === event.messageId) {
+            admission.events.push(event);
+            resolveAdmission(forkId, admission, admission.messageId, true);
+          } else {
+            adoptOwnedTurn(event.turnId);
+          }
+          return;
+        }
         if (event.type === 'error' && event.recoverable) {
           if (admission) {
             // Observation failure does not prove whether Host admitted the
@@ -612,7 +712,17 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       resolveReady();
     };
     return ready;
-  }, [applyOwnedEvent, mountedRef, resolveAdmission, sideChat]);
+  }, [
+    applyOwnedEvent,
+    adoptOwnedTurn,
+    dropOptimisticUserMessage,
+    dropQueuedMessage,
+    mountedRef,
+    projectMessageQueue,
+    reconcileUnknownAdmission,
+    resolveAdmission,
+    sideChat,
+  ]);
 
   const commitFork = useCallback(
     (session: SessionSummary) => {
@@ -667,6 +777,9 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
           clearPermissionModeIntent(existing.id);
           setCompanion(undefined);
           setAllMessages([]);
+          setPendingUserMessages([]);
+          setQueuedMessages([]);
+          setQueuedMessageRevision(undefined);
           onForkVisibilityChangeRef.current?.({
             type: 'cleanup-succeeded',
             sessionId: existing.id,
@@ -1120,7 +1233,10 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     }
   }, [releaseAdmission, resolveAdmission, sideChat]);
 
-  const steer = useCallback(async (text: string): Promise<boolean> => {
+  const submitFollowUp = useCallback(async (
+    text: string,
+    placement: 'current_turn' | 'next_turn',
+  ): Promise<boolean> => {
     const id = companionIdRef.current;
     const trimmed = text.trim();
     if (
@@ -1128,7 +1244,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       !id ||
       !trimmed ||
       !turnInFlight ||
-      pendingAdmissionRef.current
+      (placement === 'current_turn' && pendingAdmissionRef.current !== null)
     ) {
       return false;
     }
@@ -1137,35 +1253,69 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       messageId: admissionId,
       events: [],
     };
-    setPendingAdmission(admission);
+    setPendingUserMessages((current) => [
+      ...current.filter((message) => message.id !== admissionId),
+      {
+        id: admissionId,
+        text: trimmed,
+        ts: Date.now(),
+        transientPlacement: placement,
+        ...(placement === 'current_turn' && activeTurnIdRef.current
+          ? { hostTurnId: activeTurnIdRef.current }
+          : {}),
+      },
+    ]);
+    if (placement === 'current_turn') setPendingAdmission(admission);
     try {
-      const outcome = await sideChat.steer(id, trimmed, admissionId);
+      const outcome = await sideChat.submitFollowUp(id, placement, trimmed, admissionId);
       if (!mountedRef.current) return false;
-      if ((await admission.stopPromise) === 'confirmed') return false;
+      if (placement === 'current_turn' && (await admission.stopPromise) === 'confirmed') {
+        return false;
+      }
       if (admissionOutcomeForMessage(admission.events, admission.messageId)?.kind === 'retracted') {
         return false;
       }
       if (outcome.kind === 'started') {
-        bindAdmittedTurn(id, outcome.turnId, { preserveLiveTurn: true });
+        if (placement === 'current_turn') {
+          bindAdmittedTurn(id, outcome.turnId, { preserveLiveTurn: true });
+        } else {
+          // The active Turn can settle between the local streaming check and
+          // Host admission. In that race a nominal next-turn follow-up starts
+          // immediately, so adopt the Host-named Turn even if its admission
+          // event arrived before this command reply (or was missed entirely).
+          adoptOwnedTurn(outcome.turnId);
+        }
       } else if (resolveAdmission(id, admission, outcome.messageId, true)?.kind === 'retracted') {
         return false;
+      } else if (
+        outcome.kind === 'queued' &&
+        placement === 'current_turn' &&
+        pendingAdmissionRef.current === admission
+      ) {
+        // A queued follow-up no longer owns the Composer's single in-flight
+        // admission slot. Its optimistic row and the Host queue projection
+        // remain until delivery/retraction, while later follow-ups may queue too.
+        setPendingAdmission(null);
       }
       setError(null);
       return true;
     } catch {
       if (mountedRef.current) {
-        if (pendingAdmissionRef.current === admission) {
+        if (placement === 'current_turn' && pendingAdmissionRef.current === admission) {
           releaseAdmission(admission, copyRef.current.errors.sendFailed);
         } else if (
           admissionOutcomeForMessage(admission.events, admission.messageId)?.kind !== 'retracted'
         ) {
+          dropOptimisticUserMessage(admission.messageId);
           setError(copyRef.current.errors.sendFailed);
         }
       }
       return false;
     }
   }, [
+    adoptOwnedTurn,
     bindAdmittedTurn,
+    dropOptimisticUserMessage,
     mountedRef,
     releaseAdmission,
     resolveAdmission,
@@ -1173,6 +1323,54 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     sideChat,
     turnInFlight,
   ]);
+
+  const steer = useCallback(
+    (text: string) => submitFollowUp(text, 'current_turn'),
+    [submitFollowUp],
+  );
+  const queue = useCallback(
+    (text: string) => submitFollowUp(text, 'next_turn'),
+    [submitFollowUp],
+  );
+
+  const runQueueEntryAction = useCallback(
+    async (action: (sessionId: string) => Promise<void>): Promise<void> => {
+      const id = companionIdRef.current;
+      if (!id) return;
+      try {
+        await action(id);
+      } catch (error) {
+        if (mountedRef.current) setError(copyRef.current.errors.respondFailed);
+        throw error;
+      }
+    },
+    [mountedRef],
+  );
+
+  const promoteQueuedEntry = useCallback(
+    (entryId: string) => runQueueEntryAction((id) => sideChat.promoteQueueEntry(id, entryId)),
+    [runQueueEntryAction, sideChat],
+  );
+  const updateQueuedEntry = useCallback(
+    (entryId: string, expectedQueueRevision: number, text: string) =>
+      runQueueEntryAction((id) =>
+        sideChat.updateQueueEntry(id, entryId, expectedQueueRevision, text),
+      ),
+    [runQueueEntryAction, sideChat],
+  );
+  const deleteQueuedEntry = useCallback(
+    async (entryId: string): Promise<void> => {
+      const messageId = queuedMessages.find((entry) => entry.entryId === entryId)?.messageId;
+      await runQueueEntryAction((id) => sideChat.retractQueueEntry(id, entryId));
+      if (messageId) dropOptimisticUserMessage(messageId);
+    },
+    [dropOptimisticUserMessage, queuedMessages, runQueueEntryAction, sideChat],
+  );
+  const reorderQueuedEntries = useCallback(
+    (entryIds: readonly string[]) =>
+      runQueueEntryAction((id) => sideChat.reorderQueueEntries(id, entryIds)),
+    [runQueueEntryAction, sideChat],
+  );
 
   const setPermissionMode = useCallback(
     (mode: PermissionMode): Promise<boolean> => {
@@ -1330,6 +1528,8 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     hasContent,
     messages,
     transientMessages,
+    queuedMessages,
+    queuedMessageRevision,
     liveTurn,
     streaming,
     processing,
@@ -1345,6 +1545,11 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     compact,
     send,
     steer,
+    queue,
+    promoteQueuedEntry,
+    updateQueuedEntry,
+    deleteQueuedEntry,
+    reorderQueuedEntries,
     setPermissionMode,
     regenerate,
     stop,

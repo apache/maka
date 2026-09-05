@@ -192,7 +192,7 @@ export type SideChatSendResult =
   | { ok: false; reason: 'outcome_unknown'; messageId: string }
   | { ok: false; reason?: string; messageId?: never };
 
-export type SideChatSteerResult =
+export type SideChatFollowUpResult =
   | { kind: 'queued'; messageId: string }
   | { kind: 'outcome_unknown'; messageId: string }
   | { kind: 'started'; turnId: string };
@@ -237,7 +237,21 @@ export interface SideChatSessionPort {
     sessionId: string,
     target?: SideChatStopTarget,
   ): Promise<{ kind: 'retracted'; messageId: string } | undefined>;
-  steer(sessionId: string, text: string, admissionId?: string): Promise<SideChatSteerResult>;
+  submitFollowUp(
+    sessionId: string,
+    placement: 'current_turn' | 'next_turn',
+    text: string,
+    admissionId?: string,
+  ): Promise<SideChatFollowUpResult>;
+  retractQueueEntry(sessionId: string, entryId: string): Promise<void>;
+  promoteQueueEntry(sessionId: string, entryId: string): Promise<void>;
+  updateQueueEntry(
+    sessionId: string,
+    entryId: string,
+    expectedQueueRevision: number,
+    text: string,
+  ): Promise<void>;
+  reorderQueueEntries(sessionId: string, entryIds: readonly string[]): Promise<void>;
   setPermissionMode(
     sessionId: string,
     mode: PermissionMode,

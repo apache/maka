@@ -342,11 +342,13 @@ export function QuoteCompanionPanel(props: {
             )}
             <Composer
               ref={composerRef}
-              onSend={(text) =>
+              onSend={(text, metadata) =>
                 dispatchQuoteCompanionInput({
                   text,
                   streaming: companion.streaming,
+                  followUpMode: metadata?.followUpMode,
                   compact: companion.compact,
+                  queue: companion.queue,
                   steer: companion.steer,
                   send: async () => {
                     try {
@@ -376,6 +378,12 @@ export function QuoteCompanionPanel(props: {
               hidden={Boolean(activeInteraction)}
               streaming={companion.streaming}
               processing={companion.processing}
+              queuedMessages={companion.queuedMessages}
+              queuedMessageRevision={companion.queuedMessageRevision}
+              onPromoteQueuedEntry={companion.promoteQueuedEntry}
+              onUpdateQueuedEntry={companion.updateQueuedEntry}
+              onDeleteQueuedEntry={companion.deleteQueuedEntry}
+              onReorderQueuedEntries={companion.reorderQueuedEntries}
               draftKey={draftKey}
               disabled={!companion.modelReady}
               onPickAttachments={pickAttachments}
