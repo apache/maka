@@ -18,8 +18,10 @@
  */
 
 import assert from 'node:assert/strict';
+import { fork } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { once } from 'node:events';
+import { lstat, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -110,6 +112,87 @@ test('serializes concurrent local CAS writers across adapter instances', async (
     assert.equal(rejected.reason.code, 'revision_conflict');
   });
 });
+
+for (const crashPoint of ['before-rename', 'after-rename'] as const) {
+  test(`recovers a repository writer killed ${crashPoint} without removing its lock`, async () => {
+    await withTemporaryDirectory(async (root) => {
+      const repository = await openFileSessionRepository({ storageRoot: root });
+      const initial = await publishCheckpoint(
+        repository,
+        await writeArtifact(root, 'initial.tar.zst', 'initial bytes'),
+      );
+      const created = await repository.createSession({
+        sessionId: 'session-a',
+        agentId: 'agent-a',
+        checkpoint: initial,
+      });
+      const next = await publishCheckpoint(
+        repository,
+        await writeArtifact(root, 'next.tar.zst', 'next bytes'),
+      );
+      const input = {
+        sessionId: created.ref.sessionId,
+        expectedRevision: created.ref.revision,
+        checkpoint: next,
+        commitId: 'interrupted-commit',
+      };
+      const inputPath = join(root, 'commit-input.json');
+      await writeFile(inputPath, JSON.stringify(input), 'utf8');
+      const writer = fork(
+        new URL('./fixtures/file-session-repository-crash-writer.js', import.meta.url),
+        [root, inputPath, crashPoint],
+        { stdio: ['ignore', 'ignore', 'inherit', 'ipc'] },
+      );
+      const closed = new Promise<void>((resolve) => writer.once('close', () => resolve()));
+      try {
+        const ready = new AbortController();
+        const timer = setTimeout(() => ready.abort(), 10_000);
+        try {
+          const [message] = await Promise.race([
+            once(writer, 'message', { signal: ready.signal }),
+            closed.then(() => {
+              throw new Error('Repository writer exited before its crash point');
+            }),
+          ]);
+          assert.equal(message, crashPoint);
+        } finally {
+          clearTimeout(timer);
+          ready.abort();
+        }
+        assert.equal(writer.kill('SIGKILL'), true);
+        await closed;
+        // No finally ran in the child. Recovery must tolerate the marker that
+        // is still on disk; this test never removes repository-internal state.
+        await lstat(join(root, 'session-repository-v1.json.lock'));
+
+        const reopened = await openFileSessionRepository({ storageRoot: root });
+        assert.equal(
+          (await reopened.checkoutCurrent('session-a')).ref.revision,
+          crashPoint === 'before-rename' ? 'r1' : 'r2',
+        );
+        const recovered = await reopened.commit(input);
+        assert.equal(recovered.ref.revision, 'r2');
+        assert.deepEqual(recovered.checkpoint, next);
+        assert.deepEqual(await reopened.commit(input), recovered);
+        // An after-rename retry can return its existing receipt without taking
+        // a write lock. A new commit proves the repository is actually writable.
+        const advanced = await reopened.commit({
+          sessionId: 'session-a',
+          expectedRevision: recovered.ref.revision,
+          checkpoint: initial,
+          commitId: 'after-recovery',
+        });
+        assert.equal(advanced.ref.revision, 'r3');
+        const final = await openFileSessionRepository({ storageRoot: root });
+        assert.deepEqual(await final.checkoutCurrent('session-a'), advanced);
+        assert.deepEqual(await final.commit(input), recovered);
+      } finally {
+        if (writer.exitCode === null && writer.signalCode === null) writer.kill('SIGKILL');
+        await closed;
+      }
+    });
+  });
+}
 
 test('persists Fork source binding and crash recovery across reopened adapters', async () => {
   await withTemporaryDirectory(async (root) => {

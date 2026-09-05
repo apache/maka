@@ -53,7 +53,7 @@ import {
   type SessionRevisionRef,
   type StoredSessionCheckpoint,
 } from './session-repository.js';
-import { withFileUpdateLock } from './file-update-lock.js';
+import { withProcessLifetimeFileUpdateLock } from './process-lifetime-file-update-lock.js';
 
 const MAX_IDENTIFIER_LENGTH = 512;
 const MAX_OBJECT_REF_LENGTH = 2_048;
@@ -275,7 +275,9 @@ class FileSessionRepositoryAdapter implements FileSessionRepository {
   private async mutate<T>(operation: (state: PersistentState) => T): Promise<T> {
     await mkdir(dirname(this.statePath), { recursive: true, mode: 0o700 });
     try {
-      return await withFileUpdateLock(this.statePath, async () => {
+      // The native lease is released on process death, allowing the next
+      // writer to reclaim an ownerless marker without stealing a live lock.
+      return await withProcessLifetimeFileUpdateLock(this.statePath, async () => {
         const state = await this.readState();
         const result = operation(state);
         await writeStateAtomically(this.statePath, state);
