@@ -878,9 +878,8 @@ test('TUI MCP cancellation rolls back a committed add and reconciles the manager
   let disconnects = 0;
   let disconnectSignal: AbortSignal | undefined;
   const syncSnapshots: McpConfigFile[] = [];
-  const manager = {
-    ...managementManager([]).manager,
-    sync: async (config: McpConfigFile, options?: { signal?: AbortSignal }) => {
+  const manager = managementManager([], {
+    sync: async (config, options) => {
       syncCount += 1;
       syncSnapshots.push(structuredClone(config));
       if (syncCount !== 2) return;
@@ -890,23 +889,11 @@ test('TUI MCP cancellation rolls back a committed add and reconciles the manager
         void actionSync.promise.then(resolve, reject);
       });
     },
-    disconnect: async (_serverId: string, _remove: boolean, options?: { signal?: AbortSignal }) => {
+    disconnect: async (_serverId, _remove, options) => {
       disconnects += 1;
       disconnectSignal = options?.signal;
     },
-  } as unknown as Pick<
-    McpClientManager,
-    | 'sync'
-    | 'statuses'
-    | 'toolSnapshot'
-    | 'callTool'
-    | 'test'
-    | 'reconnect'
-    | 'disconnect'
-    | 'forgetServerCredentials'
-    | 'onChange'
-    | 'close'
-  >;
+  }).manager;
   const controller = createTuiMcpController(
     { workspaceRoot: '/unused', connection: connectionHarness().connection },
     { configStore: store.store, manager, createProvider: () => undefined },
@@ -948,13 +935,8 @@ test('TUI MCP forwards its action deadline into credential retirement before per
   } satisfies McpConfigFile;
   const store = mutableConfigStore(initial, []);
   let cleanupSignal: AbortSignal | undefined;
-  const manager = {
-    ...managementManager([]).manager,
-    forgetServerCredentials: async (
-      _serverId: string,
-      _config: unknown,
-      options?: { signal?: AbortSignal },
-    ) => {
+  const manager = managementManager([], {
+    forgetServerCredentials: async (_serverId, _config, options) => {
       cleanupSignal = options?.signal;
       if (!cleanupSignal) throw new Error('missing credential cleanup signal');
       await new Promise<never>((_resolve, reject) => {
@@ -965,18 +947,7 @@ test('TUI MCP forwards its action deadline into credential retirement before per
         );
       });
     },
-  } as unknown as Pick<
-    McpClientManager,
-    | 'sync'
-    | 'statuses'
-    | 'toolSnapshot'
-    | 'callTool'
-    | 'test'
-    | 'reconnect'
-    | 'forgetServerCredentials'
-    | 'onChange'
-    | 'close'
-  >;
+  }).manager;
   const controller = createTuiMcpController(
     { workspaceRoot: '/unused', connection: connectionHarness().connection },
     {
@@ -1021,28 +992,12 @@ test('TUI MCP waits for an already-started credential retirement before reportin
   const store = mutableConfigStore(initial, []);
   const retirement = deferred<void>();
   let cleanupSignal: AbortSignal | undefined;
-  const manager = {
-    ...managementManager([]).manager,
-    forgetServerCredentials: async (
-      _serverId: string,
-      _config: unknown,
-      options?: { signal?: AbortSignal },
-    ) => {
+  const manager = managementManager([], {
+    forgetServerCredentials: async (_serverId, _config, options) => {
       cleanupSignal = options?.signal;
       await retirement.promise;
     },
-  } as unknown as Pick<
-    McpClientManager,
-    | 'sync'
-    | 'statuses'
-    | 'toolSnapshot'
-    | 'callTool'
-    | 'test'
-    | 'reconnect'
-    | 'forgetServerCredentials'
-    | 'onChange'
-    | 'close'
-  >;
+  }).manager;
   const controller = createTuiMcpController(
     { workspaceRoot: '/unused', connection: connectionHarness().connection },
     {
@@ -1091,28 +1046,12 @@ test('TUI MCP bounds an uncooperative credential retirement after cancellation',
   } satisfies McpConfigFile;
   const store = mutableConfigStore(initial, []);
   let cleanupSignal: AbortSignal | undefined;
-  const manager = {
-    ...managementManager([]).manager,
-    forgetServerCredentials: async (
-      _serverId: string,
-      _config: unknown,
-      options?: { signal?: AbortSignal },
-    ) => {
+  const manager = managementManager([], {
+    forgetServerCredentials: async (_serverId, _config, options) => {
       cleanupSignal = options?.signal;
       await new Promise<never>(() => undefined);
     },
-  } as unknown as Pick<
-    McpClientManager,
-    | 'sync'
-    | 'statuses'
-    | 'toolSnapshot'
-    | 'callTool'
-    | 'test'
-    | 'reconnect'
-    | 'forgetServerCredentials'
-    | 'onChange'
-    | 'close'
-  >;
+  }).manager;
   const controller = createTuiMcpController(
     { workspaceRoot: '/unused', connection: connectionHarness().connection },
     {
@@ -1162,9 +1101,8 @@ test('TUI MCP reports a failed cancellation rollback instead of claiming cancell
   };
   const actionSync = deferred<void>();
   let syncCount = 0;
-  const manager = {
-    ...managementManager([]).manager,
-    sync: async (_config: McpConfigFile, options?: { signal?: AbortSignal }) => {
+  const manager = managementManager([], {
+    sync: async (_config, options) => {
       syncCount += 1;
       if (syncCount !== 2) return;
       await new Promise<void>((resolve, reject) => {
@@ -1176,18 +1114,7 @@ test('TUI MCP reports a failed cancellation rollback instead of claiming cancell
         void actionSync.promise.then(resolve, reject);
       });
     },
-  } as unknown as Pick<
-    McpClientManager,
-    | 'sync'
-    | 'statuses'
-    | 'toolSnapshot'
-    | 'callTool'
-    | 'test'
-    | 'reconnect'
-    | 'forgetServerCredentials'
-    | 'onChange'
-    | 'close'
-  >;
+  }).manager;
   const controller = createTuiMcpController(
     { workspaceRoot: '/unused', connection: connectionHarness().connection },
     { configStore: store, manager, createProvider: () => undefined },
@@ -1215,9 +1142,8 @@ test('TUI MCP rollback preserves a newer concurrent edit to the same server', as
   const store = mutableConfigStore(emptyConfig(), []);
   const actionSync = deferred<void>();
   let syncCount = 0;
-  const manager = {
-    ...managementManager([]).manager,
-    sync: async (_config: McpConfigFile, options?: { signal?: AbortSignal }) => {
+  const manager = managementManager([], {
+    sync: async (_config, options) => {
       syncCount += 1;
       if (syncCount !== 2) return;
       await new Promise<void>((resolve, reject) => {
@@ -1229,18 +1155,7 @@ test('TUI MCP rollback preserves a newer concurrent edit to the same server', as
         void actionSync.promise.then(resolve, reject);
       });
     },
-  } as unknown as Pick<
-    McpClientManager,
-    | 'sync'
-    | 'statuses'
-    | 'toolSnapshot'
-    | 'callTool'
-    | 'test'
-    | 'reconnect'
-    | 'forgetServerCredentials'
-    | 'onChange'
-    | 'close'
-  >;
+  }).manager;
   const controller = createTuiMcpController(
     { workspaceRoot: '/unused', connection: connectionHarness().connection },
     { configStore: store.store, manager, createProvider: () => undefined },
@@ -1270,69 +1185,12 @@ test('TUI MCP rollback preserves a newer concurrent edit to the same server', as
 });
 
 test('TUI MCP forwards action cancellation to manager test without accepting its late result', async () => {
-  let testSignal: AbortSignal | undefined;
-  let listener: ((status: McpServerStatus) => void) | undefined;
-  let status: McpServerStatus = {
-    serverId: 'docs',
-    state: 'disconnected',
-    toolCount: 0,
-    tools: [],
-    updatedAt: 0,
-  };
-  const manager = {
-    sync: async () => undefined,
-    statuses: () => [status],
-    toolSnapshot: () => ({ revision: 0, tools: [] }) as McpToolSnapshot,
-    callTool: async () => ({ content: [] }),
-    test: async (_serverId: string, options?: { signal?: AbortSignal }) => {
-      testSignal = options?.signal;
-      await new Promise<void>((resolve) => {
-        options?.signal?.addEventListener('abort', () => resolve(), { once: true });
-      });
-      status = connectedStatus('docs', 1);
-      listener?.(status);
-      return { ok: true, status, latencyMs: 1 };
-    },
-    reconnect: async () => status,
-    disconnect: async () => {
-      status = {
-        serverId: 'docs',
-        state: 'disconnected',
-        toolCount: 0,
-        tools: [],
-        updatedAt: 2,
-      };
-      listener?.(status);
-    },
-    forgetServerCredentials: async () => undefined,
-    onChange: (next: (status: McpServerStatus) => void) => {
-      listener = next;
-      return () => {
-        if (listener === next) listener = undefined;
-      };
-    },
-    close: async () => undefined,
-  } as unknown as Pick<
-    McpClientManager,
-    | 'sync'
-    | 'statuses'
-    | 'toolSnapshot'
-    | 'callTool'
-    | 'test'
-    | 'reconnect'
-    | 'disconnect'
-    | 'forgetServerCredentials'
-    | 'onChange'
-    | 'close'
-  >;
+  const manager = cancellableTestManager({ lateSuccessfulTest: true });
   const controller = createTuiMcpController(
     { workspaceRoot: '/unused', connection: connectionHarness().connection },
     {
-      configStore: configStoreHarness(async () => ({
-        version: 3,
-        mcpServers: { docs: { command: 'server' } },
-      })),
-      manager,
+      configStore: configStoreHarness(async () => docsConfig()),
+      manager: manager.manager,
       createProvider: () => undefined,
     },
   );
@@ -1342,71 +1200,23 @@ test('TUI MCP forwards action cancellation to manager test without accepting its
   );
   const abort = new AbortController();
   const testing = controller.execute({ kind: 'test', serverId: 'docs' }, { signal: abort.signal });
-  await waitFor(() => testSignal !== undefined, 'manager test to receive its signal');
+  await waitFor(() => manager.testSignal !== undefined, 'manager test to receive its signal');
 
   abort.abort(new Error('cancel test'));
   assert.deepEqual(await testing, { status: 'failed', reason: 'cancelled' });
-  assert.equal(testSignal?.aborted, true);
+  assert.equal(manager.testSignal?.aborted, true);
   assert.equal(controller.snapshot().servers[0]?.state, 'disconnected');
   await controller.close();
 });
 
 test('TUI MCP cancellation removes the previously published tools after test cleanup', async () => {
-  let listener: (() => void) | undefined;
-  let revision = 1;
-  let toolCount = 1;
-  let status = connectedStatus('docs', 1);
-  const manager = {
-    sync: async () => undefined,
-    statuses: () => [status],
-    toolSnapshot: () =>
-      ({ revision, tools: new Array(toolCount).fill({}) }) as unknown as McpToolSnapshot,
-    callTool: async () => ({ content: [] }),
-    test: async (_serverId: string, options?: { signal?: AbortSignal }) =>
-      new Promise<never>((_resolve, reject) => {
-        options?.signal?.addEventListener(
-          'abort',
-          () => reject(options.signal?.reason ?? new Error('cancelled')),
-          { once: true },
-        );
-      }),
-    reconnect: async () => status,
-    disconnect: async () => {
-      revision += 1;
-      toolCount = 0;
-      status = { ...status, state: 'disconnected', toolCount: 0, updatedAt: 2 };
-      listener?.();
-    },
-    forgetServerCredentials: async () => undefined,
-    onChange: (next: () => void) => {
-      listener = next;
-      return () => {
-        if (listener === next) listener = undefined;
-      };
-    },
-    close: async () => undefined,
-  } as unknown as Pick<
-    McpClientManager,
-    | 'sync'
-    | 'statuses'
-    | 'toolSnapshot'
-    | 'callTool'
-    | 'test'
-    | 'reconnect'
-    | 'disconnect'
-    | 'forgetServerCredentials'
-    | 'onChange'
-    | 'close'
-  >;
+  const manager = cancellableTestManager({ status: connectedStatus('docs', 1), revision: 1 });
   const connection = connectionHarness();
   const controller = createTuiMcpController(
     { workspaceRoot: '/unused', connection: connection.connection },
     {
-      configStore: configStoreHarness(async () => ({
-        version: 3,
-        mcpServers: { docs: { command: 'server' } },
-      })),
-      manager,
+      configStore: configStoreHarness(async () => docsConfig()),
+      manager: manager.manager,
       createProvider: (current) =>
         current.toolSnapshot().tools.length === 0 ? undefined : provider('provider'),
     },
@@ -1428,40 +1238,11 @@ test('TUI MCP cancellation removes the previously published tools after test cle
 });
 
 test('TUI MCP returns a typed failure when cancelled publication cleanup times out', async () => {
-  let revision = 1;
-  let toolCount = 1;
-  let status = connectedStatus('docs', 1);
-  const manager = {
-    ...managementManager([]).manager,
-    statuses: () => [status],
-    toolSnapshot: () =>
-      ({ revision, tools: new Array(toolCount).fill({}) }) as unknown as McpToolSnapshot,
-    test: async (_serverId: string, options?: { signal?: AbortSignal }) =>
-      new Promise<never>((_resolve, reject) => {
-        options?.signal?.addEventListener(
-          'abort',
-          () => reject(options.signal?.reason ?? new Error('cancelled')),
-          { once: true },
-        );
-      }),
-    disconnect: async () => {
-      revision += 1;
-      toolCount = 0;
-      status = { ...status, state: 'disconnected', toolCount: 0, updatedAt: 2 };
-    },
-  } as unknown as Pick<
-    McpClientManager,
-    | 'sync'
-    | 'statuses'
-    | 'toolSnapshot'
-    | 'callTool'
-    | 'test'
-    | 'reconnect'
-    | 'disconnect'
-    | 'forgetServerCredentials'
-    | 'onChange'
-    | 'close'
-  >;
+  const manager = cancellableTestManager({
+    status: connectedStatus('docs', 1),
+    revision: 1,
+    notifyOnDisconnect: false,
+  });
   const connection = connectionHarness();
   const allowUnregister = deferred<void>();
   connection.connection.unregisterClientCapabilities = async () =>
@@ -1469,11 +1250,8 @@ test('TUI MCP returns a typed failure when cancelled publication cleanup times o
   const controller = createTuiMcpController(
     { workspaceRoot: '/unused', connection: connection.connection },
     {
-      configStore: configStoreHarness(async () => ({
-        version: 3,
-        mcpServers: { docs: { command: 'server' } },
-      })),
-      manager,
+      configStore: configStoreHarness(async () => docsConfig()),
+      manager: manager.manager,
       createProvider: (current) =>
         current.toolSnapshot().tools.length === 0 ? undefined : provider('provider'),
       actionTimeoutMs: 50,
@@ -1493,56 +1271,12 @@ test('TUI MCP returns a typed failure when cancelled publication cleanup times o
 });
 
 test('TUI MCP action deadline aborts a hung test and restores disconnected state', async () => {
-  let disconnected = 0;
-  let status: McpServerStatus = {
-    serverId: 'docs',
-    state: 'disconnected',
-    toolCount: 0,
-    tools: [],
-    updatedAt: 0,
-  };
-  const manager = {
-    sync: async () => undefined,
-    statuses: () => [status],
-    toolSnapshot: () => ({ revision: 0, tools: [] }) as McpToolSnapshot,
-    callTool: async () => ({ content: [] }),
-    test: async (_serverId: string, options?: { signal?: AbortSignal }) =>
-      new Promise<never>((_resolve, reject) => {
-        options?.signal?.addEventListener(
-          'abort',
-          () => reject(options.signal?.reason ?? new Error('deadline')),
-          { once: true },
-        );
-      }),
-    reconnect: async () => status,
-    disconnect: async () => {
-      disconnected += 1;
-      status = { ...status, state: 'disconnected', updatedAt: 1 };
-    },
-    forgetServerCredentials: async () => undefined,
-    onChange: () => () => undefined,
-    close: async () => undefined,
-  } as unknown as Pick<
-    McpClientManager,
-    | 'sync'
-    | 'statuses'
-    | 'toolSnapshot'
-    | 'callTool'
-    | 'test'
-    | 'reconnect'
-    | 'disconnect'
-    | 'forgetServerCredentials'
-    | 'onChange'
-    | 'close'
-  >;
+  const manager = cancellableTestManager();
   const controller = createTuiMcpController(
     { workspaceRoot: '/unused', connection: connectionHarness().connection },
     {
-      configStore: configStoreHarness(async () => ({
-        version: 3,
-        mcpServers: { docs: { command: 'server' } },
-      })),
-      manager,
+      configStore: configStoreHarness(async () => docsConfig()),
+      manager: manager.manager,
       createProvider: () => undefined,
       actionTimeoutMs: 10,
     },
@@ -1556,58 +1290,29 @@ test('TUI MCP action deadline aborts a hung test and restores disconnected state
     status: 'failed',
     reason: 'cancelled',
   });
-  assert.equal(disconnected, 1);
+  assert.equal(manager.disconnects, 1);
   assert.equal(controller.snapshot().servers[0]?.state, 'disconnected');
   await controller.close();
 });
 
 test('TUI MCP starts a fresh bounded cleanup window after an early cancellation', async () => {
-  let disconnectSignal: AbortSignal | undefined;
-  let testSignal: AbortSignal | undefined;
-  const manager = {
-    ...managementManager([]).manager,
-    test: async (_serverId: string, options?: { signal?: AbortSignal }) => {
-      testSignal = options?.signal;
-      return new Promise<never>((_resolve, reject) => {
-        options?.signal?.addEventListener(
-          'abort',
-          () => reject(options.signal?.reason ?? new Error('cancelled')),
-          { once: true },
-        );
-      });
-    },
-    disconnect: async (_serverId: string, _remove: boolean, options?: { signal?: AbortSignal }) => {
-      disconnectSignal = options?.signal;
+  const manager = cancellableTestManager({
+    disconnect: async (signal) => {
       await new Promise<void>((resolve, reject) => {
-        options?.signal?.addEventListener(
+        signal?.addEventListener(
           'abort',
-          () => reject(options.signal?.reason ?? new Error('cleanup deadline')),
+          () => reject(signal.reason ?? new Error('cleanup deadline')),
           { once: true },
         );
         setTimeout(resolve, 30);
       });
     },
-  } as unknown as Pick<
-    McpClientManager,
-    | 'sync'
-    | 'statuses'
-    | 'toolSnapshot'
-    | 'callTool'
-    | 'test'
-    | 'reconnect'
-    | 'disconnect'
-    | 'forgetServerCredentials'
-    | 'onChange'
-    | 'close'
-  >;
+  });
   const controller = createTuiMcpController(
     { workspaceRoot: '/unused', connection: connectionHarness().connection },
     {
-      configStore: configStoreHarness(async () => ({
-        version: 3,
-        mcpServers: { docs: { command: 'server' } },
-      })),
-      manager,
+      configStore: configStoreHarness(async () => docsConfig()),
+      manager: manager.manager,
       createProvider: () => undefined,
       actionTimeoutMs: 500,
     },
@@ -1618,12 +1323,15 @@ test('TUI MCP starts a fresh bounded cleanup window after an early cancellation'
   );
   const abort = new AbortController();
   const testing = controller.execute({ kind: 'test', serverId: 'docs' }, { signal: abort.signal });
-  await waitFor(() => testSignal !== undefined, 'manager test to begin before early cancellation');
+  await waitFor(
+    () => manager.testSignal !== undefined,
+    'manager test to begin before early cancellation',
+  );
   abort.abort(new Error('cancel test immediately'));
 
   assert.deepEqual(await testing, { status: 'failed', reason: 'cancelled' });
-  assert.ok(disconnectSignal);
-  assert.equal(disconnectSignal.aborted, false);
+  assert.ok(manager.disconnectSignal);
+  assert.equal(manager.disconnectSignal.aborted, false);
   await controller.close();
 });
 
@@ -1867,6 +1575,97 @@ test('TUI MCP manages enabled state, tests, reconnects, and removes through one 
   await controller.close();
 });
 
+function docsConfig(): McpConfigFile {
+  return { version: 3, mcpServers: { docs: { command: 'server' } } };
+}
+
+function cancellableTestManager(
+  options: {
+    readonly status?: McpServerStatus;
+    readonly revision?: number;
+    readonly lateSuccessfulTest?: boolean;
+    readonly notifyOnDisconnect?: boolean;
+    readonly disconnect?: (signal?: AbortSignal) => Promise<void>;
+  } = {},
+) {
+  let listener: (() => void) | undefined;
+  let revision = options.revision ?? 0;
+  let status: McpServerStatus = options.status ?? {
+    serverId: 'docs',
+    state: 'disconnected',
+    toolCount: 0,
+    tools: [],
+    updatedAt: 0,
+  };
+  let testSignal: AbortSignal | undefined;
+  let disconnectSignal: AbortSignal | undefined;
+  let disconnects = 0;
+  const manager = managementManager([], {
+    test: async (_serverId, testOptions) => {
+      testSignal = testOptions?.signal;
+      if (options.lateSuccessfulTest) {
+        await new Promise<void>((resolve) => {
+          testSignal?.addEventListener('abort', () => resolve(), { once: true });
+        });
+        status = connectedStatus('docs', 1);
+        listener?.();
+        return { ok: true, status, latencyMs: 1 };
+      }
+      return new Promise<never>((_resolve, reject) => {
+        testSignal?.addEventListener(
+          'abort',
+          () => reject(testSignal?.reason ?? new Error('cancelled')),
+          { once: true },
+        );
+      });
+    },
+    disconnect: async (_serverId, _remove, disconnectOptions) => {
+      disconnects += 1;
+      disconnectSignal = disconnectOptions?.signal;
+      revision += 1;
+      status = { ...status, state: 'disconnected', toolCount: 0, updatedAt: 2 };
+      await options.disconnect?.(disconnectSignal);
+      if (options.notifyOnDisconnect !== false) listener?.();
+    },
+  }).manager;
+  return {
+    manager: {
+      ...manager,
+      statuses: () => [status],
+      toolSnapshot: () =>
+        ({ revision, tools: new Array(status.toolCount).fill({}) }) as unknown as McpToolSnapshot,
+      reconnect: async () => status,
+      onChange: (next: () => void) => {
+        listener = next;
+        return () => {
+          if (listener === next) listener = undefined;
+        };
+      },
+    } as unknown as Pick<
+      McpClientManager,
+      | 'sync'
+      | 'statuses'
+      | 'toolSnapshot'
+      | 'callTool'
+      | 'test'
+      | 'reconnect'
+      | 'disconnect'
+      | 'forgetServerCredentials'
+      | 'onChange'
+      | 'close'
+    >,
+    get testSignal() {
+      return testSignal;
+    },
+    get disconnectSignal() {
+      return disconnectSignal;
+    },
+    get disconnects() {
+      return disconnects;
+    },
+  };
+}
+
 function mutableConfigStore(initial: McpConfigFile, order: string[]) {
   let config = structuredClone(initial);
   const store = {
@@ -1892,14 +1691,35 @@ function mutableConfigStore(initial: McpConfigFile, order: string[]) {
 
 function managementManager(
   order: string[],
-  options: { readonly credentialFailure?: boolean; readonly credentialWait?: Promise<void> } = {},
+  options: {
+    readonly credentialFailure?: boolean;
+    readonly credentialWait?: Promise<void>;
+    readonly sync?: (
+      config: McpConfigFile,
+      options?: { readonly signal?: AbortSignal },
+    ) => Promise<void>;
+    readonly test?: (
+      serverId: string,
+      options?: { readonly signal?: AbortSignal },
+    ) => ReturnType<McpClientManager['test']>;
+    readonly disconnect?: (
+      serverId: string,
+      remove: boolean,
+      options?: { readonly signal?: AbortSignal },
+    ) => Promise<void>;
+    readonly forgetServerCredentials?: (
+      serverId: string,
+      config: unknown,
+      options?: { readonly signal?: AbortSignal },
+    ) => Promise<void>;
+  } = {},
 ) {
   let listener: (() => void) | undefined;
   let syncFailure = false;
   let revision = 0;
   const statuses: McpServerStatus[] = [];
   const manager = {
-    sync: async () => {
+    sync: async (config: McpConfigFile, syncOptions?: { readonly signal?: AbortSignal }) => {
       order.push('sync');
       if (syncFailure) {
         syncFailure = false;
@@ -1907,21 +1727,38 @@ function managementManager(
       }
       revision += 1;
       listener?.();
+      await options.sync?.(config, syncOptions);
     },
     statuses: () => statuses,
     toolSnapshot: () => ({ revision, tools: [] }) as McpToolSnapshot,
     callTool: async () => ({ content: [] }),
-    test: async (serverId: string) => {
+    test: async (serverId: string, testOptions?: { readonly signal?: AbortSignal }) => {
       order.push(`test:${serverId}`);
+      if (options.test) return options.test(serverId, testOptions);
       return { ok: true, status: connectedStatus(serverId, 0), latencyMs: 1 };
     },
     reconnect: async (serverId: string) => {
       order.push(`reconnect:${serverId}`);
       return connectedStatus(serverId, 0);
     },
-    forgetServerCredentials: async (serverId: string) => {
+    disconnect: async (
+      serverId: string,
+      remove = false,
+      disconnectOptions?: { readonly signal?: AbortSignal },
+    ) => {
+      await options.disconnect?.(serverId, remove, disconnectOptions);
+    },
+    forgetServerCredentials: async (
+      serverId: string,
+      config: unknown,
+      credentialOptions?: { readonly signal?: AbortSignal },
+    ) => {
       order.push(`forget:${serverId}`);
       if (options.credentialFailure) throw new Error('credential cleanup failed');
+      if (options.forgetServerCredentials) {
+        await options.forgetServerCredentials(serverId, config, credentialOptions);
+        return;
+      }
       await options.credentialWait;
     },
     onChange: (next: () => void) => {
@@ -1939,6 +1776,7 @@ function managementManager(
     | 'callTool'
     | 'test'
     | 'reconnect'
+    | 'disconnect'
     | 'forgetServerCredentials'
     | 'onChange'
     | 'close'
