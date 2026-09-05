@@ -217,13 +217,8 @@ async function materializeArtifact(
     dirname(targetPath),
     `.${sanitizeArtifactName(artifactId)}.${randomUUID()}.tmp`,
   );
-  const backupPath = join(
-    dirname(targetPath),
-    `.${sanitizeArtifactName(artifactId)}.${randomUUID()}.bak`,
-  );
   const handle = await open(stagingPath, "wx");
   let offset = 0;
-  let destinationBackedUp = false;
   let writingStaging = false;
   try {
     const totalBytes = await client.streamArtifact(
@@ -252,30 +247,13 @@ async function materializeArtifact(
     await handle.sync();
     await handle.close();
     try {
-      await rename(targetPath, backupPath);
-      destinationBackedUp = true;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        throw new ArtifactMaterializationError("replace_failed", error);
-      }
-    }
-    try {
       await rename(stagingPath, targetPath);
     } catch (error) {
-      if (destinationBackedUp) {
-        await rename(backupPath, targetPath).catch(() => undefined);
-        destinationBackedUp = false;
-      }
       throw new ArtifactMaterializationError("replace_failed", error);
-    }
-    if (destinationBackedUp) {
-      destinationBackedUp = false;
-      await rm(backupPath, { force: true });
     }
   } catch (error) {
     await handle.close().catch(() => undefined);
     await rm(stagingPath, { force: true }).catch(() => undefined);
-    if (destinationBackedUp) await rename(backupPath, targetPath).catch(() => undefined);
     if (!(error instanceof ArtifactMaterializationError)) {
       throw new ArtifactMaterializationError(writingStaging ? "target_write_failed" : "source_failed", error);
     }
