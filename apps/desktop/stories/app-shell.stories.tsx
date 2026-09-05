@@ -1943,21 +1943,24 @@ export const OversizedTurnHoldsAReadingAnchorOnColdScroll: Story = {
     };
 
     // Cold: no warmup pass has rendered the blocks above, so each upward step
-    // crosses first-paint intrinsic-size estimates. Native `overflow-anchor`
-    // must absorb the correction — a held anchor should move down by exactly
-    // what the reader scrolled up, and no more. Total document-height drift is
-    // not the criterion; a visible block jumping under the reader is.
+    // materializes first-paint intrinsic-size estimates. The criterion is what
+    // the reader sees, so it is measured in viewport space: an anchor they were
+    // reading should move down by exactly the step they asked for. Native
+    // `overflow-anchor` compensates the materialization by adjusting
+    // `scrollTop`, so neither document-space growth nor the scrollTop delta may
+    // be the yardstick — comparing against either reports the (allowed)
+    // correction itself as a jump. Only `|viewport move − intended step|` is a
+    // jump the reader experiences.
     let worstUnexpected = 0;
     for (let step = 0; step < 8 && root.scrollTop > 0; step += 1) {
       const anchor = visibleAnchor();
       const topBefore = anchor.getBoundingClientRect().top;
-      const scrollBefore = root.scrollTop;
-      root.scrollTop = Math.max(0, scrollBefore - 240);
+      const intended = Math.min(240, root.scrollTop);
+      root.scrollTop -= intended;
       root.dispatchEvent(new Event('scroll'));
       await painted(4);
-      const scrolled = scrollBefore - root.scrollTop;
       const moved = anchor.getBoundingClientRect().top - topBefore;
-      worstUnexpected = Math.max(worstUnexpected, Math.abs(moved - scrolled));
+      worstUnexpected = Math.max(worstUnexpected, Math.abs(moved - intended));
     }
     // Conservative tolerance pending a main-vs-branch calibration run; the
     // worst unexpected move is logged in the message so the number can be read
