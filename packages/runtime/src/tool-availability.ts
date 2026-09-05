@@ -452,6 +452,8 @@ export class ToolAvailabilityRuntime {
 }
 
 function renderInventory(groups: readonly SearchGroup[]): string {
+  // This is model guidance for deferred-tool selection, not a deterministic
+  // general-purpose loop breaker; execution-loop policy stays elsewhere.
   const lines = groups.flatMap((group) => [
     `${group.id}:`,
     ...group.toolNames.map((name) => `- ${name}`),
@@ -461,6 +463,14 @@ function renderInventory(groups: readonly SearchGroup[]): string {
     'bounded top matches; their complete callable definitions become visible on the',
     'next provider step. Search again to expand the active set. A blocked result means',
     'the highest remaining match did not fit this search schema budget.',
+    '',
+    'Activation is scoped to this current turn only. An "activated" name in older',
+    'history is informational and does not grant availability in a later turn. On',
+    'each new turn, use only complete definitions visible in the current provider',
+    'tool set and call tool_search again before using a deferred tool.',
+    'Never substitute Bash echo, a placeholder call, or another tool for a deferred',
+    'tool whose definition is not visible. Search again; if it remains unavailable',
+    'or blocked, report the blockage and do not claim execution or repeat placeholders.',
     '',
     'Searchable tool inventory (group and canonical name only):',
     ...lines,
