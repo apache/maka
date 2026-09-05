@@ -34,12 +34,14 @@ import type {
   WorkHubCoordinationActInput,
   WorkHubCoordinationActResult,
   WorkHubCoordinationCandidatesResult,
+  WorkHubCoordinationSnapshotResult,
   OperationOutcome,
   OperationError,
 } from '@maka/runtime-host/protocol';
 import { boundedWorkHubTimelineText, WorkHubCoordinationFailure } from './workhub-controller.js';
 
 export { WorkHubCoordinationFailure };
+
 import type { WorkHubDesktopTranscriptBridge } from './workhub-session-port.js';
 
 const WORKHUB_COORDINATION_TURN_LIMIT = 40;
@@ -52,7 +54,7 @@ export function createDesktopWorkHubCoordinationPort(deps: {
     userText: string;
     assistantText: string;
   }): Promise<{ turnId: string }>;
-  candidates(): Promise<WorkHubCoordinationCandidatesResult>;
+  candidates(): Promise<WorkHubCoordinationSnapshotResult>;
   act(
     input: Omit<WorkHubCoordinationActInput, 'create'>,
   ): Promise<OperationOutcome<'workhub.coordination.act'>>;
@@ -71,49 +73,44 @@ export function createDesktopWorkHubCoordinationPort(deps: {
       const store = new DesktopTranscriptRangeStore(deps.sessionId);
       let disposed = false;
       let ready = false;
-      let historyReady = false;
-      let historyGeneration = 0;
+      let refreshGeneration = 0;
       let handle: Awaited<ReturnType<typeof deps.transcripts.open>> | undefined;
-      let historyLane = Promise.resolve();
-      const coordinationMessagesBySequence = new Map<number, StoredMessage>();
+      let refreshLane = Promise.resolve();
+      let refreshScheduled = false;
+      let scheduledRefreshGeneration = 0;
+      let activeDelegations: readonly WorkHubActiveDelegation[] = [];
       const emit = () => {
-        const messages = store.snapshot().messages;
-        handler(
-          projectWorkHubCoordinationTurns(messages),
-          projectWorkHubActiveDelegations(
-            [...coordinationMessagesBySequence.entries()]
-              .sort(([left], [right]) => left - right)
-              .map(([sequence, message]) => ({ sequence, message })),
-          ),
-        );
+        handler(projectWorkHubCoordinationTurns(store.snapshot().messages), activeDelegations);
+      };
+      const scheduleRefresh = (generation: number) => {
+        scheduledRefreshGeneration = generation;
+        if (refreshScheduled) return;
+        refreshScheduled = true;
+        refreshLane = refreshLane
+          .then(async () => {
+            const scheduledGeneration = scheduledRefreshGeneration;
+            refreshScheduled = false;
+            if (disposed || scheduledGeneration !== refreshGeneration) return;
+            const result = await deps.candidates();
+            if (disposed || scheduledGeneration !== refreshGeneration) return;
+            activeDelegations = result.delegations;
+            if (ready) emit();
+          })
+          .catch(onError);
       };
       const opened = await deps.transcripts.open(
         deps.sessionId,
         (batch) => {
           if (disposed) return;
           try {
+            const reset = batch.reset === true;
             if (batch.reset) {
-              coordinationMessagesBySequence.clear();
               ready = false;
-              historyReady = false;
-              const generation = ++historyGeneration;
-              if (handle) {
-                historyLane = historyLane.then(async () => {
-                  if (disposed || generation !== historyGeneration) return;
-                  await rebuildCompleteHistory(generation);
-                }).catch((error) => {
-                  onError(error);
-                });
-              }
+              refreshGeneration += 1;
             }
             const changed = store.accept(batch);
-            for (const { sequence, message } of store.durableEntries()) {
-              if (message.type === 'workhub_coordination') {
-                coordinationMessagesBySequence.set(sequence, message);
-              }
-            }
             ready ||= batch.ready;
-            if (historyReady && ready && (changed || batch.ready)) emit();
+            if (handle && (reset || changed || batch.ready)) scheduleRefresh(refreshGeneration);
           } catch (error) {
             onError(error);
           }
@@ -127,28 +124,10 @@ export function createDesktopWorkHubCoordinationPort(deps: {
       });
       handle = opened;
 
-      async function rebuildCompleteHistory(generation: number): Promise<void> {
-        if (!handle) return;
-        while (!disposed && generation === historyGeneration && store.range().hasOlder) {
-          const before = store.range().oldestSequence;
-          await handle.loadBefore(before);
-          const after = store.range();
-          if (after.hasOlder && after.oldestSequence === before) {
-            throw new Error('WorkHub Coordination transcript history did not advance');
-          }
-        }
-        if (disposed || generation !== historyGeneration) return;
-        const range = store.range();
-        if (range.hasNewer && range.durableThrough !== null) {
-          await handle.loadAround(range.durableThrough);
-        }
-        if (disposed || generation !== historyGeneration) return;
-        historyReady = true;
-        if (ready) emit();
-      }
-
       try {
-        await rebuildCompleteHistory(historyGeneration);
+        const result = await deps.candidates();
+        activeDelegations = result.delegations;
+        if (ready) emit();
       } catch (error) {
         disposed = true;
         await handle.close().catch(() => undefined);
@@ -162,27 +141,6 @@ export function createDesktopWorkHubCoordinationPort(deps: {
       };
     },
   };
-}
-
-export function projectWorkHubActiveDelegations(
-  entries: ReadonlyArray<{ readonly sequence: number; readonly message: StoredMessage }>,
-): WorkHubActiveDelegation[] {
-  const terminalDelegationIds = new Set(
-    entries.flatMap(({ message }) => {
-      const terminal = terminalDelegationLink(message);
-      return terminal ? [terminal.delegationId] : [];
-    }),
-  );
-  return entries.flatMap(({ message, sequence }) =>
-    message.type === 'workhub_coordination' &&
-      message.kind === 'delegation_assigned' &&
-      !terminalDelegationIds.has(message.delegationId)
-      ? [{
-          actionId: message.actionId,
-          targetSessionId: message.targetSessionId,
-          sequence,
-        }]
-      : []);
 }
 
 export function projectWorkHubCoordinationTurns(
@@ -207,6 +165,21 @@ export function projectWorkHubCoordinationTurns(
   }
 
   for (const message of messages) {
+    if (message.type === 'workhub_coordination' && message.kind === 'delegation_resume') {
+      turns.push({
+        messageId: message.id,
+        turnId: message.coordinationTurnId,
+        text: boundedWorkHubTimelineText(message.userText),
+        state: 'completed',
+        resume: {
+          targetSessionId: message.targetSessionId,
+          targetSessionName: message.targetSessionName,
+          outcome: message.outcome,
+        },
+        updatedAt: message.ts,
+      });
+      continue;
+    }
     if (message.type === 'workhub_coordination' && message.kind === 'delegation_stop_requested') {
       const resolution = stopResolutionByDelegationId.get(message.stopsDelegationId);
       turns.push({

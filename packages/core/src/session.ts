@@ -941,6 +941,7 @@ export interface TurnStateMessage {
 export const WORKHUB_COORDINATION_RECORD_SCHEMA_VERSION = 1 as const;
 export const WORKHUB_COORDINATION_REPLACEMENT_SCHEMA_VERSION = 2 as const;
 export const WORKHUB_COORDINATION_STOP_SCHEMA_VERSION = 3 as const;
+export const WORKHUB_COORDINATION_RESUME_SCHEMA_VERSION = 4 as const;
 
 export type WorkHubDelegationDisposition = 'delegate_existing' | 'create_new';
 
@@ -1077,6 +1078,26 @@ export interface WorkHubDelegationStopResolvedMessage {
   targetTurnId?: string;
 }
 
+/** Durable observed result of a resume attempt. */
+export interface WorkHubDelegationResumeMessage {
+  type: 'workhub_coordination';
+  id: string;
+  turnId: string;
+  ts: number;
+  schemaVersion: typeof WORKHUB_COORDINATION_RESUME_SCHEMA_VERSION;
+  kind: 'delegation_resume';
+  actionId: string;
+  actionFingerprint: `sha256:${string}`;
+  coordinationTurnId: string;
+  resumesActionId: string;
+  resumesDelegationId: string;
+  targetSessionId: string;
+  targetSessionName: string;
+  userText: string;
+  outcome: 'resume_started' | 'already_running';
+  targetTurnId?: string;
+}
+
 /**
  * The exact durable operation one WorkHub action identity is allowed to own.
  *
@@ -1091,7 +1112,12 @@ export type WorkHubActionOperation =
   | 'delegate_existing'
   | 'create_new'
   | 'replace'
-  | 'stop';
+  | 'stop'
+  // Resume claims like every other disposition, so one action identity still
+  // means one operation. A Host that predates this value refuses to read a
+  // claim carrying it, which is a downgrade hazard and not a wire one: the
+  // table is local, and the row only exists once a resume has been admitted.
+  | 'resume';
 
 /** Durable global binding from one action identity to one exact operation. */
 export interface WorkHubActionClaim {
@@ -1110,7 +1136,8 @@ export type WorkHubCoordinationMessage =
   | WorkHubDelegationReplacementAbortedMessage
   | WorkHubDelegationSupersededMessage
   | WorkHubDelegationStopRequestedMessage
-  | WorkHubDelegationStopResolvedMessage;
+  | WorkHubDelegationStopResolvedMessage
+  | WorkHubDelegationResumeMessage;
 
 function isWorkHubDelegationStopResolution(
   outcome: unknown,
@@ -1380,6 +1407,26 @@ const WORKHUB_DELEGATION_STOP_RESOLVED_MESSAGE_SHAPE =
     ],
     ['targetTurnId'],
   );
+const WORKHUB_DELEGATION_RESUME_MESSAGE_SHAPE = defineObjectShape<WorkHubDelegationResumeMessage>()(
+  [
+    'type',
+    'id',
+    'turnId',
+    'ts',
+    'schemaVersion',
+    'kind',
+    'actionId',
+    'actionFingerprint',
+    'coordinationTurnId',
+    'resumesActionId',
+    'resumesDelegationId',
+    'targetSessionId',
+    'targetSessionName',
+    'userText',
+    'outcome',
+  ],
+  ['targetTurnId'],
+);
 const WORKHUB_DELEGATION_CREATE_SHAPE = defineObjectShape<WorkHubDelegationCreateSpec>()(
   ['title', 'workspace'],
   [],
@@ -1570,6 +1617,29 @@ function decodeMessage(
 }
 
 function isWorkHubCoordinationMessage(message: Record<string, unknown>): boolean {
+  if (message.kind === 'delegation_resume') {
+    const started = message.outcome === 'resume_started';
+    return (
+      hasMessageEnvelope(message, true) &&
+      hasExactShape(message, WORKHUB_DELEGATION_RESUME_MESSAGE_SHAPE) &&
+      message.schemaVersion === WORKHUB_COORDINATION_RESUME_SCHEMA_VERSION &&
+      isWorkHubActionIdentity(message) &&
+      typeof message.resumesActionId === 'string' &&
+      message.resumesActionId.length > 0 &&
+      typeof message.resumesDelegationId === 'string' &&
+      message.resumesDelegationId.length > 0 &&
+      typeof message.targetSessionId === 'string' &&
+      message.targetSessionId.length > 0 &&
+      typeof message.targetSessionName === 'string' &&
+      message.targetSessionName.trim().length > 0 &&
+      typeof message.userText === 'string' &&
+      message.userText.trim().length > 0 &&
+      (started || message.outcome === 'already_running') &&
+      (started
+        ? typeof message.targetTurnId === 'string' && message.targetTurnId.length > 0
+        : message.targetTurnId === undefined)
+    );
+  }
   if (message.kind === 'delegation_stop_requested') {
     return (
       hasMessageEnvelope(message, true) &&

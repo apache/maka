@@ -27,20 +27,20 @@ import {
 import { Button } from '@astryxdesign/core/Button';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { ChatSurfaceLayout, Composer } from '@maka/ui';
-import type {
-  WorkHubController,
-  WorkHubCoordinationTurn,
-  WorkHubDelegationLinkState,
-  WorkHubProjection,
-  WorkHubSessionSummary,
-  WorkHubSubmission,
-  WorkHubSubmitInput,
+import {
+  type WorkHubController,
+  type WorkHubCoordinationTurn,
+  type WorkHubDelegationLinkState,
+  type WorkHubProjection,
+  type WorkHubSessionSummary,
+  type WorkHubSubmission,
+  type WorkHubSubmitInput,
 } from './workhub-controller.js';
+import { WorkHubCoordinationFailure } from './workhub-coordination-port.js';
 import {
   WorkHubSendLease,
   type WorkHubSendAttempt,
 } from './workhub-send-lease.js';
-import { WorkHubCoordinationFailure } from './workhub-coordination-port.js';
 
 export interface WorkHubConversationTurn {
   requestId: string;
@@ -176,7 +176,8 @@ export async function submitAndRecordWorkHubSurfaceInput(input: {
     result.kind === 'discussion' ||
     result.kind === 'waiting' ||
     result.kind === 'submitted' ||
-    result.kind === 'stop'
+    result.kind === 'stop' ||
+    result.kind === 'resume'
   ) {
     return result;
   }
@@ -320,7 +321,8 @@ export function WorkHubSurface(props: {
             ? { ...turn, state: 'settled', outcome: result }
             : turn,
         ));
-        if (result.kind === 'submitted' || result.kind === 'stop') await refresh();
+        if (result.kind === 'submitted' || result.kind === 'stop' || result.kind === 'resume')
+          await refresh();
         return result;
       } catch (error) {
         if (isTerminalWorkHubSurfaceFailure(error)) {
@@ -573,10 +575,15 @@ export function WorkHubCoordinationTurnView(props: {
         (candidate) => candidate.target.sessionId === props.turn.stop!.targetSessionId,
       )
     : undefined;
+  const resumedSession = props.turn.resume
+    ? props.projection.sessions.find(
+        (candidate) => candidate.target.sessionId === props.turn.resume!.targetSessionId,
+      )
+    : undefined;
   return (
     <WorkHubMessageFrame
       text={props.turn.text}
-      state={props.turn.stop?.outcome ?? (assignment?.linkState === 'active'
+      state={props.turn.stop?.outcome ?? props.turn.resume?.outcome ?? (assignment?.linkState === 'active'
         ? assignment.feedbackState
         : assignment?.linkState ?? props.turn.state)}
       linkState={assignment?.linkState}
@@ -595,6 +602,17 @@ export function WorkHubCoordinationTurnView(props: {
             : props.turn.stop.outcome
               ? copy.stopRecorded
               : copy.stopping}
+          result={undefined}
+          copy={copy}
+          onOpenSession={props.onOpenSession}
+        />
+      ) : props.turn.resume ? (
+        <SubmittedWorkView
+          session={resumedSession}
+          targetSessionId={props.turn.resume.targetSessionId}
+          fallbackName={props.turn.resume.targetSessionName}
+          heading={copy.resumeOutcomes[props.turn.resume.outcome]}
+          state={copy.resumeRecorded}
           result={undefined}
           copy={copy}
           onOpenSession={props.onOpenSession}
@@ -639,6 +657,11 @@ function workHubClarificationPrompt(
   if (reason === 'stop_target_required') return copy.stopTargetRequired;
   if (reason === 'stop_target_ambiguous') return copy.stopTargetAmbiguous;
   if (reason === 'stop_target_unavailable') return copy.stopTargetUnavailable;
+  if (reason === 'resume_target_required') return copy.resumeTargetRequired;
+  if (reason === 'resume_target_ambiguous') return copy.resumeTargetAmbiguous;
+  if (reason === 'resume_target_unavailable') return copy.resumeTargetUnavailable;
+  if (reason === 'resume_operation_unavailable') return copy.resumeOperationUnavailable;
+  if (reason === 'resume_host_recovering') return copy.resumeHostRecovering;
   return undefined;
 }
 
@@ -660,6 +683,7 @@ export function workHubCoordinationSummary(
     return `${copy.waitingForDecision} ${copy.requestNotSent}`;
   }
   if (result.kind === 'stop') return copy.stopOutcomes[result.outcome];
+  if (result.kind === 'resume') return copy.resumeOutcomes[result.outcome];
   const target = projection.sessions.find(
     (session) => session.target.sessionId === result.target.sessionId,
   );
@@ -683,6 +707,7 @@ function WorkHubTurnView(props: {
   const { turn, copy } = props;
   const submitted = turn.outcome?.kind === 'submitted' ? turn.outcome : undefined;
   const stopped = turn.outcome?.kind === 'stop' ? turn.outcome : undefined;
+  const resumed = turn.outcome?.kind === 'resume' ? turn.outcome : undefined;
   const target = submitted
     ? props.projection.sessions.find((session) => session.target.sessionId === submitted.target.sessionId)
     : undefined;
@@ -735,6 +760,18 @@ function WorkHubTurnView(props: {
               targetSessionId={stopped.target.sessionId}
               heading={copy.stopOutcomes[stopped.outcome]}
               state={stopped.outcome === 'not_owned' ? copy.openSessionToStop : copy.stopRecorded}
+              result={undefined}
+              copy={copy}
+              onOpenSession={props.onOpenSession}
+            />
+          ) : resumed ? (
+            <SubmittedWorkView
+              session={props.projection.sessions.find(
+                (session) => session.target.sessionId === resumed.target.sessionId,
+              )}
+              targetSessionId={resumed.target.sessionId}
+              heading={copy.resumeOutcomes[resumed.outcome]}
+              state={copy.resumeRecorded}
               result={undefined}
               copy={copy}
               onOpenSession={props.onOpenSession}
@@ -856,6 +893,16 @@ function workHubCopy(locale: UiLocale) {
         already_terminal: '这项工作已经结束：',
         not_owned: '未停止共享或用户拥有的 Turn：',
       },
+      resumeOutcomes: {
+        resume_started: '已让中断的工作继续：',
+        already_running: '这项工作还在跑，不需要恢复：',
+      },
+      resumeRecorded: '结果已记录',
+      resumeTargetRequired: '请明确说出要继续的工作名称，例如“恢复 支付任务”。',
+      resumeTargetAmbiguous: '这个名称对应多项工作；请打开具体的 Session 继续它。',
+      resumeTargetUnavailable: '这项工作当前没有可恢复的单个 WorkHub 委派。',
+      resumeOperationUnavailable: '当前 Runtime Host 未启用安全边界恢复；请打开原 Session 继续处理。',
+      resumeHostRecovering: 'Runtime Host 仍在恢复；请稍后重试。',
       waitingForDecision: '这项工作正在等待你的决定。',
       requestNotSent: '新请求尚未发送；处理原 Session 中的交互后可以再次发送。',
       routing: '正在判断应该交给哪个 Session…', loadFailed: '无法读取已有工作。',
@@ -925,6 +972,16 @@ function workHubCopy(locale: UiLocale) {
         already_terminal: '這項工作已經結束：',
         not_owned: '未停止共享或使用者擁有的 Turn：',
       },
+      resumeOutcomes: {
+        resume_started: '已讓中斷的工作繼續：',
+        already_running: '這項工作仍在執行，不需要恢復：',
+      },
+      resumeRecorded: '結果已記錄',
+      resumeTargetRequired: '請明確說出要繼續的工作名稱，例如「恢復 支付任務」。',
+      resumeTargetAmbiguous: '這個名稱對應多項工作；請開啟具體的 Session 繼續它。',
+      resumeTargetUnavailable: '這項工作目前沒有可恢復的單一 WorkHub 委派。',
+      resumeOperationUnavailable: '目前 Runtime Host 未啟用安全邊界恢復；請開啟原 Session 繼續處理。',
+      resumeHostRecovering: 'Runtime Host 仍在恢復；請稍後重試。',
       submitFailures: {
         candidates_changed: '工作清單已變更，請重新傳送以使用最新目標。',
         linked_correction_unavailable: '跨 Session 更正將於持久委派關聯完成後開放；請先開啟原 Session 並停止目前工作。',
@@ -980,6 +1037,19 @@ function workHubCopy(locale: UiLocale) {
       already_terminal: 'This work had already ended:',
       not_owned: 'Did not stop a shared or user-owned Turn:',
     },
+    resumeOutcomes: {
+      resume_started: 'Carried on the interrupted work:',
+      already_running: 'This work is still running, so there was nothing to resume:',
+    },
+    resumeRecorded: 'Result recorded',
+    resumeTargetRequired: 'Name the work explicitly, for example “Resume Payments”.',
+    resumeTargetAmbiguous:
+      'That name matches more than one work item. Open the exact Session to resume it.',
+    resumeTargetUnavailable:
+      'This work has no single WorkHub delegation that can be resumed.',
+    resumeOperationUnavailable:
+      'Safe-boundary resume is not enabled on this Runtime Host. Open the original Session to continue.',
+    resumeHostRecovering: 'The Runtime Host is still recovering. Try again shortly.',
     waitingForDecision: 'This work is waiting for your decision.',
     requestNotSent: 'The new request was not sent. Resolve the interaction in its Session, then send again.',
     routing: 'Choosing the right Session…', loadFailed: 'Could not read existing work.',

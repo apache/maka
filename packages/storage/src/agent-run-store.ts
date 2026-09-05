@@ -202,6 +202,11 @@ export type AdmitRootTurnResult =
 export interface RootTurnAdmissionStore {
   admitRootTurn(input: AdmitRootTurnInput): Promise<AdmitRootTurnResult>;
   readRootTurnAdmission(sessionId: string, turnId: string): Promise<RootTurnAdmission | undefined>;
+  readRootTurnContinuationAdmission(
+    sessionId: string,
+    sourceTurnId: string,
+    sourceRunId: string,
+  ): Promise<RootTurnAdmission | undefined>;
   readRootTurnSourceMessageReceipt(
     sessionId: string,
     sourceMessageId: string,
@@ -588,6 +593,26 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
       ) {
         throw new Error('Root Turn identity is already rejected');
       }
+      if (admission.execution.kind === 'safe_boundary_continuation') {
+        const sourceOwner = this.#lease.database
+          .prepare(`
+            SELECT turn_id
+            FROM core_root_turn_admissions
+            WHERE session_id = ?
+              AND json_extract(record_json, '$.execution.sourceTurnId') = ?
+              AND json_extract(record_json, '$.execution.sourceRunId') = ?
+              AND json_extract(record_json, '$.execution.kind') = 'safe_boundary_continuation'
+            LIMIT 1
+          `)
+          .get(
+            admission.sessionId,
+            admission.execution.sourceTurnId,
+            admission.execution.sourceRunId,
+          ) as { turn_id?: unknown } | undefined;
+        if (sourceOwner) {
+          throw new Error(`Root execution already has continuation ${String(sourceOwner.turn_id)}`);
+        }
+      }
       for (const source of admission.sourceMessages) {
         const proof = this.#lease.database
           .prepare(`
@@ -633,6 +658,52 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
     assertSafeId(sessionId, 'Invalid session id');
     assertSafeId(turnId, 'Invalid turn id');
     return readSqliteRootTurnAdmission(this.#lease.database, sessionId, turnId);
+  }
+
+  async readRootTurnContinuationAdmission(
+    sessionId: string,
+    sourceTurnId: string,
+    sourceRunId: string,
+  ): Promise<RootTurnAdmission | undefined> {
+    assertSafeId(sessionId, 'Invalid session id');
+    assertSafeId(sourceTurnId, 'Invalid source turn id');
+    assertSafeId(sourceRunId, 'Invalid source run id');
+    const rows = this.#lease.database
+      .prepare(`
+        SELECT turn_id, record_json
+        FROM core_root_turn_admissions
+        WHERE session_id = ?
+          AND json_extract(record_json, '$.execution.sourceTurnId') = ?
+          AND json_extract(record_json, '$.execution.sourceRunId') = ?
+          AND json_extract(record_json, '$.execution.kind') = 'safe_boundary_continuation'
+        ORDER BY admitted_at, turn_id
+        LIMIT 2
+      `)
+      .all(sessionId, sourceTurnId, sourceRunId) as Array<{
+      turn_id?: unknown;
+      record_json?: unknown;
+    }>;
+    if (rows.length === 0) return undefined;
+    if (rows.length > 1) {
+      throw new Error('Root execution has multiple durable continuation admissions');
+    }
+    const row = rows[0]!;
+    if (typeof row.turn_id !== 'string' || typeof row.record_json !== 'string') {
+      throw new Error('Invalid SQLite root turn continuation admission row');
+    }
+    const admission = normalizeRootTurnAdmission(
+      JSON.parse(row.record_json),
+      sessionId,
+      row.turn_id,
+    );
+    if (
+      admission.execution.kind !== 'safe_boundary_continuation' ||
+      admission.execution.sourceTurnId !== sourceTurnId ||
+      admission.execution.sourceRunId !== sourceRunId
+    ) {
+      throw new Error('Root turn continuation index disagrees with its durable admission');
+    }
+    return admission;
   }
 
   async readRootTurnStartRejection(

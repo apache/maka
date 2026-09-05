@@ -686,6 +686,214 @@ test('WorkHub creates new work through the production assignment composition', a
   });
 });
 
+test('WorkHub Stop retires the running continuation after Resume', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const connectionId = await configureFakeDefaultTarget(owner);
+    const { composition, manager } = await createCapturedExecutionComposition(owner, {
+      safeBoundaryResume: true,
+    });
+    const context = {
+      hostEpoch: 'execution-composition-test',
+      connectionId: 'workhub-resume-stop-client',
+      principal: 'local_os_user' as const,
+      acquireResidency: () => ({ release() {} }),
+    };
+    let continuation: { turnId: string; runId: string } | undefined;
+    let targetSessionId: string | undefined;
+    try {
+      const target = await manager.createSession({
+        cwd: root,
+        llmConnectionId: connectionId,
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'ask',
+        name: 'Payments',
+      });
+      targetSessionId = target.id;
+      await composition.handlers['workhub.coordination.resolve']({}, context);
+      const candidates = await composition.handlers['workhub.coordination.candidates']({}, context);
+      assert.equal(candidates.ok, true);
+      if (!candidates.ok) return;
+      const candidate = candidates.result.candidates.find(
+        ({ sessionId }) => sessionId === target.id,
+      );
+      assert.ok(candidate);
+      if (!candidate) return;
+
+      const delegated = await composition.handlers['workhub.coordination.act'](
+        {
+          actionId: 'workhub-resume-stop-delegation',
+          userText: FAKE_HOLD_OPEN_PROMPT,
+          candidateSetId: candidates.result.candidateSetId,
+          proposal: {
+            disposition: 'delegate_existing',
+            candidateRef: candidate.candidateRef,
+          },
+        },
+        context,
+      );
+      assert.equal(delegated.ok, true, JSON.stringify(delegated));
+      if (!delegated.ok || delegated.result.disposition !== 'delegate_existing') return;
+      const original = await composition.handlers['turn.query'](
+        { sessionId: target.id, turnId: delegated.result.targetTurnId },
+        context,
+      );
+      assert.equal(original.ok, true);
+      if (!original.ok) return;
+      await composition.handlers['turn.stop'](
+        { sessionId: target.id, turnId: original.result.turnId, runId: original.result.runId },
+        context,
+      );
+
+      const resumed = await composition.handlers['workhub.coordination.act'](
+        {
+          actionId: 'workhub-resume-stop-resume',
+          userText: 'Resume Payments',
+          proposal: {
+            disposition: 'resume_work',
+            expects: { targetSessionId: target.id },
+          },
+        },
+        context,
+      );
+      assert.equal(resumed.ok, true, JSON.stringify(resumed));
+      if (
+        !resumed.ok ||
+        resumed.result.disposition !== 'resume_work' ||
+        !resumed.result.targetTurnId
+      )
+        return;
+      const resumedTurn = await composition.handlers['turn.query'](
+        { sessionId: target.id, turnId: resumed.result.targetTurnId },
+        context,
+      );
+      assert.equal(resumedTurn.ok, true);
+      if (!resumedTurn.ok) return;
+      continuation = { turnId: resumedTurn.result.turnId, runId: resumedTurn.result.runId };
+      assert.equal(resumedTurn.result.status, 'running');
+
+      const stopped = await composition.handlers['workhub.coordination.act'](
+        {
+          actionId: 'workhub-resume-stop-stop',
+          userText: 'Stop Payments',
+          confirmation: { kind: 'user_stop' },
+          proposal: {
+            disposition: 'stop_work',
+            expects: { targetSessionId: target.id },
+          },
+        },
+        context,
+      );
+      assert.deepEqual(stopped, {
+        ok: true,
+        result: {
+          disposition: 'stop_work',
+          outcome: 'stop_delivered',
+          targetSessionId: target.id,
+          targetTurnId: continuation.turnId,
+        },
+      });
+      const terminal = await composition.handlers['turn.query'](
+        { sessionId: target.id, turnId: continuation.turnId },
+        context,
+      );
+      assert.equal(terminal.ok, true);
+      if (terminal.ok) assert.equal(terminal.result.status, 'cancelled');
+    } finally {
+      if (continuation && targetSessionId) {
+        await composition.handlers['turn.stop'](
+          { sessionId: targetSessionId, ...continuation },
+          context,
+        );
+      }
+      await composition.close();
+    }
+  });
+});
+
+test('WorkHub does not record resume while safe-boundary resume is disabled', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const connectionId = await configureFakeDefaultTarget(owner);
+    const { composition, manager } = await createCapturedExecutionComposition(owner, {
+      safeBoundaryResume: false,
+    });
+    const context = {
+      hostEpoch: 'execution-composition-test',
+      connectionId: 'workhub-disabled-resume-client',
+      principal: 'local_os_user' as const,
+      acquireResidency: () => ({ release() {} }),
+    };
+    try {
+      const target = await manager.createSession({
+        cwd: root,
+        llmConnectionId: connectionId,
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'ask',
+        name: 'Payments',
+      });
+      await composition.handlers['workhub.coordination.resolve']({}, context);
+      const candidates = await composition.handlers['workhub.coordination.candidates']({}, context);
+      assert.equal(candidates.ok, true);
+      if (!candidates.ok) return;
+      const candidate = candidates.result.candidates.find(
+        ({ sessionId }) => sessionId === target.id,
+      );
+      assert.ok(candidate);
+      if (!candidate) return;
+      const delegated = await composition.handlers['workhub.coordination.act'](
+        {
+          actionId: 'workhub-disabled-resume-delegation',
+          userText: FAKE_HOLD_OPEN_PROMPT,
+          candidateSetId: candidates.result.candidateSetId,
+          proposal: {
+            disposition: 'delegate_existing',
+            candidateRef: candidate.candidateRef,
+          },
+        },
+        context,
+      );
+      assert.equal(delegated.ok, true, JSON.stringify(delegated));
+      if (!delegated.ok || delegated.result.disposition !== 'delegate_existing') return;
+      const original = await composition.handlers['turn.query'](
+        { sessionId: target.id, turnId: delegated.result.targetTurnId },
+        context,
+      );
+      assert.equal(original.ok, true);
+      if (!original.ok) return;
+      await composition.handlers['turn.stop'](
+        { sessionId: target.id, turnId: original.result.turnId, runId: original.result.runId },
+        context,
+      );
+
+      const actionId = 'workhub-disabled-resume';
+      const resumed = await composition.handlers['workhub.coordination.act'](
+        {
+          actionId,
+          userText: 'Resume Payments',
+          proposal: {
+            disposition: 'resume_work',
+            expects: { targetSessionId: target.id },
+          },
+        },
+        context,
+      );
+      assert.deepEqual(resumed, {
+        ok: false,
+        error: {
+          code: 'operation_unavailable',
+          message: 'Safe-boundary resume is disabled for this Runtime Host',
+        },
+      });
+      await composition.close();
+      const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      assert.equal(await stores.sessionStore.readWorkHubResume(actionId), undefined);
+    } finally {
+      await composition.close();
+    }
+  });
+});
+
 test('WorkHub correction replaces its link without stopping a shared manual Turn', async () => {
   await withCompositionRoot(async ({ root, owner }) => {
     const connectionId = await configureFakeDefaultTarget(owner);
@@ -1551,17 +1759,23 @@ async function seedLegacyFakeBackendSession(
   return sessionId;
 }
 
-async function createCapturedExecutionComposition(owner: InteractiveRootOwner): Promise<{
+async function createCapturedExecutionComposition(
+  owner: InteractiveRootOwner,
+  options: { readonly safeBoundaryResume?: boolean } = {},
+): Promise<{
   composition: Awaited<ReturnType<typeof createExecutionRuntimeHostComposition>>;
   manager: SessionManager;
 }> {
   const originalRecover = SessionManager.prototype.recoverInterruptedSessionsStrict;
+  const originalSafeBoundaryResume = process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME;
   let manager: SessionManager | undefined;
   SessionManager.prototype.recoverInterruptedSessionsStrict = async function (stores) {
     manager = this;
     return originalRecover.call(this, stores);
   };
   try {
+    if (options.safeBoundaryResume === true) process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME = '1';
+    if (options.safeBoundaryResume === false) delete process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME;
     // The production composition no longer registers a test backend of its
     // own; the deterministic one arrives through the same `primaryBackendFactory`
     // seam the Desktop E2E run uses.
@@ -1574,6 +1788,11 @@ async function createCapturedExecutionComposition(owner: InteractiveRootOwner): 
     if (!manager) throw new Error('Production execution composition did not construct Runtime');
     return { composition, manager };
   } finally {
+    if (originalSafeBoundaryResume === undefined) {
+      delete process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME;
+    } else {
+      process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME = originalSafeBoundaryResume;
+    }
     SessionManager.prototype.recoverInterruptedSessionsStrict = originalRecover;
   }
 }

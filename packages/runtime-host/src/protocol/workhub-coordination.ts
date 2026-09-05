@@ -112,9 +112,19 @@ export interface WorkHubCoordinationCandidate {
 
 export type WorkHubCoordinationCandidatesInput = Record<string, never>;
 
+export interface WorkHubCoordinationActiveDelegation {
+  readonly actionId: string;
+  readonly targetSessionId: string;
+  readonly sequence: number;
+}
+
 export interface WorkHubCoordinationCandidatesResult {
   readonly candidateSetId: string;
   readonly candidates: readonly WorkHubCoordinationCandidate[];
+}
+
+export interface WorkHubCoordinationSnapshotResult extends WorkHubCoordinationCandidatesResult {
+  readonly delegations: readonly WorkHubCoordinationActiveDelegation[];
 }
 
 export type WorkHubCoordinationProposal =
@@ -144,6 +154,16 @@ export type WorkHubCoordinationProposal =
        * Which delegation the stop ends is not stated here. A client cannot
        * prove which link is live, so the Gate resolves it from its own active
        * links, and on replay from the durable claim this action already owns.
+       */
+      readonly expects: WorkHubCoordinationStopPreconditions;
+    }
+  | {
+      readonly disposition: 'resume_work';
+      /**
+       * Resume names the Session it resolved and nothing else, for the same
+       * reason a stop does: which delegation is live is the Host's to know.
+       * The Gate revalidates it, so a resolution that has gone stale fails
+       * closed instead of restarting work the user never named.
        */
       readonly expects: WorkHubCoordinationStopPreconditions;
     };
@@ -202,6 +222,12 @@ export type WorkHubCoordinationActResult =
       readonly outcome: 'cancelled_pending' | 'stop_delivered' | 'already_terminal' | 'not_owned';
       readonly targetSessionId: string;
       readonly targetTurnId?: string;
+    }
+  | {
+      readonly disposition: 'resume_work';
+      readonly outcome: 'resume_started' | 'already_running';
+      readonly targetSessionId: string;
+      readonly targetTurnId?: string;
     };
 
 export const WORKHUB_COORDINATION_OPERATION_SPECS = {
@@ -240,7 +266,7 @@ export const WORKHUB_COORDINATION_OPERATION_SPECS = {
   }),
   'workhub.coordination.candidates': defineOperation<
     WorkHubCoordinationCandidatesInput,
-    WorkHubCoordinationCandidatesResult,
+    WorkHubCoordinationSnapshotResult,
     (typeof CANDIDATE_ERRORS)[number]
   >({
     mode: 'query',
@@ -331,12 +357,13 @@ export function decodeWorkHubCoordinationCandidatesInput(
 
 export function decodeWorkHubCoordinationCandidatesResult(
   value: unknown,
-): WorkHubCoordinationCandidatesResult {
+): WorkHubCoordinationSnapshotResult {
   const result = requireExactRecord(value, 'WorkHub Coordination candidates result', [
     'candidateSetId',
     'candidates',
+    'delegations',
   ]);
-  if (!Array.isArray(result.candidates)) {
+  if (!Array.isArray(result.candidates) || !Array.isArray(result.delegations)) {
     throw invalidProtocolFrame('Invalid WorkHub Coordination candidates');
   }
   if (result.candidates.length > WORKHUB_COORDINATION_CANDIDATE_MAX_ITEMS) {
@@ -345,6 +372,18 @@ export function decodeWorkHubCoordinationCandidatesResult(
   return {
     candidateSetId: candidateSetId(result.candidateSetId),
     candidates: result.candidates.map(decodeWorkHubCoordinationCandidate),
+    delegations: result.delegations.map((value) => {
+      const delegation = requireExactRecord(value, 'Active WorkHub delegation', [
+        'actionId',
+        'targetSessionId',
+        'sequence',
+      ]);
+      return {
+        actionId: requireEntityId(delegation.actionId, 'WorkHub action id'),
+        targetSessionId: requireEntityId(delegation.targetSessionId, 'WorkHub target Session id'),
+        sequence: requireCount(delegation.sequence, 'WorkHub transcript sequence'),
+      };
+    }),
   };
 }
 
@@ -516,6 +555,32 @@ export function decodeWorkHubCoordinationActResult(value: unknown): WorkHubCoord
           }),
     };
   }
+  if (result.disposition === 'resume_work') {
+    const exact = requireShapedRecord(
+      result,
+      'WorkHub Coordination resume result',
+      ['disposition', 'outcome', 'targetSessionId'],
+      ['targetTurnId'],
+    );
+    if (exact.outcome !== 'resume_started' && exact.outcome !== 'already_running') {
+      throw invalidProtocolFrame('Invalid WorkHub resume outcome');
+    }
+    // Only a started continuation names a Turn: the Host has one to name, and
+    // the other two outcomes changed nothing that could carry an identity.
+    if ((exact.outcome === 'resume_started') !== (exact.targetTurnId !== undefined)) {
+      throw invalidProtocolFrame('Invalid WorkHub resume target Turn');
+    }
+    return {
+      disposition: 'resume_work',
+      outcome: exact.outcome,
+      targetSessionId: requireEntityId(exact.targetSessionId, 'WorkHub target Session id'),
+      ...(exact.targetTurnId === undefined
+        ? {}
+        : {
+            targetTurnId: requireEntityId(exact.targetTurnId, 'WorkHub target Turn id'),
+          }),
+    };
+  }
   throw invalidProtocolFrame('Invalid WorkHub Coordination action disposition');
 }
 
@@ -623,6 +688,16 @@ function decodeWorkHubCoordinationProposal(value: unknown): WorkHubCoordinationP
     const exact = requireExactRecord(proposal, 'WorkHub stop proposal', ['disposition', 'expects']);
     return {
       disposition: 'stop_work',
+      expects: decodeWorkHubCoordinationStopPreconditions(exact.expects),
+    };
+  }
+  if (proposal.disposition === 'resume_work') {
+    const exact = requireExactRecord(proposal, 'WorkHub resume proposal', [
+      'disposition',
+      'expects',
+    ]);
+    return {
+      disposition: 'resume_work',
       expects: decodeWorkHubCoordinationStopPreconditions(exact.expects),
     };
   }

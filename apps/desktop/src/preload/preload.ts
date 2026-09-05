@@ -2028,6 +2028,10 @@ const makaBridge = {
           ...candidate,
           sessionId: recordRuntimeHostSessionScope(scope, candidate.sessionId),
         })),
+        delegations: result.delegations.map((delegation) => ({
+          ...delegation,
+          targetSessionId: recordRuntimeHostSessionScope(scope, delegation.targetSessionId),
+        })),
       };
     },
     async act(

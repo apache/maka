@@ -665,6 +665,14 @@ test('real Session projection creates new guide topics and preserves origin ambi
             targetSessionId: input.proposal.expects.targetSessionId,
           };
         }
+        if (input.proposal.disposition === 'resume_work') {
+          return {
+            disposition: 'resume_work',
+            outcome: 'resume_started',
+            targetSessionId: input.proposal.expects.targetSessionId,
+            targetTurnId: 'resumed-turn',
+          };
+        }
         const targetSessionId = input.proposal.candidateRef.replace(/^candidate-/u, '');
         const admitted = await send(targetSessionId, {
           type: 'send',

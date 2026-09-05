@@ -45,6 +45,8 @@ test('poisons a Session after an ambiguous durable admission failure', async () 
       },
       readRootTurnAdmission: (sessionId, turnId) =>
         durableStore.readRootTurnAdmission(sessionId, turnId),
+      readRootTurnContinuationAdmission: (sessionId, sourceTurnId, sourceRunId) =>
+        durableStore.readRootTurnContinuationAdmission(sessionId, sourceTurnId, sourceRunId),
       readRootTurnSourceMessageReceipt: (sessionId, sourceMessageId) =>
         durableStore.readRootTurnSourceMessageReceipt(sessionId, sourceMessageId),
       listRootTurnAdmissionsForRecovery: (sessionId) =>
@@ -284,6 +286,7 @@ test('snapshots recovered admissions without retaining mutable caller references
   const store: RootTurnAdmissionStore = {
     admitRootTurn: async () => ({ kind: 'admitted', admission }),
     readRootTurnAdmission: async () => admission,
+    readRootTurnContinuationAdmission: async () => undefined,
     readRootTurnSourceMessageReceipt: async () => undefined,
     listRootTurnAdmissionsForRecovery: async () => [admission],
   };
@@ -366,6 +369,7 @@ test('returns an owned admission instead of retaining the mutable store result',
   const store: RootTurnAdmissionStore = {
     admitRootTurn: async () => ({ kind: 'admitted', admission: durableAdmission }),
     readRootTurnAdmission: async () => durableAdmission,
+    readRootTurnContinuationAdmission: async () => undefined,
     readRootTurnSourceMessageReceipt: async () => undefined,
     listRootTurnAdmissionsForRecovery: async () => [],
   };

@@ -90,6 +90,7 @@ import {
   type WorkHubActionClaimOutcome,
   type WorkHubDelegationStopRequestedMessage,
   type WorkHubDelegationStopResolvedMessage,
+  type WorkHubDelegationResumeMessage,
   type WorkHubDelegationSupersededMessage,
 } from '@maka/core/session';
 import type {
@@ -200,6 +201,7 @@ export interface WorkHubMessageAssignmentRequest {
 export interface WorkHubMessageAssignmentResult {
   readonly kind: 'assigned' | 'existing';
   readonly targetCreated: boolean;
+  readonly sequence: number;
   readonly assignment: WorkHubDelegationAssignedMessage;
 }
 
@@ -440,6 +442,7 @@ export interface SessionAuthorityStore extends SessionStore, MessageAdmissionSto
   readWorkHubStopResolution(
     delegationId: string,
   ): Promise<WorkHubDelegationStopResolvedMessage | undefined>;
+  readWorkHubResume(actionId: string): Promise<WorkHubDelegationResumeMessage | undefined>;
   /**
    * Durably binds one action identity to one exact WorkHub operation before its
    * effect. Survives removal of the target Session so a committed destructive
@@ -752,6 +755,15 @@ class SqliteSessionStore implements SessionAuthorityStore {
       `whz_${workHubIdentitySuffix(delegationId)}`,
     );
     return message?.type === 'workhub_coordination' && message.kind === 'delegation_stop_resolved'
+      ? message
+      : undefined;
+  }
+
+  async readWorkHubResume(actionId: string): Promise<WorkHubDelegationResumeMessage | undefined> {
+    const message = await this.readWorkHubCoordinationMessage(
+      `whn_${workHubIdentitySuffix(actionId)}`,
+    );
+    return message?.type === 'workhub_coordination' && message.kind === 'delegation_resume'
       ? message
       : undefined;
   }

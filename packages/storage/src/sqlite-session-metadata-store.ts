@@ -241,6 +241,7 @@ export interface SqliteWorkHubMessageAssignmentRequest {
 export interface SqliteWorkHubMessageAssignmentResult {
   readonly kind: 'assigned' | 'existing';
   readonly targetCreated: boolean;
+  readonly sequence: number;
   readonly assignment: WorkHubDelegationAssignedMessage;
 }
 
@@ -1782,10 +1783,11 @@ export class SqliteSessionMetadataStore {
         throw new SessionMetadataConflictError('WorkHub Coordination Session is unavailable');
       }
 
-      const existingAssignment = this.readMessageByIdSync(
+      const existingAssignmentRecord = this.readMessageRecordByIdSync(
         WORKHUB_COORDINATION_SESSION_ID,
         assignment.id,
       );
+      const existingAssignment = existingAssignmentRecord?.message;
       if (existingAssignment) {
         if (
           existingAssignment.type !== 'workhub_coordination' ||
@@ -1799,6 +1801,7 @@ export class SqliteSessionMetadataStore {
         return {
           kind: 'existing' as const,
           targetCreated: false,
+          sequence: existingAssignmentRecord.sequence,
           assignment: existingAssignment,
         };
       }
@@ -1924,18 +1927,21 @@ export class SqliteSessionMetadataStore {
       ) {
         throw new SessionMetadataConflictError('Invalid WorkHub transcript sequence');
       }
-      this.insertSessionMessagesSync(
-        WORKHUB_COORDINATION_SESSION_ID,
-        sequenceRow.last_sequence + 1,
-        [
-          { message: committedAssignment, json: committedAssignmentJson },
-          ...(supersession && supersessionJson
-            ? [{ message: supersession, json: supersessionJson }]
-            : []),
-        ],
-      );
+      const firstSequence = sequenceRow.last_sequence + 1;
+      const entries = [
+        { message: committedAssignment, json: committedAssignmentJson },
+        ...(supersession && supersessionJson
+          ? [{ message: supersession, json: supersessionJson }]
+          : []),
+      ];
+      this.insertSessionMessagesSync(WORKHUB_COORDINATION_SESSION_ID, firstSequence, entries);
       this.updateCatalogProjectionSync(WORKHUB_COORDINATION_SESSION_ID, request.projection, false);
-      return { kind: 'assigned' as const, targetCreated, assignment: committedAssignment };
+      return {
+        kind: 'assigned' as const,
+        targetCreated,
+        sequence: firstSequence,
+        assignment: committedAssignment,
+      };
     });
   }
 
@@ -5326,7 +5332,10 @@ export class SqliteSessionMetadataStore {
     return row ? decodeRecord(row) : undefined;
   }
 
-  private readMessageByIdSync(sessionId: string, messageId: string): StoredMessage | undefined {
+  private readMessageRecordByIdSync(
+    sessionId: string,
+    messageId: string,
+  ): { readonly sequence: number; readonly message: StoredMessage } | undefined {
     const row = this.db
       .prepare(
         `
@@ -5338,7 +5347,15 @@ export class SqliteSessionMetadataStore {
       `,
       )
       .get(sessionId, messageId) as StoredSessionMessagePayloadRow | undefined;
-    return row ? decodeStoredMessageRecordRow(this.db, sessionId, row) : undefined;
+    if (!row) return undefined;
+    return {
+      sequence: requireStoredMessageSequence(row.sequence, sessionId),
+      message: decodeStoredMessageRecordRow(this.db, sessionId, row),
+    };
+  }
+
+  private readMessageByIdSync(sessionId: string, messageId: string): StoredMessage | undefined {
+    return this.readMessageRecordByIdSync(sessionId, messageId)?.message;
   }
 
   private readSessionMessageOrderingSync(
@@ -7059,7 +7076,8 @@ function isWorkHubActionOperation(value: unknown): value is WorkHubActionOperati
     value === 'delegate_existing' ||
     value === 'create_new' ||
     value === 'replace' ||
-    value === 'stop'
+    value === 'stop' ||
+    value === 'resume'
   );
 }
 

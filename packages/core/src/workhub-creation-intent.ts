@@ -110,6 +110,10 @@ const DIRECT_STOP_REQUEST =
 // equivalent either.
 const DIRECT_CHINESE_STOP_REQUEST =
   /^\s*(?:(?:请|请帮我|帮我|麻烦你?)\s*)?(?:停止|停掉|停下|取消|终止|中止)\s*(?:(?:这个|该)?(?:会话|工作|任务)\s*)?(.+?)\s*[。！]?\s*$/iu;
+const DIRECT_RESUME_REQUEST =
+  /^\s*(?:(?:please|kindly)\s+)?resume\s+(?:(?:the|this)\s+)?(?:(?:session|work|task|job)\s+)?(.+?)\s*[.!。！]?\s*$/iu;
+const DIRECT_CHINESE_RESUME_REQUEST =
+  /^\s*(?:(?:请|请帮我|帮我|麻烦你?)\s*)?(?:恢复|接着跑)\s*(?:(?:这个|该)?(?:会话|工作|任务)\s*)?(.+?)\s*[。！]?\s*$/iu;
 const UNSAFE_STOP_TARGET =
   /^(?:it|this|that|one|everything|all|current|session|work|task|job|(?:this|that|current)\s+(?:session|work|task|job)|它|这个|那个|全部|当前|会话|工作|任务|(?:这个|那个|当前)(?:会话|工作|任务))$/iu;
 
@@ -148,6 +152,13 @@ export interface WorkHubRequestIntent {
     /** A direct stop speech act was present, but its target may still be unsafe. */
     readonly cue: boolean;
     /** True only for a direct, explicitly named stop command. */
+    readonly imperative: boolean;
+    readonly target?: string;
+  };
+  readonly resume: {
+    /** A direct resume speech act was present, but its target may still be unsafe. */
+    readonly cue: boolean;
+    /** True only for a direct, explicitly named resume command. */
     readonly imperative: boolean;
     readonly target?: string;
   };
@@ -316,8 +327,14 @@ export function readWorkHubRequestIntent(value: string): WorkHubRequestIntent {
       : { kind: 'unusable' };
   const correctionCue = hasWorkHubCorrectionCue(source);
   const existingTarget = affirmativeWorkHubExistingCorrectionTarget(source);
-  const stopCue = directWorkHubStopCue(source, literalMask.malformed);
-  const stopTarget = stopCue ? directWorkHubStopTarget(source, false) : undefined;
+  const stop = directWorkHubNamedAction(source, literalMask.malformed, [
+    DIRECT_STOP_REQUEST,
+    DIRECT_CHINESE_STOP_REQUEST,
+  ]);
+  const resume = directWorkHubNamedAction(source, literalMask.malformed, [
+    DIRECT_RESUME_REQUEST,
+    DIRECT_CHINESE_RESUME_REQUEST,
+  ]);
   const actions = allMatches(masked, EXECUTION_ACTION);
   const execution: WorkHubExecutionIntent =
     literalMask.malformed || naming.kind === 'unusable' || hasDominatingDeliberation(masked)
@@ -335,9 +352,14 @@ export function readWorkHubRequestIntent(value: string): WorkHubRequestIntent {
       ...(existingTarget ? { existingTarget } : {}),
     },
     stop: {
-      cue: stopCue,
-      imperative: Boolean(stopTarget),
-      ...(stopTarget ? { target: stopTarget } : {}),
+      cue: stop.cue,
+      imperative: Boolean(stop.target),
+      ...(stop.target ? { target: stop.target } : {}),
+    },
+    resume: {
+      cue: resume.cue,
+      imperative: Boolean(resume.target),
+      ...(resume.target ? { target: resume.target } : {}),
     },
   };
 }
@@ -450,6 +472,19 @@ export function matchWorkHubSessionName(
   return { kind: 'named', remainder: normalizedTarget.slice(matchedName.length).trim() };
 }
 
+/** Whether a direct stop/resume reference names exactly this Session. */
+export function workHubNamedDelegationActionTargetsSession(
+  action: { readonly imperative: boolean; readonly target?: string },
+  sessionName: string,
+): boolean {
+  if (!action.imperative || !action.target) return false;
+  const match = matchWorkHubSessionName(action.target, sessionName);
+  return (
+    match.kind === 'elided_name_punctuation' ||
+    (match.kind === 'named' && /^[.!?。！？]*$/u.test(match.remainder))
+  );
+}
+
 /**
  * The correction policy's tail rule. A correction may name its target and then
  * say what to do with it, but a withdrawal anywhere in the reference retracts
@@ -481,22 +516,20 @@ function correctionTargetMatchesSession(target: string, sessionName: string): bo
   return workHubCorrectionAdmitsReference(target, matchWorkHubSessionName(target, sessionName));
 }
 
-function directWorkHubStopTarget(value: string, malformedLiteral: boolean): string | undefined {
-  if (malformedLiteral || /[?？]\s*$/u.test(value)) return undefined;
-  const match = DIRECT_STOP_REQUEST.exec(value) ?? DIRECT_CHINESE_STOP_REQUEST.exec(value);
+function directWorkHubNamedAction(
+  value: string,
+  malformedLiteral: boolean,
+  patterns: readonly [RegExp, RegExp],
+): { readonly cue: boolean; readonly target?: string } {
+  if (malformedLiteral || /[?？]\s*$/u.test(value)) return { cue: false };
+  const match = patterns[0].exec(value) ?? patterns[1].exec(value);
   const rawTarget = match?.[1]?.trim();
-  if (!rawTarget) return undefined;
-  const target = stripMatchingStopQuotes(rawTarget.replace(/[.!。！]+\s*$/u, '').trim());
-  if (!target || UNSAFE_STOP_TARGET.test(target)) return undefined;
-  return target;
+  if (!rawTarget) return { cue: Boolean(match) };
+  const target = stripMatchingActionQuotes(rawTarget.replace(/[.!。！]+\s*$/u, '').trim());
+  return !target || UNSAFE_STOP_TARGET.test(target) ? { cue: true } : { cue: true, target };
 }
 
-function directWorkHubStopCue(value: string, malformedLiteral: boolean): boolean {
-  if (malformedLiteral || /[?？]\s*$/u.test(value)) return false;
-  return Boolean(DIRECT_STOP_REQUEST.test(value) || DIRECT_CHINESE_STOP_REQUEST.test(value));
-}
-
-function stripMatchingStopQuotes(value: string): string {
+function stripMatchingActionQuotes(value: string): string {
   const pairs = new Map([
     ['"', '"'],
     ["'", "'"],

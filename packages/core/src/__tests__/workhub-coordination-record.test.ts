@@ -261,4 +261,40 @@ describe('WorkHub Coordination stored records', () => {
       },
     );
   });
+
+  test('decodes one exact observed resume record', () => {
+    const resumed = {
+      type: 'workhub_coordination',
+      id: 'resume-id',
+      turnId: 'resume-action',
+      ts: 6,
+      schemaVersion: 4,
+      kind: 'delegation_resume',
+      actionId: 'resume-action',
+      actionFingerprint: FINGERPRINT,
+      coordinationTurnId: 'resume-action',
+      resumesActionId: 'original-action',
+      resumesDelegationId: 'original-delegation',
+      targetSessionId: 'payments',
+      targetSessionName: 'Payments',
+      userText: 'Resume Payments',
+      outcome: 'resume_started',
+      targetTurnId: 'resumed-turn',
+    } as const;
+
+    assert.deepEqual(decodeCanonicalMessage(resumed), resumed);
+    for (const invalid of [
+      { ...resumed, targetTurnId: undefined },
+      { ...resumed, outcome: 'parked' },
+      { ...resumed, sourceRunId: 'injected' },
+    ]) {
+      assert.throws(() => decodeCanonicalMessage(invalid), /Invalid stored message schema/u);
+    }
+    const alreadyRunning = {
+      ...resumed,
+      outcome: 'already_running' as const,
+      targetTurnId: undefined,
+    };
+    assert.deepEqual(decodeCanonicalMessage(alreadyRunning), alreadyRunning);
+  });
 });

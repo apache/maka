@@ -19,7 +19,7 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_CORE_EXECUTION_SCHEMA_VERSION = 7;
+export const SQLITE_CORE_EXECUTION_SCHEMA_VERSION = 8;
 
 export function migrateSqliteCoreExecutionDatabase(db: DatabaseSync): void {
   db.exec(`
@@ -171,6 +171,16 @@ export function migrateSqliteCoreExecutionDatabase(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS core_agent_runs_model_call_high_water
       ON core_agent_runs(session_id, latest_model_call_sequence, run_id)
       WHERE latest_model_call_sequence IS NOT NULL;
+
+    DROP INDEX IF EXISTS core_root_turn_continuation_source;
+
+    CREATE INDEX core_root_turn_continuation_source
+      ON core_root_turn_admissions(
+        session_id,
+        json_extract(record_json, '$.execution.sourceTurnId'),
+        json_extract(record_json, '$.execution.sourceRunId')
+      )
+      WHERE json_extract(record_json, '$.execution.kind') = 'safe_boundary_continuation';
 
     DROP INDEX IF EXISTS core_agent_runs_identity;
 
