@@ -19,6 +19,9 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { z } from 'zod';
+import type { PermissionMode } from '@maka/core/permission';
+import type { PlanStore } from '@maka/core/plan';
 import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
 import type { SessionTodoToolStore } from '@maka/runtime/session-todo-tools';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
@@ -33,6 +36,79 @@ test('the interactive tool surface does not expose the retired ExploreAgent tool
     composer.tools.some(({ name }) => name === 'ExploreAgent'),
     false,
   );
+});
+
+test('the interactive tool surface follows the session permission mode', () => {
+  const expected = {
+    bypass: {
+      bashKeys: ['command', 'timeout_ms', 'run_in_background', 'pty'],
+      declaresBoundary: false,
+    },
+    ask: {
+      bashKeys: [
+        'command',
+        'timeout_ms',
+        'run_in_background',
+        'pty',
+        'boundary_intent',
+        'required_boundary',
+      ],
+      declaresBoundary: true,
+    },
+    explore: {
+      bashKeys: [
+        'command',
+        'timeout_ms',
+        'run_in_background',
+        'pty',
+        'boundary_intent',
+        'required_boundary',
+      ],
+      declaresBoundary: true,
+    },
+  } as const satisfies Record<PermissionMode, unknown>;
+
+  for (const permissionMode of ['bypass', 'ask', 'explore'] as const) {
+    const composer = createFixtureComposer({
+      builtinTools: {
+        shellRuns: {
+          runForegroundBash: () => Promise.reject(new Error('not used')),
+          runBackgroundBash: () => Promise.reject(new Error('not used')),
+        },
+      },
+      plan: {
+        store: {} as PlanStore,
+        state: {
+          schemaVersion: 1,
+          sessionId: 'session-1',
+          storeVersion: 0,
+          proposals: [],
+          executions: [],
+        },
+        mode: 'agent',
+        permissionMode,
+      },
+    });
+    const bash = composer.tools.find(({ name }) => name === 'Bash');
+    if (!bash) throw new Error(`Bash tool missing under ${permissionMode}`);
+    const schema = z.toJSONSchema(bash.parameters as z.ZodTypeAny);
+
+    assert.deepEqual(
+      Object.keys(schema.properties ?? {}),
+      expected[permissionMode].bashKeys,
+      permissionMode,
+    );
+    assert.equal(
+      composer.tools.some(({ name }) => name === 'request_sandbox_boundary'),
+      expected[permissionMode].declaresBoundary,
+      permissionMode,
+    );
+    assert.equal(
+      bash.description.includes('Enforced by the current session sandbox boundary.'),
+      expected[permissionMode].declaresBoundary,
+      permissionMode,
+    );
+  }
 });
 
 test('Deep Research keeps standard inspection tools and its durable workspace tools', () => {

@@ -178,6 +178,8 @@ export interface BuildBuiltinToolsOptions {
   shell?: TurnShellPlan;
   permissionProfile?: PermissionProfile;
   sandboxManager?: SandboxManager;
+  /** Whether Bash should expose declarations for a host-enforced sandbox boundary. */
+  declareSandboxBoundary?: boolean;
   /** Sandboxed worker used for all local filesystem tools. */
   filesystemWorker?: Pick<FilesystemWorkerClient, 'execute'>;
   /** Test/embedding override. Production callers use the current process platform. */
@@ -297,6 +299,9 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
         buildManagedBashTool(options.shellRuns, {
           executionFacts,
           shell,
+          ...(options.declareSandboxBoundary === undefined
+            ? {}
+            : { declareSandboxBoundary: options.declareSandboxBoundary }),
           ...(options.sandboxManager
             ? {
                 transformCommand: ({ command, pty, requiredBoundary, ctx }) =>
@@ -318,6 +323,9 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
         buildExecutorBashTool(executor, shell, {
           ...(options.permissionProfile ? { permissionProfile: options.permissionProfile } : {}),
           ...(options.sandboxManager ? { sandboxManager: options.sandboxManager } : {}),
+          ...(options.declareSandboxBoundary === undefined
+            ? {}
+            : { declareSandboxBoundary: options.declareSandboxBoundary }),
           sandboxPlatform,
         }),
       ];
@@ -648,6 +656,7 @@ interface ExecutorBashSandboxOptions {
   permissionProfile?: PermissionProfile;
   sandboxManager?: SandboxManager;
   sandboxPlatform: SandboxPlatform;
+  declareSandboxBoundary?: boolean;
 }
 
 function buildExecutorBashTool(
@@ -655,25 +664,31 @@ function buildExecutorBashTool(
   shell: TurnShellPlan,
   sandboxOptions: ExecutorBashSandboxOptions,
 ): MakaTool {
+  const declareSandboxBoundary = sandboxOptions.declareSandboxBoundary !== false;
+  const executorBashFields = {
+    command: z.string().describe('The shell command to execute'),
+    timeout_ms: z.number().int().positive().max(600_000).optional(),
+  };
   return {
     name: 'Bash',
     activityKind: 'command',
     description:
       withTurnShellGuidance('Run a shell command in the session cwd.', shell) +
-      ' Enforced by the current session sandbox boundary.',
-    parameters: preprocessBashBoundaryDeclaration(
-      z
-        .object({
-          command: z.string().describe('The shell command to execute'),
-          timeout_ms: z.number().int().positive().max(600_000).optional(),
-          boundary_intent: bashBoundaryIntentSchema,
-          required_boundary: sandboxBoundaryExpansionSchema
-            .optional()
-            .describe(BASH_REQUIRED_BOUNDARY_DESCRIPTION),
-        })
-        .strict()
-        .superRefine(refineBashBoundaryDeclaration),
-    ),
+      (declareSandboxBoundary ? ' Enforced by the current session sandbox boundary.' : ''),
+    parameters: declareSandboxBoundary
+      ? preprocessBashBoundaryDeclaration(
+          z
+            .object({
+              ...executorBashFields,
+              boundary_intent: bashBoundaryIntentSchema,
+              required_boundary: sandboxBoundaryExpansionSchema
+                .optional()
+                .describe(BASH_REQUIRED_BOUNDARY_DESCRIPTION),
+            })
+            .strict()
+            .superRefine(refineBashBoundaryDeclaration),
+        )
+      : z.object(executorBashFields).strict(),
     toModelOutput: ({ output }) => bashToolResultToModelOutput(output),
     executionFacts: executor.facts,
     impl: async (input, ctx) => {
