@@ -22,7 +22,7 @@ import type { AssistantStepContentKind, StoredMessage, TurnStatus } from '@maka/
 import type { RuntimeEvent, RuntimeEventStatus } from '@maka/core/runtime-event';
 import type { ToolActivityKind, ToolResultContent } from '@maka/core/events';
 import { markPersisted } from '@maka/core/persisted-value';
-import { truncateUtf8 } from '@maka/core/diagnostic-log';
+import { TURN_FAILURE_MESSAGE_MAX_BYTES, truncateUtf8 } from '@maka/core/diagnostic-log';
 import { redactSecrets } from '@maka/core/redaction';
 import {
   SANDBOX_BOUNDARY_REQUEST_STATUSES,
@@ -48,7 +48,6 @@ const SETTLED_SANDBOX_BOUNDARY_STATUSES: readonly SettledSandboxBoundaryStatus[]
   SANDBOX_BOUNDARY_REQUEST_STATUSES.filter(
     (status): status is SettledSandboxBoundaryStatus => status !== 'pending',
   );
-const TURN_FAILURE_MESSAGE_MAX_BYTES = 256;
 import type { CanonicalPermissionOutcomeRecord } from './interaction-authority.js';
 import { isArchivedToolResultPlaceholder } from './tool-result-archive.js';
 

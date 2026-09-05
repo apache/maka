@@ -941,10 +941,7 @@ export class AgentRun {
           })
           .catch((error) => this.enqueueTraceWriteFailure(error, 'terminal session projection'));
 
-        this.markRunFailed(
-          ev.reason ?? ev.code ?? 'unknown',
-          (ev.type === 'error' ? providerFailureMessageFromEvent(ev) : undefined) ?? ev.message,
-        );
+        this.markRunFailed(ev.reason ?? ev.code ?? 'unknown', ev.message);
       }
     }
   }

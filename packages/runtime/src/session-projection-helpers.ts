@@ -18,7 +18,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { truncateUtf8 } from '@maka/core/diagnostic-log';
+import { TURN_FAILURE_MESSAGE_MAX_BYTES, truncateUtf8 } from '@maka/core/diagnostic-log';
 import { redactSecrets } from '@maka/core/redaction';
 import { failureClassFromCompleteStopReason, type SessionEvent } from '@maka/core/events';
 import type { RuntimeInvocationOutcome } from '@maka/core/runtime-invocation';
@@ -174,14 +174,14 @@ export function turnStatusFromEvent(
   switch (event.type) {
     case 'abort':
       return { status: 'aborted' };
-    case 'error':
+    case 'error': {
+      const failureMessage = providerFailureMessageFromEvent(event);
       return {
         status: 'failed',
         errorClass: event.reason ?? event.code ?? 'unknown',
-        ...(providerFailureMessageFromEvent(event)
-          ? { failureMessage: providerFailureMessageFromEvent(event) }
-          : {}),
+        ...(failureMessage ? { failureMessage } : {}),
       };
+    }
     case 'complete': {
       if (event.stopReason === 'user_stop') return { status: 'aborted' };
       const errorClass = failureClassFromCompleteStopReason(event.stopReason);
@@ -200,7 +200,7 @@ export function providerFailureMessageFromEvent(
   if (!event.details || Array.isArray(event.details)) return undefined;
   const summary = event.details.providerSummary;
   return typeof summary === 'string' && summary.length > 0
-    ? truncateUtf8(redactSecrets(summary), 256, '…')
+    ? truncateUtf8(redactSecrets(summary), TURN_FAILURE_MESSAGE_MAX_BYTES, '…')
     : undefined;
 }
 
