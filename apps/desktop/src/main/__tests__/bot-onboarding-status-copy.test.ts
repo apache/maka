@@ -23,7 +23,7 @@ import { test } from 'node:test';
 import { getBotSettingsCopy } from '../../renderer/locales/settings-bot-copy.js';
 
 test('provides concise localized retry health without provider error text', () => {
-  const zh = getBotSettingsCopy('zh');
+  const zh = getBotSettingsCopy('zh-CN');
   const en = getBotSettingsCopy('en');
   assert.equal(
     zh.onboarding.retrying('network', 2, 7),
