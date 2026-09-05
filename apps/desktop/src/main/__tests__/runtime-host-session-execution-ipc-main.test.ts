@@ -24,6 +24,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { IpcMain } from "electron";
+import { deferred } from '@maka/core/test-only/async-primitives';
 import { SIDE_CONVERSATION_SESSION_LABEL } from '@maka/core/side-conversation';
 import { type AttachmentRef } from '@maka/core/events';
 import {
@@ -57,6 +58,142 @@ test('registers Session observation as one reconnectable operation', () => {
 
   assert.equal(ipc.reconnectableChannels.has('sessions:observe'), true);
 });
+
+test('treats pending Session observation teardown as IPC cancellation', async () => {
+  const observations = new RuntimeHostSessionObservationRegistry();
+  const started = deferred();
+  const finishInitialization = deferred();
+  await observations.attach({
+    async observe() {
+      started.resolve();
+      await finishInitialization.promise;
+    },
+    async unobserve() {},
+  });
+  const ipc = observationIpcHarness(observations);
+
+  const observing = ipc.invoke('sessions:observe', 'session-1', 'observer-1');
+  try {
+    await started.promise;
+    assert.deepEqual(observations.trackedSessionIds(), ['session-1']);
+    await observations.unobserve('observer-1');
+    assert.deepEqual(observations.trackedSessionIds(), []);
+    finishInitialization.resolve();
+    assert.deepEqual(await observing, { kind: 'cancelled' });
+  } finally {
+    finishInitialization.resolve();
+    await observations.close();
+  }
+});
+
+test('treats pending transcript teardown as IPC cancellation', async () => {
+  const observations = new RuntimeHostSessionObservationRegistry();
+  const started = deferred();
+  const finishInitialization = deferred();
+  await observations.attach({
+    async observe() {},
+    async unobserve() {},
+    async openTranscript() {
+      started.resolve();
+      await finishInitialization.promise;
+      return {
+        sessionId: 'session-1',
+        generation: 'generation-1',
+        hostEpoch: 'host-epoch-1',
+        readThroughMessageId: null,
+      };
+    },
+    async loadTranscriptBefore() {},
+    async loadTranscriptAround() {},
+    async closeTranscript() {},
+  });
+  const ipc = observationIpcHarness(observations);
+
+  const opening = ipc.invoke('sessions:transcript:open', 'session-1', 'consumer-1');
+  try {
+    await started.promise;
+    assert.deepEqual(observations.trackedSessionIds(), ['session-1']);
+    await observations.closeTranscript('consumer-1', 9);
+    assert.deepEqual(observations.trackedSessionIds(), []);
+    finishInitialization.resolve();
+    assert.deepEqual(await opening, { kind: 'cancelled' });
+  } finally {
+    finishInitialization.resolve();
+    await observations.close();
+  }
+});
+
+test('preserves genuine Session observation initialization failures', async () => {
+  const observations = new RuntimeHostSessionObservationRegistry();
+  const sessionFailure = new Error('seed failed');
+  const transcriptFailure = new Error('transcript open failed');
+  await observations.attach({
+    async observe() {
+      throw sessionFailure;
+    },
+    async unobserve() {},
+    async openTranscript() {
+      throw transcriptFailure;
+    },
+    async loadTranscriptBefore() {},
+    async loadTranscriptAround() {},
+    async closeTranscript() {},
+  });
+  const ipc = observationIpcHarness(observations);
+
+  await assert.rejects(
+    ipc.invoke('sessions:observe', 'session-1', 'observer-1'),
+    (error) => error === sessionFailure,
+  );
+  await assert.rejects(
+    ipc.invoke('sessions:transcript:open', 'session-1', 'consumer-1'),
+    (error) => error === transcriptFailure,
+  );
+  await observations.close();
+});
+
+test('returns explicit ready results for Session observation IPC', async () => {
+  const observations = new RuntimeHostSessionObservationRegistry();
+  const transcript = {
+    sessionId: 'session-1',
+    generation: 'generation-1',
+    hostEpoch: 'host-epoch-1',
+    readThroughMessageId: null,
+  };
+  await observations.attach({
+    async observe() {},
+    async unobserve() {},
+    async openTranscript() {
+      return transcript;
+    },
+    async loadTranscriptBefore() {},
+    async loadTranscriptAround() {},
+    async closeTranscript() {},
+  });
+  const ipc = observationIpcHarness(observations);
+
+  assert.deepEqual(await ipc.invoke('sessions:observe', 'session-1', 'observer-1'), {
+    kind: 'ready',
+    value: undefined,
+  });
+  assert.deepEqual(await ipc.invoke('sessions:transcript:open', 'session-1', 'consumer-1'), {
+    kind: 'ready',
+    value: transcript,
+  });
+  await observations.close();
+});
+
+function observationIpcHarness(observations: RuntimeHostSessionObservationRegistry) {
+  const ipc = ipcHarness();
+  registerRuntimeHostSessionObservationIpc(
+    {
+      observations,
+      resolveSideConversation: async () => false,
+    },
+    ipc,
+  );
+  return ipc;
+}
 
 test("keeps synthetic E2E interactions visible through Host hydration and retires their answer", async () => {
   const observer = observerWithSnapshot();

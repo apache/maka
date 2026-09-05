@@ -73,6 +73,7 @@ import type {
   AppIconSelectResult,
 } from './bridge-contract.js';
 import type { ExternalSessionImportIpcResult } from './external-session-import-result.js';
+import type { RuntimeHostObservationIpcResult } from '../shared/runtime-host-observation-ipc.js';
 import {
   projectDesktopExternalSessionCatalogItem,
   type DesktopExternalSessionCatalogItem,
@@ -2252,7 +2253,11 @@ const makaBridge = {
       let unsubscribeEvents = () => {};
       let unsubscribeObservationSeed = () => {};
       const observeDispatch = runtimeHostSessionRef(sessionId).then((session) => {
-        if (disposed) return { completion: Promise.resolve() };
+        if (disposed) {
+          return {
+            completion: Promise.resolve({ kind: 'cancelled' } as const),
+          };
+        }
         const profileId = runtimeHostMetadataFor(session.scope)?.profileId;
         if (!profileId) throw new Error('The Runtime Host profile for this task is unavailable');
         // Keep the renderer listener across Host target epochs. The observer
@@ -2282,13 +2287,19 @@ const makaBridge = {
             session.scope,
             session.sessionId,
             observerId,
-          ),
+          ) as Promise<RuntimeHostObservationIpcResult<void>>,
         };
       });
       const observing = observeDispatch.then(({ completion }) => completion);
       void observing.then(
-        () => {
-          if (!disposed) onSeeded?.();
+        (result) => {
+          if (result.kind === 'cancelled') {
+            disposed = true;
+            unsubscribeObservationSeed();
+            unsubscribeEvents();
+          } else if (!disposed) {
+            onSeeded?.();
+          }
         },
         (error: unknown) => {
           if (!disposed) onSeedError?.(error);
@@ -2479,7 +2490,7 @@ const makaBridge = {
             session.scope,
             session.sessionId,
             consumerId,
-          ) as Promise<DesktopTranscriptOpenResult>,
+          ) as Promise<RuntimeHostObservationIpcResult<DesktopTranscriptOpenResult>>,
         };
       });
       let closeTask: Promise<void> | undefined;
@@ -2493,14 +2504,20 @@ const makaBridge = {
         void closeTask.catch(() => undefined);
       };
       registerCancellation?.(requestClose);
-      let opened: DesktopTranscriptOpenResult;
+      let openResult: RuntimeHostObservationIpcResult<DesktopTranscriptOpenResult>;
       try {
-        opened = await openDispatch.then(({ completion }) => completion);
+        openResult = await openDispatch.then(({ completion }) => completion);
       } catch (error) {
         closed = true;
         ipcRenderer.off(channel, listener);
         throw error;
       }
+      if (openResult.kind === 'cancelled') {
+        closed = true;
+        ipcRenderer.off(channel, listener);
+        throw new Error('Desktop transcript open was cancelled');
+      }
+      const opened = openResult.value;
       if (closed) throw new Error('Desktop transcript open was cancelled');
       identity ??= { generation: opened.generation, hostEpoch: opened.hostEpoch };
       const range = (

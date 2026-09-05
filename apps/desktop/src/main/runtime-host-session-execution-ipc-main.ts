@@ -54,7 +54,11 @@ import {
 } from "./ipc-reconnect-policy.js";
 import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
 import type { SessionCopyCleanupAuthority } from '@maka/storage/session-copy-cleanup';
-import type { RuntimeHostSessionObservationRegistry } from "./runtime-host-session-observation-registry.js";
+import type { RuntimeHostObservationIpcResult } from '../shared/runtime-host-observation-ipc.js';
+import {
+  RuntimeHostObservationCancelledError,
+  type RuntimeHostSessionObservationRegistry,
+} from "./runtime-host-session-observation-registry.js";
 import {
   RuntimeHostSessionObserver,
   type RuntimeHostSessionObserverTarget,
@@ -194,21 +198,25 @@ export function registerRuntimeHostSessionObservationIpc(
     'sessions:observe',
     async (event, sessionId: unknown, observerId: unknown) => {
       const normalizedSessionId = requiredId(sessionId, 'Session');
-      await deps.observations.observe(
-        normalizedSessionId,
-        requiredId(observerId, 'Session observer'),
-        event.sender as RuntimeHostSessionObserverTarget,
-        await deps.resolveSideConversation(normalizedSessionId),
+      return observationIpcResult(
+        deps.observations.observe(
+          normalizedSessionId,
+          requiredId(observerId, 'Session observer'),
+          event.sender as RuntimeHostSessionObserverTarget,
+          await deps.resolveSideConversation(normalizedSessionId),
+        ),
       );
     },
   );
   ipcMain.handle(
     'sessions:transcript:open',
     async (event, sessionId: unknown, consumerId: unknown) =>
-      deps.observations.openTranscript(
-        requiredId(sessionId, 'Session'),
-        requiredId(consumerId, 'Transcript consumer'),
-        event.sender as RuntimeHostTranscriptTarget,
+      observationIpcResult(
+        deps.observations.openTranscript(
+          requiredId(sessionId, 'Session'),
+          requiredId(consumerId, 'Transcript consumer'),
+          event.sender as RuntimeHostTranscriptTarget,
+        ),
       ),
   );
   ipcMain.handle('sessions:transcript:load-before', async (event, input: unknown) => {
@@ -227,6 +235,17 @@ export function registerRuntimeHostSessionObservationIpc(
     ipcMain.handle('sessions:e2e:release-renderer-observations', (event) =>
       deps.observations.releaseTarget(event.sender.id),
     );
+  }
+}
+
+async function observationIpcResult<T>(
+  operation: Promise<T>,
+): Promise<RuntimeHostObservationIpcResult<T>> {
+  try {
+    return { kind: 'ready', value: await operation };
+  } catch (error) {
+    if (error instanceof RuntimeHostObservationCancelledError) return { kind: 'cancelled' };
+    throw error;
   }
 }
 
