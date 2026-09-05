@@ -22,7 +22,12 @@ import { describe, test } from 'node:test';
 import { visibleWidth } from '@earendil-works/pi-tui';
 import type { PipeShellOutput, PtyShellOutput } from '@maka/core/shell-run';
 import type { ShellRunToolResult } from '@maka/core/shell-run-result';
-import type { SessionEvent, ShellRunSnapshotResult, ToolResultContent } from '@maka/core/events';
+import type {
+  ProviderRetryEvent,
+  SessionEvent,
+  ShellRunSnapshotResult,
+  ToolResultContent,
+} from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
 import {
   appendUserCommandToTranscript,
@@ -47,6 +52,8 @@ import {
   toggleAllThinkingExpansion,
   toggleAllToolExpansion,
   type MakaPiToolEntry,
+  type MakaPiTranscriptMetadata,
+  type ProviderRetryCountdown,
 } from '../pi-transcript.js';
 
 function toolStatus(entry: MakaPiToolEntry | undefined): string | undefined {
@@ -4695,6 +4702,46 @@ describe('Maka Pi TUI transcript', () => {
     assert.doesNotMatch(expanded, /progress-0\b/);
     assert.match(expanded, /progress-512\b/);
   });
+
+  test('activity strip reports cancellation ahead of working and retry states', () => {
+    const strip = (extra: Partial<MakaPiTranscriptMetadata>): string =>
+      stripAnsi(renderMakaPiActivityStrip({ ...meta(), ...extra }, 80));
+
+    // A running turn with nothing else to say reports elapsed work.
+    assert.equal(strip({ turnElapsedMs: 3_000 }), 'Working… 3s');
+
+    // Cancellation is announced from the moment the gesture is accepted, so the
+    // first render after recognition already reads `Cancelling…` — zero elapsed
+    // is the common case, not an edge case, and must not fall back to `Working…`.
+    assert.equal(strip({ turnElapsedMs: 3_000, interruptElapsedMs: 0 }), 'Cancelling… 0s');
+
+    // A cleanup that outlives the gesture (a tool held through the process
+    // termination grace) stays legible as progress rather than looking hung.
+    assert.equal(strip({ turnElapsedMs: 9_000, interruptElapsedMs: 2_000 }), 'Cancelling… 2s');
+
+    // A retry scheduled before the interrupt is superseded by it: the turn is no
+    // longer working towards anything the user asked for.
+    assert.equal(
+      strip({
+        turnElapsedMs: 9_000,
+        interruptElapsedMs: 1_000,
+        providerRetry: scheduledRetry(),
+      }),
+      'Cancelling… 1s',
+    );
+
+    // Without an interrupt the retry still wins over `Working…`, unchanged.
+    assert.equal(
+      strip({
+        turnElapsedMs: 9_000,
+        providerRetry: scheduledRetry(),
+      }),
+      'Retrying in 30s (2/5)',
+    );
+
+    // An idle transcript stays silent even though a previous interrupt happened.
+    assert.equal(strip({}), '');
+  });
 });
 
 describe('transcript entry render memoization', () => {
@@ -5166,6 +5213,24 @@ function subagentResult(
     artifactIds: [],
     ...overrides,
   };
+}
+
+// The strip reads a client-stamped countdown, so the receipt is `Date.now()`:
+// zero elapsed makes the rendered wait the raw `delayMs` and keeps the retry
+// assertion independent of how long the test itself took to get here.
+function scheduledRetry(): ProviderRetryCountdown {
+  const event: ProviderRetryEvent = {
+    type: 'provider_retry',
+    phase: 'scheduled',
+    id: 'event-retry',
+    turnId: 'turn-1',
+    ts: 1,
+    attempt: 2,
+    maxAttempts: 5,
+    delayMs: 30_000,
+    reason: 'rate_limit',
+  };
+  return { event, receivedAtMs: Date.now() };
 }
 
 function stripAnsi(text: string): string {

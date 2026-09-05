@@ -571,6 +571,27 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     };
   }
 
+  async interruptTurn(): Promise<MakaRetractedMessages> {
+    const turn = this.#channel?.snapshot.rootTurn;
+    // No owning turn to interrupt: the queue can still hold entries the user
+    // wants back, so retract on its own rather than reporting nothing.
+    if (!turn || isTerminalTurn(turn)) return this.retractQueued();
+    // One Host operation commits the stop fence, retracts, and aborts the turn.
+    // `interruptId` keys it, so a repeated gesture whose response was lost
+    // replays the same outcome instead of aborting anything a second time.
+    const result = await this.#request('turn.interrupt', {
+      originHostEpoch: this.#connection.hostEpoch,
+      sessionId: turn.sessionId,
+      interruptId: this.#newId(),
+      turnId: turn.turnId,
+      runId: turn.runId,
+    });
+    return {
+      text: result.retracted.map((entry) => entry.content.text).join('\n\n'),
+      messageIds: result.retracted.map((entry) => entry.messageId),
+    };
+  }
+
   async respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void> {
     const sessionId = this.#requireSession('respond to permission');
     const pending = this.#channel?.pendingInteraction(response.requestId);

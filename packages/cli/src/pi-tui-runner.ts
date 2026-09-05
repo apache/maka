@@ -97,6 +97,7 @@ import {
   inspectSessionResumeAvailability,
   type MakaAttachedSessionTurn,
   type MakaPreparedSessionTurn,
+  type MakaRetractedMessages,
   type MakaSessionDriver,
   type MakaSideConversationParentStatus,
   type MakaSessionSwitchResult,
@@ -542,6 +543,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   let turnEpoch = 0;
   let turnStartedAt: number | undefined;
   let interruptRequested = false;
+  // When the interrupt gesture was accepted, for the activity strip's
+  // `Cancelling…` counter. Set in the same tick as recognition so acceptance is
+  // visible without waiting on the cancellation authority, and cleared with the
+  // rest of the turn's UI state.
+  let interruptRequestedAt: number | undefined;
   // True while a mid-turn detach-switch is in flight: an interrupt issued in
   // that window would target the freshly attached Session instead of the Turn
   // being left behind.
@@ -653,6 +659,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     usage: state.usage,
     modelContextWindow: currentModelContextWindow(),
     turnElapsedMs: turnStartedAt !== undefined ? Date.now() - turnStartedAt : undefined,
+    interruptElapsedMs:
+      interruptRequestedAt !== undefined ? Date.now() - interruptRequestedAt : undefined,
     providerRetry: state.providerRetry,
     uiLocale: locale,
     goal: input.driver.getGoal?.() ?? null,
@@ -1109,30 +1117,50 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     }
   };
 
+  // Cancellation authority. A driver with `interruptTurn` commits the queue stop
+  // fence, retracts, and aborts the owning turn as one Host operation; without
+  // it, compose the two calls in that same order, since a message consumed
+  // between them would otherwise be lost rather than returned for re-editing.
+  const interruptTurnThroughDriver = async (): Promise<MakaRetractedMessages> => {
+    const interrupt = input.driver.interruptTurn;
+    if (interrupt) return interrupt.call(input.driver);
+    const retracted = (await input.driver.retractQueued?.()) ?? { text: '', messageIds: [] };
+    await input.driver.stop();
+    return retracted;
+  };
+
   const requestTurnInterrupt = () => {
     // A detach in flight is not the running Turn's owner acting on it — the
     // driver already points at the next Session, so a stop here would abort
     // whatever that Session has attached. Swallow until the handoff settles.
     if (interruptRequested || detaching) return;
     interruptRequested = true;
+    interruptRequestedAt = Date.now();
     // The convergence window (stop issued, turn not yet terminal) accepts no
     // new input: submits would race the abort and could open work the user
     // just cancelled. The normal turn finally restores submit; a rejected
     // stop restores it here.
     editor.disableSubmit = true;
+    // Renders `Cancelling…` in this tick. Acceptance is a local fact and must
+    // not wait on the authority: backend abort, tool cleanup, process
+    // termination grace, and durable terminal publication all land after this.
     requestRender();
-    // The authority retracts before stop: only messages still queued come back
-    // for re-editing, while anything already consumed stays in the transcript.
-    // Serializing these operations also preserves that ordering over a Host
-    // connection where both calls are asynchronous.
     void (async () => {
+      // Cancellation goes out before any client-side queue barrier. Pending
+      // enqueue Promises are `turn.message.submit` round trips, which can be
+      // delayed by transport, Session admission, or storage; settling them
+      // first put an unbounded wait in front of the abort.
+      // Ordering is still exact, because the authority serializes against its
+      // own fence: an enqueue that committed before the fence comes back in
+      // `retracted`, and one that lost the race rejects and restores its own
+      // text through the enqueue catch — each message survives exactly once.
+      const retracted = await interruptTurnThroughDriver();
       await settlePendingEnqueues();
-      const retracted = (await input.driver.retractQueued?.()) ?? { text: '', messageIds: [] };
       acceptRetraction(retracted);
       requestRender();
-      await input.driver.stop();
     })().catch((error) => {
       interruptRequested = false;
+      interruptRequestedAt = undefined;
       editor.disableSubmit = false;
       reportError(error);
     });
@@ -1469,6 +1497,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     turnStartedAt = Date.now();
     startTurnElapsedTicker();
     interruptRequested = false;
+    interruptRequestedAt = undefined;
     lastTurnEscapeAt = 0;
     editor.disableSubmit = false;
     setTaskbarProgress(true);
@@ -1481,6 +1510,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       turnStartedAt = undefined;
       stopTurnElapsedTicker();
       interruptRequested = false;
+      interruptRequestedAt = undefined;
       editor.disableSubmit = false;
       setTaskbarProgress(false);
       attention.promptTurnEnded();
