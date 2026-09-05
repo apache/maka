@@ -86,6 +86,64 @@ describe('redactSecrets', () => {
     assert.equal(text.includes('secret-value'), false);
   });
 
+  test('masks URL userinfo credentials without swallowing host or path', () => {
+    const cases: Array<[string, string]> = [
+      [
+        'https://myuser:glpat-AbCdEf12345XyZ@gitlab.com/team/repo.git',
+        'https://[redacted]@gitlab.com/team/repo.git',
+      ],
+      [
+        'https://alice:hunter2@internal.example.com/repo.git',
+        'https://[redacted]@internal.example.com/repo.git',
+      ],
+      [
+        'https://alice:ATBBxyz123abc456@bitbucket.org/team/repo.git',
+        'https://[redacted]@bitbucket.org/team/repo.git',
+      ],
+      [
+        'fatal: unable to access https://deploy:s3cretP@ss@git.corp.example/x.git/: 403',
+        'fatal: unable to access https://[redacted]@git.corp.example/x.git/: 403',
+      ],
+      ['https://user@host.example/team/repo.git', 'https://[redacted]@host.example/team/repo.git'],
+      [
+        'origin https://alice:hunter2@internal.example.com/repo.git (fetch)',
+        'origin https://[redacted]@internal.example.com/repo.git (fetch)',
+      ],
+      [
+        'see https://alice:hunter2@internal.example.com/repo.git.',
+        'see https://[redacted]@internal.example.com/repo.git.',
+      ],
+      [
+        'clone (https://alice:hunter2@internal.example.com/repo.git)',
+        'clone (https://[redacted]@internal.example.com/repo.git)',
+      ],
+    ];
+    for (const [input, expected] of cases) {
+      assert.equal(redactSecrets(input), expected);
+    }
+    assert.equal(
+      redactSecrets('https://api.example.com/v1?token=abc123'),
+      'https://api.example.com/v1?token=[redacted]',
+    );
+    assert.equal(
+      redactSecrets('https://ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@github.com/o/r.git'),
+      'https://[redacted]@github.com/o/r.git',
+    );
+    assert.equal(
+      redactSecrets('https://alice:hunter2@api.example.com/v1?token=abc123'),
+      'https://[redacted]@api.example.com/v1?token=[redacted]',
+    );
+    // Negatives: bare https://host must not swallow a later @ across spaces/newlines.
+    assert.equal(
+      redactSecrets('see https://example.com and mail bob@corp.com'),
+      'see https://example.com and mail bob@corp.com',
+    );
+    assert.equal(
+      redactSecrets('Fetching https://registry.example.com\nContact: support@example.com for help'),
+      'Fetching https://registry.example.com\nContact: support@example.com for help',
+    );
+  });
+
   test('masks quoted sensitive object keys in serialized JSON', () => {
     const text = redactSecrets(
       JSON.stringify({

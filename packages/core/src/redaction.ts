@@ -70,6 +70,7 @@ export function redactSecrets(value: string): string {
 
 function redactTextSecrets(value: string): string {
   let next = value;
+  next = redactUrlUserinfoSecrets(next);
   next = redactUrlQuerySecrets(next);
   next = next.replace(QUOTED_SECRET_KEY_VALUE_PATTERN, (match, prefix: string, key: string) =>
     isSensitiveKey(key) ? `${prefix}[redacted]` : match,
@@ -168,6 +169,14 @@ function redactJsonValue(value: unknown): { value: unknown; changed: boolean } {
     changed = changed || redacted.changed;
   }
   return { value: next, changed };
+}
+
+function redactUrlUserinfoSecrets(value: string): string {
+  // Authority runs through the first `/`, `?`, `#`, or whitespace. If it
+  // contains `@`, everything from the host-start through the last `@` is
+  // userinfo. Whitespace is excluded so a bare `https://host` followed later
+  // by an email/`@package` on the same or next line cannot swallow the gap.
+  return value.replace(/(https?:\/\/)[^\s/?#]*@/gi, '$1[redacted]@');
 }
 
 function redactUrlQuerySecrets(value: string): string {
