@@ -89,7 +89,9 @@ import {
 const DEFAULT_CONNECT_TIMEOUT_MS = 500;
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 2_000;
 const DEFAULT_LIVENESS_INTERVAL_MS = 2_000;
-const DEFAULT_LIVENESS_TIMEOUT_MS = 2_000;
+// A bounded round trip tolerates short transport/Host stalls. Unrelated inbound
+// traffic must never extend it: receiving events does not prove requests work.
+const DEFAULT_LIVENESS_TIMEOUT_MS = 8_000;
 const MAX_WEBSOCKET_FRAGMENTS = 256;
 const MAX_WEBSOCKET_BUFFERED_CHUNKS = 256;
 
@@ -103,12 +105,9 @@ export interface ConnectRuntimeHostInput {
   connectTimeoutMs?: number;
   handshakeTimeoutMs?: number;
   /**
-   * Maximum quiet interval before an end-to-end Host liveness probe.
-   * Any valid inbound frame restarts the quiet interval. A Host status
-   * observer additionally uses this as its periodic observation cadence;
-   * inbound traffic then extends an outstanding probe's progress deadline
-   * without suppressing future status observations. Injectable so tests can
-   * exercise the cadence without waiting the real default (2s).
+   * Interval between end-to-end Host liveness probes. Probes continue while
+   * inbound traffic is active; only a matching response proves a round trip.
+   * Injectable so tests can exercise the cadence without waiting 2 seconds.
    */
   livenessIntervalMs?: number;
   /**
@@ -680,7 +679,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     try {
       while (true) {
         const frame = decodeHostFrame(await this.#transport.read(0));
-        this.#resetLivenessCheck();
+        this.#scheduleLivenessCheck();
         if ('kind' in frame) {
           if (isClientCapabilityHostFrameKind(frame.kind)) {
             this.#clientCapabilities.accept(frame as ClientCapabilityHostFrame);
@@ -835,19 +834,8 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     this.#drainDomainRequests();
   }
 
-  #resetLivenessCheck(): void {
-    // Any authenticated Host frame proves the transport is still making
-    // progress, even when a periodic status observation is slow.
-    this.#resetLivenessProbeDeadline();
-    // A status observer needs periodic route observations even while other
-    // Session traffic keeps the connection active.
-    if (this.#onHostStatus) return;
-    if (this.#livenessTimer) clearTimeout(this.#livenessTimer);
-    this.#livenessTimer = undefined;
-    this.#scheduleLivenessCheck();
-  }
-
   #scheduleLivenessCheck(): void {
+    // Inbound events do not postpone the next bidirectional probe.
     if (this.#terminalError || this.#livenessTimer || this.#livenessProbePending) {
       return;
     }
@@ -860,7 +848,10 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
   #startLivenessProbe(): void {
     if (this.#terminalError || this.#livenessProbePending) return;
     this.#livenessProbePending = true;
-    this.#resetLivenessProbeDeadline();
+    this.#livenessProbeDeadline = setTimeout(() => {
+      this.#livenessProbeDeadline = undefined;
+      this.#fail(requestTimeoutError('host.status'));
+    }, DEFAULT_LIVENESS_TIMEOUT_MS);
     void this.#requestOperation(
       'host.status',
       {},
@@ -883,15 +874,6 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
         this.#livenessProbePending = false;
         this.#scheduleLivenessCheck();
       });
-  }
-
-  #resetLivenessProbeDeadline(): void {
-    if (!this.#livenessProbePending || this.#terminalError) return;
-    if (this.#livenessProbeDeadline) clearTimeout(this.#livenessProbeDeadline);
-    this.#livenessProbeDeadline = setTimeout(() => {
-      this.#livenessProbeDeadline = undefined;
-      this.#fail(requestTimeoutError('host.status'));
-    }, DEFAULT_LIVENESS_TIMEOUT_MS);
   }
 
   #acceptSubscriptionFrame(frame: SubscriptionFrame): void {

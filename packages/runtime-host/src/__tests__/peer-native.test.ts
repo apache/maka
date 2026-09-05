@@ -44,7 +44,7 @@ test('preserves transit route failures from the native boundary', () => {
   assert.equal(error.message, 'no approved route');
 });
 
-test('shares one peer endpoint, serializes same-peer connects, and cancels independently', async () => {
+test('shares one endpoint with independent application and Mesh dial lanes', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'maka-peer-abort-'));
   const nativePath = join(directory, 'peer.cjs');
   try {
@@ -184,18 +184,16 @@ module.exports = {
     const application = client.connect(peerConnectInput('shared'));
     await waitForRequestCount(native.default.stats, 2);
     const queuedAbort = new AbortController();
-    const cancelled = client.connectMeshControl(peerConnectInput('shared'), queuedAbort.signal);
+    const cancelled = client.connect(peerConnectInput('shared'), queuedAbort.signal);
     queuedAbort.abort();
     await assert.rejects(cancelled, /aborted/u);
     const control = client.connectMeshControl(peerConnectInput('shared'));
-    await waitForImmediate();
-    assert.equal(native.default.stats.requests.length, 2);
-    native.default.resolveConnect(2);
-    await application;
     await waitForRequestCount(native.default.stats, 3);
     assert.equal(native.default.stats.requests.length, 3);
     native.default.resolveConnect(3);
     await control;
+    native.default.resolveConnect(2);
+    await application;
 
     const preparedBeforeReopen = preparedPeerIds.length;
     const reopenPhases: string[] = [];
