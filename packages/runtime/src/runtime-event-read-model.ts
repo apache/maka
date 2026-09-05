@@ -22,8 +22,7 @@ import type { AssistantStepContentKind, StoredMessage, TurnStatus } from '@maka/
 import type { RuntimeEvent, RuntimeEventStatus } from '@maka/core/runtime-event';
 import type { ToolActivityKind, ToolResultContent } from '@maka/core/events';
 import { markPersisted } from '@maka/core/persisted-value';
-import { TURN_FAILURE_MESSAGE_MAX_BYTES, truncateUtf8 } from '@maka/core/diagnostic-log';
-import { redactSecrets } from '@maka/core/redaction';
+import { providerFailureSummaryFromDetails } from '@maka/core/diagnostic-log';
 import {
   SANDBOX_BOUNDARY_REQUEST_STATUSES,
   validateSandboxBoundaryExpansion,
@@ -1217,13 +1216,7 @@ function projectTerminalTurnState(
 
 function failureMessageFromRuntimeEvent(event: RuntimeEvent): string | undefined {
   const content = event.content;
-  if (content?.kind !== 'error' || !content.details || Array.isArray(content.details)) {
-    return undefined;
-  }
-  const summary = content.details.providerSummary;
-  return typeof summary === 'string' && summary.length > 0
-    ? truncateUtf8(redactSecrets(summary), TURN_FAILURE_MESSAGE_MAX_BYTES, '…')
-    : undefined;
+  return content?.kind === 'error' ? providerFailureSummaryFromDetails(content.details) : undefined;
 }
 
 function attachPendingThinking(

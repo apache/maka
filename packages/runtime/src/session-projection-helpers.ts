@@ -18,8 +18,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { TURN_FAILURE_MESSAGE_MAX_BYTES, truncateUtf8 } from '@maka/core/diagnostic-log';
-import { redactSecrets } from '@maka/core/redaction';
+import { providerFailureSummaryFromDetails } from '@maka/core/diagnostic-log';
 import { failureClassFromCompleteStopReason, type SessionEvent } from '@maka/core/events';
 import type { RuntimeInvocationOutcome } from '@maka/core/runtime-invocation';
 import type {
@@ -197,11 +196,7 @@ export function turnStatusFromEvent(
 export function providerFailureMessageFromEvent(
   event: Extract<SessionEvent, { type: 'error' }>,
 ): string | undefined {
-  if (!event.details || Array.isArray(event.details)) return undefined;
-  const summary = event.details.providerSummary;
-  return typeof summary === 'string' && summary.length > 0
-    ? truncateUtf8(redactSecrets(summary), TURN_FAILURE_MESSAGE_MAX_BYTES, '…')
-    : undefined;
+  return providerFailureSummaryFromDetails(event.details);
 }
 
 function blockedReasonFromErrorReason(reason: string | undefined): SessionBlockedReason {
