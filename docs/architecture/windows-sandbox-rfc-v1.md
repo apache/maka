@@ -82,7 +82,7 @@ launch policy, then launches the target with layered Windows controls:
   the tree on close;
 - handle inheritance disabled;
 - AppContainer ACEs for only the compiled read/write roots, with a persisted recovery ledger;
-- recursive reparse-point rejection before ACL mutation;
+- reparse-point root rejection and validated nested NTFS-junction non-traversal during ACL grants;
 - a closed, sorted environment from the normalized command;
 - bounded local named-pipe framing protected to SYSTEM and the current user.
 
@@ -252,7 +252,8 @@ designed but explicitly deferred as later gates, tracked by Phase 4 in
 Enforced (merged in #2961 unless tagged with a follow-up PR):
 
 - default-deny filesystem with distinct read/write roots compiled from the exact profile (§6.1);
-- recursive reparse-point rejection and multi-hard-link rejection before ACL mutation (§5, §6.1);
+- reparse-point root rejection, validated nested NTFS-junction non-traversal, and multi-hard-link rejection
+  before ACL mutation (§5, §6.1);
 - a fresh request-derived AppContainer SID, per-launch ACL grants in a versioned recovery ledger,
   and stale-ledger reconciliation at startup (§6.1, §7.1);
 - an AppContainer token with no network capabilities (§6.2);
@@ -264,8 +265,9 @@ Enforced (merged in #2961 unless tagged with a follow-up PR):
   the first launch, terminates and drains the AppContainer Job, and releases the launch ledger/ACEs;
 - a packaged 64-launch repeated-wave concurrency soak with disjoint launch identities, followed by
   process and ACL-ledger residue assertions;
-- a packaged malicious-child matrix covering recursive junction and multi-hard-link admission,
-  outside-file access, TCP connection denial, host named-pipe access, ambient environment,
+- a packaged malicious-child matrix covering junction-root admission rejection, nested-junction
+  non-traversal, multi-hard-link admission, outside-file access, TCP connection denial, host
+  named-pipe access, ambient environment,
   host HKCU values, parent-token access, descendant AppContainer/Job inheritance, and quarantined
   identity non-reuse;
 - per-launch private-desktop **placement** (§6.3) **(#3174)**: each production launch and the readiness probe
@@ -374,7 +376,7 @@ sequenceDiagram
   M-->>H: native path + one-shot manifest
   H->>B: --broker-local manifest
   B->>B: delete manifest; bind PID, nonce, and launch digest
-  B->>B: recover ledger; reject reparse trees; grant SID ACEs
+  B->>B: recover ledger; reject reparse roots; skip validated nested NTFS junctions; grant SID ACEs
   B->>J: create kill-on-close Job
   B->>C: create AppContainer process with atomic Job attribute
   C-->>B: bounded exit result
@@ -386,17 +388,19 @@ sequenceDiagram
 
 The first implementation needs no elevated setup. Windows creates a request-derived Maka
 AppContainer profile, and the packaged native binary grants its unique SID only the roots admitted
-for the current launch. Before mutation it recursively rejects `FILE_ATTRIBUTE_REPARSE_POINT`, persists a
-versioned ledger with `create_new` and `sync_all`, and reconciles every stale ledger before accepting
-a new request. A global kernel mutex covers only ledger/ACL mutation; each launch holds a separate
-request-specific kernel lease through child settlement, so recovery skips live ledgers while disjoint
-launches execute concurrently. Normal settlement removes the SID ACE and then deletes the ledger.
+for the current launch. Before mutation it rejects `FILE_ATTRIBUTE_REPARSE_POINT` roots and does not
+traverse validated nested NTFS junctions during recursive grants, persists a versioned ledger with `create_new`
+and `sync_all`, and reconciles every stale ledger before accepting a new request. A global kernel
+mutex covers only ledger/ACL mutation; each launch holds a separate request-specific kernel lease
+through child settlement, so recovery skips live ledgers while disjoint launches execute concurrently.
+Normal settlement removes the SID ACE and then deletes the ledger.
 
 The ledger filename is a SHA-256 of the request identity, so request-controlled path characters
 cannot escape its directory. `icacls.exe` is resolved from absolute `%SystemRoot%\System32`, invoked
 without a shell, and uses `/L` so link objects are operated on rather than followed. The Windows CI
-smoke proves normal cleanup, stale-ledger recovery, and rejection of a junction in an admitted tree.
-Crash/power-loss and concurrent replacement hardening remain release evidence, not assumptions.
+smoke proves normal cleanup, stale-ledger recovery, rejection of a junction root, and
+non-traversal of a nested junction in an admitted tree. Crash/power-loss and concurrent replacement
+hardening remain release evidence, not assumptions.
 
 ### 7.2 Broker and protocol
 
@@ -487,7 +491,7 @@ For the W1 preview, the packaged verifier maps the supported attack surface to e
 
 | Category | Packaged evidence |
 | --- | --- |
-| Filesystem aliases | outside denial plus recursive junction and multi-hard-link admission refusal |
+| Filesystem aliases | outside denial, junction-root admission refusal, nested-junction non-traversal, and multi-hard-link admission refusal |
 | Network channels | TCP connect denial without network capabilities |
 | IPC | host named-pipe denial and an explicit inherited-handle list |
 | Descendants | child creation is denied fail-closed, or a created descendant retains the AppContainer token and kill-on-close Job |

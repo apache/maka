@@ -37,10 +37,11 @@ import {
  * native one (GetFinalPathNameByHandle) are denied by the LowBox token. The
  * Windows variant therefore resolves lexically and REJECTS reparse points
  * outright instead of following them. That is sound because request paths are
- * canonicalised by the client before launch, the broker refuses to grant any
- * tree containing a reparse point, and the ACL grants themselves are the
- * kernel-side enforcement: a link created after grant time points at an
- * ungranted target the worker cannot touch anyway.
+ * canonicalised by the client before launch, the broker rejects a reparse
+ * point as a grant root and does not traverse validated nested NTFS junctions while
+ * granting a tree, and the ACL grants themselves are the kernel-side
+ * enforcement: a link created after grant time points at an ungranted target
+ * the worker cannot touch anyway.
  */
 export interface SandboxPathApi {
   realpath(path: string): Promise<string>;

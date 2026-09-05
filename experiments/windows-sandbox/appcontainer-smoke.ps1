@@ -33,6 +33,7 @@ if (-not (Test-Path -LiteralPath $launcher)) {
 
 $tempRoot = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { $env:TEMP }
 $requestPath = Join-Path $tempRoot "maka-windows-appcontainer-$PID.json"
+$reparseRequestPath = Join-Path $tempRoot "maka-windows-appcontainer-reparse-$PID.json"
 $secretPath = Join-Path $tempRoot "maka-windows-appcontainer-secret-$PID.txt"
 $allowedReadPath = Join-Path $tempRoot "maka-windows-appcontainer-allowed-read-$PID.txt"
 $allowedWriteRoot = Join-Path $tempRoot "maka-windows-appcontainer-allowed-write-$PID"
@@ -113,7 +114,21 @@ try {
 
   $junction = Join-Path $allowedWriteRoot 'junction'
   New-Item -ItemType Junction -Path $junction -Target $staleRoot | Out-Null
-  $reparseOutput = & $launcher --appcontainer $requestPath 2>&1
+  $reparseRequest = @{
+    version = 1
+    requestId = "appcontainer-reparse-root-$PID"
+    executable = $launcher
+    arguments = @('--self-probe')
+    cwd = Split-Path -Parent $launcher
+    readRoots = @($junction)
+    writeRoots = @()
+    exactReadRoots = @()
+    exactWriteRoots = @()
+    network = 'restricted'
+    environment = @{}
+  }
+  $reparseRequest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $reparseRequestPath -Encoding utf8
+  $reparseOutput = & $launcher --appcontainer $reparseRequestPath 2>&1
   if ($LASTEXITCODE -eq 0 -or ($reparseOutput -join "`n") -notmatch 'reparse point') {
     throw "AppContainer accepted a reparse-point root: $($reparseOutput -join "`n")"
   }
@@ -122,6 +137,7 @@ try {
 } finally {
   $listener.Stop()
   Remove-Item -LiteralPath $requestPath -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $reparseRequestPath -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $secretPath -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $allowedReadPath -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $allowedWriteRoot -Recurse -Force -ErrorAction SilentlyContinue

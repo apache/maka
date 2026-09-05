@@ -41,10 +41,14 @@ use windows_sys::Win32::Security::{
     OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    BY_HANDLE_FILE_INFORMATION, CreateFileW, FILE_ATTRIBUTE_REPARSE_POINT,
-    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ,
-    FILE_SHARE_WRITE, GetFileInformationByHandle, OPEN_EXISTING,
+    BY_HANDLE_FILE_INFORMATION, CreateFileW, FILE_ATTRIBUTE_DIRECTORY,
+    FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+    FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    GetFileInformationByHandle, OPEN_EXISTING,
 };
+use windows_sys::Win32::System::IO::DeviceIoControl;
+use windows_sys::Win32::System::Ioctl::FSCTL_GET_REPARSE_POINT;
+use windows_sys::Win32::System::SystemServices::IO_REPARSE_TAG_MOUNT_POINT;
 use windows_sys::Win32::System::Threading::{CreateMutexW, ReleaseMutex, WaitForSingleObject};
 
 use crate::broker_pipe_security::pipe_security_sddl;
@@ -429,15 +433,15 @@ pub(crate) fn collect_roots(request: &LaunchRequest) -> Result<Vec<LedgerRoot>, 
             reject_multi_link_file(Path::new(path))?;
         }
         // Only a recursive grant extends into the tree, so only a recursive
-        // grant requires the tree to be alias-free. Exact roots (e.g. the
-        // cwd metadata anchor) may legitimately contain junctions deeper in
-        // the workspace that the sandbox never grants.
+        // grant needs to inspect its entries. Exact roots (e.g. the cwd
+        // metadata anchor) may legitimately contain junctions deeper in the
+        // workspace that the sandbox never grants.
         let recursive_read = contains_path(&request.read_roots, path)
             && !contains_path(&request.exact_read_roots, path);
         let recursive_write = contains_path(&request.write_roots, path)
             && !contains_path(&request.exact_write_roots, path);
         if metadata.is_dir() && (recursive_read || recursive_write) {
-            reject_aliased_entries(Path::new(path))?;
+            reject_multi_link_files(Path::new(path))?;
         }
         roots.push(LedgerRoot {
             path: path.clone(),
@@ -455,30 +459,139 @@ fn contains_path(paths: &[String], path: &str) -> bool {
     paths.iter().any(|entry| entry.eq_ignore_ascii_case(path))
 }
 
-/// Rejects reparse points and multi-link files anywhere in a recursively
-/// granted tree. An `(OI)(CI)` grant propagates inherited ACEs onto the
-/// existing children at grant time, so a file inside the tree that also has a
-/// hard link outside it would carry the grant past the declared root.
-fn reject_aliased_entries(path: &Path) -> Result<fs::Metadata, String> {
+fn reject_multi_link_files(path: &Path) -> Result<(), String> {
     let metadata = fs::symlink_metadata(path)
         .map_err(|error| format!("inspect ACL root {} failed: {error}", path.display()))?;
     if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-        return Err(format!(
-            "ACL root contains a reparse point: {}",
-            path.display()
-        ));
+        return if metadata.file_attributes() & FILE_ATTRIBUTE_DIRECTORY != 0
+            && nested_reparse_is_ntfs_junction(path)?
+        {
+            Ok(())
+        } else {
+            Err(format!(
+                "ACL tree contains an unsupported reparse point: {}",
+                path.display()
+            ))
+        };
     }
     if metadata.is_dir() {
         for entry in fs::read_dir(path)
             .map_err(|error| format!("scan ACL root {} failed: {error}", path.display()))?
         {
             let entry = entry.map_err(|error| format!("scan ACL root failed: {error}"))?;
-            reject_aliased_entries(&entry.path())?;
+            reject_multi_link_files(&entry.path())?;
         }
     } else {
         reject_multi_link_file(path)?;
     }
-    Ok(metadata)
+    Ok(())
+}
+
+fn nested_reparse_is_ntfs_junction(path: &Path) -> Result<bool, String> {
+    let wide_path = wide(&path.to_string_lossy());
+    let handle = unsafe {
+        CreateFileW(
+            wide_path.as_ptr(),
+            FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(last_error(&format!(
+            "CreateFileW(inspect nested reparse point {})",
+            path.display()
+        )));
+    }
+    let mut data = [0_u8; 16 * 1024];
+    let mut bytes_returned = 0;
+    let queried = unsafe {
+        DeviceIoControl(
+            handle,
+            FSCTL_GET_REPARSE_POINT,
+            std::ptr::null(),
+            0,
+            data.as_mut_ptr().cast(),
+            data.len() as u32,
+            &mut bytes_returned,
+            std::ptr::null_mut(),
+        )
+    };
+    unsafe { CloseHandle(handle) };
+    if queried == 0 {
+        return Err(last_error(&format!(
+            "DeviceIoControl(FSCTL_GET_REPARSE_POINT {})",
+            path.display()
+        )));
+    }
+    is_ntfs_junction_reparse_data(&data[..bytes_returned as usize])
+}
+
+pub(crate) fn is_ntfs_junction_reparse_data(data: &[u8]) -> Result<bool, String> {
+    const REPARSE_DATA_HEADER_LEN: usize = 8;
+    const MOUNT_POINT_PATH_OFFSET: usize = 16;
+
+    let reparse_tag = u32::from_le_bytes(
+        data.get(..4)
+            .ok_or_else(|| "nested reparse point data is missing its tag".to_owned())?
+            .try_into()
+            .expect("reparse tag has a fixed width"),
+    );
+    if reparse_tag != IO_REPARSE_TAG_MOUNT_POINT {
+        return Ok(false);
+    }
+    let reparse_data_len = u16::from_le_bytes(
+        data.get(4..6)
+            .ok_or_else(|| "nested junction data is missing its length".to_owned())?
+            .try_into()
+            .expect("reparse data length has a fixed width"),
+    ) as usize;
+    let reparse_data_end = REPARSE_DATA_HEADER_LEN
+        .checked_add(reparse_data_len)
+        .ok_or_else(|| "nested junction data length overflows".to_owned())?;
+    if reparse_data_end < MOUNT_POINT_PATH_OFFSET || reparse_data_end > data.len() {
+        return Err("nested junction data has an invalid length".to_owned());
+    }
+    let substitute_offset = u16::from_le_bytes(
+        data.get(8..10)
+            .ok_or_else(|| "nested junction data is missing its substitute offset".to_owned())?
+            .try_into()
+            .expect("substitute offset has a fixed width"),
+    ) as usize;
+    let substitute_len = u16::from_le_bytes(
+        data.get(10..12)
+            .ok_or_else(|| "nested junction data is missing its substitute length".to_owned())?
+            .try_into()
+            .expect("substitute length has a fixed width"),
+    ) as usize;
+    if substitute_len % 2 != 0 {
+        return Err("nested junction substitute name has an odd byte length".to_owned());
+    }
+    let substitute_start = MOUNT_POINT_PATH_OFFSET
+        .checked_add(substitute_offset)
+        .ok_or_else(|| "nested junction substitute offset overflows".to_owned())?;
+    let substitute_end = substitute_start
+        .checked_add(substitute_len)
+        .ok_or_else(|| "nested junction substitute length overflows".to_owned())?;
+    let substitute = data
+        .get(substitute_start..substitute_end)
+        .filter(|_| substitute_end <= reparse_data_end)
+        .ok_or_else(|| "nested junction substitute name is out of range".to_owned())?;
+    let target = String::from_utf16(
+        &substitute
+            .chunks_exact(2)
+            .map(|unit| u16::from_le_bytes([unit[0], unit[1]]))
+            .collect::<Vec<_>>(),
+    )
+    .map_err(|error| format!("nested junction substitute name is invalid UTF-16: {error}"))?;
+    let target_path = target.strip_prefix(r"\??\").unwrap_or_default().as_bytes();
+    Ok(target_path.len() >= 3
+        && target_path[0].is_ascii_alphabetic()
+        && target_path[1] == b':'
+        && target_path[2] == b'\\')
 }
 
 /// Fails closed on files whose kernel link count exceeds one. The DACL that a
