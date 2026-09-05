@@ -1056,10 +1056,10 @@ const COPY = {
       },
       durationUsage: {
         title: 'Time breakdown',
-        center: 'Recorded Time',
+        center: 'Recorded time',
         segment: {
-          model: (count) => `LLM Calls × ${count}`,
-          tool: (count) => `Tool Runs × ${count}`,
+          model: (count) => `LLM calls × ${count}`,
+          tool: (count) => `Tool runs × ${count}`,
         },
       },
       coveragePartial: (parts) =>
