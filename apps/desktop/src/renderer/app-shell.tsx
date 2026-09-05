@@ -2875,7 +2875,7 @@ function AppShellContent({
                     {workHubEnabled && navSelection.section === 'sessions' && activeId ? (
                       <Button
                         className="workhub-return"
-                        label={uiLocale !== 'en' ? '返回 WorkHub' : 'Return to WorkHub'}
+                        label={shellCopy.returnToWorkHub}
                         variant="secondary"
                         size="sm"
                         onClick={openWorkHub}

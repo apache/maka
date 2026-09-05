@@ -86,13 +86,13 @@ export function buildWebSearchTool(executor: WebSearchExecutor): MakaTool {
   };
 }
 
-function webSearchError(reason: WebSearchErrorReason, message: string, query?: string) {
+function webSearchError(reason: WebSearchErrorReason, message?: string, query?: string) {
   return {
     kind: 'web_search_error' as const,
     ok: false as const,
     provider: 'tavily' as const,
     ...(query ? { query } : {}),
     reason,
-    message,
+    message: message?.trim() ? message : `Web search failed (${reason}).`,
   };
 }

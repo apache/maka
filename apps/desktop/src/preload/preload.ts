@@ -1261,15 +1261,11 @@ function executeWebSearchQuery(input: {
     return Promise.resolve(unsupportedWebSearchProvider());
   }
   if (input.provider === 'model') {
-    return Promise.resolve({
-      ok: false,
-      reason: 'unsupported_provider',
-      message: '原生联网搜索由任务中的主模型请求执行，不支持从设置页单独调用。',
-    });
+    return Promise.resolve({ ok: false, reason: 'unsupported_provider' });
   }
   const query = normalizeWebSearchQuery(input.query);
   if (!query) {
-    return Promise.resolve({ ok: false, reason: 'invalid_query', message: '请输入有效的搜索关键词。' });
+    return Promise.resolve({ ok: false, reason: 'invalid_query' });
   }
   const apiKey = webSearchCredentialOverride(input.apiKey);
   return selectedRuntimeHostScope(host).then((scope) =>
@@ -1289,11 +1285,7 @@ function executeWebSearchTest(input: {
     return Promise.resolve(unsupportedWebSearchProvider());
   }
   if (input.provider === 'model') {
-    return Promise.resolve({
-      ok: false,
-      reason: 'unsupported_provider',
-      message: '原生联网搜索由任务中的主模型请求执行，不需要单独测试搜索凭据。',
-    });
+    return Promise.resolve({ ok: false, reason: 'unsupported_provider' });
   }
   const apiKey = webSearchCredentialOverride(input.apiKey);
   return selectedRuntimeHostScope(host).then((scope) =>
@@ -1305,11 +1297,7 @@ function executeWebSearchTest(input: {
 }
 
 function unsupportedWebSearchProvider(): WebSearchResponse {
-  return {
-    ok: false,
-    reason: 'unsupported_provider',
-    message: '当前配置不支持这个搜索引擎，请选择 Tavily 后重试。',
-  };
+  return { ok: false, reason: 'unsupported_provider' };
 }
 
 function webSearchCredentialOverride(value: unknown): string | undefined {

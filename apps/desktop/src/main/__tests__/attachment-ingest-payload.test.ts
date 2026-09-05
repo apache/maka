@@ -24,7 +24,7 @@ import { encodeIngestItems } from '../../preload/attachment-ingest-payload.js';
 describe('encodeIngestItems', () => {
   test('rejects more than 8 items without reading any file bytes', async () => {
     const items = Array.from({ length: 9 }, (_, i) => ({ approvalId: `a${i}`, name: `f${i}.txt` }));
-    await assert.rejects(encodeIngestItems(items as never), /8/);
+    await assert.rejects(encodeIngestItems(items as never), /attachment_ingest:count_exceeded/);
   });
 
   test('rejects a File over 50MB without calling arrayBuffer', async () => {
@@ -38,7 +38,7 @@ describe('encodeIngestItems', () => {
         return new ArrayBuffer(0);
       },
     } as unknown as File;
-    await assert.rejects(encodeIngestItems([{ file: bigFile }]), /50/);
+    await assert.rejects(encodeIngestItems([{ file: bigFile }]), /attachment_ingest:size_exceeded/);
     assert.equal(arrayBufferCalls, 0, 'arrayBuffer must not be called for an oversized file');
   });
 
@@ -67,7 +67,7 @@ describe('encodeIngestItems', () => {
   test('rejects a raw base64 item that is neither a File nor an approval token', async () => {
     await assert.rejects(
       encodeIngestItems([{ name: 'forged', base64: 'AAAA' }] as never),
-      /无效/,
+      /attachment_ingest:payload_invalid/,
     );
   });
 });

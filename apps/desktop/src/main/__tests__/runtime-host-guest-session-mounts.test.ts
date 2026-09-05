@@ -325,7 +325,7 @@ test('removes failed activation desire instead of creating recoverable profile s
   });
 
   const result = await mounts.importInvitation(invitation('guest-two'), false, 'import-two');
-  assert.deepEqual(result.kind === 'error' ? result.reason : result.kind, 'peer_path_unavailable');
+  assert.deepEqual(result, { kind: 'error', reason: 'peer_path_unavailable' });
   assert.deepEqual(await store.read(), []);
   assert.equal(unmounted.length, 1);
 });
@@ -670,6 +670,25 @@ test('does not lose a catalog invalidation that races Guest activation', async (
   assert.equal((await store.read())[0]?.session, undefined);
   assert.equal(reads, 2);
   await mounts.close();
+});
+
+test('logs unexpected activation failures without returning Host details', async (context) => {
+  const diagnostics: string[] = [];
+  context.mock.method(console, 'error', (...values: unknown[]) => {
+    diagnostics.push(values.map(String).join(' '));
+  });
+  const mounts = service(memoryStore(), {
+    mount: async () => {
+      throw new Error('Authorization: Bearer very-secret-token');
+    },
+  });
+
+  const result = await mounts.importInvitation(invitation('guest-failed'), false, 'import-failed');
+
+  assert.deepEqual(result, { kind: 'error', reason: 'connection_failed' });
+  assert.equal(diagnostics.length, 1);
+  assert.match(diagnostics[0]!, /session-collaboration.*import failed/u);
+  assert.doesNotMatch(diagnostics[0]!, /very-secret-token/u);
 });
 
 test('settles admitted finalization before committing unmount desire', async () => {

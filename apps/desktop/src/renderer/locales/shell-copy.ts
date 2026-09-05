@@ -17,9 +17,7 @@
  * under the License.
  */
 
-import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
-
-import { type UiCatalog, type UiLocale } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, lookupCopy } from '@maka/core/ui-locale';
 
 import { type PermissionMode } from '@maka/core/permission';
 
@@ -28,6 +26,8 @@ import { type SettingsSection } from '@maka/core/settings';
 import { type SlashCommandIdForSurface } from '@maka/core/slash-command-catalog';
 
 import { type GoalStatus } from '@maka/core/goal';
+import { redactSecrets } from '@maka/core/redaction';
+import type { AttachmentIngestBlockedCode } from '@maka/core/attachments';
 
 export const STATIC_COMMAND_IDS = [
   'action:new-chat',
@@ -344,6 +344,7 @@ type ShellCopy = {
     bypassCancelLabel: string;
     permissionFailedTitle: string;
     permissionFallback: string;
+    attachmentIngestBlocked: Record<AttachmentIngestBlockedCode, string>;
     modelFailedTitle: string;
     modelFallback: string;
     thinkingFailedTitle: string;
@@ -435,6 +436,7 @@ type ShellCopy = {
     workspaceActions: string;
   };
   app: {
+    returnToWorkHub: string;
     loadingWorkbarLabel: string;
     loadingWorkbar: string;
     useSkillPrompt(skillName: string): string;
@@ -1005,6 +1007,16 @@ const SHELL_COPY_BY_LOCALE = {
       bypassCancelLabel: '保持自动',
       permissionFailedTitle: '切换权限模式失败',
       permissionFallback: '权限模式暂时无法切换，请稍后重试。',
+      attachmentIngestBlocked: {
+        count_exceeded: '附件数量超过 8 个',
+        size_exceeded: '附件大小超过 50MB',
+        payload_invalid: '附件信息无效。',
+        item_too_large: '单个附件超出大小限制。',
+        items_invalid: '附件信息无效，请重新选择文件后再发送。',
+        count_limit: '一次最多添加 8 个附件。',
+        duplicate_source: '附件来源重复，请勿重复添加同一文件。',
+        source_expired: '附件来源已过期或无效，请重新选择文件后再发送。',
+      },
       modelFailedTitle: '切换模型失败',
       modelFallback: '模型暂时无法切换，请稍后重试。',
       thinkingFailedTitle: '切换思考级别失败',
@@ -1169,6 +1181,7 @@ const SHELL_COPY_BY_LOCALE = {
       workspaceActions: '工作区辅助操作',
     },
     app: {
+      returnToWorkHub: '返回 WorkHub',
       loadingWorkbarLabel: '正在加载任务工作栏',
       loadingWorkbar: '正在加载任务工作栏…',
       useSkillPrompt: (skillName: string) => `使用 ${skillName} 技能：`,
@@ -1507,6 +1520,16 @@ const SHELL_COPY_BY_LOCALE = {
       bypassCancelLabel: '保持自動',
       permissionFailedTitle: '切換權限模式失敗',
       permissionFallback: '權限模式暫時無法切換，請稍後重試。',
+      attachmentIngestBlocked: {
+        count_exceeded: '附件數量超過 8 個',
+        size_exceeded: '附件大小超過 50MB',
+        payload_invalid: '附件資訊無效。',
+        item_too_large: '單一附件超出大小限制。',
+        items_invalid: '附件資訊無效，請重新選擇檔案後再傳送。',
+        count_limit: '一次最多新增 8 個附件。',
+        duplicate_source: '附件來源重複，請勿重複新增同一檔案。',
+        source_expired: '附件來源已過期或無效，請重新選擇檔案後再傳送。',
+      },
       modelFailedTitle: '切換模型失敗',
       modelFallback: '模型暫時無法切換，請稍後重試。',
       thinkingFailedTitle: '切換思考級別失敗',
@@ -1671,6 +1694,7 @@ const SHELL_COPY_BY_LOCALE = {
       workspaceActions: '工作區輔助操作',
     },
     app: {
+      returnToWorkHub: '返回 WorkHub',
       loadingWorkbarLabel: '正在載入任務工作欄',
       loadingWorkbar: '正在載入任務工作欄…',
       useSkillPrompt: (skillName: string) => `使用 ${skillName} 技能：`,
@@ -2015,6 +2039,16 @@ const SHELL_COPY_BY_LOCALE = {
       bypassCancelLabel: 'Keep Auto',
       permissionFailedTitle: 'Could not change permission mode',
       permissionFallback: 'The permission mode could not be changed. Try again later.',
+      attachmentIngestBlocked: {
+        count_exceeded: 'More than 8 attachments.',
+        size_exceeded: 'Attachment larger than 50MB.',
+        payload_invalid: 'The attachment payload is invalid.',
+        item_too_large: 'One attachment exceeds the size limit.',
+        items_invalid: 'The attachment list is invalid. Pick the files again and resend.',
+        count_limit: 'At most 8 attachments per message.',
+        duplicate_source: 'Duplicate attachment source. Do not add the same file twice.',
+        source_expired: 'The attachment source expired or is invalid. Pick the files again and resend.',
+      },
       modelFailedTitle: 'Could not change model',
       modelFallback: 'The model could not be changed. Try again later.',
       thinkingFailedTitle: 'Could not change thinking level',
@@ -2218,6 +2252,7 @@ const SHELL_COPY_BY_LOCALE = {
       workspaceActions: 'Workspace actions',
     },
     app: {
+      returnToWorkHub: 'Return to WorkHub',
       loadingWorkbarLabel: 'Loading task workbar',
       loadingWorkbar: 'Loading task workbar…',
       useSkillPrompt: (skillName: string) => `Use the ${skillName} skill: `,
@@ -2320,7 +2355,19 @@ export function getShellCopy(locale: UiLocale): ShellCopy {
 }
 
 export function localizedShellErrorMessage(error: unknown, fallback: string, locale: UiLocale): string {
-  return generalizedErrorMessageForLocale(error, fallback, locale);
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+  const maps = getShellCopy(locale).sessionSettingsActions;
+  // The reason token survives the Electron IPC wrapper.
+  const blocked = lookupCopy(
+    maps.attachmentIngestBlocked,
+    message.match(/attachment_ingest:([a-z_]+)/u)?.[1],
+  );
+  if (blocked) return blocked;
+  // Diagnostics are inlined: a depended-on copy catalog may only hold bare
+  // package runtime imports.
+  const detail = error instanceof Error ? (error.stack ?? `${error.name}: ${error.message}`) : String(error);
+  console.error('[desktop] operation failed:', redactSecrets(detail));
+  return fallback;
 }
 
 export function sessionSettingFailureCopy(

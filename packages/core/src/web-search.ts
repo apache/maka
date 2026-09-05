@@ -53,7 +53,7 @@ export type WebSearchResponse =
       readonly provider?: WebSearchProvider;
       readonly results: ReadonlyArray<WebSearchResultRow>;
     }
-  | { readonly ok: false; readonly reason: WebSearchErrorReason; readonly message: string };
+  | { readonly ok: false; readonly reason: WebSearchErrorReason; readonly message?: string };
 
 export const WEB_SEARCH_QUERY_MAX_CHARS = 200;
 export const WEB_SEARCH_DEFAULT_LIMIT = 5;

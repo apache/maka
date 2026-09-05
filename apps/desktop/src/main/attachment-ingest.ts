@@ -31,6 +31,7 @@ import {
 import type { ArtifactKind } from '@maka/core/artifacts';
 import type { AttachmentRef } from '@maka/core/events';
 import type { AttachmentApprovalRegistry } from './attachment-approval.js';
+import { attachmentIngestBlocked } from '@maka/core/attachments';
 
 export type AttachmentIngestFile =
   | { path: string; mimeType?: string; size: number }
@@ -154,7 +155,7 @@ export async function readFileCapped(path: string, maxBytes: number): Promise<Ui
   try {
     const buf = Buffer.alloc(maxBytes + 1);
     const { bytesRead } = await fh.read(buf, 0, maxBytes + 1, 0);
-    if (bytesRead > maxBytes) throw new Error('单个附件超出大小限制。');
+    if (bytesRead > maxBytes) throw attachmentIngestBlocked('item_too_large');
     return buf.subarray(0, bytesRead);
   } finally {
     await fh.close();
@@ -188,23 +189,23 @@ export async function resolveIngestItems(input: {
 }): Promise<AttachmentIngestFile[]> {
   const maxAttachments = input.maxAttachments ?? MAX_ATTACHMENT_COUNT;
   const maxBytes = input.maxBytes ?? MAX_ATTACHMENT_BYTES;
-  if (!Array.isArray(input.items)) throw new Error('附件信息无效，请重新选择文件后再发送。');
-  if (input.items.length > maxAttachments) throw new Error('一次最多添加 8 个附件。');
+  if (!Array.isArray(input.items)) throw attachmentIngestBlocked('items_invalid');
+  if (input.items.length > maxAttachments) throw attachmentIngestBlocked('count_limit');
   // Phase 1: validate every item with no side effects. Approval tokens are
   // peeked (not consumed) so a later invalid item does not burn earlier ones.
   const planned: AttachmentIngestFile[] = [];
   const approvalIds: string[] = [];
   const seenApprovalIds = new Set<string>();
   for (const item of input.items) {
-    if (!item || typeof item !== 'object') throw new Error('附件信息无效，请重新选择文件后再发送。');
+    if (!item || typeof item !== 'object') throw attachmentIngestBlocked('items_invalid');
     const record = item as Record<string, unknown>;
     if (typeof record.approvalId === 'string' && typeof record.name === 'string') {
-      if (seenApprovalIds.has(record.approvalId)) throw new Error('附件来源重复，请勿重复添加同一文件。');
+      if (seenApprovalIds.has(record.approvalId)) throw attachmentIngestBlocked('duplicate_source');
       seenApprovalIds.add(record.approvalId);
       const approved = input.approvals.peekApproval(input.senderId, record.approvalId);
-      if (!approved) throw new Error('附件来源已过期或无效，请重新选择文件后再发送。');
+      if (!approved) throw attachmentIngestBlocked('source_expired');
       const statResult = await input.stat(approved.path);
-      if (statResult.size > maxBytes) throw new Error('单个附件超出大小限制。');
+      if (statResult.size > maxBytes) throw attachmentIngestBlocked('item_too_large');
       const mimeType = pickMimeType(record.mimeType, approved.mimeType);
       planned.push({ path: approved.path, ...(mimeType ? { mimeType } : {}), size: statResult.size });
       approvalIds.push(record.approvalId);
@@ -215,21 +216,21 @@ export async function resolveIngestItems(input: {
       // string must not be decoded into main memory. base64 encodes 3 bytes
       // per 4 chars, so ceil(maxBytes*4/3)+padding is a safe upper bound.
       const maxBase64Len = Math.ceil((maxBytes * 4) / 3) + 4;
-      if (record.base64.length > maxBase64Len) throw new Error('单个附件超出大小限制。');
+      if (record.base64.length > maxBase64Len) throw attachmentIngestBlocked('item_too_large');
       const content = Buffer.from(record.base64, 'base64');
-      if (content.byteLength > maxBytes) throw new Error('单个附件超出大小限制。');
+      if (content.byteLength > maxBytes) throw attachmentIngestBlocked('item_too_large');
       const mimeType = typeof record.mimeType === 'string' && record.mimeType.length > 0 ? record.mimeType : undefined;
       planned.push({ name: record.name, ...(mimeType ? { mimeType } : {}), size: content.byteLength, content });
       continue;
     }
-    throw new Error('附件信息无效，请重新选择文件后再发送。');
+    throw attachmentIngestBlocked('items_invalid');
   }
   // Phase 2: consume all approval tokens now that every item validated. Peek
   // passed, so each consume succeeds unless a concurrent request raced on the
   // same token; in that rare case we surface it as an expired-token error.
   for (const id of approvalIds) {
     if (!input.approvals.consumeApproval(input.senderId, id)) {
-      throw new Error('附件来源已过期或无效，请重新选择文件后再发送。');
+      throw attachmentIngestBlocked('source_expired');
     }
   }
   return planned;

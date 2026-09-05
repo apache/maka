@@ -875,6 +875,20 @@ export type RuntimeContinuationLifecycleEvent =
       errorClass: string;
     };
 
+export type SessionControlBlockedCode =
+  | 'permission_turn_running'
+  | 'permission_tool_pending'
+  | 'boundary_turn_running'
+  | 'boundary_request_pending'
+  | 'collaboration_turn_running'
+  | 'collaboration_tool_pending'
+  | 'plan_mode_plan_running'
+  | 'plan_mode_awaiting_approval';
+
+function sessionControlBlocked(code: SessionControlBlockedCode): Error {
+  return new Error(`session_control_blocked:${code}`);
+}
+
 export class SessionManager {
   private readonly runtimeKernel: RuntimeKernelLike;
   private readonly runtimeLedgerRepair?: RuntimeLedgerRepair;
@@ -1621,10 +1635,10 @@ export class SessionManager {
     }
 
     if (this.runtimeKernel.hasActiveRuns(sessionId)) {
-      throw new Error('当前任务正在运行，等结束后再切换权限模式。');
+      throw sessionControlBlocked('permission_turn_running');
     }
     if (previous.status === 'waiting_for_user') {
-      throw new Error('当前有工具调用正在等待确认，处理后再切换权限模式。');
+      throw sessionControlBlocked('permission_tool_pending');
     }
 
     const labels = leavingDeepResearch
@@ -1654,11 +1668,11 @@ export class SessionManager {
     kind: 'managed' | 'bypass',
   ): Promise<ExecutionBoundary> {
     if (this.runtimeKernel.hasActiveRuns(sessionId)) {
-      throw new Error('当前任务正在运行，等结束后再切换沙箱边界。');
+      throw sessionControlBlocked('boundary_turn_running');
     }
     const header = await this.deps.store.readHeader(sessionId);
     if (header.status === 'waiting_for_user') {
-      throw new Error('当前有沙箱边界请求正在等待确认，处理后再切换。');
+      throw sessionControlBlocked('boundary_request_pending');
     }
     const current = await this.deps.store.readExecutionBoundary(sessionId);
     const boundary = await this.commitExecutionBoundaryTransition(sessionId, current, kind);
@@ -1843,20 +1857,20 @@ export class SessionManager {
       throw new PlanConflictError('Linked child Sessions cannot enter Plan mode');
     }
     if (this.runtimeKernel.hasActiveRuns(sessionId)) {
-      throw new Error('当前任务正在运行，等结束后再切换协作模式。');
+      throw sessionControlBlocked('collaboration_turn_running');
     }
     if (previous.status === 'waiting_for_user') {
-      throw new Error('当前有工具调用正在等待确认，处理后再切换协作模式。');
+      throw sessionControlBlocked('collaboration_tool_pending');
     }
     const planState = await this.requirePlanStore().readState(sessionId);
     if (mode === 'plan' && planState.activeExecutionId) {
-      throw new Error('当前计划仍在执行，结束或中断后才能切换到 Plan Mode。');
+      throw sessionControlBlocked('plan_mode_plan_running');
     }
     const latestProposal = planState.proposals.find(
       (proposal) => proposal.proposalId === planState.latestProposalId,
     );
     if (mode === 'agent' && latestProposal?.status === 'pending_approval') {
-      throw new Error('当前方案正在等待审批，请明确放弃方案后再退出 Plan Mode。');
+      throw sessionControlBlocked('plan_mode_awaiting_approval');
     }
 
     const next = await this.deps.store.updateHeader(sessionId, {

@@ -22,6 +22,7 @@ import { Banner, EmptyState, Spinner } from '@astryxdesign/core';
 import { Button } from '@astryxdesign/core/Button';
 import { TextInput } from '@astryxdesign/core/TextInput';
 import { useUiLocale } from '@maka/ui';
+import { ExpectedOperationError, unexpectedErrorFallback } from './application/contracts/operation-diagnostics.js';
 import type {
   CreateWorkBoardItemInput,
   WorkBoardItem,
@@ -31,6 +32,7 @@ import type {
 import { ListTodo } from '@maka/ui/icons';
 import { useWorkBoard } from './use-work-board.js';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
+import { getWorkBoardErrorCopy } from './locales/work-board-error-copy.js';
 
 type WorkBoardPanelCopy = ReturnType<typeof getDesktopConversationCopy>['workBoardPanel'];
 
@@ -139,7 +141,9 @@ export function WorkBoardPanel(props: {
   projectId: string | null;
   projectAliases?: readonly string[];
 }) {
-  const copy = getDesktopConversationCopy(useUiLocale()).workBoardPanel;
+  const locale = useUiLocale();
+  const copy = getDesktopConversationCopy(locale).workBoardPanel;
+  const errorCopy = getWorkBoardErrorCopy(locale);
   const [filter, setFilter] = useState<'inbox' | 'project'>('inbox');
   const projectScopeIds = useMemo(() => {
     if (props.projectId === null) return undefined;
@@ -175,7 +179,11 @@ export function WorkBoardPanel(props: {
       await action();
       return true;
     } catch (error) {
-      setActionError(error instanceof Error ? error.message : copy.actionFailed);
+      setActionError(
+        error instanceof ExpectedOperationError && Object.hasOwn(errorCopy, error.code)
+          ? errorCopy[error.code as keyof typeof errorCopy]
+          : unexpectedErrorFallback(error, copy.actionFailed, 'work-board'),
+      );
       return false;
     }
   };
@@ -283,7 +291,7 @@ export function WorkBoardPanel(props: {
           role="alert"
           className="maka-work-board-message"
           title={copy.loadFailed}
-          description={board.error}
+          description={errorCopy[board.error]}
           endContent={
             <Button size="sm" variant="ghost" label={copy.retry} onClick={board.retry} />
           }
@@ -296,7 +304,7 @@ export function WorkBoardPanel(props: {
               role="alert"
               className="maka-work-board-message"
               title={copy.loadFailed}
-              description={board.continuationError}
+              description={errorCopy[board.continuationError]}
               endContent={
                 <Button
                   size="sm"
