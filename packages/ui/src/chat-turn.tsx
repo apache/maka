@@ -74,7 +74,6 @@ import { InlineReferenceText } from './inline-reference.js';
 import { DirectoryReferenceChip } from './directory-reference-chip.js';
 import { redactSecrets } from './redact.js';
 import { useAttachmentImageSource } from './attachment-image.js';
-import type { UiLocale } from '@maka/core/ui-locale';
 import { resolvePreviewKind } from './artifact-preview-registry.js';
 
 export function LocalizedChatMessage({

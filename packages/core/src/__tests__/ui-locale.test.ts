@@ -75,7 +75,7 @@ describe('UI locale', () => {
     for (const locale of UI_LOCALES) {
       assert.ok(isUiLocale(locale), locale);
       assert.equal(resolveSystemUiLocale([locale]), locale);
-      assert.equal(uiLocaleToIntlLocale(locale), locale);
+      assert.equal(uiLocaleToIntlLocale(locale), locale === 'ko' ? 'ko-KR' : locale);
     }
     const intlLocales = UI_LOCALES.map(uiLocaleToIntlLocale);
     assert.equal(new Set(intlLocales).size, UI_LOCALES.length);
@@ -91,12 +91,14 @@ describe('UI message catalogs', () => {
     }>()({
       en: { title: 'Status', detail: { ready: 'Ready', waiting: 'Waiting' } },
       'zh-CN': { title: '状态', detail: { ready: '就绪' } },
+      ko: { title: 'Status', detail: { ready: 'Ready', waiting: 'Waiting' } },
     });
 
     assert.deepEqual(resolveUiMessageCatalog(catalog), {
       en: { title: 'Status', detail: { ready: 'Ready', waiting: 'Waiting' } },
       'zh-CN': { title: '状态', detail: { ready: '就绪', waiting: 'Waiting' } },
       'zh-TW': { title: 'Status', detail: { ready: 'Ready', waiting: 'Waiting' } },
+      ko: { title: 'Status', detail: { ready: 'Ready', waiting: 'Waiting' } },
     });
   });
 

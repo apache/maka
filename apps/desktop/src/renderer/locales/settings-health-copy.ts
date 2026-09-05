@@ -134,6 +134,65 @@ const layersEn: HealthCenterCopy['layers'] = {
     description: 'Health of workspace files, JSONL, SQLite, and other local storage.'
   }
 };
+
+const layersZhTw: HealthCenterCopy['layers'] = {
+  configuration: { label: '設定', description: '設定頁中的必填項目是否完整。' },
+  validation: { label: '驗證', description: '憑證與端點的連線測試結果；驗證通過不代表傳送路徑可用。' },
+  permission: { label: '系統權限', description: '所需的 OS 與 TCC 權限是否已授權。' },
+  feature: { label: '功能狀態', description: '功能是否已明確啟用，以及目前是否可用。' },
+  action_approval: { label: '操作核准', description: '工具呼叫與高風險操作的核准原則狀態。' },
+  memory_acceptance: { label: '記憶寫入', description: '是否已接受記憶寫入約定，以及是否已啟用寫入。' },
+  runtime_probe: { label: '執行狀態探測', description: '最近一次實際傳送、串流或事件接收的探測結果。' },
+  storage: { label: '儲存空間', description: '工作區檔案、JSONL、SQLite 和其他本機儲存空間的健康狀態。' },
+};
+
+const healthMessageZhTw: Readonly<Record<string, string>> = {
+  '连接已关闭。': '連線已關閉。',
+  '等待选择默认模型。': '等待選擇預設模型。',
+  '凭据与端点验证已通过。': '憑證與端點驗證已通過。',
+  '连接需要重新修复认证。': '連線需要重新完成驗證。',
+  '上次连接验证失败。': '上次連線驗證失敗。',
+  '没有启用任何模型。': '尚未啟用任何模型。',
+  '不是工作区的默认模型来源。': '不是工作區的預設模型來源。',
+  '等待验证连接。': '等待驗證連線。',
+  '等待完成发送运行态探测。': '等待完成傳送執行狀態探測。',
+  '能力门禁已满足。': '能力門檻已滿足。',
+  '能力已关闭或暂停。': '能力已關閉或暫停。',
+  '等待补齐能力配置。': '等待完成能力設定。',
+  '能力被必要系统权限阻塞。': '能力受到必要系統權限阻擋。',
+  '能力运行态探测处于降级状态。': '能力執行狀態探測目前處於降級狀態。',
+  '最近一次发送已完成。': '最近一次傳送已完成。',
+  '最近一次发送已由用户停止。': '最近一次傳送已由使用者停止。',
+  '最近一次发送失败。': '最近一次傳送失敗。',
+};
+
+const healthDetailZhTw: Readonly<Record<string, string>> = {
+  '这是连接验证结果，不代表发送、流式输出或中断通路已经运行通过。': '這是連線驗證結果，不代表傳送、串流輸出或中斷路徑已實際執行成功。',
+  '在 设置 · 模型 的连接详情里启用至少一个模型后才能使用该连接。': '請在「設定・模型」的連線詳細資料中啟用至少一個模型，才能使用此連線。',
+  '凭据验证与真实发送、流式输出、中断通路是两层健康信号。': '憑證驗證與實際傳送、串流輸出、中斷路徑是兩層不同的健康訊號。',
+  '该能力当前已关闭。': '此能力目前已關閉。',
+  '等待填写平台凭据。': '等待填寫平台憑證。',
+  '仅 macOS 系统权限可探测。': '只能探測 macOS 系統權限。',
+  '系统未提供可直接读取的授权状态。': '系統未提供可直接讀取的授權狀態。',
+  '状态详情请见对应设置页。': '狀態詳細資料請參閱對應的設定頁。',
+};
+
+function healthSignalLabelZhTw(signal: HealthSignal): string {
+  return signal.label.endsWith(' 运行态')
+    ? `${signal.label.slice(0, -' 运行态'.length)} 執行狀態`
+    : signal.label;
+}
+
+function healthSignalMessageZhTw(signal: HealthSignal): string {
+  return healthMessageZhTw[signal.message]
+    ?? (/[㐀-鿿]/u.test(signal.message) ? '健康狀態已更新。' : signal.message);
+}
+
+function healthSignalDetailZhTw(signal: HealthSignal): string | undefined {
+  if (!signal.detail) return undefined;
+  return healthDetailZhTw[signal.detail]
+    ?? (/[㐀-鿿]/u.test(signal.detail) ? '詳細資料請參閱對應的設定頁。' : signal.detail);
+}
 const SETTINGS_HEALTH_COPY_BASE = {
   'zh-CN': {
     loading: '正在加载健康快照',

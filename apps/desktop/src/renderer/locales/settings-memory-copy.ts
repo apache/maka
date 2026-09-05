@@ -362,7 +362,7 @@ const SETTINGS_MEMORY_COPY_BASE = {
   }),
   'zh-TW': makeCopy('zh-TW', zhTwText, {
     origins: { manual: '手動記錄', imported: '匯入記錄', extracted: '確認提取', unknown: '手寫條目' }, entryStatuses: { draft: '草稿', review_required: '待確認', active: '生效', archived: '已歸檔', rejected: '已拒絕', unknown: '未識別' }, backupKinds: { reset: '重置前備份', restore: '恢復前備份', save: '儲存前備份' }, memoryStatuses: { ok: '本地檔案已就緒', disabled: '已關閉', safe_mode: '安全模式', incognito_blocked: '隱身停用', error: '讀取失敗' }, promptBlocked: { disabled: '本地記憶已關閉。', incognito: '隱身模式下不會提供本地記憶。', safeMode: 'MEMORY.md 過大，目前不會提供。', agentRead: '模型上下文讀取未開啟。' }, backupOversize: '備份過大，無法預覽條目', previewOversize: '草稿過大，條目預覽已暫停；儲存前請先刪減 MEMORY.md 內容。', previewTruncationMarker: '[本地記憶已按長度截斷]',
-  }
+  }),
   en: makeCopy('en-US', enText, {
     origins: {
       manual: 'Manual entry',
@@ -580,7 +580,7 @@ export function getMemorySettingsCopy(locale: UiLocale): MemorySettingsCopy {
 }
 function makeCopy(intlLocale: string, text: Record<MemoryTextKey, string>, values: Pick<MemorySettingsCopy, 'origins' | 'entryStatuses' | 'backupKinds' | 'memoryStatuses' | 'promptBlocked' | 'backupOversize' | 'previewOversize' | 'previewTruncationMarker'>): MemorySettingsCopy {
   const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
-  const isZh = intlLocale === 'zh-CN';
+  const isZh = intlLocale === 'zh-CN' || intlLocale === 'zh-TW';
   const isKo = intlLocale === 'ko-KR';
   return {
     intlLocale,

@@ -160,7 +160,7 @@ test('Korean catalog additions do not leak Korean into English or leave key dyna
   assert.equal(getArtifactCopy('ko').preview.externalLinks(2), '이 미리보기에서는 외부 링크가 비활성화되었습니다. · 외부 링크 2개');
   assert.equal(getUsageSettingsCopy('ko').recordCount(2), '2개 기록');
   assert.deepEqual(getSettingsPreferencesCopy('en').personalization.localeOptions.at(-1), ['ko', '한국어']);
-  assert.deepEqual(getSettingsPreferencesCopy('zh').personalization.localeOptions.at(-1), ['ko', '한국어']);
+  assert.deepEqual(getSettingsPreferencesCopy('zh-CN').personalization.localeOptions.at(-1), ['ko', '한국어']);
 });
 
 test('Korean representative surfaces preserve interpolation', () => {

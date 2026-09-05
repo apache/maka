@@ -119,7 +119,7 @@ const ZH_CN = {
 };
 
 type SessionCollaborationCopy = {
-  readonly [Key in keyof typeof ZH]: (typeof ZH)[Key] extends (
+  readonly [Key in keyof typeof ZH_CN]: (typeof ZH_CN)[Key] extends (
     ...args: infer Args
   ) => string
     ? (...args: Args) => string

@@ -232,6 +232,13 @@ const GENERALIZED_ERROR_COPY: UiCatalog<Record<GeneralizedErrorCategory, string>
     provider: 'Provider returned an error',
     network: 'Network error',
   },
+  ko: {
+    timeout: '요청 시간이 초과되었습니다',
+    rateLimit: '요청 한도를 초과했습니다',
+    authentication: '인증에 실패했습니다',
+    provider: '공급자가 오류를 반환했습니다',
+    network: '네트워크 오류',
+  },
 };
 
 function classifyGeneralizedError(error: unknown): GeneralizedErrorCategory | null {

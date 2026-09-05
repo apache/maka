@@ -272,7 +272,7 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
   'zh-CN': {
     personalization: {
       saveFailed: '保存失败', displayName: '显示名称', displayNameHelp: 'Maka 在聊天里会以这个名字称呼你。留空就用默认的“你”。', displayNamePlaceholder: '例如：JK', displayNameUnset: '未设置，Maka 会称呼你“你”', displayNameChange: '更改', displayNameSet: '设置',
-      interfaceLanguage: '界面语言', interfaceLanguageHelp: '选择 Maka 界面的显示语言。切换后立即生效，重启后保持。', localeOptions: [['auto', '跟随系统'], ['zh', '中文'], ['en', 'English'], ['ko', '한국어']],
+      interfaceLanguage: '界面语言', interfaceLanguageHelp: '选择 Maka 界面的显示语言。切换后立即生效，重启后保持。', localeOptions: [['auto', '跟随系统'], ['zh-CN', '中文'], ['en', 'English'], ['ko', '한국어']],
       assistantTone: '助手语气偏好', assistantToneHelp: '最多 500 字，只影响回答的语气和风格。权限确认与安全规则不受影响；改动会自动保存。', assistantTonePlaceholder: '例如：技术严谨、偏简洁、不要 emoji。',
     },
     sections: {
@@ -369,7 +369,7 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
   },
   en: {
     personalization: {
-      saveFailed: 'Could not save', displayName: 'Display name', displayNameHelp: 'Maka uses this name when addressing you. Leave it blank to use “you”.', displayNamePlaceholder: 'For example: JK', displayNameUnset: 'Not set — Maka will say “you”', displayNameChange: 'Change', displayNameSet: 'Set', interfaceLanguage: 'Interface language', interfaceLanguageHelp: 'Choose the language used by Maka. Changes apply immediately and persist after restart.', localeOptions: [['auto', 'Follow system'], ['zh', '中文'], ['en', 'English'], ['ko', '한국어']], assistantTone: 'Assistant tone', assistantToneHelp: 'Up to 500 characters. This changes response style only; permission and safety rules still apply. Changes save automatically.', assistantTonePlaceholder: 'For example: technically rigorous, concise, and no emoji.',
+      saveFailed: 'Could not save', displayName: 'Display name', displayNameHelp: 'Maka uses this name when addressing you. Leave it blank to use “you”.', displayNamePlaceholder: 'For example: JK', displayNameUnset: 'Not set — Maka will say “you”', displayNameChange: 'Change', displayNameSet: 'Set', interfaceLanguage: 'Interface language', interfaceLanguageHelp: 'Choose the language used by Maka. Changes apply immediately and persist after restart.', localeOptions: [['auto', 'Follow system'], ['zh-CN', '中文'], ['en', 'English'], ['ko', '한국어']], assistantTone: 'Assistant tone', assistantToneHelp: 'Up to 500 characters. This changes response style only; permission and safety rules still apply. Changes save automatically.', assistantTonePlaceholder: 'For example: technically rigorous, concise, and no emoji.',
     },
     sections: {
       identity: 'Identity', identityHelp: 'How Maka addresses you, plus interface language and response tone.',
@@ -521,7 +521,7 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
   },
   ko: {
     personalization: {
-      saveFailed: '저장하지 못했습니다', displayName: '표시 이름', displayNameHelp: 'Maka가 사용자를 부를 때 사용할 이름입니다. 비워 두면 “사용자”라고 표시합니다.', displayNamePlaceholder: '예: 민준', displayNameUnset: '설정되지 않음 — Maka가 “사용자”라고 표시합니다', displayNameChange: '변경', displayNameSet: '설정', interfaceLanguage: '인터페이스 언어', interfaceLanguageHelp: 'Maka에서 사용할 언어를 선택하세요. 변경 사항은 즉시 적용되며 다시 시작해도 유지됩니다.', localeOptions: [['auto', '시스템 설정 따름'], ['zh', '中文'], ['en', 'English'], ['ko', '한국어']], assistantTone: '어시스턴트 말투', assistantToneHelp: '최대 500자입니다. 응답 스타일만 변경하며 권한 및 안전 규칙에는 영향을 주지 않습니다. 변경 사항은 자동 저장됩니다.', assistantTonePlaceholder: '예: 기술적으로 엄밀하고 간결하며 이모지 없이.',
+      saveFailed: '저장하지 못했습니다', displayName: '표시 이름', displayNameHelp: 'Maka가 사용자를 부를 때 사용할 이름입니다. 비워 두면 “사용자”라고 표시합니다.', displayNamePlaceholder: '예: 민준', displayNameUnset: '설정되지 않음 — Maka가 “사용자”라고 표시합니다', displayNameChange: '변경', displayNameSet: '설정', interfaceLanguage: '인터페이스 언어', interfaceLanguageHelp: 'Maka에서 사용할 언어를 선택하세요. 변경 사항은 즉시 적용되며 다시 시작해도 유지됩니다.', localeOptions: [['auto', '시스템 설정 따름'], ['zh-CN', '中文'], ['en', 'English'], ['ko', '한국어']], assistantTone: '어시스턴트 말투', assistantToneHelp: '최대 500자입니다. 응답 스타일만 변경하며 권한 및 안전 규칙에는 영향을 주지 않습니다. 변경 사항은 자동 저장됩니다.', assistantTonePlaceholder: '예: 기술적으로 엄밀하고 간결하며 이모지 없이.',
     },
     sections: {
       identity: 'Identity', identityHelp: 'How Maka addresses you, plus interface language and response tone.',

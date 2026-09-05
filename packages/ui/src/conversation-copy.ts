@@ -59,7 +59,7 @@ export function formatRetryDelay(seconds: number, locale: UiLocale): string {
   const h = Math.floor((s % 86_400) / 3_600);
   const m = Math.floor((s % 3_600) / 60);
   const sec = s % 60;
-  if (locale !== 'en') {
+  if (locale === 'zh-CN' || locale === 'zh-TW') {
     const parts: string[] = [];
     if (d > 0) parts.push(`${d}天`);
     if (h > 0) parts.push(`${h}${locale === 'zh-TW' ? '小時' : '小时'}`);

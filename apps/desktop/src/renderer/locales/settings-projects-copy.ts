@@ -628,7 +628,6 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE_BASE = {
       remoteAccessOn: '已開啟',
       remoteAccessOff: '未開啟',
       enableRemoteAccess: '開啟',
-      remoteAccessEnabling: '正在準備並開啟遠端存取；首次可能需要一點時間。',
       disableRemoteAccess: '關閉連線',
       disableRemoteAccessConfirm: '關閉遠端連線？',
       disableRemoteAccessDescription: '這只會停止 Direct peer 連線；已授予的分享存取權仍會保留。',

@@ -351,6 +351,29 @@ const HOST_RESOURCE_COPY = {
     ) =>
       `${mount} · ${available} available / ${total}${filesystem ? ` · ${filesystem}` : ''}`,
   },
+  ko: {
+    title: 'Host 리소스',
+    open: 'Host 리소스 보기',
+    done: '완료',
+    unavailable: 'Host가 연결되어 있을 때 리소스 정보를 사용할 수 있습니다',
+    cpu: 'CPU',
+    cpuUsage: 'CPU 사용량',
+    memory: '메모리',
+    graphics: '그래픽 어댑터',
+    storage: '저장 공간',
+    noGraphicsAdapter: '검색되지 않음',
+    graphicsUnknown: '확인할 수 없음',
+    sharedMemory: '공유 메모리',
+    memoryUnknown: '메모리 알 수 없음',
+    network: '네트워크 처리량',
+    measuring: '측정 중…',
+    logicalProcessors: (count: number, available: number) =>
+      count === available ? `${count}개 논리 프로세서` : `${count}개 중 ${available}개 논리 프로세서 사용 가능`,
+    networkRate: (interfaceName: string, received: string, transmitted: string) =>
+      `${interfaceName} · ↓ ${received}/s · ↑ ${transmitted}/s`,
+    storageVolume: (mount: string, available: string, total: string, filesystem: string | undefined) =>
+      `${mount} · ${available} 사용 가능 / ${total}${filesystem ? ` · ${filesystem}` : ''}`,
+  },
 } satisfies Record<UiLocale, unknown>;
 
 function hostResourceCopy(locale: UiLocale) {
