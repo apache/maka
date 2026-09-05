@@ -19,7 +19,6 @@
 
 import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
-import type { CollaborationTurnRequestQueryResult } from '@maka/runtime-host/protocol';
 import {
   encodeDesktopCollaborationInvitation,
   type DesktopCollaborationConnectionTarget,
@@ -47,6 +46,7 @@ export function registerRuntimeHostCollaborationIpc(
     | DesktopCollaborationConnectionTarget
     | Promise<DesktopCollaborationConnectionTarget>,
 ): void {
+  let backgroundInboxUnavailable = false;
   ipcMain.handle(
     'session-collaboration:prepare',
     async (
@@ -98,15 +98,19 @@ export function registerRuntimeHostCollaborationIpc(
     async (_event, sessionId: unknown) => {
       const requestedSessionId =
         sessionId === undefined ? undefined : requiredId(sessionId, 'Session');
+      if (requestedSessionId === undefined && backgroundInboxUnavailable) {
+        return { canRequestTurns: false, requests: [] };
+      }
       try {
         return await client.queryCollaborationTurnRequests(requestedSessionId);
       } catch (error) {
         if (requestedSessionId === undefined && isCollaborationInboxUnavailable(error)) {
+          backgroundInboxUnavailable = true;
           return {
             canRequestTurns: false,
             requests: [],
             authorityUnavailable: true,
-          } satisfies CollaborationTurnRequestQueryResult & { authorityUnavailable: true };
+          };
         }
         throw error;
       }

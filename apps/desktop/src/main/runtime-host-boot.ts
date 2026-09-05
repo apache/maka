@@ -1135,9 +1135,6 @@ const startLocalRuntimeHostManager = () => startRuntimeHostDesktopManager(
         profileName: state.target.profile.name,
         profileKind: state.target.profile.kind,
         profileAccess,
-        ...(state.collaborationAuthority === undefined
-          ? {}
-          : { collaborationAuthority: state.collaborationAuthority }),
         ...(hostId ? { hostId } : {}),
         readiness: state.readiness,
         isDefault:
@@ -1188,9 +1185,6 @@ const startLocalRuntimeHostManager = () => startRuntimeHostDesktopManager(
         profileName: state.target.profile.name,
         profileKind: state.target.profile.kind,
         profileAccess: runtimeHostProfileAccess(state.target.profile),
-        ...(state.collaborationAuthority === undefined
-          ? {}
-          : { collaborationAuthority: state.collaborationAuthority }),
         ...(hostId ? { hostId } : {}),
         readiness: "unavailable",
         isDefault:
@@ -1215,9 +1209,6 @@ const startLocalRuntimeHostManager = () => startRuntimeHostDesktopManager(
         profileName: state?.target.profile.name ?? profileId,
         profileKind: state?.target.profile.kind ?? "remote",
         profileAccess: state ? runtimeHostProfileAccess(state.target.profile) : "owner",
-        ...(state?.collaborationAuthority === undefined
-          ? {}
-          : { collaborationAuthority: state.collaborationAuthority }),
         ...(state?.readiness === "ready"
           ? { hostId: state.candidate.client.hostId }
           : state?.readiness !== "unavailable" && state && "hostId" in state && state.hostId
@@ -1818,7 +1809,6 @@ function registerPersistentClientIpc(): void {
     target: ResolvedRuntimeHostProfile,
     readiness: 'ready' | 'reconnecting',
     hostId: string,
-    collaborationAuthority?: boolean,
   ): DesktopRuntimeHostIdentity => ({
     hostId,
     targetEpoch: epoch,
@@ -1826,7 +1816,6 @@ function registerPersistentClientIpc(): void {
     profileName: target.profile.name,
     profileKind: target.profile.kind,
     profileAccess: runtimeHostProfileAccess(target.profile),
-    ...(collaborationAuthority === undefined ? {} : { collaborationAuthority }),
     readiness,
   });
   ipcMain.handle("runtime-host:activeIdentity", () => {
@@ -1839,7 +1828,6 @@ function registerPersistentClientIpc(): void {
       current.target,
       current.readiness,
       current.hostId,
-      current.collaborationAuthority,
     );
   });
   ipcMain.handle("runtime-host:identities", () =>
@@ -1848,13 +1836,7 @@ function registerPersistentClientIpc(): void {
       const hostId = state.readiness === "ready" ? state.candidate.client.hostId : state.hostId;
       if (!hostId) return [];
       return [
-        projectRuntimeHostIdentity(
-          state.epoch,
-          state.target,
-          state.readiness,
-          hostId,
-          state.collaborationAuthority,
-        ),
+        projectRuntimeHostIdentity(state.epoch, state.target, state.readiness, hostId),
       ];
     }),
   );

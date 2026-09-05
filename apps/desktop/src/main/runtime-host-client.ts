@@ -302,8 +302,8 @@ export class DesktopRuntimeHostClient {
     return this.#connectionClosed || this.#closeTask ? 'unavailable' : 'ready';
   }
 
-  status(timeoutMs?: number): Promise<HostStatusResult> {
-    return this.connection.status(timeoutMs);
+  status(): Promise<HostStatusResult> {
+    return this.connection.status();
   }
 
   finalizeAccessCredential(

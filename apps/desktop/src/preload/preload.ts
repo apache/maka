@@ -129,10 +129,7 @@ import {
   resolveRuntimeHostSessionCatalog,
   type RuntimeHostSessionCatalogCoverage,
 } from './runtime-host-session-catalog.js';
-import {
-  collectPendingTurnRequestsWithCapabilityCache,
-  retainRuntimeHostCollaborationAuthority,
-} from './runtime-host-turn-request-inbox.js';
+import { collectAvailablePendingTurnRequests } from './runtime-host-turn-request-inbox.js';
 import type { ExecutionBoundaryReadModel, SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { ClientCapabilityResponse } from '@maka/core/client-capability-grant';
 import type {
@@ -273,10 +270,10 @@ const runtimeHostMetadata = new Map<
     readonly profileName: string;
     readonly profileKind: RuntimeHostProfileKind;
     readonly profileAccess: 'owner' | 'session_guest';
-    readonly collaborationAuthority?: boolean;
   }
 >();
 const runtimeHostSessionProfiles = new Map<string, string>();
+const unavailableCollaborationScopes = new Set<RuntimeHostScopeKey>();
 let lastDesktopSessionCatalog: RuntimeHostSessionCatalogCoverage = {
   sessions: [],
   completeHostIds: [],
@@ -290,15 +287,6 @@ function runtimeHostScopeKey(scope: DesktopTargetScope): RuntimeHostScopeKey {
 
 function runtimeHostMetadataFor(scope: DesktopTargetScope) {
   return runtimeHostMetadata.get(runtimeHostScopeKey(scope));
-}
-
-function markRuntimeHostCollaborationUnavailable(scope: DesktopTargetScope): void {
-  const metadata = runtimeHostMetadataFor(scope);
-  if (!metadata || metadata.collaborationAuthority === false) return;
-  runtimeHostMetadata.set(runtimeHostScopeKey(scope), {
-    ...metadata,
-    collaborationAuthority: false,
-  });
 }
 
 function observeRuntimeHostSessionScope(scope: DesktopTargetScope, sessionId: string): {
@@ -343,13 +331,6 @@ ipcRenderer.on(
       }
     }
     if (nextScope && nextScopeKey) {
-      const previousMetadata = runtimeHostMetadata.get(nextScopeKey);
-      const collaborationAuthority = retainRuntimeHostCollaborationAuthority(
-        typeof change.collaborationAuthority === 'boolean'
-          ? change.collaborationAuthority
-          : undefined,
-        previousMetadata?.collaborationAuthority,
-      );
       runtimeHostScopes.set(nextScopeKey, nextScope);
       runtimeHostProfiles.set(change.profileId, nextScopeKey);
       runtimeHostMetadata.set(nextScopeKey, {
@@ -357,7 +338,6 @@ ipcRenderer.on(
         profileName: change.profileName,
         profileKind: change.profileKind,
         profileAccess: change.profileAccess,
-        ...(collaborationAuthority === undefined ? {} : { collaborationAuthority }),
       });
       if (change.isDefault) activeRuntimeHost = nextScope;
     } else if (change.isDefault) {
@@ -385,7 +365,6 @@ function recordRuntimeHostIdentity(value: unknown): {
     profileName?: unknown;
     profileKind?: unknown;
     profileAccess?: unknown;
-    collaborationAuthority?: unknown;
     readiness?: unknown;
   };
   if (
@@ -393,18 +372,11 @@ function recordRuntimeHostIdentity(value: unknown): {
     typeof metadata.profileName !== 'string' ||
     !isRuntimeHostProfileKind(metadata.profileKind) ||
     (metadata.profileAccess !== 'owner' && metadata.profileAccess !== 'session_guest') ||
-    (metadata.collaborationAuthority !== undefined &&
-      typeof metadata.collaborationAuthority !== 'boolean') ||
     (metadata.readiness !== 'ready' && metadata.readiness !== 'reconnecting')
   ) {
     throw new Error('Desktop Runtime Host identity is invalid');
   }
   const scopeKey = runtimeHostScopeKey(scope);
-  const previousMetadata = runtimeHostMetadata.get(scopeKey);
-  const collaborationAuthority = retainRuntimeHostCollaborationAuthority(
-    metadata.collaborationAuthority as boolean | undefined,
-    previousMetadata?.collaborationAuthority,
-  );
   runtimeHostScopes.set(scopeKey, scope);
   runtimeHostProfiles.set(metadata.profileId, scopeKey);
   runtimeHostMetadata.set(scopeKey, {
@@ -412,7 +384,6 @@ function recordRuntimeHostIdentity(value: unknown): {
     profileName: metadata.profileName,
     profileKind: metadata.profileKind,
     profileAccess: metadata.profileAccess,
-    ...(collaborationAuthority === undefined ? {} : { collaborationAuthority }),
   });
   return { scope, readiness: metadata.readiness };
 }
@@ -1494,31 +1465,35 @@ const makaBridge = {
       );
     },
     async getPendingTurnRequests() {
-      const scopes = (await runtimeHostScopeList()).filter(
+      const readyScopes = (await runtimeHostScopeList()).filter(
         (scope) => runtimeHostMetadataFor(scope)?.profileAccess === 'owner',
       );
-      return collectPendingTurnRequestsWithCapabilityCache(
-        scopes,
-        (scope) => runtimeHostMetadataFor(scope)?.collaborationAuthority,
-        async (scope) => {
+      const readyScopeKeys = new Set(readyScopes.map(runtimeHostScopeKey));
+      for (const scopeKey of unavailableCollaborationScopes) {
+        if (!readyScopeKeys.has(scopeKey)) unavailableCollaborationScopes.delete(scopeKey);
+      }
+      const scopes = readyScopes.filter(
+        (scope) => !unavailableCollaborationScopes.has(runtimeHostScopeKey(scope)),
+      );
+      return collectAvailablePendingTurnRequests(
+        scopes.map(async (scope) => {
           const result = await ipcRenderer.invoke(
             'session-collaboration:turn-request:query',
             scope,
           ) as CollaborationTurnRequestQueryResult & { authorityUnavailable?: true };
-          return {
-            ...(result.authorityUnavailable ? { authorityUnavailable: true as const } : {}),
-            requests: result.requests
-              .filter((request) => request.state.kind === 'pending')
-              .map((request): SessionTurnAccessRequest => ({
-                ...request,
-                intent: {
-                  ...request.intent,
-                  sessionId: recordRuntimeHostSessionScope(scope, request.intent.sessionId),
-                },
-              })),
-          };
-        },
-        markRuntimeHostCollaborationUnavailable,
+          if (result.authorityUnavailable) {
+            unavailableCollaborationScopes.add(runtimeHostScopeKey(scope));
+          }
+          return result.requests
+            .filter((request) => request.state.kind === 'pending')
+            .map((request): SessionTurnAccessRequest => ({
+              ...request,
+              intent: {
+                ...request.intent,
+                sessionId: recordRuntimeHostSessionScope(scope, request.intent.sessionId),
+              },
+            }));
+        }),
       );
     },
     async acknowledgeTurnRequest(sessionId, requestId) {

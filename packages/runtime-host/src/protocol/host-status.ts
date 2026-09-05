@@ -68,8 +68,6 @@ export interface HostStatusResult {
   hostEpoch: string;
   compositionId: string;
   compositionRevision: string;
-  /** Whether this Host can serve collaboration authority operations. */
-  collaborationAuthority?: boolean;
   state: HostLifecycleState;
   connections: number;
   activeOperations: number;
@@ -128,7 +126,6 @@ function decodeHostStatusResult(value: unknown): HostStatusResult {
     'hostEpoch',
     'compositionId',
     'compositionRevision',
-    ...(valueRecord.collaborationAuthority === undefined ? [] : ['collaborationAuthority']),
     'state',
     'connections',
     'activeOperations',
@@ -149,7 +146,6 @@ function decodeHostDiagnosticsResult(value: unknown): HostDiagnosticsResult {
     'hostEpoch',
     'compositionId',
     'compositionRevision',
-    ...(valueRecord.collaborationAuthority === undefined ? [] : ['collaborationAuthority']),
     'state',
     'connections',
     'activeOperations',
@@ -281,14 +277,6 @@ function decodeHostStatusFields(record: Record<string, unknown>): HostStatusResu
       'Runtime Host composition revision',
       128,
     ),
-    ...(record.collaborationAuthority === undefined
-      ? {}
-      : {
-          collaborationAuthority: requireBoolean(
-            record.collaborationAuthority,
-            'collaborationAuthority',
-          ),
-        }),
     state: requireHostLifecycleState(record.state),
     connections: requireCount(record.connections, 'connections'),
     activeOperations: requireCount(record.activeOperations, 'activeOperations'),

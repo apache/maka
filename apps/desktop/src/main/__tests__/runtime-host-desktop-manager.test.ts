@@ -110,20 +110,6 @@ test('replaces a disconnected Runtime Host generation', { timeout: 10_000 }, asy
   assert.equal(second.closeCalls, 1);
 });
 
-test('publishes the Runtime Host collaboration capability with its identity', async () => {
-  const current = candidateHarness();
-  (current.candidate.client as unknown as {
-    status: () => Promise<{ collaborationAuthority: boolean }>;
-  }).status = async () => ({ collaborationAuthority: false });
-  const owner = await startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
-    startCandidate: async () => ready(current.candidate),
-  });
-
-  assert.equal(owner.current()?.collaborationAuthority, false);
-  assert.equal(owner.entries()[0]?.collaborationAuthority, false);
-  await owner.close();
-});
-
 test('quiesces reconnect and waits for the Host process before update install', async () => {
   const current = candidateHarness({ disconnectOnPrepare: true });
   const replacement = candidateHarness();

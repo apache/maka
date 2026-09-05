@@ -2174,19 +2174,6 @@ describe('Runtime Host bootstrap protocol', () => {
       },
     };
     assert.deepEqual(HOST_BOOTSTRAP_OPERATION_SPECS['host.status'].decodeOutput(status), status);
-    assert.equal(
-      HOST_BOOTSTRAP_OPERATION_SPECS['host.status'].decodeOutput({
-        ...status,
-        collaborationAuthority: false,
-      }).collaborationAuthority,
-      false,
-    );
-    assert.throws(() =>
-      HOST_BOOTSTRAP_OPERATION_SPECS['host.status'].decodeOutput({
-        ...status,
-        collaborationAuthority: 'unknown',
-      }),
-    );
     assert.throws(() =>
       HOST_BOOTSTRAP_OPERATION_SPECS['host.status'].decodeOutput({
         ...status,

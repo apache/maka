@@ -108,7 +108,6 @@ export interface RuntimeHostDesktopTargetSnapshot {
   readonly target: ResolvedRuntimeHostProfile;
   readonly readiness: 'ready' | 'reconnecting';
   readonly candidate?: DesktopRuntimeHostCandidate;
-  readonly collaborationAuthority?: boolean;
 }
 
 export type RuntimeHostDesktopTargetState =
@@ -117,21 +116,18 @@ export type RuntimeHostDesktopTargetState =
       readonly target: ResolvedRuntimeHostProfile;
       readonly readiness: 'connecting' | 'reconnecting';
       readonly hostId?: string;
-      readonly collaborationAuthority?: boolean;
     }
   | {
       readonly epoch: string;
       readonly target: ResolvedRuntimeHostProfile;
       readonly readiness: 'ready';
       readonly candidate: DesktopRuntimeHostCandidate;
-      readonly collaborationAuthority?: boolean;
     }
   | {
       readonly epoch: string;
       readonly target: ResolvedRuntimeHostProfile;
       readonly readiness: 'unavailable';
       readonly hostId?: string;
-      readonly collaborationAuthority?: boolean;
       readonly error: Error;
     };
 
@@ -223,7 +219,6 @@ interface DesktopRuntimeHostTargetGeneration {
   readonly observations: RuntimeHostSessionObservationRegistry;
   state: RuntimeHostDesktopTargetState;
   hostId?: string;
-  collaborationAuthority?: boolean;
   lifecycle?: RuntimeHostReconnectLifecycle<DesktopRuntimeHostCandidate>;
   unsubscribeLifecycle?: () => void;
   unsubscribeRoutes?: () => void;
@@ -484,20 +479,12 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       ...(target.hostId ? { hostId: target.hostId } : {}),
       target: target.target,
       readiness: candidate ? 'ready' : 'reconnecting',
-      ...(target.collaborationAuthority === undefined
-        ? {}
-        : { collaborationAuthority: target.collaborationAuthority }),
       ...(candidate ? { candidate } : {}),
     };
   }
 
   entries(): readonly RuntimeHostDesktopTargetState[] {
-    return [...this.#targets.values()].map((target) => ({
-      ...target.state,
-      ...(target.collaborationAuthority === undefined
-        ? {}
-        : { collaborationAuthority: target.collaborationAuthority }),
-    }));
+    return [...this.#targets.values()].map((target) => target.state);
   }
 
   ownsScope(scope: { readonly hostId: string; readonly targetEpoch: string }): boolean {
@@ -1098,12 +1085,6 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
             // replay one-shot join progress.
             onConnectionPhase: (phase) => onConnectionPhase?.(phase),
             ...(refreshPeerRoutes ? {} : { refreshPeerRoutes: false }),
-            onHostStatus: (status) => {
-              if (status.collaborationAuthority !== undefined) {
-                target.collaborationAuthority = status.collaborationAuthority;
-              }
-              target.input.onHostStatus?.(status);
-            },
             signal,
             ...(takeoverHostEpoch === undefined ? {} : { takeoverHostEpoch }),
           },
@@ -1116,13 +1097,6 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
         throw error;
       }
       if (result.kind === 'ready') {
-        const status = result.candidate.client.status;
-        if (typeof status === 'function') {
-          const observed = await status.call(result.candidate.client, 5_000).catch(() => undefined);
-          if (observed?.collaborationAuthority !== undefined) {
-            target.collaborationAuthority = observed.collaborationAuthority;
-          }
-        }
         target.hostId = result.candidate.client.hostId;
         const previous = target.lastCandidate;
         const retainedOwnedProcess =
@@ -1379,18 +1353,12 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
               target: target.target,
               readiness: 'ready',
               candidate,
-              ...(target.collaborationAuthority === undefined
-                ? {}
-                : { collaborationAuthority: target.collaborationAuthority }),
             }
           : {
               epoch: target.epoch,
               target: target.target,
               readiness: 'reconnecting',
               ...(target.hostId ? { hostId: target.hostId } : {}),
-              ...(target.collaborationAuthority === undefined
-                ? {}
-                : { collaborationAuthority: target.collaborationAuthority }),
             },
       );
     });
@@ -1403,18 +1371,12 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
             target: target.target,
             readiness: 'ready',
             candidate,
-            ...(target.collaborationAuthority === undefined
-              ? {}
-              : { collaborationAuthority: target.collaborationAuthority }),
           }
         : {
             epoch: target.epoch,
             target: target.target,
             readiness: 'reconnecting',
             ...(target.hostId ? { hostId: target.hostId } : {}),
-            ...(target.collaborationAuthority === undefined
-              ? {}
-              : { collaborationAuthority: target.collaborationAuthority }),
           },
     );
   }

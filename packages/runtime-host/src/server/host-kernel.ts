@@ -845,7 +845,6 @@ export class RuntimeHostKernel {
       hostEpoch: this.hostEpoch,
       compositionId: this.compositionDescriptor.id,
       compositionRevision: this.compositionDescriptor.revision,
-      collaborationAuthority: this.#options.accessAuthority !== undefined,
       state: this.#state,
       connections: this.#acceptedTransports.size,
       activeOperations: this.#activeOperations,

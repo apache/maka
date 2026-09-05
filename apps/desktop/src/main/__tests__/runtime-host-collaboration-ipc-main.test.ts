@@ -165,9 +165,11 @@ function peerReachability() {
 
 test('treats an unavailable collaboration authority as an empty background inbox', async () => {
   const handlers = new Map<string, IpcHandler>();
+  let queryCalls = 0;
   registerRuntimeHostCollaborationIpc(
     {
       async queryCollaborationTurnRequests() {
+        queryCalls += 1;
         throw new RuntimeHostOperationError(
           'collaboration.turn-request.query',
           'operation_unavailable',
@@ -192,6 +194,11 @@ test('treats an unavailable collaboration authority as an empty background inbox
     requests: [],
     authorityUnavailable: true,
   });
+  assert.deepEqual(await query({} as Parameters<IpcHandler>[0]), {
+    canRequestTurns: false,
+    requests: [],
+  });
+  assert.equal(queryCalls, 1);
   await assert.rejects(
     query({} as Parameters<IpcHandler>[0], 'session-1'),
     RuntimeHostOperationError,
