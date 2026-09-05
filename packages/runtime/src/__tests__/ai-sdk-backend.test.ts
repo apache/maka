@@ -6053,6 +6053,173 @@ describe('AiSdkBackend model history', () => {
     assert.doesNotMatch(prompt, /CODEX_WRONG_MODEL_STATE|cmp_wrong_model/);
   });
 
+  test('replays a checkpoint whose covered prefix carries a stale tool-result transition (#4842)', async () => {
+    // The standalone compaction path pins the checkpoint's coverage digest on
+    // RAW RuntimeEvents, while pre-turn replay used to match it against the
+    // transition-folded view: any durable stale-result archive inside the
+    // covered prefix then failed the digest and the turn silently fell back to
+    // full-history replay. Replay now matches the raw view and folds the
+    // projected [block, tail] afterwards.
+    const model = completionModel();
+    const transitions: ModelProjectionTransition[] = [];
+    const recorded: HistoryCompactCheckpoint[] = [];
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      contextBudget: {
+        name: 'checkpoint-transition-replay-test',
+        charsPerToken: 1,
+        staleToolResultPrune: {
+          enabled: true,
+          maxResultEstimatedTokens: 1,
+          minRecentTurnsFull: 0,
+        },
+        historyCompact: { enabled: true },
+      },
+      summarizeHistoryCompact: async () => structuredSummary('FOLDED_PREFIX_COMPACT_SENTINEL'),
+      recordHistoryCompactCheckpoint: (checkpoint) => {
+        recorded.push(checkpoint);
+      },
+      loadHistoryCompactCheckpoint: () => recorded.at(-1),
+      toolResultArchive: testToolResultArchive({
+        archiveToolResult: async (event) => ({ artifactId: `artifact-${event.runtimeEventId}` }),
+      }),
+      loadModelProjectionTransitions: async () => ({
+        transitions: [...transitions],
+        unreadableTargets: new Set<string>(),
+        unscopedUnreadable: 0,
+      }),
+      recordModelProjectionTransition: async (transition) => {
+        transitions.push(transition);
+      },
+    });
+    const priorEvents = [
+      runtimeTextEvent({
+        id: 'fold-old-user',
+        turnId: 'turn-old',
+        role: 'user',
+        author: 'user',
+        text: 'FOLD_OLD_USER_ALPHA '.repeat(60),
+      }),
+      runtimeEvent({
+        id: 'fold-call',
+        turnId: 'turn-old',
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'function_call',
+          id: 'tool-fold-1',
+          name: 'Read',
+          args: { path: 'a.ts' },
+        },
+      }),
+      runtimeEvent({
+        id: 'fold-result',
+        turnId: 'turn-old',
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id: 'tool-fold-1',
+          name: 'Read',
+          result: { body: 'y'.repeat(400) },
+          isError: false,
+        },
+      }),
+      runtimeTextEvent({
+        id: 'fold-recent-user',
+        turnId: 'turn-recent',
+        role: 'user',
+        author: 'user',
+        text: 'FOLD_RECENT_RETAINED_CONTEXT',
+      }),
+    ];
+
+    // Turn 1 commits the durable archive transition for the stale result. Each
+    // phase gets fresh clones: production readers deserialize their own event
+    // objects from the ledger, so no in-memory mutation can alias across them.
+    await drain(
+      backend.send({
+        turnId: 'turn-seed',
+        text: 'seed the archive transition',
+        context: [],
+        runtimeContext: structuredClone(priorEvents),
+      }),
+    );
+    assert.equal(transitions.length, 1);
+
+    // Standalone compaction creates the checkpoint over the raw prefix, exactly
+    // like the production path whose input is begin.runtimeContext.
+    const compact = await backend.compactHistory({
+      turnId: 'turn-compact',
+      runId: 'run-compact',
+      runtimeContext: structuredClone(priorEvents),
+    });
+    assert.equal(compact.outcome.kind, 'compacted');
+    assert.equal(recorded.length, 1);
+
+    // The next turn must replay through the checkpoint, not fail open. A fresh
+    // backend mirrors production: the compaction operation and the next send
+    // run as separate runs with separate backend instances.
+    const replayBackend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      contextBudget: {
+        name: 'checkpoint-transition-replay-test',
+        charsPerToken: 1,
+        staleToolResultPrune: {
+          enabled: true,
+          maxResultEstimatedTokens: 1,
+          minRecentTurnsFull: 0,
+        },
+        historyCompact: { enabled: true },
+      },
+      loadHistoryCompactCheckpoint: () => recorded.at(-1),
+      toolResultArchive: testToolResultArchive({
+        archiveToolResult: async (event) => ({ artifactId: `artifact-${event.runtimeEventId}` }),
+      }),
+      loadModelProjectionTransitions: async () => ({
+        transitions: [...transitions],
+        unreadableTargets: new Set<string>(),
+        unscopedUnreadable: 0,
+      }),
+      recordModelProjectionTransition: async (transition) => {
+        transitions.push(transition);
+      },
+    });
+    await drain(
+      replayBackend.send({
+        turnId: 'turn-after-compact',
+        text: 'after compact',
+        context: [],
+        runtimeContext: structuredClone(priorEvents),
+      }),
+    );
+
+    const lastCall = model.doStreamCalls.at(-1);
+    const prompt = JSON.stringify(
+      lastCall?.prompt.map((message) => ({ role: message.role, content: message.content })),
+    );
+    assert.match(prompt, /FOLDED_PREFIX_COMPACT_SENTINEL/);
+    assert.doesNotMatch(prompt, /FOLD_OLD_USER_ALPHA/);
+  });
+
   test('keeps RuntimeEvent replay when a tool result is unmatched (orphan dropped, rest replayed)', async () => {
     // `unmatched_tool_result` is a non-blocking diagnostic: the materializer
     // drops the orphan itself (a standalone tool message is an Anthropic 400)

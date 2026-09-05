@@ -2836,8 +2836,18 @@ export class AiSdkTurn {
       this.deps.backend.modelId,
     );
     let contextBudget = preparedContextBudget.policy;
-    const budgeted = applyRuntimeEventContextBudget(priorRuntimeContext, contextBudget);
-    let runtimeContext = budgeted?.events ?? priorRuntimeContext;
+    // Match the durable checkpoint against the RAW ledger prefix: every
+    // creation path (standalone compactHistory and the mid-turn state) pins
+    // its coverage digest on raw events, so matching the folded view here
+    // lets any durable projection transition inside the covered prefix orphan
+    // the checkpoint and silently fail open into a full-history replay
+    // (#4842). The projected [block, tail] is then folded through the
+    // transition reducer before it becomes messages, so a committed
+    // transition still cannot resurrect content for the model (#4283).
+    const budgeted = applyRuntimeEventContextBudget(rawPriorRuntimeContext, contextBudget);
+    let runtimeContext = await this.deps.compaction.foldEffectiveModelHistory(
+      budgeted?.events ?? rawPriorRuntimeContext,
+    );
     let contextBudgetDiagnostic = budgeted?.diagnostic;
     let projectedHistoryCompactCheckpoint = budgeted?.historyCompactCheckpoint;
     if (preparedContextBudget.diagnosticPatch) {
