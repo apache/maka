@@ -196,6 +196,76 @@ describe('AiSdkBackend tool_search activation', () => {
     assert.ok(!captured[0]?.includes('browser_click'));
   });
 
+  test('a provider failure does not carry search activation into a resent turn', async () => {
+    const firstTurn = createDurableTurnHarness({ turnId: 'turn-1', text: 'click it' });
+    const captured: string[][] = [];
+    const resentMessages: unknown[] = [];
+    const resentSearchDescriptions: string[] = [];
+    let requests = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async ({ prompt, tools }) => {
+        captured.push((tools ?? []).map((tool) => tool.name));
+        requests += 1;
+        if (requests === 3) {
+          resentMessages.push(prompt);
+          const search = tools?.find(
+            (tool) => tool.type === 'function' && tool.name === TOOL_SEARCH_NAME,
+          );
+          resentSearchDescriptions.push(
+            search?.type === 'function' ? (search.description ?? '') : '',
+          );
+        }
+        if (requests === 1) {
+          return {
+            stream: convertArrayToReadableStream(searchChunks('search-1', 'browser click')),
+          };
+        }
+        if (requests === 2) {
+          throw Object.assign(new Error('schema rejected'), {
+            name: 'AI_APICallError',
+            statusCode: 400,
+          });
+        }
+        return { stream: convertArrayToReadableStream(doneChunks()) };
+      },
+    });
+    const instance = backend({ model, calls: [], durable: firstTurn });
+
+    const failedEvents = await drainWithDurableTurn(
+      instance.send(firstTurn.sendInput()),
+      firstTurn,
+    );
+    assert.ok(failedEvents.some((event) => event.type === 'error'));
+    assert.ok(captured[1]?.includes('browser_click'));
+    assert.match(JSON.stringify(firstTurn.ledger), /activated/);
+
+    const resentEvents: unknown[] = [];
+    for await (const event of instance.send({
+      turnId: 'turn-2',
+      text: 'click it again',
+      context: [],
+      runtimeContext: firstTurn.ledger,
+    })) {
+      resentEvents.push(event);
+    }
+
+    assert.equal(
+      resentEvents.some((event) => (event as { type?: string }).type === 'error'),
+      false,
+    );
+    assert.ok(captured[2]?.includes(TOOL_SEARCH_NAME));
+    assert.ok(!captured[2]?.includes('browser_click'));
+    assert.match(JSON.stringify(resentMessages[0]), /activated/);
+    assert.match(
+      resentSearchDescriptions[0] ?? '',
+      /Activation is scoped to this current turn only/,
+    );
+    assert.match(
+      resentSearchDescriptions[0] ?? '',
+      /call tool_search again before using a deferred tool/,
+    );
+  });
+
   test('omitting search availability keeps the complete bound surface direct', async () => {
     const captured: string[][] = [];
     await drain(

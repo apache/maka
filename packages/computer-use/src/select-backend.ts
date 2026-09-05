@@ -26,11 +26,9 @@ import type { MakaCuServiceSnapshot } from './maka-cu-service.js';
 /**
  * One executor.
  *
- * This was a two-member set while cua-driver was being replaced, and the
- * selector took an overload per member. Keeping the id now that the second
- * executor is gone is not ceremony: `backendId` is what the capability snapshot
- * reports and what `'none'` is distinguished from, so it stays a named value
- * rather than becoming a boolean nobody can read.
+ * The macOS and Windows executors speak the same protocol and use the same
+ * supervised service. Keeping one id here is intentional: `backendId` reports
+ * the protocol backend, while the host manifest chooses the platform binary.
  */
 export const CU_BACKEND_IDS = ['maka-cu'] as const;
 export type CuBackendId = (typeof CU_BACKEND_IDS)[number];
@@ -93,12 +91,15 @@ export interface MakaCuSelection {
   overlay?: CuOverlayHook;
   onTrace?: MakaCuBackendOptions['onTrace'];
   createBackend?: (options: MakaCuBackendOptions) => DisposableBackend;
+  /** Test/host seam; production defaults to Node's platform. */
+  platform?: NodeJS.Platform;
 }
 
 export type ComputerUseBackendSelection = MakaCuSelection;
 
 export function selectComputerUseBackend(deps?: MakaCuSelection): SelectedComputerUseBackend {
-  if (process.platform !== 'darwin') return NONE;
+  const platform = deps?.platform ?? process.platform;
+  if (platform !== 'darwin' && platform !== 'win32') return NONE;
   if (!deps?.binaryPath || !deps.expectedBinarySha256) return NONE;
   const binaryPath = deps.binaryPath;
   const expectedBinarySha256 = deps.expectedBinarySha256;

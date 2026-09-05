@@ -50,7 +50,8 @@ undeclared internal source paths.
 The shipped selector enables Computer Use only when all of these conditions
 hold:
 
-1. the host platform is macOS (`process.platform === 'darwin'`);
+1. the host platform is macOS or Windows (`process.platform === 'darwin'` or
+   `process.platform === 'win32'`);
 2. the composition supplies a `maka-cu` executable path; and
 3. the composition supplies the executable's expected SHA-256 digest.
 
@@ -69,6 +70,25 @@ Cross-platform work is tracked separately:
 - [#3891](https://github.com/apache/maka/issues/3891) — Linux backend;
 - [#3785](https://github.com/apache/maka/issues/3785) — Windows executor
   hardening and production evidence.
+
+On Windows, Desktop reads the `windowsCu` entry from
+`apps/desktop/bundled-tools.json`, verifies the complete helper directory
+against its declared file digests, and uses the same `maka.cu/2` service. The
+helper preparation script is `node scripts/computer-use.mjs prepare-windows`.
+Local preparation always leaves `distributionReady: false` and cannot promote
+it by accepting a caller-authored provenance file. Release readiness requires a
+separately reviewed pipeline that mechanically verifies the exact CI artifact,
+GitHub attestation, Authenticode signature, clean-machine run, and packaged
+conversation run. When readiness is eventually true, a missing helper fails
+packaging and the packaged verifier checks the exact file set, sizes, digests,
+and Authenticode status.
+
+Windows Computer Use intentionally owns only native desktop applications. Web
+content is routed to Browser Use/OpenCLI, which can use browser-native page,
+DOM/accessibility, tab, navigation, and command state with stronger targeting
+and verification. This separation prevents duplicate browser automation and
+keeps coordinate/global-input/foreground fallbacks out of the strict
+background-only desktop contract.
 
 ## Protocol and lifecycle
 

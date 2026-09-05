@@ -407,6 +407,35 @@ test('Desktop packaging does not distribute the retired bundled Git runtime', ()
   );
 });
 
+test('Windows Computer Use packaging is fail-closed and readiness-gated', async () => {
+  const { windowsCuExtraResources } = await import('../apps/desktop/electron-builder.config.mjs');
+  assert.deepEqual(
+    windowsCuExtraResources({
+      platform: 'win32',
+      manifest: { windowsCu: { distributionReady: false } },
+      helperExists: true,
+    }),
+    [],
+  );
+  assert.throws(
+    () =>
+      windowsCuExtraResources({
+        platform: 'win32',
+        manifest: { windowsCu: { distributionReady: true } },
+        helperExists: false,
+      }),
+    /distribution-ready.*missing/,
+  );
+  assert.deepEqual(
+    windowsCuExtraResources({
+      platform: 'win32',
+      manifest: { windowsCu: { distributionReady: true } },
+      helperExists: true,
+    }),
+    [{ from: 'resources/bin/maka-cu-windows', to: 'bin/maka-cu-windows' }],
+  );
+});
+
 test('packaged third-party license sources are resolved, not assumed hoisted', () => {
   // electron and @fontsource-variable/geist* are declared by apps/desktop, so
   // `../../node_modules/<pkg>` only resolves when the installer hoists them to

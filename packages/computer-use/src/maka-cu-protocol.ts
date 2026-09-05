@@ -698,6 +698,19 @@ export function readEnvelope(method: string, result: unknown): MakaCuEnvelope {
       'result.error.detail.wouldRequirePath',
     );
   }
+  // `snapshotSpent` is a wire fact used by the Host's frame lifetime logic.
+  // Keep the numeric 0/1 representation agreed with the native worker; a
+  // boolean must be rejected rather than silently treated as "not spent".
+  if (
+    detail?.snapshotSpent !== undefined &&
+    detail.snapshotSpent !== 0 &&
+    detail.snapshotSpent !== 1
+  ) {
+    throw new MakaCuProtocolViolation(
+      method,
+      'result.error.detail.snapshotSpent must be numeric 0 or 1',
+    );
+  }
   return {
     ...record,
     ok: false,

@@ -22,6 +22,7 @@ import { fileURLToPath } from 'node:url';
 
 const commands = {
   prepare: { module: 'prepare.mjs' },
+  'prepare-windows': { module: '../prepare-windows-cu-helper.mjs' },
   'real-ax': {
     module: 'real-ax-launcher.mjs',
     options: {

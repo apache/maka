@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import {
@@ -29,6 +29,23 @@ import { resolveProductManifestIdentity } from '../../scripts/product-release-id
 
 function readManifest(relativePath) {
   return JSON.parse(readFileSync(new URL(relativePath, import.meta.url), 'utf8'));
+}
+
+export function windowsCuExtraResources({
+  platform = process.platform,
+  manifest = readManifest('./bundled-tools.json'),
+  helperExists = existsSync('resources/bin/maka-cu-windows/maka-cu-windows.exe'),
+} = {}) {
+  if (platform !== 'win32' || manifest.windowsCu?.distributionReady !== true) return [];
+  if (!helperExists) {
+    throw new Error(
+      'windowsCu is distribution-ready but resources/bin/maka-cu-windows/maka-cu-windows.exe is missing',
+    );
+  }
+  return [{
+    from: 'resources/bin/maka-cu-windows',
+    to: 'bin/maka-cu-windows',
+  }];
 }
 
 // Some license files below ship inside third-party packages that apps/desktop
@@ -143,6 +160,7 @@ const baseDesktopBuilderConfig = {
     },
     ...(process.platform === 'win32'
       ? [
+          ...windowsCuExtraResources(),
           {
             from: 'resources/windows-sandbox/maka-windows-sandbox.exe',
             to: 'windows-sandbox/maka-windows-sandbox.exe',

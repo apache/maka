@@ -144,6 +144,58 @@ test('coordinate dispatch fields are absent from the wire schema', () => {
   assert.equal(fields.includes('region'), false);
 });
 
+test('window geometry uses fixed-length homogeneous arrays on the wire', () => {
+  const validMove = computerWireParams.safeParse({
+    action: 'window_action',
+    observation_id: 'o',
+    element_id: '0',
+    window_action: 'move',
+    position: [-193, -1049],
+  });
+  const validResize = computerWireParams.safeParse({
+    action: 'window_action',
+    observation_id: 'o',
+    element_id: '0',
+    window_action: 'resize',
+    size: [800, 600],
+  });
+  assert.equal(validMove.success, true);
+  assert.equal(validResize.success, true);
+
+  for (const input of [
+    {
+      action: 'window_action',
+      observation_id: 'o',
+      element_id: '0',
+      window_action: 'move',
+      position: [1, 2, 3],
+    },
+    {
+      action: 'window_action',
+      observation_id: 'o',
+      element_id: '0',
+      window_action: 'move',
+      position: [1.5, 2],
+    },
+    {
+      action: 'window_action',
+      observation_id: 'o',
+      element_id: '0',
+      window_action: 'resize',
+      size: [-1, 600],
+    },
+    {
+      action: 'window_action',
+      observation_id: 'o',
+      element_id: '0',
+      window_action: 'resize',
+      size: [800],
+    },
+  ]) {
+    assert.equal(computerWireParams.safeParse(input).success, false);
+  }
+});
+
 for (const call of CALLS) {
   const name =
     call.action === 'window_action'

@@ -46,7 +46,7 @@ test('Computer Use CLI advertises only the supported evidence commands', () => {
   assert.equal(result.status, 0, result.stderr);
   assert.equal(
     result.stdout,
-    `Usage: node scripts/computer-use.mjs <command> [options]\n\nCommands:\n  prepare\n  real-ax\n  real-model\n  restart-soak\n  provider-matrix\n`,
+    `Usage: node scripts/computer-use.mjs <command> [options]\n\nCommands:\n  prepare\n  prepare-windows\n  real-ax\n  real-model\n  restart-soak\n  provider-matrix\n`,
   );
 });
 

@@ -109,6 +109,17 @@ describe('ToolAvailabilityRuntime — search activation', () => {
     assert.ok(!plan.activeTools.includes('docs_edit'));
   });
 
+  test('tool_search explains that activation is current-turn model guidance', () => {
+    const description = searchTool(runtime().prepare(new Map())).description;
+
+    assert.match(description, /Activation is scoped to this current turn only/);
+    assert.match(description, /older\s+history is informational/);
+    assert.match(description, /call tool_search again before using a deferred tool/);
+    assert.match(description, /Never substitute Bash echo, a placeholder call/);
+    assert.match(description, /report the blockage and do not claim execution/);
+    assert.doesNotMatch(description, /deterministic general-purpose loop breaker/);
+  });
+
   test('a group cannot defer the fixed direct baseline', () => {
     const plan = new ToolAvailabilityRuntime(
       [tool('Read'), tool('browser_click')],

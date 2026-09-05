@@ -33,6 +33,7 @@ import {
   assertMissing,
   assertPackagedDependencyClosure,
   assertPackagedResources,
+  assertPackagedWindowsCuResources,
   isolatedUserEnv,
   makePtyProbe,
   runCommand,
@@ -159,6 +160,26 @@ export async function verifyPackagedWindowsApp(
     requireAppIconCatalog: requiresCurrentContract,
     requireDirectPeerArtifact: requiresCurrentContract,
   });
+  const windowsCu = await assertPackagedWindowsCuResources(resources, { forbidPath });
+  if (windowsCu.required) {
+    step('verifying Windows Computer Use Authenticode signature');
+    const signature = await run(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        '(Get-AuthenticodeSignature -LiteralPath $args[0]).Status.ToString()',
+        windowsCu.binaryPath,
+      ],
+      { cwd: workingDirectory },
+    );
+    if (signature.stdout.trim() !== 'Valid') {
+      throw new Error(
+        `Windows Computer Use helper Authenticode status must be Valid, found ${signature.stdout.trim() || 'empty'}`,
+      );
+    }
+  }
   // The upgrade baseline is a build that shipped on its own channel, from its
   // own commit: its update feed and dependency closure are the ones that were
   // right for it, not the ones this checkout expects.

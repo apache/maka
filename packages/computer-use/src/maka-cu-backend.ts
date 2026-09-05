@@ -2016,10 +2016,17 @@ export function createMakaCuBackend(opts: MakaCuBackendOptions): MakaCuBackend {
     return completeDispatch('dispatch.element', envelope, snapshot, context);
   }
 
-  /** §4.1: a refused dispatch leaves the frame live; `outcome_unknown` spends it. */
+  /**
+   * §4.1: a refused dispatch normally leaves the frame live; an executor may
+   * explicitly report that it spent the frame before refusing. The native
+   * protocol encodes that fact as numeric detail `snapshotSpent: 1` for any
+   * failure code, not only `dispatch_refused`. `outcome_unknown` always spends
+   * it because the action's fate is not known.
+   */
   function forgetUnusableSnapshot(error: MakaCuDomainError, snapshot: StoredSnapshot): void {
     const unusable =
       error.code === 'outcome_unknown' ||
+      error.detail?.snapshotSpent === 1 ||
       error.code === 'snapshot_spent' ||
       error.code === 'snapshot_superseded' ||
       error.code === 'snapshot_expired' ||

@@ -12,5 +12,21 @@
     "hardenedRuntime": false,
     "notarization": "missing",
     "distributionReady": false
+  },
+  "windowsCu": {
+    "repo": "maka-agent/maka-cu",
+    "source": "apps/OpenComputerUseWindows/native",
+    "expectedProtocolVersion": "maka.cu/2",
+    "binaryName": "maka-cu-windows.exe",
+    "publishContract": {
+      "executor": "rust-native-windows",
+      "protocol": "maka.cu/2",
+      "runtimeIdentifier": "win-x64",
+      "rustTarget": "x86_64-pc-windows-msvc",
+      "cargoProfile": "release",
+      "lto": true,
+      "staticNativeDependencies": true
+    },
+    "distributionReady": false
   }
 }

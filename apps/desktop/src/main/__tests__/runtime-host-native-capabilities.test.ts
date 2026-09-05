@@ -19,7 +19,11 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildComputerUseTools, type ComputerUseToolSet } from '@maka/runtime/computer-use-tools';
+import {
+  buildComputerUseTools,
+  computerWireParams,
+  type ComputerUseToolSet,
+} from '@maka/runtime/computer-use-tools';
 import { type CuDispatchBackend } from '@maka/runtime/computer-use-types';
 import { type MakaTool, type MakaToolContext } from '@maka/runtime/tool-runtime';
 import type { ClientCapabilityProvider } from '@maka/runtime-host/client';
@@ -29,11 +33,61 @@ import {
   type ClientCapabilityCallFrame,
   type ClientCapabilityServiceCallFrame,
 } from '@maka/runtime-host/protocol';
+import Ajv2020 from 'ajv/dist/2020.js';
 import { z } from 'zod';
 import { buildClientSettingsTools } from '../client-settings-tools.js';
 import { browserOriginAdmission } from '../browser/browser-origin-admission.js';
 import { buildRiveWorkflowTool } from '../rive-workflow-tool.js';
 import { createDesktopNativeCapabilityProvider } from '../runtime-host-native-capabilities.js';
+
+const COMPUTER_USE_GEOMETRY_SAMPLES = {
+  valid: [
+    {
+      action: 'window_action',
+      observation_id: 'observation-1',
+      element_id: '0',
+      window_action: 'move',
+      position: [-193, -1049],
+    },
+    {
+      action: 'window_action',
+      observation_id: 'observation-1',
+      element_id: '0',
+      window_action: 'resize',
+      size: [800, 600],
+    },
+  ],
+  invalid: [
+    {
+      action: 'window_action',
+      observation_id: 'observation-1',
+      element_id: '0',
+      window_action: 'move',
+      position: [1, 2, 3],
+    },
+    {
+      action: 'window_action',
+      observation_id: 'observation-1',
+      element_id: '0',
+      window_action: 'move',
+      position: [1.5, 2],
+    },
+    {
+      action: 'window_action',
+      observation_id: 'observation-1',
+      element_id: '0',
+      window_action: 'resize',
+      size: [-1, 600],
+    },
+    {
+      action: 'window_action',
+      observation_id: 'observation-1',
+      element_id: '0',
+      window_action: 'resize',
+      size: [800],
+    },
+  ],
+} as const;
 
 test('publishes self-described session-affine Browser and Computer Use offers', () => {
   const provider = createDesktopNativeCapabilityProvider({
@@ -127,7 +181,24 @@ test('publishes the real Computer Use schema through the Client Capability proto
       offers: provider.offers(),
     }),
   );
-  const actionSchema = provider.offers()[0]?.tools[0]?.inputSchema.properties as
+  const descriptor = provider.offers()[0]?.tools[0];
+  assert.ok(descriptor);
+  const ajv = new Ajv2020();
+  assert.equal(
+    ajv.validateSchema(descriptor.inputSchema),
+    true,
+    JSON.stringify(ajv.errors),
+  );
+  const validate = ajv.compile(descriptor.inputSchema);
+  for (const input of COMPUTER_USE_GEOMETRY_SAMPLES.valid) {
+    assert.equal(computerWireParams.safeParse(input).success, true);
+    assert.equal(validate(input), true, JSON.stringify(validate.errors));
+  }
+  for (const input of COMPUTER_USE_GEOMETRY_SAMPLES.invalid) {
+    assert.equal(computerWireParams.safeParse(input).success, false);
+    assert.equal(validate(input), false, JSON.stringify(input));
+  }
+  const actionSchema = descriptor.inputSchema.properties as
     | Record<string, { enum?: unknown }>
     | undefined;
   assert.equal(

@@ -1085,7 +1085,8 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
       );
       return { outcome: { ok: true, tier: 'ax', verified: true } };
     };
-    const [tool] = buildComputerUseTools({ backend });
+    const tools = buildComputerUseTools({ backend });
+    const [tool] = tools;
     const observed = (await tool.impl(
       { action: 'observe', app: 'Fixture', window_id: 7 } as never,
       ctx(),
@@ -1114,6 +1115,18 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
       [3, 4],
       [4, 4],
     ]);
+    const finalObservationId = observationIdOf(result.modelText);
+    assert.ok(finalObservationId, 'the sequence returns a frame the Host can keep active');
+    assert.equal(tools.sessionEvents.snapshot('s1').status, 'active');
+    const followUp = (await tool.impl(
+      {
+        action: 'click_element',
+        observation_id: finalObservationId,
+        element_id: '1',
+      } as never,
+      ctx(undefined, { toolCallId: 'sequence-follow-up' }),
+    )) as { text: string };
+    assert.doesNotMatch(followUp.text, /failed: reobserve_required/);
   });
 
   test('a sequence stops at the step it cannot resolve, and says which', async () => {
@@ -1999,7 +2012,7 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
     ['user_intervened', 'reobserve_required'],
     ['screen_locked', 'screen_locked'],
     ['blocked_url', 'blocked_url'],
-    ['outcome_unknown', 'reobserve_required'],
+    ['outcome_unknown', 'active'],
     ['service_unavailable', 'reobserve_required'],
   ] as const) {
     test(`typed ${error} outcome advances Runtime to ${expectedStatus}`, async () => {
@@ -2083,6 +2096,7 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
         ok: false,
         error: 'outcome_unknown',
         message: 'semantic delivery may have occurred',
+        evidence: { path: 'none' },
       },
     });
     const tools = buildComputerUseTools({ backend });
@@ -2102,7 +2116,55 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
 
     assert.match(result.text, /outcome_unknown/);
     assert.doesNotMatch(result.text, /failed: reobserve_required/);
+    assert.doesNotMatch(result.text, /still current/);
     assert.equal(tools.sessionEvents.snapshot('s1').status, 'reobserve_required');
+  });
+
+  test('semantic outcome_unknown re-observes without retrying the mutation', async () => {
+    let dispatches = 0;
+    let captures = 0;
+    const backend = fakeBackend() as CuDispatchBackend & {
+      observeApp: NonNullable<CuDispatchBackend['observeApp']>;
+      captureObservation: NonNullable<CuDispatchBackend['captureObservation']>;
+      runSemantic: NonNullable<CuDispatchBackend['runSemantic']>;
+    };
+    backend.observeApp = async () => observation();
+    backend.captureObservation = async () => {
+      captures += 1;
+      return observation({ observationId: `unknown-refresh-${captures}` });
+    };
+    backend.runSemantic = async () => {
+      dispatches += 1;
+      return {
+        outcome: {
+          ok: false,
+          error: 'outcome_unknown',
+          message: 'the action may already have landed',
+          evidence: { path: 'none' },
+        },
+      };
+    };
+    const tools = buildComputerUseTools({ backend });
+    const [tool] = tools;
+    const observed = (await tool.impl({ action: 'observe', app: 'Fixture' } as never, ctx())) as {
+      text: string;
+    };
+    const result = (await tool.impl(
+      {
+        action: 'click_element',
+        observation_id: JSON.parse(observed.text).observation_id,
+        element_id: '5',
+      } as never,
+      ctx(undefined, { toolCallId: 'unknown-refresh' }),
+    )) as { text: string; error?: string };
+
+    assert.equal(result.error, 'outcome_unknown');
+    assert.match(result.text, /outcome_unknown/);
+    assert.match(result.text, /Fresh observation/);
+    assert.doesNotMatch(result.text, /still current/);
+    assert.equal(dispatches, 1, 'unknown never retries the mutation');
+    assert.equal(captures, 1, 'unknown forces one fresh observation');
+    assert.equal(tools.sessionEvents.snapshot('s1').status, 'active');
   });
 
   test('clearSession cannot mask a delivered semantic mutation outcome', async () => {
