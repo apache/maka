@@ -390,48 +390,60 @@ export class McpClientManager {
     return () => this.listeners.delete(listener);
   }
 
-  sync(config: McpConfigFile): Promise<void> {
+  sync(config: McpConfigFile, options: { signal?: AbortSignal } = {}): Promise<void> {
     if (this.closed) return Promise.reject(new Error('MCP client manager is closed'));
     const snapshot = structuredClone(config);
-    const operation = this.syncQueue.catch(() => {}).then(() => this.syncNow(snapshot));
+    const operation = this.syncQueue
+      .catch(() => {})
+      .then(() => {
+        throwIfAborted(options.signal);
+        return this.syncNow(snapshot, options.signal);
+      });
     this.syncQueue = operation;
     return operation;
   }
 
-  private async syncNow(config: McpConfigFile): Promise<void> {
+  private async syncNow(config: McpConfigFile, signal?: AbortSignal): Promise<void> {
+    throwIfAborted(signal);
     const desired = new Set(Object.keys(config.mcpServers));
     // A failed erase must not abandon the rest of the reconciliation: the
     // config file is already written, so stopping here would leave every
     // OTHER added/changed server diverged until the next sync. The blocked
     // server stays blocked; the failures reject the sync at the end.
     const removalFailures: unknown[] = [];
-    await Promise.all(
-      [...this.connections.keys()]
-        .filter((serverId) => !desired.has(serverId))
-        .map(async (serverId) => {
-          const entry = this.connections.get(serverId);
-          // Credentials first, connection second: a removed server's stored
-          // OAuth tokens are a hazard — a same-id server added back later
-          // must not inherit them. Erasing is the authoritative transition;
-          // only after it succeeds may connection ownership be released. On
-          // failure the entry stays, blocked — the next sync retries.
-          try {
-            await this.forgetAuthorization(serverId, entry?.credentialCleanupOwed ?? entry?.config);
-          } catch (error) {
-            if (entry) {
-              await this.blockForCredentialCleanup(
-                serverId,
-                entry,
-                entry.credentialCleanupOwed ?? entry.config,
-                error,
-              );
-            }
-            removalFailures.push(error);
-            return;
+    const removals = [...this.connections.keys()]
+      .filter((serverId) => !desired.has(serverId))
+      .map(async (serverId) => {
+        const entry = this.connections.get(serverId);
+        // Credentials first, connection second: a removed server's stored
+        // OAuth tokens are a hazard — a same-id server added back later
+        // must not inherit them. Erasing is the authoritative transition;
+        // only after it succeeds may connection ownership be released. On
+        // failure the entry stays, blocked — the next sync retries.
+        try {
+          await this.forgetAuthorization(serverId, entry?.credentialCleanupOwed ?? entry?.config, {
+            signal,
+          });
+        } catch (error) {
+          if (signal?.aborted) throw error;
+          if (entry) {
+            await this.blockForCredentialCleanup(
+              serverId,
+              entry,
+              entry.credentialCleanupOwed ?? entry.config,
+              error,
+            );
           }
-          await this.disconnect(serverId, true);
-        }),
+          removalFailures.push(error);
+          return;
+        }
+        await this.disconnect(serverId, true, { signal });
+      });
+    const removalResults = await Promise.allSettled(removals);
+    const removalRejection = removalResults.find(
+      (result): result is PromiseRejectedResult => result.status === 'rejected',
     );
+    if (removalRejection) throw removalRejection.reason;
     const connectIds: string[] = [];
     for (const [serverId, serverConfig] of Object.entries(config.mcpServers)) {
       const fingerprint = stableConfigFingerprint(serverConfig);
@@ -451,8 +463,9 @@ export class McpClientManager {
             : undefined;
         if (owed) {
           try {
-            await this.forgetAuthorization(serverId, owed);
+            await this.forgetAuthorization(serverId, owed, { signal });
           } catch (error) {
+            if (signal?.aborted) throw error;
             await this.blockForCredentialCleanup(serverId, current, owed, error);
             // Same contract as the removal loop: the config is already
             // written to the NEW endpoint while the old one stays blocked —
@@ -463,7 +476,7 @@ export class McpClientManager {
           }
           current.credentialCleanupOwed = undefined;
         }
-        await this.disconnect(serverId, true);
+        await this.disconnect(serverId, true, { signal });
       } else if (current?.credentialCleanupOwed) {
         // Same fingerprint again: the config reverted to (or never left)
         // the endpoint the credentials belong to — nothing is owed.
@@ -484,7 +497,10 @@ export class McpClientManager {
       }
       if (serverConfig.enabled !== false) connectIds.push(serverId);
     }
-    await Promise.all(connectIds.map((serverId) => this.connect(serverId).catch(() => {})));
+    await Promise.all(
+      connectIds.map((serverId) => this.connect(serverId, { signal }).catch(() => {})),
+    );
+    throwIfAborted(signal);
     if (removalFailures.length > 0) throw removalFailures[0];
   }
 
@@ -528,8 +544,12 @@ export class McpClientManager {
     return this.callableSnapshot;
   }
 
-  async connect(serverId: string): Promise<McpServerStatus> {
+  async connect(
+    serverId: string,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<McpServerStatus> {
     if (this.closed) throw new Error('MCP client manager is closed');
+    throwIfAborted(options.signal);
     const entry = this.requireConnection(serverId);
     if (entry.closing) throw new Error(`MCP server "${serverId}" is closing`);
     if (entry.credentialCleanupOwed) {
@@ -547,10 +567,19 @@ export class McpClientManager {
       // state mid-round and rotate the record under the round's fence.
       return cloneStatus(entry.status);
     }
-    if (entry.connectPromise) return entry.connectPromise;
+    if (entry.connectPromise) {
+      // A joining caller observes the manager-owned single flight; it does not
+      // acquire cancellation ownership over the caller that created it. The
+      // join may stop waiting, while explicit lifecycle owners can still use
+      // cancelConnect()/disconnect() to terminate the shared transport.
+      return waitForAbort(entry.connectPromise, options.signal);
+    }
     const controller = new AbortController();
+    const forwardAbort = () => controller.abort(abortReason(options.signal));
+    options.signal?.addEventListener('abort', forwardAbort, { once: true });
     entry.connectController = controller;
     const promise = this.connectEntry(serverId, entry, controller.signal).finally(() => {
+      options.signal?.removeEventListener('abort', forwardAbort);
       if (entry.connectPromise === promise) entry.connectPromise = undefined;
       if (entry.connectController === controller) entry.connectController = undefined;
     });
@@ -567,12 +596,21 @@ export class McpClientManager {
     return true;
   }
 
-  async reconnect(serverId: string): Promise<McpServerStatus> {
-    await this.disconnect(serverId, false);
-    return this.connect(serverId);
+  async reconnect(
+    serverId: string,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<McpServerStatus> {
+    throwIfAborted(options.signal);
+    await this.disconnect(serverId, false, options);
+    throwIfAborted(options.signal);
+    return this.connect(serverId, options);
   }
 
-  async disconnect(serverId: string, remove = false): Promise<void> {
+  async disconnect(
+    serverId: string,
+    remove = false,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<void> {
     const entry = this.connections.get(serverId);
     if (!entry) return;
     entry.closing = true;
@@ -591,17 +629,28 @@ export class McpClientManager {
     entry.enforceMcpHeaders = false;
     entry.refreshDiagnostic = undefined;
     entry.subscriptionDiagnostic = undefined;
-    await safeClose(client, transport, subscription);
-    await connectPromise?.catch(() => {});
     if (remove) {
-      this.connections.delete(serverId);
-      return;
+      if (this.connections.get(serverId) === entry) this.connections.delete(serverId);
+    } else {
+      this.update(entry, {
+        ...this.makeStatus(serverId, entry.config.enabled === false ? 'disabled' : 'disconnected'),
+        stderrTail: entry.status.stderrTail,
+      });
     }
-    entry.closing = false;
-    this.update(entry, {
-      ...this.makeStatus(serverId, entry.config.enabled === false ? 'disabled' : 'disconnected'),
-      stderrTail: entry.status.stderrTail,
-    });
+    const cleanup = Promise.all([
+      safeClose(client, transport, subscription),
+      connectPromise?.catch(() => {}),
+    ]).then(() => undefined);
+    const finish = () => {
+      if (!remove && this.connections.get(serverId) === entry) entry.closing = false;
+    };
+    try {
+      await waitForAbort(cleanup, options.signal);
+      finish();
+    } catch (error) {
+      void cleanup.finally(finish).catch(() => {});
+      throw error;
+    }
   }
 
   async close(): Promise<void> {
@@ -882,8 +931,9 @@ export class McpClientManager {
     };
   }
 
-  async test(serverId: string): Promise<McpTestResult> {
+  async test(serverId: string, options: { signal?: AbortSignal } = {}): Promise<McpTestResult> {
     const started = this.now();
+    throwIfAborted(options.signal);
     const current = this.requireConnection(serverId);
     if (current.config.enabled === false) {
       return {
@@ -893,9 +943,10 @@ export class McpClientManager {
       };
     }
     try {
-      const status = await this.reconnect(serverId);
+      const status = await this.reconnect(serverId, options);
       return { ok: true, status, latencyMs: this.now() - started };
-    } catch {
+    } catch (error) {
+      if (options.signal?.aborted) throw error;
       return {
         ok: false,
         status: this.status(serverId) ?? this.makeStatus(serverId, 'error'),
@@ -1157,7 +1208,9 @@ export class McpClientManager {
     // A plain static-bearer config with no OAuth involvement keeps its
     // header untouched. The config store rejects the explicit conflict
     // (oauth block + Authorization header) outright.
-    const record = this.coordinator ? await this.coordinator.read(serverId) : undefined;
+    const record = this.coordinator
+      ? await waitForAbort(this.coordinator.read(serverId), signal)
+      : undefined;
     // The raw record only counts when it is BOUND to this endpoint: after an
     // offline mcp.json repoint the stale record's tokens will be dropped by
     // the provider, so they must not strip a configured header either.
@@ -1260,7 +1313,10 @@ export class McpClientManager {
 
   /** Flow view with generation/version pinned before any remote await. */
   private beginFlow(serverId: string, signal?: AbortSignal): Promise<McpOAuthStorage> {
-    return this.requireCoordinator().beginFlow(serverId, signal ? { signal } : {});
+    return waitForAbort(
+      this.requireCoordinator().beginFlow(serverId, signal ? { signal } : {}),
+      signal,
+    );
   }
 
   private requireCoordinator(): McpCredentialCoordinator {
@@ -1601,8 +1657,9 @@ export class McpClientManager {
   async forgetServerCredentials(
     serverId: string,
     previousConfig = this.connections.get(serverId)?.config,
+    options: { signal?: AbortSignal } = {},
   ): Promise<void> {
-    await this.forgetAuthorization(serverId, previousConfig);
+    await this.forgetAuthorization(serverId, previousConfig, options);
   }
 
   /** Drops any stored OAuth record for a server that is being removed or
@@ -1621,7 +1678,18 @@ export class McpClientManager {
     options: { signal?: AbortSignal } = {},
   ): Promise<void> {
     if (!this.coordinator) return;
-    if (config && isMcpStdioConfig(config) && !(await this.coordinator.read(serverId))) return;
+    throwIfAborted(options.signal);
+    if (
+      config &&
+      isMcpStdioConfig(config) &&
+      !(await waitForAbort(this.coordinator.read(serverId), options.signal))
+    ) {
+      return;
+    }
+    throwIfAborted(options.signal);
+    // erase() owns the write fence: once its storage commit starts it must
+    // settle before sync can report cancellation, otherwise a tombstone can
+    // land after the caller has already begun rollback/reconciliation.
     await this.coordinator.erase(serverId, options);
   }
 
@@ -2548,6 +2616,36 @@ async function safeClose(
     client?.close().catch(() => {}),
     transport?.close().catch(() => {}),
   ]);
+}
+
+function abortReason(signal?: AbortSignal): Error {
+  return signal?.reason instanceof Error
+    ? signal.reason
+    : new Error(String(signal?.reason ?? 'MCP operation aborted'));
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw abortReason(signal);
+}
+
+function waitForAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(abortReason(signal));
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const settle = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', onAbort);
+      callback();
+    };
+    const onAbort = () => settle(() => reject(abortReason(signal)));
+    signal.addEventListener('abort', onAbort, { once: true });
+    void promise.then(
+      (value) => settle(() => resolve(value)),
+      (error: unknown) => settle(() => reject(error)),
+    );
+  });
 }
 
 async function connectCandidate(

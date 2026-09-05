@@ -236,7 +236,7 @@ describe('FileCredentialStore compareAndSetSecret', () => {
     slug: string,
     kind: CredentialKind,
     expected: string | null,
-    value: string,
+    value: string | null,
   ): Promise<CredentialCasResult> {
     assert.ok(store.compareAndSetSecret, 'file store exposes the CAS capability');
     return store.compareAndSetSecret(slug, kind, expected, value);
@@ -309,6 +309,26 @@ describe('FileCredentialStore compareAndSetSecret', () => {
       assert.deepEqual(result, { committed: false, current: null });
       const reader = createFileCredentialStore(dir);
       assert.equal(await reader.getSecret('acct', 'oauth_token'), null);
+    });
+  });
+
+  test('compare-and-delete removes only the credential version it observed', async () => {
+    await withTempDir(async (dir) => {
+      const a = createFileCredentialStore(dir);
+      const b = createFileCredentialStore(dir);
+      await a.setSecret('acct', 'oauth_token', 'tok-basis');
+
+      assert.deepEqual(await cas(a, 'acct', 'oauth_token', 'tok-basis', null), {
+        committed: true,
+      });
+      assert.equal(await a.getSecret('acct', 'oauth_token'), null);
+
+      await a.setSecret('acct', 'oauth_token', 'tok-newer');
+      assert.deepEqual(await cas(b, 'acct', 'oauth_token', 'tok-basis', null), {
+        committed: false,
+        current: 'tok-newer',
+      });
+      assert.equal(await b.getSecret('acct', 'oauth_token'), 'tok-newer');
     });
   });
 
