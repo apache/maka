@@ -202,6 +202,11 @@ export type AdmitRootTurnResult =
 export interface RootTurnAdmissionStore {
   admitRootTurn(input: AdmitRootTurnInput): Promise<AdmitRootTurnResult>;
   readRootTurnAdmission(sessionId: string, turnId: string): Promise<RootTurnAdmission | undefined>;
+  readRootTurnContinuationAdmission(
+    sessionId: string,
+    sourceTurnId: string,
+    sourceRunId: string,
+  ): Promise<RootTurnAdmission | undefined>;
   readRootTurnSourceMessageReceipt(
     sessionId: string,
     sourceMessageId: string,
@@ -633,6 +638,45 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
     assertSafeId(sessionId, 'Invalid session id');
     assertSafeId(turnId, 'Invalid turn id');
     return readSqliteRootTurnAdmission(this.#lease.database, sessionId, turnId);
+  }
+
+  async readRootTurnContinuationAdmission(
+    sessionId: string,
+    sourceTurnId: string,
+    sourceRunId: string,
+  ): Promise<RootTurnAdmission | undefined> {
+    assertSafeId(sessionId, 'Invalid session id');
+    assertSafeId(sourceTurnId, 'Invalid source turn id');
+    assertSafeId(sourceRunId, 'Invalid source run id');
+    const row = this.#lease.database
+      .prepare(`
+        SELECT turn_id, record_json
+        FROM core_root_turn_admissions
+        WHERE session_id = ?
+          AND json_extract(record_json, '$.execution.sourceTurnId') = ?
+          AND json_extract(record_json, '$.execution.sourceRunId') = ?
+          AND json_extract(record_json, '$.execution.kind') = 'safe_boundary_continuation'
+      `)
+      .get(sessionId, sourceTurnId, sourceRunId) as
+      | { turn_id?: unknown; record_json?: unknown }
+      | undefined;
+    if (!row) return undefined;
+    if (typeof row.turn_id !== 'string' || typeof row.record_json !== 'string') {
+      throw new Error('Invalid SQLite root turn continuation admission row');
+    }
+    const admission = normalizeRootTurnAdmission(
+      JSON.parse(row.record_json),
+      sessionId,
+      row.turn_id,
+    );
+    if (
+      admission.execution.kind !== 'safe_boundary_continuation' ||
+      admission.execution.sourceTurnId !== sourceTurnId ||
+      admission.execution.sourceRunId !== sourceRunId
+    ) {
+      throw new Error('Root turn continuation index disagrees with its durable admission');
+    }
+    return admission;
   }
 
   async readRootTurnStartRejection(

@@ -249,12 +249,6 @@ test('WorkHub Coordination resume has closed input and outcome shapes', () => {
       outcome: 'already_running',
       targetSessionId: 'payments',
     },
-    {
-      disposition: 'resume_work',
-      outcome: 'parked',
-      targetSessionId: 'payments',
-      parkReason: 'safety_check_failed',
-    },
   ]) {
     assert.deepEqual(decodeWorkHubCoordinationActResult(result), result);
   }
@@ -264,12 +258,6 @@ test('WorkHub Coordination resume has closed input and outcome shapes', () => {
       disposition: 'resume_work',
       outcome: 'parked',
       targetSessionId: 'payments',
-    },
-    {
-      disposition: 'resume_work',
-      outcome: 'parked',
-      targetSessionId: 'payments',
-      parkReason: 'invented',
     },
     {
       disposition: 'resume_work',

@@ -90,8 +90,7 @@ import {
   type WorkHubActionClaimOutcome,
   type WorkHubDelegationStopRequestedMessage,
   type WorkHubDelegationStopResolvedMessage,
-  type WorkHubDelegationResumeRequestedMessage,
-  type WorkHubDelegationResumeResolvedMessage,
+  type WorkHubDelegationResumeMessage,
   type WorkHubDelegationSupersededMessage,
 } from '@maka/core/session';
 import type {
@@ -447,12 +446,7 @@ export interface SessionAuthorityStore extends SessionStore, MessageAdmissionSto
   readWorkHubStopResolution(
     delegationId: string,
   ): Promise<WorkHubDelegationStopResolvedMessage | undefined>;
-  readWorkHubResumeRequest(
-    actionId: string,
-  ): Promise<WorkHubDelegationResumeRequestedMessage | undefined>;
-  readWorkHubResumeResolution(
-    actionId: string,
-  ): Promise<WorkHubDelegationResumeResolvedMessage | undefined>;
+  readWorkHubResume(actionId: string): Promise<WorkHubDelegationResumeMessage | undefined>;
   /**
    * Durably binds one action identity to one exact WorkHub operation before its
    * effect. Survives removal of the target Session so a committed destructive
@@ -780,25 +774,11 @@ class SqliteSessionStore implements SessionAuthorityStore {
       : undefined;
   }
 
-  async readWorkHubResumeRequest(
-    actionId: string,
-  ): Promise<WorkHubDelegationResumeRequestedMessage | undefined> {
-    const message = await this.readWorkHubCoordinationMessage(
-      `whu_${workHubIdentitySuffix(actionId)}`,
-    );
-    return message?.type === 'workhub_coordination' &&
-      message.kind === 'delegation_resume_requested'
-      ? message
-      : undefined;
-  }
-
-  async readWorkHubResumeResolution(
-    actionId: string,
-  ): Promise<WorkHubDelegationResumeResolvedMessage | undefined> {
+  async readWorkHubResume(actionId: string): Promise<WorkHubDelegationResumeMessage | undefined> {
     const message = await this.readWorkHubCoordinationMessage(
       `whn_${workHubIdentitySuffix(actionId)}`,
     );
-    return message?.type === 'workhub_coordination' && message.kind === 'delegation_resume_resolved'
+    return message?.type === 'workhub_coordination' && message.kind === 'delegation_resume'
       ? message
       : undefined;
   }

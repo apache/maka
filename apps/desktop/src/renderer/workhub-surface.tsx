@@ -27,20 +27,20 @@ import {
 import { Button } from '@astryxdesign/core/Button';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { ChatSurfaceLayout, Composer } from '@maka/ui';
-import type {
-  WorkHubController,
-  WorkHubCoordinationTurn,
-  WorkHubDelegationLinkState,
-  WorkHubProjection,
-  WorkHubSessionSummary,
-  WorkHubSubmission,
-  WorkHubSubmitInput,
+import {
+  WorkHubCoordinationFailure,
+  type WorkHubController,
+  type WorkHubCoordinationTurn,
+  type WorkHubDelegationLinkState,
+  type WorkHubProjection,
+  type WorkHubSessionSummary,
+  type WorkHubSubmission,
+  type WorkHubSubmitInput,
 } from './workhub-controller.js';
 import {
   WorkHubSendLease,
   type WorkHubSendAttempt,
 } from './workhub-send-lease.js';
-import { isWorkHubCoordinationFailure } from './workhub-coordination-port.js';
 
 export interface WorkHubConversationTurn {
   requestId: string;
@@ -95,7 +95,7 @@ export function workHubSubmissionClearsDraft(
 }
 
 export function workHubSurfaceFailure(error: unknown): WorkHubSurfaceFailure {
-  if (isWorkHubCoordinationFailure(error)) {
+  if (error instanceof WorkHubCoordinationFailure) {
     if (error.code === 'operation_conflict') return 'action_changed';
     if (error.code === 'not_found' || error.code === 'session_archived') {
       return 'candidates_changed';
@@ -467,7 +467,7 @@ export function WorkHubSurface(props: {
 
 function isTerminalWorkHubSurfaceFailure(error: unknown): boolean {
   return (
-    isWorkHubCoordinationFailure(error) &&
+    error instanceof WorkHubCoordinationFailure &&
     (error.code === 'operation_conflict' ||
       error.code === 'not_found' ||
       error.code === 'session_archived' ||
@@ -611,10 +611,8 @@ export function WorkHubCoordinationTurnView(props: {
           session={resumedSession}
           targetSessionId={props.turn.resume.targetSessionId}
           fallbackName={props.turn.resume.targetSessionName}
-          heading={props.turn.resume.outcome
-            ? copy.resumeOutcomes[props.turn.resume.outcome]
-            : copy.resumingWork}
-          state={props.turn.resume.outcome ? copy.resumeRecorded : copy.resuming}
+          heading={copy.resumeOutcomes[props.turn.resume.outcome]}
+          state={copy.resumeRecorded}
           result={undefined}
           copy={copy}
           onOpenSession={props.onOpenSession}
@@ -895,11 +893,10 @@ function workHubCopy(locale: UiLocale) {
       resumeOutcomes: {
         resume_started: '已让中断的工作继续：',
         already_running: '这项工作还在跑，不需要恢复：',
-        parked: '无法继续这项工作；请打开该 Session 查看原因：',
       },
-      resumingWork: '正在请求继续：', resuming: '正在处理', resumeRecorded: '结果已记录',
+      resumeRecorded: '结果已记录',
       resumeTargetAmbiguous: '这个名称对应多项工作；请打开具体的 Session 继续它。',
-      resumeTargetUnavailable: '这项工作现在没有可以继续的单个 WorkHub 委派；请打开该 Session 查看。',
+      resumeTargetUnavailable: '当前 Runtime Host 无法继续这项工作；安全边界恢复可能未启用，或 Host 仍在恢复。',
       waitingForDecision: '这项工作正在等待你的决定。',
       requestNotSent: '新请求尚未发送；处理原 Session 中的交互后可以再次发送。',
       routing: '正在判断应该交给哪个 Session…', loadFailed: '无法读取已有工作。',
@@ -972,11 +969,10 @@ function workHubCopy(locale: UiLocale) {
       resumeOutcomes: {
         resume_started: '已讓中斷的工作繼續：',
         already_running: '這項工作仍在執行，不需要恢復：',
-        parked: '無法繼續這項工作；請開啟該 Session 檢視原因：',
       },
-      resumingWork: '正在請求繼續：', resuming: '正在處理', resumeRecorded: '結果已記錄',
+      resumeRecorded: '結果已記錄',
       resumeTargetAmbiguous: '這個名稱對應多項工作；請開啟具體的 Session 繼續它。',
-      resumeTargetUnavailable: '這項工作現在沒有可以繼續的單一 WorkHub 委派；請開啟該 Session 檢視。',
+      resumeTargetUnavailable: '目前 Runtime Host 無法繼續這項工作；安全邊界恢復可能未啟用，或 Host 仍在恢復。',
       submitFailures: {
         candidates_changed: '工作清單已變更，請重新傳送以使用最新目標。',
         linked_correction_unavailable: '跨 Session 更正將於持久委派關聯完成後開放；請先開啟原 Session 並停止目前工作。',
@@ -1035,13 +1031,12 @@ function workHubCopy(locale: UiLocale) {
     resumeOutcomes: {
       resume_started: 'Carried on the interrupted work:',
       already_running: 'This work is still running, so there was nothing to resume:',
-      parked: 'Could not carry this work on. Open its Session to see why:',
     },
-    resumingWork: 'Requesting resume:', resuming: 'Resuming', resumeRecorded: 'Result recorded',
+    resumeRecorded: 'Result recorded',
     resumeTargetAmbiguous:
       'That name matches more than one work item. Open the exact Session to resume it.',
     resumeTargetUnavailable:
-      'This work has no single WorkHub delegation to resume right now. Open its Session to see what is running.',
+      'The current Runtime Host cannot resume this work. Safe-boundary resume may be disabled, or the Host may still be recovering.',
     waitingForDecision: 'This work is waiting for your decision.',
     requestNotSent: 'The new request was not sent. Resolve the interaction in its Session, then send again.',
     routing: 'Choosing the right Session…', loadFailed: 'Could not read existing work.',

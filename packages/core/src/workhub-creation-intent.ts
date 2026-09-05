@@ -110,8 +110,6 @@ const DIRECT_STOP_REQUEST =
 // equivalent either.
 const DIRECT_CHINESE_STOP_REQUEST =
   /^\s*(?:(?:请|请帮我|帮我|麻烦你?)\s*)?(?:停止|停掉|停下|取消|终止|中止)\s*(?:(?:这个|该)?(?:会话|工作|任务)\s*)?(.+?)\s*[。！]?\s*$/iu;
-// Resume asks the Host to carry on work that was interrupted, so it reads the
-// same shape as a stop: a direct speech act naming one existing Session. It is
 const DIRECT_RESUME_REQUEST =
   /^\s*(?:(?:please|kindly)\s+)?resume\s+(?:(?:the|this)\s+)?(?:(?:session|work|task|job)\s+)?(.+?)\s*[.!。！]?\s*$/iu;
 const DIRECT_CHINESE_RESUME_REQUEST =

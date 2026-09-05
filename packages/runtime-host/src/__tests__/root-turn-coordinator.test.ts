@@ -1268,6 +1268,8 @@ test('idle Skill admission persists a canonical draft without history before roo
         throw new Error('injected root admission failure');
       },
       readRootTurnAdmission: (sessionId, turnId) => store.readRootTurnAdmission(sessionId, turnId),
+      readRootTurnContinuationAdmission: (sessionId, sourceTurnId, sourceRunId) =>
+        store.readRootTurnContinuationAdmission(sessionId, sourceTurnId, sourceRunId),
       readRootTurnSourceMessageReceipt: (sessionId, messageId) =>
         store.readRootTurnSourceMessageReceipt(sessionId, messageId),
       listRootTurnAdmissionsForRecovery: (sessionId) =>
@@ -3195,6 +3197,8 @@ test('successor admission failure retains the terminal transition and its confir
         return store.admitRootTurn(input);
       },
       readRootTurnAdmission: (sessionId, turnId) => store.readRootTurnAdmission(sessionId, turnId),
+      readRootTurnContinuationAdmission: (sessionId, sourceTurnId, sourceRunId) =>
+        store.readRootTurnContinuationAdmission(sessionId, sourceTurnId, sourceRunId),
       readRootTurnSourceMessageReceipt: (sessionId, messageId) =>
         store.readRootTurnSourceMessageReceipt(sessionId, messageId),
       listRootTurnAdmissionsForRecovery: (sessionId) =>
@@ -3303,6 +3307,8 @@ test('shutdown contains a successor backend start rejected by Interaction drain'
         return store.admitRootTurn(input);
       },
       readRootTurnAdmission: (sessionId, turnId) => store.readRootTurnAdmission(sessionId, turnId),
+      readRootTurnContinuationAdmission: (sessionId, sourceTurnId, sourceRunId) =>
+        store.readRootTurnContinuationAdmission(sessionId, sourceTurnId, sourceRunId),
       readRootTurnSourceMessageReceipt: (sessionId, messageId) =>
         store.readRootTurnSourceMessageReceipt(sessionId, messageId),
       listRootTurnAdmissionsForRecovery: (sessionId) =>

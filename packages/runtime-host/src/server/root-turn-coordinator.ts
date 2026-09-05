@@ -521,27 +521,24 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
 
   /** Returns the newest Host-admitted continuation descended from one root execution. */
   async readLatestRootTurnLineage(identity: HostedExecutionRef): Promise<HostedExecutionRef> {
-    const admissions = await this.stores.agentRunStore.listRootTurnAdmissionsForRecovery(
+    const origin = await this.stores.agentRunStore.readRootTurnAdmission(
       identity.sessionId,
+      identity.turnId,
     );
-    const originIndex = admissions.findIndex(
-      ({ turnId, runId }) => turnId === identity.turnId && runId === identity.runId,
-    );
-    if (originIndex === -1) {
+    if (!origin || origin.runId !== identity.runId) {
       throw new RuntimeMessageAuthorityInvariantError(
         `Root execution ${identity.turnId}/${identity.runId} has no durable admission`,
       );
     }
-    let latest = admissions[originIndex]!;
-    for (const admission of admissions.slice(originIndex + 1)) {
-      const execution = admission.execution;
-      if (
-        execution.kind === 'safe_boundary_continuation' &&
-        execution.sourceTurnId === latest.turnId &&
-        execution.sourceRunId === latest.runId
-      ) {
-        latest = admission;
-      }
+    let latest = origin;
+    while (true) {
+      const continuation = await this.stores.agentRunStore.readRootTurnContinuationAdmission(
+        identity.sessionId,
+        latest.turnId,
+        latest.runId,
+      );
+      if (!continuation) break;
+      latest = continuation;
     }
     return { sessionId: latest.sessionId, turnId: latest.turnId, runId: latest.runId };
   }

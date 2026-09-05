@@ -461,37 +461,6 @@ test('a named resume submits and reports what the Host did', async () => {
   await handle.close();
 });
 
-test('a parked resume preserves the Host park reason', async () => {
-  const controller = createGatedWorkHubController({
-    sessions: port([session('payments', { sessionName: 'Payments' })]),
-    coordination: {
-      open: async (handler) => {
-        handler([], []);
-        return { close: async () => undefined };
-      },
-      record: async (input) => ({ turnId: input.turnId }),
-      candidates: async () => assert.fail('a resume must not read route candidates'),
-      act: async () => ({
-        disposition: 'resume_work',
-        outcome: 'parked',
-        targetSessionId: 'payments',
-        parkReason: 'safety_check_failed',
-      }),
-    },
-  });
-  const handle = await controller.openConversation(() => undefined, () => undefined);
-
-  assert.deepEqual(await controller.submit({ requestId: 'resume-parked', text: 'Resume Payments' }), {
-    kind: 'resume',
-    strategyId: WORKHUB_ROUTING_STRATEGY_ID,
-    requestId: 'resume-parked',
-    target: { sessionId: 'payments' },
-    outcome: 'parked',
-    parkReason: 'safety_check_failed',
-  });
-  await handle.close();
-});
-
 test('a resume the Host will not admit becomes its clarification', async () => {
   const sessions = port([session('payments', { sessionName: 'Payments' })]);
   const controller = createGatedWorkHubController({
@@ -524,52 +493,34 @@ test('a resume the Host will not admit becomes its clarification', async () => {
   await handle.close();
 });
 
-test('resume-shaped ordinary work routes normally instead of resuming', async () => {
-  // `Continue` is an ordinary English verb. A resume that recalls no WorkHub
-  // identity is work to do, not a command over a delegation.
-  const sessions = port([session('payments', { sessionName: 'Payments' })]);
-  const actions: WorkHubCoordinationActInput[] = [];
+test('a Runtime Host without safe-boundary resume explains why it cannot resume', async () => {
   const controller = createGatedWorkHubController({
-    sessions,
+    sessions: port([session('payments', { sessionName: 'Payments' })]),
     coordination: {
       open: async (handler) => {
         handler([], []);
         return { close: async () => undefined };
       },
       record: async (input) => ({ turnId: input.turnId }),
-      candidates: async () => ({
-        candidateSetId: `sha256:${'c'.repeat(64)}`,
-        candidates: [{
-          candidateRef: 'ref-payments',
-          sessionId: 'payments',
-          sessionName: 'Payments',
-          workspace: {
-            target: { kind: 'host_path' as const, path: '/workspace/payments' },
-            hostCwd: '/workspace/payments',
-          },
-          state: 'active' as const,
-          updatedAt: 1,
-        }],
-      }),
-      act: async (input) => {
-        actions.push(input);
-        return {
-          disposition: 'delegate_existing',
-          targetSessionId: 'payments',
-          targetTurnId: 'delegated-turn',
-        };
+      candidates: async () => assert.fail('a resume must not read route candidates'),
+      act: async () => {
+        throw new WorkHubCoordinationFailure(
+          'operation_unavailable',
+          'Safe-boundary resume is disabled for this Runtime Host',
+        );
       },
     },
   });
   const handle = await controller.openConversation(() => undefined, () => undefined);
 
-  const result = await controller.submit({
-    requestId: 'ordinary-1',
-    text: 'Continue the refactor in Payments',
+  assert.deepEqual(await controller.submit({ requestId: 'resume-disabled', text: 'Resume Payments' }), {
+    kind: 'clarification',
+    strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+    requestId: 'resume-disabled',
+    text: 'Resume Payments',
+    options: [],
+    reason: 'resume_target_unavailable',
   });
-
-  assert.equal(result.kind, 'submitted');
-  assert.equal(actions[0]?.proposal.disposition, 'delegate_existing');
   await handle.close();
 });
 

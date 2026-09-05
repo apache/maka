@@ -38,12 +38,6 @@ import type {
 } from '@maka/runtime-host/protocol';
 import { boundedWorkHubTimelineText, WorkHubCoordinationFailure } from './workhub-controller.js';
 
-export function isWorkHubCoordinationFailure(
-  error: unknown,
-): error is WorkHubCoordinationFailure {
-  return error instanceof WorkHubCoordinationFailure;
-}
-
 import type { WorkHubDesktopTranscriptBridge } from './workhub-session-port.js';
 
 const WORKHUB_COORDINATION_TURN_LIMIT = 40;
@@ -172,32 +166,24 @@ export function projectWorkHubCoordinationTurns(
         : [],
     ),
   );
-  const resumeResolutionByActionId = new Map(
-    messages.flatMap((message) =>
-      message.type === 'workhub_coordination' && message.kind === 'delegation_resume_resolved'
-        ? [[message.actionId, message] as const]
-        : [],
-    ),
-  );
   for (const message of messages) {
     const terminal = terminalDelegationLink(message);
     if (terminal) terminalLinkState.set(terminal.delegationId, terminal.state);
   }
 
   for (const message of messages) {
-    if (message.type === 'workhub_coordination' && message.kind === 'delegation_resume_requested') {
-      const resolution = resumeResolutionByActionId.get(message.actionId);
+    if (message.type === 'workhub_coordination' && message.kind === 'delegation_resume') {
       turns.push({
         messageId: message.id,
         turnId: message.coordinationTurnId,
         text: boundedWorkHubTimelineText(message.userText),
-        state: resolution ? 'completed' : 'running',
+        state: 'completed',
         resume: {
           targetSessionId: message.targetSessionId,
           targetSessionName: message.targetSessionName,
-          ...(resolution ? { outcome: resolution.outcome } : {}),
+          outcome: message.outcome,
         },
-        updatedAt: resolution ? Math.max(message.ts, resolution.ts) : message.ts,
+        updatedAt: message.ts,
       });
       continue;
     }

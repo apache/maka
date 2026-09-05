@@ -1390,17 +1390,25 @@ export async function createExecutionRuntimeHostComposition(
           const snapshot = await coordinator.read(latest);
           return isHostedExecutionTerminal(snapshot) ? 'retired' : 'recovering';
         },
-        // Resolve only the execution lineage owned by this delegation. A
-        // Session-wide latest-failure query could otherwise continue unrelated
-        // work started directly in the same Session.
-        planResume: async (assignment, context) => {
+        // Resolve and resume only the execution lineage owned by this
+        // delegation. A Session-wide latest-failure query could otherwise
+        // continue unrelated work started directly in the same Session.
+        resumeDelegation: async (assignment, context) => {
           const disposition = await messages.readMessageExecutionDisposition(
             assignment.targetSessionId,
             assignment.targetMessageId,
           );
-          if (disposition.kind === 'recovering') return { kind: 'recovering' as const };
+          if (disposition.kind === 'recovering') {
+            throw new WorkHubActionEffectFailure(
+              'host_not_ready',
+              'WorkHub is still recovering the delegated execution',
+            );
+          }
           if (disposition.kind !== 'owned_root') {
-            return { kind: 'parked' as const, parkReason: 'resume_candidate_missing' as const };
+            throw new WorkHubActionEffectFailure(
+              'operation_conflict',
+              'WorkHub delegated execution is not resumable',
+            );
           }
           const source = await coordinator.readLatestRootTurnLineage({
             sessionId: assignment.targetSessionId,
@@ -1408,12 +1416,20 @@ export async function createExecutionRuntimeHostComposition(
             runId: disposition.runId,
           });
           if (isActiveWorkHubRoot(coordinator, source)) {
-            return { kind: 'already_running' as const };
+            return { outcome: 'already_running' as const };
           }
           const snapshot = await coordinator.read(source);
-          if (!isHostedExecutionTerminal(snapshot)) return { kind: 'recovering' as const };
+          if (!isHostedExecutionTerminal(snapshot)) {
+            throw new WorkHubActionEffectFailure(
+              'host_not_ready',
+              'WorkHub is still recovering the delegated execution',
+            );
+          }
           if (snapshot.status !== 'failed' && snapshot.status !== 'cancelled') {
-            return { kind: 'parked' as const, parkReason: 'resume_candidate_missing' as const };
+            throw new WorkHubActionEffectFailure(
+              'operation_conflict',
+              'WorkHub delegated execution is not resumable',
+            );
           }
           const plan = await coordinator.handlers['turn.resume.query'](
             { sessionId: assignment.targetSessionId, sourceRunId: source.runId },
@@ -1421,7 +1437,14 @@ export async function createExecutionRuntimeHostComposition(
           );
           if (!plan.ok) throw new WorkHubActionEffectFailure(plan.error.code, plan.error.message);
           if (plan.result.disposition === 'parked') {
-            return { kind: 'parked' as const, parkReason: plan.result.reason };
+            throw new WorkHubActionEffectFailure(
+              plan.result.reason === 'resume_feature_disabled'
+                ? 'operation_unavailable'
+                : 'operation_conflict',
+              plan.result.reason === 'resume_feature_disabled'
+                ? 'Safe-boundary resume is disabled for this Runtime Host'
+                : 'WorkHub delegated execution is not resumable',
+            );
           }
           if (
             plan.result.sourceRunId !== source.runId ||
@@ -1432,32 +1455,16 @@ export async function createExecutionRuntimeHostComposition(
               'WorkHub resume source lineage changed during planning',
             );
           }
-          return {
-            kind: 'ready' as const,
-            sourceTurnId: plan.result.sourceTurnId,
-            sourceRunId: plan.result.sourceRunId,
-            sourceRuntimeEventHighWater: plan.result.sourceRuntimeEventHighWater,
-            targetTurnId: workHubResumedTurnId(assignment.delegationId, plan.result.sourceRunId),
-          };
-        },
-        resumeDelegation: async (request, context) => {
-          if (
-            request.plan !== 'ready' ||
-            !request.sourceRunId ||
-            request.sourceRuntimeEventHighWater === undefined ||
-            !request.targetTurnId
-          ) {
-            throw new WorkHubActionEffectFailure(
-              'persistence_failed',
-              'WorkHub durable resume plan is incomplete',
-            );
-          }
+          const targetTurnId = workHubResumedTurnId(
+            assignment.delegationId,
+            plan.result.sourceRunId,
+          );
           const started = await coordinator.handlers['turn.resume.start'](
             {
-              sessionId: request.targetSessionId,
-              turnId: request.targetTurnId,
-              sourceRunId: request.sourceRunId,
-              sourceRuntimeEventHighWater: request.sourceRuntimeEventHighWater,
+              sessionId: assignment.targetSessionId,
+              turnId: targetTurnId,
+              sourceRunId: plan.result.sourceRunId,
+              sourceRuntimeEventHighWater: plan.result.sourceRuntimeEventHighWater,
             },
             context,
           );
@@ -1465,7 +1472,14 @@ export async function createExecutionRuntimeHostComposition(
             throw new WorkHubActionEffectFailure(started.error.code, started.error.message);
           }
           if (started.result.kind === 'parked') {
-            return { outcome: 'parked' as const, parkReason: started.result.plan.reason };
+            throw new WorkHubActionEffectFailure(
+              started.result.plan.reason === 'resume_feature_disabled'
+                ? 'operation_unavailable'
+                : 'operation_conflict',
+              started.result.plan.reason === 'resume_feature_disabled'
+                ? 'Safe-boundary resume is disabled for this Runtime Host'
+                : 'WorkHub delegated execution is not resumable',
+            );
           }
           return {
             outcome: 'resume_started' as const,

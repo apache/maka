@@ -100,11 +100,6 @@ export interface WorkHubRoutePolicy {
     text: string;
     sessions: WorkHubRoutableSession[];
   }): WorkHubNamedActionRouteDecision;
-  /**
-   * Resume reads the same way a stop does and refuses on the same terms. The
-   * two share one resolver and one tail rule so `Resume Payments` and
-   * `Stop Payments` cannot disagree about which Session they mean.
-   */
   resolveResume(input: {
     text: string;
     sessions: WorkHubRoutableSession[];
@@ -145,31 +140,12 @@ const MIN_STRONG_SINGLE_LATIN_LENGTH = 8;
 const MAX_UNCERTAINTY_OPTIONS = 5;
 const MAX_RELATED_CLARIFICATION_OPTIONS = 4;
 
-/**
- * The reference half of a direct action over one existing delegation.
- *
- * Action Intent says only that the user issued this imperative and what work it
- * refers to; the shared Session Resolver recalls which visible Sessions that
- * reference names; this decides whether the resolution is sufficient to submit.
- *
- * Stop and resume ask exactly this, so they share it. What the Host then does
- * with the named Session — end its delegation, or carry it on — is the Host's,
- * and neither action claims to know whether there is one to act on.
- */
 function resolveNamedDelegationAction(
   sessionResolver: WorkHubSessionResolver,
-  action: { readonly requested: boolean; readonly target?: string },
+  reference: string,
   sessions: WorkHubRoutableSession[],
   ambiguousReason: WorkHubStopClarificationReason,
-  unnamedReason?: WorkHubStopClarificationReason,
 ): WorkHubNamedActionRouteDecision {
-  if (!action.requested) return { kind: 'not_requested' };
-  const reference = action.target;
-  if (!reference) {
-    return unnamedReason
-      ? { kind: 'clarification', reason: unnamedReason }
-      : { kind: 'not_requested' };
-  }
   const sessionByRef = new Map(sessions.map((session) => [session.target.sessionId, session]));
   const resolution = sessionResolver.resolve({
     reference: { text: reference },
@@ -228,22 +204,23 @@ function createWorkHubRoutePolicyVisit(
     // stoppable says why.
     resolveStop({ text, sessions }) {
       const action = readWorkHubRequestIntent(text).stop;
+      if (!action.cue) return { kind: 'not_requested' };
+      if (!action.imperative || !action.target) {
+        return { kind: 'clarification', reason: 'stop_target_required' };
+      }
       return resolveNamedDelegationAction(
         sessionResolver,
-        { requested: action.cue, ...(action.imperative ? { target: action.target } : {}) },
+        action.target,
         sessions,
         'stop_target_ambiguous',
-        'stop_target_required',
       );
     },
-    // Resume asks the same question of the same words, so it asks it with the
-    // same code. Two copies of this would be two chances for `Resume Payments`
-    // and `Stop Payments` to disagree about which Session they name.
     resolveResume({ text, sessions }) {
       const action = readWorkHubRequestIntent(text).resume;
+      if (!action.imperative || !action.target) return { kind: 'not_requested' };
       return resolveNamedDelegationAction(
         sessionResolver,
-        { requested: action.imperative, ...(action.target ? { target: action.target } : {}) },
+        action.target,
         sessions,
         'resume_target_ambiguous',
       );

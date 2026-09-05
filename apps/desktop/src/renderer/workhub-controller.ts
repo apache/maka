@@ -136,7 +136,7 @@ export interface WorkHubCoordinationTurn {
   resume?: {
     readonly targetSessionId: string;
     readonly targetSessionName: string;
-    readonly outcome?: Extract<WorkHubCoordinationActResult, { disposition: 'resume_work' }>['outcome'];
+    readonly outcome: Extract<WorkHubCoordinationActResult, { disposition: 'resume_work' }>['outcome'];
   };
   updatedAt: number;
 }
@@ -220,10 +220,6 @@ export type WorkHubSubmission = (
       target: WorkHubSessionTarget;
       outcome: Extract<WorkHubCoordinationActResult, { disposition: 'resume_work' }>['outcome'];
       targetTurnId?: string;
-      parkReason?: Extract<
-        WorkHubCoordinationActResult,
-        { disposition: 'resume_work' }
-      >['parkReason'];
     }
 ) & { strategyId: WorkHubRoutingStrategyId };
 
@@ -364,29 +360,43 @@ export function createWorkHubController(deps: {
         },
         ...(kind === 'stop' ? { confirmation: { kind: 'user_stop' as const } } : {}),
       });
+      const result = {
+        strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+        requestId: input.requestId,
+        target,
+      };
       if (kind === 'resume' && admitted.disposition === 'resume_work') {
         return {
-          kind,
-          strategyId: WORKHUB_ROUTING_STRATEGY_ID,
-          requestId: input.requestId,
-          target,
+          ...result,
+          kind: 'resume',
           outcome: admitted.outcome,
           ...(admitted.targetTurnId ? { targetTurnId: admitted.targetTurnId } : {}),
-          ...(admitted.parkReason ? { parkReason: admitted.parkReason } : {}),
         };
       }
       if (kind === 'stop' && admitted.disposition === 'stop_work') {
         return {
-          kind,
-          strategyId: WORKHUB_ROUTING_STRATEGY_ID,
-          requestId: input.requestId,
-          target,
+          ...result,
+          kind: 'stop',
           outcome: admitted.outcome,
           ...(admitted.targetTurnId ? { targetTurnId: admitted.targetTurnId } : {}),
         };
       }
       throw new Error('WorkHub Action Gate returned an unexpected disposition');
     } catch (error) {
+      if (
+        kind === 'resume' &&
+        error instanceof WorkHubCoordinationFailure &&
+        (error.code === 'operation_unavailable' || error.code === 'host_not_ready')
+      ) {
+        return {
+          kind: 'clarification',
+          strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+          requestId: input.requestId,
+          text: input.text,
+          options: [],
+          reason: 'resume_target_unavailable',
+        };
+      }
       if (error instanceof WorkHubCoordinationFailure && error.code === 'operation_conflict') {
         return {
           kind: 'clarification',

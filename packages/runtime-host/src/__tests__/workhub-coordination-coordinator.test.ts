@@ -47,7 +47,10 @@ import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import type { RootTurnCoordinator } from '../server/root-turn-coordinator.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 import { SessionOperationFailure } from '../server/session-catalog-coordinator.js';
-import type { WorkHubActionGateEffects } from '../server/workhub-coordination-action-gate.js';
+import {
+  WorkHubActionEffectFailure,
+  type WorkHubActionGateEffects,
+} from '../server/workhub-coordination-action-gate.js';
 import {
   HostWorkHubCoordinationCoordinator,
   type CoordinationCreateTarget,
@@ -1075,7 +1078,7 @@ describe('Host WorkHub Coordination coordinator', () => {
     }
   });
 
-  test('persists a resume plan and result before replaying after Host restart', async () => {
+  test('persists one resume result after the Host starts the continuation', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-workhub-resume-'));
     let store = createSessionStore(root);
     let targetId = '';
@@ -1099,13 +1102,6 @@ describe('Host WorkHub Coordination coordinator', () => {
       let resumeCalls = 0;
       const workhub = coordinator(root, store, () => undefined, undefined, undefined, undefined, {
         assign: persistTestAssignmentAction(store, 'payments-turn'),
-        planResume: async () => ({
-          kind: 'ready',
-          sourceTurnId: 'payments-turn',
-          sourceRunId: 'payments-run',
-          sourceRuntimeEventHighWater: 9,
-          targetTurnId: 'resumed-turn',
-        }),
         resumeDelegation: async () => {
           resumeCalls += 1;
           return {
@@ -1147,30 +1143,12 @@ describe('Host WorkHub Coordination coordinator', () => {
         },
       });
       assert.equal(resumeCalls, 1);
-      assert.equal(
-        (await store.readWorkHubResumeRequest('resume-action'))?.sourceRunId,
-        'payments-run',
-      );
-      assert.equal(
-        (await store.readWorkHubResumeResolution('resume-action'))?.targetTurnId,
-        'resumed-turn',
-      );
-    } finally {
-      await store.close?.();
-    }
-
-    store = createSessionStore(root);
-    try {
-      const restarted = coordinator(root, store, () => undefined, undefined, undefined, undefined, {
-        planResume: async () => assert.fail('durable resume replay must not replan'),
-        resumeDelegation: async () => assert.fail('durable resume replay must not restart'),
-      });
-      const replay = await restarted.handlers['workhub.coordination.act'](resumeInput(), CONTEXT);
-      assert.equal(replay.ok, true);
-      if (replay.ok && replay.result.disposition === 'resume_work') {
-        assert.equal(replay.result.outcome, 'resume_started');
-        assert.equal(replay.result.targetTurnId, 'resumed-turn');
-      }
+      const durable = await store.readWorkHubResume('resume-action');
+      assert.equal(durable?.kind, 'delegation_resume');
+      assert.equal(durable?.resumesActionId, 'source-action');
+      assert.equal(durable?.targetSessionId, target.id);
+      assert.equal(durable?.outcome, 'resume_started');
+      assert.equal(durable?.targetTurnId, 'resumed-turn');
     } finally {
       await store.close?.();
       await rm(root, { recursive: true, force: true });
@@ -1190,21 +1168,16 @@ describe('Host WorkHub Coordination coordinator', () => {
       });
       let recovering = true;
       const workhub = coordinator(root, store, () => undefined, undefined, undefined, undefined, {
-        assign: (input) => persistTestAssignment(store, input, 'payments-turn'),
-        planResume: async () =>
-          recovering
-            ? { kind: 'recovering' }
-            : {
-                kind: 'ready',
-                sourceTurnId: 'payments-turn',
-                sourceRunId: 'payments-run',
-                sourceRuntimeEventHighWater: 9,
-                targetTurnId: 'resumed-turn',
-              },
-        resumeDelegation: async () => ({
-          outcome: 'resume_started',
-          targetTurnId: 'resumed-turn',
-        }),
+        assign: persistTestAssignmentAction(store, 'payments-turn'),
+        resumeDelegation: async () => {
+          if (recovering) {
+            throw new WorkHubActionEffectFailure(
+              'host_not_ready',
+              'WorkHub is still recovering the delegated execution',
+            );
+          }
+          return { outcome: 'resume_started', targetTurnId: 'resumed-turn' };
+        },
       });
       assert.equal((await workhub.handlers['workhub.coordination.resolve']({}, CONTEXT)).ok, true);
       const candidates = await workhub.handlers['workhub.coordination.candidates']({}, CONTEXT);
@@ -1239,11 +1212,11 @@ describe('Host WorkHub Coordination coordinator', () => {
       assert.deepEqual(await workhub.handlers['workhub.coordination.act'](input, CONTEXT), {
         ok: false,
         error: {
-          code: 'operation_unavailable',
+          code: 'host_not_ready',
           message: 'WorkHub is still recovering the delegated execution',
         },
       });
-      assert.equal(await store.readWorkHubResumeRequest(input.actionId), undefined);
+      assert.equal(await store.readWorkHubResume(input.actionId), undefined);
 
       recovering = false;
       const retried = await workhub.handlers['workhub.coordination.act'](input, CONTEXT);
@@ -2051,13 +2024,6 @@ function coordinator(
     executions,
     sessionActions: {
       readDelegationRetirement: async () => 'not_retired',
-      planResume: async () => ({
-        kind: 'ready' as const,
-        sourceTurnId: 'source-turn',
-        sourceRunId: 'source-run',
-        sourceRuntimeEventHighWater: 1,
-        targetTurnId: 'resumed-turn',
-      }),
       resumeDelegation: async () => ({
         outcome: 'resume_started' as const,
         targetTurnId: 'resumed-turn',

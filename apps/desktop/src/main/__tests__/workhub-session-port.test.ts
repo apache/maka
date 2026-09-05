@@ -318,33 +318,18 @@ test('direct-stop projection is retryable until resolved and preserves not_owned
 });
 
 test('resume projection survives reload and exposes its durable outcome', () => {
-  const requested: StoredMessage = {
-    type: 'workhub_coordination', id: 'resume-request', turnId: 'resume-action', ts: 2,
-    schemaVersion: 4, kind: 'delegation_resume_requested', actionId: 'resume-action',
+  const resumed: StoredMessage = {
+    type: 'workhub_coordination', id: 'resume', turnId: 'resume-action', ts: 3,
+    schemaVersion: 4, kind: 'delegation_resume', actionId: 'resume-action',
     actionFingerprint: `sha256:${'b'.repeat(64)}`, coordinationTurnId: 'resume-action',
     resumesActionId: 'source-action', resumesDelegationId: 'payments-delegation',
-    targetSessionId: 'payments', targetMessageId: 'payments-message',
-    targetSessionName: 'Payments', userText: 'Resume Payments', plan: 'ready',
-    sourceTurnId: 'failed-turn', sourceRunId: 'failed-run',
-    sourceRuntimeEventHighWater: 4, targetTurnId: 'resumed-turn',
-  };
-  const resolved: StoredMessage = {
-    type: 'workhub_coordination', id: 'resume-resolution', turnId: 'resume-action', ts: 3,
-    schemaVersion: 4, kind: 'delegation_resume_resolved', actionId: 'resume-action',
-    actionFingerprint: `sha256:${'b'.repeat(64)}`, coordinationTurnId: 'resume-action',
-    resumesActionId: 'source-action', resumesDelegationId: 'payments-delegation',
-    targetSessionId: 'payments', outcome: 'resume_started',
+    targetSessionId: 'payments',
+    targetSessionName: 'Payments', userText: 'Resume Payments', outcome: 'resume_started',
     targetTurnId: 'resumed-turn',
   };
 
-  assert.deepEqual(projectWorkHubCoordinationTurns([requested]), [{
-    messageId: 'resume-request', turnId: 'resume-action', text: 'Resume Payments',
-    state: 'running',
-    resume: { targetSessionId: 'payments', targetSessionName: 'Payments' },
-    updatedAt: 2,
-  }]);
-  assert.deepEqual(projectWorkHubCoordinationTurns([requested, resolved]), [{
-    messageId: 'resume-request', turnId: 'resume-action', text: 'Resume Payments',
+  assert.deepEqual(projectWorkHubCoordinationTurns([resumed]), [{
+    messageId: 'resume', turnId: 'resume-action', text: 'Resume Payments',
     state: 'completed',
     resume: {
       targetSessionId: 'payments', targetSessionName: 'Payments', outcome: 'resume_started',

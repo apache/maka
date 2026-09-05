@@ -262,64 +262,39 @@ describe('WorkHub Coordination stored records', () => {
     );
   });
 
-  test('decodes exact resume plan and observed resolution records', () => {
-    const requested = {
+  test('decodes one exact observed resume record', () => {
+    const resumed = {
       type: 'workhub_coordination',
-      id: 'resume-request-id',
+      id: 'resume-id',
       turnId: 'resume-action',
       ts: 6,
       schemaVersion: 4,
-      kind: 'delegation_resume_requested',
+      kind: 'delegation_resume',
       actionId: 'resume-action',
       actionFingerprint: FINGERPRINT,
       coordinationTurnId: 'resume-action',
       resumesActionId: 'original-action',
       resumesDelegationId: 'original-delegation',
       targetSessionId: 'payments',
-      targetMessageId: 'payments-message',
       targetSessionName: 'Payments',
       userText: 'Resume Payments',
-      plan: 'ready',
-      sourceTurnId: 'failed-turn',
-      sourceRunId: 'failed-run',
-      sourceRuntimeEventHighWater: 12,
-      targetTurnId: 'resumed-turn',
-    } as const;
-    const resolved = {
-      type: 'workhub_coordination',
-      id: 'resume-resolution-id',
-      turnId: 'resume-action',
-      ts: 7,
-      schemaVersion: 4,
-      kind: 'delegation_resume_resolved',
-      actionId: 'resume-action',
-      actionFingerprint: FINGERPRINT,
-      coordinationTurnId: 'resume-action',
-      resumesActionId: 'original-action',
-      resumesDelegationId: 'original-delegation',
-      targetSessionId: 'payments',
       outcome: 'resume_started',
       targetTurnId: 'resumed-turn',
     } as const;
 
-    assert.deepEqual(decodeCanonicalMessage(requested), requested);
-    assert.deepEqual(decodeCanonicalMessage(resolved), resolved);
+    assert.deepEqual(decodeCanonicalMessage(resumed), resumed);
     for (const invalid of [
-      { ...requested, sourceRunId: undefined },
-      { ...requested, sourceRuntimeEventHighWater: -1 },
-      { ...requested, plan: 'parked', parkReason: undefined },
-      { ...resolved, targetTurnId: undefined },
-      { ...resolved, outcome: 'parked', parkReason: undefined },
-      { ...resolved, sourceRunId: 'injected' },
+      { ...resumed, targetTurnId: undefined },
+      { ...resumed, outcome: 'parked' },
+      { ...resumed, sourceRunId: 'injected' },
     ]) {
       assert.throws(() => decodeCanonicalMessage(invalid), /Invalid stored message schema/u);
     }
-    const parked = {
-      ...resolved,
-      outcome: 'parked' as const,
-      parkReason: 'safety_check_failed' as const,
+    const alreadyRunning = {
+      ...resumed,
+      outcome: 'already_running' as const,
       targetTurnId: undefined,
     };
-    assert.deepEqual(decodeCanonicalMessage(parked), parked);
+    assert.deepEqual(decodeCanonicalMessage(alreadyRunning), alreadyRunning);
   });
 });
