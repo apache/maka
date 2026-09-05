@@ -244,7 +244,7 @@ const htmlArtifact: ArtifactDescriptor = {
   kind: 'html',
   sizeBytes: 256,
   mimeType: 'text/html',
-  source: 'tool_result',
+  source: 'subagent_writeback',
 };
 
 function RemoteProjectDirectoryStory() {
