@@ -88,6 +88,7 @@ export interface WorkbarHostModel {
   rightWidth: number;
   bottomHeight: number;
   panelsState: SessionWorkbarPanelsState;
+  surfaceKey?: string;
   onActivateTab: (placement: SessionWorkbarPlacement, tabId: string) => void;
   onCloseTab: (placement: SessionWorkbarPlacement, tab: SessionWorkbarTab) => void;
   onCloseTabs: (
@@ -103,6 +104,7 @@ export interface WorkbarHostModel {
   rightResizable: ResizableProps;
   bottomResizable: ResizableProps;
   quotes?: readonly QuoteCompanionPanelState[];
+  sessions?: readonly SessionSummary[];
   onQuotesConsumed?: (snapshot: CompanionQuoteSnapshot) => void;
   onRemoveQuote?: (target: CompanionQuoteTarget) => void;
   onForkVisibilityChange?: (event: CompanionForkVisibilityEvent) => void;
@@ -167,7 +169,7 @@ export function WorkbarHost({ model: props }: { model: WorkbarHostModel }) {
             }
           >
             <WorkbarSurface
-              key={props.activeId}
+              key={props.surfaceKey ?? props.activeId}
               sessionId={props.activeId}
               projectId={props.projectId}
               projectAliases={props.projectAliases}
@@ -182,6 +184,7 @@ export function WorkbarHost({ model: props }: { model: WorkbarHostModel }) {
               onOpenLauncher={props.onOpenLauncher}
               onRequestOpenTab={props.onRequestOpenTab}
               quotes={props.quotes}
+              sessions={props.sessions}
               onQuotesConsumed={props.onQuotesConsumed}
               onRemoveQuote={props.onRemoveQuote}
               onForkVisibilityChange={props.onForkVisibilityChange}
