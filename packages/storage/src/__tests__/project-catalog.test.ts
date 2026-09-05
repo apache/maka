@@ -35,7 +35,11 @@ import {
   resolveProjectLocation,
 } from '../project-catalog.js';
 import { createSessionStore } from '../session-store.js';
-import { createGitRepositoryWithWorktree } from './fixtures/git-repository.js';
+import {
+  BROKEN_GIT_SHAPES,
+  createBrokenGitMetadata,
+  createGitRepositoryWithWorktree,
+} from './fixtures/git-repository.js';
 
 const execFileAsync = promisify(execFile);
 const trackedCatalogs = new Map<ProjectCatalog, string>();
@@ -94,6 +98,82 @@ test('a plain folder resolves without requiring the Git executable', async () =>
       identity: `folder:${await realpath(folder)}`,
       kind: 'folder',
     });
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('an incomplete enclosing .git directory does not turn a nested folder into a repository', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-folder-invalid-git-'));
+  try {
+    const folder = join(base, 'folder');
+    await mkdir(join(base, '.git', 'gk'), { recursive: true });
+    await mkdir(folder);
+
+    assert.deepEqual(await resolveProjectLocationWithoutGit(folder), {
+      canonicalPath: await realpath(folder),
+      identity: `folder:${await realpath(folder)}`,
+      kind: 'folder',
+    });
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('broken ancestor Git metadata does not turn a nested folder into a repository', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-invalid-ancestor-'));
+  try {
+    for (const shape of BROKEN_GIT_SHAPES) {
+      const root = join(base, shape);
+      const folder = join(root, 'folder');
+      await mkdir(folder, { recursive: true });
+      await createBrokenGitMetadata(root, shape);
+
+      assert.deepEqual(
+        await resolveProjectLocation({ path: folder }),
+        {
+          canonicalPath: await realpath(folder),
+          identity: `folder:${await realpath(folder)}`,
+          kind: 'folder',
+        },
+        shape,
+      );
+    }
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('a folder nested inside a repository resolves to that repository', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-nested-in-repo-'));
+  try {
+    const repository = join(base, 'repository');
+    const nested = join(repository, 'sub', 'dir');
+    await mkdir(nested, { recursive: true });
+    await execFileAsync('git', ['init', '--quiet'], { cwd: repository });
+
+    const resolved = await resolveProjectLocation({ path: nested });
+
+    assert.equal(resolved.kind, 'git');
+    assert.equal(resolved.git?.worktreeRoot, await realpath(repository));
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('a folder nested inside a linked worktree resolves to that repository', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-nested-in-worktree-'));
+  try {
+    const repository = join(base, 'repository');
+    const linkedWorktree = join(base, 'linked');
+    await createGitRepositoryWithWorktree(repository, linkedWorktree, 'nested-linked');
+    const nested = join(linkedWorktree, 'nested');
+    await mkdir(nested);
+
+    const resolved = await resolveProjectLocation({ path: nested });
+
+    assert.equal(resolved.kind, 'git');
+    assert.equal(resolved.git?.isWorktree, true);
   } finally {
     await rm(base, { recursive: true, force: true });
   }
