@@ -164,6 +164,7 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
         input.scheduledTaskTool,
         input.goalTools,
         input.parentAgentTools,
+        input.plan?.permissionMode,
         input.plan,
         input.deepResearch?.tools,
       );
@@ -545,12 +546,18 @@ function buildDefaultHostTools(
   scheduledTaskTool?: MakaTool,
   goalTools: readonly MakaTool[] = [],
   parentAgentTools: readonly MakaTool[] = [],
+  permissionMode?: PermissionMode,
   plan?: InteractiveRunComposerInput['plan'],
   deepResearchTools: readonly MakaTool[] = [],
 ): MakaTool[] {
-  const builtins = builtinOptions ? buildBuiltinTools(builtinOptions) : [];
+  const projectedBuiltinOptions =
+    builtinOptions && permissionMode !== undefined
+      ? { ...builtinOptions, declareSandboxBoundary: permissionMode !== 'bypass' }
+      : builtinOptions;
+  const builtins = projectedBuiltinOptions ? buildBuiltinTools(projectedBuiltinOptions) : [];
   const question = buildAskUserQuestionTool();
-  const sandboxBoundary = buildRequestSandboxBoundaryTool();
+  const sandboxBoundaryTools =
+    permissionMode === 'bypass' ? [] : [buildRequestSandboxBoundaryTool()];
   const todoTools = buildSessionTodoTools(sessionTodo);
   const activeExecution = plan ? activePlanExecution(plan.state) : undefined;
   const interruptedExecution = plan
@@ -570,7 +577,7 @@ function buildDefaultHostTools(
     ...builtins.map((tool) => tool.name),
     ...hostTools.map((tool) => tool.name),
     question.name,
-    sandboxBoundary.name,
+    ...sandboxBoundaryTools.map((tool) => tool.name),
     'Skill',
     'SkillSearch',
     ...todoTools.map((tool) => tool.name),
@@ -586,7 +593,7 @@ function buildDefaultHostTools(
     ...builtins,
     ...hostTools,
     question,
-    sandboxBoundary,
+    ...sandboxBoundaryTools,
     buildSkillAgentToolFromInventory(inventoryFor, skillHost, { shadowTracker }),
     buildSkillSearchAgentToolFromInventory(inventoryFor, skillHost, { shadowTracker }),
     ...todoTools,
