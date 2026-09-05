@@ -1871,10 +1871,14 @@ export class OnboardingWizard implements Component {
     const prefixWidth = visibleWidth(prefix);
     const contentWidth = Math.max(1, width - prefixWidth);
     const editorLines = editor.render(contentWidth).slice(1, -1);
+    // pi-tui's Editor always paints its fake cursor; `focused` only controls
+    // the hardware-cursor marker used for IME placement. Remove styling from
+    // inactive fields while preserving the Editor's wrapping and scrolling.
+    const renderedLines = editor.focused ? editorLines : editorLines.map(stripAnsi);
     if (editorLines.length === 0) {
       return [padLine(prefix, width)];
     }
-    return editorLines.map((line, index) =>
+    return renderedLines.map((line, index) =>
       padLine(`${index === 0 ? prefix : ' '.repeat(prefixWidth)}${line}`, width),
     );
   }
