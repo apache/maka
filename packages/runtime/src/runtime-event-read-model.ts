@@ -440,6 +440,68 @@ export function projectRuntimeEventsToStoredMessages(
   return { messages, diagnostics: state.diagnostics };
 }
 
+/**
+ * A running invocation's events as the transcript should show them right now.
+ *
+ * Two things separate a live run from a finished one. Its last text or thinking
+ * event is still arriving, so it is presented as settled rather than withheld;
+ * and a step that has only thought so far has no assistant row to hang that
+ * thinking on, so an empty one is opened for it. Neither changes the ledger:
+ * both are how the same events read before the run ends.
+ */
+export function activePresentationRuntimeEvents(events: readonly RuntimeEvent[]): RuntimeEvent[] {
+  const textMessages = new Set<string>();
+  const lastThinkingByMessage = new Map<string, RuntimeEvent>();
+
+  for (const event of events) {
+    const content = event.content;
+    if (event.role !== 'model' || (content?.kind !== 'text' && content?.kind !== 'thinking')) {
+      continue;
+    }
+    const messageKey = activeMessageKey(event);
+    if (content.kind === 'text') textMessages.add(messageKey);
+    else lastThinkingByMessage.set(messageKey, event);
+  }
+
+  const syntheticAfter = new Map<RuntimeEvent, RuntimeEvent[]>();
+  for (const [messageKey, thinking] of lastThinkingByMessage) {
+    if (textMessages.has(messageKey)) continue;
+    const existing = syntheticAfter.get(thinking) ?? [];
+    existing.push(emptyAssistantText(thinking));
+    syntheticAfter.set(thinking, existing);
+  }
+
+  const presented: RuntimeEvent[] = [];
+  for (const event of events) {
+    presented.push(settledPresentationEvent(event));
+    presented.push(...(syntheticAfter.get(event) ?? []));
+  }
+  return presented;
+}
+
+function activeMessageKey(event: RuntimeEvent): string {
+  const messageId = event.refs?.providerEventId ?? event.refs?.storedMessageId ?? event.id;
+  return `${event.runId}\0${messageId}`;
+}
+
+function settledPresentationEvent(event: RuntimeEvent): RuntimeEvent {
+  const content = event.content;
+  return event.partial &&
+    event.role === 'model' &&
+    (content?.kind === 'text' || content?.kind === 'thinking')
+    ? { ...event, partial: false }
+    : event;
+}
+
+function emptyAssistantText(thinking: RuntimeEvent): RuntimeEvent {
+  return {
+    ...thinking,
+    id: `${thinking.id}:active-transcript-empty-text`,
+    partial: false,
+    content: { kind: 'text', text: '' },
+  };
+}
+
 export function projectRuntimeEventsToStoredMessagesWithArchiveStatuses(
   events: readonly RuntimeEvent[],
   options: ProjectRuntimeEventsToStoredMessagesOptions & {

@@ -150,7 +150,6 @@ import {
 import {
   RuntimeReadModel,
   RuntimeReadModelError,
-  type RuntimeReadModelProjectionCache,
   type RuntimeReadModelSessionView,
 } from './runtime-read-model.js';
 import { inspectAgentRunReadModel, type AgentRunInspectModel } from './agent-run-inspect.js';
@@ -3989,7 +3988,7 @@ export class SessionManager {
       throw new Error('Conversation copy requires a side-effect-free message snapshot');
     }
     const readMessages = readMessagesSnapshot.bind(this.deps.store);
-    const view = await this.getSessionView(sessionId, { readMessages });
+    const view = await this.getSessionView(sessionId);
     if (view.invocations.length > 0 || view.messages.length > 0) return view;
     const messages = await readMessages(sessionId);
     if (messages.length === 0) return view;
@@ -4341,22 +4340,16 @@ export class SessionManager {
     return turn;
   }
 
-  private async getSessionView(
-    sessionId: string,
-    projectionCache: RuntimeReadModelProjectionCache = this.deps.store,
-  ): Promise<RuntimeReadModelSessionView> {
-    return this.readModel(projectionCache).getSessionView(sessionId);
+  private async getSessionView(sessionId: string): Promise<RuntimeReadModelSessionView> {
+    return this.readModel().getSessionView(sessionId);
   }
 
-  private readModel(
-    projectionCache: RuntimeReadModelProjectionCache = this.deps.store,
-  ): RuntimeReadModel {
+  private readModel(): RuntimeReadModel {
     if (!this.deps.runStore || !this.deps.runtimeEventStore) {
       throw new Error('RuntimeReadModel requires AgentRunStore and RuntimeEventStore');
     }
     return new RuntimeReadModel({
       runtimeEventStore: this.deps.runtimeEventStore,
-      projectionCache,
       ...(this.deps.canonicalPermissionOutcomes
         ? { canonicalPermissionOutcomes: this.deps.canonicalPermissionOutcomes }
         : {}),

@@ -20,6 +20,7 @@
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { StoredMessage } from '@maka/core/session';
 import {
+  activePresentationRuntimeEvents,
   affectsRuntimeEventStoredMessageProjection,
   isHardRuntimeEventReadModelDiagnostic,
   projectRuntimeEventsToStoredMessages,
@@ -66,10 +67,13 @@ export function createSessionTranscriptReader(input: {
         events,
         input.canonicalPermissionOutcomes,
       );
-      const projected = projectRuntimeEventsToStoredMessages(activePresentationEvents(events), {
-        invocations: invocations.filter((invocation) => invocation.runId === rootTurn.runId),
-        canonicalPermissionOutcomes,
-      });
+      const projected = projectRuntimeEventsToStoredMessages(
+        activePresentationRuntimeEvents(events),
+        {
+          invocations: invocations.filter((invocation) => invocation.runId === rootTurn.runId),
+          canonicalPermissionOutcomes,
+        },
+      );
       if (projected.diagnostics.some(isHardRuntimeEventReadModelDiagnostic)) {
         throw new Error('Active RuntimeEvent transcript projection is incomplete');
       }
@@ -144,37 +148,6 @@ async function readCanonicalPermissionOutcomes(
   return outcomes;
 }
 
-function activePresentationEvents(events: readonly RuntimeEvent[]): RuntimeEvent[] {
-  const textMessages = new Set<string>();
-  const lastThinkingByMessage = new Map<string, RuntimeEvent>();
-
-  for (const event of events) {
-    const content = event.content;
-    if (event.role !== 'model' || (content?.kind !== 'text' && content?.kind !== 'thinking')) {
-      continue;
-    }
-    const messageKey = activeMessageKey(event);
-    if (content.kind === 'text') textMessages.add(messageKey);
-    else lastThinkingByMessage.set(messageKey, event);
-  }
-
-  const syntheticAfter = new Map<RuntimeEvent, RuntimeEvent[]>();
-  for (const [messageKey, thinking] of lastThinkingByMessage) {
-    if (textMessages.has(messageKey)) continue;
-    const existing = syntheticAfter.get(thinking) ?? [];
-    existing.push(emptyAssistantText(thinking));
-    syntheticAfter.set(thinking, existing);
-  }
-
-  const presented: RuntimeEvent[] = [];
-  for (const event of events) {
-    presented.push(presentationEvent(event));
-    const synthetic = syntheticAfter.get(event);
-    if (synthetic) presented.push(...synthetic);
-  }
-  return presented;
-}
-
 async function readActiveProjectionEvents(
   stores: ExecutionStoresWriter<'interactive'>,
   sessionId: string,
@@ -213,29 +186,6 @@ async function readActiveProjectionEvents(
     throw new Error('Active RuntimeEvent transcript exceeds its storage scan limit');
   }
   return events;
-}
-
-function activeMessageKey(event: RuntimeEvent): string {
-  const messageId = event.refs?.providerEventId ?? event.refs?.storedMessageId ?? event.id;
-  return `${event.runId}\0${messageId}`;
-}
-
-function presentationEvent(event: RuntimeEvent): RuntimeEvent {
-  const content = event.content;
-  return event.partial &&
-    event.role === 'model' &&
-    (content?.kind === 'text' || content?.kind === 'thinking')
-    ? { ...event, partial: false }
-    : event;
-}
-
-function emptyAssistantText(thinking: RuntimeEvent): RuntimeEvent {
-  return {
-    ...thinking,
-    id: `${thinking.id}:active-transcript-empty-text`,
-    partial: false,
-    content: { kind: 'text', text: '' },
-  };
 }
 
 function isTerminalTurn(turn: TurnSnapshot): boolean {

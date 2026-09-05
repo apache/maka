@@ -7589,17 +7589,6 @@ describe('SessionManager permission mode updates', () => {
         hint: 'write approval',
       },
     );
-
-    const cachedView = await new RuntimeReadModel({
-      runtimeEventStore: runStore,
-      projectionCache: {
-        readMessages: async () =>
-          messages.filter((message) => message.type !== 'permission_decision'),
-      },
-      canonicalPermissionOutcomes,
-    }).getSessionView(header.sessionId);
-
-    assert.deepStrictEqual(cachedView.diagnostics, []);
   });
 
   test('SessionManager joins a canonical hosted permission without a ledger request', async () => {
@@ -8221,7 +8210,7 @@ describe('SessionManager permission mode updates', () => {
     );
   });
 
-  test('getMessages includes in-flight projection cache rows for an active RuntimeEvent run', async () => {
+  test('getMessages reads an active run from its own ledger', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
     const manager = makeManagerForReadCutover(store, runStore);
@@ -8236,7 +8225,51 @@ describe('SessionManager permission mode updates', () => {
       assistantText: 'completed answer',
       legacyIdPrefix: 'legacy',
     });
-    const activeMessages: StoredMessage[] = [
+    const activeHeader = makeRunHeader({
+      sessionId: session.id,
+      runId: 'run-2',
+      turnId: 'turn-2',
+      status: 'running',
+      createdAt: 200,
+      updatedAt: 203,
+    });
+    await seedInvocationFromHeader(runStore, activeHeader);
+    await runStore.appendRuntimeEvent(
+      session.id,
+      'run-2',
+      runtimeEvent({
+        id: 'active-user-event',
+        sessionId: session.id,
+        runId: 'run-2',
+        turnId: 'turn-2',
+        ts: 201,
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: 'active question' },
+        refs: { storedMessageId: 'active-user' },
+      }),
+    );
+    // Still arriving: the row a reader sees now, with more of it to come.
+    await runStore.appendRuntimeEvent(
+      session.id,
+      'run-2',
+      runtimeEvent({
+        id: 'active-assistant-event',
+        sessionId: session.id,
+        runId: 'run-2',
+        turnId: 'turn-2',
+        ts: 202,
+        partial: true,
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'text', text: 'partial active answer' },
+        refs: { storedMessageId: 'active-assistant' },
+      }),
+    );
+
+    const messages = await manager.getMessages(session.id);
+    assert.deepStrictEqual(messages, [
+      ...completed.projectedMessages,
       { type: 'user', id: 'active-user', turnId: 'turn-2', ts: 201, text: 'active question' },
       {
         type: 'assistant',
@@ -8246,30 +8279,7 @@ describe('SessionManager permission mode updates', () => {
         text: 'partial active answer',
         modelId: 'fake-model',
       },
-      {
-        type: 'turn_state',
-        id: 'active-state',
-        turnId: 'turn-2',
-        ts: 203,
-        status: 'running',
-        partialOutputRetained: true,
-      },
-    ];
-    await store.appendMessages(session.id, activeMessages);
-    await seedInvocationFromHeader(
-      runStore,
-      makeRunHeader({
-        sessionId: session.id,
-        runId: 'run-2',
-        turnId: 'turn-2',
-        status: 'running',
-        createdAt: 200,
-        updatedAt: 203,
-      }),
-    );
-
-    const messages = await manager.getMessages(session.id);
-    assert.deepStrictEqual(messages, [...completed.projectedMessages, ...activeMessages]);
+    ]);
     assert.deepStrictEqual(await manager.listTurns(session.id), [
       {
         turnId: 'turn-1',
@@ -8284,19 +8294,6 @@ describe('SessionManager permission mode updates', () => {
         partialOutputRetained: true,
       },
     ]);
-
-    const view = await new RuntimeReadModel({
-      runtimeEventStore: runStore,
-      projectionCache: store,
-    }).getSessionView(session.id);
-    assert.strictEqual(
-      view.diagnostics.some(
-        (diagnostic) =>
-          diagnostic.code === 'incomplete_event' &&
-          diagnostic.message.includes('in-flight projection cache'),
-      ),
-      true,
-    );
   });
 
   test('getMessages overlays a canonical permission acceptance from a running ledger', async () => {
@@ -8480,7 +8477,6 @@ describe('SessionManager permission mode updates', () => {
 
     const view = await new RuntimeReadModel({
       runtimeEventStore: runStore,
-      projectionCache: store,
     }).getSessionView(session.id);
 
     const readRequestId = (value: unknown): string[] =>
@@ -8677,8 +8673,8 @@ describe('SessionManager permission mode updates', () => {
       userText: 'runtime regenerate text',
       assistantText: 'runtime answer',
       legacyIdPrefix: 'legacy',
+      legacyUserText: 'stale transcript text',
     });
-    store.failNextReadMessagesFor.set(session.id, 1);
 
     await drain(manager.regenerateTurn(session.id, { sourceTurnId: 'source', turnId: 'regen-1' }));
 
@@ -8812,8 +8808,8 @@ describe('SessionManager permission mode updates', () => {
         }),
       ],
     );
-    store.failNextReadMessagesFor.set(session.id, 1);
-
+    // The transcript store holds no source rows at all, so what regenerate
+    // finds can only have come from the ledger.
     await drain(
       manager.regenerateTurn(session.id, { sourceTurnId: 'source', turnId: 'regen-aborted' }),
     );
@@ -14228,6 +14224,8 @@ async function seedRuntimeReadTurn(input: {
   userText: string;
   assistantText: string;
   legacyIdPrefix: string;
+  /** Says something else in the transcript store, so a reader proves its source. */
+  legacyUserText?: string;
 }): Promise<{ legacyMessages: StoredMessage[]; projectedMessages: StoredMessage[] }> {
   const header = makeRunHeader({
     sessionId: input.sessionId,
@@ -14279,7 +14277,7 @@ async function seedRuntimeReadTurn(input: {
       id: `${input.legacyIdPrefix}-user`,
       turnId: input.turnId,
       ts: 101,
-      text: input.userText,
+      text: input.legacyUserText ?? input.userText,
     },
     {
       type: 'assistant',
