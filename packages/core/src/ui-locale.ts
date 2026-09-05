@@ -78,6 +78,7 @@ export function resolveUiMessageCatalog<T>(catalog: UiMessageCatalog<T>): UiCata
   return Object.fromEntries(
     UI_LOCALES.map((locale) => [
       locale,
+      // en is the base every other locale merges over; merging it into itself only copies it.
       locale === 'en'
         ? catalog.en
         : mergeUiMessages(catalog.en, catalog[locale] as DeepPartial<T> | undefined),
