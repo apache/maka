@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { formatUiMessage, UI_LOCALES } from '@maka/core/ui-locale';
+import { formatUiMessage, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 import { getTuiPickerCopy, onboardingFailureMessage } from '../pi-tui-pickers.js';
 import { TUI_COPY_RESOURCES } from '../tui-copy-catalog.js';
 
@@ -45,7 +45,10 @@ const MESSAGE_VALUES = {
 describe('TUI copy resources', () => {
   test('registers every domain without a locale-specific getter branch', () => {
     for (const [domain, catalog] of Object.entries(TUI_COPY_RESOURCES)) {
-      for (const locale of UI_LOCALES) assert.ok(catalog[locale], `${domain}/${locale}`);
+      for (const locale of ['en', 'zh-CN', 'zh-TW'] as const) {
+        assert.ok(catalog[locale], `${domain}/${locale}`);
+      }
+      assert.ok(resolveUiMessageCatalog(catalog as never).ko, `${domain}/ko`);
     }
   });
 
