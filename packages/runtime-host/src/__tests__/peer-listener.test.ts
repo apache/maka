@@ -32,7 +32,7 @@ test('bounds and aborts pending peer authentication', async () => {
   const listener = createRuntimeHostPeerListener(
     peerWith([...streams]),
     UNUSED_REACHABILITY,
-    {} as never,
+    { subscribeRevocations: () => () => {} } as never,
     () => {},
   );
   await waitForImmediate();
@@ -52,7 +52,7 @@ test('expires a peer that does not send its credential', async (context) => {
   const listener = createRuntimeHostPeerListener(
     peerWith([stream]),
     UNUSED_REACHABILITY,
-    {} as never,
+    { subscribeRevocations: () => () => {} } as never,
     () => {},
   );
   await waitForImmediate();
@@ -63,12 +63,75 @@ test('expires a peer that does not send its credential', async (context) => {
   await listener.cleanup();
 });
 
+test('expires stalled authentication responses and releases logical admission slots', {
+  timeout: 2_000,
+}, async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  let releaseWrites!: () => void;
+  const stalledWrite = new Promise<void>((resolve) => {
+    releaseWrites = resolve;
+  });
+  const streams = Array.from({ length: 4 }, (_, index) => {
+    const stream = recordingStream(
+      Buffer.from(
+        `${JSON.stringify({
+          v: 2,
+          credential: 'valid',
+          resume: { sessionId: String(index).padStart(64, '0'), generation: 1, received: 0 },
+        })}\n`,
+      ),
+    );
+    return { ...stream, write: async () => stalledWrite };
+  });
+  let admit!: (stream: RuntimeHostPeerNativeStream) => void;
+  const client = peerWith([]);
+  let accepted = 0;
+  const listener = createRuntimeHostPeerListener(
+    {
+      ...client,
+      serveApplication: async (onStream, signal) => {
+        admit = onStream;
+        return client.serveApplication(onStream, signal);
+      },
+    },
+    UNUSED_REACHABILITY,
+    {
+      authenticate: () => ({ operationGrants: 'all' }),
+      subscribeRevocations: () => () => {},
+    } as never,
+    () => {
+      accepted++;
+    },
+  );
+  context.after(async () => {
+    releaseWrites();
+    await listener.cleanup();
+  });
+  for (const stream of streams) admit(stream);
+  await waitForImmediate();
+  context.mock.timers.tick(5_000);
+  await waitForImmediate();
+  // Same PeerId, including a previously allocated session ID, must be reusable.
+  const healthy = recordingStream(
+    Buffer.from(
+      `${JSON.stringify({
+        v: 2,
+        credential: 'valid',
+        resume: { sessionId: '0'.repeat(64), generation: 1, received: 0 },
+      })}\n`,
+    ),
+  );
+  admit(healthy);
+  await waitForImmediate();
+  assert.equal(accepted, 1);
+});
+
 test('reports an explicit authentication rejection before closing the stream', async () => {
   const stream = recordingStream(Buffer.from('{"v":1,"credential":"rejected"}\n'));
   const listener = createRuntimeHostPeerListener(
     peerWith([stream]),
     UNUSED_REACHABILITY,
-    { authenticate: () => null } as never,
+    { authenticate: () => null, subscribeRevocations: () => () => {} } as never,
     () => {},
   );
   await waitForImmediate();
@@ -102,6 +165,7 @@ test('rechecks peer authority at admission after the authentication response is 
     UNUSED_REACHABILITY,
     {
       authenticate: () => (authentications++ === 0 ? { operationGrants: 'all' } : null),
+      subscribeRevocations: () => () => {},
     } as never,
     () => {
       accepted = true;
@@ -125,7 +189,10 @@ test('bounds active application streams from one authenticated peer', async () =
   const listener = createRuntimeHostPeerListener(
     peerWith([...streams]),
     UNUSED_REACHABILITY,
-    { authenticate: () => ({ operationGrants: 'all' }) } as never,
+    {
+      authenticate: () => ({ operationGrants: 'all' }),
+      subscribeRevocations: () => () => {},
+    } as never,
     () => {
       accepted += 1;
     },
@@ -163,7 +230,12 @@ test('projects newly accepted coordination relays from the running peer endpoint
       signature: 'AA',
     }),
   } as never;
-  const listener = createRuntimeHostPeerListener(peer, reachability, {} as never, () => {});
+  const listener = createRuntimeHostPeerListener(
+    peer,
+    reachability,
+    { subscribeRevocations: () => () => {} } as never,
+    () => {},
+  );
   const listeners = createRuntimeHostListenerSet(
     {
       kind: 'local_ipc',

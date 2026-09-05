@@ -461,6 +461,59 @@ describe('maka activate JSONL protocol', () => {
     });
   });
 
+  test('blocks a completed invocation whose stream carried a boundary failure', async () => {
+    // Guards the current contract: a completed invocation whose stream carried
+    // a boundary failure reports `blocked` / `permission_required` with exit 3.
+    // The `maka activate` transition itself (main completed with exit 0 when
+    // the classifier cleared `recovered`) is not regression-coverable after
+    // the deletion: `recovered` no longer exists in the outcome type, so an
+    // injected `MakaRunOutcome` cannot express the old shape.
+    const lines: string[] = [];
+    const boundaryFailure = {
+      kind: 'text',
+      text: 'Write requires an approved session sandbox boundary expansion.',
+      sandboxFailure: {
+        reason: 'sandbox_boundary_required',
+        requiredExpansion: {
+          filesystem: {
+            entries: [{ path: '/tmp/output', access: 'write', scope: 'subtree' }],
+          },
+        },
+      },
+    } as const;
+    const result = await runMakaActivationCli(
+      [
+        '--state-root',
+        ROOTS.stateRoot,
+        '--workspace-root',
+        ROOTS.workspaceRoot,
+        '--config-root',
+        ROOTS.configRoot,
+      ],
+      {
+        ...fakeDeps({
+          result: completedResult(),
+          events: [
+            {
+              type: 'tool_result',
+              id: 'event-boundary-result',
+              turnId: 'turn-1',
+              ts: 1,
+              toolUseId: 'tool-boundary',
+              isError: true,
+              content: boundaryFailure,
+            },
+          ],
+        }),
+        writeStdout: (text) => lines.push(text.trim()),
+      },
+    );
+
+    assert.equal(result, 3);
+    assert.equal(JSON.parse(lines.at(-1)!).status, 'blocked');
+    assert.equal(JSON.parse(lines.at(-1)!).reason, 'permission_required');
+  });
+
   test('retries non-permission blocked sessions instead of requesting permission', async () => {
     for (const blockedReason of ['auth', 'tool_failed'] as const) {
       const lines: string[] = [];

@@ -1,0 +1,11 @@
+diff --git a/node_modules/app-builder-lib/out/targets/archive.js b/node_modules/app-builder-lib/out/targets/archive.js
+--- a/node_modules/app-builder-lib/out/targets/archive.js
++++ b/node_modules/app-builder-lib/out/targets/archive.js
+@@ -101,6 +101,7 @@ function compute7zCompressArgs(format, options = {}) {
+         // For all other formats the codec is implicit from the output file extension.
+         args.push(`-mm=${storeOnly ? "Copy" : "Deflate"}`);
+         args.push("-mcu");
++        args.push("-mtm=off", "-mta=off");
+     }
+     return args;
+ }

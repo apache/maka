@@ -35,6 +35,7 @@ import {
 import { latestContextProjectionInput } from './latest-context-snapshot.js';
 import type { ContextDiagnosticsCompaction } from './context-diagnostics.js';
 import type { ModelCallCommit } from '@maka/core/agent-run';
+import { computeCost } from './telemetry/cost.js';
 
 export type ProviderRequestCacheValueSource = 'provider' | 'derived';
 
@@ -150,6 +151,140 @@ export interface ModelCallAccountingInput {
    * stream's `pull` handler and error an otherwise-complete model response.
    */
   assertReady?: () => void;
+}
+
+export interface ProviderRequestTelemetryInput {
+  sessionId: string;
+  connectionSlug?: string;
+  providerId?: string;
+  defaultModelId: string;
+  now: () => number;
+  newId: () => string;
+  resolveContextWindow: (modelId: string) => number | undefined;
+  resolvePricing: (modelId: string) => PricingConfig | null;
+  recordModelCallAttempt?: (commit: ModelCallCommit<ModelCallAttempt>) => void | Promise<void>;
+  assertModelCallAccountingReady?: () => void;
+  beforeRunProviderDispatch?: (input: {
+    sessionId: string;
+    turnId: string;
+    runId: string;
+  }) => void | Promise<void>;
+}
+
+export interface CreateProviderRequestTrackerInput {
+  turnId: string;
+  callKind: ModelCallKind;
+  modelId: string;
+  historyCompactRoute?: ModelCallAttempt['historyCompactRoute'];
+  runId: string | undefined;
+}
+
+/** Session-scoped construction and pricing for physical provider requests. */
+export class ProviderRequestTelemetry {
+  constructor(private readonly input: ProviderRequestTelemetryInput) {}
+
+  normalizedUsageCostUsd(usage: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheHitInputTokens: number;
+    cacheMissInputTokens: number;
+    cacheWriteInputTokens: number;
+  }): number | undefined {
+    const pricing = this.resolvePricing(this.input.defaultModelId);
+    if (!pricing) return undefined;
+    try {
+      return computeCost(usage, pricing).totalCost;
+    } catch {
+      return undefined;
+    }
+  }
+
+  createTracker(input: CreateProviderRequestTrackerInput): ProviderRequestTracker | undefined {
+    const accounting = this.accounting(input.callKind, {
+      modelId: input.modelId,
+      ...(input.runId ? { runId: input.runId } : {}),
+      ...(input.historyCompactRoute ? { historyCompactRoute: input.historyCompactRoute } : {}),
+    });
+    const beforeDispatch =
+      input.runId && this.input.beforeRunProviderDispatch
+        ? () =>
+            this.input.beforeRunProviderDispatch?.({
+              sessionId: this.input.sessionId,
+              turnId: input.turnId,
+              runId: input.runId!,
+            })
+        : undefined;
+    if (!accounting && !beforeDispatch) return undefined;
+    return new ProviderRequestTracker({
+      traceId: this.input.newId(),
+      turnId: input.turnId,
+      contextWindow: this.input.resolveContextWindow(input.modelId),
+      now: this.input.now,
+      newId: this.input.newId,
+      ...(beforeDispatch ? { beforeDispatch } : {}),
+      ...(accounting ? { accounting } : {}),
+    });
+  }
+
+  private accounting(
+    callKind: ModelCallKind,
+    identity: {
+      runId?: string;
+      modelId?: string;
+      historyCompactRoute?: ModelCallAttempt['historyCompactRoute'];
+    },
+  ): ModelCallAccountingInput | undefined {
+    const record = this.input.recordModelCallAttempt;
+    if (!record) return undefined;
+    const modelId = identity.modelId ?? this.input.defaultModelId;
+    return {
+      sessionId: this.input.sessionId,
+      resolveRunId: () => identity.runId,
+      ...(this.input.connectionSlug ? { connectionSlug: this.input.connectionSlug } : {}),
+      ...(this.input.providerId ? { providerId: this.input.providerId } : {}),
+      callKind,
+      ...(identity.historyCompactRoute
+        ? { historyCompactRoute: identity.historyCompactRoute }
+        : {}),
+      record,
+      resolveCost: (usage) => this.resolveCost(usage, modelId),
+      ...(this.input.assertModelCallAccountingReady
+        ? { assertReady: this.input.assertModelCallAccountingReady }
+        : {}),
+    };
+  }
+
+  private resolveCost(
+    usage: ProviderRequestUsage,
+    modelId: string,
+  ): ResolvedModelCallCost | undefined {
+    const pricing = this.resolvePricing(modelId);
+    if (!pricing) return undefined;
+    try {
+      const costUsd = computeCost(
+        {
+          inputTokens: usage.inputTokens ?? 0,
+          outputTokens: usage.outputTokens ?? 0,
+          cacheHitInputTokens: usage.cacheReadInputTokens ?? 0,
+          cacheMissInputTokens: usage.cacheMissInputTokens ?? 0,
+          cacheWriteInputTokens: usage.cacheWriteInputTokens ?? 0,
+        },
+        pricing,
+      ).totalCost;
+      if (costUsd === undefined || !Number.isFinite(costUsd)) return undefined;
+      return { costUsd, pricingRates: pricing };
+    } catch {
+      return undefined;
+    }
+  }
+
+  private resolvePricing(modelId: string): PricingConfig | undefined {
+    try {
+      return this.input.resolvePricing(modelId) ?? undefined;
+    } catch {
+      return undefined;
+    }
+  }
 }
 
 export interface TrackProviderStreamInput {

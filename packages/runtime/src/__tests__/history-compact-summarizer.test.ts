@@ -38,6 +38,7 @@ import {
 } from '../history-compact-summarizer.js';
 import { buildHistoryCompactCheckpoint } from '../history-compact-checkpoint.js';
 import { SUMMARY_FORMAT_TEMPLATE } from '../history-compact-summary-validation.js';
+import { sectionedSummary } from './history-compact-test-fixtures.js';
 
 // The summarization instruction rides as the request's trailing user message,
 // never as a separate system-role field (#4634).
@@ -1276,8 +1277,7 @@ describe('buildLlmHistorySummarizer', () => {
     const previousCheckpoint = buildHistoryCompactCheckpoint({
       sessionId: 'sess-1',
       coveredRuntimeEvents: [old],
-      summary: 'PRIOR_SUMMARY',
-      summaryFormat: 'legacy_freeform',
+      summary: sectionedSummary('PRIOR_SUMMARY'),
     });
     const summarize = buildLlmHistorySummarizer({
       resolveModel: () => 'fake-model',
@@ -1390,8 +1390,7 @@ describe('buildLlmHistorySummarizer', () => {
     const previousCheckpoint = buildHistoryCompactCheckpoint({
       sessionId: 'sess-1',
       coveredRuntimeEvents: [old],
-      summary: 'PRIOR_SUMMARY',
-      summaryFormat: 'legacy_freeform',
+      summary: sectionedSummary('PRIOR_SUMMARY'),
     });
     const input = inputWith([old, newer]);
 

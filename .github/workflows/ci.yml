@@ -134,6 +134,21 @@ jobs:
       - name: Check ASF source headers
         run: npm run check:asf-headers
 
+      # Locale hygiene ratchet (node built-ins only, so it runs install-free): a new UI locale must only ever mean a new
+      # UiCatalog key, so locale-literal branches, silent locale defaults,
+      # and payload sniffing may shrink but never grow.
+      - name: Check locale hygiene
+        if: steps.plan.outputs.code == 'true'
+        env:
+          BASE_SHA: ${{ github.event_name == 'push' && github.event.before || github.event.pull_request.base.sha }}
+        run: |
+          node --test scripts/check-locale-hygiene.test.mjs
+          if [[ -n "$BASE_SHA" && ! "$BASE_SHA" =~ ^0+$ ]]; then
+            npm run check:locale-hygiene -- --base "$BASE_SHA"
+          else
+            npm run check:locale-hygiene
+          fi
+
       # Everything below this line may need an installed toolchain, so each
       # step names the selections it belongs to. `setup-node` itself is
       # unconditional: it costs seconds on a runner the job is already holding,

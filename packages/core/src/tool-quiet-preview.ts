@@ -240,7 +240,7 @@ export interface ToolInvocationInput {
  */
 export function formatToolInvocationLine(
   item: ToolInvocationInput,
-  locale: UiLocale = 'zh-CN',
+  locale: UiLocale,
 ): string | undefined {
   const s = strings(locale);
   const args = asRecord(item.args);
@@ -528,7 +528,7 @@ export interface QuietPreview {
  * Primary list/text fields become the main body; remaining fields (error, ok,
  * truncated, …) are appended so diagnostics cannot vanish.
  */
-export function formatQuietJsonValue(value: unknown, locale: UiLocale = 'zh-CN'): QuietPreview {
+export function formatQuietJsonValue(value: unknown, locale: UiLocale): QuietPreview {
   const s = strings(locale);
   if (value === null || value === undefined) {
     return { body: s.empty };
@@ -686,8 +686,8 @@ function formatArrayAsBody(values: unknown[], locale: UiLocale): string {
  */
 export function formatAsKeyValueLines(
   record: Record<string, unknown>,
-  depth = 0,
-  locale: UiLocale = 'zh-CN',
+  depth: number,
+  locale: UiLocale,
 ): string {
   const s = strings(locale);
   if (depth > 3) return redactSecrets(String(record));

@@ -169,3 +169,11 @@ export function resolveUiLocale(
 export function uiLocaleToIntlLocale(locale: UiLocale): UiLocale {
   return locale;
 }
+
+/** Copy for a wire code, or undefined when a newer producer sent one this catalog does not know. */
+export function lookupCopy(
+  map: Readonly<Record<string, string>>,
+  code: string | undefined,
+): string | undefined {
+  return code !== undefined && Object.hasOwn(map, code) ? map[code] : undefined;
+}
