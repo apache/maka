@@ -28,17 +28,13 @@
  *   pinned  → content that grows writes `scrollTop = scrollHeight`
  *   !pinned → nothing here writes `scrollTop`, ever
  *
- * "Keep the reader where they were reading" is the definition of
- * `overflow-anchor: auto`, which is already the initial value and costs nothing,
- * and "the reader is dragging" is also just don't touch it — so both of those
- * are the same instruction to this code: stay out of the way.
+ * While pinned, disable native anchoring so content cannot move the viewport
+ * behind this authority's own write. Once released, restore native anchoring
+ * to keep the reader on the same content without application writes.
  *
- * Being the only writer is what makes the state exact rather than guessed. It
- * remembers the offset it wrote, so a scroll event that finds the scroller
- * still on that offset is its own echo and any other offset is the reader — by
- * construction, and with no dependence on when the event arrives. Astryx had to
- * infer that from scroll direction, height deltas and wheel events, and every
- * one of those signals has more than one cause.
+ * The last written offset identifies our asynchronous scroll echoes. When
+ * released, geometry also accounts for native anchoring and browser clamping
+ * before an unexplained movement is reported as reader input.
  */
 
 import {
@@ -137,6 +133,9 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
   const readerListeners = new Set<() => void>();
 
   const publish = (): void => {
+    // Net height cannot explain anchoring when content shrinks above the
+    // viewport while growing below it. Give each mode just one scroll writer.
+    if (root) root.style.overflowAnchor = pinned ? 'none' : 'auto';
     if (snapshot.pinned === pinned && snapshot.awayFromTail === awayFromTail) return;
     snapshot = { pinned, awayFromTail };
     for (const listener of listeners) listener();
@@ -163,6 +162,8 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
       root = next;
       const target = root;
       if (!target) return () => undefined;
+      const previousOverflowAnchor = target.style.overflowAnchor;
+      publish();
       const onScroll = (): void => {
         // An event that finds the scroller still on the offset this authority
         // put it on is the echo of that write, however late it arrives; any
@@ -254,6 +255,7 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
         childList.disconnect();
         box.disconnect();
         target.removeEventListener('scroll', onScroll);
+        target.style.overflowAnchor = previousOverflowAnchor;
         lastWrittenTop = undefined;
         if (root === target) root = null;
       };

@@ -33,6 +33,7 @@ import { test } from 'node:test';
 import { createTranscriptScrollAuthority } from '../transcript-scroll-authority.js';
 
 interface FakeRoot {
+  style: { overflowAnchor: string };
   scrollTop: number;
   scrollHeight: number;
   clientHeight: number;
@@ -50,6 +51,7 @@ interface FakeRoot {
 function fakeRoot(options?: { scrollHeight?: number; clientHeight?: number }): FakeRoot {
   const listeners = new Set<() => void>();
   const root: FakeRoot = {
+    style: { overflowAnchor: '' },
     scrollTop: 0,
     scrollHeight: options?.scrollHeight ?? 3_000,
     clientHeight: options?.clientHeight ?? 600,
