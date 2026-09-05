@@ -304,6 +304,9 @@ export class WechatBridge extends BaseBotAdapter implements SendCapable {
   }
 }
 
+/** Stable machine codes for QR sign-in guidance; presenters own copy. */
+export type WechatBridgeQrHintCode = 'wechat_bridge_remote_url' | 'wechat_bridge_unreachable';
+
 export type WechatBridgeQrCodeResult =
   | {
       ok: true;
@@ -315,7 +318,7 @@ export type WechatBridgeQrCodeResult =
   | {
       ok: false;
       error: string;
-      hint: string;
+      hintCode?: WechatBridgeQrHintCode;
     };
 
 export async function getWechatBridgeQrCode(
@@ -326,7 +329,7 @@ export async function getWechatBridgeQrCode(
     return {
       ok: false,
       error: 'WeChat bridge URL must be http://127.0.0.1 or http://localhost',
-      hint: '微信扫码登录只允许访问本机 wechat-bridge，不能指向远端 URL。',
+      hintCode: 'wechat_bridge_remote_url',
     };
   }
 
@@ -344,7 +347,7 @@ export async function getWechatBridgeQrCode(
   return {
     ok: false,
     error: generalizedErrorMessage(lastError),
-    hint: '先启动本机 wechat-bridge，并确认它暴露了 iLink 兼容的 /api/weixin/qrcode 或 /qrcode 接口。',
+    hintCode: 'wechat_bridge_unreachable',
   };
 }
 
@@ -447,8 +450,8 @@ export async function testWechatBridge(channel: BotChannelSettings): Promise<Bot
   if (!baseUrl) {
     return {
       ok: false,
-      error: 'WeChat bridge URL must be http://127.0.0.1 or http://localhost',
-      hint: '微信本地桥接只允许访问本机 wechat-bridge，不能指向远端 URL。',
+      errorCode: 'wechat_bridge_url_invalid',
+      hintCode: 'wechat_bridge_local_only',
     };
   }
   try {
@@ -479,7 +482,7 @@ export async function testWechatBridge(channel: BotChannelSettings): Promise<Bot
     return {
       ok: false,
       error: generalizedErrorMessage(error),
-      hint: '先在本机启动 wechat-bridge，并确认 WeChat 已登录；发送能力需要 wxp_act_ 激活码。',
+      hintCode: 'wechat_bridge_start_required',
     };
   }
 }
@@ -516,8 +519,8 @@ export async function testWechatIlinkCredentials(
   if (!baseUrl || !token) {
     return {
       ok: false,
-      error: 'WeChat iLink credentials are incomplete',
-      hint: '请先完成微信扫码登录，保存 iLink bot token 与 base URL。',
+      errorCode: 'wechat_ilink_credentials_incomplete',
+      hintCode: 'wechat_ilink_login_required',
     };
   }
   return {
@@ -528,7 +531,7 @@ export async function testWechatIlinkCredentials(
       displayName: channel.botUserId ? `iLink ${channel.botUserId}` : 'WeChat iLink',
     },
     capabilities: { auth: true, send: true },
-    hint: '扫码登录凭据已保存；运行态会通过 iLink 长轮询接收消息。',
+    hintCode: 'wechat_ilink_polling',
   };
 }
 

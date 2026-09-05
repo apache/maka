@@ -101,7 +101,7 @@ describe("settings IPC helpers", () => {
     const result = toSettingsTestResult("telegram", {
       ok: true,
       identity: { id: "42", username: "maka_bot", displayName: "Maka" },
-      hint: "ready",
+      hintCode: "telegram_send_start",
     });
 
     assert.equal(result.ok, true);
@@ -115,7 +115,7 @@ describe("settings IPC helpers", () => {
       username: "maka_bot",
       displayName: "Maka",
     });
-    assert.equal(result.details?.hint, "ready");
+    assert.equal(result.details?.hintCode, "telegram_send_start");
   });
 
   test("redacts and generalizes bot test errors before returning SettingsTestResult", () => {

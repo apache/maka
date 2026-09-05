@@ -33,7 +33,7 @@ import {
   maskSensitive,
   type TestProxyResult,
 } from "@maka/core/settings/network-settings";
-import type { BotTestResult } from '@maka/runtime/bots';
+import type { BotTestErrorCode, BotTestResult } from '@maka/runtime/bots';
 import { collectPersonalizationWarnings } from '@maka/runtime/system-prompt/personalization-prompt';
 import { getTavilyCredentialSource } from "./web-search/credentials.js";
 
@@ -195,9 +195,7 @@ export function toSettingsTestResult(
   provider: BotProvider,
   result: BotTestResult,
 ): SettingsTestResult {
-  const failure = result.ok
-    ? undefined
-    : botTestFailure(provider, result.error);
+  const failure = result.ok ? undefined : botTestFailure(provider, result);
   return {
     ok: result.ok,
     code: result.ok ? "bot_credentials_valid" : failure?.code,
@@ -208,50 +206,54 @@ export function toSettingsTestResult(
     details: {
       ...(result.identity ? { identity: result.identity } : {}),
       ...(result.capabilities ? { capabilities: result.capabilities } : {}),
-      ...(result.hint ? { hint: result.hint } : {}),
+      ...(result.hintCode ? { hintCode: result.hintCode } : {}),
     },
   };
 }
 
 export function botTestErrorMessage(
   provider: BotProvider,
-  error: unknown,
+  result: Pick<BotTestResult, "errorCode" | "error">,
 ): string {
-  return botTestFailure(provider, error).message;
+  return botTestFailure(provider, result).message;
 }
+
+const MISSING_CREDENTIAL_CODES: ReadonlySet<BotTestErrorCode> = new Set([
+  "slack_tokens_missing",
+  "feishu_credentials_missing",
+  "wecom_credentials_missing",
+  "dingtalk_credentials_missing",
+  "qq_credentials_missing",
+  "wechat_ilink_credentials_incomplete",
+]);
 
 function botTestFailure(
   provider: BotProvider,
-  error: unknown,
+  result: Pick<BotTestResult, "errorCode" | "error">,
 ): { code: SettingsTestResultCode; message: string } {
   const label = botDisplayLabel(provider);
-  const raw = redactSecrets(
-    error instanceof Error ? error.message : String(error ?? ""),
-  ).trim();
-  const lower = raw.toLowerCase();
-
-  if (lower.includes("bot token is required")) {
+  if (result.errorCode === "token_missing") {
     return {
       code: "bot_token_missing",
       message: `${label} requires a Bot Token.`,
     };
   }
-  if (lower.includes("invalid bot token")) {
+  if (result.errorCode === "token_invalid") {
     return {
       code: "bot_token_invalid",
       message: `${label} rejected the Bot Token.`,
     };
   }
-  if (
-    provider === "feishu" &&
-    /appid|app_id|appsecret|app_secret|required/.test(lower)
-  ) {
+  if (result.errorCode && MISSING_CREDENTIAL_CODES.has(result.errorCode)) {
     return {
       code: "bot_app_credentials_missing",
-      message: "Feishu requires an App ID and App Secret.",
+      message: `${label} requires an App ID and App Secret.`,
     };
   }
 
+  const raw = redactSecrets(
+    typeof result.error === "string" ? result.error : "",
+  ).trim();
   const classified = generalizedErrorMessage(raw, "");
   return {
     code: "bot_connection_failed",

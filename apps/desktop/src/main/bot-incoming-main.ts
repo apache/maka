@@ -183,6 +183,7 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
     }
   }
 
+  // bot-channel notices follow the bot audience language; localization tracked under #2672
   async function sendTransientBotNotice(message: BotIncomingMessage, text: string, ttlMs: number): Promise<void> {
     if (closed) return;
     await deps.botRegistry.sendMessage(
@@ -424,6 +425,7 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
   return { handleBotIncomingMessage, invalidateSessionBindings, close };
 }
 
+// bot-channel notices follow the bot audience language; localization tracked under #2672
 function botReply(result: BotSessionTurnResult): string {
   if (result.kind === 'suspended') {
     return '这条请求需要在 Maka 桌面端审批后才能继续。';

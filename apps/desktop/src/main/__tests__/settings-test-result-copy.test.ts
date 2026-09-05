@@ -20,6 +20,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { settingsTestResultMessage } from "../../renderer/locales/settings-test-result-copy.js";
+import { toSettingsTestResult } from "../settings-ipc-helpers.js";
 
 test("missing proxy credentials have actionable bilingual copy", () => {
   const result = {
@@ -35,5 +36,19 @@ test("missing proxy credentials have actionable bilingual copy", () => {
   assert.equal(
     settingsTestResultMessage(result, "en"),
     "Proxy authentication is enabled. Enter a proxy password before testing.",
+  );
+});
+
+
+test("renders a bot-test error code per locale without content sniffing", () => {
+  const result = toSettingsTestResult("dingtalk", {
+    ok: false,
+    errorCode: "dingtalk_credentials_missing",
+  });
+  assert.equal(result.code, "bot_app_credentials_missing");
+  assert.equal(settingsTestResultMessage(result, "zh-CN"), "请填写 App ID 和 App Secret 后再测试。");
+  assert.equal(
+    settingsTestResultMessage(result, "en"),
+    "Enter an App ID and App Secret before testing the connection.",
   );
 });

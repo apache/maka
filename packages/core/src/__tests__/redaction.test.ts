@@ -22,9 +22,7 @@ import { formatWithOptions } from 'node:util';
 import { describe, test } from 'node:test';
 import {
   generalizedErrorMessage,
-  generalizedErrorMessageChinese,
   generalizedErrorMessageForLocale,
-  generalizedErrorMessageTraditionalChinese,
   redactSecrets,
 } from '../redaction.js';
 
@@ -298,6 +296,18 @@ describe('redactSecrets', () => {
   });
 });
 
+describe('generalizedErrorMessageForLocale', () => {
+  test('renders the same classification in each locale and the fallback when none matches', () => {
+    const timeout = new Error('request timeout after 30s');
+    assert.equal(generalizedErrorMessageForLocale(timeout, 'fallback', 'en'), 'Request timed out');
+    assert.equal(generalizedErrorMessageForLocale(timeout, 'fallback', 'zh-CN'), '请求超时');
+    assert.equal(
+      generalizedErrorMessageForLocale(new Error('unclassified'), '操作失败', 'zh-CN'),
+      '操作失败',
+    );
+  });
+});
+
 describe('generalizedErrorMessage', () => {
   test('classifies provider failures without exposing secret-bearing input', () => {
     for (const [raw, expected] of [
@@ -335,7 +345,7 @@ describe('generalizedErrorMessage', () => {
   });
 });
 
-describe('generalizedErrorMessageChinese', () => {
+describe('generalizedErrorMessageForLocale zh-CN', () => {
   test('maps provider failures to Chinese categories without leaking secrets', () => {
     for (const [raw, expected] of [
       ['Request timeout after 30s', '请求超时'],
@@ -355,19 +365,23 @@ describe('generalizedErrorMessageChinese', () => {
       ['something weird happened', '操作失败'],
       ['401 Authorization: Bearer sk-live-secret-token-value', '鉴权失败'],
     ]) {
-      const message = generalizedErrorMessageChinese(new Error(raw));
+      const message = generalizedErrorMessageForLocale(new Error(raw), '操作失败', 'zh-CN');
       assert.equal(message, expected);
       assert.match(message, /[一-鿿]/);
       assert.doesNotMatch(message, /sk-live-secret-token-value/);
     }
-    assert.equal(generalizedErrorMessageChinese('non-Error string input'), '操作失败');
+    assert.equal(
+      generalizedErrorMessageForLocale('non-Error string input', '操作失败', 'zh-CN'),
+      '操作失败',
+    );
   });
 
   test('uses a caller-supplied Chinese fallback for unknown errors', () => {
     assert.equal(
-      generalizedErrorMessageChinese(
+      generalizedErrorMessageForLocale(
         new Error('something weird happened'),
         '会话已创建但发送失败，请重试。',
+        'zh-CN',
       ),
       '会话已创建但发送失败，请重试。',
     );
@@ -375,9 +389,10 @@ describe('generalizedErrorMessageChinese', () => {
 
   test('does not mistake runtime authority errors for authentication failures', () => {
     assert.equal(
-      generalizedErrorMessageChinese(
+      generalizedErrorMessageForLocale(
         new Error('Conversation copy contains durable runtime authority facts'),
         '无法基于该上下文创建新会话。',
+        'zh-CN',
       ),
       '无法基于该上下文创建新会话。',
     );
@@ -404,7 +419,7 @@ describe('localized generalized error messages', () => {
       ['network unreachable', '網路錯誤'],
       ['something weird happened', '操作失敗'],
     ]) {
-      assert.equal(generalizedErrorMessageTraditionalChinese(new Error(raw)), expected);
+      assert.equal(generalizedErrorMessageForLocale(new Error(raw), '操作失敗', 'zh-TW'), expected);
     }
   });
 

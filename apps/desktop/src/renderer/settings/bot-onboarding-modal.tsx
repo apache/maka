@@ -190,7 +190,7 @@ export function BotOnboardingModal(props: {
             ) : starting || snapshot?.state === 'connecting' ? (
               <Spinner size="lg" aria-label={onboardingCopy.generatingAria} />
             ) : snapshot?.state === 'connected' ? (
-              snapshot.warning ? (
+              snapshot.warningCode ? (
                 <span className="settingsBotOnboardingEmpty" aria-hidden="true">
                   <AlertCircle size={ICON_SIZE.plate} />
                 </span>
@@ -262,13 +262,15 @@ function statusCopy(
     case 'connecting': return shared.connecting;
     // PR1197 review (P0-3): honour the honest "saved but not connected" notice
     // instead of claiming a healthy connection.
-    case 'connected': return snapshot.warning
-      ? (locale === 'zh-CN' ? snapshot.warning : shared.connectedWarning)
+    case 'connected': return snapshot.warningCode
+      ? (snapshot.warningDetail
+          ? shared.savedNotConnectedDetail(snapshot.warningDetail)
+          : shared.savedNotConnected)
       : shared.connected(getBotSettingsCopy(locale).providers[snapshot.provider].label);
     case 'expired': return shared.expired;
     case 'denied': return shared.denied;
     case 'cancelled': return shared.cancelled;
-    case 'error': return locale === 'zh-CN' ? (snapshot.error ?? shared.failed) : shared.failed;
+    case 'error': return snapshot.errorCode ? shared.errors[snapshot.errorCode] : shared.failed;
     default: return shared.preparing;
   }
 }

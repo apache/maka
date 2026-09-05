@@ -351,8 +351,8 @@ describe('BotOnboardingService', () => {
     test.advance(5_000);
     const connected = await test.service.poll(started.sessionId);
     assert.equal(connected.state, 'connected');
-    assert.match(connected.warning ?? '', /凭据已保存，但连接未建立/);
-    assert.match(connected.warning ?? '', /鉴权失败/);
+    assert.equal(connected.warningCode, 'saved_not_connected');
+    assert.match(connected.warningDetail ?? '', /鉴权失败/);
     assert.equal(JSON.stringify(connected).includes('private-client-secret'), false);
   });
 
@@ -376,7 +376,7 @@ describe('BotOnboardingService', () => {
     test.advance(5_000);
     const connected = await test.service.poll(started.sessionId);
     assert.equal(connected.state, 'connected');
-    assert.equal(connected.warning, undefined);
+    assert.equal(connected.warningCode, undefined);
   });
 
   it('invalidates an older session when the same provider starts again', async () => {

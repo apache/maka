@@ -90,12 +90,12 @@ export function registerSettingsBotsIpc(
               : 'configured') as BotReadinessState,
             readinessReason: result.ok
               ? undefined
-              : botTestErrorMessage(provider, result.error),
+              : botTestErrorMessage(provider, result),
             readinessUpdatedAt: Date.now(),
             lastTestAt: Date.now(),
             lastError: result.ok
               ? undefined
-              : botTestErrorMessage(provider, result.error),
+              : botTestErrorMessage(provider, result),
           };
     await deps.settingsStore.update({
       botChat: { channels: { [provider]: channelPatch } },

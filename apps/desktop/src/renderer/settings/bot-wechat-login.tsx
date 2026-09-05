@@ -99,7 +99,8 @@ export function WechatQrLoginModal(props: {
   onRefreshStatuses(): void | Promise<unknown>;
 }) {
   const locale = useUiLocale();
-  const copy = getBotSettingsCopy(locale).wechat;
+  const botCopy = getBotSettingsCopy(locale);
+  const copy = botCopy.wechat;
   const [result, setResult] = useState<WechatBridgeQrCodeResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [reloadNonce, setReloadNonce] = useState(0);
@@ -131,7 +132,6 @@ export function WechatQrLoginModal(props: {
         setResult({
           ok: false,
           error: settingsActionErrorMessage(error, locale),
-          hint: copy.readQrFailed,
         });
       })
       .finally(() => {
@@ -222,7 +222,7 @@ export function WechatQrLoginModal(props: {
                 headingLevel={4}
                 icon={<MessageSquare size={ICON_SIZE.empty} />}
                 title={error.error}
-                description={error.hint}
+                description={error.hintCode ? botCopy.testHints[error.hintCode] : copy.readQrFailed}
                 actions={<Button variant="secondary" size="sm" isDisabled={loading} onClick={reloadQrCode} label={loading ? copy.retrying : copy.retry} />}
               />
             </div>
