@@ -83,6 +83,7 @@ import { useWorkbarServices } from '../../services-context.js';
 
 export function ArtifactPane(props: {
   sessionId: string;
+  active: boolean;
   onCountChange?: (count: number) => void;
   onDismiss?: () => void;
 }) {
@@ -132,7 +133,7 @@ export function ArtifactPane(props: {
     setSelectedId(null);
   }, [sessionId]);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (showFailureToast = true) => {
     const requestSeq = ++artifactListRequestSeqRef.current;
     if (!sessionId) {
       recordsSessionIdRef.current = undefined;
@@ -157,7 +158,7 @@ export function ArtifactPane(props: {
           recordsSessionIdRef.current = undefined;
           setRecordsSessionId(undefined);
           setRecords([]);
-        } else {
+        } else if (showFailureToast) {
           toast.error(copy.pane.refreshFailed, message, undefined, { sessionId });
         }
       }
@@ -165,11 +166,22 @@ export function ArtifactPane(props: {
   }, [artifacts, copy, locale, sessionId, toast]);
 
   useEffect(() => {
-    void refresh();
+    if (!props.active) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // Writeback can commit after the terminal Session event. Read the existing
+    // catalog while visible instead of treating that event as a commit signal.
+    const poll = async () => {
+      await refresh(false);
+      if (!stopped) timer = setTimeout(() => void poll(), 2_000);
+    };
+    void poll();
     return () => {
+      stopped = true;
+      clearTimeout(timer);
       artifactListRequestSeqRef.current += 1;
     };
-  }, [sessionId, refresh]);
+  }, [props.active, sessionId, refresh]);
 
   const activeRecords = useMemo(
     () => (recordsSessionId === sessionId ? filterUserVisibleArtifacts(records) : []),
