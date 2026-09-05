@@ -66,7 +66,7 @@ afterEach(async () => {
 
 async function mountProbe<T>(useHook: (options: { draftKey: string }) => T): Promise<{
   latest(): T;
-  render(draftKey: string, locale?: 'en' | 'zh'): Promise<void>;
+  render(draftKey: string, locale?: 'en' | 'zh-CN'): Promise<void>;
 }> {
   const { document, window } = parseHTML('<div id="root"></div>');
   Object.assign(globalThis, {
@@ -88,7 +88,7 @@ async function mountProbe<T>(useHook: (options: { draftKey: string }) => T): Pro
     return null;
   }
 
-  const render = async (draftKey: string, locale: 'en' | 'zh' = 'en') => {
+  const render = async (draftKey: string, locale: 'en' | 'zh-CN' = 'en') => {
     await act(async () => {
       root.render(
         createElement(LocaleProvider, {
@@ -275,16 +275,16 @@ test('AppShell composition shows the localized non-vision image notice once per 
     description: en.imageAttachmentNotDirectDescription,
   }]);
 
-  await probe.render('session-zh', 'zh');
+  await probe.render('session-zh', 'zh-CN');
   await act(() => probe.latest().attachFilePaths([image]));
-  const zh = getDesktopConversationCopy('zh').actions;
+  const zh = getDesktopConversationCopy('zh-CN').actions;
   assert.deepEqual(calls[1], {
     title: zh.imageAttachmentNotDirectTitle,
     description: zh.imageAttachmentNotDirectDescription,
   });
 
   probe.latest().imageNoticeLifecycle.transfer('session-zh', 'session-transferred');
-  await probe.render('session-transferred', 'zh');
+  await probe.render('session-transferred', 'zh-CN');
   await act(() => probe.latest().attachFilePaths([image]));
   assert.equal(calls.length, 2);
 

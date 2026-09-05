@@ -41,7 +41,7 @@ const manualFailure = new DesktopLocalHostRetirementError(
   { cause: failure.cause },
 );
 
-for (const locale of ['en', 'zh'] as const) {
+for (const locale of ['en', 'zh-CN'] as const) {
   test(`quit failure copy exposes actionable Host facts in ${locale}`, () => {
     const dialog = buildRuntimeHostQuitFailureDialog(manualFailure, locale);
 
@@ -54,7 +54,7 @@ for (const locale of ['en', 'zh'] as const) {
 
 test('manual recovery copy names a cross-platform process-management concept', () => {
   const english = buildRuntimeHostQuitFailureDialog(manualFailure, 'en').options.detail ?? '';
-  const chinese = buildRuntimeHostQuitFailureDialog(manualFailure, 'zh').options.detail ?? '';
+  const chinese = buildRuntimeHostQuitFailureDialog(manualFailure, 'zh-CN').options.detail ?? '';
 
   assert.match(english, /operating system's process-management tool/);
   assert.match(chinese, /操作系统的进程管理工具/);

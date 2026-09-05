@@ -597,9 +597,6 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
     },
     ...(options.meteredSummarizer
       ? {
-          persistPreparedRequestArtifact: async () => ({
-            artifactId: 'artifact-mid-turn-capture',
-          }),
           recordModelCallAttempt: (commit: ModelCallCommit<ModelCallAttempt>) => {
             commits.push(commit);
             modelCalls.push(commit.attempt);

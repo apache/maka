@@ -703,11 +703,14 @@ export async function createDesktopRuntimeHostCandidate(
         once: target.once.bind(target),
         off: target.off.bind(target),
       }),
+      (missingSessionId) => emitSessionsChanged("deleted", missingSessionId),
     );
     const restoredSessionIdSet = new Set(restoredSessionIds);
-    const failedSessionIds = observedSessionIds.filter(
-      (sessionId) => !restoredSessionIdSet.has(sessionId),
-    );
+    // Attach forgets Sessions the Host no longer serves, so only Sessions
+    // that are still registered but failed to restore count as failures.
+    const failedSessionIds = sessionObservations
+      .observedSessionIds()
+      .filter((sessionId) => !restoredSessionIdSet.has(sessionId));
     if (failedSessionIds.length > 0) {
       throw new Error(
         `Failed to restore Session observations: ${failedSessionIds.join(', ')}`,

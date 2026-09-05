@@ -48,8 +48,8 @@ describe('UI locale settings update gate', () => {
     const savedLocales: string[] = [];
 
     assert.equal(gate.commit(firstLocaleTicket, 'en', (next) => savedLocales.push(next)), false);
-    assert.equal(gate.commit(latestLocaleTicket, 'zh', (next) => savedLocales.push(next)), true);
-    assert.deepEqual(savedLocales, ['zh']);
+    assert.equal(gate.commit(latestLocaleTicket, 'zh-CN', (next) => savedLocales.push(next)), true);
+    assert.deepEqual(savedLocales, ['zh-CN']);
   });
 
   it('delivers the persisted auto preference without resolving it locally', () => {
@@ -71,7 +71,7 @@ describe('UI locale settings update gate', () => {
 
     assert.equal(gate.commit(saveTicket, 'en', (next) => applied.push(next)), true);
     assert.equal(
-      gate.commitHydration(hydration, 'zh', (next) => applied.push(next)),
+      gate.commitHydration(hydration, 'zh-CN', (next) => applied.push(next)),
       false,
     );
     assert.deepEqual(applied, ['en']);
@@ -84,7 +84,7 @@ describe('UI locale settings update gate', () => {
     const applied: string[] = [];
 
     assert.equal(
-      gate.commitHydration(hydration, 'zh', (next) => applied.push(next)),
+      gate.commitHydration(hydration, 'zh-CN', (next) => applied.push(next)),
       false,
     );
     assert.equal(gate.commit(saveTicket, 'en', (next) => applied.push(next)), true);
@@ -102,7 +102,7 @@ describe('UI locale settings update gate', () => {
       true,
     );
     assert.equal(
-      appShellGate.commit(firstSurfaceTicket, 'zh', (next) => applied.push(next)),
+      appShellGate.commit(firstSurfaceTicket, 'zh-CN', (next) => applied.push(next)),
       false,
     );
     assert.deepEqual(applied, ['en']);
@@ -116,10 +116,10 @@ describe('UI locale settings update gate', () => {
 
     gate.cancel(failedSaveTicket);
     assert.equal(
-      gate.commitHydration(blockedHydration, 'zh', (next) => applied.push(next)),
+      gate.commitHydration(blockedHydration, 'zh-CN', (next) => applied.push(next)),
       true,
     );
-    assert.deepEqual(applied, ['zh']);
+    assert.deepEqual(applied, ['zh-CN']);
   });
 
   it('applies the latest blocked hydration when an intervening locale save fails', () => {
@@ -129,13 +129,13 @@ describe('UI locale settings update gate', () => {
     const applied: string[] = [];
 
     assert.equal(
-      gate.commitHydration(hydration, 'zh', (next) => applied.push(next)),
+      gate.commitHydration(hydration, 'zh-CN', (next) => applied.push(next)),
       false,
     );
     assert.deepEqual(applied, []);
 
     gate.cancel(failedSaveTicket);
-    assert.deepEqual(applied, ['zh']);
+    assert.deepEqual(applied, ['zh-CN']);
   });
 
   it('accepts an older pending save after the newer save fails', () => {

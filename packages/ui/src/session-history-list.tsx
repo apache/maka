@@ -70,6 +70,7 @@ import {
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 import { getSessionHoverCardCopy } from './session-hover-card-copy.js';
+import { deriveTitlebarProjectName } from './titlebar-session-identity.js';
 
 type SessionRowActionId = 'flag' | 'archive' | 'rename';
 type ProjectRowActionId = 'new' | 'relink' | 'rename' | 'archive' | 'restore';
@@ -442,6 +443,10 @@ function SessionListGroups(props: {
           streaming={rail.streamingSessionIds?.has(session.id) ?? false}
           stale={rail.staleSessionIds?.has(session.id) ?? false}
           worktree={rail.worktreeSessionIds?.has(session.id) ?? false}
+          projectName={
+            rail.sessionProjectName?.(session) ??
+            deriveTitlebarProjectName({ projectPath: session.cwd })
+          }
           meta={rail.sessionMeta?.(session)}
           sessionBadge={rail.sessionBadge}
           onSelectSession={rail.onSelectSession}
@@ -680,6 +685,7 @@ const SessionNavRow = memo(function SessionNavRow(props: {
   streaming: boolean;
   stale: boolean;
   worktree: boolean;
+  projectName?: string;
   meta?: string;
   sessionBadge?: SessionRailData['sessionBadge'];
   onSelectSession(sessionId: string): void;
@@ -824,12 +830,14 @@ const SessionNavRow = memo(function SessionNavRow(props: {
         id={hoverDescriptionId}
         session={props.session}
         status={previewStatus}
+        projectName={props.projectName}
         locale={locale}
       />
       <SessionHoverCardLayer
         containerRef={containerRef}
         session={props.session}
         status={previewStatus}
+        projectName={props.projectName}
         locale={locale}
       />
       {props.actions && (
@@ -850,6 +858,7 @@ const SessionHoverCardLayer = memo(function SessionHoverCardLayer(props: {
   containerRef: RefObject<HTMLElement | null>;
   session: SessionSummary;
   status: string;
+  projectName?: string;
   locale: UiLocale;
 }) {
   const copy = getSessionHoverCardCopy(props.locale);
@@ -867,6 +876,7 @@ const SessionHoverCardLayer = memo(function SessionHoverCardLayer(props: {
     <SessionHoverCardContent
       session={props.session}
       status={props.status}
+      projectName={props.projectName}
       locale={props.locale}
     />,
   );
@@ -876,6 +886,7 @@ function SessionHoverCardDescription(props: {
   id: string;
   session: SessionSummary;
   status: string;
+  projectName?: string;
   locale: UiLocale;
 }) {
   const conversationCopy = getConversationCopy(props.locale);
@@ -887,7 +898,7 @@ function SessionHoverCardDescription(props: {
     session.lastMessagePreview || copy.noMessages,
     session.model,
     permission,
-    session.cwd,
+    props.projectName,
     session.lastMessageAt
       ? `${copy.updated} ${formatAbsoluteTimestamp(session.lastMessageAt, props.locale)}`
       : undefined,
@@ -901,6 +912,7 @@ function SessionHoverCardDescription(props: {
 function SessionHoverCardContent(props: {
   session: SessionSummary;
   status: string;
+  projectName?: string;
   locale: UiLocale;
 }) {
   const conversationCopy = getConversationCopy(props.locale);
@@ -924,9 +936,9 @@ function SessionHoverCardContent(props: {
         <span aria-hidden="true">·</span>
         <span>{permission}</span>
       </span>
-      {session.cwd ? (
-        <span className="maka-sidebar-hover-card-path" title={session.cwd}>
-          {session.cwd}
+      {props.projectName ? (
+        <span className="maka-sidebar-hover-card-project" title={session.cwd}>
+          {props.projectName}
         </span>
       ) : null}
       {session.lastMessageAt ? (

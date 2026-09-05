@@ -17,12 +17,31 @@
  * under the License.
  */
 
+import { createHash } from 'node:crypto';
 import { access, realpath } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
+import { readStableBoundedFile } from '@maka/storage/stable-storage';
 
 const LAUNCHER_FILE = 'maka-runtime-host-task-launcher.exe';
+const MANAGED_LAUNCHER_PREFIX = 'maka-runtime-host-task-launcher-';
+const WINDOWS_TASK_LAUNCHER_MAX_BYTES = 1024 * 1024;
 
 export async function resolveRuntimeHostWindowsTaskLauncherPath(cliPath: string): Promise<string> {
+  const packageRoot = dirname(dirname(await realpath(cliPath)));
+  const packaged = await resolvePackagedRuntimeHostWindowsTaskLauncherPath(cliPath);
+  const contents = await readRuntimeHostWindowsTaskLauncher(packaged);
+  const projected = projectedLauncherPath(packageRoot, contents);
+  if (projected) {
+    const observed = await readRuntimeHostWindowsTaskLauncher(projected).catch(() => undefined);
+    if (observed?.equals(contents)) return realpath(projected);
+  }
+
+  return packaged;
+}
+
+export async function resolvePackagedRuntimeHostWindowsTaskLauncherPath(
+  cliPath: string,
+): Promise<string> {
   const packageRoot = dirname(dirname(await realpath(cliPath)));
   const packaged = join(
     packageRoot,
@@ -49,6 +68,29 @@ export async function resolveRuntimeHostWindowsTaskLauncherPath(cliPath: string)
   }
 
   throw new Error('Maka does not include the Windows Runtime Host task launcher');
+}
+
+export function runtimeHostManagedWindowsTaskLauncherPath(
+  deploymentRoot: string,
+  contents: Uint8Array,
+): string {
+  const digest = createHash('sha256').update(contents).digest('hex');
+  return join(deploymentRoot, `${MANAGED_LAUNCHER_PREFIX}${digest}.exe`);
+}
+
+export function readRuntimeHostWindowsTaskLauncher(path: string): Promise<Buffer> {
+  return readStableBoundedFile({
+    path,
+    maxBytes: WINDOWS_TASK_LAUNCHER_MAX_BYTES,
+    invalidFile: () => new Error('The managed Runtime Host Windows task launcher is invalid'),
+  });
+}
+
+function projectedLauncherPath(packageRoot: string, contents: Uint8Array): string | undefined {
+  const versionsRoot = dirname(packageRoot);
+  return basename(versionsRoot) === 'versions'
+    ? runtimeHostManagedWindowsTaskLauncherPath(dirname(versionsRoot), contents)
+    : undefined;
 }
 
 async function isReadable(path: string): Promise<boolean> {

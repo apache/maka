@@ -33,7 +33,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { generalizedErrorMessage, generalizedErrorMessageChinese } from '@maka/core/redaction';
+import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
 import { type LlmConnection } from '@maka/core/llm-connections';
 import { type SessionSummary } from '@maka/core/session';
 import { type UiLocale } from '@maka/core/ui-locale';
@@ -229,7 +229,7 @@ export function createOnboardingSnapshotPoller(
 
 export function onboardingSnapshotErrorMessage(error: unknown, locale: UiLocale): string {
   const fallback = getOnboardingCopy(locale).snapshotErrorFallback;
-  return locale === 'zh' ? generalizedErrorMessageChinese(error, fallback) : generalizedErrorMessage(error, fallback);
+  return generalizedErrorMessageForLocale(error, fallback, locale);
 }
 
 /**

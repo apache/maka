@@ -59,6 +59,7 @@ import {
 } from './runtime-host-management-dialog.js';
 import {
   PeerMeshPeerIdButton,
+  getRuntimeHostPeerMeshCopy,
   RuntimeHostAddComputerMenu,
   RuntimeHostConnectionCodeDialog,
   RuntimeHostPairingRecoveryButton,
@@ -92,6 +93,7 @@ export function RuntimeHostProfilesSection(props: {
 }) {
   const locale = useUiLocale();
   const copy = getSettingsProjectsCopy(locale).runtimeHost;
+  const peerMeshCopy = getRuntimeHostPeerMeshCopy(locale);
   const pairingActionCopy: RuntimeHostPairingActionCopy = {
     retry: copy.resolvePairingRecovery,
     retryFailed: copy.resolvePairingRecoveryFailed,
@@ -195,7 +197,7 @@ export function RuntimeHostProfilesSection(props: {
       if (result.kind === "unavailable") {
         toast.error(
           copy.selectFailed,
-          result.message,
+          settingsActionErrorMessage(result.message, locale),
           undefined,
           { profileId },
         );
@@ -668,11 +670,9 @@ export function RuntimeHostProfilesSection(props: {
                               <PeerMeshPeerIdButton
                                 peerId={profile.transport.reachability.lease.peerId}
                                 displayValue={abbreviatePeerId(profile.transport.reachability.lease.peerId)}
-                                copyLabel={locale.startsWith('zh')
-                                  ? `复制完整 Peer ID：${profile.transport.reachability.lease.peerId}`
-                                  : `Copy full Peer ID: ${profile.transport.reachability.lease.peerId}`}
-                                copiedTitle={locale.startsWith('zh') ? 'Peer ID 已复制' : 'Peer ID copied'}
-                                failedTitle={locale.startsWith('zh') ? '无法复制 Peer ID' : 'Could not copy Peer ID'}
+                                copyLabel={peerMeshCopy.copyPeerId(profile.transport.reachability.lease.peerId)}
+                                copiedTitle={peerMeshCopy.peerIdCopied}
+                                failedTitle={peerMeshCopy.peerIdCopyFailed}
                                 errorMessage={(error) => settingsActionErrorMessage(error, locale)}
                                 className="settingsRuntimeHostPeerId"
                               />
@@ -695,11 +695,13 @@ export function RuntimeHostProfilesSection(props: {
                         <Badge variant="neutral" label={copy.unavailable} />
                       ) : null}
                       {entry.peerPath ? (
-                        <Tooltip content={peerPathDetail(entry.peerPath, locale)}>
+                        <Tooltip content={peerPathDetail(entry.peerPath, peerMeshCopy)}>
                           <span>
                             <Badge
                               variant="neutral"
-                              label={peerPathLabel(entry.peerPath, locale)}
+                              label={entry.peerPath.kind === 'direct'
+                                ? peerMeshCopy.peerPathDirect
+                                : peerMeshCopy.peerPathTransit}
                             />
                           </span>
                         </Tooltip>
@@ -842,12 +844,10 @@ export function RuntimeHostProfilesSection(props: {
 
 function peerPathDetail(
   path: RuntimeHostPeerConnectionPath,
-  locale: string,
+  copy: ReturnType<typeof getRuntimeHostPeerMeshCopy>,
 ): string {
   if (path.kind === 'transit') {
-    return locale.startsWith('zh')
-      ? `成员转发 · ${abbreviatePeerId(path.relayPeerId)}`
-      : `Member transit · ${abbreviatePeerId(path.relayPeerId)}`;
+    return `${copy.peerPathTransit} · ${abbreviatePeerId(path.relayPeerId)}`;
   }
   const transport = path.transport === 'webrtc'
     ? 'WebRTC'
@@ -855,24 +855,10 @@ function peerPathDetail(
       ? 'QUIC'
       : path.transport === 'tcp'
         ? 'TCP'
-        : locale.startsWith('zh')
-          ? '其他'
-          : 'Other';
-  return `${locale.startsWith('zh') ? '直连' : 'Direct'} · ${transport}`;
+        : copy.peerPathOther;
+  return `${copy.peerPathDirect} · ${transport}`;
 }
 
-function peerPathLabel(
-  path: RuntimeHostPeerConnectionPath,
-  locale: string,
-): string {
-  if (path.kind === 'transit') {
-    return locale.startsWith('zh') ? '成员转发' : 'Member transit';
-  }
-  if (path.transport === 'webrtc') return 'WebRTC';
-  if (path.transport === 'quic') return 'QUIC';
-  if (path.transport === 'tcp') return 'TCP';
-  return locale.startsWith('zh') ? '直连' : 'Direct';
-}
 
 function abbreviatePeerId(peerId: string): string {
   return peerId.length <= 20 ? peerId : `${peerId.slice(0, 10)}…${peerId.slice(-6)}`;

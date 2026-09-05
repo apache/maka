@@ -72,7 +72,7 @@ test('every settings page exposes named actionable controls', async ({ window: p
   const sectionLabels = (await navigation.getByRole('button').allTextContents())
     .map((label) => label.trim().replace(/\s*Beta$/, ''))
     .filter((label) => label.length > 0 && label !== '返回应用');
-  const expectedSectionLabels = groupedNav('zh')
+  const expectedSectionLabels = groupedNav('zh-CN')
     .flatMap(({ items }) => items)
     .filter(({ enabled }) => enabled)
     .map(({ label }) => label);

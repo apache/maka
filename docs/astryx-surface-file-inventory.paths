@@ -22,6 +22,7 @@ apps/desktop/src/renderer/features/goals/ui/goal-host.tsx
 apps/desktop/src/renderer/features/goals/ui/goal-provider.tsx
 apps/desktop/src/renderer/features/module-hub/services-context.tsx
 apps/desktop/src/renderer/features/module-hub/ui/module-hub-host.tsx
+apps/desktop/src/renderer/features/module-hub/ui/module-hub-provider.tsx
 apps/desktop/src/renderer/features/runtime-host-management/services-context.tsx
 apps/desktop/src/renderer/features/runtime-host-management/ui/peer-mesh-peer-id-button.tsx
 apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-add-computer-menu.tsx
@@ -29,6 +30,7 @@ apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-conne
 apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-connection-code-dialog.tsx
 apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-peer-mesh-dialog.tsx
 apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-profile-pairing-actions.tsx
+apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-resource-dialog.tsx
 apps/desktop/src/renderer/features/session-collaboration/services-context.tsx
 apps/desktop/src/renderer/features/session-collaboration/turn-request-inbox-context.tsx
 apps/desktop/src/renderer/features/session-collaboration/ui/session-collaboration-join-dialog.tsx
@@ -50,6 +52,7 @@ apps/desktop/src/renderer/features/workbar/tools/artifacts/artifact-pane.tsx
 apps/desktop/src/renderer/features/workbar/tools/artifacts/artifact-preview-registry-shell.tsx
 apps/desktop/src/renderer/features/workbar/tools/artifacts/artifact-preview.tsx
 apps/desktop/src/renderer/features/workbar/tools/browser/browser-panel.tsx
+apps/desktop/src/renderer/features/workbar/tools/inspector/live-context-usage-probe.tsx
 apps/desktop/src/renderer/features/workbar/tools/inspector/session-inspector-panel.tsx
 apps/desktop/src/renderer/features/workbar/tools/review/session-review-panel.tsx
 apps/desktop/src/renderer/features/workbar/tools/side-chat/quote-companion-panel.tsx

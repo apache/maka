@@ -85,10 +85,24 @@ const PURGE_INTENT_SCHEMA_VERSION = 1 as const;
 
 const MAX_PURGE_INTENT_BYTES = 64 * 1024 * 1024;
 const ARTIFACT_PURGE_RESOLVE_CONCURRENCY = 8;
-const EMPTY_SESSION_SNAPSHOT: ArtifactSessionSnapshot = {
-  records: [],
-  revision: artifactListRevision([]),
-};
+/**
+ * The source of the artifacts the retired capture sink wrote. The value stays
+ * a valid source so the records still decode; nothing produces new ones.
+ */
+const RETIRED_CAPTURE_ARTIFACT_SOURCE: ArtifactSource = 'provider_request_capture';
+
+/**
+ * A record on its way off disk, which no copy may carry anywhere.
+ *
+ * Copying one would hand the target Session bytes already condemned, and would
+ * put records back after the sweep finished and stopped looking. Leaving them
+ * out also keeps the two from racing: the sweep can no longer delete a record a
+ * copy is holding. That property belongs to the copy, not to one of its three
+ * selection passes, so every pass asks the same question here.
+ */
+function isRetiredCapture(record: ArtifactRecord): boolean {
+  return record.source === RETIRED_CAPTURE_ARTIFACT_SOURCE;
+}
 
 interface ArtifactSessionSnapshot {
   readonly records: readonly ArtifactRecord[];
@@ -223,6 +237,8 @@ export interface ArtifactAuthorityStore extends ArtifactStore {
     input: ConversationArtifactCopyInput,
   ): Promise<ConversationArtifactCopyResult>;
   purgeSessionArtifacts(sessionId: string): Promise<void>;
+  /** Drops up to `limit` retired prepared-request captures; reports what remains. */
+  purgeRetiredCaptures(limit: number): Promise<{ purged: number; remaining: number }>;
   deleteUserArtifactInSession(
     sessionId: string,
     artifactId: string,
@@ -291,7 +307,6 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
   private artifactRoot: string;
   private purgeIntentPath: string;
   private records: ArtifactRecord[] = [];
-  private sessionSnapshots = new Map<string, ArtifactSessionSnapshot>();
   private metadataReady = false;
   private recoveryRequired: boolean;
   private selfManagedRecoveryRequired: boolean;
@@ -426,7 +441,8 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
           (record) =>
             record.sessionId === input.sourceSessionId &&
             turnIds.has(record.turnId) &&
-            !excludedArtifactIds.has(record.id),
+            !excludedArtifactIds.has(record.id) &&
+            !isRetiredCapture(record),
         )
         .map((record) => ({ ...record }));
       for (const [sessionId, artifactIds] of requestedLinkedArtifactIds) {
@@ -435,10 +451,15 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
             (candidate) =>
               candidate.sessionId === sessionId &&
               candidate.id === artifactId &&
-              candidate.status !== 'deleted',
+              candidate.status !== 'deleted' &&
+              !isRetiredCapture(candidate),
           );
-          if (!record) throw new Error(`Linked Artifact ${artifactId} could not be copied`);
-          selected.push({ ...record });
+          // A linked child result names every Artifact its turn held, and the
+          // ledger naming them cannot be rewritten. One that is no longer
+          // there is copied as nothing rather than failing the copy -- the
+          // caller is asking for what a past turn had, not asserting that all
+          // of it survived.
+          if (record) selected.push({ ...record });
         }
       }
       const selectedIds = new Set(selected.map((record) => record.id));
@@ -447,7 +468,8 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
           record.sessionId === input.sourceSessionId &&
           includedArtifactIds.has(record.id) &&
           !excludedArtifactIds.has(record.id) &&
-          !selectedIds.has(record.id)
+          !selectedIds.has(record.id) &&
+          !isRetiredCapture(record)
         ) {
           selected.push({ ...record });
           selectedIds.add(record.id);
@@ -576,7 +598,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
         }
         throw error;
       }
-      this.replaceRecords(nextRecords);
+      this.records = nextRecords;
       return { ...record };
     } finally {
       if (!preserveStaging) {
@@ -643,7 +665,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
       record.id === canonical.id ? revived : record,
     );
     await this.writeMetadataUnlocked({ upserts: [revived] });
-    this.replaceRecords(nextRecords);
+    this.records = nextRecords;
     return { ...revived };
   }
 
@@ -693,7 +715,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     const { offset, limit } = options;
     return this.enqueue(async () => {
       await this.load();
-      const snapshot = this.sessionSnapshots.get(sessionId) ?? EMPTY_SESSION_SNAPSHOT;
+      const snapshot = this.sessionSnapshot(sessionId);
       return {
         revision: snapshot.revision,
         records: snapshot.records.slice(offset, offset + limit).map((record) => ({ ...record })),
@@ -707,7 +729,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     assertArtifactTurnKey(turnId);
     return this.enqueue(async () => {
       await this.load();
-      const snapshot = this.sessionSnapshots.get(sessionId) ?? EMPTY_SESSION_SNAPSHOT;
+      const snapshot = this.sessionSnapshot(sessionId);
       return snapshot.records
         .filter((record) => record.turnId === turnId && record.status !== 'deleted')
         .map((record) => ({ ...record }));
@@ -717,7 +739,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
   async getInSession(sessionId: string, artifactId: string): Promise<ArtifactSessionEntry> {
     return this.enqueue(async () => {
       await this.load();
-      const snapshot = this.sessionSnapshots.get(sessionId) ?? EMPTY_SESSION_SNAPSHOT;
+      const snapshot = this.sessionSnapshot(sessionId);
       const record = snapshot.records.find((candidate) => candidate.id === artifactId);
       return {
         revision: snapshot.revision,
@@ -855,7 +877,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
         record.id === artifactId ? tombstone : record,
       );
       await this.writeMetadataUnlocked({ upserts: [tombstone] });
-      this.replaceRecords(nextRecords);
+      this.records = nextRecords;
     });
   }
 
@@ -865,7 +887,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
   ): Promise<ArtifactUserDeleteResult> {
     return this.enqueueMutation(async () => {
       await this.prepareMutationUnlocked({ kind: 'delete' });
-      const snapshot = this.sessionSnapshots.get(sessionId) ?? EMPTY_SESSION_SNAPSHOT;
+      const snapshot = this.sessionSnapshot(sessionId);
       const existing = snapshot.records.find((record) => record.id === artifactId);
       if (!existing) return { kind: 'not_found' };
       if (!canUserDeleteArtifact(existing)) return { kind: 'protected' };
@@ -877,7 +899,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
         record.id === existing.id ? tombstone : record,
       );
       await this.writeMetadataUnlocked({ upserts: [tombstone] });
-      this.replaceRecords(nextRecords);
+      this.records = nextRecords;
       return { kind: 'deleted', record: { ...tombstone } };
     });
   }
@@ -887,17 +909,45 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     await this.enqueueMutation(async () => {
       await this.prepareMutationUnlocked({ kind: 'purge' });
       const ids = new Set(acceptedArtifactIds);
-      const records = this.records.filter((record) => ids.has(record.id));
-      if (records.length === 0) return;
-      const paths = await this.preparePurgePathsUnlocked(records);
-      try {
-        await this.publishPurgeIntentUnlocked(records.map((record) => record.id));
-        await this.completePurgeUnlocked(ids, paths);
-      } catch (error) {
-        this.invalidateWriterState();
-        throw error;
-      }
+      await this.purgeRecordsUnlocked(this.records.filter((record) => ids.has(record.id)));
     });
+  }
+
+  /**
+   * Drops a bounded batch of the prepared-request captures left behind by the
+   * retired capture sink, and reports what is still there.
+   *
+   * These are not the user's to clean up: they never appear in the UI, and the
+   * only thing that ever reclaimed one was purging its whole conversation. The
+   * store made them, so the store disposes of them.
+   *
+   * Bounded so a large residue cannot monopolise the mutation queue, and safe
+   * to stop at any point: purge publishes its intent before touching a file,
+   * and the next call reads whatever is left.
+   */
+  async purgeRetiredCaptures(limit: number): Promise<{ purged: number; remaining: number }> {
+    let outcome = { purged: 0, remaining: 0 };
+    await this.enqueueMutation(async () => {
+      await this.prepareMutationUnlocked({ kind: 'purge' });
+      const retired = this.records.filter(isRetiredCapture);
+      const batch = retired.slice(0, limit);
+      await this.purgeRecordsUnlocked(batch);
+      outcome = { purged: batch.length, remaining: retired.length - batch.length };
+    });
+    return outcome;
+  }
+
+  private async purgeRecordsUnlocked(records: readonly ArtifactRecord[]): Promise<void> {
+    if (records.length === 0) return;
+    const ids = new Set(records.map((record) => record.id));
+    const paths = await this.preparePurgePathsUnlocked(records);
+    try {
+      await this.publishPurgeIntentUnlocked([...ids]);
+      await this.completePurgeUnlocked(ids, paths);
+    } catch (error) {
+      this.invalidateWriterState();
+      throw error;
+    }
   }
 
   private async preparePurgePathsUnlocked(
@@ -998,7 +1048,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     }
     const nextRecords = this.records.filter((record) => !ids.has(record.id));
     await this.writeMetadataUnlocked({ deleteIds: [...ids] });
-    this.replaceRecords(nextRecords);
+    this.records = nextRecords;
     await this.removePurgeIntentUnlocked();
   }
 
@@ -1018,7 +1068,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     maxBytes: number,
   ): Promise<PreparedArtifactRead | ArtifactReadFailure> {
     await this.load();
-    const snapshot = this.sessionSnapshots.get(sessionId) ?? EMPTY_SESSION_SNAPSHOT;
+    const snapshot = this.sessionSnapshot(sessionId);
     const record = snapshot.records.find((candidate) => candidate.id === artifactId);
     if (!record) return { ok: false, reason: 'not_found' };
     return this.prepareRecordRead(record, maxBytes, false);
@@ -1041,7 +1091,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
   private async load(): Promise<void> {
     await this.metadataRepository.ready();
     this.metadataReady = true;
-    this.replaceRecords(this.metadataRepository.readAll());
+    this.records = this.metadataRepository.readAll();
   }
 
   private async writeMetadataUnlocked(changes: ArtifactMetadataChanges): Promise<void> {
@@ -1094,7 +1144,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
   private async reloadForMutationUnlocked(): Promise<void> {
     await this.metadataRepository.ready();
     this.metadataReady = true;
-    this.replaceRecords(this.metadataRepository.readAll());
+    this.records = this.metadataRepository.readAll();
   }
 
   private async hasCanonicalRecoveryResidueUnlocked(): Promise<boolean> {
@@ -1203,7 +1253,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     };
     const nextRecords = [...this.records, record];
     await this.writeMetadataUnlocked({ upserts: [record] });
-    this.replaceRecords(nextRecords);
+    this.records = nextRecords;
     this.recoverableOrphans.delete(filesystemPathKey(candidate.relativePath));
     return { ...record };
   }
@@ -1360,28 +1410,25 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     this.workspaceRoot = canonicalRoot;
     this.artifactRoot = join(canonicalRoot, 'artifacts');
     this.purgeIntentPath = join(this.artifactRoot, ARTIFACT_PURGE_INTENT_FILE);
-    this.replaceRecords([]);
+    this.records = [];
     this.recoverableOrphans.clear();
     if (this.recoveryMode === 'self_managed') this.selfManagedRecoveryRequired = true;
   }
 
-  private replaceRecords(records: ArtifactRecord[]): void {
-    const bySession = new Map<string, ArtifactRecord[]>();
-    for (const record of records) {
-      const sessionRecords = bySession.get(record.sessionId);
-      if (sessionRecords) sessionRecords.push(record);
-      else bySession.set(record.sessionId, [record]);
-    }
-    const snapshots = new Map<string, ArtifactSessionSnapshot>();
-    for (const [sessionId, sessionRecords] of bySession) {
-      sessionRecords.sort(compareArtifactRecords);
-      snapshots.set(sessionId, {
-        records: sessionRecords,
-        revision: artifactListRevision(sessionRecords),
-      });
-    }
-    this.records = records;
-    this.sessionSnapshots = snapshots;
+  /**
+   * Orders one session's records and stamps the revision readers compare on.
+   *
+   * Sealed on the way out rather than kept in a map. A revision hashes every
+   * record in its session, and every reader reloads the whole store from the
+   * database before it reads one, so a kept snapshot never survived to be read
+   * -- sealing all of them on load only charged each reader for the sessions it
+   * did not ask about.
+   */
+  private sessionSnapshot(sessionId: string): ArtifactSessionSnapshot {
+    const records = this.records
+      .filter((record) => record.sessionId === sessionId)
+      .sort(compareArtifactRecords);
+    return { records, revision: artifactListRevision(records) };
   }
 
   private async publishPurgeIntentUnlocked(artifactIds: readonly string[]): Promise<void> {

@@ -38,7 +38,7 @@ export type WebSearchSettingsCopy = {
 };
 
 const SETTINGS_WEB_SEARCH_COPY = {
-  zh: {
+  'zh-CN': {
     saveFailed: '保存联网搜索设置失败', saveStatusFailed: '保存联网搜索状态失败', keySaved: '已保存 Tavily 密钥', keySavedDetail: '可点击「测试」做一次真实请求验证。',
     credentialsCleared: '已清空 Tavily 凭据', credentialsClearedDetail: '联网搜索已自动关闭。', credentialValid: 'Tavily 凭据可用', resultCount: (count) => `返回 ${count} 条结果。`,
     testFailed: '联网搜索测试失败', testError: '联网搜索测试出错', enabled: '启用联网搜索', enabledHelp: '启用后，Maka 可以在需要最新外部信息时调用所选搜索来源。',
@@ -54,6 +54,23 @@ const SETTINGS_WEB_SEARCH_COPY = {
     statuses: { valid: '已验证', invalid_credentials: '密钥无效', rate_limited: '服务限流', timeout: '测试超时', network_error: '网络异常', not_configured: '等待配置', untested: '未测试', validEnabled: '已验证 · 已启用', validDisabled: '已验证 · 未启用', unknownEnabled: '未测试 · 已启用', modelEnabled: '已启用 · 按任务模型判定', modelDisabled: '当前模型来源 · 未启用' },
     sources: { model: '来源：当前模型连接', envWithSaved: '来源：环境变量（已保存密钥备用）', env: '来源：环境变量', saved: '来源：本机已保存密钥', none: '来源：未配置' },
     errors: { invalid_query: '请输入有效的搜索内容。', incognito_active: '无痕模式下无法使用联网搜索。', not_configured: '所选搜索来源尚未配置完成。', invalid_credentials: '搜索来源拒绝了当前凭据，请更新后重试。', rate_limited: '搜索请求过于频繁，请稍后重试。', network_error: '网络请求失败，请检查网络后重试。', timeout: '搜索请求超时，请重试。', unsupported_provider: '当前模型不支持服务端搜索，或 Maka 尚未实现它的协议；可改用 Tavily。', experimental_disabled: '联网搜索实验功能当前已关闭。' },
+  },
+  'zh-TW': {
+    saveFailed: '儲存聯網搜尋設定失敗', saveStatusFailed: '儲存聯網搜尋狀態失敗', keySaved: '已儲存 Tavily 金鑰', keySavedDetail: '可點選「測試」做一次真實請求驗證。',
+    credentialsCleared: '已清空 Tavily 憑據', credentialsClearedDetail: '聯網搜尋已自動關閉。', credentialValid: 'Tavily 憑據可用', resultCount: (count) => `返回 ${count} 條結果。`,
+    testFailed: '聯網搜尋測試失敗', testError: '聯網搜尋測試出錯', enabled: '啟用聯網搜尋', enabledHelp: '啟用後，Maka 可以在需要最新外部資訊時呼叫所選搜尋來源。',
+    provider: '搜尋來源', providerHelp: '優先複用目前模型的服務端搜尋；不支援時可顯式改用 Tavily。', providerModel: '目前模型', providerTavily: 'Tavily',
+    modelCredential: '主模型原生搜尋', modelCredentialHelp: 'Maka 會在每個任務回合開始時，根據目前連線與精確模型決定是否把原生 web_search 注入同一次模型請求。不儲存第二份搜尋金鑰，也不會從設定頁另發一次模型呼叫。',
+    statusAria: '聯網搜尋憑據狀態', lastTest: '最近測試 ', enabledAria: '啟用聯網搜尋', key: 'Tavily 金鑰',
+    envKeyHelp: '目前使用環境變數 TAVILY_API_KEY / MAKA_TAVILY_API_KEY；如需改用儲存的金鑰，請移除環境變數後重啟。', savedKeyHelp: '金鑰只儲存在本機。申請地址：',
+    envPlaceholder: '由環境變數提供', storedPlaceholder: '已儲存（輸入新金鑰可替換）', keyPlaceholder: 'tvly-xxxxxxxx', keyAria: 'Tavily 金鑰',
+    actions: '憑據操作', actionsHelp: '儲存後可以測試一次真實請求；清空憑據會同步關閉聯網搜尋。', saving: '儲存中…', saveKey: '儲存金鑰', testing: '測試中…', testKey: '測試憑據', clearing: '清空中…', clearKey: '清空金鑰',
+    testSearch: '測試搜尋', testSearchHelp: '發一條真實查詢，確認所選聯網搜尋來源是否設定可用。結果只顯示在這裡，不寫入任務。', queryPlaceholder: '例如：本週 AI 產品釋出動態',
+    searching: '搜尋中…', search: '搜尋', queryFailed: (error) => `查詢失敗：${error}`, noResults: '沒有結果。', resultsAria: '聯網搜尋真實查詢結果',
+    disabledReasons: { noKey: '先設定所選搜尋來源', disabled: '先啟用聯網搜尋', noQuery: '輸入查詢後再搜尋' },
+    statuses: { valid: '已驗證', invalid_credentials: '金鑰無效', rate_limited: '服務限流', timeout: '測試超時', network_error: '網路異常', not_configured: '等待設定', untested: '未測試', validEnabled: '已驗證 · 已啟用', validDisabled: '已驗證 · 未啟用', unknownEnabled: '未測試 · 已啟用', modelEnabled: '已啟用 · 按任務模型判定', modelDisabled: '目前模型來源 · 未啟用' },
+    sources: { model: '來源：目前模型連線', envWithSaved: '來源：環境變數（已儲存金鑰備用）', env: '來源：環境變數', saved: '來源：本機已儲存金鑰', none: '來源：未設定' },
+    errors: { invalid_query: '請輸入有效的搜尋內容。', incognito_active: '無痕模式下無法使用聯網搜尋。', not_configured: '所選搜尋來源尚未設定完成。', invalid_credentials: '搜尋來源拒絕了目前憑據，請更新後重試。', rate_limited: '搜尋請求過於頻繁，請稍後重試。', network_error: '網路請求失敗，請檢查網路後重試。', timeout: '搜尋請求超時，請重試。', unsupported_provider: '目前模型不支援服務端搜尋，或 Maka 尚未實現它的協議；可改用 Tavily。', experimental_disabled: '聯網搜尋實驗功能目前已關閉。' },
   },
   en: {
     saveFailed: 'Failed to save web search settings', saveStatusFailed: 'Failed to save web search status', keySaved: 'Tavily key saved', keySavedDetail: 'Select Test credentials to verify it with a real request.',

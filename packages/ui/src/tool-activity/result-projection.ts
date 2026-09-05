@@ -142,7 +142,7 @@ export function withLiveStreamFallback(
   // Match live stream's "[已脱敏]" marker when a chunk was redacted
   // (including empty bodies that only suppressed secrets).
   if (anyRedacted) {
-    const marker = getToolActivityCopy(options?.locale ?? 'zh').output.redacted;
+    const marker = getToolActivityCopy(options?.locale ?? 'zh-CN').output.redacted;
     if (stdout.length > 0) stdout = `${stdout}${stdout.endsWith('\n') ? '' : '\n'}${marker}`;
     else if (stderr.length > 0) stderr = `${stderr}${stderr.endsWith('\n') ? '' : '\n'}${marker}`;
     else stdout = marker;

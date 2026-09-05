@@ -48,8 +48,8 @@ test('resolves English park copy for every known reason with no Chinese (#4489)'
   }
 });
 
-test('keeps the Chinese copy for zh', () => {
-  const copy = resumeParkToastCopy(['pending_permission'], 'zh');
+test('keeps the Chinese copy for zh-CN', () => {
+  const copy = resumeParkToastCopy(['pending_permission'], 'zh-CN');
 
   assert.equal(copy.title, '暂时无法继续这一轮');
   assert.equal(copy.description, '上次执行仍在等待权限确认。');
@@ -60,7 +60,7 @@ test('resolves the missing-candidate special case per locale', () => {
     title: 'Nothing to resume',
     description: 'This task is already up to date.',
   });
-  assert.deepEqual(resumeParkToastCopy(['resume_candidate_missing'], 'zh'), {
+  assert.deepEqual(resumeParkToastCopy(['resume_candidate_missing'], 'zh-CN'), {
     title: '没有可恢复的任务',
     description: '任务已是最新状态。',
   });
@@ -71,6 +71,6 @@ test('falls back to the generic description for unknown reasons and dedupes repe
   assert.equal(unknown.title, 'This round cannot be resumed yet');
   assert.equal(unknown.description, 'This task does not currently meet the conditions to continue.');
 
-  const deduped = resumeParkToastCopy(['pending_permission', 'pending_permission'], 'zh');
+  const deduped = resumeParkToastCopy(['pending_permission', 'pending_permission'], 'zh-CN');
   assert.equal(deduped.description, '上次执行仍在等待权限确认。');
 });

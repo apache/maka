@@ -583,7 +583,6 @@ export async function cloneConversationRuntimeLedger(
         checkpointIds,
         transitionIds,
         transitionState,
-        operationalEventIds,
         providerTraceIds,
         logicalCallIds,
       );
@@ -874,7 +873,6 @@ function cloneAgentRunEvent(
   checkpointIds: Map<string, string>,
   transitionIds: Map<string, string>,
   transitionState: Map<string, { projection: DurableToolResultProjection; transitionId: string }>,
-  operationalEventIds: ReadonlyMap<string, string>,
   providerTraceIds: ReadonlyMap<string, string>,
   logicalCallIds: ReadonlyMap<string, string>,
 ): EmittedAgentRunEvent | null {
@@ -913,13 +911,8 @@ function cloneAgentRunEvent(
     // checkpoint whose summary no longer satisfies the COMPLETE predicate —
     // re-runnable here on structure and truncation (the size floor needs the
     // summarizer call's usage, which a copy does not have) — must not
-    // propagate into a fresh session. Unmarked legacy summaries stay copyable
-    // under the truncation-only load policy and keep their unmarked identity
-    // in the target.
-    if (
-      sourceCheckpoint.summaryFormat !== undefined &&
-      findCheckpointSummaryDefect(sourceCheckpoint.summary) !== undefined
-    ) {
+    // propagate into a fresh session.
+    if (findCheckpointSummaryDefect(sourceCheckpoint.summary) !== undefined) {
       throw new Error(`Cannot copy invalid history compact checkpoint ${event.id}`);
     }
     const coveredRuntimeEvents = match.coveredRuntimeEvents.map((sourceEvent) => {
@@ -944,7 +937,6 @@ function cloneAgentRunEvent(
       sessionId: references.targetSessionId,
       coveredRuntimeEvents,
       summary: sourceCheckpoint.summary,
-      summaryFormat: sourceCheckpoint.summaryFormat ?? 'legacy_freeform',
       highWaterName: sourceCheckpoint.highWaterName,
       highWaterSeq: sourceCheckpoint.highWaterSeq,
       now: sourceCheckpoint.createdAt,
@@ -1084,7 +1076,9 @@ function rewriteModelCallAttempt(
   // nested identity is repaired rather than trusted and the *output* still
   // satisfies the `event.id === attemptId` contract. `decodeModelCallAttempt`
   // still rejects a schema-invalid payload.
-  const attempt = decodeModelCallAttempt(event.data);
+  // The join key is dropped by leaving it out of the spread: a conditional
+  // spread of `{}` cannot remove a key the spread above already placed.
+  const { captureArtifactId, ...attempt } = decodeModelCallAttempt(event.data);
   return {
     ...attempt,
     sessionId: ids.sessionId,
@@ -1092,58 +1086,7 @@ function rewriteModelCallAttempt(
     attemptId: ids.attemptId,
     logicalCallId: requiredMappedId(logicalCallIds, attempt.logicalCallId, 'logical model call'),
     traceId: requiredMappedId(providerTraceIds, attempt.traceId, 'provider trace'),
-    ...(attempt.captureArtifactId !== undefined
-      ? { captureArtifactId: rewriteOwnedArtifactId(attempt.captureArtifactId, references) }
-      : {}),
-  };
-}
-
-function providerRequestCapture(event: AgentRunEvent): Record<string, unknown> & {
-  readonly traceId: string;
-  readonly captureId: string;
-  readonly artifactId: string;
-} {
-  const data = event.data;
-  if (
-    !data ||
-    data.captureId !== event.id ||
-    typeof data.traceId !== 'string' ||
-    typeof data.artifactId !== 'string'
-  ) {
-    throw new Error(`Cannot copy invalid provider request capture ${event.id}`);
-  }
-  return {
-    ...data,
-    traceId: data.traceId,
-    captureId: data.captureId,
-    artifactId: data.artifactId,
-  };
-}
-
-function providerRequestAttempt(event: AgentRunEvent): Record<string, unknown> & {
-  readonly traceId: string;
-  readonly attemptId: string;
-  readonly captureId?: string;
-  readonly captureArtifactId?: string;
-} {
-  const data = event.data;
-  const hasCaptureId = typeof data?.captureId === 'string';
-  const hasArtifactId = typeof data?.captureArtifactId === 'string';
-  if (
-    !data ||
-    data.attemptId !== event.id ||
-    typeof data.traceId !== 'string' ||
-    hasCaptureId !== hasArtifactId
-  ) {
-    throw new Error(`Cannot copy invalid provider request attempt ${event.id}`);
-  }
-  return {
-    ...data,
-    traceId: data.traceId,
-    attemptId: data.attemptId,
-    ...(hasCaptureId && hasArtifactId
-      ? { captureId: data.captureId as string, captureArtifactId: data.captureArtifactId as string }
-      : {}),
+    ...(captureArtifactId !== undefined ? capturedArtifactJoin(captureArtifactId, references) : {}),
   };
 }
 
@@ -1163,6 +1106,34 @@ function rewriteOwnedArtifactId(
 ): string {
   if (references.mode === 'preserve_external') return sourceArtifactId;
   return rewriteOwnedId(sourceArtifactId, references.artifactIds, 'Artifact');
+}
+
+/**
+ * A reference whose target may have been reclaimed, mapped or dropped.
+ *
+ * An Artifact reference normally throws on a missing target, because the bytes
+ * and the record naming them are removed together and a copy that lost one has
+ * lost something a reader will ask for. These references are the exception:
+ * they live in an append-only ledger that outlives what it names, and the
+ * retired provider-request captures are reclaimed from disk on their own. A
+ * copy carries what is still there and drops the rest, because failing would
+ * make a whole Session uncopyable over a byte nothing reads.
+ */
+function reclaimableArtifactReference(
+  sourceArtifactId: string,
+  references: ConversationCopyArtifactReferenceMap,
+): string | undefined {
+  if (references.mode === 'preserve_external') return sourceArtifactId;
+  return references.artifactIds.get(sourceArtifactId);
+}
+
+/** The `captureArtifactId` join, or nothing when its Artifact is gone. */
+function capturedArtifactJoin(
+  sourceArtifactId: string,
+  references: ConversationCopyArtifactReferenceMap,
+): { captureArtifactId?: string } {
+  const targetArtifactId = reclaimableArtifactReference(sourceArtifactId, references);
+  return targetArtifactId === undefined ? {} : { captureArtifactId: targetArtifactId };
 }
 
 function rewriteOwnedId(sourceId: string, ids: ReadonlyMap<string, string>, kind: string): string {
@@ -1631,7 +1602,10 @@ function rewriteArtifactIds(
   artifactIds: readonly string[],
   references: ConversationCopyArtifactReferenceMap,
 ): readonly string[] {
-  return artifactIds.map((artifactId) => rewriteOwnedArtifactId(artifactId, references));
+  return artifactIds.flatMap((artifactId) => {
+    const targetArtifactId = reclaimableArtifactReference(artifactId, references);
+    return targetArtifactId === undefined ? [] : [targetArtifactId];
+  });
 }
 
 function validatedExternalChildReferences(
@@ -1661,9 +1635,10 @@ function rewriteSnapshotArtifactIds(
   if (references.mode !== 'exact' || references.linkedChildren.mode !== 'snapshot') {
     return artifactIds;
   }
-  return artifactIds.map((artifactId) =>
-    requiredMappedId(references.artifactIds, artifactId, 'linked Artifact'),
-  );
+  return artifactIds.flatMap((artifactId) => {
+    const targetArtifactId = references.artifactIds.get(artifactId);
+    return targetArtifactId === undefined ? [] : [targetArtifactId];
+  });
 }
 
 function rewriteArchivedSnapshot(

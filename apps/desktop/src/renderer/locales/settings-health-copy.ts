@@ -75,6 +75,71 @@ const layersZh: HealthCenterCopy['layers'] = {
   storage: { label: '存储', description: '工作区文件、JSONL、SQLite 等本地存储健康度。' },
 };
 
+const layersZhTw: HealthCenterCopy['layers'] = {
+  configuration: { label: '設定', description: '設定頁中的必填項目是否完整。' },
+  validation: { label: '驗證', description: '憑證與端點的連線測試結果；驗證通過不代表傳送路徑可用。' },
+  permission: { label: '系統權限', description: '所需的 OS 與 TCC 權限是否已授權。' },
+  feature: { label: '功能狀態', description: '功能是否已明確啟用，以及目前是否可用。' },
+  action_approval: { label: '操作核准', description: '工具呼叫與高風險操作的核准原則狀態。' },
+  memory_acceptance: { label: '記憶寫入', description: '是否已接受記憶寫入約定，以及是否已啟用寫入。' },
+  runtime_probe: { label: '執行狀態探測', description: '最近一次實際傳送、串流或事件接收的探測結果。' },
+  storage: { label: '儲存空間', description: '工作區檔案、JSONL、SQLite 和其他本機儲存空間的健康狀態。' },
+};
+
+const healthMessageZhTw: Readonly<Record<string, string>> = {
+  '连接已关闭。': '連線已關閉。',
+  '等待选择默认模型。': '等待選擇預設模型。',
+  '凭据与端点验证已通过。': '憑證與端點驗證已通過。',
+  '连接需要重新修复认证。': '連線需要重新完成驗證。',
+  '上次连接验证失败。': '上次連線驗證失敗。',
+  '没有启用任何模型。': '尚未啟用任何模型。',
+  '不是工作区的默认模型来源。': '不是工作區的預設模型來源。',
+  '等待验证连接。': '等待驗證連線。',
+  '等待完成发送运行态探测。': '等待完成傳送執行狀態探測。',
+  '能力门禁已满足。': '能力門檻已滿足。',
+  '能力已关闭或暂停。': '能力已關閉或暫停。',
+  '等待补齐能力配置。': '等待完成能力設定。',
+  '能力被必要系统权限阻塞。': '能力受到必要系統權限阻擋。',
+  '能力运行态探测处于降级状态。': '能力執行狀態探測目前處於降級狀態。',
+  '最近一次发送已完成。': '最近一次傳送已完成。',
+  '最近一次发送已由用户停止。': '最近一次傳送已由使用者停止。',
+  '最近一次发送失败。': '最近一次傳送失敗。',
+};
+
+const healthDetailZhTw: Readonly<Record<string, string>> = {
+  '这是连接验证结果，不代表发送、流式输出或中断通路已经运行通过。': '這是連線驗證結果，不代表傳送、串流輸出或中斷路徑已實際執行成功。',
+  '在 设置 · 模型 的连接详情里启用至少一个模型后才能使用该连接。': '請在「設定・模型」的連線詳細資料中啟用至少一個模型，才能使用此連線。',
+  '在任务中显式选择该连接的模型即可正常使用;新对话的默认模型在 设置 · 通用 配置。': '在任務中明確選擇此連線的模型即可使用；新對話的預設模型可在「設定・一般」中設定。',
+  '凭据验证与真实发送、流式输出、中断通路是两层健康信号。': '憑證驗證與實際傳送、串流輸出、中斷路徑是兩層不同的健康訊號。',
+  '该能力当前已关闭。': '此能力目前已關閉。',
+  '等待填写平台凭据。': '等待填寫平台憑證。',
+  '仅 macOS 系统权限可探测。': '只能探測 macOS 系統權限。',
+  '系统未提供可直接读取的授权状态。': '系統未提供可直接讀取的授權狀態。',
+  '状态详情请见对应设置页。': '狀態詳細資料請參閱對應的設定頁。',
+};
+
+function healthSignalLabelZhTw(signal: HealthSignal): string {
+  return signal.label.endsWith(' 运行态')
+    ? `${signal.label.slice(0, -' 运行态'.length)} 執行狀態`
+    : signal.label;
+}
+
+function healthSignalMessageZhTw(signal: HealthSignal): string {
+  return healthMessageZhTw[signal.message]
+    ?? (/[\u3400-\u9fff]/u.test(signal.message) ? '健康狀態已更新。' : signal.message);
+}
+
+function healthSignalDetailZhTw(signal: HealthSignal): string | undefined {
+  if (!signal.detail) return undefined;
+  const runtimeDetail = /^模型=(.*?) · 延迟=(\d+)ms(?: · 错误类型=(.*))?$/u.exec(signal.detail);
+  if (runtimeDetail) {
+    const [, model, latency, errorClass] = runtimeDetail;
+    return `模型=${model} · 延遲=${latency}ms${errorClass ? ` · 錯誤類型=${errorClass}` : ''}`;
+  }
+  return healthDetailZhTw[signal.detail]
+    ?? (/[\u3400-\u9fff]/u.test(signal.detail) ? '詳細資料請參閱對應的設定頁。' : signal.detail);
+}
+
 const layersEn: HealthCenterCopy['layers'] = {
   configuration: { label: 'Configuration', description: 'Whether required settings are complete.' },
   validation: { label: 'Validation', description: 'Credential and endpoint connectivity results. A passing validation does not prove the send path works.' },
@@ -87,7 +152,7 @@ const layersEn: HealthCenterCopy['layers'] = {
 };
 
 const SETTINGS_HEALTH_COPY = {
-  zh: {
+  'zh-CN': {
     loading: '正在加载健康快照', readFailed: '无法读取健康快照', noData: '健康服务未返回数据。', readAgain: '重新读取',
     title: '健康中心', subtitle: '各项能力当前的运行状况检查。',
     badge: '只读快照', lastRead: '最近一次读取：', refresh: '刷新', summaryAria: '按状态筛选健康信号', summaryFilterAria: (label, count, selected) => selected ? `${label} ${count} 项，当前筛选；再次按下显示全部` : `仅显示${label}健康信号，共 ${count} 项`,
@@ -105,6 +170,25 @@ const SETTINGS_HEALTH_COPY = {
     signalLabel: (signal) => signal.label,
     signalMessage: (signal) => signal.message,
     signalDetail: (signal) => signal.detail,
+  },
+  'zh-TW': {
+    loading: '正在載入健康快照', readFailed: '無法讀取健康快照', noData: '健康服務未返回資料。', readAgain: '重新讀取',
+    title: '健康中心', subtitle: '各項能力目前的執行狀況檢查。',
+    badge: '只讀快照', lastRead: '最近一次讀取：', refresh: '重新整理', summaryAria: '按狀態篩選健康訊號', summaryFilterAria: (label, count, selected) => selected ? `${label} ${count} 項，目前篩選；再次按下顯示全部` : `僅顯示${label}健康訊號，共 ${count} 項`,
+    blockers: {
+      send: (count, totalCount) => `全部健康訊號中，${count}/${totalCount} 條會阻塞傳送`,
+      capability: (count, totalCount) => `全部健康訊號中，${count}/${totalCount} 條會阻塞能力`,
+    },
+    layerAria: (label) => `${label}健康訊號`, layerListAria: (label) => `${label}健康訊號列表`,
+    footnote: '本頁不直接執行測試、修復或權限變更；它只彙總目前已記錄的健康訊號。需要處理問題時，請進入對應設定頁或重新觸發相關功能。',
+    layers: layersZhTw,
+    statuses: { ok: { label: '正常', tone: 'neutral' }, info: { label: '提示', tone: 'neutral' }, warning: { label: '警告', tone: 'attention' }, error: { label: '錯誤', tone: 'error' }, unknown: { label: '未知', tone: 'neutral' } },
+    scopes: { app: '應用', llm_connection: 'LLM 連線', bot: '機器人', capability: '能力', storage: '儲存' },
+    sources: { connection_test: '連線測試', capability_snapshot: '能力快照', permission_snapshot: '權限快照', runtime_probe: '執行態探測', settings: '設定', storage: '本地儲存' },
+    source: '來源：', blocksSend: '阻塞傳送', blocksCapability: '阻塞能力',
+    signalLabel: healthSignalLabelZhTw,
+    signalMessage: healthSignalMessageZhTw,
+    signalDetail: healthSignalDetailZhTw,
   },
   en: {
     loading: 'Loading health snapshot', readFailed: 'Could not read health snapshot', noData: 'The health service returned no data.', readAgain: 'Read again',

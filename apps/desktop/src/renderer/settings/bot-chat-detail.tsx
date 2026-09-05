@@ -305,7 +305,7 @@ export function BotChatChannelDetail(props: {
           title={detailCopy.latestFailure}
           description={(
             <span className="settingsBotBannerDescription">
-              {locale === 'zh' ? viewState.currentError : detailCopy.latestFailureDetail}
+              {locale === 'zh-CN' ? viewState.currentError : detailCopy.latestFailureDetail}
             </span>
           )} />
       )}
@@ -415,7 +415,7 @@ export function BotChatChannelDetail(props: {
             if (snapshot.warning) {
               toast.warning(
                 detailCopy.credentialsSaved(providerPresentation.label),
-                locale === 'zh' ? snapshot.warning : detailCopy.savedButNotConnected,
+                locale === 'zh-CN' ? snapshot.warning : detailCopy.savedButNotConnected,
               );
               return;
             }
@@ -635,7 +635,7 @@ function BotAllowedUserIdsField(props: {
     if (!same) props.onChange(next);
   };
   const warning = invalidEntries.length > 0
-    ? `${copy.invalidUsers(invalidEntries.slice(0, 3).join(locale === 'zh' ? '、' : ', '))}${invalidEntries.length > 3 ? copy.moreInvalid(invalidEntries.length) : ''}`
+    ? `${copy.invalidUsers(invalidEntries.slice(0, 3).join(locale !== 'en' ? '、' : ', '))}${invalidEntries.length > 3 ? copy.moreInvalid(invalidEntries.length) : ''}`
     : undefined;
 
   return (
@@ -653,7 +653,7 @@ function BotAllowedUserIdsField(props: {
   );
 }
 
-function botConnectionLabel(connection: BotStatus['connection'], locale: 'zh' | 'en'): string {
+function botConnectionLabel(connection: BotStatus['connection'], locale: 'zh-CN' | 'zh-TW' | 'en'): string {
   const copy = getBotSettingsCopy(locale).status;
   switch (connection) {
     case 'polling': return copy.polling;

@@ -22,7 +22,14 @@ import {
   type AgentRunEvent,
   type AgentRunStore,
 } from '@maka/core/agent-run';
-import { decodeModelCallAttempt, type ModelCallAttempt } from '@maka/core/model-call-attempt';
+import {
+  decodeModelCallAttempt,
+  type ModelCallAttempt,
+  type PromptComposition,
+  type PromptCompositionSegment,
+  type PromptCompositionSegmentKind,
+  type PromptCompositionTool,
+} from '@maka/core/model-call-attempt';
 import {
   foldPromptComposition,
   PROVIDER_REQUEST_ATTEMPT_EVENT_TYPE,
@@ -40,31 +47,6 @@ import {
 } from './history-compact-checkpoint.js';
 
 export type ContextDiagnosticsUnavailableReason = 'no_completed_request' | 'trace_unavailable';
-
-export type ContextDiagnosticsSegmentKind =
-  | 'system_instructions'
-  | 'tool_definitions'
-  | 'messages'
-  | 'other';
-
-/**
- * One part of the latest request, measured in bytes of serialized request.
- *
- * Bytes only. `bytes / 4` is a rule of thumb over serialized JSON — wrong in a
- * direction nobody here can correct for, badly so for an attachment's base64 —
- * so the estimate is made where it is shown and labelled `≈` there. A figure
- * rounded into this contract could no longer be labelled at all (#2323).
- */
-export interface ContextDiagnosticsSegment {
-  kind: ContextDiagnosticsSegmentKind;
-  bytes: number;
-}
-
-/** One tool's schema, sized on its own, so a reader knows which to remove. */
-export interface ContextDiagnosticsTool {
-  name: string;
-  bytes: number;
-}
 
 export interface ContextDiagnosticsCompaction {
   kind: 'history';
@@ -95,19 +77,9 @@ export type ContextDiagnostics =
        * quiet lie this separation exists to prevent, so readers never join an
        * independent capture stream (#2323).
        */
-      composition?: ContextDiagnosticsComposition;
+      composition?: PromptComposition;
       compaction?: ContextDiagnosticsCompaction;
     };
-
-export interface ContextDiagnosticsComposition {
-  segments: ContextDiagnosticsSegment[];
-  /** The largest named tool schemas, largest first; bounded at the fold. */
-  tools?: ContextDiagnosticsTool[];
-  /** Everything past the named rows, so the bytes still account for every tool. */
-  remainingTools?: { count: number; bytes: number };
-  /** Tool schemas the payload did not name, so their bytes are still counted. */
-  unlabelledToolBytes?: number;
-}
 
 type ContextRunStore = Pick<
   AgentRunStore,
@@ -247,7 +219,7 @@ async function rebuildContextFromLedger(
   // fallback for provider/model/status/timing/usage or for a different attempt.
   const composition =
     resolved.composition ??
-    (anchor && !anchor.hasRequestObservation
+    (anchor && !anchor.composition
       ? exactHistoricalComposition(anchor, historicalAttempts)
       : undefined);
   const snapshot: LatestContextSnapshot = {
@@ -338,7 +310,6 @@ function legacyProviderAnchor(event: AgentRunEvent): MeteringAnchor | undefined 
     modelId,
     startedAt: typeof startedAt === 'number' ? startedAt : completedAt,
     completedAt,
-    hasRequestObservation: false,
     ...(typeof data.inputTokens === 'number' ? { inputTokens: data.inputTokens } : {}),
     ...(typeof data.contextWindow === 'number' ? { contextWindow: data.contextWindow } : {}),
     ...(composition ? { composition } : {}),
@@ -376,8 +347,7 @@ interface MeteringAnchor {
   inputTokens?: number;
   cacheReadInputTokens?: number;
   contextWindow?: number;
-  composition?: ContextDiagnosticsComposition;
-  hasRequestObservation: boolean;
+  composition?: PromptComposition;
 }
 
 interface CheckpointCandidate {
@@ -395,9 +365,14 @@ function meteringAnchor(event: AgentRunEvent): MeteringAnchor | undefined {
     return undefined;
   }
   if (attempt.callKind !== 'main' || attempt.status !== 'completed') return undefined;
-  const composition = attempt.requestObservation
-    ? foldPromptComposition(attempt.requestObservation.segments)
-    : undefined;
+  // Attempts recorded before the fold moved onto the record still carry their
+  // parts, and folding them here is the only way to say what those requests
+  // were made of. Current attempts arrive already folded.
+  const composition =
+    attempt.promptComposition ??
+    (attempt.requestObservation
+      ? foldPromptComposition(attempt.requestObservation.segments)
+      : undefined);
   return {
     attemptId: attempt.attemptId,
     traceId: attempt.traceId,
@@ -405,7 +380,6 @@ function meteringAnchor(event: AgentRunEvent): MeteringAnchor | undefined {
     modelId: attempt.modelId,
     startedAt: attempt.startedAt,
     completedAt: attempt.completedAt,
-    hasRequestObservation: attempt.requestObservation !== undefined,
     ...(attempt.inputTokens !== undefined ? { inputTokens: attempt.inputTokens } : {}),
     ...(attempt.cacheReadInputTokens !== undefined
       ? { cacheReadInputTokens: attempt.cacheReadInputTokens }
@@ -418,7 +392,7 @@ function meteringAnchor(event: AgentRunEvent): MeteringAnchor | undefined {
 function exactHistoricalComposition(
   anchor: MeteringAnchor,
   candidates: readonly LegacyProviderAnchor[],
-): ContextDiagnosticsComposition | undefined {
+): PromptComposition | undefined {
   const matches = candidates.filter(
     (candidate) =>
       candidate.composition !== undefined &&

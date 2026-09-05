@@ -38,6 +38,7 @@ import {
 } from '../history-compact-summarizer.js';
 import { buildHistoryCompactCheckpoint } from '../history-compact-checkpoint.js';
 import { SUMMARY_FORMAT_TEMPLATE } from '../history-compact-summary-validation.js';
+import { sectionedSummary } from './history-compact-test-fixtures.js';
 
 const ts = 1_700_000_000_000;
 let __seq = 0;
@@ -133,7 +134,6 @@ describe('buildLlmHistorySummarizer', () => {
           return now;
         },
         newId: () => 'trace-id',
-        persistArtifact: async () => ({ artifactId: 'artifact-1' }),
         accounting: {
           sessionId: 'sess-1',
           resolveRunId: () => 'run-1',
@@ -197,7 +197,6 @@ describe('buildLlmHistorySummarizer', () => {
         turnId: 'turn-1',
         now: () => 100 + id,
         newId: () => `request-${++id}`,
-        persistArtifact: async () => ({ artifactId: `artifact-${id}` }),
         accounting: {
           sessionId: 'sess-1',
           resolveRunId: () => 'run-1',
@@ -1244,8 +1243,7 @@ describe('buildLlmHistorySummarizer', () => {
     const previousCheckpoint = buildHistoryCompactCheckpoint({
       sessionId: 'sess-1',
       coveredRuntimeEvents: [old],
-      summary: 'PRIOR_SUMMARY',
-      summaryFormat: 'legacy_freeform',
+      summary: sectionedSummary('PRIOR_SUMMARY'),
     });
     const summarize = buildLlmHistorySummarizer({
       resolveModel: () => 'fake-model',
@@ -1358,8 +1356,7 @@ describe('buildLlmHistorySummarizer', () => {
     const previousCheckpoint = buildHistoryCompactCheckpoint({
       sessionId: 'sess-1',
       coveredRuntimeEvents: [old],
-      summary: 'PRIOR_SUMMARY',
-      summaryFormat: 'legacy_freeform',
+      summary: sectionedSummary('PRIOR_SUMMARY'),
     });
     const input = inputWith([old, newer]);
 

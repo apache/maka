@@ -159,7 +159,7 @@ export interface SkillsCopy {
 }
 
 const SKILLS_COPY = {
-  zh: {
+  'zh-CN': {
     categories: { '内容创作': '内容创作', '数据与AI': '数据与 AI', '设计与UI': '设计与 UI', 'DevOps与部署': 'DevOps 与部署', '文档与写作': '文档与写作', '效率工具': '效率工具', '研究与分析': '研究与分析' },
     market: { categoryAll: '全部分类', sortName: '排序：名称', sortRecent: '排序：最近', controls: '市场筛选与排序', categoryFilter: '按分类筛选市场技能', sortAriaLabel: '市场技能排序方式', ariaLabel: '技能市场', importLocal: '导入本地 Skill', emptySearchTitle: '没有匹配的市场技能', emptyTitle: '来源库还是空的', emptySearchBody: '换一个关键词，或清空搜索查看全部来源。', emptyBody: '导入一个含 SKILL.md 的本地文件，它会作为可安装的来源出现在这里。', emptyFilterBody: '换一个分类或关键词，或清空筛选查看全部来源。', clearSearch: '清空搜索', clearFilters: '清空筛选', sourceFallback: '本地来源库 Skill。' },
     tabs: { ariaLabel: '技能视图', market: '市场', builtin: '内置', installed: '已安装' },
@@ -173,6 +173,21 @@ const SKILLS_COPY = {
     status: { metadataError: '元数据异常', managed: { source_missing: '来源缺失', update_available: '可更新', local_modified: '本地已修改', metadata_error: '元数据异常', up_to_date: '受管理', not_managed: '受管理' }, modified: '已修改', bundled: '内置', local: '本地', stateError: '状态异常', enabled: '已启用', disabled: '已停用' },
     page: { title: '技能', toolbarAria: '技能筛选与视图', metaInstalled: (count) => `${count} 个已安装`, metaUpdates: (count) => `${count} 个可更新`, metaAvailable: (count) => `${count} 个可安装`, searchMatches: (count) => `${count} 个匹配`, search: '搜索技能', openFolder: '打开目录', moreActions: '更多技能操作', refreshing: '刷新中…', refresh: '刷新' },
     detail: { label: '技能详情', enabled: '启用', pinned: '已固定', inspectorOpened: (name) => `已打开 ${name} 的详情`, idLabel: '标识', scopeLabel: '范围', sourceLabel: '来源', contextLabel: '上下文', runtimeLabel: '运行状态', toolsLabel: '声明工具', pathLabel: '路径' },
+  },
+  'zh-TW': {
+    categories: { '内容创作': '內容創作', '数据与AI': '資料與 AI', '设计与UI': '設計與 UI', 'DevOps与部署': 'DevOps 與部署', '文档与写作': '文件與寫作', '效率工具': '效率工具', '研究与分析': '研究與分析' },
+    market: { categoryAll: '全部分類', sortName: '排序：名稱', sortRecent: '排序：最近', controls: '市場篩選與排序', categoryFilter: '按分類篩選市場技能', sortAriaLabel: '市場技能排序方式', ariaLabel: '技能市場', importLocal: '匯入本地 Skill', emptySearchTitle: '沒有符合的市場技能', emptyTitle: '來源庫還是空的', emptySearchBody: '換一個關鍵詞，或清空搜尋檢視全部來源。', emptyBody: '匯入一個含 SKILL.md 的本地檔案，它會作為可安裝的來源出現在這裡。', emptyFilterBody: '換一個分類或關鍵詞，或清空篩選檢視全部來源。', clearSearch: '清空搜尋', clearFilters: '清空篩選', sourceFallback: '本地來源庫 Skill。' },
+    tabs: { ariaLabel: '技能檢視', market: '市場', builtin: '內建', installed: '已安裝' },
+    install: { action: (name) => `安裝 ${name}`, installedAction: (name) => `${name} 已安裝到目前工作區`, installedTitle: '已安裝到目前工作區', installed: '已安裝', notInstalled: '未安裝' },
+    builtin: { ariaLabel: '內建技能', emptyTitle: '暫無內建技能', emptyBody: '應用自帶的技能會出現在這裡。', noMatchTitle: '沒有符合的內建技能', noMatchBody: '換一個關鍵詞，或清空搜尋檢視全部內建技能。', fallback: '應用自帶 Skill。', toolCount: (count: number) => `${count} 個工具` },
+    installed: { emptySearchTitle: '沒有符合的 Skill', emptyTitle: '等待新增 Skill', emptySearchBody: '換一個關鍵詞，或清空搜尋檢視全部本地技能。', emptyBodyBeforeCode: '把一個含', emptyBodyAfterCode: '的資料夾放到工作區的 skills/ 目錄下，重新整理後會出現在這裡。', refreshPending: '重新整理中…', refresh: '重新整理技能', listAriaLabel: '技能列表' },
+    context: { scope: { project: '專案', workspace: '工作區', user: '使用者', custom: '自訂' }, decision: { advertised: '已進入上下文', disabled: '已停用', invalid: '後設資料無效', host_incompatible: '主機不相容', shadowed: '被高優先順序覆蓋', budget: '因預算省略' }, needsReview: '待確認', discoverySource: (scope, source) => `${scope}/${source} 發現源`, discoveryDiagnostic: { blocked_path: '路徑被安全策略阻止', read_failed: '來源不可讀取' } },
+    row: { opening: '開啟中…', reviewing: '審查中…', use: '使用', openTitle: '開啟 SKILL.md', pinTitle: '固定到技能上下文', unpinTitle: '取消固定', viewDiff: '檢視差異', viewUpdate: '檢視更新', confirmDeleteAriaLabel: (name) => `確認刪除 ${name}`, deleteDescription: '此操作會刪除這個 Skill 的檔案，且無法撤銷。', cancel: '取消', delete: '刪除' },
+    review: { ariaLabel: 'Skill 更新審查', title: '更新審查', source: (id) => `來源 ${id}`, managedSource: '受管理來源', hasBaseline: '已有基線', missingBaseline: '缺少基線', lineTransition: (current, source) => `${current} → ${source} 行`, changedLines: (count) => `${count} 行不同`, warning: '工作區副本已有本地修改。繼續更新會用來源庫版本覆蓋目前 SKILL.md。', workspace: '目前工作區', sourceVersion: '來源庫版本', cancel: '取消', overwrite: '覆蓋本地修改', update: '更新到來源版本' },
+    description: { document: '建立、編輯、檢查文件內容。', presentation: '建立、編輯、檢查簡報。', spreadsheet: '建立、編輯、分析表格資料。', image: '生成或編輯圖片素材。', browser: '開啟、檢查、操作網頁介面。', macos: '輔助構建和除錯 macOS 應用。', fallback: '開啟技能檔案檢視適用場景。' },
+    status: { metadataError: '後設資料異常', managed: { source_missing: '來源缺失', update_available: '可更新', local_modified: '本地已修改', metadata_error: '後設資料異常', up_to_date: '受管理', not_managed: '受管理' }, modified: '已修改', bundled: '內建', local: '本地', stateError: '狀態異常', enabled: '已啟用', disabled: '已停用' },
+    page: { title: '技能', toolbarAria: '技能篩選與檢視', metaInstalled: (count) => `${count} 個已安裝`, metaUpdates: (count) => `${count} 個可更新`, metaAvailable: (count) => `${count} 個可安裝`, searchMatches: (count) => `${count} 個符合`, search: '搜尋技能', openFolder: '開啟目錄', moreActions: '更多技能操作', refreshing: '重新整理中…', refresh: '重新整理' },
+    detail: { label: '技能詳情', enabled: '啟用', pinned: '已固定', inspectorOpened: (name) => `已開啟 ${name} 的詳情`, idLabel: '標識', scopeLabel: '範圍', sourceLabel: '來源', contextLabel: '上下文', runtimeLabel: '執行狀態', toolsLabel: '宣告工具', pathLabel: '路徑' },
   },
   en: {
     categories: { '内容创作': 'Content creation', '数据与AI': 'Data & AI', '设计与UI': 'Design & UI', 'DevOps与部署': 'DevOps & deployment', '文档与写作': 'Documents & writing', '效率工具': 'Productivity', '研究与分析': 'Research & analysis' },

@@ -60,7 +60,7 @@ export const BOT_LABELS: Record<BotProvider, { support: 'runtime' | 'credentials
   slack: { support: 'runtime' },
 };
 
-export function botReadinessCopyForSupport(support: 'runtime' | 'credentials' | 'planned', readiness: BotReadinessState, locale: UiLocale = 'zh') {
+export function botReadinessCopyForSupport(support: 'runtime' | 'credentials' | 'planned', readiness: BotReadinessState, locale: UiLocale = 'zh-CN') {
   const copy = getBotSettingsCopy(locale);
   if (support === 'planned') return copy.planned;
   return copy.readiness[readiness] ?? copy.readiness.scaffolded;
@@ -98,7 +98,7 @@ export function BotBrandLogo(props: { provider: BotProvider; size?: 'compact' | 
 export type BotPendingActionName = 'test' | 'connect' | 'restart' | 'disconnect';
 export type BotPendingAction = { provider: BotProvider; action: BotPendingActionName };
 
-export function botStatusDetail(status: BotStatus, locale: UiLocale = 'zh'): string {
+export function botStatusDetail(status: BotStatus, locale: UiLocale = 'zh-CN'): string {
   const copy = getBotSettingsCopy(locale).status;
   switch (status.reason) {
     case 'disabled': return copy.disabled;

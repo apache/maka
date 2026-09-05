@@ -28,6 +28,7 @@ import {
   type TUI,
 } from '@earendil-works/pi-tui';
 import type { McpProtocolPreference, McpServerConfig } from '@maka/core/mcp';
+import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
 import {
   defineUiMessageCatalog,
   formatUiMessage,
@@ -67,6 +68,7 @@ interface TuiMcpStatusCopy {
   readonly configuredOnly: string;
   readonly configPending: string;
   readonly toolCount: string;
+  readonly connectionFailed: string;
   readonly editor: {
     readonly addTitle: string;
     readonly transportTitle: string;
@@ -732,7 +734,17 @@ function serverLines(server: TuiMcpServerSnapshot, locale: UiLocale, selected: b
   const cursor = selected ? ansi.accent('›') : ' ';
   return [
     `${cursor} ${statusMarker(server.state)} ${ansi.bold(server.serverId)}  ${details}`,
-    ...(server.error ? [`    ${ansi.red(server.error)}`] : []),
+    ...(server.error
+      ? [
+          `    ${ansi.red(
+            generalizedErrorMessageForLocale(
+              new Error(server.error),
+              locale === 'en' ? server.error : copy.connectionFailed,
+              locale,
+            ),
+          )}`,
+        ]
+      : []),
   ];
 }
 
@@ -763,7 +775,7 @@ function actionNotice(
 }
 
 function resultCopy(locale: UiLocale, code: TuiMcpResultCode): string {
-  return MCP_STATUS_COPY[locale].editor.results[code];
+  return MCP_STATUS_COPY[locale].editor.results[code] ?? code;
 }
 
 function confirmAddDocument(draft: GuidedDraft, locale: UiLocale): string[] {

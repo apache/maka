@@ -137,7 +137,9 @@ function parseThemeFlag(raw: string | undefined): 'light' | 'dark' | 'auto' | nu
 
 function parseLocaleFlag(raw: string | undefined): UiLocale | null {
   const normalized = raw?.trim().toLowerCase();
-  return normalized === 'zh' || normalized === 'en' ? normalized : null;
+  if (normalized === 'zh-cn') return 'zh-CN';
+  if (normalized === 'zh-tw') return 'zh-TW';
+  return normalized === 'en' ? 'en' : null;
 }
 
 function parseTimezoneFlag(raw: string | undefined): string | null {

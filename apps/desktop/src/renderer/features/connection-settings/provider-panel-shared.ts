@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { generalizedErrorMessage, generalizedErrorMessageChinese, redactSecrets } from '@maka/core/redaction';
+import { generalizedErrorMessageForLocale, redactSecrets } from '@maka/core/redaction';
 import { type ConnectionTestResult } from '@maka/core/llm-connections';
 import { type UiLocale } from '@maka/core/ui-locale';
 import { getProviderSettingsCopy } from './settings-provider-copy.js';
@@ -25,7 +25,7 @@ import { cleanErrorMessage } from '../../application/contracts/connection-error-
 
 export type CredentialPresenceStatus = boolean | 'loading' | 'error';
 
-export function providerPanelActionErrorMessage(error: unknown, locale: UiLocale = 'zh'): string {
+export function providerPanelActionErrorMessage(error: unknown, locale: UiLocale = 'zh-CN'): string {
   const shared = getProviderSettingsCopy(locale).shared;
   // Electron wraps ipcMain.handle rejections as "Error invoking remote method
   // '<channel>': Error: <message>". Classify the original message, not the
@@ -36,15 +36,13 @@ export function providerPanelActionErrorMessage(error: unknown, locale: UiLocale
   if (known) return known;
   // Main-process handlers throw display-ready Chinese copy; keep it instead
   // of flattening it into a coarser classification or the generic fallback.
-  if (/[\u3400-\u9fff]/.test(cleaned)) return cleaned;
+  if (locale === 'zh-CN' && /[\u3400-\u9fff]/.test(cleaned)) return cleaned;
   if (/connection_stale|Unable to delete Connection: connection_stale/i.test(cleaned)) {
-    return locale === 'zh'
-      ? '连接状态已更新，请刷新列表后再删除。'
-      : 'The connection changed while deleting. Refresh the list and try again.';
+    if (locale === 'zh-CN') return '连接状态已更新，请刷新列表后再删除。';
+    if (locale === 'zh-TW') return '連線狀態已更新，請重新整理清單後再刪除。';
+    return 'The connection changed while deleting. Refresh the list and try again.';
   }
-  const classified = locale === 'zh'
-    ? generalizedErrorMessageChinese(new Error(cleaned), '')
-    : generalizedErrorMessage(new Error(cleaned), '');
+  const classified = generalizedErrorMessageForLocale(new Error(cleaned), '', locale);
   return classified || shared.actionFallback;
 }
 
@@ -61,7 +59,7 @@ export interface ConnectionTestTroubleshootingCopy {
 export function connectionTestFailureFallback(
   result: ConnectionTestResult,
   copy: ConnectionTestTroubleshootingCopy,
-  locale: UiLocale = 'zh',
+  locale: UiLocale = 'zh-CN',
 ): string {
   const shared = getProviderSettingsCopy(locale).shared;
   if (result.statusCode === 429) return shared.rateLimit;
@@ -79,16 +77,14 @@ export function connectionTestFailureFallback(
 export function connectionTestFailureMessage(
   result: ConnectionTestResult,
   copy: ConnectionTestTroubleshootingCopy,
-  locale: UiLocale = 'zh',
+  locale: UiLocale = 'zh-CN',
 ): string {
   const fallback = connectionTestFailureFallback(result, copy, locale);
   if (!result.errorMessage) return fallback;
-  return locale === 'zh'
-    ? generalizedErrorMessageChinese(new Error(result.errorMessage), fallback)
-    : generalizedErrorMessage(new Error(result.errorMessage), fallback);
+  return generalizedErrorMessageForLocale(new Error(result.errorMessage), fallback, locale);
 }
 
-export function connectionLastTestMessageDisplay(message: string | undefined, locale: UiLocale = 'zh'): string | undefined {
+export function connectionLastTestMessageDisplay(message: string | undefined, locale: UiLocale = 'zh-CN'): string | undefined {
   if (!message) return undefined;
   const trimmed = message.trim();
   if (!trimmed) return undefined;
@@ -96,8 +92,6 @@ export function connectionLastTestMessageDisplay(message: string | undefined, lo
   const copy = getProviderSettingsCopy(locale).shared;
   const known = (copy.lastTest as Readonly<Record<string, string>>)[normalized];
   if (known) return known;
-  const classified = locale === 'zh'
-    ? generalizedErrorMessageChinese(new Error(trimmed), '')
-    : generalizedErrorMessage(new Error(trimmed), '');
+  const classified = generalizedErrorMessageForLocale(new Error(trimmed), '', locale);
   return classified || copy.statusUnavailable;
 }

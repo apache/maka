@@ -19,6 +19,7 @@
 
 mod bindings;
 mod engine;
+mod process_identity;
 mod webrtc_direct;
 #[cfg(target_os = "windows")]
 mod windows_lifecycle;
@@ -29,6 +30,7 @@ pub use bindings::{
     PeerTransitSnapshot, StartPeerEndpointOptions, ensure_peer_identity, sign_peer_identity,
     start_peer_endpoint, verify_peer_identity,
 };
+pub use process_identity::read_process_start_identity;
 #[cfg(target_os = "windows")]
 pub use windows_lifecycle::{
     WindowsTaskStatus, own_current_process_tree, windows_task_activate, windows_task_converge,

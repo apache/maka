@@ -81,6 +81,10 @@ import {
 } from './session-subscription.js';
 import { ClientCapabilityChannel } from './client-capability-channel.js';
 import type { ClientCapabilityProvider } from './client-capability.js';
+import {
+  readRuntimeHostProcessIdentity,
+  type RuntimeHostProcessIdentity,
+} from './process-identity.js';
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 500;
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 2_000;
@@ -138,18 +142,21 @@ export type ConnectRuntimeHostResult =
       kind: 'incompatible';
       handshake: HostIncompatible;
       registration: HostRegistration;
+      processIdentity?: RuntimeHostProcessIdentity;
     }
   | {
       kind: 'upgrade_required';
       registration: HostRegistration;
       restartable: true;
       handshake: HostIncompatible;
+      processIdentity?: RuntimeHostProcessIdentity;
     }
   | {
       kind: 'upgrade_required';
       registration: HostRegistration;
       restartable: false;
       handshake?: HostIncompatible;
+      processIdentity?: RuntimeHostProcessIdentity;
     }
   | { kind: 'draining'; registration: HostRegistration }
   | {
@@ -234,6 +241,7 @@ interface ConnectResolvedRuntimeHostInput
   clientInstanceId: string;
   controlDirectory: string;
   electionDeadline?: number;
+  readProcessIdentity?: typeof readRuntimeHostProcessIdentity;
 }
 
 export interface RuntimeHostConnection {
@@ -1223,6 +1231,16 @@ export async function connectResolvedRuntimeHost(
       registration,
     };
   }
+  // Observe the candidate before opening its endpoint. Besides keeping this
+  // potentially slow OS query outside the Host's handshake window, the later
+  // root/epoch-validated handshake binds this evidence to the registration we
+  // actually reached. Query failure deliberately leaves recovery unavailable.
+  const processIdentity = shouldObserveProcessIdentity(registration, generation, input.protocol)
+    ? await (input.readProcessIdentity ?? readRuntimeHostProcessIdentity)(registration.pid).catch(
+        () => undefined,
+      )
+    : undefined;
+  const processEvidence = processIdentity === undefined ? {} : { processIdentity };
   const connectDeadline = phaseDeadline(connectTimeoutMs, input.electionDeadline);
   const connectBudget = remainingTimeout(connectDeadline.at);
   if (connectBudget === undefined) {
@@ -1310,7 +1328,12 @@ export async function connectResolvedRuntimeHost(
         registration.generation !== generation
       ) {
         await result.connection.close().catch(() => undefined);
-        return { kind: 'upgrade_required', registration, restartable: false };
+        return {
+          kind: 'upgrade_required',
+          registration,
+          restartable: false,
+          ...processEvidence,
+        };
       }
       return { ...result, registration };
     }
@@ -1331,16 +1354,18 @@ export async function connectResolvedRuntimeHost(
             registration,
             restartable: true,
             handshake: result.handshake,
+            ...processEvidence,
           }
         : {
             kind: 'upgrade_required',
             registration,
             restartable: false,
             handshake: result.handshake,
+            ...processEvidence,
           };
     }
     return result.kind === 'incompatible'
-      ? { ...result, registration }
+      ? { ...result, registration, ...processEvidence }
       : { kind: 'draining', registration };
   } catch (error) {
     transport.abort();
@@ -1381,6 +1406,20 @@ export async function connectResolvedRuntimeHost(
   } finally {
     clearTimeout(handshakeTimer);
   }
+}
+
+function shouldObserveProcessIdentity(
+  registration: HostRegistration,
+  generation: string | undefined,
+  protocol: ProtocolRange,
+): boolean {
+  return (
+    registration.lifecycleMode === 'ephemeral' &&
+    (registration.compatibilityEpoch !== RUNTIME_HOST_COMPATIBILITY_EPOCH ||
+      registration.protocolMax < protocol.min ||
+      registration.protocolMin > protocol.max ||
+      (generation !== undefined && registration.generation !== generation))
+  );
 }
 
 interface ExchangeRuntimeHostHandshakeInput {

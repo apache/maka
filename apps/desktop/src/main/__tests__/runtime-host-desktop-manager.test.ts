@@ -1494,6 +1494,62 @@ test('waits passively for a Host that cannot be taken over', async () => {
   await owner.close();
 });
 
+test('offers to stop an exact local ephemeral Host before retrying startup', async () => {
+  const observed = incompatibleHost('blocked_by_residency');
+  const conflict = {
+    ...observed,
+    registration: { ...observed.registration, lifecycleMode: 'ephemeral' as const },
+    processIdentity: {
+      startIdentity: 'darwin:1700000000:123456',
+    },
+    handshake: {
+      ...observed.handshake,
+      activity: {
+        connections: 0,
+        activeOperations: 0,
+        processUptimeSeconds: 60,
+        residencies: [],
+      },
+    },
+  };
+  const replacement = candidateHarness();
+  let starts = 0;
+  let prompts = 0;
+  let terminations = 0;
+  const owner = await startRuntimeHostDesktopManager(
+    { rootPath: '/workspace' } as DesktopRuntimeHostCandidateStartInput,
+    {
+      startCandidate: async () => {
+        starts += 1;
+        return starts === 1 ? conflict : ready(replacement.candidate);
+      },
+      upgradePrompts: {
+        restartable: async () => assert.fail('incompatible Host used restart prompt'),
+        nonRestartable: async (_conflict, action) => {
+          prompts += 1;
+          assert.equal(action, 'replace_may_interrupt_work');
+          return 'replace';
+        },
+      },
+      forceTerminateObservedHost: async (identity, authority) => {
+        terminations += 1;
+        assert.deepEqual(identity, {
+          rootPath: '/workspace',
+          registration: conflict.registration,
+        });
+        assert.deepEqual(authority.processIdentity, conflict.processIdentity);
+        assert.equal(authority.isCurrent(), true);
+        return true;
+      },
+    },
+  );
+
+  assert.equal(prompts, 1, 'even an idle snapshot must not authorize a forced stop');
+  assert.equal(terminations, 1);
+  assert.equal(starts, 2);
+  await owner.close();
+});
+
 test('silently replaces an idle non-restartable Local Host and retries', async () => {
   const observed = upgradeRequired(true);
   const conflict = {
@@ -1667,7 +1723,7 @@ test('lets the user cancel startup when an incompatible Host owns the root', asy
 
 function incompatibleHost(
   replacement: 'wait_for_idle_exit' | 'blocked_by_residency',
-): DesktopRuntimeHostCandidateStartResult {
+): Extract<DesktopRuntimeHostCandidateStartResult, { kind: 'incompatible' }> {
   return {
     kind: 'incompatible',
     registration: hostRegistration({ compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH - 1 }),

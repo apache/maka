@@ -22,7 +22,7 @@ import test from 'node:test';
 import { getSessionHoverCardCopy } from '../session-hover-card-copy.js';
 
 test('localizes task and project hover card summaries', () => {
-  const zh = getSessionHoverCardCopy('zh');
+  const zh = getSessionHoverCardCopy('zh-CN');
   const en = getSessionHoverCardCopy('en');
 
   assert.equal(zh.sessionDetailsLabel('发布说明'), '发布说明 任务详情');

@@ -84,6 +84,7 @@
     "package:macos-autoupdate-next": "node scripts/package-macos-autoupdate-next.mjs",
     "verify:macos-autoupdate": "node scripts/verify-macos-autoupdate.mjs",
     "package:windows-x64": "node scripts/package-windows-x64.mjs",
+    "test:windows-archives": "node --test scripts/windows-archive-repro.test.mjs",
     "verify:windows-x64": "node scripts/verify-windows-x64.mjs",
     "verify:windows-installer": "node scripts/verify-windows-installer-lifecycle.mjs",
     "package:windows-autoupdate-next": "node scripts/package-windows-autoupdate-next.mjs",
@@ -107,15 +108,15 @@
     "smoke:windows:dist": "node scripts/windows-smoke.mjs"
   },
   "devDependencies": {
-    "@ai-sdk/provider-utils": "5.0.28",
-    "@astryxdesign/cli": "0.4.5",
+    "@ai-sdk/provider-utils": "5.0.34",
+    "@astryxdesign/cli": "0.5.2",
     "@astryxdesign/core": "0.5.2",
-    "@biomejs/biome": "2.5.9",
+    "@biomejs/biome": "2.5.11",
     "@electron/asar": "4.3.0",
-    "@types/node": "^26.2.0",
+    "@types/node": "^26.4.0",
     "esbuild": "^0.28.1",
     "husky": "^9.1.7",
-    "knip": "^6.32.2",
+    "knip": "^6.33.0",
     "patch-package": "8.0.1",
     "typescript": "^7.0.2",
     "yaml": "2.9.0"

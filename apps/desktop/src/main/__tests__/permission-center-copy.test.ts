@@ -22,6 +22,6 @@ import { test } from 'node:test';
 import { getPermissionCenterCopy } from '../../renderer/locales/permission-center-copy.js';
 
 test('presents a granted OS permission as a verified success', () => {
-  assert.equal(getPermissionCenterCopy('zh').osStates.granted.tone, 'success');
+  assert.equal(getPermissionCenterCopy('zh-CN').osStates.granted.tone, 'success');
   assert.equal(getPermissionCenterCopy('en').osStates.granted.tone, 'success');
 });

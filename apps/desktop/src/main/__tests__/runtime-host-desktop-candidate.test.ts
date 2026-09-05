@@ -30,6 +30,7 @@ import type {
   ConnectOrSpawnRuntimeHostInput,
   RuntimeHostConnection,
 } from '@maka/runtime-host/client';
+import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 import {
   SESSION_CONTINUITY_SCHEMA_VERSION,
   type ClientCapabilityCallFrame,
@@ -892,6 +893,69 @@ test('drops a stale shared Session observation when Guest access is gone', async
   assert.deepEqual(observations.trackedSessionIds(), []);
   assert.deepEqual(changes, [{ reason: 'deleted', sessionId: 'session-1' }]);
   await candidate.close();
+  await observations.close();
+});
+
+test('forgets an observed Session the Host no longer serves instead of blocking every reconnect', async () => {
+  const observations = new RuntimeHostSessionObservationRegistry();
+  const firstIpc = ipcHarness();
+  const firstHost = connectionHarness('missing-session-source', {
+    sessionId: 'session-1',
+    subscriptionSnapshot: continuitySnapshot(),
+  });
+  const firstCandidate = await createDesktopRuntimeHostCandidate(
+    firstHost.connection,
+    deps(firstIpc),
+    observations,
+  );
+  await firstIpc.invoke('sessions:observe', 'session-1', 'observer-1');
+  await firstCandidate.close();
+
+  // The replacement Host no longer serves session-1: subscription.open
+  // deterministically answers not_found.
+  const changes: Array<{ reason: string; sessionId?: string }> = [];
+  const missingHost = connectionHarness('missing-session-host', {
+    sessionId: 'session-1',
+    subscriptionError: new RuntimeHostOperationError(
+      'subscription.open',
+      'not_found',
+      'Runtime Host Session was not found',
+    ),
+  });
+  const secondCandidate = await createDesktopRuntimeHostCandidate(
+    missingHost.connection,
+    {
+      ...deps(ipcHarness()),
+      emitSessionsChanged: (_scope, reason, sessionId) => {
+        changes.push({ reason, ...(sessionId === undefined ? {} : { sessionId }) });
+      },
+    },
+    observations,
+  );
+
+  // The stale active registration is forgotten instead of failing the
+  // candidate start, and the renderer is told to drop the Session view.
+  assert.deepEqual(observations.observedSessionIds(), []);
+  assert.ok(
+    changes.some(
+      ({ reason, sessionId }) => reason === 'deleted' && sessionId === 'session-1',
+    ),
+  );
+  await secondCandidate.close();
+
+  // A later reconnect observes new Sessions on the same registry.
+  const thirdIpc = ipcHarness();
+  const thirdHost = connectionHarness('missing-session-recovered', {
+    sessionId: 'session-2',
+  });
+  const thirdCandidate = await createDesktopRuntimeHostCandidate(
+    thirdHost.connection,
+    deps(thirdIpc),
+    observations,
+  );
+  await thirdIpc.invoke('sessions:observe', 'session-2', 'observer-2');
+  assert.deepEqual(observations.observedSessionIds(), ['session-2']);
+  await thirdCandidate.close();
   await observations.close();
 });
 
