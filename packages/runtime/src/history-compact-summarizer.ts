@@ -46,7 +46,6 @@ export { HistoryCompactSummarizerError } from './history-compact-error.js';
 
 export interface AiSdkGenerateTextOptions {
   model: unknown;
-  instructions: string;
   messages: ModelMessage[];
   providerOptions?: Record<string, unknown>;
   maxOutputTokens?: number;
@@ -74,7 +73,12 @@ export interface BuildLlmHistorySummarizerOptions {
 // folded events are projected with the same policy the model would see them.
 // The format block is the validation module's template, so the mandated
 // format and the validation can never drift apart.
-const SUMMARIZATION_SYSTEM_PROMPT = [
+// It rides as the trailing user message, never as provider instructions
+// (system role): agentic coding models such as kimi k3-256k ignore a system
+// prompt in this shape and keep answering the conversation instead, so the
+// fold fails open forever (#4634), and a distinct system prompt also forfeits
+// the prefix cache the main-loop requests built.
+const SUMMARIZATION_PROMPT = [
   'You are a context summarization assistant.',
   'Read the conversation between a user and an AI assistant, then produce a structured summary another LLM will use to continue the same task.',
   'Do NOT continue the conversation. Do NOT answer questions in it. ONLY output the structured summary.',
@@ -89,17 +93,17 @@ const SUMMARIZATION_SYSTEM_PROMPT = [
 const SUMMARY_REQUEST_INSTRUCTION =
   'Now write the structured summary of the conversation above. Output only the summary.';
 
-function shortenSummarizationSystemPrompt(): string {
+function shortenSummarizationPrompt(): string {
   return [
-    SUMMARIZATION_SYSTEM_PROMPT,
+    SUMMARIZATION_PROMPT,
     '',
     'Your previous attempt was cut off at the output limit. Produce the same summary in well under half the length: keep every section, drop detail rather than sections.',
   ].join('\n');
 }
 
-function repairSummarizationSystemPrompt(reason: string): string {
+function repairSummarizationPrompt(reason: string): string {
   return [
-    SUMMARIZATION_SYSTEM_PROMPT,
+    SUMMARIZATION_PROMPT,
     '',
     `A prior attempt was rejected as ${reason}.`,
     'Produce one complete replacement summary from the source conversation.',
@@ -132,16 +136,6 @@ export function buildLlmHistorySummarizer(options: BuildLlmHistorySummarizerOpti
           ],
         });
       }
-      // The folded span usually ends on an assistant message. A chat-template
-      // model handed a conversation that already ends with its own turn emits
-      // an end-of-sequence token and nothing else (Ollama qwen2.5: finish
-      // `stop`, one output token, empty text), so the request must end with
-      // an instruction the model can answer. Hosted providers do not need the
-      // nudge and are not disturbed by it (#4559).
-      projectedMessages.push({
-        role: 'user',
-        content: [{ type: 'text', text: SUMMARY_REQUEST_INSTRUCTION }],
-      });
       // Nothing is trimmed on a local estimate: whether this input fits the
       // summarizer's window is its provider's answer (`input_too_large`, which
       // the planner retreats on), and the output is capped outright (#4559).
@@ -167,8 +161,21 @@ export function buildLlmHistorySummarizer(options: BuildLlmHistorySummarizerOpti
         step += 1;
         const result = await generateText({
           model,
-          instructions,
-          messages,
+          // The instruction rides as the trailing user message rather than the
+          // AI SDK's `instructions` (system role): the request must still end
+          // with an imperative the model can answer (#4559), and no
+          // system-role prompt may precede the conversation, which agentic
+          // models ignore and which forfeits the main loop's prefix cache
+          // (#4634).
+          messages: [
+            ...messages,
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: `${instructions}\n\n${SUMMARY_REQUEST_INSTRUCTION}` },
+              ],
+            },
+          ],
           maxOutputTokens,
           ...(options.providerOptions !== undefined
             ? { providerOptions: options.providerOptions }
@@ -195,12 +202,12 @@ export function buildLlmHistorySummarizer(options: BuildLlmHistorySummarizerOpti
         return { text: result.text, defect, truncated };
       };
 
-      let initial = await generateSummary(SUMMARIZATION_SYSTEM_PROMPT, projectedMessages);
+      let initial = await generateSummary(SUMMARIZATION_PROMPT, projectedMessages);
       if (initial.truncated) {
         // The provider cut the summary at the output cap. One shorter attempt;
         // a second cut is the provider saying this span will not summarize
         // inside the cap, and the fold fails open.
-        initial = await generateSummary(shortenSummarizationSystemPrompt(), projectedMessages);
+        initial = await generateSummary(shortenSummarizationPrompt(), projectedMessages);
         if (initial.truncated) throw new HistoryCompactSummarizerError('output_length');
       }
       if (!initial.defect) return initial.text;
@@ -211,7 +218,7 @@ export function buildLlmHistorySummarizer(options: BuildLlmHistorySummarizerOpti
       // A malformed provider completion is often repairable, but retries must
       // be bounded: one stricter attempt, then the caller's failure circuit
       // records the stable defect for this compaction input.
-      const repairInstructions = repairSummarizationSystemPrompt(initial.defect);
+      const repairInstructions = repairSummarizationPrompt(initial.defect);
       let repaired: Awaited<ReturnType<typeof generateSummary>>;
       try {
         repaired = await generateSummary(repairInstructions, projectedMessages);
