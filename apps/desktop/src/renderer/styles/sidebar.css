@@ -306,6 +306,10 @@
 
 .maka-sidebar-hover-card-path {
   font: var(--maka-text-code);
+}
+
+.maka-sidebar-hover-card-path,
+.maka-sidebar-hover-card-project {
   min-width: 0;
   overflow: hidden;
   color: var(--muted-foreground);

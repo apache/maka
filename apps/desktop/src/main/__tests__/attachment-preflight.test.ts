@@ -29,19 +29,19 @@ describe('attachment preflight (before session create)', () => {
       size: 100,
       source: { type: 'file' as const, file: { size: 100 } },
     }));
-    assert.throws(() => preflightAttachmentItems(items), /8/);
+    assert.throws(() => preflightAttachmentItems(items, 'zh-CN'), /8/);
   });
 
   test('rejects an oversized File so no empty session is created', () => {
     assert.throws(
-      () => preflightAttachmentItems([{ size: CAP + 1, source: { type: 'file', file: { size: CAP + 1 } } }]),
+      () => preflightAttachmentItems([{ size: CAP + 1, source: { type: 'file', file: { size: CAP + 1 } } }], 'zh-CN'),
       /50MB/,
     );
   });
 
   test('rejects an oversized approval-token attachment by pending size', () => {
     assert.throws(
-      () => preflightAttachmentItems([{ size: CAP + 1, source: { type: 'approval', approvalId: 'a1' } }]),
+      () => preflightAttachmentItems([{ size: CAP + 1, source: { type: 'approval', approvalId: 'a1' } }], 'zh-CN'),
       /50MB/,
     );
   });
@@ -52,8 +52,16 @@ describe('attachment preflight (before session create)', () => {
         preflightAttachmentItems([
           { size: 10, source: { type: 'approval', approvalId: 'dup' } },
           { size: 10, source: { type: 'approval', approvalId: 'dup' } },
-        ]),
+        ], 'zh-CN'),
       /重复/,
+    );
+    assert.throws(
+      () =>
+        preflightAttachmentItems([
+          { size: 10, source: { type: 'approval', approvalId: 'dup' } },
+          { size: 10, source: { type: 'approval', approvalId: 'dup' } },
+        ], 'en'),
+      /already added/,
     );
   });
 
@@ -62,7 +70,7 @@ describe('attachment preflight (before session create)', () => {
       preflightAttachmentItems([
         { size: 100, source: { type: 'approval', approvalId: 'a1' } },
         { size: 100, source: { type: 'file', file: { size: 100 } } },
-      ]),
+      ], 'zh-CN'),
     );
   });
 });

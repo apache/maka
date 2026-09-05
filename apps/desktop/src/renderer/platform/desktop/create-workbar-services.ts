@@ -31,7 +31,6 @@ export type DesktopWorkbarBridge = Pick<
   | 'inspector'
   | 'sessions'
   | 'shellRuns'
-  | 'todo'
   | 'transcripts'
 >;
 
@@ -55,7 +54,6 @@ export function createDesktopWorkbarServices(
         bridge.sessions.subscribeEvents(sessionId, handler),
     },
     terminal: bridge.shellRuns,
-    todo: bridge.todo,
     browser: {
       setActiveSession: (sessionId) => bridge.browser.setActiveSession(sessionId),
       setViewport: (input) => bridge.browser.setViewport(input),

@@ -1686,6 +1686,9 @@ const makaBridge = {
     reconcileUpdate(profileId: string) {
       return ipcRenderer.invoke('runtime-host-management:reconcile-update', profileId);
     },
+    getResources(profileId: string) {
+      return ipcRenderer.invoke('runtime-host-management:get-resources', profileId);
+    },
     getDirectPeer(profileId: string) {
       return ipcRenderer.invoke('runtime-host-management:get-direct-peer', profileId);
     },

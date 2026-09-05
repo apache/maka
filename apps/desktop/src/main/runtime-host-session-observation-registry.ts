@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { RuntimeHostOperationError } from "@maka/runtime-host/client";
 import type {
   RuntimeHostSessionObserver,
   RuntimeHostRendererTarget,
@@ -72,6 +73,20 @@ function requireTranscriptSource(
     throw new Error('Runtime Host transcript source is unavailable');
   }
   return source as SessionObservationSource & TranscriptSource;
+}
+
+/**
+ * A `subscription.open`/`not_found` answer is deterministic: the Host no
+ * longer serves this Session (Host restart with ephemeral state, Session GC,
+ * or deletion by another client). Unlike `session.transcript.page`/`not_found`
+ * (see `isRecoverableSubscriptionFailure` in the subscription owner), there is
+ * nothing to retry — the registration must be forgotten instead of blocking
+ * every reconnect.
+ */
+function isMissingRuntimeHostSessionError(error: unknown): boolean {
+  if (!(error instanceof RuntimeHostOperationError)) return false;
+  if (error.operation !== "subscription.open") return false;
+  return error.code === "not_found";
 }
 
 interface SessionObservationRegistration {
@@ -139,6 +154,7 @@ export class RuntimeHostSessionObservationRegistry {
   async attach(
     source: SessionObservationSource,
     bindTarget: ObservationTargetBinding = (target) => target,
+    onSessionMissing?: (sessionId: string) => void,
   ): Promise<string[]> {
     this.#assertOpen();
     if (this.#source && this.#source !== source) {
@@ -176,6 +192,15 @@ export class RuntimeHostSessionObservationRegistry {
             this.#source === source &&
             this.#registrations.get(observerId) === registration
           ) {
+            if (isMissingRuntimeHostSessionError(error)) {
+              // The Host no longer serves this Session. Forget the
+              // registration regardless of lifecycle so the stale entry
+              // cannot fail every future reconnect, and let the upper layer
+              // drop the Session view.
+              onSessionMissing?.(registration.sessionId);
+              this.#deleteRegistration(observerId, registration);
+              return undefined;
+            }
             if (registration.lifecycle === "pending") {
               this.#deleteRegistration(observerId, registration);
             }

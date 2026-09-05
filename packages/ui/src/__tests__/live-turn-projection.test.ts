@@ -70,7 +70,7 @@ describe('the unconfirmed claim an arm carries', () => {
 
 describe('provider retry copy', () => {
   it('describes capacity retries without collapsing them into generic unavailability', () => {
-    assert.match(getConversationCopy('zh').messages.providerRetryReason.provider_capacity, /满载/);
+    assert.match(getConversationCopy('zh-CN').messages.providerRetryReason.provider_capacity, /满载/);
     assert.match(
       getConversationCopy('en').messages.providerRetryReason.provider_capacity,
       /capacity/,
@@ -1026,7 +1026,7 @@ describe('tool_result_preview live projection', () => {
         type: 'turn_state', id: 'state-1', turnId: 'turn-1', ts: 3,
         status: 'running', partialOutputRetained: true,
       },
-    ]);
+    ], 'en');
     const started = applyLiveTurnEvent(undefined, {
       type: 'tool_start', id: 'start-1', turnId: 'turn-1', stepId: 'step-1',
       toolUseId: 'tool-1', toolName: 'Read', args: { path: 'README.md' }, ts: 4,

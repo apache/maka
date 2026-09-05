@@ -240,9 +240,27 @@ const MCP_CATALOG_ENGLISH_COPY: Record<McpCatalogId, McpCatalogLocalizedCopy> = 
   'sequential-thinking': { name: 'Sequential thinking', description: 'Provide revisable, verifiable structured reasoning for complex problems.', category: 'Reasoning and planning', setupLabel: undefined },
 };
 
+const MCP_CATALOG_TRADITIONAL_COPY: Record<McpCatalogId, McpCatalogLocalizedCopy> = {
+  dingtalk: { name: 'DingTalk', description: '管理聯絡人、行事曆、任務和協作資料。', category: '通訊', setupLabel: '需要 Client ID 和 Client Secret' },
+  feishu: { name: '飛書', description: '存取飛書文件、行事曆、訊息和 OpenAPI。', category: '通訊', setupLabel: '需要 App ID 和 App Secret' },
+  slack: { name: 'Slack', description: '傳送訊息、管理頻道，並在 Slack 工作區協作。', category: '通訊', setupLabel: '需要 Bot Token 和 Team ID' },
+  line: { name: 'LINE', description: '透過 LINE Bot Messaging API 傳送和管理訊息。', category: '通訊', setupLabel: '需要 Channel Access Token' },
+  notion: { name: 'Notion', description: '搜尋、讀取和更新 Notion 工作區。', category: '知識與文件', setupLabel: '需要登入授權' },
+  'macos-apps': { name: 'macOS 應用程式', description: '透過原生系統權限連接「行事曆」與「提醒事項」。', category: '系統與生產力', setupLabel: undefined },
+  'google-calendar': { name: 'Google 日曆', description: '管理活動、建立會議並檢查可用時間。', category: '系統與生產力', setupLabel: '需要 OAuth 憑證檔案' },
+  figma: { name: 'Figma', description: '讀取設計檔案、元件和開發交付資料。', category: '設計與開發', setupLabel: '需要 Personal Access Token' },
+  vercel: { name: 'Vercel', description: '檢查專案、部署、記錄和平台文件。', category: '設計與開發', setupLabel: '需要登入授權' },
+  supabase: { name: 'Supabase', description: '管理資料庫、專案設定、移轉和 Edge Functions。', category: '設計與開發', setupLabel: '需要登入授權' },
+  filesystem: { name: '本機檔案', description: '在選取的資料夾中安全地讀取、寫入和管理檔案。', category: '檔案與知識', setupLabel: '需要選擇允許存取的資料夾' },
+  memory: { name: '持久記憶', description: '使用結構化知識圖譜記住實體、關係和重要事實。', category: '檔案與知識', setupLabel: undefined },
+  playwright: { name: '瀏覽器自動化', description: '讓 Maka 透過 Playwright 讀取和操作實際網頁。', category: '設計與開發', setupLabel: undefined },
+  'sequential-thinking': { name: '循序思考', description: '為複雜問題提供可修正、可驗證的結構化推理。', category: '推理與規劃', setupLabel: undefined },
+};
+
 export function getMcpCatalog(locale: UiLocale): McpCatalogEntry[] {
-  if (locale === 'zh') return MCP_CATALOG;
-  return MCP_CATALOG.map((entry) => ({ ...entry, ...MCP_CATALOG_ENGLISH_COPY[entry.id] }));
+  if (locale === 'zh-CN') return MCP_CATALOG;
+  const copy = locale === 'zh-TW' ? MCP_CATALOG_TRADITIONAL_COPY : MCP_CATALOG_ENGLISH_COPY;
+  return MCP_CATALOG.map((entry) => ({ ...entry, ...copy[entry.id] }));
 }
 
 export function catalogEntryMatches(entry: McpCatalogEntry, normalizedQuery: string): boolean {

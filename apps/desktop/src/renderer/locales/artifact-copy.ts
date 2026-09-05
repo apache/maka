@@ -92,7 +92,7 @@ export type ArtifactCopy = {
 };
 
 const ARTIFACT_COPY = {
-  zh: {
+  'zh-CN': {
     pane: {
       refreshFailed: '刷新生成文件失败', openFailed: '无法在 Finder 中打开生成文件', copyFailed: '复制失败',
       readTextFailed: '无法读取生成文件文本内容。', copied: '已复制生成文件文本', saved: '已另存生成文件', saveFailed: '另存失败',
@@ -126,6 +126,42 @@ const ARTIFACT_COPY = {
       oversize: { title: '文件过大，暂不预览', description: '为避免在内存中加载大体积图片，超过 2 MB 的文件不在此处展开预览。' },
       readFailed: { title: '加载预览失败', description: '无法读取文件内容（可能已被删除、移动或权限不足）。请通过「在 Finder 中打开」检查文件。' },
       unsupported: '暂不支持的预览', name: '名称', unnamed: '(未命名)', type: '类型', size: '大小', openInFinder: '在 Finder 中打开', loadingImage: '加载图片预览…',
+    },
+  },
+  'zh-TW': {
+    pane: {
+      refreshFailed: '重新整理生成檔案失敗', openFailed: '無法在 Finder 中開啟生成檔案', copyFailed: '複製失敗',
+      readTextFailed: '無法讀取生成檔案文本內容。', copied: '已複製生成檔案文本', saved: '已另存生成檔案', saveFailed: '另存失敗',
+      fallbackName: '生成檔案', deleteTitle: (name) => `刪除 "${name}"`, deleteDescription: '軟刪除：在記錄中標記為已刪除，檔案保留 6 小時可恢復。',
+      delete: '刪除', deleteReadOnly: '刪除（只讀檔案）', cancel: '取消', deleted: (name) => `已刪除 ${name}`, deleteFailed: (name) => `刪除 ${name} 失敗`, panelAria: '生成檔案預覽面板',
+      listLoadFailed: '生成檔案列表載入失敗', retrying: '重試中…', retry: '重試', listAria: '生成檔案列表', deletedBadge: '已刪除',
+      previewNamed: (name) => `預覽 ${name}`, empty: '暫無生成檔案', emptyHint: '助手生成檔案後會顯示在這裡。',
+      back: '返回生成檔案列表', moreActions: (name) => `${name} 的更多操作`,
+      openInFinder: '在 Finder 中開啟', saveAs: '另存為', copy: '複製',
+      saveFailures: { not_found: '生成檔案不存在。', not_allowed: '生成檔案路徑檢查未透過。', deleted: '生成檔案已刪除，不能另存。', write_failed: '目標位置無法寫入。', default: '無法儲存生成檔案。' },
+      actionFailed: '生成檔案操作失敗，請稍後重試。',
+    },
+    preview: {
+      loadingFile: '載入檔案預覽…', loadingDiff: '載入 diff 預覽…', loadingHtml: '載入 HTML 預覽…',
+      externalLinks: (count) => `此預覽中已停用外部連結 · ${count} 個連結`, frameTitle: (name) => `生成檔案預覽 · ${name}`,
+      loadingPdf: '載入 PDF 預覽…', pdfFallback: '如果瀏覽器沒有內建 PDF 渲染，請透過更多選單「在 Finder 中開啟」檢視。',
+      rendered: '預覽', source: '原始碼', previewLimited: (limit) => `僅顯示前 ${limit}；可透過更多選單開啟或另存完整檔案。`,
+      renderLimited: (limit, lines) => `為保證流暢，富文本預覽僅展開前 ${limit}、最多 ${lines} 行；完整原始碼仍可檢視。`,
+      highlightLimited: (limit, lines) => `為保證流暢，僅高亮前 ${limit}、最多 ${lines} 行，其餘內容以純文本顯示。`,
+      diffLinesLimited: (count) => `為保證流暢，另有 ${count} 行未在預覽中展開。`,
+      readFailed: { title: '無法讀取生成檔案', description: '路徑可能已被外部刪除。請透過更多選單「在 Finder 中開啟」檢查檔案位置。' },
+      notAllowed: { title: '無法讀取生成檔案', description: '路徑檢查未透過，檔案已不在允許預覽的生成檔案目錄內。' },
+      tooLarge: (bytes) => ({ title: '檔案超出預覽大小', description: `${bytes} 位元組超過文本預覽閾值，請透過更多選單開啟或另存完整內容。` }),
+      deleted: { title: '此生成檔案已刪除', description: '預覽已停止。如需檢視原檔案請使用「在 Finder 中開啟」。' },
+      unsupportedMime: { title: '不支援的檔案型別', description: '該生成檔案的 MIME 型別不在內聯預覽允許列表中。請使用工具欄「在 Finder 中開啟」或「另存為」。' },
+    },
+    registry: {
+      kindDisallowed: { title: '目前預覽暫不支援該型別', description: '此類生成檔案不能在面板內直接預覽。請使用「在 Finder 中開啟」檢視。' },
+      mimeDisallowed: { title: '格式暫不支援預覽', description: '已識別到檔案的 MIME 型別，但目前預覽只支援 PNG / JPEG / GIF / WebP / AVIF。' },
+      unknownType: { title: '無法識別檔案型別', description: '檔案沒有 MIME 後設資料，副檔名也未符合。請透過「在 Finder 中開啟」檢視。' },
+      oversize: { title: '檔案過大，暫不預覽', description: '為避免在記憶體中載入大體積圖片，超過 2 MB 的檔案不在此處展開預覽。' },
+      readFailed: { title: '載入預覽失敗', description: '無法讀取檔案內容（可能已被刪除、移動或權限不足）。請透過「在 Finder 中開啟」檢查檔案。' },
+      unsupported: '暫不支援的預覽', name: '名稱', unnamed: '(未命名)', type: '型別', size: '大小', openInFinder: '在 Finder 中開啟', loadingImage: '載入圖片預覽…',
     },
   },
   en: {

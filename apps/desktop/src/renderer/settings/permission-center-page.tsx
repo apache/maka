@@ -487,6 +487,7 @@ function CapabilityRow(props: {
               row grew ~5x. `label position: start` keeps each readout on
               one line (label left, value right) like the <dl> it replaced. */}
           <MetadataList
+            className="settingsCapabilityMetadata"
             columns={2}
             label={{ position: 'start', width: 92 }}
             aria-label={copy.layers.aria(capabilityLabel)}
@@ -497,7 +498,7 @@ function CapabilityRow(props: {
                     an unwrapped reason ran straight into the state value
                     ("探测降级maka-cu 未响应握手…"). */}
                 <VStack gap={0.5}>
-                  <Text type="body" size="sm">{layer.value}</Text>
+                  <Text type="body">{layer.value}</Text>
                   {layer.reason ? (
                     <Text type="supporting" size="sm" color="secondary">{layer.reason}</Text>
                   ) : null}
@@ -507,6 +508,7 @@ function CapabilityRow(props: {
           </MetadataList>
           {capability.osPermissions.length > 0 && (
             <MetadataList
+              className="settingsCapabilityMetadata"
               columns={2}
               label={{ position: 'start', width: 92 }}
               aria-label={copy.requiredPermissionsAria(capabilityLabel)}
@@ -703,7 +705,7 @@ function localizedCapabilityLabel(capability: CapabilitySnapshot, locale: UiLoca
 }
 
 function localizedSnapshotText(value: string | undefined, locale: UiLocale): string | undefined {
-  if (!value || (locale === 'en' && /[\u3400-\u9fff]/u.test(value))) return undefined;
+  if (!value || (locale !== 'zh-CN' && /[\u3400-\u9fff]/u.test(value))) return undefined;
   return value;
 }
 
@@ -712,7 +714,7 @@ function localizedCapabilityGuidance(
   locale: UiLocale,
   copy: PermissionCenterCopy,
 ): readonly string[] {
-  return capability.guidance.filter((item) => locale === 'zh' || !/[\u3400-\u9fff]/u.test(item));
+  return capability.guidance.filter((item) => locale === 'zh-CN' || !/[\u3400-\u9fff]/u.test(item));
 }
 
 function featureTone(state: CapabilitySnapshot['feature']['state']): StatusSemantic {

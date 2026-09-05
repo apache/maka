@@ -55,11 +55,11 @@ The continuation-start event must be durable before the provider is called.
 
 ## Planner gates
 
-`RuntimeContinuationPlanner` reads the source AgentRun and RuntimeEvent ledger.
+`RuntimeContinuationPlanner` reads the source invocation and its RuntimeEvent ledger.
 The plan is `continue` only when all of the following are true:
 
 - the source run and RuntimeEvent ledger are readable;
-- the run header has exactly one matching, non-partial terminal RuntimeEvent;
+- the source invocation has exactly one matching, non-partial terminal RuntimeEvent;
 - every RuntimeEvent belongs to one source Session, Invocation, Run, and Turn;
 - the Phase 0 projection is `safe_replay`;
 - every accepted tool call has a committed matching response;
@@ -111,10 +111,9 @@ from being executed merely because a new model turn was created.
 If continuation-start persistence fails:
 
 1. the provider is not called;
-2. no terminal AgentRun header is committed without a terminal RuntimeEvent;
-3. the incomplete target Run remains recoverable;
-4. existing startup recovery later writes a recovered terminal RuntimeEvent
-   and then commits the matching failed run header.
+2. the incomplete target Run remains recoverable;
+3. existing startup recovery later writes a recovered terminal RuntimeEvent,
+   which is the whole of ending that Run.
 
 The source ledger is never mutated by continuation execution.
 

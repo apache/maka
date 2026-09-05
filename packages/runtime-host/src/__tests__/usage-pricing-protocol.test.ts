@@ -479,8 +479,8 @@ describe('Usage/Pricing protocol', () => {
         lease.transaction('write', () => {
           lease.database
             .prepare(`
-              INSERT INTO core_agent_runs(session_id, run_id, created_at, record_json)
-              VALUES ('session-b', 'run-b', 0, '{}')
+              INSERT INTO core_agent_runs(session_id, run_id, created_at)
+              VALUES ('session-b', 'run-b', 0)
             `)
             .run();
           lease.database

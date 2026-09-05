@@ -24,7 +24,6 @@ import type { ArtifactRecord } from '@maka/core/artifacts';
 import type { BrowserState } from '@maka/core/browser';
 import type { GitReviewReadResult, GitReviewSnapshot } from '@maka/core/git-review';
 import type { SessionSummary } from '@maka/core/session';
-import type { SessionTodoItem } from '@maka/core/session-todo';
 import type { SessionTrace } from '@maka/core/session-trace';
 import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
 import { ToastProvider } from '@maka/ui';
@@ -33,6 +32,7 @@ import { WorkbarSurface } from '../src/renderer/features/workbar/stories';
 import {
   createFakeWorkbarServices,
   createSessionWorkbarPanelsState,
+  activateSessionWorkbarTab,
   createSessionWorkbarTabsState,
   openStaticSessionWorkbarTab,
   terminalSessionWorkbarTabId,
@@ -146,21 +146,6 @@ const RICH_TERMINAL_BUFFER = [
 ].join('\r\n');
 
 // ---- ledgers -------------------------------------------------------------
-
-// The long item is deliberate: it is what proves a long subject still wraps
-// instead of pushing the panel sideways.
-const tasks: SessionTodoItem[] = [
-  { content: '完成会话任务台账升级', status: 'in_progress' },
-  { content: '验证 SQLite authority 与并发短 key 分配', status: 'completed' },
-  { content: '检查窄窗口下的任务树布局', status: 'pending' },
-  {
-    content:
-      '核对深层缩进、超长任务描述、owner 与阻塞原因在窄窗口中仍可完整换行且不遮挡后续内容',
-    status: 'pending',
-  },
-  { content: '同步生命周期文档与边界说明', status: 'pending' },
-  { content: '验证 Goal 一次提醒门禁', status: 'completed' },
-];
 
 const artifacts: ArtifactRecord[] = [
   {
@@ -776,8 +761,6 @@ const unsubscribe = () => () => undefined;
  * varies, and everything else stays on the populated default.
  */
 function bridge(options: {
-  tasks?: SessionTodoItem[];
-  tasksFail?: boolean;
   trace?: SessionTrace;
   traceNextCursor?: string;
   traceFail?: boolean;
@@ -799,13 +782,6 @@ function bridge(options: {
 } = {}): Decorator {
   const browserState = options.browserState ?? EMPTY_BROWSER_STATE;
   const services = createFakeWorkbarServices({
-    todo: {
-      read: async () => {
-        if (options.tasksFail) throw new Error('读取任务失败');
-        return options.tasks ?? tasks;
-      },
-      subscribeChanges: unsubscribe,
-    },
     artifacts: {
       list: async () => artifacts,
       readText: async (_sessionId: string, id: string) => ({ ok: true, text: artifactText[id] ?? '' }),
@@ -950,6 +926,8 @@ function bridge(options: {
  */
 function Workbar(props: {
   tab?: SessionWorkbarTabKind;
+  /** Extra faces opened after `tab`, so the strip can be seen with several. */
+  alsoOpen?: readonly Exclude<SessionWorkbarTabKind, 'side-chat' | 'terminal'>[];
   sourceSession?: SessionSummary;
   /** Overrides the restored column width, the way the resize handle does. */
   width?: number;
@@ -979,11 +957,22 @@ function Workbar(props: {
       },
     ];
   }
-  const tabsState = tab
+  const openedFirst = tab
     ? createSessionWorkbarTabsState([tab], tab.id)
     : props.tab && props.tab !== 'side-chat'
       ? openStaticSessionWorkbarTab(emptyTabsState, props.tab)
       : emptyTabsState;
+  // Opening a face activates it, so after the extras land the requested face
+  // is re-activated: the strip shows several tabs with `props.tab` selected
+  // and the rest unselected, which is the only arrangement where a hovered
+  // unselected tab can be told apart from the selected one.
+  const withExtras = (props.alsoOpen ?? []).reduce<typeof openedFirst>(
+    (state, kind) => openStaticSessionWorkbarTab(state, kind),
+    openedFirst,
+  );
+  const tabsState = openedFirst.activeTabId
+    ? activateSessionWorkbarTab(withExtras, openedFirst.activeTabId)
+    : withExtras;
   return (
     <ToastProvider>
       <div
@@ -992,6 +981,11 @@ function Workbar(props: {
           // Fill the preview viewport like AppShell fills the window; a fixed
           // height pushes the stacked workbar below the fold in short windows.
           height: '100dvh',
+          // AppShell declares this on the frame that holds the plates, and the
+          // workbar's own grid reserves its first row with it. Without it the
+          // strip's row collapses and the bar floats mid-panel, so the story
+          // stops showing the shell it exists to pin.
+          '--maka-plate-titlebar-clearance': 'calc(var(--h-titlebar) - var(--agents-content-area-gap))',
           ...(props.width ? { '--maka-session-workbar-width': `${props.width}px` } : {}),
         } as CSSProperties}
       >
@@ -1006,10 +1000,6 @@ function Workbar(props: {
           onActivateTab={noop}
           onCloseTab={noop}
           onCloseTabs={noop}
-          onReorderTab={noop}
-          onMoveTab={noop}
-          onMoveTabToPanel={noop}
-          onPinTab={noop}
           onOpenLauncher={noop}
           onRequestOpenTab={noop}
           confirmBypass={async () => true}
@@ -1046,6 +1036,26 @@ export const ToolPicker: Story = {
 export const Changes: Story = {
   decorators: [bridge()],
   render: () => <Workbar tab="review" />,
+};
+
+// Real path: 变更 open, then 浏览器 and 生成文件 opened from [+]. Faces are added to
+// the right of the strip and never reordered, so this is what three of them
+// look like — one selected, two not, which is the only arrangement where the
+// selected marker can be told apart from a hover. (Work Board is not among
+// them: this story group's bridge stubs no `workBoard` service, and the panel
+// subscribes to it on mount.)
+export const SeveralFaces: Story = {
+  decorators: [bridge()],
+  render: () => <Workbar tab="review" alsoOpen={['browser', 'files']} />,
+};
+
+// The same three at the panel's floor, where the strip has to scroll inside
+// itself rather than push [+] and the collapse toggle off the edge.
+export const SeveralFacesAtColumnFloor: Story = {
+  decorators: [bridge()],
+  render: () => (
+    <Workbar tab="review" alsoOpen={['browser', 'files']} width={320} />
+  ),
 };
 
 // Real path: 任务工作栏 → 变更 on a session whose branch matches its base. The
@@ -1188,26 +1198,6 @@ export const TerminalWriteFailed: Story = {
     await userEvent.keyboard('echo hi');
     await waitFor(() => expect(canvasElement.textContent).toContain('无法发送终端输入'));
   },
-};
-
-// Real path: sidebar → a session → 展开任务工作栏, landing on the tab the app
-// restored. Tasks is the default: an in-progress root, a child claimed and
-// blocked by a subagent, and the finished ones folded into 最近结束.
-export const Tasks: Story = {
-  decorators: [bridge()],
-  render: () => <Workbar tab="tasks" />,
-};
-
-// Real path: 任务工作栏 → 任务 on a session whose agent never wrote a task.
-export const TasksEmpty: Story = {
-  decorators: [bridge({ tasks: [] })],
-  render: () => <Workbar tab="tasks" />,
-};
-
-// Real path: 任务工作栏 → 任务 when `tasks.list` rejects; 重试 re-runs the read.
-export const TasksLoadFailed: Story = {
-  decorators: [bridge({ tasksFail: true })],
-  render: () => <Workbar tab="tasks" />,
 };
 
 // Storybook cannot host the native WebContentsView, so these pin what the panel

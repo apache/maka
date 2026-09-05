@@ -819,13 +819,17 @@ function SubmittedWorkView(props: {
 }
 
 export function workHubAmbiguousCommandPrompt(locale: UiLocale): string {
-  return locale === 'zh'
-    ? '没有开始新工作。如果需要我直接执行，请给出明确指令，例如“修复登录”。'
-    : 'I did not start new work. If you want me to do it, give a direct instruction, for example “Fix login”.';
+  if (locale === 'zh-CN') {
+    return '没有开始新工作。如果需要我直接执行，请给出明确指令，例如“修复登录”。';
+  }
+  if (locale === 'zh-TW') {
+    return '沒有開始新工作。如果需要我直接執行，請給出明確指令，例如「修復登入」。';
+  }
+  return 'I did not start new work. If you want me to do it, give a direct instruction, for example “Fix login”.';
 }
 
 function workHubCopy(locale: UiLocale) {
-  if (locale === 'zh') {
+  if (locale === 'zh-CN') {
     return {
       locale,
       subtitle: '在一个入口里继续、创建和查看普通 Session',
@@ -884,6 +888,68 @@ function workHubCopy(locale: UiLocale) {
         stopped: '已停止关联',
       },
       turnStates: { running: '进行中', completed: '已完成', aborted: '已中止', failed: '失败' },
+    } as const;
+  }
+  if (locale === 'zh-TW') {
+    return {
+      locale,
+      subtitle: '在一個入口繼續、建立和檢視一般 Session',
+      emptyTitle: '從這裡繼續所有工作',
+      emptyBody: (count: number) => count > 0
+        ? `WorkHub 會根據現有 ${count} 個 Session 判斷目標；不確定時會先詢問你。`
+        : '提出一個明確目標，WorkHub 會建立一般 Session 並將結果帶回這裡。',
+      workCount: (count: number) => `${count} 項工作`, clarification: '選擇工作',
+      chooseWork: '這則輸入可能與多項工作有關，請選擇目標：',
+      confirmCommand: workHubAmbiguousCommandPrompt(locale),
+      discussionStayed: '這則內容暫時保留在 WorkHub，沒有建立或變更 Session。',
+      discussionHint: '提出明確的執行目標後，我會將它交給對應的 Session。',
+      answering: '正在回答…',
+      choseWork: (name: string) => `選擇「${name}」`,
+      sentTo: '已交給：', createdWork: '已建立新工作：', accepted: '已接收', sessionFallback: '一般 Session',
+      stopTargetRequired: '請明確說出要停止的工作名稱，例如「停止 支付任務」。',
+      stopTargetAmbiguous: '這個名稱對應多項工作；請開啟具體的 Session 停止對應委派。',
+      stopTargetUnavailable: '這項工作現在沒有可以停止的單一 WorkHub 委派；請開啟該 Session 檢視。',
+      waitingForDecision: '這項工作正在等待你的決定。',
+      requestNotSent: '新請求尚未傳送；處理原 Session 中的互動後可以再次傳送。',
+      routing: '正在判斷應該交給哪個 Session…', loadFailed: '無法讀取現有工作。',
+      loading: '正在讀取現有工作…',
+      preparing: '正在準備 WorkHub…', unavailable: '暫時無法使用',
+      coordinationFailedTitle: 'WorkHub 暫時無法啟動',
+      coordinationFailedBody: '請檢查目前 Runtime Host 的預設模型設定，然後重試。',
+      retry: '重試',
+      stoppingWork: '正在請求停止：', stopping: '正在處理', stopRecorded: '結果已記錄',
+      openSessionToStop: '這個 Turn 不由該委派獨佔；請開啟 Session 處理',
+      stopOutcomes: {
+        cancelled_pending: '已取消尚未開始的工作：',
+        stop_delivered: '已向執行中的工作發出停止請求：',
+        already_terminal: '這項工作已經結束：',
+        not_owned: '未停止共享或使用者擁有的 Turn：',
+      },
+      submitFailures: {
+        candidates_changed: '工作清單已變更，請重新傳送以使用最新目標。',
+        linked_correction_unavailable: '跨 Session 更正將於持久委派關聯完成後開放；請先開啟原 Session 並停止目前工作。',
+        target_waiting: '目標 Session 正在等待你的處理；請先開啟並完成該互動。',
+        action_changed: '這次操作已變更，請重新傳送。',
+        delivery_failed: '輸入未能送達，請重試。',
+      },
+      scrollToBottom: '捲動到底部', archived: '已封存',
+      states: { active: '使用中', running: '進行中', waiting_for_user: '等待你', blocked: '受阻', aborted: '已中止' },
+      delegationStates: {
+        accepted: '已接收',
+        running: '進行中',
+        waiting_for_user: '等待你',
+        completed: '已完成',
+        failed: '失敗',
+        aborted: '已中止',
+        recovering: '正在恢復',
+      },
+      assignmentLinkStates: {
+        active: (execution: string) => `關聯有效 · ${execution}`,
+        superseded: '已被更正',
+        aborted: '更正已中止',
+        stopped: '已停止關聯',
+      },
+      turnStates: { running: '進行中', completed: '已完成', aborted: '已中止', failed: '失敗' },
     } as const;
   }
   return {

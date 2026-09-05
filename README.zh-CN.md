@@ -21,85 +21,46 @@
   <img src="apps/desktop/assets/app-icons/sky.png" alt="Maka" width="72" valign="middle" /> Apache Maka (Incubating)
 </h1>
 
-<p align="center"><sub>正在 Apache 软件基金会孵化</sub></p>
+<h3 align="center">Apache Maka（孵化中）是一个高性能的 Agent 工作台，并完整记录它做过的每一件事。</h3>
 
 <p align="center">
-  <a href="https://github.com/apache/maka/stargazers"><img src="https://img.shields.io/github/stars/apache/maka?style=flat&label=%E2%98%85&color=4C8DFF" alt="GitHub stars" /></a>
+  <a href="https://maka.apache.org/zh-CN/">官网</a> ·
+  <a href="./docs/README.md">文档</a> ·
+  <a href="https://maka.apache.org/zh-CN/downloads/">下载</a> ·
+  <a href="./README.md">English</a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/apache/maka/stargazers"><img src="https://img.shields.io/github/stars/apache/maka?style=flat&label=stars&color=4C8DFF" alt="GitHub stars" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-4C8DFF?style=flat" alt="License: Apache 2.0" /></a>
-  <img src="https://img.shields.io/badge/macOS-arm64%20%7C%20x64-4C8DFF?style=flat&logo=apple&logoColor=white" alt="macOS Apple Silicon 与 Intel" />
-  <img src="https://img.shields.io/badge/Windows-preview-9BB8F0?style=flat&logo=windows&logoColor=white" alt="Windows 未签名预览" />
-  <img src="https://img.shields.io/badge/Linux-preview-9BB8F0?style=flat&logo=linux&logoColor=white" alt="Linux 未签名预览" />
-  <a href="https://deepwiki.com/apache/maka"><img src="https://img.shields.io/badge/DeepWiki-%E7%AC%AC%E4%B8%89%E6%96%B9%20AI%20%E6%96%87%E6%A1%A3-9BB8F0?style=flat" alt="DeepWiki：第三方 AI 生成文档" /></a>
-  <a href="./README.md"><img src="https://img.shields.io/badge/English-4C8DFF?style=flat" alt="English" /></a>
+  <img src="https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-macOS%20%C2%B7%20Windows%20%E9%A2%84%E8%A7%88%20%C2%B7%20Linux%20%E9%A2%84%E8%A7%88-4C8DFF?style=flat" alt="平台：macOS、Windows 预览、Linux 预览" />
 </p>
 
-<p align="center">
-  <strong>一个为真实工作而生的本地优先 Agent 工作台。</strong><br/>
-  Maka 在沙箱边界下阅读项目、执行工具，并把模型消息和工具调用保存为可恢复的运行事实——数据在本机，执行走同一个 Runtime Host。
-</p>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./.github/assets/readme-hero.zh-CN.dark.png" />
+  <img alt="一轮交互的运行时事件：模型说、执行命令、请求权限、你批准了、拿到结果、编辑文件、本轮结束。" src="./.github/assets/readme-hero.zh-CN.light.png" />
+</picture>
 
-<p align="center">
-  <a href="https://github.com/apache/maka/releases"><img src="https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD%20Desktop%20Nightly-1F6FEB?style=for-the-badge" alt="下载 Desktop Nightly" /></a><br/>
-  每天从 <code>main</code> 构建，面向开发者和测试者。不是 ASF release，也不适合生产使用。
-</p>
+## 什么是 Maka
 
-![Maka——你的工作，你的 Agent。](./.github/assets/maka-hero.zh-CN.png)
+Agent harness 的本职就是把任务做完。衡量它的标准只有一条：完成了多少，花了多少。我们公开每一次运行：同一个模型，同一个官方验证器，逐任务的完整记录。
 
-> [!NOTE]
-> Apache Maka (Incubating) 是一个正在 Apache 软件基金会（ASF）孵化的项目，由 Apache Incubator PMC 提供 sponsor。所有新接受的项目都必须经过孵化，直到进一步审查表明其基础设施、沟通方式和决策流程已经稳定到与其他成功的 ASF 项目一致的程度。孵化状态并不必然反映代码的完成度或稳定性，但它确实表明该项目尚未得到 ASF 的完全认可。项目当前已知的问题记录在 [DISCLAIMER-WIP](./DISCLAIMER-WIP)（以英文原文为准）。
+- **靠测量，不靠宣称。** Maka 与其他 harness 在同一个模型、同一个官方验证器下对比跑分，每份报告都附逐任务结果，见 [`docs/eval/`](./docs/eval)。
+- **日志就是运行时。** 每条模型消息、工具调用、权限决定和终止都是一条只追加的 RuntimeEvent。界面、下一轮 prompt 和崩溃恢复都是这份日志的投影，从不是唯一副本。旧的工具输出可以不进下一轮 prompt，但不会从日志里消失。
+- **数据在你的机器上，模型由你接。** 会话、设置和运行记录保存在本机；云 API、本地模型或兼容网关都可以。
+- **一个 Runtime Host。** Desktop、TUI 和 CLI、Eval 都是瘦客户端，执行只由这一个 Runtime Host 说了算；Eval 只负责实验和分数。
 
-> [!IMPORTANT]
-> Maka 仍在活跃开发中。数据格式、CLI 和实验能力仍可能变化。
+[官网](https://maka.apache.org/zh-CN/)演示了日志中的一轮，并链接到公开的运行结果。系统地图见 [ARCHITECTURE.zh-CN.md](./ARCHITECTURE.zh-CN.md)。
 
-## 为什么是 Maka
+## 获取 Maka
 
-- **数据在你的机器上。** 会话、设置和运行记录默认保存在本机。模型由你接：云 API、本地模型或兼容网关。
-- **做过的事会留下来。** 模型消息、工具调用、工具结果、这一轮怎么结束，都会记下来。界面和下一次模型请求只是这份记录的视图，不是唯一副本。
-- **缩短上下文不等于删掉历史。** Maka 可以不把旧的工具输出送进下一轮提示，但不会扔掉已保存的证据。
-- **Agent 只在一处跑。** 桌面、终端和 Maka 评测都走 Runtime Host。Eval 只负责实验和分数。
+**Apache Releases**：Maka 尚未发布过 Apache release。发布之后，带签名的源码包才是正式 release，其他渠道分发的包属于便利构建。候选版本的准入标准、签名路径与验包步骤见[下载页面](https://maka.apache.org/zh-CN/downloads/)与 [`.github/ASF_SOURCE_RELEASE.md`](./.github/ASF_SOURCE_RELEASE.md)。
 
-完整设计见 [Maka Backend Architecture](./ARCHITECTURE.zh-CN.md)。
+**Desktop Nightly**：每天从 `main` 构建，面向开发者和测试者，覆盖 macOS 的 Apple Silicon 与 Intel、Windows x64、Linux x64 与 arm64；Windows 和 Linux 构建是未签名预览。它不是 ASF release，不适合生产使用。安装包与平台状态见[下载页面](https://maka.apache.org/zh-CN/downloads/)。
 
-## 运行形态
+**从源码构建**：要从源码 checkout 直接构建并运行 Desktop、TUI 或 CLI，见下方的[从源码构建](#从源码构建)一节。
 
-| 入口 | 适合什么 | 当前能力 |
-|---|---|---|
-| **Desktop** | 日常交互、文件与 Artifact 工作流、模型和权限配置 | Electron + React，支持流式会话、工具时间线、分支、搜索和恢复 |
-| **TUI / CLI** | 在当前工程目录中使用 Maka，或执行单次非交互 Turn | `maka`、`maka run`，复用 Desktop 的 workspace 和模型连接 |
-| **Eval** | Maka 与外部 subject 的可复现实验 | `maka eval run <spec> --out <directory>` |
-
-## 当前能力
-
-### Agent Runtime
-
-- 多模型连接、流式输出、thinking、用量统计，以及更清楚的 provider 错误；
-- 内置工具：`Read`、`Write`、`Edit`、`Bash`、`Glob`、`Grep`。Computer Use 和目录里的 skill 是可选的，默认不开；
-- 越出沙箱的工具需要批准；运行可以中止；失败会被分类；
-- 有一份可恢复的执行记录，进程崩溃后可以收敛状态，中断的回合可以按需续跑。
-
-### Desktop Workspace
-
-- 会话创建、归档、搜索、重命名、重试、重新生成和从 Turn 分支；
-- Artifact 列表与预览、工作区说明、模型和沙箱设置；
-- 配置后可使用本地记忆和联网搜索；
-- 聊天应用（IM bot）仍是实验能力，见 [IM 接入](./docs/architecture/bot-onboarding-runtime.zh-CN.md)。
-
-### Evaluation
-
-- 声明式多臂 Experiment 展开为 task × repetition × subject cell；
-- 每个 cell 使用 immutable attempt，基础设施失败只替换该 cell，并选择最早有效 attempt；
-- 通用结果只包含 score、normalized usage、可归因 cost、duration、status/failure reason 与 artifacts；
-- Maka subject 只通过 Runtime Host 执行，外部 subject 使用 generic external subject adapter。
-
-## 快速开始
-
-### Release 与下载
-
-Apache Maka 目前还没有发布过 Apache release。当前从本仓库或包管理器分发的一切内容，都是在进入孵化器之前或孵化期间产生的，不是 Apache 软件基金会的 release，也没有经过 Incubator PMC 审查和投票。
-
-在 Apache release 出现之后，官方 release 指的是由 ASF 发布、并经 podling PPMC 和 Incubator PMC 批准的源码 release。由该源码构建并通过其他渠道分发的包，例如包管理器中的包或 Desktop 安装程序，属于 convenience artifact，本身不是 release，并且只有在由获批源码 release 构建时才有效。候选契约、签名路径和验包步骤见 [`.github/ASF_SOURCE_RELEASE.md`](./.github/ASF_SOURCE_RELEASE.md)。
-
-[Desktop Nightly](https://github.com/apache/maka/releases) 面向开发者和测试者，每天从 `main` 构建。请选择最新的 **Maka Desktop Nightly** prerelease；安装后，应用会在 Nightly 渠道自动更新。它不是 ASF release，不适合生产使用。Desktop 目前面向 Apple Silicon Mac（`arm64`）。暂不支持 Intel Mac 和 Linux。[Windows](docs/windows-support.md) 是未签名预览，不是正式支持的发布层级。
+## 从源码构建
 
 ### 环境要求
 
@@ -193,7 +154,7 @@ Experiment → Cells → Attempts → Results
        Runtime Host 执行 Maka subjects
 ```
 
-从 [ARCHITECTURE.zh-CN.md](./ARCHITECTURE.zh-CN.md) 开始阅读。它提供总体架构图、代码边界、按问题组织的阅读路径，以及六篇中英双语深度文章。
+从 [ARCHITECTURE.zh-CN.md](./ARCHITECTURE.zh-CN.md) 开始阅读。它提供总体架构图、代码边界、按问题组织的阅读路径，以及 `docs/architecture/` 下深度文章的链接。
 
 ## 仓库结构
 
@@ -209,9 +170,14 @@ packages/eval/         Experiment cell、attempt、result 与 executor/subject a
 packages/computer-use/ Computer Use 后端选择、Host 生命周期和协议适配
 packages/cli/          TUI 和非交互 CLI
 packages/ui/           共享对话、Markdown、Artifact 与 UI primitives
+native/                Rust：Runtime Host 的 direct-peer addon 与 gitoxide helper
+website/               maka.apache.org 的 Astro 源码
 
 docs/                  架构、产品、安全、隐私和测试契约
 scripts/               Build hygiene、视觉检查、smoke 和 release helpers
+skills/                随仓库分发的 agent skill
+patches/               安装时应用到 npm 依赖的补丁
+experiments/           平台实验，目前是 Windows 沙箱 smoke 脚本
 ```
 
 ## 本地数据与恢复
@@ -227,10 +193,10 @@ Workspace 数据默认放在 Electron `userData` 下：
   artifacts/
 ```
 
-- API key 一类的秘密是本地明文文件（`credential-vault.json`），只有你的系统账号能读。界面进程拿不到明文。
+- API key 一类的机密存在本地明文文件（`credential-vault.json`），只有你的系统账号能读。界面进程拿不到明文。
 - 写文件、跑 Shell 的工具必须先过沙箱边界。
-- `runtime.sqlite` 是当前活记录。更早的 JSONL transcript 和 Electron `safeStorage` 凭据不会导入；升级后会话可能是空的，那些凭据需要重新填写。
-- 中断回合的续跑默认关闭。只有设置 `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1` 才会打开 Desktop **安全恢复**、CLI `/resume` 和启动时自动续跑——这些路径会打模型、消耗 token。
+- `runtime.sqlite` 是当前生效的那份记录。更早的 JSONL transcript 和 Electron `safeStorage` 凭据不会导入；升级后会话可能是空的，那些凭据需要重新填写。
+- 中断回合的续跑默认关闭。只有设置 `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1` 才会打开 Desktop **安全恢复**、CLI `/resume` 和启动时自动续跑——这些路径会真的请求模型、消耗 token。
 
 细节见 [SECURITY.md](./SECURITY.md)、[隐私](./docs/workspace-privacy-context.md)、[续跑](./docs/architecture/runtime-resume-architecture.zh-CN.md)。
 
@@ -273,11 +239,13 @@ npm --workspace @maka/desktop run smoke:real-window
 
 ## 文档入口
 
+- [官网](https://maka.apache.org/zh-CN/)
 - [文档索引与权威来源说明](./docs/README.md)
 - [后端架构总览](./ARCHITECTURE.zh-CN.md)
 - [产品设计](./DESIGN.md)
 - [贡献指南](./CONTRIBUTING.zh-CN.md)
 - [安全政策](./SECURITY.md)
+- [DeepWiki](https://deepwiki.com/apache/maka)，第三方 AI 生成文档，不由项目维护
 
 ## 开源协议
 
@@ -285,3 +253,9 @@ Maka 使用 [Apache License 2.0](./LICENSE) 开源，归属信息见
 [NOTICE](./NOTICE)。第三方组件仍分别适用其自身的许可证与声明。
 
 Apache Maka、Maka、Apache、Apache 羽毛标志和 Apache Maka 项目标志是 Apache 软件基金会的注册商标或商标。
+
+> [!NOTE]
+> Apache Maka (Incubating) 是一个正在 Apache 软件基金会（ASF）孵化的项目，由 Apache Incubator PMC 主办。所有新接受的项目都必须经过孵化，直到进一步审查表明其基础设施、沟通方式和决策流程已经稳定到与其他成功的 ASF 项目一致的程度。孵化状态未必反映代码的完成度或稳定性，但它确实表明该项目尚未得到 ASF 的完全认可。项目当前已知的问题记录在 [DISCLAIMER-WIP](./DISCLAIMER-WIP)（以英文原文为准）。
+
+> [!IMPORTANT]
+> Maka 仍在活跃开发中。数据格式、CLI 和实验能力仍可能变化。

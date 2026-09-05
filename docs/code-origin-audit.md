@@ -220,13 +220,13 @@ The exact boundary, locally authored divergences, and artifact reproducibility l
 
 A maintainer confirmed that the following assets were AI-generated and that no third-party image, logo, or artwork was uploaded as input:
 
-- `.github/assets/maka-hero.en.png`
-- `.github/assets/maka-hero.zh-CN.png`
 - `apps/desktop/assets/icon.png`
 - `apps/desktop/resources/status/cu-status.png`
 - `apps/desktop/resources/status/cu-status@2x.png`
 
-The first three used ChatGPT Image. The status PNGs were exported from an AI-generated SVG. Exact prompts were not retained and may have requested a visual style reference, so this confirmation is provenance evidence rather than a guarantee that no style or IP concern exists.
+`icon.png` used ChatGPT Image, as did the former README heroes `.github/assets/maka-hero.en.png` and `maka-hero.zh-CN.png`, removed on 2026-09-04. The status PNGs were exported from an AI-generated SVG. Exact prompts were not retained and may have requested a visual style reference, so this confirmation is provenance evidence rather than a guarantee that no style or IP concern exists.
+
+The README heroes now in `.github/assets/readme-hero.*.png` are not generated art: `website/scripts/readme-hero.mjs` renders them from the built website, so they carry only the site's own copy, styles and fonts, whose provenance is recorded with `website/`.
 
 ### Source archive non-text inventory
 
@@ -234,7 +234,7 @@ The ASF source verifier reads this inventory from the candidate itself. A
 non-text image must match one of these paths; executable and archive magic is
 rejected even if a path is listed here.
 
-- `.github/assets/*.png`: the AI-generated hero images recorded above.
+- `.github/assets/*.png`: the README hero images rendered from the website, recorded above.
 - `apps/desktop/assets/icon.png`: the AI-generated application mark recorded above.
 - `apps/desktop/assets/app-icons/*.png`: `mono.png` is the contributor-submitted grayscale derivative of the application mark from pull request #3431; the remaining variants are reproducibly rendered from the Apache-licensed geometry and palette in `scripts/generate-app-icons.py` and byte-checked by `scripts/generate-app-icons.test.mjs`.
 - `apps/desktop/build/*.png`: contributor-submitted DMG artwork from pull request #3817; that contribution records Codex as review and verification assistance, not as the source of the artwork.

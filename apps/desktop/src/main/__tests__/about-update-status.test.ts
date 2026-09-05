@@ -25,7 +25,7 @@ import {
 } from '../../renderer/settings/about-update-status.js';
 import { getSettingsPreferencesCopy } from '../../renderer/locales/settings-preferences-copy.js';
 
-const copy = getSettingsPreferencesCopy('zh').about;
+const copy = getSettingsPreferencesCopy('zh-CN').about;
 
 test('a packaged nightly is tokened Nightly, never 正式版', () => {
   const facts = aboutChannelFacts({ buildMode: 'packaged', updateChannel: 'nightly' }, copy);
@@ -47,7 +47,7 @@ test('buildMode decides before updateChannel, whose dev value is a placeholder',
 
 test('the nightly steady states each read as themselves', () => {
   const detail = (status: Parameters<typeof aboutUpdateStatusDetail>[0]) =>
-    aboutUpdateStatusDetail(status, copy);
+    aboutUpdateStatusDetail(status, copy, { isDevBuild: false });
 
   assert.equal(
     detail({

@@ -20,7 +20,7 @@
 import assert from 'node:assert/strict';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { after, describe, test } from 'node:test';
-import type { AgentRunHeader } from '@maka/core/agent-run';
+import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 
 import type { LlmConnection } from '@maka/core/llm-connections';
@@ -37,11 +37,11 @@ import {
   type CuObservation,
 } from '../computer-use-tools.js';
 import { buildProviderOptions, getAIModel } from '../model-factory.js';
-import type { PreparedRequestArtifactInput } from '../provider-request-telemetry.js';
 import { backfillRuntimeEventsFromStoredMessages } from '../runtime-event-backfill.js';
 import { createDurableTurnHarness } from './durable-turn-harness.js';
 import { createTestAiSdkBackend } from './execution-boundary-test-helpers.js';
 import { latestObservationIn } from './observation-text-reader.js';
+import { testInvocationOpening } from './invocation-fixture.js';
 
 const servers: Array<{ close(): Promise<void> }> = [];
 const PROVIDER_STATE_IDENTITY = `sha256:${'1'.repeat(64)}` as const;
@@ -105,22 +105,18 @@ describe('Anthropic-compatible Computer Use product loops', () => {
         newId: idGenerator(),
         now: monotonicClock(),
       });
-    const sourceRun = {
-      runId: 'run-prev',
+    const sourceRun = sourceInvocation({
       sessionId,
+      runId: 'run-prev',
+      invocationId: 'inv-prev',
       turnId: 'turn-prev',
-      status: 'completed',
-      backendKind: 'ai-sdk',
       llmConnectionId: 'connection-anthropic',
       llmConnectionSlug: 'anthropic',
       modelId: 'claude-sonnet-4-5-20250929',
-      providerStateIdentity: PROVIDER_STATE_IDENTITY,
-      cwd: '/tmp/maka',
       permissionMode: 'bypass',
-      createdAt: 1,
-      updatedAt: 2,
+      openedAt: 1,
       completedAt: 2,
-    } satisfies AgentRunHeader;
+    });
     for await (const event of createRuntime().send(firstTurn.sendInput())) firstTurn.record(event);
     assert.deepEqual(
       firstTurn.ledger
@@ -149,7 +145,7 @@ describe('Anthropic-compatible Computer Use product loops', () => {
     for await (const event of createRuntime().send(
       secondTurn.sendInput({
         runtimeContext: firstTurn.ledger,
-        runtimeContextRunHeaders: [sourceRun],
+        runtimeContextInvocations: [sourceRun],
       }),
     )) {
       secondTurn.record(event);
@@ -222,7 +218,6 @@ describe('Anthropic-compatible Computer Use product loops', () => {
         text: 'Set the fixture field to provider-loop.',
       });
       const requestBodies: Array<Record<string, unknown>> = [];
-      const captures: PreparedRequestArtifactInput[] = [];
       const attempts: ModelCallAttempt[] = [];
       const server = await startJsonServer(async (request, response) => {
         assert.equal(request.method, 'POST');
@@ -281,10 +276,6 @@ describe('Anthropic-compatible Computer Use product loops', () => {
         loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
         newId: idGenerator(),
         now: monotonicClock(),
-        persistPreparedRequestArtifact: async (capture) => {
-          captures.push(capture);
-          return { artifactId: `capture-artifact-${captures.length}` };
-        },
         recordModelCallAttempt: ({ attempt }) => {
           attempts.push(attempt);
         },
@@ -309,7 +300,6 @@ describe('Anthropic-compatible Computer Use product loops', () => {
       );
       assert.equal(events.at(-1)?.type, 'complete');
       assert.equal(requestBodies.length, 4);
-      assert.equal(captures.length, 4);
       assert.equal(attempts.length, 4);
       assert.deepEqual(toolResults, [{ isError: false }, { isError: false }, { isError: false }]);
       assert.deepEqual(
@@ -487,22 +477,18 @@ describe('OpenAI-compatible product loops', () => {
       newId: idGenerator(),
       now: monotonicClock(),
     });
-    const sourceRun = {
-      runId: 'run-prev',
+    const sourceRun = sourceInvocation({
       sessionId,
+      runId: 'run-prev',
+      invocationId: 'inv-prev',
       turnId: 'turn-prev',
-      status: 'completed',
-      backendKind: 'ai-sdk',
       llmConnectionId: 'connection-copilot',
       llmConnectionSlug: 'github-copilot',
       modelId: 'gpt-5.4',
-      providerStateIdentity: PROVIDER_STATE_IDENTITY,
-      cwd: '/tmp/maka',
       permissionMode: 'bypass',
-      createdAt: 1,
-      updatedAt: 2,
+      openedAt: 1,
       completedAt: 2,
-    } satisfies AgentRunHeader;
+    });
     const priorEvents = [
       {
         id: 'rt-user-prev',
@@ -551,7 +537,7 @@ describe('OpenAI-compatible product loops', () => {
     for await (const event of runtime.send(
       currentTurn.sendInput({
         runtimeContext: priorEvents,
-        runtimeContextRunHeaders: [sourceRun],
+        runtimeContextInvocations: [sourceRun],
       }),
     )) {
       currentTurn.record(event);
@@ -679,23 +665,18 @@ describe('OpenAI-compatible product loops', () => {
       'openai-chat',
       131_072,
     );
-    const sourceRun = {
+    const sourceRun = sourceInvocation({
+      sessionId,
       runId: 'run-kimi-openai-recovered-tool-step',
       invocationId: 'invocation-kimi-openai-recovered-tool-step',
-      sessionId,
       turnId: previousTurnId,
-      status: 'completed',
-      backendKind: 'ai-sdk',
       llmConnectionId: 'test-connection-id',
       llmConnectionSlug: providerConnection.slug,
       modelId: 'k3',
-      providerStateIdentity: PROVIDER_STATE_IDENTITY,
-      cwd: '/tmp/maka',
       permissionMode: 'ask',
-      createdAt: 1,
-      updatedAt: 5,
+      openedAt: 1,
       completedAt: 5,
-    } satisfies AgentRunHeader;
+    });
     const recovered = backfillRuntimeEventsFromStoredMessages({
       run: sourceRun,
       messages: [
@@ -761,7 +742,7 @@ describe('OpenAI-compatible product loops', () => {
     for await (const event of runtime.send(
       currentTurn.sendInput({
         runtimeContext: recovered.events,
-        runtimeContextRunHeaders: [sourceRun],
+        runtimeContextInvocations: [sourceRun],
       }),
     )) {
       currentTurn.record(event);
@@ -826,23 +807,18 @@ describe('OpenAI-compatible product loops', () => {
       'openai-chat',
       131_072,
     );
-    const sourceRun = {
+    const sourceRun = sourceInvocation({
+      sessionId,
       runId: firstTurn.anchor.runId,
       invocationId: firstTurn.anchor.invocationId,
-      sessionId,
       turnId: firstTurn.anchor.turnId,
-      status: 'completed',
-      backendKind: 'ai-sdk',
       llmConnectionId: 'test-connection-id',
       llmConnectionSlug: providerConnection.slug,
       modelId: 'k3',
-      providerStateIdentity: PROVIDER_STATE_IDENTITY,
-      cwd: '/tmp/maka',
       permissionMode: 'ask',
-      createdAt: firstTurn.anchor.ts,
-      updatedAt: firstTurn.anchor.ts + 1,
+      openedAt: firstTurn.anchor.ts,
       completedAt: firstTurn.anchor.ts + 1,
-    } satisfies AgentRunHeader;
+    });
     const createRuntime = () =>
       createTestAiSdkBackend({
         testProjectionArtifacts: true,
@@ -892,7 +868,7 @@ describe('OpenAI-compatible product loops', () => {
     for await (const event of createRuntime().send(
       secondTurn.sendInput({
         runtimeContext: recovered.events,
-        runtimeContextRunHeaders: [sourceRun],
+        runtimeContextInvocations: [sourceRun],
       }),
     )) {
       secondTurn.record(event);
@@ -918,7 +894,6 @@ describe('OpenAI-compatible product loops', () => {
       text: 'Set the fixture field to provider-loop.',
     });
     const requestBodies: Array<Record<string, unknown>> = [];
-    const captures: PreparedRequestArtifactInput[] = [];
     const attempts: ModelCallAttempt[] = [];
     const server = await startJsonServer(async (request, response) => {
       assert.equal(request.method, 'POST');
@@ -969,10 +944,6 @@ describe('OpenAI-compatible product loops', () => {
       loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
       newId: idGenerator(),
       now: monotonicClock(),
-      persistPreparedRequestArtifact: async (capture) => {
-        captures.push(capture);
-        return { artifactId: `capture-artifact-${captures.length}` };
-      },
       recordModelCallAttempt: ({ attempt }) => {
         attempts.push(attempt);
       },
@@ -998,13 +969,12 @@ describe('OpenAI-compatible product loops', () => {
     );
     assert.equal(events.at(-1)?.type, 'complete');
     assert.equal(requestBodies.length, 4);
-    assert.equal(captures.length, 4);
     assert.equal(attempts.length, 4);
-    for (const capture of captures) {
+    for (const body of requestBodies) {
       assert.doesNotMatch(
-        capture.serializedRequest,
+        JSON.stringify(body),
         /MAKA_(?:KIMI|OPENAI_CHAT)_EMPTY_REASONING/,
-        'provider request evidence must not persist the SDK-only empty-reasoning marker',
+        'the SDK-only empty-reasoning marker must not reach the provider',
       );
     }
     for (const body of requestBodies) {
@@ -1593,4 +1563,62 @@ function readBody(request: IncomingMessage): Promise<string> {
     request.on('end', () => resolve(body));
     request.on('error', reject);
   });
+}
+
+/**
+ * A prior invocation on the same route, as its own events describe it.
+ *
+ * The replay path only needs its identity, its route and the fact that it
+ * ended; none of that is a field a writer sets apart from the ledger.
+ */
+function sourceInvocation(input: {
+  sessionId: string;
+  runId: string;
+  invocationId: string;
+  turnId: string;
+  llmConnectionId: string;
+  llmConnectionSlug: string;
+  modelId: string;
+  permissionMode: 'ask' | 'bypass';
+  openedAt: number;
+  completedAt: number;
+}): RuntimeInvocationRecord {
+  const identity = {
+    sessionId: input.sessionId,
+    invocationId: input.invocationId,
+    runId: input.runId,
+    turnId: input.turnId,
+  };
+  return {
+    ...identity,
+    openedAt: input.openedAt,
+    opening: testInvocationOpening({
+      route: {
+        provenance: 'runtime',
+        backendKind: 'ai-sdk',
+        llmConnectionId: input.llmConnectionId,
+        llmConnectionSlug: input.llmConnectionSlug,
+        modelId: input.modelId,
+        providerStateIdentity: PROVIDER_STATE_IDENTITY,
+      },
+      configuration: {
+        cwd: '/tmp/maka',
+        permissionMode: input.permissionMode,
+        collaborationMode: 'agent',
+        orchestrationMode: 'default',
+        orchestrationSource: 'session',
+        toolMode: 'direct',
+      },
+    }),
+    terminalEvent: {
+      ...identity,
+      id: `${input.runId}-terminal`,
+      ts: input.completedAt,
+      partial: false,
+      role: 'system',
+      author: 'system',
+      status: 'completed',
+      actions: { endInvocation: true },
+    },
+  };
 }

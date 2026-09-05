@@ -70,17 +70,17 @@ test('targets manual diagnostics to the current task or new-task Host profile', 
 });
 
 test('presents every successful-frame context compaction outcome', () => {
-  assert.deepEqual(contextCompactionNotice({ kind: 'compacted', checkpointId: 'checkpoint-1' }), {
+  assert.deepEqual(contextCompactionNotice({ kind: 'compacted', checkpointId: 'checkpoint-1' }, 'en'), {
     level: 'success',
     title: 'Context compacted',
     description: 'Older context was replaced with a checkpoint summary.',
   });
-  assert.deepEqual(contextCompactionNotice({ kind: 'unchanged', reason: 'already_compacted' }), {
+  assert.deepEqual(contextCompactionNotice({ kind: 'unchanged', reason: 'already_compacted' }, 'en'), {
     level: 'info',
     title: 'Nothing to compact',
     description: 'The task already uses the latest checkpoint.',
   });
-  assert.deepEqual(contextCompactionNotice({ kind: 'failed', reason: 'write_failed' }), {
+  assert.deepEqual(contextCompactionNotice({ kind: 'failed', reason: 'write_failed' }, 'en'), {
     level: 'error',
     title: 'Compaction failed',
     description: 'The task could not be compacted. Try again later.',

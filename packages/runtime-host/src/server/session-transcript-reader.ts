@@ -60,14 +60,14 @@ export function createSessionTranscriptReader(input: {
     readActiveOverlay: async (sessionId, rootTurn) => {
       if (!rootTurn || isTerminalTurn(rootTurn)) return [];
 
-      const run = await input.stores.agentRunStore.readRun(sessionId, rootTurn.runId);
+      const invocations = await input.stores.runtimeEventStore.listSessionInvocations(sessionId);
       const events = await readActiveProjectionEvents(input.stores, sessionId, rootTurn.runId);
       const canonicalPermissionOutcomes = await readCanonicalPermissionOutcomes(
         events,
         input.canonicalPermissionOutcomes,
       );
       const projected = projectRuntimeEventsToStoredMessages(activePresentationEvents(events), {
-        runHeaders: [run],
+        invocations: invocations.filter((invocation) => invocation.runId === rootTurn.runId),
         canonicalPermissionOutcomes,
       });
       if (projected.diagnostics.some(isHardRuntimeEventReadModelDiagnostic)) {

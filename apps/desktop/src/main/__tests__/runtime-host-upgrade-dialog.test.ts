@@ -48,7 +48,12 @@ test('localizes upgrade activity without changing decision indexes', () => {
   const zh = buildRuntimeHostUpgradeDialog(
     conflict,
     'restart',
-    'zh',
+    'zh-CN',
+  ).options;
+  const zhTw = buildRuntimeHostUpgradeDialog(
+    conflict,
+    'restart',
+    'zh-TW',
   ).options;
   assert.deepEqual(en.buttons, ['Restart Runtime Host', 'Wait', 'Cancel Startup']);
   assert.deepEqual(zh.buttons, ['重启 Runtime Host', '等待', '取消启动']);
@@ -58,6 +63,9 @@ test('localizes upgrade activity without changing decision indexes', () => {
   assert.match(zh.detail ?? '', /每日回顾: 1/);
   assert.match(en.detail ?? '', /Scheduled Task: 2/);
   assert.match(zh.detail ?? '', /计划任务: 2/);
+  assert.deepEqual(zhTw.buttons, ['重啟 Runtime Host', '等待', '取消啟動']);
+  assert.match(zhTw.detail ?? '', /仍有 2 個其他客戶端連線/);
+  assert.match(zhTw.detail ?? '', /每日回顧: 1/);
   assert.match(en.detail ?? '', /Process ID \(PID\):/);
 });
 
@@ -65,9 +73,9 @@ test('maps the non-default replacement choice to the replace decision', async ()
   const prompts = createRuntimeHostUpgradePrompts(
     async () => 'en',
     async (options) => {
-      assert.deepEqual(options.buttons, ['Stop Host and Continue', 'Cancel Startup']);
-      assert.equal(options.defaultId, 1);
-      assert.equal(options.cancelId, 1);
+      assert.deepEqual(options.buttons, ['Stop Host and Continue', 'Wait', 'Cancel Startup']);
+      assert.equal(options.defaultId, 2);
+      assert.equal(options.cancelId, 2);
       assert.match(options.detail ?? '', /Maka will stop this Host/);
       return { response: 0, checkboxChecked: false };
     },
@@ -77,7 +85,7 @@ test('maps the non-default replacement choice to the replace decision', async ()
       {
         kind: 'upgrade_required',
         restartable: false,
-        registration: { pid: 42 },
+        registration: { pid: 42, lifecycleMode: 'ephemeral' },
       } as never,
       'replace_may_interrupt_work',
     ),
@@ -148,7 +156,7 @@ test('explains when the safe replacement check could not verify idle state', () 
   const dialog = buildRuntimeHostUpgradeDialog(
     conflict,
     'replace_may_interrupt_work',
-    'zh',
+    'zh-CN',
   );
 
   assert.match(dialog.options.detail ?? '', /无法确认此 Host 是否处于空闲状态/u);

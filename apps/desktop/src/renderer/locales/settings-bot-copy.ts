@@ -114,6 +114,92 @@ const zhCopy = {
     waiting: '等待扫码确认… 窗口会每 3 秒刷新登录状态。', retrying: '重试中…', retry: '重试', bridgeGenerating: 'bridge 正在生成二维码', bridgeGeneratingHint: '二维码就绪后会自动显示，也可以手动重新获取。', fetching: '获取中…', fetchAgain: '重新获取',
   },
 } as const;
+const zhTwCopy = {
+  providers: {
+    telegram: { label: 'Telegram', help: '透過 @BotFather 建立 Bot 並取得 Token' },
+    feishu: { label: '飛書', help: '在飛書開放平台建立應用並取得憑證' },
+    wecom: { label: '企業微信', help: '透過企業微信 AI 應用串接，使用 WebSocket 長連線' },
+    wechat: { label: '微信', help: '透過本機 wechat-bridge 串接個人微信，需 iOS / Android 微信 8.0.70+。' },
+    discord: { label: 'Discord', help: '在 Discord Developer Portal 建立 Bot' },
+    dingtalk: { label: '釘釘', help: '在釘釘開發者後臺建立機器人應用' },
+    qq: { label: 'QQ', help: '在 QQ 開放平台建立機器人並取得 AppID 和 AppSecret' },
+    slack: { label: 'Slack', help: '使用 Bot Token 與 App-Level Token 透過 Socket Mode 串接' },
+  } satisfies Record<BotProvider, { label: string; help: string }>,
+  readiness: {
+    unscaffolded: { label: '未開放', detail: '該平台目前不可作為遠端串接管道。', tone: 'neutral' },
+    scaffolded: { label: '待設定', detail: '等待補齊這個平台需要的憑證設定。', tone: 'neutral' },
+    configured: { label: '已設定', detail: '已填寫設定；等待完成憑證或執行狀態驗證。', tone: 'attention' },
+    credentials_valid: { label: '憑證有效', detail: '憑證探測透過；這不代表已能收發訊息。', tone: 'attention' },
+    operational: { label: '執行可用', detail: '最近一次真實執行探測成功。', tone: 'success' },
+    degraded: { label: '執行降級', detail: '之前可用，但最近執行狀態探測失敗。', tone: 'error' },
+  } satisfies Record<BotReadinessState, { label: string; detail: string; tone: StatusSemantic }>,
+  planned: { label: '未開放', detail: '該平台目前不會儲存為遠端串接管道或定時任務投遞目標。', tone: 'neutral' as const },
+  status: {
+    disabled: '開關關閉', noToken: '等待填寫 Bot Token', missingFeishuCredentials: '等待填寫飛書 App ID 或 App Secret',
+    feishuDomainRequired: '飛書憑證有效，等待填寫事件訂閱域名', feishuEventsNotConnected: '飛書憑證有效，等待事件回呼串接',
+    unavailable: '該平台目前不可作為遠端串接管道', stopped: '監聽已停止', detailsInLogs: '執行狀態詳情請見記錄',
+    polling: '長輪詢', gateway: '事件通道', webhook: 'Webhook', none: '無',
+  },
+  overview: {
+    loadFailed: '遠端串接狀態載入失敗', reload: '重新載入', active: '正在使用', sortHint: '按需要處理、最近活動排序',
+    empty: '還沒有正在使用的管道', emptyHelp: '從下方選擇一個訊息平台開始設定。', more: '串接更多管道', choose: '選擇平台開始設定',
+    listening: '監聽中', manageAria: (name: string, status: string) => `管理 ${name}，${status}`, connectAria: (name: string) => `串接 ${name}`,
+  },
+  page: {
+    saveFailed: (name: string) => `${name} 儲存失敗`, loadFailed: '載入遠端串接狀態失敗', refreshFailed: '重新整理遠端串接狀態失敗',
+    credentialVerified: (name: string) => `${name} 憑證已驗證`, credentialVerifiedDetail: '憑證檢查已透過。', credentialTestFailed: (name: string) => `${name} 憑證測試失敗`, credentialTestFailedDetail: '請檢查憑證和網路設定後重試。', testError: (name: string) => `${name} 測試出錯`,
+    listening: (name: string) => `${name} 已開始監聽`, notListening: (name: string) => `${name} 啟動後未進入監聽`, startFailed: (name: string) => `${name} 啟動失敗`,
+    disconnectTitle: '斷開微信登入？', disconnectDescription: '將清除本機儲存的掃碼登入憑證，之後需要重新掃碼才能繼續使用微信管道。',
+    disconnect: '斷開登入', cancel: '取消', disconnected: '微信登入已斷開', credentialsCleared: '本機關聯憑證已清除。',
+  },
+  detail: {
+    unavailableHint: '該平台未開放，暫不能啟用。', scanFirstHint: '先掃碼串接後才能啟用。', testFirstHint: '先測試並連線後才能啟用。',
+    back: '返回遠端串接', configDocs: '檢視設定文件', enableAria: (name: string) => `啟用${name}管道`, listening: '正在監聽新訊息', healthy: '連線正常，無需處理。',
+    actionsAria: (name: string) => `${name}管道操作`, quickBind: '快捷綁定', scanLogin: '掃碼登入', scanConnect: '掃碼串接', disconnecting: '斷開中…', disconnectWechat: '斷開微信登入', bridgeQr: '本機橋接二維碼',
+    testing: '測試中…', test: '測試連線', connecting: '連線中…', testAndConnect: '測試並連線', restarting: '重啟中…', restart: '重啟監聽',
+    runtimeAria: (name: string) => `${name}執行狀態`, identity: '身份', unknownIdentity: '未取得', connectionType: '通道型別', lastEvent: '最近事件', noneYet: '暫無', lastTest: '最近一次測試', neverTested: '從未測試',
+    statusRefreshFailed: '執行狀態重新整理失敗', latestFailure: '最近一次失敗', latestFailureDetail: '請檢查設定、網路和執行記錄後重試。', savedButNotConnected: '憑證已儲存，但連線尚未成功啟動。', setupMethod: '串接方式', connectionSettings: '連線設定', localCredentials: '憑證僅儲存在本機', autosave: '自動儲存',
+    setupAria: (name: string) => `${name}串接方式`, quickRecommended: '快捷串接（推薦）', manual: '手動設定', quickAria: (name: string) => `${name}快捷串接`,
+    quickWecomTitle: '掃碼建立並綁定機器人', quickTitle: '掃碼自動建立應用與機器人', quickWecomDetail: '企業管理員掃碼確認後，Maka 會儲存 Bot ID 與 Secret 並啟動長連線。',
+    quickQqTitle: '使用手機 QQ 掃碼建立並綁定機器人', quickQqDetail: '確認後，QQ 會安全返回 AppID 與 AppSecret，Maka 在本機儲存憑證並啟動 Gateway。',
+    telegramOfficialFlow: 'Telegram 官方目前僅支援透過 @BotFather 取得 Bot Token，不提供掃碼建立 Bot 並回傳 Token 的 API。',
+    quickDetail: '掃碼確認後，Maka 會在 main process 內儲存憑證並啟動訊息連線。', feishuRegionAria: '選擇飛書帳號區域', feishu: '飛書',
+    beginQuickBind: '開始快捷綁定', scanWith: (name: string) => `使用${name}掃碼串接`, planned: '這個平台目前只作為平台清單展示，不會進入可用管道，也不會儲存為定時任務投遞目標。',
+    credentialsSaved: (name: string) => `${name}憑證已儲存`, scanComplete: (name: string) => `${name}已完成掃碼串接`, savedAndConnected: '憑證已安全儲存並開始連線',
+    proxy: '代理地址', chinaRequired: '（國內網路必填）', authOnly: '（僅用於 Bot 鑑權）', telegramProxyAria: 'Telegram 代理地址',
+    telegramNotice: '請開啟網路的 TUN 模式後重啟應用，以便完成 Telegram Bot 設定', feishuCredentialId: '飛書憑證 ID', feishuSecret: '飛書 App Secret',
+    feishuDomain: '飛書域名', feishuOption: '飛書 (feishu.cn)', discordProxyAria: 'Discord 代理地址',
+    discordNotice: '國內網路存取 Discord：上方代理僅作用於 Bot 鑑權請求，訊息收發走 WebSocket 長連線需要系統級代理。請開啟網路的 TUN 模式後重啟應用。',
+    dingtalkId: '釘釘應用金鑰', dingtalkSecret: '釘釘 Client Secret', wecomBotPlaceholder: '企業微信 AI 應用 Bot ID', wecomBotAria: '企業微信 Bot ID',
+    wecomSecretPlaceholder: 'AI 應用 Secret', wecomSecretAria: '企業微信 Secret', qqId: 'QQ 應用編號',
+    allowedUsersLabel: (count: number, max: number) => `允許的使用者 ID（${count} / ${max}）`, allowedUsersPlaceholder: '每行一個使用者 ID，留空表示不限\n例如：123456789',
+    allowedUsersHelp: 'Telegram 使用者 ID 是 64 位整數；填入後只接收列表裡這些 ID 的來信，其它人發的訊息會被靜默忽略（不會回彈任何提示）。',
+    limitReached: '（已達到上限）', invalidUsers: (values: string) => `下列不是數字 ID，可能是使用者名稱之類的輸入，符合不到任何人：${values}`, moreInvalid: (count: number) => ` 等 ${count} 項`,
+  },
+  onboarding: {
+    providers: {
+      dingtalk: { title: '設定釘釘', ariaLabel: '設定釘釘掃碼串接', qrAlt: '設定釘釘二維碼', subtitle: '在釘釘中掃碼完成應用註冊', waiting: '請使用釘釘掃描二維碼並確認授權', scanned: '已掃碼，請在釘釘中完成確認' },
+      feishu: { title: '設定飛書', ariaLabel: '設定飛書掃碼串接', qrAlt: '設定飛書二維碼', subtitle: '使用飛書掃描二維碼，自動建立並設定機器人', waiting: '請使用飛書掃描二維碼並確認建立', scanned: '已掃碼，請在飛書中完成確認' },
+      wecom: { title: '設定企業微信', ariaLabel: '設定企業微信掃碼串接', qrAlt: '設定企業微信二維碼', subtitle: '快捷綁定會自動建立並連線企業微信機器人', waiting: '開啟企業微信，掃描二維碼完成機器人建立', scanned: '已掃碼，請在企業微信中完成確認' },
+      wechat: { title: '掃碼登入', ariaLabel: '微信掃碼登入', qrAlt: '微信掃碼登入二維碼', subtitle: '請使用微信掃描二維碼完成連線', waiting: '請使用微信掃描二維碼並在手機上確認', scanned: '已掃碼，請在微信中完成確認' },
+      qq: { title: '設定 QQ', ariaLabel: '設定 QQ 掃碼串接', qrAlt: '設定 QQ 二維碼', subtitle: '使用手機 QQ 掃碼建立並綁定機器人', waiting: '請使用手機 QQ 掃描二維碼並確認綁定', scanned: '已掃碼，請在 QQ 中完成確認' },
+    },
+    lark: { title: '設定 Lark', ariaLabel: '設定 Lark 掃碼串接', qrAlt: '設定 Lark 二維碼', subtitle: '使用 Lark 掃描二維碼，自動建立並設定機器人', waiting: '請使用 Lark 掃描二維碼並確認建立', scanned: '已掃碼，請在 Lark 中完成確認' },
+    connectedRefreshFailed: (message: string) => `連線已完成，但狀態重新整理失敗：${message}`, close: (title: string) => `關閉${title}`,
+    generatingAria: '正在生成二維碼', privacy: '憑證僅儲存在本機，不會傳給 renderer 或 Maka 雲端。', openBrowser: '無法掃碼？在瀏覽器中開啟',
+    done: '完成', regenerate: '重新生成', refreshQr: '重新整理二維碼', cancel: '取消', generating: '正在生成安全二維碼…', connecting: '授權完成，正在儲存憑證並啟動連線…',
+    connected: (name: string) => `${name} 已連線`, connectedWarning: '憑證已儲存，但連線尚未成功啟動。', expired: '二維碼已過期，請重新生成', denied: '授權已取消，請重新生成二維碼', cancelled: '掃碼串接已取消', failed: '掃碼串接失敗，請重試', preparing: '準備掃碼串接…',
+  },
+  wechat: {
+    token: '微信 Bot Token', tokenPlaceholder: '本機 wechat-bridge Bearer Token', collapseAdvanced: '收起進階設定', expandAdvanced: '進階設定（公眾號 / 本機 bridge 地址）',
+    bridgeAddress: '本機 bridge 地址', appId: '公眾號 App ID', appIdPlaceholder: '微信公眾號 App ID',
+    appSecret: '公眾號 App Secret', appSecretPlaceholder: '微信公眾號 App Secret',
+    advancedNotice: '本機 bridge 預設為 http://127.0.0.1:18400。公眾號 App ID / App Secret 僅用於公眾號訊息傳送，個人微信掃碼登入走本機 bridge。',
+    readQrFailed: '讀取本機 wechat-bridge 二維碼失敗，請確認 bridge 已啟動。', title: '微信掃碼登入', subtitle: '使用手機微信掃描二維碼，並在手機上確認登入本機 wechat-bridge。', close: '關閉微信掃碼登入',
+    generating: '正在生成二維碼…', loggedIn: '微信已登入，返回後可以測試連線或重啟監聽。', expired: '二維碼已過期', expiredHint: '重新整理二維碼後重新掃碼即可繼續登入。', refreshing: '重新整理中…', refresh: '重新整理二維碼', qrAlt: '微信掃碼登入二維碼',
+    waiting: '等待掃碼確認… 視窗會每 3 秒重新整理登入狀態。', retrying: '重試中…', retry: '重試', bridgeGenerating: 'bridge 正在生成二維碼', bridgeGeneratingHint: '二維碼就緒後會自動顯示，也可以手動重新取得。', fetching: '取得中…', fetchAgain: '重新取得',
+  },
+} as const;
 
 export type BotSettingsCopy = WidenCopy<typeof zhCopy>;
 
@@ -143,7 +229,11 @@ const enCopy: BotSettingsCopy = {
   wechat: { token: 'WeChat Bot Token', tokenPlaceholder: 'Local wechat-bridge Bearer Token', collapseAdvanced: 'Hide advanced settings', expandAdvanced: 'Advanced settings (Official Account / local bridge URL)', bridgeAddress: 'Local bridge URL', appId: 'Official Account App ID', appIdPlaceholder: 'WeChat Official Account App ID', appSecret: 'Official Account App Secret', appSecretPlaceholder: 'WeChat Official Account App Secret', advancedNotice: 'The local bridge defaults to http://127.0.0.1:18400. Official Account App ID and App Secret are used only for Official Account messaging; personal WeChat QR sign-in uses the local bridge.', readQrFailed: 'Could not read a QR code from the local wechat-bridge. Make sure the bridge is running.', title: 'WeChat QR sign-in', subtitle: 'Scan the QR code with WeChat and confirm signing in to the local wechat-bridge on your phone.', close: 'Close WeChat QR sign-in', generating: 'Generating QR code…', loggedIn: 'WeChat is signed in. Return to test the connection or restart the listener.', expired: 'QR code expired', expiredHint: 'Refresh the QR code and scan again to continue signing in.', refreshing: 'Refreshing…', refresh: 'Refresh QR code', qrAlt: 'WeChat sign-in QR code', waiting: 'Waiting for confirmation… Sign-in status refreshes every 3 seconds.', retrying: 'Retrying…', retry: 'Retry', bridgeGenerating: 'The bridge is generating a QR code', bridgeGeneratingHint: 'The QR code appears automatically once ready; you can also fetch it again.', fetching: 'Fetching…', fetchAgain: 'Fetch again' },
 };
 
-const BOT_SETTINGS_COPY = { zh: zhCopy, en: enCopy } satisfies UiCatalog<BotSettingsCopy>;
+const BOT_SETTINGS_COPY = {
+  'zh-CN': zhCopy,
+  'zh-TW': zhTwCopy,
+  en: enCopy,
+} satisfies UiCatalog<BotSettingsCopy>;
 
 export function getBotSettingsCopy(locale: UiLocale): BotSettingsCopy {
   return BOT_SETTINGS_COPY[locale];

@@ -19,7 +19,6 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type { AgentRunHeader } from '@maka/core/agent-run';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import {
   applyRuntimeEventHistoryCompact,
@@ -28,6 +27,7 @@ import {
   type PlanHistoryCompactionInput,
 } from '../history-compaction.js';
 import { HistoryCompactSummarizerError } from '../history-compact-summarizer.js';
+import { testInvocationRecord } from './invocation-fixture.js';
 import { matchHistoryCompactCheckpointPrefix } from '../history-compact-checkpoint.js';
 
 describe('safe compaction prefix selection', () => {
@@ -192,7 +192,7 @@ describe('plan context compaction', () => {
       planInput({
         phase: 'standalone',
         orderedEvents: events,
-        runHeaders: HEADERS_A,
+        invocations: RUNS_A,
         acceptedRoute: ROUTE_A,
         reserveTailEvents: 0,
         summarize: ({ coveredRuntimeEvents }) => {
@@ -233,7 +233,7 @@ describe('plan context compaction', () => {
       planInput({
         phase: 'standalone',
         orderedEvents: first,
-        runHeaders: HEADERS_A,
+        invocations: RUNS_A,
         acceptedRoute: ROUTE_A,
         reserveTailEvents: 0,
         summarize: () => {
@@ -257,7 +257,7 @@ describe('plan context compaction', () => {
       planInput({
         phase: 'standalone',
         orderedEvents: later,
-        runHeaders: HEADERS_A,
+        invocations: RUNS_A,
         acceptedRoute: ROUTE_A,
         reserveTailEvents: 0,
         previousCheckpoint: retreated.checkpoint,
@@ -286,7 +286,7 @@ describe('plan context compaction', () => {
       planInput({
         phase: 'standalone',
         orderedEvents: events,
-        runHeaders: HEADERS_A,
+        invocations: RUNS_A,
         acceptedRoute: ROUTE_A,
         reserveTailEvents: 0,
         summarize: () => {
@@ -305,7 +305,7 @@ describe('plan context compaction', () => {
   test("a mixed-route session retreats to this route's own newest reply", async () => {
     // History can span runs on several routes. A span another model accepted
     // proves nothing about this summarizer's window, so the retreat targets the
-    // newest reply THIS route produced, found through the run headers.
+    // newest reply THIS route produced, found through each run's opening.
     const events = [
       user('old-user', 'old-turn'),
       modelOnRun('mine', 'old-turn', 'run-1', 'accepted by this route'),
@@ -317,10 +317,7 @@ describe('plan context compaction', () => {
       planInput({
         phase: 'standalone',
         orderedEvents: events,
-        runHeaders: [
-          runHeader('run-1', 'model-a', 'conn-a'),
-          runHeader('run-2', 'model-b', 'conn-b'),
-        ],
+        invocations: [runOn('run-1', 'model-a', 'conn-a'), runOn('run-2', 'model-b', 'conn-b')],
         acceptedRoute: ROUTE_A,
         reserveTailEvents: 0,
         summarize: ({ coveredRuntimeEvents }) => {
@@ -348,7 +345,7 @@ describe('plan context compaction', () => {
       planInput({
         phase: 'standalone',
         orderedEvents: [user('u1', 't1'), modelOnRun('theirs', 't1', 'run-2')],
-        runHeaders: [runHeader('run-2', 'model-b', 'conn-b')],
+        invocations: [runOn('run-2', 'model-b', 'conn-b')],
         acceptedRoute: ROUTE_A,
         reserveTailEvents: 0,
         summarize: () => {
@@ -370,7 +367,7 @@ describe('plan context compaction', () => {
       planInput({
         phase: 'standalone',
         orderedEvents: [user('u1', 't1'), user('u2', 't1'), user('u3', 't2')],
-        runHeaders: HEADERS_A,
+        invocations: RUNS_A,
         acceptedRoute: ROUTE_A,
         reserveTailEvents: 0,
         summarize: () => {
@@ -560,24 +557,26 @@ function model(id: string, turnId: string, text: string = id): RuntimeEvent {
 function modelOnRun(id: string, turnId: string, runId: string, text: string = id): RuntimeEvent {
   return { ...model(id, turnId, text), runId, invocationId: runId };
 }
-function runHeader(runId: string, modelId: string, llmConnectionId: string): AgentRunHeader {
-  return {
-    runId,
+/** A completed run opened on the named route. */
+function runOn(runId: string, modelId: string, llmConnectionId: string) {
+  return testInvocationRecord({
     sessionId: 'session-1',
+    runId,
     turnId: 'turn-1',
-    status: 'completed',
-    backendKind: 'ai-sdk',
-    llmConnectionId,
-    llmConnectionSlug: llmConnectionId,
-    modelId,
-    cwd: '/tmp/maka',
-    permissionMode: 'ask',
-    createdAt: 1_800_000_000_000,
-    updatedAt: 1_800_000_000_000,
-  };
+    outcome: 'completed',
+    opening: {
+      route: {
+        provenance: 'runtime',
+        backendKind: 'ai-sdk',
+        llmConnectionId,
+        llmConnectionSlug: llmConnectionId,
+        modelId,
+      },
+    },
+  });
 }
 const ROUTE_A = { modelId: 'model-a', connectionId: 'conn-a' };
-const HEADERS_A = [runHeader('run-1', 'model-a', 'conn-a')];
+const RUNS_A = [runOn('run-1', 'model-a', 'conn-a')];
 
 function call(id: string, callId: string, turnId: string): RuntimeEvent {
   return {

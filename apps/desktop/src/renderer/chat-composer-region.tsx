@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useLayoutEffect, useRef, type ComponentProps, type RefObject } from 'react';
+import { useLayoutEffect, useRef, type ComponentProps, type ComponentType, type ReactNode, type RefObject } from 'react';
 import {
   Banner,
   Button,
@@ -116,10 +116,25 @@ interface ChatComposerRegionProps
    * Tokens the provider counted for the session's latest request on the active
    * route, or nothing when that cannot be established. Resolved by the owner,
    * which knows the transcript range and the route; this control never derives
-   * it from the rendered slice.
+   * it from the rendered slice. This is the per-turn anchor: it moves when a
+   * turn's usage record lands. `LiveContextUsageProbe` overlays the
+   * per-settled-request snapshot (#4717) whenever that snapshot can vouch for
+   * the same route, and this value is the fallback when it cannot.
    */
   latestRequestUsageTokens?: number;
   onOpenContextUsage(): void;
+  /**
+   * The live overlay for the gauge (#4717), injected rather than imported:
+   * the subscription owns services that live behind the Workbar services
+   * context, and this region must stay loadable without it (the draft-handoff
+   * suite mounts it bare). Absent, the per-turn anchor alone drives the gauge.
+   */
+  LiveContextUsageProbe?: ComponentType<{
+    sessionId: string | undefined;
+    model: string | undefined;
+    providerType: string | undefined;
+    children: (usage: { readonly usageTokens: number } | undefined) => ReactNode;
+  }>;
   directoryComposerProps: Pick<
     ComponentProps<typeof Composer>,
     'pendingDirectories' | 'onRemoveDirectory' | 'onPickDirectory'
@@ -194,6 +209,7 @@ export function ChatComposerRegion({
   boundaryUnreadableNotice,
   latestRequestUsageTokens,
   onOpenContextUsage,
+  LiveContextUsageProbe,
   directoryComposerProps,
   directoryPickerEnabled,
   ...composerRest
@@ -277,6 +293,41 @@ export function ChatComposerRegion({
     );
   }, [composerRef, newTaskDraftKey, newTaskSendPending]);
 
+  // The composer body as a function of the gauge's live reading, so the probe
+  // — when mounted — can feed it the per-settled-request snapshot (#4717), and
+  // the anchor prop remains the reading it falls back to.
+  const renderComposer = (liveContextUsage: { readonly usageTokens: number } | undefined) => (
+    <ComposerGoalProjectionConsumer>
+      {(goalProjection) => (
+        <Composer
+          ref={composerRef}
+          {...composerRest}
+          contextUsage={contextUsage && liveContextUsage
+            ? { ...contextUsage, usageTokens: liveContextUsage.usageTokens }
+            : contextUsage}
+          // AppShell carries staged attachments into both queued and steering
+          // follow-ups. Other Composer hosts remain gated by default because a
+          // text-only running-turn submission would leave attachments behind.
+          allowAttachmentImportWhileStreaming
+          mentionSkills={mentions?.mentionSkills}
+          mentionSkillsUnavailable={mentions?.mentionSkillsUnavailable}
+          mentionSkillsLoading={mentions?.mentionSkillsLoading}
+          onSearchMentionFiles={mentions?.searchMentionFiles}
+          {...directoryComposerProps}
+          onPickDirectory={
+            directoryPickerEnabled ? directoryComposerProps.onPickDirectory : undefined
+          }
+          hidden={!active || onboardingComposerHidden || Boolean(activeInteraction)}
+          draftKey={activeId ?? newTaskDraftKey}
+          draftPersistence={newTaskDraftPersistence}
+          stopPending={activeId ? stopPendingBySession[activeId] === true : false}
+          goalActive={goalProjection.goalActive}
+          onSetGoal={goalProjection.onSetGoal}
+        />
+      )}
+    </ComposerGoalProjectionConsumer>
+  );
+
   return (
     <>
       <div className="maka-composer-interaction-slot">
@@ -330,33 +381,17 @@ export function ChatComposerRegion({
           />
         )}
       </div>
-      <ComposerGoalProjectionConsumer>
-        {(goalProjection) => (
-          <Composer
-            ref={composerRef}
-            {...composerRest}
-            contextUsage={contextUsage}
-            // AppShell carries staged attachments into both queued and steering
-            // follow-ups. Other Composer hosts remain gated by default because a
-            // text-only running-turn submission would leave attachments behind.
-            allowAttachmentImportWhileStreaming
-            mentionSkills={mentions?.mentionSkills}
-            mentionSkillsUnavailable={mentions?.mentionSkillsUnavailable}
-            mentionSkillsLoading={mentions?.mentionSkillsLoading}
-            onSearchMentionFiles={mentions?.searchMentionFiles}
-            {...directoryComposerProps}
-            onPickDirectory={
-              directoryPickerEnabled ? directoryComposerProps.onPickDirectory : undefined
-            }
-            hidden={!active || onboardingComposerHidden || Boolean(activeInteraction)}
-            draftKey={activeId ?? newTaskDraftKey}
-            draftPersistence={newTaskDraftPersistence}
-            stopPending={activeId ? stopPendingBySession[activeId] === true : false}
-            goalActive={goalProjection.goalActive}
-            onSetGoal={goalProjection.onSetGoal}
-          />
-        )}
-      </ComposerGoalProjectionConsumer>
+      {LiveContextUsageProbe ? (
+        <LiveContextUsageProbe
+          sessionId={activeId}
+          model={composerRest.activeModel}
+          providerType={composerRest.activeProviderType}
+        >
+          {renderComposer}
+        </LiveContextUsageProbe>
+      ) : (
+        renderComposer(undefined)
+      )}
     </>
   );
 }

@@ -263,6 +263,7 @@ async function smokeRuntimeHostPeerProtocol({ packageRoot, cliEntrypoint, root }
     if (!nativePath) throw new Error('Installed CLI did not configure its direct-peer artifact');
     const addon = require(nativePath);
     await smokeWindowsTaskScheduler(
+      addon,
       windowsLifecycle.createWindowsRuntimeHostLifecycleProvider,
       cliEntrypoint,
       join(root, 'windows task & % 生命周期'),
@@ -413,7 +414,7 @@ async function smokeRuntimeHostPeerProtocol({ packageRoot, cliEntrypoint, root }
   }
 }
 
-async function smokeWindowsTaskScheduler(createProvider, cliEntrypoint, root) {
+async function smokeWindowsTaskScheduler(addon, createProvider, cliEntrypoint, root) {
   if (process.platform !== 'win32') return;
   mkdirSync(root, { recursive: true });
   const rootId = createHash('sha256').update(root).digest('hex');
@@ -430,8 +431,6 @@ async function smokeWindowsTaskScheduler(createProvider, cliEntrypoint, root) {
     dirname(managedCliEntrypoint),
     'runtime-host-windows-supervisor-smoke.mjs',
   );
-  const controllerRunnerPath = join(dirname(cliEntrypoint), 'runtime-host-windows-task-runner.js');
-  const disabledControllerRunnerPath = `${controllerRunnerPath}.disabled`;
   const readyPath = join(root, 'ready.json');
   const replacementReadyPath = join(root, 'replacement-ready.json');
   const hostileArgument = '空 格 &|^<>%PATH% " \\';
@@ -460,6 +459,10 @@ async function smokeWindowsTaskScheduler(createProvider, cliEntrypoint, root) {
     'utf8',
   );
   const provider = createProvider(rootId, { cliPath: managedCliEntrypoint });
+  const legacyRunnerPath = join(
+    dirname(managedCliEntrypoint),
+    'runtime-host-windows-task-runner.js',
+  );
   const hostCommand = [
     process.execPath,
     scriptPath,
@@ -470,10 +473,10 @@ async function smokeWindowsTaskScheduler(createProvider, cliEntrypoint, root) {
   ];
   const replacementHostCommand = [...hostCommand.slice(0, -1), replacementReadyPath];
   const reconciliationCommand = [process.execPath, '-e', 'process.exit(0)'];
-  renameSync(controllerRunnerPath, disabledControllerRunnerPath);
   try {
     await provider.supervisor.preflight();
-    await provider.supervisor.converge({ command: hostCommand });
+    addon.windowsTaskConverge(rootId, 'host', legacyRunnerPath, hostCommand);
+    addon.windowsTaskVerify(rootId, 'host', legacyRunnerPath, hostCommand);
     await provider.supervisor.verify({ command: hostCommand });
     await provider.reconciliationTrigger.converge({ command: reconciliationCommand });
     await provider.reconciliationTrigger.verify({ command: reconciliationCommand });
@@ -551,7 +554,6 @@ async function smokeWindowsTaskScheduler(createProvider, cliEntrypoint, root) {
   } finally {
     await provider.supervisor.uninstall().catch(() => undefined);
     await provider.reconciliationTrigger.uninstall().catch(() => undefined);
-    renameSync(disabledControllerRunnerPath, controllerRunnerPath);
   }
 }
 

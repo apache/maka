@@ -85,7 +85,13 @@ button {
     *::after {
       animation-duration: 0.01ms !important;
       animation-iteration-count: 1 !important;
-      transition-duration: 0.01ms !important;
+      /* `none`, not a 0.01ms duration: a near-zero duration still creates a
+         transition per animatable property (the initial `transition-property`
+         is `all`) and still fires transitionrun/start/end on every style
+         recalculation. On a long transcript that is tens of thousands of
+         events per scroll. `none` creates nothing, and settles strictly
+         faster than 0.01ms does. */
+      transition: none !important;
       scroll-behavior: auto !important;
     }
   }
@@ -103,7 +109,7 @@ button {
   [data-maka-reduced-motion="true"] *::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
+    transition: none !important;
     /* Scroll behavior + view transition durations also collapse */
     scroll-behavior: auto !important;
   }
@@ -117,7 +123,7 @@ button {
   [data-maka-e2e-fixture="true"] *::before,
   [data-maka-e2e-fixture="true"] *::after {
     animation: none !important;
-    transition-duration: 0.01ms !important;
+    transition: none !important;
     caret-color: transparent !important;
   }
 

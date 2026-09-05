@@ -67,6 +67,7 @@ import { Marker, markerVariants } from './primitives/chat.js';
 import { ToolTrow, toolTrowHasVisibleSpinner } from './tool-activity.js';
 import { formatBytes } from './tool-activity/preview-utils.js';
 import { useUiLocale } from './locale-context.js';
+import type { UiLocale } from '@maka/core/ui-locale';
 import { getConversationCopy } from './conversation-copy.js';
 import { AstryxLocaleProvider } from './astryx-i18n.js';
 import { InlineReferenceText } from './inline-reference.js';
@@ -298,7 +299,7 @@ function accessibleTextExcerpt(text: string): string {
   return normalized.length > 48 ? `${normalized.slice(0, 47)}…` : normalized;
 }
 
-function accessibleActionContext(text: string, ts: number | undefined, locale: 'zh' | 'en'): string {
+function accessibleActionContext(text: string, ts: number | undefined, locale: UiLocale): string {
   return [
     accessibleTextExcerpt(text),
     ts === undefined ? undefined : formatAbsoluteTimestamp(ts, locale),

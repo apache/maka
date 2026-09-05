@@ -19,12 +19,20 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type { AgentRunEvent, AgentRunHeader, AgentRunStore } from '@maka/core/agent-run';
-import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { AgentRunEvent, AgentRunStore } from '@maka/core/agent-run';
+import type { RuntimeEvent, RuntimeEventInvocationOpenedContent } from '@maka/core/runtime-event';
 import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
+import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
+import {
+  buildInvocationOpenedEvent,
+  runtimeInvocationsFromSessionEvents,
+} from '@maka/core/runtime-invocation';
 import { inspectAgentRunReadModel } from '../agent-run-inspect.js';
+import { testInvocationOpening } from './invocation-fixture.js';
+import { assertDoubleRunNotSealed } from './runtime-event-store-seal.js';
 
 const sessionId = 'session-1';
+const invocationId = 'inv-1';
 const runId = 'run-1';
 const turnId = 'turn-1';
 const ts = 1_800_000_000_000;
@@ -32,14 +40,25 @@ const ts = 1_800_000_000_000;
 describe('inspectAgentRunReadModel', () => {
   test('returns consistent diagnostics for a complete run', async () => {
     const runStore = new MemoryAgentRunStore();
-    await runStore.createRun(
-      makeHeader({ status: 'completed', completedAt: ts + 10, updatedAt: ts + 10 }),
+    await runStore.appendRuntimeEvent(
+      sessionId,
+      runId,
+      buildInvocationOpenedEvent({
+        id: 'rt-open',
+        run: { sessionId, invocationId, runId, turnId },
+        openedAt: ts,
+        opening: makeOpening(),
+      }),
     );
-    await runStore.appendEvent(sessionId, runId, makeRunEvent({ type: 'run_started', ts: ts + 1 }));
     await runStore.appendEvent(
       sessionId,
       runId,
-      makeRunEvent({ type: 'run_completed', ts: ts + 10 }),
+      makeRunEvent({ type: 'turn_started', ts: ts + 1 }),
+    );
+    await runStore.appendEvent(
+      sessionId,
+      runId,
+      makeRunEvent({ type: 'model_stream_completed', ts: ts + 10 }),
     );
     await runStore.appendRuntimeEvent(
       sessionId,
@@ -81,45 +100,37 @@ describe('inspectAgentRunReadModel', () => {
     assert.deepStrictEqual(inspected.sourceHealth, {
       runtimeLedger: 'present',
       runtimeTerminalPresent: true,
-      operationalTerminalPresent: true,
-      statusConsistency: 'consistent',
     });
     assert.strictEqual(inspected.terminalRuntimeFact?.runStatus, 'completed');
-    assert.strictEqual(inspected.operationalTerminalEvent?.type, 'run_completed');
     assert.deepStrictEqual(
       inspected.runtimeEvents.map((event) => event.id),
-      ['rt-user', 'rt-assistant', 'rt-complete'],
+      ['rt-open', 'rt-user', 'rt-assistant', 'rt-complete'],
     );
     assert.deepStrictEqual(
       inspected.projection?.messages.map((message) => message.type),
       ['user', 'assistant', 'turn_state'],
     );
-    assert.strictEqual(
-      inspected.diagnostics.some((diagnostic) => diagnostic.code === 'status_consistency_mismatch'),
-      false,
-    );
   });
 
   test('reports missing and corrupt runtime-events without discarding operational facts', async () => {
     const missingRuntimeStore = new MemoryAgentRunStore();
-    await missingRuntimeStore.createRun(makeHeader({ status: 'completed' }));
     await missingRuntimeStore.appendEvent(
       sessionId,
       runId,
-      makeRunEvent({ type: 'run_completed' }),
+      makeRunEvent({ type: 'model_stream_completed' }),
     );
 
     const missing = await inspectAgentRunReadModel(missingRuntimeStore, missingRuntimeStore, {
       sessionId,
       runId,
+      invocation: makeInvocation(),
     });
 
     assert.deepStrictEqual(
       missing.events.map((event) => event.type),
-      ['run_completed'],
+      ['model_stream_completed'],
     );
     assert.strictEqual(missing.sourceHealth.runtimeLedger, 'missing');
-    assert.strictEqual(missing.sourceHealth.operationalTerminalPresent, true);
     assert.strictEqual(missing.sourceHealth.runtimeTerminalPresent, false);
     assert.strictEqual(
       missing.diagnostics.some((diagnostic) => diagnostic.code === 'missing_runtime_ledger'),
@@ -127,92 +138,42 @@ describe('inspectAgentRunReadModel', () => {
     );
 
     const corruptRuntimeStore = new MemoryAgentRunStore({ failRuntimeEventReads: true });
-    await corruptRuntimeStore.createRun(makeHeader({ status: 'completed' }));
     await corruptRuntimeStore.appendEvent(
       sessionId,
       runId,
-      makeRunEvent({ type: 'run_completed' }),
+      makeRunEvent({ type: 'model_stream_completed' }),
     );
 
     const corrupt = await inspectAgentRunReadModel(corruptRuntimeStore, corruptRuntimeStore, {
       sessionId,
       runId,
+      invocation: makeInvocation(),
     });
 
     assert.deepStrictEqual(
       corrupt.events.map((event) => event.type),
-      ['run_completed'],
+      ['model_stream_completed'],
     );
     assert.strictEqual(corrupt.sourceHealth.runtimeLedger, 'read_failed');
-    assert.strictEqual(corrupt.sourceHealth.operationalTerminalPresent, true);
     assert.strictEqual(
       corrupt.diagnostics.some((diagnostic) => diagnostic.code === 'runtime_ledger_read_failed'),
-      true,
-    );
-  });
-
-  test('diagnoses status disagreement between header operational and RuntimeEvent facts', async () => {
-    const runStore = new MemoryAgentRunStore();
-    await runStore.createRun(makeHeader({ status: 'failed', failureClass: 'tool_failed' }));
-    await runStore.appendEvent(sessionId, runId, makeRunEvent({ type: 'run_failed' }));
-    await runStore.appendRuntimeEvent(
-      sessionId,
-      runId,
-      makeRuntimeEvent({
-        id: 'rt-complete',
-        role: 'system',
-        author: 'system',
-        status: 'completed',
-        actions: { endInvocation: true },
-      }),
-    );
-
-    const inspected = await inspectAgentRunReadModel(runStore, runStore, { sessionId, runId });
-
-    assert.strictEqual(inspected.sourceHealth.statusConsistency, 'inconsistent');
-    assert.strictEqual(inspected.terminalRuntimeFact?.runStatus, 'completed');
-    assert.strictEqual(
-      inspected.diagnostics.some((diagnostic) => diagnostic.code === 'status_consistency_mismatch'),
       true,
     );
   });
 });
 
 class MemoryAgentRunStore implements AgentRunStore, RuntimeEventStore {
-  private headers = new Map<string, AgentRunHeader>();
   private events = new Map<string, AgentRunEvent[]>();
   private runtimeEvents = new Map<string, RuntimeEvent[]>();
   private runtimeEventEntries: RuntimeEvent[] = [];
 
   constructor(private readonly options: { failRuntimeEventReads?: boolean } = {}) {}
 
-  async createRun(header: AgentRunHeader): Promise<AgentRunHeader> {
-    this.headers.set(key(header.sessionId, header.runId), { ...header });
-    return { ...header };
-  }
-
-  async updateRun(
-    sessionId: string,
-    runId: string,
-    patch: Partial<AgentRunHeader>,
-  ): Promise<AgentRunHeader> {
-    const current = await this.readRun(sessionId, runId);
-    const next = { ...current, ...patch, sessionId, runId };
-    this.headers.set(key(sessionId, runId), next);
-    return { ...next };
-  }
-
-  async readRun(sessionId: string, runId: string): Promise<AgentRunHeader> {
-    const header = this.headers.get(key(sessionId, runId));
-    if (!header) throw new Error(`Unknown run ${runId}`);
-    return { ...header };
-  }
-
-  async listSessionRuns(sessionId: string): Promise<AgentRunHeader[]> {
-    return Array.from(this.headers.values())
-      .filter((header) => header.sessionId === sessionId)
-      .sort((a, b) => a.createdAt - b.createdAt || a.runId.localeCompare(b.runId))
-      .map((header) => ({ ...header }));
+  async listSessionInvocations(sessionId: string): Promise<RuntimeInvocationRecord[]> {
+    return runtimeInvocationsFromSessionEvents(
+      sessionId,
+      await this.readSessionRuntimeEvents(sessionId),
+    );
   }
 
   async appendEvent(sessionId: string, runId: string, event: AgentRunEvent): Promise<void> {
@@ -226,6 +187,7 @@ class MemoryAgentRunStore implements AgentRunStore, RuntimeEventStore {
 
   async appendRuntimeEvent(sessionId: string, runId: string, event: RuntimeEvent): Promise<void> {
     const eventKey = key(sessionId, runId);
+    assertDoubleRunNotSealed(this.runtimeEvents.get(eventKey) ?? [], event);
     this.runtimeEvents.set(eventKey, [
       ...(this.runtimeEvents.get(eventKey) ?? []),
       copyRuntimeEvent(event),
@@ -283,27 +245,21 @@ class MemoryAgentRunStore implements AgentRunStore, RuntimeEventStore {
   }
 }
 
-function makeHeader(overrides: Partial<AgentRunHeader> = {}): AgentRunHeader {
-  return {
-    runId,
-    sessionId,
-    turnId,
-    status: 'running',
-    backendKind: 'fake',
-    llmConnectionSlug: 'fake',
-    modelId: 'fake-model',
-    cwd: '/tmp/cwd',
-    permissionMode: 'ask',
-    createdAt: ts,
-    updatedAt: ts,
-    ...overrides,
-  };
+function makeOpening(): RuntimeEventInvocationOpenedContent {
+  return testInvocationOpening({
+    configuration: { cwd: '/tmp/cwd' },
+  });
+}
+
+/** The invocation a run is named by, for the cases whose ledger is unreadable. */
+function makeInvocation(): RuntimeInvocationRecord {
+  return { sessionId, invocationId, runId, turnId, openedAt: ts, opening: makeOpening() };
 }
 
 function makeRunEvent(overrides: Partial<AgentRunEvent> = {}): AgentRunEvent {
   return {
-    type: 'run_started',
-    id: `op-${overrides.type ?? 'run_started'}`,
+    type: 'turn_started',
+    id: `op-${overrides.type ?? 'turn_started'}`,
     runId,
     sessionId,
     turnId,

@@ -133,8 +133,8 @@ export function promptRailSession(now: number): SessionHeader {
 
 /**
  * A plain multi-prompt conversation: no tools, no thinking, no usage rows.
- * `prompt-rail.spec.ts` measures the rail against this, so every turn is just
- * a prompt and a reply long enough to push the transcript past the scrollport.
+ * The transcript perf suite measures against this, so every turn is just a
+ * prompt and a reply long enough to push the transcript past the scrollport.
  */
 export function promptRailMessages(now: number): StoredMessage[] {
   const messages: StoredMessage[] = [];

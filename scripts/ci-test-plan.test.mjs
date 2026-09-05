@@ -55,6 +55,7 @@ const dirs = [
   'packages/cli',
   'packages/ui',
   'apps/desktop',
+  'website',
 ];
 
 const graph = {
@@ -67,6 +68,7 @@ const graph = {
     ['packages/cli', new Set()],
     ['packages/ui', new Set(['apps/desktop'])],
     ['apps/desktop', new Set()],
+    ['website', new Set()],
   ]),
   testDirs: new Set(dirs),
 };
@@ -84,6 +86,15 @@ test('documentation inside workspaces selects nothing at all', () => {
 
     assert.deepEqual(selections(plan), [], path);
     assert.deepEqual(plan.workspaces, [], path);
+  }
+});
+
+test('the READMEs run the website tests that check their opening sentence', () => {
+  for (const path of ['README.md', 'README.zh-CN.md']) {
+    const plan = planTests([path], { graph });
+
+    assert.equal(plan.code, true, path);
+    assert.deepEqual(plan.workspaces, ['website'], path);
   }
 });
 
@@ -223,6 +234,7 @@ test('release authority changes select their dedicated contract gate', () => {
     '.github/workflows/release-cli-finalize.yml',
     '.github/workflows/release-cli-stage.yml',
     '.github/workflows/release.yml',
+    'scripts/audit-shipped-dependencies.mjs',
     'scripts/package-macos.mjs',
     'scripts/package-macos-autoupdate-next.mjs',
     'scripts/package-macos-arm64-cli.mjs',

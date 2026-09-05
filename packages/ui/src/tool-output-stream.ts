@@ -147,7 +147,7 @@ export function applyToolOutputChunk(
   const maxChunks = options.maxChunks ?? TOOL_STREAM_MAX_CHUNKS;
   const maxTotalChars = options.maxTotalChars ?? TOOL_STREAM_MAX_TOTAL_CHARS;
   const maxChunkChars = options.maxChunkChars ?? TOOL_STREAM_MAX_CHUNK_CHARS;
-  const truncatedChunkMarker = getSharedUiCopy(options.locale ?? 'zh').stream.toolChunkTruncated;
+  const truncatedChunkMarker = getSharedUiCopy(options.locale ?? 'zh-CN').stream.toolChunkTruncated;
 
   const list = prevChunks ?? [];
 

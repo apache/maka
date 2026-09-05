@@ -20,7 +20,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { SearchErrorReason, SearchRequest, SearchResult } from '@maka/core/search';
 import type { UiLocale } from '@maka/core/ui-locale';
-import { generalizedErrorMessage, generalizedErrorMessageChinese } from '@maka/core/redaction';
+import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
 import {
   CommandPalette as AstryxCommandPalette,
   CommandPaletteFooter,
@@ -128,9 +128,7 @@ function searchModalThrownErrorMessage(
   locale: UiLocale,
   fallback: string,
 ): string {
-  return locale === 'zh'
-    ? generalizedErrorMessageChinese(error, fallback)
-    : generalizedErrorMessage(error, fallback);
+  return generalizedErrorMessageForLocale(error, fallback, locale);
 }
 
 /**

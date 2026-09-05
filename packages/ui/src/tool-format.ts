@@ -89,13 +89,15 @@ export function describeLoadToolResult(
   }
 
   const label = suppliedLabel ?? (locale === 'en' ? 'Tools' : '工具');
+  const enableLabel = locale === 'en' ? 'Enable' : locale === 'zh-CN' ? '启用' : '啟用';
+  const enabledLabel = locale === 'en' ? 'enabled' : locale === 'zh-CN' ? '已启用' : '已啟用';
   return {
     kind,
     actionLabel: suppliedLabel
-      ? locale === 'en' ? `Enable ${suppliedLabel}` : `启用 ${suppliedLabel}`
+      ? `${enableLabel} ${suppliedLabel}`
       : copy.genericAction,
     title: suppliedLabel
-      ? locale === 'en' ? `${suppliedLabel} enabled` : `${suppliedLabel} 已启用`
+      ? `${suppliedLabel} ${enabledLabel}`
       : copy.genericTitle,
     description: suppliedDescription ?? copy.genericDescription,
     label,

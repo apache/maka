@@ -609,6 +609,13 @@ export function ChatView(props: {
 
   if (!props.activeSession) {
     const conversationItems = props.conversationItems ?? [];
+    // A side conversation forks lazily: its first send arms the optimistic
+    // bubble (and, after the rising-edge delay, the running-status line) BEFORE
+    // the fork commits, so there is no session yet. Render that optimistic
+    // content here too — otherwise the first question stays invisible for the
+    // whole fork round trip (#4654). Once the fork commits `activeSession`
+    // arrives and the full transcript below takes over.
+    const hasOptimisticContent = transientMessages.length > 0 || !!props.runningStatus;
     const emptyContent = props.emptyOverride ?? (
       <EmptyChatHero onPromptSuggestion={props.onPromptSuggestion} userLabel={props.userLabel} />
     );
@@ -635,12 +642,45 @@ export function ChatView(props: {
             owns. */}
         <ChatMessageList
           className="maka-chat-message-list maka-chatContent"
-          emptyState={conversationItems.length === 0 ? emptyContent : undefined}
+          emptyState={
+            conversationItems.length === 0 && !hasOptimisticContent ? emptyContent : undefined
+          }
         >
-          {conversationItems.length > 0 ? (
+          {/* Keep this a single `null` child when there is nothing to show, so
+              `ChatMessageList` still renders its `emptyState` (the onboarding
+              surface / empty hero). Rendering empty `transientMessages`/running
+              fragments as separate children would leave the list "non-empty" and
+              suppress that empty state. */}
+          {conversationItems.length > 0 || hasOptimisticContent ? (
             <>
-              {emptyContent}
-              {conversationItems.map((item) => <Fragment key={item.id}>{item.content}</Fragment>)}
+              {conversationItems.length > 0 ? (
+                <>
+                  {emptyContent}
+                  {conversationItems.map((item) => (
+                    <Fragment key={item.id}>{item.content}</Fragment>
+                  ))}
+                </>
+              ) : null}
+              {transientMessages.map((message) => (
+                <TransientUserMessage key={message.id} message={message} />
+              ))}
+              {/* No committed turn yet (the fork is still being created), so
+                  render the running phrase in a bare turn without a clock —
+                  mirrors the #642 fallback in the settled-session branch below. */}
+              {props.runningStatus && (
+                <section className="maka-turn" data-live-streaming="true">
+                  <LocalizedChatMessage
+                    accessibleLabel={conversationCopy.messages.assistantAriaLabel}
+                    sender="assistant"
+                    className="maka-chat-message maka-assistant-answer"
+                  >
+                    <div className="maka-assistant-answer-content">
+                      <TurnRunningStatus />
+                    </div>
+                    <div aria-hidden="true" className="maka-live-turn-footer-placeholder" />
+                  </LocalizedChatMessage>
+                </section>
+              )}
             </>
           ) : null}
         </ChatMessageList>
@@ -925,7 +965,7 @@ export function ChatView(props: {
 export function DeepResearchProgressPanel({
   run,
   onContinue,
-  copy = getConversationCopy('zh').chat.deepResearchProgress,
+  copy = getConversationCopy('zh-CN').chat.deepResearchProgress,
 }: {
   run: DeepResearchClientProgress;
   onContinue?: (run: DeepResearchClientProgress) => void;

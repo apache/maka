@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import type { UiCatalog, UiLocale } from './ui-locale.js';
+
 const SENSITIVE_KEY_SUFFIXES = new Set([
   'auth',
   'authorization',
@@ -206,23 +208,62 @@ function isAssignmentSensitiveKey(key: string): boolean {
   return suffix !== 'auth' && suffix !== 'authorization';
 }
 
-export function generalizedErrorMessage(error: unknown, fallback = 'Operation failed'): string {
+type GeneralizedErrorCategory = 'timeout' | 'rateLimit' | 'authentication' | 'provider' | 'network';
+
+const GENERALIZED_ERROR_COPY: UiCatalog<Record<GeneralizedErrorCategory, string>> = {
+  'zh-CN': {
+    timeout: '请求超时',
+    rateLimit: '触发模型速率限制',
+    authentication: '鉴权失败',
+    provider: '模型服务返回错误',
+    network: '网络错误',
+  },
+  'zh-TW': {
+    timeout: '請求逾時',
+    rateLimit: '已達模型速率限制',
+    authentication: '驗證失敗',
+    provider: '模型服務傳回錯誤',
+    network: '網路錯誤',
+  },
+  en: {
+    timeout: 'Request timed out',
+    rateLimit: 'Rate limit exceeded',
+    authentication: 'Authentication failed',
+    provider: 'Provider returned an error',
+    network: 'Network error',
+  },
+};
+
+function classifyGeneralizedError(error: unknown): GeneralizedErrorCategory | null {
   const message = error instanceof Error ? error.message : String(error);
   const redacted = redactSecrets(message);
   const lower = redacted.toLowerCase();
-  if (lower.includes('timeout')) return 'Request timed out';
-  if (lower.includes('429') || lower.includes('rate')) return 'Rate limit exceeded';
+  if (lower.includes('timeout')) return 'timeout';
+  if (lower.includes('429') || lower.includes('rate')) return 'rateLimit';
   if (lower.includes('401') || lower.includes('403') || isAuthenticationErrorText(lower))
-    return 'Authentication failed';
-  if (lower.includes('5') && /\b5\d\d\b/.test(lower)) return 'Provider returned an error';
+    return 'authentication';
+  if (lower.includes('5') && /\b5\d\d\b/.test(lower)) return 'provider';
   if (
     lower.includes('network') ||
     lower.includes('fetch') ||
     lower.includes('econn') ||
     lower.includes('enotfound')
   )
-    return 'Network error';
-  return fallback;
+    return 'network';
+  return null;
+}
+
+function localizedGeneralizedErrorMessage(
+  error: unknown,
+  fallback: string,
+  locale: UiLocale,
+): string {
+  const category = classifyGeneralizedError(error);
+  return category ? GENERALIZED_ERROR_COPY[locale][category] : fallback;
+}
+
+export function generalizedErrorMessage(error: unknown, fallback = 'Operation failed'): string {
+  return localizedGeneralizedErrorMessage(error, fallback, 'en');
 }
 
 /**
@@ -239,22 +280,22 @@ export function generalizedErrorMessage(error: unknown, fallback = 'Operation fa
  * UX when the classifier can't categorize.
  */
 export function generalizedErrorMessageChinese(error: unknown, fallback = '操作失败'): string {
-  const message = error instanceof Error ? error.message : String(error);
-  const redacted = redactSecrets(message);
-  const lower = redacted.toLowerCase();
-  if (lower.includes('timeout')) return '请求超时';
-  if (lower.includes('429') || lower.includes('rate')) return '触发模型速率限制';
-  if (lower.includes('401') || lower.includes('403') || isAuthenticationErrorText(lower))
-    return '鉴权失败';
-  if (lower.includes('5') && /\b5\d\d\b/.test(lower)) return '模型服务返回错误';
-  if (
-    lower.includes('network') ||
-    lower.includes('fetch') ||
-    lower.includes('econn') ||
-    lower.includes('enotfound')
-  )
-    return '网络错误';
-  return fallback;
+  return localizedGeneralizedErrorMessage(error, fallback, 'zh-CN');
+}
+
+export function generalizedErrorMessageTraditionalChinese(
+  error: unknown,
+  fallback = '操作失敗',
+): string {
+  return localizedGeneralizedErrorMessage(error, fallback, 'zh-TW');
+}
+
+export function generalizedErrorMessageForLocale(
+  error: unknown,
+  fallback: string,
+  locale: UiLocale,
+): string {
+  return localizedGeneralizedErrorMessage(error, fallback, locale);
 }
 
 export function isAuthenticationErrorText(message: string): boolean {

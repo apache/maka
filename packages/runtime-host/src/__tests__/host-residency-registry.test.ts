@@ -46,3 +46,55 @@ test('Host residency registry explains liveness and drains on exact release', as
   assert.equal(registry.activeCount, 0);
   assert.deepEqual(registry.snapshot(), []);
 });
+
+test('idle-kind residencies block liveness but never the drain', async () => {
+  const registry = new HostResidencyRegistry();
+  const marker = registry.acquire('process-retention', 'idle');
+  const work = registry.acquire('hosted-execution');
+
+  assert.equal(registry.activeCount, 2);
+  assert.equal(registry.drainCount, 1);
+  assert.deepEqual(registry.snapshot(), [
+    { label: 'hosted-execution', count: 1 },
+    { label: 'process-retention', count: 1 },
+  ]);
+
+  let drained = false;
+  const drain = registry.waitForEmpty().then(() => {
+    drained = true;
+  });
+  await Promise.resolve();
+  assert.equal(drained, false);
+  work.release();
+  await drain;
+  assert.equal(drained, true);
+  assert.equal(registry.activeCount, 1);
+  assert.equal(registry.drainCount, 0);
+
+  const resource = registry.acquire('runtime-resource');
+  let exceptResolved = false;
+  const except = registry.waitForEmptyExcept('runtime-resource').then(() => {
+    exceptResolved = true;
+  });
+  await Promise.resolve();
+  assert.equal(exceptResolved, true);
+  resource.release();
+  await except;
+  marker.release();
+  assert.equal(registry.activeCount, 0);
+  assert.deepEqual(registry.snapshot(), []);
+});
+
+test('idle-kind residency release resolves only drain waiters when nothing drains', async () => {
+  const registry = new HostResidencyRegistry();
+  const marker = registry.acquire('process-retention', 'idle');
+  let drained = false;
+  const drain = registry.waitForEmpty().then(() => {
+    drained = true;
+  });
+  await drain;
+  assert.equal(drained, true);
+  assert.equal(registry.activeCount, 1);
+  marker.release();
+  assert.equal(registry.activeCount, 0);
+});

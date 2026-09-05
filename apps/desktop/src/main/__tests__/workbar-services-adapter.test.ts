@@ -33,7 +33,6 @@ function createBridgeRecorder(): {
     'sessions.subscribeEvents',
     'shellRuns.subscribePtyData',
     'shellRuns.subscribeResync',
-    'todo.subscribeChanges',
     'browser.setActiveSession',
     'browser.setViewport',
     'browser.onState',
@@ -70,7 +69,6 @@ function createBridgeRecorder(): {
       gitReview: domain('gitReview'),
       sessions: domain('sessions'),
       shellRuns: domain('shellRuns'),
-      todo: domain('todo'),
       browser: domain('browser'),
       artifacts: domain('artifacts'),
       app: domain('app'),
@@ -121,9 +119,6 @@ describe('createDesktopWorkbarServices', () => {
     await services.terminal.write({ sessionId: 's', ref: 'term', input: 'ls' });
     services.terminal.subscribePtyData(eventHandler)();
     services.terminal.subscribeResync(eventHandler)();
-
-    await services.todo.read('s');
-    services.todo.subscribeChanges(eventHandler)();
 
     services.browser.setActiveSession('s');
     services.browser.setViewport({ sessionId: 's', rect: null });
@@ -197,8 +192,6 @@ describe('createDesktopWorkbarServices', () => {
         'shellRuns.write',
         'shellRuns.subscribePtyData',
         'shellRuns.subscribeResync',
-        'todo.read',
-        'todo.subscribeChanges',
         'browser.setActiveSession',
         'browser.setViewport',
         'browser.navigate',

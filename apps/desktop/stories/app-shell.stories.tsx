@@ -19,7 +19,7 @@
 
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, waitFor } from 'storybook/test';
-import { useState, type CSSProperties, type ReactNode } from 'react';
+import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
 import type { ComponentProps } from 'react';
 import type { ProjectRecord } from '@maka/core/project';
 import type { SessionSummary, StoredMessage } from '@maka/core/session';
@@ -370,7 +370,7 @@ function ComposedShell(props: {
     deriveAppShellTurnPresentation(turns, {
       activeId: active?.id,
       pendingTurnActions: new Set<string>(),
-      uiLocale: 'zh',
+      uiLocale: 'zh-CN',
     });
   const projectGroups: SessionGroup[] = catalogProjects.map((item) => ({
     id: `project:${item.id}`,
@@ -1429,4 +1429,1082 @@ export const GoalDialogOpen: Story = {
       />
     </>
   ),
+};
+
+/**
+ * Transcript geometry.
+ *
+ * Assert positions against the scroller's own end, never as a pixel delta: a
+ * delta is satisfiable by two wrongs, where the content grew by as much as the
+ * view moved.
+ */
+const TAIL_SCROLLER = '[data-chat-scroll-container="true"]';
+
+// Enough to push the transcript past a viewport twice, few enough that a
+// stream of them ends while a story is still settling.
+const TAIL_LINES = Array.from(
+  { length: 60 },
+  (_, index) => `第 ${index} 行：这一段用来把转录推过滚动视口的高度。`,
+);
+
+function tailScroller(): HTMLElement {
+  const root = document.querySelector<HTMLElement>(TAIL_SCROLLER);
+  if (!root) throw new Error('the chat scroll container is missing');
+  return root;
+}
+
+/** The distance to the tail plus the three numbers it came from. */
+function tailMetrics(): {
+  distance: number;
+  scrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+} {
+  const root = tailScroller();
+  return {
+    distance: Math.round(root.scrollHeight - root.scrollTop - root.clientHeight),
+    scrollTop: Math.round(root.scrollTop),
+    scrollHeight: root.scrollHeight,
+    clientHeight: root.clientHeight,
+  };
+}
+
+/**
+ * Samples every frame while the answer grows: a tail slipping away *while*
+ * content arrives is indistinguishable, afterwards, from a view dragged back
+ * at the last delta. Stops on the content; the budget is only a fuse.
+ */
+function measureTailLag(frameBudget: number): Promise<{
+  worstLag: number;
+  worstFrameGrowth: number;
+  grewBy: number;
+  viewportHeight: number;
+}> {
+  return new Promise((resolve) => {
+    const root = tailScroller();
+    const startedAt = root.scrollHeight;
+    let previousScrollHeight = startedAt;
+    let worstLag = 0;
+    let worstFrameGrowth = 0;
+    let left = frameBudget;
+    const tick = (): void => {
+      const settledTail = previousScrollHeight - root.clientHeight;
+      worstLag = Math.max(worstLag, Math.abs(root.scrollTop - settledTail));
+      worstFrameGrowth = Math.max(worstFrameGrowth, root.scrollHeight - previousScrollHeight);
+      previousScrollHeight = root.scrollHeight;
+      const enough = root.scrollHeight - startedAt > root.clientHeight;
+      if (enough || --left <= 0) {
+        resolve({
+          worstLag: Math.round(worstLag),
+          worstFrameGrowth: Math.round(worstFrameGrowth),
+          grewBy: Math.round(root.scrollHeight - startedAt),
+          viewportHeight: root.clientHeight,
+        });
+      } else requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
+}
+
+/** Waits out the frames a layout change needs to commit and paint. */
+function painted(frames = 3): Promise<void> {
+  return new Promise((resolve) => {
+    const tick = (left: number): void => {
+      if (left <= 0) resolve();
+      else requestAnimationFrame(() => tick(left - 1));
+    };
+    tick(frames);
+  });
+}
+
+function messageList(): HTMLElement {
+  const list = tailScroller().querySelector<HTMLElement>('.maka-chat-message-list');
+  if (!list) throw new Error('the transcript content box is missing');
+  return list;
+}
+
+function turnTop(turnId: string): number {
+  const turn = document.querySelector(`[data-turn-id="${CSS.escape(turnId)}"]`);
+  if (!turn) throw new Error(`turn ${turnId} is not mounted`);
+  return Math.round(turn.getBoundingClientRect().top);
+}
+
+function firstResidentTurnId(): string | null {
+  return document
+    .querySelector('[data-transcript-turn-id]')
+    ?.getAttribute('data-transcript-turn-id') ?? null;
+}
+
+/**
+ * The dock affordance is always in the DOM — Astryx toggles opacity and
+ * pointer-events — so presence proves nothing and a visibility check passes on
+ * the transparent one. `dockOffered` is the real question.
+ */
+function dockButton(): HTMLButtonElement {
+  const button = [...document.querySelectorAll('button')].find((candidate) =>
+    /底部|to bottom/i.test(
+      `${candidate.getAttribute('aria-label') ?? ''} ${candidate.textContent ?? ''}`,
+    ),
+  );
+  if (!button) throw new Error('the scroll-to-bottom affordance is missing');
+  return button;
+}
+
+function dockOffered(): boolean {
+  const style = getComputedStyle(dockButton());
+  return style.pointerEvents !== 'none' && Number(style.opacity) > 0.5;
+}
+
+/**
+ * The rule this drives reads `composedPath()` and the overflow of what the
+ * wheel crossed — DOM state — so a dispatched wheel takes the same branch a
+ * real one does. What it cannot do is scroll, so cases that need the reader to
+ * move set `scrollTop` themselves.
+ */
+function wheelUp(target: Element): void {
+  target.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true }));
+}
+
+/** A scroller inside the transcript, standing in for a tool-output box. */
+function injectNestedScroller(parent: Element): HTMLElement {
+  const box = document.createElement('div');
+  box.dataset.nestedScroller = 'true';
+  box.style.cssText = 'height:120px;overflow-y:auto';
+  const filler = document.createElement('div');
+  filler.style.height = '2000px';
+  box.append(filler);
+  parent.append(box);
+  // Away from both ends, so scrolling up inside it never reaches a boundary.
+  box.scrollTop = 600;
+  return box;
+}
+
+/** Answered turns, oldest first. `from` may go negative as history loads. */
+function transcriptTurns(from: number, count: number): StoredMessage[] {
+  return Array.from({ length: count }, (_, offset) => {
+    const index = from + offset;
+    const turnId = `turn-scroll-${index}`;
+    return [
+      user(`msg-scroll-${index}-u`, turnId, 500 - index * 2, `第 ${index} 个问题`),
+      assistant(
+        `msg-scroll-${index}-a`,
+        turnId,
+        499 - index * 2,
+        TAIL_LINES.slice(0, 4).join('\n\n'),
+      ),
+    ];
+  }).flat();
+}
+
+/** Stops the harness below, so the tail can be read against a settled transcript. */
+let stopTailStream: (() => void) | undefined;
+
+/** Streams one line per frame into a live Turn. */
+function StreamingTailHarness() {
+  const [lines, setLines] = useState(1);
+  useEffect(() => {
+    // Paced by frames, not by the clock, so it stays in step with the
+    // per-frame sampler on a slow runner.
+    let frame = 0;
+    let stopped = false;
+    const tick = (): void => {
+      if (stopped) return;
+      setLines((count) => (count >= TAIL_LINES.length ? count : count + 1));
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    const stop = (): void => {
+      stopped = true;
+      cancelAnimationFrame(frame);
+    };
+    stopTailStream = stop;
+    return () => {
+      stop();
+      stopTailStream = undefined;
+    };
+  }, []);
+  return (
+    <ComposedShell
+      session={{ status: 'running', streaming: true }}
+      chat={{
+        runningStatus: true,
+        messages: [
+          user('msg-tail-1', 'turn-tail', 3, '把转录推过一屏，看看尾巴还跟不跟得住。'),
+          {
+            type: 'turn_state',
+            id: 'state-tail',
+            turnId: 'turn-tail',
+            ts: NOW - 30_000,
+            status: 'running',
+            partialOutputRetained: false,
+          },
+        ],
+        liveTurn: {
+          turnId: 'turn-tail',
+          phase: 'streamed',
+          steps: [{
+            stepId: 'msg-assistant-tail',
+            text: {
+              // Paragraph breaks, not single newlines: Markdown folds those
+              // back into one block and the transcript stops growing by rows.
+              text: TAIL_LINES.slice(0, lines).join('\n\n'),
+              truncated: false,
+              complete: false,
+            },
+            tools: [],
+          }],
+        },
+      }}
+    />
+  );
+}
+
+export const StreamingTailFollow: Story = {
+  render: () => <StreamingTailHarness />,
+  play: async () => {
+    // The fuse runs out inside the smoke's per-story budget, so a stalled
+    // stream fails saying so instead of timing the story out.
+    const lag = await measureTailLag(600);
+
+    // The samples have to have covered more than a viewport of real growth, or
+    // every reading above is a stationary transcript and proves nothing.
+    expect(lag.grewBy).toBeGreaterThan(lag.viewportHeight);
+    expect(lag.worstLag).toBeLessThanOrEqual(lag.worstFrameGrowth + 8);
+
+    // Settle against a transcript that stopped growing, or the reading only
+    // says the sampler caught a frame between deltas.
+    stopTailStream?.();
+    await waitFor(
+      () => {
+        const settled = tailMetrics();
+        expect(settled.distance, JSON.stringify(settled)).toBeLessThanOrEqual(4);
+      },
+      { timeout: 5_000 },
+    );
+
+    // A reader the tail never left has nothing to dock to.
+    expect(dockOffered()).toBe(false);
+  },
+};
+
+/** Lets a play function drive props React owns. One story renders per page. */
+let appendTurn: (() => void) | undefined;
+
+/** Every `onLoadEarlierHistory` the transcript asked for, anchor turn first. */
+const historyLoads: string[] = [];
+
+const HISTORY_BATCH = 4;
+
+// More than any story here consumes. Running the history out retires the
+// "earlier history" notice, and that removal is a height change above the
+// reader with no arrival to explain it.
+const HISTORY_BATCHES_AVAILABLE = 8;
+
+/** A settled transcript with a turn the play function can make arrive. */
+function SettledTranscriptHarness({ turns }: { turns: number }) {
+  const [extra, setExtra] = useState(0);
+  useEffect(() => {
+    appendTurn = () => setExtra((count) => count + 1);
+    return () => {
+      appendTurn = undefined;
+    };
+  }, []);
+  return <ComposedShell chat={{ messages: transcriptTurns(0, turns + extra) }} />;
+}
+
+/** The history seam is two props: `hasOlderHistory`, and a loader that prepends. */
+function HistoryHarness({ turns }: { turns: number }) {
+  const [range, setRange] = useState({ from: 0, count: turns });
+  useEffect(() => {
+    historyLoads.length = 0;
+  }, []);
+  return (
+    <ComposedShell
+      chat={{
+        messages: transcriptTurns(range.from, range.count),
+        hasOlderHistory: range.from > -HISTORY_BATCH * HISTORY_BATCHES_AVAILABLE,
+        onLoadEarlierHistory: (anchorTurnId) => {
+          historyLoads.push(anchorTurnId ?? '(none)');
+          setRange((current) => ({
+            from: current.from - HISTORY_BATCH,
+            count: current.count + HISTORY_BATCH,
+          }));
+        },
+      }}
+    />
+  );
+}
+
+/** The band inside which the transcript treats a reader move as asking. */
+function loadBand(): number {
+  return Math.max(640, tailScroller().clientHeight * 2);
+}
+
+export const TailFollowsGrowthOutsideTurns: Story = {
+  render: () => <SettledTranscriptHarness turns={12} />,
+  play: async () => {
+    await waitFor(() => expect(tailMetrics().distance).toBeLessThanOrEqual(4));
+
+    const grown = document.createElement('div');
+    grown.dataset.outsideTurnGrowth = 'true';
+    grown.style.height = '600px';
+    messageList().append(grown);
+    // Outside a wrapper is what makes this the uncovered path: growth inside
+    // one is what every other story here already exercises.
+    expect(
+      grown.closest('[data-transcript-turn-id]'),
+      'the injected box landed inside a turn wrapper',
+    ).toBe(null);
+
+    await painted(6);
+    await waitFor(() => {
+      const settled = tailMetrics();
+      expect(settled.distance, JSON.stringify(settled)).toBeLessThanOrEqual(4);
+    });
+  },
+};
+
+export const ReaderScrolledUpIsNotPulledBack: Story = {
+  render: () => <SettledTranscriptHarness turns={12} />,
+  play: async () => {
+    const root = tailScroller();
+    await waitFor(() => expect(tailMetrics().distance).toBeLessThanOrEqual(4));
+
+    root.scrollTop -= 500;
+    await painted(6);
+    const before = tailMetrics().distance;
+    expect(before, JSON.stringify(tailMetrics())).toBeGreaterThan(100);
+    await waitFor(() => expect(dockOffered()).toBe(true));
+
+    const anchorTurnId = document.querySelector<HTMLElement>('[data-turn-id]')?.dataset.turnId;
+    if (!anchorTurnId) throw new Error('the transcript has no mounted turn');
+    const anchorTop = turnTop(anchorTurnId);
+
+    appendTurn?.();
+
+    // The turn the reader was on is still where it was. Everything that
+    // arrived, arrived below them.
+    //
+    // Both conditions retry together, because `distance` crosses `before`
+    // while the arriving Turn is still laid out at its `content-visibility`
+    // estimate — reading the anchor on that frame reads an intermediate
+    // layout, and on a slow renderer it is still 16px out. Retrying cannot
+    // launder a real failure: a reader who was pulled back is at the tail, so
+    // `distance` never gets above `before` again.
+    await waitFor(() => {
+      expect(tailMetrics().distance).toBeGreaterThan(before);
+      expect(Math.abs(turnTop(anchorTurnId) - anchorTop)).toBeLessThanOrEqual(4);
+    });
+  },
+};
+
+export const DockAffordanceReturnsToTail: Story = {
+  render: () => <SettledTranscriptHarness turns={12} />,
+  play: async () => {
+    await waitFor(() => expect(tailMetrics().distance).toBeLessThanOrEqual(4));
+
+    tailScroller().scrollTop = 0;
+    await painted(6);
+    // Offered at all is the assertion: with Astryx's scroll layer off, its
+    // `isScrolledUp` never updates again, so the stock button would stay
+    // transparent forever. This one reads Maka's pin.
+    await waitFor(() => expect(dockOffered()).toBe(true));
+
+    dockButton().click();
+    await waitFor(() => {
+      const settled = tailMetrics();
+      expect(settled.distance, JSON.stringify(settled)).toBeLessThanOrEqual(4);
+    });
+    expect(dockOffered()).toBe(false);
+  },
+};
+
+export const NestedScrollerNearHistoryBoundaryAsksForNothing: Story = {
+  render: () => <HistoryHarness turns={7} />,
+  play: async () => {
+    await waitFor(() => {
+      const settled = tailMetrics();
+      expect(settled.scrollTop, JSON.stringify(settled)).toBeLessThanOrEqual(loadBand());
+      expect(settled.distance, JSON.stringify(settled)).toBeLessThanOrEqual(4);
+    });
+
+    const nested = injectNestedScroller(messageList());
+    await painted(6);
+    historyLoads.length = 0;
+
+    wheelUp(nested);
+    await painted(6);
+    // The gesture crossed a scroller that could act on it, so it was never the
+    // reader asking for what is above the transcript.
+    expect(historyLoads).toEqual([]);
+    expect(nested.scrollTop).toBe(600);
+  },
+};
+
+export const TailFollowDoesNotAskForHistory: Story = {
+  render: () => <HistoryHarness turns={7} />,
+  play: async () => {
+    const before = firstResidentTurnId();
+    // A transcript shorter than about three viewports has its tail inside the
+    // band that asks for earlier history, so "near the start" cannot mean the
+    // reader wants it.
+    await waitFor(() => {
+      const settled = tailMetrics();
+      expect(settled.scrollTop, JSON.stringify(settled)).toBeLessThanOrEqual(loadBand());
+      expect(settled.distance, JSON.stringify(settled)).toBeLessThanOrEqual(4);
+    });
+
+    await painted(12);
+    // Nothing arrived that the reader did not ask for.
+    expect(historyLoads).toEqual([]);
+    expect(firstResidentTurnId()).toBe(before);
+  },
+};
+
+export const AWheelTheScrollerCannotActOnAsksForHistory: Story = {
+  render: () => <HistoryHarness turns={1} />,
+  play: async () => {
+    const before = firstResidentTurnId();
+    await painted(6);
+    const settled = tailMetrics();
+    // Too short to move: no scroll can follow the wheel, so the authority
+    // never learns the reader asked. The wheel itself has to carry it.
+    expect(settled.scrollHeight, JSON.stringify(settled)).toBeLessThanOrEqual(
+      settled.clientHeight,
+    );
+
+    wheelUp(tailScroller());
+    await waitFor(() => expect(firstResidentTurnId()).not.toBe(before));
+  },
+};
+
+export const EarlierHistoryLandsAboveTheReader: Story = {
+  render: () => <HistoryHarness turns={30} />,
+  play: async () => {
+    const root = tailScroller();
+    await waitFor(() => expect(tailMetrics().distance).toBeLessThanOrEqual(4));
+
+    // Just short of the band that asks for more, so the active range has
+    // painted turns around the reader before the load starts. Landing straight
+    // on zero leaves no visible turn above the load boundary to anchor on.
+    root.scrollTop = loadBand() + 400;
+    await painted(6);
+    const before = firstResidentTurnId();
+    const heightBefore = root.scrollHeight;
+    historyLoads.length = 0;
+
+    // The move that asks for earlier history and the reading of where the
+    // reader is, in one task.
+    root.scrollTop = Math.min(300, root.scrollHeight - root.clientHeight);
+    const rootTop = root.getBoundingClientRect().top;
+    const turn = [...root.querySelectorAll<HTMLElement>('[data-turn-id]')].find(
+      (candidate) => candidate.getBoundingClientRect().bottom > rootTop,
+    );
+    if (!turn?.dataset.turnId) throw new Error('no turn is on screen');
+    const anchor = { turnId: turn.dataset.turnId, top: Math.round(turn.getBoundingClientRect().top) };
+    wheelUp(root);
+
+    await waitFor(() => expect(firstResidentTurnId()).not.toBe(before));
+    await painted(6);
+
+    // The turns that arrived went above the reader, and the reader did not go
+    // with them. Asserting the element rather than a `scrollTop` delta is the
+    // point: a compensation computed from `scrollHeight` satisfies the delta
+    // while putting the reader somewhere else entirely.
+    //
+    // Budgeted against what arrived rather than in fixed pixels. A Turn carries
+    // `content-visibility: auto`, so one that lands off screen is anchored
+    // against its estimated height and settles a few pixels away from it; a
+    // reader who went with the history instead moves by the whole insert.
+    await waitFor(() =>
+      expect(
+        tailScroller().scrollHeight - heightBefore,
+        JSON.stringify({ anchor, loads: historyLoads }),
+      ).toBeGreaterThan(400),
+    );
+
+    // Fixed once, after the arrival has settled. Recomputed on every retry it
+    // would grow along with the drift it is supposed to bound, so a late
+    // `content-visibility` resolution could admit a reading that was failing.
+    await painted(8);
+    const inserted = tailScroller().scrollHeight - heightBefore;
+    const budget = Math.max(4, inserted * 0.02);
+    expect(
+      Math.abs(turnTop(anchor.turnId) - anchor.top),
+      JSON.stringify({ anchor, inserted, budget, now: turnTop(anchor.turnId), ...tailMetrics() }),
+    ).toBeLessThanOrEqual(budget);
+  },
+};
+
+/**
+ * The reader going *up* through Turns that have never rendered.
+ *
+ * A bound, not stillness. A Turn off screen is laid out at
+ * `contain-intrinsic-block-size: auto 280px` and swaps to its real height on
+ * the way past, so travelling through them moves things by construction —
+ * about 8% of the transcript here. What the bound says is that one Turn owes
+ * at most one estimate, keeping the correction proportional to Turns crossed
+ * rather than to what is inside them.
+ */
+const TRAVERSAL_STEP = 700;
+
+/** What one Turn is worth, measured after everything has rendered once. */
+function medianTurnHeight(): number {
+  const heights = [...tailScroller().querySelectorAll<HTMLElement>('[data-turn-id]')]
+    .map((turn) => turn.getBoundingClientRect().height)
+    .sort((a, b) => a - b);
+  if (heights.length === 0) throw new Error('the transcript has no mounted turn');
+  return heights[Math.floor(heights.length / 2)];
+}
+
+/** The first Turn whose box is still on screen, and where it starts. */
+function anchorInView(): { turnId: string; top: number } {
+  const root = tailScroller();
+  const rootTop = root.getBoundingClientRect().top;
+  const turn = [...root.querySelectorAll<HTMLElement>('[data-turn-id]')].find(
+    (candidate) => candidate.getBoundingClientRect().bottom > rootTop,
+  );
+  if (!turn?.dataset.turnId) throw new Error('no turn is on screen');
+  return { turnId: turn.dataset.turnId, top: Math.round(turn.getBoundingClientRect().top) };
+}
+
+export const UpwardTraversalHoldsTurnGeometry: Story = {
+  render: () => <SettledTranscriptHarness turns={40} />,
+  play: async () => {
+    const root = tailScroller();
+    await waitFor(() => expect(tailMetrics().distance).toBeLessThanOrEqual(4));
+    const heightBefore = root.scrollHeight;
+    expect(
+      heightBefore / root.clientHeight,
+      'the transcript has to be deep enough to hold unrendered Turns',
+    ).toBeGreaterThan(6);
+
+    const drifts: number[] = [];
+    let steps = 0;
+    while (root.scrollTop > 0 && steps < 40) {
+      const anchor = anchorInView();
+      const scrollBefore = root.scrollTop;
+      root.scrollTop = Math.max(0, scrollBefore - TRAVERSAL_STEP);
+      await painted(4);
+
+      // The reader moved by what the scroller actually moved, so the Turn under
+      // them comes down the viewport by that much plus whatever the estimates
+      // above them were off by.
+      const travelled = scrollBefore - root.scrollTop;
+      drifts.push(Math.round(turnTop(anchor.turnId) - (anchor.top + travelled)));
+      steps += 1;
+    }
+    expect(steps, 'the traversal has to have taken real steps').toBeGreaterThan(6);
+
+    const worstDrift = Math.max(...drifts.map(Math.abs));
+    const turnHeight = medianTurnHeight();
+    // No single step throws the reader past a whole exchange. One Turn's worth
+    // of correction is the most one Turn can owe.
+    expect(worstDrift, `per-step drift: ${drifts.join(' ')} against a Turn of ${turnHeight}`)
+      .toBeLessThanOrEqual(turnHeight);
+
+    // And over the whole traversal the corrections stay proportional to the
+    // Turns crossed. Measured at ~8% here; #4259's 63% is the failure this
+    // exists to catch.
+    const heightAfter = root.scrollHeight;
+    expect(
+      Math.abs(heightAfter - heightBefore) / heightBefore,
+      JSON.stringify({ heightBefore, heightAfter, steps, turnHeight }),
+    ).toBeLessThanOrEqual(0.15);
+
+    // And the reader can still get back.
+    dockButton().click();
+    await waitFor(
+      () => {
+        const settled = tailMetrics();
+        expect(settled.distance, JSON.stringify(settled)).toBeLessThanOrEqual(4);
+      },
+      { timeout: 5_000 },
+    );
+  },
+};
+
+export const HistoryAtTheTopStillLandsAboveTheReader: Story = {
+  render: () => <HistoryHarness turns={16} />,
+  play: async () => {
+    const root = tailScroller();
+    // Writing zero while the scroller is still at zero is a no-op, so require
+    // the initial pin to have provably moved before exercising the real one.
+    await waitFor(() => {
+      const settled = tailMetrics();
+      expect(settled.scrollTop, JSON.stringify(settled)).toBeGreaterThan(0);
+      expect(settled.distance, JSON.stringify(settled)).toBeLessThanOrEqual(4);
+    });
+    const before = firstResidentTurnId();
+
+    // The one position where the browser declines to anchor, and the one the
+    // wheel-to-load path puts the reader in.
+    root.scrollTop = 0;
+    wheelUp(root);
+
+    await waitFor(() => expect(firstResidentTurnId()).not.toBe(before));
+    await painted(6);
+
+    // Anchoring resumes at an offset of one pixel, so the offset itself is the
+    // evidence: left at zero the browser holds the scroller at the top and
+    // every turn that arrives pushes the reader's content down the viewport.
+    expect(tailScroller().scrollTop).toBeGreaterThanOrEqual(1);
+  },
+};
+
+/**
+ * The prompt anchor rail (#563). All three of its shipped regressions had the
+ * same shape — the code kept working and the pixels stopped — so the
+ * assertions here are geometric.
+ *
+ * Tick count comes from `transcriptTurnIndex`, not from mounted Turns: the
+ * transcript holds only the Host's active range and the index carries the rest
+ * of the landmarks, so the rail gets all 64 ticks against 10 Turns. That is
+ * what the Host does in production.
+ */
+const PROMPT_RAIL_TURN_COUNT = 120;
+
+/** `DESKTOP_TRANSCRIPT_ACTIVE_RANGE_MAX_TURNS`, restated to keep stories off preload. */
+const PROMPT_RAIL_ACTIVE_RANGE = 10;
+
+/** `MAX_PROMPT_RAIL_TICKS` in prompt-anchor-rail.tsx, which does not export it. */
+const PROMPT_RAIL_MAX_TICKS = 64;
+
+const PROMPT_RAIL_TAIL_RANGE_START = PROMPT_RAIL_TURN_COUNT - PROMPT_RAIL_ACTIVE_RANGE + 1;
+
+const promptRailIndex = Array.from({ length: PROMPT_RAIL_TURN_COUNT }, (_, offset) => ({
+  turnId: `turn-scroll-${offset + 1}`,
+  sequence: offset + 1,
+  label: `第 ${offset + 1} 个问题`,
+}));
+
+const promptRailMessages = transcriptTurns(PROMPT_RAIL_TAIL_RANGE_START, PROMPT_RAIL_ACTIVE_RANGE);
+
+function PromptRailHarness() {
+  return (
+    <ComposedShell
+      chat={{ messages: promptRailMessages, transcriptTurnIndex: promptRailIndex }}
+    />
+  );
+}
+
+function railTicks(): HTMLElement[] {
+  return [...document.querySelectorAll<HTMLElement>('.maka-prompt-rail-tick')];
+}
+
+function railBars(): HTMLElement[] {
+  return [...document.querySelectorAll<HTMLElement>('.maka-prompt-rail-tick-bar')];
+}
+
+/** Positive on all four = the rail's box is inside the scrollport, clear of the dock. */
+function railInsets(): {
+  insetTop: number;
+  insetBottom: number;
+  insetRight: number;
+  dockClearance: number;
+} {
+  const scroller = tailScroller();
+  const rail = document.querySelector('.maka-prompt-rail');
+  if (!rail) throw new Error('the prompt rail is missing');
+  const scrollport = scroller.getBoundingClientRect();
+  const box = rail.getBoundingClientRect();
+  // Astryx renders the composer dock as the scroll container's last child; the
+  // rail measures it the same way, for want of a published hook.
+  const dock = scroller.lastElementChild?.getBoundingClientRect();
+  if (!dock) throw new Error('the composer dock is missing');
+  return {
+    insetTop: Math.round(box.top - scrollport.top),
+    insetBottom: Math.round(scrollport.bottom - box.bottom),
+    insetRight: Math.round(scrollport.right - box.right),
+    dockClearance: Math.round(dock.top - box.bottom),
+  };
+}
+
+export const PromptRailTicksPaintRealBoxes: Story = {
+  render: () => <PromptRailHarness />,
+  play: async () => {
+    await waitFor(() => expect(railBars().length).toBeGreaterThan(0));
+
+    // Measured over ALL ticks, not a sample: a helper that skips what it
+    // cannot evaluate creates its blind spot exactly where a regression lives.
+    const bars = railBars().map((bar) => {
+      const box = bar.getBoundingClientRect();
+      return { width: Math.round(box.width), height: Math.round(box.height) };
+    });
+
+    expect(bars).toHaveLength(Math.min(PROMPT_RAIL_TURN_COUNT, PROMPT_RAIL_MAX_TICKS));
+    // #2580 shipped bars at 0x0 — present in the DOM, painting nothing.
+    expect(Math.min(...bars.map((bar) => bar.width))).toBeGreaterThan(0);
+    expect(Math.min(...bars.map((bar) => bar.height))).toBeGreaterThan(0);
+  },
+};
+
+export const PromptRailStaysInsideTheScrollport: Story = {
+  render: () => <PromptRailHarness />,
+  play: async () => {
+    const scroller = tailScroller();
+    await waitFor(() => expect(railBars().length).toBeGreaterThan(0));
+    // Without an overflowing transcript the rail has nothing to be pinned
+    // against and the rest of this proves nothing.
+    expect(scroller.scrollHeight).toBeGreaterThan(scroller.clientHeight);
+
+    for (const position of ['top', 'bottom'] as const) {
+      scroller.scrollTop = position === 'top' ? 0 : scroller.scrollHeight;
+      scroller.dispatchEvent(new Event('scroll'));
+      await painted(4);
+
+      // The bottom is where it bites: a sticky offset is clamped by its
+      // containing block, and the chat shell ends a dock-height above the
+      // scrollport's bottom edge (#2161 showed up as a negative insetTop).
+      await waitFor(() => {
+        const insets = railInsets();
+        expect(
+          Object.entries(insets).filter(([, inset]) => inset < 0),
+          `rail geometry at the ${position}: ${JSON.stringify(insets)}`,
+        ).toEqual([]);
+      });
+    }
+  },
+};
+
+export const PromptRailHasNoGapsBetweenTicks: Story = {
+  render: () => <PromptRailHarness />,
+  play: async () => {
+    await waitFor(() => expect(railBars().length).toBeGreaterThan(1));
+
+    // Two things at once, both by walking the rail a pixel at a time: no gap
+    // between hit boxes, where the hover falloff would drop out and pick up
+    // again every few pixels; and nothing occluding the ticks, which is #2338
+    // — macOS's overlay scrollbar takes no layout space but still swallows the
+    // pointer. `elementFromPoint`, not a dispatched pointer event, because a
+    // dispatched event cannot see occlusion at all.
+    //
+    // The occlusion half only bites in a headed browser on macOS: headless
+    // Chromium paints no platform scrollbar at all, and Linux's in-flow one
+    // moves the content column left instead of overlaying it. So #2338 is
+    // inert on CI, exactly as it was in E2E. Before touching the rail's right
+    // edge, run this on a Mac with `SMOKE_HEADED=1` — a plain local smoke run
+    // is headless and proves nothing about occlusion.
+    //
+    // Where the walk goes matters for the same reason. The bar sits at the
+    // tick's right edge, ~11px from the scrollport, inside the 14px the macOS
+    // overlay scrollbar claims; a column further left is outside it and sees
+    // no occlusion at all.
+    const bars = railBars();
+    const first = bars[0].getBoundingClientRect();
+    const last = bars[bars.length - 1].getBoundingClientRect();
+    const x = Math.round(first.left + first.width / 2);
+    const misses: number[] = [];
+    for (
+      let y = Math.round(first.top + first.height / 2);
+      y <= Math.round(last.top + last.height / 2);
+      y += 1
+    ) {
+      if (!document.elementFromPoint(x, y)?.closest('.maka-prompt-rail-tick')) misses.push(y);
+    }
+
+    // The walk has to have covered the rail, not two adjacent bars: a rail
+    // that laid out almost nothing would otherwise pass with no misses.
+    const walked = Math.round(last.bottom - first.top);
+    const railHeight = Math.round(
+      document.querySelector('.maka-prompt-rail')?.getBoundingClientRect().height ?? 0,
+    );
+    expect(walked, `walked ${walked} of a rail ${railHeight} tall`).toBeGreaterThan(
+      railHeight * 0.8,
+    );
+    expect(misses, `misses at y=${misses.slice(0, 12).join(',')}`).toHaveLength(0);
+  },
+};
+
+/** Away from the tail, but still inside the band that would ask for history. */
+async function scrollAwayFromTail(): Promise<void> {
+  const root = tailScroller();
+  root.scrollTop = Math.min(root.scrollHeight - root.clientHeight - 100, loadBand() + 200);
+  root.dispatchEvent(new Event('scroll'));
+  await painted(4);
+}
+
+async function scrollTranscriptTo(position: 'top' | 'bottom'): Promise<void> {
+  const root = tailScroller();
+  root.scrollTop = position === 'top' ? 0 : root.scrollHeight;
+  root.dispatchEvent(new Event('scroll'));
+  await painted(4);
+}
+
+export const ActiveTurnsKeepStableDomIdentities: Story = {
+  render: () => <PromptRailHarness />,
+  play: async () => {
+    await waitFor(() => expect(railBars().length).toBeGreaterThan(0));
+    const sourceCount = Number(
+      messageList().getAttribute('data-turn-source-count'),
+    );
+    expect(sourceCount).toBe(PROMPT_RAIL_ACTIVE_RANGE);
+    expect(document.querySelectorAll('[data-turn-id]')).toHaveLength(sourceCount);
+
+    // Marked on the elements themselves: a remount drops the attribute, which
+    // a count alone cannot tell apart from a remount that produced the same
+    // number of Turns.
+    for (const turn of document.querySelectorAll<HTMLElement>('[data-turn-id]')) {
+      turn.dataset.stableMountProbe = turn.dataset.turnId;
+    }
+
+    await scrollTranscriptTo('bottom');
+    await scrollAwayFromTail();
+
+    expect(document.querySelectorAll('[data-turn-id]')).toHaveLength(sourceCount);
+    expect(document.querySelectorAll('[data-turn-id][data-stable-mount-probe]')).toHaveLength(
+      sourceCount,
+    );
+  },
+};
+
+export const ScrollingAwayPreservesTurnOwnedFocus: Story = {
+  render: () => <PromptRailHarness />,
+  play: async () => {
+    await waitFor(() => expect(railBars().length).toBeGreaterThan(0));
+    await scrollTranscriptTo('bottom');
+
+    const tailTurnId = `turn-scroll-${PROMPT_RAIL_TURN_COUNT}`;
+    const turn = document.querySelector<HTMLElement>(`[data-turn-id="${tailTurnId}"]`);
+    if (!turn) throw new Error('the tail Turn is missing');
+
+    const action = document.createElement('button');
+    action.dataset.turnOwnedAction = 'true';
+    action.textContent = 'Turn-owned action';
+    turn.append(action);
+    action.focus();
+    const range = document.createRange();
+    range.selectNodeContents(action);
+    const selection = document.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+
+    await scrollAwayFromTail();
+
+    await waitFor(() => {
+      const active = document.activeElement;
+      expect({
+        retained: document.querySelector(`[data-turn-id="${tailTurnId}"]`) !== null,
+        focusRetained: active instanceof HTMLElement && active.dataset.turnOwnedAction === 'true',
+        selectionRetained: document.getSelection()?.isCollapsed === false,
+      }).toEqual({ retained: true, focusRetained: true, selectionRetained: true });
+    });
+  },
+};
+
+export const OffscreenActiveTurnsStayFindable: Story = {
+  render: () => <PromptRailHarness />,
+  play: async () => {
+    await waitFor(() => expect(railBars().length).toBeGreaterThan(0));
+    const firstTurnId = document
+      .querySelector('[data-turn-id]')
+      ?.getAttribute('data-turn-id');
+    const turnNumber = Number(firstTurnId?.split('-').at(-1));
+    expect(turnNumber).toBeGreaterThan(0);
+    const needle = `第 ${turnNumber} 个问题`;
+
+    await scrollTranscriptTo('bottom');
+
+    // `window.find` walks the rendered text, so a Turn skipped by
+    // `content-visibility` would not be there to find.
+    //
+    // The E2E original also asserted the Turn's text was in the accessibility
+    // tree, which needs CDP and so did not come across. The smoke's AX audit
+    // is not a substitute: it checks for unnamed actionable nodes and
+    // duplicate landmarks, never that a given string is exposed.
+    document.getSelection()?.removeAllRanges();
+    // `window.find` is non-standard, so it is not on the DOM lib's Window.
+    const found = (window as unknown as { find(text: string): boolean }).find(needle);
+
+    expect(found, `searching for ${needle}`).toBe(true);
+    expect(document.getSelection()?.toString() ?? '').toContain(needle);
+    document.getSelection()?.removeAllRanges();
+  },
+};
+
+/** Where a Turn sits relative to the top of the scrollport. */
+function turnOffsetFromScroller(turnId: string): number {
+  const root = tailScroller();
+  const turn = document.querySelector(`[data-turn-id="${CSS.escape(turnId)}"]`);
+  if (!turn) throw new Error(`turn ${turnId} is not mounted`);
+  return Math.round(turn.getBoundingClientRect().top - root.getBoundingClientRect().top);
+}
+
+/**
+ * The Host's half of a rail jump: a tick for a Turn outside the active range
+ * comes back out as `onLoadTranscriptTurn`, and the range moves to it. ChatView
+ * holds the claim until the Turn mounts, then aligns to it.
+ */
+function PromptRailNavigationHarness() {
+  const [firstIndex, setFirstIndex] = useState(PROMPT_RAIL_TAIL_RANGE_START);
+  return (
+    <ComposedShell
+      chat={{
+        messages: transcriptTurns(firstIndex, PROMPT_RAIL_ACTIVE_RANGE),
+        transcriptTurnIndex: promptRailIndex,
+        onLoadTranscriptTurn: (target) => setFirstIndex(target.sequence),
+      }}
+    />
+  );
+}
+
+export const FirstRailClickLandsOnItsPromptAndHolds: Story = {
+  render: () => <PromptRailNavigationHarness />,
+  play: async () => {
+    await waitFor(() => expect(railTicks().length).toBeGreaterThan(0));
+
+    // The bug only exists while a scroll is in flight: a jump that finishes in
+    // one frame has nothing for the tail-follow lock to collide with, which is
+    // why the E2E original ran under a fixture that asked for motion back.
+    // Here the fixture passes `scrollBehavior: 'smooth'` outright, so the one
+    // thing that can still collapse the scroll under it is the browser's own
+    // reduced-motion state.
+    expect(
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+      'a reduced-motion browser finishes the jump in one frame and this story stops testing anything',
+    ).toBe(false);
+
+    // The case that used to fail: the head of the conversation is not mounted,
+    // so the jump has to bring it in, and the fill that follows changes
+    // scrollHeight underneath the tail-follow lock. A lock that ignores
+    // scroll-ups arriving with a changed height stays on and pulls the
+    // transcript back to the bottom — the click looks dead until the reader
+    // scrolls by hand.
+    const targetTurnId = 'turn-scroll-1';
+    expect(document.querySelector(`[data-turn-id="${targetTurnId}"]`)).toBe(null);
+
+    railTicks()[0].click();
+
+    // Bounded on both sides: below is the Turn never arriving, above is it
+    // arriving and then being pulled off the top of the scrollport.
+    await waitFor(
+      () => expect(Math.abs(turnOffsetFromScroller(targetTurnId))).toBeLessThan(24),
+      { timeout: 10_000 },
+    );
+    expect(railTicks()[0].getAttribute('aria-current')).toBe('true');
+
+    // And stays: Turns keep resolving their content and remeasuring after the
+    // jump, so one that only wins the first frame reads as landing and then
+    // sliding away.
+    await painted(72);
+    const settled = turnOffsetFromScroller(targetTurnId);
+    expect(settled, `the prompt slid to ${settled} after landing`).toBeGreaterThan(-24);
+    expect(settled).toBeLessThan(24);
+    expect(railTicks()[0].getAttribute('aria-current')).toBe('true');
+  },
+};
+
+/**
+ * Which tick the reading position maps to, derived the way the rail derives
+ * it: the newest Turn when parked at the end, otherwise the first Turn in the
+ * top third of the scrollport, projected onto the tick count.
+ */
+function promptRailSnapshot(): {
+  currentIds: string[];
+  expectedId: string | null;
+  sourceTurnId: string | null;
+} {
+  const root = tailScroller();
+  const ticks = railTicks();
+  const currentIds = ticks
+    .filter((tick) => tick.getAttribute('aria-current') === 'true')
+    .map((tick) => tick.dataset.promptTurnId ?? '');
+  const rootBounds = root.getBoundingClientRect();
+  const atEnd = root.scrollHeight - root.scrollTop - root.clientHeight <= 2;
+  const turns = [...root.querySelectorAll<HTMLElement>('[data-transcript-turn-id]')]
+    .map((turn) => ({
+      element: turn,
+      id: turn.dataset.transcriptTurnId ?? '',
+      index: Number(turn.dataset.transcriptTurnId?.split('-').at(-1)) - 1,
+    }))
+    .filter((turn) => turn.id.length > 0 && Number.isFinite(turn.index));
+  const inScrollport = (element: HTMLElement, bottomEdge: number): boolean => {
+    const bounds = element.getBoundingClientRect();
+    return bounds.bottom > rootBounds.top && bounds.top < bottomEdge;
+  };
+  const readingBandTurns = turns
+    .filter(({ element }) => inScrollport(element, rootBounds.top + rootBounds.height * 0.34))
+    .sort((left, right) => left.index - right.index);
+  const scrollportTurns = turns
+    .filter(({ element }) => inScrollport(element, rootBounds.bottom))
+    .sort((left, right) => left.index - right.index);
+  const sourceTurn = atEnd
+    ? turns.reduce<(typeof turns)[number] | null>(
+        (latest, turn) => (latest === null || turn.index > latest.index ? turn : latest),
+        null,
+      )
+    : (readingBandTurns[0] ?? scrollportTurns[0] ?? null);
+  const expectedRailIndex =
+    sourceTurn === null || ticks.length === 0
+      ? null
+      : Math.round((sourceTurn.index * (ticks.length - 1)) / (PROMPT_RAIL_TURN_COUNT - 1));
+  return {
+    currentIds,
+    expectedId:
+      expectedRailIndex === null ? null : (ticks[expectedRailIndex]?.dataset.promptTurnId ?? null),
+    sourceTurnId: sourceTurn?.id ?? null,
+  };
+}
+
+async function expectRailMatchesReadingPosition(where: string): Promise<void> {
+  await waitFor(() => {
+    const snapshot = promptRailSnapshot();
+    expect(snapshot.expectedId, `no visible Turn at the ${where}`).not.toBe(null);
+    expect(snapshot.currentIds, `rail at the ${where}: ${JSON.stringify(snapshot)}`).toEqual([
+      snapshot.expectedId,
+    ]);
+  });
+}
+
+export const RailStaysOnTheVisiblePrompt: Story = {
+  render: () => <PromptRailNavigationHarness />,
+  play: async () => {
+    const root = tailScroller();
+    await waitFor(() => expect(railTicks().length).toBeGreaterThan(0));
+
+    await scrollTranscriptTo('bottom');
+    await expectRailMatchesReadingPosition('tail');
+    expect(railTicks().at(-1)?.getAttribute('aria-current')).toBe('true');
+
+    // Counted across every change, not sampled at rest: two current ticks for
+    // one frame in the middle of a scroll is the failure, and it is invisible
+    // to a reading taken after the scroll settles.
+    const currentCounts: number[] = [];
+    const rail = document.querySelector('.maka-prompt-rail');
+    if (!rail) throw new Error('the prompt rail is missing');
+    const record = (): void => {
+      currentCounts.push(rail.querySelectorAll('.maka-prompt-rail-tick[aria-current="true"]').length);
+    };
+    const observer = new MutationObserver(record);
+    observer.observe(rail, { attributes: true, subtree: true, attributeFilter: ['aria-current'] });
+    record();
+
+    try {
+      // Reading positions across the active range, then a jump that replaces
+      // the range entirely — the two ways the rail's input changes.
+      for (const fraction of [0.75, 0.5, 0.25, 0]) {
+        root.scrollTop = Math.round((root.scrollHeight - root.clientHeight) * fraction);
+        root.dispatchEvent(new Event('scroll'));
+        await painted(4);
+        await expectRailMatchesReadingPosition(`${fraction * 100}% of the transcript`);
+      }
+
+      railTicks()[0].click();
+      await waitFor(
+        () => expect(document.querySelector('[data-turn-id="turn-scroll-1"]')).not.toBe(null),
+        { timeout: 10_000 },
+      );
+      await scrollTranscriptTo('top');
+      await expectRailMatchesReadingPosition('head');
+      expect(railTicks()[0].getAttribute('aria-current')).toBe('true');
+    } finally {
+      observer.disconnect();
+    }
+
+    expect(currentCounts.length).toBeGreaterThan(1);
+    expect(
+      currentCounts.every((count) => count === 1),
+      `current tick count over time: ${currentCounts.join(',')}`,
+    ).toBe(true);
+  },
 };

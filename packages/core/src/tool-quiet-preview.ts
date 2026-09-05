@@ -52,7 +52,7 @@ interface QuietPreviewStrings {
 }
 
 const STRINGS_BY_LOCALE: Record<UiLocale, QuietPreviewStrings> = {
-  zh: {
+  'zh-CN': {
     backgroundTerminal: '后台终端交互',
     empty: '（空）',
     done: '已完成',
@@ -61,6 +61,16 @@ const STRINGS_BY_LOCALE: Record<UiLocale, QuietPreviewStrings> = {
     written: '已写入',
     bytes: (n) => `共 ${n} 字节`,
     moreQuestions: (total) => (total > 1 ? ` 等 ${total} 问` : ''),
+  },
+  'zh-TW': {
+    backgroundTerminal: '後臺終端互動',
+    empty: '（空）',
+    done: '已完成',
+    notDone: '未完成',
+    replacements: (n) => `${n} 處`,
+    written: '已寫入',
+    bytes: (n) => `共 ${n} 位元組`,
+    moreQuestions: (total) => (total > 1 ? ` 等 ${total} 問` : ''),
   },
   en: {
     backgroundTerminal: 'Background terminal interaction',
@@ -75,7 +85,7 @@ const STRINGS_BY_LOCALE: Record<UiLocale, QuietPreviewStrings> = {
 };
 
 function strings(locale: UiLocale): QuietPreviewStrings {
-  return STRINGS_BY_LOCALE[locale] ?? STRINGS_BY_LOCALE.zh;
+  return STRINGS_BY_LOCALE[locale] ?? STRINGS_BY_LOCALE['zh-CN'];
 }
 
 // ── Tool command extraction ──────────────────────────────────────────────
@@ -230,7 +240,7 @@ export interface ToolInvocationInput {
  */
 export function formatToolInvocationLine(
   item: ToolInvocationInput,
-  locale: UiLocale = 'zh',
+  locale: UiLocale,
 ): string | undefined {
   const s = strings(locale);
   const args = asRecord(item.args);
@@ -518,7 +528,7 @@ export interface QuietPreview {
  * Primary list/text fields become the main body; remaining fields (error, ok,
  * truncated, …) are appended so diagnostics cannot vanish.
  */
-export function formatQuietJsonValue(value: unknown, locale: UiLocale = 'zh'): QuietPreview {
+export function formatQuietJsonValue(value: unknown, locale: UiLocale): QuietPreview {
   const s = strings(locale);
   if (value === null || value === undefined) {
     return { body: s.empty };
@@ -676,8 +686,8 @@ function formatArrayAsBody(values: unknown[], locale: UiLocale): string {
  */
 export function formatAsKeyValueLines(
   record: Record<string, unknown>,
-  depth = 0,
-  locale: UiLocale = 'zh',
+  depth: number,
+  locale: UiLocale,
 ): string {
   const s = strings(locale);
   if (depth > 3) return redactSecrets(String(record));

@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { formatUiMessage } from '@maka/core/ui-locale';
+import { formatUiMessage, UI_LOCALES } from '@maka/core/ui-locale';
 import { getTuiPickerCopy, onboardingFailureMessage } from '../pi-tui-pickers.js';
 import { TUI_COPY_RESOURCES } from '../tui-copy-catalog.js';
 
@@ -45,33 +45,37 @@ const MESSAGE_VALUES = {
 describe('TUI copy resources', () => {
   test('registers every domain without a locale-specific getter branch', () => {
     for (const [domain, catalog] of Object.entries(TUI_COPY_RESOURCES)) {
-      assert.ok(catalog.en, `${domain}/en`);
-      assert.ok(catalog.zh, `${domain}/zh`);
+      for (const locale of UI_LOCALES) assert.ok(catalog[locale], `${domain}/${locale}`);
     }
   });
 
-  test('keeps Chinese coverage, variables, and ICU formatting aligned with English', () => {
+  test('keeps translated coverage, variables, and ICU formatting aligned with English', () => {
     for (const [domain, catalog] of Object.entries(TUI_COPY_RESOURCES)) {
       const enLeaves = new Map(leafEntries(catalog.en));
-      const zhLeaves = new Map(leafEntries(catalog.zh));
-
-      assert.deepEqual([...zhLeaves.keys()].sort(), [...enLeaves.keys()].sort(), `${domain}/zh`);
-      for (const [path, enTemplate] of enLeaves) {
-        const zhTemplate = zhLeaves.get(path)!;
-        const enVariables = messageVariables(enTemplate);
-        const zhVariables = messageVariables(zhTemplate);
-        assert.deepEqual(zhVariables, enVariables, `${domain}/zh/${path}`);
-        if (enVariables.length === 0) continue;
-        assert.notEqual(
-          formatUiMessage(enTemplate, MESSAGE_VALUES, 'en'),
-          enTemplate,
-          `${domain}/en/${path}`,
+      for (const locale of ['zh-CN', 'zh-TW'] as const) {
+        const translatedLeaves = new Map(leafEntries(catalog[locale]));
+        assert.deepEqual(
+          [...translatedLeaves.keys()].sort(),
+          [...enLeaves.keys()].sort(),
+          `${domain}/${locale}`,
         );
-        assert.notEqual(
-          formatUiMessage(zhTemplate, MESSAGE_VALUES, 'zh'),
-          zhTemplate,
-          `${domain}/zh/${path}`,
-        );
+        for (const [path, enTemplate] of enLeaves) {
+          const translatedTemplate = translatedLeaves.get(path)!;
+          const enVariables = messageVariables(enTemplate);
+          const translatedVariables = messageVariables(translatedTemplate);
+          assert.deepEqual(translatedVariables, enVariables, `${domain}/${locale}/${path}`);
+          if (enVariables.length === 0) continue;
+          assert.notEqual(
+            formatUiMessage(enTemplate, MESSAGE_VALUES, 'en'),
+            enTemplate,
+            `${domain}/en/${path}`,
+          );
+          assert.notEqual(
+            formatUiMessage(translatedTemplate, MESSAGE_VALUES, locale),
+            translatedTemplate,
+            `${domain}/${locale}/${path}`,
+          );
+        }
       }
     }
   });
@@ -79,11 +83,13 @@ describe('TUI copy resources', () => {
   test('keeps model picker copy locale-specific', () => {
     assert.equal(getTuiPickerCopy('en').modelPickerTitle, 'Select Model');
     assert.equal(getTuiPickerCopy('en').searchLabel, 'Search');
-    assert.equal(getTuiPickerCopy('zh').modelPickerTitle, '选择模型');
-    assert.equal(getTuiPickerCopy('zh').searchLabel, '搜索');
-    assert.equal(getTuiPickerCopy('zh').selectPickerHint, '↑↓ 选择 · Enter 确认 · Esc 关闭');
-    assert.equal(getTuiPickerCopy('zh').currentMarker, '当前');
-    assert.equal(getTuiPickerCopy('zh').defaultMarker, '默认');
+    assert.equal(getTuiPickerCopy('zh-CN').modelPickerTitle, '选择模型');
+    assert.equal(getTuiPickerCopy('zh-CN').searchLabel, '搜索');
+    assert.equal(getTuiPickerCopy('zh-TW').modelPickerTitle, '選擇模型');
+    assert.equal(getTuiPickerCopy('zh-TW').searchLabel, '搜尋');
+    assert.equal(getTuiPickerCopy('zh-TW').selectPickerHint, '↑↓ 選擇 · Enter 確認 · Esc 關閉');
+    assert.equal(getTuiPickerCopy('zh-CN').currentMarker, '当前');
+    assert.equal(getTuiPickerCopy('zh-TW').defaultMarker, '預設');
   });
 
   test('formats the English MCP count with ICU plural rules', () => {
@@ -93,22 +99,47 @@ describe('TUI copy resources', () => {
     assert.equal(formatUiMessage(template, { count: 2 }, 'en'), '2 tools');
   });
 
+  test('localizes rewind and skill notices in both locales', () => {
+    assert.equal(TUI_COPY_RESOURCES.rewind.en.noTargets, 'No turns to rewind to.');
+    assert.equal(TUI_COPY_RESOURCES.rewind['zh-CN'].noTargets, '没有可回退的轮次。');
+    assert.equal(
+      formatUiMessage(
+        TUI_COPY_RESOURCES.skills.en.failedItem,
+        { request: 'nope', reason: TUI_COPY_RESOURCES.skills.en.failureReasons.not_found },
+        'en',
+      ),
+      '/skill:nope (not found)',
+    );
+    assert.equal(
+      formatUiMessage(
+        TUI_COPY_RESOURCES.skills['zh-CN'].failedItem,
+        { request: 'nope', reason: TUI_COPY_RESOURCES.skills['zh-CN'].failureReasons.not_found },
+        'zh-CN',
+      ),
+      '/skill:nope（未找到）',
+    );
+  });
+
   test('localizes stable onboarding failure codes at the TUI boundary', () => {
     assert.equal(
       onboardingFailureMessage({ kind: 'rejected', reason: 'connection_not_found' }, 'en'),
       'This connection no longer exists. Reopen /setup and try again.',
     );
     assert.equal(
-      onboardingFailureMessage({ kind: 'rejected', reason: 'connection_not_found' }, 'zh'),
+      onboardingFailureMessage({ kind: 'rejected', reason: 'connection_not_found' }, 'zh-CN'),
       '该连接已不存在，请重新打开 /setup 后重试。',
     );
     assert.equal(
-      onboardingFailureMessage({ kind: 'failed', errorClass: 'auth' }, 'zh'),
+      onboardingFailureMessage({ kind: 'failed', errorClass: 'auth' }, 'zh-CN'),
       '服务商身份验证失败，请检查 API key 后重试。',
     );
     assert.equal(
-      onboardingFailureMessage({ kind: 'unavailable' }, 'zh'),
+      onboardingFailureMessage({ kind: 'unavailable' }, 'zh-CN'),
       '无法连接 Runtime Host，请重试。',
+    );
+    assert.equal(
+      onboardingFailureMessage({ kind: 'failed', errorClass: 'auth' }, 'zh-TW'),
+      '服務商身分驗證失敗，請檢查 API key 後重試。',
     );
   });
 });

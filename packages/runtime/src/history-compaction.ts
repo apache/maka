@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { AgentRunHeader } from '@maka/core/agent-run';
+import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { ContextBudgetDiagnostic } from '@maka/core/usage-stats/types';
 import { finitePositive } from './context-budget-helpers.js';
@@ -185,12 +185,12 @@ export interface PlanHistoryCompactionInput {
   highWaterSeq?: number;
   previousCheckpoint?: HistoryCompactCheckpoint;
   /**
-   * Run headers for the ordered events, and the route this fold is dispatched
-   * on. Together they name the newest reply this route produced, which is the
-   * only span a retreat may target: a rejection of a larger one says nothing
-   * about a span another model accepted.
+   * The invocations behind the ordered events, and the route this fold is
+   * dispatched on. Together they name the newest reply this route produced,
+   * which is the only span a retreat may target: a rejection of a larger one
+   * says nothing about a span another model accepted.
    */
-  runHeaders?: readonly AgentRunHeader[];
+  invocations?: readonly RuntimeInvocationRecord[];
   acceptedRoute?: { modelId: string; connectionId?: string };
   /** Present only when this automatic Compaction should create a Memory task. */
   memoryExtractionBoundary?: HistoryCompactMemoryExtractionBoundary;
@@ -229,22 +229,24 @@ export type HistoryCompactionFailReason = 'no_safe_completed_span' | 'summarizer
  * A span is only proven for the model and connection that accepted it: a token
  * count is a number in one tokenizer, and a session's history can span runs on
  * several routes. So the newest reply produced on the summarizer's own route
- * ends the span, found through the run headers rather than by role alone —
+ * ends the span, found through each run's opening rather than by role alone —
  * everything before its first event was in a request that route accepted.
  * A ledger with no reply from this route has nothing proven, and the caller
- * must not invent a boundary.
+ * must not invent a boundary. Nor does a run whose opening could not prove its
+ * route — a migrated header with no Connection — even when the current run has
+ * no Connection of its own: two unknowns are not a match.
  */
 function acceptedInputBoundary(
   events: readonly RuntimeEvent[],
-  runHeaders: readonly AgentRunHeader[],
+  invocations: readonly RuntimeInvocationRecord[],
   route: { modelId: string; connectionId?: string } | undefined,
 ): number | undefined {
   if (!route) return undefined;
   const onRoute = (event: RuntimeEvent | undefined): boolean => {
     if (event?.role !== 'model') return false;
-    const header = runHeaders.find((candidate) => candidate.runId === event.runId);
-    if (!header || header.modelId !== route.modelId) return false;
-    return header.llmConnectionId === route.connectionId;
+    const opened = invocations.find((candidate) => candidate.runId === event.runId)?.opening.route;
+    if (opened?.provenance !== 'runtime' || opened.modelId !== route.modelId) return false;
+    return opened.llmConnectionId === route.connectionId;
   };
   let index = -1;
   for (let cursor = events.length - 1; cursor >= 0; cursor -= 1) {
@@ -337,7 +339,7 @@ export async function planHistoryCompaction(
           // (#4559).
           const proven = acceptedInputBoundary(
             input.orderedEvents,
-            input.runHeaders ?? [],
+            input.invocations ?? [],
             input.acceptedRoute,
           );
           if (proven === undefined || proven >= boundary.coveredCount) {

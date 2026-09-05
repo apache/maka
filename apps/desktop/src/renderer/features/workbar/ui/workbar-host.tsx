@@ -94,18 +94,6 @@ export interface WorkbarHostModel {
     placement: SessionWorkbarPlacement,
     tabs: readonly SessionWorkbarTab[],
   ) => void;
-  onReorderTab: (
-    placement: SessionWorkbarPlacement,
-    tabId: string,
-    targetTabId: string,
-  ) => void;
-  onMoveTab: (
-    placement: SessionWorkbarPlacement,
-    tabId: string,
-    direction: 'left' | 'right',
-  ) => void;
-  onMoveTabToPanel: (tabId: string, target: SessionWorkbarPlacement) => void;
-  onPinTab: (tabId: string) => void;
   onOpenLauncher: (placement: SessionWorkbarPlacement) => void;
   onRequestOpenTab: (
     placement: SessionWorkbarPlacement,
@@ -191,10 +179,6 @@ export function WorkbarHost({ model: props }: { model: WorkbarHostModel }) {
               onActivateTab={props.onActivateTab}
               onCloseTab={props.onCloseTab}
               onCloseTabs={props.onCloseTabs}
-              onReorderTab={props.onReorderTab}
-              onMoveTab={props.onMoveTab}
-              onMoveTabToPanel={props.onMoveTabToPanel}
-              onPinTab={props.onPinTab}
               onOpenLauncher={props.onOpenLauncher}
               onRequestOpenTab={props.onRequestOpenTab}
               quotes={props.quotes}

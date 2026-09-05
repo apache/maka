@@ -44,7 +44,7 @@ type SettingsTestResultCopy = {
 };
 
 const COPY = {
-  zh: {
+  'zh-CN': {
     proxy: {
       reachable: (endpoint, location) =>
         ["代理配置有效", endpoint, location].filter(Boolean).join(" · "),
@@ -67,6 +67,31 @@ const COPY = {
       tokenInvalid: "Bot Token 无效，请检查后重试。",
       appCredentialsMissing: "请填写 App ID 和 App Secret 后再测试。",
       connectionFailed: "请检查凭据和网络设置后重试。",
+    },
+  },
+  'zh-TW': {
+    proxy: {
+      reachable: (endpoint, location) =>
+        ["代理設定有效", endpoint, location].filter(Boolean).join(" · "),
+      disabled: "請先啟用代理伺服器，再進行測試。",
+      configurationMissing: "請填寫代理伺服器地址和埠後再測試。",
+      credentialMissing: "代理認證已開啟，請輸入代理密碼後再測試。",
+      timeout: "代理測試超時，請檢查代理服務是否可達。",
+      httpError: (status) =>
+        status === undefined
+          ? "代理測試回傳了錯誤回應，請檢查代理服務或測試地址。"
+          : `代理測試回傳 HTTP ${status}，請檢查代理服務或測試地址。`,
+      unreachable: "代理不可達，請檢查伺服器地址、埠和認證資訊。",
+    },
+    bot: {
+      credentialsValid: (username) =>
+        username
+          ? `憑據檢查已透過 · ${username}。這不代表訊息收發服務已啟動。`
+          : "憑據檢查已透過。這不代表訊息收發服務已啟動。",
+      tokenMissing: "請填寫 Bot Token 後再測試。",
+      tokenInvalid: "Bot Token 無效，請檢查後重試。",
+      appCredentialsMissing: "請填寫 App ID 和 App Secret 後再測試。",
+      connectionFailed: "請檢查憑據和網路設定後重試。",
     },
   },
   en: {

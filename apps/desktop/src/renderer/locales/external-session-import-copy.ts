@@ -94,7 +94,7 @@ type ExternalSessionImportCopy = {
 };
 
 const COPY = {
-  zh: {
+  'zh-CN': {
     sourceLabel: '来源',
     sourceNames: { codex: 'Codex', 'claude-code': 'Claude Code' },
     includeArchived: '包含已归档的对话',
@@ -149,6 +149,62 @@ const COPY = {
     batchNothingImported: '没有对话被导入。',
     importOutcomeUnknownDescription: (names) =>
       `以下对话的导入结果无法确认：${names.map((name) => `「${name}」`).join('、')}。请先在任务列表中查找，已经出现的不要再次导入。`,
+  },
+  'zh-TW': {
+    sourceLabel: '來源',
+    sourceNames: { codex: 'Codex', 'claude-code': 'Claude Code' },
+    includeArchived: '包含已歸檔的對話',
+    searchLabel: '搜尋',
+    searchHelp: '符合對話標題與專案路徑。留空顯示全部。',
+    searchPlaceholder: '標題或路徑的一部分',
+    searchEmpty: (term) => `沒有標題或路徑包含「${term}」的對話。`,
+    loading: '正在讀取外部對話…',
+    listAria: '可匯入的對話',
+    emptyTitle: '沒有可匯入的對話',
+    emptyDescription: '目前來源中沒有找到符合條件的根對話。',
+    unavailableTitle: '沒有檢測到支援的 Agent',
+    // The title already says nothing was detected, so this says what to do
+    // about it instead of saying it again. It names Codex because the renderer
+    // only ever learns which sources *were* detected — nothing but a copy
+    // string can tell someone with none what to go install. The second half is
+    // the promise that earns the permission to read another app's files.
+    unavailableDescription: '在本機使用過 Codex 後，它的對話會出現在這裡。Maka 只讀取這些檔案，不會修改。',
+    loadFailedTitle: '無法讀取外部對話',
+    loadFailedFallback: '外部對話目錄暫時無法讀取，請重試。',
+    retry: '重試',
+    archived: '已歸檔',
+    loadMore: '載入更多',
+    loadingMore: '正在載入…',
+    duplicateNote: '再次匯入同一個對話會建立一個獨立的任務。',
+    importedCount: (count) => `已匯入 ${count} 次`,
+    openLatestImportedTask: '開啟最近匯入的任務',
+    openLatestImportedTaskFor: (name) => `開啟「${name}」最近匯入的任務`,
+    import: '匯入',
+    importAgain: '再次匯入',
+    importTask: (name) => `匯入「${name}」`,
+    importTaskAgain: (name) => `再次匯入「${name}」`,
+    importing: '正在匯入…',
+    importingTask: (name) => `正在匯入「${name}」`,
+    importInProgressTitle: '正在匯入',
+    importInProgressDescription: (name) => `正在匯入「${name}」，完成後會直接開啟這個任務。`,
+    importFailedTitle: '匯入失敗',
+    importFailedFallback: '該對話無法轉換或儲存。請檢查來源後重試。',
+    importRecoveredTitle: '已確認匯入',
+    importRecoveredDescription: (name) => `「${name}」匯入的任務現已可用。`,
+    importNotRecordedTitle: '沒有發現新任務',
+    importNotRecordedDescription: '沒有記錄到新的任務，可以安全重試。',
+    importOutcomeUnknownTitle: '需要確認匯入結果',
+    selectAllAriaLabel: '全選或全部取消選取',
+    selectedCount: (selected, listed) => `已選 ${selected} / ${listed}`,
+    selectRowAriaLabel: (name) => `選取 ${name}`,
+    importSelected: '匯入所選項目',
+    batchProgress: (done, total) => `正在匯入 ${done} / ${total}`,
+    batchDoneTitle: (imported) => `已匯入 ${imported} 個對話`,
+    batchDuplicated: (count) => `其中 ${count} 個先前已匯入，現在各有兩份。`,
+    batchFailed: (count) => `另有 ${count} 個無法匯入。`,
+    batchNothingImported: '沒有匯入任何對話。',
+    importOutcomeUnknownDescription: (names) =>
+      `以下對話的匯入結果無法確認：${names.map((name) => `「${name}」`).join('、')}。請先在任務列表中查詢，已經出現的不要再次匯入。`,
   },
   en: {
     sourceLabel: 'Source',

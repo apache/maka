@@ -171,8 +171,11 @@ test('project and task rows show contextual hover details', async ({
   await expect(taskCard.locator('.maka-sidebar-hover-card-preview')).toHaveText(
     '已归档第 00 条研究记录。',
   );
-  await expect(taskCard.locator('.maka-sidebar-hover-card-path')).toContainText(
-    'e2e-fixture-sidebar-search-modal-open',
+  const taskProject = taskCard.locator('.maka-sidebar-hover-card-project');
+  await expect(taskProject).toHaveText(LONG_SIDEBAR_PROJECT_NAME);
+  await expect(taskProject).toHaveAttribute(
+    'title',
+    /e2e-fixture-sidebar-search-modal-open/,
   );
   await expect(taskCard.locator('.maka-sidebar-hover-card-meta')).toContainText('glm-5.1');
 

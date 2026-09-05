@@ -56,7 +56,7 @@ function isDeniedEnvKey(key) {
  * @param {string} homeDir
  * @param {{
  *   scenario?: string,
- *   locale?: 'zh' | 'en',
+ *   locale?: 'zh-CN' | 'zh-TW' | 'en',
  *   platform?: 'darwin' | 'win32' | 'linux',
  *   theme?: 'light' | 'dark',
  *   scrollMotion?: 'auto' | 'smooth',

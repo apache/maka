@@ -25,7 +25,7 @@ import {
 import { expect, test } from './fixtures.js';
 
 test('fixture-seeded transcripts return content hits with turn ids', async ({
-  promptRailWindow: page,
+  threadSearchWindow: page,
 }) => {
   const outcome = await page.evaluate(async () =>
     window.maka.search.thread({

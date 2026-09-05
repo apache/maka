@@ -23,6 +23,7 @@ import assert from 'node:assert/strict';
 import {
   MODEL_CALL_DIAGNOSTIC_FIELD_MAX_LENGTH,
   MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
+  PROMPT_COMPOSITION_MAX_TOOLS,
   decodeModelCallAttempt,
   groupModelCallAttempts,
   settledAttempt,
@@ -59,7 +60,55 @@ function attempt(overrides: Partial<ModelCallAttempt> = {}): ModelCallAttempt {
 }
 
 describe('ModelCallAttempt codec', () => {
-  test('accepts one bounded prepared-request observation on the canonical attempt', () => {
+  test('accepts the folded prompt composition on the canonical attempt', () => {
+    const decoded = decodeModelCallAttempt({
+      ...attempt(),
+      promptComposition: {
+        segments: [
+          { kind: 'system_instructions', bytes: 400 },
+          { kind: 'tool_definitions', bytes: 300 },
+        ],
+        tools: [{ name: 'Bash', bytes: 300 }],
+        remainingTools: { count: 2, bytes: 40 },
+        unlabelledToolBytes: 10,
+      },
+    });
+
+    assert.deepEqual(decoded.promptComposition?.tools, [{ name: 'Bash', bytes: 300 }]);
+  });
+
+  test('rejects a composition that names one bucket twice', () => {
+    // Two rows for one kind would let a reader's total disagree with the
+    // store's, and nothing downstream could tell which was meant.
+    assert.throws(() =>
+      decodeModelCallAttempt({
+        ...attempt(),
+        promptComposition: {
+          segments: [
+            { kind: 'messages', bytes: 10 },
+            { kind: 'messages', bytes: 20 },
+          ],
+        },
+      }),
+    );
+  });
+
+  test('rejects a composition carrying more named tools than the fold can produce', () => {
+    assert.throws(() =>
+      decodeModelCallAttempt({
+        ...attempt(),
+        promptComposition: {
+          segments: [{ kind: 'tool_definitions', bytes: 650 }],
+          tools: Array.from({ length: PROMPT_COMPOSITION_MAX_TOOLS + 1 }, (_, index) => ({
+            name: `tool-${index}`,
+            bytes: 10,
+          })),
+        },
+      }),
+    );
+  });
+
+  test('still decodes the prepared-request observation recorded before the fold', () => {
     const decoded = decodeModelCallAttempt({
       ...attempt(),
       requestObservation: {

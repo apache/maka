@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { DesktopSessionSummary } from './bridge-contract.js';
+import type { DesktopSessionSummary } from '../shared/desktop-session-projection.js';
 
 export interface RuntimeHostSessionCatalogRequest {
   readonly hostId: string;

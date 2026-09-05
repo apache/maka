@@ -28,26 +28,26 @@ describe('TUI primary guidance catalog', () => {
       .map((command) => command.id)
       .sort();
 
-    for (const locale of ['zh', 'en'] as const) {
+    for (const locale of ['zh-CN', 'en'] as const) {
       assert.deepEqual(Object.keys(getTuiPrimaryGuidance(locale).commands).sort(), expected);
     }
   });
 
   test('keeps keybinding tokens identical across locales', () => {
-    const tokens = (locale: 'zh' | 'en') =>
+    const tokens = (locale: 'zh-CN' | 'en') =>
       getTuiPrimaryGuidance(locale).help.keybindings.flatMap((line) => {
         const match = /^\s*(.*?)\s*—/u.exec(line);
         return match ? [match[1]!.replace(/\s*[（(].*$/u, '')] : [];
       });
 
-    assert.deepEqual(tokens('zh'), tokens('en'));
+    assert.deepEqual(tokens('zh-CN'), tokens('en'));
   });
 
   test('renders Option shortcut labels on macOS and Alt labels elsewhere', () => {
-    const guidanceFor = (locale: 'zh' | 'en', platform: NodeJS.Platform) =>
+    const guidanceFor = (locale: 'zh-CN' | 'en', platform: NodeJS.Platform) =>
       getTuiPrimaryGuidance(locale, platform);
 
-    for (const locale of ['zh', 'en'] as const) {
+    for (const locale of ['zh-CN', 'en'] as const) {
       const macKeybindings = guidanceFor(locale, 'darwin').help.keybindings.join('\n');
       assert.match(macKeybindings, /⌥\+Enter/u);
       assert.match(macKeybindings, /⌥\+↑/u);

@@ -25,6 +25,7 @@ import { after, describe, test } from 'node:test';
 import {
   authenticateInteractiveArtifactStoreWriter,
   openInteractiveArtifactStoreForWrite,
+  startRetiredCaptureSweep,
   type InteractiveArtifactStoreWriter,
 } from '../artifact-stores.js';
 import { ARTIFACT_WRITER_LOCK_FILE } from '../artifact-storage-layout.js';
@@ -152,6 +153,200 @@ describe('interactive artifact store authority', () => {
     });
   });
 });
+
+describe('retired request capture sweep', () => {
+  test('drains a real writer, and cannot run before that writer has recovered', async () => {
+    await withInteractiveOwner(async (owner, _root, track) => {
+      const writer = track(await openInteractiveArtifactStoreForWrite(owner.lease));
+      await writer.recover();
+      for (let index = 0; index < 40; index += 1) {
+        await writer.create({
+          ...artifactInput(`capture-${index}`, `request-${index}`),
+          source: 'provider_request_capture',
+        });
+      }
+      await writer.create(artifactInput('kept', 'kept'));
+
+      // Every other test here injects a fake, which is why the failure that
+      // actually shipped got through: wired ahead of recovery, each batch was
+      // refused, the sweep gave up on the first one, and it reclaimed nothing
+      // at all for anyone. Only the real writer and its real queue show that.
+      const errors: unknown[] = [];
+      startRetiredCaptureSweep(writer, {
+        onError: (error) => {
+          errors.push(error);
+        },
+      });
+      await settled(
+        async () => (await writer.listPage('session-1', { offset: 0, limit: 100 })).total === 1,
+      );
+      assert.deepEqual(errors, []);
+      const remaining = await writer.listPage('session-1', { offset: 0, limit: 100 });
+      assert.equal(remaining.records[0]?.id, 'kept');
+    });
+  });
+
+  test('keeps taking batches until the residue is gone, then stops', async () => {
+    const limits: number[] = [];
+    // A store that purges fewer than asked still has to be revisited.
+    let residue = 5;
+    startRetiredCaptureSweep({
+      purgeRetiredCaptures: async (limit) => {
+        limits.push(limit);
+        const purged = Math.min(2, residue);
+        residue -= purged;
+        return { purged, remaining: residue };
+      },
+    });
+
+    await settled(() => residue === 0);
+    const passes = limits.length;
+    assert.equal(passes, 3, 'a batch that clears part of the residue is followed by another');
+
+    await idleLongerThanOnePause();
+    assert.equal(limits.length, passes, 'an empty residue does not schedule another pass');
+  });
+
+  test('waits longer after a batch that took longer', async () => {
+    const gaps: number[] = [];
+    let previousEnd = 0;
+    let residue = 3;
+    // A batch that holds the writer lock for 300 ms must not be followed
+    // straight away on a store large enough for that to happen.
+    startRetiredCaptureSweep({
+      purgeRetiredCaptures: async () => {
+        if (previousEnd) gaps.push(Date.now() - previousEnd);
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, 300);
+        });
+        residue -= 1;
+        previousEnd = Date.now();
+        return { purged: 1, remaining: residue };
+      },
+    });
+
+    await settled(() => residue === 0);
+    assert.ok(gaps.length >= 1, 'the sweep took more than one batch');
+    assert.ok(
+      gaps.every((gap) => gap >= 600),
+      `a 300 ms batch must be followed by a pause of at least 600 ms, saw ${gaps.join(', ')}`,
+    );
+  });
+
+  test('retries a failed batch, and lets onError repair what made it fail', async () => {
+    let calls = 0;
+    const errors: unknown[] = [];
+    let residue = 2;
+    // The first failure says nothing about the second: a write authority that
+    // another mutation left needing recovery refuses this batch too, until
+    // something recovers it. That something is onError.
+    let recovered = false;
+    startRetiredCaptureSweep(
+      {
+        purgeRetiredCaptures: async () => {
+          calls += 1;
+          if (!recovered) throw new Error('Artifact write recovery is required');
+          residue -= 1;
+          return { purged: 1, remaining: residue };
+        },
+      },
+      {
+        onError: async (error) => {
+          errors.push(error);
+          recovered = true;
+        },
+      },
+    );
+
+    await settled(() => residue === 0);
+    assert.equal(errors.length, 1);
+    assert.match(String(errors[0]), /recovery is required/);
+    assert.ok(calls > 1, 'the sweep came back after the failure');
+  });
+
+  test('gives up once failures stop looking temporary', async () => {
+    let calls = 0;
+    const errors: unknown[] = [];
+    startRetiredCaptureSweep(
+      {
+        purgeRetiredCaptures: async () => {
+          calls += 1;
+          throw new Error('artifact store is unavailable');
+        },
+      },
+      {
+        onError: (error) => {
+          errors.push(error);
+        },
+      },
+    );
+
+    await settled(() => errors.length === 5);
+    await idleLongerThanOnePause();
+    assert.equal(calls, 5, 'a permanent failure does not retry forever');
+  });
+
+  test('does not shrink a batch that cost a lot, because the cost is not the batch', async () => {
+    const limits: number[] = [];
+    let residue = 400;
+    // A batch costs what the whole store costs, not what its own size costs.
+    // Asking for less would pay that same toll again for fewer records, so an
+    // expensive batch is answered by waiting longer, not by taking less.
+    startRetiredCaptureSweep({
+      purgeRetiredCaptures: async (limit) => {
+        limits.push(limit);
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, 400);
+        });
+        residue -= limit;
+        return { purged: limit, remaining: Math.max(0, residue) };
+      },
+    });
+
+    await settled(() => limits.length >= 2);
+    assert.deepEqual(limits.slice(0, 2), [256, 256]);
+  });
+
+  test('stop keeps the next batch from starting', async () => {
+    let calls = 0;
+    let release!: () => void;
+    const firstBatch = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const stop = startRetiredCaptureSweep({
+      purgeRetiredCaptures: async () => {
+        calls += 1;
+        await firstBatch;
+        return { purged: 1, remaining: 99 };
+      },
+    });
+
+    await settled(() => calls === 1);
+    stop();
+    release();
+    await idleLongerThanOnePause();
+    assert.equal(calls, 1, 'a residue that remains is left for a later run');
+  });
+});
+
+/** Lets the sweep's own timers run until it reaches the state under test. */
+async function settled(done: () => boolean | Promise<boolean>): Promise<void> {
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline) {
+    if (await done()) return;
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 10);
+    });
+  }
+  throw new Error('The capture sweep did not reach the expected state');
+}
+
+/** Long enough that a sweep which meant to continue would have called again. */
+async function idleLongerThanOnePause(): Promise<void> {
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, 400);
+  });
+}
 
 function artifactInput(id: string, content: string | Uint8Array) {
   return {

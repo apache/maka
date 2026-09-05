@@ -99,7 +99,7 @@ export interface TurnFooterContext {
    * / other action types stay clickable.
    */
   pendingActions?: ReadonlySet<TurnFooterActionId>;
-  locale?: UiLocale;
+  locale: UiLocale;
 }
 
 /**
@@ -113,7 +113,7 @@ export interface TurnFooterContext {
  */
 export function deriveTurnFooterActions(input: TurnFooterContext): TurnFooterAction[] {
   const { status, hasContent, alreadyRegenerated, pendingActions, metaSummary } = input;
-  const copyText = getDesktopConversationCopy(input.locale ?? 'zh').footer;
+  const copyText = getDesktopConversationCopy(input.locale).footer;
   const actionLabel = copyText.labels;
   const isPending = (id: TurnFooterActionId) => pendingActions?.has(id) ?? false;
   const PENDING_TOOLTIP = copyText.pending;

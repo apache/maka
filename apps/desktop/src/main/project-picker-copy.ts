@@ -20,5 +20,7 @@
 import type { UiLocale } from '@maka/core/ui-locale';
 
 export function projectPickerTitle(locale: UiLocale): string {
-  return locale === 'zh' ? '添加项目' : 'Add project';
+  if (locale === 'zh-CN') return '添加项目';
+  if (locale === 'zh-TW') return '新增專案';
+  return 'Add project';
 }

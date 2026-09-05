@@ -30,6 +30,8 @@
     "./collaboration": "./dist/collaboration.js",
     "./orchestration": "./dist/orchestration.js",
     "./tool-mode": "./dist/tool-mode.js",
+    "./record-schema": "./dist/record-schema.js",
+    "./runtime-invocation": "./dist/runtime-invocation.js",
     "./plan": "./dist/plan.js",
     "./agent-run": "./dist/agent-run.js",
     "./subagent-workspace": "./dist/subagent-workspace.js",
@@ -162,6 +164,6 @@
     "test:dist": "node --test \"dist/**/*.test.js\""
   },
   "dependencies": {
-    "intl-messageformat": "11.2.12"
+    "intl-messageformat": "11.2.14"
   }
 }

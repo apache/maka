@@ -45,9 +45,13 @@ export {
   type RuntimeHostRetirementPreparation,
 } from './host-retirement.js';
 export {
+  forceTerminateObservedRegisteredRuntimeHost,
   forceTerminateRegisteredRuntimeHost,
+  type ObservedRegisteredRuntimeHost,
+  type ObservedRegisteredRuntimeHostTerminationAuthority,
   type RegisteredRuntimeHostIdentity,
 } from './registered-host-termination.js';
+export type { RuntimeHostProcessIdentity } from './process-identity.js';
 export {
   LOCAL_RUNTIME_HOST_PROFILE,
   RUNTIME_HOST_ACCESS_CREDENTIAL_MAX_BYTES,

@@ -596,6 +596,9 @@ export interface DesktopRuntimeHostManagementProgress {
     | import('@maka/runtime-host/operator').RuntimeHostServiceUpdatePhase;
 }
 
+export type DesktopRuntimeHostResources =
+  import('@maka/runtime-host/protocol').HostResourcesResult;
+
 export interface DesktopRuntimeHostDirectPeerSnapshot {
   readonly state: 'unsupported' | 'not_configured' | 'disabled' | 'enabled';
   readonly peerId?: string;
@@ -877,6 +880,7 @@ export interface MakaBridge {
       policy: import('@maka/runtime-host/operator').RuntimeHostManagedUpdatePolicy,
     ): Promise<DesktopRuntimeHostUpdatePolicySnapshot>;
     reconcileUpdate(profileId: string): Promise<DesktopRuntimeHostUpdateReconciliationResponse>;
+    getResources(profileId: string): Promise<DesktopRuntimeHostResources | undefined>;
     getDirectPeer(profileId: string): Promise<DesktopRuntimeHostDirectPeerSnapshot>;
     configureDirectPeer(
       profileId: string,

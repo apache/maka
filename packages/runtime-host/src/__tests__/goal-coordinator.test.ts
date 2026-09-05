@@ -23,6 +23,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import type { GoalAuthorityRecord } from '@maka/core/goal';
+import { seedInvocation } from '@maka/runtime/test-only/invocation-fixture';
 import type { GoalTurnOutcome } from '@maka/runtime/goal-continuation';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
 import { openInteractiveGoalAuthorityForWrite } from '@maka/storage/goal-authority';
@@ -354,21 +355,30 @@ test('restart settles the durable current Goal execution through Hosted Executio
       admittedAt: 1,
     });
     assert.equal(admission.kind, 'admitted');
-    await stores.agentRunStore.createRun({
-      runId: execution.runId,
-      invocationId: execution.runId,
+    await seedInvocation(stores.runtimeEventStore, {
       sessionId: session.id,
+      invocationId: execution.runId,
+      runId: execution.runId,
       turnId: execution.turnId,
-      status: 'created',
-      backendKind: 'fake',
-      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
-      llmConnectionSlug: 'fake',
-      modelId: 'fake-model',
-      cwd: capability.canonicalPath,
-      permissionMode: 'ask',
-      goalId: record.goal.id,
-      createdAt: 2,
-      updatedAt: 2,
+      openedAt: 2,
+      opening: {
+        route: {
+          provenance: 'runtime',
+          backendKind: 'fake',
+          llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+          llmConnectionSlug: 'fake',
+          modelId: 'fake-model',
+        },
+        configuration: {
+          cwd: capability.canonicalPath,
+          permissionMode: 'ask',
+          collaborationMode: 'agent',
+          orchestrationMode: 'default',
+          orchestrationSource: 'session',
+          toolMode: 'direct',
+        },
+        root: { kind: 'goal', goalId: record.goal.id },
+      },
     });
     await stores.runtimeEventStore.appendRuntimeEvent(session.id, execution.runId, {
       id: 'goal_recovery_terminal',
@@ -382,11 +392,6 @@ test('restart settles the durable current Goal execution through Hosted Executio
       role: 'model',
       author: 'agent',
       content: { kind: 'text', text: 'done' },
-    });
-    await stores.agentRunStore.updateRun(session.id, execution.runId, {
-      status: 'completed',
-      updatedAt: 3,
-      completedAt: 3,
     });
 
     let drainRequested = false;

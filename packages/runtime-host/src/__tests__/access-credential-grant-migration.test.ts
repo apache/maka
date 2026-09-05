@@ -55,10 +55,10 @@ function storedCredential(operationGrants: readonly string[]): Record<string, un
   };
 }
 
-test('a renamed operation carries its stored authority to the successor', async () => {
+test('renamed and split operations carry their stored authority to successors', async () => {
   const path = await writeAccessFile({
     schemaVersion: 3,
-    credentials: [storedCredential(['host.status', 'task.ledger.query'])],
+    credentials: [storedCredential(['host.status', 'host.diagnostics.query', 'task.ledger.query'])],
     sessionGrants: [],
     turnAccessRequests: [],
   });
@@ -66,8 +66,18 @@ test('a renamed operation carries its stored authority to the successor', async 
   const file = await readAccessCredentialFile(path);
   const credential = file.credentials[0];
   assert.ok(credential);
-  assert.deepEqual(credential.grants, ['host.status', 'session.todo.query']);
-  assert.deepEqual(effectiveOperationGrants(credential), ['host.status', 'session.todo.query']);
+  assert.deepEqual(credential.grants, [
+    'host.status',
+    'host.diagnostics.query',
+    'host.resources.query',
+    'session.todo.query',
+  ]);
+  assert.deepEqual(effectiveOperationGrants(credential), [
+    'host.status',
+    'host.diagnostics.query',
+    'host.resources.query',
+    'session.todo.query',
+  ]);
   assert.deepEqual(unresolvedPersistedGrants(file), []);
 });
 

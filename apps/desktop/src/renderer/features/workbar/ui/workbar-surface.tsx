@@ -17,63 +17,34 @@
  * under the License.
  */
 
-import {
-  lazy,
-  Suspense,
-  useEffect,
-  useRef,
-  useState,
-  type CSSProperties,
-  type ComponentProps,
-  type KeyboardEvent as ReactKeyboardEvent,
-  type ReactNode,
-} from 'react';
-import {
-  closestCenter,
-  DndContext,
-  PointerSensor,
-  useSensor,
-  useSensors,
-  type DragEndEvent,
-} from '@dnd-kit/core';
-import {
-  horizontalListSortingStrategy,
-  SortableContext,
-  useSortable,
-} from '@dnd-kit/sortable';
-import {
-  SessionTodoPanel,
-  sessionTodoActiveCount,
-  IconButton,
-  Composer,
-  useUiLocale,
-  type ChatModelChoice,
-} from '@maka/ui';
+import { lazy, Suspense, useState, type ReactNode } from 'react';
+import { Composer, useUiLocale, type ChatModelChoice } from '@maka/ui';
 import {
   ICON_SIZE,
   Activity,
+  Check,
   Clipboard,
+  FileDiff,
   FolderOpen,
-  GitBranch,
   Globe,
-  ListTodo,
   Loader2,
   MessageCircleQuestion,
   Plus,
   Terminal,
-  X,
 } from '@maka/ui/icons';
 import { Badge } from '@astryxdesign/core/Badge';
-import { Button } from '@astryxdesign/core/Button';
 import { Card } from '@astryxdesign/core/Card';
-import { ContextMenu } from '@astryxdesign/core/ContextMenu';
+import {
+  DropdownMenu,
+  DropdownMenuItem,
+} from '@astryxdesign/core/DropdownMenu';
 import { Heading } from '@astryxdesign/core/Heading';
 import { Icon } from '@astryxdesign/core/Icon';
 import { Kbd } from '@astryxdesign/core/Kbd';
 import { List, ListItem } from '@astryxdesign/core/List';
 import { Section } from '@astryxdesign/core/Section';
 import { Spinner } from '@astryxdesign/core/Spinner';
-import { Tooltip } from '@astryxdesign/core/Tooltip';
+import { Tab, TabList } from '@astryxdesign/core/TabList';
 import type { SessionSummary } from '@maka/core/session';
 import { QuoteCompanionPanel } from '../tools/side-chat/quote-companion-panel';
 import {
@@ -81,12 +52,13 @@ import {
   type SessionWorkbarTabKind,
   type SessionWorkbarPanelsState,
   type SessionWorkbarPlacement,
-  type SessionWorkbarTabsState,
-  sessionWorkbarTabsExcept,
-  sessionWorkbarTabsToRight,
   terminalRefFromWorkbarTab,
 } from '../model/workbar-tabs';
-import { useSessionTodo } from '../tools/tasks/use-session-todo';
+import {
+  WORKBAR_TOOL_DEFINITIONS,
+  workbarToolDefinition,
+  type WorkbarToolDefinition,
+} from '../model/workbar-tool-definitions';
 import { WorkbarToggle } from './workbar-toggle';
 import { WorkBoardPanel } from '../../../work-board-panel.js';
 import { getDesktopConversationCopy } from '../../../locales/conversation-copy.js';
@@ -128,34 +100,21 @@ function WorkbarPanelLoading(props: { label: string }) {
 }
 
 function WorkbarPanel(props: {
+  id?: string;
   active: boolean;
   placement: SessionWorkbarPlacement;
   overlay?: boolean;
-  preview?: boolean;
-  onPin?: () => void;
   className?: string;
   children: ReactNode;
 }) {
-  const pinPreview = (target: EventTarget | null) => {
-    if (!props.preview) return;
-    if (
-      target instanceof Element &&
-      target.closest('[data-tab-preview-pin-exempt]')
-    ) {
-      return;
-    }
-    props.onPin?.();
-  };
   return (
     <Section
+      id={props.id}
       variant="transparent"
       padding={0}
       hidden={!props.active}
       data-placement={props.placement}
       data-overlay={props.overlay || undefined}
-      data-preview={props.preview || undefined}
-      onPointerDownCapture={(event) => pinPreview(event.target)}
-      onKeyDownCapture={(event) => pinPreview(event.target)}
       className={
         props.className
           ? `maka-session-workbar-panel ${props.className}`
@@ -171,20 +130,33 @@ function TabCount(props: { count: number }) {
   return <Badge variant="neutral" label={props.count} data-maka-contract="session-workbar-count" />;
 }
 
-function tabLabel(
-  tab: SessionWorkbarTab,
-  tabs: readonly SessionWorkbarTab[],
-  copy: ReturnType<typeof getDesktopConversationCopy>['workbar'],
-): string {
-  switch (tab.kind) {
+/**
+ * The one place a tool's semantic icon name becomes a glyph.
+ * `workbar-tool-definitions.ts` names the icon; nothing else picks one.
+ */
+const FACE_ICON = {
+  activity: Activity,
+  'file-diff': FileDiff,
+  folder: FolderOpen,
+  globe: Globe,
+  'list-todo': Clipboard,
+  'message-circle-question': MessageCircleQuestion,
+  terminal: Terminal,
+} as const satisfies Record<WorkbarToolDefinition['icon'], typeof Activity>;
+
+function faceIcon(kind: SessionWorkbarTabKind) {
+  return FACE_ICON[workbarToolDefinition(kind).icon];
+}
+
+type WorkbarCopy = ReturnType<typeof getDesktopConversationCopy>['workbar'];
+
+/** A face's own name, before any per-instance numbering. */
+function faceLabel(kind: SessionWorkbarTabKind, copy: WorkbarCopy): string {
+  switch (kind) {
     case 'review':
       return copy.review;
     case 'terminal':
-      return tab.ordinal && tab.ordinal > 1
-        ? copy.terminalNumbered(tab.ordinal)
-        : copy.terminal;
-    case 'tasks':
-      return copy.tasks;
+      return copy.terminal;
     case 'work-board':
       return copy.workBoard;
     case 'browser':
@@ -193,6 +165,21 @@ function tabLabel(
       return copy.files;
     case 'inspector':
       return copy.inspector;
+    case 'side-chat':
+      return copy.sideChat;
+  }
+}
+
+function tabLabel(
+  tab: SessionWorkbarTab,
+  tabs: readonly SessionWorkbarTab[],
+  copy: WorkbarCopy,
+): string {
+  switch (tab.kind) {
+    case 'terminal':
+      return tab.ordinal && tab.ordinal > 1
+        ? copy.terminalNumbered(tab.ordinal)
+        : copy.terminal;
     case 'side-chat':
       {
         if (tab.title?.trim()) return tab.title.trim();
@@ -203,186 +190,136 @@ function tabLabel(
           ) + 1;
         return index <= 1 ? copy.sideChat : copy.sideChatNumbered(index);
       }
+    default:
+      return faceLabel(tab.kind, copy);
   }
 }
 
-function tabIcon(tab: SessionWorkbarTab, active: boolean): ReactNode {
-  if (active) {
+function tabIcon(tab: SessionWorkbarTab, running: boolean): ReactNode {
+  if (running) {
     return (
       <Loader2
         size={ICON_SIZE.control}
         aria-hidden="true"
-        className="maka-workbar-tab-icon maka-workbar-tab-spinner"
+        className="maka-workbar-tab-spinner"
       />
     );
   }
-  const Icon =
-    tab.kind === 'review'
-      ? GitBranch
-      : tab.kind === 'terminal'
-        ? Terminal
-        : tab.kind === 'tasks'
-          ? ListTodo
-          : tab.kind === 'work-board'
-            ? Clipboard
-          : tab.kind === 'browser'
-            ? Globe
-            : tab.kind === 'files'
-              ? FolderOpen
-              : tab.kind === 'inspector'
-                ? Activity
-                : MessageCircleQuestion;
-  return <Icon size={ICON_SIZE.control} aria-hidden="true" className="maka-workbar-tab-icon" />;
+  const FaceIcon = faceIcon(tab.kind);
+  return <FaceIcon size={ICON_SIZE.control} aria-hidden="true" />;
+}
+
+/**
+ * The strip, and the one control that opens and closes faces.
+ *
+ * `Tab` renders `endContent` inside its own `<button>`, so a per-tab close
+ * would nest a button in a button, and `TabList` warns when a `role="tablist"`
+ * strip's direct children are not tabs. Opening and closing therefore share the
+ * [+] menu: every face is listed, the open ones carry a checkmark, and picking
+ * one toggles it. The menu holds no shortcuts — the launcher below lists every
+ * face with its own, and that is where a shortcut is learned.
+ */
+function WorkbarFaceMenu(props: {
+  tabs: readonly SessionWorkbarTab[];
+  sideChatAvailable: boolean;
+  onOpen: (kind: SessionWorkbarTabKind) => void;
+  onCloseKind: (kind: SessionWorkbarTabKind) => void;
+}) {
+  const copy = getDesktopConversationCopy(useUiLocale()).workbar;
+  return (
+    <DropdownMenu
+      button={{
+        variant: 'ghost',
+        size: 'sm',
+        isIconOnly: true,
+        label: copy.openTab,
+        icon: <Plus size={ICON_SIZE.control} aria-hidden />,
+      }}
+    >
+      {WORKBAR_TOOL_DEFINITIONS.map((definition) => {
+        const FaceIcon = FACE_ICON[definition.icon];
+        const isOpen = props.tabs.some((tab) => tab.kind === definition.kind);
+        return (
+          <DropdownMenuItem
+            key={definition.kind}
+            label={faceLabel(definition.kind, copy)}
+            icon={<FaceIcon size={ICON_SIZE.control} aria-hidden />}
+            endContent={isOpen ? <Check size={ICON_SIZE.control} aria-hidden /> : undefined}
+            isDisabled={definition.kind === 'side-chat' && !props.sideChatAvailable}
+            hasCloseOnSelect={false}
+            onClick={() =>
+              isOpen
+                ? props.onCloseKind(definition.kind)
+                : props.onOpen(definition.kind)
+            }
+          />
+        );
+      })}
+    </DropdownMenu>
+  );
 }
 
 function WorkbarTabStrip(props: {
   placement: SessionWorkbarPlacement;
   tabs: readonly SessionWorkbarTab[];
   activeTabId: string | null;
-  taskCount: number;
   artifactCount: number;
+  sideChatAvailable: boolean;
   activeSideChatPanelIds?: ReadonlySet<string>;
   onActivate: (tabId: string) => void;
-  onClose: (tab: SessionWorkbarTab) => void;
-  onCloseTabs: (tabs: readonly SessionWorkbarTab[]) => void;
-  onReorder: (tabId: string, targetTabId: string) => void;
-  onMove: (tabId: string, direction: 'left' | 'right') => void;
-  onMoveToPanel: (tabId: string, target: SessionWorkbarPlacement) => void;
-  onPin: (tabId: string) => void;
-  onOpenLauncher: () => void;
+  onOpenKind: (kind: SessionWorkbarTabKind) => void;
+  onCloseKind: (kind: SessionWorkbarTabKind) => void;
   onCollapseRightPanel?: () => void;
 }) {
   const copy = getDesktopConversationCopy(useUiLocale()).workbar;
-  const tabListRef = useRef<HTMLDivElement>(null);
-  const sensors = useSensors(
-    useSensor(PointerSensor, {
-      activationConstraint: { distance: 6 },
-    }),
-  );
-  const handleDragEnd = (event: DragEndEvent) => {
-    const activeId = String(event.active.id);
-    const targetId = event.over ? String(event.over.id) : null;
-    if (targetId && targetId !== activeId) props.onReorder(activeId, targetId);
-  };
-  const handleTabKeyDown = (
-    tabId: string,
-    event: ReactKeyboardEvent<HTMLButtonElement>,
-  ) => {
-    const currentIndex = props.tabs.findIndex((tab) => tab.id === tabId);
-    if (currentIndex < 0) return;
-    const targetIndex =
-      event.key === 'ArrowLeft'
-        ? Math.max(0, currentIndex - 1)
-        : event.key === 'ArrowRight'
-          ? Math.min(props.tabs.length - 1, currentIndex + 1)
-          : event.key === 'Home'
-            ? 0
-            : event.key === 'End'
-              ? props.tabs.length - 1
-              : -1;
-    const target = props.tabs[targetIndex];
-    if (!target || target.id === tabId) return;
-    event.preventDefault();
-    props.onActivate(target.id);
-    window.requestAnimationFrame(() => {
-      tabListRef.current
-        ?.querySelector<HTMLElement>(
-          `[data-workbar-tab-id="${CSS.escape(target.id)}"] [role="tab"]`,
-        )
-        ?.focus();
-    });
-  };
-  useEffect(() => {
-    const tabList = tabListRef.current;
-    if (!tabList || !props.activeTabId) return;
-    let frame = 0;
-    const revealActiveTab = () => {
-      window.cancelAnimationFrame(frame);
-      frame = window.requestAnimationFrame(() => {
-        const activeTab = tabList.querySelector<HTMLElement>(
-          `[data-workbar-tab-id="${CSS.escape(props.activeTabId ?? '')}"]`,
-        );
-        if (!activeTab) return;
-        const listBox = tabList.getBoundingClientRect();
-        const tabBox = activeTab.getBoundingClientRect();
-        if (tabBox.left < listBox.left) {
-          tabList.scrollLeft -= listBox.left - tabBox.left;
-        } else if (tabBox.right > listBox.right) {
-          tabList.scrollLeft += tabBox.right - listBox.right;
-        }
-      });
-    };
-    revealActiveTab();
-    const observer = new ResizeObserver(revealActiveTab);
-    observer.observe(tabList);
-    return () => {
-      observer.disconnect();
-      window.cancelAnimationFrame(frame);
-    };
-  }, [props.activeTabId, props.tabs.length]);
   return (
+    // TabList sits in a `min-width: 0` flex item on purpose. A flex item
+    // defaults to `min-width: auto`, so a strip without the reset refuses to
+    // shrink: it spills past the panel and pushes [+] and the collapse toggle
+    // off the edge instead of scrolling.
     <div className="maka-workbar-tab-strip">
-      <DndContext
-        sensors={sensors}
-        collisionDetection={closestCenter}
-        onDragEnd={handleDragEnd}
-      >
-        <SortableContext
-          items={props.tabs.map((tab) => tab.id)}
-          strategy={horizontalListSortingStrategy}
-        >
-          <div
-            ref={tabListRef}
-            className="maka-workbar-tab-list"
+      <div className="maka-workbar-tab-list">
+        {props.tabs.length > 0 ? (
+          // No `hasDivider`: the rail is the bar's, so it can run the full row
+          // instead of stopping where the tabs do. See `shell.css`.
+          <TabList
+            size="sm"
             role="tablist"
             aria-label={copy.sectionsAriaLabel}
+            value={props.activeTabId ?? props.tabs[0]!.id}
+            onChange={(next) => props.onActivate(String(next))}
           >
-            {props.tabs.map((tab, index) => (
-              <SortableWorkbarTab
-                key={tab.id}
-                tab={tab}
-                index={index}
-                tabs={props.tabs}
-                selected={tab.id === props.activeTabId}
-                running={
-                  tab.kind === 'side-chat' &&
-                  props.activeSideChatPanelIds?.has(
-                    tab.id.slice('side-chat:'.length),
-                  ) === true
-                }
-                count={
-                  tab.kind === 'tasks'
-                    ? props.taskCount
-                    : tab.kind === 'files'
-                      ? props.artifactCount
-                      : undefined
-                }
-                onActivate={props.onActivate}
-                onClose={props.onClose}
-                onCloseTabs={props.onCloseTabs}
-                onMove={props.onMove}
-                placement={props.placement}
-                onMoveToPanel={props.onMoveToPanel}
-                onPin={props.onPin}
-                onKeyDown={handleTabKeyDown}
-              />
-            ))}
-          </div>
-        </SortableContext>
-      </DndContext>
-      <Tooltip content={copy.openTab}>
-        <IconButton
-          label={copy.openTab}
-          icon={<Plus size={ICON_SIZE.control} aria-hidden />}
-          variant="ghost"
-          size="sm"
-          className="maka-workbar-new-tab"
-          onClick={props.onOpenLauncher}
-        />
-      </Tooltip>
+            {props.tabs.map((tab) => {
+              const running =
+                tab.kind === 'side-chat' &&
+                props.activeSideChatPanelIds?.has(
+                  tab.id.slice('side-chat:'.length),
+                ) === true;
+              const count = tab.kind === 'files' ? props.artifactCount : undefined;
+              return (
+                <Tab
+                  key={tab.id}
+                  value={tab.id}
+                  label={tabLabel(tab, props.tabs, copy)}
+                  panelId={`maka-workbar-panel-${tab.id}`}
+                  icon={tabIcon(tab, running)}
+                  endContent={count !== undefined ? <TabCount count={count} /> : undefined}
+                />
+              );
+            })}
+          </TabList>
+        ) : null}
+      </div>
+      <WorkbarFaceMenu
+        tabs={props.tabs}
+        sideChatAvailable={props.sideChatAvailable}
+        onOpen={props.onOpenKind}
+        onCloseKind={props.onCloseKind}
+      />
       {props.placement === 'right' && props.onCollapseRightPanel ? (
         <WorkbarToggle
           collapsed={false}
+          size="sm"
           className="maka-workbar-panel-toggle"
           onToggle={props.onCollapseRightPanel}
         />
@@ -391,235 +328,14 @@ function WorkbarTabStrip(props: {
   );
 }
 
-function SortableWorkbarTab(props: {
-  placement: SessionWorkbarPlacement;
-  tab: SessionWorkbarTab;
-  index: number;
-  tabs: readonly SessionWorkbarTab[];
-  selected: boolean;
-  running: boolean;
-  count?: number;
-  onActivate: (tabId: string) => void;
-  onClose: (tab: SessionWorkbarTab) => void;
-  onCloseTabs: (tabs: readonly SessionWorkbarTab[]) => void;
-  onMove: (tabId: string, direction: 'left' | 'right') => void;
-  onMoveToPanel: (tabId: string, target: SessionWorkbarPlacement) => void;
-  onPin: (tabId: string) => void;
-  onKeyDown: (
-    tabId: string,
-    event: ReactKeyboardEvent<HTMLButtonElement>,
-  ) => void;
-}) {
-  const copy = getDesktopConversationCopy(useUiLocale()).workbar;
-  const label = tabLabel(props.tab, props.tabs, copy);
-  const {
-    isDragging,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-  } = useSortable({ id: props.tab.id });
-  const style = {
-    transform: transform
-      ? `translate3d(${Math.round(transform.x)}px, 0, 0)`
-      : undefined,
-    transition,
-  } satisfies CSSProperties;
-  const otherTabs = sessionWorkbarTabsExcept(
-    {
-      tabs: [...props.tabs],
-      activeTabId: props.tab.id,
-      launcherOpen: false,
-      activationHistory: [props.tab.id],
-    },
-    props.tab.id,
-  );
-  const tabsToRight = sessionWorkbarTabsToRight(
-    {
-      tabs: [...props.tabs],
-      activeTabId: props.tab.id,
-      launcherOpen: false,
-      activationHistory: [props.tab.id],
-    },
-    props.tab.id,
-  );
-
-  return (
-    <ContextMenu
-      className="maka-workbar-tab-context"
-      label={copy.tabMenu(label)}
-      size="sm"
-      items={[
-        ...(props.tab.preview
-          ? [
-              {
-                label: copy.pinTab,
-                onClick: () => props.onPin(props.tab.id),
-              },
-              { type: 'divider' as const },
-            ]
-          : []),
-        {
-          label: copy.moveLeft,
-          isDisabled: props.index === 0,
-          onClick: () => props.onMove(props.tab.id, 'left'),
-        },
-        {
-          label: copy.moveRight,
-          isDisabled: props.index === props.tabs.length - 1,
-          onClick: () => props.onMove(props.tab.id, 'right'),
-        },
-        {
-          label:
-            props.placement === 'right'
-              ? copy.moveToBottom
-              : copy.moveToRight,
-          onClick: () =>
-            props.onMoveToPanel(
-              props.tab.id,
-              props.placement === 'right' ? 'bottom' : 'right',
-            ),
-        },
-        { type: 'divider' },
-        {
-          label: copy.close,
-          onClick: () => props.onClose(props.tab),
-        },
-        {
-          label: copy.closeOthers,
-          isDisabled: otherTabs.length === 0,
-          onClick: () => props.onCloseTabs(otherTabs),
-        },
-        {
-          label: copy.closeToRight,
-          isDisabled: tabsToRight.length === 0,
-          onClick: () => props.onCloseTabs(tabsToRight),
-        },
-      ]}
-    >
-      <div
-        ref={setNodeRef}
-        className="maka-workbar-tab"
-        data-workbar-tab-id={props.tab.id}
-        data-active={props.selected || undefined}
-        data-dragging={isDragging || undefined}
-        data-running={props.running || undefined}
-        data-preview={props.tab.preview || undefined}
-        style={style}
-      >
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          role="tab"
-          label={
-            props.count !== undefined
-              ? `${label}, ${props.count}`
-              : label
-          }
-          aria-selected={props.selected}
-          aria-busy={props.running || undefined}
-          tabIndex={props.selected ? 0 : -1}
-          className="maka-workbar-tab-select"
-          onClick={() => props.onActivate(props.tab.id)}
-          {...listeners}
-          onKeyDown={(event) => props.onKeyDown(props.tab.id, event)}
-          onDoubleClick={() => {
-            if (props.tab.preview) props.onPin(props.tab.id);
-          }}
-          icon={tabIcon(props.tab, props.running)}
-          endContent={props.count !== undefined ? <TabCount count={props.count} /> : undefined}
-        >
-          <span
-            className="maka-workbar-tab-label"
-            title={props.tab.preview ? `${label} · ${copy.pinTabHint}` : label}
-          >
-            {label}
-          </span>
-        </Button>
-        <Tooltip content={copy.closeTab(label)}>
-          <IconButton
-            label={copy.closeTab(label)}
-            icon={<X size={ICON_SIZE.meta} aria-hidden />}
-            variant="ghost"
-            size="sm"
-            className="maka-workbar-tab-close"
-            onClick={() => props.onClose(props.tab)}
-          />
-        </Tooltip>
-      </div>
-    </ContextMenu>
-  );
-}
-
 function WorkbarLauncher(props: {
   onOpen: (kind: SessionWorkbarTabKind) => void;
   sideChatAvailable: boolean;
 }) {
   const copy = getDesktopConversationCopy(useUiLocale()).workbar;
-  const actions: Array<{
-    kind: SessionWorkbarTabKind;
-    label: string;
-    description: string;
-    icon: typeof Activity;
-    shortcut?: string;
-    disabled?: boolean;
-  }> = [
-    {
-      kind: 'side-chat',
-      label: copy.sideChat,
-      description: copy.launcher.sideChat,
-      icon: MessageCircleQuestion,
-      shortcut: 'mod+alt+s',
-      disabled: !props.sideChatAvailable,
-    },
-    {
-      kind: 'review',
-      label: copy.review,
-      description: copy.launcher.review,
-      icon: GitBranch,
-      shortcut: 'ctrl+shift+g',
-    },
-    {
-      kind: 'terminal',
-      label: copy.terminal,
-      description: copy.launcher.terminal,
-      icon: Terminal,
-      shortcut: 'ctrl+`',
-    },
-    {
-      kind: 'browser',
-      label: copy.browser,
-      description: copy.launcher.browser,
-      icon: Globe,
-      shortcut: 'mod+t',
-    },
-    {
-      kind: 'files',
-      label: copy.files,
-      description: copy.launcher.files,
-      icon: FolderOpen,
-      shortcut: 'mod+p',
-    },
-    {
-      kind: 'tasks',
-      label: copy.tasks,
-      description: copy.launcher.tasks,
-      icon: ListTodo,
-    },
-    {
-      kind: 'work-board',
-      label: copy.workBoard,
-      description: copy.launcher.workBoard,
-      icon: Clipboard,
-    },
-    {
-      kind: 'inspector',
-      label: copy.inspector,
-      description: copy.launcher.inspector,
-      icon: Activity,
-    },
-  ];
+  // The list is the tool registry, in registry order — icons and shortcuts
+  // included. This is the one place a face's shortcut is shown, so it is also
+  // where the shortcuts are learned.
   return (
     <div className="maka-workbar-launcher">
       <div className="maka-workbar-launcher-frame">
@@ -628,25 +344,35 @@ function WorkbarLauncher(props: {
           density="compact"
           header={<Heading level={4}>{copy.openTools}</Heading>}
         >
-          {actions.map((action) => (
+          {WORKBAR_TOOL_DEFINITIONS.map((definition) => (
             <ListItem
-              key={action.kind}
-              startContent={<Icon icon={action.icon} size="sm" color="secondary" />}
-              label={action.label}
-              description={action.description}
-              endContent={
-                action.shortcut ? (
-                  <Kbd keys={action.shortcut} />
-                ) : undefined
+              key={definition.kind}
+              startContent={
+                <Icon icon={FACE_ICON[definition.icon]} size="sm" color="secondary" />
               }
-              isDisabled={action.disabled}
-              onClick={() => props.onOpen(action.kind)}
+              label={faceLabel(definition.kind, copy)}
+              description={copy.launcher[launcherCopyKey(definition.kind)]}
+              endContent={
+                definition.shortcut ? <Kbd keys={definition.shortcut} /> : undefined
+              }
+              isDisabled={definition.kind === 'side-chat' && !props.sideChatAvailable}
+              onClick={() => props.onOpen(definition.kind)}
             />
           ))}
         </List>
       </div>
     </div>
   );
+}
+
+function launcherCopyKey(
+  kind: SessionWorkbarTabKind,
+): keyof WorkbarCopy['launcher'] {
+  return kind === 'side-chat'
+    ? 'sideChat'
+    : kind === 'work-board'
+      ? 'workBoard'
+      : kind;
 }
 
 export function WorkbarSurface(props: {
@@ -664,18 +390,6 @@ export function WorkbarSurface(props: {
     placement: SessionWorkbarPlacement,
     tabs: readonly SessionWorkbarTab[],
   ) => void;
-  onReorderTab: (
-    placement: SessionWorkbarPlacement,
-    tabId: string,
-    targetTabId: string,
-  ) => void;
-  onMoveTab: (
-    placement: SessionWorkbarPlacement,
-    tabId: string,
-    direction: 'left' | 'right',
-  ) => void;
-  onMoveTabToPanel: (tabId: string, target: SessionWorkbarPlacement) => void;
-  onPinTab: (tabId: string) => void;
   onOpenLauncher: (placement: SessionWorkbarPlacement) => void;
   onRequestOpenTab: (
     placement: SessionWorkbarPlacement,
@@ -696,11 +410,6 @@ export function WorkbarSurface(props: {
 }) {
   const locale = useUiLocale();
   const copy = getDesktopConversationCopy(locale).workbar;
-  const sessionTodo = useSessionTodo(props.sessionId, {
-    locale,
-    loadFailed: copy.todoLoadFailed,
-  });
-  const taskCount = sessionTodoActiveCount(sessionTodo.items);
   const [artifactCount, setArtifactCount] = useState(0);
   const placements: SessionWorkbarPlacement[] = ['right', 'bottom'];
   const positionedTabs = placements.flatMap((placement) =>
@@ -738,21 +447,17 @@ export function WorkbarSurface(props: {
                 tabs={panel.tabs}
                 activeTabId={showingLauncher ? null : panel.activeTabId}
                 activeSideChatPanelIds={props.activeSideChatPanelIds}
-                taskCount={taskCount}
                 artifactCount={artifactCount}
+                sideChatAvailable={props.sourceSession !== undefined}
                 onActivate={(tabId) => props.onActivateTab(placement, tabId)}
-                onClose={(tab) => props.onCloseTab(placement, tab)}
-                onCloseTabs={(tabs) => props.onCloseTabs(placement, tabs)}
-                onReorder={(tabId, targetTabId) =>
-                  props.onReorderTab(placement, tabId, targetTabId)
+                onOpenKind={(kind) => props.onRequestOpenTab(placement, kind)}
+                onCloseKind={(kind) =>
+                  props.onCloseTabs(
+                    placement,
+                    panel.tabs.filter((tab) => tab.kind === kind),
+                  )
                 }
-                onMove={(tabId, direction) =>
-                  props.onMoveTab(placement, tabId, direction)
-                }
-                onMoveToPanel={props.onMoveTabToPanel}
-                onPin={props.onPinTab}
                 placement={placement}
-                onOpenLauncher={() => props.onOpenLauncher(placement)}
                 onCollapseRightPanel={
                   placement === 'right'
                     ? () => props.onDismissPanel('right')
@@ -797,15 +502,6 @@ export function WorkbarSurface(props: {
                 active={!props.hidden && active}
               />
             </Suspense>
-          );
-        } else if (tab.kind === 'tasks') {
-          content = (
-            <SessionTodoPanel
-              items={sessionTodo.items}
-              loading={sessionTodo.loading}
-              error={sessionTodo.error}
-              onRetry={sessionTodo.retry}
-            />
           );
         } else if (tab.kind === 'work-board') {
           content = (
@@ -869,11 +565,10 @@ export function WorkbarSurface(props: {
         return content ? (
           <WorkbarPanel
             key={tab.id}
+            id={`maka-workbar-panel-${tab.id}`}
             active={active}
             placement={placement}
             overlay
-            preview={tab.preview}
-            onPin={() => props.onPinTab(tab.id)}
             className={
               tab.kind === 'side-chat' ? 'maka-quote-workbar-panel' : undefined
             }

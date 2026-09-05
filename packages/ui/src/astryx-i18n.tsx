@@ -24,7 +24,7 @@ import {
 } from '@astryxdesign/core/i18n';
 import type { Overrides } from '@astryxdesign/core/i18n';
 import { getSharedUiCopy } from './shared-ui-copy.js';
-import { ASTRYX_COPY_ZH } from './astryx-copy.js';
+import { ASTRYX_COPY_ZH, ASTRYX_COPY_ZH_TW } from './astryx-copy.js';
 import { useUiLocale } from './locale-context.js';
 import type { UiLocale } from './locale-helpers.js';
 
@@ -105,9 +105,9 @@ export function astryxMessageOverrides(locale: UiLocale): Overrides | undefined 
   }
   const shared = getSharedUiCopy(locale);
   const form = shared.formControls;
-  // `locale` is narrowed to 'zh' past the early return; the catalogue lives
+  // `locale` is narrowed to a Chinese locale past the early return; the catalogues live
   // off-barrel in astryx-copy.ts because nothing outside this map consumes it.
-  const astryx = ASTRYX_COPY_ZH;
+  const astryx = locale === 'zh-TW' ? ASTRYX_COPY_ZH_TW : ASTRYX_COPY_ZH;
   return {
     [locale]: {
       '@astryx.codeBlock.copyCode': shared.markdown.copyCode,

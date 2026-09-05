@@ -186,7 +186,7 @@ test('durable delegation renders terminal link state instead of stale execution 
       },
       updatedAt: 10,
     };
-    const render = (locale: 'en' | 'zh') => renderToStaticMarkup(
+    const render = (locale: 'en' | 'zh-CN') => renderToStaticMarkup(
       createElement(LocaleProvider, {
         locale,
         children: createElement(AstryxLocaleProvider, {
@@ -200,7 +200,7 @@ test('durable delegation renders terminal link state instead of stale execution 
       }),
     );
     const englishMarkup = render('en');
-    const chineseMarkup = render('zh');
+    const chineseMarkup = render('zh-CN');
 
     assert.match(englishMarkup, new RegExp(english, 'u'));
     assert.doesNotMatch(englishMarkup, />Running</u);
@@ -229,7 +229,7 @@ test('durable creation explicitly announces the new work', () => {
     },
     updatedAt: 10,
   };
-  const render = (locale: 'en' | 'zh') => renderToStaticMarkup(
+  const render = (locale: 'en' | 'zh-CN') => renderToStaticMarkup(
     createElement(LocaleProvider, {
       locale,
       children: createElement(AstryxLocaleProvider, {
@@ -244,7 +244,7 @@ test('durable creation explicitly announces the new work', () => {
   );
 
   assert.match(render('en'), /Created new work:/u);
-  assert.match(render('zh'), /已创建新工作：/u);
+  assert.match(render('zh-CN'), /已创建新工作：/u);
 });
 
 test('surface projection refresh gate rejects older reads after a newer refresh starts', () => {

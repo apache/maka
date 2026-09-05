@@ -25,6 +25,7 @@ import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
 import { HStack } from '@astryxdesign/core/Stack';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
 import type { PeerMeshProjection, PeerMeshQueryResult } from '@maka/runtime-host/protocol';
+import type { UiLocale } from '@maka/core/ui-locale';
 import {
   decodeRuntimeHostWebRtcStunPolicy,
   type RuntimeHostWebRtcStunPolicy,
@@ -126,7 +127,7 @@ export function RuntimeHostPeerMeshDialog(props: {
   readonly onClose: () => void;
 }) {
   const locale = useUiLocale();
-  const copy = peerMeshCopy(locale);
+  const copy = getRuntimeHostPeerMeshCopy(locale);
   const toast = useToast();
   const services = useRuntimeHostManagementServices().peerMesh;
   const [snapshot, setSnapshot] = useState<PeerMeshQueryResult>();
@@ -855,7 +856,7 @@ export function RuntimeHostPeerMeshDialog(props: {
 function PeerMeshAdvancedSettings(props: {
   readonly localPeerId?: string;
   readonly connectivity?: DesktopConnectivityControls;
-  readonly copy: ReturnType<typeof peerMeshCopy>;
+  readonly copy: ReturnType<typeof getRuntimeHostPeerMeshCopy>;
   readonly onCopyPeerId: (peerId: string) => void;
 }) {
   const { connectivity } = props;
@@ -1007,7 +1008,7 @@ function PeerMeshAdvancedSettings(props: {
 
 function Overview(props: {
   readonly snapshot: PeerMeshQueryResult | undefined;
-  readonly copy: ReturnType<typeof peerMeshCopy>;
+  readonly copy: ReturnType<typeof getRuntimeHostPeerMeshCopy>;
   readonly working: boolean;
   readonly localPeerLabel: string;
   readonly onInvite: (meshId: string) => void;
@@ -1232,7 +1233,7 @@ function Overview(props: {
 function UnavailableEndpoint(props: {
   readonly setup: ManagedHostPeerSetup;
   readonly working: boolean;
-  readonly copy: ReturnType<typeof peerMeshCopy>;
+  readonly copy: ReturnType<typeof getRuntimeHostPeerMeshCopy>;
   readonly onEnable: () => void;
   readonly onInspect?: () => void;
   readonly onRefresh: () => void;
@@ -1315,7 +1316,7 @@ function UnavailableEndpoint(props: {
 function JoinView(props: {
   readonly value: string;
   readonly working: boolean;
-  readonly copy: ReturnType<typeof peerMeshCopy>;
+  readonly copy: ReturnType<typeof getRuntimeHostPeerMeshCopy>;
   readonly onChange: (value: string) => void;
 }) {
   return (
@@ -1347,7 +1348,7 @@ function JoinView(props: {
 
 function InvitationView(props: {
   readonly invitation: Extract<PeerMeshDialogView, { readonly kind: 'invitation' }>;
-  readonly copy: ReturnType<typeof peerMeshCopy>;
+  readonly copy: ReturnType<typeof getRuntimeHostPeerMeshCopy>;
 }) {
   return (
     <div className="settingsPeerMeshFocusedView">
@@ -1398,7 +1399,7 @@ function InvitationView(props: {
 function MeshCard(props: {
   readonly mesh: PeerMeshProjection;
   readonly transit: PeerMeshQueryResult['transit'];
-  readonly copy: ReturnType<typeof peerMeshCopy>;
+  readonly copy: ReturnType<typeof getRuntimeHostPeerMeshCopy>;
   readonly working: boolean;
   readonly onInvite: () => void;
   readonly onRemove: (peerId: string) => void;
@@ -1698,7 +1699,7 @@ function TransitMetric(props: { readonly label: string; readonly value: string }
 
 function PeerIdText(props: {
   readonly peerId: string;
-  readonly copy: ReturnType<typeof peerMeshCopy>;
+  readonly copy: ReturnType<typeof getRuntimeHostPeerMeshCopy>;
   readonly onCopy: (peerId: string) => void;
 }) {
   return (
@@ -1717,7 +1718,7 @@ function PeerIdText(props: {
 
 function MeshIdText(props: {
   readonly meshId: string;
-  readonly copy: ReturnType<typeof peerMeshCopy>;
+  readonly copy: ReturnType<typeof getRuntimeHostPeerMeshCopy>;
   readonly onCopy: (meshId: string) => void;
 }) {
   return (
@@ -1803,9 +1804,8 @@ function abbreviate(peerId: string): string {
   return peerId.length <= 22 ? peerId : `${peerId.slice(0, 11)}…${peerId.slice(-7)}`;
 }
 
-function peerMeshCopy(locale: string) {
-  const zh = locale.startsWith('zh');
-  return zh
+export function getRuntimeHostPeerMeshCopy(locale: UiLocale) {
+  return locale === 'zh-CN'
     ? {
         title: 'Peer Mesh',
         experimental: '实验性',
@@ -1881,6 +1881,9 @@ function peerMeshCopy(locale: string) {
         meshIdHelp: '用于诊断和识别此 Mesh；点击 ID 可复制完整值。',
         thisRuntimeHost: '本机 Runtime Host',
         thisDesktop: '本机 Desktop',
+        peerPathDirect: '直连',
+        peerPathTransit: '成员转发',
+        peerPathOther: '其他',
         displayName: '在 Mesh 中显示的名称',
         meshDisplayName: 'Mesh 名称',
         unnamedMesh: '未命名 Mesh',
@@ -1888,6 +1891,7 @@ function peerMeshCopy(locale: string) {
         renameMesh: '修改 Mesh 名称',
         save: '保存',
         peerIdCopied: 'Peer ID 已复制',
+        peerIdCopyFailed: '无法复制 Peer ID',
         meshIdCopied: 'Mesh ID 已复制',
         copyPeerId: (value: string) => `复制完整 Peer ID：${value}`,
         copyMeshId: (value: string) => `复制完整 Mesh ID：${value}`,
@@ -1965,7 +1969,170 @@ function peerMeshCopy(locale: string) {
         localHostMissing: '本机 Runtime Host 尚未加入',
         localHostMissingHint: '加入后，其他成员才能通过此 Mesh 连接本机分享的任务。',
       }
-    : {
+    : locale === 'zh-TW'
+      ? {
+          title: 'Peer Mesh',
+          experimental: '實驗性',
+          failed: 'Peer Mesh 操作失敗',
+          invalidResult: 'Peer Mesh 回傳了無效結果',
+          unknownError: 'Peer Mesh 操作失敗',
+          outcomeUnknown: 'Host 可能已完成此操作。已重新整理目前狀態，請確認後再重試。',
+          invitationOutcomeUnknown:
+            'Host 可能已建立邀請碼，但代碼未能回傳且無法復原。它會自動過期；建立新邀請前請先檢查待使用邀請數量。',
+          outcomeUnknownRefreshFailed:
+            'Host 可能已完成此操作，但目前狀態也無法重新整理。請恢復連線並重新整理後再重試。',
+          unavailable: '目前 endpoint 不支援 Peer Mesh',
+          loading: '正在讀取 Mesh 狀態…',
+          checkingPeerConnection: '正在檢查此 Runtime Host 的 Peer 連線…',
+          peerConnectionDisabled: '此 Runtime Host 尚未開啟 Peer 連線',
+          peerConnectionDisabledHint:
+            '開啟後，此 Host 才能建立或加入 Mesh；現有 SSH 連線會繼續保留。',
+          peerConnectionDisableProfileFirst:
+            '此 Host 的 Direct peer 連線正在使用中，請先在 Host 列表中將它停用。',
+          enablePeerConnection: '開啟 Peer 連線',
+          peerConnectionStarting: 'Peer 連線已開啟，Mesh endpoint 正在就緒',
+          peerConnectionStartingHint: '通常只需幾秒；也可以立即重新檢查。',
+          peerConnectionUpgradeRequired: '此 Runtime Host 版本尚不支援 Peer Mesh 管理',
+          peerConnectionUpgradeRequiredHint: '請先更新此 Host，再回來開啟 Peer 連線。',
+          working: {
+            refresh: '正在重新整理 Peer Mesh…',
+            create: '正在建立 Mesh…',
+            join: '正在加入 Mesh…',
+            invite: '正在準備邀請…',
+            'add-host': '正在將 Runtime Host 加入 Mesh…',
+            'enable-peer': '正在為 Runtime Host 開啟 Peer 連線…',
+            update: '正在更新 Mesh…',
+            rename: '正在儲存名稱…',
+          },
+          settling: '正在確認最終狀態…',
+          endpoint: '管理對象',
+          desktopEndpoint: 'Desktop Client',
+          hostEndpoint: '本機 Runtime Host',
+          desktopEndpointHelp: '此 Client 用於連線至 Mesh 中的 Runtime Host。',
+          hostEndpointHelp: '此 Host 加入後，其他成員才能連線至本機分享的任務。',
+          advancedSettings: '進階設定',
+          technicalDetails: '身分與連線設定',
+          connectivityAutomatic: '自動連線（建議）',
+          connectivityKnownRoutesOnly: '僅使用已知路徑',
+          connectivityCustom: '自訂位址探索',
+          restartRequired: '需要重新啟動',
+          adaptiveConnectivity: '自適應連線',
+          adaptiveConnectivityHelp:
+            'Maka 會自動競速可用的直接連線方式，並在獲准時使用成員轉送；此處不需要選擇特定通訊協定。',
+          connectivityPolicyLoading: '正在讀取連線策略…',
+          connectivityPolicyLoadFailed: '無法讀取連線策略',
+          connectivityPolicySaveFailed: '無法儲存連線策略',
+          restoreDefaultConnectivityPolicy: '恢復預設設定',
+          connectivityPolicyRestartRequired:
+            '重新啟動 Maka 後，已儲存的連線策略變更會套用至新連線。',
+          publicAddressDiscovery: '公網位址探索',
+          publicStunDefault: '公共 STUN（建議）',
+          publicStunDisabled: '不使用公共 STUN',
+          publicStunCustom: '自訂 STUN',
+          customStunUrls: 'STUN 位址',
+          customStunUrlsInvalid: '請輸入以逗號分隔的 stun:主機[:連接埠] 位址，最多 8 個。',
+          publicStunDefaultHelp:
+            '使用 Cloudflare 公共 STUN 盡力探索公網對映。它不承載 Maka 流量，但提供者可觀察來源 IP 和請求時間；Maka 不保證其可用性。',
+          publicStunDisabledHelp:
+            '僅嘗試本機位址和其他已知直接連線路徑；跨 NAT 的直接連線成功率可能降低。',
+          publicStunCustomHelp:
+            '使用逗號分隔的 stun: 位址。STUN 只探索網路位址，不承載 Session 內容。',
+          saveConnectivityPolicy: '儲存變更',
+          peerId: 'Peer ID',
+          peerIdHelp: '此 endpoint 在 Mesh 中的技術身分；點選 ID 可複製完整值。',
+          meshId: 'Mesh ID',
+          meshIdHelp: '用於診斷和識別此 Mesh；點選 ID 可複製完整值。',
+          thisRuntimeHost: '本機 Runtime Host',
+          thisDesktop: '本機 Desktop',
+          peerPathDirect: '直接連線',
+          peerPathTransit: '成員轉送',
+          peerPathOther: '其他',
+          displayName: '在 Mesh 中顯示的名稱',
+          meshDisplayName: 'Mesh 名稱',
+          unnamedMesh: '未命名 Mesh',
+          rename: '修改名稱',
+          renameMesh: '修改 Mesh 名稱',
+          save: '儲存',
+          peerIdCopied: 'Peer ID 已複製',
+          peerIdCopyFailed: '無法複製 Peer ID',
+          meshIdCopied: 'Mesh ID 已複製',
+          copyPeerId: (value: string) => `複製完整 Peer ID：${value}`,
+          copyMeshId: (value: string) => `複製完整 Mesh ID：${value}`,
+          empty: '建立你的第一個 Mesh',
+          emptyHint: '建立新的 Mesh，或透過一次性邀請碼加入。',
+          meshes: 'Mesh',
+          mesh: 'Mesh',
+          members: '成員',
+          activeMeshCount: (value: number) => `${value} 個使用中`,
+          showClosedMeshes: (value: number) => `顯示已關閉（${value}）`,
+          noActiveMeshes: '沒有使用中的 Mesh',
+          noActiveMeshesHint: '已關閉的 Mesh 預設隱藏；可透過上方篩選查看。',
+          authority: '管理者',
+          member: '成員',
+          closed: '已關閉',
+          memberCount: (value: number) => `${value} 個成員`,
+          pending: (value: number) => `${value} 個待使用邀請`,
+          transit: '成員轉送',
+          transitHelp: '允許此 Mesh 的成員透過本機建立連線；會使用本機頻寬。',
+          transitToggle: '為此 Mesh 提供轉送',
+          transitStatus: '成員轉送狀態',
+          transitLimitsLabel: '成員轉送限制',
+          transitLimits: (value: PeerMeshQueryResult['transit']) =>
+            value
+              ? `固定上限：每位成員 ${value.maxCircuitsPerPeer} 條連線，每條最長 ${formatHours(value.maxCircuitDurationSeconds)}，最多 ${formatMebibytes(value.maxCircuitBytes)}。一次只能為一個 Mesh 開啟。`
+              : '成員轉送使用固定資源上限，一次只能為一個 Mesh 開啟。',
+          allowedMembers: '允許成員',
+          reservations: 'Reservation',
+          circuits: '連線',
+          routeState: {
+            local: '本機',
+            route_available: '路徑可用',
+            coordination_only: '僅協調路徑',
+            stale: '路徑已過期',
+            unknown: '路徑未知',
+          },
+          endpointKind: {
+            client: 'Client',
+            host: 'Runtime Host',
+            unknown: '未識別 Peer',
+          },
+          endpointKindHelp: {
+            client: 'Client 是操作介面：它連線至 Host、瀏覽任務並發起操作，本身不持有任務。',
+            host: 'Runtime Host 持有任務和執行狀態，並執行經過授權的工作。',
+            unknown: '此 Peer 尚未回報它是 Client 或 Runtime Host，通常來自舊版本。',
+          },
+          joinTitle: '加入 Mesh',
+          joinHint: '貼上另一個 Peer 產生的一次性邀請碼。',
+          joinCode: '邀請碼',
+          join: '加入',
+          joinMesh: '加入 Mesh',
+          invite: '邀請成員',
+          invitationTitle: '邀請成員',
+          invitationFor: (value: string) => `Mesh ${value}`,
+          invitationWarning: '此代碼只能使用一次；取得代碼的人可以讓一個 peer 加入此 Mesh。',
+          invitationDirectOnly:
+            '尚未連線至協調節點。此邀請碼只包含直接位址，跨 NAT 時可能無法連線。',
+          invitationExpires: (value: string) => `有效期限至 ${value}`,
+          invitationCopied: '邀請碼已複製',
+          copyInvitation: '複製邀請碼',
+          create: '建立 Mesh',
+          refresh: '重新整理',
+          back: '返回',
+          leave: '退出 Mesh',
+          closeMesh: '關閉 Mesh',
+          remove: '移除成員',
+          cancel: '取消',
+          closeConfirm: '關閉這個 Mesh？',
+          leaveConfirm: '退出這個 Mesh？',
+          removeConfirm: '移除這個成員？',
+          meshActions: 'Mesh 操作',
+          memberActions: (peerId: string) => `${peerId} 的操作`,
+          addLocalHost: '新增本機 Runtime Host',
+          localRuntimeHost: 'Runtime Host',
+          localHostMissing: '本機 Runtime Host 尚未加入',
+          localHostMissingHint: '加入後，其他成員才能透過此 Mesh 連線至本機分享的任務。',
+        }
+      : {
         title: 'Peer Mesh',
         experimental: 'Experimental',
         failed: 'Peer Mesh operation failed',
@@ -2041,6 +2208,9 @@ function peerMeshCopy(locale: string) {
         meshIdHelp: 'Used to identify and diagnose this Mesh. Select the ID to copy its full value.',
         thisRuntimeHost: 'This Runtime Host',
         thisDesktop: 'This Desktop',
+        peerPathDirect: 'Direct',
+        peerPathTransit: 'Member transit',
+        peerPathOther: 'Other',
         displayName: 'Name shown in the Mesh',
         meshDisplayName: 'Mesh name',
         unnamedMesh: 'Unnamed Mesh',
@@ -2048,6 +2218,7 @@ function peerMeshCopy(locale: string) {
         renameMesh: 'Rename Mesh',
         save: 'Save',
         peerIdCopied: 'Peer ID copied',
+        peerIdCopyFailed: 'Could not copy Peer ID',
         meshIdCopied: 'Mesh ID copied',
         copyPeerId: (value: string) => `Copy full Peer ID: ${value}`,
         copyMeshId: (value: string) => `Copy full Mesh ID: ${value}`,

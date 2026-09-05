@@ -18,8 +18,19 @@
  */
 
 import type { DatabaseSync } from 'node:sqlite';
+import {
+  decodePersistedLegacyRunHeader,
+  invocationOpeningFromLegacyRunHeader,
+  type LegacyRunHeader,
+} from './legacy-run-header.js';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
+import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
+import {
+  buildInvocationOpenedEvent,
+  buildSyntheticTerminalRuntimeEvent,
+} from '@maka/core/runtime-invocation';
 
-export const SQLITE_RUNTIME_SCHEMA_VERSION = 15;
+export const SQLITE_RUNTIME_SCHEMA_VERSION = 16;
 export const RUNTIME_RECOVERY_AUTHORITY_CAPABILITY = 'runtime_recovery_authority';
 export const RUNTIME_RECOVERY_AUTHORITY_CAPABILITY_VERSION = 1;
 export const RUNTIME_CONTINUATION_AUTHORITY_CAPABILITY = 'runtime_continuation_authority';
@@ -484,7 +495,320 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
     ALTER TABLE runtime_continuation_claims_v15 RENAME TO runtime_continuation_claims;
     `,
   ],
+  [
+    16,
+    `
+    CREATE INDEX runtime_events_by_session_kind
+      ON runtime_events(session_id, event_kind, invocation_id);
+
+    CREATE UNIQUE INDEX runtime_events_one_opening_per_invocation
+      ON runtime_events(invocation_id)
+      WHERE event_kind = 'invocation_opened';
+
+    CREATE TABLE runtime_legacy_invocation_openings (
+      invocation_id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      run_id TEXT NOT NULL,
+      turn_id TEXT NOT NULL,
+      opened_at INTEGER NOT NULL,
+      opening_json TEXT NOT NULL,
+      -- UNIQUE is what indexes this side of the foreign key. SQLite indexes only
+      -- the parent, so without it every deleted RuntimeEvent scans this whole
+      -- table looking for rows to cascade.
+      anchor_event_id TEXT NOT NULL UNIQUE
+        REFERENCES runtime_events(event_id) ON DELETE CASCADE
+    ) WITHOUT ROWID;
+
+    CREATE INDEX runtime_legacy_invocation_openings_by_session
+      ON runtime_legacy_invocation_openings(session_id, opened_at, invocation_id);
+
+    -- Rebuilt rather than renamed in place, because the column rename is not
+    -- the only thing this claim needs. Its start event belongs to the target
+    -- Session, and the foreign key had no ON DELETE clause, so purging that
+    -- Session was refused outright by the constraint and the whole purge rolled
+    -- back. A continuation whose target has been deleted no longer names
+    -- anything, so the claim goes with it and the source boundary it held is
+    -- free again.
+    CREATE TABLE runtime_continuation_claims_v16 (
+      claim_id TEXT PRIMARY KEY,
+      source_session_id TEXT NOT NULL,
+      source_invocation_id TEXT NOT NULL,
+      source_run_id TEXT NOT NULL,
+      source_turn_id TEXT NOT NULL,
+      source_event_high_water INTEGER NOT NULL CHECK (source_event_high_water > 0),
+      source_prefix_digest TEXT NOT NULL,
+      boundary_digest TEXT NOT NULL UNIQUE,
+      boundary_json TEXT NOT NULL,
+      provider_projection_version INTEGER NOT NULL CHECK (provider_projection_version IN (1, 2)),
+      provider_replay_digest TEXT NOT NULL,
+      target_session_id TEXT NOT NULL,
+      target_invocation_id TEXT NOT NULL UNIQUE,
+      target_run_id TEXT NOT NULL UNIQUE,
+      target_turn_id TEXT NOT NULL,
+      target_opening_json TEXT NOT NULL,
+      claimed_at INTEGER NOT NULL,
+      start_event_id TEXT UNIQUE REFERENCES runtime_events(event_id) ON DELETE CASCADE,
+      start_kind TEXT CHECK (
+        start_kind IS NULL OR start_kind IN ('runtime_admission', 'claim_repair')
+      ),
+      protocol_version INTEGER NOT NULL CHECK (protocol_version = 1),
+      UNIQUE (
+        source_session_id,
+        source_run_id,
+        source_event_high_water,
+        source_prefix_digest
+      ),
+      UNIQUE (target_session_id, target_turn_id)
+    );
+
+    INSERT INTO runtime_continuation_claims_v16 (
+      claim_id, source_session_id, source_invocation_id, source_run_id, source_turn_id,
+      source_event_high_water, source_prefix_digest, boundary_digest, boundary_json,
+      provider_projection_version, provider_replay_digest, target_session_id,
+      target_invocation_id, target_run_id, target_turn_id, target_opening_json,
+      claimed_at, start_event_id, start_kind, protocol_version
+    )
+    SELECT
+      claim_id, source_session_id, source_invocation_id, source_run_id, source_turn_id,
+      source_event_high_water, source_prefix_digest, boundary_digest, boundary_json,
+      provider_projection_version, provider_replay_digest, target_session_id,
+      target_invocation_id, target_run_id, target_turn_id, target_run_header_json,
+      claimed_at, start_event_id, start_kind, protocol_version
+    FROM runtime_continuation_claims;
+    DROP TABLE runtime_continuation_claims;
+    ALTER TABLE runtime_continuation_claims_v16 RENAME TO runtime_continuation_claims;
+    `,
+  ],
 ]);
+
+/**
+ * Data migrations that a SQL statement cannot express, applied inside the same
+ * transaction as their schema step. They project persisted records through the
+ * one TypeScript mapping that owns that projection, so a migration and the live
+ * writer can never classify a field two different ways.
+ */
+const DATA_MIGRATIONS: ReadonlyMap<number, (db: DatabaseSync) => void> = new Map([
+  [
+    16,
+    (db) => {
+      backfillInvocationOpeningFacts(db);
+      projectContinuationClaimOpenings(db);
+    },
+  ],
+]);
+
+/**
+ * Replace each open claim's embedded target Run header with the opening fact it
+ * always implied.
+ *
+ * The header was only ever there so the start event could be checked against
+ * it, and the check went through the projection anyway. Projecting once, here,
+ * leaves one representation instead of a copy plus a derivation.
+ *
+ * A row this cannot project is dropped rather than left half-migrated: an
+ * undecodable claim could not have admitted a start event before this migration
+ * either, and keeping it would only block the boundary it holds.
+ */
+function projectContinuationClaimOpenings(db: DatabaseSync): void {
+  const rows = db
+    .prepare('SELECT claim_id, target_opening_json FROM runtime_continuation_claims')
+    .all() as Array<{ claim_id: string; target_opening_json: string }>;
+  const update = db.prepare(
+    'UPDATE runtime_continuation_claims SET target_opening_json = ? WHERE claim_id = ?',
+  );
+  const remove = db.prepare('DELETE FROM runtime_continuation_claims WHERE claim_id = ?');
+  for (const row of rows) {
+    try {
+      const header = decodePersistedLegacyRunHeader(JSON.parse(row.target_opening_json));
+      update.run(JSON.stringify(invocationOpeningFromLegacyRunHeader(header)), row.claim_id);
+    } catch {
+      remove.run(row.claim_id);
+    }
+  }
+}
+
+/**
+ * Give every Run header its opening fact, so that after this migration the
+ * opening lives in the runtime database rather than on the header.
+ *
+ * A run that never wrote a RuntimeEvent gets the real thing: the opening fact
+ * as event one of its own invocation. A run that already has events cannot,
+ * because it owns an immutable sequence whose position 1, digests and coverage
+ * other facts already point at; inserting into it would rewrite signed history.
+ * Its opening is recorded in `runtime_legacy_invocation_openings` instead,
+ * which only this migration ever writes. Readers merge the two, so nothing
+ * downstream has to know which shelf a given opening came off.
+ *
+ * A shelved opening describes a ledger that already exists, so it is anchored to
+ * that ledger's first event and dies with it. Without the anchor, deleting a
+ * Session's events would leave the opening behind, and the inventory would
+ * report the run again with no ending — a completed run coming back as an
+ * active one.
+ *
+ * A header this cannot project fails closed: it is skipped, and its transcript
+ * and tool evidence stay exactly as readable as before.
+ */
+function backfillInvocationOpeningFacts(db: DatabaseSync): void {
+  if (!hasTable(db, 'core_agent_runs')) return;
+  // The header column is dropped by the core-execution migration that follows
+  // this one, so its absence means every header it held is already an opening
+  // fact. Nothing left to project, and the two scopes stay independently
+  // replayable.
+  if (!hasColumn(db, 'core_agent_runs', 'record_json')) return;
+  const rows = db
+    .prepare(`
+      SELECT
+        r.session_id,
+        r.run_id,
+        r.record_json,
+        first_event.invocation_id AS existing_invocation_id,
+        first_event.event_id AS anchor_event_id
+      FROM core_agent_runs r
+      LEFT JOIN runtime_events first_event ON first_event.event_id = (
+        SELECT e.event_id FROM runtime_events e
+        WHERE e.session_id = r.session_id AND e.run_id = r.run_id
+        ORDER BY e.event_seq ASC LIMIT 1
+      )
+      ORDER BY r.created_at ASC, r.run_id ASC
+    `)
+    .all() as Array<{
+    session_id: string;
+    run_id: string;
+    record_json: string;
+    existing_invocation_id: string | null;
+    anchor_event_id: string | null;
+  }>;
+  const insertEvent = db.prepare(`
+    INSERT INTO runtime_events (
+      event_id, session_id, invocation_id, run_id, turn_id, event_seq,
+      event_kind, payload_json, committed_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insertOrdinal = db.prepare(`
+    INSERT INTO runtime_session_event_ordinals(session_id, ordinal, event_id)
+    SELECT ?, COALESCE(MAX(ordinal), 0) + 1, ?
+    FROM runtime_session_event_ordinals WHERE session_id = ?
+  `);
+  const insertLegacyOpening = db.prepare(`
+    INSERT OR IGNORE INTO runtime_legacy_invocation_openings (
+      invocation_id, session_id, run_id, turn_id, opened_at, opening_json,
+      anchor_event_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+  // The header column is dropped right after this, so a header this cannot read
+  // is a run that would silently cease to exist. Refusing the whole migration
+  // keeps the database as it was, and the failure names the row instead of
+  // hiding it.
+  const unreadable = (row: { session_id: string; run_id: string }, cause: unknown): Error =>
+    new Error(
+      `Cannot migrate the AgentRun header of ${row.session_id}/${row.run_id}: ${
+        cause instanceof Error ? cause.message : String(cause)
+      }`,
+      { cause },
+    );
+  for (const row of rows) {
+    let header: LegacyRunHeader;
+    let opening: string;
+    try {
+      header = decodePersistedLegacyRunHeader(JSON.parse(row.record_json));
+      opening = JSON.stringify(invocationOpeningFromLegacyRunHeader(header));
+    } catch (error) {
+      throw unreadable(row, error);
+    }
+    if (row.existing_invocation_id !== null && row.anchor_event_id !== null) {
+      // The invocation id its own events already carry is the one every reader
+      // joins on, so the legacy row is keyed by that rather than by the header's
+      // copy, which older builds minted independently.
+      insertLegacyOpening.run(
+        row.existing_invocation_id,
+        header.sessionId,
+        header.runId,
+        header.turnId,
+        header.createdAt,
+        opening,
+        row.anchor_event_id,
+      );
+      continue;
+    }
+    // A run with no events of its own gets the facts its header held, where
+    // facts live now: the opening, and the ending if the header recorded one.
+    // A header still marked in flight stays open; recovery settles it the way it
+    // settles any run the process died holding.
+    const run = {
+      sessionId: header.sessionId,
+      invocationId: header.invocationId ?? header.runId,
+      runId: header.runId,
+      turnId: header.turnId,
+    };
+    const events = [
+      buildInvocationOpenedEvent({
+        id: `invocation_opened:${header.runId}`,
+        run,
+        openedAt: header.createdAt,
+        opening: invocationOpeningFromLegacyRunHeader(header),
+      }),
+      ...(header.status === 'completed' ||
+      header.status === 'failed' ||
+      header.status === 'cancelled'
+        ? [
+            buildSyntheticTerminalRuntimeEvent({
+              id: `invocation_terminal:${header.runId}`,
+              invocationId: run.invocationId,
+              run,
+              status: header.status,
+              ts: header.completedAt ?? header.updatedAt,
+              ...(header.failureClass !== undefined ? { failureClass: header.failureClass } : {}),
+              ...(header.failureMessage !== undefined ? { message: header.failureMessage } : {}),
+              ...(header.abortSource !== undefined ? { abortSource: header.abortSource } : {}),
+            }),
+          ]
+        : []),
+    ];
+    events.forEach((event, index) => {
+      let encoded: { event: RuntimeEvent; json: string };
+      try {
+        encoded = encodeCanonicalRuntimeEvent(event);
+      } catch (error) {
+        throw unreadable(row, error);
+      }
+      insertEvent.run(
+        event.id,
+        event.sessionId,
+        event.invocationId,
+        event.runId,
+        event.turnId,
+        index + 1,
+        runtimeEventKind(event),
+        encoded.json,
+        event.ts,
+      );
+      insertOrdinal.run(event.sessionId, event.id, event.sessionId);
+    });
+  }
+}
+
+/** The `event_kind` column: the one coarse label every reader indexes events by. */
+export function runtimeEventKind(event: RuntimeEvent): string {
+  return (
+    event.content?.kind ??
+    event.status ??
+    (event.actions?.workspaceFact ? 'workspace_fact' : undefined) ??
+    (event.actions?.toolDispatch ? 'tool_dispatch' : undefined) ??
+    (event.actions?.endInvocation ? 'invocation_end' : 'runtime_fact')
+  );
+}
+
+function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: unknown }>;
+  return columns.some((candidate) => candidate.name === column);
+}
+
+function hasTable(db: DatabaseSync, name: string): boolean {
+  const row = db
+    .prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get(name) as { present?: unknown } | undefined;
+  return row?.present === 1;
+}
 
 export function configureSqliteRuntimeDatabase(db: DatabaseSync): void {
   // Bound lock acquisition before touching persistent journal state. WAL mode is
@@ -530,6 +854,7 @@ export function migrateSqliteRuntimeDatabase(
       const sql = MIGRATIONS.get(version);
       if (!sql) throw new Error(`Missing SQLite runtime migration ${version}`);
       db.exec(sql);
+      DATA_MIGRATIONS.get(version)?.(db);
       db.exec(`PRAGMA user_version = ${version}`);
     }
     if (ownsTransaction) db.exec('COMMIT');

@@ -88,6 +88,7 @@ export {
   Eye,
   EyeOff,
   FileCode,
+  FileDiff,
   FileEdit,
   FileImage,
   FileText,

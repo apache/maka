@@ -269,10 +269,10 @@ export type SettingsPreferencesCopy = {
 };
 
 const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
-  zh: {
+  'zh-CN': {
     personalization: {
       saveFailed: '保存失败', displayName: '显示名称', displayNameHelp: 'Maka 在聊天里会以这个名字称呼你。留空就用默认的“你”。', displayNamePlaceholder: '例如：JK', displayNameUnset: '未设置，Maka 会称呼你“你”', displayNameChange: '更改', displayNameSet: '设置',
-      interfaceLanguage: '界面语言', interfaceLanguageHelp: '选择 Maka 界面的显示语言。切换后立即生效，重启后保持。', localeOptions: [['auto', '跟随系统'], ['zh', '中文'], ['en', 'English']],
+      interfaceLanguage: '界面语言', interfaceLanguageHelp: '选择 Maka 界面的显示语言。切换后立即生效，重启后保持。', localeOptions: [['auto', '跟随系统'], ['zh-CN', '简体中文'], ['zh-TW', '繁體中文'], ['en', 'English']],
       assistantTone: '助手语气偏好', assistantToneHelp: '最多 500 字，只影响回答的语气和风格。权限确认与安全规则不受影响；改动会自动保存。', assistantTonePlaceholder: '例如：技术严谨、偏简洁、不要 emoji。',
     },
     sections: {
@@ -367,9 +367,100 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
     },
     password: { copyFailed: '复制失败', clipboardUnavailable: '剪贴板不可用或被系统拒绝。', copying: '复制中', copied: '已复制', copy: '复制', hide: '隐藏', show: '显示', value: '凭据值' },
   },
+  'zh-TW': {
+    personalization: {
+      saveFailed: '儲存失敗', displayName: '顯示名稱', displayNameHelp: 'Maka 在聊天裡會以這個名字稱呼你。留空就用預設的“你”。', displayNamePlaceholder: '例如：JK', displayNameUnset: '未設定，Maka 會稱呼你“你”', displayNameChange: '更改', displayNameSet: '設定',
+      interfaceLanguage: '介面語言', interfaceLanguageHelp: '選擇 Maka 介面的顯示語言。切換後立即生效，重新啟動後仍會保留。', localeOptions: [['auto', '自動（跟隨系統）'], ['zh-CN', '简体中文'], ['zh-TW', '繁體中文'], ['en', 'English']],
+      assistantTone: '助手語氣偏好', assistantToneHelp: '最多 500 字，只影響回答的語氣和風格。權限確認與安全規則不受影響；改動會自動儲存。', assistantTonePlaceholder: '例如：技術嚴謹、偏簡潔、不要 emoji。',
+    },
+    sections: {
+      identity: '身份', identityHelp: 'Maka 如何稱呼你，以及介面語言和回答語氣。',
+      privacy: '隱私與通知', privacyHelp: '本地資料的讀寫範圍，以及桌面通知時機。',
+      chatDefaults: '任務預設', chatDefaultsHelp: '新任務的起始模型、權限模式與思考級別。',
+      shell: '命令列環境', shellHelp: '選擇 Runtime Host 執行 Bash 工具和終端命令時使用的 shell。',
+      network: '網路', networkHelp: 'AI 模型請求走的網路通道。',
+      theme: '主題', themeHelp: '介面跟隨系統，還是固定淺色或深色。',
+      palette: '調色盤', paletteHelp: '強調色與畫布色調；切換會立即生效並儲存在本地。',
+      appIcon: '應用圖示', appIconHelp: 'Dock、工作列和切換器裡顯示的 Maka 圖示；切換會立即生效。',
+      fontSize: '字型大小', fontSizeHelp: '介面與終端機的文字大小；調整會立即生效並儲存在本機。',
+      pets: '自訂寵物', petsHelp: '管理你自己匯入的 PetPack。Maka 不預裝、也不預設啟用任何寵物。',
+    },
+    appearance: {
+      saveFailed: '儲存外觀設定失敗', theme: '主題', palette: '調色盤',
+      themeOptions: { light: { label: '淺色', help: '始終使用淺色介面。' }, dark: { label: '深色', help: '始終使用深色介面。' }, auto: { label: '跟隨系統', help: '符合系統目前的淺色或深色偏好。' } },
+      paletteLabels: { default: '預設', onedark: 'One Dark', 'catppuccin-mocha': 'Catppuccin Mocha', 'tokyo-night': 'Tokyo Night', nord: 'Nord', coral: '珊瑚', azure: '湖藍', forest: '森林', dusk: '暮光', sand: '沙金', mono: '極簡灰' },
+      paletteHelp: { default: 'Maka 品牌藍強調色', onedark: '編輯器經典深色', 'catppuccin-mocha': '紫調柔和深色', 'tokyo-night': '深藍主題', nord: '北歐冷色', coral: '暖粉 / 珊瑚強調色', azure: '湖藍強調色，乾淨冷靜', forest: '深苔綠與暖蜂蜜強調色', dusk: '深紫羅蘭與冷調畫布', sand: '琥珀沙金與暖奶白', mono: '純灰階，無彩色干擾' },
+      paletteGroups: { editor: '編輯器主題', product: '產品色調' },
+      appIconLabels: { default: '經典', mono: '單色', 'sky': '原色天藍', 'cyan': '青藍', 'ice': '冰藍漸變', 'pale-inverted': '淡底深標', 'ink': '墨黑', 'paper': '紙白', 'graphite': '石墨', 'pencil-kraft': '鉛筆・牛皮紙', 'pencil-sky': '鉛筆・天藍', 'pencil-navy': '鉛筆・深藍', 'alpine': '晴空雪山', 'dusk': '黃昏', 'night': '夜山', 'midnight': '午夜藍', 'carbon': 'OLED 純黑', 'slate': '石板灰', 'obsidian': '黑曜石', 'neon-cyan': '霓虹青', 'matrix': '磷光綠', 'magenta': '洋紅', 'amber-crt': '琥珀 CRT', 'clay': '陶土', 'sage': '鼠尾草', 'dust': '灰粉', 'fog': '霧藍', 'sunset': '日落', 'amber': '琥珀', 'terracotta': '赤陶', 'ocean': '深海', 'moss': '苔原', 'desert': '沙漠', 'glacier': '冰河', 'gold': '鎏金', 'chrome': '鉻', 'mono-black': '單色・黑', 'mono-white': '單色・白', 'hazard': '黑黃', 'forest': '蒼綠' },
+      appIconHelp: { default: 'Maka 預設品牌圖示', mono: '灰階版本，Dock 裡更安靜', 'sky': '幾何 M 標，品牌藍', 'cyan': '偏青的藍', 'ice': '由淺到深的藍色漸變', 'pale-inverted': '淡藍底配深藍標', 'ink': '黑底白標，對比最強', 'paper': '白底黑標', 'graphite': '白底黑標，筆尖為灰', 'pencil-kraft': '鉛筆意象，牛皮紙底', 'pencil-sky': '鉛筆意象，天藍底', 'pencil-navy': '鉛筆意象，深藍底', 'alpine': '雪頂山峰，晴空底', 'dusk': '雪頂山峰，黃昏底', 'night': '雪頂山峰，夜色底', 'midnight': '深藍底搭配亮藍標誌，在深色 Dock 上仍保有清楚輪廓', 'carbon': '純黑背景，OLED 螢幕只顯示標誌', 'slate': '冷色石板灰底搭配淺灰標誌', 'obsidian': '紫黑漸層底搭配淡紫標誌', 'neon-cyan': '近黑底搭配霓虹青', 'matrix': '終端機螢幕的磷光綠', 'magenta': '深紫底搭配洋紅', 'amber-crt': '早期終端機的琥珀色', 'clay': '低飽和陶土色', 'sage': '低飽和灰綠色', 'dust': '低飽和灰粉色', 'fog': '低飽和灰藍色', 'sunset': '橘色到粉色的斜向漸層', 'amber': '琥珀底搭配深褐標誌', 'terracotta': '磚紅漸層', 'ocean': '深青綠漸層', 'moss': '深苔綠漸層', 'desert': '沙色漸層搭配深褐標誌', 'glacier': '極淺的冰河藍漸層', 'gold': '標誌帶有金色漸層', 'chrome': '標誌帶有銀色漸層', 'mono-black': '純白底黑色標誌，可單色列印', 'mono-white': '純黑底白色標誌', 'hazard': '黑底黃色標誌，是本組對比最高的款式', 'forest': '綠色背景上的雪頂山峰' },
+      appIconGroups: {
+        mascot: '擬人', blue: '藍色系', contrast: '黑白', pencil: '鉛筆', mountain: '高山',
+        dark: '深色', neon: '霓虹', muted: '柔和', warm: '暖色', nature: '自然', metal: '金屬', highContrast: '高對比',
+        custom: '自訂',
+      },
+      appIconSplitLabel: '淺色與深色模式使用不同圖示',
+      appIconSplitHelp: '關閉時，兩種外觀會共用同一個圖示。',
+      appIconTargets: { light: '淺色', dark: '深色' },
+      appIconCustom: '匯入的圖示',
+      appIconCustomHelp: '你自己匯入的圖片',
+      appIconImport: '匯入圖示…',
+      appIconImporting: '正在匯入…',
+      appIconImportHelp: '方形 PNG 最好；四周留約 10% 透明邊，Dock 裡才會和其它應用一樣大。',
+      appIconRemove: '刪除',
+      appIconImportError: '匯入圖示失敗',
+      appIconRemoveFailed: '刪除圖示失敗',
+      appIconSelectFailed: '切換圖示失敗',
+      appIconImportFailed: {
+        too_large: '檔案太大，換一張小一點的圖片',
+        too_many_pixels: '圖片尺寸太大，最多 4096×4096',
+        unsupported_format: '只支援 PNG 和 JPEG',
+        unreadable: '這個檔案讀不出影像',
+        too_small: '圖片太小，至少需要 128×128',
+        write_failed: '無法儲存匯入的圖示',
+      },
+      appIconUnavailable: '無法載入應用圖示',
+      fontSize: { uiLabel: 'UI 字型大小', uiHelp: '調整介面使用的基準字型大小', terminalLabel: '終端機字型大小', terminalHelp: '調整終端機命令輸出與程式碼使用的字型大小' },
+    },
+    pets: {
+      import: '匯入 PetPack', importing: '正在匯入…', loading: '正在載入自訂寵物…',
+      status: '桌面寵物', activePet: (name) => `目前使用：${name}`, disabled: '已關閉', disable: '關閉寵物', disabling: '正在關閉…',
+      empty: '還沒有匯入寵物', emptyHelp: '選擇一個包含 pet.json 和精靈圖的本地資料夾。',
+      selected: '正在使用', select: '使用', selecting: '正在切換…', remove: '刪除', removing: '正在刪除…',
+      removeTitle: (name) => `刪除“${name}”？`, removeDescription: '這會刪除 Maka 本地儲存的該寵物包，且無法撤銷。原始資料夾不會受影響。', confirmRemove: '刪除', cancel: '取消',
+      loadFailed: '無法載入自訂寵物', importFailed: '匯入寵物失敗', selectFailed: '切換寵物失敗', removeFailed: '刪除寵物失敗',
+      importErrors: { invalid_directory: '所選資料夾無效。', invalid_manifest: 'pet.json 不符合 maka.pet/v1 格式。', invalid_asset: '精靈圖缺失、無效或超出限制。', already_installed: '已經匯入了相同 ID 的寵物。', read_failed: '無法讀取所選資料夾。' },
+      selectErrors: { invalid_id: '寵物 ID 無效。', not_found: '該寵物已不在本地寵物庫中。', read_failed: '無法讀取寵物庫。', write_failed: '無法儲存寵物選擇。' },
+      removeErrors: { invalid_id: '寵物 ID 無效。', remove_failed: '無法刪除本機寵物包。' },
+    },
+    general: {
+      incognito: '隱身模式', incognitoHelp: '開啟後暫停本地記憶讀寫、聯網搜尋和定時任務觸發。', enableIncognito: '啟用隱身模式', incognitoFailed: '隱身模式切換失敗', notifications: '完成時傳送系統通知', notificationsHelp: '視窗不在前臺時，在回答完成或出錯後傳送桌面通知。', notificationsFailed: '通知設定切換失敗', workspaceInstructions: '遵循專案指令', workspaceInstructionsHelp: '自動讀取每個專案中已有的 AGENTS.md、CLAUDE.md 或 GEMINI.md；檔案仍由各自專案管理。', workspaceInstructionsFailed: '專案指令設定切換失敗', workHub: '啟用 WorkHub', workHubHelp: '在一個入口檢視已有工作，並將新輸入保守地送往普通任務。', workHubFailed: 'WorkHub 設定切換失敗', updateFailed: '設定未生效，請稍後重試。',
+      defaultModel: '預設模型', defaultModelHelp: '新任務預設使用的模型。', notSet: '未設定', saveDefaultModelFailed: '儲存預設模型失敗', defaultPermission: '預設權限模式', defaultPermissionHelp: '新任務預設使用的權限模式；可在任務內隨時切換。', saveDefaultPermissionFailed: '儲存預設權限模式失敗', defaultThinking: '預設思考級別', defaultThinkingHelp: '新任務的思考級別；目前模型不支援所選級別時用模型預設。', followModelDefault: '跟隨模型預設', saveDefaultThinkingFailed: '儲存預設思考級別失敗',
+      shellPreference: 'Bash 工具 shell', shellPreferenceHelp: '自動模式保持 Windows 的 PowerShell 優先規則；Git Bash 是僅對目前 Runtime Host 生效的顯式覆蓋。', shellAuto: '自動（推薦）', shellGitBash: 'Git Bash', shellExecutable: 'Git Bash 執行檔', shellExecutableHelp: '填寫 Runtime Host 所在 Windows 機器上 bash.exe 的絕對路徑。也支援該機器上的舊版 System32 WSL Bash；儲存時會驗證 GNU Bash。', saveShell: '儲存 shell 設定', savingShell: '正在儲存…', shellSaved: '已儲存', saveShellFailed: '儲存 shell 設定失敗', shellExecutableRejected: '目前 Runtime Host 無法把該路徑作為 GNU Bash 執行。請檢查 Host 是否為 Windows、路徑是否存在，並確認檔名為 bash.exe。',
+      proxy: '代理伺服器', proxyHelp: '為 AI 模型請求設定網路代理', enableProxy: '啟用代理伺服器', saveNetworkFailed: '儲存網路設定失敗', proxyProtocol: '代理協議', serverAddress: '伺服器地址', port: '埠', proxyAuth: '代理認證', proxyAuthHelp: '需要使用者名稱和密碼時開啟。', enableProxyAuth: '啟用代理認證', username: '使用者名稱', password: '密碼', bypassList: '代理白名單', bypassHelp: '這些域名將繞過代理直連，多個用逗號分隔。', autoBypass: (count) => `已自動新增 ${count} 個域名。代理僅作用於 AI 模型請求。`, testing: '測試中…', testCurrent: '測試目前設定', proxyReachable: '代理可達', proxyTestFailed: '代理測試失敗', proxyTestError: '代理測試出錯',
+      passwordSavedPlaceholder: '密碼已儲存；輸入新密碼以替換',
+    },
+    about: {
+      loadFailed: '載入關於資訊失敗', loading: '正在載入關於頁', unavailable: '無法載入關於資訊', copied: '已複製診斷資訊', pasteHint: '檢查內容後，可直接貼上到問題報告', copyFailed: '複製失敗', clipboardUnavailable: '剪貼簿不可用或被系統拒絕。', devBuild: '本地開發版', nightlyBuild: 'Nightly', buildLabel: '建構', supportTitle: '支援', copyAction: '複製', reportIssueHelp: '帶上診斷資訊去 GitHub Issues，回覆更快。', reportIssueOpen: '開啟', channelSummaries: { dev: '本地開發建構，不檢查更新。', nightly: '每日建構的預發佈版，自動更新到最新 nightly，會覆蓋正式版安裝。', release: '正式發佈版，自動接收穩定更新。' }, privacyLabel: '隱私與安全', privacyTitle: '本地優先 · 隱私預設', privacyPoints: ['所有任務、設定、憑據和 Skill 指令檔案都保留在本機工作區。', '模型金鑰儲存在本機憑據檔案內；訂閱帳號權杖使用系統安全儲存。', 'Maka 不傳送使用遙測；只在你顯式啟用時與所選模型供應商通訊。', '高風險工具操作需要在任務內明示授權。', '每個任務都會在本機保留訊息、工具呼叫、權限決策與模式變更記錄。'], copying: '複製中…', copyDiagnostics: '複製診斷資訊', copyHelp: '複製版本、平臺、隱藏主目錄後的工作區路徑，以及近期脫敏的 Desktop 與 Runtime Host 記錄；僅寫入剪貼簿，不會自動上傳。', keyboardShortcuts: '鍵盤快捷鍵', keyboardShortcutsHelp: 'Maka 支援的全部快捷鍵一覽。', keyboardShortcutsOpen: '檢視', reportIssueLabel: '報告問題',
+
+      checkForUpdates: '檢查更新',
+      checkingForUpdates: '檢查中…',
+
+
+      updateIdle: '尚未檢查更新。',
+      updateNotAvailable: '已是最新版本。',
+      updateAvailable: (version) => `發現新版本 v${version}，正在準備下載…`,
+      updateDownloading: (version, percent) => `正在下載 v${version}（${percent}%）…`,
+      updateVerifying: (version) => `正在驗證 v${version} 的發佈來源…`,
+      updateDownloaded: (version) => `v${version} 已下載，可在側欄選擇重啟安裝。`,
+      updateInstalling: (version) => `正在安裝 v${version}…`,
+      updateCheckFailed: '檢查更新失敗',
+      updateCheckFailedDetail: (message) => message,
+    },
+    password: { copyFailed: '複製失敗', clipboardUnavailable: '剪貼簿不可用或被系統拒絕。', copying: '複製中', copied: '已複製', copy: '複製', hide: '隱藏', show: '顯示', value: '憑據值' },
+  },
   en: {
     personalization: {
-      saveFailed: 'Could not save', displayName: 'Display name', displayNameHelp: 'Maka uses this name when addressing you. Leave it blank to use “you”.', displayNamePlaceholder: 'For example: JK', displayNameUnset: 'Not set — Maka will say “you”', displayNameChange: 'Change', displayNameSet: 'Set', interfaceLanguage: 'Interface language', interfaceLanguageHelp: 'Choose the language used by Maka. Changes apply immediately and persist after restart.', localeOptions: [['auto', 'Follow system'], ['zh', '中文'], ['en', 'English']], assistantTone: 'Assistant tone', assistantToneHelp: 'Up to 500 characters. This changes response style only; permission and safety rules still apply. Changes save automatically.', assistantTonePlaceholder: 'For example: technically rigorous, concise, and no emoji.',
+      saveFailed: 'Could not save', displayName: 'Display name', displayNameHelp: 'Maka uses this name when addressing you. Leave it blank to use “you”.', displayNamePlaceholder: 'For example: JK', displayNameUnset: 'Not set — Maka will say “you”', displayNameChange: 'Change', displayNameSet: 'Set', interfaceLanguage: 'Interface language', interfaceLanguageHelp: 'Choose the language used by Maka. Changes apply immediately and persist after restart.', localeOptions: [['auto', 'Follow system'], ['zh-CN', 'Simplified Chinese'], ['zh-TW', 'Traditional Chinese'], ['en', 'English']], assistantTone: 'Assistant tone', assistantToneHelp: 'Up to 500 characters. This changes response style only; permission and safety rules still apply. Changes save automatically.', assistantTonePlaceholder: 'For example: technically rigorous, concise, and no emoji.',
     },
     sections: {
       identity: 'Identity', identityHelp: 'How Maka addresses you, plus interface language and response tone.',

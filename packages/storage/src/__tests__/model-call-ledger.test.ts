@@ -23,7 +23,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, test } from 'node:test';
-import type { AgentRunHeader } from '@maka/core/agent-run';
 import {
   MODEL_CALL_ATTEMPT_EVENT_TYPE,
   MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
@@ -37,6 +36,7 @@ import {
 } from '../model-call-ledger.js';
 import { acquireOperationalStateDatabase } from '../operational-state-store.js';
 import { createSqliteAgentRunStore } from '../agent-run-store.js';
+import { openInvocation } from './fixtures/invocation-opening.js';
 
 const NOW = 1_750_000_000_000;
 
@@ -90,8 +90,8 @@ function appendAuthorityEvent(
     lease.transaction('write', () => {
       lease.database
         .prepare(`
-          INSERT OR IGNORE INTO core_agent_runs(session_id, run_id, created_at, record_json)
-          VALUES (?, ?, ?, '{}')
+          INSERT OR IGNORE INTO core_agent_runs(session_id, run_id, created_at)
+          VALUES (?, ?, ?)
         `)
         .run(sessionId, runId, NOW - 1_000);
       lease.database
@@ -356,21 +356,8 @@ describe('canonical model call ledger', () => {
 describe('catching the read model up from the AgentRun authority', () => {
   test('consumes the high-water published by the real AgentRun append path', async () => {
     await withLedger(async (ledger, root) => {
+      await openInvocation(root, { sessionId: 'session-1', runId: 'run-1', turnId: 'turn-1' });
       const runStore = createSqliteAgentRunStore(root);
-      const header: AgentRunHeader = {
-        runId: 'run-1',
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        status: 'created',
-        backendKind: 'fake',
-        llmConnectionSlug: 'fake',
-        modelId: 'fake-model',
-        cwd: '/tmp/cwd',
-        permissionMode: 'ask',
-        createdAt: 1,
-        updatedAt: 1,
-      };
-      await runStore.createRun(header);
       await runStore.appendEvent('session-1', 'run-1', {
         id: 'attempt-real-append',
         type: MODEL_CALL_ATTEMPT_EVENT_TYPE,

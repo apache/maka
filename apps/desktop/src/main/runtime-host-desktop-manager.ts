@@ -21,6 +21,7 @@ import { randomUUID } from 'node:crypto';
 import type { BotIncomingMessage } from '@maka/runtime/bots';
 import {
   abortable,
+  forceTerminateObservedRegisteredRuntimeHost,
   forceTerminateRegisteredRuntimeHost,
   RuntimeHostOperationError,
   RuntimeHostPermanentReconnectError,
@@ -247,6 +248,7 @@ export async function startRuntimeHostDesktopManager(
     upgradePrompts?: RuntimeHostUpgradePrompts;
     waitForHostExit?: (pid: number) => Promise<void>;
     forceTerminateHost?: typeof forceTerminateRegisteredRuntimeHost;
+    forceTerminateObservedHost?: typeof forceTerminateObservedRegisteredRuntimeHost;
     waitForHostRetirement?: (
       registration: HostRegistration,
       signal: AbortSignal,
@@ -271,6 +273,7 @@ export async function startRuntimeHostDesktopManager(
     options.upgradePrompts,
     options.waitForHostExit ?? waitForProcessExit,
     options.forceTerminateHost ?? forceTerminateRegisteredRuntimeHost,
+    options.forceTerminateObservedHost ?? forceTerminateObservedRegisteredRuntimeHost,
     options.waitForHostRetirement ?? waitForProcessRetirement,
     options.resolveLocalHostReplacement,
     options.recoverLocalHost,
@@ -310,6 +313,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     private readonly upgradePrompts: RuntimeHostUpgradePrompts | undefined,
     private readonly waitForHostExit: (pid: number) => Promise<void>,
     private readonly forceTerminateHost: typeof forceTerminateRegisteredRuntimeHost,
+    private readonly forceTerminateObservedHost: typeof forceTerminateObservedRegisteredRuntimeHost,
     private readonly waitForHostRetirement: (
       registration: HostRegistration,
       signal: AbortSignal,
@@ -1138,7 +1142,8 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       ) {
         const replacement = target.input.profileTarget
           ? undefined
-          : await this.resolveLocalHostReplacement?.(result.registration, signal);
+          : this.#registeredEphemeralHostReplacement(target, result, signal) ??
+            (await this.resolveLocalHostReplacement?.(result.registration, signal));
         const activity = result.handshake?.activity;
         if (replacement && activity && isHostActivityIdle(activity)) {
           // Only a complete, observed snapshot can authorize silent
@@ -1182,6 +1187,43 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       if (await tryRecoverLocalHost()) continue;
       throw runtimeHostStartupError(result.reason, result.diagnostic);
     }
+  }
+
+  #registeredEphemeralHostReplacement(
+    target: DesktopRuntimeHostTargetGeneration,
+    conflict: RuntimeHostWaitConflict,
+    signal: AbortSignal,
+  ): RuntimeHostLocalReplacement | undefined {
+    const { registration, processIdentity } = conflict;
+    if (registration.lifecycleMode !== 'ephemeral' || !processIdentity) return undefined;
+    const stillAuthorized = () =>
+      !this.#closed &&
+      !signal.aborted &&
+      target.valid &&
+      this.#targets.get(target.target.profile.id) === target;
+    return {
+      replace: async (activeWorkPolicy) => {
+        // This Host cannot participate in the current retirement protocol, so
+        // an earlier idle snapshot cannot prove that it remains idle. Require
+        // explicit consent before using the identity-fenced termination path.
+        if (activeWorkPolicy === 'refuse_active_work') return 'active_tasks';
+        signal.throwIfAborted();
+        const terminated = await this.forceTerminateObservedHost(
+          {
+            rootPath: this.#baseInput.rootPath,
+            registration,
+          },
+          { processIdentity, isCurrent: stillAuthorized },
+        );
+        signal.throwIfAborted();
+        if (!terminated) {
+          throw new RuntimeHostPermanentReconnectError(
+            'The older Runtime Host changed before it could be stopped safely',
+          );
+        }
+        return 'replaced';
+      },
+    };
   }
 
   #resolveRestartable(

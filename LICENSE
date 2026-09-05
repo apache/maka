@@ -207,11 +207,11 @@ Vercel AI SDK
 
 Source: https://www.npmjs.com/package/@ai-sdk/provider-utils/v/5.0.11
         https://www.npmjs.com/package/@ai-sdk/provider/v/4.0.3
-Patched package: https://www.npmjs.com/package/@ai-sdk/provider-utils/v/5.0.28
+Patched package: https://www.npmjs.com/package/@ai-sdk/provider-utils/v/5.0.34
 Repository: https://github.com/vercel/ai/tree/main/packages/provider-utils
             https://github.com/vercel/ai/tree/main/packages/provider
 Adapted declarations: @ai-sdk/provider-utils 5.0.11, @ai-sdk/provider 4.0.3
-Dependency patch: patches/@ai-sdk+provider-utils+5.0.28.patch
+Dependency patch: patches/@ai-sdk+provider-utils+5.0.34.patch
 Copyright 2023 Vercel, Inc.
 License: Apache-2.0
 
@@ -223,7 +223,7 @@ License, Version 2.0 above applies to the adapted material.
 The pinned versions are the ones present when the adaptation was made. The
 adapted declarations are unchanged through @ai-sdk/provider-utils 5.0.25 and
 @ai-sdk/provider 4.0.7, the versions recorded by the code origin audit. Maka
-also redistributes a patch against @ai-sdk/provider-utils 5.0.28; that patch
+also redistributes a patch against @ai-sdk/provider-utils 5.0.34; that patch
 modifies Apache-2.0 source and is covered by the license reproduced above.
 
 Astryx
@@ -307,6 +307,39 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
+
+electron-builder dependency patch
+
+Source: https://www.npmjs.com/package/app-builder-lib/v/26.15.3
+Repository: https://github.com/electron-userland/electron-builder
+Version: 26.15.3
+Dependency patch: patches/app-builder-lib+26.15.3.patch
+License: MIT
+
+Maka redistributes a source patch that omits modification and access times
+from ZIP archives. The following MIT License applies to that material:
+
+The MIT License (MIT)
+
+Copyright (c) 2015 Loopline Systems
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 node-pty dependency patch
 

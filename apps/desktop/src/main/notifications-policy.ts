@@ -86,6 +86,11 @@ export function runNotificationCopy(
       ? { title: 'Conversation error', body: 'This response did not finish. Click to view details.' }
       : { title: 'Response ready', body: 'Maka finished this response. Click to view it.' };
   }
+  if (locale === 'zh-TW') {
+    return kind === 'errored'
+      ? { title: '任務發生錯誤', body: '本次回答未能完成，按一下以檢視詳細資料。' }
+      : { title: '回答已產生', body: 'Maka 已完成本次回答，按一下以檢視。' };
+  }
   if (kind === 'errored') {
     return { title: '任务出错', body: '本轮回答未能完成，点击查看详情。' };
   }

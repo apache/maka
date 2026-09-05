@@ -701,7 +701,7 @@ describe('responses wire request body', () => {
           ],
         },
       ],
-      tools: [tools.apply_patch as never],
+      tools: [{ ...(tools.apply_patch as object), name: 'apply_patch' } as never],
       providerOptions: { openai: { store: false } },
     });
 

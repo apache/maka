@@ -813,6 +813,7 @@ const CLIENT_CAPABILITY_SCHEMA_TYPES = new Set([
 const CLIENT_CAPABILITY_SCHEMA_KEYWORDS = new Set([
   '$defs',
   '$ref',
+  'additionalItems',
   'additionalProperties',
   'allOf',
   'anyOf',
@@ -918,11 +919,10 @@ function validateToolInputSchema(root: Record<string, unknown>): void {
         throw invalidProtocolFrame('Invalid Client Capability tool schema required');
       }
     }
-    if (
-      schema.additionalProperties !== undefined &&
-      typeof schema.additionalProperties !== 'boolean'
-    ) {
-      visit(schema.additionalProperties);
+    for (const key of ['additionalItems', 'additionalProperties'] as const) {
+      if (schema[key] !== undefined && typeof schema[key] !== 'boolean') {
+        visit(schema[key]);
+      }
     }
     if (schema.propertyNames !== undefined) {
       visit(schema.propertyNames);

@@ -121,7 +121,6 @@ export const ALLOWED = {
     useEffect: 14,
     useKeyboardHelp: 1,
     useLayoutEffect: 2,
-    useModuleHubController: 1,
     useNewTaskChoice: 1,
     useOnboardingSnapshot: 1,
     usePlanModeState: 1,

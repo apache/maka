@@ -755,6 +755,18 @@ export const ProblemConnections: Story = {
   render: () => <ProviderStory bridge={createBridge({ connections: problemConnections, defaultSlug: 'zai-live' })} />,
 };
 
+// Real path: first run — no connection yet, so the list offers the recommended
+// providers as rows, one click from a provider's form.
+export const EmptyProviders: Story = {
+  render: () => <ProviderStory bridge={createBridge({ connections: [] })} />,
+  play: async ({ canvasElement }) => {
+    await waitFor(() => {
+      expect(canvasElement.querySelector('.providerCatalogRow[data-provider="opencode-free"]')).not.toBeNull();
+    }, { timeout: 5_000 });
+    expect(canvasElement.querySelector('[data-maka-contract="provider-catalog"]')).toBeNull();
+  },
+};
+
 // Real path: 设置 → 模型 → click a connection row — the detail page it routes to.
 export const ConnectionDetailPage: Story = {
   render: () => (
@@ -781,8 +793,8 @@ export const AlibabaConnectionDetailPage: Story = {
 };
 
 // Real path: 设置 → 模型 → click a connection whose provider has no model-list
-// endpoint — 添加模型 stands where 更新模型目录 would, and the capability section
-// lists the models Maka's bundled metadata cannot describe.
+// endpoint — 添加模型 stands where 更新模型目录 would, and the models Maka's
+// bundled metadata cannot describe carry a 配置参数 editor on their row.
 export const StaticCatalogConnectionDetail: Story = {
   render: () => (
     <ProviderStory
@@ -792,10 +804,11 @@ export const StaticCatalogConnectionDetail: Story = {
   ),
 };
 
-// Real path: 设置 → 模型 → click a custom relay — the capability section with
-// several enabled models, where 批量设置思考档位 sits above the per-model rows it
-// writes into. Opening its menu shows each level's coverage across the table:
-// `low` and `high` on 1 of 4, everything else on none.
+// Real path: 设置 → 模型 → click a custom relay — several enabled models, each
+// with a 配置参数 editor, and 批量设置思考档位 in the section's action cluster
+// writing into all of them at once. Opening its menu shows each level's
+// coverage across the table: `low` and `high` on 1 of 4, everything else on
+// none.
 export const RelayConnectionDetail: Story = {
   render: () => (
     <ProviderStory
@@ -949,6 +962,13 @@ export const ApiKeyOnboardingModels: Story = {
     await userEvent.click(await canvas.findByRole('button', { name: '验证并选择模型' }));
     await expect(canvas.findByText('选择此连接使用的模型')).resolves.toBeTruthy();
     await expect(canvas.findByRole('button', { name: '添加连接' })).resolves.toBeTruthy();
+    // The step that replaced the key form has to take the focus the pressed
+    // button left behind, or a keyboard user restarts from the top of Settings.
+    await waitFor(() => {
+      expect(document.activeElement?.getAttribute('data-maka-contract')).toBe(
+        'api-key-onboarding-models',
+      );
+    });
   },
 };
 

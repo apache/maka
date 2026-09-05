@@ -17,7 +17,8 @@
  * under the License.
  */
 
-import type { RootExecutionDescriptor } from '@maka/core/agent-run';
+import type { BackendStopMode } from '@maka/core/backend-types';
+import type { RootExecutionDescriptor } from '@maka/core/runtime-invocation';
 import type { MessageContent, SessionEvent } from '@maka/core/events';
 import type { UserMessageInput } from '@maka/core/runtime-inputs';
 import type { StopSessionInput } from '@maka/runtime/session-manager';

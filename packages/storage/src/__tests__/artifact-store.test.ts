@@ -322,6 +322,124 @@ describe('SQLite Artifact store', () => {
     });
   });
 
+  test('a conversation copy leaves retired captures behind rather than reintroducing them', async () => {
+    await withWorkspace(async (root) => {
+      const authority = createArtifactStoreWriteAuthority(root);
+      await authority.recover();
+      const { store } = authority;
+      const kept = await store.create(artifactInput('kept-artifact', 'kept', 10));
+      await store.create({
+        ...artifactInput('capture-artifact', 'request', 11),
+        source: 'provider_request_capture',
+      });
+
+      const copied = await store.copyConversationArtifacts({
+        sourceSessionId: 'session-1',
+        targetSessionId: 'session-copy',
+        turnIds: ['turn-1'],
+      });
+
+      // The sweep runs once and stops when nothing is left. A copy that
+      // carried captures would put them back afterwards, so every fork would
+      // hand the new Session a fresh set of bytes nobody reads and nothing
+      // will come back for.
+      assert.equal(copied.artifactIds.get('capture-artifact'), undefined);
+      assert.ok(copied.artifactIds.get(kept.id));
+      assert.deepEqual(
+        (await store.list('session-copy', { includeDeleted: true })).map((record) => record.source),
+        ['fixture'],
+      );
+      // And the source keeps its own until the sweep takes them.
+      assert.deepEqual(await store.purgeRetiredCaptures(8), { purged: 1, remaining: 0 });
+    });
+  });
+
+  test('and leaves them behind on the linked and included paths too', async () => {
+    await withWorkspace(async (root) => {
+      const authority = createArtifactStoreWriteAuthority(root);
+      await authority.recover();
+      const { store } = authority;
+      // A Side Conversation copy names artifacts three ways: by turn, by a
+      // linked child Session, and by an explicit include list for the refs
+      // that carry no conversation turn. All three reach the same records.
+      const linkedKept = await store.create({
+        ...artifactInput('linked-kept', 'child result', 10),
+        sessionId: 'session-child',
+      });
+      await store.create({
+        ...artifactInput('linked-capture', 'child request', 11),
+        sessionId: 'session-child',
+        source: 'provider_request_capture',
+      });
+      await store.create({
+        ...artifactInput('upload-capture', 'uploaded request', 12),
+        turnId: 'upload-1',
+        source: 'provider_request_capture',
+      });
+
+      const copied = await store.copyConversationArtifacts({
+        sourceSessionId: 'session-1',
+        targetSessionId: 'session-copy',
+        turnIds: ['turn-1'],
+        includeArtifactIds: ['upload-capture'],
+        linkedArtifacts: [{ sessionId: 'session-child', artifactIds: [linkedKept.id] }],
+      });
+
+      assert.ok(copied.artifactIds.get(linkedKept.id), 'ordinary linked artifacts still copy');
+      assert.equal(copied.artifactIds.get('upload-capture'), undefined);
+      assert.deepEqual(
+        (await store.list('session-copy', { includeDeleted: true })).map((record) => record.source),
+        ['fixture'],
+      );
+
+      // A child result lists every Artifact its turn held, captures included,
+      // and the ledger holding that list cannot be rewritten. So a request
+      // naming one is answered with what is still copyable, not refused: the
+      // alternative is a Session that can never be forked again.
+      const named = await store.copyConversationArtifacts({
+        sourceSessionId: 'session-1',
+        targetSessionId: 'session-copy-2',
+        turnIds: ['turn-1'],
+        linkedArtifacts: [
+          { sessionId: 'session-child', artifactIds: ['linked-capture', linkedKept.id] },
+        ],
+      });
+      assert.equal(named.artifactIds.get('linked-capture'), undefined);
+      assert.ok(named.artifactIds.get(linkedKept.id));
+    });
+  });
+
+  test('reclaims retired request captures in bounded batches and leaves everything else', async () => {
+    await withWorkspace(async (root) => {
+      const authority = createArtifactStoreWriteAuthority(root);
+      await authority.recover();
+      const { store } = authority;
+      for (let index = 0; index < 3; index += 1) {
+        await store.create({
+          ...artifactInput(`capture-${index}`, `request-${index}`, 10 + index),
+          source: 'provider_request_capture',
+        });
+      }
+      await store.create(artifactInput('kept-artifact', 'kept', 20));
+
+      assert.deepEqual(await store.purgeRetiredCaptures(2), { purged: 2, remaining: 1 });
+      assert.deepEqual(await store.purgeRetiredCaptures(2), { purged: 1, remaining: 0 });
+      // The sweep stops on its own rather than spinning once the residue is gone.
+      assert.deepEqual(await store.purgeRetiredCaptures(2), { purged: 0, remaining: 0 });
+
+      assert.deepEqual(
+        (await store.list('session-1', { includeDeleted: true })).map((record) => record.id),
+        ['kept-artifact'],
+      );
+      // Purge, not a tombstone: the bytes are what this reclaims.
+      const kept = await store.getInSession('session-1', 'kept-artifact');
+      assert.ok(kept.record);
+      assert.deepEqual(await readdir(join(root, 'artifacts', 'session-1')), [
+        basename(kept.record.relativePath),
+      ]);
+    });
+  });
+
   test('excludes selected Artifacts from a conversation snapshot', async () => {
     await withWorkspace(async (root) => {
       const authority = createArtifactStoreWriteAuthority(root);

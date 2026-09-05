@@ -143,6 +143,7 @@ export interface RuntimeHostPeerTransitRelayCandidate {
 }
 
 interface RuntimeHostPeerNativeModule {
+  readProcessStartIdentity?(pid: number): unknown;
   ensurePeerIdentity(keyPath: string): Promise<string>;
   signPeerIdentity(
     keyPath: string,
@@ -164,6 +165,16 @@ interface RuntimeHostPeerNativeModule {
     readonly automaticRelayDiscovery?: boolean;
     readonly webRtcStunUrls?: readonly string[];
   }): unknown;
+}
+
+export function readRuntimeHostNativeProcessStartIdentity(
+  nativePath: string,
+  pid: number,
+): string | undefined {
+  const reader = loadNativeModule(nativePath).readProcessStartIdentity;
+  if (!reader) return undefined;
+  const identity = reader(pid);
+  return typeof identity === 'string' && isProcessStartIdentity(identity) ? identity : undefined;
 }
 
 export async function signRuntimeHostPeerIdentity(input: {
@@ -666,6 +677,12 @@ function isPeerId(value: unknown): value is string {
     value.length > 0 &&
     Buffer.byteLength(value, 'utf8') <= 256 &&
     !/[\u0000-\u001f\u007f]/u.test(value)
+  );
+}
+
+function isProcessStartIdentity(value: string): boolean {
+  return (
+    Buffer.byteLength(value, 'utf8') <= 256 && /^(?:darwin|linux|windows):[0-9a-f:-]+$/u.test(value)
   );
 }
 
