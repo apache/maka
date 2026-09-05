@@ -101,7 +101,7 @@ type HostExecutionRuntimePolicyAuthority = {
 
 type HostExecutionArtifactAuthority = Pick<
   InteractiveArtifactStoreWriter,
-  'create' | 'createOwned' | 'readDurableAttachmentBinary' | 'deleteOwnedArtifactInSession'
+  'create' | 'readDurableAttachmentBinary'
 >;
 
 type HostExecutionUsageAuthority = {
@@ -329,11 +329,7 @@ async function buildHostAiSdkBackend(
         );
       }
     : undefined;
-  const planProjectionImage = createReadImageSnapshotPlanner(
-    input.artifacts,
-    (sessionId, artifactId) =>
-      input.artifacts.deleteOwnedArtifactInSession(sessionId, artifactId, 'tool_result_projection'),
-  );
+  const planProjectionImage = createReadImageSnapshotPlanner(input.artifacts);
 
   try {
     return new HostAiSdkBackend(

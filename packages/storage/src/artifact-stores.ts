@@ -58,18 +58,6 @@ export interface InteractiveArtifactStoreWriter extends DurableArtifactAttachmen
   readonly [writerBrand]: true;
   create(input: CreateArtifactInput): Promise<ArtifactRecord>;
   /**
-   * Create, reporting whether THIS call is the one that published the artifact.
-   *
-   * `create` is idempotent on a content-derived id: a second caller for the same
-   * bytes gets the existing record back. A caller that may later reclaim what it
-   * published cannot infer ownership from that success — it would reclaim an
-   * artifact an earlier, already-committed projection still references. The
-   * probe and the create share one write lease, so the receipt is exact.
-   */
-  createOwned(
-    input: CreateArtifactInput,
-  ): Promise<{ record: ArtifactRecord; publishedByThisCall: boolean }>;
-  /**
    * Narrow system delete for one Session-owned artifact of a declared source.
    *
    * The caller must name the source it believes it owns, and a mismatch throws,
@@ -160,17 +148,6 @@ function createWriterFacade(
     create: (input) => {
       const acceptedInput = snapshotCreateInput(input);
       return run(() => store.create(acceptedInput));
-    },
-    createOwned: (input) => {
-      const acceptedInput = snapshotCreateInput(input);
-      return run(async () => {
-        const plannedId = acceptedInput.id;
-        const existing = plannedId
-          ? await store.getInSession(acceptedInput.sessionId, plannedId)
-          : undefined;
-        const record = await store.create(acceptedInput);
-        return { record, publishedByThisCall: !existing?.record };
-      });
     },
     deleteOwnedArtifactInSession: (sessionId, artifactId, source) =>
       run(() => store.deleteOwnedArtifactInSession(sessionId, artifactId, source)),
