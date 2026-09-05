@@ -2621,9 +2621,13 @@ export const About: Story = {
   render: () => <SettingsStory section="about" />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.findByText('本地开发版', { exact: true })).resolves.toBeTruthy();
+    // The lead row is the version with the channel sentence under it; a dev
+    // checkout says it does not update and gets no update row at all.
+    await expect(canvas.findByText(/^Maka v\d/)).resolves.toBeTruthy();
     await expect(canvas.findByText('本地开发构建，不检查更新。')).resolves.toBeTruthy();
     await expect(canvas.queryByRole('button', { name: '检查更新' })).not.toBeInTheDocument();
+    // Support lives outside the info conditional; each control is named by its
+    // row, not by the verb on its face. Actions are buttons, navigation a link.
     await expect(
       canvas.findByRole('heading', { name: '支持' }),
     ).resolves.toBeTruthy();
@@ -2634,8 +2638,11 @@ export const About: Story = {
     await expect(
       canvas.findByRole('button', { name: '键盘快捷键' }),
     ).resolves.toBeEnabled();
-    const privacy = await canvas.findByRole('list', { name: '隐私承诺' });
-    await expect(within(privacy).getAllByRole('listitem')).toHaveLength(3);
+    // Provenance is one static line, rendered whatever `app.info` did.
+    await expect(
+      canvas.findByText('Apache Maka (incubating) · Apache License 2.0', { exact: false }),
+    ).resolves.toBeTruthy();
+    await expect(canvas.findByRole('link', { name: '源码' })).resolves.toBeTruthy();
   },
 };
 
@@ -2666,6 +2673,26 @@ export const AboutRelease: Story = {
       updateChannel: 'release',
       appVersion: '0.2.0',
       updateStatus: { state: 'not-available', currentVersion: '0.2.0' },
+    }),
+  ],
+  render: () => <SettingsStory section="about" />,
+};
+
+// Real path: a packaged install whose auto-download failed. The row names the
+// failed step and offers 检查更新, which re-fetches the release the updater
+// already knows about.
+export const AboutUpdateFailed: Story = {
+  decorators: [
+    withPackagedChannelBridge({
+      updateChannel: 'release',
+      appVersion: '0.2.0',
+      updateStatus: {
+        state: 'error',
+        currentVersion: '0.2.0',
+        latestVersion: '0.2.1',
+        operation: 'download',
+        message: 'net::ERR_CONNECTION_RESET',
+      },
     }),
   ],
   render: () => <SettingsStory section="about" />,
