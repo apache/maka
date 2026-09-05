@@ -508,8 +508,6 @@ async function httpFailure(r: ConnectionEffectResponse, t0: number): Promise<Con
     await r.cancel();
     return {
       ok: false,
-      errorMessage:
-        'OAuth 已登录，但当前账号或 provider 正在 rate limit。请稍后重试，或先切换到其它可用模型。',
       statusCode,
       errorClass: 'provider_unavailable',
       latencyMs: Date.now() - t0,

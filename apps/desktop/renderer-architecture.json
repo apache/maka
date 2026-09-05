@@ -63,6 +63,7 @@
     "src/renderer/locales/agent-graph-copy.ts",
     "src/renderer/locales/artifact-copy.ts",
     "src/renderer/locales/browser-copy.ts",
+    "src/renderer/locales/capability-reason-copy.ts",
     "src/renderer/locales/conversation-copy.ts",
     "src/renderer/locales/external-session-import-copy.ts",
     "src/renderer/locales/mcp-copy.ts",
@@ -387,12 +388,13 @@
           "./command-palette-commands.js": 1,
           "./conversation-markdown.js": 1,
           "./default-runtime-host-operation.js": 1,
+          "./locales/settings-memory-copy.js": 1,
           "./locales/settings-test-result-copy.js": 1,
           "./locales/shell-copy.js": 1,
           "react": 1
         },
         "importSpecifiers": 9,
-        "nonTriviaTokens": 2307
+        "nonTriviaTokens": 2301
       },
       "src/renderer/app-shell-context-compaction.ts": {
         "importDeclarations": 0,
@@ -1548,6 +1550,17 @@
         "actionFactories": [],
         "dependencyPaths": {}
       },
+      "src/renderer/locales/capability-reason-copy.ts": {
+        "bridgePaths": {},
+        "environmentCapabilities": {},
+        "hookCalls": {},
+        "lifecycleMethods": {},
+        "unresolvedDependencies": 0,
+        "actionFactories": [],
+        "dependencyPaths": {
+          "@maka/core/ui-locale": 1
+        }
+      },
       "src/renderer/locales/conversation-copy.ts": {
         "bridgePaths": {},
         "environmentCapabilities": {},
@@ -1656,7 +1669,9 @@
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
-        "dependencyPaths": {}
+        "dependencyPaths": {
+          "@maka/core/ui-locale": 1
+        }
       },
       "src/renderer/locales/settings-memory-copy.ts": {
         "bridgePaths": {},
@@ -1665,7 +1680,9 @@
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
-        "dependencyPaths": {}
+        "dependencyPaths": {
+          "@maka/core/ui-locale": 1
+        }
       },
       "src/renderer/locales/settings-navigation-copy.ts": {
         "bridgePaths": {},
@@ -2687,6 +2704,7 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
+          "../locales/capability-reason-copy": 1,
           "../locales/settings-bot-copy": 1,
           "../locales/settings-health-copy": 1,
           "./runtime-host-settings-target.js": 1,
@@ -2895,6 +2913,7 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
+          "../locales/capability-reason-copy": 1,
           "../locales/permission-center-copy": 1,
           "../locales/settings-bot-copy": 1,
           "./runtime-host-settings-target.js": 1,

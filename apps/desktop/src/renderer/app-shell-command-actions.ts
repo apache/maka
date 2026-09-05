@@ -41,6 +41,7 @@ import {
   commandPaletteConnectionTestFailureMessage,
 } from "./app-shell-copy.js";
 import { getShellCopy } from "./locales/shell-copy.js";
+import { memoryOpenFailureMessage } from "./locales/settings-memory-copy.js";
 import { settingsTestResultMessage } from "./locales/settings-test-result-copy.js";
 
 type ToastApi = {
@@ -127,10 +128,11 @@ export function buildAppShellCommandList(
   // still acts on current data (same stable-ref pattern as
   // openSessionInChatRef in app-shell.tsx).
   const options = optionsRef.current;
-  const copy = getShellCopy(options.uiLocale).commandActions;
+  const locale = options.uiLocale;
+  const copy = getShellCopy(locale).commandActions;
 
   return buildCommandList({
-    locale: options.uiLocale,
+    locale: locale,
     activeSessionId: options.activeId,
     themePref: options.themePref,
     connections: options.connections,
@@ -170,7 +172,7 @@ export function buildAppShellCommandList(
             copy.connectionTestFailed(name),
             commandPaletteConnectionTestFailureMessage(
               result,
-              options.uiLocale,
+              locale,
             ),
             undefined,
             diagnosticTarget,
@@ -183,7 +185,7 @@ export function buildAppShellCommandList(
           commandPaletteActionErrorMessage(
             err,
             copy.connectionUnavailable,
-            options.uiLocale,
+            locale,
           ),
           undefined,
           defaultRuntimeHostDiagnosticTarget(err),
@@ -205,7 +207,7 @@ export function buildAppShellCommandList(
           commandPaletteActionErrorMessage(
             err,
             copy.setDefaultFallback,
-            options.uiLocale,
+            locale,
           ),
           undefined,
           defaultRuntimeHostDiagnosticTarget(err),
@@ -231,7 +233,7 @@ export function buildAppShellCommandList(
       const markdown = renderConversationMarkdown(
         session?.name ?? copy.newConversation,
         messages,
-        options.uiLocale,
+        locale,
       );
       try {
         await navigator.clipboard.writeText(markdown);
@@ -251,7 +253,7 @@ export function buildAppShellCommandList(
       const markdown = renderConversationMarkdown(
         sessionName,
         messages,
-        options.uiLocale,
+        locale,
       );
       const now = new Date();
       const yyyy = now.getFullYear();
@@ -287,7 +289,7 @@ export function buildAppShellCommandList(
           commandPaletteActionErrorMessage(
             err,
             copy.exportFallback,
-            options.uiLocale,
+            locale,
           ),
         );
       }
@@ -299,7 +301,12 @@ export function buildAppShellCommandList(
           window.maka.memory.openFile(host),
         );
         if (!result.ok) {
-          toastApi.error(copy.memoryOpenFailedTitle, result.message, undefined, diagnosticTarget);
+          toastApi.error(
+            copy.memoryOpenFailedTitle,
+            memoryOpenFailureMessage(result, locale),
+            undefined,
+            diagnosticTarget,
+          );
         }
       } catch (err) {
         toastApi.error(
@@ -307,7 +314,7 @@ export function buildAppShellCommandList(
           commandPaletteActionErrorMessage(
             err,
             copy.memoryOpenFallback,
-            options.uiLocale,
+            locale,
           ),
           undefined,
           defaultRuntimeHostDiagnosticTarget(err),
@@ -350,7 +357,7 @@ export function buildAppShellCommandList(
           commandPaletteActionErrorMessage(
             err,
             copy.clipboardDenied,
-            options.uiLocale,
+            locale,
           ),
           undefined,
           target,
@@ -368,7 +375,7 @@ export function buildAppShellCommandList(
         const { value: result, diagnosticTarget } = await runOnDefaultRuntimeHost((host) =>
           window.maka.settings.testNetworkProxy(undefined, host),
         );
-        const message = settingsTestResultMessage(result, options.uiLocale);
+        const message = settingsTestResultMessage(result, locale);
         if (result.ok) {
           const latency = result.latencyMs ? ` · ${result.latencyMs}ms` : "";
           toastApi.success(copy.networkPassedTitle, `${message}${latency}`);
@@ -381,7 +388,7 @@ export function buildAppShellCommandList(
           commandPaletteActionErrorMessage(
             err,
             copy.networkTestFallback,
-            options.uiLocale,
+            locale,
           ),
           undefined,
           defaultRuntimeHostDiagnosticTarget(err),

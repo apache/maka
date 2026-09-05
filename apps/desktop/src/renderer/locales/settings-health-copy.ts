@@ -28,7 +28,7 @@ import type {
   HealthSignalStatus,
 } from '@maka/core/health';
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, lookupCopy } from '@maka/core/ui-locale';
 
 /**
  * Health signals carry their own severity ladder — error > warning > info > ok
@@ -123,7 +123,7 @@ const SETTINGS_HEALTH_COPY = {
     source: '来源：', blocksSend: '阻塞发送', blocksCapability: '阻塞能力',
     signalLabel: (signal) => (signal.id.endsWith(':runtime') ? `${signal.label} 运行态` : signal.label),
     signalMessage: (signal) => signalMessagesZh[signal.message],
-    signalDetail: (signal) => signalDetailZh(signal),
+    signalDetail: (signal) => signalDetailZh(signal.detail),
   },
   'zh-TW': {
     loading: '正在載入健康快照', readFailed: '無法讀取健康快照', noData: '健康服務未返回資料。', readAgain: '重新讀取',
@@ -142,7 +142,7 @@ const SETTINGS_HEALTH_COPY = {
     source: '來源：', blocksSend: '阻塞傳送', blocksCapability: '阻塞能力',
     signalLabel: (signal) => (signal.id.endsWith(':runtime') ? `${signal.label} 執行狀態` : signal.label),
     signalMessage: (signal) => signalMessagesZhTw[signal.message],
-    signalDetail: (signal) => signalDetailZhTw(signal),
+    signalDetail: (signal) => signalDetailZhTw(signal.detail),
   },
   en: {
     loading: 'Loading health snapshot', readFailed: 'Could not read health snapshot', noData: 'The health service returned no data.', readAgain: 'Read again',
@@ -161,7 +161,7 @@ const SETTINGS_HEALTH_COPY = {
     source: 'Source: ', blocksSend: 'Blocks sending', blocksCapability: 'Blocks capability',
     signalLabel: (signal) => (signal.id.endsWith(':runtime') ? `${signal.label} runtime` : signal.label),
     signalMessage: (signal) => signalMessagesEn[signal.message],
-    signalDetail: (signal) => signalDetailEn(signal),
+    signalDetail: (signal) => signalDetailEn(signal.detail),
   },
 } satisfies UiCatalog<HealthCenterCopy>;
 
@@ -253,8 +253,7 @@ const connectionTestErrorMessages = {
   },
 } satisfies UiCatalog<Record<HealthConnectionTestErrorClass, string>>;
 
-function signalDetailZh(signal: HealthSignal): string | undefined {
-  const detail = signal.detail;
+function signalDetailZh(detail: HealthSignalDetail | undefined): string | undefined {
   if (!detail) return undefined;
   switch (detail.kind) {
     case 'validation_scope_note':
@@ -272,10 +271,7 @@ function signalDetailZh(signal: HealthSignal): string | undefined {
         ...(detail.errorClass ? [`错误类型=${localizedRuntimeErrorClass(detail.errorClass, 'zh-CN')}`] : []),
       ].join(' · ');
     case 'capability_reason':
-      // Interim: capability-snapshot still emits zh-CN prose; code it as a
-      // CapabilityReasonCode to drop this sniff. Bot reasons pre-resolve at the
-      // page layer (copy catalogs may not runtime-import each other).
-      return /[\u3400-\u9fff]/u.test(detail.reason) ? detail.reason : '状态详情请见对应设置页。';
+      return '状态详情请见对应设置页。';
     case 'last_test_error_class':
       return connectionTestErrorMessages['zh-CN'][detail.errorClass];
     case 'last_test_message':
@@ -285,8 +281,7 @@ function signalDetailZh(signal: HealthSignal): string | undefined {
   }
 }
 
-function signalDetailZhTw(signal: HealthSignal): string | undefined {
-  const detail = signal.detail;
+function signalDetailZhTw(detail: HealthSignalDetail | undefined): string | undefined {
   if (!detail) return undefined;
   switch (detail.kind) {
     case 'validation_scope_note':
@@ -314,8 +309,7 @@ function signalDetailZhTw(signal: HealthSignal): string | undefined {
   }
 }
 
-function signalDetailEn(signal: HealthSignal): string | undefined {
-  const detail = signal.detail;
+function signalDetailEn(detail: HealthSignalDetail | undefined): string | undefined {
   if (!detail) return undefined;
   switch (detail.kind) {
     case 'validation_scope_note':
