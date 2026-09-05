@@ -524,7 +524,6 @@ type E2eTestFixtures = {
   railRenderWindow: Page;
   promptRailWindow: Page;
   threadSearchWindow: Page;
-  partialHistoryWindow: Page;
   requestHeaderRowWindow: Page;
   newTaskTargetWindow: Page;
   directoryReferenceWindow: { page: Page; folder: string };
@@ -672,17 +671,6 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
       readinessSelector: '[data-turn-id]',
       e2eFixtureScenario: 'chat-prompt-rail',
       locale: 'zh-CN',
-    }, use);
-  },
-  // A transcript larger than the bounded Desktop range. Clicking an unloaded
-  // prompt exercises the real load-around path and its partial-history UI.
-  partialHistoryWindow: async ({}, use) => {
-    await withE2eWindow({
-      seed: false,
-      readinessSelector: '[data-turn-id]',
-      e2eFixtureScenario: 'chat-partial-history',
-      locale: 'zh-CN',
-      showWindow: true,
     }, use);
   },
   // Settings → 模型, where `no-models` is the seeded openai-compatible relay —
