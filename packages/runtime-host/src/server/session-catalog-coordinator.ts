@@ -19,7 +19,7 @@
 
 import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import { createHash } from 'node:crypto';
-import { authorizeConnectionModel } from '@maka/core/llm-connections';
+import { authorizeConnectionModel, connectionEnabledModelIds } from '@maka/core/llm-connections';
 import { isModelExplicitlyUnsupportedForChat } from '@maka/core/model-catalog';
 import { thinkingVariantsForConnection } from '@maka/core/model-thinking';
 import {
@@ -28,6 +28,7 @@ import {
   type ExecutionBoundarySummary,
 } from '@maka/core/sandbox-boundary';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
+import type { ConnectionCatalogEntry, ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
 import { DEFAULT_SESSION_NAME, normalizeUserSessionName } from '@maka/core/session-name';
 import {
   isSessionStartModeLabel as isExecutionSemanticLabel,
@@ -149,6 +150,20 @@ export class SessionOperationFailure extends Error {
   }
 }
 
+/**
+ * The import path found no ready connection+model to attach the task to. A
+ * distinct type (not just a message) so `#importSession` can map it to the
+ * stable `model_unavailable` wire code without inspecting the message — the
+ * generic `operation_unavailable` code it carries is also used for an
+ * unavailable source, which is a different failure.
+ */
+export class NoUsableImportModelError extends SessionOperationFailure {
+  constructor(message: string) {
+    super('operation_unavailable', message);
+    this.name = 'NoUsableImportModelError';
+  }
+}
+
 export interface HostSessionCatalogCoordinatorOptions {
   readonly stores: SessionCatalogStores;
   readonly runtimePolicy: SessionRuntimePolicyStores;
@@ -167,6 +182,82 @@ interface ResolvedSessionModel {
   readonly connectionId: string;
   readonly connectionSlug: string;
   readonly model: string;
+}
+
+/** A connection+model the import path may attempt, in preference order. */
+interface ImportModelCandidate {
+  readonly connectionId: string;
+  readonly connectionSlug: string;
+  readonly modelId: string;
+  /**
+   * This candidate is the workspace's configured default. Its failure is never
+   * skipped — a set-but-unusable default fails the import exactly as an explicit
+   * default target does today, rather than silently substituting a connection
+   * the user never chose. Fallback only applies when no default is set.
+   */
+  readonly isDefault: boolean;
+}
+
+/**
+ * Connection+model candidates for an imported task, most-preferred first: the
+ * configured default (kept at its exact precedence), then one ready model per
+ * enabled connection in catalog order. Model-level readiness that is a pure
+ * catalog fact — enabled, not quarantined, chat-capable — is applied here so an
+ * unusable connection costs one `#resolveModel` attempt, not one per enabled
+ * model (a connection may enable hundreds). Connection-level readiness
+ * (credential, retired provider, identity) stays in `#resolveModel`, which
+ * remains the sole arbiter of those.
+ */
+function importModelCandidates(snapshot: ConnectionCatalogSnapshot): ImportModelCandidate[] {
+  const byId = new Map(
+    snapshot.connections.map((connection) => [connection.connectionId, connection]),
+  );
+  const candidates: ImportModelCandidate[] = [];
+  const seen = new Set<string>();
+  const push = (connection: ConnectionCatalogEntry, modelId: string, isDefault: boolean): void => {
+    const key = `${connection.connectionId} ${modelId}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    candidates.push({
+      connectionId: connection.connectionId,
+      connectionSlug: connection.slug,
+      modelId,
+      isDefault,
+    });
+  };
+  // The connection's first enabled model that is a valid chat target, by pure
+  // catalog facts alone (no credential or provider-liveness read). Emitting only
+  // this one — rather than every enabled model — bounds the enumeration to one
+  // candidate per connection, so a connection-level failure (missing credential,
+  // retired provider) costs a single `#resolveModel` round trip.
+  const firstReadyModel = (connection: ConnectionCatalogEntry): string | undefined => {
+    for (const modelId of connectionEnabledModelIds(connection)) {
+      // Mirror `#resolveModel`'s pure-catalog gates, the wire byte cap included:
+      // a model id can be within the catalog's code-unit limit yet exceed the
+      // byte cap (e.g. emoji), and taking it as the connection's sole candidate
+      // would let `#resolveModel` reject it and mask the connection's shorter,
+      // usable models. Skip it here so the next enabled model is considered.
+      if (Buffer.byteLength(modelId, 'utf8') > SESSION_CATALOG_MODEL_MAX_BYTES) continue;
+      const model = authorizeConnectionModel(connection, modelId);
+      if (model && !isModelExplicitlyUnsupportedForChat(model)) return modelId;
+    }
+    return undefined;
+  };
+  // Default first, so a configured-and-ready default keeps today's behavior.
+  // `retainedDefaultTarget` + `isValidTarget` guarantee a persisted default is
+  // enabled and present in `enabledModelIds`, so its exact model is taken at its
+  // precedence rather than re-picked from the connection.
+  const preferred = snapshot.defaultTarget;
+  if (preferred) {
+    const connection = byId.get(preferred.connectionId);
+    if (connection?.enabled) push(connection, preferred.modelId, true);
+  }
+  for (const connection of snapshot.connections) {
+    if (!connection.enabled) continue;
+    const modelId = firstReadyModel(connection);
+    if (modelId !== undefined) push(connection, modelId, false);
+  }
+  return candidates;
 }
 
 /** Host-owned Session catalog, creation, and configuration authority. */
@@ -206,11 +297,33 @@ export class HostSessionCatalogCoordinator {
     this.#sessionAccessAuthority = options.sessionAccessAuthority;
   }
 
+  /**
+   * Target for a task imported from another agent's conversation. Import is an
+   * explicit, one-off user action on a specific conversation, so it prefers the
+   * configured default but falls back to any ready connection+model — see
+   * `#resolveImportModel`.
+   */
   async resolveExternalSessionImportTarget(): Promise<Omit<CreateSessionInput, 'cwd' | 'name'>> {
-    const [model, policy] = await Promise.all([
-      this.#resolveModel({ kind: 'default' }, undefined),
-      this.#readRuntimePolicy(),
-    ]);
+    return this.#composeCreateTarget(this.#resolveImportModel());
+  }
+
+  /**
+   * Target for the autonomous WorkHub coordination create path (its
+   * `resolveCreateTarget`). Unlike import there is no user in the loop to pick a
+   * model, so this fails closed when no default is configured rather than binding
+   * a connection the user never chose. Import's fallback deliberately does not
+   * reach here; keeping the two resolvers apart is what confines the guess to an
+   * explicit user
+   * action.
+   */
+  async resolveDefaultCreateTarget(): Promise<Omit<CreateSessionInput, 'cwd' | 'name'>> {
+    return this.#composeCreateTarget(this.#resolveModel({ kind: 'default' }, undefined));
+  }
+
+  async #composeCreateTarget(
+    modelResolution: Promise<ResolvedSessionModel>,
+  ): Promise<Omit<CreateSessionInput, 'cwd' | 'name'>> {
+    const [model, policy] = await Promise.all([modelResolution, this.#readRuntimePolicy()]);
     return {
       llmConnectionId: model.connectionId,
       llmConnectionSlug: model.connectionSlug,
@@ -802,6 +915,58 @@ export class HostSessionCatalogCoordinator {
       if (isNotFound(error)) return undefined;
       throw error;
     }
+  }
+
+  /**
+   * Model for an imported task. Prefers the configured default but falls back to
+   * any ready connection+model, because a default is only auto-set during
+   * onboarding bootstrap (`setDefaultIfMissing`) and a self-configured profile
+   * legitimately has `defaultTarget: null` while holding perfectly usable
+   * connections. Without the fallback, every import fails before the source is
+   * even read. Unlike interactive session creation, import has no model picker,
+   * so this is the only place that can choose one.
+   */
+  async #resolveImportModel(): Promise<ResolvedSessionModel> {
+    let snapshot: ConnectionCatalogSnapshot;
+    try {
+      snapshot = await this.#runtimePolicy.connectionCatalog.getSnapshot();
+    } catch {
+      throw new SessionOperationFailure('persistence_failed', 'Connection catalog is unavailable');
+    }
+    for (const candidate of importModelCandidates(snapshot)) {
+      try {
+        return await this.#resolveModel(
+          {
+            kind: 'explicit',
+            connectionId: candidate.connectionId,
+            connectionSlug: candidate.connectionSlug,
+            model: candidate.modelId,
+          },
+          undefined,
+        );
+      } catch (error) {
+        if (!(error instanceof SessionOperationFailure)) throw error;
+        // The configured default is never substituted away from: if it is set
+        // but unusable (e.g. its credential was revoked), surface its failure
+        // exactly as an explicit default target does today, rather than silently
+        // attaching the task to a connection the user did not choose. The
+        // fallback below runs only when no default is set — the null-default
+        // state this fix is for, where there is nothing to substitute for.
+        if (candidate.isDefault) throw error;
+        // Otherwise, only a genuinely unusable candidate is skippable:
+        // `invalid_request` (disabled / retired / not-enabled / non-chat) and
+        // `operation_unavailable` (no credential). Any other code — notably
+        // `operation_conflict`, thrown when the connection was deleted or
+        // renamed after the snapshot — is a real fault the caller must see, not
+        // a reason to silently fall through to a lower-priority connection.
+        if (error.code !== 'invalid_request' && error.code !== 'operation_unavailable') {
+          throw error;
+        }
+      }
+    }
+    throw new NoUsableImportModelError(
+      'No usable Session model connection is available for import',
+    );
   }
 
   async #resolveModel(

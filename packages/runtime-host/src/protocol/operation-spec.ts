@@ -31,6 +31,10 @@ export type HostOperationErrorCode =
   | 'operation_conflict'
   | 'capability_unavailable'
   | 'invalid_request'
+  // External-session import: no usable model connection to attach the task to.
+  | 'model_unavailable'
+  // External-session import: the source could not be read or converted.
+  | 'source_unreadable'
   | 'projection_incomplete'
   | 'stale_cursor'
   | 'persistence_failed'
