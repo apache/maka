@@ -236,20 +236,10 @@ describe('FileCredentialStore compareAndSetSecret', () => {
     slug: string,
     kind: CredentialKind,
     expected: string | null,
-    value: string,
+    value: string | null,
   ): Promise<CredentialCasResult> {
     assert.ok(store.compareAndSetSecret, 'file store exposes the CAS capability');
     return store.compareAndSetSecret(slug, kind, expected, value);
-  }
-
-  function casDelete(
-    store: CredentialStore,
-    slug: string,
-    kind: CredentialKind,
-    expected: string | null,
-  ): Promise<CredentialCasResult> {
-    assert.ok(store.compareAndDeleteSecret, 'file store exposes the CAS delete capability');
-    return store.compareAndDeleteSecret(slug, kind, expected);
   }
 
   test('commits when the basis still matches, and the write persists', async () => {
@@ -328,13 +318,13 @@ describe('FileCredentialStore compareAndSetSecret', () => {
       const b = createFileCredentialStore(dir);
       await a.setSecret('acct', 'oauth_token', 'tok-basis');
 
-      assert.deepEqual(await casDelete(a, 'acct', 'oauth_token', 'tok-basis'), {
+      assert.deepEqual(await cas(a, 'acct', 'oauth_token', 'tok-basis', null), {
         committed: true,
       });
       assert.equal(await a.getSecret('acct', 'oauth_token'), null);
 
       await a.setSecret('acct', 'oauth_token', 'tok-newer');
-      assert.deepEqual(await casDelete(b, 'acct', 'oauth_token', 'tok-basis'), {
+      assert.deepEqual(await cas(b, 'acct', 'oauth_token', 'tok-basis', null), {
         committed: false,
         current: 'tok-newer',
       });

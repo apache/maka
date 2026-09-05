@@ -368,11 +368,10 @@ export function createRuntimeHostProfileCredentialStore(
 export function createRuntimeHostCapabilityProviderCredentialStore(
   credentials: Pick<
     CredentialStore,
-    'getSecret' | 'setSecret' | 'deleteSecret' | 'compareAndSetSecret' | 'compareAndDeleteSecret'
+    'getSecret' | 'setSecret' | 'deleteSecret' | 'compareAndSetSecret'
   >,
 ): RuntimeHostCapabilityProviderCredentialStore {
   const compareAndSetSecret = credentials.compareAndSetSecret?.bind(credentials);
-  const compareAndDeleteSecret = credentials.compareAndDeleteSecret?.bind(credentials);
   const locator = (
     target: RuntimeHostRemoteProfileIncarnation,
     ownerClientInstanceId: string,
@@ -413,20 +412,13 @@ export function createRuntimeHostCapabilityProviderCredentialStore(
               expected === null
                 ? null
                 : encodeCapabilityProviderCredential(target, ownerClientInstanceId, expected);
-            if (credential === null) {
-              if (!compareAndDeleteSecret) return false;
-              const result = await compareAndDeleteSecret(
-                slot,
-                'runtime_host_capability_provider',
-                encodedExpected,
-              );
-              return result.committed;
-            }
             const result = await compareAndSetSecret(
               slot,
               'runtime_host_capability_provider',
               encodedExpected,
-              encodeCapabilityProviderCredential(target, ownerClientInstanceId, credential),
+              credential === null
+                ? null
+                : encodeCapabilityProviderCredential(target, ownerClientInstanceId, credential),
             );
             return result.committed;
           },
@@ -1487,7 +1479,7 @@ function profileCredentialSlot(profile: RemoteRuntimeHostProfile): string {
 }
 
 async function deleteCapabilityProviderCredential(
-  credentials: Pick<CredentialStore, 'getSecret' | 'deleteSecret' | 'compareAndDeleteSecret'>,
+  credentials: Pick<CredentialStore, 'getSecret' | 'deleteSecret' | 'compareAndSetSecret'>,
   target: RuntimeHostRemoteProfileIncarnation,
   ownerClientInstanceId: string,
 ): Promise<void> {
@@ -1501,8 +1493,8 @@ async function deleteCapabilityProviderCredential(
   ) {
     return;
   }
-  if (credentials.compareAndDeleteSecret) {
-    await credentials.compareAndDeleteSecret(slot, 'runtime_host_capability_provider', stored);
+  if (credentials.compareAndSetSecret) {
+    await credentials.compareAndSetSecret(slot, 'runtime_host_capability_provider', stored, null);
     return;
   }
   await credentials.deleteSecret(slot, 'runtime_host_capability_provider');
