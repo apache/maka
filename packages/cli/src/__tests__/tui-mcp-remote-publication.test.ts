@@ -136,6 +136,139 @@ test('remote TUI publication activates, rotates, and removes one profile-bound c
   await target.closePublication?.();
 });
 
+test('remote TUI publication aborts and rolls back a cancelled credential write', async () => {
+  const credentials = credentialHarness();
+  const writeStarted = deferred();
+  const allowWrite = deferred();
+  let connects = 0;
+  const target = createRemoteTuiMcpPublicationTarget(
+    {
+      clientDataRoot: '/client-data',
+      profile: PROFILE,
+      profileIncarnationId: PROFILE_INCARNATION_ID,
+      ownerClientInstanceId: 'terminal-client',
+    },
+    {
+      ...profileDeps(),
+      credentials: {
+        ...credentials.store,
+        set: async (...args) => {
+          writeStarted.resolve();
+          await allowWrite.promise;
+          await credentials.store.set(...args);
+        },
+      },
+      connectProfile: async () => {
+        connects += 1;
+        return connectionHarness('unexpected').connection;
+      },
+    },
+  );
+  const latest = await availability(target);
+  assert.deepEqual(latest(), { kind: 'unavailable', reason: 'credential_required' });
+  const abort = new AbortController();
+  const setting = target.setCredential?.('provider-secret', { signal: abort.signal });
+  assert.ok(setting);
+  await writeStarted.promise;
+  abort.abort(new Error('cancel credential write'));
+  allowWrite.resolve();
+
+  await assert.rejects(setting, /cancel credential write/u);
+  assert.equal(credentials.values.size, 0);
+  assert.equal(connects, 0);
+  assert.deepEqual(latest(), { kind: 'unavailable', reason: 'credential_required' });
+  await target.closePublication?.();
+});
+
+test('remote TUI publication preserves a newer credential after a cancelled write', async () => {
+  const credentials = credentialHarness();
+  const writeStarted = deferred();
+  const allowWrite = deferred();
+  const target = createRemoteTuiMcpPublicationTarget(
+    {
+      clientDataRoot: '/client-data',
+      profile: PROFILE,
+      profileIncarnationId: PROFILE_INCARNATION_ID,
+      ownerClientInstanceId: 'terminal-client',
+    },
+    {
+      ...profileDeps(),
+      credentials: {
+        ...credentials.store,
+        set: async (...args) => {
+          writeStarted.resolve();
+          await allowWrite.promise;
+          await credentials.store.set(...args);
+          credentials.values.set('office\0incarnation-a\0terminal-client', 'newer-secret');
+        },
+      },
+    },
+  );
+  await availability(target);
+  const abort = new AbortController();
+  const setting = target.setCredential?.('provider-secret', { signal: abort.signal });
+  assert.ok(setting);
+  await writeStarted.promise;
+  abort.abort(new Error('cancel superseded credential write'));
+  allowWrite.resolve();
+
+  await assert.rejects(setting, /cancel superseded credential write/u);
+  assert.equal(credentials.values.get('office\0incarnation-a\0terminal-client'), 'newer-secret');
+  await target.closePublication?.();
+});
+
+test('remote TUI publication restores a removed credential when cancellation lands late', async () => {
+  const credentials = credentialHarness('provider-secret');
+  const deleting = deferred();
+  const allowDelete = deferred();
+  const connections: ConnectionHarness[] = [];
+  const target = createRemoteTuiMcpPublicationTarget(
+    {
+      clientDataRoot: '/client-data',
+      profile: PROFILE,
+      profileIncarnationId: PROFILE_INCARNATION_ID,
+      ownerClientInstanceId: 'terminal-client',
+    },
+    {
+      ...profileDeps(),
+      credentials: {
+        ...credentials.store,
+        delete: async (...args) => {
+          deleting.resolve();
+          await allowDelete.promise;
+          await credentials.store.delete(...args);
+        },
+      },
+      loadClientInstanceId: async () => 'provider-client',
+      connectProfile: async () => {
+        const connection = connectionHarness(`connection-${connections.length + 1}`);
+        connections.push(connection);
+        return connection.connection;
+      },
+    },
+  );
+  const latest = await availability(target);
+  await waitFor(
+    () => latest().kind === 'connected',
+    'provider companion to connect before removal',
+  );
+  const abort = new AbortController();
+  const removing = target.removeCredential?.({ signal: abort.signal });
+  assert.ok(removing);
+  await deleting.promise;
+  abort.abort(new Error('cancel credential removal'));
+  allowDelete.resolve();
+
+  await assert.rejects(removing, /cancel credential removal/u);
+  assert.equal(credentials.values.get('office\0incarnation-a\0terminal-client'), 'provider-secret');
+  await waitFor(
+    () => latest().kind === 'connected',
+    'provider companion to reconnect after rollback',
+  );
+  assert.equal(connections.length, 2);
+  await target.closePublication?.();
+});
+
 test('remote TUI publication fails closed while the same provider lifetime is active', async () => {
   const credentials = credentialHarness('provider-secret');
   const profiles = profileHarness();

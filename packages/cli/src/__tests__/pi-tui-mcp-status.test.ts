@@ -422,6 +422,39 @@ describe('MCP management overlay', () => {
     });
   }
 
+  test('Esc aborts the active MCP action and ignores its late result', async () => {
+    let actionSignal: AbortSignal | undefined;
+    let resolveAction!: (result: TuiMcpActionResult) => void;
+    const actionResult = new Promise<TuiMcpActionResult>((resolve) => {
+      resolveAction = resolve;
+    });
+    const mcp = surface(listSnapshot());
+    mcp.execute = async (_action, options?: { signal?: AbortSignal }) => {
+      actionSignal = options?.signal;
+      return actionResult;
+    };
+    const overlay = new McpManagementOverlay({
+      locale: 'en',
+      surface: mcp,
+      viewportRows: () => 8,
+      onClose: () => undefined,
+      onChange: () => undefined,
+    });
+
+    overlay.handleInput('t');
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(actionSignal?.aborted, false);
+
+    overlay.handleInput('\u001b');
+    assert.equal(actionSignal?.aborted, true);
+    resolveAction({ status: 'tested', test: testResult(true), effect: 'published' });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    const text = overlay.render(100).map(stripAnsi).join('\n');
+    assert.doesNotMatch(text, /MCP server responded successfully/u);
+    assert.match(text, /filesystem/u);
+  });
+
   const resultCopy = TUI_COPY_RESOURCES['mcp-status'].en.editor.results;
   const RESULT_CASES: readonly [TuiMcpActionResult, keyof typeof resultCopy][] = [
     [{ status: 'conflict', reason: 'exists' }, 'exists'],
@@ -430,9 +463,11 @@ describe('MCP management overlay', () => {
     [{ status: 'conflict', reason: 'stale_import' }, 'stale_import'],
     [{ status: 'conflict', reason: 'missing' }, 'missing'],
     [{ status: 'failed', reason: 'closed' }, 'closed'],
+    [{ status: 'failed', reason: 'cancelled' }, 'cancelled'],
     [{ status: 'failed', reason: 'invalid-config' }, 'invalid-config'],
     [{ status: 'failed', reason: 'credential-cleanup-failed' }, 'credential-cleanup-failed'],
     [{ status: 'failed', reason: 'persist-failed' }, 'persist-failed'],
+    [{ status: 'failed', reason: 'rollback-failed' }, 'rollback-failed'],
     [{ status: 'failed', reason: 'manager-failed' }, 'manager-failed'],
     [{ status: 'applied', effect: 'published' }, 'published'],
     [{ status: 'applied', effect: 'pending_host' }, 'pending_host'],

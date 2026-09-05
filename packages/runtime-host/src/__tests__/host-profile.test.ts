@@ -560,6 +560,28 @@ describe('Runtime Host profiles', () => {
     assert.equal(await credentials.get(incarnationA, 'owner-b'), 'provider-b');
   });
 
+  test('conditionally restores capability-provider credentials without overwriting a newer value', async () => {
+    const path = await profilePath();
+    const credentials = createRuntimeHostCapabilityProviderCredentialStore(
+      createFileCredentialStore(join(dirname(path), 'credentials')),
+    );
+    assert.ok(credentials.compareAndSet);
+    const profile = remoteProfile('office', 'wss://a.example.com', ROOT_A);
+    const target = { profile, profileIncarnationId: 'incarnation-a' };
+
+    await credentials.set(target, 'owner-a', 'cancelled-value');
+    assert.equal(await credentials.compareAndSet(target, 'owner-a', 'cancelled-value', null), true);
+    assert.equal(await credentials.get(target, 'owner-a'), null);
+
+    await credentials.set(target, 'owner-a', 'cancelled-value');
+    await credentials.set(target, 'owner-a', 'newer-value');
+    assert.equal(
+      await credentials.compareAndSet(target, 'owner-a', 'cancelled-value', 'old-value'),
+      false,
+    );
+    assert.equal(await credentials.get(target, 'owner-a'), 'newer-value');
+  });
+
   test('removing a profile retires its terminal and provider credentials together', async () => {
     const path = await profilePath();
     const credentialStore = createFileCredentialStore(join(dirname(path), 'credentials'));

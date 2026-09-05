@@ -214,52 +214,108 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
     return () => this.#listeners.delete(listener);
   }
 
-  setCredential(credential: string): Promise<void> {
+  setCredential(
+    credential: string,
+    options: { readonly signal?: AbortSignal } = {},
+  ): Promise<void> {
     this.#cancelConnect();
     return this.#serialize(async () => {
       if (this.#closed) throw new Error('Remote MCP publication is closed');
-      const committed = await this.#deps.profiles.mutateRemoteProfileIfCurrent(
-        this.#profileTarget(),
-        (profile) =>
-          this.#deps.credentials.set(
-            { profile, profileIncarnationId: this.#input.profileIncarnationId },
-            this.#input.ownerClientInstanceId,
-            credential,
-          ),
-      );
-      if (!committed) {
-        await this.#retire('target_mismatch');
-        throw new RuntimeHostProfileConnectionError(
-          'target_mismatch',
-          'Remote MCP publication profile is no longer current',
+      let target: RuntimeHostRemoteProfileIncarnation | undefined;
+      let previous: string | null | undefined;
+      let written = false;
+      let disconnected = false;
+      try {
+        throwIfAborted(options.signal);
+        const committed = await this.#deps.profiles.mutateRemoteProfileIfCurrent(
+          this.#profileTarget(),
+          async (profile) => {
+            throwIfAborted(options.signal);
+            target = { profile, profileIncarnationId: this.#input.profileIncarnationId };
+            previous = await this.#deps.credentials.get(target, this.#input.ownerClientInstanceId);
+            throwIfAborted(options.signal);
+            await this.#deps.credentials.set(target, this.#input.ownerClientInstanceId, credential);
+            written = true;
+            throwIfAborted(options.signal);
+          },
         );
+        if (!committed) {
+          await this.#retire('target_mismatch');
+          throw new RuntimeHostProfileConnectionError(
+            'target_mismatch',
+            'Remote MCP publication profile is no longer current',
+          );
+        }
+        throwIfAborted(options.signal);
+        await this.#disconnect();
+        disconnected = true;
+        throwIfAborted(options.signal);
+        await this.#connect(credential, options.signal);
+        throwIfAborted(options.signal);
+      } catch (error) {
+        if (options.signal?.aborted && target && previous !== undefined && written) {
+          this.#cancelConnect();
+          if (disconnected) await this.#disconnect();
+          const restored = await this.#restoreCredential(target, previous, credential);
+          if (restored) {
+            if (previous === null) this.#setUnavailable('credential_required');
+            else if (disconnected) await this.#connect(previous);
+          }
+        }
+        throw error;
       }
-      await this.#disconnect();
-      await this.#connect(credential);
     });
   }
 
-  removeCredential(): Promise<void> {
+  removeCredential(options: { readonly signal?: AbortSignal } = {}): Promise<void> {
     this.#cancelConnect();
     return this.#serialize(async () => {
       if (this.#closed) throw new Error('Remote MCP publication is closed');
-      await this.#disconnect();
-      const committed = await this.#deps.profiles.mutateRemoteProfileIfCurrent(
-        this.#profileTarget(),
-        (profile) =>
-          this.#deps.credentials.delete(
-            { profile, profileIncarnationId: this.#input.profileIncarnationId },
-            this.#input.ownerClientInstanceId,
-          ),
-      );
-      if (!committed) {
-        await this.#retire('target_mismatch');
-        throw new RuntimeHostProfileConnectionError(
-          'target_mismatch',
-          'Remote MCP publication profile is no longer current',
+      let target: RuntimeHostRemoteProfileIncarnation | undefined;
+      let previous: string | null | undefined;
+      let deleted = false;
+      let disconnected = false;
+      try {
+        throwIfAborted(options.signal);
+        await this.#disconnect();
+        disconnected = true;
+        throwIfAborted(options.signal);
+        const committed = await this.#deps.profiles.mutateRemoteProfileIfCurrent(
+          this.#profileTarget(),
+          async (profile) => {
+            throwIfAborted(options.signal);
+            target = { profile, profileIncarnationId: this.#input.profileIncarnationId };
+            previous = await this.#deps.credentials.get(target, this.#input.ownerClientInstanceId);
+            throwIfAborted(options.signal);
+            await this.#deps.credentials.delete(target, this.#input.ownerClientInstanceId);
+            deleted = true;
+            throwIfAborted(options.signal);
+          },
         );
+        if (!committed) {
+          await this.#retire('target_mismatch');
+          throw new RuntimeHostProfileConnectionError(
+            'target_mismatch',
+            'Remote MCP publication profile is no longer current',
+          );
+        }
+        throwIfAborted(options.signal);
+        this.#setUnavailable('credential_required');
+      } catch (error) {
+        if (options.signal?.aborted && disconnected) {
+          const rollbackTarget = target ?? this.#profileTarget();
+          const prior =
+            previous === undefined
+              ? await this.#deps.credentials.get(rollbackTarget, this.#input.ownerClientInstanceId)
+              : previous;
+          const restored = deleted
+            ? await this.#restoreCredential(rollbackTarget, prior, null)
+            : true;
+          if (restored && prior !== null) await this.#connect(prior);
+          else if (restored) this.#setUnavailable('credential_required');
+        }
+        throw error;
       }
-      this.#setUnavailable('credential_required');
     });
   }
 
@@ -277,12 +333,15 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
     return pending;
   }
 
-  async #connect(credential: string): Promise<void> {
+  async #connect(credential: string, signal?: AbortSignal): Promise<void> {
     const generation = ++this.#generation;
     const abort = new AbortController();
     this.#connectAbort = abort;
+    const forwardAbort = () => abort.abort(abortReason(signal));
+    signal?.addEventListener('abort', forwardAbort, { once: true });
     this.#setUnavailable('host_unavailable');
     try {
+      throwIfAborted(signal);
       const clientInstanceId = await this.#deps.loadClientInstanceId(
         providerIdentityPath(this.#input),
       );
@@ -343,8 +402,32 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
       }
       await this.#closePeer(this.#peerClient);
     } finally {
+      signal?.removeEventListener('abort', forwardAbort);
       if (this.#connectAbort === abort) this.#connectAbort = undefined;
     }
+  }
+
+  async #restoreCredential(
+    target: RuntimeHostRemoteProfileIncarnation,
+    previous: string | null,
+    cancelledValue: string | null,
+  ): Promise<boolean> {
+    if (this.#deps.credentials.compareAndSet) {
+      return this.#deps.credentials.compareAndSet(
+        target,
+        this.#input.ownerClientInstanceId,
+        cancelledValue,
+        previous,
+      );
+    }
+    const current = await this.#deps.credentials.get(target, this.#input.ownerClientInstanceId);
+    if (current !== cancelledValue) return false;
+    if (previous === null) {
+      await this.#deps.credentials.delete(target, this.#input.ownerClientInstanceId);
+    } else {
+      await this.#deps.credentials.set(target, this.#input.ownerClientInstanceId, previous);
+    }
+    return true;
   }
 
   async #disconnect(): Promise<void> {
@@ -535,4 +618,14 @@ function classifyUnavailable(error: unknown): TuiMcpPublicationUnavailableReason
   if (error instanceof RuntimeHostProfileConnectionError) return error.reason;
   if (error instanceof RuntimeHostRemoteCompatibilityError) return 'target_mismatch';
   return 'host_unavailable';
+}
+
+function abortReason(signal?: AbortSignal): Error {
+  return signal?.reason instanceof Error
+    ? signal.reason
+    : new Error(String(signal?.reason ?? 'Remote MCP publication cancelled'));
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw abortReason(signal);
 }
