@@ -144,7 +144,7 @@ async function waitForCompanionForkId(page: Page, sourceSessionId: string) {
 }
 
 async function setRightWorkbarWidth(page: Page, width: number) {
-  const layoutOwner = page.locator('.maka-workbar-layout-vars');
+  const layoutOwner = page.locator('.appFrame');
   const workbar = page.locator('.maka-session-workbar[data-placement="right"]');
   await expect(layoutOwner).toHaveCount(1);
   await expect(workbar).toBeVisible();
@@ -159,6 +159,40 @@ async function setRightWorkbarWidth(page: Page, width: number) {
     .toBeCloseTo(width, 0);
   return workbar;
 }
+
+test('a wide right workbar keeps a long session title and Share action outside the panel', async ({
+  window: page,
+}) => {
+  const { sessionId } = await createSession(page, 'create long title workbar session');
+  const longTitle =
+    'Investigate why the completed plan session title overlaps the token usage dashboard';
+  await page.evaluate(
+    ({ id, title }) => window.maka.sessions.rename(id, title),
+    { id: sessionId, title: longTitle },
+  );
+
+  const identity = page.locator('[data-maka-contract="titlebar-identity"]');
+  const share = page.getByRole('button', { name: '分享此任务' });
+  await expect(identity).toContainText('Investigate why the completed plan session title');
+  await expect(share).toBeVisible();
+
+  await page.getByRole('button', { name: '打开用量追踪' }).click();
+  const workbar = await setRightWorkbarWidth(page, 600);
+  await expect(
+    page.locator('[data-maka-contract="session-inspector"]'),
+  ).toBeVisible();
+
+  const [identityBox, workbarBox] = await Promise.all([
+    identity.boundingBox(),
+    workbar.boundingBox(),
+  ]);
+  expect(identityBox).not.toBeNull();
+  expect(workbarBox).not.toBeNull();
+  expect(identityBox!.x + identityBox!.width).toBeLessThanOrEqual(workbarBox!.x);
+
+  await share.click();
+  await expect(page.getByText('分享任务', { exact: true })).toBeVisible();
+});
 
 test('narrow right workbar keeps launcher shortcuts and side-chat send button inside', async ({
   window: page,

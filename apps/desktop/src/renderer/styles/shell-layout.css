@@ -273,7 +273,10 @@
      the OS reports (macOS: traffic lights on the left; Windows: caption buttons
      on the right; Linux: neither, so the design floor stands). */
   padding-left: var(--maka-titlebar-gutter-left);
-  padding-right: calc(var(--space-6) + var(--maka-titlebar-overlay-right-width));
+  padding-right: calc(
+    var(--space-6) + var(--maka-titlebar-overlay-right-width) +
+      var(--maka-titlebar-workbar-reserve, 0px)
+  );
   -webkit-app-region: drag;
 
   /* Three columns, not a flex row, because the middle one has to line up with

@@ -25,6 +25,7 @@ import {
   useRef,
   useState,
   type ComponentProps,
+  type CSSProperties,
 } from 'react';
 import type { ClientCapabilityResponse } from '@maka/core/client-capability-grant';
 import type { QuoteRef } from '@maka/core/events';
@@ -101,6 +102,7 @@ export interface UseWorkbarControllerInput {
 
 export interface WorkbarController {
   host: WorkbarHostModel;
+  getFrameStyle(sidebarCollapsed: boolean, sidebarWidth: number): CSSProperties;
   commands: WorkbarControllerCommands;
   selectors: WorkbarControllerSelectors;
   /**
@@ -702,6 +704,15 @@ export function useWorkbarController(
   );
 
   return {
+    getFrameStyle: (sidebarCollapsed, sidebarWidth) =>
+      ({
+        '--maka-session-workbar-width': `${layout.workbarWidth}px`,
+        '--maka-titlebar-workbar-reserve':
+          input.available && !layout.workbarCollapsed
+            ? 'calc(var(--maka-session-workbar-width) + var(--agents-content-area-gap))'
+            : '0px',
+        ...(sidebarCollapsed ? {} : { '--maka-sidenav-width': `${sidebarWidth}px` }),
+      }) as CSSProperties,
     commands,
     LiveContextUsageProbe,
     selectors: {

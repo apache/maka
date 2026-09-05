@@ -24,7 +24,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type CSSProperties,
   type ComponentProps,
   type Dispatch,
   type SetStateAction,
@@ -2673,13 +2672,7 @@ function AppShellContent({
          `data-sidebar-state`. Writing both here would duplicate the constant;
          writing this one unconditionally would bury the other, since an inline
          custom property outranks any rule that redefines it. */
-      style={
-        sessionListCollapsed
-          ? undefined
-          : ({
-              '--maka-sidenav-width': `${sessionListWidth}px`,
-            } as CSSProperties)
-      }
+      style={workbar.getFrameStyle(sessionListCollapsed, sessionListWidth)}
     >
       <LiveTurnReconciler
         controller={sessionUiController}
