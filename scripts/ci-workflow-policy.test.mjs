@@ -29,7 +29,7 @@
  */
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -71,7 +71,7 @@ test('one unconditional job carries the required context on every pull request',
   assert.doesNotMatch(jobsBlock, /^ {4}if:/mu);
 });
 
-test('planning runs first and every later step gates on its outputs', () => {
+test('comparison precedes planning and every later gate uses plan outputs', () => {
   const workflow = readWorkflow('ci.yml');
 
   // With the job split gone there is no `needs` context to read. GitHub
@@ -80,7 +80,10 @@ test('planning runs first and every later step gates on its outputs', () => {
   assert.doesNotMatch(workflow, /needs\.plan\.outputs/u);
 
   const planStep = workflow.indexOf('      - id: plan\n');
+  const comparisonStep = workflow.indexOf('      - id: comparison\n');
   assert.ok(planStep >= 0, 'no planning step');
+  assert.ok(comparisonStep >= 0 && comparisonStep < planStep, 'resolve comparison before planning');
+  assert.doesNotMatch(workflow.slice(comparisonStep, planStep), /\n\s+if:|continue-on-error/u);
   assert.ok(planStep < workflow.indexOf('steps.plan.outputs'));
   assert.match(
     workflow,
@@ -93,15 +96,24 @@ test('core CI validates pull requests and the resulting main branch state', () =
 
   assert.match(workflow, /pull_request:\n\s+branches: \[main\]/u);
   assert.match(workflow, /push:\n\s+branches: \[main\]/u);
-  assert.match(
-    workflow,
-    /BASE_SHA: \$\{\{ github\.event_name == 'push' && github\.event\.before \|\| github\.event\.pull_request\.base\.sha \}\}/u,
-  );
-  assert.match(
-    workflow,
-    /HEAD_SHA: \$\{\{ github\.event_name == 'push' && github\.sha \|\| github\.event\.pull_request\.head\.sha \}\}/u,
-  );
-  assert.match(workflow, /\[\[ "\$BASE_SHA" =~ \^0\+\$ \]\]/u);
+  assert.match(workflow, /PUSH_BASE_SHA: \$\{\{ github\.event\.before \}\}/u);
+  assert.match(workflow, /PR_HEAD_SHA: \$\{\{ github\.event\.pull_request\.head\.sha \}\}/u);
+  assert.doesNotMatch(workflow, /github\.event\.pull_request\.base\.sha/u);
+});
+
+test('every core diff gate consumes the shared comparison without resolving another base', () => {
+  const workflow = readWorkflow('ci.yml');
+  const gates = workflow.split('\n      - ').filter((step) => step.includes('--base '));
+  assert.equal(gates.length, 4, 'planner, epoch, locale and renderer must all be covered');
+  for (const gate of gates) {
+    assert.match(gate, /BASE_SHA: \$\{\{ steps\.comparison\.outputs\.base \}\}/u);
+    assert.match(gate, /--base "\$BASE_SHA"/u);
+    assert.doesNotMatch(
+      gate,
+      /github\.event\.(?:before|pull_request)|git (?:rev-parse|merge-base)/u,
+    );
+  }
+  assert.match(workflow, /HEAD_SHA: \$\{\{ steps\.comparison\.outputs\.head \}\}/u);
 });
 
 test('core CI uses the Windows inventory package-script authority', () => {
@@ -111,16 +123,18 @@ test('core CI uses the Windows inventory package-script authority', () => {
   assert.doesNotMatch(workflow, /run: node scripts\/windows-test-inventory\.mjs --check/u);
 });
 
-test('renderer gate compares a refreshed PR merge with its actual base and rejects wrong checkouts', () => {
+test('shared comparison drives every diff gate on refreshed merges, pushes and dispatches', () => {
   const workflow = readWorkflow('ci.yml');
-  const start = workflow.indexOf('      - name: Check renderer architecture\n');
-  assert.ok(start >= 0);
-  const step = workflow.slice(start, workflow.indexOf('\n      - ', start + 1));
-  assert.match(step, /CI_EVENT_NAME: \$\{\{ github\.event_name \}\}/u);
-  assert.match(step, /PR_HEAD_SHA: \$\{\{ github\.event\.pull_request\.head\.sha \}\}/u);
-  const script = step.split('        run: |\n')[1];
-  assert.ok(script);
-  const root = mkdtempSync(join(tmpdir(), 'renderer-ci-base-'));
+  const scriptFor = (header) => {
+    const start = workflow.indexOf(`      - ${header}\n`);
+    assert.ok(start >= 0, header);
+    const step = workflow.slice(start, workflow.indexOf('\n      - ', start + 1));
+    const script = step.split('        run: |\n')[1] ?? step.match(/        run: ([^\n]+)/u)?.[1];
+    assert.ok(script, header);
+    return script;
+  };
+  const comparisonScript = scriptFor('id: comparison');
+  const root = mkdtempSync(join(tmpdir(), 'ci-comparison-'));
   const git = (...args) =>
     execFileSync('git', ['-c', 'core.hooksPath=/dev/null', ...args], {
       cwd: root,
@@ -142,19 +156,81 @@ test('renderer gate compares a refreshed PR merge with its actual base and rejec
     );
     return git('rev-parse', 'HEAD');
   };
-  const run = (env) =>
-    spawnSync('bash', ['-e', '-c', `npm() { printf '%s\\n' "$@"; }\n${script}`], {
+  let invocation = 0;
+  const readLines = (path) =>
+    existsSync(path) ? readFileSync(path, 'utf8').trim().split('\n') : [];
+  const run = (script, env) => {
+    const outputPath = join(root, `output-${invocation}`);
+    const invocationPath = join(root, `invocations-${invocation++}`);
+    const result = spawnSync('bash', ['-e', '-c', script], {
       cwd: root,
       encoding: 'utf8',
-      env: { ...process.env, BASE_SHA: '', CI_EVENT_NAME: '', PR_HEAD_SHA: '', ...env },
+      env: {
+        ...process.env,
+        BASE_SHA: '',
+        CI_EVENT_NAME: '',
+        PUSH_BASE_SHA: '',
+        PR_HEAD_SHA: '',
+        ...env,
+        GITHUB_OUTPUT: outputPath,
+        INVOCATION_LOG: invocationPath,
+      },
     });
-  const assertInvocation = (result, base) => {
+    return {
+      ...result,
+      outputs: Object.fromEntries(readLines(outputPath).map((line) => line.split('='))),
+      invocations: readLines(invocationPath),
+    };
+  };
+  const assertConsumers = (env, expectedBase, expectedHead, fullPlan = !expectedBase) => {
+    const result = run(comparisonScript, env);
     assert.equal(result.status, 0, result.stderr);
-    assert.deepEqual(result.stdout.trim().split('\n'), [
-      'run',
-      'check:renderer-architecture',
-      ...(base ? ['--', '--base', base] : []),
-    ]);
+    assert.deepEqual(result.outputs, { base: expectedBase, head: expectedHead });
+    const consumers = [
+      [
+        'id: plan',
+        [
+          'node',
+          'scripts/ci-test-plan.mjs',
+          ...(fullPlan ? ['--full'] : ['--base', expectedBase, '--head', expectedHead]),
+        ],
+      ],
+      [
+        'name: Check locale hygiene',
+        [
+          'node',
+          '--test',
+          'scripts/check-locale-hygiene.test.mjs',
+          'npm',
+          'run',
+          'check:locale-hygiene',
+          ...(expectedBase ? ['--', '--base', expectedBase] : []),
+        ],
+      ],
+      [
+        'name: Check renderer architecture',
+        [
+          'npm',
+          'run',
+          'check:renderer-architecture',
+          ...(expectedBase ? ['--', '--base', expectedBase] : []),
+        ],
+      ],
+    ];
+    if (env.CI_EVENT_NAME === 'pull_request') {
+      consumers.push([
+        'name: Guard the protocol compatibility epoch',
+        ['node', 'scripts/protocol-epoch-check.mjs', '--base', expectedBase],
+      ]);
+    }
+    for (const [header, expected] of consumers) {
+      const consumer = run(
+        `node() { printf '%s\\n' node "$@" >> "$INVOCATION_LOG"; }\nnpm() { printf '%s\\n' npm "$@" >> "$INVOCATION_LOG"; }\n${scriptFor(header)}`,
+        { BASE_SHA: result.outputs.base, HEAD_SHA: result.outputs.head },
+      );
+      assert.equal(consumer.status, 0, `${header}: ${consumer.stderr}`);
+      assert.deepEqual(consumer.invocations, expected, header);
+    }
   };
   try {
     git('init', '--initial-branch=main');
@@ -176,28 +252,41 @@ test('renderer gate compares a refreshed PR merge with its actual base and rejec
       '-m',
       'PR merge',
     );
+    const mergedHead = git('rev-parse', 'HEAD');
 
-    // The event retains oldBase, but checkout now contains newBase + prHead.
-    assertInvocation(
-      run({ CI_EVENT_NAME: 'pull_request', BASE_SHA: oldBase, PR_HEAD_SHA: prHead }),
+    // Ignore any stale base: compare the actual main parent to the checked-out merge.
+    assertConsumers(
+      { CI_EVENT_NAME: 'pull_request', BASE_SHA: oldBase, PR_HEAD_SHA: prHead },
       newBase,
+      mergedHead,
     );
     // Pushes (including merge commits) must still compare with event.before.
-    assertInvocation(run({ CI_EVENT_NAME: 'push', BASE_SHA: oldBase }), oldBase);
-    assertInvocation(run({ CI_EVENT_NAME: 'push', BASE_SHA: '0'.repeat(40) }));
-    assertInvocation(run({ CI_EVENT_NAME: 'workflow_dispatch' }));
+    assertConsumers({ CI_EVENT_NAME: 'push', PUSH_BASE_SHA: oldBase }, oldBase, mergedHead);
+    assertConsumers({ CI_EVENT_NAME: 'push', PUSH_BASE_SHA: '0'.repeat(40) }, '', mergedHead);
+    assertConsumers({ CI_EVENT_NAME: 'push' }, '', mergedHead);
+    // Missing push history selects all tests, but must not silently replace
+    // the requested base for the gates (which still reject an unavailable ref).
+    assertConsumers(
+      { CI_EVENT_NAME: 'push', PUSH_BASE_SHA: 'f'.repeat(40) },
+      'f'.repeat(40),
+      mergedHead,
+      true,
+    );
+    assertConsumers({ CI_EVENT_NAME: 'workflow_dispatch', PUSH_BASE_SHA: oldBase }, '', mergedHead);
 
-    const mismatch = run({
-      CI_EVENT_NAME: 'pull_request',
-      BASE_SHA: oldBase,
-      PR_HEAD_SHA: oldBase,
-    });
-    assert.notEqual(mismatch.status, 0);
-    assert.equal(mismatch.stdout, '', 'wrong-head checkouts must not run the gate');
+    for (const invalidHead of [oldBase, '']) {
+      const mismatch = run(comparisonScript, {
+        CI_EVENT_NAME: 'pull_request',
+        PR_HEAD_SHA: invalidHead,
+      });
+      assert.notEqual(mismatch.status, 0);
+      assert.deepEqual(mismatch.outputs, {}, 'wrong-head checkouts must not publish a comparison');
+    }
     git('checkout', '--detach', prHead);
-    const unmerged = run({ CI_EVENT_NAME: 'pull_request', BASE_SHA: oldBase, PR_HEAD_SHA: prHead });
+    assertConsumers({ CI_EVENT_NAME: 'push', PUSH_BASE_SHA: oldBase }, oldBase, prHead);
+    const unmerged = run(comparisonScript, { CI_EVENT_NAME: 'pull_request', PR_HEAD_SHA: prHead });
     assert.notEqual(unmerged.status, 0);
-    assert.equal(unmerged.stdout, '', 'a linear checkout cannot supply the merge base');
+    assert.deepEqual(unmerged.outputs, {}, 'a linear PR checkout cannot supply the merge base');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

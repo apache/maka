@@ -54,16 +54,37 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - id: comparison
+        name: Resolve checked-out comparison
+        env:
+          CI_EVENT_NAME: ${{ github.event_name }}
+          PUSH_BASE_SHA: ${{ github.event.before }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # Every diff-based gate must compare the same checked-out tree.
+          # PR event bases can predate the main parent of the actual merge.
+          BASE_SHA=""
+          HEAD_SHA="$(git rev-parse --verify HEAD)"
+          if [[ "$CI_EVENT_NAME" == "pull_request" ]]; then
+            MERGED_HEAD_SHA="$(git rev-parse --verify 'HEAD^2')"
+            if [[ -z "$PR_HEAD_SHA" || "$MERGED_HEAD_SHA" != "$PR_HEAD_SHA" ]]; then
+              echo "CI comparison requires the merge of the requested PR head" >&2
+              exit 1
+            fi
+            BASE_SHA="$(git rev-parse --verify 'HEAD^1')"
+          elif [[ "$CI_EVENT_NAME" == "push" && ! "$PUSH_BASE_SHA" =~ ^0+$ ]]; then
+            BASE_SHA="$PUSH_BASE_SHA"
+          fi
+          printf 'base=%s\nhead=%s\n' "$BASE_SHA" "$HEAD_SHA" >> "$GITHUB_OUTPUT"
+
       - id: plan
         name: Select affected test surfaces
         env:
-          BASE_SHA: ${{ github.event_name == 'push' && github.event.before || github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event_name == 'push' && github.sha || github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ steps.comparison.outputs.base }}
+          HEAD_SHA: ${{ steps.comparison.outputs.head }}
         run: |
-          # PR checks may predate later main changes, so the planning lane also
-          # validates the exact merged delta. Dispatches and unavailable history
-          # fail safe to every surface.
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]] || [[ "$BASE_SHA" =~ ^0+$ ]] || ! git cat-file -e "${BASE_SHA}^{commit}"; then
+          # Dispatches, initial pushes and unavailable history select every surface.
+          if [[ -z "$BASE_SHA" ]] || ! git cat-file -e "${BASE_SHA}^{commit}"; then
             node scripts/ci-test-plan.mjs --full >> "$GITHUB_OUTPUT"
           else
             node scripts/ci-test-plan.mjs --base "$BASE_SHA" --head "$HEAD_SHA" >> "$GITHUB_OUTPUT"
@@ -97,7 +118,9 @@ jobs:
       # incompatible protocols under one number (#3313).
       - name: Guard the protocol compatibility epoch
         if: github.event_name == 'pull_request'
-        run: node scripts/protocol-epoch-check.mjs --base 'HEAD^1'
+        env:
+          BASE_SHA: ${{ steps.comparison.outputs.base }}
+        run: node scripts/protocol-epoch-check.mjs --base "$BASE_SHA"
 
       - name: Test the epoch guard
         run: node --test --test-concurrency=1 scripts/protocol-epoch-check.test.mjs
@@ -140,10 +163,10 @@ jobs:
       - name: Check locale hygiene
         if: steps.plan.outputs.code == 'true'
         env:
-          BASE_SHA: ${{ github.event_name == 'push' && github.event.before || github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ steps.comparison.outputs.base }}
         run: |
           node --test scripts/check-locale-hygiene.test.mjs
-          if [[ -n "$BASE_SHA" && ! "$BASE_SHA" =~ ^0+$ ]]; then
+          if [[ -n "$BASE_SHA" ]]; then
             npm run check:locale-hygiene -- --base "$BASE_SHA"
           else
             npm run check:locale-hygiene
@@ -214,22 +237,9 @@ jobs:
       - name: Check renderer architecture
         if: steps.plan.outputs.code == 'true'
         env:
-          BASE_SHA: ${{ github.event_name == 'push' && github.event.before || github.event.pull_request.base.sha }}
-          CI_EVENT_NAME: ${{ github.event_name }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ steps.comparison.outputs.base }}
         run: |
-          # A rerun can check out a refreshed PR merge while the event still
-          # names an older base. Compare against this merge's actual base so
-          # changes already on main are not charged to the pull request.
-          if [[ "$CI_EVENT_NAME" == "pull_request" ]]; then
-            MERGED_HEAD_SHA="$(git rev-parse --verify 'HEAD^2')"
-            if [[ -z "$PR_HEAD_SHA" || "$MERGED_HEAD_SHA" != "$PR_HEAD_SHA" ]]; then
-              echo "Renderer architecture check requires the merge of the requested PR head" >&2
-              exit 1
-            fi
-            BASE_SHA="$(git rev-parse --verify 'HEAD^1')"
-          fi
-          if [[ -n "$BASE_SHA" && ! "$BASE_SHA" =~ ^0+$ ]]; then
+          if [[ -n "$BASE_SHA" ]]; then
             npm run check:renderer-architecture -- --base "$BASE_SHA"
           else
             npm run check:renderer-architecture
