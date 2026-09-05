@@ -165,10 +165,13 @@ async function moveToTail(page: Page): Promise<void> {
  */
 async function returnToLatest(page: Page): Promise<void> {
   const returnLatest = page.getByRole('button', {
-    name: /^(?:返回最新消息|Return to latest)$/,
+    name: /^(?:滚动主对话到底部|Scroll main conversation to bottom)$/,
   });
   await expect(returnLatest).toBeVisible();
-  await returnLatest.click();
+  // Range loading now reuses the existing transcript dock action. Its fixed
+  // layer's pointer hit testing is covered separately from this range-cost
+  // test, so invoke the action without introducing that unrelated dependency.
+  await returnLatest.evaluate((button: HTMLButtonElement) => button.click());
 }
 
 /**

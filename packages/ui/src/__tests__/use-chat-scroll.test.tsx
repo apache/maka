@@ -172,6 +172,7 @@ test('a session switch restores a Turn anchor after async fill and preserves tai
   };
 
   const anchors = new Map<string, string>();
+  const handledTargets: number[] = [];
   const unavailableRestores = new Map<string, string>();
   let authority: TranscriptScrollAuthority | undefined;
   let messageRevision = 0;
@@ -190,6 +191,7 @@ test('a session switch restores a Turn anchor after async fill and preserves tai
       messages: [{ id: `message-${messageRevision}` }] as StoredMessage[],
       target,
       restoreTarget,
+      onTargetHandled: (nonce) => handledTargets.push(nonce),
       onReadingAnchorChange: (turnId) => {
         unavailableRestores.delete(sessionId);
         if (turnId) anchors.set(sessionId, turnId);
@@ -286,6 +288,10 @@ test('a session switch restores a Turn anchor after async fill and preserves tai
   await renderSession('session-b');
   await flushFrames();
   assert.equal(anchors.get('session-b'), 'turn-b-1');
+  assert.deepEqual(handledTargets, [1]);
+  await renderSession('session-b');
+  await flushFrames();
+  assert.deepEqual(handledTargets, [1]);
 
   target = undefined;
   // With no resident Turn to re-anchor to, abandoning the restore falls back

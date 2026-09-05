@@ -48,6 +48,7 @@ export function useChatScroll(input: {
    */
   target?: { turnId: string; nonce: number; align?: 'start' | 'center' };
   restoreTarget?: { turnId: string; unavailable?: boolean };
+  onTargetHandled?(nonce: number): void;
   onReadingAnchorChange?(turnId?: string): void;
   behavior: ScrollBehavior;
   hasOlderHistory?: boolean;
@@ -61,6 +62,8 @@ export function useChatScroll(input: {
   const handledTarget = useRef<string | null>(null);
   const anchorChangeRef = useRef(input.onReadingAnchorChange);
   anchorChangeRef.current = input.onReadingAnchorChange;
+  const targetHandledRef = useRef(input.onTargetHandled);
+  targetHandledRef.current = input.onTargetHandled;
   const reportReadingAnchor = useRef<(() => void) | undefined>(undefined);
   const reportedAnchor = useRef<{ sessionId?: string; turnId?: string } | undefined>(undefined);
   const activation = useRef<{ sessionId?: string; restoreTurnId?: string } | undefined>(undefined);
@@ -244,6 +247,7 @@ export function useChatScroll(input: {
       targetElement.setAttribute('tabindex', '-1');
       targetElement.focus({ preventScroll: true });
       setHighlightedTurnId(target.turnId);
+      targetHandledRef.current?.(target.nonce);
     });
     const clear = target.kind === 'search'
       ? window.setTimeout(() => {

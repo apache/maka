@@ -32,6 +32,15 @@ interface TranscriptRangeController<Message> {
   loadAround(sequence: number): Promise<void>;
 }
 
+interface TranscriptHistoryController {
+  readonly store: {
+    range(): { readonly hasNewer: boolean; readonly newestSequence: number | null };
+  };
+  loadBefore(maxBytes?: number, anchorTurnId?: string): Promise<void>;
+  loadAround(sequence: number): Promise<void>;
+  loadLatest(): Promise<void>;
+}
+
 interface SearchTarget {
   readonly sessionId: string;
   readonly turnId: string;
@@ -61,6 +70,35 @@ export function newestDurablePromptSequence<Message>(
   } catch {
     return null;
   }
+}
+
+export async function loadTranscriptRange(
+  controller: TranscriptHistoryController,
+  target: 'earlier' | 'newer' | 'latest',
+  maxBytes: number,
+  anchorTurnId?: string,
+): Promise<void> {
+  if (target === 'earlier') return controller.loadBefore(maxBytes, anchorTurnId);
+  if (target === 'latest') return controller.loadLatest();
+  const range = controller.store.range();
+  if (range.hasNewer && range.newestSequence !== null) {
+    await controller.loadAround(range.newestSequence + 1);
+  }
+}
+
+export function transcriptRestoreTarget(
+  anchor: TranscriptReadingAnchor | undefined,
+  unavailableTurnId: string | undefined,
+): { readonly turnId: string; readonly unavailable: boolean } | undefined {
+  if (anchor) {
+    return {
+      turnId: anchor.turnId,
+      unavailable: unavailableTurnId === anchor.turnId,
+    };
+  }
+  return unavailableTurnId
+    ? { turnId: unavailableTurnId, unavailable: true }
+    : undefined;
 }
 
 export function refreshTranscriptTurnLandmarks<T>(options: {

@@ -20,36 +20,40 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { TranscriptHistoryNotice } from '../chat-view.js';
+import { TranscriptGapRow } from '../chat-view.js';
 
-function renderNotice(isPending: boolean): string {
+function renderGap(direction: 'older' | 'newer', isPending: boolean): string {
   return renderToStaticMarkup(
-    <TranscriptHistoryNotice
-      title="Viewing earlier messages"
-      actionLabel="Return to latest"
+    <TranscriptGapRow
+      direction={direction}
+      description={direction === 'older' ? 'Earlier messages are not loaded.' : 'Newer messages are not loaded.'}
+      actionLabel={direction === 'older' ? 'Load earlier messages' : 'Load newer messages'}
       isPending={isPending}
-      onReturnToLatest={() => undefined}
+      onActivate={() => undefined}
     />,
   );
 }
 
-test('presents historical position as quiet persistent status', () => {
-  const markup = renderNotice(false);
+test('presents an older boundary gap as an in-flow transcript row', () => {
+  const markup = renderGap('older', false);
 
   assert.match(markup, /role="status"/);
   assert.match(markup, /aria-live="polite"/);
   assert.match(markup, /aria-atomic="true"/);
-  assert.match(markup, /Viewing earlier messages/);
-  assert.match(markup, /Return to latest/);
-  assert.doesNotMatch(markup, /saved|loaded/);
+  assert.match(markup, /data-transcript-gap="older"/);
+  assert.match(markup, /maka-transcript-gap-row/);
+  assert.match(markup, /Earlier messages are not loaded/);
+  assert.match(markup, /Load earlier messages/);
   assert.doesNotMatch(markup, /<strong/);
   assert.doesNotMatch(markup, /disabled/);
 });
 
-test('keeps the position status visible while return-to-latest is pending', () => {
-  const markup = renderNotice(true);
+test('keeps a newer boundary gap visible while its shared loader is pending', () => {
+  const markup = renderGap('newer', true);
 
-  assert.match(markup, /Viewing earlier messages/);
-  assert.doesNotMatch(markup, /saved|loaded/);
+  assert.match(markup, /data-transcript-gap="newer"/);
+  assert.match(markup, /Newer messages are not loaded/);
+  assert.match(markup, /Load newer messages/);
   assert.match(markup, /disabled/);
+  assert.match(markup, /aria-busy="true"/);
 });

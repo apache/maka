@@ -1116,6 +1116,7 @@ function AppShellContent({
     setSearchModalOpen,
     searchScrollTarget,
     setSearchScrollTarget,
+    consumeSearchScrollTarget,
     closeSearchModal,
     searchModalDeps,
     searchModalOnNavigate,
@@ -2340,7 +2341,7 @@ function AppShellContent({
   }), [activeId, activeIdRef, newestDurablePromptSequence, transcriptTurnIndex]);
   useEffect(() => transcriptReadingPosition.restoreRange({
     sessionId: activeId,
-    searchTarget: searchScrollTarget,
+    searchTarget: searchScrollTarget?.handled ? null : searchScrollTarget,
     readingAnchor: activeId
       ? sessionUiController.transcriptReadingAnchorBySessionRef.current[activeId]
       : undefined,
@@ -2362,7 +2363,7 @@ function AppShellContent({
         ),
       }));
     },
-  }), [activeId, activeSession?.profileId, messages, searchScrollTarget?.nonce]);
+  }), [activeId, activeSession?.profileId, messages, searchScrollTarget]);
   useShellRunUpdates({
     activeId,
     setShellRunUpdatesBySession: sessionUiController.setShellRunUpdatesBySession,
@@ -2537,32 +2538,37 @@ function AppShellContent({
       setAnchor: sessionUiController.setTranscriptReadingAnchor,
     });
   }
-  async function loadTranscriptHistory(target: 'earlier' | 'latest', anchorTurnId?: string) {
+  async function loadTranscriptHistory(
+    target: 'earlier' | 'newer' | 'latest',
+    anchorTurnId?: string,
+  ) {
     const controller = transcriptRangeRef.current;
     const sessionId = activeId;
     if (!controller || !sessionId || historyLoadPendingRef.current) return;
     historyLoadPendingRef.current = true;
     setHistoryLoadPendingSessionId(sessionId);
+    if (target !== 'earlier') handleTranscriptReadingAnchorChange();
     try {
-      if (target === 'earlier') {
-        await controller.loadBefore(DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES, anchorTurnId);
-      } else await controller.loadLatest();
+      await transcriptReadingPosition.loadRange(
+        controller,
+        target,
+        DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES,
+        anchorTurnId,
+      );
     } catch (error) {
       if (
-        activeIdRef.current !== sessionId ||
-        transcriptRangeRef.current !== controller
-      ) {
-        return;
-      }
-      showSessionError(
-        sessionId,
-        desktopConversationCopy.actions.messageReadFailedTitle,
-        localizedShellErrorMessage(
-          error,
-          desktopConversationCopy.actions.operationFailedFallback,
-          uiLocale,
-        ),
-      );
+        activeIdRef.current === sessionId &&
+        transcriptRangeRef.current === controller
+      )
+        showSessionError(
+          sessionId,
+          desktopConversationCopy.actions.messageReadFailedTitle,
+          localizedShellErrorMessage(
+            error,
+            desktopConversationCopy.actions.operationFailedFallback,
+            uiLocale,
+          ),
+        );
     } finally {
       historyLoadPendingRef.current = false;
       setHistoryLoadPendingSessionId((current) => current === sessionId ? undefined : current);
@@ -2850,6 +2856,7 @@ function AppShellContent({
                 scrollToBottomLabel={
                   desktopConversationCopy.actions.scrollMainToBottom
                 }
+                onReturnToTail={() => loadTranscriptHistory('latest')}
                 hidden={navSelection.section !== 'sessions'}
                 composer={
                   <>
@@ -3059,7 +3066,7 @@ function AppShellContent({
                 historyLoadPending={historyLoadPendingSessionId === activeId}
                 onLoadEarlierHistory={(anchorTurnId) =>
                   loadTranscriptHistory('earlier', anchorTurnId)}
-                onReturnToLatestHistory={() => loadTranscriptHistory('latest')}
+                onLoadNewerHistory={() => loadTranscriptHistory('newer')}
                 liveContentSeedRevision={liveContent.liveContentSeedRevision(activeEventSeed, activeId)}
                 messages={messages}
                 transientMessages={transientMessages}
@@ -3103,16 +3110,11 @@ function AppShellContent({
                           }
                     : undefined
                 }
-                restoreTargetTurn={activeTranscriptReadingAnchor
-                  ? {
-                      turnId: activeTranscriptReadingAnchor.turnId,
-                      unavailable:
-                        activeUnavailableTranscriptRestore
-                        === activeTranscriptReadingAnchor.turnId,
-                    }
-                  : activeUnavailableTranscriptRestore
-                    ? { turnId: activeUnavailableTranscriptRestore, unavailable: true }
-                    : undefined}
+                onScrollTargetHandled={consumeSearchScrollTarget}
+                restoreTargetTurn={transcriptReadingPosition.restoreTarget(
+                  activeTranscriptReadingAnchor,
+                  activeUnavailableTranscriptRestore,
+                )}
                 onReadingAnchorChange={activeId
                   ? handleTranscriptReadingAnchorChange
                   : undefined}

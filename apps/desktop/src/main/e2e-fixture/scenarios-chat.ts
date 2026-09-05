@@ -172,7 +172,7 @@ export function partialHistorySession(now: number): SessionHeader {
 }
 
 /**
- * Eight turns whose durable transcript is well over the Desktop range budget.
+ * Eighteen turns whose durable transcript is well over both Desktop range budgets.
  * The whitespace is stored but collapses when rendered, keeping this a useful
  * visual fixture while forcing the initial open to contain only the latest
  * contiguous range.
@@ -180,9 +180,10 @@ export function partialHistorySession(now: number): SessionHeader {
 export function partialHistoryMessages(now: number): StoredMessage[] {
   const messages: StoredMessage[] = [];
   const rangePadding = ' '.repeat(180 * 1024);
-  for (let index = 1; index <= 8; index += 1) {
+  const turnCount = 18;
+  for (let index = 1; index <= turnCount; index += 1) {
     const turnId = `turn-partial-history-${index}`;
-    const ts = now - (9 - index) * 60_000;
+    const ts = now - (turnCount + 1 - index) * 60_000;
     messages.push({
       type: 'user',
       id: `msg-partial-history-user-${index}`,

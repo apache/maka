@@ -35,7 +35,6 @@ import type { SessionHealthNoticeView } from './use-shell-chat-model';
 import type { WorkspaceReadinessRecovery } from './workspace-readiness-recovery';
 import type { TaskReadinessNotice } from './task-readiness-notice';
 import { getShellCopy } from './locales/shell-copy';
-import { getDesktopConversationCopy } from './locales/conversation-copy';
 import { selectLiveTurn } from './use-app-shell-session-ui-reads';
 import { useExternalStoreSelector } from './use-external-store-selector';
 import { useDeepResearchRun } from './use-deep-research-run';
@@ -93,7 +92,7 @@ interface ChatMessageSurfaceProps extends Omit<
   hasNewerHistory: boolean;
   historyLoadPending: boolean;
   onLoadEarlierHistory: (anchorTurnId?: string) => Promise<void> | void;
-  onReturnToLatestHistory: () => Promise<void> | void;
+  onLoadNewerHistory: () => Promise<void> | void;
 }
 
 function captureLiveContent(liveTurn: LiveTurnProjection | undefined) {
@@ -130,12 +129,11 @@ export function ChatMessageSurface({
   hasNewerHistory,
   historyLoadPending,
   onLoadEarlierHistory,
-  onReturnToLatestHistory,
+  onLoadNewerHistory,
   ...chatViewRest
 }: ChatMessageSurfaceProps) {
   const locale = useUiLocale();
   const copy = getShellCopy(locale).app;
-  const transcriptCopy = getDesktopConversationCopy(locale).actions;
   // Configuration notices share the Settings label; identity recovery supplies
   // its own label because it opens the composer's connection-and-model picker.
   const goToModelsLabel = copy.goToModels;
@@ -248,13 +246,10 @@ export function ChatMessageSurface({
             emptyOverride={emptyOverride}
             goalIndicator={goalProjection.goalIndicator}
             hasOlderHistory={hasOlderHistory}
+            hasNewerHistory={hasNewerHistory}
+            historyLoadPending={historyLoadPending}
             onLoadEarlierHistory={onLoadEarlierHistory}
-            returnToLatest={hasNewerHistory ? {
-              title: transcriptCopy.partialHistoryTitle,
-              label: transcriptCopy.returnLatest,
-              isPending: historyLoadPending,
-              onClick: onReturnToLatestHistory,
-            } : undefined}
+            onLoadNewerHistory={onLoadNewerHistory}
           />
         )}
       </ChatViewGoalProjectionConsumer>

@@ -59,6 +59,7 @@ import {
 import { useChatScroll } from './use-chat-scroll.js';
 import { useTranscriptScrollAuthority } from './transcript-scroll-authority.js';
 import { placeChatConversationItems } from './chat-conversation-items.js';
+import { projectTranscriptRows } from './transcript-row-projection.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 import { SessionContextLayer, type SessionContextGoal } from './session-context-layer.js';
@@ -72,11 +73,12 @@ export interface LiveContentActivationSnapshot {
   entries: ReadonlyMap<string, string>;
 }
 
-export interface TranscriptHistoryNoticeProps {
-  title: string;
+export interface TranscriptGapRowProps {
+  direction: 'older' | 'newer';
+  description: string;
   actionLabel: string;
   isPending: boolean;
-  onReturnToLatest(): Promise<void> | void;
+  onActivate(): Promise<void> | void;
 }
 
 export interface ChatViewGoalIndicatorProps {
@@ -120,16 +122,44 @@ export function resolveRailAlignedTarget<T extends { turnId: string; nonce: numb
   };
 }
 
-/** Persistent navigation position with a direct path back to the transcript tail. */
-export function TranscriptHistoryNotice({
-  title,
+/** A truthful missing-range boundary rendered at its position in the transcript. */
+export function TranscriptGapRow({
+  direction,
+  description,
   actionLabel,
   isPending,
-  onReturnToLatest,
-}: TranscriptHistoryNoticeProps) {
+  onActivate,
+}: TranscriptGapRowProps) {
+  const actionRef = useRef<HTMLButtonElement>(null);
+  const restoreFocusAfterPendingRef = useRef(false);
+  const activationReachedPendingRef = useRef(false);
+  const isPendingRef = useRef(isPending);
+  isPendingRef.current = isPending;
+
+  useEffect(() => {
+    if (isPending) {
+      activationReachedPendingRef.current = restoreFocusAfterPendingRef.current;
+      return;
+    }
+    if (!activationReachedPendingRef.current) return;
+
+    activationReachedPendingRef.current = false;
+    const shouldRestore = restoreFocusAfterPendingRef.current;
+    restoreFocusAfterPendingRef.current = false;
+    const action = actionRef.current;
+    if (
+      shouldRestore
+      && action?.isConnected
+      && document.activeElement === document.body
+    ) {
+      action.focus({ preventScroll: true });
+    }
+  }, [isPending]);
+
   return (
     <HStack
-      className="maka-transcript-history-controls"
+      className="maka-transcript-gap-row"
+      data-transcript-gap={direction}
       gap={2}
       hAlign="center"
       vAlign="center"
@@ -138,14 +168,19 @@ export function TranscriptHistoryNotice({
       aria-live="polite"
       aria-atomic="true"
     >
-      <Text type="supporting" color="secondary">{title}</Text>
+      <Text type="supporting" color="secondary">{description}</Text>
       <Button
+        ref={actionRef}
         label={actionLabel}
         variant="ghost"
         size="sm"
-        isDisabled={isPending}
+        isLoading={isPending}
+        onBlur={() => {
+          if (!isPendingRef.current) restoreFocusAfterPendingRef.current = false;
+        }}
         onClick={() => {
-          void onReturnToLatest();
+          restoreFocusAfterPendingRef.current = document.activeElement === actionRef.current;
+          void onActivate();
         }}
       />
     </HStack>
@@ -293,18 +328,16 @@ export function ChatView(props: {
    * chat view only scrolls/highlights the already-rendered turn.
    */
   scrollTargetTurn?: { turnId: string; nonce: number };
+  onScrollTargetHandled?(nonce: number): void;
   /** Runtime-only reading position restored without search focus or highlight. */
   restoreTargetTurn?: { turnId: string; unavailable?: boolean };
   onReadingAnchorChange?(turnId?: string): void;
   scrollBehavior: ScrollBehavior;
   hasOlderHistory?: boolean;
+  hasNewerHistory?: boolean;
+  historyLoadPending?: boolean;
   onLoadEarlierHistory?(anchorTurnId?: string): Promise<void> | void;
-  returnToLatest?: {
-    title: string;
-    label: string;
-    isPending: boolean;
-    onClick(): Promise<void> | void;
-  };
+  onLoadNewerHistory?(): Promise<void> | void;
   transcriptTurnIndex?: ReadonlyArray<{ turnId: string; sequence: number; label: string }>;
   onLoadTranscriptTurn?(target: { turnId: string; sequence: number }): void;
   /**
@@ -439,6 +472,14 @@ export function ChatView(props: {
   const tailTurnId = liveInFlight
     ? props.liveTurn!.turnId
     : (streamingActive ? turns[turns.length - 1]?.turnId : undefined);
+  const boundaryOverlayTurnId = props.liveTurn?.turnId
+    ?? (streamingActive ? tailTurnId : undefined);
+  const transcriptRows = useMemo(() => projectTranscriptRows({
+    turns,
+    hasOlder: props.hasOlderHistory === true,
+    hasNewer: props.hasNewerHistory === true,
+    activeTurnId: boundaryOverlayTurnId,
+  }), [turns, props.hasOlderHistory, props.hasNewerHistory, boundaryOverlayTurnId]);
   // One rail tick per turn that carries a user prompt (Codex-style prompt
   // navigation). Memoized so the rail's IntersectionObserver isn't rebuilt
   // on every render.
@@ -584,6 +625,7 @@ export function ChatView(props: {
     messages: props.messages,
     target: scrollTargetTurn,
     restoreTarget: props.restoreTargetTurn,
+    onTargetHandled: props.onScrollTargetHandled,
     onReadingAnchorChange: props.onReadingAnchorChange,
     behavior: props.scrollBehavior,
     hasOlderHistory: props.hasOlderHistory,
@@ -738,21 +780,6 @@ export function ChatView(props: {
         role="region"
         aria-label={copy.conversationAriaLabel(props.activeSession.name)}
       >
-      {props.returnToLatest ? (
-        <TranscriptHistoryNotice
-          title={props.returnToLatest.title}
-          actionLabel={props.returnToLatest.label}
-          isPending={props.returnToLatest.isPending}
-          onReturnToLatest={async () => {
-            // Loading the latest range is the shell's job; putting the viewport
-            // on it is this view's, and setting the pin is the whole of it —
-            // the range that arrives afterwards is growth, and growth is
-            // already followed.
-            await props.returnToLatest?.onClick();
-            scrollAuthority.pinToTail();
-          }}
-        />
-      ) : null}
       <SessionContextLayer
         sessionName={props.activeSession.name}
         branch={props.branchBanner}
@@ -798,7 +825,34 @@ export function ChatView(props: {
                 && !streamingActive
                 ? emptyContent
                 : null}
-              {turns.map((turn) => {
+              {transcriptRows.map((row) => {
+                if (row.kind === 'gap') {
+                  const gap = row.direction === 'older'
+                    ? {
+                        description: copy.transcriptGap.olderDescription,
+                        actionLabel: copy.transcriptGap.olderAction,
+                        activate: () => props.onLoadEarlierHistory?.(turns[0]?.turnId),
+                      }
+                    : {
+                        description: copy.transcriptGap.newerDescription,
+                        actionLabel: copy.transcriptGap.newerAction,
+                        activate: () => props.onLoadNewerHistory?.(),
+                      };
+                  return (
+                    <TranscriptGapRow
+                      key={`transcript-gap:${row.direction}`}
+                      direction={row.direction}
+                      description={gap.description}
+                      actionLabel={gap.actionLabel}
+                      isPending={props.historyLoadPending === true}
+                      onActivate={() => {
+                        scrollAuthority.releasePin();
+                        return gap.activate();
+                      }}
+                    />
+                  );
+                }
+                const turn = row.turn;
                 return (
                   <div
                     key={turn.turnId}
