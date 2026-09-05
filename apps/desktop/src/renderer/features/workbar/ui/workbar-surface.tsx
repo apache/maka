@@ -46,6 +46,7 @@ import { Section } from '@astryxdesign/core/Section';
 import { Spinner } from '@astryxdesign/core/Spinner';
 import { Tab, TabList } from '@astryxdesign/core/TabList';
 import type { SessionSummary } from '@maka/core/session';
+import type { WorkBoardItem, WorkBoardLinkedSession } from '@maka/core/work-board';
 import { QuoteCompanionPanel } from '../tools/side-chat/quote-companion-panel';
 import {
   type SessionWorkbarTab,
@@ -406,6 +407,10 @@ export function WorkbarSurface(props: {
   activeSideChatPanelIds?: ReadonlySet<string>;
   sourceSession?: SessionSummary;
   modelChoices?: readonly ChatModelChoice[];
+  onStartWorkBoardTask?: (item: WorkBoardItem) => void;
+  resolveWorkBoardStartTask?: (item: WorkBoardItem) => { ok: boolean; message?: string };
+  onOpenWorkBoardSession?: (link: WorkBoardLinkedSession) => void;
+  workBoardStartTaskEnabled?: boolean;
   confirmBypass: () => Promise<boolean>;
 }) {
   const locale = useUiLocale();
@@ -508,6 +513,10 @@ export function WorkbarSurface(props: {
             <WorkBoardPanel
               projectId={props.projectId ?? null}
               projectAliases={props.projectAliases}
+              onStartTask={props.onStartWorkBoardTask}
+              resolveStartTask={props.resolveWorkBoardStartTask}
+              onOpenLinkedSession={props.onOpenWorkBoardSession}
+              startTaskEnabled={props.workBoardStartTaskEnabled}
             />
           );
         } else if (tab.kind === 'browser') {

@@ -69,6 +69,7 @@ import type { WorkspaceTarget } from "@maka/runtime-host/protocol";
 import { runtimeHostProfileUsesHostWorkspace } from "@maka/runtime-host/profile-kind";
 import { createCredentialMcpOAuthStorage, McpClientManager } from "@maka/mcp";
 import { createWorkBoardStore } from "@maka/storage/work-board-store";
+import { normalizeWorkBoardLinkedSession } from "@maka/core/work-board";
 import { createFileCredentialStore } from "@maka/storage/credential-store";
 import { createMcpConfigStore } from "@maka/storage/mcp-config-store";
 import { createSettingsStore } from "@maka/storage/settings-store";
@@ -1291,6 +1292,26 @@ const workBoardIpc = registerWorkBoardIpc({
   workspaceRoot,
   mainWindowController,
   store: createWorkBoardStore(workspaceRoot, { schemaMigration: 'require_current' }),
+  validateLinkedSession: async (value, expectedProjectId) => {
+    const normalized = normalizeWorkBoardLinkedSession(value);
+    if (!normalized.ok) return false;
+    try {
+      const current = runtimeHostManager?.current(normalized.value.profileId);
+      if (!current?.candidate || current.hostId !== normalized.value.hostId) return false;
+      const sessions = await current.candidate.client.listSessions();
+      const session = sessions.find((candidate) => candidate.id === normalized.value.sessionId);
+      if (!session) return false;
+      if (expectedProjectId !== undefined) {
+        return (
+          session.workspace.target.kind === 'project' &&
+          session.workspace.target.projectId === expectedProjectId
+        );
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  },
 });
 wireLifecycle();
 runtimeHostManager.setDefaultProfile(runtimeHostStartup.preferences.defaultProfileId);
