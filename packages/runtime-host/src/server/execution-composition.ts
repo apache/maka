@@ -567,8 +567,8 @@ export async function createExecutionRuntimeHostComposition(
     let deepResearch: HostDeepResearchCoordinator | undefined;
     let dailyReview: HostDailyReviewCoordinator | undefined;
     const rootPort: HostMessageRootPort = {
-      readSessionHeader: (sessionId) =>
-        requireRootCoordinator(rootCoordinator).readSessionHeader(sessionId),
+      readSessionAvailability: (sessionId, admission) =>
+        requireRootCoordinator(rootCoordinator).readSessionAvailability(sessionId, admission),
       readRootState: (sessionId) =>
         requireRootCoordinator(rootCoordinator).readRootState(sessionId),
       claimStopFence: (input, commitQueueFence, admission) =>
@@ -1179,6 +1179,18 @@ export async function createExecutionRuntimeHostComposition(
       Date.now,
       context.sessionAccessAuthority,
     );
+    const sessionCatalog = new HostSessionCatalogCoordinator({
+      stores: stores.sessionStore,
+      runtimePolicy: runtimePolicyStores,
+      manager,
+      admission: sessionAdmission,
+      continuity: continuityCoordinator,
+      workspaceResolver,
+      requestDrain: context.requestDrain,
+      ...(context.sessionAccessAuthority
+        ? { sessionAccessAuthority: context.sessionAccessAuthority }
+        : {}),
+    });
     rootCoordinator = new RootTurnCoordinator(
       manager,
       stores,
@@ -1225,6 +1237,13 @@ export async function createExecutionRuntimeHostComposition(
       },
       (input) => sessionEffectCoordinator.nameSessionFromRootMessage(input),
       context.owner.capability.rootId,
+      async (sessionId, header, admissionLease) => {
+        const adopted = await sessionCatalog.adoptLegacySessionConnectionIdentity(
+          sessionId,
+          admissionLease,
+        );
+        return adopted?.header ?? header;
+      },
     );
     const coordinator = rootCoordinator;
     const contextOperations = new HostContextCoordinator({
@@ -1352,18 +1371,6 @@ export async function createExecutionRuntimeHostComposition(
       activation: runtimePolicyActivation,
       oauthCredentials,
       onCommittedMutation: registerConfigurationMutation,
-    });
-    const sessionCatalog = new HostSessionCatalogCoordinator({
-      stores: stores.sessionStore,
-      runtimePolicy: runtimePolicyStores,
-      manager,
-      admission: sessionAdmission,
-      continuity: continuityCoordinator,
-      workspaceResolver,
-      requestDrain: context.requestDrain,
-      ...(context.sessionAccessAuthority
-        ? { sessionAccessAuthority: context.sessionAccessAuthority }
-        : {}),
     });
     const workHubCoordination = new HostWorkHubCoordinationCoordinator({
       stateRoot: context.owner.capability.canonicalPath,

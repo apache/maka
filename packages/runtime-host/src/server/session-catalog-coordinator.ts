@@ -226,6 +226,56 @@ export class HostSessionCatalogCoordinator {
     if (!outcome.ok) throw new Error(outcome.error.message);
   }
 
+  /**
+   * Compatibility migration for pre-identity Sessions whose
+   * `connectionLocked` flag is still false. The write is revision/CAS guarded
+   * and the resulting bound identity is resolved through the existing
+   * catalog-slug resolver before the metadata commit.
+   * The optional lease lets an already-admitted execution reuse its Session
+   * lane; callers without one are serialized here. Locked legacy Sessions stay
+   * untouched because the catalog cannot prove historical ownership after
+   * delete-and-reuse of a slug.
+   */
+  async adoptLegacySessionConnectionIdentity(
+    sessionId: string,
+    admissionLease?: SessionAdmissionLease,
+  ): Promise<SessionHeaderSnapshot | undefined> {
+    return admissionLease
+      ? this.#admission.runAdmitted(sessionId, admissionLease, () =>
+          this.#adoptLegacySessionConnectionIdentity(sessionId),
+        )
+      : this.#admission.run(sessionId, () => this.#adoptLegacySessionConnectionIdentity(sessionId));
+  }
+
+  async #adoptLegacySessionConnectionIdentity(
+    sessionId: string,
+  ): Promise<SessionHeaderSnapshot | undefined> {
+    const current = await this.#stores.readHeaderRecordSnapshot(sessionId);
+    if (
+      current.header.llmConnectionId !== undefined ||
+      current.header.backend === 'fake' ||
+      current.header.connectionLocked
+    ) {
+      return undefined;
+    }
+    const resolved = await this.#runtimePolicy.operations.resolveExecutionConnection({
+      kind: 'catalog_slug',
+      connectionSlug: current.header.llmConnectionSlug,
+    });
+    if (resolved.kind !== 'ready') return undefined;
+    const connection = resolved.connection;
+    try {
+      return await this.#stores.updateHeaderVersioned(
+        sessionId,
+        { llmConnectionId: connection.connectionId },
+        current.revision,
+      );
+    } catch (error) {
+      if (error instanceof SessionMetadataVersionConflictError) return undefined;
+      throw error;
+    }
+  }
+
   /** WorkHub Action Gate path; callers cannot bypass the typed operation outcome. */
   createForWorkHub(input: SessionCreateInput): Promise<OperationOutcome<'session.create'>> {
     return this.#create(input);

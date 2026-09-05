@@ -651,6 +651,44 @@ test('production composition commits automatic titles through Host-owned Session
   });
 });
 
+test('production composition lazily adopts an unlocked legacy Session before turn start', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const connectionId = await configureFakeDefaultTarget(owner);
+    const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const session = await stores.sessionStore.create({
+      cwd: root,
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    const { composition } = await createCapturedExecutionComposition(owner);
+    const context = {
+      hostEpoch: 'execution-composition-test',
+      connectionId: 'legacy-adoption-client',
+      principal: 'local_os_user' as const,
+      acquireResidency: () => ({ release() {} }),
+    };
+    try {
+      const started = await composition.handlers['turn.start'](
+        {
+          sessionId: session.id,
+          turnId: 'legacy-adoption-turn',
+          content: { text: 'adopt this legacy Session' },
+        },
+        context,
+      );
+      assert.equal(started.ok, true, JSON.stringify(started));
+      await waitFor(
+        async () =>
+          (await stores.sessionStore.readHeaderSnapshot(session.id)).llmConnectionId ===
+          connectionId,
+      );
+    } finally {
+      await composition.close();
+    }
+  });
+});
+
 test('WorkHub creates new work through the production assignment composition', async () => {
   await withCompositionRoot(async ({ root, owner }) => {
     const connectionId = await configureFakeDefaultTarget(owner);

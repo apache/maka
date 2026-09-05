@@ -194,7 +194,10 @@ export type HostMessageExecutionDisposition =
 
 /** Root execution operations that must share the message coordinator's Session gate. */
 export interface HostMessageRootPort {
-  readSessionHeader(sessionId: string): Promise<HostMessageSessionHeader | null>;
+  readSessionAvailability(
+    sessionId: string,
+    admission?: SessionAdmissionLease,
+  ): Promise<HostMessageSessionHeader | null>;
   readRootState(sessionId: string): Promise<HostMessageRootState> | HostMessageRootState;
   claimStopFence(
     input: Omit<TurnInterruptInput, 'originHostEpoch' | 'interruptId'>,
@@ -1120,7 +1123,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
           }
         | undefined;
       for (let attempt = 0; ; attempt++) {
-        const header = await this.#root.readSessionHeader(input.sessionId);
+        const header = await this.#root.readSessionAvailability(input.sessionId, admission);
         if (this.#failStopped) {
           return failure('host_draining', 'Runtime Host message authority has failed');
         }
@@ -1438,7 +1441,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
   }
 
   async #retractAdmitted(input: QueueRetractInput): Promise<MessageOutcome<QueueRetractResult>> {
-    const header = await this.#root.readSessionHeader(input.sessionId);
+    const header = await this.#root.readSessionAvailability(input.sessionId);
     if (this.#failStopped) {
       return failure('host_draining', 'Runtime Host message authority has failed');
     }
@@ -1611,7 +1614,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
   async #retractQueuedEntryAdmitted(
     input: QueueEntryRetractInput,
   ): Promise<MessageOutcome<QueueMutationResult>> {
-    const header = await this.#root.readSessionHeader(input.sessionId);
+    const header = await this.#root.readSessionAvailability(input.sessionId);
     if (this.#failStopped) {
       return failure('host_draining', 'Runtime Host message authority has failed');
     }
@@ -1647,7 +1650,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
   async #promoteQueuedEntryAdmitted(
     input: QueueEntryPromoteInput,
   ): Promise<MessageOutcome<QueueMutationResult>> {
-    const header = await this.#root.readSessionHeader(input.sessionId);
+    const header = await this.#root.readSessionAvailability(input.sessionId);
     if (this.#failStopped) {
       return failure('host_draining', 'Runtime Host message authority has failed');
     }
@@ -1729,7 +1732,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
   async #updateQueuedEntryAdmitted(
     input: QueueEntryUpdateInput,
   ): Promise<MessageOutcome<QueueMutationResult>> {
-    const header = await this.#root.readSessionHeader(input.sessionId);
+    const header = await this.#root.readSessionAvailability(input.sessionId);
     if (this.#failStopped) {
       return failure('host_draining', 'Runtime Host message authority has failed');
     }
@@ -1847,7 +1850,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
   async #reorderQueuedEntriesAdmitted(
     input: QueueEntriesReorderInput,
   ): Promise<MessageOutcome<QueueMutationResult>> {
-    const header = await this.#root.readSessionHeader(input.sessionId);
+    const header = await this.#root.readSessionAvailability(input.sessionId);
     if (this.#failStopped) {
       return failure('host_draining', 'Runtime Host message authority has failed');
     }
@@ -1913,7 +1916,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
             };
       }
 
-      const header = await this.#root.readSessionHeader(input.sessionId);
+      const header = await this.#root.readSessionAvailability(input.sessionId);
       if (this.#failStopped) {
         return {
           kind: 'conflict' as const,

@@ -308,6 +308,12 @@ interface HostAgentGraphEpochAuthority {
   beginNextGraphEpoch(rootSessionId: string): Promise<string>;
 }
 
+type LegacySessionIdentityAdopter = (
+  sessionId: string,
+  header: SessionHeader,
+  admissionLease: SessionAdmissionLease,
+) => Promise<SessionHeader>;
+
 export class RootTurnCoordinator implements HostedExecutionAuthority {
   readonly handlers: Pick<TurnOperationHandlerMap, 'turn.resume.query' | 'turn.resume.start'> = {
     'turn.resume.query': (input, context) => this.queryTurnResume(input, context),
@@ -346,6 +352,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       content: MessageContent;
     }) => void,
     private readonly directoryHostId?: string,
+    private readonly adoptLegacySessionIdentity?: LegacySessionIdentityAdopter,
   ) {
     this.stores = authenticateExecutionStoresWriter(stores, 'interactive');
     this.executionProjection = new HostedExecutionProjectionReader(this.stores);
@@ -354,6 +361,25 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     );
     this.attachmentValidator = attachmentValidator;
     this.prepareSkillInvocation = prepareSkillInvocation;
+  }
+
+  private async prepareSessionHeader(
+    header: SessionHeader,
+    admissionLease?: SessionAdmissionLease,
+  ): Promise<SessionHeader> {
+    return this.adoptLegacySessionIdentity && admissionLease
+      ? this.adoptLegacySessionIdentity(header.id, header, admissionLease)
+      : header;
+  }
+
+  private async readAdmittedSessionHeader(
+    sessionId: string,
+    admissionLease: SessionAdmissionLease,
+  ): Promise<SessionHeader> {
+    return this.prepareSessionHeader(
+      await this.stores.sessionStore.readHeaderSnapshot(sessionId),
+      admissionLease,
+    );
   }
 
   async prepareRecovery(): Promise<void> {
@@ -406,7 +432,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       const input = activationInputForAdmission(admission);
       const disposition = await this.sessionAdmission.run(sessionId, async (lease) => {
         if (admission.execution.kind === 'safe_boundary_continuation') {
-          const header = await this.stores.sessionStore.readHeaderSnapshot(sessionId);
+          const header = await this.readAdmittedSessionHeader(sessionId, lease);
           if (runtimeHostSafeBoundaryContinuationUnavailableReason(header)) {
             this.parkContinuationAdmission(admission);
             return undefined;
@@ -486,7 +512,10 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       throw new AggregateError(errors, 'Unable to close Runtime Host execution composition');
   }
 
-  async readSessionHeader(sessionId: string): Promise<HostMessageSessionHeader | null> {
+  async readSessionAvailability(
+    sessionId: string,
+    admissionLease?: SessionAdmissionLease,
+  ): Promise<HostMessageSessionHeader | null> {
     if (isWorkHubCoordinationSessionId(sessionId)) {
       return {
         isArchived: false,
@@ -494,7 +523,9 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       };
     }
     try {
-      const header = await this.stores.sessionStore.readHeaderSnapshot(sessionId);
+      const header = admissionLease
+        ? await this.readAdmittedSessionHeader(sessionId, admissionLease)
+        : await this.stores.sessionStore.readHeaderSnapshot(sessionId);
       if (header.conversationCopy?.state === 'preparing') return null;
       return {
         isArchived: header.isArchived,
@@ -770,7 +801,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
 
         let header: SessionHeader;
         try {
-          header = await this.stores.sessionStore.readHeaderSnapshot(input.sessionId);
+          header = await this.readAdmittedSessionHeader(input.sessionId, lease);
         } catch (error) {
           if (isSessionNotFoundError(error)) {
             throw new RuntimeHostedRootUnavailableError(
@@ -1057,7 +1088,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       const reservation = this.reserveRootTurn(input.sessionId);
       if (!reservation) return { error: 'Another root Turn is being admitted' };
       try {
-        const header = await this.stores.sessionStore.readHeaderSnapshot(input.sessionId);
+        const header = await this.readAdmittedSessionHeader(input.sessionId, admissionLease);
         const unavailableReason = runtimeHostExternalTurnUnavailableReason(header);
         if (unavailableReason) return { error: unavailableReason };
         const turnId = input.turnId ?? randomUUID();
@@ -1188,7 +1219,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       if (this.#executions.has(input.sessionId)) {
         return { error: 'A root Turn is still active' };
       }
-      const header = await this.stores.sessionStore.readHeaderSnapshot(input.sessionId);
+      const header = await this.readAdmittedSessionHeader(input.sessionId, admissionLease);
       const unavailableReason = runtimeHostExternalTurnUnavailableReason(header);
       if (unavailableReason) return { error: unavailableReason };
       const reservation = this.reserveRootTurn(input.sessionId);
@@ -1539,7 +1570,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
         }
         let header: SessionHeader;
         try {
-          header = await this.stores.sessionStore.readHeaderSnapshot(request.sessionId);
+          header = await this.readAdmittedSessionHeader(request.sessionId, lease);
         } catch (error) {
           if (isSessionNotFoundError(error)) {
             return completedStart(notFound('Session does not exist'));
@@ -1694,10 +1725,10 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     if (isWorkHubCoordinationSessionId(input.sessionId)) {
       return operationUnavailable(WORKHUB_COORDINATION_EXECUTION_UNAVAILABLE_REASON);
     }
-    return this.sessionAdmission.run(input.sessionId, async () => {
+    return this.sessionAdmission.run(input.sessionId, async (lease) => {
       let header: SessionHeader;
       try {
-        header = await this.stores.sessionStore.readHeaderSnapshot(input.sessionId);
+        header = await this.readAdmittedSessionHeader(input.sessionId, lease);
       } catch (error) {
         if (isSessionNotFoundError(error)) return notFound('Session does not exist');
         throw error;
@@ -1785,8 +1816,9 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
                 ),
               };
             }
-            const header = await this.stores.sessionStore.readHeaderSnapshot(input.sessionId);
-            const unavailableReason = runtimeHostSafeBoundaryContinuationUnavailableReason(header);
+            const preparedHeader = await this.readAdmittedSessionHeader(input.sessionId, lease);
+            const unavailableReason =
+              runtimeHostSafeBoundaryContinuationUnavailableReason(preparedHeader);
             if (unavailableReason) {
               return {
                 kind: 'complete',
@@ -1876,7 +1908,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
 
           let header: SessionHeader;
           try {
-            header = await this.stores.sessionStore.readHeaderSnapshot(input.sessionId);
+            header = await this.readAdmittedSessionHeader(input.sessionId, lease);
           } catch (error) {
             if (isSessionNotFoundError(error)) {
               return {
@@ -2174,7 +2206,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
         'Root Turn admission payload does not match its input',
       );
     }
-    const session = await this.stores.sessionStore.readHeaderSnapshot(input.sessionId);
+    const session = await this.readAdmittedSessionHeader(input.sessionId, admissionLease);
     const unavailableReason =
       admission.execution.kind === 'safe_boundary_continuation'
         ? runtimeHostSafeBoundaryContinuationUnavailableReason(session)

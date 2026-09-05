@@ -559,7 +559,8 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
   let requestedDrain = false;
   const goalChangeListeners = new Set<() => void>();
   const rootPort: HostMessageRootPort = {
-    readSessionHeader: (sessionId) => requireCoordinator(coordinator).readSessionHeader(sessionId),
+    readSessionAvailability: (sessionId, admission) =>
+      requireCoordinator(coordinator).readSessionAvailability(sessionId, admission),
     readRootState: (sessionId) => requireCoordinator(coordinator).readRootState(sessionId),
     claimStopFence: (input, commitQueueFence, lease) =>
       requireCoordinator(coordinator).claimStopFence(input, commitQueueFence, lease),

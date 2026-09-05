@@ -1767,7 +1767,7 @@ test('worktree child Sessions reject roots outside managed child execution', asy
       },
     );
     assert.equal(
-      (await fixture.coordinator.readSessionHeader(child.id))?.unavailableReason,
+      (await fixture.coordinator.readSessionAvailability(child.id))?.unavailableReason,
       unavailableMessage,
     );
     await assert.rejects(
@@ -2657,8 +2657,8 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
     let drainRequested = false;
     let stopClosureSignal: ReturnType<typeof deferred<void>> | undefined;
     const rootPort: HostMessageRootPort = {
-      readSessionHeader: (sessionId) =>
-        requireCoordinator(coordinator).readSessionHeader(sessionId),
+      readSessionAvailability: (sessionId, admission) =>
+        requireCoordinator(coordinator).readSessionAvailability(sessionId, admission),
       readRootState: (sessionId) => requireCoordinator(coordinator).readRootState(sessionId),
       claimStopFence: (input, commitQueueFence, admission) =>
         requireCoordinator(coordinator).claimStopFence(input, commitQueueFence, admission),
@@ -5225,7 +5225,8 @@ async function createFailureFixture(options: {
   let interactions: HostInteractionCoordinator | undefined;
   let fallbackRunClosureClaims = 0;
   const rootPort: HostMessageRootPort = {
-    readSessionHeader: (sessionId) => requireCoordinator(coordinator).readSessionHeader(sessionId),
+    readSessionAvailability: (sessionId, admission) =>
+      requireCoordinator(coordinator).readSessionAvailability(sessionId, admission),
     readRootState: (sessionId) => requireCoordinator(coordinator).readRootState(sessionId),
     claimStopFence: (input, commitQueueFence, admission) =>
       requireCoordinator(coordinator).claimStopFence(input, commitQueueFence, admission),
