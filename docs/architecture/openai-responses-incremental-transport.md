@@ -33,6 +33,12 @@ owners:
 
 ## 1. Problem and invariant
 
+> **Status (verified 2026-09-04):** this optimization is implemented — the adapter plans a turn
+> continuation and sends the suffix delta over a matching Responses WebSocket
+> (`packages/runtime/src/model-adapter.ts`, `openai-responses-continuation.ts`,
+> `openai-responses-websocket.ts`). The Problem below is kept as the record of the
+> pre-optimization state.
+
 Long tool loops currently rebuild and upload the complete provider history on every step. The
 durable Runtime event ledger remains the source of truth, but the OpenAI Responses transport may
 reuse a turn-scoped WebSocket and send only the suffix after the previous response.
