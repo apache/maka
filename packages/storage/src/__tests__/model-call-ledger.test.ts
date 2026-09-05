@@ -130,6 +130,19 @@ function appendAuthorityEvent(
   }
 }
 
+/** The projection row exactly as it sits on disk. */
+function storedRecord(root: string, attemptId: string): Record<string, unknown> {
+  const lease = acquireOperationalStateDatabase(root);
+  try {
+    const row = lease.database
+      .prepare('SELECT record_json FROM usage_model_call_attempts WHERE attempt_id = ?')
+      .get(attemptId) as { record_json?: string } | undefined;
+    return JSON.parse(row?.record_json ?? '{}') as Record<string, unknown>;
+  } finally {
+    lease.close();
+  }
+}
+
 describe('canonical model call ledger', () => {
   test('reads back what it recorded, bounded to the queried window', async () => {
     await withLedger(async (ledger, root) => {
@@ -150,7 +163,7 @@ describe('canonical model call ledger', () => {
     });
   });
 
-  test('provider failure diagnostics survive closing and reopening the ledger', async () => {
+  test('a failed call keeps its pricing basis and drops what pricing cannot use', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-model-call-ledger-reopen-'));
     const first = createSqliteModelCallLedger(root);
     try {
@@ -180,12 +193,28 @@ describe('canonical model call ledger', () => {
       const reopened = createSqliteModelCallLedger(root);
       try {
         const restored = reopened.read({ from: 0, to: NOW }).attempts[0];
-        assert.equal(restored?.historyCompactRoute, 'provider_native');
+        assert.equal(restored?.callKind, 'history_compact');
+        assert.equal(restored?.status, 'failed');
+        assert.equal(restored?.usageBasis, 'missing');
+        assert.equal(restored?.costBasis, 'unpriced');
+        // The Usage log row shows this one; the rest of the provider diagnostics
+        // are answered from the AgentRun authority, not from here.
         assert.equal(restored?.errorClass, 'RequestRejected');
-        assert.equal(restored?.httpStatus, 400);
-        assert.equal(restored?.providerCode, 'invalid_request_error');
-        assert.equal(restored?.providerRequestId, 'req-reopen-1');
-        assert.equal(restored?.retryable, false);
+        assert.deepEqual(Object.keys(storedRecord(root, 'attempt-1')).sort(), [
+          'attemptId',
+          'callKind',
+          'completedAt',
+          'costBasis',
+          'errorClass',
+          'latencyMs',
+          'logicalCallId',
+          'modelId',
+          'providerId',
+          'sessionId',
+          'status',
+          'turnId',
+          'usageBasis',
+        ]);
       } finally {
         await reopened.close();
       }
@@ -235,6 +264,56 @@ describe('canonical model call ledger', () => {
       } finally {
         lease.close();
       }
+    } finally {
+      await migrated.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('a row narrowed in place keeps spend the authority can no longer replay', async () => {
+    // Deleting a Session drops its runs and cascades their events, but leaves
+    // its ledger rows. Converging those rows by wiping and re-projecting would
+    // erase that spend from the all-time totals, so they are folded in place.
+    const root = await mkdtemp(join(tmpdir(), 'maka-model-call-ledger-narrow-'));
+    const first = createSqliteModelCallLedger(root);
+    appendAuthorityEvent(root, 0, attempt({ attemptId: 'deleted-session-call' }));
+    await first.catchUpProjection();
+    await first.close();
+
+    const database = new DatabaseSync(join(root, 'runtime.sqlite'));
+    database
+      .prepare('UPDATE usage_model_call_attempts SET record_json = ? WHERE attempt_id = ?')
+      .run(JSON.stringify(attempt({ attemptId: 'deleted-session-call' })), 'deleted-session-call');
+    database.exec(`
+      PRAGMA foreign_keys = ON;
+      DELETE FROM core_agent_runs WHERE session_id = 'session-1';
+      UPDATE operational_schema_migrations SET version = 5 WHERE scope = 'usage';
+    `);
+    database.close();
+
+    const migrated = createSqliteModelCallLedger(root);
+    try {
+      const page = migrated.read({ from: 0, to: NOW });
+      assert.equal(page.unreadableRecords, 0);
+      assert.equal(page.attempts[0]?.attemptId, 'deleted-session-call');
+      assert.equal(page.attempts[0]?.costUsd, 0.004);
+      assert.deepEqual(Object.keys(storedRecord(root, 'deleted-session-call')).sort(), [
+        'attemptId',
+        'callKind',
+        'completedAt',
+        'costBasis',
+        'costUsd',
+        'inputTokens',
+        'latencyMs',
+        'logicalCallId',
+        'modelId',
+        'outputTokens',
+        'providerId',
+        'sessionId',
+        'status',
+        'turnId',
+        'usageBasis',
+      ]);
     } finally {
       await migrated.close();
       await rm(root, { recursive: true, force: true });

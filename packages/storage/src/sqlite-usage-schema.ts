@@ -17,9 +17,13 @@
  * under the License.
  */
 
+import {
+  decodeModelCallAttempt,
+  projectModelCallPricingRecord,
+} from '@maka/core/model-call-attempt';
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_USAGE_SCHEMA_VERSION = 5;
+export const SQLITE_USAGE_SCHEMA_VERSION = 6;
 
 export function migrateSqliteUsageDatabase(db: DatabaseSync): void {
   db.exec(`
@@ -46,7 +50,9 @@ export function migrateSqliteUsageDatabase(db: DatabaseSync): void {
 
     -- Canonical model-call accounting ledger (#1679). Separate from
     -- usage_llm_calls, which is a frozen historical projection: these rows carry
-    -- usageBasis/costBasis, which that schema cannot express.
+    -- usageBasis/costBasis, which that schema cannot express. record_json holds
+    -- the pricing subset of the AgentRun authority's attempt, never the whole
+    -- record.
     CREATE TABLE IF NOT EXISTS usage_model_call_attempts (
       attempt_id TEXT PRIMARY KEY,
       completed_at INTEGER NOT NULL CHECK (completed_at >= 0),
@@ -102,6 +108,53 @@ export function migrateSqliteUsageDatabase(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS usage_model_call_attempts_session_completed_at
       ON usage_model_call_attempts(session_id, completed_at DESC, attempt_id);
   `);
+  narrowModelCallProjectionRows(db);
+}
+
+/**
+ * Folds rows written before the projection was narrowed through the same
+ * function that writes new ones.
+ *
+ * Rebuilding from the authority instead would have been the usual move for a
+ * read model, but it is not equivalent here: deleting a Session drops its
+ * `core_agent_runs` rows and cascades the events, while these rows stay, so a
+ * wipe-and-replay would silently erase the spend of every deleted Session from
+ * the all-time totals. Re-projecting each row in place keeps the ledger's
+ * answers identical and leaves one shape in the table, which is what lets the
+ * reader hold a row to it.
+ */
+function narrowModelCallProjectionRows(db: DatabaseSync): void {
+  // Keyed pages rather than one `all()`: the rows this exists to shrink are the
+  // large ones, and a workspace can hold hundreds of thousands of them.
+  const page = db.prepare(`
+    SELECT attempt_id, record_json
+    FROM usage_model_call_attempts
+    WHERE attempt_id > ?
+    ORDER BY attempt_id
+    LIMIT 500
+  `);
+  const update = db.prepare(
+    'UPDATE usage_model_call_attempts SET record_json = ? WHERE attempt_id = ?',
+  );
+  let cursor = '';
+  for (;;) {
+    const rows = page.all(cursor) as Array<{ attempt_id: string; record_json: string }>;
+    if (rows.length === 0) return;
+    for (const row of rows) {
+      let narrowed: string;
+      try {
+        narrowed = JSON.stringify(
+          projectModelCallPricingRecord(decodeModelCallAttempt(JSON.parse(row.record_json))),
+        );
+      } catch {
+        // Already narrow, or corrupt. Neither is rewritable from itself, and a
+        // corrupt row must survive to be reported by a read rather than dropped.
+        continue;
+      }
+      if (narrowed !== row.record_json) update.run(narrowed, row.attempt_id);
+    }
+    cursor = rows[rows.length - 1]?.attempt_id ?? cursor;
+  }
 }
 
 function ensureColumn(db: DatabaseSync, table: string, column: string, definition: string): void {

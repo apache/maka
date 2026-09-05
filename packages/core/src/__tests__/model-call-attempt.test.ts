@@ -25,7 +25,9 @@ import {
   MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
   PROMPT_COMPOSITION_MAX_TOOLS,
   decodeModelCallAttempt,
+  decodeModelCallPricingRecord,
   groupModelCallAttempts,
+  projectModelCallPricingRecord,
   settledAttempt,
   sumModelCallCostUsd,
   summarizeModelCallCoverage,
@@ -390,5 +392,90 @@ describe('ModelCallAttempt projections', () => {
     assert.equal(costUsd, 0);
     assert.equal(coverage.pricedAttempts, 1);
     assert.equal(coverage.unpricedAttempts, 1);
+  });
+});
+
+describe('the pricing record a Usage read model stores', () => {
+  test('keeps every field a cost answer reads and drops the rest', () => {
+    const record = projectModelCallPricingRecord(
+      attempt({
+        connectionSlug: 'work',
+        errorClass: 'RequestRejected',
+        cacheReadInputTokens: 40,
+        cacheWriteInputTokens: 10,
+        reasoningTokens: 5,
+        promptComposition: { segments: [{ kind: 'messages', bytes: 4_096 }] },
+        providerRequestId: 'req-1',
+        pricingRevision: 3,
+      }),
+    );
+
+    assert.deepEqual(record, {
+      logicalCallId: 'call-1',
+      attemptId: 'attempt-1',
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      callKind: 'main',
+      connectionSlug: 'work',
+      providerId: 'anthropic',
+      modelId: 'claude-opus-5',
+      completedAt: 1_250,
+      latencyMs: 250,
+      status: 'completed',
+      errorClass: 'RequestRejected',
+      usageBasis: 'reported',
+      costBasis: 'priced',
+      costUsd: 0.004,
+      inputTokens: 100,
+      outputTokens: 20,
+      cacheReadInputTokens: 40,
+      cacheWriteInputTokens: 10,
+      reasoningTokens: 5,
+    });
+    // Idempotent, so a stored row folded again is the same row.
+    assert.deepEqual(projectModelCallPricingRecord(record), record);
+  });
+
+  test('an absent optional stays absent rather than becoming an explicit undefined', () => {
+    const record = projectModelCallPricingRecord(
+      attempt({ costBasis: 'unpriced', costUsd: undefined }),
+    );
+    assert.equal(Object.hasOwn(record, 'costUsd'), false);
+    assert.equal(Object.hasOwn(record, 'connectionSlug'), false);
+  });
+
+  test('decodes what the projection writes and nothing wider', () => {
+    const written = projectModelCallPricingRecord(attempt());
+    assert.deepEqual(decodeModelCallPricingRecord(JSON.parse(JSON.stringify(written))), written);
+    // A whole attempt is not a projection row: reading one back would mean the
+    // table holds two shapes and no reader knows which it has.
+    assert.throws(() => decodeModelCallPricingRecord(attempt()), /Invalid ModelCallPricingRecord/);
+  });
+
+  test('holds a stored row to the same cost invariants as the authority', () => {
+    assert.throws(
+      () =>
+        decodeModelCallPricingRecord({
+          ...projectModelCallPricingRecord(attempt()),
+          costBasis: 'unpriced',
+        }),
+      /unpriced record carries a cost/,
+    );
+    assert.throws(
+      () =>
+        decodeModelCallPricingRecord({
+          ...projectModelCallPricingRecord(attempt({ costBasis: 'unpriced', costUsd: undefined })),
+          costBasis: 'priced',
+        }),
+      /priced record carries no cost/,
+    );
+    assert.throws(
+      () =>
+        decodeModelCallPricingRecord({
+          ...projectModelCallPricingRecord(attempt()),
+          usageBasis: 'missing',
+        }),
+      /missing usage but carries tokens/,
+    );
   });
 });

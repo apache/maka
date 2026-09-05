@@ -20,7 +20,7 @@
 import {
   dedupeModelCallAttempts,
   summarizeModelCallCoverage,
-  type ModelCallAttempt,
+  type ModelCallPricingRecord,
   type ModelCallCoverage,
 } from './model-call-attempt.js';
 import { usageBucketKey } from './usage-stats/bucket-key.js';
@@ -34,7 +34,11 @@ import type {
 } from './usage-stats/types.js';
 
 /**
- * Usage projections over the canonical `ModelCallAttempt` ledger.
+ * Usage projections over the canonical model-call ledger.
+ *
+ * They read {@link ModelCallPricingRecord}, not the whole attempt: what a cost
+ * answer needs is the whole reason the ledger's read model exists, so the
+ * narrower type is what the read path is allowed to depend on.
  *
  * Pure: the caller supplies the records and owns their materialization. This is
  * the aggregation the Usage surface reads once the read path moves off the
@@ -79,7 +83,7 @@ export function resolveUsageRange(range: TimeRange, now: number): { from: number
  * would inflate the error rate with user cancellations.
  */
 export function usageStatusForAttempt(
-  status: ModelCallAttempt['status'],
+  status: ModelCallPricingRecord['status'],
 ): 'success' | 'error' | 'aborted' {
   if (status === 'completed') return 'success';
   if (status === 'failed') return 'error';
@@ -87,7 +91,7 @@ export function usageStatusForAttempt(
 }
 
 function matchesQuery(
-  attempt: ModelCallAttempt,
+  attempt: ModelCallPricingRecord,
   query: UsageQuery,
   range: { from: number; to: number },
 ): boolean {
@@ -109,16 +113,16 @@ function matchesQuery(
  * `attemptId` so a re-appended settlement counts once.
  */
 export function selectModelCallAttempts(
-  attempts: readonly ModelCallAttempt[],
+  attempts: readonly ModelCallPricingRecord[],
   query: UsageQuery,
   now: number,
-): { rows: ModelCallAttempt[]; range: { from: number; to: number } } {
+): { rows: ModelCallPricingRecord[]; range: { from: number; to: number } } {
   const range = resolveUsageRange(query.range, now);
   const rows = dedupeModelCallAttempts(attempts).filter((a) => matchesQuery(a, query, range));
   return { rows, range };
 }
 
-function tokens(attempt: ModelCallAttempt): {
+function tokens(attempt: ModelCallPricingRecord): {
   input: number;
   output: number;
   cacheMiss: number;
@@ -149,12 +153,12 @@ export function clampCacheReadTokens(inputTokens: number, cacheReadTokens: numbe
 
 /** Cost contributed by an attempt. Unpriced records contribute nothing to the
  * sum and are surfaced through coverage instead of being counted as zero. */
-function pricedCost(attempt: ModelCallAttempt): number {
+function pricedCost(attempt: ModelCallPricingRecord): number {
   return attempt.costBasis === 'priced' ? (attempt.costUsd ?? 0) : 0;
 }
 
 export function projectModelCallUsageSummary(
-  attempts: readonly ModelCallAttempt[],
+  attempts: readonly ModelCallPricingRecord[],
   query: UsageQuery,
   now: number,
 ): ModelCallUsageSummary {
@@ -202,13 +206,13 @@ export function projectModelCallUsageSummary(
 }
 
 export function projectModelCallUsageBuckets(
-  attempts: readonly ModelCallAttempt[],
+  attempts: readonly ModelCallPricingRecord[],
   query: UsageQuery,
   groupBy: UsageGroupBy,
   now: number,
 ): UsageBucket[] {
   const { rows } = selectModelCallAttempts(attempts, query, now);
-  const groups = new Map<string, ModelCallAttempt[]>();
+  const groups = new Map<string, ModelCallPricingRecord[]>();
   for (const attempt of rows) {
     const key = usageBucketKey(
       { providerId: attempt.providerId, modelId: attempt.modelId, ts: attempt.completedAt },
@@ -265,7 +269,7 @@ export function projectModelCallUsageBuckets(
 }
 
 export function projectModelCallUsageLogs(
-  attempts: readonly ModelCallAttempt[],
+  attempts: readonly ModelCallPricingRecord[],
   query: UsageQuery,
   now: number,
   offset = 0,

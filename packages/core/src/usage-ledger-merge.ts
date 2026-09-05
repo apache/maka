@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { ModelCallAttempt, ModelCallCoverage } from './model-call-attempt.js';
+import type { ModelCallCoverage, ModelCallPricingRecord } from './model-call-attempt.js';
 import {
   projectModelCallUsageBuckets,
   projectModelCallUsageLogs,
@@ -142,7 +142,7 @@ export interface MergedUsageLogs {
 }
 
 export interface CanonicalUsageSource {
-  attempts: readonly ModelCallAttempt[];
+  attempts: readonly ModelCallPricingRecord[];
   unreadableRecords: number;
   pendingRepairs: number;
 }

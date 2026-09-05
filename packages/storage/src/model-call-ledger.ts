@@ -19,8 +19,11 @@
 
 import {
   decodeModelCallAttempt,
+  decodeModelCallPricingRecord,
   MODEL_CALL_ATTEMPT_EVENT_TYPE,
+  projectModelCallPricingRecord,
   type ModelCallAttempt,
+  type ModelCallPricingRecord,
 } from '@maka/core/model-call-attempt';
 import type { DatabaseSync } from 'node:sqlite';
 import {
@@ -40,6 +43,12 @@ import {
  * run" and no Usage question is shaped that way. It may fall behind the stream
  * — a failed upsert, a crash between the two — and that is recoverable: the
  * authority still holds every record, so re-projecting the run restores it.
+ *
+ * A row holds {@link ModelCallPricingRecord} and nothing else. Selecting the
+ * whole authority record instead would copy request-shape and provider
+ * diagnostics no cost question reads — evidence the AgentRun stream and the
+ * Session Inspector already answer from — into rows that then grow with the
+ * conversation rather than with spend.
  *
  * Recovery compares the AgentRun stream's durable sequence with this
  * projection's applied-through checkpoint. There is no second "dirty" fact to
@@ -68,7 +77,7 @@ export interface ModelCallLedgerReader {
 }
 
 export interface ModelCallLedgerPage {
-  readonly attempts: readonly ModelCallAttempt[];
+  readonly attempts: readonly ModelCallPricingRecord[];
   readonly unreadableRecords: number;
 }
 
@@ -181,11 +190,11 @@ class SqliteModelCallLedger implements ModelCallLedger {
       .all(...(sessionId ? [sessionId, range.from, range.to] : [range.from, range.to])) as Array<{
       record_json: string;
     }>;
-    const attempts: ModelCallAttempt[] = [];
+    const attempts: ModelCallPricingRecord[] = [];
     let unreadableRecords = 0;
     for (const row of rows) {
       try {
-        attempts.push(decodeModelCallAttempt(JSON.parse(row.record_json)));
+        attempts.push(decodeModelCallPricingRecord(JSON.parse(row.record_json)));
       } catch {
         unreadableRecords += 1;
       }
@@ -217,6 +226,7 @@ function positiveInteger(value: number | undefined, fallback: number, label: str
 }
 
 function writeModelCallAttempt(db: DatabaseSync, attempt: ModelCallAttempt): void {
+  const record = JSON.stringify(projectModelCallPricingRecord(attempt));
   db.prepare(`
       INSERT INTO usage_model_call_attempts(attempt_id, completed_at, record_json, session_id)
       VALUES (?, ?, ?, ?)
@@ -227,7 +237,7 @@ function writeModelCallAttempt(db: DatabaseSync, attempt: ModelCallAttempt): voi
       WHERE completed_at IS NOT excluded.completed_at
          OR record_json IS NOT excluded.record_json
          OR session_id IS NOT excluded.session_id
-    `).run(attempt.attemptId, attempt.completedAt, JSON.stringify(attempt), attempt.sessionId);
+    `).run(attempt.attemptId, attempt.completedAt, record, attempt.sessionId);
 }
 
 interface LaggingRunRow {
