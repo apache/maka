@@ -21,6 +21,7 @@ import {
   importGitHubCopilotLocalCredential,
   type ImportedGitHubCopilotCredential,
 } from './oauth/github-copilot-local-credential.js';
+import type { SubscriptionActionCode } from '@maka/core/oauth-subscription';
 import type { ReconnectableReadIpcMain } from './ipc-reconnect-policy.js';
 import {
   findRuntimeHostAccountConnection,
@@ -108,10 +109,10 @@ async function selectAccountDefaultIfMissing(
   }
 }
 
-function actionFailure(code: string) {
+function actionFailure(code: SubscriptionActionCode) {
   return { ok: false as const, reason: 'token_exchange_failed' as const, code, message: code };
 }
 
-function storageFailure(code: string) {
+function storageFailure(code: SubscriptionActionCode) {
   return { ok: false as const, reason: 'storage_failed' as const, code, message: code };
 }

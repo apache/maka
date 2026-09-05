@@ -17,7 +17,8 @@
  * under the License.
  */
 
-import type { LocalMemoryState } from '@maka/core/local-memory';
+import type { LocalMemoryOperationCode, LocalMemoryState } from '@maka/core/local-memory';
+import type { MemoryMutationRejectionReason } from '@maka/runtime-host/protocol';
 
 import { type UiCatalog, type UiLocale, lookupCopy } from '@maka/core/ui-locale';
 
@@ -45,13 +46,7 @@ type MemoryTextKey =
   | 'entryRestoreFailed' | 'promptCopied' | 'promptCopiedDetail'
   | 'restoreDraftAction' | 'archiveDraftAction' | 'restoreAction' | 'archiveAction';
 
-export type MemoryResultCode =
-  | 'no_backup' | 'invalid_backup_kind' | 'memory_unavailable' | 'backup_not_found'
-  | 'remote_host_owned' | 'not_regular_file' | 'open_failed' | 'file_not_found'
-  | 'disabled' | 'incognito_active' | 'safe_mode' | 'oversize'
-  | 'revision_conflict' | 'backup_revision_conflict' | 'invalid_state'
-  | 'invalid_content' | 'invalid_scope' | 'not_found' | 'not_pending'
-  | 'upload_not_found' | 'upload_incomplete' | 'upload_conflict';
+export type MemoryResultCode = LocalMemoryOperationCode | MemoryMutationRejectionReason;
 
 export type MemorySettingsCopy = {
   intlLocale: string;

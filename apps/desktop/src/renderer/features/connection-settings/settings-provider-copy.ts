@@ -18,7 +18,10 @@
  */
 
 import { generalizedErrorMessageForLocale, redactSecrets } from '@maka/core/redaction';
+import type { SubscriptionActionCode, SubscriptionActionFailureReason } from '@maka/core/oauth-subscription';
 import { type UiCatalog, type UiLocale, lookupCopy } from '@maka/core/ui-locale';
+
+type SubscriptionResultCode = SubscriptionActionCode | Extract<SubscriptionActionFailureReason, 'experimental_disabled'>;
 
 type WidenCopy<T> = T extends string
   ? string
@@ -258,7 +261,7 @@ const zhCopy = {
       copilot_subscription_check_failed: '暂时无法验证 GitHub Copilot 订阅状态，请稍后重试。',
       copilot_import_commit_failed: 'GitHub Copilot 登录未能写入 Runtime Host。',
       experimental_disabled: '本机未启用该账号登录方式；可改用导入兼容凭据，或由管理员启用后重试。',
-    },
+    } satisfies Record<SubscriptionResultCode, string>,
   },
   oauthSection: {
     signedIn: '已登录', codexDescription: '使用 ChatGPT Plus / Pro 账号添加连接。', xaiDescription: '使用 SuperGrok / X Premium 账号添加连接。',

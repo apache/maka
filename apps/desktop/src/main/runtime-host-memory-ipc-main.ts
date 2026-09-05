@@ -23,6 +23,7 @@ import { join } from "node:path";
 import type {
   LocalMemoryBackupInfo,
   LocalMemoryEntryPreview,
+  LocalMemoryOperationCode,
   LocalMemoryState,
 } from '@maka/core/local-memory';
 import { isPathInside } from '@maka/runtime/path-containment';
@@ -34,6 +35,7 @@ import {
   type MemoryEntriesView,
   type MemoryMutateInput,
   type MemoryMutateResult,
+  type MemoryMutationRejectionReason,
   type MemoryRevision,
   type MemoryStateProjection,
 } from "@maka/runtime-host/protocol";
@@ -42,6 +44,8 @@ import {
   handleReconnectableRead,
   type ReconnectableReadIpcMain,
 } from "./ipc-reconnect-policy.js";
+
+type LocalMemoryResultCode = LocalMemoryOperationCode | MemoryMutationRejectionReason;
 
 type LocalMemoryMutationResult =
   | {
@@ -53,8 +57,8 @@ type LocalMemoryMutationResult =
   | {
       readonly ok: false;
       readonly state: LocalMemoryState;
-      readonly reason: string;
-      readonly code: string;
+      readonly reason: LocalMemoryResultCode;
+      readonly code: LocalMemoryResultCode;
       readonly message: string;
     };
 
@@ -490,7 +494,7 @@ async function restoreBackup(
   kind: MemoryBackupKind,
 ): Promise<
   | { ok: true; state: LocalMemoryState }
-  | { ok: false; state: LocalMemoryState; code: string; message: string }
+  | { ok: false; state: LocalMemoryState; code: LocalMemoryResultCode; message: string }
 > {
   const state = await deps.client.queryMemory({ kind: "state" });
   if (state.kind !== "state") {
@@ -527,7 +531,7 @@ async function openMemoryPath(
     "workspaceRoot" | "allowLocalPaths" | "openPath"
   >,
   fileName: string,
-): Promise<{ ok: true } | { ok: false; code: string; message: string }> {
+): Promise<{ ok: true } | { ok: false; code: LocalMemoryResultCode; message: string }> {
   if (deps.allowLocalPaths === false) {
     return {
       ok: false,
@@ -613,7 +617,7 @@ function isBackupKind(value: unknown): value is MemoryBackupKind {
 
 async function mutationFailure(
   deps: RuntimeHostMemoryIpcDeps,
-  reason: string,
+  reason: LocalMemoryResultCode,
 ): Promise<LocalMemoryMutationResult> {
   return {
     ok: false,
