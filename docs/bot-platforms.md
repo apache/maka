@@ -264,8 +264,8 @@ traffic.
 
 ## Setup
 
-> **Status: Feishu/Lark, WeCom and QQ are verified end-to-end. The rest are
-> placeholders.** Each remaining section must be walked against a real
+> **Status: Telegram, Feishu/Lark, WeCom and QQ are verified end-to-end. The
+> rest are placeholders.** Each remaining section must be walked against a real
 > developer account before it lands — the acceptance criteria require tested
 > instructions, and untested setup steps are worse than none.
 >
@@ -280,7 +280,60 @@ channel reports `operational`.
 
 ### Telegram
 
-_TODO — register via BotFather, single `token`._
+The simplest channel to set up, and the most capable one: Telegram is the only
+platform where every optional capability in the matrix is implemented.
+
+**1. Create the bot.** Message [@BotFather](https://t.me/BotFather) and send
+`/newbot`. It asks for a display name and then a username, which must be
+globally unique and end in `bot`. BotFather replies with a token shaped
+`<bot_id>:<secret>` — that whole string is Maka's `token`. It is the only
+credential this channel takes.
+
+**2. Open the conversation from the user side.** A bot cannot start a chat.
+Open `https://t.me/<your_bot_username>`, press **Start**, and send a message.
+`getUpdates` only returns messages sent after the bot exists, so until someone
+messages it first the channel receives nothing — which looks identical to a
+broken connection.
+
+**3. Set a proxy if Telegram is not directly reachable.** The channel's
+`proxyUrl` is used for every Bot API call through `proxiedFetch`. Without it,
+startup fails at the network layer rather than with an API error.
+
+**4. Verify.** Startup calls `getMe`. Success records the bot's ID, username
+and display name, and moves the channel to `credentials_valid` — deliberately
+*not* `operational`, because `getMe` proves credentials and reachability but is
+not a send/receive smoke test. The channel reaches `operational` on the first
+real message. A rejected token surfaces Telegram's own `description` as the
+status reason.
+
+**Group messages are invisible by default.** A fresh bot reports
+`can_read_all_group_messages: false` — Telegram's privacy mode. In groups it
+therefore sees only commands and messages that @-mention it. To let a bot read
+all group traffic, disable privacy mode via BotFather (`/setprivacy`) and
+re-add the bot to the group; the setting applies from the next join. Direct
+chats are unaffected.
+
+**Only `message` updates are requested.** The poll passes
+`allowed_updates: ['message']`, so edited messages, callback queries, channel
+posts and every other update type are never delivered, regardless of what the
+bot is capable of.
+
+**Streaming replies work, in private chats only.** `startReplyStream` returns
+`null` when the target is a group, so a group reply always arrives as one final
+message. In private chats the bridge drives Telegram's native draft mechanism
+(`sendMessageDraft`), which was confirmed available to an ordinary BotFather
+bot. If a draft call ever fails the stream latches `nativeDraftAvailable` off
+and silently degrades to a single final message, so a bot that stops streaming
+mid-session is failing quietly rather than erroring.
+
+**Message limits.** Text is split at 4000 UTF-16 code units per message,
+measured in UTF-16 rather than JavaScript string length because Telegram counts
+entities that way. Ephemeral replies are clamped between 1 second and 48 hours;
+Telegram will not let a bot delete its own direct messages past that window, so
+a longer TTL would silently no-op.
+
+`allowedUserIds` holds numeric Telegram user IDs kept as strings, since they
+are 64-bit and lose precision as JavaScript numbers.
 
 ### Discord
 
