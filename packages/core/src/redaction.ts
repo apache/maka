@@ -226,7 +226,7 @@ export function classifyGeneralizedError(error: unknown): GeneralizedErrorClass 
   if (lower.includes('429') || lower.includes('rate')) return 'rate_limited';
   if (lower.includes('401') || lower.includes('403') || isAuthenticationErrorText(lower))
     return 'auth_failed';
-  if (lower.includes('5') && /\b5\d\d\b/.test(lower)) return 'provider_error';
+  if (/\b5\d\d\b/.test(lower)) return 'provider_error';
   if (
     lower.includes('network') ||
     lower.includes('fetch') ||

@@ -413,7 +413,7 @@ export function BotChatChannelDetail(props: {
             // though credentials saved. Reflect that honestly instead of a
             // success toast that overstates the connection.
             if (snapshot.warningCode) {
-              const onboardingCopy = getBotSettingsCopy(locale).onboarding;
+              const onboardingCopy = botCopy.onboarding;
               toast.warning(
                 detailCopy.credentialsSaved(providerPresentation.label),
                 snapshot.warningDetail
