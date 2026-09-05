@@ -59,10 +59,12 @@ policy hash 都不构成证据。
 
 ## 2. Owner、边界、失败状态与回滚
 
+下表只描述 baseline transaction 的契约。successor/mutation writer 的 mutation ledger、每个 successor 的 tool T1/outcome 证据校验、active mutation reservations 的派生，以及 `runtime_managed_mutation_reservations` projection 的重建与独立事务边界，由 [Managed Mutation Lifecycle Authority v1](./runtime-managed-workspace-mutation-lifecycle-authority-v1.zh-CN.md) 单独定义；本表的 canonical source、disposable state 与回滚行均只覆盖 baseline 部分。
+
 | 项目 | 决策 |
 |---|---|
 | 协议 owner | `@maka/core` 的 strict fact contract 与 pure scanner |
-| 写入 owner | baseline 与 successor/mutation writer 都是 storage-internal seam，不属于 package API；当前没有 production producer/consumer |
+| 写入 owner | baseline 与 successor/mutation writer 都是 storage-internal seam，不属于 package API；本表仅约束 baseline writer，successor/mutation writer 的契约与事务边界由 mutation lifecycle authority 定义（见本节开头）；当前没有 production producer/consumer |
 | 原子性边界 | 单个 `BEGIN IMMEDIATE ... COMMIT` SQLite transaction |
 | canonical source | store-owned authority stream 中的两条 immutable RuntimeEvents |
 | disposable state | `runtime_workspace_epochs`、`runtime_workspace_versions`、`runtime_workspace_heads` |
@@ -277,10 +279,12 @@ head 与 active mutation reservation projection。扫描失败不会先清空旧
 |---|---|---|---|
 | strict fact/lane | 支持 | 支持 | 支持 |
 | SQLite bundle 原子性 | 支持 | 实现预期；无独立 recovery gate | 支持 |
-| 多进程 exact/conflict arbitration | 支持 | 实现预期；无独立 recovery gate | recovery/baseline gate |
-| schema 10→current 并发升级 | 支持 | 实现预期；无独立 recovery gate | recovery/baseline gate |
+| 多进程 exact/conflict arbitration | 支持 | 实现预期；无独立 recovery gate | 非阻塞的定时 Windows 证据 |
+| schema 10→current 并发升级 | 支持 | 实现预期；无独立 recovery gate | 非阻塞的定时 Windows 证据 |
 | 真实进程终止 crash harness | Linux CI | 当前无独立 recovery gate | Windows recovery gate |
 | Git object/worktree 语义 | 后续切片 | 后续切片 | 后续能力矩阵 |
+
+Windows 的多进程仲裁与 schema 10→current 并发升级证据来自 `windows-baseline.yml` 的定时（schedule/manual）lane，其 job 与存储步骤均为 `continue-on-error`，不阻塞 PR；阻塞式的 `windows-recovery.yml` 不运行 `sqlite-recovery-concurrency.test.js`，其 PR 路径过滤也不包含 SQLite workspace-authority 的实现与测试。workspace-authority 的阻塞式 CI 证据目前仅由 Linux `test` 检查提供。
 
 本表只描述 authority persistence，不能推导 managed worktree 已跨平台可用。
 
