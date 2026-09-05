@@ -3363,18 +3363,10 @@ export function checkRendererArchitecture({
 // wedge the ledger permanently. We materialize the base tree and re-derive its
 // debt, keeping the base ledger only as the source of policy fields (hook
 // transitions, growth directories, root-debt key set, ownership).
-function deriveBaseTreeConfig(repoRoot, desktopRoot, base, baseCommittedConfig) {
+function materializeBaseTree(repoRoot, base) {
   const scratch = mkdtempSync(join(tmpdir(), 'renderer-arch-base-'));
   const worktreePath = join(scratch, 'tree');
-  try {
-    execFileSync('git', ['worktree', 'add', '--detach', worktreePath, base], {
-      cwd: repoRoot,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    const baseDesktopRoot = resolve(worktreePath, relative(repoRoot, desktopRoot));
-    return generateArchitectureConfig(baseDesktopRoot, baseCommittedConfig);
-  } finally {
+  const remove = () => {
     try {
       execFileSync('git', ['worktree', 'remove', '--force', worktreePath], {
         cwd: repoRoot,
@@ -3392,11 +3384,131 @@ function deriveBaseTreeConfig(repoRoot, desktopRoot, base, baseCommittedConfig) 
     } catch {
       // Best-effort cleanup of the scratch directory.
     }
+  };
+  try {
+    execFileSync('git', ['worktree', 'add', '--detach', worktreePath, base], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch (error) {
+    remove();
+    throw error;
+  }
+  return { remove, worktreePath };
+}
+
+function deriveBaseTreeConfig(baseDesktopRoot, baseCommittedConfig) {
+  return generateArchitectureConfig(baseDesktopRoot, baseCommittedConfig);
+}
+
+// If the base tree cannot be materialized or analyzed (e.g. git worktree is
+// unavailable), fall back to the committed base ledger so the ratchet still
+// runs. That silent fallback is exactly what wedged CI in #4250, so
+// `--strict-base` turns it into a hard failure instead.
+function baseTreeFallback({ base, baseCommittedConfig, error, strictBase }) {
+  const reason = error instanceof Error ? error.message : String(error);
+  if (strictBase) {
+    throw new Error(
+      `could not derive base tree debt at ${base}, and --strict-base forbids falling back to the committed base ledger (${reason})`,
+    );
+  }
+  console.warn(
+    `Renderer architecture check: could not derive base tree debt at ${base}; ` +
+      `falling back to the committed base ledger. (${reason})`,
+  );
+  return baseCommittedConfig;
+}
+
+// A change can weaken a rule in this checker and thereby lower both sides of
+// the ratchet at once: the current tree and the re-derived base tree are then
+// measured with the same relaxed rule, so the debt that rule used to flag
+// vanishes from the comparison. Whenever the checker itself differs from the
+// base commit, we therefore also measure both trees with the BASE commit's
+// checker and ratchet those two measurements with the current comparison
+// logic, so debt the base rules would have caught still fails.
+async function crossCheckUnderBaseChecker({
+  base,
+  baseCommittedConfig,
+  baseDesktopRoot,
+  desktopRoot,
+  repoRoot,
+  strictBase,
+}) {
+  const scriptPath = fileURLToPath(import.meta.url);
+  const relativeScript = normalizePath(relative(repoRoot, scriptPath));
+  let baseSource;
+  try {
+    baseSource = execFileSync('git', ['show', `${base}:${relativeScript}`], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+  } catch {
+    console.log(
+      `Renderer architecture check: ${base} has no ${relativeScript}; skipping the base-checker cross-check.`,
+    );
+    return [];
+  }
+  if (baseSource === readFileSync(scriptPath, 'utf8')) return [];
+
+  const unavailable = (stage, error) => {
+    const reason = error instanceof Error ? error.message : String(error);
+    if (strictBase) {
+      throw new Error(
+        `base-checker cross-check: ${stage} at ${base}, and --strict-base forbids skipping the cross-check (${reason})`,
+      );
+    }
+    console.warn(`Renderer architecture check: base-checker cross-check skipped; ${stage} at ${base}. (${reason})`);
+    return [];
+  };
+  const skip = (reason) => {
+    console.log(`Renderer architecture check: ${reason}; skipping the base-checker cross-check.`);
+    return [];
+  };
+
+  // The copy lives next to this script so its bare imports resolve exactly as
+  // ours do; the name is gitignored and the copy is removed even on failure.
+  const tempPath = join(dirname(scriptPath), `.tmp-base-checker-${process.pid}.mjs`);
+  try {
+    writeFileSync(tempPath, baseSource);
+    let baseChecker;
+    try {
+      baseChecker = await import(pathToFileURL(tempPath).href);
+    } catch (error) {
+      return unavailable('the base checker could not be imported', error);
+    }
+    if (typeof baseChecker.generateArchitectureConfig !== 'function') {
+      return skip(`the checker at ${base} does not export generateArchitectureConfig`);
+    }
+    let baseUnderBaseRules;
+    let currentUnderBaseRules;
+    try {
+      baseUnderBaseRules = baseChecker.generateArchitectureConfig(baseDesktopRoot, baseCommittedConfig);
+      currentUnderBaseRules = baseChecker.generateArchitectureConfig(desktopRoot, baseCommittedConfig);
+    } catch (error) {
+      return unavailable('the base checker could not measure the base and current trees', error);
+    }
+    const shapeViolations = [];
+    if (
+      !validateArchitectureConfig(baseUnderBaseRules, 'base-checker base', shapeViolations) ||
+      !validateArchitectureConfig(currentUnderBaseRules, 'base-checker current', shapeViolations)
+    ) {
+      return skip(`the checker at ${base} does not produce the current ledger shape (${shapeViolations.join('; ')})`);
+    }
+    const violations = [];
+    validateMonotonicDebt(currentUnderBaseRules, baseUnderBaseRules, desktopRoot, violations);
+    console.log(
+      `Renderer architecture check: ${relativeScript} differs from ${base}; cross-checked debt under the base checker.`,
+    );
+    return violations.sort().map((violation) => `base-checker cross-check: ${violation}`);
+  } finally {
+    rmSync(tempPath, { force: true });
   }
 }
 
-function loadBaseConfig(repoRoot, desktopRoot, base) {
-  if (!base) return { baseConfig: undefined, introducedLedger: false };
+async function loadBaseConfig(repoRoot, desktopRoot, base, { strictBase = false } = {}) {
+  if (!base) return { baseConfig: undefined, crossCheckViolations: [], introducedLedger: false };
   const relativeConfig = normalizePath(relative(repoRoot, join(desktopRoot, 'renderer-architecture.json')));
   try {
     execFileSync('git', ['rev-parse', '--verify', `${base}^{commit}`], {
@@ -3431,7 +3543,7 @@ function loadBaseConfig(repoRoot, desktopRoot, base) {
       },
     ).trim();
     if (diffStatus === `A\t${relativeConfig}` || worktreeStatus === `?? ${relativeConfig}`) {
-      return { baseConfig: undefined, introducedLedger: true };
+      return { baseConfig: undefined, crossCheckViolations: [], introducedLedger: true };
     }
     throw new Error(`base ledger is missing at ${base}:${relativeConfig}`);
   }
@@ -3445,25 +3557,43 @@ function loadBaseConfig(repoRoot, desktopRoot, base) {
     );
   }
 
+  let baseTree;
   try {
+    baseTree = materializeBaseTree(repoRoot, base);
+  } catch (error) {
     return {
-      baseConfig: deriveBaseTreeConfig(repoRoot, desktopRoot, base, baseCommittedConfig),
+      baseConfig: baseTreeFallback({ base, baseCommittedConfig, error, strictBase }),
+      crossCheckViolations: [],
       introducedLedger: false,
     };
-  } catch (error) {
-    // If the base tree cannot be materialized or analyzed (e.g. git worktree is
-    // unavailable), fall back to the committed base ledger so the ratchet still
-    // runs. This restores the pre-fix behavior rather than crashing the check.
-    console.warn(
-      `Renderer architecture check: could not derive base tree debt at ${base}; ` +
-        `falling back to the committed base ledger. (${error instanceof Error ? error.message : String(error)})`,
-    );
-    return { baseConfig: baseCommittedConfig, introducedLedger: false };
+  }
+  try {
+    const baseDesktopRoot = resolve(baseTree.worktreePath, relative(repoRoot, desktopRoot));
+    let baseConfig;
+    try {
+      baseConfig = deriveBaseTreeConfig(baseDesktopRoot, baseCommittedConfig);
+    } catch (error) {
+      baseConfig = baseTreeFallback({ base, baseCommittedConfig, error, strictBase });
+    }
+    const crossCheckViolations = await crossCheckUnderBaseChecker({
+      base,
+      baseCommittedConfig,
+      baseDesktopRoot,
+      desktopRoot,
+      repoRoot,
+      strictBase,
+    });
+    return { baseConfig, crossCheckViolations, introducedLedger: false };
+  } finally {
+    baseTree.remove();
   }
 }
 
+const CLI_USAGE = 'usage: check-renderer-architecture.mjs [--write] [--base <commit> [--strict-base]]';
+
 function parseCliArguments(args) {
   let base;
+  let strictBase = false;
   let write = false;
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
@@ -3471,31 +3601,35 @@ function parseCliArguments(args) {
       write = true;
       continue;
     }
+    if (argument === '--strict-base' && !strictBase) {
+      strictBase = true;
+      continue;
+    }
     if (argument === '--base' && base === undefined) {
       const value = args[index + 1];
-      if (!value || value.startsWith('--')) {
-        throw new Error('usage: check-renderer-architecture.mjs [--write] [--base <commit>]');
-      }
+      if (!value || value.startsWith('--')) throw new Error(CLI_USAGE);
       base = value;
       index += 1;
       continue;
     }
-    throw new Error('usage: check-renderer-architecture.mjs [--write] [--base <commit>]');
+    throw new Error(CLI_USAGE);
   }
-  return { base, write };
+  if (strictBase && base === undefined) throw new Error(`--strict-base requires --base <commit>\n${CLI_USAGE}`);
+  return { base, strictBase, write };
 }
 
-function runCli() {
+async function runCli() {
   const desktopRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
   const repoRoot = resolve(desktopRoot, '../..');
   let base;
   let config;
   let loadedBase;
+  let strictBase;
   let write;
   try {
-    ({ base, write } = parseCliArguments(process.argv.slice(2)));
+    ({ base, strictBase, write } = parseCliArguments(process.argv.slice(2)));
     config = JSON.parse(readFileSync(join(desktopRoot, 'renderer-architecture.json'), 'utf8'));
-    loadedBase = loadBaseConfig(repoRoot, desktopRoot, base);
+    loadedBase = await loadBaseConfig(repoRoot, desktopRoot, base, { strictBase });
     if (write) {
       config = generateArchitectureConfig(desktopRoot, config);
       writeFileSync(join(desktopRoot, 'renderer-architecture.json'), `${JSON.stringify(config, null, 2)}\n`);
@@ -3506,8 +3640,8 @@ function runCli() {
     process.exitCode = 1;
     return;
   }
-  const { baseConfig, introducedLedger } = loadedBase;
-  const violations = checkRendererArchitecture({ baseConfig, config, desktopRoot });
+  const { baseConfig, crossCheckViolations, introducedLedger } = loadedBase;
+  const violations = [...checkRendererArchitecture({ baseConfig, config, desktopRoot }), ...crossCheckViolations];
   if (violations.length > 0) {
     console.error('Renderer architecture check failed:');
     for (const violation of violations) console.error(`- ${violation}`);
@@ -3521,4 +3655,4 @@ function runCli() {
   console.log(`Renderer architecture check passed${baseConfig ? ` against ${base}` : ''}.`);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) runCli();
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) await runCli();

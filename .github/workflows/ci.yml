@@ -217,7 +217,7 @@ jobs:
           BASE_SHA: ${{ github.event_name == 'push' && github.event.before || github.event.pull_request.base.sha }}
         run: |
           if [[ -n "$BASE_SHA" && ! "$BASE_SHA" =~ ^0+$ ]]; then
-            npm run check:renderer-architecture -- --base "$BASE_SHA"
+            npm run check:renderer-architecture -- --base "$BASE_SHA" --strict-base
           else
             npm run check:renderer-architecture
           fi
