@@ -172,7 +172,9 @@ export function migrateSqliteCoreExecutionDatabase(db: DatabaseSync): void {
       ON core_agent_runs(session_id, latest_model_call_sequence, run_id)
       WHERE latest_model_call_sequence IS NOT NULL;
 
-    CREATE UNIQUE INDEX IF NOT EXISTS core_root_turn_continuation_source
+    DROP INDEX IF EXISTS core_root_turn_continuation_source;
+
+    CREATE INDEX core_root_turn_continuation_source
       ON core_root_turn_admissions(
         session_id,
         json_extract(record_json, '$.execution.sourceTurnId'),

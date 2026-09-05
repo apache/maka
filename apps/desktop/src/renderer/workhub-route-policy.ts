@@ -82,8 +82,14 @@ export type WorkHubStopClarificationReason =
   | 'stop_target_unavailable'
   /** The resume names more than one existing Session. */
   | 'resume_target_ambiguous'
+  /** The resume names no safe target of its own. */
+  | 'resume_target_required'
   /** The Host refused the resume; its conflict is the whole answer. */
-  | 'resume_target_unavailable';
+  | 'resume_target_unavailable'
+  /** This Host does not expose safe-boundary resume. */
+  | 'resume_operation_unavailable'
+  /** The Host is still recovering; retry may succeed. */
+  | 'resume_host_recovering';
 
 /**
  * A stop clarification never offers route options. Choosing one re-sends the
@@ -217,7 +223,10 @@ function createWorkHubRoutePolicyVisit(
     },
     resolveResume({ text, sessions }) {
       const action = readWorkHubRequestIntent(text).resume;
-      if (!action.imperative || !action.target) return { kind: 'not_requested' };
+      if (!action.cue) return { kind: 'not_requested' };
+      if (!action.imperative || !action.target) {
+        return { kind: 'clarification', reason: 'resume_target_required' };
+      }
       return resolveNamedDelegationAction(
         sessionResolver,
         action.target,

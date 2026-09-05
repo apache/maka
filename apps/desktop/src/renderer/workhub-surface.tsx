@@ -657,8 +657,11 @@ function workHubClarificationPrompt(
   if (reason === 'stop_target_required') return copy.stopTargetRequired;
   if (reason === 'stop_target_ambiguous') return copy.stopTargetAmbiguous;
   if (reason === 'stop_target_unavailable') return copy.stopTargetUnavailable;
+  if (reason === 'resume_target_required') return copy.resumeTargetRequired;
   if (reason === 'resume_target_ambiguous') return copy.resumeTargetAmbiguous;
   if (reason === 'resume_target_unavailable') return copy.resumeTargetUnavailable;
+  if (reason === 'resume_operation_unavailable') return copy.resumeOperationUnavailable;
+  if (reason === 'resume_host_recovering') return copy.resumeHostRecovering;
   return undefined;
 }
 
@@ -895,8 +898,11 @@ function workHubCopy(locale: UiLocale) {
         already_running: '这项工作还在跑，不需要恢复：',
       },
       resumeRecorded: '结果已记录',
+      resumeTargetRequired: '请明确说出要继续的工作名称，例如“恢复 支付任务”。',
       resumeTargetAmbiguous: '这个名称对应多项工作；请打开具体的 Session 继续它。',
-      resumeTargetUnavailable: '当前 Runtime Host 无法继续这项工作；安全边界恢复可能未启用，或 Host 仍在恢复。',
+      resumeTargetUnavailable: '这项工作当前没有可恢复的单个 WorkHub 委派。',
+      resumeOperationUnavailable: '当前 Runtime Host 未启用安全边界恢复；请打开原 Session 继续处理。',
+      resumeHostRecovering: 'Runtime Host 仍在恢复；请稍后重试。',
       waitingForDecision: '这项工作正在等待你的决定。',
       requestNotSent: '新请求尚未发送；处理原 Session 中的交互后可以再次发送。',
       routing: '正在判断应该交给哪个 Session…', loadFailed: '无法读取已有工作。',
@@ -971,8 +977,11 @@ function workHubCopy(locale: UiLocale) {
         already_running: '這項工作仍在執行，不需要恢復：',
       },
       resumeRecorded: '結果已記錄',
+      resumeTargetRequired: '請明確說出要繼續的工作名稱，例如「恢復 支付任務」。',
       resumeTargetAmbiguous: '這個名稱對應多項工作；請開啟具體的 Session 繼續它。',
-      resumeTargetUnavailable: '目前 Runtime Host 無法繼續這項工作；安全邊界恢復可能未啟用，或 Host 仍在恢復。',
+      resumeTargetUnavailable: '這項工作目前沒有可恢復的單一 WorkHub 委派。',
+      resumeOperationUnavailable: '目前 Runtime Host 未啟用安全邊界恢復；請開啟原 Session 繼續處理。',
+      resumeHostRecovering: 'Runtime Host 仍在恢復；請稍後重試。',
       submitFailures: {
         candidates_changed: '工作清單已變更，請重新傳送以使用最新目標。',
         linked_correction_unavailable: '跨 Session 更正將於持久委派關聯完成後開放；請先開啟原 Session 並停止目前工作。',
@@ -1033,10 +1042,14 @@ function workHubCopy(locale: UiLocale) {
       already_running: 'This work is still running, so there was nothing to resume:',
     },
     resumeRecorded: 'Result recorded',
+    resumeTargetRequired: 'Name the work explicitly, for example “Resume Payments”.',
     resumeTargetAmbiguous:
       'That name matches more than one work item. Open the exact Session to resume it.',
     resumeTargetUnavailable:
-      'The current Runtime Host cannot resume this work. Safe-boundary resume may be disabled, or the Host may still be recovering.',
+      'This work has no single WorkHub delegation that can be resumed.',
+    resumeOperationUnavailable:
+      'Safe-boundary resume is not enabled on this Runtime Host. Open the original Session to continue.',
+    resumeHostRecovering: 'The Runtime Host is still recovering. Try again shortly.',
     waitingForDecision: 'This work is waiting for your decision.',
     requestNotSent: 'The new request was not sent. Resolve the interaction in its Session, then send again.',
     routing: 'Choosing the right Session…', loadFailed: 'Could not read existing work.',

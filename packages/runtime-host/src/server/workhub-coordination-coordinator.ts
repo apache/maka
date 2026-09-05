@@ -436,7 +436,9 @@ export class HostWorkHubCoordinationCoordinator {
       }),
       conflictMessage: 'WorkHub resume already has a different resolution',
       beforeAppend: async () => {
-        const source = (await this.#listActiveAssignments()).find(
+        const source = (
+          await this.#stores.readActiveWorkHubAssignmentsByTarget([input.source.targetSessionId])
+        ).find(
           ({ actionId, delegationId }) =>
             actionId === input.source.actionId && delegationId === input.source.delegationId,
         );

@@ -21,8 +21,56 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import { createSqliteAgentRunStore } from '../agent-run-store.js';
+import { migrateSqliteCoreExecutionDatabase } from '../sqlite-core-execution-schema.js';
+
+test('core execution migration preserves databases with historical continuation forks', () => {
+  const database = new DatabaseSync(':memory:');
+  try {
+    database.exec(`
+      CREATE TABLE core_root_turn_admissions (
+        session_id TEXT NOT NULL,
+        turn_id TEXT NOT NULL,
+        admitted_at INTEGER NOT NULL,
+        record_json TEXT NOT NULL,
+        PRIMARY KEY (session_id, turn_id)
+      );
+    `);
+    const insert = database.prepare(`
+      INSERT INTO core_root_turn_admissions(session_id, turn_id, admitted_at, record_json)
+      VALUES (?, ?, ?, ?)
+    `);
+    for (const [turnId, admittedAt] of [
+      ['continuation-a', 20],
+      ['continuation-b', 30],
+    ] as const) {
+      insert.run(
+        'session',
+        turnId,
+        admittedAt,
+        JSON.stringify({
+          sessionId: 'session',
+          turnId,
+          execution: {
+            kind: 'safe_boundary_continuation',
+            sourceTurnId: 'source-turn',
+            sourceRunId: 'source-run',
+          },
+        }),
+      );
+    }
+
+    assert.doesNotThrow(() => migrateSqliteCoreExecutionDatabase(database));
+    assert.equal(
+      database.prepare('SELECT COUNT(*) AS count FROM core_root_turn_admissions').get()?.count,
+      2,
+    );
+  } finally {
+    database.close();
+  }
+});
 
 test('safe-boundary continuation admission is indexed by its source execution', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-continuation-admission-'));
@@ -63,6 +111,31 @@ test('safe-boundary continuation admission is indexed by its source execution', 
       admittedAt: 20,
     });
     assert.equal(continuation.kind, 'admitted');
+    await assert.rejects(
+      store.admitRootTurn({
+        sessionId: 'session',
+        turnId: 'competing-continuation-turn',
+        proposedRunId: 'competing-continuation-run',
+        proposedUserMessageId: null,
+        execution: {
+          kind: 'safe_boundary_continuation',
+          sourceInvocationId: 'source-invocation',
+          sourceRunId: 'source-run',
+          sourceTurnId: 'source-turn',
+          sourceRuntimeEventHighWater: 7,
+          claimId: 'competing-continuation-claim',
+          boundaryDigest: `sha256:${'d'.repeat(64)}`,
+          providerReplayDigest: `sha256:${'e'.repeat(64)}`,
+          safetyDigest: `sha256:${'f'.repeat(64)}`,
+          targetInvocationId: 'competing-continuation-invocation',
+        },
+        previousRootTurnId: 'source-turn',
+        normalizedInput: null,
+        sourceMessages: [],
+        admittedAt: 30,
+      }),
+      /already has continuation continuation-turn/,
+    );
 
     assert.deepEqual(
       await store.readRootTurnContinuationAdmission('session', 'source-turn', 'source-run'),

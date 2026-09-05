@@ -394,7 +394,9 @@ export function createWorkHubController(deps: {
           requestId: input.requestId,
           text: input.text,
           options: [],
-          reason: 'resume_target_unavailable',
+          reason: error.code === 'host_not_ready'
+            ? 'resume_host_recovering'
+            : 'resume_operation_unavailable',
         };
       }
       if (error instanceof WorkHubCoordinationFailure && error.code === 'operation_conflict') {

@@ -1136,11 +1136,15 @@ test('a resume names one Session, and reads like a stop everywhere else', () => 
     ['恢复支付任务', '支付任务'],
     ['接着跑支付任务', '支付任务'],
   ] as const) {
-    assert.deepEqual(readWorkHubRequestIntent(text).resume, { imperative: true, target }, text);
+    assert.deepEqual(
+      readWorkHubRequestIntent(text).resume,
+      { cue: true, imperative: true, target },
+      text,
+    );
   }
 
   for (const text of ['Resume it', '恢复它']) {
-    assert.deepEqual(readWorkHubRequestIntent(text).resume, { imperative: false }, text);
+    assert.deepEqual(readWorkHubRequestIntent(text).resume, { cue: true, imperative: false }, text);
   }
 
   // Ambiguous verbs remain ordinary Session instructions rather than being

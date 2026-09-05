@@ -156,6 +156,8 @@ export interface WorkHubRequestIntent {
     readonly target?: string;
   };
   readonly resume: {
+    /** A direct resume speech act was present, but its target may still be unsafe. */
+    readonly cue: boolean;
     /** True only for a direct, explicitly named resume command. */
     readonly imperative: boolean;
     readonly target?: string;
@@ -355,6 +357,7 @@ export function readWorkHubRequestIntent(value: string): WorkHubRequestIntent {
       ...(stop.target ? { target: stop.target } : {}),
     },
     resume: {
+      cue: resume.cue,
       imperative: Boolean(resume.target),
       ...(resume.target ? { target: resume.target } : {}),
     },
