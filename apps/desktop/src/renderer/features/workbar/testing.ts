@@ -140,6 +140,7 @@ export function createFakeWorkbarServices(
       submitFollowUp: async () => {
         throw new Error('Fake sideChat.submitFollowUp is not configured');
       },
+      queryCancelledMessages: async () => ({ cancelledMessageIds: [] }),
       retractQueueEntry: async () => undefined,
       promoteQueueEntry: async () => undefined,
       updateQueueEntry: async () => undefined,

@@ -33,6 +33,7 @@ import {
   type TransientUserMessageProjection,
 } from '@maka/ui';
 import type { RefreshMessagesOptions } from './app-shell-chat-actions.js';
+import { deriveMessageQueueProjection } from './application/contracts/message-queue-projection.js';
 import type { MessageQueueUiState } from './app-shell-session-ui-state.js';
 import {
   isNoRealConnectionEvent,
@@ -324,26 +325,11 @@ export function createAppShellSessionEventHandlers(options: {
     );
 
     switch (event.type) {
-      case 'queue_update':
+      case 'queue_update': {
+        const queue = deriveMessageQueueProjection(event);
         projectQueuedTransientMessages?.(
           sessionId,
-          (event.steeringEntries ?? []).concat(event.followupEntries ?? [])
-            .filter((entry) => entry.state === 'queued')
-            .map((entry) => ({
-              id: entry.messageId,
-              transientPlacement: entry.placement,
-              ...(entry.placement === 'current_turn' && { hostTurnId: event.turnId }),
-              ts: event.ts,
-              text: entry.content.displayText ?? entry.content.text,
-              ...(entry.content.attachments && { attachments: [...entry.content.attachments] }),
-              ...(entry.content.directoryReferences && {
-                directoryReferences: entry.content.directoryReferences,
-              }),
-              ...(entry.content.quotes && { quotes: [...entry.content.quotes] }),
-              ...(entry.content.inlineReferences && {
-                inlineReferences: [...entry.content.inlineReferences],
-              }),
-            })),
+          queue.transientMessages,
         );
         setMessageQueueBySession?.((current) => {
           if (!event.steering.length && !event.followup.length) {
@@ -356,14 +342,12 @@ export function createAppShellSessionEventHandlers(options: {
             ...current,
             [sessionId]: {
               queueRevision: event.queueRevision,
-              entries: [
-                ...(event.steeringEntries ?? []).filter((entry) => entry.state === 'queued'),
-                ...(event.followupEntries ?? []),
-              ].map((entry) => structuredClone(entry)),
+              entries: queue.entries,
             },
           };
         });
         break;
+      }
       case 'message_admission':
         if (event.outcome === 'retracted') removeTransientMessage?.(sessionId, event.messageId);
         break;

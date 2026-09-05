@@ -612,12 +612,13 @@
           "createAppShellSessionEventHandlers"
         ],
         "dependencyPaths": {
+          "./application/contracts/message-queue-projection.js": 1,
           "./locales/conversation-copy.js": 1,
           "./model-connection-errors.js": 1,
           "@maka/ui": 1
         },
         "importSpecifiers": 11,
-        "nonTriviaTokens": 2974
+        "nonTriviaTokens": 2771
       },
       "src/renderer/app-shell-session-start-actions.ts": {
         "importDeclarations": 2,

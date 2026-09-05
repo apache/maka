@@ -29,6 +29,7 @@ import type { PermissionMode } from '@maka/core/permission';
 import type {
   SessionChangedEvent,
   SessionSummary,
+  StoredMessage,
   TurnRecord,
 } from '@maka/core/session';
 import type { ContextCompactResult } from '@maka/runtime-host/protocol';
@@ -1981,6 +1982,138 @@ test('adopts a queued Side Conversation follow-up that starts after the active t
   assert.equal(container.firstElementChild?.getAttribute('data-live-text'), 'new answer');
 });
 
+test('keeps the settled prior turn visible while a queued successor is running', async () => {
+  let firstMessageId: string | undefined;
+  let followUpMessageId: string | undefined;
+  const oldTurnSettlement = deferred<{
+    messages: StoredMessage[];
+    settled: boolean;
+  }>();
+  const pendingFollowUp = deferred<{ kind: 'started'; turnId: string }>();
+  const { container, emit, send, queue } = await renderOwnershipProbe({
+    send: async (_sessionId, command) => {
+      firstMessageId = command.turnId;
+      return { ok: true as const, turnId: 'old-turn' };
+    },
+    submitFollowUp: async (_sessionId, placement, _text, messageId) => {
+      assert.equal(placement, 'next_turn');
+      followUpMessageId = messageId;
+      return pendingFollowUp.promise;
+    },
+    readSettledMessages: async (_sessionId, options) =>
+      options?.requiredAssistantMessageId === 'assistant-message'
+        ? oldTurnSettlement.promise
+        : { messages: [], settled: true },
+  });
+
+  await act(async () => {
+    assert.equal(await send('initial prompt'), true);
+    emit(textDeltaEvent('old-turn-text', 'old-turn', 1, 'old answer'));
+    await Promise.resolve();
+  });
+  let followUpResult!: Promise<boolean>;
+  await act(async () => {
+    followUpResult = queue('start next');
+    await Promise.resolve();
+  });
+  await waitUntil(() => followUpMessageId !== undefined);
+  await act(async () => {
+    emit(completeEvent('old-complete', 'old-turn', 2));
+    pendingFollowUp.resolve({ kind: 'started', turnId: 'new-turn' });
+    assert.equal(await followUpResult, true);
+    await Promise.resolve();
+  });
+  assert.equal(container.firstElementChild?.getAttribute('data-live-turn-id'), 'new-turn');
+
+  await act(async () => {
+    oldTurnSettlement.resolve({
+      messages: [
+        {
+          type: 'user',
+          id: firstMessageId as string,
+          turnId: 'old-turn',
+          ts: 1,
+          text: 'initial prompt',
+        },
+        {
+          type: 'assistant',
+          id: 'assistant-message',
+          turnId: 'old-turn',
+          ts: 2,
+          text: 'old answer',
+          modelId: 'test-model',
+        },
+      ],
+      settled: true,
+    });
+    await Promise.resolve();
+  });
+
+  await waitUntil(
+    () => container.firstElementChild?.getAttribute('data-message-texts') === 'initial prompt|old answer',
+  );
+  assert.equal(container.firstElementChild?.getAttribute('data-live-turn-id'), 'new-turn');
+});
+
+test('retires a cancelled queued Side Conversation message after observation reseeds', async () => {
+  let queuedMessageId: string | undefined;
+  let markSeeded: (() => void) | undefined;
+  let seedCount = 0;
+  const queriedMessageIds: string[][] = [];
+  const { container, emit, send, queue } = await renderOwnershipProbe({
+    subscribeEvents: (_sessionId, _handler, onSeeded) => {
+      markSeeded = onSeeded;
+      if (seedCount === 0) {
+        seedCount += 1;
+        onSeeded?.();
+      }
+      return () => undefined;
+    },
+    send: async () => ({ ok: true as const, turnId: 'old-turn' }),
+    submitFollowUp: async (_sessionId, placement, _text, messageId) => {
+      assert.equal(placement, 'next_turn');
+      queuedMessageId = messageId;
+      return { kind: 'queued' as const, messageId: messageId as string };
+    },
+    queryCancelledMessages: async (_sessionId, messageIds) => {
+      queriedMessageIds.push([...messageIds]);
+      return {
+        cancelledMessageIds: queuedMessageId && messageIds.includes(queuedMessageId)
+          ? [queuedMessageId]
+          : [],
+      };
+    },
+  });
+
+  await act(async () => {
+    assert.equal(await send('initial prompt'), true);
+    emit(textDeltaEvent('old-turn-text', 'old-turn', 1, 'still streaming'));
+    await Promise.resolve();
+  });
+  await act(async () => {
+    assert.equal(await queue('cancelled while disconnected'), true);
+    emit(
+      queueUpdateEvent('queued-follow-up', 'old-turn', 2, [], [
+        {
+          entryId: 'follow-up-entry',
+          messageId: queuedMessageId as string,
+          content: { text: 'cancelled while disconnected' },
+          placement: 'next_turn',
+          state: 'queued',
+        },
+      ]),
+    );
+    markSeeded?.();
+    await Promise.resolve();
+  });
+  await waitUntil(
+    () => container.firstElementChild?.getAttribute('data-transient-texts') === 'initial prompt',
+  );
+
+  assert.equal(container.firstElementChild?.getAttribute('data-queue-texts'), '');
+  assert.ok(queriedMessageIds.some((messageIds) => messageIds.includes(queuedMessageId as string)));
+});
+
 test('fails a send when observation seed rejects and resubscribes for retry', async () => {
   let sendCalls = 0;
   let subscriptionCount = 0;
@@ -2311,6 +2444,9 @@ function QuoteCompanionOwnershipProbe(props: {
     'data-transient-count': String(companion.transientMessages.length),
     'data-transient-text': companion.transientMessages[0]?.text ?? '',
     'data-transient-texts': companion.transientMessages.map((message) => message.text).join('|'),
+    'data-message-texts': companion.messages
+      .flatMap((message) => 'text' in message && typeof message.text === 'string' ? [message.text] : [])
+      .join('|'),
     'data-queue-texts': companion.queuedMessages?.map((entry) => entry.content.text).join('|') ?? '',
   });
 }

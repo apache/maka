@@ -18,6 +18,7 @@
  */
 
 import type {
+  MessageQueuePlacement,
   QuoteRef,
   SessionEvent,
   ShellRunUpdate,
@@ -47,6 +48,7 @@ import type { Result } from '@maka/core/result';
 import type {
   ContextCompactResult,
   ContextDiagnosticsResult,
+  TurnMessageQueryResult,
 } from '@maka/runtime-host/protocol';
 import type { MergedUsageSummary } from '@maka/core/usage-ledger-merge';
 import type {
@@ -239,10 +241,14 @@ export interface SideChatSessionPort {
   ): Promise<{ kind: 'retracted'; messageId: string } | undefined>;
   submitFollowUp(
     sessionId: string,
-    placement: 'current_turn' | 'next_turn',
+    placement: MessageQueuePlacement,
     text: string,
     admissionId?: string,
   ): Promise<SideChatFollowUpResult>;
+  queryCancelledMessages(
+    sessionId: string,
+    messageIds: readonly string[],
+  ): Promise<TurnMessageQueryResult>;
   retractQueueEntry(sessionId: string, entryId: string): Promise<void>;
   promoteQueueEntry(sessionId: string, entryId: string): Promise<void>;
   updateQueueEntry(
@@ -276,7 +282,8 @@ export interface SideChatSessionPort {
   subscribeEvents(
     sessionId: string,
     handler: (event: SessionEvent) => void,
-    onSeeded?: () => void,
+    /** Called after the initial observation seed and each reconnect seed. */
+    onReady?: () => void,
     onSeedError?: (error: unknown) => void,
   ): WorkbarUnsubscribe;
   subscribeSessionChanges(handler: (event: SessionChangedEvent) => void): WorkbarUnsubscribe;

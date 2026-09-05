@@ -137,6 +137,8 @@ export function createDesktopWorkbarServices(
         return result?.kind === 'retracted' ? result : undefined;
       },
       submitFollowUp: submitSideChatFollowUp,
+      queryCancelledMessages: (sessionId, messageIds) =>
+        bridge.sessions.queryCancelledMessages(sessionId, messageIds),
       retractQueueEntry: (sessionId, entryId) =>
         bridge.sessions.retractQueueEntry(sessionId, entryId),
       promoteQueueEntry: (sessionId, entryId) =>
@@ -157,8 +159,16 @@ export function createDesktopWorkbarServices(
         bridge.sessions.respondToUserQuestion(sessionId, response),
       respondToUserForm: (sessionId, response) =>
         bridge.sessions.respondToUserForm(sessionId, response),
-      subscribeEvents: (sessionId, handler, onSeeded, onSeedError) =>
-        bridge.sessions.subscribeEvents(sessionId, handler, onSeeded, undefined, onSeedError),
+      subscribeEvents: (sessionId, handler, onReady, onSeedError) =>
+        bridge.sessions.subscribeEvents(
+          sessionId,
+          handler,
+          onReady,
+          (phase) => {
+            if (phase === 'ready') onReady?.();
+          },
+          onSeedError,
+        ),
       subscribeSessionChanges: (handler) => bridge.sessions.subscribeChanges(handler),
     },
   };

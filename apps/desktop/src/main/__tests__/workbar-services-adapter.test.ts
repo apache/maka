@@ -97,6 +97,30 @@ describe('createDesktopWorkbarServices', () => {
     );
   });
 
+  it('reports Side Conversation readiness again after an observation reseed', () => {
+    const { bridge, calls } = createBridgeRecorder();
+    const services = createDesktopWorkbarServices(bridge, {
+      readSettledMessages: async () => ({ messages: [], settled: true }),
+    });
+    let readyCount = 0;
+
+    services.sideChat.subscribeEvents('fork', () => undefined, () => {
+      readyCount += 1;
+    })();
+
+    const subscribe = calls.find((call) => call.name === 'sessions.subscribeEvents');
+    assert.ok(subscribe);
+    const initialReady = subscribe.args[2] as (() => void) | undefined;
+    const observationSeed = subscribe.args[3] as
+      | ((phase: 'pending' | 'ready') => void)
+      | undefined;
+    initialReady?.();
+    observationSeed?.('pending');
+    observationSeed?.('ready');
+
+    assert.equal(readyCount, 2);
+  });
+
   it('maps every Workbar capability to the existing Desktop bridge', async () => {
     const { bridge, calls } = createBridgeRecorder();
     const settledReads: unknown[][] = [];
@@ -168,6 +192,7 @@ describe('createDesktopWorkbarServices', () => {
     await services.sideChat.stop('fork');
     await services.sideChat.submitFollowUp('fork', 'next_turn', 'later', 'message-next');
     await services.sideChat.submitFollowUp('fork', 'current_turn', 'more');
+    await services.sideChat.queryCancelledMessages('fork', ['message-next']);
     await services.sideChat.retractQueueEntry('fork', 'entry-1');
     await services.sideChat.promoteQueueEntry('fork', 'entry-2');
     await services.sideChat.updateQueueEntry('fork', 'entry-3', 4, 'updated');
@@ -229,6 +254,7 @@ describe('createDesktopWorkbarServices', () => {
         'sessions.stop',
         'sessions.submitMessage',
         'sessions.submitMessage',
+        'sessions.queryCancelledMessages',
         'sessions.retractQueueEntry',
         'sessions.promoteQueueEntry',
         'sessions.updateQueueEntry',
@@ -271,6 +297,10 @@ describe('createDesktopWorkbarServices', () => {
     assert.equal(
       typeof (followUpCalls[1]?.args[2] as { messageId?: unknown })?.messageId,
       'string',
+    );
+    assert.deepEqual(
+      calls.find((call) => call.name === 'sessions.queryCancelledMessages')?.args,
+      ['fork', ['message-next']],
     );
   });
 });

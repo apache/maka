@@ -35,6 +35,7 @@ import type {
   ContextCompactionOutcome,
   FormRequestEvent,
   MessageQueueEntryProjection,
+  MessageQueuePlacement,
   QuoteRef,
   SessionEvent,
   UserQuestionRequestEvent,
@@ -47,7 +48,10 @@ import type { UiLocale } from '@maka/core/ui-locale';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { InteractionFormResponse } from '@maka/core/interaction';
-import type { ContextCompactResult } from '@maka/runtime-host/protocol';
+import {
+  MESSAGE_QUEUE_MAX_ENTRIES,
+  type ContextCompactResult,
+} from '@maka/runtime-host/protocol';
 import { useWorkbarServices } from '../../services-context.js';
 import type { WorkbarIngestInput } from '../../ports.js';
 import {
@@ -64,6 +68,7 @@ import {
   type EnsureCompanionForkResult,
 } from './quote-companion-core.js';
 import { isExactCompactCommand } from './quote-companion-context-compaction.js';
+import { deriveMessageQueueProjection } from '../../../../application/contracts/message-queue-projection.js';
 import { mergeSettledMessages } from '../../../../settled-message-merge.js';
 import { getDesktopConversationCopy } from '../../../../locales/conversation-copy.js';
 import {
@@ -297,7 +302,11 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const [pendingUserMessages, setPendingUserMessages] = useState<
     TransientUserMessageProjection[]
   >([]);
+  const pendingUserMessagesRef = useRef(pendingUserMessages);
+  pendingUserMessagesRef.current = pendingUserMessages;
   const [queuedMessages, setQueuedMessages] = useState<MessageQueueEntryProjection[]>([]);
+  const queuedMessagesRef = useRef(queuedMessages);
+  queuedMessagesRef.current = queuedMessages;
   const [queuedMessageRevision, setQueuedMessageRevision] = useState<number | undefined>(
     undefined,
   );
@@ -386,6 +395,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const dropOptimisticUserMessage = useCallback((messageId: string) => {
     setPendingUserMessages((current) => {
       const next = current.filter((message) => message.id !== messageId);
+      pendingUserMessagesRef.current = next;
       return next.length === current.length ? current : next;
     });
   }, []);
@@ -393,6 +403,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const dropQueuedMessage = useCallback((messageId: string) => {
     setQueuedMessages((current) => {
       const next = current.filter((entry) => entry.messageId !== messageId);
+      queuedMessagesRef.current = next;
       return next.length === current.length ? current : next;
     });
   }, []);
@@ -410,39 +421,61 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
 
   const projectMessageQueue = useCallback(
     (event: Extract<SessionEvent, { type: 'queue_update' }>) => {
-      const entries = [
-        ...(event.steeringEntries ?? []).filter((entry) => entry.state === 'queued'),
-        ...(event.followupEntries ?? []),
-      ].map((entry) => structuredClone(entry));
-      setQueuedMessages(entries);
+      const queue = deriveMessageQueueProjection(event);
+      queuedMessagesRef.current = [...queue.entries];
+      setQueuedMessages([...queue.entries]);
       setQueuedMessageRevision(event.queueRevision);
 
-      const queued = [...(event.steeringEntries ?? []), ...(event.followupEntries ?? [])]
-        .filter((entry) => entry.state === 'queued')
-        .map<TransientUserMessageProjection>((entry) => ({
-          id: entry.messageId,
-          transientPlacement: entry.placement,
-          ...(entry.placement === 'current_turn' ? { hostTurnId: event.turnId } : {}),
-          ts: event.ts,
-          text: entry.content.displayText ?? entry.content.text,
-          ...(entry.content.attachments ? { attachments: [...entry.content.attachments] } : {}),
-          ...(entry.content.directoryReferences
-            ? { directoryReferences: entry.content.directoryReferences }
-            : {}),
-          ...(entry.content.quotes ? { quotes: [...entry.content.quotes] } : {}),
-          ...(entry.content.inlineReferences
-            ? { inlineReferences: [...entry.content.inlineReferences] }
-            : {}),
-        }));
+      const queued = queue.transientMessages;
       if (queued.length === 0) return;
       const queuedIds = new Set(queued.map((message) => message.id));
-      setPendingUserMessages((current) => [
-        ...current.filter((message) => !queuedIds.has(message.id)),
+      const next = [
+        ...pendingUserMessagesRef.current.filter((message) => !queuedIds.has(message.id)),
         ...queued,
-      ]);
+      ];
+      pendingUserMessagesRef.current = next;
+      setPendingUserMessages(next);
     },
     [],
   );
+
+  const retireCancelledOptimisticMessages = useCallback(async (forkId: string) => {
+    const messageIds = [
+      ...new Set([
+        ...pendingUserMessagesRef.current.map((message) => message.id),
+        ...queuedMessagesRef.current.map((entry) => entry.messageId),
+      ]),
+    ];
+    if (messageIds.length === 0) return;
+    try {
+      const cancelledIds: string[] = [];
+      for (let from = 0; from < messageIds.length; from += MESSAGE_QUEUE_MAX_ENTRIES) {
+        const result = await sideChat.queryCancelledMessages(
+          forkId,
+          messageIds.slice(from, from + MESSAGE_QUEUE_MAX_ENTRIES),
+        );
+        cancelledIds.push(...result.cancelledMessageIds);
+      }
+      if (
+        !mountedRef.current
+        || companionIdRef.current !== forkId
+        || cancelledIds.length === 0
+      ) {
+        return;
+      }
+      const cancelled = new Set(cancelledIds);
+      pendingUserMessagesRef.current = pendingUserMessagesRef.current.filter(
+        (message) => !cancelled.has(message.id),
+      );
+      setPendingUserMessages(pendingUserMessagesRef.current);
+      queuedMessagesRef.current = queuedMessagesRef.current.filter(
+        (entry) => !cancelled.has(entry.messageId),
+      );
+      setQueuedMessages(queuedMessagesRef.current);
+    } catch {
+      // A failed proof query leaves presentation intact until canonical proof arrives.
+    }
+  }, [mountedRef, sideChat]);
 
   const applyOwnedEvent = useCallback(
     (forkId: string, event: SessionEvent) => {
@@ -494,9 +527,14 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
             : {}),
           })
           .then(({ messages: next }) => {
-            if (!mountedRef.current || activeTurnIdRef.current !== settledTurnId) return;
+            if (!mountedRef.current) return;
             setAllMessages((current) => mergeSettledMessages(current, next));
-            setLiveTurn((prev) => (prev ? reconcileTerminalLiveTurn(prev, next) : prev));
+            if (activeTurnIdRef.current !== settledTurnId) return;
+            setLiveTurn((prev) =>
+              prev?.turnId === settledTurnId
+                ? reconcileTerminalLiveTurn(prev, next)
+                : prev,
+            );
             activeTurnIdRef.current = null;
             stopRequestRef.current = null;
           })
@@ -633,6 +671,10 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       .catch(() => {
         if (mountedRef.current) setError(copyRef.current.errors.settlementFailed);
       });
+    const observationSeeded = () => {
+      resolveReady();
+      void retireCancelledOptimisticMessages(forkId);
+    };
     const unsubscribe = sideChat.subscribeEvents(
       forkId,
       (event: SessionEvent) => {
@@ -699,7 +741,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         }
         applyOwnedEvent(forkId, event);
       },
-      resolveReady,
+      observationSeeded,
       rejectReady,
     );
     let disposed = false;
@@ -720,6 +762,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     mountedRef,
     projectMessageQueue,
     reconcileUnknownAdmission,
+    retireCancelledOptimisticMessages,
     resolveAdmission,
     sideChat,
   ]);
@@ -777,6 +820,8 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
           clearPermissionModeIntent(existing.id);
           setCompanion(undefined);
           setAllMessages([]);
+          pendingUserMessagesRef.current = [];
+          queuedMessagesRef.current = [];
           setPendingUserMessages([]);
           setQueuedMessages([]);
           setQueuedMessageRevision(undefined);
@@ -1001,16 +1046,18 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         events: [],
         consumeOnAdmission: () => onQuotesConsumed(quoteSnapshot),
       };
-      setPendingUserMessages((current) => [
-        ...current.filter((message) => message.id !== turnId),
-        {
-          id: turnId,
-          text: trimmed,
-          ts: Date.now(),
-          transientPlacement: 'current_turn',
-          ...(quoteSnapshot.quotes.length > 0 ? { quotes: quoteSnapshot.quotes } : {}),
-        },
-      ]);
+      const optimisticMessage: TransientUserMessageProjection = {
+        id: turnId,
+        text: trimmed,
+        ts: Date.now(),
+        transientPlacement: 'current_turn',
+        ...(quoteSnapshot.quotes.length > 0 ? { quotes: quoteSnapshot.quotes } : {}),
+      };
+      pendingUserMessagesRef.current = [
+        ...pendingUserMessagesRef.current.filter((message) => message.id !== turnId),
+        optimisticMessage,
+      ];
+      setPendingUserMessages(pendingUserMessagesRef.current);
       // Setup can still fail before the send is in flight (fork unavailable,
       // fail-closed permission write, or a lost subscription). Retire the
       // optimistic bubble and release the lock so a failed first send never
@@ -1235,7 +1282,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
 
   const submitFollowUp = useCallback(async (
     text: string,
-    placement: 'current_turn' | 'next_turn',
+    placement: MessageQueuePlacement,
   ): Promise<boolean> => {
     const id = companionIdRef.current;
     const trimmed = text.trim();
@@ -1253,18 +1300,20 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       messageId: admissionId,
       events: [],
     };
-    setPendingUserMessages((current) => [
-      ...current.filter((message) => message.id !== admissionId),
-      {
-        id: admissionId,
-        text: trimmed,
-        ts: Date.now(),
-        transientPlacement: placement,
-        ...(placement === 'current_turn' && activeTurnIdRef.current
-          ? { hostTurnId: activeTurnIdRef.current }
-          : {}),
-      },
-    ]);
+    const optimisticMessage: TransientUserMessageProjection = {
+      id: admissionId,
+      text: trimmed,
+      ts: Date.now(),
+      transientPlacement: placement,
+      ...(placement === 'current_turn' && activeTurnIdRef.current
+        ? { hostTurnId: activeTurnIdRef.current }
+        : {}),
+    };
+    pendingUserMessagesRef.current = [
+      ...pendingUserMessagesRef.current.filter((message) => message.id !== admissionId),
+      optimisticMessage,
+    ];
+    setPendingUserMessages(pendingUserMessagesRef.current);
     if (placement === 'current_turn') setPendingAdmission(admission);
     try {
       const outcome = await sideChat.submitFollowUp(id, placement, trimmed, admissionId);
