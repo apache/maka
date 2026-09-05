@@ -42,7 +42,6 @@ import type {
   TurnRecord,
 } from '@maka/core/session';
 import type { SessionTrace } from '@maka/core/session-trace';
-import type { SessionTodoItem } from '@maka/core/session-todo';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { InteractionFormResponse } from '@maka/core/interaction';
 import type { Result } from '@maka/core/result';
@@ -93,13 +92,6 @@ export interface WorkbarTerminalService {
   ): WorkbarUnsubscribe;
   subscribeResync(
     handler: (event: { sessionId: string }) => void,
-  ): WorkbarUnsubscribe;
-}
-
-export interface WorkbarTodoService {
-  read(sessionId: string): Promise<SessionTodoItem[]>;
-  subscribeChanges(
-    handler: (event: { sessionId: string; at: number }) => void,
   ): WorkbarUnsubscribe;
 }
 
@@ -286,7 +278,6 @@ export interface SideChatSessionPort {
 export interface WorkbarServices {
   readonly review: WorkbarReviewService;
   readonly terminal: WorkbarTerminalService;
-  readonly todo: WorkbarTodoService;
   readonly browser: WorkbarBrowserService;
   readonly artifacts: WorkbarArtifactsService;
   readonly inspector: WorkbarInspectorService;

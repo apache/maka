@@ -77,3 +77,73 @@ test('the context usage action opens its host trace surface', async () => {
     Object.assign(globalThis, original);
   }
 });
+
+test('the context usage share resolves declared, then metered, then metadata window', async () => {
+  const original = {
+    document: globalThis.document,
+    window: globalThis.window,
+    IS_REACT_ACT_ENVIRONMENT: (globalThis as typeof globalThis & {
+      IS_REACT_ACT_ENVIRONMENT?: boolean;
+    }).IS_REACT_ACT_ENVIRONMENT,
+  };
+  const { document, window } = parseHTML('<div id="root"></div>');
+  window.getComputedStyle = () => ({
+    direction: 'ltr',
+    writingMode: 'horizontal-tb',
+    getPropertyValue: () => '',
+  }) as unknown as CSSStyleDeclaration;
+  Object.assign(globalThis, { document, window, IS_REACT_ACT_ENVIRONMENT: true });
+  const container = document.querySelector('#root');
+  assert.ok(container);
+  const root = createRoot(container);
+
+  const render = async (
+    contextUsage: {
+      usageTokens?: number;
+      declaredContextWindow?: number;
+      meteredContextWindow?: number;
+      metadataContextWindow?: number;
+    },
+  ) => {
+    await act(() => root.render(
+      <LocaleProvider locale="en">
+        <Composer
+          contextUsage={{ ...contextUsage, onOpen: () => undefined }}
+          onSend={() => undefined}
+          onStop={() => undefined}
+        />
+      </LocaleProvider>,
+    ));
+    const action = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Open usage trace"]',
+    );
+    assert.ok(action);
+    return action.textContent?.trim();
+  };
+
+  try {
+    // The user's declaration wins over every reported window.
+    assert.equal(
+      await render({
+        usageTokens: 40_000,
+        declaredContextWindow: 100_000,
+        meteredContextWindow: 80_000,
+        metadataContextWindow: 64_000,
+      }),
+      '40%',
+    );
+    // The metered window was frozen against the same request as the tokens,
+    // so it outranks the catalog's metadata window.
+    assert.equal(
+      await render({ usageTokens: 40_000, meteredContextWindow: 80_000, metadataContextWindow: 64_000 }),
+      '50%',
+    );
+    // Metadata is the fallback…
+    assert.equal(await render({ usageTokens: 32_000, metadataContextWindow: 64_000 }), '50%');
+    // …and with no window at all the usage stands alone, no invented share.
+    assert.equal(await render({ usageTokens: 40_000 }), 'Usage');
+  } finally {
+    await act(() => root.unmount());
+    Object.assign(globalThis, original);
+  }
+});

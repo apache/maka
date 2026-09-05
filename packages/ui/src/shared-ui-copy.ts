@@ -95,13 +95,6 @@ export interface SharedUiCopy {
     close: string;
     resizeHandle: string;
   };
-  sessionTodo: {
-    ariaLabel: string;
-    retry: string;
-    loading: string;
-    activeAriaLabel: string;
-    empty: string;
-  };
   toast: {
     notifications: string;
     closeNotification: string;
@@ -192,13 +185,6 @@ const SHARED_UI_COPY = {
       dailyReviewDisconnectedBody: '桌面端数据桥当前未连接。',
     },
     primitives: { loading: '加载中', close: '关闭', resizeHandle: '调整宽度' },
-    sessionTodo: {
-      ariaLabel: '任务待办',
-      retry: '重新载入待办',
-      loading: '正在载入待办…',
-      activeAriaLabel: '进行中的待办',
-      empty: '这个任务还没有待办',
-    },
     toast: { notifications: '通知', closeNotification: '关闭通知', confirm: '确定', cancel: '取消' },
     stream: { assistantChunkTruncated: '\n[…单条 delta 已截断]\n', assistantTailTruncated: '\n\n[…后续已截断]', thinkingHeadTruncated: '[…已截断早期 reasoning]\n', thinkingChunkTruncated: '\n[…单条 delta 已截断]\n', toolChunkTruncated: '\n[…已截断]\n' },
     artifact: { unknownSize: '未知大小' },
@@ -276,13 +262,6 @@ const SHARED_UI_COPY = {
       dailyReviewDisconnectedBody: '桌面端資料橋目前未連線。',
     },
     primitives: { loading: '載入中', close: '關閉', resizeHandle: '調整寬度' },
-    sessionTodo: {
-      ariaLabel: '任務待辦',
-      retry: '重新載入待辦',
-      loading: '正在載入待辦…',
-      activeAriaLabel: '進行中的待辦',
-      empty: '這個任務還沒有待辦',
-    },
     toast: { notifications: '通知', closeNotification: '關閉通知', confirm: '確定', cancel: '取消' },
     stream: { assistantChunkTruncated: '\n[…單條 delta 已截斷]\n', assistantTailTruncated: '\n\n[…後續已截斷]', thinkingHeadTruncated: '[…已截斷早期 reasoning]\n', thinkingChunkTruncated: '\n[…單條 delta 已截斷]\n', toolChunkTruncated: '\n[…已截斷]\n' },
     artifact: { unknownSize: '未知大小' },
@@ -360,13 +339,6 @@ const SHARED_UI_COPY = {
       dailyReviewDisconnectedBody: 'The desktop data bridge is not connected.',
     },
     primitives: { loading: 'Loading', close: 'Close', resizeHandle: 'Resize handle' },
-    sessionTodo: {
-      ariaLabel: 'To-do list',
-      retry: 'Reload the to-do list',
-      loading: 'Loading the to-do list…',
-      activeAriaLabel: 'In-progress to-dos',
-      empty: 'This task has no to-dos yet',
-    },
     toast: { notifications: 'Notifications', closeNotification: 'Close notification', confirm: 'Confirm', cancel: 'Cancel' },
     stream: { assistantChunkTruncated: '\n[…single delta truncated]\n', assistantTailTruncated: '\n\n[…remaining output truncated]', thinkingHeadTruncated: '[…earlier reasoning truncated]\n', thinkingChunkTruncated: '\n[…single delta truncated]\n', toolChunkTruncated: '\n[…truncated]\n' },
     artifact: { unknownSize: 'Unknown size' },

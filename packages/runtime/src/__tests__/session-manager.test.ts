@@ -18,6 +18,7 @@
  */
 
 import { nextId } from '@maka/core/test-only/async-primitives';
+import { sectionedSummary } from './history-compact-test-fixtures.js';
 import { runtimeInvocationFailureClass } from '../runtime-event-read-model.js';
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -2355,9 +2356,9 @@ describe('SessionManager child-session runtime primitive', () => {
       childContext?.tools?.map((tool) => tool.name),
       ['Read', 'Glob', 'Grep'],
     );
-    assert.deepStrictEqual(
+    assert.strictEqual(
       backendsBySession.get(result.childSessionId)?.sendInputs[0]?.context,
-      [],
+      undefined,
     );
     assert.strictEqual(
       backendsBySession
@@ -8956,13 +8957,9 @@ describe('SessionManager permission mode updates', () => {
       secondInput.runtimeContext?.map((event) => event.turnId),
       ['turn-1', 'turn-1', 'turn-1', 'turn-1'],
     );
-    const turnState = secondInput.context.find(
-      (message) => message.type === 'turn_state' && message.turnId === 'turn-1',
-    );
-    if (turnState?.type !== 'turn_state')
-      throw new Error('prior failed turn_state was not projected');
-    assert.strictEqual(turnState.status, 'failed');
-    assert.strictEqual(turnState.errorClass, 'tool_failed');
+    const failed = secondInput.runtimeContext?.find((event) => event.status === 'failed');
+    assert.strictEqual(failed?.actions?.stateDelta?.failureClass, 'tool_failed');
+    assert.strictEqual(secondInput.context, undefined);
   });
 
   test('next parent turn excludes child run RuntimeEvents from model context', async () => {
@@ -9049,12 +9046,7 @@ describe('SessionManager permission mode updates', () => {
       secondInput.runtimeContext?.some((event) => event.turnId === 'child-turn'),
       false,
     );
-    assert.strictEqual(
-      secondInput.context.some(
-        (message) => message.type === 'user' && message.turnId === 'child-turn',
-      ),
-      false,
-    );
+    assert.strictEqual(secondInput.context, undefined);
   });
 
   test('stopSession owns an active Run and a parent turn admitted before reservation', async () => {
@@ -11098,8 +11090,7 @@ describe('SessionManager permission mode updates', () => {
           content: { kind: 'text', text: `source ${index}` },
         }),
       ),
-      summary: 'durable checkpoint before projection loss',
-      summaryFormat: 'legacy_freeform',
+      summary: sectionedSummary('durable checkpoint before projection loss'),
     });
     const durableEvent = makeRunEvent({
       sessionId: session.id,
@@ -12535,8 +12526,7 @@ class HistoryCompactCheckpointBackend implements AgentBackend {
           content: { kind: 'text', text: 'source' },
         },
       ],
-      summary: 'persist the bounded checkpoint',
-      summaryFormat: 'legacy_freeform',
+      summary: sectionedSummary('persist the bounded checkpoint'),
     });
     this.ctx.recordHistoryCompactCheckpoint?.(
       { ...checkpoint, checkpointId: 'hcheckpoint-test' },
@@ -12588,8 +12578,7 @@ class SameCoverageCheckpointReplacementProbeBackend implements AgentBackend {
         buildHistoryCompactCheckpoint({
           sessionId: this.sessionId,
           coveredRuntimeEvents,
-          summary: `${input.turnId} summary`,
-          summaryFormat: 'legacy_freeform',
+          summary: sectionedSummary(`${input.turnId} summary`),
           ...(current ? { previousCheckpointId: current.checkpointId } : {}),
         }),
         input.turnId,
@@ -12647,8 +12636,7 @@ class CheckpointRecorderContractProbeBackend implements AgentBackend {
         buildHistoryCompactCheckpoint({
           sessionId: this.sessionId,
           coveredRuntimeEvents,
-          summary: `${input.turnId} checkpoint`,
-          summaryFormat: 'legacy_freeform',
+          summary: sectionedSummary(`${input.turnId} checkpoint`),
         }),
         input.turnId,
       );

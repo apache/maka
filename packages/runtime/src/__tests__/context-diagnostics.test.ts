@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { sectionedSummary } from './history-compact-test-fixtures.js';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -1200,7 +1201,8 @@ function checkpointEvent(
           sourceDigest: `digest-${ts}`,
         },
         phase: 'pre_turn',
-        summary: 'Earlier context summary.',
+        summary: sectionedSummary('Earlier context summary.'),
+        summaryFormat: 'sections_v1',
         limitations: ['Estimated summary.'],
         estimatedTokens,
       },

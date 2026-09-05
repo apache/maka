@@ -27,14 +27,31 @@ test('a transcript drag releases outside the window through its owning Turn', as
   await composer.fill('pointer capture source');
   await composer.press('Enter');
 
-  const reply = page.getByText(/Fake backend received: pointer capture source/);
-  await expect(reply).toBeVisible();
   // Select from a settled answer. Selecting from a streaming one is broken for
   // an unrelated reason — see the fixme below — and this test exists to pin the
   // pointer-capture contract, not Selection survival across a stream close.
+  //
+  // Settled is three things, each landing on its own schedule after the
+  // footer: the lazy Markdown body has replaced its plain-text fallback (a
+  // drag begun in the fallback selects nodes about to be discarded), the
+  // stored turn has rendered (its timestamp row moves the answer down), and
+  // the transcript has written itself back to the tail.
+  const reply = page
+    .locator('[data-maka-contract="markdown"]')
+    .getByText(/Fake backend received: pointer capture source/);
+  await expect(reply).toBeVisible({ timeout: 20_000 });
   await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, {
     timeout: 20_000,
   });
+  await expect(page.getByRole('article', { name: '你发送的消息' }).locator('time')).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const root = document.querySelector('[data-chat-scroll-container="true"]')!;
+        return root.scrollHeight - root.scrollTop - root.clientHeight;
+      }),
+    )
+    .toBeLessThanOrEqual(4);
   const turn = reply.locator('xpath=ancestor::*[@data-turn-id][1]');
   const quoteLayer = page.locator('.maka-quote-actions');
   await turn.evaluate((element) => {

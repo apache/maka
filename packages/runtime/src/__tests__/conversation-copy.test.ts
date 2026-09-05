@@ -43,6 +43,7 @@ import {
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
 import { createWorkspaceRuntimeStore } from '@maka/storage/runtime-event-persistence';
+import { sectionedSummary } from './history-compact-test-fixtures.js';
 import { OPERATIONAL_STATE_DATABASE_NAME } from '@maka/storage/operational-state-store';
 import { createSqliteRuntimeStore } from '@maka/storage/sqlite-runtime-store';
 import {
@@ -1926,8 +1927,7 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
     const checkpoint = buildHistoryCompactCheckpoint({
       sessionId: 'session-source',
       coveredRuntimeEvents: sourceEvents.filter(isHistoryCompactContentEvent),
-      summary: 'The source turn called one opaque tool.',
-      summaryFormat: 'legacy_freeform',
+      summary: sectionedSummary('The source turn called one opaque tool.'),
       highWaterSeq: 3,
     });
     const providerCheckpoint = buildHistoryCompactCheckpoint({
@@ -2401,8 +2401,7 @@ test('conversation copy rebuilds an inline checkpoint without legacy child event
     const checkpoint = buildHistoryCompactCheckpoint({
       sessionId: 'session-source',
       coveredRuntimeEvents: sourceEvents.filter(isHistoryCompactContentEvent),
-      summary: 'Both retained turns are complete.',
-      summaryFormat: 'legacy_freeform',
+      summary: sectionedSummary('Both retained turns are complete.'),
       highWaterSeq: 5,
     });
     await runStore.appendEvent('session-source', 'run-2', {
@@ -2516,8 +2515,7 @@ test('conversation copy drops a checkpoint from a superseded source policy inste
     const current = buildHistoryCompactCheckpoint({
       sessionId: 'session-source',
       coveredRuntimeEvents: sourceEvents.filter(isHistoryCompactContentEvent),
-      summary: 'Everything so far is complete.',
-      summaryFormat: 'legacy_freeform',
+      summary: sectionedSummary('Everything so far is complete.'),
       highWaterSeq: 5,
     });
     const legacyPolicyCheckpoint = {
@@ -2688,8 +2686,7 @@ test('conversation copy rebuilds a resumed child checkpoint over its child run c
     const checkpoint = buildHistoryCompactCheckpoint({
       sessionId: 'session-source',
       coveredRuntimeEvents: childSourceEvents,
-      summary: 'The resumed child retained both child turns.',
-      summaryFormat: 'legacy_freeform',
+      summary: sectionedSummary('The resumed child retained both child turns.'),
       highWaterSeq: 8,
     });
     await runStore.appendEvent('session-source', 'run-child-2', {
