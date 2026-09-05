@@ -411,6 +411,9 @@ export const Composer = forwardRef<
       metadataContextWindow?: number;
       /** Open the Host-owned trace surface for this readout. */
       onOpen(): void;
+      /** Persist a model-level Maka window; undefined restores automatic behavior. */
+      onTargetChange?(target: number | undefined): void | Promise<void>;
+      targetChangePending?: boolean;
     };
     /**
      * Optional edit-and-resend banner above the composer. Desktop owns the
@@ -2135,21 +2138,20 @@ export const Composer = forwardRef<
                     showUnavailableStatus={props.showStaticModelUnavailableStatus}
                   />
                 )}
-                {props.activeSession ? (
                   <ThinkingLevelSelector
-                    levels={props.activeThinkingLevels ?? []}
-                    current={props.activeThinkingLevel}
-                    onChange={props.onThinkingLevelChange}
-                    disabled={!modelSwitchAvailability.available}
+                    levels={(props.activeSession ? props.activeThinkingLevels : props.newChatThinkingLevels) ?? []}
+                    current={props.activeSession ? props.activeThinkingLevel : props.newChatThinkingLevel}
+                    onChange={props.activeSession ? props.onThinkingLevelChange : props.onNewChatThinkingLevelChange}
+                    disabled={props.disabled || !modelSwitchAvailability.available || props.contextUsage?.targetChangePending}
                     disabledReason={thinkingSwitcherDisabledReason}
+                    contextTarget={props.contextUsage?.metadataContextWindow !== undefined && props.contextUsage.onTargetChange
+                      ? {
+                          modelMaximum: props.contextUsage.metadataContextWindow,
+                          current: props.contextUsage.declaredContextWindow,
+                          onChange: props.contextUsage.onTargetChange,
+                        }
+                      : undefined}
                   />
-                ) : (
-                  <ThinkingLevelSelector
-                    levels={props.newChatThinkingLevels ?? []}
-                    current={props.newChatThinkingLevel}
-                    onChange={props.onNewChatThinkingLevelChange}
-                  />
-                )}
                 {props.contextUsage ? <ContextUsageAction {...props.contextUsage} /> : null}
               </div>
               {/* The project decides where a NEW chat starts, which makes it a

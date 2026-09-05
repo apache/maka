@@ -94,6 +94,7 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
         )
         .map((choice) => choice.model),
       modelChoices: context.modelChoices,
+      setModelContextTarget: context.setModelContextTarget,
       subscribeModelCatalogChanges: context.subscribeModelCatalogChanges,
       connectionSlug: context.connectionSlug,
       connectionId: context.connectionId,

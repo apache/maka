@@ -59,6 +59,8 @@ import { getConversationCopy } from './conversation-copy.js';
 import type { ComposerModelSwitchAvailability } from './composer-helpers.js';
 
 const DEFAULT_THINKING_LEVEL = '__default__';
+const AUTO_CONTEXT_TARGET = '__auto__';
+const COMMON_CONTEXT_TARGETS = [256_000, 512_000] as const;
 
 function providerMarkIcon(
   providerType: ProviderType | undefined,
@@ -157,9 +159,8 @@ function ModelMenuItems(props: {
 }
 
 /**
- * Standalone thinking-level picker. Hidden when the active model has no
- * variants — the control does not appear as a disabled husk or change the
- * model menu's shape.
+ * One footer menu for thinking and the optional model context target.
+ * Automatic context adds no text; an explicit target is shown as Default[256K].
  */
 export function ThinkingLevelSelector(props: {
   levels: readonly ThinkingLevel[];
@@ -168,6 +169,11 @@ export function ThinkingLevelSelector(props: {
   disabled?: boolean;
   /** Why the control is locked (mid-turn etc.); replaces the action tooltip so the reason is discoverable, matching the model switcher beside it. */
   disabledReason?: string;
+  contextTarget?: {
+    modelMaximum: number;
+    current?: number;
+    onChange(target: number | undefined): void | Promise<void>;
+  };
 }) {
   const copy = getConversationCopy(useUiLocale()).model;
   const hasVariants = props.levels.length > 0 && Boolean(props.onChange);
@@ -179,10 +185,15 @@ export function ThinkingLevelSelector(props: {
     [copy.defaultLevel, copy.level, props.levels],
   );
 
-  if (!hasVariants) return null;
+  if (!hasVariants && !props.contextTarget) return null;
 
   const currentValue = props.current ?? DEFAULT_THINKING_LEVEL;
   const currentLabel = options.find((option) => option.value === currentValue)?.label ?? copy.defaultLevel;
+  const target = props.contextTarget;
+  const targetLabel = target?.current === undefined
+    ? copy.contextTargetAuto
+    : formatContextWindowTarget(target.current);
+  const label = target?.current === undefined ? currentLabel : `${currentLabel}[${targetLabel}]`;
 
   return (
     <DropdownMenu
@@ -190,35 +201,106 @@ export function ThinkingLevelSelector(props: {
       hasChevron={false}
       className="maka-composer-quiet-menu"
       button={{
-        label: currentLabel,
+        label,
         variant: 'ghost',
         size: 'sm',
         isDisabled: props.disabled,
-        tooltip: props.disabledReason ?? copy.changeThinkingLevel,
+        tooltip: props.disabledReason ?? (target ? copy.changeContextTarget : copy.changeThinkingLevel),
         className: 'maka-thinking-level-selector',
-        'aria-label': `${copy.thinkingLevel}: ${currentLabel}`,
+        'aria-label': `${copy.thinkingLevel}: ${currentLabel}${target ? `; ${copy.contextTarget}: ${targetLabel}` : ''}`,
       }}
     >
-      <DropdownMenuRadioGroup
-        value={currentValue}
-        label={`${copy.thinkingLevel}: ${currentLabel}`}
-        onChange={(value) => {
-          void props.onChange?.(
-            value === DEFAULT_THINKING_LEVEL ? undefined : (value as ThinkingLevel),
-          );
-        }}
-      >
-        {options.map((option) => (
+      {hasVariants ? (
+        <DropdownMenuRadioGroup
+          value={currentValue}
+          label={`${copy.thinkingLevel}: ${currentLabel}`}
+          onChange={(value) => {
+            void props.onChange?.(
+              value === DEFAULT_THINKING_LEVEL ? undefined : (value as ThinkingLevel),
+            );
+          }}
+        >
+          {target ? (
+            <div className="maka-model-menu-group-heading" aria-hidden="true">{copy.thinkingLevel}</div>
+          ) : null}
+          {options.map((option) => (
+            <DropdownMenuRadioItem
+              key={option.value}
+              value={option.value}
+              label={option.label}
+              endContent={option.value === currentValue ? currentCheck : undefined}
+              isDisabled={props.disabled}
+            />
+          ))}
+        </DropdownMenuRadioGroup>
+      ) : null}
+      {target ? <ContextWindowTargetItems {...target} disabled={props.disabled} /> : null}
+    </DropdownMenu>
+  );
+}
+
+/** Suggested targets up to the model's known maximum, plus the maximum itself. */
+export function contextWindowTargetOptions(
+  modelMaximum: number,
+  current?: number,
+): number[] {
+  const options = [
+    ...COMMON_CONTEXT_TARGETS.filter((target) => target <= modelMaximum),
+    modelMaximum,
+    ...(current === undefined ? [] : [current]),
+  ];
+  return [...new Set(options)].sort((left, right) => left - right);
+}
+
+function formatContextWindowTarget(tokens: number): string {
+  if (tokens >= 1_000_000 && tokens % 1_000_000 === 0) return `${tokens / 1_000_000}M`;
+  if (tokens >= 1_000 && tokens % 1_000 === 0) return `${tokens / 1_000}K`;
+  return tokens.toLocaleString('en-US');
+}
+
+/** Model-level Maka window. It controls proactive compaction, not the provider limit. */
+function ContextWindowTargetItems(props: {
+  modelMaximum: number;
+  current?: number;
+  onChange?(target: number | undefined): void | Promise<void>;
+  disabled?: boolean;
+}) {
+  const copy = getConversationCopy(useUiLocale()).model;
+  const options = contextWindowTargetOptions(props.modelMaximum, props.current);
+  const currentValue = props.current === undefined ? AUTO_CONTEXT_TARGET : String(props.current);
+  const currentLabel = props.current === undefined
+    ? copy.contextTargetAuto
+    : formatContextWindowTarget(props.current);
+
+  return (
+    <DropdownMenuRadioGroup
+      value={currentValue}
+      label={`${copy.contextTarget}: ${currentLabel}`}
+      onChange={(value) => {
+        void props.onChange?.(value === AUTO_CONTEXT_TARGET ? undefined : Number(value));
+      }}
+    >
+      <div className="maka-model-menu-group-heading" aria-hidden="true">{copy.contextTarget}</div>
+      <DropdownMenuRadioItem
+        value={AUTO_CONTEXT_TARGET}
+        label={copy.contextTargetAuto}
+        description={copy.contextTargetAutoHelp}
+        endContent={currentValue === AUTO_CONTEXT_TARGET ? currentCheck : undefined}
+        isDisabled={props.disabled}
+      />
+      {options.map((target) => {
+        const label = formatContextWindowTarget(target);
+        return (
           <DropdownMenuRadioItem
-            key={option.value}
-            value={option.value}
-            label={option.label}
-            endContent={option.value === currentValue ? currentCheck : undefined}
+            key={target}
+            value={String(target)}
+            label={target === props.modelMaximum ? copy.contextTargetModelMax(label) : label}
+            endContent={currentValue === String(target) ? currentCheck : undefined}
             isDisabled={props.disabled}
           />
-        ))}
-      </DropdownMenuRadioGroup>
-    </DropdownMenu>
+        );
+      })}
+    </DropdownMenuRadioGroup>
   );
 }
 

@@ -158,6 +158,22 @@ export interface RelayModelProfile {
 
 export type RelayModelProfiles = Readonly<Record<string, RelayModelProfile>>;
 
+/** Update only the selected model's compaction target, preserving other declarations. */
+export function modelProfilesWithContextTarget(
+  profiles: RelayModelProfiles | undefined,
+  modelId: string,
+  target: number | undefined,
+): RelayModelProfiles | null {
+  const { contextWindow: _contextWindow, ...otherDeclarations } = profiles?.[modelId] ?? {};
+  const nextProfile: RelayModelProfile =
+    target === undefined ? otherDeclarations : { ...otherDeclarations, contextWindow: target };
+  const { [modelId]: _currentProfile, ...otherProfiles } = profiles ?? {};
+  if (Object.keys(nextProfile).length === 0) {
+    return Object.keys(otherProfiles).length > 0 ? otherProfiles : null;
+  }
+  return { ...otherProfiles, [modelId]: nextProfile };
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

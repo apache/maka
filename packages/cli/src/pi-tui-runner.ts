@@ -78,6 +78,7 @@ import type {
   MakaOnboardingSurface,
   MakaPiTuiTurnActivitySurface,
   ModelChoice,
+  ModelContextTargetUpdate,
   OnboardingIdentityChoice,
   OnboardingProviderEntry,
   SessionRecapGenerator,
@@ -189,6 +190,8 @@ import { getTuiPrimaryGuidance } from './tui-primary-guidance.js';
 import { TUI_COPY_RESOURCES } from './tui-copy-catalog.js';
 import type { GoalControlAction, GoalProjection } from '@maka/runtime-host/protocol';
 
+import { parseContextTarget } from './model-context-target.js';
+
 export interface MakaPiTuiInput {
   /** Launcher command used in resume and recovery instructions. */
   cliCommand?: string;
@@ -212,6 +215,7 @@ export interface MakaPiTuiInput {
   permissionMode: PermissionMode;
   /** Maximum context tokens for the active model, for the statusline ctx segment. */
   modelContextWindow?: number;
+  setModelContextTarget?: (input: ModelContextTargetUpdate) => Promise<void>;
   terminal?: Terminal;
   /**
    * Whether turns and control actions publish terminal taskbar progress.
@@ -648,6 +652,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     orchestrationMode,
     thinkingLevel,
     thinkingLevels: currentThinkingLevels(),
+    declaredContextWindow: currentModelChoice()?.declaredContextWindow,
     sessionId: input.driver.getSessionId(),
     busy,
     usage: state.usage,
@@ -3501,20 +3506,44 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const slashCommandHandlers = {
     context: {
       description: primaryGuidance.commands.context,
-      // Read-only diagnostics, but runControl-gated: mid-turn it would
-      // silently no-op on the busy gate, so refuse loudly instead.
+      // Diagnostics and target changes share the same control lock.
       midTurn: 'refuse',
       run: (parts: string[]) => {
-        if (parts.length !== 1) {
+        if (parts.length > 2) {
           state.entries.push({
             kind: 'notice',
             level: 'error',
-            text: 'Usage: /context',
+            text: pickerCopy.contextTargetUsage,
           });
           requestRender();
           return;
         }
         void runControl(async () => {
+          if (parts.length === 2) {
+            const selected = currentModelChoice();
+            if (!selected || !input.setModelContextTarget) {
+              throw new Error('Context target settings are unavailable for this model.');
+            }
+            const target = parseContextTarget(parts[1]!);
+            await input.setModelContextTarget({
+              connectionId: selected.connectionId,
+              connectionSlug: selected.connectionSlug,
+              model: selected.model,
+              target,
+            });
+            modelChoices = modelChoices?.map((choice) =>
+              choice.connectionId === selected.connectionId && choice.model === selected.model
+                ? { ...choice, declaredContextWindow: target }
+                : choice,
+            );
+            state.entries.push({
+              kind: 'notice',
+              level: 'info',
+              text: `${pickerCopy.contextTarget}: ${target === undefined ? pickerCopy.contextTargetAuto : formatContextCount(target)}. ${pickerCopy.contextTargetScope}`,
+            });
+            requestRender();
+            return;
+          }
           const diagnostics: ContextDiagnostics = input.driver.getContextDiagnostics
             ? await input.driver.getContextDiagnostics()
             : { status: 'unavailable', reason: 'trace_unavailable' };

@@ -134,7 +134,6 @@ export const ALLOWED_VISIBLE_LITERALS = {
     'Goal cleared.',
     'Goal cleared.',
     'The goal no longer exists.',
-    'Usage: /context',
     'Usage: /thinking ${…}',
     'default',
     'Usage: /compact',
