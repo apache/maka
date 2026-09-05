@@ -750,17 +750,15 @@ export function useWorkbarController(
   // Keep one WorkbarSurface mounted for the whole linked Session scope. This
   // avoids remounting every tool when the first/last Side Chat tab appears and
   // lets each tool receive the new sessionId and reset its own session data.
-  const sideConversationSurfaceKeyRef = useRef<string | undefined>(undefined);
   const sideConversationSurfaceKey = useMemo(() => {
     const familyRoot = linkedSideConversationFamilyRootId(
       familySessionForSideChat,
       familySessionsForSideChat,
     );
     if (familyRoot !== undefined) {
-      sideConversationSurfaceKeyRef.current = familyRoot;
       return familyRoot;
     }
-    return sideConversationSurfaceKeyRef.current ?? activeSessionId;
+    return activeSessionId;
   }, [activeSessionId, familySessionForSideChat, familySessionsForSideChat]);
   const hostPanelsState = useMemo(
     () =>
