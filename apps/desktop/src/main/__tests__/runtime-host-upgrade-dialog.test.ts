@@ -73,9 +73,9 @@ test('maps the non-default replacement choice to the replace decision', async ()
   const prompts = createRuntimeHostUpgradePrompts(
     async () => 'en',
     async (options) => {
-      assert.deepEqual(options.buttons, ['Stop Host and Continue', 'Wait', 'Cancel Startup']);
-      assert.equal(options.defaultId, 2);
-      assert.equal(options.cancelId, 2);
+      assert.deepEqual(options.buttons, ['Stop Host and Continue', 'Cancel Startup']);
+      assert.equal(options.defaultId, 1);
+      assert.equal(options.cancelId, 1);
       assert.match(options.detail ?? '', /Maka will stop this Host/);
       return { response: 0, checkboxChecked: false };
     },

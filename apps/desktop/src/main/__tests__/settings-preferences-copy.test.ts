@@ -27,9 +27,9 @@ import { getBotSettingsCopy } from '../../renderer/locales/settings-bot-copy.js'
 test('language selector offers every preference with locale-appropriate labels', () => {
   assert.deepEqual(getSettingsPreferencesCopy('zh-CN').personalization.localeOptions, [
     ['auto', '跟随系统'],
-    ['zh-CN', '简体中文'],
-    ['zh-TW', '繁體中文'],
+    ['zh-CN', '中文'],
     ['en', 'English'],
+    ['ko', '한국어'],
   ]);
   assert.deepEqual(getSettingsPreferencesCopy('zh-TW').personalization.localeOptions, [
     ['auto', '自動（跟隨系統）'],
@@ -39,9 +39,15 @@ test('language selector offers every preference with locale-appropriate labels',
   ]);
   assert.deepEqual(getSettingsPreferencesCopy('en').personalization.localeOptions, [
     ['auto', 'Follow system'],
-    ['zh-CN', 'Simplified Chinese'],
-    ['zh-TW', 'Traditional Chinese'],
+    ['zh-CN', '中文'],
     ['en', 'English'],
+    ['ko', '한국어'],
+  ]);
+  assert.deepEqual(getSettingsPreferencesCopy('ko').personalization.localeOptions, [
+    ['auto', '시스템 설정 따름'],
+    ['zh-CN', '中文'],
+    ['en', 'English'],
+    ['ko', '한국어'],
   ]);
 });
 
