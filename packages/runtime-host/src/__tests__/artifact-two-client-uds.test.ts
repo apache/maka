@@ -21,7 +21,7 @@ import { withTimeout } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { fork, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { link, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { link, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -55,20 +55,18 @@ const PROTECTED_ARTIFACTS = [
   { id: 'tool-result-archive', source: 'tool_result_archive' },
 ] as const;
 
-test('production Host recovers Artifact publication and preserves deletes across owner death', {
+test('production Host ignores Artifact publication residue and preserves deletes across owner death', {
   timeout: 120_000,
 }, async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-artifacts-'));
   const root = join(base, 'root');
   const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
   const { sessionId, otherSessionId } = await seedExecutionRoot(capability, root);
-  const residue = await createPublicationResidue(root, sessionId);
+  await createPublicationResidue(root, sessionId);
   let firstHost: ExecutionHostHandle | undefined;
   let successor: ExecutionHostHandle | undefined;
   try {
     firstHost = await startHost(root, capability.rootId);
-    await assert.rejects(() => stat(residue.stagingPath), { code: 'ENOENT' });
-    await assert.rejects(() => stat(residue.targetPath), { code: 'ENOENT' });
 
     const desktop = await connectClient(root);
     const tui = await connectClient(root);
@@ -368,10 +366,7 @@ async function seedExecutionRoot(
   }
 }
 
-async function createPublicationResidue(
-  root: string,
-  sessionId: string,
-): Promise<{ stagingPath: string; targetPath: string }> {
+async function createPublicationResidue(root: string, sessionId: string): Promise<void> {
   const sessionDirectory = join(root, 'artifacts', sessionId);
   await mkdir(sessionDirectory, { recursive: true });
   const targetPath = join(sessionDirectory, 'publication-residue-residue.txt');
@@ -382,7 +377,6 @@ async function createPublicationResidue(
   );
   await writeFile(stagingPath, 'uncommitted publication', { flag: 'wx' });
   await link(stagingPath, targetPath);
-  return { stagingPath, targetPath };
 }
 
 async function startHost(root: string, rootId: string): Promise<ExecutionHostHandle> {
