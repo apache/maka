@@ -112,7 +112,6 @@ import {
   hasActiveTurnAtSubmit,
   mergeWorkspaceReferences,
   rebaseWorkspaceFileReferences,
-  resolveFollowUpModeAtSubmit,
 } from './follow-up-submit-routing';
 import {
   PlanExecutionPanel,
@@ -396,14 +395,14 @@ function AppShellContent({
     reportError: reportTaskEntryError,
     manageProjects: openProjectSettings,
   });
-  // Named on its own because the rail depends on it: `taskEntry.commands` is a
-  // fresh object every render, so depending on the bag rather than the command
-  // would rebuild the rail's Project rows on every AppShell commit (#4109).
+  /* Named on its own because the rail depends on it: `taskEntry.commands` is a
+   * fresh object every render, so depending on the bag rather than the command
+   * would rebuild the rail's Project rows on every AppShell commit (#4109). */
   const { selectLocalProject } = taskEntry.commands;
   const currentNewTaskDraftKey = taskEntry.selectors.draftKey;
-  // Staged files and quotes do NOT take the target-scoped key: they belong to
-  // the composer the user is looking at, and an in-flight send needs an owner
-  // that cannot move under it. See NEW_TASK_PENDING_KEY.
+  /* Staged files and quotes do NOT take the target-scoped key: they belong to
+   * the composer the user is looking at, and an in-flight send needs an owner
+   * that cannot move under it. See NEW_TASK_PENDING_KEY. */
   const attachmentDraftKey = activeId ?? NEW_TASK_PENDING_KEY;
   const directoryHostId = activeId
     ? (activeCatalogSession?.profileKind === 'local'
@@ -441,19 +440,19 @@ function AppShellContent({
     clearQuotes,
     restoreQuotes,
   } = useAppShellComposerQuotes({ draftKey: attachmentDraftKey });
-  // Held for the whole of sendOwningItsTarget; see ChatComposerRegion.
+  /* Held for the whole of sendOwningItsTarget; see ChatComposerRegion. */
   const [newTaskSendPending, setNewTaskSendPending] = useState(false);
-  // What a new chat will start with, held the way the Session holds it: a
-  // Plan toggle and one orchestration value, not one fused choice.
+  /* What a new chat will start with, held the way the Session holds it: a
+   * Plan toggle and one orchestration value, not one fused choice. */
   const [newChatPlanModeActive, setNewChatPlanModeActive] = useState(false);
   const [newChatOrchestrationMode, setNewChatOrchestrationMode] = useState<OrchestrationMode>('default');
   const [newTaskPermissionChoice, setNewTaskPermissionChoice, clearNewTaskPermissionChoice] =
     useNewTaskChoice<ChatDefaultPermissionMode>(currentNewTaskDraftKey);
   const [historyLoadPendingSessionId, setHistoryLoadPendingSessionId] = useState<string>();
-  // The state above is what the transcript renders; this is what the guard
-  // reads. A scroller can ask twice in one task — two scroll events before
-  // React has re-rendered anything — and a state read is still the old value
-  // for both of them.
+  /* The state above is what the transcript renders; this is what the guard
+   * reads. A scroller can ask twice in one task — two scroll events before
+   * React has re-rendered anything — and a state read is still the old value
+   * for both of them. */
   const historyLoadPendingRef = useRef(false);
   const [transcriptTurnIndex, setTranscriptTurnIndex] = useState<{
     sessionId: string;
@@ -540,8 +539,8 @@ function AppShellContent({
       unsubscribe();
     };
   }, [setNavSelection]);
-  // #1985: the shell's complete read of session UI state. See the hook for why
-  // the two token-rate maps are absent.
+  /* #1985: the shell's complete read of session UI state. See the hook for why
+   * the two token-rate maps are absent. */
   const {
     messageLoadErrorBySession,
     messageRetryPendingBySession,
@@ -552,8 +551,8 @@ function AppShellContent({
     streamingSessionIds,
     activeLiveTurnSnapshot,
   } = useAppShellSessionUiReads(sessionUiController, activeId);
-  // The chat surface follows the active Session's Host. Settings and global
-  // commands remain owned by the default Host.
+  /* The chat surface follows the active Session's Host. Settings and global
+   * commands remain owned by the default Host. */
   const { memoryActive, refreshMemoryActive } = useShellMemoryPill({
     toastApi,
     uiLocale,
@@ -716,10 +715,10 @@ function AppShellContent({
   }, []);
 
   const updateReminder = updateReminderFromStatus(appUpdateStatus);
-  // Dispatches on the task, not on the raw status: the footer is this
-  // callback's only caller and it only renders for the two states above, so
-  // reading the status again here would be the same "who needs the user" list
-  // maintained twice.
+  /* Dispatches on the task, not on the raw status: the footer is this
+   * callback's only caller and it only renders for the two states above, so
+   * reading the status again here would be the same "who needs the user" list
+   * maintained twice. */
   const openUpdateDownload = useCallback(() => {
     if (updateReminder?.state === 'downloaded') {
       if (updateInstallInFlightRef.current) return;
@@ -770,9 +769,9 @@ function AppShellContent({
         );
       });
   }, [updateReminder, shellCopy, toastApi, uiLocale]);
-  // Persisted composer defaults seed the empty-state model, project path, and
-  // recent workspace history so the home view is populated before the async
-  // `app:info` round-trip completes on mount.
+  /* Persisted composer defaults seed the empty-state model, project path, and
+   * recent workspace history so the home view is populated before the async
+   * `app:info` round-trip completes on mount. */
   const persistedComposerDefaults = loadComposerDefaults();
   const [helpOpen, closeHelp, openHelp] = useKeyboardHelp();
   const [paletteOpen, openPalette, closePalette] = useCommandPalette();
@@ -1822,6 +1821,14 @@ function AppShellContent({
     });
   }
 
+  const stop = createAppShellStopAction({
+    uiLocale,
+    activeIdRef,
+    stopPending: sessionUiController.stopPending,
+    removeTransientMessage,
+    toastApi,
+  });
+
   /**
    * The send the composer calls, wrapped so the new-task target cannot move
    * out from under it (#3408). `sendCurrent` captures the draft key it
@@ -1912,11 +1919,8 @@ function AppShellContent({
     const runningTurnIds = sessionId
       ? sessionsRef.current.find((session) => session.id === sessionId)?.runningTurnIds
       : undefined;
-    const followUpAtSubmit = resolveFollowUpModeAtSubmit({
-      requestedMode: metadata?.followUpMode,
-      hasActiveTurn: hasActiveTurnAtSubmit({ liveTurn, runningTurnIds }),
-      slashCommand,
-    });
+    const hasActiveTurn = hasActiveTurnAtSubmit({ liveTurn, runningTurnIds });
+    const followUpAtSubmit = !slashCommand ? metadata?.followUpMode : undefined;
     if (sessionId && followUpAtSubmit) {
       const queued = await enqueueFollowUp(sessionId, text, followUpAtSubmit, {
         ...metadata,
@@ -1925,6 +1929,7 @@ function AppShellContent({
       if (queued) delete retractedWorkspaceReferencesRef.current[sessionId];
       return queued;
     }
+    if (sessionId && hasActiveTurn && !slashCommand && !(await stop())) return false;
     if (
       revisionSend &&
       revision &&
@@ -2175,14 +2180,6 @@ function AppShellContent({
       window.maka.sessions.reorderQueueEntries(sessionId, entryIds).then(() => undefined)
     );
   }
-
-  const stop = createAppShellStopAction({
-    uiLocale,
-    activeIdRef,
-    stopPending: sessionUiController.stopPending,
-    removeTransientMessage,
-    toastApi,
-  });
 
   const [sessionDisplayBatch] = useState(createAppShellSessionDisplayBatch);
   const {

@@ -5565,6 +5565,208 @@ describe('AiSdkBackend model history', () => {
     assert.equal(usage?.type === 'token_usage' ? usage.total : undefined, 2);
   });
 
+  test('stops an unbounded loop after consecutive identical empty tool steps', async () => {
+    // Desktop often omits maxSteps. A model that repeats the same tool call with
+    // no visible text would otherwise flood empty assistant rows forever (#4083).
+    const loop = countingToolLoopModel(undefined, true);
+    const durable = durableTurnHarness('turn-empty-loop', 'keep going');
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => loop.model,
+      tools: [testTool('Read', z.object({ path: z.string() }))],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    const events = await drainDurably(backend.send(durable.input()), durable);
+    assert.equal(loop.callCount(), 3);
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'step_limit');
+    assert.equal(events.filter((event) => event.type === 'tool_start').length, 3);
+  });
+
+  test('stops an unbounded loop when empty tool steps alternate between signatures', async () => {
+    // A consecutive-only counter resets on A→B→A→B. The recent window must still
+    // treat that as no distinct progress once it fills with fewer distinct
+    // signatures than steps (#4083).
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        const path = calls % 2 === 1 ? 'notes-a.md' : 'notes-b.md';
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: 'stream-start', warnings: [] },
+              {
+                type: 'tool-call',
+                toolCallId: `tool-${calls}`,
+                toolName: 'Read',
+                input: JSON.stringify({ path }),
+              },
+              {
+                type: 'finish',
+                finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                usage: emptyUsage(),
+              },
+            ],
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const durable = durableTurnHarness('turn-empty-alternating-loop', 'keep going');
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [testTool('Read', z.object({ path: z.string() }))],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    const events = await drainDurably(backend.send(durable.input()), durable);
+    assert.equal(calls, 6);
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'step_limit');
+    assert.equal(events.filter((event) => event.type === 'tool_start').length, 6);
+  });
+
+  test('stops an unbounded loop when Responses reasoning-end is only an empty carrier', async () => {
+    // OpenAI Responses emits `{ kind: 'thinking', text: '' }` at reasoning-end
+    // whenever provider metadata is present. That carrier must not count as
+    // visible thinking, or identical textless tool steps never reach the cap.
+    const reasoningMetadata = {
+      openai: {
+        itemId: 'rs_empty',
+        reasoningEncryptedContent: 'encrypted-carrier',
+      },
+    };
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: 'stream-start', warnings: [] },
+              { type: 'reasoning-start', id: 'r1', providerMetadata: reasoningMetadata },
+              { type: 'reasoning-end', id: 'r1', providerMetadata: reasoningMetadata },
+              {
+                type: 'tool-call',
+                toolCallId: `tool-${calls}`,
+                toolName: 'Read',
+                input: JSON.stringify({ path: 'notes.md' }),
+              },
+              {
+                type: 'finish',
+                finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                usage: emptyUsage(),
+              },
+            ],
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const durable = durableTurnHarness('turn-empty-responses-loop', 'keep going');
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [testTool('Read', z.object({ path: z.string() }))],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    const events = await drainDurably(backend.send(durable.input()), durable);
+    assert.equal(calls, 3);
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'step_limit');
+    assert.equal(events.filter((event) => event.type === 'tool_start').length, 3);
+  });
+
+  test('stops an unbounded loop when only a thinking signature accompanies identical tool calls', async () => {
+    // Anthropic can emit omitted/redacted reasoning as a standalone signature
+    // with no text. The signature must persist for replay, but must not count
+    // as visible thinking or the empty-step cap never fires (#4083).
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: 'stream-start', warnings: [] },
+              { type: 'reasoning-start', id: 'r1' },
+              {
+                type: 'reasoning-delta',
+                id: 'r1',
+                delta: '',
+                providerMetadata: { anthropic: { signature: `sig-${calls}` } },
+              },
+              { type: 'reasoning-end', id: 'r1' },
+              {
+                type: 'tool-call',
+                toolCallId: `tool-${calls}`,
+                toolName: 'Read',
+                input: JSON.stringify({ path: 'notes.md' }),
+              },
+              {
+                type: 'finish',
+                finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                usage: emptyUsage(),
+              },
+            ],
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const durable = durableTurnHarness('turn-empty-signature-loop', 'keep going');
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [testTool('Read', z.object({ path: z.string() }))],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    const events = await drainDurably(backend.send(durable.input()), durable);
+    assert.equal(calls, 3);
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'step_limit');
+    assert.equal(events.filter((event) => event.type === 'tool_start').length, 3);
+    assert.ok(
+      events.some(
+        (event) =>
+          event.type === 'thinking_complete' && event.signature !== undefined && event.text === '',
+      ),
+      'signature-only reasoning must still persist',
+    );
+  });
+
   test('aborting during post-stream persistence wins over step-limit completion', async () => {
     const loop = countingToolLoopModel();
     const gate = makeGate();
@@ -15824,7 +16026,10 @@ function planExecution(status: 'completed' | 'cancelled') {
   };
 }
 
-function countingToolLoopModel(toolCallsBeforeStop?: number): {
+function countingToolLoopModel(
+  toolCallsBeforeStop?: number,
+  repeatToolInput = false,
+): {
   model: MockLanguageModelV4;
   callCount: () => number;
 } {
@@ -15854,7 +16059,7 @@ function countingToolLoopModel(toolCallsBeforeStop?: number): {
               type: 'tool-call',
               toolCallId: `tool-${calls}`,
               toolName: 'Read',
-              input: JSON.stringify({ path: `notes-${calls}.md` }),
+              input: JSON.stringify({ path: repeatToolInput ? 'notes.md' : `notes-${calls}.md` }),
             },
             {
               type: 'finish',

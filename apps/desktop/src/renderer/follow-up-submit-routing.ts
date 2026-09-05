@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { FollowUpMode, InlineReference } from '@maka/core/events';
+import type { InlineReference } from '@maka/core/events';
 
 export interface WorkspaceFileReferencePosition {
   value: string;
@@ -30,21 +30,6 @@ export function hasActiveTurnAtSubmit(input: {
 }): boolean {
   if (input.liveTurn?.terminal !== true && input.liveTurn !== undefined) return true;
   return input.runningTurnIds?.some((turnId) => turnId !== input.liveTurn?.turnId) === true;
-}
-
-export function resolveFollowUpModeAtSubmit(input: {
-  requestedMode?: FollowUpMode;
-  hasActiveTurn: boolean;
-  /** The parsed command, if the text was one. Only its presence matters here. */
-  slashCommand: object | null;
-}): FollowUpMode | undefined {
-  // A slash command tells the app to do something; it is not text for the
-  // Turn that happens to be running. Dispatch it instead of queueing it.
-  if (input.slashCommand) return undefined;
-  if (input.requestedMode) return input.requestedMode;
-  // Mid-turn submits always queue; Shift+Enter carries the one-shot steer as
-  // the requested mode.
-  return input.hasActiveTurn ? 'queue' : undefined;
 }
 
 export function mergeWorkspaceReferences(

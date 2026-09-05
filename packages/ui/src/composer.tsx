@@ -308,7 +308,7 @@ export const Composer = forwardRef<
       text: string,
       metadata?: ComposerSendMetadata,
     ): boolean | void | Promise<boolean | void>;
-    onStop(): void | Promise<void>;
+    onStop(): boolean | void | Promise<boolean | void>;
     onPickAttachments?(): void | Promise<void>;
     onPickDirectory?(): void | Promise<void>;
     pendingDirectories?: readonly import('@maka/core/events').DirectoryReference[];
@@ -1301,8 +1301,9 @@ export const Composer = forwardRef<
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    // Mid-turn the host queues the draft as a follow-up by default; only
-    // Shift+Enter (see onInputKeyDown) steers it into the active Turn.
+    // Mid-turn the host used to queue the draft as a follow-up by default; plain
+    // Enter now interrupts and starts a new root (#4083). Shift+Enter (see
+    // onInputKeyDown) still steers into the active Turn.
     void sendCurrent();
   }
 
@@ -1366,7 +1367,8 @@ export const Composer = forwardRef<
     }
     if (event.key !== 'Enter') return;
     // Alt+Enter always inserts a line break. During a running turn, Shift+Enter
-    // steers this one draft into the active Turn; plain Enter queues it.
+    // steers this one draft into the active Turn; plain Enter interrupts and
+    // starts a new root (#4083).
     if (event.altKey || (event.shiftKey && !props.streaming)) {
       event.preventDefault();
       document.execCommand('insertLineBreak');
@@ -1455,9 +1457,9 @@ export const Composer = forwardRef<
   // One slot, one button, two states — Astryx's send/stop toggle. Mid-turn an
   // empty draft has nothing to submit, so the slot is Stop; the moment there is
   // a draft, handing it over is the only meaningful action there and the button
-  // returns to Send (the host queues it as a follow-up). Stop is not lost in
-  // that window: Esc interrupts from the input, which is where the hands already
-  // are.
+  // returns to Send (the host interrupts then starts a new root, #4083). Stop is
+  // not lost in that window: Esc interrupts from the input, which is where the
+  // hands already are.
   const stopShown = props.streaming === true && !text.trim();
   // The pending plate renders the follow-up queue only: steering entries are
   // already handed to the active Turn and leave the plate at that moment.

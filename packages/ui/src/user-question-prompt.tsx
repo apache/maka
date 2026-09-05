@@ -34,7 +34,7 @@ import { getConversationCopy } from './conversation-copy.js';
 export function UserQuestionPrompt(props: {
   request: UserQuestionRequestEvent;
   onRespond(response: UserQuestionResponse): void | Promise<void>;
-  onStop(): void | Promise<void>;
+  onStop(): boolean | void | Promise<boolean | void>;
   stopPending?: boolean;
 }) {
   const copy = getConversationCopy(useUiLocale()).questions;

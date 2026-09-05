@@ -159,6 +159,13 @@ interface ReactiveFixtureOptions {
   providerNative?: boolean;
   /** Explicit send-level step budget forwarded to the backend. */
   maxSteps?: number;
+  /**
+   * Give each scripted `tool` step a distinct Read path. Needed when a test
+   * chains several textless tool steps: the Runtime empty-step cap (#4083)
+   * stops consecutive identical tool signatures, which would otherwise look
+   * like a stuck loop rather than intentional context growth.
+   */
+  distinctToolPaths?: boolean;
   /** The FIRST tool step reports an unusable usage object (no token counts). */
   firstStepUsageMissing?: boolean;
   /** Tool-search availability with the deferred `Big` tool. */
@@ -399,7 +406,9 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
     }
     const chunks =
       kind === 'tool'
-        ? toolCallChunks(call, 'Read', { path: 'one.md' })
+        ? toolCallChunks(call, 'Read', {
+            path: options.distinctToolPaths ? `one-${call}.md` : 'one.md',
+          })
         : kind === 'bigtool'
           ? toolCallChunks(call, 'Read', { path: 'big.md' }, RETRY_STEP_TEXT_SENTINEL)
           : kind === 'bigread'
@@ -1506,9 +1515,11 @@ describe('reactive overflow recovery in the streaming backend', () => {
     // Review P1-1 repro: four completed tool steps grow the provider-visible
     // request far beyond the attempt's INITIAL messages. Recovery must fold the
     // durable rejected-request history rather than relying on that stale base;
-    // same-turn tool growth must remain recoverable.
+    // same-turn tool growth must remain recoverable. Distinct paths keep this
+    // growth from matching the identical empty-step cap (#4083).
     const fixture = buildReactiveFixture({
       script: ['tool', 'tool', 'tool', 'tool', 'overflow', 'done'],
+      distinctToolPaths: true,
     });
     await runTurn(fixture);
 
@@ -1520,7 +1531,7 @@ describe('reactive overflow recovery in the streaming backend', () => {
     assert.equal(fixture.recorded.length, 1);
     assert.equal(fixture.model.doStreamCalls.length, 6);
     // The four completed tool steps ran exactly once each.
-    assert.deepEqual(fixture.toolExecutions, ['one.md', 'one.md', 'one.md', 'one.md']);
+    assert.deepEqual(fixture.toolExecutions, ['one-1.md', 'one-2.md', 'one-3.md', 'one-4.md']);
   });
 
   test('an unusable first-attempt step usage fails the whole record closed even when the retry succeeds', async () => {

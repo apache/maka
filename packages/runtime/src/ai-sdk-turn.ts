@@ -589,6 +589,19 @@ const MAX_INCOMPLETE_STREAM_RETRIES_PER_STEP = 1;
 // 2026-08-28 incident shape) would otherwise spend the full attempt budget
 // accumulating fragments before failing anyway, so fail fast after one.
 const MAX_SEALED_THINKING_RETRIES_PER_STEP = 1;
+/**
+ * Desktop interactive turns often omit `maxSteps`, so a model that keeps
+ * emitting textless tool-only steps can loop forever and flood the transcript
+ * with empty AI replies (#4083). Ordinary multi-step tool workflows and an
+ * explicit `maxSteps` remain authoritative.
+ *
+ * Identical consecutive signatures still trip after three repeats. Alternating
+ * textless signatures (A B A B …) bypass a consecutive-only counter, so the
+ * recent window also stops when it fills with fewer distinct signatures than
+ * steps — i.e. the window shows no distinct progress.
+ */
+const MAX_CONSECUTIVE_IDENTICAL_EMPTY_STEPS = 3;
+const EMPTY_STEP_SIGNATURE_WINDOW = 6;
 const PROVIDER_RETRY_BASE_DELAY_MS = 1_000;
 const PROVIDER_RETRY_MAX_DELAY_MS = 32_000;
 const PROVIDER_RETRY_JITTER_FACTOR = 0.25;
@@ -1428,7 +1441,17 @@ export class AiSdkTurn {
         let providerOutcome: ModelStepOutcome;
         let finishReason: ModelFinishReason = 'stop';
         let terminalProviderError: unknown;
+        let consecutiveIdenticalEmptySteps = 0;
+        let previousEmptyStepSignature: string | undefined;
+        const recentEmptyStepSignatures: string[] = [];
+        const clearEmptyStepProgress = (): void => {
+          consecutiveIdenticalEmptySteps = 0;
+          previousEmptyStepSignature = undefined;
+          recentEmptyStepSignatures.length = 0;
+        };
         agentLoop: for (;;) {
+          let stepSawVisibleText = false;
+          let stepSawThinking = false;
           await this.drainSteeringInto(input, queue);
           if (this.deps.backend.loadTurnRuntimeEvents) {
             requestMessages = await loadDurableTurnProjection();
@@ -1796,7 +1819,10 @@ export class AiSdkTurn {
               } else if (event.kind === 'text') {
                 if (event.text.length > 0) recordStepContent('text');
                 stepText += event.text;
-                if (event.text.length > 0) attemptSawText = true;
+                if (event.text.length > 0) {
+                  attemptSawText = true;
+                  stepSawVisibleText = true;
+                }
                 queue.push({
                   type: 'text_delta',
                   id: this.deps.newId(),
@@ -1836,7 +1862,15 @@ export class AiSdkTurn {
                 }
               } else if (event.kind === 'thinking') {
                 if (event.text.length > 0) recordStepContent('thinking');
-                if (event.text.length > 0) attemptSawThinking = true;
+                // OpenAI Responses emits an empty thinking carrier at
+                // `reasoning-end` whenever provider metadata is present. That
+                // is not user-visible progress, so it must not reset the
+                // empty-step loop cap (#4083). Persistence still appends to
+                // `stepThinkingParts` below so the encrypted carrier round-trips.
+                if (event.text.length > 0) {
+                  attemptSawThinking = true;
+                  stepSawThinking = true;
+                }
                 if (event.providerOptions !== undefined) {
                   if (event.providerOptionsOrigin !== 'maka_transport') {
                     attemptSawContinuationMetadata = true;
@@ -2339,6 +2373,43 @@ export class AiSdkTurn {
             ...(providerStepUsage ? { usage: providerStepUsage } : {}),
           });
           lastCompletedStepHadToolResult = returnedToolCalls.length > 0;
+          const emptyStepSignature =
+            !stepSawVisibleText && !stepSawThinking && returnedToolCalls.length > 0
+              ? JSON.stringify(
+                  returnedToolCalls.map(({ toolName, input }) => ({ toolName, input })),
+                )
+              : undefined;
+          if (
+            maxSteps === undefined &&
+            emptyStepSignature !== undefined &&
+            !this.loopStopRequested
+          ) {
+            consecutiveIdenticalEmptySteps =
+              emptyStepSignature === previousEmptyStepSignature
+                ? consecutiveIdenticalEmptySteps + 1
+                : 1;
+            previousEmptyStepSignature = emptyStepSignature;
+            recentEmptyStepSignatures.push(emptyStepSignature);
+            if (recentEmptyStepSignatures.length > EMPTY_STEP_SIGNATURE_WINDOW) {
+              recentEmptyStepSignatures.shift();
+            }
+            const windowHasNoDistinctProgress =
+              recentEmptyStepSignatures.length >= EMPTY_STEP_SIGNATURE_WINDOW &&
+              new Set(recentEmptyStepSignatures).size < recentEmptyStepSignatures.length;
+            if (
+              consecutiveIdenticalEmptySteps >= MAX_CONSECUTIVE_IDENTICAL_EMPTY_STEPS ||
+              windowHasNoDistinctProgress
+            ) {
+              // The model is repeating textless tool-only steps with no visible
+              // progress — either the same signature consecutively, or a short
+              // alternating cycle. Stop as a failed tool-step cap rather than
+              // reporting a successful end_turn with no answer (#4083).
+              this.loopStopReason = 'step_limit';
+              this.loopStopRequested = true;
+            }
+          } else {
+            clearEmptyStepProgress();
+          }
           const stepLimitReached = maxSteps !== undefined && runtimeSteps >= maxSteps;
           if (
             sandboxBoundaryFinalizationStep ||
@@ -2381,6 +2452,9 @@ export class AiSdkTurn {
               !this.loopStopRequested &&
               !this.aborted
             ) {
+              // A redirected prompt deserves a fresh empty-step streak; otherwise
+              // a prior empty run would stop the turn before the steer can land.
+              clearEmptyStepProgress();
               currentStepMessageId = this.deps.newId();
               continue agentLoop;
             }

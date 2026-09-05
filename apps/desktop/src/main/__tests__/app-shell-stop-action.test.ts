@@ -44,12 +44,44 @@ test('removes exactly the transient messages the Host retracts while stopping', 
       toastApi: { error() {} },
     });
 
-    await stop();
-
+    assert.equal(await stop(), true);
     assert.deepEqual(removed, [
       { sessionId: 'session-1', messageId: 'message-1' },
       { sessionId: 'session-1', messageId: 'message-2' },
     ]);
+  } finally {
+    target.window = previousWindow;
+  }
+});
+
+test('returns undefined when stop fails so plain-Enter send can abort', async () => {
+  const target = globalThis as unknown as { window?: unknown };
+  const previousWindow = target.window;
+  const errors: string[] = [];
+  target.window = {
+    maka: {
+      sessions: {
+        stop: async () => {
+          throw new Error('stop failed');
+        },
+      },
+    },
+  };
+  try {
+    const stop = createAppShellStopAction({
+      uiLocale: 'en',
+      activeIdRef: { current: 'session-1' },
+      stopPending: { claim: () => true, release: () => undefined },
+      removeTransientMessage: () => undefined,
+      toastApi: {
+        error(title) {
+          errors.push(title);
+        },
+      },
+    });
+
+    assert.equal(await stop(), undefined);
+    assert.equal(errors.length, 1);
   } finally {
     target.window = previousWindow;
   }

@@ -665,7 +665,7 @@
           "./locales/shell-copy.js": 1
         },
         "importSpecifiers": 2,
-        "nonTriviaTokens": 302
+        "nonTriviaTokens": 301
       },
       "src/renderer/app-shell-turn-actions.ts": {
         "importDeclarations": 4,
@@ -895,8 +895,8 @@
           "@maka/ui/icons": 1,
           "react": 1
         },
-        "importSpecifiers": 147,
-        "nonTriviaTokens": 15588
+        "importSpecifiers": 146,
+        "nonTriviaTokens": 15587
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 2,
