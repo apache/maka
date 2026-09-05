@@ -227,15 +227,13 @@ export function AgentGraphTopology(props: {
   const arrowMarkerId = `maka-agent-graph-arrow-${useId().replace(/\W/g, '')}`;
   const viewportRef = useRef<HTMLDivElement>(null);
   const { snapshot } = props;
-  const { layout, positionById, workByOperator, operatorById, orderedOperatorIds } = useMemo(() => {
+  const { layout, positionById, workByOperator, operatorById, orderedNodes } = useMemo(() => {
     const layout = layoutAgentGraph(snapshot.operators, snapshot.edges);
     return {
       layout,
       positionById: new Map(layout.nodes.map((node) => [node.operatorId, node])),
       operatorById: new Map(snapshot.operators.map((operator) => [operator.operatorId, operator])),
-      orderedOperatorIds: [...layout.nodes]
-        .sort((left, right) => left.x - right.x || left.y - right.y)
-        .map((node) => node.operatorId),
+      orderedNodes: [...layout.nodes].sort((left, right) => left.x - right.x || left.y - right.y),
       workByOperator: new Map(
         snapshot.operators.map((operator) => [
           operator.operatorId,
@@ -290,11 +288,9 @@ export function AgentGraphTopology(props: {
             );
           })}
         </svg>
-        {orderedOperatorIds.map((operatorId) => {
-          const operator = operatorById.get(operatorId);
+        {orderedNodes.map((position) => {
+          const operator = operatorById.get(position.operatorId);
           if (!operator) return null;
-          const position = positionById.get(operator.operatorId);
-          if (!position) return null;
           const wait = props.waitLabel(operator);
           const status = props.statusLabel(operator.status);
           const workPresentation = workByOperator.get(operator.operatorId);

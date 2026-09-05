@@ -62,6 +62,35 @@ async function expectMetadata(
   await expect(metadataValue(scope, label)).toHaveText(value);
 }
 
+test('keeps liveness signals in both views and respects reduced motion', async ({
+  agentGraphTopologyWindow: page,
+}) => {
+  const panel = page.getByRole('region', { name: 'Agent Graph', exact: true });
+  await expect(panel).toHaveAttribute('data-live', 'true');
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await page.evaluate(() => {
+    document.documentElement.removeAttribute('data-maka-e2e-fixture');
+    document.documentElement.removeAttribute('data-maka-reduced-motion');
+  });
+  const heartbeat = panel.locator('.maka-agent-graph-heartbeat');
+  const runningDot = panel.locator('.maka-agent-graph-status-dot[data-status="running"]').first();
+  await expect(heartbeat).toBeVisible();
+  await expect(heartbeat).toHaveAttribute('aria-hidden', 'true');
+  await expect(runningDot).toHaveCSS('animation-name', 'maka-agent-graph-dot-pulse');
+  await expect(runningDot).toHaveCSS('animation-iteration-count', 'infinite');
+  await panel.getByRole('radio', { name: 'List' }).click();
+  await expect(runningDot).toHaveCSS('animation-name', 'maka-agent-graph-dot-pulse');
+  await expect(runningDot).toHaveCSS('animation-iteration-count', 'infinite');
+
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await expect(heartbeat).toBeHidden();
+  await expect(runningDot).toHaveCSS('animation-iteration-count', '1');
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await page.evaluate(() => document.documentElement.setAttribute('data-maka-reduced-motion', 'true'));
+  await expect(heartbeat).toBeHidden();
+  await expect(runningDot).toHaveCSS('animation-iteration-count', '1');
+});
+
 test('inspects and follows an operator across graph views', async ({
   agentGraphTopologyWindow: page,
 }) => {

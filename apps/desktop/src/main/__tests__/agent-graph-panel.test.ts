@@ -386,6 +386,50 @@ async function renderPanel(
 }
 
 describe('AgentGraphPanel dismiss', () => {
+  it('gates the heartbeat and both views on live status and successful snapshot reads', async () => {
+    const graph = snapshot({
+      graphId: 'graph-live',
+      status: 'active',
+      operators: [graphOperator('a', [])],
+    });
+    const harness = await renderPanel(graph);
+    const panel = harness.container.querySelector('.maka-agent-graph-panel');
+    assert.ok(panel);
+    for (const status of ['active', 'waiting', 'closing'] as const) {
+      await harness.setSnapshot({ ...graph, status });
+      assert.equal(panel.getAttribute('data-live'), 'true', status);
+      assert.equal(panel.querySelector('.maka-agent-graph-heartbeat')?.getAttribute('aria-hidden'), 'true');
+    }
+    assert.ok(panel.querySelector('.maka-agent-graph-node .maka-agent-graph-status-dot[data-status="running"]'));
+    const listButton = [...panel.querySelectorAll('button')].find((button) => button.textContent === 'List');
+    assert.ok(listButton);
+    await act(async () => (listButton as HTMLElement).click());
+    assert.ok(panel.querySelector('.maka-agent-graph-operators .maka-agent-graph-status-dot[data-status="running"]'));
+
+    const read = harness.holdNextSnapshot(graph.graphId);
+    harness.notify();
+    await read.started;
+    harness.evict(graph.graphId);
+    await act(async () => {
+      read.release();
+      await Promise.resolve();
+    });
+    assert.match(panel.textContent ?? '', /Could not refresh graph state/);
+    assert.equal(panel.getAttribute('data-live'), 'false');
+    assert.equal(panel.querySelector('.maka-agent-graph-heartbeat'), null);
+    assert.ok(panel.querySelector('.maka-agent-graph-status-dot[data-status="running"]'), 'the stale snapshot remains visible without signaling liveness');
+
+    await harness.setSnapshot(graph);
+    assert.equal(panel.getAttribute('data-live'), 'true');
+    assert.ok(panel.querySelector('.maka-agent-graph-heartbeat'));
+    for (const status of ['empty', 'completed', 'failed', 'stopped'] as const) {
+      await harness.setSnapshot({ ...graph, status });
+      assert.equal(panel.getAttribute('data-live'), 'false', status);
+      assert.equal(panel.querySelector('.maka-agent-graph-heartbeat'), null, status);
+    }
+    await act(async () => harness.root.unmount());
+  });
+
   it('renders dependency topology, inspects a node, and keeps the list alternative', async () => {
     const graph = snapshot({
       graphId: 'graph-topology',
