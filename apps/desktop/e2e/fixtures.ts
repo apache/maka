@@ -530,27 +530,7 @@ type E2eTestFixtures = {
   accessibilityNarrativeWindow: Page;
 };
 
-type E2eWorkerFixtures = {
-  isolatedDisplay: void;
-};
-
-export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
-  isolatedDisplay: [async ({}, use, workerInfo) => {
-    const base = process.env.MAKA_E2E_X_DISPLAY_BASE;
-    if (base === undefined) {
-      await use();
-      return;
-    }
-    if (!/^\d+$/.test(base)) throw new Error(`Invalid E2E X display base: ${base}`);
-    const previous = process.env.DISPLAY;
-    process.env.DISPLAY = `:${Number(base) + workerInfo.parallelIndex}`;
-    try {
-      await use();
-    } finally {
-      if (previous === undefined) delete process.env.DISPLAY;
-      else process.env.DISPLAY = previous;
-    }
-  }, { scope: 'worker', auto: true }],
+export const test = base.extend<E2eTestFixtures>({
   directoryReferenceWindow: async ({}, use) => {
     await withE2eWindow(
       { seed: true, readinessSelector: COMPOSER_INPUT, locale: 'zh-CN', showWindow: true },
