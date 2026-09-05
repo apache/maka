@@ -5518,6 +5518,171 @@ describe('AiSdkBackend model history', () => {
     );
   });
 
+  test('persists the compaction fail-open note at decision time, before any settlement (#4850)', async () => {
+    // The replay fail-open decision is known at turn start; a stop before
+    // settlement skips usage persistence entirely, so a settlement-time note
+    // would never reach the transcript.
+    const gate = makeGate();
+    const model = new MockLanguageModelV4({
+      doStream: {
+        stream: new ReadableStream<LanguageModelV4StreamPart>({
+          async start(controller) {
+            controller.enqueue({ type: 'stream-start', warnings: [] });
+            controller.enqueue({ type: 'text-start', id: 'text-1' });
+            controller.enqueue({ type: 'text-delta', id: 'text-1', delta: 'PARTIAL' });
+            // Hold the finish back so the send never reaches settlement until
+            // the test releases the gate.
+            await gate.promise;
+            controller.enqueue({ type: 'text-end', id: 'text-1' });
+            controller.enqueue({
+              type: 'finish',
+              finishReason: { unified: 'stop', raw: 'stop' },
+              usage: {
+                inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                outputTokens: { total: 1, text: 1, reasoning: 0 },
+              },
+            });
+            controller.close();
+          },
+        }),
+      },
+    });
+    // A checkpoint whose covered prefix does not match the replayed events:
+    // the pre-turn replay fails open with a coverage miss.
+    const checkpoint = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: [
+        runtimeTextEvent({
+          id: 'unrelated-covered',
+          turnId: 'turn-unrelated',
+          role: 'user',
+          author: 'user',
+          text: 'UNRELATED_COVERED '.repeat(50),
+        }),
+      ],
+      summary: structuredSummary('STALE_CHECKPOINT_SENTINEL'),
+    });
+    const appended: Array<{ type: string; kind?: string; data?: unknown }> = [];
+    const isFailOpenNote = (message: { type: string; kind?: string }): boolean =>
+      message.type === 'system_note' && message.kind === 'context_compaction_failed_open';
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async (message: StoredMessage) => {
+        appended.push(message as unknown as { type: string; kind?: string; data?: unknown });
+      },
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      contextBudget: { historyCompact: { enabled: true } },
+      loadHistoryCompactCheckpoint: () => checkpoint,
+    });
+
+    const sendPromise = drain(
+      backend.send({
+        turnId: 'turn-1',
+        text: 'hi',
+        context: [],
+        runtimeContext: [
+          runtimeTextEvent({
+            id: 'rt-real-history',
+            turnId: 'turn-prev',
+            role: 'user',
+            author: 'user',
+            text: 'REAL_HISTORY '.repeat(60),
+          }),
+        ],
+      }),
+    );
+    // The decision-time write precedes the provider stream's finish: wait for
+    // the note itself, not for any stream signal. On a settlement-only
+    // implementation this wait can only time out, which is the regression.
+    try {
+      await pollFor(() => appended.some(isFailOpenNote), {
+        timeoutMs: 10_000,
+        message: 'fail-open note was not written before settlement',
+      });
+    } finally {
+      await backend.stop('user_stop');
+      gate.release();
+    }
+    await sendPromise;
+
+    const note = appended.find(isFailOpenNote);
+    assert.ok(note, 'the fail-open note must be persisted even though the turn never settled');
+    assert.equal(
+      (note?.data as { failOpenReason?: string } | undefined)?.failOpenReason,
+      'coverage_miss',
+    );
+    // Settlement never ran: no usage was persisted, and the note did not wait
+    // for it.
+    assert.equal(
+      appended.some((message) => message.type === 'token_usage'),
+      false,
+    );
+  });
+
+  test('writes the compaction fail-open note exactly once when the send settles (#4850)', async () => {
+    const model = completionModel();
+    const checkpoint = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: [
+        runtimeTextEvent({
+          id: 'settle-unrelated-covered',
+          turnId: 'turn-unrelated',
+          role: 'user',
+          author: 'user',
+          text: 'SETTLE_UNRELATED_COVERED '.repeat(50),
+        }),
+      ],
+      summary: structuredSummary('SETTLE_STALE_CHECKPOINT_SENTINEL'),
+    });
+    const appended: Array<{ type: string; kind?: string }> = [];
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async (message: StoredMessage) => {
+        appended.push(message as unknown as { type: string; kind?: string });
+      },
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      contextBudget: { historyCompact: { enabled: true } },
+      loadHistoryCompactCheckpoint: () => checkpoint,
+    });
+
+    await drain(
+      backend.send({
+        turnId: 'turn-1',
+        text: 'hi',
+        context: [],
+        runtimeContext: [
+          runtimeTextEvent({
+            id: 'rt-settle-history',
+            turnId: 'turn-prev',
+            role: 'user',
+            author: 'user',
+            text: 'SETTLE_REAL_HISTORY '.repeat(60),
+          }),
+        ],
+      }),
+    );
+
+    const notes = appended.filter(
+      (message) =>
+        message.type === 'system_note' && message.kind === 'context_compaction_failed_open',
+    );
+    assert.equal(notes.length, 1, 'the settlement fallback must not duplicate the early note');
+  });
+
   test('after-step stop preserves the current provider step usage and prevents another step', async () => {
     const loop = countingToolLoopModel();
     const durable = durableTurnHarness('turn-1', 'hi');

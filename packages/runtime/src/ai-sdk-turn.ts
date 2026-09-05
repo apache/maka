@@ -1004,6 +1004,45 @@ export class AiSdkTurn {
     let contextReportedWindowNoteWritten = false;
     let contextOverflowAfterCompactionNoteWritten = false;
     let contextWindowSuggestionNoteWritten = false;
+    // A compaction decision is known the moment its stage reports it — the
+    // pre-turn replay resolves its fold before the first request goes out —
+    // while the settlement path is skipped entirely by a stop or a stream
+    // error. Write both notes when the decision is known, once per send,
+    // whichever stage reports first (#4850).
+    const appendCompactionDecisionNotes = async (
+      contextBudget: ContextBudgetDiagnostic | undefined,
+    ): Promise<void> => {
+      if (
+        !contextCompactionFailedOpenNoteWritten &&
+        shouldAppendContextCompactionFailedOpenNote(contextBudget)
+      ) {
+        contextCompactionFailedOpenNoteWritten = true;
+        const failOpenReason = contextBudget?.compactionDecisions?.find(
+          (decision) =>
+            decision.boundaryKind === 'historyCompact' && decision.decision === 'failedOpen',
+        )?.failOpenReason;
+        const note: SystemNoteMessage = {
+          type: 'system_note',
+          id: this.deps.newId(),
+          turnId,
+          ts: this.deps.now(),
+          kind: 'context_compaction_failed_open',
+          ...(failOpenReason !== undefined ? { data: { failOpenReason } } : {}),
+        };
+        await this.deps.backend.appendMessage(note).catch(() => {});
+      }
+      if (!contextCompactedNoteWritten && shouldAppendContextCompactedNote(contextBudget)) {
+        contextCompactedNoteWritten = true;
+        const note: SystemNoteMessage = {
+          type: 'system_note',
+          id: this.deps.newId(),
+          turnId,
+          ts: this.deps.now(),
+          kind: 'context_compacted',
+        };
+        await this.deps.backend.appendMessage(note).catch(() => {});
+      }
+    };
     // Request index (0-based) at which the active prune last rewrote the
     // request. A step Maka pruned is not append-only, so usage may legitimately
     // shrink.
@@ -1189,6 +1228,10 @@ export class AiSdkTurn {
       yield* this.drain(queue);
       return;
     }
+    // The pre-turn replay's fold decision is final here: surface it now so a
+    // stop or stream error later in the send cannot keep it from the
+    // transcript (#4850).
+    await appendCompactionDecisionNotes(priorReplay.contextBudget);
     if (midTurnState) {
       // Roll-forward seed: the latest durable checkpoint (loaded or written at
       // turn start) so a mid-turn summary only re-reads the newly folded span.
@@ -2489,34 +2532,10 @@ export class AiSdkTurn {
               ...usageFields,
             };
             await this.deps.backend.appendMessage(tu).catch(() => {});
-            if (
-              !contextCompactionFailedOpenNoteWritten &&
-              shouldAppendContextCompactionFailedOpenNote(contextBudgetForUsage)
-            ) {
-              contextCompactionFailedOpenNoteWritten = true;
-              const note: SystemNoteMessage = {
-                type: 'system_note',
-                id: this.deps.newId(),
-                turnId,
-                ts: this.deps.now(),
-                kind: 'context_compaction_failed_open',
-              };
-              await this.deps.backend.appendMessage(note).catch(() => {});
-            }
-            if (
-              !contextCompactedNoteWritten &&
-              shouldAppendContextCompactedNote(contextBudgetForUsage)
-            ) {
-              contextCompactedNoteWritten = true;
-              const note: SystemNoteMessage = {
-                type: 'system_note',
-                id: this.deps.newId(),
-                turnId,
-                ts: this.deps.now(),
-                kind: 'context_compacted',
-              };
-              await this.deps.backend.appendMessage(note).catch(() => {});
-            }
+            // Settlement fallback: a mid-turn or request-hook fold is only
+            // known here. Notes already written at decision time are skipped
+            // by the flags inside.
+            await appendCompactionDecisionNotes(contextBudgetForUsage);
             queue.push({
               type: 'token_usage',
               id: this.deps.newId(),
