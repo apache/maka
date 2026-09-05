@@ -86,6 +86,7 @@ import {
 import type { RuntimeHostCompositionSource } from '../server/host-composition.js';
 import { createUnavailableDomainOperationHandlers } from '../server/operation-dispatcher.js';
 import { HostChangeFeed } from '../server/host-change-feed.js';
+import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 import { FramedTransport, RuntimeHostTransportError } from '../transport/framed-transport.js';
 import {
   prepareStorageRootControlDirectory,
@@ -941,6 +942,37 @@ describe('non-serving Runtime Host kernel', () => {
       context?.requestDrain();
       assert.equal(drainCalls, 1);
       context?.requestDrain();
+      assert.equal(drainCalls, 1);
+      await host.closed;
+    });
+  });
+
+  test('requestDrain leaves an active Session admission before beginning composition drain', async () => {
+    await withHostPaths(async (paths) => {
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      let context: RuntimeHostCompositionContext | undefined;
+      let drainCalls = 0;
+      const host = await RuntimeHostKernel.start({
+        owner,
+        idleGraceMs: 10_000,
+        composition: defineInteractiveRuntimeHostComposition(async (value) => {
+          context = value;
+          return testComposition({
+            beginDrain: () => {
+              drainCalls += 1;
+            },
+          });
+        }),
+      });
+      const admission = new SessionAdmissionGate();
+
+      await admission.run('session', () => {
+        context?.requestDrain();
+        assert.equal(drainCalls, 0);
+      });
+
       assert.equal(drainCalls, 1);
       await host.closed;
     });

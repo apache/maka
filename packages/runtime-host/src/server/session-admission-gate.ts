@@ -27,6 +27,7 @@ export interface SessionAdmissionLease {
 
 interface SessionAdmissionContext {
   readonly sessionIds: ReadonlySet<string>;
+  readonly afterRelease: Set<() => void>;
   active: boolean;
 }
 
@@ -40,6 +41,26 @@ interface SessionAdmissionLeaseState {
 type SessionAdmissionTaskResult =
   | { readonly ok: true }
   | { readonly ok: false; readonly error: unknown };
+
+const currentSessionAdmissions = new AsyncLocalStorage<readonly SessionAdmissionContext[]>();
+
+/** Run immediately outside admission, or after every active admission in this async chain releases. */
+export function runAfterCurrentSessionAdmission(operation: () => void): void {
+  const activeAdmissions = [
+    ...new Set((currentSessionAdmissions.getStore() ?? []).filter((context) => context.active)),
+  ];
+  if (activeAdmissions.length === 0) {
+    operation();
+    return;
+  }
+
+  let remaining = activeAdmissions.length;
+  const afterRelease = () => {
+    remaining -= 1;
+    if (remaining === 0) operation();
+  };
+  for (const context of activeAdmissions) context.afterRelease.add(afterRelease);
+}
 
 export class SessionAdmissionGate {
   readonly #tails = new Map<string, Promise<void>>();
@@ -91,7 +112,15 @@ export class SessionAdmissionGate {
    * Turn reaching its own. Leaving the context here settles that by saying so.
    */
   detach<T>(operation: () => T): T {
-    return this.#context.exit(operation);
+    const context = this.#context.getStore();
+    return this.#context.exit(() => {
+      const inheritedAdmissions = currentSessionAdmissions.getStore() ?? [];
+      if (!context || !inheritedAdmissions.includes(context)) return operation();
+      return currentSessionAdmissions.run(
+        inheritedAdmissions.filter((admission) => admission !== context),
+        operation,
+      );
+    });
   }
 
   runAdmitted<T>(
@@ -110,7 +139,13 @@ export class SessionAdmissionGate {
 
     let task: Promise<T>;
     try {
-      task = Promise.resolve(this.#context.run(state.context, operation));
+      const inheritedAdmissions = currentSessionAdmissions.getStore() ?? [];
+      const admissions = inheritedAdmissions.includes(state.context)
+        ? inheritedAdmissions
+        : [...inheritedAdmissions, state.context];
+      task = Promise.resolve(
+        currentSessionAdmissions.run(admissions, () => this.#context.run(state.context, operation)),
+      );
     } catch (error) {
       task = Promise.reject(error);
     }
@@ -150,7 +185,11 @@ export class SessionAdmissionGate {
     }
 
     const ownedSessionIds = new Set(sessionIds);
-    const context: SessionAdmissionContext = { sessionIds: ownedSessionIds, active: true };
+    const context: SessionAdmissionContext = {
+      sessionIds: ownedSessionIds,
+      afterRelease: new Set(),
+      active: true,
+    };
     const lease: SessionAdmissionLease = Object.freeze({
       [sessionAdmissionLeaseBrand]: true as const,
     });
@@ -166,7 +205,10 @@ export class SessionAdmissionGate {
       let operationError: unknown;
       let operationFailed = false;
       try {
-        result = await this.#context.run(context, () => operation(lease));
+        const inheritedAdmissions = currentSessionAdmissions.getStore() ?? [];
+        result = await currentSessionAdmissions.run([...inheritedAdmissions, context], () =>
+          this.#context.run(context, () => operation(lease)),
+        );
       } catch (error) {
         operationFailed = true;
         operationError = error;
@@ -192,8 +234,13 @@ export class SessionAdmissionGate {
       context.active = false;
       this.#leases.delete(lease);
       release();
-      for (const [sessionId, tail] of tails) {
-        if (this.#tails.get(sessionId) === tail) this.#tails.delete(sessionId);
+      try {
+        for (const operation of context.afterRelease) operation();
+      } finally {
+        context.afterRelease.clear();
+        for (const [sessionId, tail] of tails) {
+          if (this.#tails.get(sessionId) === tail) this.#tails.delete(sessionId);
+        }
       }
     }
   }

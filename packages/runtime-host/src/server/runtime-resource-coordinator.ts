@@ -60,6 +60,7 @@ import type {
   RuntimeResourceOperationHandlerMap,
 } from './operation-dispatcher.js';
 import type { RuntimeHostAccessAuthority } from './access-authority.js';
+import { boundedFailureDiagnostic } from './failure-diagnostic.js';
 import { SessionAdmissionGate } from './session-admission-gate.js';
 import {
   boundedRuntimeResourceSnapshot,
@@ -311,8 +312,7 @@ export class HostRuntimeResourceCoordinator
           if (isSessionNotFoundError(error)) {
             return queryFailure('not_found', 'Session was not found');
           }
-          this.#requestDrain();
-          return queryFailure('internal_failure', 'Session state is unavailable');
+          return this.#canonicalReadFailure(error, 'Session state is unavailable');
         }
         if (input.kind === 'get') {
           try {
@@ -331,9 +331,8 @@ export class HostRuntimeResourceCoordinator
                 resource: canonical,
               }),
             };
-          } catch {
-            this.#requestDrain();
-            return queryFailure('internal_failure', 'Runtime Resource state is unavailable');
+          } catch (error) {
+            return this.#canonicalReadFailure(error, 'Runtime Resource state is unavailable');
           }
         }
         let updates: ShellRunUpdate[];
@@ -342,9 +341,8 @@ export class HostRuntimeResourceCoordinator
           if (context.principalKind === 'session_guest') {
             updates = updates.filter((update) => update.sessionId === input.sessionId);
           }
-        } catch {
-          this.#requestDrain();
-          return queryFailure('internal_failure', 'Runtime Resource state is unavailable');
+        } catch (error) {
+          return this.#canonicalReadFailure(error, 'Runtime Resource state is unavailable');
         }
         try {
           const resources = canonicalRuntimeResources(updates);
@@ -376,6 +374,17 @@ export class HostRuntimeResourceCoordinator
     return guestGrantId && this.#guestObservationGrantId(context, input.sessionId) !== guestGrantId
       ? queryFailure('not_found', 'Session was not found')
       : outcome;
+  }
+
+  #canonicalReadFailure(
+    error: unknown,
+    message: string,
+  ): OperationOutcome<'runtime.resource.query'> {
+    console.error(
+      `[runtime-host] canonical Runtime Resource read failed: ${boundedFailureDiagnostic(error)}`,
+    );
+    this.#requestDrain();
+    return queryFailure('internal_failure', message);
   }
 
   #guestObservationGrantId(context: ConnectionContext, sessionId: string): string | undefined {
