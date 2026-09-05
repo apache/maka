@@ -88,11 +88,14 @@ The former Headless Harbor surface was retired by #2605 (2026-08-11, replaced
 by the minimal Eval kernel); its `MAKA_WEB_SEARCH_ENABLED=true` opt-in no
 longer exists. Its opt-in rationale — silently enabling network search would
 change benchmark semantics and historical baselines — now applies to eval
-subjects, which must enable provider-native search explicitly in their own
-configuration. Merely speaking Anthropic
-Messages is not enough to infer hosted-search support; Maka uses explicit model
-metadata or narrow model-id rules, including DeepSeek V4 Flash on an
-`anthropic-compatible` connection.
+subjects inverted: current benchmark subjects have no enablement path at all.
+Every subject removes `WebSearch`, `WebFetch`, and `FetchURL` from the
+provider-visible tool list, and the Eval metering proxy structurally strips
+named and provider-native web tools from external-harness requests, so
+results stay comparable across providers and baselines. Merely speaking
+Anthropic Messages is not enough to infer hosted-search support; Maka uses
+explicit model metadata or narrow model-id rules, including DeepSeek V4 Flash
+on an `anthropic-compatible` connection.
 
 An explicit `BackendFactoryContext.tools` list is a hard ceiling. Root surfaces
 may add native search, but scoped child agents do not gain it unless their
