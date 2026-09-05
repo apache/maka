@@ -31,6 +31,21 @@ export interface MainRendererEntry {
   readonly useDevServer: boolean;
 }
 
+export interface MainRendererCacheOwner {
+  webContents: {
+    session: {
+      clearCache(): Promise<void>;
+    };
+  };
+}
+
+export async function clearDevRendererCache(
+  mainWindow: MainRendererCacheOwner,
+  rendererEntry: MainRendererEntry,
+): Promise<void> {
+  if (rendererEntry.useDevServer) await mainWindow.webContents.session.clearCache();
+}
+
 export function resolveMainRendererEntry(
   mainModuleDirectory: string,
   viteDevServerUrl: string | undefined,

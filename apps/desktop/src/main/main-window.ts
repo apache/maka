@@ -28,7 +28,11 @@ import { BrowserViewController } from './browser/controller.js';
 import { BrowserViewManager } from './browser/view-manager.js';
 import type { E2eFixture } from './e2e-fixture.js';
 import { installMainWindowPermissionPolicy } from './main-window-permission-policy.js';
-import { loadMainRenderer, resolveMainRendererEntry } from './main-renderer-loader.js';
+import {
+  clearDevRendererCache,
+  loadMainRenderer,
+  resolveMainRendererEntry,
+} from './main-renderer-loader.js';
 import {
   type MainRendererFrameIdentity,
   observeMainRendererProcessGone,
@@ -522,6 +526,7 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
       void writeSavedBounds(workspaceRoot, final);
     });
 
+    await clearDevRendererCache(mainWindow, rendererEntry);
     await loadMainRenderer(mainWindow, rendererEntry);
 
     // PR-SHOW-AFTER-FIRST-COMMIT: reveal fallback. Start this budget only once

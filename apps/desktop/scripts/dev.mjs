@@ -47,6 +47,7 @@ import {
   handleDevelopmentLaunchOutcome,
   waitForDevelopmentLaunchVerdict,
 } from './dev-app-runtime.mjs';
+import { warmupDevRenderer } from './dev-renderer-warmup.mjs';
 
 const DESKTOP_DIR = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const REPO_ROOT    = resolve(DESKTOP_DIR, '..', '..');
@@ -151,6 +152,7 @@ process.chdir(DESKTOP_DIR);
 log('vite', 'starting dev server...');
 const server = await createServer();
 await server.listen();
+await warmupDevRenderer(server);
 server.printUrls();
 
 const devUrl = server.resolvedUrls?.local?.[0]?.replace(/\/$/, '');
