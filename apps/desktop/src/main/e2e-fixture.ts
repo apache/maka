@@ -29,6 +29,7 @@ import type { UiLocale } from '@maka/core/ui-locale';
 import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
 import { createWorkspaceRuntimeStore } from '@maka/storage/runtime-event-persistence';
 import { createProjectCatalog } from '@maka/storage/project-catalog';
+import { openInteractiveArtifactStoreForWrite } from '@maka/storage/artifact-stores';
 import {
   resolveStorageRoot,
   tryAcquireInteractiveRootOwner,
@@ -66,6 +67,7 @@ import {
 import { usageStatsRecords, usageStatsSessions } from './e2e-fixture/scenarios-usage.js';
 
 const E2E_FIXTURE_SCENARIOS = new Set<E2eFixtureScenario>([
+  'artifact-export',
   'settings-models',
   'turn-narrative',
   'turn-narrative-browser',
@@ -177,6 +179,8 @@ export function getE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState 
     ...(fixture.scrollMotion ? { scrollMotion: fixture.scrollMotion } : {}),
   };
   switch (fixture.scenario) {
+    case 'artifact-export':
+      return { ...state, activeSessionId: TURN_SESSION_ID, workbarCollapsed: false, workbarTab: 'files' };
     case 'settings-models':
       return { ...state, activeSessionId: TURN_SESSION_ID, openSettingsSection: 'models' };
     case 'turn-narrative':
@@ -244,9 +248,35 @@ export async function seedE2eFixture(input: {
   await writeConnections(input.workspaceRoot, now, scenario);
   await writeSession(
     input.workspaceRoot,
-    scenario === 'agent-graph-layout' ? agentGraphSession(now) : turnSession(now),
+    scenario === 'agent-graph-layout' ? agentGraphSession(now) :
+      scenario === 'artifact-export' ? { ...turnSession(now), name: '生成文件保存验收' } : turnSession(now),
     turnMessages(now),
   );
+
+  if (scenario === 'artifact-export') {
+    const owner = await tryAcquireInteractiveRootOwner(storageRoot);
+    if (!owner) throw new Error('Unable to acquire the artifact fixture storage root');
+    try {
+      const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
+      try {
+        await artifacts.recover();
+        await artifacts.create({
+          sessionId: TURN_SESSION_ID,
+          turnId: 'turn-fixture-1',
+          name: 'report.txt',
+          kind: 'file',
+          mimeType: 'text/plain',
+          source: 'fixture',
+          content: 'MAKA-CHECK-V1\n中文内容测试：你好，世界。\nEND-123456\n',
+          now,
+        });
+      } finally {
+        artifacts.close();
+      }
+    } finally {
+      await owner.close();
+    }
+  }
 
   if (scenario === 'agent-graph-layout') await seedAgentGraphLayout(input.workspaceRoot, now);
 
