@@ -1,3 +1,15 @@
+---
+doc_id: frontend-css-governance
+title: "Frontend CSS governance"
+language: en
+source_language: en
+implementation_status: current
+document_status: current
+translation_status: synced
+last_verified: 2026-09-04
+owners:
+  - maka-backend
+---
 <!--
   Licensed to the Apache Software Foundation (ASF) under one
   or more contributor license agreements.  See the NOTICE file

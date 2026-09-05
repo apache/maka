@@ -1,3 +1,15 @@
+---
+doc_id: astryx-full-surface-audit
+title: "Astryx full surface audit"
+language: en
+source_language: en
+implementation_status: current
+document_status: current
+translation_status: source-only
+last_verified: 2026-09-04
+owners:
+  - maka-backend
+---
 <!--
   Licensed to the Apache Software Foundation (ASF) under one
   or more contributor license agreements.  See the NOTICE file
@@ -22,6 +34,8 @@
 Date: 2026-08-09  
 Branch: `feat/astryx-surface-alignment`  
 Scope: every product surface under `apps/desktop/src/renderer/**` and `packages/ui/src/**` (183 inventory files).
+
+> **Status (verified 2026-09-05):** this is an audit record pinned to the `feat/astryx-surface-alignment` branch as of 2026-08-09; its citations and the 183-file inventory describe that tree. Since then the desktop surface has grown (the exact-head inventory generator reports 247 files at re-verification) and the settings kit was rebuilt — `SettingsSection` now implements open row groups and the memory/health pages use `MoreMenu` and `StatusDot`. The findings below are kept as written.
 
 This pass **read and analyzed** settings pages/modules, shell/chat/workbar/panels, module hubs, packages/ui compositions, and product CSS — not only inventory scripts.
 

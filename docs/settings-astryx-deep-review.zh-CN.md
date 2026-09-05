@@ -1,3 +1,15 @@
+---
+doc_id: settings-astryx-deep-review.zh-CN
+title: "Maka 设置页深度 Review——以 Astryx 设计语言为基准"
+language: zh-CN
+source_language: zh-CN
+implementation_status: current
+document_status: current
+translation_status: source-only
+last_verified: 2026-09-04
+owners:
+  - maka-backend
+---
 <!--
   Licensed to the Apache Software Foundation (ASF) under one
   or more contributor license agreements.  See the NOTICE file
@@ -21,6 +33,8 @@
 
 > 2026-08-03,基于 `settings/astryx-refactor` 分支(已 rebase 到最新 main)。
 > 审计方式:Storybook 全页截图(中/英 × 亮/暗)+ Astryx 官方 `settings` / `settings-dialog` 模板与 `astryx docs` 原文精读。
+
+> **状态(2026-09-05 核验):** 这是一份钉在 2026-08-03 `settings/astryx-refactor` 分支头上的评审记录,下文引用的卡片式布局等描述的都是当时的树。此后 `SettingsSection` 已重写为 open row-group 设计,memory/health 页也改用了 `MoreMenu` 与 `StatusDot`。以下发现按原文保留。
 
 ## 一、Astryx 官方设置语言到底是什么
 
