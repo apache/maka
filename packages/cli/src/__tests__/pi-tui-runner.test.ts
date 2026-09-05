@@ -246,7 +246,7 @@ describe('Maka Pi TUI runner', () => {
     const driver = new SlashCommandDriver();
     const run = runMakaPiTui({
       title: 'Maka',
-      locale: 'zh',
+      locale: 'zh-CN',
       driver,
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
@@ -325,7 +325,7 @@ describe('Maka Pi TUI runner', () => {
     const driver = new UserCommandDriver();
     const run = runMakaPiTui({
       title: 'Maka',
-      locale: 'zh',
+      locale: 'zh-CN',
       driver,
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
@@ -799,7 +799,7 @@ describe('Maka Pi TUI runner', () => {
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
       permissionMode: 'bypass',
-      locale: 'zh',
+      locale: 'zh-CN',
       terminal,
       onboarding: fakeOnboardingSurface({
         verify: async (input) => {
@@ -868,7 +868,7 @@ describe('Maka Pi TUI runner', () => {
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
       permissionMode: 'bypass',
-      locale: 'zh',
+      locale: 'zh-CN',
       terminal,
       onboarding: fakeOnboardingSurface({
         save: async () => {
@@ -4119,7 +4119,7 @@ describe('Maka Pi TUI runner', () => {
       models: ['gpt-5', 'gpt-5-mini'],
       connectionSlug: 'openai',
       permissionMode: 'ask',
-      locale: 'zh',
+      locale: 'zh-CN',
       terminal,
     });
 
@@ -4141,7 +4141,7 @@ describe('Maka Pi TUI runner', () => {
       model: 'gpt-5',
       connectionSlug: 'openai',
       permissionMode: 'ask',
-      locale: 'zh',
+      locale: 'zh-CN',
       modelChoices: [
         {
           connectionId: 'connection-openai',
@@ -6746,7 +6746,7 @@ describe('Maka Pi TUI runner', () => {
       connectionSlug: 'claude-subscription',
       permissionMode: 'ask',
       terminal,
-      locale: 'zh',
+      locale: 'zh-CN',
       listSkills: async () => [],
     });
 
@@ -8235,7 +8235,7 @@ describe('Maka Pi TUI runner', () => {
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
       permissionMode: 'ask',
-      locale: 'zh',
+      locale: 'zh-CN',
       terminal,
     });
 

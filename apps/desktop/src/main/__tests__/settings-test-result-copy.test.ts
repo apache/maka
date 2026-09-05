@@ -29,7 +29,7 @@ test("missing proxy credentials have actionable bilingual copy", () => {
   } as never;
 
   assert.equal(
-    settingsTestResultMessage(result, "zh"),
+    settingsTestResultMessage(result, "zh-CN"),
     "代理认证已开启，请输入代理密码后再测试。",
   );
   assert.equal(

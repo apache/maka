@@ -51,6 +51,22 @@ async function createSession(page: Page, prompt: string) {
   return { composer, sessionId: sessionId!, sidebar };
 }
 
+test('the composer usage action opens Task trace in the right workbar', async ({
+  accessibilityNarrativeWindow: page,
+}) => {
+  const action = page.getByRole('button', { name: '打开用量追踪' });
+  await expect(action).toBeVisible();
+
+  await action.click();
+
+  const rightPanel = page.locator(
+    '.maka-session-workbar-panel[data-overlay][data-placement="right"]',
+  );
+  await expect(
+    rightPanel.locator('[data-maka-contract="session-inspector"]'),
+  ).toBeVisible();
+});
+
 test('a collapsed workbar never flashes during the first send', async ({
   window: page,
 }) => {

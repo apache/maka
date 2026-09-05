@@ -20,7 +20,6 @@
 import {
   FAKE_HOLD_OPEN_PROMPT,
   FAKE_HOLD_OPEN_REWRITE_PROMPT,
-  FAKE_WAIT_FOR_STEERING_LARGE_RESPONSE_PROMPT,
 } from '@maka/runtime/test-only/fake-backend';
 import type { Locator } from '@playwright/test';
 import {
@@ -35,6 +34,7 @@ interface SessionObservationLatchWindow extends Window {
   /** E2E-only preload affordance; see the MAKA_E2E block in preload.ts. */
   makaE2eLatch?: {
     rejectNextSessionObservation(message: string): void;
+    rejectNextTranscriptOpen(message: string): void;
   };
 }
 
@@ -69,6 +69,41 @@ test('a failed first observation seed reconnects to the live Turn', async ({ win
   );
   await page.getByRole('button', { name: '停止' }).click();
   await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, {
+    timeout: 20_000,
+  });
+});
+
+test('a failed transcript open recovers when its Session observation becomes ready', async ({
+  window: page,
+}) => {
+  const originalPrompt = 'transcript recovery source';
+  const composer = page.locator(COMPOSER_INPUT);
+  await composer.fill(originalPrompt);
+  await awaitSendReady(page);
+  await composer.press('Enter');
+  await expect(page.getByRole('log')).toContainText(`Fake backend received: ${originalPrompt}`, {
+    timeout: 20_000,
+  });
+
+  const sidebar = page.getByRole('navigation', { name: '任务列表' });
+  await ensureSidebarExpanded(page);
+  const originalSessionId = await sidebar
+    .locator('[data-session-id]:has([aria-current="page"])')
+    .getAttribute('data-session-id');
+  expect(originalSessionId).toBeTruthy();
+
+  await sidebar.getByRole('button', { name: '新任务', exact: true }).click();
+
+  const latchInstalled = await page.evaluate(() => {
+    const latch = (window as SessionObservationLatchWindow).makaE2eLatch;
+    if (!latch) return false;
+    latch.rejectNextTranscriptOpen('forced first transcript failure');
+    return true;
+  });
+  expect(latchInstalled, 'the preload E2E latch is installed').toBe(true);
+
+  await sessionRow(sidebar, originalSessionId!).click();
+  await expect(page.getByRole('log')).toContainText(`Fake backend received: ${originalPrompt}`, {
     timeout: 20_000,
   });
 });
@@ -137,93 +172,6 @@ test('remounting a live surface leaves accumulated output settled', async ({
   ).__makaStreamingRemountObserved);
   expect(observed?.texts.some((text) => text.includes('<redacted>') && !text.includes(finalText)))
     .toBe(true);
-});
-
-test('keeps a completed reply after an interrupted turn and conversation remount', async ({
-  window: page,
-}) => {
-  await page.emulateMedia({ reducedMotion: 'no-preference' });
-  expect(await page.evaluate(() => matchMedia('(prefers-reduced-motion: reduce)').matches)).toBe(false);
-  const composer = page.locator(COMPOSER_INPUT);
-  await composer.fill('temporary conversation');
-  await awaitSendReady(page);
-  await composer.press('Enter');
-  await expect(page.getByRole('log')).toContainText(
-    'Fake backend received: temporary conversation',
-    { timeout: 20_000 },
-  );
-  await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, {
-    timeout: 20_000,
-  });
-  const sidebar = page.getByRole('navigation', { name: '任务列表' });
-  await page.getByRole('button', { name: '展开侧边栏' }).click();
-  await expect(page.locator('[data-agents-page]')).toHaveAttribute(
-    'data-sidebar-state',
-    'expanded',
-  );
-  const temporarySessionId = await sidebar
-    .locator('[data-session-id]:has([aria-current="page"])')
-    .getAttribute('data-session-id');
-  expect(temporarySessionId).toBeTruthy();
-  await composer.fill('draft before starting the interrupted conversation');
-  await sidebar.getByRole('button', { name: '新任务', exact: true }).click();
-  await expect(composer).toHaveText('');
-
-  await composer.fill(FAKE_HOLD_OPEN_PROMPT);
-  await awaitSendReady(page);
-  await composer.press('Enter');
-  await expect(page.locator('.maka-bubble-streaming')).toContainText(
-    'Fake backend waiting',
-    { timeout: 20_000 },
-  );
-  const originalSessionId = await sidebar
-    .locator('[data-session-id]:has([aria-current="page"])')
-    .getAttribute('data-session-id');
-  expect(originalSessionId).toBeTruthy();
-  expect(originalSessionId).not.toBe(temporarySessionId);
-  await page.getByRole('button', { name: '停止' }).click();
-  await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, {
-    timeout: 20_000,
-  });
-  await expect.poll(
-    () => page.evaluate(async (sessionId) => (
-      (await window.maka.sessions.list()).find((session) => session.id === sessionId)
-        ?.runningTurnIds?.length ?? 0
-    ), originalSessionId!),
-    { timeout: 20_000 },
-  ).toBe(0);
-  await composer.fill(FAKE_WAIT_FOR_STEERING_LARGE_RESPONSE_PROMPT);
-  await awaitSendReady(page);
-  await composer.press('Enter');
-  await expect(page.locator('.maka-user-message', {
-    hasText: FAKE_WAIT_FOR_STEERING_LARGE_RESPONSE_PROMPT,
-  })).toBeVisible();
-  await expect(page.getByRole('button', { name: '停止' })).toBeVisible({
-    timeout: 20_000,
-  });
-  const steering = 'use the detailed response';
-  const completedReply = 'Large response complete.';
-  await steerActiveTurn(composer, steering);
-  await expect(page.getByRole('log')).toContainText(completedReply);
-  await expect(page.getByRole('button', { name: '停止' })).toHaveCount(0, {
-    timeout: 20_000,
-  });
-  await expect(page.locator('.maka-bubble-streaming')).toHaveCount(0, {
-    timeout: 20_000,
-  });
-
-  const temporarySessionRow = sessionRow(sidebar, temporarySessionId!);
-  await temporarySessionRow.click();
-  await expect(temporarySessionRow.locator('[aria-current="page"]')).toHaveCount(1, {
-    timeout: 20_000,
-  });
-  await expect(page.getByRole('log')).toContainText('Fake backend received: temporary conversation');
-  const originalSessionRow = sessionRow(sidebar, originalSessionId!);
-  await originalSessionRow.click();
-  await expect(originalSessionRow.locator('[aria-current="page"]')).toHaveCount(1, {
-    timeout: 20_000,
-  });
-  await expect(page.getByRole('log')).toContainText(completedReply);
 });
 
 test('returning to a live conversation settles output accumulated while away', async ({

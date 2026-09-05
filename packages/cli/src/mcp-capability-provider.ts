@@ -21,10 +21,10 @@ import { createHash } from 'node:crypto';
 import type { McpBoundTool, McpToolBinding } from '@maka/core/mcp';
 import type { McpClientManager } from '@maka/mcp';
 import type { ClientCapabilityProvider } from '@maka/runtime-host/client';
+import { clientCapabilityEntityId } from '@maka/runtime-host/client-capability-entity-id';
 import {
   CLIENT_CAPABILITY_MAX_TOOLS,
   CLIENT_CAPABILITY_MAX_TOOLS_PER_OFFER,
-  clientCapabilityEntityId,
   decodeClientCapabilityReplaceInput,
   type ClientCapabilityCallResult,
   type ClientCapabilityOffer,

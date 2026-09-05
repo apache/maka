@@ -263,7 +263,7 @@ it('does not force the single-line scrollbar layout on multiline code', () => {
 it('gives collapsible plaintext code a localized accessible name', () => {
   const code = Array.from({ length: 10 }, (_, index) => `line ${index + 1}`);
 
-  for (const [locale, label] of [['en', 'Code'], ['zh', '代码']] as const) {
+  for (const [locale, label] of [['en', 'Code'], ['zh-CN', '代码']] as const) {
     const markup = renderToStaticMarkup(createElement(LocaleProvider, {
       locale,
       children: createElement(AstryxLocaleProvider, {

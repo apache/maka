@@ -30,7 +30,8 @@ import {
   type LanguageModelV4StreamPart,
   type LanguageModelV4Usage,
 } from '@ai-sdk/provider';
-import type { AgentRunHeader } from '@maka/core/agent-run';
+import type { RuntimeInvocationRootAuthority } from '@maka/core/runtime-event';
+import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type { AttachmentByteReader } from '@maka/core/attachments';
 import type { BackendSendInput } from '@maka/core/backend-types';
 import type { LlmConnection } from '@maka/core/llm-connections';
@@ -46,6 +47,7 @@ import {
   mapSessionEventToRuntimeEvent,
 } from '../session-event-runtime-mapper.js';
 import { projectRuntimeEventsToStoredMessages } from '../runtime-event-read-model.js';
+import { sectionedSummary } from './history-compact-test-fixtures.js';
 import type { RuntimeEventMapContext } from '../session-event-runtime-mapper.js';
 import type { AssistantMessage, StoredMessage, ToolResultMessage } from '@maka/core/session';
 import { z } from 'zod';
@@ -84,7 +86,6 @@ import {
 } from '../sandbox-boundary-declaration.js';
 import { FilesystemWorkerClientError } from '../filesystem-worker/client.js';
 import { RunTrace } from '../run-trace.js';
-import type { PreparedRequestArtifactInput } from '../provider-request-telemetry.js';
 import { decodeModelCallAttempt, type ModelCallAttempt } from '@maka/core/model-call-attempt';
 import { buildLlmHistorySummarizer } from '../history-compact-summarizer.js';
 import { createToolResultArchiveCapability } from '../tool-result-archive-capability.js';
@@ -98,6 +99,7 @@ import type { OpenAiResponsesSemanticBaseline } from '../openai-responses-contin
 import type { OpenAiResponsesTransportState } from '../openai-responses-websocket.js';
 import { getAIModel } from '../model-factory.js';
 import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
+import { testInvocationOpening } from './invocation-fixture.js';
 
 describe('AiSdkBackend ApplyPatch routing', () => {
   test('advertises apply_patch only to supported native OpenAI models', async () => {
@@ -2136,7 +2138,7 @@ describe('AiSdkBackend model history', () => {
     assert.equal(prompt.at(-1)?.role, 'tool');
   });
 
-  test('uses StoredMessage projection when RuntimeEvent replay is empty', async () => {
+  test('does not recover provider history from StoredMessages when RuntimeEvent replay is empty', async () => {
     const model = completionModel();
     const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
@@ -2185,17 +2187,11 @@ describe('AiSdkBackend model history', () => {
     );
 
     assert.deepEqual(compactPrompt(model), [
-      { role: 'user', content: [{ type: 'text', text: 'projection user' }] },
-      { role: 'assistant', content: [{ type: 'text', text: 'projection assistant' }] },
       { role: 'user', content: [{ type: 'text', text: 'current user' }] },
     ]);
   });
 
-  test('stored-message fallback skips empty assistant texts', async () => {
-    // A thinking/tool-only step projects an assistant row with empty text.
-    // The degraded stored-message path must not replay it: an empty text
-    // content block is a hard 400 on Anthropic-protocol providers, which
-    // permanently blocks every later turn of the session.
+  test('RuntimeEvent replay describes an attachment that is not safely addressable', async () => {
     const model = completionModel();
     const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
@@ -2214,98 +2210,38 @@ describe('AiSdkBackend model history', () => {
       backend.send({
         turnId: 'turn-current',
         text: 'current user',
-        context: [
-          { type: 'user', id: 'projection-u', turnId: 'turn-prev', ts: 1, text: 'projection user' },
-          {
-            type: 'assistant',
-            id: 'projection-empty',
+        context: [],
+        runtimeContext: [
+          runtimeEvent({
+            id: 'rt-u',
             turnId: 'turn-prev',
-            ts: 2,
-            text: '',
-            modelId: 'm',
-          },
-          {
-            type: 'assistant',
-            id: 'projection-a',
-            turnId: 'turn-prev',
-            ts: 3,
-            text: 'projection assistant',
-            modelId: 'm',
-          },
-        ],
-      }),
-    );
-
-    assert.deepEqual(compactPrompt(model), [
-      { role: 'user', content: [{ type: 'text', text: 'projection user' }] },
-      { role: 'assistant', content: [{ type: 'text', text: 'projection assistant' }] },
-      { role: 'user', content: [{ type: 'text', text: 'current user' }] },
-    ]);
-  });
-
-  test('stored-message fallback describes an attachment that is not safely addressable', async () => {
-    const model = completionModel();
-    const backend = createTestAiSdkBackend({
-      sessionId: 'session-1',
-      header: header(),
-      appendMessage: async () => {},
-      connection: connection(),
-      apiKey: 'sk-test',
-      modelId: 'mock-model-id',
-      modelFactory: () => model,
-      tools: [],
-      newId: idGenerator(),
-      now: monotonicClock(),
-    });
-
-    await drain(
-      backend.send({
-        turnId: 'turn-current',
-        text: 'current user',
-        context: [
-          {
-            type: 'user',
-            id: 'projection-u',
-            turnId: 'turn-prev',
-            ts: 1,
-            text: 'see the attached chart',
-            attachments: [
-              {
-                kind: 'image',
-                name: 'chart.png',
-                mimeType: 'image/png',
-                bytes: 123,
-                ref: {
-                  kind: 'session_file',
-                  sessionId: 'sess-1',
-                  relativePath: 'attachments/chart.png',
+            role: 'user',
+            author: 'user',
+            content: {
+              kind: 'text',
+              text: 'see the attached chart',
+              attachments: [
+                {
+                  kind: 'image',
+                  name: 'chart.png',
+                  mimeType: 'image/png',
+                  bytes: 123,
+                  ref: {
+                    kind: 'session_file',
+                    sessionId: 'sess-1',
+                    relativePath: 'attachments/chart.png',
+                  },
                 },
-              },
-            ],
-          },
-          {
-            type: 'assistant',
-            id: 'projection-a',
+              ],
+            },
+          }),
+          runtimeTextEvent({
+            id: 'rt-a',
             turnId: 'turn-prev',
-            ts: 2,
-            text: 'projection assistant',
-            modelId: 'm',
-          },
-        ],
-        runtimeContext: [
-          {
-            id: 'rt-terminal',
-            invocationId: 'inv-1',
-            runId: 'run-prev',
-            sessionId: 'session-1',
-            turnId: 'turn-prev',
-            ts: 1,
-            partial: false,
             role: 'model',
             author: 'agent',
-            status: 'completed',
-            actions: { endInvocation: true },
-          },
+            text: 'projection assistant',
+          }),
         ],
       }),
     );
@@ -2319,11 +2255,11 @@ describe('AiSdkBackend model history', () => {
       text.includes(
         '<attachment>\nThe attachment content is unavailable to Read.\nname: "chart.png"\nmime_type: "image/png"\n</attachment>',
       ),
-      `expected unavailable attachment context in stored-message fallback, got: ${text}`,
+      `expected unavailable attachment context in RuntimeEvent replay, got: ${text}`,
     );
   });
 
-  test('current and stored directory references expose paths without eager listings', async () => {
+  test('current and replayed directory references expose paths without eager listings', async () => {
     const model = completionModel();
     const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
@@ -2345,38 +2281,26 @@ describe('AiSdkBackend model history', () => {
         turnId: 'turn-current',
         text: 'inspect current',
         directoryReferences: [currentReference],
-        context: [
-          {
-            type: 'user',
-            id: 'projection-u',
-            turnId: 'turn-prev',
-            ts: 1,
-            text: 'inspect prior',
-            directoryReferences: [historicalReference],
-          },
-          {
-            type: 'assistant',
-            id: 'projection-a',
-            turnId: 'turn-prev',
-            ts: 2,
-            text: 'projection assistant',
-            modelId: 'm',
-          },
-        ],
+        context: [],
         runtimeContext: [
-          {
-            id: 'rt-terminal',
-            invocationId: 'inv-1',
-            runId: 'run-prev',
-            sessionId: 'session-1',
+          runtimeEvent({
+            id: 'rt-u',
             turnId: 'turn-prev',
-            ts: 1,
-            partial: false,
+            role: 'user',
+            author: 'user',
+            content: {
+              kind: 'text',
+              text: 'inspect prior',
+              directoryReferences: [historicalReference],
+            },
+          }),
+          runtimeTextEvent({
+            id: 'rt-a',
+            turnId: 'turn-prev',
             role: 'model',
             author: 'agent',
-            status: 'completed',
-            actions: { endInvocation: true },
-          },
+            text: 'projection assistant',
+          }),
         ],
       }),
     );
@@ -2398,7 +2322,7 @@ describe('AiSdkBackend model history', () => {
     }
   });
 
-  test('stored-message fallback renders image attachments as image parts when a reader is wired', async () => {
+  test('RuntimeEvent replay renders image attachments as image parts when a reader is wired', async () => {
     const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 4, 5, 6]);
     const model = completionModel();
     const backend = createTestAiSdkBackend({
@@ -2420,50 +2344,38 @@ describe('AiSdkBackend model history', () => {
       backend.send({
         turnId: 'turn-current',
         text: 'current user',
-        context: [
-          {
-            type: 'user',
-            id: 'projection-u',
-            turnId: 'turn-prev',
-            ts: 1,
-            text: 'see the attached chart',
-            attachments: [
-              {
-                kind: 'image',
-                name: 'chart.png',
-                mimeType: 'image/png',
-                bytes: 123,
-                ref: {
-                  kind: 'session_file',
-                  sessionId: 'sess-1',
-                  relativePath: 'attachments/chart.png',
-                },
-              },
-            ],
-          },
-          {
-            type: 'assistant',
-            id: 'projection-a',
-            turnId: 'turn-prev',
-            ts: 2,
-            text: 'projection assistant',
-            modelId: 'm',
-          },
-        ],
+        context: [],
         runtimeContext: [
-          {
-            id: 'rt-terminal',
-            invocationId: 'inv-1',
-            runId: 'run-prev',
-            sessionId: 'session-1',
+          runtimeEvent({
+            id: 'rt-u',
             turnId: 'turn-prev',
-            ts: 1,
-            partial: false,
+            role: 'user',
+            author: 'user',
+            content: {
+              kind: 'text',
+              text: 'see the attached chart',
+              attachments: [
+                {
+                  kind: 'image',
+                  name: 'chart.png',
+                  mimeType: 'image/png',
+                  bytes: 123,
+                  ref: {
+                    kind: 'session_file',
+                    sessionId: 'sess-1',
+                    relativePath: 'attachments/chart.png',
+                  },
+                },
+              ],
+            },
+          }),
+          runtimeTextEvent({
+            id: 'rt-a',
+            turnId: 'turn-prev',
             role: 'model',
             author: 'agent',
-            status: 'completed',
-            actions: { endInvocation: true },
-          },
+            text: 'projection assistant',
+          }),
         ],
       }),
     );
@@ -2474,7 +2386,7 @@ describe('AiSdkBackend model history', () => {
     const imageLike = parts.find((p) => p.type !== 'text' && p.mediaType === 'image/png');
     assert.ok(
       imageLike,
-      `expected a historical image/png part in stored-message fallback, got: ${JSON.stringify(parts)}`,
+      `expected a historical image/png part in RuntimeEvent replay, got: ${JSON.stringify(parts)}`,
     );
   });
 
@@ -3335,6 +3247,133 @@ describe('AiSdkBackend model history', () => {
     );
     assert.match(JSON.stringify(assistant), /ws_123/);
     assert.match(JSON.stringify(assistant), /Maka shipped the feature/);
+  });
+
+  test('preserves pending assistant steps before a following client tool step', async () => {
+    const prompt = await replayPrompt([
+      runtimeTextEvent({
+        id: 'rt-user',
+        turnId: 'turn-prev',
+        role: 'user',
+        author: 'user',
+        text: 'inspect the workspace',
+      }),
+      runtimeEvent({
+        id: 'rt-progress-a',
+        turnId: 'turn-prev',
+        role: 'model',
+        author: 'agent',
+        refs: { providerEventId: 'progress-step-a' },
+        content: { kind: 'text', text: 'I found the relevant package.' },
+      }),
+      runtimeEvent({
+        id: 'rt-progress-b',
+        turnId: 'turn-prev',
+        role: 'model',
+        author: 'agent',
+        refs: { providerEventId: 'progress-step-b' },
+        content: { kind: 'text', text: 'I will inspect its configuration.' },
+      }),
+      clientToolCallEvent('rt-read-call', 'tool-step'),
+      clientToolResultEvent('rt-read-result'),
+    ]);
+
+    assert.deepEqual(
+      prompt.slice(0, 5).map((message) => ({
+        role: message.role,
+        types: message.content.map((part) => part.type),
+        text: message.content.find((part) => part.type === 'text')?.text,
+      })),
+      [
+        { role: 'user', types: ['text'], text: 'inspect the workspace' },
+        {
+          role: 'assistant',
+          types: ['text'],
+          text: 'I found the relevant package.',
+        },
+        {
+          role: 'assistant',
+          types: ['text'],
+          text: 'I will inspect its configuration.',
+        },
+        { role: 'assistant', types: ['tool-call'], text: undefined },
+        { role: 'tool', types: ['tool-result'], text: undefined },
+      ],
+    );
+  });
+
+  test('groups a client tool only with the immediately pending matching step', async () => {
+    const contiguousPrompt = await replayPrompt([
+      runtimeTextEvent({
+        id: 'rt-user',
+        turnId: 'turn-prev',
+        role: 'user',
+        author: 'user',
+        text: 'read the file',
+      }),
+      runtimeEvent({
+        id: 'rt-progress',
+        turnId: 'turn-prev',
+        role: 'model',
+        author: 'agent',
+        refs: { providerEventId: 'shared-step' },
+        content: { kind: 'text', text: 'I will read the file now.' },
+      }),
+      clientToolCallEvent('rt-read-call', 'shared-step'),
+      clientToolResultEvent('rt-read-result'),
+    ]);
+    assert.deepEqual(
+      contiguousPrompt.slice(0, 3).map((message) => ({
+        role: message.role,
+        types: message.content.map((part) => part.type),
+      })),
+      [
+        { role: 'user', types: ['text'] },
+        { role: 'assistant', types: ['text', 'tool-call'] },
+        { role: 'tool', types: ['tool-result'] },
+      ],
+    );
+
+    const interruptedPrompt = await replayPrompt([
+      runtimeTextEvent({
+        id: 'rt-user',
+        turnId: 'turn-prev',
+        role: 'user',
+        author: 'user',
+        text: 'read the file',
+      }),
+      runtimeEvent({
+        id: 'rt-progress-a',
+        turnId: 'turn-prev',
+        role: 'model',
+        author: 'agent',
+        refs: { providerEventId: 'shared-step' },
+        content: { kind: 'text', text: 'I will read the file now.' },
+      }),
+      runtimeEvent({
+        id: 'rt-progress-b',
+        turnId: 'turn-prev',
+        role: 'model',
+        author: 'agent',
+        refs: { providerEventId: 'intervening-step' },
+        content: { kind: 'text', text: 'Another step was persisted.' },
+      }),
+      clientToolCallEvent('rt-read-call', 'shared-step'),
+      clientToolResultEvent('rt-read-result'),
+    ]);
+    assert.deepEqual(
+      interruptedPrompt.slice(0, 5).map((message) => ({
+        role: message.role,
+        types: message.content.map((part) => part.type),
+      })),
+      [
+        { role: 'user', types: ['text'] },
+        { role: 'assistant', types: ['text'] },
+        { role: 'assistant', types: ['text'] },
+        { role: 'assistant', types: ['tool-call'] },
+        { role: 'tool', types: ['tool-result'] },
+      ],
+    );
   });
 
   test('falls back to grounded text when Open Responses cannot replay a hosted tool pair', async () => {
@@ -4413,8 +4452,8 @@ describe('AiSdkBackend model history', () => {
     const result = await backend.compactHistory({
       turnId: 'turn-compact',
       runId: 'run-1',
-      runtimeContextRunHeaders: [
-        priorModelRunHeader({ connectionId: 'test-connection-id', modelId: 'mock-model-id' }),
+      runtimeContextInvocations: [
+        priorModelInvocation({ connectionId: 'test-connection-id', modelId: 'mock-model-id' }),
       ],
       runtimeContext: [
         runtimeTextEvent({
@@ -4606,8 +4645,7 @@ describe('AiSdkBackend model history', () => {
     const previous = buildHistoryCompactCheckpoint({
       sessionId: 'session-1',
       coveredRuntimeEvents: oldEvents.slice(0, 1),
-      summary: 'MANUAL_V2_PREVIOUS_SUMMARY',
-      summaryFormat: 'legacy_freeform',
+      summary: sectionedSummary('MANUAL_V2_PREVIOUS_SUMMARY'),
       charsPerToken: 1,
     });
     const summaryInputs: Array<{ previous?: string; newlyFoldedIds: string[] }> = [];
@@ -4658,7 +4696,7 @@ describe('AiSdkBackend model history', () => {
 
     assert.deepEqual(summaryInputs, [
       {
-        previous: 'MANUAL_V2_PREVIOUS_SUMMARY',
+        previous: previous.summary,
         newlyFoldedIds: ['manual-v2-roll-old-2', 'manual-v2-roll-recent'],
       },
     ]);
@@ -4693,8 +4731,7 @@ describe('AiSdkBackend model history', () => {
     const previous = buildHistoryCompactCheckpoint({
       sessionId: 'session-1',
       coveredRuntimeEvents: [...oldEvents, recentEvent],
-      summary: 'MANUAL_V2_REUSED_SUMMARY',
-      summaryFormat: 'legacy_freeform',
+      summary: sectionedSummary('MANUAL_V2_REUSED_SUMMARY'),
       charsPerToken: 1,
     });
     let summarizeCalls = 0;
@@ -4889,31 +4926,29 @@ describe('AiSdkBackend model history', () => {
         text: 'recent',
       }),
     ];
-    const sourceRunHeader = priorModelRunHeader({
+    const sourceRunHeader = priorModelInvocation({
       connectionId: 'test-connection-id',
       modelId: 'mock-model-id',
     });
-    const priorCompactionRunHeader: AgentRunHeader = {
-      ...priorModelRunHeader({
-        connectionId: 'test-connection-id',
-        modelId: 'mock-model-id',
-        runId: 'run-1',
-      }),
+    const priorCompactionRunHeader = priorModelInvocation({
+      connectionId: 'test-connection-id',
+      modelId: 'mock-model-id',
+      runId: 'run-1',
       turnId: 'turn-compact-1',
-      rootExecutionKind: 'context_compact',
-    };
+      root: { kind: 'context_compact' },
+    });
 
     const first = await backend.compactHistory({
       turnId: 'turn-compact-1',
       runId: 'run-1',
       runtimeContext: history,
-      runtimeContextRunHeaders: [sourceRunHeader],
+      runtimeContextInvocations: [sourceRunHeader],
     });
     const repeated = await backend.compactHistory({
       turnId: 'turn-compact-2',
       runId: 'run-2',
       runtimeContext: history,
-      runtimeContextRunHeaders: [sourceRunHeader, priorCompactionRunHeader],
+      runtimeContextInvocations: [sourceRunHeader, priorCompactionRunHeader],
     });
 
     assert.equal(calls, 1);
@@ -4936,7 +4971,7 @@ describe('AiSdkBackend model history', () => {
           text: 'new source history',
         }),
       ],
-      runtimeContextRunHeaders: [sourceRunHeader, priorCompactionRunHeader],
+      runtimeContextInvocations: [sourceRunHeader, priorCompactionRunHeader],
     });
     assert.equal(calls, 2, 'changed source fingerprint is eligible again');
   });
@@ -6024,9 +6059,8 @@ describe('AiSdkBackend model history', () => {
 
   test('keeps RuntimeEvent replay when a tool result is unmatched (orphan dropped, rest replayed)', async () => {
     // `unmatched_tool_result` is a non-blocking diagnostic: the materializer
-    // drops the orphan itself (a standalone tool message is an Anthropic 400),
-    // so the ledger stays on RuntimeEvent replay instead of falling back to
-    // StoredMessage projection.
+    // drops the orphan itself (a standalone tool message is an Anthropic 400)
+    // while retaining the rest of canonical history.
     const model = completionModel();
     let imageReads = 0;
     const backend = createTestAiSdkBackend({
@@ -6091,7 +6125,7 @@ describe('AiSdkBackend model history', () => {
       }),
     );
 
-    // RuntimeEvent replay (not the StoredMessage projection), orphan gone.
+    // The orphan is gone and the rest of RuntimeEvent replay remains.
     assert.deepEqual(compactPrompt(model), [
       { role: 'user', content: [{ type: 'text', text: 'runtime user' }] },
       { role: 'user', content: [{ type: 'text', text: 'current user' }] },
@@ -6158,7 +6192,7 @@ describe('AiSdkBackend model history', () => {
     ]);
   });
 
-  test('uses StoredMessage projection instead of leaking unsupported thinking text', async () => {
+  test('drops unsupported thinking while preserving RuntimeEvent text', async () => {
     const model = completionModel();
     const openAiConnection = { ...connection(), providerType: 'openai' as const };
     const backend = createTestAiSdkBackend({
@@ -6179,13 +6213,19 @@ describe('AiSdkBackend model history', () => {
         turnId: 'turn-current',
         text: 'current user',
         context: [
-          { type: 'user', id: 'projection-u', turnId: 'turn-prev', ts: 1, text: 'projection user' },
+          {
+            type: 'user',
+            id: 'projection-u',
+            turnId: 'turn-prev',
+            ts: 1,
+            text: 'wrong projection',
+          },
           {
             type: 'assistant',
             id: 'projection-a',
             turnId: 'turn-prev',
             ts: 2,
-            text: 'projection assistant',
+            text: 'wrong projection assistant',
             modelId: 'm',
           },
         ],
@@ -6244,8 +6284,8 @@ describe('AiSdkBackend model history', () => {
         turnId: 'turn-current',
         text: 'continue',
         context: [],
-        runtimeContextRunHeaders: [
-          priorModelRunHeader({ connectionId: 'connection-a', modelId: 'claude-a' }),
+        runtimeContextInvocations: [
+          priorModelInvocation({ connectionId: 'connection-a', modelId: 'claude-a' }),
         ],
         runtimeContext: [
           runtimeTextEvent({
@@ -6329,8 +6369,8 @@ describe('AiSdkBackend model history', () => {
         turnId: 'turn-current',
         text: 'continue',
         context: [],
-        runtimeContextRunHeaders: [
-          priorModelRunHeader({
+        runtimeContextInvocations: [
+          priorModelInvocation({
             connectionId: 'connection-a',
             modelId: 'claude-a',
             providerStateIdentity: `sha256:${'a'.repeat(64)}`,
@@ -6442,8 +6482,8 @@ describe('AiSdkBackend model history', () => {
         turnId: 'turn-current',
         text: 'continue',
         context: [],
-        runtimeContextRunHeaders: [
-          priorModelRunHeader({
+        runtimeContextInvocations: [
+          priorModelInvocation({
             connectionId: 'connection-copilot',
             connectionSlug: 'github-copilot',
             modelId: 'gpt-5.5',
@@ -6536,8 +6576,8 @@ describe('AiSdkBackend model history', () => {
         turnId: 'turn-current',
         text: 'continue',
         context: [],
-        runtimeContextRunHeaders: [
-          priorModelRunHeader({
+        runtimeContextInvocations: [
+          priorModelInvocation({
             connectionId: 'connection-openai',
             connectionSlug: 'openai-main',
             modelId: 'gpt-5.4',
@@ -8968,7 +9008,6 @@ describe('AiSdkBackend context budget and prompt attribution', () => {
 describe('AiSdkBackend RunTrace', () => {
   for (const protocol of ['openai-compatible', 'anthropic-compatible'] as const) {
     test(`records ${protocol} multi-step requests and reconciles complete attempt usage`, async () => {
-      const captures: PreparedRequestArtifactInput[] = [];
       const attempts: ModelCallAttempt[] = [];
       const durable = durableTurnHarness('turn-1', 'hi');
       let calls = 0;
@@ -9068,10 +9107,6 @@ describe('AiSdkBackend RunTrace', () => {
         loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
         newId: idGenerator(),
         now: monotonicClock(),
-        persistPreparedRequestArtifact: async (capture) => {
-          captures.push(capture);
-          return { artifactId: `artifact-${captures.length}` };
-        },
         recordModelCallAttempt: ({ attempt }) => {
           attempts.push(attempt);
         },
@@ -9079,7 +9114,6 @@ describe('AiSdkBackend RunTrace', () => {
 
       const events = await drainDurably(backend.send(durable.input({ runId: 'run-1' })), durable);
 
-      assert.equal(captures.length, 2);
       assert.deepEqual(
         attempts.map(({ step, attempt, status }) => ({ step, attempt, status })),
         [
@@ -9106,15 +9140,9 @@ describe('AiSdkBackend RunTrace', () => {
   }
 
   test('observes the prepared request at dispatch and records its canonical attempt', async () => {
-    const captures: PreparedRequestArtifactInput[] = [];
     const attempts: ModelCallAttempt[] = [];
     const model = new MockLanguageModelV4({
       doStream: async () => {
-        assert.equal(
-          captures.length,
-          1,
-          'artifact persistence must start before provider dispatch',
-        );
         return {
           stream: simulateReadableStream({
             chunks: [
@@ -9153,10 +9181,6 @@ describe('AiSdkBackend RunTrace', () => {
       tools: [],
       newId: idGenerator(),
       now: monotonicClock(),
-      persistPreparedRequestArtifact: async (capture) => {
-        captures.push(capture);
-        return { artifactId: `artifact-${captures.length}` };
-      },
       recordModelCallAttempt: async ({ attempt }) => {
         attempts.push(attempt);
       },
@@ -9172,7 +9196,6 @@ describe('AiSdkBackend RunTrace', () => {
       events.push(event);
     }
 
-    assert.equal(captures.length, 1);
     assert.equal(attempts.length, 1);
     assert.equal(attempts[0]?.step, 0);
     assert.equal(attempts[0]?.attempt, 0);
@@ -9181,7 +9204,7 @@ describe('AiSdkBackend RunTrace', () => {
     assert.equal(attempts[0]?.cacheMissInputTokens, 4);
     assert.equal(
       events.find((event) => event.type === 'token_usage')?.providerRequestTraceId,
-      captures[0]?.traceId,
+      attempts[0]?.traceId,
     );
   });
 
@@ -9287,36 +9310,7 @@ describe('AiSdkBackend RunTrace', () => {
     assert.equal(stored?.type === 'token_usage' && 'contextRemaining' in stored, false);
   });
 
-  test('continues the canonical call when private request persistence fails', async () => {
-    const model = completionModel();
-    const backend = createTestAiSdkBackend({
-      sessionId: 'session-1',
-      header: header(),
-      appendMessage: async () => {},
-      connection: connection(),
-      apiKey: 'sk-test',
-      modelId: 'mock-model-id',
-      modelFactory: () => model,
-      tools: [],
-      newId: idGenerator(),
-      now: monotonicClock(),
-      persistPreparedRequestArtifact: async () => {
-        throw new Error('capture unavailable');
-      },
-    });
-
-    const events: SessionEvent[] = [];
-    for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
-      events.push(event);
-    }
-
-    assert.equal(model.doStreamCalls.length, 1);
-    assert.equal(events.at(-1)?.type, 'complete');
-    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
-  });
-
   test('disables hidden AI SDK retries and traces the one explicit Runtime retry', async () => {
-    const captures: PreparedRequestArtifactInput[] = [];
     const attempts: ModelCallAttempt[] = [];
     let calls = 0;
     const model = new MockLanguageModelV4({
@@ -9361,10 +9355,6 @@ describe('AiSdkBackend RunTrace', () => {
       tools: [],
       newId: idGenerator(),
       now: monotonicClock(),
-      persistPreparedRequestArtifact: async (capture) => {
-        captures.push(capture);
-        return { artifactId: 'artifact-1' };
-      },
       recordModelCallAttempt: ({ attempt }) => {
         attempts.push(attempt);
       },
@@ -9374,7 +9364,6 @@ describe('AiSdkBackend RunTrace', () => {
     await drain(backend.send({ turnId: 'turn-1', runId: 'run-1', text: 'hi', context: [] }));
 
     assert.equal(calls, 2);
-    assert.equal(captures.length, 1);
     assert.deepEqual(
       attempts.map(({ attempt, status }) => ({ attempt, status })),
       [
@@ -11939,21 +11928,13 @@ describe('AiSdkBackend thinking persistence', () => {
     } as unknown as RuntimeEventMapContext;
     const memory = createSessionEventMapMemory();
     const runtimeEvents = events.map((event) => mapSessionEventToRuntimeEvent(event, ctx, memory));
-    const runHeader: AgentRunHeader = {
-      runId: 'run-1',
-      sessionId: 'session-1',
-      turnId: 'turn-1',
-      status: 'completed',
-      backendKind: 'ai-sdk',
-      llmConnectionSlug: 'anthropic-main',
+    const runHeader = priorModelInvocation({
       modelId: 'mock-model-id',
-      cwd: '/tmp/maka',
-      permissionMode: 'ask',
-      createdAt: 1,
-      updatedAt: 2,
-    };
+      runId: 'run-1',
+      turnId: 'turn-1',
+    });
     const projection = projectRuntimeEventsToStoredMessages(runtimeEvents, {
-      runHeaders: [runHeader],
+      invocations: [runHeader],
     });
     const assistant = projection.messages.find((message) => message.type === 'assistant');
     assert.ok(assistant && assistant.type === 'assistant');
@@ -12033,21 +12014,13 @@ describe('AiSdkBackend thinking persistence', () => {
     } as unknown as RuntimeEventMapContext;
     const memory = createSessionEventMapMemory();
     const runtimeEvents = events.map((event) => mapSessionEventToRuntimeEvent(event, ctx, memory));
-    const runHeader: AgentRunHeader = {
-      runId: 'run-1',
-      sessionId: 'session-1',
-      turnId: 'turn-1',
-      status: 'completed',
-      backendKind: 'ai-sdk',
-      llmConnectionSlug: 'anthropic-main',
+    const runHeader = priorModelInvocation({
       modelId: 'mock-model-id',
-      cwd: '/tmp/maka',
-      permissionMode: 'ask',
-      createdAt: 1,
-      updatedAt: 2,
-    };
+      runId: 'run-1',
+      turnId: 'turn-1',
+    });
     const projection = projectRuntimeEventsToStoredMessages(runtimeEvents, {
-      runHeaders: [runHeader],
+      invocations: [runHeader],
     });
     const assistant = projection.messages.find((message) => message.type === 'assistant');
     assert.ok(assistant && assistant.type === 'assistant');
@@ -13715,20 +13688,8 @@ describe('AiSdkBackend thinking persistence', () => {
     const memory = createSessionEventMapMemory();
     const runtimeContext = events.map((event) => mapSessionEventToRuntimeEvent(event, ctx, memory));
     const projection = projectRuntimeEventsToStoredMessages(runtimeContext, {
-      runHeaders: [
-        {
-          runId: 'run-prev',
-          sessionId: 'session-1',
-          turnId: 'turn-prev',
-          status: 'completed',
-          backendKind: 'ai-sdk',
-          llmConnectionSlug: planConnection.slug,
-          modelId: 'ark-code-latest',
-          cwd: '/tmp/maka',
-          permissionMode: 'ask',
-          createdAt: 1,
-          updatedAt: 2,
-        },
+      invocations: [
+        priorModelInvocation({ modelId: 'ark-code-latest', connectionSlug: planConnection.slug }),
       ],
     });
     const projectedAssistant = projection.messages.find(
@@ -14752,12 +14713,10 @@ describe('AiSdkBackend steering durability and identity', () => {
     ]);
   });
 
-  test('a degraded stored-message projection presents prior steering exactly once, in envelope form', async () => {
+  test('degraded RuntimeEvent replay presents prior steering exactly once, in envelope form', async () => {
     // A blocking replay diagnostic (here: a tool-role text event) degrades the
-    // whole ledger to the StoredMessage projection, which cannot carry the
-    // RuntimeEvent steering marker. The sidecar (keyed by the projection's
-    // stable ids) restores the canonical envelope + structured identity, so
-    // the steering appears exactly once and dedupe still works by id.
+    // provider-native shape to text-only RuntimeEvent replay. The canonical
+    // steering marker still produces one envelope with its structured id.
     const model = textCompletionModel('done');
     const backend = steeringBackend(model);
     const steeredEvent = runtimeTextEvent({
@@ -14780,11 +14739,7 @@ describe('AiSdkBackend steering durability and identity', () => {
       backend.send({
         turnId: 'turn-current',
         text: 'continue',
-        context: [
-          { type: 'user', id: 'rt-u', turnId: 'turn-prev', ts: 1, text: 'original ask' },
-          { type: 'user', id: 'rt-steer', turnId: 'turn-prev', ts: 2, text: 'steered earlier' },
-          { type: 'assistant', id: 'rt-a', turnId: 'turn-prev', ts: 3, text: 'ok', modelId: 'm' },
-        ],
+        context: [],
         runtimeContext: [
           runtimeTextEvent({
             id: 'rt-u',
@@ -14808,108 +14763,6 @@ describe('AiSdkBackend steering durability and identity', () => {
 
     assert.deepEqual(compactPrompt(model), [
       { role: 'user', content: [{ type: 'text', text: 'original ask' }] },
-      { role: 'user', content: [{ type: 'text', text: buildSteeringEnvelope('steered earlier') }] },
-      { role: 'assistant', content: [{ type: 'text', text: 'ok' }] },
-      { role: 'user', content: [{ type: 'text', text: 'continue' }] },
-    ]);
-  });
-
-  test('the degraded-projection sidecar restores steering keyed by providerEventId', async () => {
-    // A StoredMessage projection may carry the provider's event id, not the
-    // runtime event id, as the message's stable id. The sidecar must match on
-    // that key too, or the degraded replay silently loses the steering
-    // identity (bare text, no envelope, no dedupe id).
-    const model = textCompletionModel('done');
-    const backend = steeringBackend(model);
-    const steeredEvent = runtimeTextEvent({
-      id: 'rt-steer',
-      turnId: 'turn-prev',
-      role: 'user',
-      author: 'user',
-      text: 'steered earlier',
-    });
-    (steeredEvent.content as { steering?: true }).steering = true;
-    steeredEvent.refs = { providerEventId: 'prov-steer' };
-    const degradingEvent = runtimeTextEvent({
-      id: 'rt-bad',
-      turnId: 'turn-prev',
-      role: 'user',
-      author: 'user',
-      text: 'boom',
-    });
-    (degradingEvent as { role: string }).role = 'tool';
-    await drain(
-      backend.send({
-        turnId: 'turn-current',
-        text: 'continue',
-        context: [
-          { type: 'user', id: 'prov-steer', turnId: 'turn-prev', ts: 1, text: 'steered earlier' },
-          { type: 'assistant', id: 'prov-a', turnId: 'turn-prev', ts: 2, text: 'ok', modelId: 'm' },
-        ],
-        runtimeContext: [
-          steeredEvent,
-          degradingEvent,
-          runtimeTextEvent({
-            id: 'rt-a',
-            turnId: 'turn-prev',
-            role: 'model',
-            author: 'agent',
-            text: 'ok',
-          }),
-        ],
-      }),
-    );
-
-    assert.deepEqual(compactPrompt(model), [
-      { role: 'user', content: [{ type: 'text', text: buildSteeringEnvelope('steered earlier') }] },
-      { role: 'assistant', content: [{ type: 'text', text: 'ok' }] },
-      { role: 'user', content: [{ type: 'text', text: 'continue' }] },
-    ]);
-  });
-
-  test('the degraded-projection sidecar restores steering keyed by storedMessageId', async () => {
-    const model = textCompletionModel('done');
-    const backend = steeringBackend(model);
-    const steeredEvent = runtimeTextEvent({
-      id: 'rt-steer',
-      turnId: 'turn-prev',
-      role: 'user',
-      author: 'user',
-      text: 'steered earlier',
-    });
-    (steeredEvent.content as { steering?: true }).steering = true;
-    steeredEvent.refs = { storedMessageId: 'sm-steer' };
-    const degradingEvent = runtimeTextEvent({
-      id: 'rt-bad',
-      turnId: 'turn-prev',
-      role: 'user',
-      author: 'user',
-      text: 'boom',
-    });
-    (degradingEvent as { role: string }).role = 'tool';
-    await drain(
-      backend.send({
-        turnId: 'turn-current',
-        text: 'continue',
-        context: [
-          { type: 'user', id: 'sm-steer', turnId: 'turn-prev', ts: 1, text: 'steered earlier' },
-          { type: 'assistant', id: 'sm-a', turnId: 'turn-prev', ts: 2, text: 'ok', modelId: 'm' },
-        ],
-        runtimeContext: [
-          steeredEvent,
-          degradingEvent,
-          runtimeTextEvent({
-            id: 'rt-a',
-            turnId: 'turn-prev',
-            role: 'model',
-            author: 'agent',
-            text: 'ok',
-          }),
-        ],
-      }),
-    );
-
-    assert.deepEqual(compactPrompt(model), [
       { role: 'user', content: [{ type: 'text', text: buildSteeringEnvelope('steered earlier') }] },
       { role: 'assistant', content: [{ type: 'text', text: 'ok' }] },
       { role: 'user', content: [{ type: 'text', text: 'continue' }] },
@@ -16085,6 +15938,65 @@ function runtimeEvent(input: {
   };
 }
 
+function clientToolCallEvent(id: string, stepId: string): RuntimeEvent {
+  return runtimeEvent({
+    id,
+    turnId: 'turn-prev',
+    role: 'model',
+    author: 'agent',
+    refs: { stepId },
+    content: {
+      kind: 'function_call',
+      id: 'read-1',
+      name: 'Read',
+      args: { path: 'notes.md' },
+    },
+  });
+}
+
+function clientToolResultEvent(id: string): RuntimeEvent {
+  return runtimeEvent({
+    id,
+    turnId: 'turn-prev',
+    role: 'tool',
+    author: 'tool',
+    content: {
+      kind: 'function_response',
+      id: 'read-1',
+      name: 'Read',
+      result: { kind: 'text', text: 'file contents' },
+      isError: false,
+    },
+  });
+}
+
+async function replayPrompt(
+  runtimeContext: RuntimeEvent[],
+): Promise<Array<{ role: string; content: any[] }>> {
+  const model = completionModel();
+  const backend = createTestAiSdkBackend({
+    sessionId: 'session-1',
+    header: header(),
+    appendMessage: async () => {},
+    connection: connection(),
+    apiKey: 'sk-test',
+    modelId: 'mock-model-id',
+    modelFactory: () => model,
+    tools: [],
+    newId: idGenerator(),
+    now: monotonicClock(),
+  });
+  await drain(
+    backend.send({
+      turnId: 'turn-current',
+      text: 'continue',
+      context: [],
+      runtimeContext,
+    }),
+  );
+  return compactPrompt(model) as Array<{ role: string; content: any[] }>;
+}
+
 function compactPrompt(model: MockLanguageModelV4): unknown {
   return model.doStreamCalls[0]?.prompt.map((message) => ({
     role: message.role,
@@ -16338,38 +16250,55 @@ function header(permissionMode: SessionHeader['permissionMode'] = 'ask'): Sessio
   };
 }
 
-function priorModelRunHeader(input: {
+function priorModelInvocation(input: {
   connectionId?: string;
   modelId: string;
   connectionSlug?: string;
   runId?: string;
+  turnId?: string;
+  root?: RuntimeInvocationRootAuthority;
   providerStateIdentity?: `sha256:${string}`;
-}): AgentRunHeader {
-  return {
-    runId: input.runId ?? 'run-prev',
+}): RuntimeInvocationRecord {
+  const identity = {
     sessionId: 'session-1',
-    turnId: 'turn-prev',
-    status: 'completed',
-    backendKind: 'ai-sdk',
-    ...(input.connectionId ? { llmConnectionId: input.connectionId } : {}),
-    providerStateIdentity: input.providerStateIdentity ?? `sha256:${'1'.repeat(64)}`,
-    llmConnectionSlug: input.connectionSlug ?? 'anthropic-main',
-    modelId: input.modelId,
-    cwd: '/tmp/maka',
-    permissionMode: 'ask',
-    createdAt: 1,
-    updatedAt: 2,
-    completedAt: 2,
+    invocationId: input.runId ?? 'run-prev',
+    runId: input.runId ?? 'run-prev',
+    turnId: input.turnId ?? 'turn-prev',
+  };
+  return {
+    ...identity,
+    openedAt: 1,
+    opening: testInvocationOpening({
+      route: {
+        provenance: 'runtime',
+        backendKind: 'ai-sdk',
+        llmConnectionId: input.connectionId ?? 'anthropic-main-connection',
+        llmConnectionSlug: input.connectionSlug ?? 'anthropic-main',
+        modelId: input.modelId,
+        providerStateIdentity: input.providerStateIdentity ?? `sha256:${'1'.repeat(64)}`,
+      },
+      configuration: { cwd: '/tmp/maka' },
+      root: input.root ?? { kind: 'user' },
+    }),
+    terminalEvent: {
+      id: `${identity.runId}-terminal`,
+      ...identity,
+      ts: 2,
+      partial: false,
+      role: 'system',
+      author: 'system',
+      status: 'completed',
+    },
   };
 }
 
 function sameRouteReplayProvenance(
   modelId: string,
   runId = 'run-prev',
-): Pick<BackendSendInput, 'runtimeContextRunHeaders'> {
+): Pick<BackendSendInput, 'runtimeContextInvocations'> {
   return {
-    runtimeContextRunHeaders: [
-      priorModelRunHeader({ connectionId: 'test-connection-id', modelId, runId }),
+    runtimeContextInvocations: [
+      priorModelInvocation({ connectionId: 'test-connection-id', modelId, runId }),
     ],
   };
 }

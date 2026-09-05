@@ -47,7 +47,7 @@ describe('TUI Session status badge', () => {
       ),
       'needs permission',
     );
-    assert.equal(sessionStatusBadge(session({ status: 'waiting_for_user' }), 'zh'), '等你确认');
+    assert.equal(sessionStatusBadge(session({ status: 'waiting_for_user' }), 'zh-CN'), '等你确认');
   });
 
   test('marks only actionable blocked reasons and keeps resting rows unmarked', () => {
@@ -74,7 +74,7 @@ describe('TUI Session status badge', () => {
     }
     assert.equal(sessionStatusBadge(session({ status: 'active' }), 'en'), undefined);
     assert.equal(sessionStatusBadge(session({ status: 'aborted' }), 'en'), 'stopped');
-    assert.equal(sessionStatusBadge(session({ status: 'aborted' }), 'zh'), '已中止');
+    assert.equal(sessionStatusBadge(session({ status: 'aborted' }), 'zh-CN'), '已中止');
   });
 });
 

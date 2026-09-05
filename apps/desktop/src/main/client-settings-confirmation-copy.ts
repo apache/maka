@@ -24,30 +24,38 @@ export function clientSettingsConfirmation(
   changes: readonly ClientSettingsChange[],
   locale: UiLocale,
 ): { message: string; detail: string; buttons: [string, string] } {
-  const zh = locale === 'zh';
-  const labels: Record<ClientSettingsChange['key'], readonly [string, string]> = {
-    theme: ['Theme', '主题'],
-    palette: ['Palette', '配色'],
-    uiLocale: ['UI language', '界面语言'],
-    runComplete: ['Run-complete notifications', '回答完成通知'],
-    keepSystemAwake: ['Keep system awake', '保持系统唤醒'],
+  const labels: Record<ClientSettingsChange['key'], readonly [string, string, string]> = {
+    theme: ['Theme', '主题', '主題'],
+    palette: ['Palette', '配色', '色彩配置'],
+    uiLocale: ['UI language', '界面语言', '介面語言'],
+    runComplete: ['Run-complete notifications', '回答完成通知', '回答完成通知'],
+    keepSystemAwake: ['Keep system awake', '保持系统唤醒', '保持系統喚醒'],
   };
+  const localeIndex = locale === 'en' ? 0 : locale === 'zh-CN' ? 1 : 2;
   const value = (input: string | boolean | undefined): string => {
-    if (!zh) return String(input);
-    if (input === true) return '开启';
-    if (input === false) return '关闭';
+    if (locale === 'en') return String(input);
+    if (input === true) return locale === 'zh-CN' ? '开启' : '開啟';
+    if (input === false) return locale === 'zh-CN' ? '关闭' : '關閉';
     return String(input);
   };
   return {
-    message: zh
-      ? '允许 Maka 更新此客户端的设置吗？'
-      : "Allow Maka to update this client's settings?",
+    message:
+      locale === 'en'
+        ? "Allow Maka to update this client's settings?"
+        : locale === 'zh-CN'
+          ? '允许 Maka 更新此客户端的设置吗？'
+          : '允許 Maka 更新此用戶端的設定嗎？',
     detail: changes
       .map(
         (change) =>
-          `${labels[change.key][zh ? 1 : 0]}: ${value(change.current)} → ${value(change.next)}`,
+          `${labels[change.key][localeIndex]}: ${value(change.current)} → ${value(change.next)}`,
       )
       .join('\n'),
-    buttons: zh ? ['应用更改', '取消'] : ['Apply changes', 'Cancel'],
+    buttons:
+      locale === 'en'
+        ? ['Apply changes', 'Cancel']
+        : locale === 'zh-CN'
+          ? ['应用更改', '取消']
+          : ['套用變更', '取消'],
   };
 }

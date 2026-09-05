@@ -51,7 +51,7 @@ export interface RuntimeHostReconnectLifecycle<T extends RuntimeHostReconnectRes
   subscribe(listener: (current: T | undefined) => void): () => void;
   wake(): void;
   suspend(): Promise<RuntimeHostReconnectSuspension<T>>;
-  quiesce(): Promise<RuntimeHostReconnectQuiescence<T>>;
+  quiesce(signal?: AbortSignal): Promise<RuntimeHostReconnectQuiescence<T>>;
   close(): Promise<void>;
 }
 
@@ -251,7 +251,8 @@ class RuntimeHostReconnectLifecycleImpl<T extends RuntimeHostReconnectResource>
     return this.#suspension(this.#current);
   }
 
-  async quiesce(): Promise<RuntimeHostReconnectQuiescence<T>> {
+  async quiesce(signal?: AbortSignal): Promise<RuntimeHostReconnectQuiescence<T>> {
+    signal?.throwIfAborted();
     while (!this.#current) {
       if (this.#closed || this.#terminalError) {
         throw new Error('Runtime Host reconnect lifecycle is closed');
@@ -259,8 +260,9 @@ class RuntimeHostReconnectLifecycleImpl<T extends RuntimeHostReconnectResource>
       if (this.#quiesced) {
         throw new Error('Runtime Host reconnect lifecycle is already quiesced');
       }
-      await this.waitForCurrent();
+      await this.waitForCurrent(undefined, signal);
     }
+    signal?.throwIfAborted();
     if (this.#closed || this.#terminalError) {
       throw new Error('Runtime Host reconnect lifecycle is closed');
     }

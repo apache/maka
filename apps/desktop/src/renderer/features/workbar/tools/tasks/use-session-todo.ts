@@ -18,7 +18,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { generalizedErrorMessage, generalizedErrorMessageChinese } from '@maka/core/redaction';
+import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
 import type { SessionTodoItem } from '@maka/core/session-todo';
 import type { UiLocale } from '@maka/ui';
 import { useWorkbarServices } from '../../services-context.js';
@@ -58,10 +58,7 @@ export function useSessionTodo(
           sessionId: targetSessionId,
           items: current.sessionId === targetSessionId ? current.items : [],
           loading: false,
-          error:
-            copy.locale === 'zh'
-              ? generalizedErrorMessageChinese(error, copy.loadFailed)
-              : generalizedErrorMessage(error, copy.loadFailed),
+          error: generalizedErrorMessageForLocale(error, copy.loadFailed, copy.locale),
         }));
       },
     );

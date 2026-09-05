@@ -156,7 +156,7 @@ Maka is not implementing Kafka inside one process, nor does it claim that Runtim
 
 > **Log is the source of truth; state is a materialized view.**
 
-That principle directly explains the most important terminal invariant later in this chapter: a Run header cannot declare completion on its own; a terminal RuntimeEvent must support it.
+That principle directly explains the most important terminal invariant later in this chapter: nothing declares that a Run ended except the Run's own terminal RuntimeEvent.
 
 ## Three lifecycle identities, plus one correlation field
 
@@ -221,13 +221,12 @@ It is an orchestration boundary, not the model loop. A Backend should not own th
 
 `AgentRun` gives one execution a durable identity and lifecycle. At startup it:
 
-1. creates an `AgentRunHeader` in `created` state;
+1. commits the invocation's opening fact as a RuntimeEvent;
 2. writes the user message and a `running` Turn projection for a top-level Run;
 3. writes the initial user `RuntimeEvent`;
 4. locks the Session's connection configuration;
 5. ensures a Backend exists and registers the active Run;
-6. marks the Run as `running`;
-7. builds model history from earlier RuntimeEvent ledgers.
+6. builds model history from earlier RuntimeEvent ledgers.
 
 While execution is active, `AgentRun` receives both legacy `SessionEvent`s and canonical `RuntimeEvent`s and writes each to the projection or ledger it belongs to. At the end, it unregisters the active Run, converges Session and Turn state, and commits the final Run state.
 
@@ -323,12 +322,12 @@ The important point is that permission is not a UI-only pause. Requests and deci
 
 ## One semantic truth, two supporting forms of state
 
-Maka currently maintains three forms of durable data. They are not three equal sources of truth, nor do they store the same chat three times. `RuntimeEventStore` is the canonical semantic log of AI interaction; the other stores carry product projections and operational Run state.
+Maka currently maintains three forms of durable data. They are not three equal sources of truth, nor do they store the same chat three times. `RuntimeEventStore` is the canonical semantic log of AI interaction; the other stores carry product projections and the operational record of what the runtime did.
 
 | Store | Main contents | Question it answers best |
 |---|---|---|
 | `SessionStore` | `StoredMessage`s for users, assistants, tools, and Turn state | What should the UI and compatibility APIs display? What is the current in-flight projection? |
-| `AgentRunStore` | Run header and operational Run events | When did this Run start, what is its state, and at which model or tool stage did it fail? |
+| `AgentRunStore` | operational Run events | At which model or tool stage did this Run do what, and where did it fail? |
 | `RuntimeEventStore` | canonical RuntimeEvents plus bounded partial snapshots | Which semantic facts occurred, and how should other state be rebuilt from them? |
 
 The current implementation is backed by SQLite rather than a directory per Run: `AgentRunStore` and `RuntimeEventStore` both sit on the same operational state database, and RuntimeEvents land in the `runtime_events` table. Order is carried by that table's `event_seq` under a `(invocation_id, event_seq)` uniqueness constraint, so sequence numbers never repeat within one correlated execution stream — that constraint is what "ordered log" means at the storage layer. Session, Turn, Run, and the compatibility correlation field each occupy their own column, so "what happened in this Turn of this Run of this Session" is an indexed lookup.
@@ -343,18 +342,15 @@ Streaming text and thinking deltas are not appended forever to immutable JSONL. 
 
 One of the hardest runtime failure classes is disagreement about whether an execution ended. For example:
 
-- The Run header says completed, but the RuntimeEvent ledger has no terminal event;
 - the user stopped the Run, but a late complete event rewrites the Session to active;
 - the Backend stream exhausts without saying whether it succeeded or failed;
-- the terminal event is durable, but the process crashes before updating the Run header.
+- a second writer tries to end a Run that has already ended.
 
 Maka protects this core invariant:
 
-> A terminal Run must have exactly one valid terminal RuntimeEvent, and a terminal Run header must be supported by that terminal fact.
+> A Run ends exactly once, and its terminal RuntimeEvent is the only statement that it ended.
 
-`AgentRun` therefore requires the terminal RuntimeEvent to be durable before committing a terminal Run header. A Backend stream without a terminal event becomes a `missing_terminal_event` failure. Duplicate terminal events are coalesced. Terminal events with a mismatched status, a different Run identity, or `partial: true` are rejected.
-
-If the terminal RuntimeEvent exists but an interrupted header remains `running`, the read model can treat the event as the stronger fact and recovery can repair the header. In the opposite direction, if a header claims termination without a trustworthy terminal fact, the system does not blindly trust the header; it conservatively repairs the Run as a `missing_terminal_event` failure.
+There is no separate record of the outcome to keep in step, so a crash cannot leave one saying the Run finished while the other says it is still running. A Backend stream without a terminal event becomes a `missing_terminal_event` failure. Duplicate terminal events are coalesced. Terminal events with a mismatched status, a different Run identity, or `partial: true` are rejected.
 
 This invariant means recovery does not need to guess what the model intended to do next. It only needs to determine which facts are durable and converge all projections on one explainable outcome.
 
@@ -362,7 +358,7 @@ This invariant means recovery does not need to guess what the model intended to 
 
 ### User stop
 
-`RuntimeKernel.stopSession()` first marks active `AgentRun`s as stopped, then calls Backend `stop()`. `AiSdkBackend` aborts the provider stream, ends any pending sandbox boundary or user question, and emits abort/complete events. Even if a provider later produces a complete or error event, `RuntimeKernel` and `AgentRun` do not allow it to overwrite the established aborted semantics. The stop source, such as the renderer stop button, is retained in the terminal fact and Run header for diagnostics.
+`RuntimeKernel.stopSession()` first marks active `AgentRun`s as stopped, then calls Backend `stop()`. `AiSdkBackend` aborts the provider stream, ends any pending sandbox boundary or user question, and emits abort/complete events. Even if a provider later produces a complete or error event, `RuntimeKernel` and `AgentRun` do not allow it to overwrite the established aborted semantics. The stop source, such as the renderer stop button, is retained in the terminal fact for diagnostics.
 
 ### Provider or runtime error
 
@@ -393,7 +389,7 @@ Continuing execution is a separate path. `safe_boundary_continuation` resumes fr
 - `AiSdkBackend` remains large and coordinates history, context budgets, tool availability, the step loop, usage, and telemetry.
 - The mapper is still a legacy-to-canonical bridge rather than consuming native RuntimeEvents from the Backend.
 - `SessionStore` and RuntimeEvent projection must cooperate for active and in-flight reads.
-- Startup recovery performs deterministic termination and repair, not arbitrary warm resume. Continuation is a separate path: `safe_boundary_continuation` resumes from a verified safe boundary, is marked by `continuationSource` on the Run header, and is admitted and dispatched by `RuntimeKernel`; see [Chapter 8](./runtime-resume-architecture.md) for the difference.
+- Startup recovery performs deterministic termination and repair, not arbitrary warm resume. Continuation is a separate path: `safe_boundary_continuation` resumes from a verified safe boundary, is marked by the continuation source on the invocation's opening fact, and is admitted and dispatched by `RuntimeKernel`; see [Chapter 8](./runtime-resume-architecture.md) for the difference.
 
 These are real architecture boundaries, not details to hide. Future Backend decomposition or checkpoint work must preserve request shape, tool visibility, event order, and the terminal invariant before optimizing for smaller files.
 

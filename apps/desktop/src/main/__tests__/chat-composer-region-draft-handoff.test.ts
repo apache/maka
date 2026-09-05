@@ -111,6 +111,7 @@ async function mountRegion(): Promise<{
             children: createElement(AstryxLocaleProvider, {
               children: createElement(ChatComposerRegion, {
               composerRef: composer,
+              onOpenContextUsage: () => undefined,
               directoryComposerProps: {},
               directoryPickerEnabled: false,
 

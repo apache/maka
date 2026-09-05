@@ -52,7 +52,7 @@
     "smoke:browser:run": "electron scripts/browser-observe-act-smoke.mjs"
   },
   "dependencies": {
-    "@jackwener/opencli": "1.8.6",
+    "@jackwener/opencli": "1.8.7",
     "@maka/computer-use": "0.1.0",
     "@maka/core": "0.1.0",
     "@maka/mcp": "0.1.0",
@@ -66,10 +66,10 @@
     "node-pty": "^1.2.0-beta.15",
     "qrcode": "^1.5.4",
     "ws": "^8.21.3",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
-    "@ant-design/icons-svg": "4.5.0",
+    "@ant-design/icons-svg": "4.6.0",
     "@astryxdesign/core": "0.5.2",
     "@astryxdesign/theme-neutral": "0.5.2",
     "@babel/parser": "7.29.7",
@@ -82,9 +82,9 @@
     "@playwright/test": "^1.62.1",
     "@storybook/react-vite": "^10.5.10",
     "@types/react": "^19.2.18",
-    "@types/react-dom": "^19.2.4",
+    "@types/react-dom": "^19.2.5",
     "@types/ws": "^8.18.1",
-    "@vitejs/plugin-react": "^6.1.0",
+    "@vitejs/plugin-react": "^6.1.1",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
     "electron": "43.4.1",
@@ -93,7 +93,7 @@
     "linkedom": "^0.18.13",
     "react": "^19.2.1",
     "react-dom": "^19.2.1",
-    "simple-icons": "16.28.0",
+    "simple-icons": "16.29.0",
     "storybook": "^10.4.6",
     "vite": "^8.2.2"
   },

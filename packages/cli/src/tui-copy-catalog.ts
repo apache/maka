@@ -33,7 +33,7 @@ export const TUI_COPY_RESOURCES = {
       roleGoalContinuation: 'Goal continuation (autonomous):',
       roleLegacyAutomation: 'Legacy automation (history only):',
     },
-    zh: {
+    'zh-CN': {
       copiedLast:
         '已将最后一条回复发送到终端 · {count} 个字符——仅当终端（以及 tmux，如使用）允许写入剪贴板时才会真正复制。',
       copiedAll:
@@ -46,6 +46,20 @@ export const TUI_COPY_RESOURCES = {
       roleAssistant: 'Maka：',
       roleGoalContinuation: '目标续跑（自主）：',
       roleLegacyAutomation: '旧版自动化（仅历史）：',
+    },
+    'zh-TW': {
+      copiedLast:
+        '已將最後一則回覆傳送至終端機 · {count} 個字元——僅當終端機（以及 tmux，如有使用）允許寫入剪貼簿時才會真正複製。',
+      copiedAll:
+        '已將整段對話傳送至終端機 · {count} 個字元——僅當終端機（以及 tmux，如有使用）允許寫入剪貼簿時才會真正複製。',
+      tooLarge:
+        '內容過大，無法複製 · {bytes} 位元組超過 {limit} 位元組上限；更大的內容會被終端機直接捨棄。',
+      nothingToCopy: '目前沒有可複製的內容。',
+      usage: '用法：/copy [all]',
+      roleUser: '你：',
+      roleAssistant: 'Maka：',
+      roleGoalContinuation: 'Goal 繼續執行（自主）：',
+      roleLegacyAutomation: '舊版自動化（僅歷史）：',
     },
   },
   'mcp-status': {
@@ -89,6 +103,7 @@ export const TUI_COPY_RESOURCES = {
       configuredOnly: 'configured only',
       configPending: 'config pending',
       toolCount: '{count, plural, one {# tool} other {# tools}}',
+      connectionFailed: 'MCP server connection failed',
       editor: {
         addTitle: 'Add MCP server',
         transportTitle: 'Transport',
@@ -154,7 +169,7 @@ export const TUI_COPY_RESOURCES = {
         },
       },
     },
-    zh: {
+    'zh-CN': {
       title: 'MCP 服务器',
       footer: {
         back: 'Esc 返回',
@@ -191,6 +206,7 @@ export const TUI_COPY_RESOURCES = {
       configuredOnly: '仅已配置',
       configPending: '配置待同步',
       toolCount: '{count} 个工具',
+      connectionFailed: 'MCP 服务器连接失败',
       editor: {
         addTitle: '添加 MCP 服务器',
         transportTitle: '传输方式',
@@ -252,6 +268,106 @@ export const TUI_COPY_RESOURCES = {
         },
       },
     },
+    'zh-TW': {
+      title: 'MCP 伺服器',
+      footer: {
+        back: 'Esc 返回',
+        readOnly: '↑/↓ 捲動 · q/Esc 關閉',
+        manage: 'a 新增 · Enter 編輯 · Space 啟用/停用 · t 測試 · r 重新連線 · d 刪除 · Esc 關閉',
+        managePublication:
+          'a 新增 · Enter 編輯 · Space 啟用/停用 · t 測試 · r 重新連線 · d 刪除 · p 設定 Provider 認證資料 · x 刪除認證資料 · Esc 關閉',
+      },
+      unavailableTitle: '目前 TUI 未連線至本機 MCP 控制介面。',
+      unavailableDetail: '遠端 Runtime Host 的用戶端 MCP 工具關聯將於後續版本提供。',
+      loading: '正在讀取 mcp.json 並探索工具…',
+      loadError: '無法讀取或套用 MCP 設定；未向 Runtime Host 發佈任何工具。',
+      noServers: '尚未設定 MCP 伺服器。按 a 新增。',
+      publication: {
+        waiting: '等待發佈',
+        host_unavailable: 'Runtime Host 重新連線中',
+        credential_required: '需要 Provider 認證資料',
+        credential_rejected: 'Provider 認證資料遭拒',
+        provider_conflict: 'Provider 已在另一個 TUI 中執行',
+        target_mismatch: 'Provider 目標不符',
+        publishing: '正在發佈',
+        published: '已發佈',
+        not_published: '未發佈',
+        error: '發佈失敗',
+      },
+      serverState: {
+        disabled: '已停用',
+        disconnected: '未連線',
+        connecting: '連線中',
+        connected: '已連線',
+        'needs-auth': '需要登入',
+        error: '錯誤',
+      },
+      configuredOnly: '僅已設定',
+      configPending: '設定待同步',
+      toolCount: '{count} 個工具',
+      connectionFailed: 'MCP 伺服器連線失敗',
+      editor: {
+        addTitle: '新增 MCP 伺服器',
+        transportTitle: '傳輸方式',
+        protocolTitle: '通訊協定偏好',
+        confirmAddTitle: '新增這個 MCP 伺服器？',
+        confirmImportTitle: '匯入 MCP 伺服器？',
+        confirmRemoveTitle: '刪除 {serverId}？',
+        confirmRemoveCredentialTitle: '移除遠端 Provider 認證資料？',
+        confirmRemoveCredentialDetail: '這將停止向所選 Runtime Host 發佈 MCP 工具。',
+        confirmHint: 'y 確認 · Esc 取消',
+        synchronizing: '設定同步中…',
+        outOfSync: '持久化設定與 MCP Manager 尚未同步。',
+        action: {
+          test: '正在測試 MCP 伺服器…',
+          reconnect: '正在重新連線 MCP 伺服器…',
+          apply: '正在套用 MCP 設定…',
+        },
+        inputLabels: {
+          server_id: '伺服器 ID',
+          command: '命令',
+          args: '參數',
+          url: 'Streamable HTTP URL',
+          cwd: '工作目錄',
+          env: '環境變數',
+          headers: '請求標頭',
+          edit: '編輯伺服器 JSON',
+          import: '貼上 MCP JSON',
+          publication_credential: 'Provider 認證資料',
+        },
+        hints: {
+          args: 'JSON 字串陣列，可留空',
+          map: 'JSON 字串對映，可留空',
+          optional: '可留空',
+          submit: 'Enter 送出 · Esc 返回',
+          credential:
+            '僅儲存於本機認證資料存放區；不會寫入設定檔、參數或聊天內容 · Enter 送出 · Esc 返回',
+        },
+        results: {
+          exists: '該伺服器 ID 已存在。',
+          stale_config: 'MCP 設定已變更，請重試。',
+          stale_edit: '該伺服器已變更，請重新開啟後編輯。',
+          stale_import: '匯入項目已變更，請重新預覽。',
+          missing: '該伺服器已不存在。',
+          closed: 'MCP 控制器已關閉。',
+          'invalid-config': '伺服器設定無效。',
+          'credential-cleanup-failed': '無法移除已儲存的認證資料；設定未變更。',
+          'publication-credential-failed': '無法儲存或套用 Provider 認證資料。',
+          'persist-failed': '無法儲存設定。',
+          'manager-failed': 'MCP 連線操作失敗。',
+          turn_active: 'Turn 或其他控制操作執行期間無法修改 MCP。',
+          invalid: '請檢查輸入後重試。',
+          published: '設定已儲存，工具已重新整理。',
+          pending_host: '設定已儲存，正等待 Runtime Host 發佈。',
+          sync_failed: '設定已儲存，但 MCP Manager 尚未同步。',
+          publication_failed: '設定已儲存，但 capability 發佈失敗。',
+          test_ok: '連線測試通過。',
+          test_failed: '連線測試失敗。',
+          test_publication_failed: '連線測試通過，但 capability 發佈失敗。',
+          test_pending_host: '連線測試通過，正等待 Runtime Host 發佈。',
+        },
+      },
+    },
   },
   'form-interaction': {
     en: {
@@ -280,7 +396,7 @@ export const TUI_COPY_RESOURCES = {
       falseValue: 'false',
       selectedCount: '{count} selected',
     },
-    zh: {
+    'zh-CN': {
       requestedBy: '由 {detail} 请求',
       sensitiveWarning: '请勿输入密码、API 密钥、访问令牌或支付信息。',
       required: '必填',
@@ -305,6 +421,32 @@ export const TUI_COPY_RESOURCES = {
       trueValue: '是',
       falseValue: '否',
       selectedCount: '已选择 {count} 项',
+    },
+    'zh-TW': {
+      requestedBy: '由 {detail} 請求',
+      sensitiveWarning: '請勿輸入密碼、API 金鑰、存取權杖或付款資訊。',
+      required: '必填',
+      optional: '選填',
+      omitted: '未提供',
+      empty: '空',
+      invalid: '該值不符合欄位約束',
+      minimumLength: '至少 {minimum} 個字元',
+      maximumLength: '最多 {maximum} 個字元',
+      lengthRange: '長度 {minimum}–{maximum} 個字元',
+      minimumValue: '最小值 {minimum}',
+      maximumValue: '最大值 {maximum}',
+      valueRange: '範圍 {minimum}–{maximum}',
+      minimumItems: '至少選取 {minimum} 項',
+      maximumItems: '最多選取 {maximum} 項',
+      itemRange: '選取 {minimum}–{maximum} 項',
+      format: '格式：{format}',
+      reviewHint: '↑↓ 選取欄位 · Enter 編輯 · Space 提供/省略 · s 提交 · d 拒絕 · Esc 取消',
+      textHint: '輸入值 · Enter 返回檢查 · Esc 返回檢查',
+      choiceHint: '↑↓ 選取 · Enter 返回檢查 · Esc 返回檢查',
+      multiHint: '↑↓ 移動 · Space 切換 · Enter 返回檢查 · Esc 返回檢查',
+      trueValue: '是',
+      falseValue: '否',
+      selectedCount: '已選取 {count} 項',
     },
   },
   pickers: {
@@ -409,7 +551,7 @@ export const TUI_COPY_RESOURCES = {
       closeAction: 'Enter to close',
       thinkingUnsupported: 'This model does not support changing the thinking level.',
     },
-    zh: {
+    'zh-CN': {
       modelPickerTitle: '选择模型',
       modelSwitchCacheWarning: '⚠ 切换模型可能需要重建提示缓存；下一次请求可能更慢或成本更高。',
       modelSearchHint: '搜索模型 / 服务商 / 连接 · ↑↓ 选择 · Enter 确认 · Esc 取消',
@@ -498,6 +640,95 @@ export const TUI_COPY_RESOURCES = {
       closeAction: 'Enter 关闭',
       thinkingUnsupported: '当前模型不支持思考级别切换。',
     },
+    'zh-TW': {
+      modelPickerTitle: '選擇模型',
+      modelSwitchCacheWarning: '⚠ 切換模型可能需要重建提示快取；下一次請求可能較慢或成本較高。',
+      modelSearchHint: '搜尋模型 / 服務商 / 連線 · ↑↓ 選擇 · Enter 確認 · Esc 取消',
+      searchLabel: '搜尋',
+      noMatchingModels: '沒有符合的模型',
+      selectPickerHint: '↑↓ 選擇 · Enter 確認 · Esc 關閉',
+      providerConfigured: '已設定',
+      addAccount: '新增帳號',
+      thinkingLevels: {
+        off: '關',
+        minimal: '最小',
+        low: '低',
+        medium: '中',
+        high: '高',
+        xhigh: '超高',
+        max: '最高',
+      },
+      defaultThinkingLevel: '預設',
+      thinkingPickerTitle: '選擇思考級別',
+      currentMarker: '目前',
+      defaultMarker: '預設',
+      setupTitle: '設定模型服務商',
+      baseUrlLabel: 'Base URL',
+      apiKeyLabel: 'API key',
+      connectionNameLabel: '名稱',
+      connectionSlugLabel: '識別碼（slug）',
+      identityHint: '為該連線起名，或保留預設值自動分配 · Enter 繼續 · Esc 返回',
+      identitySlugInvalid: '識別碼需為 2–64 位小寫字母、數字或連字號',
+      identityNameTooLong: '名稱不能超過 256 個字元',
+      onboardingUnavailable: 'Onboarding 無法使用：目前執行環境未提供設定入口。',
+      onboardingRequestFailed: '無法連線 Runtime Host，請重試。',
+      onboardingRejections: {
+        provider_unsupported: '此服務商不支援 API key 設定。',
+        connection_not_found: '此連線已不存在，請重新開啟 /setup 後重試。',
+        credential_not_configured: '需要填寫 API key。',
+        base_url_not_configured: '此服務商需要填寫 Base URL。',
+        catalog_full: '連線目錄已滿。',
+        model_unavailable: '所選模型已無法使用，請重新驗證並選擇。',
+        slug_taken: '該識別碼已被佔用。請更換，或清空後自動分配。',
+        superseded: '此連線已變更，請重新開啟 /setup 後重試。',
+      },
+      onboardingFailures: {
+        auth: '服務商身分驗證失敗，請檢查 API key 後重試。',
+        timeout: '服務商驗證逾時，請重試。',
+        provider_unavailable: '服務商目前無法使用，請稍後重試。',
+        network: '網路錯誤中斷了服務商驗證，請重試。',
+        invalid_response: '服務商傳回無效回應，請重試。',
+        unknown: '服務商驗證失敗，請重試。',
+      },
+      accountSavedRefreshFailed: '帳號已儲存，但模型清單尚未重新整理。重新啟動 Maka 後會重新載入。',
+      listProvidersFailed: '無法讀取已設定的連線。',
+      noConfigurableProviders: '沒有可設定的 API key 服務商。',
+      baseUrlRequired: '需要填寫 Base URL',
+      baseUrlInvalid: 'Base URL 不是有效的 URL',
+      baseUrlProtocol: 'Base URL 必須使用 http 或 https',
+      baseUrlCredentials: 'Base URL 不能包含帳號密碼',
+      baseUrlQuery: 'Base URL 不能包含查詢字串或片段',
+      baseUrlTooLong: 'Base URL 不能超過 2048 位元組',
+      selectModelBeforeSaving: '至少選擇一個模型再儲存',
+      reuseBaseUrlHint: '留空以重用已儲存的 Base URL，或輸入新位址替換 · Esc 返回選擇服務商',
+      enterBaseUrlHint: '輸入中轉站的 Base URL（http/https）· Esc 返回選擇服務商',
+      continueAction: 'Enter 繼續',
+      providerSearchHint: '搜尋服務商，↑↓ 選擇 · Enter 確認 · Esc 取消',
+      noMatchingProviders: '沒有符合的服務商',
+      keyHints: {
+        reuse: {
+          baseUrl: '留空以重用已儲存的 key，或輸入新 key 輪換 · Esc 返回 Base URL',
+          provider: '留空以重用已儲存的 key，或輸入新 key 輪換 · Esc 返回選擇服務商',
+          // identity 步驟只存在於新建流程，reuse 不會落到這裡；沿用 provider 文案保持記錄完整。
+          identity: '留空以重用已儲存的 key，或輸入新 key 輪換 · Esc 返回選擇服務商',
+        },
+        enter: {
+          baseUrl: '輸入 API key · 僅儲存在本機 · Esc 返回 Base URL',
+          provider: '輸入 API key · 僅儲存在本機 · Esc 返回選擇服務商',
+          identity: '輸入 API key · 僅儲存在本機 · Esc 返回命名連線',
+        },
+      },
+      submitAction: 'Enter 送出',
+      verifyingKey: '正在驗證 key…',
+      modelSelectionHint: '搜尋模型，↑↓ 選擇 · Space 切換 · Enter 儲存 · Esc 返回',
+      selectedModels: '已選 {count}',
+      selectedModelsAndSave: '已選 {count} · Enter 儲存',
+      saving: '正在儲存…',
+      complete: '完成',
+      enabledModels: '已啟用模型：{count}',
+      closeAction: 'Enter 關閉',
+      thinkingUnsupported: '目前模型不支援思考級別切換。',
+    },
   },
   'primary-guidance': {
     en: {
@@ -551,7 +782,7 @@ export const TUI_COPY_RESOURCES = {
         ],
       },
     },
-    zh: {
+    'zh-CN': {
       welcome: {
         tagline: '陪你把事做完',
         start: '输入消息开始对话',
@@ -602,6 +833,57 @@ export const TUI_COPY_RESOURCES = {
         ],
       },
     },
+    'zh-TW': {
+      welcome: {
+        tagline: '陪你把事做完',
+        start: '輸入訊息開始對話',
+        session: '切換或恢復會話',
+        model: '切換模型',
+        setup: '設定模型服務商',
+      },
+      commands: {
+        compact: '壓縮會話上下文',
+        context: '檢視最近一次請求的上下文用量',
+        copy: '複製最後一則回覆（或 /copy all）到剪貼簿',
+        exit: '退出 Maka',
+        goal: '檢視自主目標狀態',
+        graph: '檢視、啟用、停用 Graph 模式，或執行一次 Graph 任務',
+        help: '檢視命令和快捷鍵',
+        mcp: '管理用戶端 MCP 伺服器與工具發佈狀態',
+        model: '選擇模型',
+        move: '將目前會話移到其他目錄',
+        new: '建立會話',
+        permissions: '設定會話權限',
+        recap: '用一句話總結目前會話',
+        rename: '重新命名目前會話',
+        resume: '從安全邊界恢復最近一次中斷的執行',
+        rewind: '回退到較早的對話輪次',
+        session: '切換或恢復會話',
+        setup: '設定模型服務商（API Key）',
+        side: '開啟臨時 Side Conversation',
+        skill: '呼叫 Skill（也可直接輸入 /skill:<name>）',
+        swarm: '檢視、啟用、停用 Swarm 模式，或執行一次 Swarm 任務',
+        thinking: '設定思考級別',
+        transcript: '在 Maka 內瀏覽完整對話記錄',
+      },
+      help: {
+        commandsHeading: '命令',
+        userCommand: '  !<command> — 執行一次僅使用者可見的 shell 命令',
+        keybindingsHeading: '快捷鍵',
+        keybindings: [
+          '  Ctrl+O — 展開或摺疊所有工具輸出',
+          '  Ctrl+T — 展開或摺疊檢視中的所有思考區塊',
+          '  使用終端機或觸控板捲動對話記錄',
+          '  Enter（任務執行中）— 將訊息注入目前任務',
+          '  Alt+Enter（任務執行中）— 將訊息排入下一輪',
+          '  Alt+↑ — 將已排隊訊息取回編輯器重新編輯',
+          '  Esc Esc（任務執行中）— 中斷目前任務',
+          '  Esc Esc（空閒時）— 回退到較早的輪次',
+          '  Ctrl+C — 停止任務、清空輸入，或連續按兩次退出',
+          '  Ctrl+D — 輸入為空時退出',
+        ],
+      },
+    },
   },
   rewind: {
     en: {
@@ -616,7 +898,7 @@ export const TUI_COPY_RESOURCES = {
       pickerHint:
         'Return to before the selected turn (discards it and later turns; the prompt refills the input box) · enter select / esc cancel',
     },
-    zh: {
+    'zh-CN': {
       pickerTitle: '回退',
       pending: '正在回退到该轮之前…',
       doneRefilled:
@@ -626,6 +908,17 @@ export const TUI_COPY_RESOURCES = {
       noTargets: '没有可回退的轮次。',
       busy: '无法回退：当前有正在进行的操作 — 请等待其完成，或中断（Esc）后重试。',
       pickerHint: '回到选定轮次之前（丢弃该轮及之后，prompt 回填输入框） · enter 选择 / esc 取消',
+    },
+    'zh-TW': {
+      pickerTitle: '回退',
+      pending: '正在回退到該輪之前…',
+      doneRefilled:
+        '已回退到該輪之前（分支為新任務，原任務保留），該輪 prompt 已回填輸入框，可修改後重新傳送。',
+      doneKeptDraft:
+        '已回退到該輪之前（分支為新任務，原任務保留）。輸入框已有未傳送內容，未覆蓋；該輪 prompt 已存入輸入歷史，可按 ↑ 找回。',
+      noTargets: '沒有可回退的輪次。',
+      busy: '無法回退：目前有正在進行的操作 — 請等待完成，或中斷（Esc）後重試。',
+      pickerHint: '回到選定輪次之前（捨棄該輪及之後，prompt 回填輸入框） · enter 選擇 / esc 取消',
     },
   },
   skills: {
@@ -649,7 +942,7 @@ export const TUI_COPY_RESOURCES = {
         too_many_requests: 'too many requests',
       },
     },
-    zh: {
+    'zh-CN': {
       pickerTitle: '调用技能',
       usage: 'Usage: /skill，或直接在消息中输入 /skill:<name>',
       noneAvailable: '当前没有可调用的技能。',
@@ -669,6 +962,26 @@ export const TUI_COPY_RESOURCES = {
         too_many_requests: '调用请求过多',
       },
     },
+    'zh-TW': {
+      pickerTitle: '呼叫技能',
+      usage: 'Usage: /skill，或直接在訊息中輸入 /skill:<name>',
+      noneAvailable: '目前沒有可呼叫的技能。',
+      loaded: '已載入技能：{names}',
+      loadFailed: '無法載入技能 {failures}；{outcome}',
+      outcomeNoRequest: '未發起模型請求。',
+      outcomeMarkersNotSent: '失敗的呼叫標記未傳送給模型。',
+      failedItem: '/skill:{request}（{reason}）',
+      tooManyRequestsItem: '請求超過 {limit} 個上限（{reason}）',
+      listSeparator: '、',
+      failureReasons: {
+        invalid_name: '名稱無效',
+        not_found: '找不到',
+        disabled: '已停用',
+        host_incompatible: '目前主機缺少其相依工具',
+        resolution_failed: '解析失敗',
+        too_many_requests: '呼叫請求過多',
+      },
+    },
   },
   'connection-identity': {
     en: {
@@ -684,7 +997,7 @@ export const TUI_COPY_RESOURCES = {
       accountDisabled:
         'The original account is disabled. Enable it, or run /model and choose a new account and model.',
     },
-    zh: {
+    'zh-CN': {
       withRecovery: '{notice}{recovery}',
       emptyChoiceRecovery:
         '如果 /model 没有可选项，请先添加或启用连接（API Key 连接可运行 /setup）。',
@@ -693,6 +1006,15 @@ export const TUI_COPY_RESOURCES = {
       identityMismatch: '任务保存的账号身份与当前连接不一致；运行 /model 重新选择账号和模型。',
       accountDisabled: '原账号已停用；请启用该账号，或运行 /model 选择新账号和模型。',
     },
+    'zh-TW': {
+      withRecovery: '{notice}{recovery}',
+      emptyChoiceRecovery:
+        '如果 /model 沒有可選項，請先新增或啟用連線（API Key 連線可執行 /setup）。',
+      confirmAccount: '此任務來自舊版本，需要確認一次帳號。執行 /model 選擇現有帳號和模型。',
+      accountDeleted: '原帳號已刪除；執行 /model 選擇新帳號和模型後繼續。',
+      identityMismatch: '任務儲存的帳號身分與目前連線不一致；執行 /model 重新選擇帳號和模型。',
+      accountDisabled: '原帳號已停用；請啟用該帳號，或執行 /model 選擇新帳號和模型。',
+    },
   },
   'session-actions': {
     en: {
@@ -700,9 +1022,13 @@ export const TUI_COPY_RESOURCES = {
       newSessionFailed:
         'Could not start a new session: a local command could not be stopped. Press Ctrl+C to stop it, then try again.',
     },
-    zh: {
+    'zh-CN': {
       foreignScanFailed: '读取外部对话失败：{detail}',
       newSessionFailed: '无法开始新会话：无法停止本地命令。请按 Ctrl+C 停止命令后重试。',
+    },
+    'zh-TW': {
+      foreignScanFailed: '讀取外部對話失敗：{detail}',
+      newSessionFailed: '無法開始新工作階段，請稍後重試。',
     },
   },
   'pending-queue': {
@@ -711,10 +1037,15 @@ export const TUI_COPY_RESOURCES = {
       queuedLabel: 'Queued:',
       requeueHint: 'Alt+↑ take queued messages back to re-edit',
     },
-    zh: {
+    'zh-CN': {
       steeringLabel: '注入：',
       queuedLabel: '已排队：',
       requeueHint: 'Alt+↑ 取回队列以重新编辑',
+    },
+    'zh-TW': {
+      steeringLabel: '調整方向：',
+      queuedLabel: '已排入佇列：',
+      requeueHint: 'Alt+↑ 取回佇列訊息重新編輯',
     },
   },
   'session-status': {
@@ -726,12 +1057,20 @@ export const TUI_COPY_RESOURCES = {
       signInRequired: 'needs sign-in',
       stopped: 'stopped',
     },
-    zh: {
+    'zh-CN': {
       running: '进行中',
       waitingForUser: '等你确认',
       permissionRequired: '需要权限',
       connectionRequired: '需要连接',
       signInRequired: '需要重新登录',
+      stopped: '已中止',
+    },
+    'zh-TW': {
+      running: '進行中',
+      waitingForUser: '等你確認',
+      permissionRequired: '需要權限',
+      connectionRequired: '需要連線',
+      signInRequired: '需要重新登入',
       stopped: '已中止',
     },
   },

@@ -1,0 +1,4 @@
+{
+  "en": "confirmed up to here Model says \"I'll rerun the failing test.\" Runs a command Bash · npm test Asks permission leaves the sandbox You approve written to the log Gets the result exit 1 · pruned, kept Edits a file resume.ts Turn ends run completed one turn · seven RuntimeEvents · append-only State(t) = Project(Log[0…t])",
+  "zh-CN": "到这里已确认 模型说 「我重新跑一下失败的测试。」 执行命令 Bash · npm test 请求权限 超出沙箱 你批准了 已写进日志 拿到结果 exit 1 · 裁剪展示，全量保留 编辑文件 resume.ts 本轮结束 运行完成 一轮交互 · 7 条运行时事件 · 只追加写入 State(t) = Project(Log[0…t])"
+}

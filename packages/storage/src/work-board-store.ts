@@ -39,6 +39,7 @@ import {
 } from './work-board-list-query.js';
 import {
   acquireOperationalStateDatabase,
+  type OperationalStateDatabaseOptions,
   type OperationalStateDatabaseLease,
 } from './operational-state-store.js';
 import { chainWrite } from './write-queue.js';
@@ -70,8 +71,11 @@ export interface WorkBoardStore {
   close(): void;
 }
 
-export function createWorkBoardStore(workspaceRoot: string): WorkBoardStore {
-  return new SqliteWorkBoardStore(workspaceRoot);
+export function createWorkBoardStore(
+  workspaceRoot: string,
+  databaseOptions: OperationalStateDatabaseOptions = {},
+): WorkBoardStore {
+  return new SqliteWorkBoardStore(workspaceRoot, databaseOptions);
 }
 
 interface WorkBoardRow {
@@ -89,8 +93,8 @@ class SqliteWorkBoardStore implements WorkBoardStore {
   readonly #lease: OperationalStateDatabaseLease;
   private readonly writeQueues = new Map<string, Promise<void>>();
 
-  constructor(workspaceRoot: string) {
-    this.#lease = acquireOperationalStateDatabase(resolve(workspaceRoot));
+  constructor(workspaceRoot: string, databaseOptions: OperationalStateDatabaseOptions) {
+    this.#lease = acquireOperationalStateDatabase(resolve(workspaceRoot), databaseOptions);
   }
 
   close(): void {

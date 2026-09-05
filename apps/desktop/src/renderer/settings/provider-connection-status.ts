@@ -62,7 +62,7 @@ export interface ConnectionChipStatus {
  *   readiness, fixed to credential-only language. Matches the doc warning
  *   at SettingsModal `验证通过 ≠ 运行可用`.
  */
-export function connectionChipStatus(connection: LlmConnection, locale: UiLocale = 'zh'): ConnectionChipStatus | null {
+export function connectionChipStatus(connection: LlmConnection, locale: UiLocale = 'zh-CN'): ConnectionChipStatus | null {
   const copy = getProviderSettingsCopy(locale).shared.connectionStatuses;
   // Ahead of every other branch, including needs_reauth: a retired provider
   // has no sign-in left to return to, so any repair-shaped status here would

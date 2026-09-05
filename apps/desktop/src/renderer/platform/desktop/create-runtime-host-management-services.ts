@@ -39,6 +39,13 @@ export function createDesktopRuntimeHostManagementServices(
       readClipboardText: () => navigator.clipboard.readText(),
       writeClipboardText: (value) => navigator.clipboard.writeText(value),
     },
+    resources: {
+      query: (profileId) => bridge.runtimeHostManagement.getResources(profileId),
+      schedule: (callback, delayMs) => {
+        const timer = window.setTimeout(callback, delayMs);
+        return () => window.clearTimeout(timer);
+      },
+    },
     peerMesh: {
       getConnectivityPolicy: () => bridge.runtimeHostPeerMesh.getConnectivityPolicy(),
       setConnectivityPolicy: (policy) => bridge.runtimeHostPeerMesh.setConnectivityPolicy(policy),

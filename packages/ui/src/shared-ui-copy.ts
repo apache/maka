@@ -120,7 +120,7 @@ export interface SharedUiCopy {
 }
 
 const SHARED_UI_COPY = {
-  zh: {
+  'zh-CN': {
     capabilityAudit: {
       ariaLabel: '能力风险提示',
       needsAuthorization: (count) => `${count} 个来源等待授权`,
@@ -203,6 +203,90 @@ const SHARED_UI_COPY = {
     stream: { assistantChunkTruncated: '\n[…单条 delta 已截断]\n', assistantTailTruncated: '\n\n[…后续已截断]', thinkingHeadTruncated: '[…已截断早期 reasoning]\n', thinkingChunkTruncated: '\n[…单条 delta 已截断]\n', toolChunkTruncated: '\n[…已截断]\n' },
     artifact: { unknownSize: '未知大小' },
     providers: { minimaxChina: 'MiniMax 中国站', custom: '自定义', claudeSubscription: 'Claude 订阅' },
+  },
+  'zh-TW': {
+    capabilityAudit: {
+      ariaLabel: '能力風險提示',
+      needsAuthorization: (count) => `${count} 個來源等待授權`,
+      sourceErrors: (count) => `${count} 個來源異常`,
+      failedScheduledTasks: (count) => `${count} 個定時任務上次失敗`,
+      skippedScheduledTasks: (count) => `${count} 個定時任務上次跳過`,
+    },
+    markdown: {
+      invalidInternalLink: '內部連結無效',
+      unsafeLink: '連結不安全',
+      taskList: '任務列表',
+      table: '表格',
+      checkbox: '核取方塊',
+      code: '程式碼',
+      opensInNewTab: '（在新標籤頁中開啟）',
+      copyCode: '複製程式碼',
+      copiedCode: '已複製程式碼',
+      mermaidDiagram: 'Mermaid 圖表',
+      mermaidRendering: '正在渲染 Mermaid 圖表…',
+      mermaidRenderFailed: '無法渲染 Mermaid 圖表，已顯示原始碼。',
+      mermaidTooLarge: 'Mermaid 圖表原始碼過大，已顯示原始碼。',
+      mermaidDeferred: '為避免佔用過多資源，此圖表不會自動渲染。',
+      mermaidRender: '渲染圖表',
+      mermaidViewSource: '檢視 Mermaid 原始碼',
+      mermaidToolbar: 'Mermaid 圖表工具欄',
+      mermaidViewport: 'Mermaid 圖表視窗，可拖動平移，按加號或減號縮放',
+      mermaidZoomIn: '放大圖表',
+      mermaidZoomOut: '縮小圖表',
+      mermaidResetView: '適應視窗',
+      mermaidExpandView: '全屏檢視圖表',
+      mermaidCollapseView: '退出全屏圖表',
+      mermaidZoomLevel: (percent) => `縮放比例 ${percent}%`,
+    },
+    formControls: {
+      selectPlaceholder: '選擇…',
+      clear: '清除{label}',
+      required: '必填',
+      optional: '可選',
+    },
+    modelPicker: {
+      searchPlaceholder: '搜尋模型…',
+      knowledgeCutoff: (date) => `知識截止：${date}`,
+    },
+    moduleHubs: {
+      extensions: {
+        title: '擴充套件',
+        description: '管理 Maka 可呼叫的技能與外部工具。',
+        selectorLabel: (module) => `擴充套件內容：${module}`,
+        skills: '技能',
+        mcp: 'MCP',
+      },
+      automations: {
+        title: '定時任務',
+        description: '安排定時執行，並回顧本機任務的工作進展。',
+        selectorLabel: (module) => `定時任務內容：${module}`,
+        scheduledTasks: '定時任務',
+        dailyReview: '每日回顧',
+      },
+    },
+    modules: {
+      skills: '技能',
+      loadingSkills: '正在載入技能…',
+      automations: '定時任務',
+      loadingAutomations: '正在載入定時任務…',
+      dailyReview: '每日回顧',
+      loadingDailyReview: '正在載入每日回顧…',
+      dailyReviewDescription: '自動彙總本機任務，生成摘要、遺漏提醒與深度分析；可在設定中開啟定時執行。',
+      dailyReviewDisconnectedTitle: '等待連線每日回顧資料',
+      dailyReviewDisconnectedBody: '桌面端資料橋目前未連線。',
+    },
+    primitives: { loading: '載入中', close: '關閉', resizeHandle: '調整寬度' },
+    sessionTodo: {
+      ariaLabel: '任務待辦',
+      retry: '重新載入待辦',
+      loading: '正在載入待辦…',
+      activeAriaLabel: '進行中的待辦',
+      empty: '這個任務還沒有待辦',
+    },
+    toast: { notifications: '通知', closeNotification: '關閉通知', confirm: '確定', cancel: '取消' },
+    stream: { assistantChunkTruncated: '\n[…單條 delta 已截斷]\n', assistantTailTruncated: '\n\n[…後續已截斷]', thinkingHeadTruncated: '[…已截斷早期 reasoning]\n', thinkingChunkTruncated: '\n[…單條 delta 已截斷]\n', toolChunkTruncated: '\n[…已截斷]\n' },
+    artifact: { unknownSize: '未知大小' },
+    providers: { minimaxChina: 'MiniMax 中國站', custom: '自訂', claudeSubscription: 'Claude 訂閱' },
   },
   en: {
     capabilityAudit: {

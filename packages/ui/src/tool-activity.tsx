@@ -650,7 +650,7 @@ function toolCallErrorMessage(item: ToolActivityItem, locale: UiLocale): string 
   if (item.status !== 'errored') return undefined;
   if (isRequiresBypassToolResult(item.result)) {
     const copy = getToolActivityCopy(locale).requiresBypass;
-    return locale === 'zh'
+    return locale !== 'en'
       ? `${copy.title}。${copy.description}`
       : `${copy.title}. ${copy.description}`;
   }

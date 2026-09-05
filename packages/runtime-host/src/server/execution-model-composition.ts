@@ -52,7 +52,6 @@ import { type RuntimeCommitSink } from '@maka/runtime/runtime-commit-sink';
 import {
   createAttachmentByteReader,
   createReadImageSnapshotPlanner,
-  persistProviderRequestCaptureArtifact,
   type InteractiveArtifactStoreWriter,
 } from '@maka/storage/artifact-stores';
 import type { InteractiveContextOffloadReader } from '@maka/storage/context-offload-store';
@@ -292,22 +291,6 @@ async function buildHostAiSdkBackend(
       throw new Error('Canonical model-call accounting authority is unavailable');
     }
   };
-  const persistPreparedRequestArtifact = async (capture: {
-    turnId: string;
-    captureId: string;
-    step: number;
-    serializedRequest: string;
-  }): Promise<{ artifactId: string }> => {
-    const artifact = await persistProviderRequestCaptureArtifact(input.artifacts, {
-      sessionId: input.context.sessionId,
-      turnId: capture.turnId,
-      captureId: capture.captureId,
-      step: capture.step,
-      serializedRequest: capture.serializedRequest,
-      now: Date.now(),
-    });
-    return { artifactId: artifact.id };
-  };
   const resolveRunPrompt = async (context: {
     readonly turnId: string;
     readonly emitSkillCatalogTrace?: (message: string, data?: Record<string, unknown>) => void;
@@ -468,7 +451,6 @@ async function buildHostAiSdkBackend(
         lookupPricing: pricing,
         recordModelCallAttempt,
         assertModelCallAccountingReady,
-        persistPreparedRequestArtifact,
         recordToolInvocation: (event) => recordToolInvocation({ repo: telemetry }, event),
         ...(input.runtimeCommitSink ? { runtimeCommitSink: input.runtimeCommitSink } : {}),
         newId: randomUUID,

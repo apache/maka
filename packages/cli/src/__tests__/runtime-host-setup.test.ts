@@ -54,12 +54,19 @@ import {
   acknowledgeRuntimeHostManagedDeploymentCleanup,
   assertRuntimeHostManagedOperatorDeployment,
   convergeRuntimeHostManagedOperator,
+  convergeRuntimeHostManagedWindowsTaskLauncher,
   prepareRuntimeHostManagedPackageDeployment,
   pruneRuntimeHostManagedPackages,
   readRuntimeHostManagedDeploymentCleanupReceipt,
   resolveRuntimeHostManagedControlRoot,
   resolveRuntimeHostManagedDeploymentRoot,
+  verifyRuntimeHostManagedWindowsTaskLauncher,
 } from '../runtime-host-managed-deployment.js';
+import {
+  resolvePackagedRuntimeHostWindowsTaskLauncherPath,
+  resolveRuntimeHostWindowsTaskLauncherPath,
+  runtimeHostManagedWindowsTaskLauncherPath,
+} from '../runtime-host-windows-task-launcher-artifact.js';
 import { runRuntimeHostSetupCli } from '../runtime-host-setup-command.js';
 import { RuntimeHostAccessUnavailableError } from '../runtime-host-access-command.js';
 import { replaceRuntimeHostLifecycle } from '../runtime-host-lifecycle-transaction.js';
@@ -975,6 +982,75 @@ test('managed operator binds its Client Data Root and routes deployment cleanup'
     },
   );
   assert.deepEqual(signalExit, { code: null, signal: 'SIGTERM' });
+});
+
+test('managed Windows task launcher is projected to a stable deployment path', async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-windows-launcher-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const sourcePackageRoot = await createReleasePackage(base, '0.2.0');
+  const sourceLauncher = join(
+    sourcePackageRoot,
+    'native',
+    'runtime-host-windows-task-launcher',
+    'prebuilds',
+    'win32-x64',
+    'maka-runtime-host-task-launcher.exe',
+  );
+  await mkdir(dirname(sourceLauncher), { recursive: true });
+  await writeFile(sourceLauncher, 'launcher-v1');
+  const serviceId = 'a'.repeat(64);
+  const deployment = await prepareRuntimeHostManagedPackageDeployment(
+    {
+      serviceId,
+      clientDataRoot: join(base, 'client'),
+      sourcePackageRoot,
+      version: '0.2.0',
+      packageIntegrity: PACKAGE_INTEGRITY,
+    },
+    {
+      env: { XDG_DATA_HOME: join(base, 'data') },
+      homeDir: join(base, 'home'),
+      platform: 'linux',
+    },
+  );
+  const config: RuntimeHostManagedDeploymentConfig = {
+    schemaVersion: 1,
+    state: 'active',
+    deploymentId: '00000000-0000-4000-8000-000000000001',
+    configRevision: 1,
+    deploymentRoot: deployment.root,
+    root: { id: serviceId, path: join(base, 'state') },
+    projectDirectoryRoots: [],
+    launch: {
+      kind: 'exact_package',
+      nodePath: process.execPath,
+      package: { kind: 'npm_registry', version: '0.2.0', integrity: PACKAGE_INTEGRITY },
+    },
+    listeners: { localIpc: true },
+    lifecycle: { mode: 'supervised', provider: 'windows_task', availability: 'session' },
+    reconciliation: { trigger: 'scheduled', provider: 'windows_task_timer' },
+  };
+
+  await convergeRuntimeHostManagedWindowsTaskLauncher(config);
+  const projected = runtimeHostManagedWindowsTaskLauncherPath(
+    deployment.root,
+    Buffer.from('launcher-v1'),
+  );
+  assert.equal(await readFile(projected, 'utf8'), 'launcher-v1');
+  assert.equal(await resolveRuntimeHostWindowsTaskLauncherPath(deployment.cliPath), projected);
+
+  const packaged = await resolvePackagedRuntimeHostWindowsTaskLauncherPath(deployment.cliPath);
+  await writeFile(packaged, 'launcher-v2');
+  await assert.rejects(
+    verifyRuntimeHostManagedWindowsTaskLauncher(config),
+    /does not match its deployment/u,
+  );
+  await convergeRuntimeHostManagedWindowsTaskLauncher(config);
+  await verifyRuntimeHostManagedWindowsTaskLauncher(config);
+  assert.notEqual(
+    runtimeHostManagedWindowsTaskLauncherPath(deployment.root, Buffer.from('launcher-v2')),
+    projected,
+  );
 });
 
 async function createReleasePackage(base: string, version: string): Promise<string> {

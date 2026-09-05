@@ -23,7 +23,6 @@ import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import { activateRuntimeHostManagedDeployment } from '@maka/runtime-host/client';
 import {
   createRuntimeHostLegacyPosixOperatorCommand,
-  runtimeHostManagedOperatorCommand,
   decodeRuntimeHostServiceManagementFrame,
   encodeRuntimeHostServiceManagementFrame,
   RUNTIME_HOST_SERVICE_ERROR_CODE_MAX_BYTES,
@@ -81,6 +80,7 @@ import {
 import type { RuntimeHostExpectedHost, RuntimeHostUpdateSelector } from './runtime-host-cli.js';
 import {
   canDiscardRuntimeHostLifecycleDesiredArtifacts,
+  convergeRuntimeHostLifecycleControlProjection,
   replaceRuntimeHostLifecycle,
   resolveRecoverableRuntimeHostManagedDeployment,
   RuntimeHostLifecycleTransactionError,
@@ -142,6 +142,7 @@ interface RuntimeHostUpdateCliDeps {
     readonly createLifecycleDeps: (rootId: string) => RuntimeHostLifecycleTransactionDeps;
     readonly assertOperatorDeployment: typeof assertRuntimeHostManagedOperatorDeployment;
     readonly recoverDeployment: typeof resolveRecoverableRuntimeHostManagedDeployment;
+    readonly convergeControlProjection: typeof convergeRuntimeHostLifecycleControlProjection;
     readonly verifyProjection: typeof verifyRuntimeHostLifecycleProjection;
     readonly assertOperatorConfig: typeof assertRuntimeHostManagedOperatorConfig;
     readonly manageLifecycle: typeof manageRuntimeHostManagedLifecycle;
@@ -237,6 +238,7 @@ export async function runManagedRuntimeHostUpdateCli(
       }),
       assertOperatorDeployment: assertRuntimeHostManagedOperatorDeployment,
       recoverDeployment: resolveRecoverableRuntimeHostManagedDeployment,
+      convergeControlProjection: convergeRuntimeHostLifecycleControlProjection,
       verifyProjection: verifyRuntimeHostLifecycleProjection,
       assertOperatorConfig: assertRuntimeHostManagedOperatorConfig,
       manageLifecycle: manageRuntimeHostManagedLifecycle,
@@ -651,6 +653,7 @@ async function runCanonicalRuntimeHostUpdate(
           );
         }
         const current = recovered.config;
+        await deps.canonical.convergeControlProjection(current, lifecycleDeps);
         await deps.canonical.verifyProjection(current, lifecycleDeps);
         deps.canonical.assertOperatorConfig(
           current,

@@ -29,10 +29,15 @@ import {
 import { McpPage } from '../../../mcp-page.js';
 import type { ModuleHubHostModel } from '../controller/use-module-hub-controller.js';
 import { resolveModuleHubHostRoute } from '../controller/module-hub-route.js';
+import { useModuleHubHostModel } from './module-hub-provider.js';
 
 /** Selects and mounts exactly one Module Hub leaf for the Shell selection. */
-export function ModuleHubHost(props: { model: ModuleHubHostModel }) {
-  const { model } = props;
+export function ModuleHubHost() {
+  return <ModuleHubHostView model={useModuleHubHostModel()} />;
+}
+
+/** Environment-free view seam for focused tests and Storybook. */
+export function ModuleHubHostView({ model }: { model: ModuleHubHostModel }) {
   const copy = getSharedUiCopy(useUiLocale()).moduleHubs;
   const selection = model.selection;
   const route = resolveModuleHubHostRoute(selection);

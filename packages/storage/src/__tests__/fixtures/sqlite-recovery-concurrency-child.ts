@@ -24,6 +24,7 @@ import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import { type ToolRecoveryFactEnvelope } from '@maka/core/tool-recovery-fact';
 import { type WorkspaceBaselineAuthorityInput } from '@maka/core/workspace-version-authority';
 import { createRuntimeBoundaryCursor, runtimePrefixSegment } from '@maka/core/runtime-boundary';
+import { DEFAULT_TOOL_MODE } from '@maka/core/tool-mode';
 import { createSqliteRuntimeStore } from '../../sqlite-runtime-store.js';
 import { acquireOperationalStateDatabase } from '../../operational-state-store.js';
 import {
@@ -128,32 +129,37 @@ try {
         providerProjectionVersion: 1,
         providerReplayDigest: `sha256:${'a'.repeat(64)}`,
         target,
-        targetRunHeader: {
-          ...target,
-          status: 'created',
-          backendKind: 'fake',
-          llmConnectionSlug: 'connection-1',
-          modelId: 'model-1',
-          cwd: '/workspace/repo',
-          permissionMode: 'ask',
-          collaborationMode: 'agent',
-          orchestrationMode: 'default',
-          orchestrationSource: 'session',
-          agentSwarmAuthorization: 'none',
-          createdAt: process.pid,
-          updatedAt: process.pid,
-          parentRunId: source.identity.runId,
-          parentTurnId: source.identity.turnId,
-          continuationSource: {
-            protocol: 'continuation_source_v2',
-            claimId: `claim-${process.pid}`,
-            boundaryDigest: boundary.manifestDigest,
+        targetOpening: {
+          kind: 'invocation_opened',
+          protocol: 'invocation_opened_v1',
+          route: {
+            provenance: 'unknown',
+            backendKind: 'fake',
+            llmConnectionSlug: 'connection-1',
+            modelId: 'model-1',
+          },
+          configuration: {
+            cwd: '/workspace/repo',
+            permissionMode: 'ask',
+            collaborationMode: 'agent',
+            orchestrationMode: 'default',
+            orchestrationSource: 'session',
+            toolMode: DEFAULT_TOOL_MODE,
+            agentSwarmAuthorization: 'none',
+          },
+          root: { kind: 'user' },
+          source: {
+            kind: 'continuation',
             sourceInvocationId: source.identity.invocationId,
             sourceRunId: source.identity.runId,
             sourceTurnId: source.identity.turnId,
             sourceRuntimeEventHighWater: source.position.lastEventSeq,
-            sourcePrefixDigest: source.prefixDigest,
-            replayManifestDigest: boundary.manifestDigest,
+            claimId: `claim-${process.pid}`,
+            boundaryDigest: boundary.manifestDigest,
+          },
+          lineage: {
+            parentRunId: source.identity.runId,
+            parentTurnId: source.identity.turnId,
           },
         },
         claimedAt: process.pid,

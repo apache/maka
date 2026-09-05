@@ -70,13 +70,21 @@ export type PromptSuggestion = { label: string; prompt: string };
  * general assistant first, a coding assistant second.
  */
 const PROMPT_SUGGESTIONS_BY_LOCALE: UiCatalog<PromptSuggestion[]> = {
-  zh: [
+  'zh-CN': [
     { label: '总结代码库', prompt: '帮我总结当前代码库的目录结构和关键模块。' },
     { label: '解释这段代码', prompt: '我贴一段代码进来，请帮我逐行解释它做什么、有没有坑：\n\n```\n\n```' },
     { label: '读一份长文', prompt: '我贴一篇文章/文档过来，请帮我提炼核心观点、列出关键事实、找出我可能漏看的地方：\n\n' },
     { label: '翻译并润色', prompt: '把下面这段翻译成英文，保持原意，语气专业自然：\n\n' },
     { label: '起草一条消息', prompt: '帮我起草一条 ____ 风格的消息，对象是 ____，目的是 ____：\n\n要点：\n- \n- ' },
     { label: '代码审查', prompt: '请帮我审查这段代码，重点关注可读性、错误处理和潜在性能问题：\n\n```\n\n```' },
+  ],
+  'zh-TW': [
+    { label: '總結程式碼庫', prompt: '幫我總結目前程式碼庫的目錄結構和關鍵模組。' },
+    { label: '解釋這段程式碼', prompt: '我貼一段程式碼進來，請幫我逐行解釋它做什麼、有沒有坑：\n\n```\n\n```' },
+    { label: '讀一份長文', prompt: '我貼一篇文章/文件過來，請幫我提煉核心觀點、列出關鍵事實、找出我可能漏看的地方：\n\n' },
+    { label: '翻譯並潤色', prompt: '把下面這段翻譯成英文，保持原意，語氣專業自然：\n\n' },
+    { label: '起草一條訊息', prompt: '幫我起草一條 ____ 風格的訊息，物件是 ____，目的是 ____：\n\n要點：\n- \n- ' },
+    { label: '程式碼審查', prompt: '請幫我審查這段程式碼，重點關注可讀性、錯誤處理和潛在效能問題：\n\n```\n\n```' },
   ],
   en: [
     { label: 'Summarize codebase', prompt: 'Help me map this codebase: directory layout, key modules, and how they fit together.' },

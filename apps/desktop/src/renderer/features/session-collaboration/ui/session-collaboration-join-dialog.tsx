@@ -21,7 +21,10 @@ import { useEffect, useRef, useState } from 'react';
 import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog';
 import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
 import { List, ListItem } from '@astryxdesign/core/List';
+import { HStack } from '@astryxdesign/core/Stack';
+import { Tooltip } from '@astryxdesign/core/Tooltip';
 import {
+  Badge,
   Banner,
   Button,
   FormLayout,
@@ -59,6 +62,12 @@ export interface SessionCollaborationJoinCopy {
   readonly recoveryStarted: string;
   readonly recoveryStartedBody: string;
   readonly retainedTasks: string;
+  readonly mountConnected: string;
+  readonly mountConnecting: string;
+  readonly mountReconnecting: string;
+  readonly mountUnavailable: string;
+  readonly directConnection: string;
+  readonly memberTransitConnection: string;
   readonly disconnect: string;
   readonly disconnectFailed: string;
 }
@@ -88,14 +97,21 @@ export function SessionCollaborationJoinDialog(props: {
   useEffect(() => {
     open.current = true;
     let disposed = false;
-    void services.listMounts().then(
-      (next) => {
-        if (!disposed) setMounts(next);
-      },
-      () => undefined,
-    );
+    let request = 0;
+    const refresh = () => {
+      const currentRequest = ++request;
+      void services.listMounts().then(
+        (next) => {
+          if (!disposed && request === currentRequest) setMounts(next);
+        },
+        () => undefined,
+      );
+    };
+    refresh();
+    const unsubscribe = services.subscribeMountChanges(refresh);
     return () => {
       disposed = true;
+      unsubscribe();
       open.current = false;
       const operationId = activeOperationId.current;
       if (operationId) void services.cancelImport(operationId);
@@ -290,16 +306,36 @@ export function SessionCollaborationJoinDialog(props: {
                   {mounts.map((mount) => (
                     <ListItem
                       key={mount.mountId}
-                      label={mount.name}
+                      label={mount.session?.name ?? mount.name}
+                      description={mount.session
+                        ? `${mount.name} · ${mountReadinessLabel(props.copy, mount.readiness)}`
+                        : mountReadinessLabel(props.copy, mount.readiness)}
                       endContent={(
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          label={props.copy.disconnect}
-                          isDisabled={working || removingMountId !== undefined}
-                          isLoading={removingMountId === mount.mountId}
-                          onClick={() => void disconnect(mount.mountId)}
-                        />
+                        <HStack gap={2} vAlign="center">
+                          {mount.peerPath ? (
+                            <Tooltip content={peerPathDetail(props.copy, mount.peerPath)}>
+                              <span>
+                                <Badge
+                                  variant="neutral"
+                                  label={peerPathLabel(props.copy, mount.peerPath)}
+                                />
+                              </span>
+                            </Tooltip>
+                          ) : mount.readiness !== 'ready' ? (
+                            <Badge
+                              variant={mount.readiness === 'unavailable' ? 'neutral' : 'warning'}
+                              label={mountReadinessLabel(props.copy, mount.readiness)}
+                            />
+                          ) : null}
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            label={props.copy.disconnect}
+                            isDisabled={working || removingMountId !== undefined}
+                            isLoading={removingMountId === mount.mountId}
+                            onClick={() => void disconnect(mount.mountId)}
+                          />
+                        </HStack>
                       )}
                     />
                   ))}
@@ -328,6 +364,44 @@ export function SessionCollaborationJoinDialog(props: {
       />
     </Dialog>
   );
+}
+
+function mountReadinessLabel(
+  copy: SessionCollaborationJoinCopy,
+  readiness: SessionCollaborationMountSummary['readiness'],
+): string {
+  switch (readiness) {
+    case 'connecting': return copy.mountConnecting;
+    case 'ready': return copy.mountConnected;
+    case 'reconnecting': return copy.mountReconnecting;
+    case 'unavailable': return copy.mountUnavailable;
+  }
+}
+
+function peerPathLabel(
+  copy: SessionCollaborationJoinCopy,
+  path: NonNullable<SessionCollaborationMountSummary['peerPath']>,
+): string {
+  if (path.kind === 'transit') return copy.memberTransitConnection;
+  switch (path.transport) {
+    case 'webrtc': return 'WebRTC';
+    case 'quic': return 'QUIC';
+    case 'tcp': return 'TCP';
+    case 'other': return copy.directConnection;
+  }
+}
+
+function peerPathDetail(
+  copy: SessionCollaborationJoinCopy,
+  path: NonNullable<SessionCollaborationMountSummary['peerPath']>,
+): string {
+  return path.kind === 'transit'
+    ? `${copy.memberTransitConnection} · ${abbreviatePeerId(path.relayPeerId)}`
+    : `${copy.directConnection} · ${peerPathLabel(copy, path)}`;
+}
+
+function abbreviatePeerId(peerId: string): string {
+  return peerId.length <= 20 ? peerId : `${peerId.slice(0, 10)}…${peerId.slice(-6)}`;
 }
 
 function importError(

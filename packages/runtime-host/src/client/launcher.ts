@@ -139,7 +139,7 @@ export function launchOwnedRuntimeHostCandidate(input: DetachedCandidateInput): 
         const result = await within(exited, timeoutMs);
         if (result) return result.code === 0 && result.signal === null;
         child.kill('SIGKILL');
-        await exited;
+        await within(exited, timeoutMs);
         return false;
       },
     })),

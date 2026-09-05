@@ -22,7 +22,8 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import type { AgentRunHeader } from '@maka/core/agent-run';
+import { seedInvocation, testInvocationOpening } from '@maka/runtime/test-only/invocation-fixture';
+import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import {
   type ExecutionStoresWriter,
@@ -55,7 +56,12 @@ test('keeps durable history separate from the canonical active overlay', async (
       ts: 1,
       kind: 'session_start',
     });
-    await stores.agentRunStore.createRun(runHeader(session.id));
+    await seedInvocation(stores.runtimeEventStore, {
+      sessionId: session.id,
+      runId: 'run-1',
+      turnId: 'turn-1',
+      openedAt: 1,
+    });
     await stores.runtimeEventStore.appendRuntimeEvent(
       session.id,
       'run-1',
@@ -237,8 +243,9 @@ test('stops scanning a control-only ledger at the cumulative immutable event lim
   );
   let scanned = 0;
   const stores = {
-    agentRunStore: { readRun: async () => runHeader(sessionId) },
+    agentRunStore: {},
     runtimeEventStore: {
+      listSessionInvocations: async () => [testInvocation(sessionId)],
       readRuntimeEventsBounded: async () => ({ status: 'limit_exceeded' as const }),
       scanRuntimeEvents: async (
         _sessionId: string,
@@ -289,8 +296,9 @@ test('stops an oversized active projection before retaining the full RuntimeEven
   );
   let visited = 0;
   const stores = {
-    agentRunStore: { readRun: async () => runHeader(sessionId) },
+    agentRunStore: {},
     runtimeEventStore: {
+      listSessionInvocations: async () => [testInvocation(sessionId)],
       scanRuntimeEvents: async (
         _sessionId: string,
         _runId: string,
@@ -322,24 +330,6 @@ test('stops an oversized active projection before retaining the full RuntimeEven
   assert.equal(visited, 8_193);
 });
 
-function runHeader(sessionId: string): AgentRunHeader {
-  return {
-    runId: 'run-1',
-    invocationId: 'run-1',
-    sessionId,
-    turnId: 'turn-1',
-    status: 'running',
-    backendKind: 'fake',
-    llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
-    llmConnectionSlug: 'fake',
-    modelId: 'fake-model',
-    cwd: '/tmp',
-    permissionMode: 'ask',
-    createdAt: 1,
-    updatedAt: 1,
-  };
-}
-
 function runtimeEvent(sessionId: string, overrides: Partial<RuntimeEvent>): RuntimeEvent {
   return {
     id: 'event-1',
@@ -352,5 +342,16 @@ function runtimeEvent(sessionId: string, overrides: Partial<RuntimeEvent>): Runt
     role: 'system',
     author: 'system',
     ...overrides,
+  };
+}
+
+function testInvocation(sessionId: string): RuntimeInvocationRecord {
+  return {
+    sessionId,
+    invocationId: 'run-1',
+    runId: 'run-1',
+    turnId: 'turn-1',
+    openedAt: 1,
+    opening: testInvocationOpening(),
   };
 }

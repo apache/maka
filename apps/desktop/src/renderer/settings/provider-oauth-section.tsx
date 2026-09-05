@@ -29,6 +29,7 @@ import {
 } from '@maka/ui';
 import {
   getProviderSettingsCopy,
+  subscriptionResultMessage,
   type ConnectionOAuthProviderBridge,
   type ConnectionsBridge,
   type ProviderSettingsCopy,
@@ -36,7 +37,6 @@ import {
 import {
   useOAuthLoginFlow,
   subscriptionActionErrorMessage,
-  subscriptionResultMessage,
   type OAuthAuthorizationFlowBridge,
   type OAuthConnectionIdentity,
   type SubscriptionSnapshot,

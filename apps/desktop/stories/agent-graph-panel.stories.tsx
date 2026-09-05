@@ -39,7 +39,7 @@ import { withScopedMakaBridge } from './maka-bridge';
 
 const ROOT_SESSION_ID = 'session-graph';
 const GRAPH_ID = 'graph-storybook';
-const LOCALE = 'zh';
+const LOCALE = 'zh-CN';
 const copy = getAgentGraphPanelCopy(LOCALE);
 
 const meta = {

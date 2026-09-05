@@ -253,7 +253,7 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
       try {
         const lifecycle = await readLifecycle(lifecyclePath, input.rootPath, input.rootId);
         managedService = lifecycle !== undefined && hasManagedServiceTarget(lifecycle);
-        if (!supported(input.directPeerAvailable)) {
+        if (!input.directPeerAvailable) {
           return {
             ...unsupportedSnapshot(),
             ...(managedService ? { managedService: true as const } : {}),
@@ -289,7 +289,7 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
   const enable = (value: unknown): Promise<DesktopLocalRuntimeHostRemoteAccessEnableResult> =>
     serialize(async () => {
       const request = requireEnableInput(value);
-      if (!supported(input.directPeerAvailable)) throw new Error(unsupportedSnapshot().message);
+      if (!input.directPeerAvailable) throw new Error(unsupportedSnapshot().message);
       let lifecycle = await readLifecycle(lifecyclePath, input.rootPath, input.rootId);
       if (lifecycle?.state === 'uninstalling') {
         const recovered = await finishUninstall(lifecycle);
@@ -895,7 +895,7 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
         if (lifecycle.state === 'handoff' || lifecycle.state === 'setupPending') {
           const committed = await adoptCommittedSetup(lifecycle);
           if (committed.kind === 'managed') return;
-          if (!supported(input.directPeerAvailable)) return;
+          if (!input.directPeerAvailable) return;
           if (lifecycle.state === 'handoff') await recoverLegacyHandoff(lifecycle);
           else await finishSetup(lifecycle, 'recovery');
           return;
@@ -914,20 +914,13 @@ function conflictReplacementError(pid: number, reason: string): Error {
   return new Error(`Maka could not replace Runtime Host process ${pid}: ${reason}`);
 }
 
-function supported(directPeerAvailable: boolean): boolean {
-  return directPeerAvailable && (process.platform === 'darwin' || process.platform === 'linux');
-}
-
 function unsupportedSnapshot(): Extract<
   DesktopLocalRuntimeHostRemoteAccessSnapshot,
   { state: 'unsupported' }
 > {
   return {
     state: 'unsupported',
-    message:
-      process.platform === 'darwin' || process.platform === 'linux'
-        ? 'This Desktop build does not include Direct peer support'
-        : 'Remote access to this computer currently requires macOS or Linux',
+    message: 'This Desktop build does not include Direct peer support',
   };
 }
 

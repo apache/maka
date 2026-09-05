@@ -53,10 +53,9 @@ export interface ScrollMotionPolicyInputs {
    *
    * Collapsing motion for every capture is right for a screenshot and wrong
    * for a test about scrolling: a scroll that finishes in one frame cannot
-   * collide with anything, so the fixture suite had no way to exercise the
-   * production smooth path at all (`prompt-rail.spec.ts` needs it — Astryx's
-   * auto-follow lock only contends with a scroll still in flight). This lets
-   * one fixture opt back in without loosening the default for the rest.
+   * collide with anything, and Astryx's auto-follow lock only contends with a
+   * scroll still in flight. This lets one fixture opt back in without
+   * loosening the default for the rest.
    *
    * Deliberately below the reduced-motion triggers: a fixture may ask for
    * motion the capture would otherwise skip, but nothing may override a

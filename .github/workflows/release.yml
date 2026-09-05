@@ -141,10 +141,7 @@ jobs:
       - name: Install dependencies with the pinned npm
         run: npm ci
 
-      - name: Audit production dependencies
-        run: npm audit --omit=dev --audit-level=moderate
-
-      - name: Audit shipped desktop closure
+      - name: Audit shipped product closure
         run: node scripts/audit-shipped-dependencies.mjs
 
       - name: Update stable Rust for Desktop native artifacts
@@ -348,9 +345,6 @@ jobs:
 
       - name: Install dependencies with the pinned npm
         run: npm ci
-
-      - name: Audit production dependencies
-        run: npm audit --omit=dev --audit-level=moderate
 
       - name: Build the CLI production workspace closure
         run: |

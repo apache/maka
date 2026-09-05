@@ -369,7 +369,10 @@ async function runCli() {
     );
   }
   const { chromium } = await import('@playwright/test');
-  const browser = await chromium.launch({ headless: true });
+  // Headless Chromium paints no platform scrollbar, so anything a scrollbar
+  // can occlude is inert here and on CI. `SMOKE_HEADED=1` is how you check
+  // those by hand, on the platform whose scrollbar overlays the content.
+  const browser = await chromium.launch({ headless: process.env.SMOKE_HEADED !== '1' });
   const server = await startStaticServer(staticDir);
   let problems;
   try {

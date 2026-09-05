@@ -27,7 +27,7 @@ test('queue_update events drive the independent desktop queue projection', () =>
   const transientMessages: unknown[] = [];
   const removedTransientMessageIds: string[] = [];
   const handlers = createAppShellSessionEventHandlers({
-    uiLocale: 'zh',
+    uiLocale: 'zh-CN',
     activeIdRef: { current: 'session-1' },
     liveTurnBySessionRef: controller.liveTurnBySessionRef,
     refreshMessages: async () => true,

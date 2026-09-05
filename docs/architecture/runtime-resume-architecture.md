@@ -133,7 +133,7 @@ These three words are easy to mix up:
 
 | Term | Subject | Result |
 |---|---|---|
-| Repair | Durable state of an old Run | Align terminal RuntimeEvent, Run header, and Turn state |
+| Repair | Durable state of an old Run | Give an interrupted Run its terminal RuntimeEvent and align Turn state |
 | Resume / Continuation | A history boundary already proved safe | Create fresh identities and continue the provider loop |
 | Reconcile | A tool operation with T1 but no T2 outcome | Observe the external world and commit either completed or parked |
 
@@ -204,7 +204,8 @@ Safety does not come merely from putting everything in SQLite. It comes from ass
 | Data | Nature | Purpose |
 |---|---|---|
 | Immutable `RuntimeEvent` | Canonical semantic fact | Model history, tool call/dispatch/outcome, recovery observation/decision, terminal fact |
-| `AgentRunHeader` and AgentRun events | Durable operational envelope | Attempt identity, status, lineage, and diagnostics |
+| Invocation opening fact | Immutable statement of one attempt | Identity, route, configuration, root authority, lineage |
+| AgentRun events | Durable operational record | What the runtime did, stage by stage, and its diagnostics |
 | `tool_operations` | SQLite projection | Fast current-state lookup for an operation |
 | `tool_journal_events` | SQLite projection | Fast prepared/outcome/recovery transition lookup |
 | Session messages / Turn state | Product and UI projection | Conversation and Turn display, not recovery judgment |
@@ -401,14 +402,11 @@ sequenceDiagram
   participant UI as Renderer
 
   App->>SM: recoverInterruptedSessions()
-  SM->>RS: list non-terminal / suspicious AgentRuns
+  SM->>ES: list invocations with no terminal event
   SM->>ES: read immutable RuntimeEvents
-  SM->>SM: compare terminal ledger and Run header
-  alt terminal RuntimeEvent exists, header lags
-    SM->>RS: repair the matching Run header
-  else no terminal RuntimeEvent
-    SM->>ES: commit recovered terminal RuntimeEvent first
-    SM->>RS: then commit matching failed/cancelled header
+  SM->>RS: read the operational events for the Run
+  alt no terminal RuntimeEvent
+    SM->>ES: commit a recovered terminal RuntimeEvent
   else ledger is ambiguous / unreadable
     SM-->>UI: preserve inspectable state and fail closed
   end
@@ -418,9 +416,9 @@ sequenceDiagram
 
 The invariant is:
 
-> The terminal RuntimeEvent commits before the terminal Run header. A header cannot declare completion without its semantic fact.
+> A Run has ended exactly when its terminal RuntimeEvent is durable, and nothing else records that it ended.
 
-A second crash between those commits remains repairable from the terminal event. Desktop also recovers Graph coordination. Automatic continuation is considered only after those repairs and only when the feature flag is enabled.
+There is no second commit for a crash to land between. Desktop also recovers Graph coordination. Automatic continuation is considered only after those repairs and only when the feature flag is enabled.
 
 ## Phase 1: create a new execution at a safe boundary
 
@@ -429,7 +427,7 @@ Phase 1 does not resolve unknown side effects. It continues only when every acce
 Planner gates include:
 
 - readable source Run and RuntimeEvent ledger;
-- exactly one terminal event matching the Run header;
+- exactly one terminal event for the source invocation;
 - one source execution identity across events;
 - Phase 0 `safe_replay`;
 - no pending permission;
@@ -791,7 +789,7 @@ Eval does not resume or reconstruct Runtime execution. It asks Runtime Host to e
 4. Atomically commit call, dispatch, and projection at T1.
 5. Execute the external effect without a long database transaction.
 6. Atomically commit T2 before publishing the result.
-7. Commit terminal RuntimeEvent before terminal Run header.
+7. End a Run by committing exactly one terminal RuntimeEvent.
 8. On restart, repair the old Run first.
 9. Resolve immutable facts into completed / not-dispatched / indeterminate / parked / corruption.
 10. If a production reconciler exists, commit one atomic recovery bundle; otherwise park.

@@ -51,6 +51,8 @@ export interface SessionRailData {
   /** Pre-grouped rows. Absent means group by recency here. */
   groups?: ReadonlyArray<SessionHistoryGroup>;
   groupVariant: SessionViewMode;
+  /** Human-readable project identity for a session hover card. */
+  sessionProjectName?(session: SessionSummary): string | undefined;
   sessionMeta?(session: SessionSummary): string | undefined;
   sessionBadge?(session: SessionSummary): ReactNode;
   onSelectSession(sessionId: string): void;
