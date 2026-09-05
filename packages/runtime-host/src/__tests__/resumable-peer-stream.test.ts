@@ -116,6 +116,144 @@ async function receive(stream: ResumablePeerStream, expected: Buffer) {
   assert.equal(count, expected.length);
 }
 
+test('seeded fragmented full-duplex faults retain byte order and release every raw path', {
+  timeout: 180_000,
+}, async (t) => {
+  const seeds = Number(process.env.MAKA_PEER_STRESS_SEEDS ?? 8);
+  assert.ok(Number.isSafeInteger(seeds) && seeds >= 1 && seeds <= 256);
+  const latencies: number[] = [];
+  let failures = 0;
+  let livePaths = 0;
+  let peakPaths = 0;
+  const started = performance.now();
+  const run = async (seed: number) => {
+    let rng = seed;
+    const random = (limit: number) => {
+      rng = (Math.imul(rng, 1664525) + 1013904223) >>> 0;
+      return rng % limit;
+    };
+    let right!: ResumablePeerStream;
+    let cuts = 0;
+    let attempts = 0;
+    let failedAt = 0;
+    const paths = new Set<Duplex>();
+    const candidate = (state: ReturnType<ResumablePeerStream['nextAttachment']>) => {
+      const [a, b] = duplexPair({ highWaterMark: 1024 });
+      for (const socket of [a, b]) {
+        paths.add(socket);
+        livePaths++;
+        peakPaths = Math.max(peakPaths, livePaths);
+        socket.once('close', () => {
+          paths.delete(socket);
+          livePaths--;
+        });
+      }
+      const cutAfter = cuts < 4 ? 128 * 1024 + random(384 * 1024) : Infinity;
+      let written = 0;
+      let cut = false;
+      const fragmented = (socket: Duplex) => {
+        const raw = wire(socket, 'peer');
+        return {
+          ...raw,
+          write: async (bytes: Buffer) => {
+            const prefix = Math.min(bytes.length, 1 + random(31));
+            for (const part of [bytes.subarray(0, prefix), bytes.subarray(prefix)]) {
+              if (part.length === 0) continue;
+              const remaining = cutAfter - written;
+              if (!cut && part.length > remaining) {
+                cut = true;
+                if (remaining > 0) await raw.write(part.subarray(0, remaining));
+                cuts++;
+                failures++;
+                failedAt = performance.now();
+                a.destroy();
+                b.destroy();
+                throw new Error(`seed ${seed}: cut inside a frame`);
+              }
+              written += part.length;
+              await raw.write(part);
+            }
+          },
+        };
+      };
+      right.reserve(state);
+      const received = right.received;
+      right.attach(state.generation, {
+        stream: fragmented(b),
+        remainder: Buffer.alloc(0),
+        received: state.received,
+      });
+      return { stream: fragmented(a), remainder: Buffer.alloc(0), received };
+    };
+    const left = new ResumablePeerStream({
+      peerId: 'peer',
+      reconnect: async (state) => {
+        // Failed candidates and a retained unread window coexist with replay.
+        if (++attempts % 3 === 1) throw new Error(`seed ${seed}: dial unavailable`);
+        await delay(random(4));
+        const result = candidate(state);
+        latencies.push(performance.now() - failedAt);
+        return result;
+      },
+    });
+    right = new ResumablePeerStream({ peerId: 'peer', sessionId: left.sessionId });
+    const send = async (stream: ResumablePeerStream, bytes: Buffer) => {
+      for (let offset = 0; offset < bytes.length; ) {
+        const size = Math.min(bytes.length - offset, 1 + random(128 * 1024));
+        await stream.write(bytes.subarray(offset, offset + size));
+        offset += size;
+      }
+    };
+    const drain = async (stream: ResumablePeerStream, bytes: Buffer) => {
+      for (let offset = 0; offset < bytes.length; ) {
+        if (random(8) === 0) await delay(1);
+        const chunk = await stream.read();
+        assert.ok(chunk, `seed ${seed}: premature EOF at ${offset}`);
+        assert.deepEqual(
+          chunk,
+          bytes.subarray(offset, offset + chunk.length),
+          `seed ${seed}, offset ${offset}`,
+        );
+        offset += chunk.length;
+      }
+    };
+    try {
+      const state = left.nextAttachment();
+      left.attach(state.generation, candidate(state));
+      const a = payload(4 * 1024 * 1024, seed);
+      const b = payload(4 * 1024 * 1024, seed ^ 0xff);
+      await Promise.all([send(left, a), send(right, b), drain(right, a), drain(left, b)]);
+      assert.equal(cuts, 4, `seed ${seed}: all faults must occur during traffic`);
+      await left.close();
+      await right.closed;
+    } finally {
+      left.abort();
+      right.abort();
+      await tick();
+      assert.equal(paths.size, 0, `seed ${seed}: leaked raw paths`);
+    }
+  };
+  for (let seed = 1; seed <= seeds; seed += 4) {
+    await Promise.all(
+      Array.from({ length: Math.min(4, seeds - seed + 1) }, (_, index) => run(seed + index)),
+    );
+  }
+  latencies.sort((a, b) => a - b);
+  assert.equal(livePaths, 0);
+  t.diagnostic(
+    JSON.stringify({
+      seeds,
+      bytesVerified: seeds * 8 * 1024 * 1024,
+      failures,
+      peakRawHalves: peakPaths,
+      elapsedMs: Math.round(performance.now() - started),
+      attachmentP50Ms: Math.round(latencies[Math.floor(latencies.length * 0.5)]!),
+      attachmentP95Ms: Math.round(latencies[Math.floor(latencies.length * 0.95)]!),
+      attachmentMaxMs: Math.round(latencies.at(-1)!),
+    }),
+  );
+});
+
 test('full duplex exceeds the replay window and survives repeated path replacement', {
   timeout: 10_000,
 }, async (t) => {
@@ -243,6 +381,54 @@ test('one-way blackhole triggers automatic recovery and preserves the pending re
   assert.deepEqual(await right.read(), Buffer.from('survives'));
   await writing;
   assert.equal(reattachments, 1);
+});
+
+test('continuous incoming traffic cannot starve outbound data or heartbeat behind ACKs', {
+  timeout: 3_000,
+}, async (t) => {
+  const left = new ResumablePeerStream({
+    peerId: 'peer',
+    heartbeatMs: 20,
+    heartbeatTimeoutMs: 80,
+    recoveryMs: 100,
+  });
+  const right = new ResumablePeerStream({ peerId: 'peer', sessionId: left.sessionId });
+  t.after(() => {
+    left.abort();
+    right.abort();
+  });
+  const [a, b] = duplexPair();
+  const slow = wire(a, 'peer');
+  const state = left.nextAttachment();
+  right.reserve(state);
+  right.attach(state.generation, {
+    stream: wire(b, 'peer'),
+    received: 0,
+    remainder: Buffer.alloc(0),
+  });
+  left.attach(state.generation, {
+    stream: {
+      ...slow,
+      write: async (bytes) => {
+        await delay(5);
+        await slow.write(bytes);
+      },
+    },
+    received: 0,
+    remainder: Buffer.alloc(0),
+  });
+  const bytes = payload(150 * 512, 41);
+  await Promise.all([
+    receive(left, bytes),
+    receive(right, Buffer.from('outbound must progress')),
+    left.write(Buffer.from('outbound must progress')),
+    (async () => {
+      for (let offset = 0; offset < bytes.length; offset += 512) {
+        await right.write(bytes.subarray(offset, offset + 512));
+        await delay(2);
+      }
+    })(),
+  ]);
 });
 
 test('unrecoverable path has a bounded lifetime and abort wakes blocked reads and writes', {

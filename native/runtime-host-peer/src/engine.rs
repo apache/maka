@@ -1405,9 +1405,15 @@ async fn run_endpoint_async(
                             request_id,
                         ));
                         waiter.rejected_connections.insert(connection_id);
-                        if remove_pending_dial(&mut waiter, connection_id).is_some() {
-                            direct.retiring_connections.insert(connection_id);
-                            let _ = swarm.close_connection(connection_id);
+                        if let Some(origin) = remove_pending_dial(&mut waiter, connection_id) {
+                            // A failed substream does not invalidate other streams
+                            // admitted concurrently on this connection.
+                            retire_direct_dials(
+                                &mut swarm,
+                                &mut direct,
+                                HashMap::from([(connection_id, origin)]),
+                                None,
+                            );
                         }
                         waiter.next_route_attempt = Instant::now();
                         direct.pending.insert(request_id, waiter);

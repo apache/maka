@@ -305,11 +305,16 @@ export async function writeRuntimeHostPeerAuthentication(
       'Runtime Host access credential is invalid',
     );
   }
-  await stream.write(
-    Buffer.from(
-      `${JSON.stringify(resume ? { v: 2, credential, resume } : { v: 1, credential })}\n`,
-      'utf8',
+  await withStreamDeadline(
+    stream.write(
+      Buffer.from(
+        `${JSON.stringify(resume ? { v: 2, credential, resume } : { v: 1, credential })}\n`,
+        'utf8',
+      ),
     ),
+    stream,
+    RUNTIME_HOST_PEER_AUTHENTICATION_TIMEOUT_MS,
+    'Peer authentication write timed out',
   );
 }
 
@@ -318,11 +323,16 @@ export async function writeRuntimeHostPeerAuthenticationResult(
   accepted: boolean,
   resume?: { readonly received: number },
 ): Promise<void> {
-  await stream.write(
-    Buffer.from(
-      `${JSON.stringify(resume ? { v: 2, accepted, resume } : { v: 1, accepted })}\n`,
-      'utf8',
+  await withStreamDeadline(
+    stream.write(
+      Buffer.from(
+        `${JSON.stringify(resume ? { v: 2, accepted, resume } : { v: 1, accepted })}\n`,
+        'utf8',
+      ),
     ),
+    stream,
+    RUNTIME_HOST_PEER_AUTHENTICATION_TIMEOUT_MS,
+    'Peer authentication response write timed out',
   );
 }
 

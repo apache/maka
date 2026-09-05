@@ -344,22 +344,26 @@ export class ResumablePeerStream implements RuntimeHostPeerNativeStream {
         }
         return;
       }
+      // One fair pass per class: continuous inbound consumption must not
+      // monopolize the writer with ACKs and starve PING/PONG or application data.
+      let wroteControl = false;
       if (path.acknowledged !== this.#consumed) {
         path.acknowledged = this.#consumed;
         await path.stream.write(frame(ACK, path.acknowledged));
-        continue;
+        wroteControl = true;
       }
       if (path.pong !== undefined) {
         const pong = path.pong;
         path.pong = undefined;
         await path.stream.write(frame(PONG, pong));
-        continue;
+        wroteControl = true;
       }
       if (path.ping && !path.ping.sent) {
         path.ping.sent = true;
         await path.stream.write(frame(PING, path.ping.id));
-        continue;
+        wroteControl = true;
       }
+      if (this.#path !== path || this.#ended) return;
       const next = this.#outgoing.find((chunk) => chunk.offset >= path.sent);
       if (next) {
         await path.stream.write(frame(DATA, next.offset, next.bytes));
@@ -376,7 +380,7 @@ export class ResumablePeerStream implements RuntimeHostPeerNativeStream {
         await path.stream.write(frame(FIN, this.#sent));
         continue;
       }
-      await this.#wait();
+      if (!wroteControl) await this.#wait();
     }
   }
 
