@@ -38,18 +38,24 @@ import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
 import {
   decodeClientFrame,
   decodeHostFrame,
+  decodeUsageSnapshotReleaseInput,
+  decodeUsageSnapshotReleaseResult,
   decodeUsageQueryInput,
+  decodeUsageQueryResult,
   encodePricingQueryResult,
   encodeProtocolMessage,
   PRICING_PAGE_MAX_BYTES,
   PRICING_PAGE_MAX_ITEMS,
+  REMOTE_OWNER_OPERATION_GRANTS,
   RUNTIME_HOST_MAX_MESSAGE_BYTES,
   USAGE_PAGE_MAX_BYTES,
   USAGE_PAGE_MAX_ITEMS,
   USAGE_PROJECTION_TEXT_MAX_BYTES,
+  USAGE_SNAPSHOT_ACTIVITY_MAX_ITEMS,
   type EffectivePricingEntry,
   type LlmUsageLogProjection,
   type ToolUsageLogProjection,
+  type UsageQueryResult,
 } from '../protocol/index.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import { HostUsagePricingCoordinator } from '../server/usage-pricing-coordinator.js';
@@ -63,6 +69,33 @@ const CONNECTION_CONTEXT: ConnectionContext = {
 };
 
 describe('Usage/Pricing protocol', () => {
+  test('decodes the exact Usage snapshot release input and output', () => {
+    assert.equal(REMOTE_OWNER_OPERATION_GRANTS.includes('usage.snapshot.release'), true);
+    assert.deepEqual(decodeUsageSnapshotReleaseInput({ revision: 'snapshot-revision-1' }), {
+      revision: 'snapshot-revision-1',
+    });
+    assert.deepEqual(decodeUsageSnapshotReleaseResult({ released: true }), { released: true });
+    assert.deepEqual(
+      decodeClientFrame({
+        requestId: 'usage-release-request',
+        operation: 'usage.snapshot.release',
+        input: { revision: 'snapshot-revision-1' },
+      }),
+      {
+        requestId: 'usage-release-request',
+        operation: 'usage.snapshot.release',
+        input: { revision: 'snapshot-revision-1' },
+      },
+    );
+
+    for (const input of [{}, { revision: '' }, { revision: 'snapshot-revision-1', extra: true }]) {
+      assert.throws(() => decodeUsageSnapshotReleaseInput(input), invalidFrame);
+    }
+    for (const result of [{}, { released: false }, { released: true, extra: true }]) {
+      assert.throws(() => decodeUsageSnapshotReleaseResult(result), invalidFrame);
+    }
+  });
+
   test('decodes exact bounded usage queries', () => {
     assert.deepEqual(
       decodeUsageQueryInput({
@@ -168,6 +201,147 @@ describe('Usage/Pricing protocol', () => {
       },
       { kind: 'buckets', query: { range: 'all' }, groupBy: 'week' },
       { kind: 'export', query: { range: 'all' } },
+    ]) {
+      assert.throws(() => usageRequest(input), invalidFrame);
+    }
+    for (const result of [
+      {
+        kind: 'snapshot_started',
+        revision: 'snapshot-revision-1',
+        summary: validSummary(),
+        provenance: validProvenance(),
+        extra: true,
+      },
+      {
+        kind: 'snapshot_logs',
+        revision: 'snapshot-revision-1',
+        source: 'llm',
+        rows: [validLog()],
+        offset: 0,
+        total: 2,
+        nextOffset: 0,
+        truncated: false,
+      },
+      {
+        kind: 'snapshot_logs',
+        revision: 'snapshot-revision-1',
+        source: 'llm',
+        rows: [validLog()],
+        offset: 0,
+        total: 1,
+        nextOffset: null,
+        truncated: 'no',
+      },
+      {
+        kind: 'snapshot_pricing',
+        revision: 'snapshot-revision-1',
+        entries: Array.from({ length: PRICING_PAGE_MAX_ITEMS + 1 }, (_, index) =>
+          customPricingEntry(`provider:model-${index}`),
+        ),
+        offset: 0,
+        total: PRICING_PAGE_MAX_ITEMS + 1,
+        nextOffset: null,
+      },
+      { kind: 'revision_changed', expectedRevision: '' },
+    ]) {
+      assert.throws(() => usageResponse(result), invalidFrame);
+    }
+  });
+
+  test('rejects Usage snapshot totals above the activity maximum', () => {
+    assert.throws(
+      () =>
+        decodeUsageQueryResult({
+          kind: 'snapshot_logs',
+          revision: 'snapshot-revision-1',
+          source: 'llm',
+          rows: [validLog()],
+          offset: 0,
+          total: USAGE_SNAPSHOT_ACTIVITY_MAX_ITEMS + 1,
+          nextOffset: 1,
+          truncated: true,
+        }),
+      invalidFrame,
+    );
+  });
+
+  test('decodes revision-pinned Usage snapshot start, log, and pricing pages', () => {
+    assert.doesNotThrow(() => usageRequest({ kind: 'snapshot_start', range: { from: 1, to: 2 } }));
+    assert.doesNotThrow(() =>
+      usageRequest({
+        kind: 'snapshot_logs',
+        revision: 'snapshot-revision-1',
+        source: 'llm',
+        offset: 0,
+        limit: 3,
+      }),
+    );
+    assert.doesNotThrow(() =>
+      usageRequest({
+        kind: 'snapshot_pricing',
+        revision: 'snapshot-revision-1',
+        offset: 0,
+        limit: 3,
+      }),
+    );
+
+    assert.doesNotThrow(() =>
+      usageResponse({
+        kind: 'snapshot_started',
+        revision: 'snapshot-revision-1',
+        summary: validSummary(),
+        provenance: validProvenance(),
+      }),
+    );
+    assert.doesNotThrow(() =>
+      usageResponse({
+        kind: 'snapshot_logs',
+        revision: 'snapshot-revision-1',
+        source: 'llm',
+        rows: [validLog()],
+        offset: 0,
+        total: 1,
+        nextOffset: null,
+        truncated: false,
+      }),
+    );
+    assert.doesNotThrow(() =>
+      usageResponse({
+        kind: 'snapshot_pricing',
+        revision: 'snapshot-revision-1',
+        entries: [customPricingEntry('provider:model')],
+        offset: 0,
+        total: 1,
+        nextOffset: null,
+      }),
+    );
+    assert.doesNotThrow(() =>
+      usageResponse({ kind: 'revision_changed', expectedRevision: 'snapshot-revision-1' }),
+    );
+
+    for (const input of [
+      { kind: 'snapshot_start', range: 'all', revision: 'unexpected' },
+      { kind: 'snapshot_logs', revision: '', source: 'llm', offset: 0, limit: 1 },
+      {
+        kind: 'snapshot_logs',
+        revision: 'x'.repeat(129),
+        source: 'llm',
+        offset: 0,
+        limit: 1,
+      },
+      {
+        kind: 'snapshot_logs',
+        revision: 'snapshot-revision-1',
+        source: 'model',
+        offset: 0,
+        limit: 1,
+      },
+      {
+        kind: 'snapshot_pricing',
+        revision: 'snapshot-revision-1',
+        offset: 0,
+        limit: PRICING_PAGE_MAX_ITEMS + 1,
+      },
     ]) {
       assert.throws(() => usageRequest(input), invalidFrame);
     }
@@ -522,6 +696,312 @@ describe('Usage/Pricing protocol', () => {
       const global = await stores.modelCalls.catchUpModelCallProjection();
       assert.equal(global.unreadableEvents, 1);
     } finally {
+      await stores.close().catch(() => undefined);
+      await owner.close();
+      await rm(join(resolveRootControlNamespace(), capability.rootId), {
+        recursive: true,
+        force: true,
+      });
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
+  test('leases Usage snapshots to connections with renewable idle and bounded hard lifetime', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'maka-usage-snapshot-'));
+    const capability = await resolveStorageRoot({
+      path: join(base, 'interactive-root'),
+      kind: 'interactive',
+    });
+    const owner = await tryAcquireInteractiveRootOwner(capability);
+    assert.ok(owner);
+    const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+    let now = 1_000;
+    let nextRevision = 0;
+    try {
+      await stores.telemetry.recordLlmCall(longUsageRecord('old-llm', 1));
+      await stores.telemetry.recordToolInvocation(longToolRecord('old-tool', 1));
+      await stores.pricing.upsert(0, pricing('snapshot:old'));
+      const coordinator = new HostUsagePricingCoordinator(
+        stores,
+        () => {},
+        new RuntimePolicyActivationGate(),
+        () => {},
+        async (sessionId) => `Title ${sessionId}`,
+        {
+          now: () => now,
+          createRevision: () => `snapshot-${++nextRevision}`,
+          ttlMs: 100,
+          hardTtlMs: 250,
+          capacity: 2,
+          activityLimit: 1,
+        },
+      );
+
+      const connectionA = connectionContext('connection-a');
+      const connectionB = connectionContext('connection-b');
+      const connectionC = connectionContext('connection-c');
+      const first = await expectUsageSnapshotStart(coordinator, connectionA);
+      assert.equal(first.revision, 'snapshot-1');
+      assert.equal(first.summary.totalRequests, 1);
+
+      await stores.telemetry.recordLlmCall(longUsageRecord('new-llm', 2));
+      await stores.telemetry.recordToolInvocation(longToolRecord('new-tool', 2));
+      await stores.pricing.upsert(1, pricing('snapshot:new'));
+
+      assert.deepEqual(
+        await queryUsageSnapshotLogs(coordinator, first.revision, 'llm', connectionB),
+        { kind: 'revision_changed', expectedRevision: first.revision },
+      );
+      assert.deepEqual(
+        await coordinator.handlers['usage.snapshot.release'](
+          { revision: first.revision },
+          connectionB,
+        ),
+        { ok: true, result: { released: true } },
+      );
+      const oldLlm = await expectUsageSnapshotLogs(coordinator, first.revision, 'llm', connectionA);
+      const oldTool = await expectUsageSnapshotLogs(
+        coordinator,
+        first.revision,
+        'tool',
+        connectionA,
+      );
+      const oldPricing = await expectUsageSnapshotPricing(coordinator, first.revision, connectionA);
+      assert.deepEqual(
+        oldLlm.rows.map((row) => row.id),
+        ['old-llm'],
+      );
+      assert.equal(oldLlm.rows[0]?.sessionTitle, 'Title old-llm');
+      assert.deepEqual(
+        oldTool.rows.map((row) => row.id),
+        ['old-tool'],
+      );
+      assert.equal(oldTool.rows[0]?.sessionTitle, 'Title old-tool');
+      assert.equal(oldLlm.total, 1);
+      assert.equal(oldLlm.truncated, false);
+      assert.ok(oldPricing.entries.some((entry) => entry.pricing.modelKey === 'snapshot:old'));
+      assert.ok(!oldPricing.entries.some((entry) => entry.pricing.modelKey === 'snapshot:new'));
+
+      const second = await expectUsageSnapshotStart(coordinator, connectionB);
+      const newLlm = await expectUsageSnapshotLogs(
+        coordinator,
+        second.revision,
+        'llm',
+        connectionB,
+      );
+      assert.deepEqual(
+        newLlm.rows.map((row) => row.id),
+        ['new-llm'],
+      );
+      assert.equal(newLlm.total, 1, 'total describes retained rows');
+      assert.equal(newLlm.truncated, true, 'truncation describes discarded authority rows');
+
+      assert.deepEqual(
+        await coordinator.handlers['usage.query'](
+          { kind: 'snapshot_start', range: 'all' },
+          connectionC,
+        ),
+        {
+          ok: false,
+          error: {
+            code: 'operation_conflict',
+            message: 'Usage snapshot capacity is occupied',
+          },
+        },
+      );
+      assert.equal(
+        (await queryUsageSnapshotLogs(coordinator, second.revision, 'llm', connectionB)).kind,
+        'snapshot_logs',
+        'capacity pressure preserves every active lease',
+      );
+
+      now = 1_090;
+      await expectUsageSnapshotLogs(coordinator, first.revision, 'llm', connectionA);
+      now = 1_180;
+      await expectUsageSnapshotLogs(coordinator, first.revision, 'llm', connectionA);
+      now = 1_249;
+      await expectUsageSnapshotLogs(coordinator, first.revision, 'llm', connectionA);
+      now = 1_250;
+      assert.deepEqual(
+        await queryUsageSnapshotLogs(coordinator, first.revision, 'llm', connectionA),
+        { kind: 'revision_changed', expectedRevision: first.revision },
+      );
+
+      assert.deepEqual(
+        await coordinator.handlers['usage.snapshot.release'](
+          { revision: first.revision },
+          connectionA,
+        ),
+        { ok: true, result: { released: true } },
+      );
+      assert.deepEqual(
+        await coordinator.handlers['usage.snapshot.release'](
+          { revision: first.revision },
+          connectionA,
+        ),
+        { ok: true, result: { released: true } },
+      );
+      const third = await expectUsageSnapshotStart(coordinator, connectionC);
+      coordinator.releaseConnection(connectionC.connectionId);
+      assert.deepEqual(
+        await queryUsageSnapshotLogs(coordinator, third.revision, 'llm', connectionC),
+        { kind: 'revision_changed', expectedRevision: third.revision },
+      );
+      await expectUsageSnapshotStart(coordinator, connectionA);
+    } finally {
+      await stores.close().catch(() => undefined);
+      await owner.close();
+      await rm(join(resolveRootControlNamespace(), capability.rootId), {
+        recursive: true,
+        force: true,
+      });
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
+  test('bounds concurrent Session title reads while retaining every snapshot title', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'maka-usage-snapshot-titles-'));
+    const capability = await resolveStorageRoot({
+      path: join(base, 'interactive-root'),
+      kind: 'interactive',
+    });
+    const owner = await tryAcquireInteractiveRootOwner(capability);
+    assert.ok(owner);
+    const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+    const sessionIds = Array.from({ length: 20 }, (_, index) => `session-${index}`);
+    let inFlight = 0;
+    let maxInFlight = 0;
+    try {
+      await Promise.all(
+        sessionIds.map((sessionId, index) =>
+          stores.telemetry.recordLlmCall(longUsageRecord(sessionId, index + 1)),
+        ),
+      );
+      const coordinator = new HostUsagePricingCoordinator(
+        stores,
+        () => {},
+        new RuntimePolicyActivationGate(),
+        () => {},
+        async (sessionId) => {
+          inFlight += 1;
+          maxInFlight = Math.max(maxInFlight, inFlight);
+          await Promise.resolve();
+          inFlight -= 1;
+          return `Title ${sessionId}`;
+        },
+      );
+
+      const snapshot = await expectUsageSnapshotStart(coordinator);
+      const logs = await expectUsageSnapshotLogs(coordinator, snapshot.revision, 'llm');
+
+      assert.equal(logs.rows.length, sessionIds.length);
+      for (const row of logs.rows) {
+        assert.equal(row.sessionTitle, `Title ${row.sessionId}`);
+      }
+      assert.ok(
+        maxInFlight <= 16,
+        `Session title read concurrency ${maxInFlight} exceeded the limit`,
+      );
+    } finally {
+      await stores.close().catch(() => undefined);
+      await owner.close();
+      await rm(join(resolveRootControlNamespace(), capability.rootId), {
+        recursive: true,
+        force: true,
+      });
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
+  test('reserves capacity before overlapping snapshot title hydration', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'maka-usage-snapshot-reservations-'));
+    const capability = await resolveStorageRoot({
+      path: join(base, 'interactive-root'),
+      kind: 'interactive',
+    });
+    const owner = await tryAcquireInteractiveRootOwner(capability);
+    assert.ok(owner);
+    const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+    const releaseTitles = deferred();
+    const fourTitlesEntered = deferred();
+    const inFlight: Promise<unknown>[] = [];
+    let titleReads = 0;
+    try {
+      await stores.telemetry.recordLlmCall(longUsageRecord('barrier-session', 1));
+      const coordinator = new HostUsagePricingCoordinator(
+        stores,
+        () => {},
+        new RuntimePolicyActivationGate(),
+        () => {},
+        async (sessionId) => {
+          assert.equal(sessionId, 'barrier-session');
+          titleReads += 1;
+          if (titleReads === 4) fourTitlesEntered.resolve();
+          await releaseTitles.promise;
+          return 'Barrier title';
+        },
+      );
+      const contexts = Array.from({ length: 5 }, (_, index) =>
+        connectionContext(`overlap-${index}`),
+      );
+      const firstStarts = contexts
+        .slice(0, 4)
+        .map((context) =>
+          coordinator.handlers['usage.query']({ kind: 'snapshot_start', range: 'all' }, context),
+        );
+      inFlight.push(...firstStarts);
+      await within(
+        fourTitlesEntered.promise,
+        1_000,
+        'Four admitted snapshot starts did not reach title hydration',
+      );
+
+      const fifthStart = coordinator.handlers['usage.query'](
+        { kind: 'snapshot_start', range: 'all' },
+        contexts[4]!,
+      );
+      inFlight.push(fifthStart);
+      let admissionFailure: unknown;
+      try {
+        const fifthBeforeRelease = await within(
+          fifthStart,
+          1_000,
+          'Fifth snapshot start reached expensive work before capacity conflict',
+        );
+        assert.deepEqual(fifthBeforeRelease, {
+          ok: false,
+          error: {
+            code: 'operation_conflict',
+            message: 'Usage snapshot capacity is occupied',
+          },
+        });
+        assert.equal(titleReads, 4, 'only admitted starts may hydrate Session titles');
+      } catch (error) {
+        admissionFailure = error;
+      } finally {
+        releaseTitles.resolve();
+      }
+
+      const firstOutcomes = await Promise.all(firstStarts);
+      await fifthStart;
+      if (admissionFailure) throw admissionFailure;
+      for (const [index, outcome] of firstOutcomes.entries()) {
+        assert.equal(outcome.ok, true);
+        if (!outcome.ok || outcome.result.kind !== 'snapshot_started') {
+          throw new Error('Admitted overlapping Usage snapshot did not start');
+        }
+        const logs = await expectUsageSnapshotLogs(
+          coordinator,
+          outcome.result.revision,
+          'llm',
+          contexts[index]!,
+        );
+        assert.equal(logs.rows[0]?.sessionTitle, 'Barrier title');
+      }
+      assert.equal(titleReads, 4);
+    } finally {
+      releaseTitles.resolve();
+      await Promise.allSettled(inFlight);
       await stores.close().catch(() => undefined);
       await owner.close();
       await rm(join(resolveRootControlNamespace(), capability.rootId), {
@@ -960,6 +1440,108 @@ async function queryUsageBuckets(
     throw new Error('Expected usage buckets');
   }
   return frame.result.buckets;
+}
+
+async function expectUsageSnapshotStart(
+  coordinator: HostUsagePricingCoordinator,
+  context: ConnectionContext = CONNECTION_CONTEXT,
+): Promise<Extract<UsageQueryResult, { kind: 'snapshot_started' }>> {
+  const outcome = await coordinator.handlers['usage.query'](
+    { kind: 'snapshot_start', range: 'all' },
+    context,
+  );
+  assert.equal(outcome.ok, true);
+  if (!outcome.ok || outcome.result.kind !== 'snapshot_started') {
+    throw new Error('Expected a started Usage snapshot');
+  }
+  return outcome.result;
+}
+
+async function queryUsageSnapshotLogs(
+  coordinator: HostUsagePricingCoordinator,
+  revision: string,
+  source: 'llm' | 'tool',
+  context: ConnectionContext = CONNECTION_CONTEXT,
+): Promise<Extract<UsageQueryResult, { kind: 'snapshot_logs' | 'revision_changed' }>> {
+  const outcome = await coordinator.handlers['usage.query'](
+    { kind: 'snapshot_logs', revision, source, offset: 0, limit: USAGE_PAGE_MAX_ITEMS },
+    context,
+  );
+  assert.equal(outcome.ok, true);
+  if (
+    !outcome.ok ||
+    (outcome.result.kind !== 'snapshot_logs' && outcome.result.kind !== 'revision_changed')
+  ) {
+    throw new Error('Expected a Usage snapshot log page');
+  }
+  return outcome.result;
+}
+
+async function expectUsageSnapshotLogs(
+  coordinator: HostUsagePricingCoordinator,
+  revision: string,
+  source: 'llm' | 'tool',
+  context: ConnectionContext = CONNECTION_CONTEXT,
+): Promise<Extract<UsageQueryResult, { kind: 'snapshot_logs' }>> {
+  const result = await queryUsageSnapshotLogs(coordinator, revision, source, context);
+  if (result.kind !== 'snapshot_logs') throw new Error('Expected a retained Usage snapshot');
+  assert.equal(result.source, source);
+  return result;
+}
+
+async function expectUsageSnapshotPricing(
+  coordinator: HostUsagePricingCoordinator,
+  revision: string,
+  context: ConnectionContext = CONNECTION_CONTEXT,
+): Promise<{ readonly entries: readonly EffectivePricingEntry[] }> {
+  const entries: EffectivePricingEntry[] = [];
+  let offset = 0;
+  let total: number | undefined;
+  do {
+    const outcome = await coordinator.handlers['usage.query'](
+      { kind: 'snapshot_pricing', revision, offset, limit: PRICING_PAGE_MAX_ITEMS },
+      context,
+    );
+    assert.equal(outcome.ok, true);
+    if (!outcome.ok || outcome.result.kind !== 'snapshot_pricing') {
+      throw new Error('Expected a Usage snapshot pricing page');
+    }
+    assert.equal(outcome.result.revision, revision);
+    assert.equal(outcome.result.offset, offset);
+    total ??= outcome.result.total;
+    assert.equal(outcome.result.total, total);
+    entries.push(...outcome.result.entries);
+    if (outcome.result.nextOffset === null) break;
+    offset = outcome.result.nextOffset;
+  } while (true);
+  assert.equal(entries.length, total);
+  return { entries };
+}
+
+function connectionContext(connectionId: string): ConnectionContext {
+  return { ...CONNECTION_CONTEXT, connectionId };
+}
+
+function deferred(): { readonly promise: Promise<void>; resolve(): void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
+
+async function within<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 function assertDistinctBoundedIdentities(values: readonly (string | undefined)[]): void {

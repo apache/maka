@@ -20,78 +20,31 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { UsageStats } from "@maka/core/settings";
-import type { UsageQueryInput, UsageQueryResult } from "@maka/runtime-host/protocol";
 import type { IpcHandler } from "../ipc-reconnect-policy.js";
-import type { DesktopRuntimeHostClient } from "../runtime-host-client.js";
+import {
+  DesktopRuntimeHostClientError,
+  type DesktopRuntimeHostClient,
+} from "../runtime-host-client.js";
 import { registerRuntimeHostUsageIpc } from "../runtime-host-usage-ipc-main.js";
 
 test("settings usage stats use the canonical model-call total and load every activity page", async () => {
   const handlers = new Map<string, IpcHandler>();
-  const calls: Array<{ source?: "llm" | "tool"; offset?: number }> = [];
-  const ranges: UsageQueryInput["query"]["range"][] = [];
+  const ranges: unknown[] = [];
   registerRuntimeHostUsageIpc({
     ipcMain: {
       handle: (channel, listener) => handlers.set(channel, listener),
       handleReconnectableRead: (channel, listener) => handlers.set(channel, listener),
     },
     client: {
-      queryUsage: async (input: UsageQueryInput) => {
-        ranges.push(input.query.range);
-        if (input.kind === "summary") {
-          return {
-            kind: "summary",
-            summary: {
-              range: { from: 1, to: 2 },
-              totalRequests: 151,
-              totalCostUsd: 12.5,
-              totalTokens: {
-                input: 3_000_000,
-                output: 500_000,
-                cacheMiss: 100_000,
-                cacheRead: 400_000,
-                cacheWrite: 43_090,
-                reasoning: 90,
-                total: 4_043_090,
-              },
-              cacheHitRequests: 10,
-              cacheCreateRequests: 5,
-              errorRequests: 2,
-              totalDurationMs: 0,
-            },
-            provenance: provenance(),
-          } satisfies UsageQueryResult;
-        }
-        if (input.kind !== "logs") throw new Error("unexpected usage query");
-        calls.push({ source: input.source, offset: input.offset });
-        if (input.source === "llm") {
-          const offset = input.offset ?? 0;
-          const count = offset === 0 ? 100 : 51;
-          return {
-            kind: "logs",
-            source: "llm",
-            rows: Array.from({ length: count }, (_, index) => llmRow(offset + index)),
-            offset,
-            total: 151,
-            nextOffset: offset === 0 ? 100 : null,
-            provenance: provenance(),
-          } satisfies UsageQueryResult;
-        }
-        const offset = input.offset ?? 0;
-        const count = offset === 0 ? 100 : 71;
+      loadUsageSnapshot: async (range: unknown) => {
+        ranges.push(range);
         return {
-          kind: "logs",
-          source: "tool",
-          rows: Array.from({ length: count }, (_, index) => toolRow(offset + index)),
-          offset,
-          total: 171,
-          nextOffset: offset === 0 ? 100 : null,
-        } satisfies UsageQueryResult;
-      },
-      loadPricingSnapshot: async () => ({
-        hostEpoch: "host-epoch",
-        connectionId: "connection-id",
-        revision: 1,
-        entries: [
+          revision: "snapshot-1",
+          summary: usageSummary(151),
+          provenance: provenance(),
+          llmLogs: Array.from({ length: 151 }, (_, index) => llmRow(index)),
+          toolLogs: Array.from({ length: 171 }, (_, index) => toolRow(index)),
+          pricingEntries: [
           {
             source: "custom",
             resetEffect: "become_unpriced",
@@ -101,8 +54,11 @@ test("settings usage stats use the canonical model-call total and load every act
               outputUsdPer1M: 2,
             },
           },
-        ],
-      }),
+          ],
+          llmLogsTruncated: false,
+          toolLogsTruncated: false,
+        };
+      },
     } as unknown as DesktopRuntimeHostClient,
     sendToRenderer: () => undefined,
   });
@@ -116,15 +72,8 @@ test("settings usage stats use the canonical model-call total and load every act
   assert.equal(stats.logs.length, 322);
   assert.equal(stats.logs.filter((row) => row.kind === "model").length, 151);
   assert.equal(stats.logs.filter((row) => row.kind === "tool").length, 171);
-  const expectedCalls: Array<{ source?: "llm" | "tool"; offset?: number }> = [
-    { source: "llm", offset: 0 },
-    { source: "llm", offset: 100 },
-    { source: "tool", offset: 0 },
-    { source: "tool", offset: 100 },
-  ];
-  assert.deepEqual(calls.sort(compareCall), expectedCalls.sort(compareCall));
-  assert.ok(ranges.every((range) => typeof range === "object"));
-  assert.ok(ranges.every((range) => JSON.stringify(range) === JSON.stringify(ranges[0])));
+  assert.equal(ranges.length, 1);
+  assert.equal(typeof ranges[0], "object");
   assert.equal(stats.logs.find((row) => row.id === "llm-150")?.status, "aborted");
   assert.equal(stats.logs.find((row) => row.id === "llm-150")?.sessionId, undefined);
   assert.equal(stats.logs.find((row) => row.id === "llm-150")?.costUsd, undefined);
@@ -149,7 +98,7 @@ test("settings usage stats use the canonical model-call total and load every act
   assert.equal(stats.logsTruncated, undefined);
 });
 
-test("settings usage stats reject a non-advancing activity page", async () => {
+test("settings usage stats propagate an invalid snapshot projection", async () => {
   const handlers = new Map<string, IpcHandler>();
   registerRuntimeHostUsageIpc({
     ipcMain: {
@@ -157,67 +106,26 @@ test("settings usage stats reject a non-advancing activity page", async () => {
       handleReconnectableRead: (channel, listener) => handlers.set(channel, listener),
     },
     client: {
-      queryUsage: async (input: UsageQueryInput) => {
-        if (input.kind === "summary") {
-          return {
-            kind: "summary",
-            summary: {
-              range: { from: 1, to: 2 },
-              totalRequests: 0,
-              totalCostUsd: 0,
-              totalTokens: {
-                input: 0,
-                output: 0,
-                cacheMiss: 0,
-                cacheRead: 0,
-                cacheWrite: 0,
-                reasoning: 0,
-                total: 0,
-              },
-              cacheHitRequests: 0,
-              cacheCreateRequests: 0,
-              errorRequests: 0,
-              totalDurationMs: 0,
-            },
-            provenance: provenance(),
-          } satisfies UsageQueryResult;
-        }
-        if (input.kind !== "logs") throw new Error("unexpected usage query");
-        return input.source === "llm"
-          ? ({
-              kind: "logs",
-              source: "llm",
-              rows: [],
-              offset: 0,
-              total: 1,
-              nextOffset: 0,
-              provenance: provenance(),
-            } satisfies UsageQueryResult)
-          : ({
-              kind: "logs",
-              source: "tool",
-              rows: [],
-              offset: 0,
-              total: 0,
-              nextOffset: null,
-            } satisfies UsageQueryResult);
+      loadUsageSnapshot: async () => {
+        throw new DesktopRuntimeHostClientError(
+          "projection_unstable",
+          "Runtime Host returned an invalid Usage snapshot projection",
+        );
       },
-      loadPricingSnapshot: async () => ({
-        hostEpoch: "host-epoch",
-        connectionId: "connection-id",
-        revision: 0,
-        entries: [],
-      }),
     } as unknown as DesktopRuntimeHostClient,
     sendToRenderer: () => undefined,
   });
 
   const handler = handlers.get("settings:usageStats");
   assert.ok(handler);
-  await assert.rejects(() => handler({} as never, "24h"), /invalid Usage projection/);
+  await assert.rejects(
+    () => handler({} as never, "24h"),
+    (error: unknown) =>
+      error instanceof DesktopRuntimeHostClientError && error.code === "projection_unstable",
+  );
 });
 
-test("settings usage stats degrade instead of erroring when logs disagree with the canonical summary", async () => {
+test("settings usage stats fail when a coherent snapshot cannot be retained", async () => {
   const handlers = new Map<string, IpcHandler>();
   registerRuntimeHostUsageIpc({
     ipcMain: {
@@ -225,70 +133,23 @@ test("settings usage stats degrade instead of erroring when logs disagree with t
       handleReconnectableRead: (channel, listener) => handlers.set(channel, listener),
     },
     client: {
-      queryUsage: async (input: UsageQueryInput) => {
-        if (input.kind === "summary") {
-          return {
-            kind: "summary",
-            summary: {
-              range: { from: 1, to: 2 },
-              totalRequests: 2,
-              totalCostUsd: 0,
-              totalTokens: {
-                input: 0,
-                output: 0,
-                cacheMiss: 0,
-                cacheRead: 0,
-                cacheWrite: 0,
-                reasoning: 0,
-                total: 0,
-              },
-              cacheHitRequests: 0,
-              cacheCreateRequests: 0,
-              errorRequests: 0,
-              totalDurationMs: 0,
-            },
-            provenance: provenance(),
-          } satisfies UsageQueryResult;
-        }
-        if (input.kind !== "logs") throw new Error("unexpected usage query");
-        return input.source === "llm"
-          ? ({
-              kind: "logs",
-              source: "llm",
-              rows: [llmRow(0)],
-              offset: 0,
-              total: 1,
-              nextOffset: null,
-              provenance: provenance(),
-            } satisfies UsageQueryResult)
-          : ({
-              kind: "logs",
-              source: "tool",
-              rows: [],
-              offset: 0,
-              total: 0,
-              nextOffset: null,
-            } satisfies UsageQueryResult);
+      loadUsageSnapshot: async () => {
+        throw new DesktopRuntimeHostClientError(
+          "usage_unstable",
+          "Usage snapshot kept expiring while Desktop read it",
+        );
       },
-      loadPricingSnapshot: async () => ({
-        hostEpoch: "host-epoch",
-        connectionId: "connection-id",
-        revision: 0,
-        entries: [],
-      }),
     } as unknown as DesktopRuntimeHostClient,
     sendToRenderer: () => undefined,
   });
 
   const handler = handlers.get("settings:usageStats");
   assert.ok(handler);
-  // A catch-up race (summary read before a repair commits, logs read after) must
-  // not error the whole page. The canonical summary total stays authoritative,
-  // the activity list holds what actually loaded, and provenance still rides along.
-  const stats = await handler({} as never, "all") as UsageStats;
-  assert.equal(stats.summary.totalRequests, 2);
-  assert.equal(stats.logs.filter((row) => row.kind === "model").length, 1);
-  assert.deepEqual(stats.provenance, provenance());
+  await assert.rejects(
+    () => handler({} as never, "all"),
+    (error: unknown) =>
+      error instanceof DesktopRuntimeHostClientError && error.code === "usage_unstable",
+  );
 });
 
 test("settings usage stats group the provider breakdown by connection", async () => {
@@ -299,60 +160,18 @@ test("settings usage stats group the provider breakdown by connection", async ()
       handleReconnectableRead: (channel, listener) => handlers.set(channel, listener),
     },
     client: {
-      queryUsage: async (input: UsageQueryInput) => {
-        if (input.kind === "summary") {
-          return {
-            kind: "summary",
-            summary: {
-              range: { from: 1, to: 2 },
-              totalRequests: 2,
-              totalCostUsd: 0,
-              totalTokens: {
-                input: 0,
-                output: 0,
-                cacheMiss: 0,
-                cacheRead: 0,
-                cacheWrite: 0,
-                reasoning: 0,
-                total: 0,
-              },
-              cacheHitRequests: 0,
-              cacheCreateRequests: 0,
-              errorRequests: 0,
-              totalDurationMs: 0,
-            },
-            provenance: provenance(),
-          } satisfies UsageQueryResult;
-        }
-        if (input.kind !== "logs") throw new Error("unexpected usage query");
-        // Two connections to the SAME provider type must stay two rows.
-        return input.source === "llm"
-          ? ({
-              kind: "logs",
-              source: "llm",
-              rows: [
-                { ...llmRow(0), connectionSlug: "conn-a", providerId: "provider-x" },
-                { ...llmRow(1), connectionSlug: "conn-b", providerId: "provider-x" },
-              ],
-              offset: 0,
-              total: 2,
-              nextOffset: null,
-              provenance: provenance(),
-            } satisfies UsageQueryResult)
-          : ({
-              kind: "logs",
-              source: "tool",
-              rows: [],
-              offset: 0,
-              total: 0,
-              nextOffset: null,
-            } satisfies UsageQueryResult);
-      },
-      loadPricingSnapshot: async () => ({
-        hostEpoch: "host-epoch",
-        connectionId: "connection-id",
-        revision: 0,
-        entries: [],
+      loadUsageSnapshot: async () => ({
+        revision: "snapshot-1",
+        summary: usageSummary(2),
+        provenance: provenance(),
+        llmLogs: [
+          { ...llmRow(0), connectionSlug: "conn-a", providerId: "provider-x" },
+          { ...llmRow(1), connectionSlug: "conn-b", providerId: "provider-x" },
+        ],
+        toolLogs: [],
+        pricingEntries: [],
+        llmLogsTruncated: false,
+        toolLogsTruncated: false,
       }),
     } as unknown as DesktopRuntimeHostClient,
     sendToRenderer: () => undefined,
@@ -369,69 +188,22 @@ test("settings usage stats group the provider breakdown by connection", async ()
 
 test("settings usage stats truncate the activity log at the cap instead of erroring", async () => {
   const handlers = new Map<string, IpcHandler>();
-  const PAGE = 100;
-  // Above MAX_ACTIVITY_RECORDS (50_000) so paging must stop and flag truncation.
-  const TOTAL = 50_150;
+  const TOTAL = 50_000;
   registerRuntimeHostUsageIpc({
     ipcMain: {
       handle: (channel, listener) => handlers.set(channel, listener),
       handleReconnectableRead: (channel, listener) => handlers.set(channel, listener),
     },
     client: {
-      queryUsage: async (input: UsageQueryInput) => {
-        if (input.kind === "summary") {
-          return {
-            kind: "summary",
-            summary: {
-              range: { from: 1, to: 2 },
-              totalRequests: TOTAL,
-              totalCostUsd: 0,
-              totalTokens: {
-                input: 0,
-                output: 0,
-                cacheMiss: 0,
-                cacheRead: 0,
-                cacheWrite: 0,
-                reasoning: 0,
-                total: 0,
-              },
-              cacheHitRequests: 0,
-              cacheCreateRequests: 0,
-              errorRequests: 0,
-              totalDurationMs: 0,
-            },
-            provenance: provenance(),
-          } satisfies UsageQueryResult;
-        }
-        if (input.kind !== "logs") throw new Error("unexpected usage query");
-        if (input.source === "llm") {
-          const offset = input.offset ?? 0;
-          const count = Math.min(PAGE, TOTAL - offset);
-          const nextOffset = offset + count < TOTAL ? offset + count : null;
-          return {
-            kind: "logs",
-            source: "llm",
-            rows: Array.from({ length: count }, (_, index) => llmRow(offset + index)),
-            offset,
-            total: TOTAL,
-            nextOffset,
-            provenance: provenance(),
-          } satisfies UsageQueryResult;
-        }
-        return {
-          kind: "logs",
-          source: "tool",
-          rows: [],
-          offset: 0,
-          total: 0,
-          nextOffset: null,
-        } satisfies UsageQueryResult;
-      },
-      loadPricingSnapshot: async () => ({
-        hostEpoch: "host-epoch",
-        connectionId: "connection-id",
-        revision: 0,
-        entries: [],
+      loadUsageSnapshot: async () => ({
+        revision: "snapshot-1",
+        summary: usageSummary(TOTAL + 150),
+        provenance: provenance(),
+        llmLogs: Array.from({ length: TOTAL }, (_, index) => llmRow(index)),
+        toolLogs: [],
+        pricingEntries: [],
+        llmLogsTruncated: true,
+        toolLogsTruncated: false,
       }),
     } as unknown as DesktopRuntimeHostClient,
     sendToRenderer: () => undefined,
@@ -452,71 +224,28 @@ test("settings usage stats name each row from the Host-resolved session title", 
       handleReconnectableRead: (channel, listener) => handlers.set(channel, listener),
     },
     client: {
-      queryUsage: async (input: UsageQueryInput) => {
-        if (input.kind === "summary") {
-          return {
-            kind: "summary",
-            summary: {
-              range: { from: 1, to: 2 },
-              totalRequests: 2,
-              totalCostUsd: 0,
-              totalTokens: {
-                input: 0,
-                output: 0,
-                cacheMiss: 0,
-                cacheRead: 0,
-                cacheWrite: 0,
-                reasoning: 0,
-                total: 0,
-              },
-              cacheHitRequests: 0,
-              cacheCreateRequests: 0,
-              errorRequests: 0,
-              totalDurationMs: 0,
-            },
-            provenance: provenance(),
-          } satisfies UsageQueryResult;
-        }
-        if (input.kind !== "logs") throw new Error("unexpected usage query");
-        // The Host carries `sessionTitle` on the projection (or omits it for
-        // untitled/unreadable sessions). The desktop layer just surfaces it.
-        return input.source === "llm"
-          ? ({
-              kind: "logs",
-              source: "llm",
-              rows: [
-                {
-                  ...llmRow(0),
-                  sessionId: "session-named",
-                  sessionTitle: "重构使用统计页请求日志的任务列",
-                },
-                { ...llmRow(1), sessionId: "session-untitled" },
-              ],
-              offset: 0,
-              total: 2,
-              nextOffset: null,
-              provenance: provenance(),
-            } satisfies UsageQueryResult)
-          : ({
-              kind: "logs",
-              source: "tool",
-              rows: [
-                {
-                  ...toolRow(0),
-                  sessionId: "session-named",
-                  sessionTitle: "重构使用统计页请求日志的任务列",
-                },
-              ],
-              offset: 0,
-              total: 1,
-              nextOffset: null,
-            } satisfies UsageQueryResult);
-      },
-      loadPricingSnapshot: async () => ({
-        hostEpoch: "host-epoch",
-        connectionId: "connection-id",
-        revision: 0,
-        entries: [],
+      loadUsageSnapshot: async () => ({
+        revision: "snapshot-1",
+        summary: usageSummary(2),
+        provenance: provenance(),
+        llmLogs: [
+          {
+            ...llmRow(0),
+            sessionId: "session-named",
+            sessionTitle: "重构使用统计页请求日志的任务列",
+          },
+          { ...llmRow(1), sessionId: "session-untitled" },
+        ],
+        toolLogs: [
+          {
+            ...toolRow(0),
+            sessionId: "session-named",
+            sessionTitle: "重构使用统计页请求日志的任务列",
+          },
+        ],
+        pricingEntries: [],
+        llmLogsTruncated: false,
+        toolLogsTruncated: false,
       }),
     } as unknown as DesktopRuntimeHostClient,
     sendToRenderer: () => undefined,
@@ -575,6 +304,27 @@ function toolRow(index: number) {
   };
 }
 
+function usageSummary(totalRequests: number) {
+  return {
+    range: { from: 1, to: 2 },
+    totalRequests,
+    totalCostUsd: 12.5,
+    totalTokens: {
+      input: 3_000_000,
+      output: 500_000,
+      cacheMiss: 100_000,
+      cacheRead: 400_000,
+      cacheWrite: 43_090,
+      reasoning: 90,
+      total: 4_043_090,
+    },
+    cacheHitRequests: 10,
+    cacheCreateRequests: 5,
+    errorRequests: 2,
+    totalDurationMs: 0,
+  };
+}
+
 function provenance() {
   return {
     coverage: {
@@ -589,11 +339,4 @@ function provenance() {
     unreadableRecords: 0,
     pendingRepairs: 0,
   };
-}
-
-function compareCall(
-  left: { source?: "llm" | "tool"; offset?: number },
-  right: { source?: "llm" | "tool"; offset?: number },
-): number {
-  return `${left.source}:${left.offset}`.localeCompare(`${right.source}:${right.offset}`);
 }

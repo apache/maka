@@ -120,6 +120,21 @@ export function createSqliteModelCallLedger(workspaceRoot: string): ModelCallLed
   return new SqliteModelCallLedger(workspaceRoot);
 }
 
+/**
+ * Runs the same bounded repair used by the ledger writer inside a caller-owned
+ * operational-state write transaction. This lets a cross-repository snapshot
+ * read the repaired projection before any other SQLite writer can intervene.
+ */
+export function catchUpModelCallProjectionInTransaction(
+  database: DatabaseSync,
+): CatchUpModelCallProjectionResult {
+  try {
+    return catchUpModelCallProjection(database, {}, 16, 512);
+  } catch (cause) {
+    throw new ModelCallLedgerPublicationError(false, { cause });
+  }
+}
+
 class SqliteModelCallLedger implements ModelCallLedger {
   readonly #lease: OperationalStateDatabaseLease;
   #state: 'open' | 'draining' | 'closed' = 'open';

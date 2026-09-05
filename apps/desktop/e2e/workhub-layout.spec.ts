@@ -17,13 +17,20 @@
  * under the License.
  */
 
-import { COMPOSER_INPUT, expect, test, waitForWorkHubReady } from './fixtures';
+import {
+  awaitSendReady,
+  COMPOSER_INPUT,
+  expect,
+  test,
+  waitForWorkHubReady,
+} from './fixtures';
 
 test('WorkHub target metadata remains within the submitted Session control', async ({
   window: page,
 }) => {
   const composer = page.locator(COMPOSER_INPUT);
   await composer.fill('支付回调幂等性');
+  await awaitSendReady(page);
   await composer.press('Enter');
   await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, {
     timeout: 20_000,

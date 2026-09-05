@@ -1797,7 +1797,10 @@ export async function createExecutionRuntimeHostComposition(
             stopRetiredCaptureSweep?.();
           },
         ],
-        releaseConnection: [(connectionId) => artifacts.releaseConnection(connectionId)],
+        releaseConnection: [
+          (connectionId) => artifacts.releaseConnection(connectionId),
+          (connectionId) => usagePricing.releaseConnection(connectionId),
+        ],
       }),
       createRuntimeHostDomainModule({
         id: 'client-capability',

@@ -30,6 +30,7 @@ import {
   projectSessionTodoItemsForDisplay,
   type SessionTodoItem,
 } from "@maka/core/session-todo";
+import type { UsageProvenance } from "@maka/core/usage-ledger-merge";
 
 import type {
   ConnectionVersionBasis,
@@ -42,7 +43,7 @@ import {
   canonicalPricingConfigsEqual,
   comparePricingModelKeys,
 } from "@maka/core/usage-stats/pricing";
-import type { PricingConfig } from "@maka/core/usage-stats/types";
+import type { PricingConfig, TimeRange, UsageSummaryV2 } from "@maka/core/usage-stats/types";
 import {
   type ClientCapabilityProvider,
   type DecodedSessionTranscriptPage,
@@ -151,6 +152,11 @@ import {
   type TurnInterruptResult,
   type TurnMessageSubmitInput,
   type TurnMessageSubmitResult,
+  type LlmUsageLogProjection,
+  type ToolUsageLogProjection,
+  PRICING_PAGE_MAX_ITEMS,
+  USAGE_PAGE_MAX_ITEMS,
+  USAGE_SNAPSHOT_ACTIVITY_MAX_ITEMS,
   type WorkspaceProjection,
 } from "@maka/runtime-host/protocol";
 
@@ -159,6 +165,8 @@ const decodeStoredMessage = (value: unknown): StoredMessage =>
 const MAX_OPTIMISTIC_ATTEMPTS = 3;
 const MAX_SESSION_REVISION_ATTEMPTS = 8;
 const MAX_PRICING_SNAPSHOT_ATTEMPTS = 3;
+const MAX_USAGE_SNAPSHOT_ATTEMPTS = 3;
+const USAGE_SNAPSHOT_RETRY_DELAY_MS = 50;
 const RUNTIME_HOST_RETIREMENT_TIMEOUT_MS = 5_000;
 
 export type DesktopSessionConfigurationPatch = SessionConfigurationPatch;
@@ -189,6 +197,7 @@ export type DesktopRuntimeHostClientErrorCode =
   | "revision_conflict"
   | "session_not_found"
   | "skill_catalog_unstable"
+  | "usage_unstable"
   | "unsupported_session";
 
 export class DesktopRuntimeHostClientError extends Error {
@@ -229,6 +238,17 @@ export interface DesktopPricingSnapshot {
   readonly connectionId: string;
   readonly revision: number;
   readonly entries: readonly EffectivePricingEntry[];
+}
+
+export interface DesktopUsageSnapshot {
+  readonly revision: string;
+  readonly summary: UsageSummaryV2;
+  readonly provenance: UsageProvenance;
+  readonly llmLogs: readonly LlmUsageLogProjection[];
+  readonly toolLogs: readonly ToolUsageLogProjection[];
+  readonly pricingEntries: readonly EffectivePricingEntry[];
+  readonly llmLogsTruncated: boolean;
+  readonly toolLogsTruncated: boolean;
 }
 
 export interface DesktopSkillCatalogSnapshot {
@@ -1378,6 +1398,30 @@ export class DesktopRuntimeHostClient {
     return this.request("usage.query", input);
   }
 
+  async loadUsageSnapshot(range: TimeRange): Promise<DesktopUsageSnapshot> {
+    for (let attempt = 0; attempt < MAX_USAGE_SNAPSHOT_ATTEMPTS; attempt += 1) {
+      try {
+        const snapshot = await this.#readUsageSnapshot(range);
+        if (snapshot) return snapshot;
+      } catch (error) {
+        if (
+          !(error instanceof RuntimeHostOperationError) ||
+          error.operation !== "usage.query" ||
+          error.code !== "operation_conflict"
+        ) {
+          throw error;
+        }
+      }
+      if (attempt + 1 < MAX_USAGE_SNAPSHOT_ATTEMPTS) {
+        await new Promise<void>((resolve) => setTimeout(resolve, USAGE_SNAPSHOT_RETRY_DELAY_MS));
+      }
+    }
+    throw new DesktopRuntimeHostClientError(
+      "usage_unstable",
+      "Usage snapshot stayed unavailable across bounded retries",
+    );
+  }
+
   queryGoal(sessionId: string): Promise<OperationOutput<"goal.query">> {
     return this.request("goal.query", { sessionId });
   }
@@ -1717,6 +1761,157 @@ export class DesktopRuntimeHostClient {
       revision: first.revision,
       entries,
     };
+  }
+
+  async #readUsageSnapshot(range: TimeRange): Promise<DesktopUsageSnapshot | undefined> {
+    this.#assertOpen();
+    const started = await this.request("usage.query", { kind: "snapshot_start", range });
+    if (started.kind !== "snapshot_started") {
+      throw invalidProjection("Usage snapshot start");
+    }
+    try {
+      if (
+        typeof range === "object" &&
+        (started.summary.range.from !== range.from || started.summary.range.to !== range.to)
+      ) {
+        throw invalidProjection("Usage snapshot start");
+      }
+      const [llm, tool, pricing] = await Promise.all([
+        this.#readUsageSnapshotLogs(started.revision, "llm"),
+        this.#readUsageSnapshotLogs(started.revision, "tool"),
+        this.#readUsageSnapshotPricing(started.revision),
+      ]);
+      if (!llm || !tool || !pricing) return undefined;
+      return {
+        revision: started.revision,
+        summary: started.summary,
+        provenance: started.provenance,
+        llmLogs: llm.rows,
+        toolLogs: tool.rows,
+        pricingEntries: pricing,
+        llmLogsTruncated: llm.truncated,
+        toolLogsTruncated: tool.truncated,
+      };
+    } finally {
+      try {
+        await this.request("usage.snapshot.release", { revision: started.revision });
+      } catch {
+        // Usage snapshot release is best-effort cleanup.
+      }
+    }
+  }
+
+  async #readUsageSnapshotLogs(
+    revision: string,
+    source: "llm",
+  ): Promise<{ readonly rows: readonly LlmUsageLogProjection[]; readonly truncated: boolean } | undefined>;
+  async #readUsageSnapshotLogs(
+    revision: string,
+    source: "tool",
+  ): Promise<{ readonly rows: readonly ToolUsageLogProjection[]; readonly truncated: boolean } | undefined>;
+  async #readUsageSnapshotLogs(
+    revision: string,
+    source: "llm" | "tool",
+  ): Promise<
+    | {
+        readonly rows: readonly (LlmUsageLogProjection | ToolUsageLogProjection)[];
+        readonly truncated: boolean;
+      }
+    | undefined
+  > {
+    const rows: Array<LlmUsageLogProjection | ToolUsageLogProjection> = [];
+    let offset = 0;
+    let total: number | undefined;
+    let truncated: boolean | undefined;
+    while (true) {
+      const page = await this.request("usage.query", {
+        kind: "snapshot_logs",
+        revision,
+        source,
+        offset,
+        limit: USAGE_PAGE_MAX_ITEMS,
+      });
+      if (page.kind === "revision_changed") {
+        if (page.expectedRevision !== revision) throw invalidProjection("Usage snapshot revision");
+        return undefined;
+      }
+      if (
+        page.kind !== "snapshot_logs" ||
+        page.revision !== revision ||
+        page.source !== source ||
+        page.offset !== offset ||
+        page.rows.length > USAGE_PAGE_MAX_ITEMS ||
+        page.total > USAGE_SNAPSHOT_ACTIVITY_MAX_ITEMS
+      ) {
+        throw invalidProjection("Usage snapshot logs");
+      }
+      total ??= page.total;
+      truncated ??= page.truncated;
+      if (page.total !== total || page.truncated !== truncated || rows.length !== offset) {
+        throw invalidProjection("Usage snapshot logs");
+      }
+      rows.push(...page.rows);
+      if (rows.length > total) throw invalidProjection("Usage snapshot logs");
+      if (page.nextOffset === null) {
+        if (rows.length !== total) throw invalidProjection("Usage snapshot logs");
+        return { rows, truncated };
+      }
+      if (
+        page.rows.length === 0 ||
+        page.nextOffset !== offset + page.rows.length ||
+        page.nextOffset >= total
+      ) {
+        throw invalidProjection("Usage snapshot logs");
+      }
+      offset = page.nextOffset;
+    }
+  }
+
+  async #readUsageSnapshotPricing(
+    revision: string,
+  ): Promise<readonly EffectivePricingEntry[] | undefined> {
+    const entries: EffectivePricingEntry[] = [];
+    let offset = 0;
+    let total: number | undefined;
+    while (true) {
+      const page = await this.request("usage.query", {
+        kind: "snapshot_pricing",
+        revision,
+        offset,
+        limit: PRICING_PAGE_MAX_ITEMS,
+      });
+      if (page.kind === "revision_changed") {
+        if (page.expectedRevision !== revision) throw invalidProjection("Usage snapshot revision");
+        return undefined;
+      }
+      if (
+        page.kind !== "snapshot_pricing" ||
+        page.revision !== revision ||
+        page.offset !== offset ||
+        page.entries.length > PRICING_PAGE_MAX_ITEMS ||
+        entries.length !== offset
+      ) {
+        throw invalidProjection("Usage snapshot pricing");
+      }
+      total ??= page.total;
+      if (page.total !== total) throw invalidProjection("Usage snapshot pricing");
+      entries.push(...page.entries);
+      if (entries.length > total) throw invalidProjection("Usage snapshot pricing");
+      if (page.nextOffset === null) {
+        if (entries.length !== total || !pricingEntriesAreCanonical(entries)) {
+          throw invalidProjection("Usage snapshot pricing");
+        }
+        return entries;
+      }
+      if (
+        page.entries.length === 0 ||
+        page.nextOffset !== offset + page.entries.length ||
+        page.nextOffset >= total
+      ) {
+        throw invalidProjection("Usage snapshot pricing");
+      }
+      offset = page.nextOffset;
+    }
   }
 
   async #reconcilePricingMutation(
