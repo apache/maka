@@ -1,20 +1,46 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { setImmediate as delayImmediate, setTimeout as delay } from 'node:timers/promises';
 import {
   prepareStorageRootControlDirectory,
   resolveStorageRoot,
 } from '@maka/storage/root-authority';
-import { decodeStoredMessageForRead } from '@maka/core/session';
+import {
+  decodeStoredMessage as decodePersistedStoredMessage,
+  type StoredMessage,
+} from '@maka/core/session';
+import { markPersisted } from '@maka/core/persisted-value';
 import {
   connectRuntimeHost,
   RuntimeHostSubscriptionError,
   type RuntimeHostConnection,
 } from '../client/index.js';
+import { ClientSessionSubscription } from '../client/session-subscription.js';
 import { prepareRuntimeHostEndpoint } from '../control/endpoint.js';
 import { removeHostRegistration, writeHostRegistration } from '../control/registration.js';
 import {
@@ -24,13 +50,20 @@ import {
   RUNTIME_HOST_PROTOCOL_VERSION,
   RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION,
   SESSION_CONTINUITY_SCHEMA_VERSION,
+  SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
+  type SessionTranscriptBootstrap,
+  type SessionTranscriptFragment,
+  type SessionTranscriptPage,
   type HostFrame,
+  type HostStatusResult,
   type RequestFrame,
   type SubscriptionFrame,
 } from '../protocol/index.js';
 import { FramedTransport } from '../transport/framed-transport.js';
 import { frameLocalIpcProtocolMessage } from '../transport/local-ipc-framing.js';
 
+const decodeStoredMessage = (value: unknown): StoredMessage =>
+  decodePersistedStoredMessage(markPersisted<StoredMessage>(value));
 const PROTOCOL = {
   min: RUNTIME_HOST_PROTOCOL_VERSION,
   max: RUNTIME_HOST_PROTOCOL_VERSION,
@@ -58,6 +91,7 @@ test('registers a subscription before receiving a coalesced first frame', async 
     async (connection) => {
       const subscription = await connection.openSessionSubscription({
         sessionId: 'session-1',
+        transcript: { kind: 'none' },
       });
       assert.deepEqual(await subscription[Symbol.asyncIterator]().next(), {
         done: false,
@@ -98,7 +132,10 @@ test('delivers Runtime Resource PTY frames without closing the connection', asyn
       await answerClose(transport, opened.subscriptionId);
     },
     async (connection) => {
-      const subscription = await connection.openSessionSubscription({ sessionId: 'session-1' });
+      const subscription = await connection.openSessionSubscription({
+        sessionId: 'session-1',
+        transcript: { kind: 'none' },
+      });
       assert.deepEqual(await subscription[Symbol.asyncIterator]().next(), {
         done: false,
         value: {
@@ -140,12 +177,44 @@ test('isolates a sequence gap and continues requests on the same connection', as
     async (connection) => {
       const subscription = await connection.openSessionSubscription({
         sessionId: 'session-1',
+        transcript: { kind: 'none' },
       });
       await assert.rejects(
         () => subscription[Symbol.asyncIterator]().next(),
         hasSubscriptionReason('sequence_gap'),
       );
+      await assert.rejects(
+        // @ts-expect-error host.status must use the validated status() API.
+        () => connection.request('host.status', {}),
+        /status requires the validated status\(\) API/,
+      );
       assert.equal((await connection.status()).hostEpoch, connection.hostEpoch);
+    },
+  );
+});
+
+test('fails the connection when status reports a different Host identity', async () => {
+  await withProtocolPeer(
+    async (transport, hostEpoch, rootId) => {
+      const request = await acceptConnectionAndReadOpen(transport, hostEpoch, rootId);
+      const opened = openResult(hostEpoch, 'subscription-status-identity');
+      await writeProtocolFrame(transport, {
+        requestId: request.requestId,
+        operation: 'subscription.open',
+        ok: true,
+        result: opened,
+      });
+      await answerClose(transport, opened.subscriptionId);
+      await answerStatus(transport, 'different-host-epoch');
+    },
+    async (connection) => {
+      const subscription = await connection.openSessionSubscription({
+        sessionId: 'session-1',
+        transcript: { kind: 'none' },
+      });
+      await subscription.close();
+      await assert.rejects(() => connection.status(), /status for a different Host identity/);
+      await connection.closed;
     },
   );
 });
@@ -189,6 +258,7 @@ test('rejects epoch and Session correlation changes per subscription', async () 
       async (connection) => {
         const subscription = await connection.openSessionSubscription({
           sessionId: 'session-1',
+          transcript: { kind: 'none' },
         });
         await assert.rejects(
           () => subscription[Symbol.asyncIterator]().next(),
@@ -226,6 +296,7 @@ test('evicts a locally slow iterator and keeps the connection usable', async () 
     async (connection) => {
       const subscription = await connection.openSessionSubscription({
         sessionId: 'session-1',
+        transcript: { kind: 'none' },
       });
       await closeObserved.promise;
       await assert.rejects(
@@ -252,6 +323,7 @@ test('ends every active subscription with connection_closed on EOF', async () =>
     async (connection) => {
       const subscription = await connection.openSessionSubscription({
         sessionId: 'session-1',
+        transcript: { kind: 'none' },
       });
       await assert.rejects(
         () => subscription[Symbol.asyncIterator]().next(),
@@ -273,46 +345,31 @@ test('loads a canonical transcript while live frames continue on the same connec
   await withProtocolPeer(
     async (transport, hostEpoch, rootId) => {
       const openRequest = await acceptConnectionAndReadOpen(transport, hostEpoch, rootId);
-      const opened = openResult(hostEpoch, 'subscription-transcript');
-      await writeProtocolFrame(transport, {
-        requestId: openRequest.requestId,
-        operation: 'subscription.open',
-        ok: true,
-        result: opened,
-      });
-      const transcriptRequest = decodeClientFrame(await transport.read(1_000));
-      assert.ok(!('kind' in transcriptRequest));
-      assert.equal(transcriptRequest.operation, 'session.transcript.query');
-      assert.deepEqual(transcriptRequest.input, {
-        kind: 'start',
-        subscriptionId: opened.subscriptionId,
-      });
+      const opened = openResult(
+        hostEpoch,
+        'subscription-transcript',
+        transcriptBootstrap(Buffer.from(JSON.stringify(message), 'utf8')),
+      );
       await writeRawLocalIpc(
         transport,
         Buffer.concat([
-          encodeLocalIpcTestFrame(deltaFrame(hostEpoch, opened.subscriptionId, 1)),
           encodeLocalIpcTestFrame({
-            requestId: transcriptRequest.requestId,
-            operation: 'session.transcript.query',
+            requestId: openRequest.requestId,
+            operation: 'subscription.open',
             ok: true,
-            result: {
-              kind: 'chunk',
-              snapshotId: 'snapshot-1',
-              sessionId: 'session-1',
-              messageCount: 1,
-              messageIndex: 0,
-              byteOffset: 0,
-              data: Buffer.from(JSON.stringify(message), 'utf8').toString('base64'),
-              next: null,
-            },
+            result: opened,
           }),
+          encodeLocalIpcTestFrame(deltaFrame(hostEpoch, opened.subscriptionId, 1)),
         ]),
       );
       await answerClose(transport, opened.subscriptionId);
     },
     async (connection) => {
-      const subscription = await connection.openSessionSubscription({ sessionId: 'session-1' });
-      assert.deepEqual(await subscription.loadTranscript(decodeStoredMessageForRead), [message]);
+      const subscription = await connection.openSessionSubscription({
+        sessionId: 'session-1',
+        transcript: { kind: 'tail', maxBytes: 16 * 1024 },
+      });
+      assert.deepEqual(await subscription.loadTranscript(decodeStoredMessage), [message]);
       assert.deepEqual(await subscription[Symbol.asyncIterator]().next(), {
         done: false,
         value: deltaFrame(connection.hostEpoch, subscription.subscriptionId, 1),
@@ -322,7 +379,7 @@ test('loads a canonical transcript while live frames continue on the same connec
   );
 });
 
-test('restarts transcript loading after an expired snapshot', async () => {
+test('reassembles a large message from bounded backward pages', async () => {
   const message = {
     type: 'user' as const,
     id: 'user-1',
@@ -335,163 +392,1036 @@ test('restarts transcript loading after an expired snapshot', async () => {
   await withProtocolPeer(
     async (transport, hostEpoch, rootId) => {
       const openRequest = await acceptConnectionAndReadOpen(transport, hostEpoch, rootId);
-      const opened = openResult(hostEpoch, 'subscription-retry');
+      const opened = openResult(hostEpoch, 'subscription-fragmented', {
+        throughSequence: 0,
+        durableCoverage: 'complete',
+        overlayMessageCount: 0,
+        durable: transcriptPage({
+          rawBytes: encoded.byteLength - splitAt,
+          fragments: [
+            {
+              kind: 'durable',
+              sequence: 0,
+              byteOffset: splitAt,
+              totalBytes: encoded.byteLength,
+              payloadDigest: null,
+              data: encoded.subarray(splitAt).toString('base64'),
+            },
+          ],
+          nextCursor: 'cursor-1',
+        }),
+        overlay: transcriptPage({ source: 'overlay' }),
+      });
       await writeProtocolFrame(transport, {
         requestId: openRequest.requestId,
         operation: 'subscription.open',
         ok: true,
         result: opened,
       });
-      const startRequest = decodeClientFrame(await transport.read(1_000));
-      assert.ok(!('kind' in startRequest));
-      assert.deepEqual(startRequest.input, {
-        kind: 'start',
-        subscriptionId: opened.subscriptionId,
-      });
-      await writeProtocolFrame(transport, {
-        requestId: startRequest.requestId,
-        operation: 'session.transcript.query',
-        ok: true,
-        result: {
-          kind: 'chunk',
-          snapshotId: 'expired-snapshot',
-          sessionId: 'session-1',
-          messageCount: 1,
-          messageIndex: 0,
-          byteOffset: 0,
-          data: encoded.subarray(0, splitAt).toString('base64'),
-          next: { messageIndex: 0, byteOffset: splitAt },
-        },
-      });
       const continuationRequest = decodeClientFrame(await transport.read(1_000));
       assert.ok(!('kind' in continuationRequest));
+      assert.equal(continuationRequest.operation, 'session.transcript.page');
       assert.deepEqual(continuationRequest.input, {
-        kind: 'continue',
         subscriptionId: opened.subscriptionId,
-        snapshotId: 'expired-snapshot',
-        messageIndex: 0,
-        byteOffset: splitAt,
+        source: 'durable',
+        direction: 'older',
+        throughSequence: 0,
+        cursor: 'cursor-1',
+        anchorSequence: null,
+        maxBytes: SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
       });
       await writeProtocolFrame(transport, {
         requestId: continuationRequest.requestId,
-        operation: 'session.transcript.query',
+        operation: 'session.transcript.page',
         ok: true,
-        result: { kind: 'snapshot_expired', snapshotId: 'expired-snapshot' },
-      });
-      const retryStartRequest = decodeClientFrame(await transport.read(1_000));
-      assert.ok(!('kind' in retryStartRequest));
-      assert.deepEqual(retryStartRequest.input, {
-        kind: 'start',
-        subscriptionId: opened.subscriptionId,
-      });
-      await writeProtocolFrame(transport, {
-        requestId: retryStartRequest.requestId,
-        operation: 'session.transcript.query',
-        ok: true,
-        result: {
-          kind: 'chunk',
-          snapshotId: 'snapshot-retry',
-          sessionId: 'session-1',
-          messageCount: 1,
-          messageIndex: 0,
-          byteOffset: 0,
-          data: encoded.toString('base64'),
-          next: null,
-        },
+        result: transcriptPage({
+          rawBytes: splitAt,
+          fragments: [
+            {
+              kind: 'durable',
+              sequence: 0,
+              byteOffset: 0,
+              totalBytes: encoded.byteLength,
+              payloadDigest: null,
+              data: encoded.subarray(0, splitAt).toString('base64'),
+            },
+          ],
+        }),
       });
       await answerClose(transport, opened.subscriptionId);
     },
     async (connection) => {
-      const subscription = await connection.openSessionSubscription({ sessionId: 'session-1' });
-      await assert.rejects(
-        () => subscription.loadTranscript(decodeStoredMessageForRead),
-        hasSubscriptionReason('transcript_expired'),
-      );
-      assert.deepEqual(await subscription.loadTranscript(decodeStoredMessageForRead), [message]);
+      const subscription = await connection.openSessionSubscription({
+        sessionId: 'session-1',
+        transcript: { kind: 'tail', maxBytes: 16 * 1024 },
+      });
+      assert.deepEqual(await subscription.loadTranscript(decodeStoredMessage), [message]);
       await subscription.close();
     },
   );
 });
 
-test('routes a legacy Host through incompatible replacement', async () => {
-  const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-legacy-epoch-'));
-  const capability = await resolveStorageRoot({
-    path: join(base, 'root'),
-    kind: 'interactive',
+test('decodes one bounded page without walking the remaining transcript', async () => {
+  const message = {
+    type: 'user' as const,
+    id: 'user-1',
+    turnId: 'turn-1',
+    ts: 1,
+    text: 'hello',
+  };
+  const encoded = Buffer.from(JSON.stringify(message), 'utf8');
+  const splitAt = Math.floor(encoded.byteLength / 2);
+  const requests: Array<{ cursor: string | null; maxBytes: number }> = [];
+  const subscription = new ClientSessionSubscription(
+    openResult('host-1', 'subscription-bounded-page', {
+      throughSequence: 4,
+      durableCoverage: 'complete',
+      overlayMessageCount: 0,
+      durable: {
+        ...transcriptPage({
+          rawBytes: encoded.byteLength - splitAt,
+          fragments: [
+            {
+              kind: 'durable',
+              sequence: 4,
+              byteOffset: splitAt,
+              totalBytes: encoded.byteLength,
+              payloadDigest: null,
+              data: encoded.subarray(splitAt).toString('base64'),
+            },
+          ],
+          nextCursor: 'complete-message',
+        }),
+        throughSequence: 4,
+      },
+      overlay: { ...transcriptPage({ source: 'overlay' }), throughSequence: 4 },
+    }),
+    async () => undefined,
+    async (input) => {
+      requests.push({ cursor: input.cursor, maxBytes: input.maxBytes });
+      return {
+        ...transcriptPage({
+          rawBytes: splitAt,
+          fragments: [
+            {
+              kind: 'durable',
+              sequence: 4,
+              byteOffset: 0,
+              totalBytes: encoded.byteLength,
+              payloadDigest: null,
+              data: encoded.subarray(0, splitAt).toString('base64'),
+            },
+          ],
+          nextCursor: 'older-records',
+        }),
+        throughSequence: 4,
+      };
+    },
+  );
+
+  const assemblyDeltas: number[] = [];
+  const decoded = await subscription.decodeTranscriptPage(
+    subscription.transcriptBootstrap!.durable,
+    decodeStoredMessage,
+    undefined,
+    (deltaBytes) => assemblyDeltas.push(deltaBytes),
+  );
+
+  assert.deepEqual(decoded, {
+    messages: [{ identity: 4, message }],
+    nextCursor: 'older-records',
   });
-  const { controlDirectory } = await prepareStorageRootControlDirectory(capability);
-  const hostEpoch = randomUUID();
-  const endpoint = await prepareRuntimeHostEndpoint({ rootId: capability.rootId, hostEpoch });
-  const serverTask = deferred<void>();
-  const server = createServer((socket) => {
-    void (async () => {
-      const transport = new FramedTransport(socket);
+  assert.deepEqual(requests, [{ cursor: 'complete-message', maxBytes: splitAt }]);
+  assert.deepEqual(assemblyDeltas, [encoded.byteLength, -encoded.byteLength]);
+
+  requests.length = 0;
+  await assert.rejects(
+    subscription.decodeTranscriptPage(
+      subscription.transcriptBootstrap!.durable,
+      decodeStoredMessage,
+      encoded.byteLength - 1,
+    ),
+    RangeError,
+  );
+  assert.deepEqual(requests, []);
+});
+
+test('assembles the complete edge Turn while paging newer transcript', async () => {
+  const prompt = {
+    type: 'user' as const,
+    id: 'user-1',
+    turnId: 'turn-1',
+    ts: 1,
+    text: 'prompt',
+  };
+  const answer = {
+    type: 'assistant' as const,
+    id: 'assistant-1',
+    turnId: 'turn-1',
+    ts: 2,
+    text: 'answer',
+    modelId: 'model-1',
+  };
+  const promptBytes = Buffer.from(JSON.stringify(prompt), 'utf8');
+  const answerBytes = Buffer.from(JSON.stringify(answer), 'utf8');
+  const requests: string[] = [];
+  const initial: SessionTranscriptPage = {
+    ...transcriptPage({
+      rawBytes: promptBytes.byteLength,
+      fragments: [
+        {
+          kind: 'durable',
+          sequence: 0,
+          byteOffset: 0,
+          totalBytes: promptBytes.byteLength,
+          payloadDigest: null,
+          data: promptBytes.toString('base64'),
+        },
+      ],
+      nextCursor: 'answer',
+    }),
+    direction: 'newer',
+    throughSequence: 1,
+    rangeBoundarySequence: 1,
+    protectedTurnSequence: 1,
+  };
+  const subscription = new ClientSessionSubscription(
+    openResult('host-1', 'subscription-newer-turn', {
+      throughSequence: 1,
+      durableCoverage: 'complete',
+      overlayMessageCount: 0,
+      durable: initial,
+      overlay: { ...transcriptPage({ source: 'overlay' }), throughSequence: 1 },
+    }),
+    async () => undefined,
+    async (input) => {
+      requests.push(input.cursor!);
+      return {
+        ...transcriptPage({
+          rawBytes: answerBytes.byteLength,
+          fragments: [
+            {
+              kind: 'durable',
+              sequence: 1,
+              byteOffset: 0,
+              totalBytes: answerBytes.byteLength,
+              payloadDigest: null,
+              data: answerBytes.toString('base64'),
+            },
+          ],
+        }),
+        direction: 'newer',
+        throughSequence: 1,
+        rangeBoundarySequence: 1,
+        protectedTurnSequence: 1,
+      };
+    },
+  );
+
+  const decoded = await subscription.decodeTranscriptPage(initial, decodeStoredMessage);
+
+  assert.deepEqual(
+    decoded.messages.map(({ identity, message }) => [identity, message.id]),
+    [
+      [0, 'user-1'],
+      [1, 'assistant-1'],
+    ],
+  );
+  assert.deepEqual(requests, ['answer']);
+});
+
+test('loads and releases only the active overlay', async () => {
+  const overlay = {
+    type: 'user' as const,
+    id: 'user-1',
+    turnId: 'turn-1',
+    ts: 1,
+    text: 'active',
+  };
+  const bytes = Buffer.from(JSON.stringify(overlay), 'utf8');
+  let releases = 0;
+  const subscription = new ClientSessionSubscription(
+    openResult('host-1', 'subscription-overlay-only', overlayBootstrap(bytes)),
+    async () => undefined,
+    async () => {
+      throw new Error('durable transcript must not be read');
+    },
+    async () => {
+      releases += 1;
+    },
+  );
+
+  assert.deepEqual(await subscription.loadTranscriptOverlay(decodeStoredMessage), [overlay]);
+  assert.equal(releases, 1);
+  await assert.rejects(
+    subscription.loadTranscriptOverlay(decodeStoredMessage),
+    hasSubscriptionReason('correlation_changed'),
+  );
+  assert.equal(releases, 1);
+});
+
+test('rejects an oversized active overlay before releasing it', async () => {
+  const overlay = {
+    type: 'user' as const,
+    id: 'user-1',
+    turnId: 'turn-1',
+    ts: 1,
+    text: 'active',
+  };
+  const bytes = Buffer.from(JSON.stringify(overlay), 'utf8');
+  let releases = 0;
+  const subscription = new ClientSessionSubscription(
+    openResult('host-1', 'subscription-overlay-limit', overlayBootstrap(bytes)),
+    async () => undefined,
+    async () => {
+      throw new Error('durable transcript must not be read');
+    },
+    async () => {
+      releases += 1;
+    },
+  );
+
+  await assert.rejects(
+    subscription.loadTranscriptOverlay(decodeStoredMessage, bytes.byteLength - 1),
+    RangeError,
+  );
+  assert.equal(releases, 0);
+});
+
+test('releases a materialized overlay through the connection-bound control operation', async () => {
+  const message = Buffer.from(
+    JSON.stringify({
+      type: 'user',
+      id: 'user-1',
+      turnId: 'turn-1',
+      ts: 1,
+      text: 'overlay',
+    }),
+    'utf8',
+  );
+  await withProtocolPeer(
+    async (transport, hostEpoch, rootId) => {
+      const openRequest = await acceptConnectionAndReadOpen(transport, hostEpoch, rootId);
+      const opened = openResult(
+        hostEpoch,
+        'subscription-overlay-release',
+        overlayBootstrap(message),
+      );
+      await writeProtocolFrame(transport, {
+        requestId: openRequest.requestId,
+        operation: 'subscription.open',
+        ok: true,
+        result: opened,
+      });
+      const release = decodeClientFrame(await transport.read(1_000));
+      assert.ok(!('kind' in release));
+      assert.equal(release.operation, 'session.transcript.overlay.release');
+      assert.deepEqual(release.input, {
+        subscriptionId: opened.subscriptionId,
+      });
+      await writeProtocolFrame(transport, {
+        requestId: release.requestId,
+        operation: 'session.transcript.overlay.release',
+        ok: true,
+        result: { subscriptionId: opened.subscriptionId },
+      });
+      await answerClose(transport, opened.subscriptionId);
+    },
+    async (connection) => {
+      const subscription = await connection.openSessionSubscription({
+        sessionId: 'session-1',
+        transcript: { kind: 'tail', maxBytes: 16 * 1024 },
+      });
+      assert.deepEqual(await subscription.loadTranscript(decodeStoredMessage), [
+        {
+          type: 'user',
+          id: 'user-1',
+          turnId: 'turn-1',
+          ts: 1,
+          text: 'overlay',
+        },
+      ]);
+      await subscription.close();
+    },
+  );
+});
+
+test('fails the connection when overlay release is not confirmed', async () => {
+  const message = Buffer.from(
+    JSON.stringify({
+      type: 'user',
+      id: 'user-1',
+      turnId: 'turn-1',
+      ts: 1,
+      text: 'overlay',
+    }),
+    'utf8',
+  );
+  await withProtocolPeer(
+    async (transport, hostEpoch, rootId) => {
+      const openRequest = await acceptConnectionAndReadOpen(transport, hostEpoch, rootId);
+      const opened = openResult(
+        hostEpoch,
+        'subscription-overlay-release-failure',
+        overlayBootstrap(message),
+      );
+      await writeProtocolFrame(transport, {
+        requestId: openRequest.requestId,
+        operation: 'subscription.open',
+        ok: true,
+        result: opened,
+      });
+      const release = decodeClientFrame(await transport.read(1_000));
+      assert.ok(!('kind' in release));
+      assert.equal(release.operation, 'session.transcript.overlay.release');
+      await writeProtocolFrame(transport, {
+        requestId: release.requestId,
+        operation: 'session.transcript.overlay.release',
+        ok: false,
+        error: { code: 'internal_failure', message: 'release failed' },
+      });
+    },
+    async (connection) => {
+      const subscription = await connection.openSessionSubscription({
+        sessionId: 'session-1',
+        transcript: { kind: 'tail', maxBytes: 16 * 1024 },
+      });
+      await assert.rejects(
+        () => subscription.loadTranscript(decodeStoredMessage),
+        hasSubscriptionReason('transcript_release_failed'),
+      );
+      await assert.rejects(() => connection.status());
+    },
+  );
+});
+
+test('keeps the connection usable when close wins the overlay release race', async () => {
+  const message = Buffer.from(
+    JSON.stringify({
+      type: 'user',
+      id: 'user-1',
+      turnId: 'turn-1',
+      ts: 1,
+      text: 'overlay',
+    }),
+    'utf8',
+  );
+  await withProtocolPeer(
+    async (transport, hostEpoch, rootId) => {
+      const openRequest = await acceptConnectionAndReadOpen(transport, hostEpoch, rootId);
+      const opened = openResult(
+        hostEpoch,
+        'subscription-overlay-release-after-close',
+        overlayBootstrap(message),
+      );
+      await writeProtocolFrame(transport, {
+        requestId: openRequest.requestId,
+        operation: 'subscription.open',
+        ok: true,
+        result: opened,
+      });
+      const close = decodeClientFrame(await transport.read(1_000));
+      assert.ok(!('kind' in close));
+      assert.equal(close.operation, 'subscription.close');
+      await writeProtocolFrame(transport, {
+        requestId: close.requestId,
+        operation: 'subscription.close',
+        ok: true,
+        result: { subscriptionId: opened.subscriptionId },
+      });
+      const release = decodeClientFrame(await transport.read(1_000));
+      assert.ok(!('kind' in release));
+      assert.equal(release.operation, 'session.transcript.overlay.release');
+      await writeProtocolFrame(transport, {
+        requestId: release.requestId,
+        operation: 'session.transcript.overlay.release',
+        ok: true,
+        result: { subscriptionId: opened.subscriptionId },
+      });
+      const status = decodeClientFrame(await transport.read(1_000));
+      assert.ok(!('kind' in status));
+      assert.equal(status.operation, 'host.status');
+      await writeProtocolFrame(transport, {
+        requestId: status.requestId,
+        operation: 'host.status',
+        ok: true,
+        result: {
+          hostEpoch,
+          compositionId: 'maka.interactive',
+          compositionRevision: '1',
+          state: 'ready',
+          connections: 1,
+          activeOperations: 1,
+          activeResidencies: 0,
+        },
+      });
+    },
+    async (connection) => {
+      const subscription = await connection.openSessionSubscription({
+        sessionId: 'session-1',
+        transcript: { kind: 'tail', maxBytes: 16 * 1024 },
+      });
+      const loading = subscription.loadTranscript(decodeStoredMessage);
+      await subscription.close();
+      assert.deepEqual(await loading, [
+        {
+          type: 'user',
+          id: 'user-1',
+          turnId: 'turn-1',
+          ts: 1,
+          text: 'overlay',
+        },
+      ]);
+      assert.equal((await connection.status()).hostEpoch, connection.hostEpoch);
+    },
+  );
+});
+
+test('rejects a durable sequence gap', async () => {
+  const message = Buffer.from(
+    JSON.stringify({
+      type: 'user',
+      id: 'user-1',
+      turnId: 'turn-1',
+      ts: 1,
+      text: 'hello',
+    }),
+    'utf8',
+  );
+  const fragment = {
+    kind: 'durable' as const,
+    sequence: 0,
+    byteOffset: 0,
+    totalBytes: message.byteLength,
+    payloadDigest: null,
+    data: message.toString('base64'),
+  };
+  const gap = new ClientSessionSubscription(
+    openResult('host-1', 'subscription-gap', {
+      throughSequence: 1,
+      durableCoverage: 'complete',
+      overlayMessageCount: 0,
+      durable: {
+        ...transcriptPage({
+          rawBytes: message.byteLength,
+          fragments: [{ ...fragment, sequence: 1 }],
+        }),
+        throughSequence: 1,
+      },
+      overlay: { ...transcriptPage({ source: 'overlay' }), throughSequence: 1 },
+    }),
+    async () => undefined,
+    async () => {
+      throw new Error('unexpected page request');
+    },
+  );
+  await assert.rejects(
+    () => gap.loadTranscript(decodeStoredMessage),
+    hasSubscriptionReason('correlation_changed'),
+  );
+});
+
+test('loads a projected durable transcript with intentionally sparse sequences', async () => {
+  const messages = [0, 2].map((sequence) =>
+    Buffer.from(
+      JSON.stringify({
+        type: 'user',
+        id: `user-${sequence}`,
+        turnId: 'turn-1',
+        ts: sequence + 1,
+        text: `visible-${sequence}`,
+      }),
+      'utf8',
+    ),
+  );
+  const subscription = new ClientSessionSubscription(
+    openResult('host-1', 'subscription-projected', {
+      throughSequence: 2,
+      durableCoverage: 'projected',
+      overlayMessageCount: 0,
+      durable: {
+        ...transcriptPage({
+          rawBytes: messages.reduce((total, message) => total + message.byteLength, 0),
+          fragments: messages
+            .map((message, index) => ({
+              kind: 'durable' as const,
+              sequence: index * 2,
+              byteOffset: 0,
+              totalBytes: message.byteLength,
+              payloadDigest: null,
+              data: message.toString('base64'),
+            }))
+            .reverse(),
+        }),
+        throughSequence: 2,
+      },
+      overlay: { ...transcriptPage({ source: 'overlay' }), throughSequence: 2 },
+    }),
+    async () => undefined,
+    async () => {
+      throw new Error('unexpected page request');
+    },
+  );
+
+  assert.deepEqual(
+    (await subscription.loadTranscript(decodeStoredMessage)).map((message) => message.id),
+    ['user-0', 'user-2'],
+  );
+});
+
+test('rejects a durable message that does not match its payload digest', async () => {
+  const message = Buffer.from(
+    JSON.stringify({
+      type: 'user',
+      id: 'user-1',
+      turnId: 'turn-1',
+      ts: 1,
+      text: 'hello',
+    }),
+    'utf8',
+  );
+  const subscription = new ClientSessionSubscription(
+    openResult('host-1', 'subscription-digest-mismatch', {
+      throughSequence: 0,
+      durableCoverage: 'complete',
+      overlayMessageCount: 0,
+      durable: transcriptPage({
+        rawBytes: message.byteLength,
+        fragments: [
+          {
+            kind: 'durable',
+            sequence: 0,
+            byteOffset: 0,
+            totalBytes: message.byteLength,
+            payloadDigest: `sha256:${createHash('sha256').update('different').digest('hex')}`,
+            data: message.toString('base64'),
+          },
+        ],
+      }),
+      overlay: transcriptPage({ source: 'overlay' }),
+    }),
+    async () => undefined,
+    async () => {
+      throw new Error('unexpected page request');
+    },
+  );
+
+  const assemblyDeltas: number[] = [];
+  await assert.rejects(
+    () =>
+      subscription.decodeTranscriptPage(
+        subscription.transcriptBootstrap!.durable,
+        decodeStoredMessage,
+        undefined,
+        (deltaBytes) => assemblyDeltas.push(deltaBytes),
+      ),
+    hasSubscriptionReason('correlation_changed'),
+  );
+  assert.deepEqual(assemblyDeltas, [message.byteLength, -message.byteLength]);
+});
+
+test('rejects a transcript cursor that does not advance', async () => {
+  const message = Buffer.from(
+    JSON.stringify({
+      type: 'user',
+      id: 'user-1',
+      turnId: 'turn-1',
+      ts: 1,
+      text: 'hello',
+    }),
+    'utf8',
+  );
+  const repeated = transcriptPage({
+    rawBytes: message.byteLength,
+    nextCursor: 'stuck-cursor',
+    fragments: [
+      {
+        kind: 'durable',
+        sequence: 0,
+        byteOffset: 0,
+        totalBytes: message.byteLength,
+        payloadDigest: null,
+        data: message.toString('base64'),
+      },
+    ],
+  });
+  const subscription = new ClientSessionSubscription(
+    openResult('host-1', 'subscription-stuck-cursor', {
+      throughSequence: 0,
+      durableCoverage: 'complete',
+      overlayMessageCount: 0,
+      durable: repeated,
+      overlay: transcriptPage({ source: 'overlay' }),
+    }),
+    async () => undefined,
+    async () => repeated,
+  );
+
+  await assert.rejects(subscription.loadTranscript(decodeStoredMessage), {
+    name: 'RuntimeHostSubscriptionError',
+    reason: 'correlation_changed',
+    message: 'Session transcript cursor did not advance',
+  });
+});
+
+test('rejects an overlay that terminates before its declared high-water', async () => {
+  const message = Buffer.from(
+    JSON.stringify({
+      type: 'assistant',
+      id: 'assistant-1',
+      turnId: 'turn-1',
+      ts: 1,
+      text: '',
+    }),
+    'utf8',
+  );
+  const subscription = new ClientSessionSubscription(
+    openResult('host-1', 'subscription-truncated-overlay', {
+      throughSequence: null,
+      durableCoverage: 'complete',
+      overlayMessageCount: 2,
+      durable: { ...transcriptPage(), throughSequence: null },
+      overlay: {
+        ...transcriptPage({
+          source: 'overlay',
+          rawBytes: message.byteLength,
+          fragments: [
+            {
+              kind: 'overlay',
+              messageIndex: 0,
+              byteOffset: 0,
+              totalBytes: message.byteLength,
+              data: message.toString('base64'),
+            },
+          ],
+        }),
+        throughSequence: null,
+      },
+    }),
+    async () => undefined,
+    async () => {
+      throw new Error('unexpected page request');
+    },
+  );
+
+  await assert.rejects(
+    () => subscription.loadTranscript((value) => value),
+    hasSubscriptionReason('correlation_changed'),
+  );
+});
+
+test('acknowledges the overlay only after complete materialization', async () => {
+  const message = Buffer.from(
+    JSON.stringify({
+      type: 'user',
+      id: 'user-1',
+      turnId: 'turn-1',
+      ts: 1,
+      text: 'ok',
+    }),
+    'utf8',
+  );
+  let releases = 0;
+  const subscription = new ClientSessionSubscription(
+    openResult('host-1', 'subscription-overlay-release', overlayBootstrap(message)),
+    async () => undefined,
+    async () => {
+      throw new Error('unexpected page request');
+    },
+    async () => {
+      releases += 1;
+    },
+  );
+
+  assert.deepEqual(await subscription.loadTranscript(decodeStoredMessage), [
+    { type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'ok' },
+  ]);
+  assert.equal(releases, 1);
+  await subscription.loadTranscript(decodeStoredMessage);
+  assert.equal(releases, 1);
+});
+
+test('acknowledges a complete overlay before waiting for durable continuation pages', async () => {
+  const durableMessage = Buffer.from(
+    JSON.stringify({
+      type: 'user',
+      id: 'user-1',
+      turnId: 'turn-1',
+      ts: 1,
+      text: 'history',
+    }),
+    'utf8',
+  );
+  const overlayMessage = Buffer.from(
+    JSON.stringify({
+      type: 'assistant',
+      id: 'assistant-1',
+      turnId: 'turn-1',
+      ts: 2,
+      text: 'partial',
+      modelId: 'test-model',
+    }),
+    'utf8',
+  );
+  const split = Math.floor(durableMessage.byteLength / 2);
+  const durablePageStarted = deferred<void>();
+  const continueDurablePage = deferred<void>();
+  let releases = 0;
+  const subscription = new ClientSessionSubscription(
+    openResult('host-1', 'subscription-overlay-release-before-durable', {
+      throughSequence: 0,
+      durableCoverage: 'complete',
+      overlayMessageCount: 1,
+      durable: transcriptPage({
+        rawBytes: durableMessage.byteLength - split,
+        fragments: [
+          {
+            kind: 'durable',
+            sequence: 0,
+            byteOffset: split,
+            totalBytes: durableMessage.byteLength,
+            payloadDigest: null,
+            data: durableMessage.subarray(split).toString('base64'),
+          },
+        ],
+        nextCursor: 'durable-cursor-1',
+      }),
+      overlay: overlayBootstrap(overlayMessage).overlay,
+    }),
+    async () => undefined,
+    async () => {
+      durablePageStarted.resolve();
+      await continueDurablePage.promise;
+      return transcriptPage({
+        rawBytes: split,
+        fragments: [
+          {
+            kind: 'durable',
+            sequence: 0,
+            byteOffset: 0,
+            totalBytes: durableMessage.byteLength,
+            payloadDigest: null,
+            data: durableMessage.subarray(0, split).toString('base64'),
+          },
+        ],
+      });
+    },
+    async () => {
+      releases += 1;
+    },
+  );
+
+  const loading = subscription.loadTranscript(decodeStoredMessage);
+  await durablePageStarted.promise;
+  assert.equal(releases, 1);
+  continueDurablePage.resolve();
+  assert.deepEqual(await loading, [
+    { type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'history' },
+    {
+      type: 'assistant',
+      id: 'assistant-1',
+      turnId: 'turn-1',
+      ts: 2,
+      text: 'partial',
+      modelId: 'test-model',
+    },
+  ]);
+});
+
+test('close stops transcript pagination after the in-flight page', async () => {
+  const message = Buffer.from(
+    JSON.stringify({
+      type: 'user',
+      id: 'user-1',
+      turnId: 'turn-1',
+      ts: 1,
+      text: 'hello',
+    }),
+    'utf8',
+  );
+  const page = deferred<ReturnType<typeof transcriptPage>>();
+  let pageRequests = 0;
+  const subscription = new ClientSessionSubscription(
+    openResult('host-1', 'subscription-closing', {
+      throughSequence: 0,
+      durableCoverage: 'complete',
+      overlayMessageCount: 0,
+      durable: transcriptPage({
+        rawBytes: Math.floor(message.byteLength / 2),
+        fragments: [
+          {
+            kind: 'durable',
+            sequence: 0,
+            byteOffset: Math.ceil(message.byteLength / 2),
+            totalBytes: message.byteLength,
+            payloadDigest: null,
+            data: message.subarray(Math.ceil(message.byteLength / 2)).toString('base64'),
+          },
+        ],
+        nextCursor: 'cursor-1',
+      }),
+      overlay: transcriptPage({ source: 'overlay' }),
+    }),
+    async () => undefined,
+    async () => {
+      pageRequests += 1;
+      return page.promise;
+    },
+  );
+  const loading = subscription.loadTranscript(decodeStoredMessage);
+  await delayImmediate();
+  await subscription.close();
+  page.resolve(transcriptPage());
+  await assert.rejects(() => loading, hasSubscriptionReason('connection_closed'));
+  assert.equal(pageRequests, 1);
+});
+
+test('probes an otherwise idle accepted Runtime Host connection', { timeout: 2_000 }, async () => {
+  const probed = deferred<void>();
+  const observed = deferred<HostStatusResult>();
+  await withProtocolPeer(
+    async (transport, hostEpoch, rootId) => {
       const hello = decodeClientFrame(await transport.read(1_000));
       assert.ok('kind' in hello && hello.kind === 'hello');
-      if (!('kind' in hello) || hello.kind !== 'hello') return;
-      assert.deepEqual(
-        { min: hello.protocolMin, max: hello.protocolMax },
-        { min: RUNTIME_HOST_PROTOCOL_VERSION + 1, max: RUNTIME_HOST_PROTOCOL_VERSION + 1 },
-      );
-      await writeRawLocalIpc(
-        transport,
-        encodeLegacyProtocolFrame({
-          kind: 'incompatible',
-          hostEpoch,
-          protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
-          protocolMax: RUNTIME_HOST_PROTOCOL_VERSION,
-          state: 'ready',
-          replacement: 'wait_for_idle_exit',
-        }),
-      );
-      transport.closeAfterFlush();
-      await transport.closed;
-    })().then(serverTask.resolve, serverTask.reject);
-  });
-  try {
-    await listen(server, endpoint.path);
-    await endpoint.prepareAfterListen();
-    await writeHostRegistration(controlDirectory, {
-      kind: 'maka-runtime-host',
-      schemaVersion: RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION,
-      rootId: capability.rootId,
-      hostEpoch,
-      endpoint: endpoint.path,
-      protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
-      protocolMax: RUNTIME_HOST_PROTOCOL_VERSION,
-      compatibilityEpoch: 0,
-      compositionId: 'maka.interactive',
-      compositionRevision: '1',
-      state: 'ready',
-      pid: process.pid,
-      createdAt: new Date().toISOString(),
-    });
+      await writeProtocolFrame(transport, {
+        kind: 'accepted',
+        rootId,
+        hostEpoch,
+        connectionId: 'connection-idle-liveness',
+        selectedProtocol: RUNTIME_HOST_PROTOCOL_VERSION,
+        compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+        compositionId: 'maka.interactive',
+        compositionRevision: '1',
+        state: 'ready',
+      });
+      await answerStatus(transport, hostEpoch);
+    },
+    async () => {
+      const status = await observed.promise;
+      assert.equal(status.state, 'ready');
+      assert.equal(status.compositionId, 'maka.interactive');
+      await probed.promise;
+    },
+    {
+      livenessIntervalMs: 20,
+      onLivenessProbe: probed.resolve,
+      onHostStatus: observed.resolve,
+    },
+  );
+});
 
-    const result = await connectRuntimeHost({
-      rootPath: join(base, 'root'),
-      surface: 'desktop',
-      protocol: PROTOCOL,
-    });
-    assert.equal(result.kind, 'incompatible');
-    if (result.kind === 'incompatible') {
-      assert.equal(result.registration.compatibilityEpoch, 0);
-      assert.equal(result.handshake.compatibilityEpoch, 0);
-      assert.equal(result.handshake.compositionId, 'maka.interactive');
-      assert.equal(result.handshake.compositionRevision, 'legacy');
-      assert.equal(result.handshake.replacement, 'wait_for_idle_exit');
-    }
-    await serverTask.promise;
-  } finally {
-    await closeServer(server);
-    await removeHostRegistration(controlDirectory, hostEpoch).catch(() => undefined);
-    await endpoint.cleanup().catch(() => undefined);
-    await rm(base, { recursive: true, force: true });
-  }
+test('tolerates a short Host stall without abandoning the connection', {
+  timeout: 5_000,
+}, async () => {
+  const observed = deferred<HostStatusResult>();
+  await withProtocolPeer(
+    async (transport, hostEpoch, rootId) => {
+      const hello = decodeClientFrame(await transport.read(1_000));
+      assert.ok('kind' in hello && hello.kind === 'hello');
+      await writeProtocolFrame(transport, {
+        kind: 'accepted',
+        rootId,
+        hostEpoch,
+        connectionId: 'connection-active-liveness',
+        selectedProtocol: RUNTIME_HOST_PROTOCOL_VERSION,
+        compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+        compositionId: 'maka.interactive',
+        compositionRevision: '1',
+        state: 'ready',
+      });
+      const probe = decodeClientFrame(await transport.read(1_000));
+      assert.ok(!('kind' in probe));
+      assert.equal(probe.operation, 'host.status');
+
+      // A transient pause beyond the old two-second deadline is recoverable.
+      // Only the eventual matching response completes the probe.
+      await delay(1_100);
+      await writeProtocolFrame(transport, {
+        kind: 'session.catalog.changed',
+        revision: 1,
+        sessionId: 'shared-session',
+      });
+      await delay(1_100);
+      await writeProtocolFrame(transport, {
+        requestId: probe.requestId,
+        operation: 'host.status',
+        ok: true,
+        result: hostStatus(hostEpoch),
+      });
+      await answerStatus(transport, hostEpoch);
+    },
+    async (connection) => {
+      await observed.promise;
+      assert.equal((await connection.status()).hostEpoch, connection.hostEpoch);
+    },
+    {
+      livenessIntervalMs: 20,
+      onHostStatus: observed.resolve,
+    },
+  );
+});
+
+test('closes an unresponsive request path even while Host notifications continue', {
+  timeout: 12_000,
+}, async () => {
+  let received = 0;
+  let probes = 0;
+  await withProtocolPeer(
+    async (transport, hostEpoch, rootId) => {
+      await transport.read(1_000);
+      await writeProtocolFrame(transport, {
+        kind: 'accepted',
+        rootId,
+        hostEpoch,
+        connectionId: 'one-way-host',
+        selectedProtocol: RUNTIME_HOST_PROTOCOL_VERSION,
+        compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+        compositionId: 'maka.interactive',
+        compositionRevision: '1',
+        state: 'ready',
+      });
+      let revision = 0;
+      const notifications = setInterval(() => {
+        void writeProtocolFrame(transport, {
+          kind: 'session.catalog.changed',
+          revision: ++revision,
+          sessionId: 'shared-session',
+        }).catch(() => undefined);
+      }, 10);
+      try {
+        const probe = decodeClientFrame(await transport.read(1_000));
+        assert.ok(!('kind' in probe));
+        assert.equal(probe.operation, 'host.status');
+        await transport.closed;
+      } finally {
+        clearInterval(notifications);
+      }
+    },
+    async (connection) => {
+      connection.subscribeSessionCatalogChanges(() => {
+        received += 1;
+      });
+      await connection.closed;
+      assert.ok(received > 10, 'inbound events must remain active during the failed probe');
+      assert.equal(probes, 0, 'one-way events cannot acknowledge a probe');
+    },
+    {
+      livenessIntervalMs: 20,
+      onLivenessProbe: () => {
+        probes += 1;
+      },
+    },
+  );
 });
 
 async function withProtocolPeer(
   serve: (transport: FramedTransport, hostEpoch: string, rootId: string) => Promise<void>,
   run: (connection: RuntimeHostConnection) => Promise<void>,
+  connectionOptions: {
+    readonly livenessIntervalMs?: number;
+    readonly onLivenessProbe?: () => void;
+    readonly onHostStatus?: (status: HostStatusResult) => void;
+  } = {},
 ): Promise<void> {
   const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-subscription-'));
   const capability = await resolveStorageRoot({
@@ -531,8 +1461,8 @@ async function withProtocolPeer(
     });
     const connected = await connectRuntimeHost({
       rootPath: join(base, 'root'),
-      surface: 'tui',
       protocol: PROTOCOL,
+      ...connectionOptions,
     });
     assert.equal(connected.kind, 'connected');
     if (connected.kind !== 'connected') return;
@@ -600,23 +1530,33 @@ async function answerStatus(transport: FramedTransport, hostEpoch: string): Prom
     requestId: request.requestId,
     operation: 'host.status',
     ok: true,
-    result: {
-      hostEpoch,
-      compositionId: 'maka.interactive',
-      compositionRevision: '1',
-      state: 'ready',
-      connections: 1,
-      activeOperations: 1,
-      activeResidencies: 0,
-    },
+    result: hostStatus(hostEpoch),
   });
 }
 
-function openResult(hostEpoch: string, subscriptionId: string) {
+function hostStatus(hostEpoch: string): HostStatusResult {
+  return {
+    hostEpoch,
+    compositionId: 'maka.interactive',
+    compositionRevision: '1',
+    state: 'ready',
+    connections: 1,
+    activeOperations: 1,
+    activeResidencies: 0,
+  };
+}
+
+function openResult(
+  hostEpoch: string,
+  subscriptionId: string,
+  transcript: SessionTranscriptBootstrap | null = null,
+) {
   return {
     hostEpoch,
     subscriptionId,
     nextSequence: 1,
+    activeAssistantStreams: [],
+    transcript,
     snapshot: {
       schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
       session: {
@@ -624,7 +1564,6 @@ function openResult(hostEpoch: string, subscriptionId: string) {
         metadataRevision: 1,
         status: 'running' as const,
         createdAt: 1,
-        lastUsedAt: 2,
         isArchived: false,
       },
       projectionRevision: 1,
@@ -638,6 +1577,75 @@ function openResult(hostEpoch: string, subscriptionId: string) {
       queue: { hostEpoch, queueRevision: 1, steering: [], followup: [] },
       interactions: { pending: [] },
     },
+  };
+}
+
+function transcriptBootstrap(message: Buffer): SessionTranscriptBootstrap {
+  return {
+    throughSequence: 0,
+    durableCoverage: 'complete',
+    overlayMessageCount: 0,
+    durable: transcriptPage({
+      rawBytes: message.byteLength,
+      fragments: [
+        {
+          kind: 'durable',
+          sequence: 0,
+          byteOffset: 0,
+          totalBytes: message.byteLength,
+          payloadDigest: null,
+          data: message.toString('base64'),
+        },
+      ],
+    }),
+    overlay: transcriptPage({ source: 'overlay' }),
+  };
+}
+
+function overlayBootstrap(message: Buffer): SessionTranscriptBootstrap {
+  return {
+    throughSequence: null,
+    durableCoverage: 'complete',
+    overlayMessageCount: 1,
+    durable: { ...transcriptPage(), throughSequence: null },
+    overlay: {
+      ...transcriptPage({
+        source: 'overlay',
+        rawBytes: message.byteLength,
+        fragments: [
+          {
+            kind: 'overlay',
+            messageIndex: 0,
+            byteOffset: 0,
+            totalBytes: message.byteLength,
+            data: message.toString('base64'),
+          },
+        ],
+      }),
+      throughSequence: null,
+    },
+  };
+}
+
+function transcriptPage(
+  options: {
+    source?: 'durable' | 'overlay';
+    rawBytes?: number;
+    fragments?: readonly SessionTranscriptFragment[];
+    nextCursor?: string | null;
+  } = {},
+): SessionTranscriptPage {
+  return {
+    kind: 'page',
+    sessionId: 'session-1',
+    source: options.source ?? 'durable',
+    direction: 'older',
+    throughSequence: 0,
+    rawBytes: options.rawBytes ?? 0,
+    fragments: options.fragments ?? [],
+    rangeBoundarySequence: null,
+    protectedTurnSequence: null,
+    nextCursor: options.nextCursor ?? null,
   };
 }
 
@@ -682,10 +1690,6 @@ function writeRawLocalIpc(transport: FramedTransport, frame: Uint8Array): Promis
   });
 }
 
-function encodeLegacyProtocolFrame(frame: unknown): Buffer {
-  return Buffer.from(`${JSON.stringify(frame)}\n`, 'utf8');
-}
-
 function listen(server: Server, path: string): Promise<void> {
   return new Promise((resolve, reject) => {
     server.once('error', reject);
@@ -698,18 +1702,4 @@ function closeServer(server: Server): Promise<void> {
   return new Promise((resolve, reject) => {
     server.close((error) => (error ? reject(error) : resolve()));
   });
-}
-
-function deferred<T>(): {
-  promise: Promise<T>;
-  resolve(value: T | PromiseLike<T>): void;
-  reject(error: unknown): void;
-} {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  return { promise, resolve, reject };
 }

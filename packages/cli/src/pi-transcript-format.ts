@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import {
   truncateToWidth,
   visibleWidth,
@@ -5,7 +24,9 @@ import {
   type MarkdownTheme,
 } from '@earendil-works/pi-tui';
 import type { ToolResultContent } from '@maka/core/events';
-import { projectAgentSwarmResult, ptyHumanTerminalText, type ShellOutput } from '@maka/core';
+import { projectAgentSwarmResult } from '@maka/core/agent-swarm';
+import { ptyHumanTerminalText } from '@maka/core/pty-output-view';
+import { type ShellOutput } from '@maka/core/shell-run';
 import { ansi } from './tui-ansi.js';
 
 export function renderIndented(text: string, width: number, indent: number): string[] {
@@ -67,13 +88,6 @@ export function formatToolResultContent(content: ToolResultContent): string {
       ].join('\n\n');
     case 'web_search_error':
       return content.message;
-    case 'explore_agent':
-      return (
-        content.report ??
-        content.summary ??
-        content.message ??
-        `Inspected ${content.filesInspected} files`
-      );
     case 'subagent':
       return content.summary;
     case 'agent_swarm': {
@@ -149,6 +163,12 @@ export function formatUnknownInline(value: unknown): string {
 }
 
 /** Fold line breaks into spaces so a summary can never split a one-line slot. */
+export function formatTokenCount(tokens: number): string {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
+  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}k`;
+  return String(tokens);
+}
+
 export function collapseToSingleLine(text: string): string {
   return text.replace(/\s*\n\s*/g, ' ');
 }

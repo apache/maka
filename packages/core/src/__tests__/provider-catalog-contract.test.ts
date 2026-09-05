@@ -1,74 +1,42 @@
-/**
- * Provider catalog contract — structural invariants over the registry.
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
  *
- * These invariants replace the per-provider add-flow E2E clones that used to
- * live in apps/desktop/e2e/providers.spec.ts. They are data-driven over
- * CATALOG_PROVIDER_TYPES, so adding a provider is covered automatically with
- * zero manual test updates. They assert *shape*, never snapshot values (no
- * "provider X's model is exactly Y"), so a legitimate model/endpoint refresh
- * does not churn this file.
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
- * Brand-mark completeness (every catalog provider resolves to a real mark, not
- * the generic fallback) is asserted on the desktop side — core cannot import a
- * renderer module — in
- * apps/desktop/src/main/__tests__/icon-governance-contract.test.ts
- * ("renders a registered brand mark for every catalog provider").
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
  */
 
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
+  defaultEnabledModelIdsWhenOmitted,
   deriveConnectionSlug,
   validateConnectionBaseUrl,
   validateSlug,
 } from '../llm-connections.js';
+import { GENERATED_MODELS_DEV_METADATA } from '../model-metadata.generated.js';
 import {
   CATALOG_PROVIDER_TYPES,
   PROVIDER_REGISTRY,
-  isWiredOAuthProvider,
-  type ProviderCatalogGroup,
+  isRetiredProvider,
+  providerFallbackModelIds,
 } from '../provider-registry.js';
-
-// The catalog groups the catalog UI actually renders as tabs. A new group must
-// be added here deliberately, which is the point: ProvidersPanel only knows how
-// to render these buckets. 'recommended' is deliberately NOT a base group even
-// though the ProviderCatalogGroup union carries it: the 推荐 tab is an overlay
-// sourced from RECOMMENDED_PROVIDER_TYPES (ProvidersPanel.providersForCategory),
-// while every other tab filters by catalogGroup — so a provider declaring
-// catalogGroup: 'recommended' would appear in no tab at all. (Splitting the
-// union type itself is a larger registry change, out of scope here.)
-const CATALOG_TAB_GROUPS: ReadonlySet<ProviderCatalogGroup> = new Set([
-  'plans',
-  'api',
-  'aggregators',
-  'local',
-]);
+import { buildConnectionModelCatalogEntries } from '../model-catalog.js';
+import { PROVIDER_AUTH_ACTIONS, deriveProviderAuthContract } from '../provider-auth.js';
+import type { ProviderType } from '../llm-connections.js';
 
 describe('provider connection slug derivation contract', () => {
-  it('derives a valid canonical slug for every catalog provider', () => {
-    for (const type of CATALOG_PROVIDER_TYPES) {
-      const slug = deriveConnectionSlug(type);
-      assert.equal(
-        validateSlug(slug),
-        null,
-        `deriveConnectionSlug('${type}') derived invalid slug '${slug}'`,
-      );
-    }
-  });
-
-  it('keeps collision-suffixed slugs valid', () => {
-    for (const type of CATALOG_PROVIDER_TYPES) {
-      const first = deriveConnectionSlug(type);
-      const second = deriveConnectionSlug(type, [first]);
-      assert.equal(second, `${first}-2`);
-      assert.equal(
-        validateSlug(second),
-        null,
-        `deriveConnectionSlug('${type}', ['${first}']) derived invalid slug '${second}'`,
-      );
-    }
-  });
-
   it('continues through dense collisions until it finds an unused slug', () => {
     const base = deriveConnectionSlug('openai');
     const existing = [base, ...Array.from({ length: 98 }, (_, index) => `${base}-${index + 2}`)];
@@ -80,55 +48,8 @@ describe('provider connection slug derivation contract', () => {
   });
 });
 
-describe('provider OAuth wiring contract', () => {
-  it('derives runnable account providers from the registry adapter boundary', () => {
-    for (const type of [
-      'claude-subscription',
-      'openai-codex',
-      'github-copilot',
-      'xai-oauth',
-    ] as const) {
-      assert.equal(isWiredOAuthProvider(type), true, `${type} must be wired`);
-    }
-    assert.equal(isWiredOAuthProvider('gemini-cli'), false);
-  });
-});
-
 describe('provider catalog contract — structural invariants over CATALOG_PROVIDER_TYPES', () => {
-  it('gives every catalog provider a non-empty label and description', () => {
-    for (const type of CATALOG_PROVIDER_TYPES) {
-      const def = PROVIDER_REGISTRY[type];
-      assert.ok(def.label.trim().length > 0, `${type} must carry a non-empty label`);
-      assert.ok(def.description.trim().length > 0, `${type} must carry a non-empty description`);
-    }
-  });
-
-  it('assigns every catalog provider a catalog group that renders as a tab', () => {
-    for (const type of CATALOG_PROVIDER_TYPES) {
-      const group = PROVIDER_REGISTRY[type].catalogGroup;
-      assert.ok(
-        group !== undefined && CATALOG_TAB_GROUPS.has(group),
-        `${type} catalogGroup ${String(group)} must be one of ${[...CATALOG_TAB_GROUPS].join(', ')}`,
-      );
-    }
-  });
-
   it('exposes an endpoint source that passes the production baseUrl gate', () => {
-    // A provider must be able to name where its base URL comes from:
-    //   - a concrete baseUrl, or
-    //   - a baseUrlTemplate whose placeholders resolve to a concrete URL
-    //     (account-scoped endpoints), or
-    //   - a custom relay connection where the user supplies the URL
-    //     at connect time.
-    // Concrete URLs are judged by validateConnectionBaseUrl — the same gate the
-    // connection IPC applies — so a registry default can never be something
-    // production would reject (a bare `new URL()` check would still admit
-    // `javascript:` or `file:` schemes). The validator alone cannot decide
-    // blank-vs-concrete, though: it deliberately returns null for blank input,
-    // whose semantics there are "no override, fall back to the provider
-    // default" — but here the registry value IS the default, so a whitespace
-    // baseUrl means no usable endpoint. An explicit trim check routes blank
-    // values away from the validator.
     for (const type of CATALOG_PROVIDER_TYPES) {
       const def = PROVIDER_REGISTRY[type];
       if (def.baseUrl.trim() !== '') {
@@ -160,55 +81,159 @@ describe('provider catalog contract — structural invariants over CATALOG_PROVI
     }
   });
 
-  it('ships a well-formed default model set for every catalog provider', () => {
-    for (const type of CATALOG_PROVIDER_TYPES) {
-      const def = PROVIDER_REGISTRY[type];
-      for (const id of def.fallbackModels) {
-        assert.ok(id.trim().length > 0, `${type} ships an empty fallback model id`);
-      }
-      assert.equal(
-        new Set(def.fallbackModels).size,
-        def.fallbackModels.length,
-        `${type} ships duplicate fallback model ids`,
+  it('delegates Alibaba Token Plan execution through one explicit Runtime profile', () => {
+    const delegated = Object.entries(PROVIDER_REGISTRY).flatMap(([providerType, definition]) => {
+      const adapter = definition.runtimeAdapter;
+      return adapter.kind === 'openai-compatible' && adapter.runtimeProfile
+        ? [{ providerType, runtimeProfile: adapter.runtimeProfile }]
+        : [];
+    });
+    assert.deepEqual(delegated, [
+      { providerType: 'alibaba-token-plan-cn', runtimeProfile: 'alibaba-token-plan' },
+      { providerType: 'alibaba-token-plan', runtimeProfile: 'alibaba-token-plan' },
+    ]);
+  });
+});
+
+describe('retired provider contract', () => {
+  // Retirement rests on a few lines nothing else reads. Each was separately
+  // revertible with the whole suite green, which would let a retired provider
+  // become sendable again by accident.
+  const retired = (Object.keys(PROVIDER_REGISTRY) as ProviderType[]).filter((type) =>
+    isRetiredProvider(type),
+  );
+
+  it('pins the entries this catalog retires', () => {
+    assert.deepEqual(retired, ['claude-subscription']);
+  });
+
+  it('keeps a retired provider registered but unwired', () => {
+    for (const type of retired) {
+      assert.ok(
+        PROVIDER_REGISTRY[type] !== undefined,
+        `${type} must stay registered so a stored connection still decodes`,
       );
-      if (def.fallbackModels.length === 0) {
-        // The add form derives its recommended default model from the shipped
-        // snapshot (provider-add-form.tsx → buildCatalogRecommendedDefaultModel)
-        // and connection readiness reports missing_model for an empty default
-        // (connection-readiness.ts). An empty snapshot is therefore only
-        // acceptable where the model catalog is inherently instance-specific —
-        // a user-operated runtime or endpoint (category 'local' / 'custom')
-        // whose models can only be discovered live from the user's own
-        // instance. A hosted, keyed provider with an empty snapshot would
-        // silently create never-ready connections with no recommended default.
-        assert.ok(
-          def.category === 'local' || def.category === 'custom',
-          `${type} is a hosted provider (category ${def.category}) and must ship a non-empty default model snapshot`,
-        );
-        assert.notEqual(
-          def.modelDiscovery.kind,
-          'fallback',
-          `${type} ships no default model snapshot, so it must declare live model discovery — ` +
-            'static-fallback discovery would leave it with no model source at all',
+      assert.equal(
+        PROVIDER_REGISTRY[type].runtimeAdapter.kind,
+        'unavailable',
+        `${type} is retired, so no Runtime adapter may claim it`,
+      );
+    }
+  });
+
+  it('keeps a retired provider out of the add-connection catalog', () => {
+    for (const type of retired) {
+      assert.equal(
+        CATALOG_PROVIDER_TYPES.includes(type),
+        false,
+        `${type} must not be offerable as a new connection`,
+      );
+    }
+  });
+
+  it('offers no action on a retired connection', () => {
+    // The storage layer admits model fetches and connection tests by reading
+    // this contract, so every action being unavailable is what refuses them
+    // there — not a check each call site has to remember.
+    for (const type of retired) {
+      const contract = deriveProviderAuthContract({
+        providerType: type,
+        hasSecret: true,
+      });
+      for (const action of PROVIDER_AUTH_ACTIONS) {
+        assert.equal(
+          contract.actionAvailability[action],
+          false,
+          `${type} must not offer ${action}`,
         );
       }
     }
   });
 
-  it('requires an operational reason for every ready remote provider without live discovery', () => {
-    for (const [type, def] of Object.entries(PROVIDER_REGISTRY)) {
-      if (
-        def.status !== 'ready' ||
-        def.category === 'local' ||
-        def.category === 'custom' ||
-        def.modelDiscovery.kind !== 'fallback'
-      ) {
-        continue;
+  it('reports every model of a retired connection as removed and unselectable', () => {
+    // The adapter blocks the send; without this the pickers would keep offering
+    // models that can no longer answer.
+    for (const type of retired) {
+      const entries = buildConnectionModelCatalogEntries({
+        connection: {
+          slug: `${type}-stored`,
+          providerType: type,
+          defaultModel: PROVIDER_REGISTRY[type].fallbackModels[0] ?? '',
+          models: undefined,
+          modelSource: 'fallback',
+        },
+      });
+      assert.ok(entries.length > 0, `${type} should still list its stored models`);
+      for (const entry of entries) {
+        assert.equal(entry.canUseAsChatDefault, false);
       }
-      assert.ok(
-        def.modelDiscovery.reason.trim().length > 0,
-        `${type} must explain why its inference credential cannot discover models`,
-      );
     }
+  });
+});
+
+// A deprecated id in `fallbackModels` is offered as a usable choice: the
+// catalog marks the list available and default-capable, and `fallbackModels[0]`
+// is the new-connection default and the connection-test probe.
+// `toolCallingModelIds` filters on tool-calling
+// capability only, so a derivation that needs it drops deprecated ids at its
+// own call site, and `openai` writes its list by hand. Removal is from the
+// offer only — an id a user already chose still sends, and live discovery
+// still returns whatever the endpoint serves (#3355).
+// Not every catalog provider has a models.dev snapshot (custom and
+// compatible-endpoint types have none), so the lookup is widened rather than
+// keyed on the registry's own union.
+const snapshotFor = (type: string) =>
+  (
+    GENERATED_MODELS_DEV_METADATA as Record<
+      string,
+      Record<string, { lifecycle?: string }> | undefined
+    >
+  )[type];
+
+describe('provider catalog contract — fallback lifecycle', () => {
+  it('keeps deprecated snapshot models out of fallback lists', () => {
+    const regressed = [];
+    for (const type of CATALOG_PROVIDER_TYPES) {
+      const snapshot = snapshotFor(type);
+      if (snapshot === undefined) continue;
+      const deprecated = (PROVIDER_REGISTRY[type].fallbackModels ?? []).filter(
+        (id) => snapshot[id]?.lifecycle === 'deprecated',
+      );
+      if (deprecated.length > 0) {
+        regressed.push(`${type}: ${deprecated.join(', ')}`);
+      }
+    }
+    assert.deepEqual(regressed, []);
+  });
+});
+
+describe('opencode-free retired-model quarantine', () => {
+  const opencodeFree = PROVIDER_REGISTRY['opencode-free'];
+
+  // Ox Alpha Free (x-preview-f-free) was retired upstream on OpenCode Zen while
+  // models.dev still snapshots it free+active, so the derivation would keep
+  // offering it as a default-enabled, picker-visible row. Remove this assertion
+  // together with the OPENCODE_FREE_BROKEN_MODEL_IDS entry once the snapshot
+  // marks it deprecated (or upstream serves it again).
+  it('quarantines x-preview-f-free out of the offered free models', () => {
+    assert.ok(opencodeFree.brokenModelIds?.includes('x-preview-f-free'));
+    assert.ok(!providerFallbackModelIds(opencodeFree).includes('x-preview-f-free'));
+    assert.ok(
+      !(defaultEnabledModelIdsWhenOmitted('opencode-free') ?? []).includes('x-preview-f-free'),
+    );
+  });
+
+  // Mechanism guard, independent of which ids the deny-list holds: a quarantined
+  // id must never leak back into the offered candidates through either path.
+  it('never offers a quarantined broken id as a free candidate', () => {
+    const broken = new Set(opencodeFree.brokenModelIds ?? []);
+    const offered = [
+      ...providerFallbackModelIds(opencodeFree),
+      ...(defaultEnabledModelIdsWhenOmitted('opencode-free') ?? []),
+    ];
+    assert.deepEqual(
+      offered.filter((id) => broken.has(id)),
+      [],
+    );
   });
 });

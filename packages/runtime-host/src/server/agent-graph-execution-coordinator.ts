@@ -1,14 +1,36 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { randomUUID } from 'node:crypto';
-import { normalizeMessageContent, type UserMessageInput } from '@maka/core';
+import { normalizeMessageContent } from '@maka/core/events';
+import { type UserMessageInput } from '@maka/core/runtime-inputs';
+import { agentGraphIdForRootSession } from '@maka/runtime/stream-graph-coordinator';
 import {
-  agentGraphIdForRootSession,
   recoverAgentGraphSupervisorContextOverflow,
-  RuntimeHostedRootConflictError,
-  RuntimeMessageAuthorityInvariantError,
   type AgentGraphSupervisorContextRecoveryDiagnostic,
   type AgentGraphSupervisorTurnOutcome,
-  type SessionManager,
-} from '@maka/runtime';
+} from '@maka/runtime/agent-graph-supervisor-wake';
+import {
+  RuntimeHostedRootConflictError,
+  RuntimeMessageAuthorityInvariantError,
+} from '@maka/runtime/message-authority';
+import { type SessionManager } from '@maka/runtime/session-manager';
 import type {
   HostedExecutionAdmission,
   HostedExecutionAdmissionResult,
@@ -30,6 +52,7 @@ export interface HostAgentGraphExecutionCoordinatorOptions {
   readonly executions: AgentGraphExecutionAuthority;
   readonly runtime: AgentGraphRuntime;
   readonly newId?: () => string;
+  readonly currentGraphId?: (rootSessionId: string) => Promise<string>;
 }
 
 /** Maps Agent Graph wake attempts onto the domain-neutral Hosted Execution port. */
@@ -37,11 +60,15 @@ export class HostAgentGraphExecutionCoordinator {
   readonly #executions: AgentGraphExecutionAuthority;
   readonly #runtime: AgentGraphRuntime;
   readonly #newId: () => string;
+  readonly #currentGraphId: (rootSessionId: string) => Promise<string>;
 
   constructor(options: HostAgentGraphExecutionCoordinatorOptions) {
     this.#executions = options.executions;
     this.#runtime = options.runtime;
     this.#newId = options.newId ?? randomUUID;
+    this.#currentGraphId =
+      options.currentGraphId ??
+      (async (rootSessionId) => agentGraphIdForRootSession(rootSessionId));
   }
 
   async run(
@@ -50,7 +77,7 @@ export class HostAgentGraphExecutionCoordinator {
     abortSignal: AbortSignal,
     isCurrent: () => Promise<boolean>,
   ): Promise<AgentGraphSupervisorTurnOutcome> {
-    assertAgentGraphInput(sessionId, input);
+    await assertAgentGraphInput(sessionId, input, this.#currentGraphId);
     const origin = input.origin;
     if (origin?.kind !== 'agent_graph') {
       throw new RuntimeMessageAuthorityInvariantError('Agent Graph execution lost its origin');
@@ -169,10 +196,14 @@ export class HostAgentGraphExecutionCoordinator {
   }
 }
 
-function assertAgentGraphInput(sessionId: string, input: UserMessageInput): void {
+async function assertAgentGraphInput(
+  sessionId: string,
+  input: UserMessageInput,
+  currentGraphId: (rootSessionId: string) => Promise<string>,
+): Promise<void> {
   if (
     input.origin?.kind !== 'agent_graph' ||
-    input.origin.graphId !== agentGraphIdForRootSession(sessionId) ||
+    input.origin.graphId !== (await currentGraphId(sessionId)) ||
     input.turnOrchestration?.mode !== 'graph' ||
     input.turnOrchestration.source !== 'host_api'
   ) {
@@ -188,10 +219,7 @@ function classifyAgentGraphOutcome(
   if (snapshot.status === 'completed') return { kind: 'completed', turnId: snapshot.turnId };
   if (snapshot.status === 'cancelled') return { kind: 'aborted', turnId: snapshot.turnId };
   if (snapshot.status === 'failed') {
-    if (
-      snapshot.failureClass === 'context_overflow' ||
-      snapshot.failureClass === 'context_budget_exhausted'
-    ) {
+    if (snapshot.failureClass === 'context_overflow') {
       return {
         kind: 'context_overflow',
         turnId: snapshot.turnId,

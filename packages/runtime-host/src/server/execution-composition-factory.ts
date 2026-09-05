@@ -1,5 +1,23 @@
-import type { VerifiedGitRuntimeInput } from '@maka/storage/managed-workspace-owner';
-import { resolveBundledGitRuntime } from './bundled-git-runtime.js';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import type { PublishedProjectDirectoryRoot } from './project-directory-authority.js';
 import {
   createExecutionRuntimeHostComposition,
   type ExecutionRuntimeHostComposition,
@@ -11,14 +29,12 @@ import {
 } from './host-composition.js';
 
 export interface ExecutionRuntimeHostCompositionSourceOptions {
-  readonly managedWorkspaceGitRuntime?: VerifiedGitRuntimeInput;
-  readonly bundledGitResourcesRoot?: string;
-  readonly legacyConfigurationRoot?: string;
+  readonly projectDirectoryRoots?: readonly PublishedProjectDirectoryRoot[];
 }
 
 export interface ExecutionRuntimeHostCompositionDependencies {
   readonly createComposition?: (
-    context: RuntimeHostCompositionContext<'interactive'>,
+    context: RuntimeHostCompositionContext,
     options: Parameters<typeof createExecutionRuntimeHostComposition>[1],
   ) => Promise<ExecutionRuntimeHostComposition>;
 }
@@ -26,17 +42,10 @@ export interface ExecutionRuntimeHostCompositionDependencies {
 export async function createExecutionRuntimeHostCompositionSource(
   options: ExecutionRuntimeHostCompositionSourceOptions,
   dependencies: ExecutionRuntimeHostCompositionDependencies = {},
-): Promise<RuntimeHostCompositionSource<'interactive'>> {
-  if (options.managedWorkspaceGitRuntime && options.bundledGitResourcesRoot) {
-    throw new Error('Managed workspace Git runtime must have exactly one authority');
-  }
-  const managedWorkspaceGitRuntime = options.bundledGitResourcesRoot
-    ? await resolveBundledGitRuntime({ resourcesRoot: options.bundledGitResourcesRoot })
-    : options.managedWorkspaceGitRuntime;
+): Promise<RuntimeHostCompositionSource> {
   const compositionOptions = {
-    ...(managedWorkspaceGitRuntime ? { managedWorkspaceGitRuntime } : {}),
-    ...(options.legacyConfigurationRoot
-      ? { legacyConfigurationRoot: options.legacyConfigurationRoot }
+    ...(options.projectDirectoryRoots
+      ? { projectDirectoryRoots: options.projectDirectoryRoots }
       : {}),
   };
   const createComposition = dependencies.createComposition ?? createExecutionRuntimeHostComposition;

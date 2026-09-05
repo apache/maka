@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { EditorTheme, SelectListTheme } from '@earendil-works/pi-tui';
 
 // PR #496: desktop --accent = oklch(0.70 0.135 250), rendered here as truecolor ANSI.
@@ -8,19 +27,9 @@ const MUTED_RGB = [128, 132, 140] as const;
 
 // #1064: detect terminal color capability at module load so truecolor is
 // downgraded on basic terminals and disabled entirely under NO_COLOR.
-let colorLevel = detectColorLevel();
+const colorLevel = detectColorLevel();
 
-/**
- * Override the detected color level — for tests that assert exact escape
- * sequences. Production code never calls this; the module-load detection
- * governs real terminal output.
- */
-export function _setColorLevelForTesting(level: 0 | 1 | 2 | 3): void {
-  colorLevel = level;
-  rebuildAnsi();
-}
-
-export let ansi = buildAnsi();
+export const ansi = buildAnsi();
 
 // #1053: status disc — a single `●` tinted by tone. The shared visual primitive
 // for the transcript's tool rows: ok = done, accent = running, danger = error,
@@ -42,7 +51,10 @@ export function disc(tone: DiscTone): string {
 }
 
 export function stripAnsi(text: string): string {
-  return text.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '');
+  return text.replace(
+    /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[PX^_][^\x1b]*(?:\x1b\\)|[ -/]*[0-~])/gu,
+    '',
+  );
 }
 
 export function editorTheme(): EditorTheme {
@@ -62,10 +74,6 @@ export function selectListTheme(): SelectListTheme {
   };
 }
 
-function rebuildAnsi(): void {
-  ansi = buildAnsi();
-}
-
 function buildAnsi() {
   return {
     bold: style(1, 22),
@@ -83,38 +91,68 @@ function buildAnsi() {
 }
 
 function detectColorLevel(): 0 | 1 | 2 | 3 {
-  return detectColorLevelFromEnv({
-    NO_COLOR: process.env.NO_COLOR,
-    TERM: process.env.TERM,
-    COLORTERM: process.env.COLORTERM,
-  });
+  return detectColorLevelFromEnv(
+    {
+      NO_COLOR: process.env.NO_COLOR,
+      TERM: process.env.TERM,
+      COLORTERM: process.env.COLORTERM,
+    },
+    // Only a tty.WriteStream can answer; piped output leaves this undefined.
+    process.stdout.getColorDepth?.(),
+  );
 }
 
 /**
- * Pure color level detection from an env snapshot.
- * - 0: no color (NO_COLOR non-empty, or TERM is dumb/empty)
+ * Pure color level detection from an env snapshot and the terminal's own
+ * reported depth.
+ * - 0: no color (NO_COLOR non-empty, TERM is dumb, or nothing reports color)
  * - 1: 16-color (basic ANSI)
- * - 2: 256-color (TERM contains 256color)
- * - 3: 24-bit truecolor (COLORTERM=truecolor/24bit or TERM ends with -truecolor)
+ * - 2: 256-color
+ * - 3: 24-bit truecolor (COLORTERM=truecolor/24bit, TERM ending -truecolor, or
+ *   a terminal reporting 24-bit depth)
  *
  * Benchmark: codex `supports-color` 3-level; pi `theme.ts` 256 fallback.
+ *
+ * `TERM` alone cannot answer this. Native Windows shells (PowerShell, cmd) set
+ * no `TERM` at all on consoles that do support truecolor, so treating an unset
+ * `TERM` as colorless made the whole TUI monochrome there while WSL and Git
+ * Bash stayed coloured (#3536). `supports-color` avoids that by returning on
+ * `process.platform === 'win32'` before it ever reads `TERM`; Node's
+ * `getColorDepth()` already implements that same Windows build check, so this
+ * asks the terminal rather than maintaining a second copy of the ladder.
+ *
+ * `depth` is the value from `tty.WriteStream.getColorDepth()`: 1 (none), 4
+ * (16), 8 (256) or 24 (16m). It is undefined when stdout is not a terminal,
+ * which leaves the pre-existing `TERM` ladder as the fallback.
  */
-function detectColorLevelFromEnv(env: {
-  NO_COLOR?: string;
-  TERM?: string;
-  COLORTERM?: string;
-}): 0 | 1 | 2 | 3 {
+export function detectColorLevelFromEnv(
+  env: {
+    NO_COLOR?: string;
+    TERM?: string;
+    COLORTERM?: string;
+  },
+  depth: number | undefined,
+): 0 | 1 | 2 | 3 {
   // NO_COLOR spec — a non-empty value disables all color.
   // (NO_COLOR= with an empty string does NOT disable color per the spec.)
   if (env.NO_COLOR && env.NO_COLOR.length > 0) return 0;
   // TERM=dumb is explicitly colorless.
   const term = env.TERM ?? '';
-  if (term === 'dumb' || term === '') return 0;
-  // COLORTERM=truecolor → 24-bit.
+  if (term === 'dumb') return 0;
+  // An explicit declaration outranks the reported depth: the terminal is
+  // telling us something it knows and the capability probe may not.
   const colorterm = env.COLORTERM ?? '';
   if (colorterm === 'truecolor' || colorterm === '24bit') return 3;
   // Known truecolor terminals by TERM name.
-  if (/\-(truecolor|24bit)$/.test(term)) return 3;
+  if (/-(truecolor|24bit)$/.test(term)) return 3;
+  if (depth !== undefined) {
+    if (depth >= 24) return 3;
+    if (depth >= 8) return 2;
+    if (depth >= 4) return 1;
+    return 0;
+  }
+  // No terminal to ask (piped output). Fall back to the env ladder.
+  if (term === '') return 0;
   // 256-color: most modern terminals set this explicitly.
   if (/256color|256-color/.test(term)) {
     return 2;

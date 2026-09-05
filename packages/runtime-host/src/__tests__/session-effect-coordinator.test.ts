@@ -1,10 +1,29 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import type { SessionHeader } from '@maka/core/session';
-import type { RuntimeReadModelSessionView } from '@maka/runtime';
+import type { RuntimeReadModelSessionView } from '@maka/runtime/runtime-read-model';
 import { openInteractiveArtifactStoreForWrite } from '@maka/storage/artifact-stores';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
@@ -15,7 +34,6 @@ import type { HostSessionEffectModel } from '../server/execution-model-authority
 const connectionContext: ConnectionContext = {
   hostEpoch: 'host-epoch-1',
   connectionId: 'connection-1',
-  surface: 'tui',
   principal: 'local_os_user',
   acquireResidency: () => ({ release: () => undefined }),
 };
@@ -55,7 +73,7 @@ test('Session recap publishes one protected result and exact retries never repea
       },
       {
         readSessionHeader: async () =>
-          ({ isArchived: true, status: 'archived' }) as unknown as SessionHeader,
+          ({ isArchived: true, status: 'active' }) as unknown as SessionHeader,
       },
     );
     assert.deepEqual(
@@ -122,7 +140,7 @@ test('Session effect leaves Turn admission free and drain aborts accepted recap 
         },
         {
           readSessionHeader: async () =>
-            ({ isArchived: true, status: 'archived' }) as unknown as SessionHeader,
+            ({ isArchived: true, status: 'active' }) as unknown as SessionHeader,
         },
       );
       assert.deepEqual(
@@ -184,21 +202,20 @@ test('Session effect leaves Turn admission free and drain aborts accepted recap 
   );
 });
 
-test('Automatic title generation fences retirement until the effect settles', async () => {
+test('Automatic naming fences retirement until the effect settles', async () => {
   const started = gate();
   await withHarness(
     async ({ coordinator }) => {
-      const pending = coordinator.generateTitle({
+      coordinator.nameSessionFromRootMessage({
         sessionId: 'session-1',
-        header: { id: 'session-1' } as SessionHeader,
-        sourceText: 'A first user message',
+        content: { text: 'A first user message' },
       });
       await started.promise;
       assert.equal(coordinator.hasLiveSessionState('session-1'), true);
       assert.equal(coordinator.hasLiveSessionState('session-2'), false);
 
       coordinator.beginDrain();
-      assert.equal(await pending, undefined);
+      await coordinator.close();
       assert.equal(coordinator.hasLiveSessionState('session-1'), false);
     },
     {
@@ -209,7 +226,13 @@ test('Automatic title generation fences retirement until the effect settles', as
         );
         return undefined;
       },
-      generateRecap: async () => assert.fail('title generation must not call recap'),
+      generateRecap: async () => assert.fail('naming must not call recap'),
+    },
+    {
+      readSessionHeader: async () => unnamedHeader(),
+      // Draining retires the effect rather than downgrading it: the fallback
+      // name answers an unreachable model, not a Host that is shutting down.
+      nameSessionIfUnnamed: async () => assert.fail('an aborted naming must not write'),
     },
   );
 });
@@ -259,6 +282,139 @@ test('Session recap keeps accounting failures non-terminal and unsafe to retry',
     { requestDrain: () => (drains += 1) },
   );
 });
+
+test('Naming writes what the title model generated, not the Message', async () => {
+  const named = gate();
+  const titles: string[] = [];
+  await withHarness(
+    async ({ coordinator }) => {
+      coordinator.nameSessionFromRootMessage({
+        sessionId: 'session-1',
+        content: { text: 'hello world' },
+      });
+      await named.promise;
+      assert.deepEqual(titles, ['Model title']);
+    },
+    {
+      generateTitle: async () => 'Model title',
+      generateRecap: async () => assert.fail('naming must not call recap'),
+    },
+    {
+      readSessionHeader: async () => unnamedHeader(),
+      nameSessionIfUnnamed: async (_sessionId, title) => {
+        titles.push(title);
+        return unnamedHeader();
+      },
+      onSessionNamed: () => named.release(),
+    },
+  );
+});
+
+test('Naming falls back to the Message when the title model is unreachable', async () => {
+  const named = gate();
+  const titles: string[] = [];
+  let notifications = 0;
+  await withHarness(
+    async ({ coordinator }) => {
+      coordinator.nameSessionFromRootMessage({
+        sessionId: 'session-1',
+        content: { text: '\nFallback title\nignored' },
+      });
+      await named.promise;
+      assert.deepEqual(titles, ['Fallback title']);
+      assert.equal(notifications, 1);
+    },
+    {
+      generateTitle: async () => {
+        throw new Error('offline');
+      },
+      generateRecap: async () => assert.fail('naming must not call recap'),
+    },
+    {
+      readSessionHeader: async () => unnamedHeader(),
+      nameSessionIfUnnamed: async (_sessionId, title) => {
+        titles.push(title);
+        return unnamedHeader();
+      },
+      onSessionNamed: () => {
+        notifications += 1;
+        named.release();
+      },
+    },
+  );
+});
+
+test('A named Session is never renamed by the effect', async () => {
+  let modelCalls = 0;
+  await withHarness(
+    async ({ coordinator }) => {
+      coordinator.nameSessionFromRootMessage({
+        sessionId: 'session-1',
+        content: { text: 'hello' },
+      });
+      await coordinator.close();
+      assert.equal(modelCalls, 0);
+    },
+    {
+      generateTitle: async () => {
+        modelCalls += 1;
+        return 'Generated loses';
+      },
+      generateRecap: async () => assert.fail('naming must not call recap'),
+    },
+    {
+      readSessionHeader: async () => ({
+        ...unnamedHeader(),
+        name: 'Manual wins',
+        titleIsManual: true,
+      }),
+      nameSessionIfUnnamed: async () => assert.fail('a named Session must not be renamed'),
+      onSessionNamed: () => assert.fail('a named Session must not notify'),
+    },
+  );
+});
+
+test('A racing manual rename wins over the generated title', async () => {
+  const attempted = gate();
+  let notifications = 0;
+  await withHarness(
+    async ({ coordinator }) => {
+      coordinator.nameSessionFromRootMessage({
+        sessionId: 'session-1',
+        content: { text: 'hello' },
+      });
+      await attempted.promise;
+      await coordinator.close();
+      assert.equal(notifications, 0);
+    },
+    {
+      generateTitle: async () => 'Generated loses',
+      generateRecap: async () => assert.fail('naming must not call recap'),
+    },
+    {
+      readSessionHeader: async () => unnamedHeader(),
+      // The store re-checks the name under its own write: the rename landed
+      // first, so the generated title is refused.
+      nameSessionIfUnnamed: async () => {
+        attempted.release();
+        return null;
+      },
+      onSessionNamed: () => {
+        notifications += 1;
+      },
+    },
+  );
+});
+
+function unnamedHeader(): SessionHeader {
+  return {
+    id: 'session-1',
+    name: 'New Chat',
+    titleIsManual: false,
+    isArchived: false,
+    status: 'active',
+  } as unknown as SessionHeader;
+}
 
 async function withHarness(
   run: (input: {
@@ -318,6 +474,8 @@ function createCoordinator(
       options.readSessionHeader ??
       (async () => ({ isArchived: false, status: 'active' }) as unknown as SessionHeader),
     sessionAdmission: options.admission ?? new SessionAdmissionGate(),
+    nameSessionIfUnnamed: options.nameSessionIfUnnamed ?? (async () => null),
+    onSessionNamed: options.onSessionNamed ?? (() => undefined),
     acquireResidency: () => ({ release: () => undefined }),
     requestDrain:
       options.requestDrain ??
@@ -329,6 +487,11 @@ interface CoordinatorOptions {
   readonly admission?: SessionAdmissionGate;
   readonly readSessionHeader?: (sessionId: string) => Promise<SessionHeader>;
   readonly requestDrain?: () => void;
+  readonly nameSessionIfUnnamed?: (
+    sessionId: string,
+    title: string,
+  ) => Promise<SessionHeader | null>;
+  readonly onSessionNamed?: (sessionId: string) => void;
 }
 
 function gate(): { promise: Promise<void>; release(): void } {

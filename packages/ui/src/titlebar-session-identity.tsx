@@ -1,6 +1,28 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { useEffect, useRef, useState } from 'react';
 import { BreadcrumbItem, Breadcrumbs } from '@astryxdesign/core/Breadcrumbs';
 import { Icon } from '@astryxdesign/core/Icon';
+import { IconButton } from '@astryxdesign/core/IconButton';
+import { Tooltip } from '@astryxdesign/core/Tooltip';
+import { Share2 } from './icons.js';
 import { getConversationCopy } from './conversation-copy.js';
 import { InlineRenameInput } from './inline-rename-input.js';
 import { useUiLocale } from './locale-context.js';
@@ -15,7 +37,7 @@ import { useUiLocale } from './locale-context.js';
  */
 export interface TitlebarProject {
   name: string;
-  onOpenFolder(): void;
+  onOpenFolder?(): void;
 }
 
 /**
@@ -75,6 +97,8 @@ export function TitlebarSessionIdentity(props: {
   project?: TitlebarProject;
   /** Immediate linked parent when viewing a child subagent session. */
   parentSession?: TitlebarParentSession;
+  readOnly?: boolean;
+  action?: { readonly label: string; onClick(): void };
 }) {
   const copy = getConversationCopy(useUiLocale());
   const [renaming, setRenaming] = useState(false);
@@ -131,13 +155,17 @@ export function TitlebarSessionIdentity(props: {
           <BreadcrumbItem onClick={props.project.onOpenFolder}>
             <span
               className="maka-titlebar-identity__segment"
-              title={copy.chat.openProjectFolder(props.project.name)}
+              title={props.project.onOpenFolder
+                ? copy.chat.openProjectFolder(props.project.name)
+                : props.project.name}
             >
               {props.project.name}
             </span>
-            <span className="maka-visually-hidden">
-              {copy.chat.openProjectFolderAction}
-            </span>
+            {props.project.onOpenFolder ? (
+              <span className="maka-visually-hidden">
+                {copy.chat.openProjectFolderAction}
+              </span>
+            ) : null}
           </BreadcrumbItem>
         ) : null}
         {props.parentSession ? (
@@ -174,6 +202,12 @@ export function TitlebarSessionIdentity(props: {
               onCancel={() => endRename(true)}
             />
           </BreadcrumbItem>
+        ) : props.readOnly ? (
+          <BreadcrumbItem isCurrent>
+            <span className="maka-titlebar-identity__segment maka-titlebar-identity__segment--session">
+              {props.sessionName}
+            </span>
+          </BreadcrumbItem>
         ) : (
           /* `isCurrent={false}`, not the default: a current crumb renders as a
              plain <span aria-current="page"> and DROPS onClick, so the rename
@@ -193,6 +227,18 @@ export function TitlebarSessionIdentity(props: {
           </BreadcrumbItem>
         )}
       </Breadcrumbs>
+      {props.action ? (
+        <Tooltip content={props.action.label}>
+          <IconButton
+            className="maka-titlebar-identity__action"
+            label={props.action.label}
+            icon={<Share2 size={14} />}
+            variant="ghost"
+            size="sm"
+            onClick={props.action.onClick}
+          />
+        </Tooltip>
+      ) : null}
     </div>
   );
 }

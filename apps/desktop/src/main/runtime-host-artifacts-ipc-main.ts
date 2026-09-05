@@ -1,8 +1,32 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { randomUUID } from "node:crypto";
 import { open, mkdir, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { MAX_ATTACHMENT_BYTES, type ArtifactSaveResult } from "@maka/core";
+import {
+  ARTIFACT_IMAGE_PREVIEW_MAX_BYTES,
+  normalizeArtifactImagePreviewMime,
+  resolveArtifactImagePreview,
+  type ArtifactSaveResult,
+} from '@maka/core/artifacts';
 import { sanitizeArtifactName } from "@maka/storage/artifact-stores";
 import {
   handleReconnectableRead,
@@ -19,6 +43,13 @@ interface RuntimeHostArtifactsIpcDeps {
   readonly showItemInFolder: (path: string) => void;
   readonly presentationRoot?: string;
 }
+
+type RuntimeHostAttachmentPreviewIpcDeps = Pick<
+  RuntimeHostArtifactsIpcDeps,
+  'ipcMain' | 'client'
+>;
+
+const ATTACHMENT_PREVIEW_LIMIT_EXCEEDED = Symbol("attachment-preview-limit-exceeded");
 
 export function registerRuntimeHostArtifactsIpc(
   deps: RuntimeHostArtifactsIpcDeps,
@@ -40,12 +71,6 @@ export function registerRuntimeHostArtifactsIpc(
         ? artifacts
         : artifacts.filter(({ status }) => status !== "deleted");
     },
-  );
-  handleReconnectableRead(
-    deps.ipcMain,
-    "artifacts:get",
-    (_event, sessionId: string, artifactId: string) =>
-      deps.client.getArtifact(sessionId, artifactId),
   );
   handleReconnectableRead(
     deps.ipcMain,
@@ -72,37 +97,7 @@ export function registerRuntimeHostArtifactsIpc(
       return result;
     },
   );
-  handleReconnectableRead(
-    deps.ipcMain,
-    "attachments:readBytes",
-    async (_event, sessionId: string, artifactId: string) => {
-      const artifact = await deps.client.getArtifact(sessionId, artifactId);
-      if (
-        !artifact ||
-        artifact.status === "deleted" ||
-        artifact.sizeBytes > MAX_ATTACHMENT_BYTES
-      ) {
-        return { ok: false as const, reason: "not_found" };
-      }
-      const chunks: Buffer[] = [];
-      let received = 0;
-      await deps.client.streamArtifact(sessionId, artifactId, async (chunk) => {
-        received += chunk.byteLength;
-        if (received > MAX_ATTACHMENT_BYTES) {
-          throw new Error("Attachment exceeds the renderer byte limit");
-        }
-        chunks.push(Buffer.from(chunk));
-      });
-      if (received !== artifact.sizeBytes) {
-        return { ok: false as const, reason: "read_failed" };
-      }
-      return {
-        ok: true as const,
-        base64: Buffer.concat(chunks, received).toString("base64"),
-        mimeType: artifact.mimeType ?? "application/octet-stream",
-      };
-    },
-  );
+  registerRuntimeHostAttachmentPreviewIpc(deps);
   deps.ipcMain.handle(
     "app:openArtifactPath",
     async (_event, sessionId: string, artifactId: string) => {
@@ -153,6 +148,58 @@ export function registerRuntimeHostArtifactsIpc(
       } catch {
         return { ok: false, reason: "write_failed" };
       }
+    },
+  );
+}
+
+/** Guest-safe projection used by transcript attachment thumbnails. */
+export function registerRuntimeHostAttachmentPreviewIpc(
+  deps: RuntimeHostAttachmentPreviewIpcDeps,
+): void {
+  handleReconnectableRead(
+    deps.ipcMain,
+    "attachments:readBytes",
+    async (_event, sessionId: string, artifactId: string) => {
+      const artifact = await deps.client.getArtifact(sessionId, artifactId);
+      if (
+        !artifact ||
+        artifact.status === "deleted"
+      ) {
+        return { ok: false as const, reason: "not_found" };
+      }
+      const preview = resolveArtifactImagePreview(artifact);
+      if (preview.kind === "unsupported") {
+        return {
+          ok: false as const,
+          reason: preview.reason === "oversize" ? "too_large" : "unsupported_mime",
+        };
+      }
+      const mimeType = normalizeArtifactImagePreviewMime(artifact.mimeType, artifact.name);
+      if (!mimeType) return { ok: false as const, reason: "unsupported_mime" };
+      const chunks: Buffer[] = [];
+      let received = 0;
+      try {
+        await deps.client.streamArtifact(sessionId, artifactId, async (chunk) => {
+          received += chunk.byteLength;
+          if (received > ARTIFACT_IMAGE_PREVIEW_MAX_BYTES) {
+            throw ATTACHMENT_PREVIEW_LIMIT_EXCEEDED;
+          }
+          chunks.push(Buffer.from(chunk));
+        });
+      } catch (error) {
+        if (error === ATTACHMENT_PREVIEW_LIMIT_EXCEEDED) {
+          return { ok: false as const, reason: "too_large" };
+        }
+        throw error;
+      }
+      if (received !== artifact.sizeBytes) {
+        return { ok: false as const, reason: "read_failed" };
+      }
+      return {
+        ok: true as const,
+        base64: Buffer.concat(chunks, received).toString("base64"),
+        mimeType,
+      };
     },
   );
 }

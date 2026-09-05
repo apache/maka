@@ -1,12 +1,37 @@
-import { type SessionEvent, type StoredMessage } from '@maka/core';
-import type { CreateSessionInput, UserMessageInput } from '@maka/core/runtime-inputs';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { failureClassFromCompleteStopReason, type SessionEvent } from '@maka/core/events';
+import { findProjectByIdentity } from '@maka/core/project';
+import { type StoredMessage } from '@maka/core/session';
+import type { UserMessageInput } from '@maka/core/runtime-inputs';
 import type { ExecutionBoundaryReadModel } from '@maka/core/sandbox-boundary';
 import type { SessionSummary } from '@maka/core/session';
 import {
+  projectSessionCatalogSummary,
   readRuntimeHostSessions,
+  readRuntimeHostProjects,
   RuntimeHostOperationError,
   type RuntimeHostConnection,
+  type RuntimeHostProfile,
 } from '@maka/runtime-host/client';
+import { runtimeHostProfileUsesHostWorkspace } from '@maka/runtime-host/profile-kind';
 import type { InteractionPendingSnapshot, SessionCatalogItem } from '@maka/runtime-host/protocol';
 import {
   runMakaTextCliCore,
@@ -24,26 +49,36 @@ import {
 } from './runtime-host-cli-context.js';
 import {
   createRuntimeHostMakaSessionDriver,
-  runtimeHostSessionSummary,
   type RuntimeHostMakaSessionDriver,
 } from './runtime-host-session-driver.js';
-import type { MakaPreparedSessionTurn } from './session-driver.js';
+import type { CreateSessionRequest, MakaPreparedSessionTurn } from './session-driver.js';
 import {
   formatRuntimeHostCliTaskBlockers,
   isRuntimeHostCliTaskBlocked,
   readRuntimeHostCliTaskReadiness,
 } from './runtime-host-task-readiness.js';
+import { resolveMakaClientDataRoot } from './workspace-root.js';
 
 const GRAPH_POLL_INTERVAL_MS = 25;
 
 export interface RuntimeHostRunCommandDeps {
-  connect(rootPath: string): Promise<RuntimeHostCliConnectionContext>;
+  connect(
+    rootPath: string,
+    hostProfileId: string | undefined,
+    clientDataRoot: string,
+  ): Promise<RuntimeHostCliConnectionContext>;
   createContext(
     connection: RuntimeHostConnection,
     catalog: RuntimeHostCliConnectionContext['catalog'],
     input: Parameters<MakaRunDeps['createContext']>[0],
+    profile: RuntimeHostProfile,
   ): MakaRunContext | Promise<MakaRunContext>;
   run: typeof runMakaTextCliCore;
+}
+
+export interface RuntimeHostTextCliOptions {
+  readonly cliCommand: string;
+  readonly clientDataRoot: string;
 }
 
 export interface RuntimeHostRunContextDeps {
@@ -56,28 +91,46 @@ export async function runRuntimeHostTextCli(
   argv: readonly string[],
   overrides: Partial<MakaRunEnvironmentDeps> = {},
   commandOverrides: Partial<RuntimeHostRunCommandDeps> = {},
+  options: RuntimeHostTextCliOptions = {
+    cliCommand: 'maka',
+    clientDataRoot: resolveMakaClientDataRoot(),
+  },
 ): Promise<number> {
   const commandDeps = { ...defaultRuntimeHostRunCommandDeps(), ...commandOverrides };
   let connected: RuntimeHostCliConnectionContext | undefined;
-  const connect = async (rootPath: string): Promise<RuntimeHostCliConnectionContext> => {
-    connected ??= await commandDeps.connect(rootPath);
+  const connect = async (
+    rootPath: string,
+    hostProfileId?: string,
+  ): Promise<RuntimeHostCliConnectionContext> => {
+    connected ??= await commandDeps.connect(rootPath, hostProfileId, options.clientDataRoot);
     return connected;
   };
   try {
     return await commandDeps.run(
       argv,
       {
-        listSessions: async (rootPath) =>
+        listSessions: async (rootPath, hostProfileId) =>
           runtimeHostSessionSummaries(
-            await readRuntimeHostSessions((await connect(rootPath)).connection),
+            await readRuntimeHostSessions((await connect(rootPath, hostProfileId)).connection),
           ),
         createContext: async (input) => {
-          const context = await connect(input.workspaceRoot);
-          await assertRuntimeHostRunReady(context.connection, context.catalog, input);
-          return commandDeps.createContext(context.connection, context.catalog, input);
+          const context = await connect(input.workspaceRoot, input.hostProfileId);
+          const preparedInput = await prepareRuntimeHostRunInput(
+            context.connection,
+            context.catalog,
+            context.profile,
+            input,
+            options.cliCommand,
+          );
+          return commandDeps.createContext(
+            context.connection,
+            context.catalog,
+            preparedInput,
+            context.profile,
+          );
         },
       },
-      overrides,
+      { ...overrides, cliCommand: () => options.cliCommand },
     );
   } finally {
     await connected?.close().catch(() => undefined);
@@ -86,8 +139,14 @@ export async function runRuntimeHostTextCli(
 
 function defaultRuntimeHostRunCommandDeps(): RuntimeHostRunCommandDeps {
   return {
-    connect: (rootPath) => connectRuntimeHostCli({ rootPath, surface: 'run' }),
-    createContext: createRuntimeHostRunContext,
+    connect: (rootPath, hostProfileId, clientDataRoot) =>
+      connectRuntimeHostCli({
+        rootPath,
+        ...(hostProfileId ? { profileId: hostProfileId } : {}),
+        clientDataRoot,
+      }),
+    createContext: (connection, catalog, input) =>
+      createRuntimeHostRunContext(connection, catalog, input),
     run: runMakaTextCliCore,
   };
 }
@@ -109,9 +168,14 @@ export function createRuntimeHostRunContext(
   const driver = contextDeps.createDriver({
     connection,
     cwd: input.cwd,
+    llmConnectionId: target.connection.connectionId,
     llmConnectionSlug: target.connection.slug,
     model: target.model,
-    permissionMode: 'ask',
+    executionLocation:
+      !input.hostProfileId || input.hostProfileId === 'local'
+        ? { kind: 'client_path' }
+        : { kind: 'host' },
+    ...(input.projectId ? { workspace: { kind: 'project', projectId: input.projectId } } : {}),
   });
   const runtime = new RuntimeHostRunRuntime(
     connection,
@@ -136,22 +200,51 @@ export function createRuntimeHostRunContext(
   };
 }
 
-async function assertRuntimeHostRunReady(
+async function prepareRuntimeHostRunInput(
   connection: RuntimeHostConnection,
   catalog: RuntimeHostCliConnectionContext['catalog'],
+  profile: RuntimeHostProfile,
   input: Parameters<MakaRunDeps['createContext']>[0],
-): Promise<void> {
+  cliCommand: string,
+): Promise<Parameters<MakaRunDeps['createContext']>[0]> {
+  let projectId = input.projectId;
+  if (runtimeHostProfileUsesHostWorkspace(profile.kind) && !input.resumeSessionId) {
+    if (!projectId) {
+      throw new Error(`Runtime Host profile ${profile.id} requires --project for a new Session`);
+    }
+    const project = findProjectByIdentity(await readRuntimeHostProjects(connection), projectId);
+    if (!project || project.archivedAt !== null || !project.available) {
+      throw new Error(`Runtime Host Project is unavailable: ${projectId}`);
+    }
+    projectId = project.id;
+  }
+  const preparedInput = projectId === input.projectId ? input : { ...input, projectId };
   const snapshot = await readRuntimeHostCliTaskReadiness({
     connection,
     catalog,
-    cwd: input.cwd,
-    ...(input.requestedConnectionSlug ? { connectionSlug: input.requestedConnectionSlug } : {}),
-    ...(input.requestedModel ? { model: input.requestedModel } : {}),
+    cwd: preparedInput.cwd,
+    ...(runtimeHostProfileUsesHostWorkspace(profile.kind)
+      ? { workspaceState: 'ready' as const }
+      : {}),
+    ...(preparedInput.requestedConnectionSlug
+      ? { connectionSlug: preparedInput.requestedConnectionSlug }
+      : {}),
+    ...(preparedInput.requestedModel ? { model: preparedInput.requestedModel } : {}),
   });
   if (isRuntimeHostCliTaskBlocked(snapshot)) {
-    throw new Error(`Task is not ready:\n${formatRuntimeHostCliTaskBlockers(snapshot)}`);
+    throw new Error(
+      `Task is not ready:\n${formatRuntimeHostCliTaskBlockers(snapshot, cliCommand)}`,
+    );
   }
+  return preparedInput;
 }
+
+type ActiveRuntimeHostTurn = {
+  readonly sessionId: string;
+  readonly turnId: string;
+  readonly runId: string;
+  outcome: TurnOutcomeClassifier;
+};
 
 class RuntimeHostRunRuntime implements MakaRunRuntime {
   readonly #connection: RuntimeHostConnection;
@@ -162,16 +255,16 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
   readonly #maxSteps: number | undefined;
   readonly #unsubscribeTranscriptReplacements: () => void;
   #sessionId: string | undefined;
-  #activeTurn: { sessionId: string; turnId: string; runId: string } | undefined;
+  #activeTurn: ActiveRuntimeHostTurn | undefined;
   #stopRequested = false;
   #closed = false;
   readonly #interactions: NonInteractiveInteractionController;
   #graphAdmissionTurnIds = new Set<string>();
-  #latestTranscriptReplacement: StoredMessage[] | undefined;
+  #latestTranscriptReplacement: readonly StoredMessage[] | undefined;
   readonly #graphTerminalWaiters = new Map<
     string,
     Set<{
-      resolve(messages: StoredMessage[]): void;
+      resolve(messages: readonly StoredMessage[]): void;
       reject(error: Error): void;
       timer: ReturnType<typeof setTimeout>;
     }>
@@ -195,11 +288,14 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
       this.#stopForInteraction(pending),
     );
     this.#unsubscribeTranscriptReplacements = driver.subscribeTranscriptReplacements(
-      (_sessionId, _turnId, messages) => this.#acceptGraphTranscript(messages),
+      (sessionId, turnId, messages) => {
+        this.#acceptRootTranscript(sessionId, turnId, messages);
+        this.#acceptGraphTranscript(messages);
+      },
     );
   }
 
-  async createSession(input: CreateSessionInput): Promise<SessionSummary> {
+  async createSession(input: CreateSessionRequest): Promise<SessionSummary> {
     const created = await this.#driver.createSession(input);
     this.#sessionId = created.id;
     return created;
@@ -223,14 +319,19 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
       ...(maxSteps !== undefined ? { maxSteps } : {}),
     });
     if (!turn.runId) throw new Error('Runtime Host did not return a Run identity');
-    const activeTurn = { sessionId: turn.sessionId, turnId: turn.turnId, runId: turn.runId };
+    const activeTurn = {
+      sessionId: turn.sessionId,
+      turnId: turn.turnId,
+      runId: turn.runId,
+      outcome: new TurnOutcomeClassifier(turn.runId),
+    };
     this.#activeTurn = activeTurn;
     if (this.#stopRequested) {
       await this.#stopTurn(activeTurn);
       if (input.turnOrchestration?.mode === 'graph') await this.#stopGraph(sessionId);
     }
     try {
-      yield* this.#observeTurn(turn);
+      yield* this.#observeTurn(turn, activeTurn);
     } finally {
       if (this.#activeTurn === activeTurn) this.#activeTurn = undefined;
     }
@@ -301,7 +402,7 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
       throw new Error(`Agent Graph ${terminalStatus}`);
     }
     await this.#interactions.settle();
-    let messages = await this.#driver.readMessages();
+    let messages: readonly StoredMessage[] = await this.#driver.readMessages();
     let graphTurnId = lastNewGraphSupervisorTurnId(messages, this.#graphAdmissionTurnIds);
     let outcome = graphTurnId ? outcomeFromStoredTurn(messages, graphTurnId) : undefined;
     if (graphTurnId && !outcome) {
@@ -329,7 +430,11 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
       this.#sessionCwdOverride?.sessionId === sessionId &&
       switched.summary.cwd !== this.#sessionCwdOverride.cwd
     ) {
-      const moved = await this.#driver.moveSession(this.#sessionCwdOverride.cwd);
+      const moveSession = this.#driver.moveSession;
+      if (!moveSession) {
+        throw new Error('The selected Runtime Host does not allow Client path relocation');
+      }
+      const moved = await moveSession(this.#sessionCwdOverride.cwd);
       if (moved.cwd !== this.#sessionCwdOverride.cwd) {
         throw new Error(
           `Runtime Host cannot resume Session ${sessionId}: its working directory could not be canonicalized`,
@@ -339,25 +444,35 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
     this.#sessionId = sessionId;
   }
 
-  async *#observeTurn(turn: MakaPreparedSessionTurn): AsyncIterable<SessionEvent> {
-    const accumulator = new TurnOutcomeAccumulator(turn.runId ?? turn.turnId);
+  async *#observeTurn(
+    turn: MakaPreparedSessionTurn,
+    active: ActiveRuntimeHostTurn,
+  ): AsyncIterable<SessionEvent> {
     const events = turn.events[Symbol.asyncIterator]();
     for (;;) {
       const next = await this.#interactions.race(events.next());
       if (next.done) break;
       const event = next.value;
-      if (event.type === 'user_question_request' || event.type === 'sandbox_boundary_request') {
+      if (
+        event.type === 'user_question_request' ||
+        event.type === 'form_request' ||
+        event.type === 'sandbox_boundary_request'
+      ) {
         continue;
       }
-      accumulator.accept(event);
+      active.outcome.accept(observationFromSessionEvent(event));
       yield event;
     }
     await this.#interactions.settle();
-    await this.#observer?.(accumulator.finish());
+    await this.#observer?.(active.outcome.outcome('fail'));
   }
 
   async #stopTurn(turn: { sessionId: string; turnId: string; runId: string }): Promise<void> {
-    await this.#connection.request('turn.stop', turn);
+    await this.#connection.request('turn.stop', {
+      sessionId: turn.sessionId,
+      turnId: turn.turnId,
+      runId: turn.runId,
+    });
   }
 
   async #stopGraph(sessionId: string): Promise<void> {
@@ -368,25 +483,34 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
     }
   }
 
-  #acceptGraphTranscript(messages: StoredMessage[]): void {
-    const replacement = messages.map((message) => structuredClone(message));
-    this.#latestTranscriptReplacement = replacement;
+  #acceptGraphTranscript(messages: readonly StoredMessage[]): void {
+    this.#latestTranscriptReplacement = messages;
     for (const [turnId, waiters] of this.#graphTerminalWaiters) {
-      if (!outcomeFromStoredTurn(replacement, turnId)) continue;
+      if (!outcomeFromStoredTurn(messages, turnId)) continue;
       this.#graphTerminalWaiters.delete(turnId);
       for (const waiter of waiters) {
         clearTimeout(waiter.timer);
-        waiter.resolve(replacement);
+        waiter.resolve(messages);
       }
     }
   }
 
-  #waitForGraphTurnTerminal(turnId: string): Promise<StoredMessage[]> {
+  #acceptRootTranscript(
+    sessionId: string,
+    turnId: string,
+    messages: readonly StoredMessage[],
+  ): void {
+    const active = this.#activeTurn;
+    if (!active || active.sessionId !== sessionId || active.turnId !== turnId) return;
+    active.outcome = classifierFromStoredTurn(messages, turnId, active.runId);
+  }
+
+  #waitForGraphTurnTerminal(turnId: string): Promise<readonly StoredMessage[]> {
     if (this.#closed) return Promise.reject(new Error('Runtime Host run context closed'));
     if (this.#stopRequested) return Promise.reject(new Error('Agent Graph wait was cancelled'));
     const latest = this.#latestTranscriptReplacement;
     if (latest && outcomeFromStoredTurn(latest, turnId)) return Promise.resolve(latest);
-    return new Promise<StoredMessage[]>((resolve, reject) => {
+    return new Promise<readonly StoredMessage[]>((resolve, reject) => {
       let waiters = this.#graphTerminalWaiters.get(turnId);
       if (!waiters) {
         waiters = new Set();
@@ -434,63 +558,178 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
 }
 
 function runtimeHostSessionSummaries(items: readonly SessionCatalogItem[]): SessionSummary[] {
-  return items.flatMap((item) => ('kind' in item ? [] : [runtimeHostSessionSummary(item)]));
+  return items.flatMap((item) => ('kind' in item ? [] : [projectSessionCatalogSummary(item)]));
 }
 
-class TurnOutcomeAccumulator {
+type TurnOutcomeObservation =
+  | { readonly kind: 'output'; readonly text: string }
+  | {
+      readonly kind: 'terminal';
+      readonly update: 'replace' | 'if_unset';
+      readonly status: 'completed';
+    }
+  | {
+      readonly kind: 'terminal';
+      readonly update: 'replace' | 'if_unset';
+      readonly status: 'failed';
+      readonly failure: NonNullable<MakaRunOutcome['failure']>;
+    }
+  | {
+      readonly kind: 'tool_result';
+      readonly toolUseId: string;
+      readonly outcome: 'sandbox_failure' | 'success';
+    };
+
+type TerminalOutcomeObservation = Extract<TurnOutcomeObservation, { kind: 'terminal' }>;
+
+class TurnOutcomeClassifier {
   readonly #outcomeId: string;
+  readonly #unresolvedSandboxFailures = new Set<string>();
   #finalOutput: string | undefined;
-  #failure: { class: string; message: string } | undefined;
-  #completed = false;
-  #unresolvedBoundary = false;
-  #recoveredBoundary = false;
+  #terminal: TerminalOutcomeObservation | undefined;
 
   constructor(outcomeId: string) {
     this.#outcomeId = outcomeId;
   }
 
-  accept(event: SessionEvent): void {
-    if (event.type === 'text_complete' && event.text.trim().length > 0) {
-      this.#finalOutput = event.text;
-    } else if (event.type === 'error') {
-      this.#failure = { class: event.reason ?? 'runtime_error', message: event.message };
-    } else if (event.type === 'abort') {
-      this.#failure = { class: 'aborted', message: 'Turn was cancelled' };
-    } else if (event.type === 'complete') {
-      this.#completed = true;
-    }
-    if (event.type !== 'tool_result') return;
-    if (event.isError && event.content.kind === 'text' && event.content.sandboxFailure) {
-      this.#unresolvedBoundary = true;
-      return;
-    }
-    if (!event.isError && this.#unresolvedBoundary) {
-      this.#unresolvedBoundary = false;
-      this.#recoveredBoundary = true;
+  accept(observation: TurnOutcomeObservation | undefined): void {
+    switch (observation?.kind) {
+      case undefined:
+        return;
+      case 'output':
+        this.#finalOutput = observation.text;
+        return;
+      case 'terminal':
+        if (observation.update === 'replace' || this.#terminal === undefined) {
+          this.#terminal = observation;
+        }
+        return;
+      case 'tool_result': {
+        if (observation.outcome === 'sandbox_failure') {
+          this.#unresolvedSandboxFailures.add(observation.toolUseId);
+        }
+        // No clearing path: `maka run` denies every widening request, so the
+        // boundary cannot move mid-Turn and a later success cannot prove that
+        // a blocked call recovered. The failure stays unresolved to the end.
+        return;
+      }
     }
   }
 
-  finish(): MakaRunOutcome {
-    const completed = this.#completed && !this.#failure;
+  outcome(incomplete: 'fail'): MakaRunOutcome;
+  outcome(incomplete: 'pending'): MakaRunOutcome | undefined;
+  outcome(incomplete: 'fail' | 'pending'): MakaRunOutcome | undefined {
+    const terminal = this.#terminal;
+    if (!terminal && incomplete === 'pending') return undefined;
+    const completed = terminal?.status === 'completed';
+    const sandboxBoundary = this.#unresolvedSandboxFailures.size > 0 ? 'unresolved' : 'none';
+    const failure =
+      terminal?.status === 'failed'
+        ? terminal.failure
+        : {
+            class: 'missing_terminal_event',
+            message: 'Turn ended unexpectedly',
+          };
     return {
       outcomeId: this.#outcomeId,
       status: completed ? 'completed' : 'failed',
       ...(completed && this.#finalOutput !== undefined ? { finalOutput: this.#finalOutput } : {}),
-      ...(!completed
-        ? {
-            failure: this.#failure ?? {
-              class: 'missing_terminal_event',
-              message: 'Turn ended unexpectedly',
-            },
-          }
-        : {}),
-      sandboxBoundary: this.#unresolvedBoundary
-        ? 'unresolved'
-        : this.#recoveredBoundary
-          ? 'recovered'
-          : 'none',
+      ...(!completed ? { failure } : {}),
+      sandboxBoundary,
     };
   }
+}
+
+function observationFromSessionEvent(event: SessionEvent): TurnOutcomeObservation | undefined {
+  if (event.type === 'text_complete' && event.text.trim().length > 0) {
+    return { kind: 'output', text: event.text };
+  }
+  if (event.type === 'error') {
+    return {
+      kind: 'terminal',
+      update: 'replace',
+      status: 'failed',
+      failure: { class: event.reason ?? event.code ?? 'runtime_error', message: event.message },
+    };
+  }
+  if (event.type === 'abort') {
+    return {
+      kind: 'terminal',
+      update: 'replace',
+      status: 'failed',
+      failure: { class: 'aborted', message: 'Turn was cancelled' },
+    };
+  }
+  if (event.type === 'complete') {
+    return observationFromCompleteEvent(event);
+  }
+  return event.type === 'tool_result' ? observationFromToolResult(event) : undefined;
+}
+
+function observationFromStoredMessage(message: StoredMessage): TurnOutcomeObservation | undefined {
+  if (message.type === 'assistant' && message.text.trim().length > 0) {
+    return { kind: 'output', text: message.text };
+  }
+  if (message.type === 'turn_state' && message.status === 'completed') {
+    return { kind: 'terminal', update: 'replace', status: 'completed' };
+  }
+  if (message.type === 'turn_state' && message.status === 'aborted') {
+    return {
+      kind: 'terminal',
+      update: 'replace',
+      status: 'failed',
+      failure: { class: 'aborted', message: 'Turn was cancelled' },
+    };
+  }
+  if (message.type === 'turn_state' && message.status === 'failed') {
+    return {
+      kind: 'terminal',
+      update: 'replace',
+      status: 'failed',
+      failure: {
+        class: message.errorClass ?? 'runtime_error',
+        message: 'Agent Graph final Turn failed',
+      },
+    };
+  }
+  return message.type === 'tool_result' ? observationFromToolResult(message) : undefined;
+}
+
+function observationFromCompleteEvent(
+  event: Extract<SessionEvent, { type: 'complete' }>,
+): TerminalOutcomeObservation {
+  if (event.stopReason === 'user_stop') {
+    return {
+      kind: 'terminal',
+      update: 'if_unset',
+      status: 'failed',
+      failure: { class: 'aborted', message: 'Turn was cancelled' },
+    };
+  }
+  const failureClass = failureClassFromCompleteStopReason(event.stopReason);
+  return failureClass
+    ? {
+        kind: 'terminal',
+        update: 'if_unset',
+        status: 'failed',
+        failure: { class: failureClass },
+      }
+    : { kind: 'terminal', update: 'if_unset', status: 'completed' };
+}
+
+function observationFromToolResult(
+  result: Pick<Extract<SessionEvent, { type: 'tool_result' }>, 'content' | 'isError' | 'toolUseId'>,
+): TurnOutcomeObservation | undefined {
+  if (result.isError && result.content.kind === 'text' && result.content.sandboxFailure) {
+    return {
+      kind: 'tool_result',
+      toolUseId: result.toolUseId,
+      outcome: 'sandbox_failure',
+    };
+  }
+  return result.isError
+    ? undefined
+    : { kind: 'tool_result', toolUseId: result.toolUseId, outcome: 'success' };
 }
 
 function graphSupervisorTurnIds(messages: readonly StoredMessage[]): Set<string> {
@@ -519,36 +758,19 @@ function outcomeFromStoredTurn(
   messages: readonly StoredMessage[],
   turnId: string,
 ): MakaRunOutcome | undefined {
-  const turnMessages = messages.filter((message) => message.turnId === turnId);
-  const finalOutput = [...turnMessages]
-    .reverse()
-    .find(
-      (message): message is Extract<StoredMessage, { type: 'assistant' }> =>
-        message.type === 'assistant' && message.text.trim().length > 0,
-    )?.text;
-  const storedTerminal = [...turnMessages]
-    .reverse()
-    .find(
-      (message): message is Extract<StoredMessage, { type: 'turn_state' }> =>
-        message.type === 'turn_state' && message.status !== 'running',
-    );
-  const status = storedTerminal?.status;
-  if (!status) return undefined;
-  const completed = status === 'completed';
-  return {
-    outcomeId: turnId,
-    status: completed ? 'completed' : 'failed',
-    ...(completed && finalOutput !== undefined ? { finalOutput } : {}),
-    ...(!completed
-      ? {
-          failure: {
-            class: storedTerminal?.errorClass ?? storedTerminal?.abortSource ?? status,
-            message: status === 'aborted' ? 'Turn was cancelled' : 'Agent Graph final Turn failed',
-          },
-        }
-      : {}),
-    sandboxBoundary: storedSandboxBoundaryOutcome(turnMessages),
-  };
+  return classifierFromStoredTurn(messages, turnId, turnId).outcome('pending');
+}
+
+function classifierFromStoredTurn(
+  messages: readonly StoredMessage[],
+  turnId: string,
+  outcomeId: string,
+): TurnOutcomeClassifier {
+  const classifier = new TurnOutcomeClassifier(outcomeId);
+  for (const message of messages) {
+    if (message.turnId === turnId) classifier.accept(observationFromStoredMessage(message));
+  }
+  return classifier;
 }
 
 class NonInteractiveInteractionController {
@@ -613,7 +835,9 @@ class NonInteractiveInteractionController {
     throw new Error(
       pending.request.kind === 'question'
         ? 'interactive user questions are unavailable in non-interactive mode'
-        : 'interactive permission requests are unavailable in non-interactive mode',
+        : pending.request.kind === 'form'
+          ? 'interactive user forms are unavailable in non-interactive mode'
+          : 'interactive permission requests are unavailable in non-interactive mode',
     );
   }
 
@@ -622,27 +846,6 @@ class NonInteractiveInteractionController {
     this.#failure = error;
     this.#publishFailure(error);
   }
-}
-
-function storedSandboxBoundaryOutcome(
-  messages: readonly StoredMessage[],
-): MakaRunOutcome['sandboxBoundary'] {
-  let unresolved = false;
-  let recovered = false;
-  for (const message of messages) {
-    if (
-      message.type === 'tool_result' &&
-      message.isError &&
-      message.content.kind === 'text' &&
-      message.content.sandboxFailure
-    ) {
-      unresolved = true;
-    } else if (message.type === 'tool_result' && !message.isError && unresolved) {
-      unresolved = false;
-      recovered = true;
-    }
-  }
-  return unresolved ? 'unresolved' : recovered ? 'recovered' : 'none';
 }
 
 function delay(ms: number): Promise<void> {

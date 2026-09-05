@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 // Systematic row-alignment auditor (design governance tool).
 //
 // For every e2e-fixture fixture, finds horizontal clusters of interactive
@@ -28,12 +47,14 @@ const FIXTURES = [
   ['module-daily-review', '.maka-module-main'],
   ['scheduled-tasks', '.maka-module-main'],
   ['settings-general', '.settingsSurface'],
-  ['fetched-empty', '.settingsSurface'],
+  ['settings-models', '.settingsSurface'],
   ['settings-data', '.settingsSurface'],
   // 使用统计 restyle: the range/refresh row, underline tab bar, and stats
   // tables now sit under the alignment auditor's watch.
   ['settings-usage', '.settingsSurface'],
   ['turn-narrative', '.maka-session-workbar'],
+  // #2188: the browser toolbar's four-control-plus-input row.
+  ['turn-narrative-browser', '.maka-browser-panel'],
   ['settings-permissions', '.settingsSurface'],
   // #1233 deferral: bot QR-onboarding modal in its deterministic waiting state.
   ['settings-bots-onboarding', '.settingsSurface'],
@@ -47,6 +68,9 @@ const FIXTURES = [
 // fixture) still proceeds on the old CI-gate budget.
 const SETTLE_MS = Number(process.env.AUDIT_SETTLE_MS ?? 2_500);
 const QUIET_MS = Number(process.env.AUDIT_QUIET_MS ?? 500);
+// Fixtures own separate Electron user-data roots and never synthesize focus or
+// pointer input, so they can fill the four hosted-runner cores safely.
+const CONCURRENCY = 4;
 
 // Resolves once the DOM has stayed mutation-free for `quietMs`, bounded by
 // `budgetMs` overall. Runs after withFixtureWindow's own settle expression,
@@ -64,9 +88,6 @@ const QUIESCENT_EXPR = (quietMs, budgetMs) => `new Promise((resolve)=>{
   };
   tick();
 })`;
-let totalIssues = 0;
-let fixtureErrors = 0;
-
 const EXPR = `(()=>{
   const controls=[...document.querySelectorAll('button,[role=button],[role=switch],input,select,[role=combobox],[role=tab]')].filter(e=>{
     const r=e.getBoundingClientRect();
@@ -102,24 +123,45 @@ const EXPR = `(()=>{
   return JSON.stringify(issues.slice(0,12));
 })()`;
 
-for (const [fixture, readySelector] of FIXTURES) {
+async function auditFixture([fixture, readySelector]) {
   try {
     const issues = await withFixtureWindow(
       fixture,
-      { theme: 'light', readySelector, settleMs: 0 },
+      { theme: 'light', readySelector, settleMs: QUIET_MS },
       async ({ evaluate }) => {
         await evaluate(QUIESCENT_EXPR(QUIET_MS, SETTLE_MS));
         return JSON.parse(await evaluate(EXPR));
       },
     );
-    console.log('==', fixture, '==');
-    for (const issue of issues) console.log(JSON.stringify(issue));
-    totalIssues += issues.length;
-    if (!issues.length) console.log('(clean)');
+    return { fixture, issues };
   } catch (err) {
-    console.log('==', fixture, '== ERROR', err.message);
-    fixtureErrors++;
+    return { fixture, error: err instanceof Error ? err.message : String(err) };
   }
+}
+
+const results = new Array(FIXTURES.length);
+let nextFixture = 0;
+await Promise.all(
+  Array.from({ length: Math.min(CONCURRENCY, FIXTURES.length) }, async () => {
+    while (nextFixture < FIXTURES.length) {
+      const index = nextFixture++;
+      results[index] = await auditFixture(FIXTURES[index]);
+    }
+  }),
+);
+
+let totalIssues = 0;
+let fixtureErrors = 0;
+for (const result of results) {
+  if (result.error) {
+    console.log('==', result.fixture, '== ERROR', result.error);
+    fixtureErrors++;
+    continue;
+  }
+  console.log('==', result.fixture, '==');
+  for (const issue of result.issues) console.log(JSON.stringify(issue));
+  totalIssues += result.issues.length;
+  if (!result.issues.length) console.log('(clean)');
 }
 
 // CI semantics: alignment findings fail the run; fixture-level launch errors

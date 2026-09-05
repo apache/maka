@@ -1,39 +1,65 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 export interface AppQuitEvent {
   preventDefault(): void;
 }
 
 export interface AppQuitCoordinator {
   focusOrCreateWindow(): void;
-  getWindowCreationSignal(): AbortSignal | undefined;
   handleBeforeQuit(event: AppQuitEvent): void;
 }
 
 export interface AppQuitCoordinatorDeps {
+  prepareToQuit(): Promise<'ready' | 'cancelled'>;
   cleanup(): Promise<void>;
-  focusOrCreateWindow(signal: AbortSignal): void;
+  focusOrCreateWindow(signal: AbortSignal): void | Promise<void>;
+  onPreparationError(error: unknown): void;
   onCleanupError(error: unknown): void;
+  onWindowCreationError(error: unknown): void;
   resumeQuit(): void;
 }
 
-type AppQuitPhase = 'running' | 'cleaning' | 'ready-to-exit';
+type AppQuitPhase = 'running' | 'preparing' | 'cleaning' | 'ready-to-exit';
 
 export function createAppQuitCoordinator(deps: AppQuitCoordinatorDeps): AppQuitCoordinator {
   let phase: AppQuitPhase = 'running';
-  const windowCreationAbort = new AbortController();
+  let windowCreationAbort = new AbortController();
+
+  const focusOrCreateWindow = (): void => {
+    if (phase !== 'running') return;
+    try {
+      void Promise.resolve(deps.focusOrCreateWindow(windowCreationAbort.signal)).catch(
+        deps.onWindowCreationError,
+      );
+    } catch (error) {
+      deps.onWindowCreationError(error);
+    }
+  };
 
   return {
-    focusOrCreateWindow(): void {
-      if (phase !== 'running') return;
-      deps.focusOrCreateWindow(windowCreationAbort.signal);
-    },
-    getWindowCreationSignal(): AbortSignal | undefined {
-      return phase === 'running' ? windowCreationAbort.signal : undefined;
-    },
+    focusOrCreateWindow,
     handleBeforeQuit(event): void {
       if (phase === 'ready-to-exit') return;
       event.preventDefault();
-      if (phase === 'cleaning') return;
-      phase = 'cleaning';
+      if (phase !== 'running') return;
+      phase = 'preparing';
       windowCreationAbort.abort();
       const finishCleanup = () => {
         // `before-quit` was cancelled inside Electron's native quit transaction.
@@ -46,10 +72,31 @@ export function createAppQuitCoordinator(deps: AppQuitCoordinatorDeps): AppQuitC
           deps.resumeQuit();
         });
       };
-      void deps.cleanup().then(finishCleanup, (error) => {
-        deps.onCleanupError(error);
-        finishCleanup();
-      });
+      void Promise.resolve()
+        .then(() => deps.prepareToQuit())
+        .then(
+          (preparation) => {
+            if (preparation === 'cancelled') {
+              phase = 'running';
+              windowCreationAbort = new AbortController();
+              focusOrCreateWindow();
+              return;
+            }
+            phase = 'cleaning';
+            return Promise.resolve()
+              .then(() => deps.cleanup())
+              .then(finishCleanup, (error) => {
+                deps.onCleanupError(error);
+                finishCleanup();
+              });
+          },
+          (error) => {
+            phase = 'running';
+            windowCreationAbort = new AbortController();
+            deps.onPreparationError(error);
+            focusOrCreateWindow();
+          },
+        );
     },
   };
 }

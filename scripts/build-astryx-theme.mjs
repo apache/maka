@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 // Build the Maka Astryx theme and strip its element-typography block (#1565 PR 3).
 //
 // `astryx theme build` compiles apps/desktop/src/renderer/astryx-theme/makaTheme.ts
@@ -37,13 +56,16 @@ const generatedFiles = ['maka.css', 'maka.js', 'maka.d.ts'];
 const canonicalCommand =
   ' * Command: astryx theme build src/renderer/astryx-theme/makaTheme.ts --out ' +
   'src/renderer/astryx-theme/maka.css';
+const canonicalBuilderComment = ' * maka theme — built by `astryx theme build`';
 const postProcessNote =
   '/* Post-processed by scripts/build-astryx-theme.mjs: the @layer reset\n' +
   ' * element-typography block is stripped — see that script for why. */\n\n';
 
 export function normalizeGeneratedHeader(source) {
   const withoutTimestamp = source.replace(/^ \* Generated: .*\n/m, '');
-  return withoutTimestamp.replace(/^ \* Command: .*$/m, canonicalCommand);
+  return withoutTimestamp
+    .replace(/^ \* Command: .*$/m, canonicalCommand)
+    .replace(/^ \* maka theme — built by `.*astryx theme build`$/m, canonicalBuilderComment);
 }
 
 export function stripResetLayer(css, file = cssOut) {

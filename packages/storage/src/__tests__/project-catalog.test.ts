@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, realpath, rm as remove, writeFile } from 'node:fs/promises';
@@ -9,7 +28,9 @@ import { promisify } from 'node:util';
 import {
   createProjectCatalog as createProjectCatalogBase,
   type ProjectCatalog,
+  ProjectPathBoundaryError,
   ProjectUnavailableError,
+  ProjectPathMismatchError,
   type ResolvedProjectLocation,
   resolveProjectLocation,
 } from '../project-catalog.js';
@@ -116,6 +137,114 @@ test('a repository and its linked worktree resolve to one project identity', asy
   }
 });
 
+test('registering a nested folder keeps that folder instead of the enclosing repository', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-nested-folder-'));
+  try {
+    const parent = join(base, 'parent-project');
+    const child = join(parent, 'child-project');
+    await mkdir(child, { recursive: true });
+    await execFileAsync('git', ['init', '--quiet'], { cwd: parent });
+    const catalog = createProjectCatalog(join(base, 'storage'), {
+      now: () => 1_000,
+      createId: (() => {
+        let id = 0;
+        return () => `project-${++id}`;
+      })(),
+    });
+
+    const parentProject = await catalog.register(parent);
+    const childProject = await catalog.register(child);
+    const parentPath = await realpath(parent);
+    const childPath = await realpath(child);
+
+    assert.notEqual(childProject.id, parentProject.id);
+    assert.equal(parentProject.preferredPath, parentPath);
+    assert.equal(childProject.preferredPath, childPath);
+    assert.equal(childProject.name, 'child-project');
+
+    // session.create → HostWorkspaceResolver.touch(projectId, preferredPath)
+    const touched = await catalog.touch(childProject.id, childProject.preferredPath);
+    assert.equal(touched.id, childProject.id);
+    assert.equal(touched.preferredPath, childPath);
+    await assert.rejects(
+      () => catalog.touch(childProject.id, parentPath),
+      (error) => error instanceof ProjectPathMismatchError && error.projectId === childProject.id,
+    );
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('registration validates the final canonical path against its boundary', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-boundary-'));
+  try {
+    const publishedRoot = join(base, 'published');
+    const outside = join(base, 'outside');
+    await Promise.all([mkdir(publishedRoot), mkdir(outside)]);
+    const catalog = createProjectCatalog(join(base, 'storage'));
+
+    await assert.rejects(
+      () => catalog.register(outside, { withinRoot: publishedRoot }),
+      (error) => error instanceof ProjectPathBoundaryError,
+    );
+    assert.deepEqual(await catalog.list(), []);
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('relink and relinkWithSessions keep a nested repository directory', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-nested-relink-'));
+  const storage = join(base, 'storage');
+  const sessions = createSessionStore(storage);
+  try {
+    const parent = join(base, 'parent-project');
+    const child = join(parent, 'child-project');
+    const childTwo = join(parent, 'child-two');
+    const elsewhere = join(base, 'elsewhere');
+    const elsewhereTwo = join(base, 'elsewhere-two');
+    await mkdir(child, { recursive: true });
+    await mkdir(childTwo, { recursive: true });
+    await mkdir(elsewhere, { recursive: true });
+    await mkdir(elsewhereTwo, { recursive: true });
+    await execFileAsync('git', ['init', '--quiet'], { cwd: parent });
+    const catalog = createProjectCatalog(storage, {
+      now: () => 1_000,
+      createId: (() => {
+        let id = 0;
+        return () => `project-${++id}`;
+      })(),
+    });
+
+    const parentProject = await catalog.register(parent);
+    const original = await catalog.register(elsewhere);
+    const originalSessions = await catalog.register(elsewhereTwo);
+    const childPath = await realpath(child);
+    const childTwoPath = await realpath(childTwo);
+    const assigned = await sessions.create(sessionInput(elsewhereTwo, originalSessions.id));
+
+    const relinked = await catalog.relink(original.id, child);
+    assert.equal(relinked.id, original.id);
+    assert.notEqual(relinked.id, parentProject.id);
+    assert.equal(relinked.preferredPath, childPath);
+
+    const { project: relinkedSessions, updatedSessionIds } = await catalog.relinkWithSessions(
+      originalSessions.id,
+      childTwo,
+    );
+    assert.equal(relinkedSessions.id, originalSessions.id);
+    assert.notEqual(relinkedSessions.id, parentProject.id);
+    assert.equal(relinkedSessions.preferredPath, childTwoPath);
+    assert.deepEqual(updatedSessionIds, [assigned.id]);
+    const header = await sessions.readHeaderSnapshot(assigned.id);
+    assert.equal(header.projectId, relinkedSessions.id);
+    assert.equal(header.cwd, childTwoPath);
+  } finally {
+    await sessions.close?.();
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
 async function resolveProjectLocationWithoutGit(path: string): Promise<ResolvedProjectLocation> {
   const stdout = await runProjectCatalogWithoutGit(
     'const [moduleUrl, path] = process.argv.slice(1); const { resolveProjectLocation } = await import(moduleUrl); console.log(JSON.stringify(await resolveProjectLocation({ path })));',
@@ -150,17 +279,23 @@ test('registering a repository and its linked worktree creates one project with 
     const repository = join(base, 'repository');
     const linkedWorktree = join(base, 'linked');
     await createGitRepositoryWithWorktree(repository, linkedWorktree, 'catalog-linked');
+    let now = 1_000;
     const catalog = createProjectCatalog(join(base, 'storage'), {
-      now: () => 1_000,
+      now: () => now,
       createId: () => 'project-1',
     });
 
     const first = await catalog.register(repository);
+    now = 2_000;
     const second = await catalog.register(linkedWorktree);
-    const expectedPaths = [await realpath(linkedWorktree), await realpath(repository)].sort();
+    const repositoryPath = await realpath(repository);
+    const linkedWorktreePath = await realpath(linkedWorktree);
+    const expectedPaths = [linkedWorktreePath, repositoryPath].sort();
 
     assert.equal(first.id, 'project-1');
+    assert.equal(first.preferredPath, repositoryPath);
     assert.equal(second.id, first.id);
+    assert.equal(second.preferredPath, linkedWorktreePath);
     assert.deepEqual(
       (await catalog.list()).map((project) => ({
         id: project.id,
@@ -177,6 +312,40 @@ test('registering a repository and its linked worktree creates one project with 
         },
       ],
     );
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('registering without preference preserves the preferred location until it is touched', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-catalog-not-preferred-'));
+  try {
+    const repository = join(base, 'repository');
+    const linkedWorktree = join(base, 'linked');
+    await createGitRepositoryWithWorktree(repository, linkedWorktree, 'catalog-not-preferred');
+    let now = 1_000;
+    const catalog = createProjectCatalog(join(base, 'storage'), {
+      now: () => now,
+      createId: () => 'project-1',
+    });
+    const doNotPrefer = { prefer: false } as const;
+    const repositoryPath = await realpath(repository);
+    const linkedWorktreePath = await realpath(linkedWorktree);
+
+    const first = await catalog.register(repository, doNotPrefer);
+    now = 2_000;
+    const added = await catalog.register(linkedWorktree, doNotPrefer);
+    assert.equal(added.id, first.id);
+    assert.equal(added.locations.length, 2);
+    assert.equal(added.preferredPath, repositoryPath);
+
+    now = 3_000;
+    const registeredAgain = await catalog.register(linkedWorktree, doNotPrefer);
+    assert.equal(registeredAgain.preferredPath, repositoryPath);
+
+    now = 4_000;
+    const touched = await catalog.touch(first.id, linkedWorktreePath);
+    assert.equal(touched.preferredPath, linkedWorktreePath);
   } finally {
     await rm(base, { recursive: true, force: true });
   }
@@ -285,10 +454,6 @@ test('two catalogs changing one project at the same time keep both changes', asy
     const first = createProjectCatalog(storage, { now: () => 1_000 });
     const second = createProjectCatalog(storage, { now: () => 2_000 });
     const project = await first.register(workspace);
-    // Both catalogs settle their one-time legacy-import probe first, so the two
-    // mutations below really do overlap instead of queueing behind that I/O.
-    await Promise.all([first.list(), second.list()]);
-
     // Each catalog rewrites the whole table; without holding the write lock
     // across its own read, the later writer replays a stale copy and the other
     // window's edit disappears with no error anywhere.
@@ -503,94 +668,6 @@ test('selecting a project returns its most recent available location and rejects
     await assert.rejects(() => catalog.select(missing.id), /unavailable/i);
     await catalog.archive(available.id);
     await assert.rejects(() => catalog.select(available.id), /archived/i);
-  } finally {
-    await rm(base, { recursive: true, force: true });
-  }
-});
-
-test('a malformed legacy catalog is reported and preserved without blocking the catalog', async () => {
-  const base = await mkdtemp(join(tmpdir(), 'maka-project-corrupt-'));
-  try {
-    const workspace = join(base, 'workspace');
-    const storage = join(base, 'storage');
-    const catalogPath = join(storage, 'projects.json');
-    await mkdir(workspace);
-    await mkdir(storage);
-    const original = '{"schemaVersion":1,"projects":[{}]}\n';
-    await writeFile(catalogPath, original, 'utf8');
-    const failures: unknown[] = [];
-    const catalog = createProjectCatalog(storage, {
-      onLegacyImportFailure: (error) => failures.push(error),
-    });
-
-    // SQLite is the authority: a legacy file that cannot be read must not take
-    // the catalog down with it, and it must stay on disk to recover by hand.
-    const project = await catalog.register(workspace);
-
-    assert.equal((await catalog.list()).length, 1);
-    assert.equal((await catalog.list())[0]?.id, project.id);
-    assert.equal(await readFile(catalogPath, 'utf8'), original);
-    assert.equal(failures.length, 1);
-    assert.match(String(failures[0]), /Invalid project catalog/);
-  } finally {
-    await rm(base, { recursive: true, force: true });
-  }
-});
-
-test('a legacy catalog is imported once and then set aside', async () => {
-  const base = await mkdtemp(join(tmpdir(), 'maka-project-import-'));
-  try {
-    const storage = join(base, 'storage');
-    await mkdir(storage);
-    await writeFile(
-      join(storage, 'projects.json'),
-      JSON.stringify({
-        schemaVersion: 1,
-        projects: [
-          {
-            id: 'legacy-project',
-            aliases: ['merged-away'],
-            name: 'Renamed By Hand',
-            identity: 'folder:/gone',
-            locations: [{ path: '/gone', isWorktree: false, lastUsedAt: 5 }],
-            lastUsedAt: 7,
-            archivedAt: 9,
-          },
-        ],
-      }),
-      'utf8',
-    );
-    const failures: unknown[] = [];
-    const catalog = createProjectCatalog(storage, {
-      now: () => 1_000,
-      onLegacyImportFailure: (error) => failures.push(error),
-    });
-
-    const projects = await catalog.list();
-
-    assert.deepEqual(failures, []);
-    // The user's name, relink aliases and archive state only ever lived in this
-    // file; losing them on upgrade would be indistinguishable from data loss.
-    assert.equal(projects.length, 1);
-    assert.equal(projects[0]?.id, 'legacy-project');
-    assert.equal(projects[0]?.name, 'Renamed By Hand');
-    assert.deepEqual(projects[0]?.aliases, ['merged-away']);
-    assert.equal(projects[0]?.archivedAt, 9);
-    await assert.rejects(() => readFile(join(storage, 'projects.json'), 'utf8'), {
-      code: 'ENOENT',
-    });
-    const setAside = JSON.parse(
-      await readFile(join(storage, 'projects.json.imported-1000'), 'utf8'),
-    ) as { projects: Array<{ id: string }> };
-    assert.deepEqual(
-      setAside.projects.map((project) => project.id),
-      ['legacy-project'],
-      'the imported file is kept verbatim so a bad upgrade stays recoverable',
-    );
-
-    // A catalog opened later must not re-import and must not lose the state.
-    catalog.close();
-    assert.equal((await createProjectCatalog(storage).list()).length, 1);
   } finally {
     await rm(base, { recursive: true, force: true });
   }

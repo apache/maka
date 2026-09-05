@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type {
   ConnectionLastTestStatus,
   ConnectionTestErrorClass,
@@ -7,7 +26,13 @@ import type {
 import type { ThinkingLevel } from './model-thinking.js';
 import type { ProviderType } from './provider-registry.js';
 import type { RelayModelProfile } from './model-thinking.js';
-import type { ChatDefaultPermissionMode, ProxyProtocol } from './settings.js';
+import {
+  networkProxyCredentialTarget,
+  type ChatDefaultPermissionMode,
+  type NetworkProxyCredentialTarget,
+  type ProxyProtocol,
+  type ShellSettings,
+} from './settings.js';
 import type { SubagentSettings } from './subagent-settings.js';
 import type { JsonObject } from './request-customization.js';
 import {
@@ -17,6 +42,8 @@ import {
 } from './web-search.js';
 
 export { WEB_SEARCH_PROVIDERS };
+export { networkProxyCredentialTarget };
+export type { NetworkProxyCredentialTarget };
 export type { ConnectionTestErrorClass, ModelDiscoverySource } from './llm-connections.js';
 export {
   decodeRuntimePolicyEntityId,
@@ -24,18 +51,22 @@ export {
 } from './runtime-policy/domain-codec.js';
 export {
   decodeCanonicalRuntimePolicy,
-  decodeLegacyRuntimePolicyV1,
+  normalizeNetworkProxyCredentialTarget,
+  decodeRuntimePolicyV2,
+  normalizeNetworkProxyUpdate,
   normalizeRuntimePolicyMutation,
 } from './runtime-policy/policy-codec.js';
 export {
   CONNECTION_CATALOG_MAX_CONNECTIONS,
   CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS,
+  CONNECTION_CATALOG_MAX_ENTRIES_PER_CONNECTION,
   CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION,
   CONNECTION_MODEL_ID_MAX_LENGTH,
   CONNECTION_NAME_MAX_LENGTH,
   decodeCanonicalConnectionBaseUrl,
   decodeCanonicalConnectionCatalogEntry,
   decodeConnectionModelId,
+  decodeConnectionCredentialTarget,
   decodeRelayModelProfilesTable,
   decodeConnectionModel,
   decodeConnectionName,
@@ -49,11 +80,14 @@ export {
   normalizeConnectionCatalogEntryUpdate,
   normalizeConnectionCatalogEntryUpdateForProvider,
   normalizeConnectionModelDiscoveryResult,
+  canonicalConnectionEffectiveBaseUrl,
+  connectionCredentialTarget,
   normalizeCreateCatalogConnectionInput,
   normalizeRemoveCatalogConnectionInput,
   normalizeSetDefaultConnectionTargetInput,
   normalizeUpdateCatalogConnectionInput,
 } from './runtime-policy/connection-catalog-codec.js';
+export { decodeModelCatalogEntry } from './runtime-policy/model-catalog-entry-codec.js';
 export {
   decodeCredentialLocator,
   decodeCredentialStatus,
@@ -125,6 +159,7 @@ export interface RuntimePolicy {
     readonly defaultProvider: WebSearchProvider;
   };
   readonly subagents: SubagentSettings;
+  readonly shell: ShellSettings;
 }
 
 export interface RuntimePolicySnapshot {
@@ -152,6 +187,7 @@ export type RuntimePolicyMutation =
   | { readonly kind: 'set_chat_defaults'; readonly value: RuntimePolicy['chatDefaults'] }
   | { readonly kind: 'set_web_search'; readonly value: RuntimePolicy['webSearch'] }
   | { readonly kind: 'set_subagents'; readonly value: RuntimePolicy['subagents'] }
+  | { readonly kind: 'set_shell'; readonly value: RuntimePolicy['shell'] }
   | { readonly kind: 'patch_agent_settings'; readonly value: AgentRuntimeSettingsPatch };
 
 export interface MutateRuntimePolicyInput {
@@ -162,6 +198,44 @@ export interface MutateRuntimePolicyInput {
 export type MutateRuntimePolicyResult =
   | { readonly kind: 'committed'; readonly snapshot: RuntimePolicySnapshot }
   | RevisionConflict;
+
+export type NetworkProxyCredentialUpdate =
+  | { readonly kind: 'keep' }
+  | {
+      readonly kind: 'replace';
+      readonly secret: string;
+      readonly expectedTarget?: NetworkProxyCredentialTarget;
+    }
+  | { readonly kind: 'delete' };
+
+/**
+ * One optimistic basis for the Host-owned proxy policy and credential pair.
+ * The Runtime Host validates both generations before publishing either side.
+ */
+export interface UpdateNetworkProxyInput {
+  readonly expectedPolicyRevision: Revision;
+  readonly expectedCredential: CredentialVersionBasis | null;
+  readonly networkProxy: RuntimePolicy['networkProxy'];
+  readonly credential: NetworkProxyCredentialUpdate;
+}
+
+export type UpdateNetworkProxyResult =
+  | {
+      readonly kind: 'committed';
+      readonly snapshot: RuntimePolicySnapshot;
+      readonly credentialStatus: CredentialStatus;
+    }
+  | RevisionConflict
+  | {
+      readonly kind: 'proxy_target_mismatch';
+      readonly expected: NetworkProxyCredentialTarget;
+      readonly actual: NetworkProxyCredentialTarget;
+    }
+  | {
+      readonly kind: 'credential_stale';
+      readonly expected: CredentialVersionBasis | null;
+      readonly actual: CredentialVersionBasis | null;
+    };
 
 export function createDefaultRuntimePolicy(): RuntimePolicy {
   return {
@@ -182,6 +256,7 @@ export function createDefaultRuntimePolicy(): RuntimePolicy {
     chatDefaults: { permissionMode: 'ask' },
     webSearch: { enabled: false, defaultProvider: 'model' },
     subagents: { presets: [] },
+    shell: { preference: 'auto', executable: '' },
   };
 }
 
@@ -222,7 +297,29 @@ export interface ConnectionCatalogEntry extends ConnectionConfiguration {
   readonly modelSource?: ConnectionModelDiscoveryResult['source'];
   readonly modelsFetchedAt?: ConnectionModelDiscoveryResult['fetchedAt'];
   readonly lastTest?: ConnectionTestSummary;
+  /** Digest of the model-facts subset used when `lastTest` was recorded. */
+  readonly lastTestModelFactsFingerprint?: string;
 }
+
+export type ConnectionOnboardingTarget =
+  | {
+      readonly kind: 'create';
+      readonly providerType: ProviderType;
+      /**
+       * Optional caller-requested identity. When absent, the Host derives the
+       * slug (`openai`, `openai-2`, …) and display name as before. When
+       * present, the Host validates the slug against the catalog and rejects
+       * the save with `slug_taken` on collision rather than silently deriving
+       * a different identity. A surface talking to an older Host must omit
+       * both keys — the wire decoder there rejects unknown fields.
+       */
+      readonly slug?: string;
+      readonly name?: string;
+    }
+  | {
+      readonly kind: 'existing';
+      readonly connectionId: EntityId;
+    };
 
 export type ConnectionCatalogEntryDraft = ConnectionConfiguration;
 
@@ -248,6 +345,12 @@ export interface ConnectionVersionBasis {
   readonly revision: Revision;
 }
 
+export interface ConnectionCredentialTarget extends ConnectionVersionBasis {
+  readonly slug: string;
+  readonly providerType: ProviderType;
+  readonly effectiveBaseUrl: string;
+}
+
 export interface ConnectionTarget {
   readonly connectionId: EntityId;
   readonly modelId: string;
@@ -271,6 +374,22 @@ export interface UpdateCatalogConnectionInput {
 
 export interface RemoveCatalogConnectionInput {
   readonly expected: ConnectionVersionBasis;
+}
+
+/**
+ * Built-in seed evolution as one atomic catalog mutation: a row still exactly
+ * matching a historical system seed follows the current seed — enabled ids AND
+ * the static inventory — and a system default the migration removes is
+ * retargeted in the same document write. Any other inventory is a user
+ * selection and is never touched; an already-null default stays null.
+ */
+export interface MigrateSystemSeedInput {
+  readonly slug: string;
+  readonly providerType: ProviderType;
+  readonly legacyEnabledModelIds: readonly (readonly string[])[];
+  readonly enabledModelIds: readonly string[];
+  readonly defaultModelId: string;
+  readonly retiredModelIds: readonly string[];
 }
 
 export interface SetDefaultConnectionTargetInput {
@@ -338,6 +457,7 @@ export interface CredentialVaultSnapshot {
 export interface SetCredentialInput {
   readonly locator: CredentialLocator;
   readonly expected: (CredentialIdentity & { readonly revision: Revision }) | null;
+  readonly expectedConnection?: ConnectionCredentialTarget;
   readonly secret: string;
 }
 
@@ -348,6 +468,11 @@ export interface DeleteCredentialInput {
 export type CredentialMutationResult =
   | { readonly kind: 'committed'; readonly snapshot: CredentialVaultSnapshot }
   | { readonly kind: 'connection_not_found' }
+  | {
+      readonly kind: 'connection_stale';
+      readonly expected: ConnectionVersionBasis;
+      readonly actual: ConnectionVersionBasis | null;
+    }
   | {
       readonly kind: 'credential_stale';
       readonly expected: CredentialVersionBasis | null;

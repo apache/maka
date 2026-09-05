@@ -1,5 +1,24 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { Buffer } from 'node:buffer';
-import { attachmentKindFromMimeType, guessMimeFromName, MAX_ATTACHMENT_BYTES } from '@maka/core';
+import { MAX_ATTACHMENT_BYTES, sniffAttachmentMimeType } from '@maka/core/attachments';
 import type { AttachmentApprovalRegistry } from './attachment-approval.js';
 
 export type AttachmentPreviewResult =
@@ -46,17 +65,14 @@ export async function loadApprovalPreview(input: {
   }
   const approved = input.approvals.peekApproval(input.senderId, input.approvalId);
   if (!approved) return { ok: false, reason: 'not_found' };
-  const mimeType =
-    approved.mimeType && approved.mimeType.length > 0
-      ? approved.mimeType
-      : guessMimeFromName(approved.name);
-  if (attachmentKindFromMimeType(mimeType, approved.name) !== 'image') {
-    return { ok: false, reason: 'not_image' };
-  }
   const maxBytes = input.maxBytes ?? MAX_ATTACHMENT_BYTES;
   if (approved.size > maxBytes) return { ok: false, reason: 'unreadable' };
   try {
     const bytes = await input.readFile(approved.path, approved.size);
+    const contentMimeType = sniffAttachmentMimeType(bytes);
+    if (!contentMimeType?.startsWith('image/')) {
+      return { ok: false, reason: 'not_image' };
+    }
     const preview = await input.renderPreview(bytes);
     if (preview) {
       return {
@@ -67,7 +83,7 @@ export async function loadApprovalPreview(input: {
     }
     const fallbackCap = input.inlineFallbackMaxBytes ?? INLINE_PREVIEW_FALLBACK_MAX_BYTES;
     if (bytes.byteLength <= fallbackCap) {
-      return { ok: true, base64: Buffer.from(bytes).toString('base64'), mimeType };
+      return { ok: true, base64: Buffer.from(bytes).toString('base64'), mimeType: contentMimeType };
     }
     return { ok: false, reason: 'unreadable' };
   } catch {

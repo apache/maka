@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { promises as fs } from 'node:fs';
 import { resolve } from 'node:path';
 import { realpathAllowMissing } from './path-containment.js';
@@ -7,7 +26,7 @@ import {
   type SandboxBoundaryAccess,
   type SandboxBoundaryExpansion,
   type SandboxBoundaryScope,
-} from '@maka/core';
+} from '@maka/core/sandbox-boundary';
 
 export interface NormalizedSandboxBoundaryPath {
   readonly displayPath: string;
@@ -15,6 +34,18 @@ export interface NormalizedSandboxBoundaryPath {
   readonly access: SandboxBoundaryAccess;
   readonly scope: SandboxBoundaryScope;
   readonly targetType: 'file' | 'directory' | 'other' | 'missing';
+}
+
+/**
+ * A boundary declaration the caller can correct and submit again.
+ *
+ * Filesystem failures are deliberately not wrapped in this error: an invalid
+ * declaration is actionable model input, while realpath/stat/permission/I/O
+ * failures describe an unavailable host operation and need to retain their
+ * original classification.
+ */
+export class SandboxBoundaryDeclarationError extends Error {
+  override readonly name = 'SandboxBoundaryDeclarationError';
 }
 
 export async function normalizeSandboxBoundaryPath(input: {
@@ -28,7 +59,9 @@ export async function normalizeSandboxBoundaryPath(input: {
     input.path.includes('\0') ||
     input.path.length > MAX_SANDBOX_BOUNDARY_PATH_CHARS
   ) {
-    throw new Error('Sandbox boundary path is invalid or exceeds the length limit.');
+    throw new SandboxBoundaryDeclarationError(
+      'Sandbox boundary path is invalid or exceeds the length limit.',
+    );
   }
   const canonicalCwd = await fs.realpath(input.cwd);
   const displayPath = resolve(canonicalCwd, input.path);
@@ -37,7 +70,9 @@ export async function normalizeSandboxBoundaryPath(input: {
   const scope =
     input.scope === 'auto' ? (targetType === 'directory' ? 'subtree' : 'exact') : input.scope;
   if (scope === 'subtree' && targetType !== 'directory') {
-    throw new Error('A subtree sandbox boundary must target an existing directory.');
+    throw new SandboxBoundaryDeclarationError(
+      'A subtree sandbox boundary must target an existing directory.',
+    );
   }
   return { displayPath, enforcementPath, access: input.access, scope, targetType };
 }
@@ -47,7 +82,7 @@ export async function normalizeSandboxBoundaryExpansion(
   cwd: string,
 ): Promise<SandboxBoundaryExpansion> {
   const validated = validateSandboxBoundaryExpansion(expansion);
-  if (!validated.ok) throw new Error(validated.message);
+  if (!validated.ok) throw new SandboxBoundaryDeclarationError(validated.message);
   const entries = await Promise.all(
     (validated.expansion.filesystem?.entries ?? []).map(async (entry) => {
       const normalized = await normalizeSandboxBoundaryPath({
@@ -55,7 +90,7 @@ export async function normalizeSandboxBoundaryExpansion(
         cwd,
       });
       if (normalized.scope === 'exact' && normalized.targetType === 'directory') {
-        throw new Error(
+        throw new SandboxBoundaryDeclarationError(
           'An exact sandbox boundary cannot target a directory; use subtree for directory access.',
         );
       }
@@ -70,7 +105,7 @@ export async function normalizeSandboxBoundaryExpansion(
     ...(entries.length > 0 ? { filesystem: { entries } } : {}),
     ...(validated.expansion.network ? { network: validated.expansion.network } : {}),
   });
-  if (!normalized.ok) throw new Error(normalized.message);
+  if (!normalized.ok) throw new SandboxBoundaryDeclarationError(normalized.message);
   return normalized.expansion;
 }
 

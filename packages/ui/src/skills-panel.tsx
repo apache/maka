@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 // packages/ui/src/skills-panel.tsx
 //
 // The Skills module page, on the shared ModulePage shell (Astryx Layout,
@@ -21,6 +40,7 @@ import {
   ICON_SIZE,
   Blocks,
   BookOpen,
+  Check,
   Download,
   FolderOpen,
   Loader2,
@@ -28,8 +48,8 @@ import {
   RefreshCcw,
   Search,
 } from './icons.js';
-import type { CapabilityAuditReport } from '@maka/core';
-import { deriveCapabilityAuditReport } from '@maka/core';
+import type { CapabilityAuditReport } from '@maka/core/capability-audit';
+import { deriveCapabilityAuditReport } from '@maka/core/capability-audit';
 import {
   Button as UiButton,
   EmptyState,
@@ -315,6 +335,15 @@ export function SkillsModuleMain(props: {
 
   // ── Catalog rows (市场 / 内置): one job each — install. ──────────────
   function catalogInstallButton(key: string, name: string, installing: boolean, installed: boolean, onInstall?: () => void) {
+    const installIcon = installing
+      ? <Loader2 size={ICON_SIZE.chrome} aria-hidden="true" />
+      : installed
+        ? (
+          <span className="maka-skill-install-complete-icon">
+            <Check size={ICON_SIZE.chrome} aria-hidden="true" />
+          </span>
+        )
+        : <Download size={ICON_SIZE.chrome} aria-hidden="true" />;
     return (
       <IconButton
         key={key}
@@ -322,9 +351,9 @@ export function SkillsModuleMain(props: {
         size="sm"
         onClick={onInstall}
         isDisabled={installed || skillActionBusy || !onInstall}
-        label={copy.install.action(name)}
+        label={installed ? copy.install.installedAction(name) : copy.install.action(name)}
         tooltip={installed ? copy.install.installedTitle : copy.install.action(name)}
-        icon={installing ? <Loader2 size={ICON_SIZE.chrome} aria-hidden="true" /> : <Download size={ICON_SIZE.chrome} aria-hidden="true" />}
+        icon={installIcon}
       />
     );
   }
@@ -348,14 +377,14 @@ export function SkillsModuleMain(props: {
       {allManagedSources.length === 0 ? (
         /* With a query in play this is a search empty, so it carries the clear
            action (DESIGN.md §10); without one it stays a plain panel empty. */
-        <EmptyState
+        (<EmptyState
           icon={<BookOpen size={ICON_SIZE.empty} />}
           title={normalizedSkillQuery ? copy.market.emptySearchTitle : copy.market.emptyTitle}
           description={normalizedSkillQuery ? copy.market.emptySearchBody : copy.market.emptyBody}
           actions={normalizedSkillQuery ? (
             <UiButton variant="ghost" size="sm" label={copy.market.clearSearch} onClick={() => setSkillSearchQuery('')} />
           ) : undefined}
-        />
+        />)
       ) : marketSources.length === 0 ? (
         <EmptyState
           icon={<Search size={ICON_SIZE.empty} />}
@@ -429,49 +458,47 @@ export function SkillsModuleMain(props: {
         // heading; a single flat List otherwise. `header` is List's own slot,
         // so the heading is associated with its rows rather than floating
         // above them as loose text.
-        (showBundledGroups ? bundledCatalogGroups : [[null, bundledCatalogFiltered] as const]).map(
-          ([category, entries]) => (
-        <List
-          key={category ?? 'all'}
-          density="balanced"
-          hasDividers
-          className="maka-module-page-rows"
-          aria-label={category ? copy.categories[category] : copy.builtin.ariaLabel}
-          header={category ? <Text type="label" size="sm" color="secondary">{copy.categories[category]}</Text> : undefined}
-        >
-          {entries.map((entry) => (
-            <ListItem
-              key={entry.id}
-              label={entry.name}
-              description={[
-                // The category is the group heading when grouping is on;
-                // repeating it on every row under that heading is the
-                // duplicate-count noise we removed from this page before.
-                showBundledGroups ? null : copy.categories[entry.category],
-                entry.declaredTools.length > 0
-                  ? copy.builtin.toolCount(entry.declaredTools.length)
-                  : null,
-                entry.description || copy.builtin.fallback,
-              ]
-                .filter(Boolean)
-                .join(' · ')}
-              startContent={(
-                <span className="maka-module-market-icon" aria-hidden="true">
-                  <Blocks size={ICON_SIZE.empty} />
-                </span>
-              )}
-              endContent={catalogInstallButton(
-                entry.id,
-                entry.name,
-                pendingSkillAction === `bundled:install:${entry.id}`,
-                entry.installed,
-                props.onInstallBundledSkill ? () => void runSkillAction(`bundled:install:${entry.id}`, () => props.onInstallBundledSkill?.(entry.id)) : undefined,
-              )}
-            />
-          ))}
-        </List>
-          ),
-        )
+        ((showBundledGroups ? bundledCatalogGroups : [[null, bundledCatalogFiltered] as const]).map(([category, entries]) => (
+      <List
+        key={category ?? 'all'}
+        density="balanced"
+        hasDividers
+        className="maka-module-page-rows"
+        aria-label={category ? copy.categories[category] : copy.builtin.ariaLabel}
+        header={category ? <Text type="label" size="sm" color="secondary">{copy.categories[category]}</Text> : undefined}
+      >
+        {entries.map((entry) => (
+          <ListItem
+            key={entry.id}
+            label={entry.name}
+            description={[
+              // The category is the group heading when grouping is on;
+              // repeating it on every row under that heading is the
+              // duplicate-count noise we removed from this page before.
+              showBundledGroups ? null : copy.categories[entry.category],
+              entry.declaredTools.length > 0
+                ? copy.builtin.toolCount(entry.declaredTools.length)
+                : null,
+              entry.description || copy.builtin.fallback,
+            ]
+              .filter(Boolean)
+              .join(' · ')}
+            startContent={(
+              <span className="maka-module-market-icon" aria-hidden="true">
+                <Blocks size={ICON_SIZE.empty} />
+              </span>
+            )}
+            endContent={catalogInstallButton(
+              entry.id,
+              entry.name,
+              pendingSkillAction === `bundled:install:${entry.id}`,
+              entry.installed,
+              props.onInstallBundledSkill ? () => void runSkillAction(`bundled:install:${entry.id}`, () => props.onInstallBundledSkill?.(entry.id)) : undefined,
+            )}
+          />
+        ))}
+      </List>
+        )))
       )}
     </div>
   );
@@ -495,11 +522,9 @@ export function SkillsModuleMain(props: {
           actions={(
             // A search that matched nothing exits through clear (DESIGN.md
             // §10); only the true first-run empty offers the refresh.
-            normalizedSkillQuery
-              ? <UiButton variant="ghost" size="sm" label={copy.market.clearSearch} onClick={() => setSkillSearchQuery('')} />
-              : props.onRefreshSkills
+            (normalizedSkillQuery ? <UiButton variant="ghost" size="sm" label={copy.market.clearSearch} onClick={() => setSkillSearchQuery('')} /> : props.onRefreshSkills
                 ? <UiButton variant="ghost" size="sm" label={pendingSkillAction === 'refresh' ? copy.installed.refreshPending : copy.installed.refresh} onClick={() => void runSkillAction('refresh', refreshSkillData)} isDisabled={skillActionBusy} />
-                : undefined
+                : undefined)
           )}
         />
       ) : filteredSkills.length === 0 ? (
@@ -513,7 +538,7 @@ export function SkillsModuleMain(props: {
         /* Selectable, otherwise inert rows: every control that used to ride
            the row now lives in the inspector — no interactive elements
            inside an interactive list item. */
-        <List density="balanced" hasDividers className="maka-module-page-rows" aria-label={copy.installed.listAriaLabel}>
+        (<List density="balanced" hasDividers className="maka-module-page-rows" aria-label={copy.installed.listAriaLabel}>
           {filteredSkills.map((skill) => {
             const isDiscoveryDiagnostic = skill.kind === 'discovery_diagnostic';
             const skillRef = skill.ref ?? skill.id;
@@ -570,13 +595,13 @@ export function SkillsModuleMain(props: {
               />
             );
           })}
-        </List>
+        </List>)
       )}
     </div>
   );
 
   return (
-    <main className="maka-main detailPane maka-module-main agents-chat-panel" data-page-shell="layout" data-module="skills" aria-label={props.hubHeader?.title ?? copy.page.title}>
+    <section className="maka-main detailPane maka-module-main agents-chat-panel" data-page-shell="layout" data-module="skills" aria-label={props.hubHeader?.title ?? copy.page.title}>
       <ModulePage
         title={props.hubHeader?.title ?? copy.page.title}
         // The page header said only how many skills are installed, which made
@@ -723,6 +748,6 @@ export function SkillsModuleMain(props: {
         {activeSkillTab === 'builtin' ? builtinPanel : null}
         {activeSkillTab === 'installed' ? installedPanel : null}
       </ModulePage>
-    </main>
+    </section>
   );
 }

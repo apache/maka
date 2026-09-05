@@ -1,21 +1,46 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { nextId } from '@maka/core/test-only/async-primitives';
 import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import assert from 'node:assert/strict';
+import { Buffer } from 'node:buffer';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import {
-  createGenesisExecutionBoundary,
-  type LlmConnection,
-  type SessionEvent,
-  type SessionHeader,
-} from '@maka/core';
+import { createGenesisExecutionBoundary } from '@maka/core/sandbox-boundary';
+import { type LlmConnection } from '@maka/core/llm-connections';
+import { type SessionEvent } from '@maka/core/events';
+import { type SessionHeader, type StoredMessage } from '@maka/core/session';
 import type { McpToolBinding } from '@maka/core/mcp';
-import { createSqliteRuntimeStore } from '@maka/storage';
-import { createSessionEventMapMemory, mapSessionEventToRuntimeEvent } from '../ai-sdk-flow.js';
+import {
+  createSqliteRuntimeStore,
+  type SqliteRuntimeStoreFailpoint,
+} from '@maka/storage/sqlite-runtime-store';
+import {
+  createSessionEventMapMemory,
+  mapSessionEventToRuntimeEvent,
+} from '../session-event-runtime-mapper.js';
 import { buildRuntimeEventModelReplayPlan } from '../model-history.js';
 import { buildMcpTools } from '../mcp-tools.js';
-import type { InvocationContext } from '../invocation-context.js';
+import type { RuntimeEventMapContext } from '../session-event-runtime-mapper.js';
 import { MAX_ACTIVE_SUBAGENT_TOOLS_PER_TURN, ToolRuntime, type MakaTool } from '../tool-runtime.js';
 
 describe('ToolRuntime with real SQLite boundary', () => {
@@ -125,7 +150,11 @@ describe('ToolRuntime with real SQLite boundary', () => {
             return { content: [{ type: 'text', text: 'ok' }] };
           },
         },
-        { categoryHint: 'client_capability', recoveryMode: 'outcome_unknown' },
+        {
+          categoryHint: 'custom_tool',
+          hostAdmission: 'client_capability',
+          recoveryMode: 'outcome_unknown',
+        },
       );
       assert.ok(clientTool);
       const runtime = createTestToolRuntime({
@@ -158,7 +187,7 @@ describe('ToolRuntime with real SQLite boundary', () => {
       });
 
       assert.equal(implementationCalls, 0);
-      assert.match(JSON.stringify(result.result), /require the Bypass execution boundary/u);
+      assert.match(JSON.stringify(result.result), /missing its Host admission/u);
       const toolEvents = published.filter(
         (event) => event.type === 'tool_start' || event.type === 'tool_result',
       );
@@ -451,6 +480,16 @@ describe('ToolRuntime with real SQLite boundary', () => {
       );
       assert.equal((await store.readImmutableRuntimeEvents('session-1', 'run-1')).length, 3);
 
+      const response = events.find((event) => event.content?.kind === 'function_response');
+      const durableProjection =
+        response?.content?.kind === 'function_response'
+          ? response.content.modelProjection
+          : undefined;
+      assert.deepEqual(durableProjection, {
+        version: 1,
+        kind: 'json',
+        value: { ok: true, text: 'contents' },
+      });
       const context = invocationContext();
       const memory = createSessionEventMapMemory();
       const durableEvents = published.filter(
@@ -462,14 +501,124 @@ describe('ToolRuntime with real SQLite boundary', () => {
       );
       assert.deepEqual(
         mappedEvents,
-        events.filter(
-          (event) =>
-            event.content?.kind === 'function_call' || event.content?.kind === 'function_response',
-        ),
+        events
+          .filter(
+            (event) =>
+              event.content?.kind === 'function_call' ||
+              event.content?.kind === 'function_response',
+          )
+          .map((event) => JSON.parse(JSON.stringify(event))),
       );
 
       assert.equal((await store.readRuntimeEvents('session-1', 'run-1')).length, 3);
       assert.equal((await store.readImmutableRuntimeEvents('session-1', 'run-1')).length, 3);
+    } finally {
+      store.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not repeat tool or projection side effects after an atomic T2 failure', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-tool-sqlite-t2-retry-'));
+    let runtimeEventInsertions = 0;
+    let failT2 = true;
+    const store = createSqliteRuntimeStore(join(root, 'runtime.sqlite'), {
+      failpoint: (point) => {
+        if (
+          point === ('after_runtime_event_insert' satisfies SqliteRuntimeStoreFailpoint) &&
+          failT2 &&
+          ++runtimeEventInsertions === 2
+        ) {
+          throw new Error(`sqlite runtime failpoint: ${point}`);
+        }
+      },
+    });
+    try {
+      let implementationCalls = 0;
+      let artifactWrites = 0;
+      const appendedMessages: StoredMessage[] = [];
+      const runtime = createTestToolRuntime({
+        sessionId: 'session-1',
+        header: header(),
+        connection: connection(),
+        modelId: 'model-1',
+        appendMessage: async (message) => {
+          appendedMessages.push(message);
+        },
+        newId: nextId(),
+        now: nextNow(),
+        getPermissionPauseTarget: () => null,
+        runId: 'run-1',
+        invocationId: 'invocation-1',
+        runtimeCommitSink: store,
+        prepareDurableProjectionArtifact: () => {
+          return {
+            ref: {
+              kind: 'session_file',
+              sessionId: 'session-1',
+              relativePath: 'projection-artifact',
+            },
+            persist: async () => {
+              artifactWrites += 1;
+            },
+          };
+        },
+      });
+      const imageTool: MakaTool = {
+        name: 'Read',
+        description: 'read',
+        parameters: {},
+        recoveryMode: 'replay_safe',
+        impl: async () => {
+          implementationCalls += 1;
+          return { private: 'completed execution fact' };
+        },
+        toModelOutput: () => ({
+          type: 'content',
+          value: [
+            {
+              type: 'file',
+              data: { type: 'data', data: Buffer.from([137, 80, 78, 71]).toString('base64') },
+              mediaType: 'image/png',
+            },
+          ],
+        }),
+      };
+      const published: SessionEvent[] = [];
+      const settle = () =>
+        runtime.settleToolCall({
+          tool: imageTool,
+          turnId: 'turn-1',
+          toolCallId: 'provider-call-1',
+          input: {},
+          abortSignal: new AbortController().signal,
+          eventSink: {
+            push: (event) => published.push(event),
+            pushAndWaitUntilConsumed: async (event) => {
+              published.push(event);
+            },
+          },
+        });
+
+      await assert.rejects(settle(), /sqlite runtime failpoint: after_runtime_event_insert/u);
+      assert.equal(implementationCalls, 1);
+      assert.equal(artifactWrites, 1);
+      failT2 = false;
+      await assert.rejects(settle(), /duplicate_event_id/u);
+
+      assert.equal(implementationCalls, 1);
+      assert.equal(artifactWrites, 1);
+      assert.equal(published.filter((event) => event.type === 'tool_result').length, 0);
+      assert.equal(published.filter((event) => event.type === 'tool_start').length, 1);
+      assert.equal(appendedMessages.filter((message) => message.type === 'tool_call').length, 1);
+      const events = await store.readRuntimeEvents('session-1', 'run-1');
+      assert.deepEqual(
+        events.map((event) => event.content?.kind),
+        ['function_call', undefined],
+      );
+      const operationId = events[0]?.refs?.operationId;
+      assert.ok(operationId);
+      assert.equal((await store.readToolOperation(operationId))?.currentState, 'prepared');
     } finally {
       store.close();
       await rm(root, { recursive: true, force: true });
@@ -525,10 +674,13 @@ describe('ToolRuntime with real SQLite boundary', () => {
       const events = await store.readRuntimeEvents('session-1', 'run-1');
       assert.deepEqual(
         mappedEvents,
-        events.filter(
-          (event) =>
-            event.content?.kind === 'function_call' || event.content?.kind === 'function_response',
-        ),
+        events
+          .filter(
+            (event) =>
+              event.content?.kind === 'function_call' ||
+              event.content?.kind === 'function_response',
+          )
+          .map((event) => JSON.parse(JSON.stringify(event))),
       );
       assert.equal(events.length, 3);
       assert.equal(events[2]?.content?.kind, 'function_response');
@@ -549,7 +701,6 @@ function header(): SessionHeader {
     workspaceRoot: '/workspace/repo',
     cwd: '/workspace/repo',
     createdAt: 1,
-    lastUsedAt: 1,
     name: 'test',
     titleIsManual: false,
     isFlagged: false,
@@ -567,24 +718,13 @@ function header(): SessionHeader {
   };
 }
 
-function invocationContext(): InvocationContext {
+function invocationContext(): RuntimeEventMapContext {
   return {
     sessionId: 'session-1',
     invocationId: 'invocation-1',
     runId: 'run-1',
     turnId: 'turn-1',
-    source: 'test',
-    startedAt: 1,
-    newId: nextId(),
     now: () => 1,
-    request: {
-      sessionId: 'session-1',
-      invocationId: 'invocation-1',
-      runId: 'run-1',
-      turnId: 'turn-1',
-      text: 'test',
-      source: 'test',
-    },
   };
 }
 
@@ -599,12 +739,6 @@ function connection(): LlmConnection {
     updatedAt: 1,
   };
 }
-
-function nextId(): () => string {
-  let value = 0;
-  return () => `id-${++value}`;
-}
-
 function nextNow(): () => number {
   let value = 0;
   return () => ++value;

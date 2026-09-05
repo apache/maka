@@ -1,46 +1,33 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
   decodeClientFrame,
   decodeHostFrame,
   HOST_OPERATION_SPECS,
-  RuntimeHostProtocolError,
   type SessionCatalogProjection,
 } from '../protocol/index.js';
 
 describe('Session retirement protocol', () => {
-  test('declares exact ready-only lifecycle and remove commands', () => {
-    assert.equal(HOST_OPERATION_SPECS['session.lifecycle.set'].mode, 'command');
-    assert.equal(HOST_OPERATION_SPECS['session.lifecycle.set'].availability, 'ready');
-    assert.equal(HOST_OPERATION_SPECS['session.remove'].mode, 'command');
-    assert.equal(HOST_OPERATION_SPECS['session.remove'].availability, 'ready');
-
-    assert.deepEqual(
-      decodeClientFrame({
-        requestId: 'request-archive',
-        operation: 'session.lifecycle.set',
-        input: { sessionId: 'session-1', state: 'archived' },
-      }),
-      {
-        requestId: 'request-archive',
-        operation: 'session.lifecycle.set',
-        input: { sessionId: 'session-1', state: 'archived' },
-      },
-    );
-    assert.deepEqual(
-      decodeClientFrame({
-        requestId: 'request-remove',
-        operation: 'session.remove',
-        input: { sessionId: 'session-1', expectedRevision: 3 },
-      }),
-      {
-        requestId: 'request-remove',
-        operation: 'session.remove',
-        input: { sessionId: 'session-1', expectedRevision: 3 },
-      },
-    );
-  });
-
   test('rejects open shapes, invalid states, and mismatched result identities', () => {
     assert.throws(
       () =>
@@ -64,7 +51,7 @@ describe('Session retirement protocol', () => {
       () =>
         HOST_OPERATION_SPECS['session.lifecycle.set'].assertOutputForInput?.(
           { sessionId: 'session-1', state: 'archived' },
-          projection({ id: 'session-2', isArchived: true, status: 'archived' }),
+          projection({ id: 'session-2', isArchived: true }),
         ),
       isInvalidFrame,
     );
@@ -79,7 +66,11 @@ describe('Session retirement protocol', () => {
   });
 
   test('preserves removal conflicts and archived lifecycle state on the wire', () => {
-    const archived = projection({ isArchived: true, status: 'archived' });
+    const archived = projection({
+      isArchived: true,
+      status: 'blocked',
+      blockedReason: 'tool_failed',
+    });
     assert.deepEqual(
       decodeHostFrame({
         requestId: 'request-archive',
@@ -118,25 +109,65 @@ describe('Session retirement protocol', () => {
     );
   });
 
-  test('correlates unsupported legacy lifecycle results without inventing lifecycle fields', () => {
-    const legacy = {
-      kind: 'unsupported_legacy_record' as const,
-      id: 'session-1',
-      revision: 2,
-      reason: 'not_wire_representable' as const,
+  test('carries the archived-subtask count on a removed result and rejects a malformed one', () => {
+    const withCount = {
+      requestId: 'request-remove',
+      operation: 'session.remove' as const,
+      ok: true as const,
+      result: { kind: 'removed' as const, sessionId: 'session-1', archivedSubtaskCount: 3 },
     };
-    assert.doesNotThrow(() =>
-      HOST_OPERATION_SPECS['session.lifecycle.set'].assertOutputForInput?.(
-        { sessionId: 'session-1', state: 'archived' },
-        legacy,
-      ),
+    assert.deepEqual(decodeHostFrame(withCount), withCount);
+    // Absent when nothing was archived — the common delete keeps its old shape.
+    const withoutCount = {
+      requestId: 'request-remove',
+      operation: 'session.remove' as const,
+      ok: true as const,
+      result: { kind: 'removed' as const, sessionId: 'session-1' },
+    };
+    assert.deepEqual(decodeHostFrame(withoutCount), withoutCount);
+    assert.throws(
+      () =>
+        decodeHostFrame({
+          requestId: 'request-remove',
+          operation: 'session.remove',
+          ok: true,
+          result: { kind: 'removed', sessionId: 'session-1', archivedSubtaskCount: -1 },
+        }),
+      isInvalidFrame,
+    );
+  });
+
+  test('round-trips the removal preview query and rejects a malformed count', () => {
+    const request = {
+      requestId: 'request-preview',
+      operation: 'session.remove.preview' as const,
+      input: { sessionId: 'session-1' },
+    };
+    assert.deepEqual(decodeClientFrame(request), request);
+    const response = {
+      requestId: 'request-preview',
+      operation: 'session.remove.preview' as const,
+      ok: true as const,
+      result: { archivableSubtaskCount: 4 },
+    };
+    assert.deepEqual(decodeHostFrame(response), response);
+    assert.throws(
+      () =>
+        decodeHostFrame({
+          requestId: 'request-preview',
+          operation: 'session.remove.preview',
+          ok: true,
+          result: { archivableSubtaskCount: -1 },
+        }),
+      isInvalidFrame,
     );
     assert.throws(
       () =>
-        HOST_OPERATION_SPECS['session.lifecycle.set'].assertOutputForInput?.(
-          { sessionId: 'session-2', state: 'archived' },
-          legacy,
-        ),
+        decodeClientFrame({
+          requestId: 'request-preview',
+          operation: 'session.remove.preview',
+          input: { sessionId: 'session-1', expectedRevision: 2 },
+        }),
       isInvalidFrame,
     );
   });
@@ -151,7 +182,7 @@ function projection(overrides: Partial<SessionCatalogProjection> = {}): SessionC
       hostCwd: '/workspace',
     },
     createdAt: 1,
-    lastUsedAt: 1,
+    activityAt: 1,
     name: 'Session',
     isFlagged: false,
     isArchived: false,
@@ -160,6 +191,7 @@ function projection(overrides: Partial<SessionCatalogProjection> = {}): SessionC
     hasUnread: false,
     status: 'active',
     backend: 'fake',
+    llmConnectionId: null,
     llmConnectionSlug: 'fake',
     connectionLocked: false,
     model: 'fake-model',

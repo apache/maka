@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
@@ -383,6 +402,26 @@ describe('discoverNestedProtectedMetadataPaths', () => {
 });
 
 describe('LinuxBubblewrapBackend', () => {
+  it('fails when protected-metadata discovery fails during transform', () => {
+    let scans = 0;
+    const backend = new LinuxBubblewrapBackend({
+      capability: { available: true, bwrapPath: '/usr/bin/bwrap' },
+      discoverProtectedMetadataPaths: () => {
+        scans += 1;
+        throw new Error('workspace changed during enumeration');
+      },
+    });
+    const request = workspaceRequest(protectedMetadataProfile());
+
+    const transformed = backend.transform(request);
+    assert.equal(scans, 1);
+    assert.equal(transformed.ok, false);
+    if (!transformed.ok) {
+      assert.equal(transformed.reason, 'backend_not_available');
+      assert.match(transformed.message ?? '', /enumerate protected metadata/i);
+    }
+  });
+
   it('wraps a managed restricted command when bwrap is available', () => {
     const backend = new LinuxBubblewrapBackend({
       capability: { available: true, bwrapPath: '/usr/bin/bwrap' },

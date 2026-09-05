@@ -1,10 +1,29 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, renameSync } from 'node:fs';
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { applySandboxBoundaryExpansion } from '@maka/core';
+import { applySandboxBoundaryExpansion } from '@maka/core/sandbox-boundary';
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import { LinuxBubblewrapBackend, linuxExecutableRoots } from '../sandbox/linux-sandbox.js';
 import { detectLinuxSandboxCapability } from '../sandbox/linux-capability.js';
@@ -213,7 +232,7 @@ describe('Linux sandbox smoke', () => {
           turnId: 'turn-1',
           toolCallId: 'tool-1',
           cwd: workspace,
-          permissionMode: 'execute',
+          permissionMode: 'ask',
           abortSignal: new AbortController().signal,
           emitOutput: () => {},
         },
@@ -267,13 +286,17 @@ describe('Linux sandbox smoke', () => {
         `printf additional-ok > ${shellQuote(allowedPath)}; ` +
         `/bin/sh -c ${shellQuote(siblingAttempt)} 2>/dev/null || :; exit 0`;
       const additionalResult = (await bash.impl(
-        { command: additionalCommand, required_boundary: requiredBoundary },
+        {
+          command: additionalCommand,
+          boundary_intent: 'expand',
+          required_boundary: requiredBoundary,
+        },
         {
           sessionId: 'session-1',
           turnId: 'turn-1',
           toolCallId: 'tool-additional',
           cwd: workspace,
-          permissionMode: 'execute',
+          permissionMode: 'ask',
           executionBoundary: expandedBoundary,
           abortSignal: new AbortController().signal,
           emitOutput: () => {},
@@ -297,7 +320,7 @@ describe('Linux sandbox smoke', () => {
           turnId: 'turn-1',
           toolCallId: 'tool-unrelated',
           cwd: workspace,
-          permissionMode: 'execute',
+          permissionMode: 'ask',
           executionBoundary: expandedBoundary,
           abortSignal: new AbortController().signal,
           emitOutput: () => {},
@@ -313,7 +336,7 @@ describe('Linux sandbox smoke', () => {
           turnId: 'turn-1',
           toolCallId: 'tool-escalation',
           cwd: workspace,
-          permissionMode: 'execute',
+          permissionMode: 'ask',
           executionBoundary: { kind: 'bypass' as const, revision: 2 },
           abortSignal: new AbortController().signal,
           emitOutput: () => {},

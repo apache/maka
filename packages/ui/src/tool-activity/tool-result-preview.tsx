@@ -1,19 +1,34 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { useEffect, useRef, type ReactNode } from 'react';
-import {
-  isShellOutput,
-  normalizeSearchUrl,
-  ptyHumanTerminalText,
-  readWriteStdinInputPreview,
-  type ShellOutput,
-  type ToolResultContent,
-} from '@maka/core';
+import { isShellOutput, type ShellOutput } from '@maka/core/shell-run';
+import { normalizeSearchUrl } from '@maka/core/search';
+import { ptyHumanTerminalText } from '@maka/core/pty-output-view';
+import { readWriteStdinInputPreview } from '@maka/core/tool-activity-args';
+import { type ToolResultContent } from '@maka/core/events';
 import { Button as UiButton, Link } from '@astryxdesign/core';
 import { ICON_SIZE, AlertCircle, Ban, Check, Clock, Copy, GitBranch, Loader2, Plug, ShieldAlert } from '../icons.js';
 import { redactSecrets } from '../redact.js';
 import { useClipboardCopyFeedback } from '../clipboard-feedback.js';
 import { useUiLocale } from '../locale-context.js';
 import { cn } from '../ui.js';
-import { ExploreAgentPreview } from './agent-preview.js';
 import { formatQuietJsonValue } from './builtin-preview.js';
 import { ToolCodeBlock } from './tool-code-block.js';
 import { DiffCodePreview } from './diff-code-preview.js';
@@ -64,13 +79,16 @@ export function ToolOutputSurface(props: {
   kind: string;
   heading?: string;
   body?: string;
-  attention?: 'error' | 'warning';
   actions?: ReactNode;
+  actionIdentity?: string;
   children: ReactNode;
 }) {
   const copyText = getToolActivityCopy(useUiLocale()).copy;
   const feedback = useClipboardCopyFeedback();
   const command = props.heading?.trim() ? props.heading : undefined;
+  const actionIdentity =
+    props.actionIdentity?.trim() ||
+    redactSecrets(command ?? '').trim().slice(0, 80);
   const copyPayload = [command, props.body].filter(Boolean).join('\n');
   // Each surface owns its own feedback hook, so the key never has to
   // distinguish one surface from another — it only has to be stable across
@@ -89,11 +107,7 @@ export function ToolOutputSurface(props: {
     <div
       data-slot="tool-output"
       data-kind={props.kind}
-      className={cn(
-        TOOL_OUTPUT_PANEL_CLASS,
-        props.attention === 'error' && 'maka-tool-output-destructive-border',
-        props.attention === 'warning' && 'maka-tool-output-warning-border',
-      )}
+      className={TOOL_OUTPUT_PANEL_CLASS}
     >
       {command && (
         <div className="maka-tool-output-command-row">
@@ -109,7 +123,7 @@ export function ToolOutputSurface(props: {
               // it would compete with the thing being copied. `label` is the
               // accessible name in this mode.
               isIconOnly
-              label={label}
+              label={copyText.actionAriaLabel(label, actionIdentity)}
               aria-busy={phase === 'pending' ? 'true' : undefined}
               isDisabled={phase === 'pending'}
               onClick={() => void feedback.copy(copyKey, copyPayload)}
@@ -132,6 +146,7 @@ export function ToolResultPreview(props: {
   args?: unknown;
   shellRunSource?: 'owned' | 'unavailable';
   fileDiffActions?: ReactNode;
+  actionIdentity?: string;
 }) {
   const { content } = props;
   const locale = useUiLocale();
@@ -142,6 +157,7 @@ export function ToolResultPreview(props: {
         diff={content.diff}
         paths={content.paths}
         actions={props.fileDiffActions}
+        actionIdentity={props.actionIdentity}
       />
     );
   }
@@ -174,17 +190,20 @@ export function ToolResultPreview(props: {
         failureMessage={content.failureMessage}
         output={isShellOutput(content.output) ? content.output : undefined}
         sandboxBlocked={isSandboxDeniedToolResult(content)}
+        actionIdentity={props.actionIdentity}
       />
     );
   }
 
   if (content.kind === 'shell_run') {
     if (props.toolName === 'WriteStdin') return <PtyControlPreview result={content} args={props.args} />;
-    return <ShellRunPreview result={content} source={props.shellRunSource} />;
-  }
-
-  if (content.kind === 'explore_agent') {
-    return <ExploreAgentPreview result={content} />;
+    return (
+      <ShellRunPreview
+        result={content}
+        source={props.shellRunSource}
+        actionIdentity={props.actionIdentity}
+      />
+    );
   }
 
   if (content.kind === 'rive_workflow') {
@@ -199,6 +218,7 @@ export function ToolResultPreview(props: {
         <ToolCodeBlock
           code={formatUserVisibleToolText(quiet.body, locale)}
           title={quiet.headline ? formatUserVisibleToolText(quiet.headline, locale) : undefined}
+          actionIdentity={props.actionIdentity}
         />
       </div>
     );
@@ -210,7 +230,7 @@ export function ToolResultPreview(props: {
     const code = capped > 0 ? `${body}\n\n${copy.hiddenLines(capped)}` : body;
     return (
       <div data-kind="text">
-        <ToolCodeBlock code={code} />
+        <ToolCodeBlock code={code} actionIdentity={props.actionIdentity} />
       </div>
     );
   }
@@ -218,15 +238,19 @@ export function ToolResultPreview(props: {
   // image / summary / unknown — show a compact descriptor so the user knows
   // what kind landed without dumping binary or storage refs.
   if (content.kind === 'file_write') {
+    const copy = getToolActivityCopy(locale).result;
     return (
       <div data-kind={content.kind}>
-        <ToolCodeBlock code={`Wrote ${content.bytes} bytes to ${content.path}`} />
+        <ToolCodeBlock
+          code={copy.fileWritten(content.bytes, content.path)}
+          actionIdentity={props.actionIdentity}
+        />
       </div>
     );
   }
   return (
     <div data-kind={content.kind}>
-      <ToolCodeBlock code={`[${content.kind}]`} />
+      <ToolCodeBlock code={`[${content.kind}]`} actionIdentity={props.actionIdentity} />
     </div>
   );
 }
@@ -271,28 +295,6 @@ function PtyControlPreview(props: {
 }
 
 /**
- * Which tint a unified-diff line takes. Deliberately shallow: it reads the
- * line's first character, not the hunk semantics, which is all the colouring
- * needs and all a preview should promise.
- *
- * `+++`/`---` are file markers, not an addition and a deletion — they have to
- * be tested before the single-character cases or every diff opens with one
- * green and one red line that mean nothing.
- */
-export function diffLineKind(line: string): 'add' | 'del' | 'hunk' | 'meta' | 'ctx' {
-  // The trailing space is what separates a file marker from content: unified
-  // diff writes `--- a/path`, never a bare `---`. Without it, deleting a YAML
-  // document separator or an SQL `--` comment paints the removal as a header —
-  // the one line the reader most needs to see as red.
-  if (line.startsWith('--- ') || line.startsWith('+++ ')) return 'meta';
-  if (line.startsWith('@@')) return 'hunk';
-  if (line.startsWith('+')) return 'add';
-  if (line.startsWith('-')) return 'del';
-  if (line.startsWith('diff ') || line.startsWith('index ')) return 'meta';
-  return 'ctx';
-}
-
-/**
  * Line-level diff colouring — green additions, red deletions, a tinted hunk
  * header — in the same surface a command uses, with the changed paths as its
  * heading.
@@ -315,6 +317,7 @@ function FileDiffPreview(props: {
   diff: string;
   paths: string[];
   actions?: ReactNode;
+  actionIdentity?: string;
 }) {
   const copy = getToolActivityCopy(useUiLocale()).result;
   // Apply UI-level redaction then cap the displayed lines. Both are
@@ -328,6 +331,7 @@ function FileDiffPreview(props: {
       heading={props.paths.length > 0 ? props.paths.join(', ') : undefined}
       body={body}
       actions={props.actions}
+      actionIdentity={props.actionIdentity}
     >
       <DiffCodePreview diff={body} paths={props.paths} />
       {capped > 0 && (
@@ -345,6 +349,7 @@ function TerminalPreview(props: {
   failureMessage?: string;
   output?: ShellOutput;
   sandboxBlocked?: boolean;
+  actionIdentity?: string;
 }) {
   const activityCopy = getToolActivityCopy(useUiLocale());
   const copy = activityCopy.result;
@@ -358,7 +363,7 @@ function TerminalPreview(props: {
       kind="terminal"
       heading={safeCmd}
       body={props.output ? shellOutputText(props.output, copy) : undefined}
-      attention={props.sandboxBlocked ? 'warning' : succeeded ? undefined : 'error'}
+      actionIdentity={props.actionIdentity}
     >
       {props.output ? (
         <ShellOutputBody output={props.output} failed={!succeeded} />
@@ -396,6 +401,7 @@ function TerminalPreview(props: {
 function ShellRunPreview(props: {
   result: Extract<ToolResultContent, { kind: 'shell_run' }>;
   source?: 'owned' | 'unavailable';
+  actionIdentity?: string;
 }) {
   const locale = useUiLocale();
   const copy = getToolActivityCopy(locale).result;
@@ -403,7 +409,6 @@ function ShellRunPreview(props: {
   const sandboxBlocked = isSandboxDeniedToolResult(result);
   const safeCmd = redactSecrets(result.cmd);
   const output = isShellOutput(result.output) ? result.output : undefined;
-  const attention = result.status === 'failed' || result.status === 'orphaned' || (result.exitCode !== undefined && result.exitCode !== 0);
 
   if (result.mode === 'pty') {
     return (
@@ -411,7 +416,6 @@ function ShellRunPreview(props: {
         result={result}
         output={output?.mode === 'pty' ? output : undefined}
         safeCmd={safeCmd}
-        attention={attention}
         sandboxBlocked={sandboxBlocked}
         source={props.source}
       />
@@ -432,7 +436,7 @@ function ShellRunPreview(props: {
       kind="shell_run"
       heading={safeCmd}
       body={pipeOutput ? shellOutputText(pipeOutput, copy) : undefined}
-      attention={attention ? (sandboxBlocked ? 'warning' : 'error') : undefined}
+      actionIdentity={props.actionIdentity}
     >
       <p className={TOOL_OUTPUT_NOTE_CLASS}>
         {statusLabel}
@@ -460,7 +464,6 @@ function PtyShellSurface(props: {
   result: Extract<ToolResultContent, { kind: 'shell_run' }>;
   output?: Extract<ShellOutput, { mode: 'pty' }>;
   safeCmd: string;
-  attention: boolean;
   sandboxBlocked: boolean;
   source?: 'owned' | 'unavailable';
 }) {
@@ -470,15 +473,7 @@ function PtyShellSurface(props: {
     <div
       data-slot="tool-output"
       data-kind="pty-shell"
-      className={cn(
-        TOOL_OUTPUT_PANEL_CLASS,
-        'maka-pty-shell',
-        props.attention && (
-          props.sandboxBlocked
-            ? 'maka-tool-output-warning-border'
-            : 'maka-tool-output-destructive-border'
-        ),
-      )}
+      className={cn(TOOL_OUTPUT_PANEL_CLASS, 'maka-pty-shell')}
     >
       <header className="maka-pty-shell-header">
         <span className="maka-pty-shell-title">
@@ -654,7 +649,7 @@ function isCancelledStatus(status: string | undefined): boolean {
   return status === 'cancelled';
 }
 
-function shellRunStatusLabel(status: string, locale: import('@maka/core').UiLocale): string {
+function shellRunStatusLabel(status: string, locale: import('@maka/core/ui-locale').UiLocale): string {
   const copy = getToolActivityCopy(locale).result;
   const label = (copy.backgroundStatus as Readonly<Record<string, string>>)[status];
   return label ?? copy.backgroundUnknown(status);
@@ -690,7 +685,7 @@ function RiveWorkflowPreview(props: {
     result.stderrTail ? `stderr_tail:\n${result.stderrTail}` : '',
   ].filter(Boolean);
   const body = [
-    result.ok ? 'Rive workflow completed' : 'Rive workflow failed',
+    result.ok ? copy.workflowCompleted : copy.workflowFailed,
     result.summary,
     '',
     ...rows.map(([label, value]) => `${label}: ${value}`),

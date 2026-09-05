@@ -1,6 +1,25 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { type RuntimeEvent } from '@maka/core';
+import { type RuntimeEvent } from '@maka/core/runtime-event';
 import {
   buildImmutableRuntimePrefix,
   type RuntimePrefixIdentityV1,
@@ -8,10 +27,29 @@ import {
 import {
   buildContinuationReplayPlan,
   buildContinuationReplaySegment,
+  digestProviderReplayAdmission,
 } from '../continuation-replay.js';
-import { PROVIDER_REPLAY_PROJECTION_VERSION } from '../model-history.js';
+import {
+  PROVIDER_REPLAY_PROJECTION_VERSION,
+  type RuntimeEventModelReplayItem,
+} from '../model-history.js';
 
 describe('continuation replay segment', () => {
+  it('rejects a persisted v1 admission under the route-bound v2 projection', () => {
+    const identity = runtimeIdentity();
+    const result = buildContinuationReplaySegment({
+      prefix: buildImmutableRuntimePrefix(identity, [
+        { eventSeq: 1, event: textEvent('legacy-user', 'user', identity) },
+      ]),
+      providerProjectionVersion: 1,
+    });
+
+    assert.equal(result.kind, 'blocked');
+    if (result.kind !== 'blocked') return;
+    assert.equal(result.reason, 'provider_replay_unsupported');
+    assert.match(result.diagnostics[0]?.message ?? '', /projection 1 is unsupported/);
+  });
+
   it('trims an interrupted assistant suffix after the last stable user boundary', () => {
     const identity = runtimeIdentity();
     const result = buildContinuationReplaySegment({
@@ -307,6 +345,11 @@ describe('continuation replay segment', () => {
     const result = buildContinuationReplayPlan({
       prefixes: [ancestor, source],
       providerProjectionVersion: PROVIDER_REPLAY_PROJECTION_VERSION,
+      admissionRoute: {
+        invocations: [],
+        targetProviderStateIdentity: undefined,
+        targetModelId: 'test-model',
+      },
     });
 
     assert.equal(result.kind, 'replayable');
@@ -322,6 +365,34 @@ describe('continuation replay segment', () => {
     assert.deepEqual(
       result.plan.boundary.segments.map((segment) => segment.identity.runId),
       ['run-1', 'run-2'],
+    );
+  });
+});
+
+describe('continuation replay digest', () => {
+  it('keeps the projection v2 digest compatible while excluding internal invocation identity', () => {
+    const digest = (invocationId: string) =>
+      digestProviderReplayAdmission({
+        providerProjectionVersion: PROVIDER_REPLAY_PROJECTION_VERSION,
+        targetProviderStateIdentity: undefined,
+        targetModelId: 'test-model',
+        items: [
+          {
+            kind: 'tool_call',
+            invocationId,
+            toolCallId: 'read-1',
+            toolName: 'Read',
+            input: { path: 'notes.md' },
+            eventId: 'call-1',
+            ts: 1,
+          } satisfies RuntimeEventModelReplayItem,
+        ],
+      });
+
+    assert.equal(digest('invocation-a'), digest('invocation-b'));
+    assert.equal(
+      digest('invocation-a'),
+      'sha256:775dac9a0959d888541d9e4930431b60dee89e4f28b62238ddde64dfd5f542ee',
     );
   });
 });

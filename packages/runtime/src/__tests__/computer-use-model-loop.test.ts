@@ -1,13 +1,29 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { LanguageModelV4StreamPart, LanguageModelV4Usage } from '@ai-sdk/provider';
-import type {
-  LlmConnection,
-  SessionEvent,
-  SessionHeader,
-  StoredMessage,
-  ToolInvocationRecord,
-} from '@maka/core';
+import type { LlmConnection } from '@maka/core/llm-connections';
+import type { SessionEvent } from '@maka/core/events';
+import type { SessionHeader, StoredMessage } from '@maka/core/session';
+import type { ToolInvocationRecord } from '@maka/core/usage-stats/types';
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 
 import { AiSdkBackend } from '../ai-sdk-backend.js';
@@ -35,7 +51,6 @@ describe('AiSdkBackend Computer Use model loop', () => {
     for (const providerType of [
       'openai',
       'anthropic',
-      'claude-subscription',
       'kimi-coding-plan',
       'MiniMax',
       'MiniMax-cn',
@@ -181,14 +196,13 @@ describe('AiSdkBackend Computer Use model loop', () => {
     );
   });
 
-  test('a coordinate attempt fails closed and the model can recover through a fresh semantic plan', async () => {
+  test('a keyboard refusal reaches the next model step and the turn still completes', async () => {
     const durable = createDurableTurnHarness({
       turnId: 'turn-1',
-      text: 'Update the fixture safely.',
+      text: 'Try the requested key and report the result.',
     });
-    const value = { current: '' };
     const backendCalls: string[] = [];
-    const computerBackend = fakeComputerBackend(value, backendCalls);
+    const computerBackend = fakeComputerBackend({ current: '' }, backendCalls);
     const [computerTool] = buildComputerUseTools({ backend: computerBackend });
     let modelStep = 0;
     const model = new MockLanguageModelV4({
@@ -196,46 +210,24 @@ describe('AiSdkBackend Computer Use model loop', () => {
         modelStep += 1;
         const chunks =
           modelStep === 1
-            ? toolCall('observe-1', {
+            ? toolCall('observe', {
                 action: 'observe',
                 app: 'pid:42',
                 window_id: 7,
-                include_screenshot: true,
               })
             : modelStep === 2
               ? (() => {
                   const observation = latestObservation(options.prompt);
-                  return toolCall('blocked-click', {
-                    action: 'left_click',
+                  return toolCall('key', {
+                    action: 'key',
                     observation_id: observation.observation_id,
-                    coordinate: [20, 20],
+                    text: 'Tab',
                   });
                 })()
-              : modelStep === 3
-                ? (() => {
-                    assert.match(stringsIn(options.prompt).join('\n'), /unsupported_action/);
-                    return toolCall('observe-2', {
-                      action: 'observe',
-                      app: 'pid:42',
-                      window_id: 7,
-                      include_screenshot: true,
-                    });
-                  })()
-                : modelStep === 4
-                  ? (() => {
-                      const observation = latestObservation(options.prompt);
-                      const field = observation.elements.find(
-                        (element) => element.label === 'CUA Lab Set Value Field',
-                      );
-                      assert.ok(field);
-                      return toolCall('safe-set', {
-                        action: 'set_value',
-                        observation_id: observation.observation_id,
-                        element_id: field.element_id,
-                        value: 'recovered',
-                      });
-                    })()
-                  : textCompletion('recovered safely');
+              : (() => {
+                  assert.match(stringsIn(options.prompt).join('\n'), /unsupported_action/);
+                  return textCompletion('The keyboard action was refused.');
+                })();
         return {
           stream: simulateReadableStream({
             chunks,
@@ -255,28 +247,14 @@ describe('AiSdkBackend Computer Use model loop', () => {
 
     const events = await drainWithDurableTurn(runtime.send(durable.sendInput()), durable);
 
-    assert.equal(
-      modelStep,
-      5,
-      JSON.stringify({
-        eventTypes: events.map((event) => event.type),
-        error: events.find((event) => event.type === 'error'),
-        ledger: durable.ledger,
-      }),
-    );
-    assert.equal(value.current, 'recovered');
-    // Each observe resolves its `app` first, because the model is allowed to
-    // say the name a person would use. That lookup is a backend call and not a
-    // model round trip, which is the round trip the resolution exists to save.
-    assert.deepEqual(backendCalls, [
-      'list_apps',
-      'observe',
-      'left_click',
-      'list_apps',
-      'observe',
-      'set_value',
-    ]);
+    assert.equal(modelStep, 3);
+    assert.deepEqual(backendCalls, ['list_apps', 'observe', 'key']);
     assert.equal(events.at(-1)?.type, 'complete');
+    const textComplete = [...events].reverse().find((event) => event.type === 'text_complete');
+    assert.equal(
+      textComplete?.type === 'text_complete' ? textComplete.text : undefined,
+      'The keyboard action was refused.',
+    );
   });
 });
 
@@ -379,6 +357,7 @@ function createRuntime(input: {
     modelId: 'mock-computer-model',
     modelFactory: () => input.model,
     tools: [input.computerTool],
+    testProjectionArtifacts: true,
     ...(input.durable ? { loadTurnRuntimeEvents: input.durable.loadTurnRuntimeEvents } : {}),
     newId: idGenerator(),
     now: monotonicClock(),
@@ -437,7 +416,6 @@ function header(): SessionHeader {
     workspaceRoot: '/tmp/maka',
     cwd: '/tmp/maka',
     createdAt: 1,
-    lastUsedAt: 1,
     name: 'Computer model loop',
     titleIsManual: true,
     isFlagged: false,

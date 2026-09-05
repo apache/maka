@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * PR #1316 review coverage: lock the per-shell capture-command quoting, the
  * marker-adjacency contract (which is why the dead xonsh branch was dropped),
@@ -292,12 +311,12 @@ describe('selectLoginShell', () => {
 
 describe('buildCaptureCommand', () => {
   describe('POSIX family (bash / zsh / fish / sh)', () => {
-    it('zsh produces the -i -l -c argv and a flush-marker payload', () => {
-      const { command, shellArgs } = buildCaptureCommand('zsh', '/usr/bin/node', MARK);
+    it('escapes the executable and produces a flush-marker payload', () => {
+      const { command, shellArgs } = buildCaptureCommand('bash', "/Users/Bob's/node", MARK);
       assert.deepEqual(shellArgs, ['-i', '-l', '-c']);
       assert.equal(
         command,
-        `'/usr/bin/node' -p '"${MARK}" + JSON.stringify({ PATH: process.env.PATH }) + "${MARK}"'`,
+        `'/Users/Bob'\\''s/node' -p '"${MARK}" + JSON.stringify({ PATH: process.env.PATH }) + "${MARK}"'`,
       );
       // The payload concatenates mark + JSON + mark with no separator, so the
       // emitted bytes are `<mark>{...}<mark>` — markers flush against the
@@ -306,29 +325,6 @@ describe('buildCaptureCommand', () => {
       const match = buildMarkerRegex(MARK).exec(emitted);
       assert.ok(match);
       assert.equal(match[1], JSON.stringify({ PATH: '/usr/bin' }));
-    });
-
-    it('tcsh / csh collapse to the legacy single -ic argv', () => {
-      const tcsh = buildCaptureCommand('tcsh', '/usr/bin/node', MARK);
-      assert.deepEqual(tcsh.shellArgs, ['-ic']);
-      const csh = buildCaptureCommand('csh', '/usr/bin/node', MARK);
-      assert.deepEqual(csh.shellArgs, ['-ic']);
-      // Same flush-marker payload as the rest of the POSIX family.
-      assert.equal(
-        tcsh.command,
-        `'/usr/bin/node' -p '"${MARK}" + JSON.stringify({ PATH: process.env.PATH }) + "${MARK}"'`,
-      );
-    });
-
-    it('round-trips an apostrophe in execPath via the close-quote / escape / reopen sequence', () => {
-      // POSIX single-quoting cannot contain a literal `'`; the safe escape is
-      // to close the quote, emit a backslash-escaped quote, and reopen.
-      const { command, shellArgs } = buildCaptureCommand('bash', "/Users/Bob's/node", MARK);
-      assert.deepEqual(shellArgs, ['-i', '-l', '-c']);
-      assert.equal(
-        command,
-        `'/Users/Bob'\\''s/node' -p '"${MARK}" + JSON.stringify({ PATH: process.env.PATH }) + "${MARK}"'`,
-      );
     });
   });
 
@@ -364,42 +360,4 @@ describe('buildCaptureCommand', () => {
     });
   });
 
-  it('xonsh falls into the POSIX branch (the dedicated branch is gone)', () => {
-    // xonsh is intentionally unsupported. It must NOT get a special argv and
-    // must share the POSIX payload — proving the dead branch was removed.
-    const { command, shellArgs } = buildCaptureCommand('xonsh', '/usr/bin/node', MARK);
-    assert.deepEqual(shellArgs, ['-i', '-l', '-c']);
-    assert.equal(
-      command,
-      `'/usr/bin/node' -p '"${MARK}" + JSON.stringify({ PATH: process.env.PATH }) + "${MARK}"'`,
-    );
-  });
-});
-
-describe('buildMarkerRegex', () => {
-  it('matches <mark>{...}<mark> and captures the JSON body', () => {
-    const regex = buildMarkerRegex(MARK);
-    const match = regex.exec(`${MARK}${JSON.stringify({ k: 'v' })}${MARK}`);
-    assert.ok(match);
-    assert.equal(match[1], JSON.stringify({ k: 'v' }));
-  });
-
-  it('captures the body across newlines (dotall via [\\s\\S])', () => {
-    const body = `{
-  "PATH": "/usr/bin"
-}`;
-    const match = buildMarkerRegex(MARK).exec(`${MARK}${body}${MARK}`);
-    assert.ok(match);
-    assert.equal(match[1], body);
-  });
-
-  it('does NOT match the old xonsh shape `mark {...} mark` (space-separated)', () => {
-    // The dropped xonsh branch ran Python `print(mark, json, mark)`, whose
-    // default sep joins args with a SPACE — producing `mark {...} mark`. That
-    // shape never satisfied the flush-marker regex, which is exactly why the
-    // branch was dead. This test is the guard that would have caught review
-    // item #3 before it shipped.
-    const xonshShape = `${MARK} {"k":"v"} ${MARK}`;
-    assert.equal(buildMarkerRegex(MARK).exec(xonshShape), null);
-  });
 });

@@ -1,10 +1,29 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * Shared clipboard-copy feedback hook + tri-state phase type.
  *
  * PR-UI-LIB-EXTRACT-7 (WAWQAQ msg `510fef52`, round 8/10): pulled
  * out of `components.tsx`. The hook is consumed at three sites
  * inside `@maka/ui` (message metadata copy, ToolActivity, and the
- * explore-agent preview); the `phase` type
+ * structured preview); the `phase` type
  * is also referenced by `TurnFooterActions` which keeps its own
  * inline copy-feedback state. None of these are part of the
  * public API.

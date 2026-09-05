@@ -1,3 +1,24 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import type { UiLocale } from '@maka/core/ui-locale';
+
 /**
  * Pure decision + copy helpers for desktop run-completion notifications.
  *
@@ -56,9 +77,22 @@ export interface RunNotificationCopy {
  * could not supply a session name / reply preview (e.g. an untitled
  * session or a tool-only turn with no assistant text).
  */
-export function runNotificationCopy(kind: RunNotificationKind): RunNotificationCopy {
+export function runNotificationCopy(
+  kind: RunNotificationKind,
+  locale: UiLocale,
+): RunNotificationCopy {
+  if (locale === 'en') {
+    return kind === 'errored'
+      ? { title: 'Conversation error', body: 'This response did not finish. Click to view details.' }
+      : { title: 'Response ready', body: 'Maka finished this response. Click to view it.' };
+  }
+  if (locale === 'zh-TW') {
+    return kind === 'errored'
+      ? { title: '任務發生錯誤', body: '本次回答未能完成，按一下以檢視詳細資料。' }
+      : { title: '回答已產生', body: 'Maka 已完成本次回答，按一下以檢視。' };
+  }
   if (kind === 'errored') {
-    return { title: '对话出错', body: '本轮回答未能完成，点击查看详情。' };
+    return { title: '任务出错', body: '本轮回答未能完成，点击查看详情。' };
   }
   return { title: '回答已生成', body: 'Maka 已完成本轮回答，点击查看。' };
 }
@@ -96,8 +130,11 @@ function sanitizeLine(value: unknown, max: number): string {
  * missing or blank. Sanitization + capping live here so the IPC handler
  * stays a thin shell and the logic is unit-testable without Electron.
  */
-export function resolveNotificationContent(input: RunNotificationInput): RunNotificationCopy {
-  const fallback = runNotificationCopy(input.kind);
+export function resolveNotificationContent(
+  input: RunNotificationInput,
+  locale: UiLocale,
+): RunNotificationCopy {
+  const fallback = runNotificationCopy(input.kind, locale);
   return {
     title: sanitizeLine(input.title, MAX_TITLE_CHARS) || fallback.title,
     body: sanitizeLine(input.body, MAX_BODY_CHARS) || fallback.body,

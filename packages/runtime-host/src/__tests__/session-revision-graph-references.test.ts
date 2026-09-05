@@ -1,11 +1,29 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { AgentRunHeader } from '@maka/core/agent-run';
+import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
+import { testInvocationRecord } from '@maka/runtime/test-only/invocation-fixture';
 import type { SessionHeader, StoredMessage } from '@maka/core/session';
-import {
-  agentGraphIdForRootSession,
-  collectConversationCopyLinkedChildReferences,
-} from '@maka/runtime';
+import { agentGraphIdForRootSession } from '@maka/runtime/stream-graph-coordinator';
+import { collectConversationCopyLinkedChildReferences } from '@maka/runtime/conversation-copy';
 import {
   agentGraphRevisionAdmissionSessionIds,
   prepareAgentGraphRevisionReferences,
@@ -55,6 +73,95 @@ test('Agent Graph revision references preserve only exact terminal provenance', 
   assert.equal(archived.ok, true);
 });
 
+test('Side Conversation references accept terminal linked children as snapshots', async () => {
+  const accepted = await prepare({ kind: 'side_conversation' });
+  assert.equal(accepted.ok, true);
+  if (!accepted.ok) assert.fail('Expected accepted Side Conversation references');
+  assert.deepEqual([...accepted.references.keys()], [CHILD_SESSION_ID]);
+});
+
+test('Side Conversation references accept terminal non-Graph child Sessions as snapshots', async () => {
+  const accepted = await prepare({
+    kind: 'side_conversation',
+    messages: [linkedSubagentResult('completed')],
+    sessionHeaders: [sessionHeader(ROOT_SESSION_ID), childHeader({ graph: false })],
+  });
+  assert.equal(accepted.ok, true);
+  if (!accepted.ok) assert.fail('Expected accepted linked-child snapshot');
+  assert.deepEqual([...accepted.references.keys()], [CHILD_SESSION_ID]);
+});
+
+test('Side Conversation references wait for live Graph and child state', async () => {
+  for (const input of [
+    { graphState: 'live' as const },
+    { childActive: true },
+    { messages: [linkedSubagentResult('running')] },
+  ]) {
+    const outcome = await prepare({ kind: 'side_conversation', ...input });
+    assert.equal(outcome.ok, false);
+    if (!outcome.ok) assert.equal(outcome.code, 'session_busy');
+  }
+});
+
+test('Side Conversation validates the retained Graph instead of a newer live Graph', async () => {
+  const sideConversation = await prepare({
+    kind: 'side_conversation',
+    sessionGraphState: 'live',
+    graphState: 'terminal',
+  });
+  assert.equal(sideConversation.ok, true);
+
+  const revision = await prepare({
+    sessionGraphState: 'live',
+    graphState: 'terminal',
+  });
+  assert.deepEqual(revision, {
+    ok: false,
+    code: 'session_busy',
+    message: 'A retained Agent Graph is not terminal',
+  });
+});
+
+test('Side Conversation rejects a retained child without a terminal result snapshot', async () => {
+  const outcome = await prepare({
+    kind: 'side_conversation',
+    messages: [],
+    sessionHeaders: [sessionHeader(ROOT_SESSION_ID), childHeader({ graph: false })],
+  });
+  assert.deepEqual(outcome, {
+    ok: false,
+    code: 'operation_unavailable',
+    message: 'Side Conversation requires a terminal result for every retained linked child',
+  });
+});
+
+test('Side Conversation waits for a live retained child before its result is committed', async () => {
+  const outcome = await prepare({
+    kind: 'side_conversation',
+    messages: [],
+    childActive: true,
+    sessionHeaders: [sessionHeader(ROOT_SESSION_ID), childHeader({ graph: false })],
+  });
+  assert.deepEqual(outcome, {
+    ok: false,
+    code: 'session_busy',
+    message: 'A retained linked child is still active',
+  });
+});
+
+test('Side Conversation waits for a live retained Graph before its result is committed', async () => {
+  const outcome = await prepare({
+    kind: 'side_conversation',
+    messages: [],
+    graphState: 'live',
+  });
+  assert.deepEqual(outcome, {
+    ok: false,
+    code: 'session_busy',
+    message: 'A retained Agent Graph is not terminal',
+  });
+});
+
 test('Agent Graph revision references reject incomplete or mismatched provenance', async () => {
   const cases: ReadonlyArray<{
     name: string;
@@ -93,22 +200,12 @@ test('Agent Graph revision references reject incomplete or mismatched provenance
     },
     {
       name: 'active child Run',
-      input: { runs: [agentRun({ status: 'running', completedAt: undefined })] },
+      input: { runs: [agentRun({ status: 'running' })] },
       code: 'session_busy',
     },
     {
       name: 'wrong Artifact turn',
       input: { artifactTurnId: 'other-turn' },
-      code: 'operation_unavailable',
-    },
-    {
-      name: 'deleted Artifact',
-      input: { artifactStatus: 'deleted' },
-      code: 'operation_unavailable',
-    },
-    {
-      name: 'missing Artifact',
-      input: { artifactMissing: true },
       code: 'operation_unavailable',
     },
     {
@@ -122,6 +219,21 @@ test('Agent Graph revision references reject incomplete or mismatched provenance
     assert.equal(outcome.ok, false, policyCase.name);
     if (!outcome.ok) assert.equal(outcome.code, policyCase.code, policyCase.name);
   }
+});
+
+test('Agent Graph revision references outlive the Artifacts they name', async () => {
+  // A child result lists every Artifact its turn held, in a ledger that can
+  // never be rewritten -- so an id in it outlives what it named. The retired
+  // provider-request captures are reclaimed on their own, and a user may
+  // delete a child's Artifact; neither may cost the Session its ability to
+  // take a revision. What this checks is that a reference does not reach
+  // outside its own child and lineage, which `wrong Artifact turn` above
+  // still fails on.
+  const reclaimed = await prepare({ artifactMissing: true });
+  assert.equal(reclaimed.ok, true);
+
+  const userDeleted = await prepare({ artifactStatus: 'deleted' });
+  assert.equal(userDeleted.ok, true);
 });
 
 test('Agent Graph revision references reject invalid ownership boundaries', async () => {
@@ -211,11 +323,12 @@ test('Agent Graph revision admission includes only retained direct and reference
 });
 
 interface PrepareOverrides {
-  readonly kind?: 'branch' | 'revision';
+  readonly kind?: 'branch' | 'revision' | 'side_conversation';
   readonly messages?: readonly StoredMessage[];
   readonly archivedResults?: readonly string[];
   readonly sessionHeaders?: readonly SessionHeader[];
-  readonly runs?: readonly AgentRunHeader[];
+  readonly runs?: readonly RuntimeInvocationRecord[];
+  readonly sessionGraphState?: 'absent' | 'live' | 'terminal';
   readonly graphState?: 'absent' | 'live' | 'terminal';
   readonly artifactTurnId?: string;
   readonly artifactStatus?: 'live' | 'deleted';
@@ -240,8 +353,8 @@ async function prepare(overrides: PrepareOverrides = {}) {
       }),
     },
     {
-      agentRunStore: {
-        listSessionRuns: async () => overrides.runs ?? [agentRun()],
+      runtimeEventStore: {
+        listSessionInvocations: async () => overrides.runs ?? [agentRun()],
       },
       artifacts: {
         getInSession: async (sessionId, artifactId) => ({
@@ -262,7 +375,14 @@ async function prepare(overrides: PrepareOverrides = {}) {
         }),
       },
       graph: {
-        readSessionState: async () => overrides.graphState ?? 'terminal',
+        readSessionState: async () =>
+          overrides.sessionGraphState ?? overrides.graphState ?? 'terminal',
+        readGraphState: async (_rootSessionId, graphId) => {
+          if (graphId !== agentGraphIdForRootSession(ROOT_SESSION_ID)) {
+            throw new Error('Graph is not bound to this root Session');
+          }
+          return overrides.graphState ?? 'terminal';
+        },
       },
       isSessionActive: () => overrides.childActive ?? false,
     },
@@ -342,7 +462,6 @@ function sessionHeader(id: string): SessionHeader {
     workspaceRoot: '/workspace',
     cwd: '/workspace',
     createdAt: 1,
-    lastUsedAt: 1,
     name: id,
     titleIsManual: false,
     isFlagged: false,
@@ -351,6 +470,7 @@ function sessionHeader(id: string): SessionHeader {
     status: 'active',
     hasUnread: false,
     backend: 'fake',
+    llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
     llmConnectionSlug: 'fake',
     connectionLocked: true,
     model: 'fake-model',
@@ -394,21 +514,30 @@ function childHeader(
   };
 }
 
-function agentRun(overrides: Partial<AgentRunHeader> = {}): AgentRunHeader {
-  return {
-    runId: CHILD_RUN_ID,
-    invocationId: 'child-invocation',
-    sessionId: CHILD_SESSION_ID,
-    turnId: CHILD_TURN_ID,
-    status: 'completed',
-    backendKind: 'fake',
-    llmConnectionSlug: 'fake',
-    modelId: 'fake-model',
-    cwd: '/workspace',
-    permissionMode: 'ask',
-    createdAt: 1,
-    updatedAt: 2,
-    completedAt: 2,
-    ...overrides,
+function agentRun(
+  overrides: {
+    runId?: string;
+    turnId?: string;
+    status?: 'completed' | 'failed' | 'cancelled' | 'running';
+    resumedFromRunId?: string;
+    retriedFromRunId?: string;
+  } = {},
+): RuntimeInvocationRecord {
+  const status = overrides.status ?? 'completed';
+  const lineage = {
+    ...(overrides.resumedFromRunId ? { resumedFromRunId: overrides.resumedFromRunId } : {}),
+    ...(overrides.retriedFromRunId ? { retriedFromRunId: overrides.retriedFromRunId } : {}),
   };
+  return testInvocationRecord({
+    sessionId: CHILD_SESSION_ID,
+    runId: overrides.runId ?? CHILD_RUN_ID,
+    turnId: overrides.turnId ?? CHILD_TURN_ID,
+    invocationId: overrides.runId ?? 'child-invocation',
+    openedAt: 1,
+    closedAt: 2,
+    ...(status === 'running'
+      ? {}
+      : { outcome: status === 'cancelled' ? ('aborted' as const) : status }),
+    ...(Object.keys(lineage).length > 0 ? { opening: { lineage } } : {}),
+  });
 }

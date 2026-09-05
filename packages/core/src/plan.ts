@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 export const PLAN_PROPOSAL_STATUSES = ['pending_approval', 'stale', 'approved'] as const;
 export type PlanProposalStatus = (typeof PLAN_PROPOSAL_STATUSES)[number];
 
@@ -39,11 +58,6 @@ export interface PlanStepDefinition {
   complexity?: 'low' | 'medium' | 'high';
 }
 
-export interface LegacyPlanProjection {
-  /** The pre-Host ledger required bounded content or identity projection. */
-  truncated: true;
-}
-
 export interface PlanProposal {
   planId: string;
   proposalId: string;
@@ -59,7 +73,6 @@ export interface PlanProposal {
   risks?: string[];
   status: PlanProposalStatus;
   submittedAt: number;
-  legacyProjection?: LegacyPlanProjection;
 }
 
 export interface PlanExecutionStep extends PlanStepDefinition {
@@ -82,7 +95,6 @@ export interface PlanExecution {
   interruptedAt?: number;
   cancelReason?: string;
   interruptionReason?: string;
-  legacyProjection?: LegacyPlanProjection;
 }
 
 export interface PlanSessionState {
@@ -102,8 +114,6 @@ interface PlanEventBase {
   sessionId: string;
   ts: number;
   storeVersion: number;
-  /** Read-time compatibility marker; new canonical events never persist it. */
-  legacyProjection?: LegacyPlanProjection;
 }
 
 export type PlanEvent =

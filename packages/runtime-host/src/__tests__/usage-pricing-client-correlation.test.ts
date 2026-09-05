@@ -1,3 +1,23 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -18,7 +38,6 @@ import {
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_PROTOCOL_VERSION,
   RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION,
-  RuntimeHostProtocolError,
   type HostFrame,
   type OperationInput,
   type OperationOutput,
@@ -168,7 +187,7 @@ describe('Usage/Pricing client response correlation', () => {
           const request = requestUnchecked(connection, mismatch.operation, mismatch.input);
           await assert.rejects(request, isInvalidFrame);
           await connection.closed;
-          await assert.rejects(requestUnchecked(connection, 'host.status', {}), isInvalidFrame);
+          await assert.rejects(connection.status(REQUEST_TIMEOUT_MS), isInvalidFrame);
         },
       );
     });
@@ -295,7 +314,6 @@ async function withProtocolPeer(
     });
     const connected = await connectRuntimeHost({
       rootPath: root,
-      surface: 'tui',
       protocol: PROTOCOL,
     });
     assert.equal(connected.kind, 'connected');

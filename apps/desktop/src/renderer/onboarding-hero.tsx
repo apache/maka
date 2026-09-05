@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 // apps/desktop/src/renderer/onboarding-hero.tsx
 //
 // First-run recovery rendered in place of the empty chat while setup is
@@ -5,12 +24,11 @@
 // shows only the shortest next action. Provider configuration remains owned
 // by Settings, and a ready workspace returns to the ordinary Composer.
 
-import {
-  type LlmConnection,
-  type OnboardingState,
-  type ProviderType,
-  type SettingsSection,
-} from '@maka/core';
+import { type LlmConnection, type ProviderType } from '@maka/core/llm-connections';
+
+import { type OnboardingState } from '@maka/core/onboarding';
+
+import { type SettingsSection } from '@maka/core/settings';
 import { Button, MakaWordmark, useUiLocale } from '@maka/ui';
 import { ICON_SIZE, AlertCircle, ChevronRight, Cpu, KeyRound } from '@maka/ui/icons';
 import {
@@ -334,6 +352,11 @@ function assertNever(value: never): never {
   throw new Error('OnboardingHero: unexhausted state');
 }
 
-function acknowledgeBlockedReason(reason: 'all_connections_unhealthy') {
+// Listed as literals rather than the reason type: a future reason still has to
+// be added here, which is the point — it forces a look at whether this card
+// needs to react to it.
+function acknowledgeBlockedReason(
+  reason: 'all_connections_unhealthy' | 'all_connections_retired',
+) {
   void reason;
 }

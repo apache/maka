@@ -1,52 +1,43 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { strict as assert } from 'node:assert';
-import { mkdir, mkdtemp } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { dirname, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { describe, it } from 'node:test';
-import { build } from 'esbuild';
-import type { ChatModelChoice, LlmConnection, SessionSummary } from '@maka/core';
-import { buildChatModelChoices } from '@maka/core/chat-model-choice';
-import { buildConnectionModelCatalogEntries } from '@maka/core/model-catalog';
+import type {
+  IdentifiedLlmConnection,
+  ProjectedLlmConnection,
+} from '@maka/core/llm-connections';
 import {
-  normalizeActiveChatModel,
-  pickNewChatModel,
-} from '../../renderer/shell-chat-model-selection.js';
-
-const REPO_ROOT = resolve(import.meta.dirname, '../../../../..');
-
-type ModelCatalogChoicesModule = {
-  buildCatalogRecommendedDefaultModel(providerType: LlmConnection['providerType']): string;
-  buildCatalogDailyReviewModelOptions(
-    connections: readonly LlmConnection[],
-    currentModelKey: string,
-  ): Array<readonly [string, string]>;
-};
-
-let modulePromise: Promise<ModelCatalogChoicesModule> | undefined;
-
-function importModelCatalogChoices(): Promise<ModelCatalogChoicesModule> {
-  return (modulePromise ??= (async () => {
-    const outdir = await mkdtemp(resolve(tmpdir(), 'maka-model-catalog-choices-'));
-    const outfile = resolve(outdir, 'model-catalog-choices.mjs');
-    await mkdir(dirname(outfile), { recursive: true });
-    await build({
-      entryPoints: [resolve(REPO_ROOT, 'apps/desktop/src/renderer/model-catalog-choices.ts')],
-      outfile,
-      bundle: true,
-      platform: 'node',
-      format: 'esm',
-      target: 'node20',
-      logLevel: 'silent',
-    });
-    return (await import(pathToFileURL(outfile).href)) as ModelCatalogChoicesModule;
-  })());
-}
+  resolveConnectionModelCatalog,
+  resolveDraftConnectionModelCatalog,
+  type ModelCatalogEntry,
+} from '@maka/core/model-catalog';
+import { buildChatModelChoices } from '@maka/core/chat-model-choice';
+import { pickNewChatModel } from '../../renderer/shell-chat-model-selection.js';
+import { buildCatalogDailyReviewModelOptions } from '../../renderer/model-catalog-choices.js';
 
 function connection(
-  overrides: Partial<LlmConnection> & Pick<LlmConnection, 'slug' | 'providerType'>,
-): LlmConnection {
-  return {
+  overrides: Partial<IdentifiedLlmConnection> &
+    Pick<IdentifiedLlmConnection, 'slug' | 'providerType'>,
+): ProjectedLlmConnection {
+  const stored: IdentifiedLlmConnection = {
+    connectionId: `connection-${overrides.slug}`,
     name: overrides.slug,
     defaultModel: '',
     enabled: true,
@@ -55,88 +46,12 @@ function connection(
     updatedAt: 1,
     ...overrides,
   };
-}
-
-function choiceIdentity(choice: {
-  connectionSlug: string;
-  providerType: string;
-  model: string;
-}): string {
-  return `${choice.connectionSlug}:${choice.providerType}:${choice.model}`;
+  // The Host resolves the catalog and projects it; tests build connections the
+  // same way so they exercise what a client actually receives.
+  return { ...stored, catalogEntries: resolveConnectionModelCatalog(stored) };
 }
 
 describe('model catalog picker helpers', () => {
-  it('keeps the first offered Codex model when replacing an unsupported stored model', () => {
-    const choices: ChatModelChoice[] = [
-      {
-        connectionSlug: 'codex-account',
-        providerType: 'openai-codex',
-        providerLabel: 'OpenAI OAuth',
-        model: 'first-offered',
-        label: 'First offered',
-        isDefault: false,
-        thinkingLevels: [],
-      },
-      {
-        connectionSlug: 'codex-account',
-        providerType: 'openai-codex',
-        providerLabel: 'OpenAI OAuth',
-        model: 'later-default',
-        label: 'Later default',
-        isDefault: true,
-        thinkingLevels: [],
-      },
-    ];
-    const session: SessionSummary = {
-      id: 'session-1',
-      name: 'Legacy Codex session',
-      isFlagged: false,
-      isArchived: false,
-      labels: [],
-      hasUnread: false,
-      status: 'active',
-      backend: 'ai-sdk',
-      llmConnectionSlug: 'codex-account',
-      connectionLocked: true,
-      model: 'gpt-5-codex',
-      permissionMode: 'ask',
-    };
-
-    assert.equal(
-      normalizeActiveChatModel(
-        session,
-        connection({
-          slug: 'codex-account',
-          providerType: 'openai-codex',
-          defaultModel: 'gpt-5-codex',
-        }),
-        choices,
-      ),
-      'first-offered',
-    );
-  });
-
-  it('uses the first offered model when no user or workspace preference exists', () => {
-    assert.deepEqual(
-      pickNewChatModel({
-        pending: null,
-        catalogDefault: undefined,
-        choices: [
-          {
-            connectionSlug: 'opencode-free',
-            providerType: 'opencode-free',
-            providerLabel: 'OpenCode Zen',
-            model: 'mimo-v2.5-free',
-            label: 'MiMo V2.5 Free',
-            isDefault: true,
-            thinkingLevels: [],
-          },
-        ],
-      }),
-      { llmConnectionSlug: 'opencode-free', model: 'mimo-v2.5-free' },
-    );
-  });
-
   it('uses the readiness-checked activation candidate before an unverified first choice', () => {
     assert.deepEqual(
       pickNewChatModel({
@@ -148,6 +63,7 @@ describe('model catalog picker helpers', () => {
         catalogDefault: undefined,
         choices: [
           {
+            connectionId: 'connection-missing',
             connectionSlug: 'missing-key-first',
             providerType: 'anthropic',
             providerLabel: 'Anthropic',
@@ -157,6 +73,7 @@ describe('model catalog picker helpers', () => {
             thinkingLevels: [],
           },
           {
+            connectionId: 'connection-ready',
             connectionSlug: 'ready-second',
             providerType: 'opencode-free',
             providerLabel: 'OpenCode Zen',
@@ -167,98 +84,13 @@ describe('model catalog picker helpers', () => {
           },
         ],
       }),
-      { llmConnectionSlug: 'ready-second', model: 'ready-model' },
+      {
+        llmConnectionId: 'connection-ready',
+        llmConnectionSlug: 'ready-second',
+        model: 'ready-model',
+      },
     );
   });
-
-  it('offers the normalized fallback for legacy Codex-only inventory', () => {
-    const choices = buildChatModelChoices([
-      connection({
-        slug: 'codex-account',
-        providerType: 'openai-codex',
-        defaultModel: 'gpt-5-codex',
-        enabledModelIds: ['gpt-5-codex'],
-        models: [{ id: 'gpt-5-codex' }],
-      }),
-    ]);
-
-    assert.deepEqual(choices.map(choiceIdentity), [
-      'codex-account:openai-codex:gpt-5.6-sol',
-    ]);
-  });
-
-  it('projects enabled models across wired providers without collapsing provider identities', () => {
-    const openrouter = connection({
-      slug: 'openrouter-main',
-      providerType: 'openrouter',
-      defaultModel: 'openrouter/auto',
-      enabledModelIds: ['openrouter/auto', 'anthropic/claude-sonnet-4.6'],
-      models: [
-        { id: 'openrouter/auto' },
-        { id: 'anthropic/claude-sonnet-4.6' },
-        { id: 'openai/gpt-5.5' },
-      ],
-      modelSource: 'fetched',
-    });
-    assert.deepEqual(
-      buildChatModelChoices([openrouter]).map((choice) => choice.model),
-      ['openrouter/auto', 'anthropic/claude-sonnet-4.6'],
-    );
-    assert.deepEqual(
-      buildConnectionModelCatalogEntries({ connection: openrouter }).map((choice) => choice.id),
-      ['openrouter/auto', 'anthropic/claude-sonnet-4.6', 'openai/gpt-5.5'],
-    );
-
-    const choices = buildChatModelChoices([
-      connection({
-        slug: 'ollama-cloud',
-        providerType: 'ollama-cloud',
-        defaultModel: 'qwen3.5:397b',
-        models: [{ id: 'qwen3.5:397b' }],
-        modelSource: 'fetched',
-      }),
-      connection({
-        slug: 'ollama-local',
-        providerType: 'ollama',
-        defaultModel: 'qwen3.5:cloud',
-        models: [{ id: 'qwen3.5' }, { id: 'qwen3.5:cloud' }],
-        modelSource: 'fetched',
-      }),
-      connection({
-        slug: 'github-copilot',
-        providerType: 'github-copilot',
-        models: [{ id: 'gpt-5.4' }],
-        modelSource: 'fetched',
-      }),
-      connection({
-        slug: 'xai-oauth',
-        providerType: 'xai-oauth',
-        models: [{ id: 'grok-4.5' }],
-        modelSource: 'fetched',
-      }),
-      connection({
-        slug: 'codex-account',
-        providerType: 'openai-codex',
-        models: [{ id: 'gpt-5-codex' }, { id: 'gpt-5.5' }],
-        modelSource: 'fetched',
-      }),
-      connection({
-        slug: 'gemini-account',
-        providerType: 'gemini-cli',
-        models: [{ id: 'gemini-2.5-pro' }],
-        modelSource: 'fetched',
-      }),
-    ]);
-    assert.deepEqual(choices.map(choiceIdentity), [
-      'ollama-cloud:ollama-cloud:qwen3.5:397b',
-      'ollama-local:ollama:qwen3.5',
-      'ollama-local:ollama:qwen3.5:cloud',
-      'github-copilot:github-copilot:gpt-5.4',
-      'xai-oauth:xai-oauth:grok-4.5',
-      'codex-account:openai-codex:gpt-5.5',
-    ]);
-  });
-
   it('keeps API connection labels while redacting OAuth account identities', () => {
     const choices = buildChatModelChoices([
       connection({
@@ -290,184 +122,86 @@ describe('model catalog picker helpers', () => {
     assert.ok(choices.every((choice) => !(choice.connectionName ?? '').includes('@')));
   });
 
-  it('keeps Daily Review choices enabled, private, and recoverable', async () => {
-    const { buildCatalogDailyReviewModelOptions } = await importModelCatalogChoices();
-    const openrouter = connection({
-      slug: 'openrouter-main',
-      providerType: 'openrouter',
-      enabledModelIds: ['openrouter/auto'],
-      models: [{ id: 'openrouter/auto' }, { id: 'openai/gpt-5.5' }],
-      modelSource: 'fetched',
+  it('renders the Host entry, not a local rebuild, while the editor is unedited', () => {
+    // A Host that knows this model and a Desktop that does not: the entry says
+    // the model cannot serve as a chat default and carries a name this build
+    // has never heard. An unedited editor must show what the Host decided —
+    // rebuilding locally is exactly the version disagreement the projection
+    // ends, and here it would also offer a model the Host ruled out.
+    const stored = {
+      connectionId: 'connection-relay',
+      slug: 'relay',
+      name: 'Relay',
+      providerType: 'openai-compatible' as const,
+      defaultModel: 'host-only-model',
+      enabled: true,
+      enabledModelIds: ['host-only-model'],
+      models: [{ id: 'host-only-model' }],
+      modelSource: 'fetched' as const,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const hostEntry: ModelCatalogEntry = {
+      ...resolveConnectionModelCatalog(stored)[0],
+      displayName: 'Host-only image model',
+      canUseAsChatDefault: false,
+    };
+    const connection: ProjectedLlmConnection = { ...stored, catalogEntries: [hostEntry] };
+    const draft = {
+      models: stored.models,
+      modelSource: stored.modelSource,
+      enabledModelIds: stored.enabledModelIds,
+    };
+
+    const unedited = resolveDraftConnectionModelCatalog(connection, draft);
+    assert.deepEqual(unedited, [hostEntry]);
+
+    // And the exception still applies: a draft the Host has not seen is the
+    // one thing the client resolves for itself.
+    const edited = resolveDraftConnectionModelCatalog(connection, {
+      ...draft,
+      models: [...stored.models, { id: 'just-fetched' }],
     });
     assert.deepEqual(
-      buildCatalogDailyReviewModelOptions(
-        [openrouter],
-        'openrouter-main::openai/gpt-5.5',
-      ),
-      [
-        ['openrouter-main::openrouter/auto', 'Auto Router'],
-        ['openrouter-main::openai/gpt-5.5', 'GPT-5.5 · 当前不可用'],
-      ],
+      edited.map((entry) => entry.id).sort(),
+      ['host-only-model', 'just-fetched'],
     );
+    assert.notEqual(edited[0]?.displayName, 'Host-only image model');
+  });
 
+  it('does not offer Daily Review a Codex model the subscription cannot serve', () => {
+    // A connection saved while `gpt-5-codex` was still picker-visible keeps it
+    // in `enabledModelIds`. The inventory filter alone left it there, and the
+    // catalog listed it back as a model no inventory describes — selectable,
+    // and failing at the provider once a scheduled run sent to it.
     const options = buildCatalogDailyReviewModelOptions(
       [
         connection({
-          slug: 'codex-work',
-          name: 'person@example.com',
+          slug: 'codex',
           providerType: 'openai-codex',
-          models: [{ id: 'shared-model', displayName: 'Shared Model' }],
-          modelSource: 'fetched',
-        }),
-        connection({
-          slug: 'codex-home',
-          name: 'private@example.com',
-          providerType: 'openai-codex',
-          models: [{ id: 'shared-model', displayName: 'Shared Model' }],
-          modelSource: 'fetched',
-        }),
-        connection({
-          slug: 'gemini-account',
-          providerType: 'gemini-cli',
-          models: [{ id: 'gemini-2.5-pro' }],
-          modelSource: 'fetched',
-        }),
-        connection({
-          slug: 'deepseek-api',
-          providerType: 'deepseek',
-          models: [{ id: 'deepseek-v4-flash' }],
+          defaultModel: 'gpt-5.5',
+          enabledModelIds: ['gpt-5.5', 'gpt-5-codex'],
+          models: [{ id: 'gpt-5.5' }],
           modelSource: 'fetched',
         }),
       ],
       '',
+      'zh-CN',
     );
-    assert.deepEqual(options, [
-      [
-        'codex-work::shared-model',
-        'Shared Model · OpenAI OAuth (ChatGPT / Codex) · codex-work',
-      ],
-      [
-        'codex-home::shared-model',
-        'Shared Model · OpenAI OAuth (ChatGPT / Codex) · codex-home',
-      ],
-      ['deepseek-api::deepseek-v4-flash', 'DeepSeek V4 Flash'],
-    ]);
-    assert.ok(options.every(([, label]) => !label.includes('@')));
-
-    assert.deepEqual(
-      buildCatalogDailyReviewModelOptions([], 'deleted-openai::gpt-4o-mini'),
-      [['deleted-openai::gpt-4o-mini', 'gpt-4o-mini · deleted-openai · 当前不可用']],
+    const keys = options.map(([key]) => key);
+    assert.ok(
+      keys.includes('codex::gpt-5.5'),
+      `expected the servable model to be offered, got ${JSON.stringify(keys)}`,
     );
-    assert.deepEqual(
-      buildCatalogDailyReviewModelOptions(
-        [
-          connection({
-            slug: 'openai-api',
-            providerType: 'openai',
-            models: [{ id: 'gpt-4o-mini' }],
-            modelSource: 'fetched',
-          }),
-        ],
-        'openai-api::custom-model',
-      ),
-      [
-        ['openai-api::gpt-4o-mini', 'GPT-4o mini'],
-        ['openai-api::custom-model', 'custom-model · 当前不可用'],
-      ],
+    assert.equal(
+      keys.includes('codex::gpt-5-codex'),
+      false,
+      `unsupported Codex model was offered: ${JSON.stringify(keys)}`,
     );
   });
 
-  it('derives canonical defaults, exact provider ids, and missing-default state', async () => {
-    const { buildCatalogRecommendedDefaultModel } = await importModelCatalogChoices();
-    assert.deepEqual(
-      [
-        'deepseek',
-        'siliconflow',
-        'vercel',
-        'zenmux',
-        'opencode',
-        'opencode-go',
-        'openai-compatible',
-      ].map((providerType) =>
-        buildCatalogRecommendedDefaultModel(providerType as LlmConnection['providerType']),
-      ),
-      [
-        'deepseek-v4-flash',
-        'moonshotai/Kimi-K2.6',
-        'anthropic/claude-opus-4.8',
-        'moonshotai/kimi-k2.5',
-        'gpt-5.5',
-        'minimax-m3',
-        '',
-      ],
-    );
-
-    const zenmux = connection({
-      slug: 'zenmux',
-      providerType: 'zenmux',
-      defaultModel: 'moonshotai/kimi-k2.5',
-      models: [
-        { id: 'moonshotai/kimi-k2.5' },
-        { id: 'moonshotai/kimi-k2.7-code' },
-      ],
-      modelSource: 'fetched',
-    });
-    assert.deepEqual(
-      buildConnectionModelCatalogEntries({ connection: zenmux }).map(({ id, source, isDefault }) => ({
-        id,
-        source,
-        isDefault,
-      })),
-      [
-        { id: 'moonshotai/kimi-k2.5', source: 'provider_api', isDefault: true },
-        { id: 'moonshotai/kimi-k2.7-code', source: 'provider_api', isDefault: false },
-      ],
-    );
-    assert.deepEqual(buildChatModelChoices([zenmux]).map(choiceIdentity), [
-      'zenmux:zenmux:moonshotai/kimi-k2.5',
-      'zenmux:zenmux:moonshotai/kimi-k2.7-code',
-    ]);
-    const missingDefault = buildConnectionModelCatalogEntries({
-      connection: connection({
-        slug: 'openai-api',
-        providerType: 'openai',
-        defaultModel: 'gpt-5',
-        models: [{ id: 'gpt-4o-mini' }],
-        modelSource: 'fetched',
-      }),
-    });
-    assert.deepEqual(
-      missingDefault.map(({ id, availability, unavailableReason, isDefault }) => ({
-        id,
-        availability,
-        unavailableReason,
-        isDefault,
-      })),
-      [
-        {
-          id: 'gpt-5',
-          availability: 'blocked',
-          unavailableReason: 'not_in_live_list',
-          isDefault: true,
-        },
-        {
-          id: 'gpt-4o-mini',
-          availability: 'available',
-          unavailableReason: 'none',
-          isDefault: false,
-        },
-      ],
-    );
-    assert.equal(
-      buildConnectionModelCatalogEntries({
-        connection: connection({
-          slug: 'deepseek-api',
-          providerType: 'deepseek',
-          defaultModel: 'deepseek-v4-flash',
-          modelSource: 'fallback',
-        }),
-      }).filter((choice) => choice.source === 'static_catalog').length,
-      4,
-    );
+  it('labels a saved-but-unavailable selection in the UI locale', () => {
+    const [, label] = buildCatalogDailyReviewModelOptions([], 'codex::gone', 'en').at(-1)!;
+    assert.equal(label, 'gone · codex · Currently unavailable');
   });
 });

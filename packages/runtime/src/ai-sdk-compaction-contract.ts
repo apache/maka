@@ -1,112 +1,65 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
+import type { HistoryCompactRoute } from '@maka/core/model-call-attempt';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { ModelProjectionTransition } from '@maka/core/model-projection-transition';
+import type { LoadedModelProjectionTransitions } from './model-projection-transition-ledger.js';
+import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 
 import type { ProviderRequestTracker } from './provider-request-telemetry.js';
-import type { ActiveFullCompactBlock } from './active-full-compact.js';
-import type { ActiveToolResultArchiveCandidate } from './active-tool-result-prune.js';
+import type { ContextBudgetPolicy } from './context-budget.js';
 import type {
-  ArchiveRetrievalMode,
-  ContextBudgetPolicy,
-  HistoryCompactBlock,
-  StaleToolResultArchiveCandidate,
-  SynthesisCacheBlock,
-  SynthesisSourceRef,
-} from './context-budget.js';
-import type { HistoryCompactCheckpoint } from './history-compact-checkpoint.js';
+  HistoryCompactCheckpoint,
+  HistoryCompactProviderState,
+} from './history-compact-checkpoint.js';
 import type { ModelFactory } from './model-adapter.js';
-import type { SemanticCompactBlock } from './semantic-compact.js';
 import type { ToolResultArchiveCapability } from './tool-result-archive-capability.js';
 
-export interface SynthesisCacheLoadInput {
-  sessionId: string;
-  maxBlocks?: number;
-  maxBytes?: number;
-  maxEstimatedTokens?: number;
-}
-export interface SynthesisCacheLoadResult {
-  blocks: SynthesisCacheBlock[];
-  skipped?: number;
-  skippedReasonCounts?: Record<string, number>;
-  evicted?: number;
-  evictionReasonCounts?: Record<string, number>;
-}
-export interface SynthesisCacheWriteInput {
-  sessionId: string;
-  turnId: string;
-  source: {
-    createdFrom: 'gated_archive_retrieval' | 'eager_archive_retrieval';
-    query: string;
-    hydratedRuntimeEvents: RuntimeEvent[];
-    retrievedArchiveRefs: SynthesisSourceRef[];
-    archiveRetrievalMode: ArchiveRetrievalMode;
-  };
-  limits: {
-    maxBlocks: number;
-    maxBlockEstimatedTokens: number;
-    maxEstimatedTokens: number;
-    charsPerToken: number;
-  };
-  requestShapeHashBefore?: string;
-  requestShapeHashAfter?: string;
-}
-export interface SynthesisCacheWriteResult {
-  blocks: SynthesisCacheBlock[];
-  skipped?: number;
-  skippedReasonCounts?: Record<string, number>;
-}
-export type SynthesisCacheLoader = (
-  input: SynthesisCacheLoadInput,
-) => Promise<SynthesisCacheLoadResult> | SynthesisCacheLoadResult;
-export type SynthesisCacheWriter = (
-  input: SynthesisCacheWriteInput,
-) => Promise<SynthesisCacheWriteResult | void> | SynthesisCacheWriteResult | void;
+/**
+ * Default output cap for a compaction summary. Measured summaries land around
+ * 1K tokens; the cap exists so a runaway summarizer cannot occupy the context
+ * it was asked to free, not to shape the summary (#4559).
+ */
+export const DEFAULT_HISTORY_COMPACT_MAX_OUTPUT_TOKENS = 8_000;
 
-export interface HistoryCompactLoadInput {
-  sessionId: string;
-  maxBlocks?: number;
-  maxBytes?: number;
-  maxEstimatedTokens?: number;
-}
-export interface HistoryCompactLoadResult {
-  blocks: HistoryCompactBlock[];
-  skipped?: number;
-  skippedReasonCounts?: Record<string, number>;
-}
-export interface HistoryCompactWriteInput {
-  sessionId: string;
-  turnId: string;
-  source: {
-    draftBlock: HistoryCompactBlock;
-    foldedRuntimeEvents: RuntimeEvent[];
-  };
-  limits: {
-    maxBlocks: number;
-    maxBlockEstimatedTokens: number;
-    maxEstimatedTokens: number;
-    charsPerToken: number;
-  };
-  requestShapeHashBefore?: string;
-  requestShapeHashAfter?: string;
-  abortSignal?: AbortSignal;
-}
-export interface HistoryCompactWriteResult {
-  blocks: HistoryCompactBlock[];
-  skipped?: number;
-  skippedReasonCounts?: Record<string, number>;
-}
-export type HistoryCompactLoader = (
-  input: HistoryCompactLoadInput,
-) => Promise<HistoryCompactLoadResult> | HistoryCompactLoadResult;
-export type HistoryCompactWriter = (
-  input: HistoryCompactWriteInput,
-) => Promise<HistoryCompactWriteResult | void> | HistoryCompactWriteResult | void;
 export interface HistoryCompactSummaryInput {
   sessionId: string;
   turnId: string;
-  source: { foldedRuntimeEvents: RuntimeEvent[] };
+  /** Run issuing this compaction; its events are same-route by construction. */
+  runId?: string;
+  source: {
+    foldedRuntimeEvents: RuntimeEvent[];
+    invocations?: readonly RuntimeInvocationRecord[];
+  };
   previousCheckpoint?: HistoryCompactCheckpoint;
   newlyFoldedRuntimeEvents?: RuntimeEvent[];
-  requestShapeHashBefore?: string;
+  /**
+   * Output cap for the summary call. A summary is re-sent on every later
+   * request, so it is bounded outright rather than estimated: the summarizer's
+   * provider truncates at this cap (`finishReason: length`), and the compactor
+   * then asks once for a shorter one. Whether the compaction INPUT fits the
+   * summarizer's window is that provider's answer (`input_too_large`), never a
+   * local estimate's (#4559).
+   */
+  maxOutputTokens?: number;
   abortSignal?: AbortSignal;
   /**
    * Physical-call tracking for this summarization, built by the backend (#1679).
@@ -118,9 +71,24 @@ export interface HistoryCompactSummaryInput {
    */
   providerRequestTracker?: ProviderRequestTracker;
 }
+/**
+ * Produces the checkpoint summary that REPLACES the folded history. A string
+ * result must satisfy the mandated checkpoint format — the sections, fence,
+ * truncation, and size-floor rules owned by
+ * `history-compact-summary-validation.ts` (its `SUMMARY_FORMAT_TEMPLATE` is
+ * the shape to emit) — because every checkpoint write gate rejects a
+ * defective summary and fails the compaction open (#3029). A free-form
+ * plain-text summary is no longer persistable. Provider-native state objects
+ * bypass text validation; `undefined`/empty falls to the `empty_summary`
+ * gate.
+ */
 export type HistoryCompactSummarizer = (
   input: HistoryCompactSummaryInput,
-) => Promise<string | undefined> | string | undefined;
+) =>
+  | Promise<string | HistoryCompactProviderState | undefined>
+  | string
+  | HistoryCompactProviderState
+  | undefined;
 export type HistoryCompactCheckpointLoader = () =>
   | Promise<HistoryCompactCheckpoint | undefined>
   | HistoryCompactCheckpoint
@@ -129,18 +97,18 @@ export type HistoryCompactCheckpointRecorder = (
   checkpoint: HistoryCompactCheckpoint,
   turnId: string,
 ) => void | Promise<void>;
-export type ActiveFullCompactBlockRecorder = (
-  block: ActiveFullCompactBlock,
-) => void | Promise<void>;
-export type SemanticCompactBlockRecorder = (block: SemanticCompactBlock) => void | Promise<void>;
-
+export type ModelProjectionTransitionLoader = () => Promise<LoadedModelProjectionTransitions>;
+export type ModelProjectionTransitionLedgerRecorder = (
+  transition: ModelProjectionTransition,
+  turnId: string,
+) => Promise<void>;
 /** Provider and persistence capabilities used by the compaction collaborator. */
 export interface AiSdkCompactionCapabilities {
   connection: RuntimeExecutionConnection;
   apiKey: string;
   modelId: string;
   modelFactory: ModelFactory;
-  /** Optional prior-history budget. Keeps whole turns to preserve tool-call/result pairs. */
+  /** Optional model-visible context budget and compaction policy. */
   contextBudget?: ContextBudgetPolicy;
   /**
    * The whole tool-result archive authority (#2026): the writer that durably
@@ -150,20 +118,22 @@ export interface AiSdkCompactionCapabilities {
    * it can no longer mean "archives without a way back".
    */
   toolResultArchive?: ToolResultArchiveCapability;
-  /** Optional best-effort source-bearing synthesis cache loader. */
-  loadSynthesisCache?: SynthesisCacheLoader;
-  /** Optional best-effort source-bearing synthesis cache writer. */
-  writeSynthesisCache?: SynthesisCacheWriter;
-  /** Optional best-effort source-bearing history compact block loader. */
-  loadHistoryCompact?: HistoryCompactLoader;
-  /** Optional best-effort source-bearing history compact block writer. */
-  writeHistoryCompact?: HistoryCompactWriter;
-  /** Preferred bounded V2 checkpoint loader. Legacy artifact blocks remain a read-only fallback. */
+  /** Latest checkpoint loader. */
   loadHistoryCompactCheckpoint?: HistoryCompactCheckpointLoader;
-  /** Produces a checkpoint summary from the prior summary plus newly evicted RuntimeEvents. */
+  /** Produces a checkpoint value from prior state plus newly evicted RuntimeEvents. */
   summarizeHistoryCompact?: HistoryCompactSummarizer;
-  /** Best-effort durable recorder for accepted V2 checkpoints. */
+  /** Actual route used by the configured history compactor, for durable diagnostics. */
+  historyCompactRoute?: HistoryCompactRoute;
+  /** Durable recorder for accepted checkpoints; persistence precedes projection. */
   recordHistoryCompactCheckpoint?: HistoryCompactCheckpointRecorder;
+  /**
+   * Session-scoped read of every committed model-projection transition (#4283).
+   * Absent means this session cannot make a lossy model-history change durable,
+   * and therefore must not make one at all.
+   */
+  loadModelProjectionTransitions?: ModelProjectionTransitionLoader;
+  /** Durable append for one transition; persistence precedes model-visible loss. */
+  recordModelProjectionTransition?: ModelProjectionTransitionLedgerRecorder;
   /**
    * Durable read of the given turn's persisted RuntimeEvents from the
    * authoritative run ledger. Mid-turn capacity compaction derives its
@@ -174,8 +144,4 @@ export interface AiSdkCompactionCapabilities {
   loadTurnRuntimeEvents?: (turnId: string) => Promise<RuntimeEvent[]>;
   /** Explicit capability for folding current-run events into session-scoped history. */
   allowMidTurnHistoryCompaction?: boolean;
-  /** Optional best-effort durable recorder for accepted active full compact blocks. */
-  recordActiveFullCompactBlock?: ActiveFullCompactBlockRecorder;
-  /** Optional best-effort durable recorder for accepted semantic compact blocks. */
-  recordSemanticCompactBlock?: SemanticCompactBlockRecorder;
 }

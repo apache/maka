@@ -1,12 +1,31 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import type { SessionHeader, StoredMessage } from '@maka/core';
+import type { SessionHeader, StoredMessage } from '@maka/core/session';
 import {
   acquireOperationalStateDatabase,
-  createSqliteSessionMetadataStore,
   OPERATIONAL_STATE_DATABASE_NAME,
-  projectSessionCatalogMessages,
-} from '@maka/storage';
+} from '@maka/storage/operational-state-store';
+import { projectSessionCatalogMessages } from '@maka/storage/session-store';
+import { createSqliteSessionMetadataStore } from '@maka/storage/sqlite-session-metadata-store';
 
 // Fixed clock for the e2e-fixture. All seeded timestamps and
 // transient fixture state derive from this value unless tests explicitly
@@ -14,7 +33,11 @@ import {
 export const E2E_FIXTURE_NOW = Date.UTC(2026, 4, 22, 3, 0, 0);
 
 export const TURN_SESSION_ID = 'e2e-fixture-turn';
-export const ARTIFACT_SESSION_ID = 'e2e-fixture-artifact';
+export const AGENT_GRAPH_SESSION_ID = 'e2e-fixture-agent-graph';
+export const PROMPT_RAIL_SESSION_ID = 'e2e-fixture-prompt-rail';
+export const PARTIAL_HISTORY_SESSION_ID = 'e2e-fixture-partial-history';
+/** Exceeds both the 64-tick rail and the bounded active transcript range. */
+export const PROMPT_RAIL_PROMPT_COUNT = 120;
 export const LONG_SIDEBAR_SESSION_PREFIX = 'e2e-fixture-sidebar-long-';
 export const LONG_SIDEBAR_SESSION_COUNT = 60;
 export const LONG_SIDEBAR_PROJECT_ID = 'e2e-fixture-project';
@@ -35,7 +58,6 @@ export function header(input: {
     workspaceRoot: 'e2e-fixture',
     cwd: '/workspace/maka',
     createdAt: input.now - 3_600_000,
-    lastUsedAt: input.lastMessageAt,
     lastMessageAt: input.lastMessageAt,
     name: input.name,
     titleIsManual: true,

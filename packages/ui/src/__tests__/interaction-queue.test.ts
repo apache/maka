@@ -1,10 +1,30 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
 import type {
+  FormRequestEvent,
   SandboxBoundaryRequestEvent,
   UserQuestionRequestEvent,
-} from '@maka/core';
+} from '@maka/core/events';
 import {
   activeInteractionFor,
   clearInteractions,
@@ -12,6 +32,7 @@ import {
   dequeueInteractionByToolUseId,
   enqueueInteraction,
   reconcileInteractions,
+  reduceInteractionQueues,
   type InteractionQueues,
 } from '../interaction-queue.js';
 
@@ -44,6 +65,20 @@ function question(requestId: string): UserQuestionRequestEvent {
   };
 }
 
+function form(requestId: string): FormRequestEvent {
+  return {
+    type: 'form_request',
+    id: `evt_${requestId}`,
+    turnId: 'turn_1',
+    ts: 0,
+    requestId,
+    toolUseId: `call_${requestId}`,
+    message: 'Choose settings',
+    requester: { name: 'deploy' },
+    fields: [{ kind: 'boolean', name: 'confirm', label: 'Confirm', required: true }],
+  };
+}
+
 describe('composer interaction queue', () => {
   test('boundary and question requests share one FIFO per session', () => {
     let queues: InteractionQueues = {};
@@ -53,6 +88,31 @@ describe('composer interaction queue', () => {
     assert.equal(activeInteractionFor(queues, 's')?.requestId, 'boundary');
     queues = dequeueInteractionByRequestId(queues, 's', 'boundary');
     assert.equal(activeInteractionFor(queues, 's')?.requestId, 'question');
+  });
+
+  test('Client Capability requests enter and leave the shared queue', () => {
+    let queues = reduceInteractionQueues({}, 's', {
+      type: 'client_capability_request',
+      id: 'evt_capability',
+      turnId: 'turn_1',
+      ts: 0,
+      requestId: 'capability',
+      toolUseId: 'call_capability',
+      capability: 'browser',
+      scope: { kind: 'browser_origin', origin: 'https://example.com' },
+    });
+    assert.equal(activeInteractionFor(queues, 's')?.requestId, 'capability');
+
+    queues = reduceInteractionQueues(queues, 's', {
+      type: 'client_capability_decision_ack',
+      id: 'evt_ack',
+      turnId: 'turn_1',
+      ts: 1,
+      requestId: 'capability',
+      toolUseId: 'call_capability',
+      decision: 'allow',
+    });
+    assert.equal(activeInteractionFor(queues, 's'), undefined);
   });
 
   test('deduplicates replays and isolates sessions', () => {
@@ -101,5 +161,24 @@ describe('composer interaction queue', () => {
 
     assert.equal(activeInteractionFor(reconciled, 's')?.type, 'user_question_request');
     assert.equal(activeInteractionFor(reconciled, 's')?.requestId, 'missed');
+  });
+
+  test('form requests enter and leave the shared queue', () => {
+    let queues = reduceInteractionQueues({}, 's', form('form-1'));
+
+    assert.equal(activeInteractionFor(queues, 's')?.type, 'form_request');
+    queues = reduceInteractionQueues(queues, 's', {
+      type: 'form_answer_ack',
+      id: 'evt_form_ack',
+      turnId: 'turn_1',
+      ts: 1,
+      requestId: 'form-1',
+      toolUseId: 'call_form-1',
+    });
+    assert.equal(activeInteractionFor(queues, 's'), undefined);
+
+    queues = reconcileInteractions({}, 's', [form('rehydrated-form')]);
+
+    assert.equal(activeInteractionFor(queues, 's')?.requestId, 'rehydrated-form');
   });
 });

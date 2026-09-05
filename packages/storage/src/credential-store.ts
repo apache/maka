@@ -1,10 +1,30 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { randomUUID } from 'node:crypto';
-import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, open, readFile, rename, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { withFileUpdateLock } from './file-update-lock.js';
 
 /**
  * Pure-Node credential store. Shared by the desktop app and any
- * headless consumer (CLI / eval harness / third party) that runs the
+ * non-desktop consumer (CLI / third party) that runs the
  * runtime outside Electron.
  *
  * At rest this is plaintext JSON behind 0600 file perms (file-first;
@@ -31,7 +51,9 @@ type StoredCredentialKind =
   | 'botToken'
   | 'botAppSecret'
   | 'proxyPassword'
-  | 'tavilyApiKey';
+  | 'tavilyApiKey'
+  | 'runtimeHostAccess'
+  | 'runtimeHostCapabilityProvider';
 export type CredentialKind =
   | 'api_key'
   | 'oauth_token'
@@ -39,7 +61,9 @@ export type CredentialKind =
   | 'bot_token'
   | 'app_secret'
   | 'proxy_password'
-  | 'tavily_api_key';
+  | 'tavily_api_key'
+  | 'runtime_host_access'
+  | 'runtime_host_capability_provider';
 
 /** Current on-disk schema version. Unknown versions fail closed on read. */
 export const CREDENTIAL_SCHEMA_VERSION = 1;
@@ -233,19 +257,36 @@ async function ensureSecretDir(dir: string): Promise<void> {
 /**
  * Owner-only atomic write for a credentials file: a 0700 dir, an exclusive
  * 0600 temp ('wx'/O_EXCL so we never follow a pre-planted symlink at a
- * predictable path), 0600 re-enforced, an atomic rename, and temp cleanup on
- * failure.
+ * predictable path), a durability fence before and after the atomic rename,
+ * and temp cleanup on failure.
  */
 async function writeSecretFileAtomic(path: string, contents: string): Promise<void> {
   await ensureSecretDir(dirname(path));
   const tempPath = `${path}.${randomUUID()}.tmp`;
   try {
-    await writeFile(tempPath, contents, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    const handle = await open(tempPath, 'wx', 0o600);
+    try {
+      await handle.writeFile(contents, 'utf8');
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
     await chmodStrict(tempPath, 0o600);
     await rename(tempPath, path);
+    await syncDirectory(dirname(path));
   } catch (error) {
     await rm(tempPath, { force: true });
     throw error;
+  }
+}
+
+async function syncDirectory(path: string): Promise<void> {
+  if (process.platform === 'win32') return;
+  const handle = await open(path, 'r');
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
   }
 }
 
@@ -264,10 +305,7 @@ async function chmodStrict(path: string, mode: number): Promise<void> {
   await chmod(path, mode);
 }
 
-// A contended acquire polls this often, then fails loud after the timeout.
-const LOCK_POLL_MS = 25;
 const LOCK_TIMEOUT_MS = 10_000;
-const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * Serialize a read-modify-write across processes / store instances that share
@@ -300,31 +338,8 @@ export async function withCredentialFileLock<T>(
   fn: () => Promise<T>,
   timeoutMs: number = LOCK_TIMEOUT_MS,
 ): Promise<T> {
-  const lockPath = `${targetPath}.lock`;
-  // mkdir (the acquire below) is atomic but needs its parent to exist; harden it
-  // to 0700 the same way the writer does so the lock dir never sits loose.
   await ensureSecretDir(dirname(targetPath));
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    try {
-      await mkdir(lockPath);
-      break;
-    } catch (error) {
-      if ((error as { code?: string }).code !== 'EEXIST') throw error;
-      if (Date.now() >= deadline) {
-        throw new Error(
-          `credentials.json is locked by another process (${lockPath}). ` +
-            'If no other process is using it, remove that directory and retry.',
-        );
-      }
-      await delay(LOCK_POLL_MS);
-    }
-  }
-  try {
-    return await fn();
-  } finally {
-    await rm(lockPath, { recursive: true, force: true });
-  }
+  return withFileUpdateLock(targetPath, fn, timeoutMs);
 }
 
 const STORED_CREDENTIAL_KINDS = [
@@ -335,6 +350,8 @@ const STORED_CREDENTIAL_KINDS = [
   'botAppSecret',
   'proxyPassword',
   'tavilyApiKey',
+  'runtimeHostAccess',
+  'runtimeHostCapabilityProvider',
 ] as const satisfies readonly StoredCredentialKind[];
 
 function toStoredKind(kind: CredentialKind): StoredCredentialKind {
@@ -353,5 +370,9 @@ function toStoredKind(kind: CredentialKind): StoredCredentialKind {
       return 'proxyPassword';
     case 'tavily_api_key':
       return 'tavilyApiKey';
+    case 'runtime_host_access':
+      return 'runtimeHostAccess';
+    case 'runtime_host_capability_provider':
+      return 'runtimeHostCapabilityProvider';
   }
 }

@@ -1,9 +1,25 @@
-import type { ChatDefaultPermissionMode } from "@maka/core";
-import {
-  resolveSkillDiscoveryPaths,
-  scanSkillsWithDiagnostics,
-  type InvocableSkillEntry,
-} from "@maka/runtime";
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import type { ChatDefaultPermissionMode } from '@maka/core/settings';
+import { resolveSkillDiscoveryPaths, scanSkillsWithDiagnostics } from '@maka/runtime/skills';
+import { type InvocableSkillEntry } from '@maka/runtime/skill-invocation';
 import type {
   SkillCatalogGovernanceItem,
   SkillCatalogManagedUpdateMutation,
@@ -45,9 +61,13 @@ interface RuntimeHostSkillsIpcDeps {
   readonly client: DesktopRuntimeHostClient;
   readonly workspaceRoot: string;
   readonly mainWindowController: MainWindowController;
-  readonly getCurrentWorkspaceTarget: () => Promise<WorkspaceTarget>;
+  readonly getSelectedWorkspaceTarget: () => Promise<WorkspaceTarget | undefined>;
+  readonly resolveNewSessionWorkspaceTarget: (
+    projectId: string | null | undefined,
+  ) => Promise<WorkspaceTarget | undefined>;
   readonly getDefaultPermissionMode: () => Promise<ChatDefaultPermissionMode>;
   readonly openPath: (path: string) => Promise<string>;
+  readonly allowLocalPaths?: boolean;
 }
 
 interface GovernanceProjection {
@@ -71,9 +91,11 @@ export function registerRuntimeHostSkillsIpc(
   deps: RuntimeHostSkillsIpcDeps,
 ): void {
   handleReconnectableRead(deps.ipcMain, "skills:list", async () => {
+    const workspace = await deps.getSelectedWorkspaceTarget();
+    if (!workspace) return [];
     const projection = await loadGovernance(
       deps,
-      await deps.getCurrentWorkspaceTarget(),
+      workspace,
     );
     return projection.items.map((item) =>
       toSkillEntry(item, projection.paths.get(item.ref) ?? ""),
@@ -84,17 +106,23 @@ export function registerRuntimeHostSkillsIpc(
     deps.ipcMain,
     "skills:listInvocable",
     async (_event, sessionId?: unknown, newSessionContext?: unknown) => {
-      const target =
-        typeof sessionId === "string"
-          ? { kind: "session" as const, sessionId }
-          : {
-              kind: "new_session" as const,
-              context: { workspace: await deps.getCurrentWorkspaceTarget() },
-              collaborationMode:
-                normalizeNewSessionCollaborationMode(newSessionContext) ??
-                "agent",
-              permissionMode: await deps.getDefaultPermissionMode(),
-            };
+      let target;
+      if (typeof sessionId === "string") {
+        target = { kind: "session" as const, sessionId };
+      } else {
+        const projectId = normalizeNewSessionProjectId(newSessionContext);
+        const workspace = await deps.resolveNewSessionWorkspaceTarget(projectId);
+        if (!workspace) return [];
+        target = {
+          kind: "new_session" as const,
+          context: { workspace },
+          collaborationMode:
+            normalizeNewSessionCollaborationMode(newSessionContext) ?? "agent",
+          permissionMode:
+            normalizeNewSessionPermissionMode(newSessionContext) ??
+            await deps.getDefaultPermissionMode(),
+        };
+      }
       return (await deps.client.listInvocableSkills(target)).map(
         (item): InvocableSkillEntry => ({ ...item }),
       );
@@ -102,7 +130,8 @@ export function registerRuntimeHostSkillsIpc(
   );
 
   handleReconnectableRead(deps.ipcMain, "skills:catalog:list", async () => {
-    const workspace = await deps.getCurrentWorkspaceTarget();
+    const workspace = await deps.getSelectedWorkspaceTarget();
+    if (!workspace) return [];
     const snapshot = await deps.client.loadSkillCatalog(
       { workspace },
       "bundled",
@@ -128,7 +157,8 @@ export function registerRuntimeHostSkillsIpc(
   });
 
   handleReconnectableRead(deps.ipcMain, "skills:sources:list", async () => {
-    const workspace = await deps.getCurrentWorkspaceTarget();
+    const workspace = await deps.getSelectedWorkspaceTarget();
+    if (!workspace) return [];
     const snapshot = await deps.client.loadSkillCatalog(
       { workspace },
       "managed_sources",
@@ -149,6 +179,9 @@ export function registerRuntimeHostSkillsIpc(
   });
 
   deps.ipcMain.handle("skills:sources:importLocalFile", async () => {
+    if (deps.allowLocalPaths === false) {
+      throw new Error("Local Skill import is unavailable for a remote Runtime Host");
+    }
     const result = await deps.mainWindowController.showOpenDialog({
       title: "Import Skill source",
       properties: ["openFile"],
@@ -177,27 +210,11 @@ export function registerRuntimeHostSkillsIpc(
     },
   );
 
-  handleReconnectableRead(deps.ipcMain, "skills:details", async (_event, idOrRef: string) => {
-    const projection = await loadGovernance(
-      deps,
-      await deps.getCurrentWorkspaceTarget(),
-    );
-    const resolved = resolveGovernanceItem(projection.items, idOrRef);
-    if (!resolved.ok) return resolved;
-    return {
-      ok: true as const,
-      details: toSkillDetails(
-        resolved.item,
-        projection.paths.get(resolved.item.ref) ?? "",
-      ),
-    };
-  });
-
   handleReconnectableRead(
     deps.ipcMain,
     "skills:previewUpdate",
     async (_event, idOrRef: string) => {
-      const workspaceTarget = await deps.getCurrentWorkspaceTarget();
+      const workspaceTarget = await requireSelectedWorkspaceTarget(deps);
       for (let attempt = 0; attempt < MAX_REVISION_ATTEMPTS; attempt += 1) {
         const projection = await loadGovernance(deps, workspaceTarget);
         const resolved = resolveGovernanceItem(projection.items, idOrRef);
@@ -212,11 +229,7 @@ export function registerRuntimeHostSkillsIpc(
         return projectPreviewResult(
           result,
           resolved.item,
-          await resolveProjectedPath(
-            deps.workspaceRoot,
-            workspace.hostCwd,
-            resolved.item.ref,
-          ),
+          await resolveProjectedPath(deps, workspace.hostCwd, resolved.item.ref),
         );
       }
       throw new Error(
@@ -288,27 +301,6 @@ export function registerRuntimeHostSkillsIpc(
     },
   );
 
-  deps.ipcMain.handle("skills:createStarter", async () => {
-    const { result, workspace } = await mutateSkill(deps, "governance", {
-      kind: "create_starter",
-    });
-    if (result.kind === "rejected")
-      return { ok: false as const, reason: mapMutationReason(result.reason) };
-    if (!result.entry)
-      throw new Error("Runtime Host did not project the starter Skill");
-    const path = await resolveProjectedPath(
-      deps.workspaceRoot,
-      workspace.hostCwd,
-      result.entry.ref,
-    );
-    return {
-      ok: true as const,
-      created: result.kind === "committed",
-      skill: toSkillEntry(result.entry, path),
-      filePath: path,
-    };
-  });
-
   deps.ipcMain.handle("skills:delete", async (_event, idOrRef: string) => {
     const { result } = await mutateResolvedSkillRaw(
       deps,
@@ -327,9 +319,12 @@ export function registerRuntimeHostSkillsIpc(
   deps.ipcMain.handle(
     "skills:open",
     async (_event, idOrRef: string, target: "file" | "directory" = "file") => {
+      if (deps.allowLocalPaths === false) {
+        throw new Error("Local Skill paths are unavailable for a remote Runtime Host");
+      }
       const projection = await loadGovernance(
         deps,
-        await deps.getCurrentWorkspaceTarget(),
+        await requireSelectedWorkspaceTarget(deps),
       );
       const item = resolveGovernanceItem(projection.items, idOrRef);
       if (!item.ok) return item;
@@ -360,7 +355,10 @@ async function loadGovernance(
     workspace: snapshot.workspace,
     snapshot,
     items: snapshot.items.filter(isGovernanceItem),
-    paths: await loadSkillPaths(deps.workspaceRoot, snapshot.workspace.hostCwd),
+    paths:
+      deps.allowLocalPaths === false
+        ? new Map()
+        : await loadSkillPaths(deps.workspaceRoot, snapshot.workspace.hostCwd),
   };
 }
 
@@ -389,6 +387,21 @@ function normalizeNewSessionCollaborationMode(
   if (!input || typeof input !== "object" || Array.isArray(input)) return;
   const value = (input as Record<string, unknown>).collaborationMode;
   return value === "agent" || value === "plan" ? value : undefined;
+}
+
+function normalizeNewSessionPermissionMode(
+  input: unknown,
+): ChatDefaultPermissionMode | undefined {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return;
+  const value = (input as Record<string, unknown>).permissionMode;
+  return value === "ask" || value === "bypass" ? value : undefined;
+}
+
+function normalizeNewSessionProjectId(input: unknown): string | null | undefined {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return;
+  const value = (input as Record<string, unknown>).projectId;
+  if (value === null) return null;
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function resolveGovernanceItem(
@@ -430,11 +443,7 @@ async function installSkill(
     ok: true as const,
     skill: toSkillEntry(
       result.entry,
-      await resolveProjectedPath(
-        deps.workspaceRoot,
-        workspace.hostCwd,
-        result.entry.ref,
-      ),
+      await resolveProjectedPath(deps, workspace.hostCwd, result.entry.ref),
     ),
   };
 }
@@ -457,11 +466,7 @@ async function mutateResolvedSkill(
     ok: true as const,
     skill: toSkillEntry(
       result.entry,
-      await resolveProjectedPath(
-        deps.workspaceRoot,
-        workspace.hostCwd,
-        result.entry.ref,
-      ),
+      await resolveProjectedPath(deps, workspace.hostCwd, result.entry.ref),
     ),
   };
 }
@@ -471,7 +476,7 @@ async function mutateResolvedSkillRaw(
   idOrRef: string,
   mutation: (ref: string) => SkillCatalogMutation,
 ): Promise<StableSkillMutation> {
-  const workspace = await deps.getCurrentWorkspaceTarget();
+  const workspace = await requireSelectedWorkspaceTarget(deps);
   for (let attempt = 0; attempt < MAX_REVISION_ATTEMPTS; attempt += 1) {
     const projection = await loadGovernance(deps, workspace);
     const resolved = resolveGovernanceItem(projection.items, idOrRef);
@@ -503,7 +508,7 @@ async function mutateSkill(
   view: "governance" | "bundled" | "managed_sources",
   mutation: SkillCatalogMutation,
 ): Promise<StableSkillMutation> {
-  const workspace = await deps.getCurrentWorkspaceTarget();
+  const workspace = await requireSelectedWorkspaceTarget(deps);
   for (let attempt = 0; attempt < MAX_REVISION_ATTEMPTS; attempt += 1) {
     const snapshot = await deps.client.loadSkillCatalog(
       { workspace },
@@ -524,12 +529,23 @@ async function mutateSkill(
 }
 
 async function resolveProjectedPath(
-  workspaceRoot: string,
+  deps: Pick<RuntimeHostSkillsIpcDeps, "workspaceRoot" | "allowLocalPaths">,
   projectRoot: string,
   ref: string,
 ): Promise<string> {
-  const resolved = await resolveSkillOpenPath(workspaceRoot, ref, "file", projectRoot);
+  if (deps.allowLocalPaths === false) return "";
+  const resolved = await resolveSkillOpenPath(deps.workspaceRoot, ref, "file", projectRoot);
   return resolved.ok ? resolved.path : "";
+}
+
+async function requireSelectedWorkspaceTarget(
+  deps: Pick<RuntimeHostSkillsIpcDeps, "getSelectedWorkspaceTarget">,
+): Promise<WorkspaceTarget> {
+  const workspace = await deps.getSelectedWorkspaceTarget();
+  if (!workspace) {
+    throw new Error("Select a project from the remote Runtime Host first");
+  }
+  return workspace;
 }
 
 function toSkillEntry(

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
@@ -24,6 +43,7 @@ import {
   type InteractiveRootOwner,
   type StorageRootCapability,
 } from '../root-authority.js';
+import { removeControlDirectory } from './fixtures/control-directory-hygiene.js';
 
 const MEMORY_DIRECTORY = 'memory';
 const TRANSACTION_DIRECTORY = '.memory-bundle-transaction';
@@ -120,51 +140,6 @@ describe('interactive Memory bundle storage authority', () => {
           error.actual.memory.revision === revision(external),
       );
       assert.deepEqual(await readFile(memoryPath(root)), external);
-    });
-  });
-
-  test('publishes legacy backup candidates without changing the bundle revision', async () => {
-    await withInteractiveOwner(async ({ root, owner }) => {
-      const store = await openInteractiveMemoryBundleStoreForWrite(owner.lease);
-      const initial = await store.read();
-      const first = Buffer.from('# First memory\n');
-      const pending = Buffer.from('# Pending remains\n');
-      const firstCommit = await store.commit({
-        expectedRevision: initial.revision,
-        memory: first,
-        pending,
-      });
-      const second = Buffer.from('# Second memory\n');
-      const secondCommit = await store.commit({
-        expectedRevision: firstCommit.snapshot.revision,
-        memory: second,
-        pending,
-        backup: 'save',
-      });
-
-      assert.deepEqual(await readFile(join(memoryDirectory(root), 'MEMORY.md.bak')), first);
-      assert.equal((await store.read()).revision, secondCommit.snapshot.revision);
-      const backups = await store.listBackups();
-      assert.equal(backups.length, 1);
-      assert.equal(backups[0]?.kind, 'save');
-      assert.equal(backups[0]?.document.kind, 'document');
-      assert.equal(backups[0]?.revision, revision(first));
-      if (backups[0]?.document.kind === 'document') {
-        assert.deepEqual(Buffer.from(backups[0].document.bytes), first);
-      }
-
-      const reset = Buffer.from('# Reset memory\n');
-      await store.commit({
-        expectedRevision: secondCommit.snapshot.revision,
-        memory: reset,
-        pending,
-        backup: 'reset',
-      });
-      assert.deepEqual(await readFile(join(memoryDirectory(root), 'MEMORY.md.reset.bak')), second);
-      assert.deepEqual(
-        new Set((await store.listBackups()).map((backup) => backup.kind)),
-        new Set(['save', 'reset']),
-      );
     });
   });
 
@@ -778,7 +753,11 @@ async function withInteractiveRoot(
   const root = await mkdtemp(join(tmpdir(), 'maka-memory-bundle-store-'));
   try {
     const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
-    await run({ root, capability });
+    try {
+      await run({ root, capability });
+    } finally {
+      await removeControlDirectory(capability.rootId);
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }

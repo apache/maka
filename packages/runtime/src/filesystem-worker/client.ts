@@ -1,20 +1,38 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { randomUUID } from 'node:crypto';
 import { lstat, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname } from 'node:path';
-import {
-  canReadPath,
-  canWritePath,
-  compilePermissionProfile,
-  type ExecutionBoundary,
-  type PermissionMode,
-  type PermissionProfile,
-  type SandboxBoundaryExpansion,
-} from '@maka/core';
+import { canReadPath, canWritePath, type PermissionProfile } from '@maka/core/permission-profile';
+
+import { compilePermissionProfile } from '@maka/core/permission-profile-compiler';
+
+import { type ExecutionBoundary, type SandboxBoundaryExpansion } from '@maka/core/sandbox-boundary';
+
+import { type PermissionMode } from '@maka/core/permission';
 
 import { normalizeSandboxBoundaryPath } from '../sandbox-boundary-path.js';
 import { resolveCanonicalDirectoryEntryTarget } from '../path-containment.js';
 import { pinExistingLinuxProfilePath } from '../sandbox/linux-profile-path.js';
+import { classifyWindowsBrokerFailure } from '../sandbox/windows-broker-errors.js';
 import type { SandboxManager } from '../sandbox/sandbox-manager.js';
 import type { SandboxPlatform } from '../sandbox/types.js';
 import type { FilesystemWorkerLaunchSpecProvider } from './launch-spec.js';
@@ -26,6 +44,7 @@ import {
 import {
   FILESYSTEM_WORKER_PROTOCOL_VERSION,
   FilesystemWorkerOperationSchema,
+  operationAccess,
   operationUsesDirectoryEntry,
   parseFilesystemWorkerResponse,
   type FilesystemWorkerErrorCode,
@@ -51,6 +70,26 @@ export interface FilesystemWorkerClientInput {
   platform?: SandboxPlatform;
 }
 
+/**
+ * What the caller observed about the operation target at lock acquisition
+ * (T0). Required, so every caller must decide explicitly which CAS contract it
+ * is participating in — an absent field is no longer a silently accepted "no
+ * CAS" that a queue window can slip through (#3484).
+ *
+ * - `{ dev, ino }`: T0 observed an existing target; the worker compare-and-
+ *   swaps this against the on-disk inode at T1.
+ * - `'missing'`: T0 observed no target (a create). If the target exists by T1,
+ *   something created it while this call waited — writing would clobber
+ *   content this call never saw, so the operation fails with `path_changed`.
+ * - `'unchecked'`: the caller does not participate in CAS (no T0 snapshot,
+ *   e.g. a verification script or a read). Writes proceed without an identity
+ *   check; use deliberately, never as a default for mutations.
+ */
+export type FilesystemWorkerExpectedIdentity =
+  | { readonly dev: string; readonly ino: string }
+  | 'missing'
+  | 'unchecked';
+
 export interface FilesystemWorkerExecuteInput {
   operation: FilesystemWorkerClientOperation;
   cwd: string;
@@ -59,6 +98,16 @@ export interface FilesystemWorkerExecuteInput {
   /** Explicit embedding policy. Mode-based defaults are compiled only when omitted. */
   permissionProfile?: PermissionProfile;
   abortSignal?: AbortSignal;
+  /**
+   * The caller's T0 observation, see `FilesystemWorkerExpectedIdentity`.
+   *
+   * REQUIRED for write operations: the client throws at runtime when a write
+   * arrives without one, so a JavaScript caller (which TypeScript cannot
+   * guard) fails loudly instead of silently skipping the queue-window CAS.
+   * Reads never participate in CAS: the client sends 'unchecked' for them
+   * automatically, so read callers have no way to get this wrong.
+   */
+  expectedIdentity?: FilesystemWorkerExpectedIdentity;
 }
 
 export type FilesystemWorkerClientErrorReason =
@@ -68,6 +117,7 @@ export type FilesystemWorkerClientErrorReason =
   | 'worker_bundle_unavailable'
   | 'runtime_executable_unavailable'
   | 'spawn_failed'
+  | 'worker_io_incomplete'
   | 'timeout'
   | 'aborted'
   | 'response_overflow'
@@ -89,9 +139,17 @@ export class FilesystemWorkerClientError extends Error {
   readonly stage: 'validation' | 'transform' | 'launch' | 'protocol' | 'operation';
   readonly recoverable: boolean;
   readonly requestId?: string;
-  readonly backend?: 'none' | 'macos-seatbelt' | 'linux';
+  readonly backend?: 'none' | 'macos-seatbelt' | 'linux' | 'windows';
   readonly profileName?: string;
   readonly requiredExpansion?: SandboxBoundaryExpansion;
+  /**
+   * Whether the request had been dispatched to the worker before this failure.
+   * Only meaningful for `'launch'`/`'protocol'` failures: `undefined` means
+   * "the question does not apply" (pre-flight validation). When `false` the
+   * child never ran, so nothing on disk could have changed; when `true` the
+   * child ran and the outcome on disk is genuinely unknown.
+   */
+  readonly dispatched?: boolean;
 
   constructor(input: {
     reason: FilesystemWorkerClientErrorReason;
@@ -99,9 +157,10 @@ export class FilesystemWorkerClientError extends Error {
     message?: string;
     recoverable?: boolean;
     requestId?: string;
-    backend?: 'none' | 'macos-seatbelt' | 'linux';
+    backend?: 'none' | 'macos-seatbelt' | 'linux' | 'windows';
     profileName?: string;
     requiredExpansion?: SandboxBoundaryExpansion;
+    dispatched?: boolean;
   }) {
     super(input.message ?? `Filesystem worker failed: ${input.reason}.`);
     this.name = 'FilesystemWorkerClientError';
@@ -112,6 +171,7 @@ export class FilesystemWorkerClientError extends Error {
     this.backend = input.backend;
     this.profileName = input.profileName;
     this.requiredExpansion = input.requiredExpansion;
+    this.dispatched = input.dispatched;
   }
 }
 
@@ -128,7 +188,12 @@ export class FilesystemWorkerClient {
 
   async execute(input: FilesystemWorkerExecuteInput): Promise<FilesystemWorkerResult> {
     const requestId = this.newId();
-    if (input.abortSignal?.aborted) throw clientError('aborted', 'launch', requestId);
+    if (input.abortSignal?.aborted) {
+      // Pre-flight cancel: nothing has been dispatched, so this is a clean
+      // cancellation, not an unknown outcome. Carrying dispatched:false lets
+      // the host tell the two apart instead of blaming every queued tool.
+      throw clientError('aborted', 'launch', requestId, undefined, false, {}, false);
+    }
     if (input.executionBoundary && input.executionBoundary.kind !== 'managed') {
       throw clientError(
         'invalid_request',
@@ -152,22 +217,71 @@ export class FilesystemWorkerClient {
     if (!parsedOperation.success) throw clientError('invalid_operation', 'validation', requestId);
 
     const access = operationAccess(parsedOperation.data.kind);
+    // Reads never participate in CAS: the client sends 'unchecked' for them
+    // automatically, so read callers (including plain-JavaScript verifiers
+    // that bypass TypeScript) have no way to get the identity wrong.
+    // Writes require an explicit T0 state, enforced at runtime: a caller that
+    // omits it fails loudly here instead of silently skipping the
+    // queue-window CAS (#3487, maintainer review).
+    const writeIdentity = access === 'write' ? input.expectedIdentity : 'unchecked';
+    if (access === 'write' && writeIdentity === undefined) {
+      throw clientError(
+        'invalid_request',
+        'validation',
+        requestId,
+        'A write operation requires an explicit expectedIdentity: {dev, ino}, "missing", or "unchecked".',
+      );
+    }
     const entryMode = operationUsesDirectoryEntry(parsedOperation.data);
-    const target: FilesystemWorkerTarget & { writableAncestor?: string } = await (entryMode
-      ? normalizeDirectoryEntryTarget({
-          path: parsedOperation.data.path,
-          access,
-          cwd: canonicalCwd,
-        })
-      : normalizeSandboxBoundaryPath({
-          path: parsedOperation.data.path,
-          access,
-          scope: operationScope(parsedOperation.data.kind),
-          cwd: canonicalCwd,
-        })
-    ).catch(() => {
-      throw clientError('invalid_operation', 'validation', requestId);
-    });
+    // The wire identity contract is derived below from the caller's explicit
+    // expectedIdentity; the normalised target itself has no identity field,
+    // so the declared type omits it.
+    const target: Omit<FilesystemWorkerTarget, 'identity'> & { writableAncestor?: string } =
+      await (entryMode
+        ? normalizeDirectoryEntryTarget({
+            path: parsedOperation.data.path,
+            access,
+            cwd: canonicalCwd,
+          })
+        : normalizeSandboxBoundaryPath({
+            path: parsedOperation.data.path,
+            access,
+            scope: operationScope(parsedOperation.data.kind),
+            cwd: canonicalCwd,
+          })
+      ).catch(() => {
+        throw clientError('invalid_operation', 'validation', requestId);
+      });
+    // The identity was captured by the caller at lock acquisition (T0) and
+    // passed in as expectedIdentity. Do NOT re-derive it here: re-deriving at
+    // this point (after the lock is held) would sample the post-queue inode,
+    // making the CAS self-fulfilling and re-opening the queue window.
+    //
+    // Missing↔existing transitions while queued are reconciled here, against
+    // the T1 reality the target normaliser just derived:
+    // - T0 existing (identity present) but T1 missing: the target was removed
+    //   while this call waited — typically a cooperative Maka delete that ran
+    //   first under the same write lock. Drop the stale identity and let the
+    //   mutation proceed as a fresh exclusive create ("delete then rewrite"
+    //   stays a clean apply; a rename-swap is NOT this case — it leaves an
+    //   existing inode and is caught by the identity comparison instead).
+    // - T0 missing ('missing') but T1 existing: the target was created while
+    //   this call waited. Writing would clobber content this call never saw,
+    //   so fail with a meaningful path_changed (never invalid_request).
+    // - 'unchecked': the caller does not participate in CAS. The target may
+    //   be present at T1 without this being a race — the caller simply has no
+    //   T0 snapshot, so nothing can be compared (#3484).
+    const targetExistsAtT1 = target.targetType !== 'missing';
+    const identity =
+      targetExistsAtT1 && typeof writeIdentity === 'object' ? writeIdentity : undefined;
+    if (targetExistsAtT1 && access === 'write' && writeIdentity === 'missing') {
+      throw clientError(
+        'path_changed',
+        'validation',
+        requestId,
+        'The target was created while this call waited for the lock; re-read before writing.',
+      );
+    }
     const compiled =
       input.executionBoundary?.kind === 'managed'
         ? {
@@ -193,7 +307,7 @@ export class FilesystemWorkerClient {
     const pathContext = {
       workspaceRoots: compiled.workspaceRoots,
       tmpdir: await canonicalPath(tmpdir()),
-      slashTmp: await canonicalPath('/tmp'),
+      ...(platform === 'win32' ? {} : { slashTmp: await canonicalPath('/tmp') }),
       ...(runtimeWritableRoots ? { runtimeWritableRoots } : {}),
     };
     const allowed =
@@ -247,6 +361,11 @@ export class FilesystemWorkerClient {
         access,
         scope: target.scope,
         targetType: target.targetType,
+        // The execution-time identity contract. A concrete identity is only
+        // carried when the target still exists at T1; a target that vanished
+        // while queued (or was never there) is 'missing'; reads always say
+        // 'unchecked' (the client generates it, callers cannot get it wrong).
+        identity: typeof writeIdentity === 'object' ? (identity ?? 'missing') : writeIdentity,
       },
     } as const;
     const requestJson = JSON.stringify(request);
@@ -387,21 +506,86 @@ export class FilesystemWorkerClient {
         timeoutMs: this.timeoutMs,
         ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
       });
-    } catch {
-      throw clientError('spawn_failed', 'launch', requestId);
+    } catch (error) {
+      // The process-runner attaches a `dispatched` flag to the rejection so we
+      // can tell "the child never started" (spawn_failed — clean) from "the
+      // child ran but its result was lost" (worker_io_incomplete — the outcome
+      // on disk is unknown). A thrown error without the flag (e.g. spawn()
+      // itself raising before any 'spawn' event could fire) is treated as
+      // never-dispatched.
+      const dispatched = (error as { dispatched?: boolean } | null)?.dispatched === true;
+      throw clientError(
+        dispatched ? 'worker_io_incomplete' : 'spawn_failed',
+        'launch',
+        requestId,
+        undefined,
+        false,
+        {},
+        dispatched,
+      );
     } finally {
       pinnedTarget?.releaseSource();
       pinnedRuntimeWritableRoot?.releaseSource();
     }
-    if (processResult.timedOut) throw clientError('timeout', 'launch', requestId);
-    if (processResult.aborted) throw clientError('aborted', 'launch', requestId);
-    if (processResult.responseOverflow) throw clientError('response_overflow', 'launch', requestId);
+    if (processResult.timedOut) {
+      throw clientError(
+        'timeout',
+        'launch',
+        requestId,
+        undefined,
+        false,
+        {},
+        processResult.dispatched,
+      );
+    }
+    if (processResult.aborted) {
+      // A post-dispatch abort means the child had the request and may have
+      // acted on it before being killed; carry dispatched so the host can
+      // classify it as an unknown outcome rather than a clean cancel.
+      throw clientError(
+        'aborted',
+        'launch',
+        requestId,
+        undefined,
+        false,
+        {},
+        processResult.dispatched,
+      );
+    }
+    if (processResult.responseOverflow) {
+      throw clientError(
+        'response_overflow',
+        'launch',
+        requestId,
+        undefined,
+        false,
+        {},
+        processResult.dispatched,
+      );
+    }
     if (processResult.exitCode !== 0) {
+      const brokerFailure =
+        transformed.sandboxType === 'windows'
+          ? classifyWindowsBrokerFailure(processResult.stderrTail)
+          : undefined;
+      if (brokerFailure) {
+        throw clientError(
+          brokerFailure.reason,
+          'launch',
+          requestId,
+          processResult.stderrTail || undefined,
+          brokerFailure.recoverable,
+          { backend: 'windows' },
+        );
+      }
       throw clientError(
         'worker_crashed',
         'launch',
         requestId,
         processResult.stderrTail || undefined,
+        false,
+        {},
+        processResult.dispatched,
       );
     }
 
@@ -409,11 +593,18 @@ export class FilesystemWorkerClient {
     try {
       response = parseFilesystemWorkerResponse(JSON.parse(processResult.stdout));
     } catch {
-      throw clientError('invalid_response', 'protocol', requestId);
+      // The child produced output we could not parse, but it ran and emitted
+      // something, so the request was dispatched (the on-disk outcome is
+      // unknown for a mutation).
+      throw clientError('invalid_response', 'protocol', requestId, undefined, false, {}, true);
     }
     if (response.requestId !== requestId)
-      throw clientError('response_id_mismatch', 'protocol', requestId);
+      throw clientError('response_id_mismatch', 'protocol', requestId, undefined, false, {}, true);
     if (!response.ok) {
+      // A well-formed worker error means the child ran and answered: dispatch
+      // had happened. Carry dispatched:true so a mutating op that fails here
+      // (e.g. the worker reports `outcome_unknown` after a partial write) is
+      // classified as an unknown outcome rather than slipping through.
       throw clientError(
         response.error.code,
         'operation',
@@ -424,13 +615,22 @@ export class FilesystemWorkerClient {
           backend: transformed.exec.sandboxType,
           profileName: effectiveProfile.name ?? effectiveProfile.type,
         },
+        true,
       );
     }
     if (
       response.result.kind !== operation.kind &&
       !(operation.kind === 'read' && response.result.kind === 'read_image')
     ) {
-      throw clientError('response_kind_mismatch', 'protocol', requestId);
+      throw clientError(
+        'response_kind_mismatch',
+        'protocol',
+        requestId,
+        undefined,
+        false,
+        {},
+        true,
+      );
     }
     return response.result;
   }
@@ -445,7 +645,13 @@ export function filesystemWorkerRuntimeWritableRoots(input: {
   entryMode?: boolean;
   writableAncestor?: string;
 }): readonly string[] | undefined {
-  if (input.platform !== 'linux' || input.access !== 'write') return undefined;
+  // Linux mounts and Windows ACL grants can only target existing paths, so a
+  // write whose target does not exist yet is enforced through its existing
+  // writable ancestor. macOS seatbelt policies may reference missing paths
+  // directly and need no ancestor root.
+  if ((input.platform !== 'linux' && input.platform !== 'win32') || input.access !== 'write') {
+    return undefined;
+  }
   if (input.entryMode) return input.writableAncestor ? [input.writableAncestor] : undefined;
   return input.targetType === 'missing' ? [dirname(input.enforcementPath)] : undefined;
 }
@@ -484,12 +690,6 @@ function deriveWorkerProfile(
   };
 }
 
-function operationAccess(kind: FilesystemWorkerOperation['kind']): 'read' | 'write' {
-  return kind === 'write' || kind === 'apply_patch' || kind === 'edit' || kind === 'format_json'
-    ? 'write'
-    : 'read';
-}
-
 function operationScope(kind: FilesystemWorkerOperation['kind']): 'exact' | 'subtree' | 'auto' {
   if (kind === 'glob') return 'subtree';
   return kind === 'grep' ? 'auto' : 'exact';
@@ -503,7 +703,7 @@ async function normalizeDirectoryEntryTarget(input: {
   path: string;
   cwd: string;
   access: 'read' | 'write';
-}): Promise<FilesystemWorkerTarget & { writableAncestor?: string }> {
+}): Promise<Omit<FilesystemWorkerTarget, 'identity'> & { writableAncestor?: string }> {
   const target = await resolveCanonicalDirectoryEntryTarget(input.cwd, input.path);
   let targetType: FilesystemWorkerTarget['targetType'];
   try {
@@ -536,10 +736,11 @@ function clientError(
   message?: string,
   recoverable = false,
   metadata: {
-    backend?: 'none' | 'macos-seatbelt' | 'linux';
+    backend?: 'none' | 'macos-seatbelt' | 'linux' | 'windows';
     profileName?: string;
     requiredExpansion?: SandboxBoundaryExpansion;
   } = {},
+  dispatched?: boolean,
 ): FilesystemWorkerClientError {
   return new FilesystemWorkerClientError({
     reason,
@@ -548,5 +749,6 @@ function clientError(
     message,
     recoverable,
     ...metadata,
+    ...(dispatched !== undefined ? { dispatched } : {}),
   });
 }

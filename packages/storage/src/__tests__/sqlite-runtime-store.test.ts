@@ -1,10 +1,31 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, it } from 'node:test';
-import type { RuntimeEvent } from '@maka/core';
+import { DEFAULT_TOOL_MODE } from '@maka/core/tool-mode';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
+import { RunSealedError } from '@maka/core/runtime-event-store';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import {
   buildImmutableRuntimePrefix,
@@ -41,196 +62,52 @@ describe('SqliteRuntimeStore', () => {
     });
   });
 
-  it('upgrades a populated mainline schema 6 database without rewriting RuntimeEvents', async () => {
-    await withStore(async (store, dbPath) => {
-      const historical = functionCallEvent({
-        id: 'schema-6-historical-event',
-        content: { kind: 'text', text: 'preserve me across v6 to v7' },
+  it('refuses every post-terminal append as the typed sealed-run boundary', async () => {
+    await withStore(async (store) => {
+      const opening = functionCallEvent({
+        id: 'sealed-run-opening',
+        content: { kind: 'text', text: 'hello' },
       });
-      await store.appendRuntimeEvent(historical.sessionId, historical.runId, historical);
-      store.close();
+      await store.appendRuntimeEvent(opening.sessionId, opening.runId, opening);
+      const terminal: RuntimeEvent = {
+        id: 'sealed-run-terminal',
+        invocationId: 'invocation-1',
+        runId: opening.runId,
+        sessionId: opening.sessionId,
+        turnId: 'turn-1',
+        ts: 2,
+        partial: false,
+        role: 'system',
+        author: 'system',
+        status: 'aborted',
+        actions: { endInvocation: true, stateDelta: { abortSource: 'user_stop' } },
+      };
+      await store.appendRuntimeEvent(terminal.sessionId, terminal.runId, terminal);
 
-      const legacy = new DatabaseSync(dbPath);
-      legacy.exec(`
-        DROP TABLE runtime_partial_segments;
-        DROP TABLE runtime_session_event_ordinals;
-        DROP TABLE runtime_storage_root_binding;
-        DROP TABLE runtime_workspace_heads;
-        DROP TABLE runtime_workspace_versions;
-        DROP TABLE runtime_workspace_epochs;
-        DROP TABLE headless_task_run_events;
-        DELETE FROM runtime_capabilities
-          WHERE capability = 'runtime_workspace_version_authority';
-        PRAGMA user_version = 6;
-      `);
-      legacy.close();
-
-      const upgraded = createSqliteRuntimeStore(dbPath);
-      try {
-        assert.equal(upgraded.schemaVersion(), SQLITE_RUNTIME_SCHEMA_VERSION);
-        assert.deepEqual(
-          await upgraded.readImmutableRuntimeEvents(historical.sessionId, historical.runId),
-          [historical],
-        );
-        assert.deepEqual(await upgraded.readSessionRuntimeEventEntries(historical.sessionId), [
-          { ordinal: 1, event: historical },
-        ]);
-        const inspect = new DatabaseSync(dbPath);
-        try {
-          const columns = inspect
-            .prepare('PRAGMA table_info(runtime_continuation_claims)')
-            .all() as Array<{ name: string }>;
-          assert.ok(columns.some((column) => column.name === 'start_kind'));
-        } finally {
-          inspect.close();
-        }
-      } finally {
-        upgraded.close();
-      }
-    });
-  });
-
-  it('upgrades a populated mainline schema 8 database without losing headless task events', async () => {
-    await withStore(async (store, dbPath) => {
-      store.close();
-
-      const mainline = new DatabaseSync(dbPath);
-      mainline
-        .prepare(`
-          INSERT INTO headless_task_run_events(task_run_id, sequence, event_id, record_json)
-          VALUES (?, ?, ?, ?)
-        `)
-        .run('task-run-1', 0, 'headless-event-1', '{"kind":"started"}');
-      mainline.close();
-
-      const upgraded = createSqliteRuntimeStore(dbPath);
-      try {
-        assert.equal(upgraded.schemaVersion(), SQLITE_RUNTIME_SCHEMA_VERSION);
-        const inspect = new DatabaseSync(dbPath);
-        try {
-          assert.deepEqual(
-            inspect
-              .prepare(`
-                SELECT task_run_id, sequence, event_id, record_json
-                FROM headless_task_run_events
-              `)
-              .all()
-              .map((row) => ({ ...row })),
-            [
-              {
-                task_run_id: 'task-run-1',
-                sequence: 0,
-                event_id: 'headless-event-1',
-                record_json: '{"kind":"started"}',
-              },
-            ],
-          );
-          assert.deepEqual(
-            inspect
-              .prepare('PRAGMA table_info(runtime_storage_root_binding)')
-              .all()
-              .map((row) => (row as { name: string }).name),
-            ['singleton', 'root_id', 'protocol_version'],
-          );
-        } finally {
-          inspect.close();
-        }
-      } finally {
-        upgraded.close();
-      }
-    });
-  });
-
-  it('upgrades a schema 9 partial snapshot and appends new segments without rewriting it', async () => {
-    await withStore(async (store, dbPath) => {
-      const partial = (id: string, ts: number, text: string): RuntimeEvent =>
-        functionCallEvent({
-          id,
-          ts,
-          partial: true,
-          role: 'model',
-          author: 'agent',
-          content: { kind: 'text', text },
-          refs: { providerEventId: 'message-1' },
-        });
-      await store.appendRuntimeEvent('session-1', 'run-1', partial('partial-old', 1, 'old'));
-      store.close();
-
-      const legacy = new DatabaseSync(dbPath);
-      legacy.prepare(`UPDATE runtime_partial_snapshots SET text_content = 'old'`).run();
-      legacy.exec(`
-        DROP TABLE runtime_partial_segments;
-        DROP TABLE runtime_session_event_ordinals;
-        PRAGMA user_version = 9;
-      `);
-      legacy.close();
-
-      const upgraded = createSqliteRuntimeStore(dbPath);
-      try {
-        const before = await upgraded.readRuntimeEvents('session-1', 'run-1');
-        assert.equal(
-          before[0]?.content?.kind === 'text' ? before[0].content.text : undefined,
-          'old',
-        );
-        await upgraded.appendRuntimeEvent('session-1', 'run-1', partial('partial-new', 2, 'new'));
-        const after = await upgraded.readRuntimeEvents('session-1', 'run-1');
-        assert.equal(
-          after[0]?.content?.kind === 'text' ? after[0].content.text : undefined,
-          'oldnew',
-        );
-      } finally {
-        upgraded.close();
-      }
-    });
-  });
-
-  it('backfills schema 10 Session ordinals in SQLite insertion order', async () => {
-    await withStore(async (store, dbPath) => {
-      const first = functionCallEvent({ id: 'legacy-first', ts: 20 });
-      const second = functionCallEvent({
-        id: 'legacy-second',
-        invocationId: 'invocation-2',
-        runId: 'run-2',
-        turnId: 'turn-2',
-        ts: 10,
-      });
-      await store.appendRuntimeEvent(first.sessionId, first.runId, first);
-      await store.appendRuntimeEvent(second.sessionId, second.runId, second);
-      store.close();
-
-      const legacy = new DatabaseSync(dbPath);
-      legacy.exec(`
-        DROP TABLE runtime_session_event_ordinals;
-        PRAGMA user_version = 10;
-      `);
-      legacy.close();
-
-      const upgraded = createSqliteRuntimeStore(dbPath);
-      try {
-        assert.deepEqual(
-          (await upgraded.readSessionRuntimeEventEntries(first.sessionId)).map(
-            ({ ordinal, event }) => ({ ordinal, eventId: event.id }),
-          ),
-          [
-            { ordinal: 1, eventId: first.id },
-            { ordinal: 2, eventId: second.id },
-          ],
-        );
-        const third = functionCallEvent({
-          id: 'legacy-third',
-          invocationId: 'invocation-3',
-          runId: 'run-3',
-          turnId: 'turn-3',
-          ts: 5,
-        });
-        await upgraded.appendRuntimeEvent(third.sessionId, third.runId, third);
-        assert.equal(
-          (await upgraded.readSessionRuntimeEventEntries(first.sessionId)).at(-1)?.ordinal,
-          3,
-        );
-      } finally {
-        upgraded.close();
-      }
+      // A plain straggler and a tool-bearing one refuse identically: the
+      // seal is checked before tool-ledger semantics (#2311), so a late
+      // function_call cannot surface as a producer bug or as corruption.
+      await assert.rejects(
+        store.appendRuntimeEvent(opening.sessionId, opening.runId, {
+          ...opening,
+          id: 'late-plain-straggler',
+          ts: 3,
+        }),
+        (error: unknown) => error instanceof RunSealedError,
+      );
+      await assert.rejects(
+        store.appendRuntimeEvent(
+          opening.sessionId,
+          opening.runId,
+          functionCallEvent({
+            id: 'late-tool-straggler',
+            ts: 4,
+          }),
+        ),
+        (error: unknown) => error instanceof RunSealedError,
+      );
+      // Exact-id retry of an already-stored event keeps its dedup answer.
+      await store.appendRuntimeEvent(terminal.sessionId, terminal.runId, terminal);
     });
   });
 
@@ -544,8 +421,16 @@ describe('SqliteRuntimeStore', () => {
 
   it('commits function_response, outcome journal fact, and projection atomically in T2', async () => {
     await withStore(async (store) => {
-      await commitPrepared(store);
-      const outcome = functionResponseEvent();
+      await commitPrepared(store, { resultProjectionVersion: 1 });
+      const outcome = functionResponseEvent({
+        content: {
+          kind: 'function_response',
+          id: 'provider-call-1',
+          name: 'Read',
+          result: 'private execution contents',
+          modelProjection: { version: 1, kind: 'text', text: 'bounded model contents' },
+        },
+      });
 
       const result = await store.commitToolOutcome({
         operationId: 'operation-1',
@@ -558,7 +443,19 @@ describe('SqliteRuntimeStore', () => {
       assert.equal(result.runtimeEventSeq, 3);
       assert.deepEqual(await store.readRuntimeEvents('session-1', 'run-1'), [
         functionCallEvent(),
-        toolDispatchEvent(),
+        toolDispatchEvent({
+          actions: {
+            toolDispatch: {
+              protocol: 't1_after_preflight_v1',
+              operationId: 'operation-1',
+              providerToolCallId: 'provider-call-1',
+              toolName: 'Read',
+              canonicalArgsHash: READ_ARGS_HASH,
+              recoveryMode: 'replay_safe',
+              resultProjectionVersion: 1,
+            },
+          },
+        }),
         outcome,
       ]);
       assert.equal((await store.readImmutableRuntimeEvents('session-1', 'run-1')).length, 3);
@@ -582,6 +479,32 @@ describe('SqliteRuntimeStore', () => {
         ['prepared', 'outcome_committed'],
       );
       assert.deepEqual(await store.listUnsettledToolOperations(), []);
+    });
+  });
+
+  it('keeps projected T2 prepared when its atomic model projection is missing', async () => {
+    await withStore(async (store) => {
+      await commitPrepared(store, { resultProjectionVersion: 1 });
+
+      await assert.rejects(
+        store.commitToolOutcome({
+          operationId: 'operation-1',
+          journalEventId: 'operation-1_outcome',
+          runtimeEvent: functionResponseEvent(),
+          committedAt: 20,
+        }),
+        /requires its durable model projection/,
+      );
+
+      assert.deepEqual(
+        (await store.readRuntimeEvents('session-1', 'run-1')).map((event) => event.id),
+        ['call-event-1', 'dispatch-event-1'],
+      );
+      assert.equal((await store.readToolOperation('operation-1'))?.currentState, 'prepared');
+      assert.deepEqual(
+        (await store.readToolJournal('operation-1')).map((event) => event.state),
+        ['prepared'],
+      );
     });
   });
 
@@ -740,10 +663,149 @@ describe('SqliteRuntimeStore', () => {
       }
 
       const visible = await store.readRuntimeEvents('session-1', 'run-1');
+      const scanned: RuntimeEvent[] = [];
+      const scan = await store.scanRuntimeEvents(
+        'session-1',
+        'run-1',
+        {
+          maxBatchBytes: 1024,
+          maxRecordBytes: 1024,
+          maxImmutableRecords: 10,
+          maxImmutableBytes: 1024,
+          maxPartialRecords: 10,
+          maxPartialBytes: 1024,
+        },
+        (events) => scanned.push(...events),
+      );
+      assert.equal(scan.status, 'complete');
       assert.equal(visible.length, 1);
+      assert.deepEqual(scanned, visible);
       assert.deepEqual(visible[0]?.content, { kind: 'text', text: 'hello!' });
       assert.deepEqual(await store.readImmutableRuntimeEvents('session-1', 'run-1'), []);
       assert.equal((await store.readImmutableRuntimeEvents('session-1', 'run-1')).length, 0);
+    });
+  });
+
+  it('rejects an oversized scan record before visiting its decoded body', async () => {
+    await withStore(async (store) => {
+      await store.appendRuntimeEvent(
+        'session-1',
+        'run-1',
+        functionCallEvent({
+          id: 'large-event',
+          content: { kind: 'text', text: 'x'.repeat(4096) },
+        }),
+      );
+      let visits = 0;
+      const result = await store.scanRuntimeEvents(
+        'session-1',
+        'run-1',
+        {
+          maxBatchBytes: 128,
+          maxRecordBytes: 128,
+          maxImmutableRecords: 10,
+          maxImmutableBytes: 1024,
+          maxPartialRecords: 10,
+          maxPartialBytes: 1024,
+        },
+        () => {
+          visits += 1;
+        },
+      );
+      assert.equal(result.status, 'limit_exceeded');
+      assert.equal(visits, 0);
+    });
+  });
+
+  it('rejects an immutable ledger that exceeds its cumulative scan budget before decoding it', async () => {
+    await withStore(async (store) => {
+      for (const index of [1, 2]) {
+        const event: RuntimeEvent = {
+          id: `event-${index}`,
+          invocationId: 'invocation-1',
+          runId: 'run-1',
+          sessionId: 'session-1',
+          turnId: 'turn-1',
+          ts: index,
+          partial: false,
+          role: 'user',
+          author: 'user',
+          content: { kind: 'text', text: `message-${index}` },
+        };
+        await store.appendRuntimeEvent('session-1', 'run-1', event);
+      }
+      let visits = 0;
+      const result = await store.scanRuntimeEvents(
+        'session-1',
+        'run-1',
+        {
+          maxBatchBytes: 16 * 1024,
+          maxRecordBytes: 16 * 1024,
+          maxImmutableRecords: 1,
+          maxImmutableBytes: 16 * 1024,
+          maxPartialRecords: 10,
+          maxPartialBytes: 16 * 1024,
+        },
+        () => {
+          visits += 1;
+        },
+      );
+
+      assert.equal(result.status, 'limit_exceeded');
+      assert.equal(visits, 0);
+    });
+  });
+
+  it('streams fragmented legacy partial segments without retaining their row set', async () => {
+    await withStore(async (store, dbPath) => {
+      await store.appendRuntimeEvent(
+        'session-1',
+        'run-1',
+        functionCallEvent({
+          id: 'partial-segment-seed',
+          partial: true,
+          content: { kind: 'text', text: '' },
+          refs: { providerEventId: 'message-1' },
+        }),
+      );
+      const inspect = new DatabaseSync(dbPath);
+      try {
+        const { stream_key: streamKey } = inspect
+          .prepare('SELECT stream_key FROM runtime_partial_snapshots')
+          .get() as { stream_key: string };
+        const insert = inspect.prepare(`
+          INSERT INTO runtime_partial_segments(stream_key, segment_seq, text_content, updated_at)
+          VALUES (?, ?, 'x', ?)
+        `);
+        inspect.exec('BEGIN IMMEDIATE');
+        for (let sequence = 1; sequence <= 9_000; sequence += 1) {
+          insert.run(streamKey, sequence, sequence);
+        }
+        inspect.exec('COMMIT');
+      } finally {
+        inspect.close();
+      }
+      const scanned: RuntimeEvent[] = [];
+      const result = await store.scanRuntimeEvents(
+        'session-1',
+        'run-1',
+        {
+          maxBatchBytes: 1024,
+          maxRecordBytes: 16 * 1024,
+          maxImmutableRecords: 10,
+          maxImmutableBytes: 16 * 1024,
+          maxPartialRecords: 10,
+          maxPartialBytes: 16 * 1024,
+        },
+        (events) => scanned.push(...events),
+      );
+      assert.equal(result.status, 'complete');
+      assert.equal(scanned.length, 1);
+      assert.equal(scanned[0]?.content?.kind, 'text');
+      assert.equal(
+        scanned[0]?.content?.kind === 'text' ? scanned[0].content.text : undefined,
+        'x'.repeat(9_000),
+      );
     });
   });
 
@@ -759,6 +821,55 @@ describe('SqliteRuntimeStore', () => {
       assert.equal(existing.kind, 'existing');
       assert.deepEqual(existing.claim, claim);
       assert.deepEqual(await store.readContinuationClaimByBoundary(claim.boundaryDigest), claim);
+    });
+  });
+
+  it('refuses a continuation target opening it cannot read, stored or submitted', async () => {
+    await withStore(async (store, dbPath) => {
+      const claim = continuationClaim();
+      await persistImmutablePrefix(store, continuationSourcePrefix());
+      await assert.rejects(
+        () =>
+          store.claimContinuation({
+            claim: {
+              ...claim,
+              targetOpening: {
+                ...claim.targetOpening,
+                configuration: {
+                  ...claim.targetOpening.configuration,
+                  permissionMode: 'execute',
+                },
+              } as unknown as ContinuationClaimV1['targetOpening'],
+            },
+          }),
+        /Invalid RuntimeEvent invocation_opened schema/,
+      );
+      assert.equal((await store.claimContinuation({ claim })).kind, 'acquired');
+
+      const database = new DatabaseSync(dbPath);
+      try {
+        database.exec(`
+          UPDATE runtime_continuation_claims
+          SET target_opening_json = json_set(
+            target_opening_json,
+            '$.configuration.permissionMode',
+            'execute'
+          )
+          WHERE claim_id = 'claim-1';
+        `);
+      } finally {
+        database.close();
+      }
+
+      // A persisted Run header used to be widened on read. The opening fact has
+      // no legacy layer and none is wanted: a claim whose frozen opening cannot
+      // be read cannot authenticate the start event it exists to authenticate,
+      // and admitting one against a guessed opening would be the failure this
+      // record is meant to prevent.
+      await assert.rejects(
+        store.readContinuationClaimByBoundary(claim.boundaryDigest),
+        /Invalid RuntimeEvent invocation_opened schema/,
+      );
     });
   });
 
@@ -973,6 +1084,47 @@ describe('SqliteRuntimeStore', () => {
 
       assert.equal(conflict.kind, 'conflict');
       assert.deepEqual(conflict.claim, claim);
+    });
+  });
+
+  it('lets a started continuation target be purged instead of refusing the delete', async () => {
+    await withStore(async (store, dbPath) => {
+      const claim = continuationClaim();
+      await persistImmutablePrefix(store, continuationSourcePrefix());
+      assert.equal((await store.claimContinuation({ claim })).kind, 'acquired');
+
+      const db = new DatabaseSync(dbPath);
+      try {
+        db.exec('PRAGMA foreign_keys = ON');
+        // Stand the claim up the way starting a continuation does: its start
+        // event is event one of the target Session's run.
+        const start = db
+          .prepare('SELECT event_id, session_id FROM runtime_events ORDER BY event_seq ASC LIMIT 1')
+          .get() as { event_id: string; session_id: string };
+        db.prepare(
+          "UPDATE runtime_continuation_claims SET start_event_id = ?, start_kind = 'runtime_admission' WHERE claim_id = ?",
+        ).run(start.event_id, claim.claimId);
+
+        // Purging a conversation deletes its events. The claim used to have no
+        // ON DELETE clause, so the constraint refused this and rolled the whole
+        // purge back — for the user's delete, a copy rollback, an import
+        // discard and Session retirement alike.
+        db.prepare('DELETE FROM runtime_events WHERE session_id = ?').run(start.session_id);
+
+        assert.equal(
+          (
+            db
+              .prepare(
+                'SELECT COUNT(*) AS count FROM runtime_continuation_claims WHERE claim_id = ?',
+              )
+              .get(claim.claimId) as { count: number }
+          ).count,
+          0,
+          'a continuation whose target was deleted no longer names anything, so it goes too',
+        );
+      } finally {
+        db.close();
+      }
     });
   });
 
@@ -1529,11 +1681,58 @@ describe('SqliteRuntimeStore', () => {
             `)
             .all()
             .map((row) => ({ ...row })),
-          [
-            { segment_seq: 1, text_content: 'a' },
-            { segment_seq: 2, text_content: 'bc' },
-          ],
+          [{ segment_seq: 1, text_content: 'abc' }],
         );
+      } finally {
+        inspect.close();
+      }
+    });
+  });
+
+  it('coalesces partial text into fixed-size tail segments', async () => {
+    await withStore(async (store, dbPath) => {
+      const chunks = ['x'.repeat(40 * 1024), 'y'.repeat(40 * 1024), 'z'];
+      for (const [index, text] of chunks.entries()) {
+        await store.appendRuntimeEvent(
+          'session-1',
+          'run-1',
+          functionCallEvent({
+            id: `partial-${index}`,
+            ts: index + 1,
+            partial: true,
+            role: 'model',
+            author: 'agent',
+            content: { kind: 'text', text },
+            refs: { providerEventId: 'message-1' },
+          }),
+        );
+      }
+
+      const events = await store.readRuntimeEvents('session-1', 'run-1');
+      assert.equal(events[0]?.content?.kind, 'text');
+      assert.equal(
+        events[0]?.content?.kind === 'text' ? events[0].content.text : undefined,
+        chunks.join(''),
+      );
+
+      const inspect = new DatabaseSync(dbPath);
+      try {
+        const snapshot = inspect
+          .prepare('SELECT text_content FROM runtime_partial_snapshots')
+          .get() as { text_content?: unknown };
+        const segments = inspect
+          .prepare(`
+            SELECT segment_seq, length(CAST(text_content AS BLOB)) AS stored_bytes
+            FROM runtime_partial_segments
+            ORDER BY segment_seq ASC
+          `)
+          .all()
+          .map((row) => ({ ...row }));
+        assert.equal(snapshot.text_content, '');
+        assert.deepEqual(segments, [
+          { segment_seq: 1, stored_bytes: 40 * 1024 },
+          { segment_seq: 2, stored_bytes: 40 * 1024 + 1 },
+        ]);
       } finally {
         inspect.close();
       }
@@ -1766,32 +1965,37 @@ function continuationClaimForBoundary(
     providerProjectionVersion: 1,
     providerReplayDigest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
     target,
-    targetRunHeader: {
-      ...target,
-      status: 'created',
-      backendKind: 'fake',
-      llmConnectionSlug: 'connection-1',
-      modelId: 'model-1',
-      cwd: '/workspace/repo',
-      permissionMode: 'ask',
-      collaborationMode: 'agent',
-      orchestrationMode: 'default',
-      orchestrationSource: 'session',
-      agentSwarmAuthorization: 'none',
-      createdAt: claimedAt,
-      updatedAt: claimedAt,
-      parentRunId: source.identity.runId,
-      parentTurnId: source.identity.turnId,
-      continuationSource: {
-        protocol: 'continuation_source_v2',
-        claimId,
-        boundaryDigest: boundary.manifestDigest,
+    targetOpening: {
+      kind: 'invocation_opened',
+      protocol: 'invocation_opened_v1',
+      route: {
+        provenance: 'unknown',
+        backendKind: 'fake',
+        llmConnectionSlug: 'connection-1',
+        modelId: 'model-1',
+      },
+      configuration: {
+        cwd: '/workspace/repo',
+        permissionMode: 'ask',
+        collaborationMode: 'agent',
+        orchestrationMode: 'default',
+        orchestrationSource: 'session',
+        toolMode: DEFAULT_TOOL_MODE,
+        agentSwarmAuthorization: 'none',
+      },
+      root: { kind: 'user' },
+      source: {
+        kind: 'continuation',
         sourceInvocationId: source.identity.invocationId,
         sourceRunId: source.identity.runId,
         sourceTurnId: source.identity.turnId,
         sourceRuntimeEventHighWater: source.position.lastEventSeq,
-        sourcePrefixDigest: source.prefixDigest,
-        replayManifestDigest: boundary.manifestDigest,
+        claimId,
+        boundaryDigest: boundary.manifestDigest,
+      },
+      lineage: {
+        parentRunId: source.identity.runId,
+        parentTurnId: source.identity.turnId,
       },
     },
     claimedAt,
@@ -1874,6 +2078,8 @@ function continuationStartEvent(
     partial: false,
     role: 'system',
     author: 'system',
+    modelVisibility: 'hidden',
+    content: claim.targetOpening,
     actions: {
       ...(overrides.toolBoundaryProtocol
         ? { runtimeProtocol: { toolBoundary: overrides.toolBoundaryProtocol } }
@@ -1968,12 +2174,26 @@ function toolDispatchEvent(overrides: Partial<RuntimeEvent> = {}): RuntimeEvent 
   };
 }
 
-function commitPrepared(store: Store) {
+function commitPrepared(store: Store, options: { resultProjectionVersion?: 1 } = {}) {
   return store.commitToolPrepared({
     operationId: 'operation-1',
     journalEventId: 'operation-1_prepared',
     runtimeEvent: functionCallEvent(),
-    dispatchRuntimeEvent: toolDispatchEvent(),
+    dispatchRuntimeEvent: toolDispatchEvent({
+      actions: {
+        toolDispatch: {
+          protocol: 't1_after_preflight_v1',
+          operationId: 'operation-1',
+          providerToolCallId: 'provider-call-1',
+          toolName: 'Read',
+          canonicalArgsHash: READ_ARGS_HASH,
+          recoveryMode: 'replay_safe',
+          ...(options.resultProjectionVersion !== undefined
+            ? { resultProjectionVersion: options.resultProjectionVersion }
+            : {}),
+        },
+      },
+    }),
     providerToolCallId: 'provider-call-1',
     toolName: 'Read',
     canonicalArgsHash: READ_ARGS_HASH,

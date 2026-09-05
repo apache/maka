@@ -1,0 +1,132 @@
+diff --git a/node_modules/node-pty/lib/unixTerminal.js b/node_modules/node-pty/lib/unixTerminal.js
+index af2d24c..a16ab59 100644
+--- a/node_modules/node-pty/lib/unixTerminal.js
++++ b/node_modules/node-pty/lib/unixTerminal.js
+@@ -65,6 +65,10 @@ var UnixTerminal = /** @class */ (function (_super) {
+         var parsedEnv = _this._parseEnv(env);
+         var encoding = (opt.encoding === undefined ? 'utf8' : opt.encoding);
+         var onexit = function (code, signal) {
++            // Stop queued writes while the PTY fd is still owned by this terminal.
++            // An async write that outlives the fd can target an unrelated file if
++            // the operating system reuses the descriptor before libuv runs it.
++            _this._writeStream.dispose();
+             // XXX Sometimes a data event is emitted after exit. Wait til socket is
+             // destroyed.
+             if (!_this._emittedClose) {
+@@ -105,6 +109,7 @@ var UnixTerminal = /** @class */ (function (_super) {
+                     return;
+                 }
+             }
++            _this._writeStream.dispose();
+             // close
+             _this._close();
+             // EIO on exit from fs.ReadStream:
+@@ -134,6 +139,7 @@ var UnixTerminal = /** @class */ (function (_super) {
+         _this._readable = true;
+         _this._writable = true;
+         _this._socket.on('close', function () {
++            _this._writeStream.dispose();
+             if (_this._emittedClose) {
+                 return;
+             }
+@@ -288,12 +294,19 @@ var CustomWriteStream = /** @class */ (function () {
+         this._fd = _fd;
+         this._encoding = _encoding;
+         this._writeQueue = [];
++        this._disposed = false;
++        this._fdIdentity = fs.fstatSync(_fd);
+     }
+     CustomWriteStream.prototype.dispose = function () {
++        this._disposed = true;
+         clearImmediate(this._writeImmediate);
+         this._writeImmediate = undefined;
++        this._writeQueue.length = 0;
+     };
+     CustomWriteStream.prototype.write = function (data) {
++        if (this._disposed) {
++            return;
++        }
+         // Writes are put in a queue and processed asynchronously in order to handle
+         // backpressure from the kernel buffer.
+         var buffer = typeof data === 'string'
+@@ -309,42 +322,53 @@ var CustomWriteStream = /** @class */ (function () {
+     CustomWriteStream.prototype._processWriteQueue = function () {
+         var _this = this;
+         this._writeImmediate = undefined;
+-        if (this._writeQueue.length === 0) {
++        if (this._disposed || this._writeQueue.length === 0) {
+             return;
+         }
+         var task = this._writeQueue[0];
++        if (!this._ownsFileDescriptor()) {
++            this.dispose();
++            return;
++        }
+         // Write to the underlying file descriptor and handle it directly, rather
+         // than using the `net.Socket`/`tty.WriteStream` wrappers which swallow and
+         // mask errors like EAGAIN and can cause the thread to block indefinitely.
+-        fs.write(this._fd, task.buffer, task.offset, function (err, written) {
+-            if (err) {
+-                if ('code' in err && err.code === 'EAGAIN') {
+-                    // `setImmediate` is used to yield to the event loop and re-attempt
+-                    // the write later.
+-                    _this._writeImmediate = setImmediate(function () { return _this._processWriteQueue(); });
+-                }
+-                else {
+-                    // Stop processing immediately on unexpected error and log
+-                    _this._writeQueue.length = 0;
+-                    console.error('Unhandled pty write error', err);
+-                }
+-                return;
+-            }
++        // The native layer marks the PTY master fd as non-blocking. Keep each raw-fd
++        // write synchronous so no libuv request can outlive the descriptor, then
++        // yield between writes to retain asynchronous queue and backpressure behavior.
++        try {
++            var written = fs.writeSync(this._fd, task.buffer, task.offset);
+             task.offset += written;
+             if (task.offset >= task.buffer.byteLength) {
+-                _this._writeQueue.shift();
++                this._writeQueue.shift();
+             }
+-            // Since there is more room in the kernel buffer, we can continue to write
+-            // until we hit EAGAIN or exhaust the queue.
+-            //
+-            // Note that old versions of bash, like v3.2 which ships in macOS, appears
+-            // to have a bug in its readline implementation that causes data
+-            // corruption when writes to the pty happens too quickly. Instead of
+-            // trying to workaround that we just accept it so that large pastes are as
+-            // fast as possible.
+-            // Context: https://github.com/microsoft/node-pty/issues/833
+-            _this._processWriteQueue();
+-        });
++        }
++        catch (err) {
++            if (typeof err !== 'object' || err === null || !('code' in err) || err.code !== 'EAGAIN') {
++                // Stop processing immediately on unexpected error and log
++                this._writeQueue.length = 0;
++                console.error('Unhandled pty write error', err);
++                return;
++            }
++        }
++        if (!this._disposed && this._writeQueue.length > 0) {
++            this._writeImmediate = setImmediate(function () { return _this._processWriteQueue(); });
++        }
++    };
++    CustomWriteStream.prototype._ownsFileDescriptor = function () {
++        try {
++            var current = fs.fstatSync(this._fd);
++            return current.dev === this._fdIdentity.dev
++                && current.ino === this._fdIdentity.ino
++                && current.mode === this._fdIdentity.mode
++                && current.rdev === this._fdIdentity.rdev;
++        }
++        catch (err) {
++            if (typeof err === 'object' && err !== null && 'code' in err && err.code === 'EBADF') {
++                return false;
++            }
++            throw err;
++        }
+     };
+     return CustomWriteStream;
+ }());

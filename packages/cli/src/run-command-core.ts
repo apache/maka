@@ -1,12 +1,32 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { randomUUID } from 'node:crypto';
 import { realpath, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import type { SessionEvent } from '@maka/core/events';
 import { isThinkingLevel, type ThinkingLevel } from '@maka/core/model-thinking';
-import type { CreateSessionInput, UserMessageInput } from '@maka/core/runtime-inputs';
+import type { UserMessageInput } from '@maka/core/runtime-inputs';
 import type { ExecutionBoundaryReadModel } from '@maka/core/sandbox-boundary';
 import type { SessionSummary } from '@maka/core/session';
 import { normalizeUserSessionName } from '@maka/core/session-name';
+import type { CreateSessionRequest } from './session-driver.js';
 import { selectMakaRunSession } from './run-session-selection.js';
 import { sessionEventSandboxBoundaryFailureReason } from './sandbox-boundary-failure.js';
 import { resolveMakaWorkspaceRoot } from './workspace-root.js';
@@ -25,6 +45,8 @@ export interface MakaRunOptions {
   continueLatest?: boolean;
   graph?: true;
   thinkingDefaultExplicit?: boolean;
+  hostProfileId?: string;
+  projectId?: string;
 }
 
 export type ParseMakaRunArgsResult =
@@ -33,7 +55,7 @@ export type ParseMakaRunArgsResult =
   | { kind: 'error'; message: string };
 
 export interface MakaRunRuntime {
-  createSession(input: CreateSessionInput): Promise<SessionSummary>;
+  createSession(input: CreateSessionRequest): Promise<SessionSummary>;
   readExecutionBoundary(sessionId: string): Promise<ExecutionBoundaryReadModel>;
   sendMessage(sessionId: string, input: UserMessageInput): AsyncIterable<SessionEvent>;
   respondToSandboxBoundary(
@@ -60,25 +82,28 @@ export interface MakaRunOutcome {
   status: 'completed' | 'failed';
   finalOutput?: string;
   failure?: { class: string; message?: string };
-  sandboxBoundary: 'none' | 'unresolved' | 'recovered';
+  sandboxBoundary: 'none' | 'unresolved';
 }
 
 export interface MakaRunContextInput {
-  surface: 'run' | 'activation';
   workspaceRoot: string;
   cwd: string;
   requestedConnectionSlug?: string;
   requestedModel?: string;
   maxSteps?: number;
   enableAgentGraph?: boolean;
+  resumeSessionId?: string;
   sessionCwdOverride?: { sessionId: string; cwd: string };
   runOutcomeObserver?: (outcome: MakaRunOutcome) => void | Promise<void>;
+  hostProfileId?: string;
+  projectId?: string;
 }
 
 export interface MakaRunDeps {
   createContext(input: MakaRunContextInput): Promise<MakaRunContext>;
-  listSessions(workspaceRoot: string): Promise<SessionSummary[]>;
+  listSessions(workspaceRoot: string, hostProfileId?: string): Promise<SessionSummary[]>;
   workspaceRoot(): string;
+  cliCommand(): string;
   processCwd(): string;
   stdinIsTTY(): boolean;
   readStdin(): Promise<string>;
@@ -101,6 +126,8 @@ const VALUE_FLAGS = new Set([
   'timeout',
   'max-steps',
   'resume',
+  'host',
+  'project',
 ]);
 
 const REPEATABLE_VALUE_FLAGS = new Set<string>();
@@ -156,6 +183,15 @@ export function parseMakaRunArgs(argv: readonly string[]): ParseMakaRunArgsResul
   if (resumeId !== undefined && continueLatest) {
     return { kind: 'error', message: '--resume and --continue cannot be used together' };
   }
+  if (flags.has('project') && (resumeId !== undefined || continueLatest)) {
+    return { kind: 'error', message: '--project cannot be used with --resume or --continue' };
+  }
+  if (flags.get('host') && flags.get('host') !== 'local' && continueLatest) {
+    return { kind: 'error', message: '--continue is unavailable for a remote Runtime Host' };
+  }
+  if (flags.get('host') && flags.get('host') !== 'local' && flags.has('cwd')) {
+    return { kind: 'error', message: '--cwd cannot be used with a remote Runtime Host' };
+  }
   const timeoutSeconds = timeout === undefined ? undefined : Number(timeout);
   if (timeoutSeconds !== undefined && (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0)) {
     return { kind: 'error', message: '--timeout must be a positive number of seconds' };
@@ -183,6 +219,8 @@ export function parseMakaRunArgs(argv: readonly string[]): ParseMakaRunArgsResul
       ...(continueLatest ? { continueLatest: true } : {}),
       ...(graph ? { graph: true as const } : {}),
       ...(thinking === 'default' ? { thinkingDefaultExplicit: true } : {}),
+      ...(flags.get('host') !== undefined ? { hostProfileId: flags.get('host') } : {}),
+      ...(flags.get('project') !== undefined ? { projectId: flags.get('project') } : {}),
     },
   };
 }
@@ -195,11 +233,11 @@ export async function runMakaTextCliCore(
   const deps: MakaRunDeps = { ...defaultMakaRunEnvironmentDeps(), ...adapter, ...overrides };
   const parsed = parseMakaRunArgs(argv);
   if (parsed.kind === 'help') {
-    deps.writeStdout(`${makaRunHelpText()}\n`);
+    deps.writeStdout(`${makaRunHelpText(deps.cliCommand())}\n`);
     return 0;
   }
   if (parsed.kind === 'error') {
-    deps.writeStderr(`maka run: ${parsed.message}\n\n${makaRunHelpText()}\n`);
+    deps.writeStderr(`maka run: ${parsed.message}\n\n${makaRunHelpText(deps.cliCommand())}\n`);
     return 2;
   }
 
@@ -210,7 +248,7 @@ export async function runMakaTextCliCore(
     prompt = await resolveRunPrompt(parsed.options, deps);
     const sessions =
       parsed.options.resumeId !== undefined || parsed.options.continueLatest === true
-        ? await deps.listSessions(workspaceRoot)
+        ? await deps.listSessions(workspaceRoot, parsed.options.hostProfileId)
         : [];
     selection = await selectMakaRunSession(
       {
@@ -229,7 +267,12 @@ export async function runMakaTextCliCore(
           ? { explicitThinking: parsed.options.thinking }
           : {}),
       },
-      { canonicalizeDirectory: canonicalDirectory },
+      {
+        canonicalizeDirectory: canonicalDirectory,
+        ...(parsed.options.hostProfileId && parsed.options.hostProfileId !== 'local'
+          ? { canonicalizeStoredDirectory: async (path: string) => path }
+          : {}),
+      },
     );
   } catch (error) {
     deps.writeStderr(`maka run: ${errorMessage(error)}\n`);
@@ -237,12 +280,10 @@ export async function runMakaTextCliCore(
   }
 
   let outcome: MakaRunOutcome | undefined;
-  let streamBoundaryFailure = false;
-  const boundaryFailureInvocationIds = new Set<string>();
+  let boundaryFailure = false;
   let context: MakaRunContext;
   try {
     context = await deps.createContext({
-      surface: 'run',
       workspaceRoot,
       cwd: selection.cwd,
       ...(selection.kind === 'existing' || parsed.options.connection
@@ -259,17 +300,17 @@ export async function runMakaTextCliCore(
               selection.kind === 'existing' ? selection.session.model : parsed.options.model,
           }
         : {}),
-      ...(selection.kind === 'existing'
+      ...(selection.kind === 'existing' &&
+      (!parsed.options.hostProfileId || parsed.options.hostProfileId === 'local')
         ? { sessionCwdOverride: { sessionId: selection.session.id, cwd: selection.cwd } }
         : {}),
+      ...(selection.kind === 'existing' ? { resumeSessionId: selection.session.id } : {}),
       ...(parsed.options.maxSteps !== undefined ? { maxSteps: parsed.options.maxSteps } : {}),
       ...(parsed.options.graph ? { enableAgentGraph: true } : {}),
+      ...(parsed.options.hostProfileId ? { hostProfileId: parsed.options.hostProfileId } : {}),
+      ...(parsed.options.projectId ? { projectId: parsed.options.projectId } : {}),
       runOutcomeObserver: (result) => {
-        if (result.sandboxBoundary === 'recovered') {
-          boundaryFailureInvocationIds.delete(result.outcomeId);
-        } else if (result.sandboxBoundary === 'unresolved') {
-          boundaryFailureInvocationIds.add(result.outcomeId);
-        }
+        if (result.sandboxBoundary === 'unresolved') boundaryFailure = true;
         outcome = result;
       },
     });
@@ -286,10 +327,12 @@ export async function runMakaTextCliCore(
         : await context.runtime.createSession({
             cwd: selection.cwd,
             name: makaRunSessionName(prompt),
-            backend: 'ai-sdk',
             llmConnectionSlug: context.target.connection.slug,
             model: context.target.model,
-            permissionMode: parsed.options.yolo ? 'bypass' : 'ask',
+            // `--yolo` is a one-shot elevation, not one half of a choice.
+            // Omitting the field lets the Session start in the Host's
+            // configured default instead of forcing Auto onto every run.
+            ...(parsed.options.yolo ? { permissionMode: 'bypass' as const } : {}),
             ...(parsed.options.thinking !== undefined
               ? { thinkingLevel: parsed.options.thinking }
               : {}),
@@ -347,12 +390,13 @@ export async function runMakaTextCliCore(
     for await (const event of context.runtime.sendMessage(session.id, {
       turnId: deps.newId(),
       text: prompt,
+      ...(parsed.options.maxSteps !== undefined ? { maxSteps: parsed.options.maxSteps } : {}),
       ...(parsed.options.graph
         ? { turnOrchestration: { mode: 'graph' as const, source: 'host_api' as const } }
         : {}),
     })) {
       if (event.type === 'sandbox_boundary_request') {
-        streamBoundaryFailure = true;
+        boundaryFailure = true;
         deps.writeStderr(
           'maka run: sandbox boundary expansion is unavailable in non-interactive mode\n',
         );
@@ -363,7 +407,7 @@ export async function runMakaTextCliCore(
       }
       const sandboxFailureReason = sessionEventSandboxBoundaryFailureReason(event);
       if (sandboxFailureReason) {
-        streamBoundaryFailure = true;
+        boundaryFailure = true;
         deps.writeStderr(
           sandboxFailureReason === 'requires_bypass'
             ? 'maka run: sandbox bypass requires an explicit --yolo\n'
@@ -395,12 +439,7 @@ export async function runMakaTextCliCore(
     return 1;
   }
   if (streamFailed) return 1;
-  if (
-    (streamBoundaryFailure && outcome?.sandboxBoundary !== 'recovered') ||
-    boundaryFailureInvocationIds.size > 0
-  ) {
-    return 1;
-  }
+  if (boundaryFailure) return 1;
   if (!outcome) {
     deps.writeStderr('maka run: runtime produced no outcome\n');
     return 1;
@@ -431,10 +470,10 @@ async function canonicalDirectory(input: string): Promise<string> {
   return canonical;
 }
 
-function makaRunHelpText(): string {
+function makaRunHelpText(cliCommand: string): string {
   return [
-    'Usage: maka run [PROMPT] [options]',
-    '       maka -p [PROMPT] [options]',
+    `Usage: ${cliCommand} run [PROMPT] [options]`,
+    `       ${cliCommand} -p [PROMPT] [options]`,
     '',
     'Input:',
     '  -                         Read the complete prompt from stdin',
@@ -443,13 +482,15 @@ function makaRunHelpText(): string {
     'Options:',
     '  --cwd <path>              Working directory (default: current directory)',
     '  --connection <slug>       Model connection to use',
+    '  --host <profile-id>       Connect through a saved Runtime Host profile',
+    '  --project <project-id>    Select an existing Project on a remote Host',
     '  --model <id>              Model to use',
     '  --thinking <level>        off|minimal|low|medium|high|xhigh|max|default',
     '  --timeout <seconds>       Invocation timeout',
     '  --max-steps <count>       Tool-step cap',
-    '  --yolo                    Give this session full access to your files and network',
-    '  --resume <session-id>     Continue an explicit compatible session',
-    '  --continue                Continue the latest compatible session for cwd',
+    '  --yolo                    Give this task full access to your files and network',
+    '  --resume <session-id>     Continue an explicit compatible task',
+    '  --continue                Continue the latest compatible task for cwd',
     '  --graph                   Run this turn in Graph Mode and wait for graph completion',
     '  -h, --help                Show help',
   ].join('\n');
@@ -458,6 +499,7 @@ function makaRunHelpText(): string {
 function defaultMakaRunEnvironmentDeps(): MakaRunEnvironmentDeps {
   return {
     workspaceRoot: () => resolveMakaWorkspaceRoot(),
+    cliCommand: () => 'maka',
     processCwd: () => process.cwd(),
     stdinIsTTY: () => process.stdin.isTTY === true,
     readStdin: readProcessStdin,

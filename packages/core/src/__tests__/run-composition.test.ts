@@ -1,43 +1,28 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  createRunCompositionSnapshot,
   decodeRunCompositionSnapshot,
   RUN_COMPOSITION_SCHEMA_VERSION,
 } from '../run-composition.js';
-
-test('Run Composition snapshots are canonical immutable execution facts', () => {
-  const sourceRevisions = [
-    { id: 'skill-catalog', revision: 'skills-2' },
-    { id: 'runtime-policy', revision: '4' },
-    { id: 'memory', revision: 'memory-3' },
-  ];
-  const toolNames = ['Write', 'Read'];
-  const snapshot = createRunCompositionSnapshot({
-    composerId: 'maka.interactive',
-    composerRevision: '1',
-    sourceRevisions,
-    baseSystemPromptHash: hash('1'),
-    toolCatalogHash: hash('2'),
-    toolAvailabilityHash: hash('3'),
-    baseProviderOptionsHash: hash('4'),
-    toolNames,
-    contextWindow: 128_000,
-  });
-
-  sourceRevisions[0]!.revision = 'late-revision';
-  toolNames.push('LateTool');
-  assert.deepEqual(snapshot.sourceRevisions, [
-    { id: 'memory', revision: 'memory-3' },
-    { id: 'runtime-policy', revision: '4' },
-    { id: 'skill-catalog', revision: 'skills-2' },
-  ]);
-  assert.deepEqual(snapshot.toolNames, ['Read', 'Write']);
-  assert.ok(Object.isFrozen(snapshot));
-  assert.ok(Object.isFrozen(snapshot.sourceRevisions));
-  assert.ok(Object.isFrozen(snapshot.sourceRevisions[0]));
-  assert.ok(Object.isFrozen(snapshot.toolNames));
-});
 
 test('Run Composition snapshots reject ambiguous toolsets and malformed hashes', () => {
   const valid = {

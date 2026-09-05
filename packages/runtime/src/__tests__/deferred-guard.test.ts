@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
@@ -5,10 +24,10 @@ import { z } from 'zod';
 import type { SessionEvent } from '@maka/core/events';
 import type { SessionHeader } from '@maka/core/session';
 import type { StoredMessage } from '@maka/core/session';
-import { projectToolActivityArgs } from '@maka/core';
+import { projectToolActivityArgs } from '@maka/core/tool-activity-args';
 
 import { ToolRuntime, formatDeferredNotLoadedText, type MakaTool } from '../tool-runtime.js';
-import { mapSessionEventToRuntimeEvent } from '../ai-sdk-flow.js';
+import { mapSessionEventToRuntimeEvent } from '../session-event-runtime-mapper.js';
 
 // The execute-boundary guard rejects a *gated* tool whose name is absent from
 // the current step's active snapshot before the real impl.
@@ -19,7 +38,6 @@ function header(): SessionHeader {
     workspaceRoot: '/tmp/maka',
     cwd: '/tmp/maka',
     createdAt: 1,
-    lastUsedAt: 1,
     name: 'Test',
     titleIsManual: true,
     isFlagged: false,
@@ -144,17 +162,6 @@ describe('tool-availability execute-boundary guard', () => {
       invocationId: 'inv-1',
       runId: 'run-1',
       turnId: 'turn-1',
-      source: 'test',
-      startedAt: 1,
-      request: {
-        sessionId: 'session-1',
-        invocationId: 'inv-1',
-        runId: 'run-1',
-        turnId: 'turn-1',
-        text: 'test',
-        source: 'test',
-      },
-      newId: () => 'runtime-event-1',
       now: () => 1,
     });
     assert.equal(runtimeEvent.content?.kind, 'function_call');
@@ -171,11 +178,11 @@ describe('tool-availability execute-boundary guard', () => {
   test('rejects a gated tool absent from the step snapshot before implementation', async () => {
     const h = makeHarness();
     const implCalls: string[] = [];
-    // The same-step trap: the browser group was just requested via load_tools
+    // The same-step trap: browser_click was just returned by tool_search
     // but is not yet active this step, so browser_click must be rejected.
     h.runtime.setGating({
       gatedNames: new Set(['browser_click']),
-      activeNames: () => new Set(['Read', 'load_tools']),
+      activeNames: () => new Set(['Read', 'tool_search']),
     });
 
     const result = await run(h, tool('browser_click', implCalls));
@@ -198,7 +205,7 @@ describe('tool-availability execute-boundary guard', () => {
     const implCalls: string[] = [];
     h.runtime.setGating({
       gatedNames: new Set(['browser_click']),
-      activeNames: () => new Set(['Read', 'load_tools', 'browser_click']),
+      activeNames: () => new Set(['Read', 'tool_search', 'browser_click']),
     });
 
     const t = tool('browser_click', implCalls);
@@ -211,7 +218,7 @@ describe('tool-availability execute-boundary guard', () => {
     );
   });
 
-  test('is inert when no gating is installed (economy off)', async () => {
+  test('is inert when no gating is installed', async () => {
     const h = makeHarness();
     const implCalls: string[] = [];
     // No setGating call: any tool must execute as before.

@@ -1,31 +1,45 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { createDefaultSettings, mergeSettings } from "@maka/core/settings";
 import { SENSITIVE_PLACEHOLDER } from "@maka/core/settings/network-settings";
 import {
-  botTestErrorMessage,
   buildSettingsUpdateResult,
   maskAppSettings,
-  preserveSensitivePlaceholders,
   toSettingsTestResult,
 } from "../settings-ipc-helpers.js";
 
 describe("settings IPC helpers", () => {
-  test("masks sensitive network and bot fields before returning settings to renderer", () => {
+  test("masks sensitive bot fields before returning settings to renderer", () => {
     const settings = createDefaultSettings();
-    settings.network.proxy.password = "proxy-secret";
     settings.botChat.channels.telegram.token = "telegram-secret";
     settings.botChat.channels.feishu.appSecret = "feishu-secret";
 
     const masked = maskAppSettings(settings);
 
-    assert.equal(masked.network.proxy.password, SENSITIVE_PLACEHOLDER);
     assert.equal(masked.botChat.channels.telegram.token, SENSITIVE_PLACEHOLDER);
     assert.equal(
       masked.botChat.channels.feishu.appSecret,
       SENSITIVE_PLACEHOLDER,
     );
-    assert.equal(settings.network.proxy.password, "proxy-secret");
   });
 
   test("keeps empty sensitive fields empty instead of showing a placeholder", () => {
@@ -33,7 +47,6 @@ describe("settings IPC helpers", () => {
 
     const masked = maskAppSettings(settings);
 
-    assert.equal(masked.network.proxy.password, "");
     assert.equal(masked.botChat.channels.telegram.token, "");
   });
 
@@ -54,16 +67,13 @@ describe("settings IPC helpers", () => {
 
   test("reveals sensitive fields only when the current patch explicitly changes them", () => {
     const settings = createDefaultSettings();
-    settings.network.proxy.password = "new-proxy-secret";
     settings.botChat.channels.telegram.token = "new-bot-token";
     settings.botChat.channels.feishu.appSecret = "stored-feishu-secret";
 
     const masked = maskAppSettings(settings, {
-      network: { proxy: { password: "new-proxy-secret" } },
       botChat: { channels: { telegram: { token: "new-bot-token" } } },
     });
 
-    assert.equal(masked.network.proxy.password, "new-proxy-secret");
     assert.equal(masked.botChat.channels.telegram.token, "new-bot-token");
     assert.equal(
       masked.botChat.channels.feishu.appSecret,
@@ -85,38 +95,6 @@ describe("settings IPC helpers", () => {
       SENSITIVE_PLACEHOLDER,
     );
     assert.equal(masked.webSearch.providers.tavily.credentialSource, "saved");
-  });
-
-  test("preserves placeholder values as stored secrets before persisting patches", () => {
-    const current = createDefaultSettings();
-    current.network.proxy.password = "stored-proxy-secret";
-    current.botChat.channels.telegram.token = "stored-bot-token";
-    current.botChat.channels.feishu.appSecret = "stored-feishu-secret";
-
-    const patch = preserveSensitivePlaceholders(
-      {
-        network: {
-          proxy: { password: SENSITIVE_PLACEHOLDER, host: "10.0.0.2" },
-        },
-        botChat: {
-          channels: {
-            telegram: { token: SENSITIVE_PLACEHOLDER, enabled: true },
-            feishu: { appSecret: SENSITIVE_PLACEHOLDER, appId: "cli_123" },
-          },
-        },
-      },
-      current,
-    );
-
-    assert.equal(patch.network?.proxy?.password, "stored-proxy-secret");
-    assert.equal(patch.network?.proxy?.host, "10.0.0.2");
-    assert.equal(patch.botChat?.channels?.telegram?.token, "stored-bot-token");
-    assert.equal(patch.botChat?.channels?.telegram?.enabled, true);
-    assert.equal(
-      patch.botChat?.channels?.feishu?.appSecret,
-      "stored-feishu-secret",
-    );
-    assert.equal(patch.botChat?.channels?.feishu?.appId, "cli_123");
   });
 
   test("maps runtime bot test results as credential checks, not operational readiness", () => {
@@ -155,33 +133,6 @@ describe("settings IPC helpers", () => {
       JSON.stringify(result).includes("sk-live-secret-token-value"),
       false,
     );
-  });
-
-  test("bot test diagnostics stay locale-neutral and actionable", () => {
-    assert.equal(
-      botTestErrorMessage("qq", "Bot connection test failed"),
-      "QQ connection test failed.",
-    );
-    assert.equal(
-      botTestErrorMessage("telegram", "Bot token is required"),
-      "Telegram requires a Bot Token.",
-    );
-    assert.equal(
-      botTestErrorMessage("feishu", "Feishu appId and appSecret are required"),
-      "Feishu requires an App ID and App Secret.",
-    );
-  });
-
-  test("settings update result wraps settings and omits warnings for normal personalization", () => {
-    const settings = createDefaultSettings();
-    settings.personalization.assistantTone = "请简洁一点。";
-
-    const result = buildSettingsUpdateResult(settings, {
-      personalization: { assistantTone: "请简洁一点。" },
-    });
-
-    assert.equal(result.settings.personalization.assistantTone, "请简洁一点。");
-    assert.equal(result.warnings, undefined);
   });
 
   test("settings update result returns transient personalization warning enums without raw phrases", () => {

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
@@ -8,7 +27,8 @@ import {
   projectHistoryCompactCheckpointReplay,
   validateHistoryCompactCheckpointShape,
 } from '../history-compact-checkpoint.js';
-import { applyRuntimeEventHistoryCompact } from '../history-compact.js';
+import { applyRuntimeEventHistoryCompact } from '../history-compaction.js';
+import { sectionedSummary } from './history-compact-test-fixtures.js';
 
 describe('mid-turn history compact checkpoint', () => {
   test('builds a mid_turn checkpoint that re-renders the covered head anchor verbatim', () => {
@@ -22,7 +42,7 @@ describe('mid-turn history compact checkpoint', () => {
     const checkpoint = buildHistoryCompactCheckpoint({
       sessionId: 'session-1',
       coveredRuntimeEvents: events,
-      summary: 'Prior work plus the current turn opening.',
+      summary: sectionedSummary('Prior work plus the current turn opening.'),
       phase: 'mid_turn',
       headAnchor: { runtimeEventId: 'anchor', turnId: 'turn-1' },
       now: 1_800_000_010_000,
@@ -64,7 +84,7 @@ describe('mid-turn history compact checkpoint', () => {
         buildHistoryCompactCheckpoint({
           sessionId: 'session-1',
           coveredRuntimeEvents: events,
-          summary: 'x',
+          summary: sectionedSummary('x'),
           phase: 'mid_turn',
         }),
       /requires a head anchor/,
@@ -74,7 +94,7 @@ describe('mid-turn history compact checkpoint', () => {
         buildHistoryCompactCheckpoint({
           sessionId: 'session-1',
           coveredRuntimeEvents: events,
-          summary: 'x',
+          summary: sectionedSummary('x'),
           phase: 'mid_turn',
           headAnchor: { runtimeEventId: 'missing', turnId: 'turn-1' },
         }),
@@ -90,7 +110,7 @@ describe('mid-turn history compact checkpoint', () => {
         buildHistoryCompactCheckpoint({
           sessionId: 'session-1',
           coveredRuntimeEvents: events,
-          summary: 'x',
+          summary: sectionedSummary('x'),
           phase: 'mid_turn',
           headAnchor: { runtimeEventId: 'a', turnId: 'turn-9' },
         }),
@@ -102,7 +122,7 @@ describe('mid-turn history compact checkpoint', () => {
         buildHistoryCompactCheckpoint({
           sessionId: 'session-1',
           coveredRuntimeEvents: events,
-          summary: 'x',
+          summary: sectionedSummary('x'),
           phase: 'mid_turn',
           headAnchor: { runtimeEventId: 'b', turnId: 'turn-1' },
         }),
@@ -126,7 +146,7 @@ describe('mid-turn history compact checkpoint', () => {
         buildHistoryCompactCheckpoint({
           sessionId: 'session-1',
           coveredRuntimeEvents: events,
-          summary: 'x',
+          summary: sectionedSummary('x'),
           phase: 'mid_turn',
           headAnchor: { runtimeEventId: 'prior-user', turnId: 'turn-0' },
         }),
@@ -138,7 +158,7 @@ describe('mid-turn history compact checkpoint', () => {
     const checkpoint = buildHistoryCompactCheckpoint({
       sessionId: 'session-1',
       coveredRuntimeEvents: events,
-      summary: 'mid turn summary',
+      summary: sectionedSummary('mid turn summary'),
       phase: 'mid_turn',
       headAnchor: { runtimeEventId: 'anchor', turnId: 'turn-1' },
     });
@@ -164,7 +184,7 @@ describe('mid-turn history compact checkpoint', () => {
         buildHistoryCompactCheckpoint({
           sessionId: 'session-1',
           coveredRuntimeEvents: events,
-          summary: 'x',
+          summary: sectionedSummary('x'),
           phase: 'mid_turn',
           headAnchor: { runtimeEventId: 'a', turnId: 'turn-1' },
         }),
@@ -181,7 +201,7 @@ describe('mid-turn history compact checkpoint', () => {
     const checkpoint = buildHistoryCompactCheckpoint({
       sessionId: 'session-1',
       coveredRuntimeEvents: events.slice(0, 2),
-      summary: 'mid turn summary',
+      summary: sectionedSummary('mid turn summary'),
       phase: 'mid_turn',
       headAnchor: { runtimeEventId: 'anchor', turnId: 'turn-1' },
     });
@@ -223,13 +243,13 @@ describe('mid-turn history compact checkpoint', () => {
     const implicit = buildHistoryCompactCheckpoint({
       sessionId: 'session-1',
       coveredRuntimeEvents: events,
-      summary: 'same',
+      summary: sectionedSummary('same'),
       now: 5,
     });
     const explicit = buildHistoryCompactCheckpoint({
       sessionId: 'session-1',
       coveredRuntimeEvents: events,
-      summary: 'same',
+      summary: sectionedSummary('same'),
       phase: 'pre_turn',
       now: 5,
     });
@@ -239,7 +259,7 @@ describe('mid-turn history compact checkpoint', () => {
     const mid = buildHistoryCompactCheckpoint({
       sessionId: 'session-1',
       coveredRuntimeEvents: events,
-      summary: 'same',
+      summary: sectionedSummary('same'),
       now: 5,
       phase: 'mid_turn',
       headAnchor: { runtimeEventId: 'a', turnId: 'turn-0' },
@@ -258,7 +278,7 @@ describe('mid-turn history compact checkpoint', () => {
     const checkpoint = buildHistoryCompactCheckpoint({
       sessionId: 'session-1',
       coveredRuntimeEvents: events.slice(0, 4),
-      summary: 'mid turn summary',
+      summary: sectionedSummary('mid turn summary'),
       phase: 'mid_turn',
       headAnchor: { runtimeEventId: 'anchor', turnId: 'turn-1' },
     });
@@ -266,12 +286,7 @@ describe('mid-turn history compact checkpoint', () => {
     // Normal thresholds: the raw projection is far below the default high
     // water, and the accepted mid_turn checkpoint must STILL replay — the
     // covered raw span may never be re-injected on recovery.
-    const replay = applyRuntimeEventHistoryCompact(
-      events,
-      { enabled: true, mode: 'read_write', checkpoint },
-      1,
-      10_000,
-    );
+    const replay = applyRuntimeEventHistoryCompact(events, { enabled: true, checkpoint });
 
     assert.equal(replay.checkpoint?.checkpointId, checkpoint.checkpointId);
     assert.deepEqual(

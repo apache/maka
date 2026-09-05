@@ -1,6 +1,28 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import electronUpdater from 'electron-updater';
 import type { AppUpdater, UpdateCheckResult } from 'electron-updater';
 import type { ProgressInfo, UpdateInfo } from 'electron-updater';
+import type { DownloadedUpdateAttestationVerifier } from './app-update-attestation.js';
+import type { DesktopUpdateChannel } from './app-update-attestation.js';
+import { resolveUpdateFeedOverride } from './app-update-test-context.js';
 
 export type AppUpdateProgress = {
   percent: number;
@@ -24,6 +46,7 @@ export type AppUpdateStatus =
       latestVersion: string;
       progress: AppUpdateProgress;
     }
+  | { state: 'verifying'; currentVersion: string; latestVersion: string }
   | {
       state: 'downloaded';
       currentVersion: string;
@@ -66,11 +89,23 @@ export interface AppUpdateService {
 interface AppUpdateServiceDeps {
   currentVersion: string;
   isPackaged: boolean;
+  updateChannel?: DesktopUpdateChannel;
   updater?: AppUpdater;
+  /**
+   * Harness-only feed override (`MAKA_UPDATE_TEST_FEED`); see
+   * {@link resolveUpdateFeedOverride} for the exact accepted shape.
+   */
+  testFeedUrl?: string;
   mockLatestVersion?: string;
   mockState?: 'available' | 'downloading' | 'downloaded';
   onStatusChange?: (status: AppUpdateStatus) => void;
-  hasActiveTasks: () => boolean | Promise<boolean>;
+  verifyDownloadedUpdate: DownloadedUpdateAttestationVerifier;
+  prepareInstall: (
+    input: AppUpdateInstallRequest,
+  ) => Promise<
+    | { readonly kind: 'active_tasks' }
+    | { readonly kind: 'prepared'; rollback(): void }
+  >;
   clock?: {
     setTimeout(callback: () => void, delayMs: number): unknown;
     clearTimeout(handle: unknown): void;
@@ -88,6 +123,28 @@ const UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
  */
 const UPDATE_CHECK_ON_FOCUS_MIN_INTERVAL_MS = 15 * 60 * 1000;
 
+/**
+ * Harness-only override for the update feed (`MAKA_UPDATE_TEST_FEED`).
+ *
+ * Accepts exactly `http://127.0.0.1:<port>[/path]` and maps it to a generic
+ * provider so the end-to-end Windows auto-update verification can serve a
+ * candidate installer plus `latest.yml` from a loopback HTTP server. Anything
+ * else set — a remote host, `localhost`, another loopback alias, HTTPS,
+ * userinfo, a query string, or a malformed URL — throws: a mistyped override
+ * must never silently fall back to the production GitHub feed, because a test
+ * run quietly installing a real release is exactly the failure this shape
+ * exists to prevent.
+ *
+ * Security posture (this is not an update-hijack vector): setting an
+ * environment variable on the app's process already requires code execution
+ * as the same user, and the per-user NSIS install model means that user can
+ * rewrite the installation directory directly — the override grants no
+ * capability across any privilege boundary. Loopback-only keeps even that
+ * same-user surface minimal: the feed must be a process listening on this
+ * machine. With the variable unset the feed configuration is byte-identical
+ * to production. The application composition root deliberately bypasses
+ * release provenance only for this synthetic-byte transport harness.
+ */
 function normalizeVersion(version: string): string {
   return version.trim().replace(/^v/i, '');
 }
@@ -163,7 +220,9 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
     cancellationToken?: UpdateCheckResult['cancellationToken'];
     cancelledForRetry: boolean;
   } | undefined;
+  let activeVerification: Promise<void> | undefined;
   let checkTimer: unknown;
+  let installHandoff: { rollback(): void } | undefined;
   let started = false;
   let disposed = false;
   // Resolve Electron's singleton lazily so tests can inject an updater without
@@ -186,7 +245,7 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
   const currentStatus = (): AppUpdateStatus => status;
 
   const latestVersion = () =>
-    status.state === 'available' || status.state === 'downloading' || status.state === 'downloaded' ||
+    status.state === 'available' || status.state === 'downloading' || status.state === 'verifying' || status.state === 'downloaded' ||
     status.state === 'installing' || status.state === 'error'
       ? status.latestVersion
       : updateInfoVersion(latestInfo);
@@ -201,6 +260,12 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
     operation,
     message: error instanceof Error ? error.message : String(error),
   });
+
+  const rollbackInstallHandoff = (): void => {
+    const handoff = installHandoff;
+    installHandoff = undefined;
+    handoff?.rollback();
+  };
 
   const trackAutoDownload = (result: UpdateCheckResult | null): void => {
     if (!result?.downloadPromise) return;
@@ -227,13 +292,12 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
 
   updater.autoDownload = true;
   updater.autoInstallOnAppQuit = false;
-  updater.allowPrerelease = false;
+  updater.allowPrerelease = deps.updateChannel === 'nightly';
   updater.logger = null;
-  updater.setFeedURL({
-    provider: 'github',
-    owner: 'Maka-Agent',
-    repo: 'maka-agent',
-  });
+  const testFeed = resolveUpdateFeedOverride(deps.testFeedUrl);
+  // Production reads electron-builder's packaged app-update.yml. Only the
+  // loopback harness replaces that single authority boundary.
+  if (testFeed) updater.setFeedURL(testFeed);
 
   updater.on('checking-for-update', () => {
     publish({ state: 'checking', currentVersion: deps.currentVersion });
@@ -266,18 +330,39 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
   });
   updater.on('update-downloaded', (event) => {
     latestInfo = event;
-    publish({
-      state: 'downloaded',
-      currentVersion: deps.currentVersion,
-      latestVersion: updateInfoVersion(event) ?? latestVersion() ?? deps.currentVersion,
-    });
+    const version = updateInfoVersion(event) ?? latestVersion() ?? deps.currentVersion;
+    publish({ state: 'verifying', currentVersion: deps.currentVersion, latestVersion: version });
+    const verification = Promise.resolve().then(() =>
+      deps.verifyDownloadedUpdate({
+        downloadedFile: event.downloadedFile,
+        version,
+        files: event.files,
+      }),
+    );
+    activeVerification = verification;
+    void verification
+      .then(() => {
+        if (activeVerification !== verification) return;
+        publish({
+          state: 'downloaded',
+          currentVersion: deps.currentVersion,
+          latestVersion: version,
+        });
+      })
+      .catch((error) => {
+        if (activeVerification === verification) publishError('download', error);
+      })
+      .finally(() => {
+        if (activeVerification === verification) activeVerification = undefined;
+      });
   });
   updater.on('error', (error) => {
     const operation = status.state === 'installing'
       ? 'install'
-      : status.state === 'available' || status.state === 'downloading'
+      : status.state === 'available' || status.state === 'downloading' || status.state === 'verifying'
         ? 'download'
         : 'check';
+    if (operation === 'install') rollbackInstallHandoff();
     publishError(operation, error);
   });
 
@@ -288,15 +373,17 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
     if (!deps.isPackaged) {
       return publish({ state: 'not-available', currentVersion: deps.currentVersion });
     }
-    if (status.state === 'downloaded' || status.state === 'installing') return status;
+    if (status.state === 'verifying' || status.state === 'downloaded' || status.state === 'installing') return status;
     if (status.state === 'downloading' && !allowDuringDownload) return status;
     if (activeDownload && !allowDuringDownload) return status;
     if (checkInFlight) return checkInFlight;
     lastCheckStartedAt = now();
     checkInFlight = updater
       .checkForUpdates()
-      .then((result) => {
+      .then(async (result) => {
         trackAutoDownload(result);
+        const verification = activeVerification;
+        if (verification) await verification.catch(() => undefined);
         return status;
       })
       .catch((error) => status.state === 'error' ? status : publishError('check', error))
@@ -336,7 +423,7 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
     if (deps.mockLatestVersion) {
       return publish(mockStatus(deps.currentVersion, deps.mockLatestVersion, 'downloaded'));
     }
-    if (!deps.isPackaged || status.state === 'downloaded' || status.state === 'installing') {
+    if (!deps.isPackaged || status.state === 'verifying' || status.state === 'downloaded' || status.state === 'installing') {
       return status;
     }
     if (checkInFlight) await checkInFlight;
@@ -353,26 +440,17 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
 
   async function installUpdate(input: AppUpdateInstallRequest): Promise<AppUpdateInstallResult> {
     if (status.state !== 'downloaded') return { ok: false, reason: 'not_downloaded' };
-    let hasActiveTasks: boolean;
-    try {
-      hasActiveTasks = await deps.hasActiveTasks();
-    } catch (error) {
-      publishError('install', error);
-      return { ok: false, reason: 'install_failed' };
-    }
-    if (typeof hasActiveTasks !== 'boolean') {
-      publishError('install', new Error('Active task status is unavailable'));
-      return { ok: false, reason: 'install_failed' };
-    }
-    if (hasActiveTasks && !input.allowInterruptActiveTasks) {
-      return { ok: false, reason: 'active_tasks' };
-    }
     if (deps.mockLatestVersion) {
       return { ok: true };
     }
-    const version = latestVersion() ?? deps.currentVersion;
-    publish({ state: 'installing', currentVersion: deps.currentVersion, latestVersion: version });
     try {
+      const preparation = await deps.prepareInstall(input);
+      if (preparation.kind === 'active_tasks') {
+        return { ok: false, reason: 'active_tasks' };
+      }
+      installHandoff = preparation;
+      const version = latestVersion() ?? deps.currentVersion;
+      publish({ state: 'installing', currentVersion: deps.currentVersion, latestVersion: version });
       updater.quitAndInstall(false, true);
       const installStatus = currentStatus();
       if (installStatus.state === 'error' && installStatus.operation === 'install') {
@@ -380,6 +458,7 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
       }
       return { ok: true };
     } catch (error) {
+      rollbackInstallHandoff();
       publishError('install', error);
       return { ok: false, reason: 'install_failed' };
     }

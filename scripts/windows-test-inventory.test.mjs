@@ -1,101 +1,52 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import test from 'node:test';
-import {
-  collectWindowsTestSkips,
-  findSkipExpressions,
-  renderWindowsTestInventory,
-  windowsTestInventoriesMatch,
-} from './windows-test-inventory.mjs';
+import { excludesWindows } from './windows-test-inventory.mjs';
 
-test('compares generated inventories independently of checkout line endings', () => {
-  const rendered = '# Windows test skip inventory\n\nEntry\n';
-
-  assert.equal(windowsTestInventoriesMatch(rendered.replaceAll('\n', '\r\n'), rendered), true);
-  assert.equal(windowsTestInventoriesMatch(rendered.replaceAll('\n', '\r'), rendered), true);
-  assert.equal(windowsTestInventoriesMatch(`${rendered}Changed\n`, rendered), false);
-});
-
-test('reads multiline skip expressions through their property delimiter', () => {
-  const source = `
-// skip: process.platform === 'win32',
-const example = "skip: process.platform === 'win32',";
-test('direct multiline', {
-  skip:
-    process.platform === 'win32'
-      ? 'not on Windows'
-      : false,
-}, () => {});
-test('logical multiline', {
-  skip:
-    process.platform === 'win32' ||
-    anotherCondition,
-  timeout: 1000,
-}, () => {});
-`;
-
-  assert.deepEqual(
-    findSkipExpressions(source).map(({ expression }) => expression),
-    [
-      "process.platform === 'win32'\n      ? 'not on Windows'\n      : false",
-      "process.platform === 'win32' ||\n    anotherCondition",
-    ],
+test('exempts a complete Windows-false ternary from the skip inventory', () => {
+  assert.equal(
+    excludesWindows("process.platform === 'win32' ? false : 'Windows-only regression'"),
+    false,
+  );
+  assert.equal(
+    excludesWindows("((process.platform === 'win32' ? false : 'Windows-only regression'))"),
+    false,
   );
 });
 
-test('collects and classifies every test declaration that excludes Windows', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'maka-windows-inventory-'));
-  try {
-    await mkdir(join(root, 'packages', 'runtime-host'), { recursive: true });
-    await mkdir(join(root, 'apps', 'desktop'), { recursive: true });
-    await writeFile(
-      join(root, 'packages', 'runtime-host', 'host.test.ts'),
-      `test('named pipe peer', {
-  skip:
-    process.platform === 'win32'
-      ? 'not on Windows'
-      : false,
-}, () => {});
-test('named pipe reconnect', {
-  skip:
-    process.platform === 'win32' ||
-    anotherCondition,
-}, () => {});
-`,
-    );
-    await writeFile(
-      join(root, 'apps', 'desktop', 'window.test.mjs'),
-      'test(\'macOS window probe\', { skip: process.platform !== "darwin" }, () => {});\n',
-    );
+test('keeps a composite expression that can still skip on Windows', () => {
+  assert.equal(
+    excludesWindows(
+      "(process.platform === 'win32' ? false : 'Unix-only') || process.env.CI === '1'",
+    ),
+    true,
+  );
+  assert.equal(
+    excludesWindows(
+      "(process.platform === 'win32' ? false : 'Unix-only') || (process.env.CI === '1')",
+    ),
+    true,
+  );
+});
 
-    const entries = await collectWindowsTestSkips(root);
-    assert.deepEqual(
-      entries.map(({ path, title, classification }) => ({ path, title, classification })),
-      [
-        {
-          path: 'apps/desktop/window.test.mjs',
-          title: 'macOS window probe',
-          classification: 'platform-contract',
-        },
-        {
-          path: 'packages/runtime-host/host.test.ts',
-          title: 'named pipe peer',
-          classification: 'windows-backend-gap',
-        },
-        {
-          path: 'packages/runtime-host/host.test.ts',
-          title: 'named pipe reconnect',
-          classification: 'windows-backend-gap',
-        },
-      ],
-    );
-    const rendered = renderWindowsTestInventory(entries);
-    assert.match(rendered, /Total Windows-excluded declarations: \*\*3\*\*/u);
-    assert.match(rendered, /windows-backend-gap \| 2/u);
-    assert.doesNotMatch(rendered, /window\.test\.mjs:\d+/u);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
+test('keeps a direct Windows exclusion in the skip inventory', () => {
+  assert.equal(excludesWindows("process.platform === 'win32' ? 'POSIX-only' : false"), true);
 });

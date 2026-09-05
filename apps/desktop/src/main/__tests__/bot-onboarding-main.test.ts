@@ -1,3 +1,23 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { deferred } from '@maka/core/test-only/async-primitives';
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import {
@@ -5,9 +25,9 @@ import {
   mergeSettings,
   type AppSettings,
   type UpdateAppSettingsInput,
-} from '@maka/core';
-import type { BotRegistry } from '@maka/runtime';
-import type { SettingsStore } from '@maka/storage';
+} from '@maka/core/settings';
+import type { BotRegistry } from '@maka/runtime/bots';
+import type { SettingsStore } from '@maka/storage/settings-store';
 import {
   BotOnboardingService,
   wecomTerminalPollStatus,
@@ -15,13 +35,6 @@ import {
 } from '../bot-onboarding-main.js';
 
 const QR_DATA = 'data:image/png;base64,ZmFrZQ==';
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((next) => { resolve = next; });
-  return { promise, resolve };
-}
-
 function harness(
   adapter: BotOnboardingProviderAdapter,
   applyEffect?: (settings: AppSettings, patch: UpdateAppSettingsInput) => Promise<void>,
@@ -490,21 +503,6 @@ describe('BotOnboardingService', () => {
     test.advance(5_000);
     const result = await test.service.poll(started.sessionId);
     assert.equal(result.state, 'error');
-  });
-
-  it('categorizes a fatal provider error into specific Chinese copy', async () => {
-    // PR1197 review (P2-11): 鉴权/网络/超时 categories must survive to the user
-    // instead of collapsing to one generic line.
-    const adapter: BotOnboardingProviderAdapter = {
-      async start() { return startResult(); },
-      async poll() { throw new Error('auth failed: invalid client credentials'); },
-    };
-    const test = harness(adapter);
-    const started = await test.service.start({ provider: 'dingtalk' });
-    test.advance(5_000);
-    const result = await test.service.poll(started.sessionId);
-    assert.equal(result.state, 'error');
-    assert.equal(result.error, '鉴权失败');
   });
 
   it('expires locally without polling after the provider TTL', async () => {

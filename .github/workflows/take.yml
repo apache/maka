@@ -1,0 +1,179 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: Assign/unassign the issue via `take` or `untake` comment
+on:
+  issue_comment:
+    types: created
+
+permissions:
+  issues: write
+
+jobs:
+  issue_assign:
+    runs-on: ubuntu-slim
+    if: (!github.event.issue.pull_request) && (github.event.comment.body == 'take' || github.event.comment.body == 'untake')
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.event.issue.number }}
+      queue: max
+    steps:
+      - name: Take or untake issue
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          USER_LOGIN: ${{ github.event.comment.user.login }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          API_VERSION="2026-03-10"
+          ISSUE_ENDPOINT="repos/$REPO/issues/$ISSUE_NUMBER"
+          ASSIGNEES_ENDPOINT="$ISSUE_ENDPOINT/assignees"
+          COMMENTS_ENDPOINT="$ISSUE_ENDPOINT/comments"
+
+          post_comment() {
+            local body="$1"
+            gh api --silent \
+              --method POST \
+              --header "X-GitHub-Api-Version: $API_VERSION" \
+              "$COMMENTS_ENDPOINT" \
+              --raw-field "body=$body"
+          }
+
+          reply() {
+            local body="$1"
+            echo "$body"
+            post_comment "$body"
+          }
+
+          fail_with_comment() {
+            local body="$1"
+            echo "$body" >&2
+            if ! post_comment "$body"; then
+              echo "Could not post the failure message to issue $ISSUE_NUMBER" >&2
+            fi
+            exit 1
+          }
+
+          if [[ "$COMMENT_BODY" == "take" ]]; then
+            if ! CURRENT_ASSIGNEES="$(
+              gh api \
+                --header "X-GitHub-Api-Version: $API_VERSION" \
+                "$ISSUE_ENDPOINT" \
+                --jq '[.assignees[].login]'
+            )"; then
+              fail_with_comment \
+                "I could not inspect the current assignees. Please try again later."
+            fi
+
+            if jq -e --arg user "$USER_LOGIN" \
+              'any(.[]; . != $user)' <<<"$CURRENT_ASSIGNEES" >/dev/null; then
+              CURRENT_HOLDERS="$(
+                jq -r --arg user "$USER_LOGIN" \
+                  '[.[] | select(. != $user)] | join(", ")' \
+                  <<<"$CURRENT_ASSIGNEES"
+              )"
+              reply \
+                "Issue #$ISSUE_NUMBER is already assigned to $CURRENT_HOLDERS, so it was not reassigned."
+              exit 0
+            fi
+
+            if jq -e --arg user "$USER_LOGIN" \
+              'index($user) != null' <<<"$CURRENT_ASSIGNEES" >/dev/null; then
+              echo "Issue #$ISSUE_NUMBER is already assigned to $USER_LOGIN."
+              exit 0
+            fi
+
+            echo "Assigning issue $ISSUE_NUMBER to $USER_LOGIN"
+            if ! ASSIGNMENT_RESPONSE="$(
+              gh api \
+                --method POST \
+                --header "X-GitHub-Api-Version: $API_VERSION" \
+                "$ASSIGNEES_ENDPOINT" \
+                --field "assignees[]=$USER_LOGIN"
+            )"; then
+              fail_with_comment \
+                "I could not assign this issue because the GitHub API request failed. Please try again later."
+            fi
+
+            if ! jq -e '.assignees | type == "array"' \
+              <<<"$ASSIGNMENT_RESPONSE" >/dev/null; then
+              fail_with_comment \
+                "I could not verify the new assignee. Please try again later."
+            fi
+
+            if ! jq -e --arg user "$USER_LOGIN" \
+              '.assignees | map(.login) | index($user) != null' \
+              <<<"$ASSIGNMENT_RESPONSE" >/dev/null; then
+              reply \
+                "GitHub did not add $USER_LOGIN as an assignee. The account may not be assignable in this repository."
+              exit 0
+            fi
+
+            if ! jq -e --arg user "$USER_LOGIN" \
+              '.assignees | length == 1 and .[0].login == $user' \
+              <<<"$ASSIGNMENT_RESPONSE" >/dev/null; then
+              CURRENT_HOLDERS="$(
+                jq -r --arg user "$USER_LOGIN" \
+                  '[.assignees[].login | select(. != $user)] | join(", ")' \
+                  <<<"$ASSIGNMENT_RESPONSE"
+              )"
+
+              if ! ROLLBACK_RESPONSE="$(
+                gh api \
+                  --method DELETE \
+                  --header "X-GitHub-Api-Version: $API_VERSION" \
+                  "$ASSIGNEES_ENDPOINT" \
+                  --field "assignees[]=$USER_LOGIN"
+              )"; then
+                fail_with_comment \
+                  "Another assignee appeared while take was running, and I could not undo the conflicting assignment."
+              fi
+
+              if ! jq -e --arg user "$USER_LOGIN" \
+                '.assignees | type == "array" and (map(.login) | index($user) == null)' \
+                <<<"$ROLLBACK_RESPONSE" >/dev/null; then
+                fail_with_comment \
+                  "Another assignee appeared while take was running, and I could not verify that the conflicting assignment was undone."
+              fi
+
+              reply \
+                "Issue #$ISSUE_NUMBER was assigned to $CURRENT_HOLDERS while take was running, so it was not reassigned."
+              exit 0
+            fi
+          elif [[ "$COMMENT_BODY" == "untake" ]]; then
+            echo "Unassigning issue $ISSUE_NUMBER from $USER_LOGIN"
+            if ! UNASSIGNMENT_RESPONSE="$(
+              gh api \
+                --method DELETE \
+                --header "X-GitHub-Api-Version: $API_VERSION" \
+                "$ASSIGNEES_ENDPOINT" \
+                --field "assignees[]=$USER_LOGIN"
+            )"; then
+              fail_with_comment \
+                "I could not unassign this issue because the GitHub API request failed. Please try again later."
+            fi
+
+            if ! jq -e --arg user "$USER_LOGIN" \
+              '.assignees | type == "array" and (map(.login) | index($user) == null)' \
+              <<<"$UNASSIGNMENT_RESPONSE" >/dev/null; then
+              fail_with_comment \
+                "I could not verify that $USER_LOGIN was unassigned. Please try again later."
+            fi
+          fi

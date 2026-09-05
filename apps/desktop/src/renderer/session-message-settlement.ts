@@ -1,59 +1,119 @@
-import type { StoredMessage } from '@maka/core';
-
-/**
- * Read-model settlement shared by the main chat and the quote companion.
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
  *
- * After a turn completes, the live projection must not be handed off to the
- * persisted transcript until the matching assistant message is actually stored —
- * otherwise a settlement lag makes the just-finished exchange flicker away. This
- * reads the session's messages and, when a specific assistant message is
- * required, retries with a short backoff until it lands (or the budget is spent).
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
  */
 
-/** Backoff between committed-assistant settlement reads. */
-const COMMITTED_ASSISTANT_SETTLE_DELAYS_MS = [120, 360] as const;
+import type { StoredMessage } from '@maka/core/session';
+import type { MakaBridge } from '../preload/bridge-contract.js';
+import { DesktopTranscriptRangeStore } from './desktop-transcript-range-store.js';
+
+const COMMITTED_ASSISTANT_SETTLE_TIMEOUT_MS = 480;
 
 export interface RefreshMessagesOptions {
   requiredAssistantMessageId?: string;
+  signal?: AbortSignal;
 }
 
-export function hasAssistantMessage(
-  messages: readonly StoredMessage[],
-  messageId: string,
-): boolean {
-  return messages.some((message) => message.type === 'assistant' && message.id === messageId);
+export type TranscriptSettlementSource = Pick<MakaBridge['transcripts'], 'open'>;
+
+export async function readSettledMessagesFrom(
+  transcripts: TranscriptSettlementSource,
+  sessionId: string,
+  options: RefreshMessagesOptions = {},
+): Promise<{ messages: StoredMessage[]; settled: boolean }> {
+  return readSettledMessagesUsing(transcripts, sessionId, options);
 }
 
-/**
- * Read a session's messages, waiting (with backoff) for `requiredAssistantMessageId`
- * to be persisted when one is given. `settled` reports whether that message was
- * found; the caller only hands off from the live projection once it is.
- */
 export async function readSettledMessages(
   sessionId: string,
   options: RefreshMessagesOptions = {},
 ): Promise<{ messages: StoredMessage[]; settled: boolean }> {
-  const requiredMessageId = options.requiredAssistantMessageId;
-  if (!requiredMessageId) {
-    return { messages: await window.maka.sessions.readMessages(sessionId), settled: true };
-  }
+  return readSettledMessagesUsing(window.maka.transcripts, sessionId, options);
+}
 
-  let lastError: unknown;
-  let lastMessages: StoredMessage[] | undefined;
-  for (let attempt = 0; attempt <= COMMITTED_ASSISTANT_SETTLE_DELAYS_MS.length; attempt += 1) {
-    try {
-      const messages = await window.maka.sessions.readMessages(sessionId);
-      if (hasAssistantMessage(messages, requiredMessageId)) {
-        return { messages, settled: true };
+async function readSettledMessagesUsing(
+  transcripts: TranscriptSettlementSource,
+  sessionId: string,
+  options: RefreshMessagesOptions,
+): Promise<{ messages: StoredMessage[]; settled: boolean }> {
+  const deadline = Date.now() + COMMITTED_ASSISTANT_SETTLE_TIMEOUT_MS;
+  const store = new DesktopTranscriptRangeStore(sessionId);
+  let notify: () => void = () => {};
+  const changed = () => new Promise<void>((resolve) => {
+    notify = resolve;
+  });
+  let nextChange = changed();
+  let cancelOpen = () => {};
+  let rejectCancellation!: (error: Error) => void;
+  const cancellation = new Promise<never>((_resolve, reject) => {
+    rejectCancellation = reject;
+  });
+  void cancellation.catch(() => undefined);
+  let cancelled = false;
+  const cancel = (error: Error) => {
+    if (cancelled) return;
+    cancelled = true;
+    cancelOpen();
+    rejectCancellation(error);
+  };
+  const abort = () => cancel(new Error('Desktop transcript settlement was cancelled'));
+  options.signal?.addEventListener('abort', abort, { once: true });
+  if (options.signal?.aborted) abort();
+  const openTimeout = globalThis.setTimeout(
+    () => cancel(new Error('Desktop transcript settlement timed out while opening')),
+    Math.max(0, deadline - Date.now()),
+  );
+  const opening = transcripts.open(
+    sessionId,
+    (batch) => {
+      if (!store.accept(batch)) return;
+      notify();
+      nextChange = changed();
+    },
+    (close) => {
+      cancelOpen = close;
+      if (cancelled) close();
+    },
+  );
+  void opening.catch(() => undefined);
+  let handle: Awaited<typeof opening> | undefined;
+  try {
+    handle = await Promise.race([opening, cancellation]);
+    globalThis.clearTimeout(openTimeout);
+    while (true) {
+      const snapshot = store.snapshot();
+      const requiredMessageId = options.requiredAssistantMessageId;
+      const settled =
+        snapshot.ready &&
+        (requiredMessageId === undefined || store.hasDurableMessage(requiredMessageId));
+      if (settled || Date.now() >= deadline) {
+        return { messages: [...snapshot.messages], settled };
       }
-      lastMessages = messages;
-    } catch (error) {
-      lastError = error;
+      await Promise.race([
+        nextChange,
+        cancellation,
+        new Promise<void>((resolve) =>
+          globalThis.setTimeout(resolve, Math.max(0, deadline - Date.now())),
+        ),
+      ]);
     }
-    const delayMs = COMMITTED_ASSISTANT_SETTLE_DELAYS_MS[attempt];
-    if (delayMs === undefined) break;
-    await new Promise((resolve) => window.setTimeout(resolve, delayMs));
+  } finally {
+    globalThis.clearTimeout(openTimeout);
+    options.signal?.removeEventListener('abort', abort);
+    await handle?.close().catch(() => undefined);
   }
-  if (lastMessages) return { messages: lastMessages, settled: false };
-  throw lastError;
 }

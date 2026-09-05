@@ -1,38 +1,37 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
   decodeClientFrame,
+  decodeExternalSessionCatalogQueryInput,
   decodeExternalSessionCatalogQueryResult,
   decodeExternalSessionSourceQueryResult,
+  EXTERNAL_SESSION_IMPORTED_SESSION_IDS_MAX_ITEMS,
   EXTERNAL_SESSION_PAGE_MAX_ITEMS,
   HOST_OPERATION_SPECS,
-  RuntimeHostProtocolError,
 } from '../protocol/index.js';
 
 describe('external Session protocol', () => {
-  test('declares three bounded ready-only operations', () => {
-    assert.deepEqual(
-      Object.fromEntries(
-        (
-          [
-            'external-session.source.query',
-            'external-session.catalog.query',
-            'external-session.import',
-          ] as const
-        ).map((operation) => [
-          operation,
-          {
-            mode: HOST_OPERATION_SPECS[operation].mode,
-            availability: HOST_OPERATION_SPECS[operation].availability,
-          },
-        ]),
-      ),
-      {
-        'external-session.source.query': { mode: 'query', availability: 'ready' },
-        'external-session.catalog.query': { mode: 'query', availability: 'ready' },
-        'external-session.import': { mode: 'command', availability: 'ready' },
-      },
-    );
+  test('identifies external Session queries that expose Host paths', () => {
     assert.equal(
       HOST_OPERATION_SPECS['external-session.catalog.query'].usesHostPaths?.({
         adapterId: 'codex',
@@ -98,6 +97,126 @@ describe('external Session protocol', () => {
     );
   });
 
+  test('round-trips required external Session import state', () => {
+    const result = {
+      sessions: [
+        {
+          id: 'source-1',
+          name: 'Imported source',
+          hostCwd: '/workspace',
+          importState: {
+            importedCount: 10,
+            importedSessionIds: Array.from(
+              { length: EXTERNAL_SESSION_IMPORTED_SESSION_IDS_MAX_ITEMS },
+              (_, index) => `imported-${EXTERNAL_SESSION_IMPORTED_SESSION_IDS_MAX_ITEMS - index}`,
+            ),
+            isImporting: true,
+          },
+        },
+      ],
+      nextCursor: null,
+    };
+
+    assert.deepEqual(decodeExternalSessionCatalogQueryResult(result), result);
+  });
+
+  test('rejects missing, open, malformed, and inconsistent external Session import state', () => {
+    const summary = {
+      id: 'source-1',
+      name: 'Imported source',
+      hostCwd: '/workspace',
+    };
+    const decodeState = (importState?: unknown) =>
+      decodeExternalSessionCatalogQueryResult({
+        sessions: [{ ...summary, ...(importState === undefined ? {} : { importState }) }],
+        nextCursor: null,
+      });
+
+    assert.throws(() => decodeState(), isProtocolError);
+    assert.throws(
+      () =>
+        decodeState({
+          importedCount: 1,
+          importedSessionIds: ['imported-1'],
+          isImporting: false,
+          extra: true,
+        }),
+      isProtocolError,
+    );
+    assert.throws(
+      () =>
+        decodeState({
+          importedCount: -1,
+          importedSessionIds: [],
+          isImporting: false,
+        }),
+      isProtocolError,
+    );
+    assert.throws(
+      () =>
+        decodeState({
+          importedCount: EXTERNAL_SESSION_IMPORTED_SESSION_IDS_MAX_ITEMS + 1,
+          importedSessionIds: Array.from(
+            { length: EXTERNAL_SESSION_IMPORTED_SESSION_IDS_MAX_ITEMS + 1 },
+            (_, index) => `imported-${index}`,
+          ),
+          isImporting: false,
+        }),
+      isProtocolError,
+    );
+    assert.throws(
+      () =>
+        decodeState({
+          importedCount: 1,
+          importedSessionIds: ['invalid id'],
+          isImporting: false,
+        }),
+      isProtocolError,
+    );
+    assert.throws(
+      () =>
+        decodeState({
+          importedCount: 0,
+          importedSessionIds: [],
+          isImporting: 'yes',
+        }),
+      isProtocolError,
+    );
+    assert.throws(
+      () =>
+        decodeState({
+          importedCount: 1,
+          importedSessionIds: ['imported-2', 'imported-1'],
+          isImporting: false,
+        }),
+      isProtocolError,
+    );
+  });
+
+  test('rejects sparse imported Session id arrays', () => {
+    const importedSessionIds = Array<string>(1);
+
+    assert.throws(
+      () =>
+        decodeExternalSessionCatalogQueryResult({
+          sessions: [
+            {
+              id: 'source-1',
+              name: 'Imported source',
+              hostCwd: '/workspace',
+              importState: {
+                importedCount: 1,
+                importedSessionIds,
+                isImporting: false,
+              },
+            },
+          ],
+          nextCursor: null,
+        }),
+      isProtocolError,
+    );
+  });
+
   test('rejects open-ended, malformed, and oversized frames', () => {
     assert.throws(
       () =>
@@ -133,6 +252,11 @@ describe('external Session protocol', () => {
             id: `source-${index}`,
             name: `Session ${index}`,
             hostCwd: '/workspace',
+            importState: {
+              importedCount: 0,
+              importedSessionIds: [],
+              isImporting: false,
+            },
           })),
           nextCursor: null,
         }),
@@ -148,3 +272,37 @@ describe('external Session protocol', () => {
 function isProtocolError(error: unknown): boolean {
   return error instanceof RuntimeHostProtocolError && error.code === 'invalid_frame';
 }
+
+describe('external Session catalog query text', () => {
+  test('a term is accepted and carried through', () => {
+    assert.deepEqual(
+      decodeExternalSessionCatalogQueryInput({ adapterId: 'claude-code', text: 'parser' }),
+      { adapterId: 'claude-code', text: 'parser' },
+    );
+  });
+
+  test('an absent term stays absent rather than becoming an empty filter', () => {
+    assert.deepEqual(decodeExternalSessionCatalogQueryInput({ adapterId: 'codex' }), {
+      adapterId: 'codex',
+    });
+  });
+
+  test('a term that is not a bounded string is refused at the frame', () => {
+    // The term reaches every adapter, so an unbounded or wrong-typed value
+    // must not get past the protocol edge.
+    for (const text of [42, null, {}, '', 'x'.repeat(1_000)]) {
+      assert.throws(
+        () => decodeExternalSessionCatalogQueryInput({ adapterId: 'codex', text }),
+        RuntimeHostProtocolError,
+        `text=${JSON.stringify(text)?.slice(0, 24)}`,
+      );
+    }
+  });
+
+  test('an unknown field is still refused', () => {
+    assert.throws(
+      () => decodeExternalSessionCatalogQueryInput({ adapterId: 'codex', query: 'parser' }),
+      RuntimeHostProtocolError,
+    );
+  });
+});

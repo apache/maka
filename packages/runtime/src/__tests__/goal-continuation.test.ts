@@ -1,3 +1,23 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { deferred } from '@maka/core/test-only/async-primitives';
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { GoalManager, type GoalManagerDeps } from '../goal-state.js';
@@ -18,19 +38,9 @@ import {
 } from '../goal-continuation.js';
 import type { GoalEvaluation } from '../goal-evaluator.js';
 import type { MakaToolContext } from '../tool-runtime.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 const SESSION = 'sess-1';
-
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
-
 function controlledCall<T>() {
   const result = deferred<T>();
   let markStarted!: () => void;
@@ -176,11 +186,7 @@ function setup(opts?: {
 }
 
 async function waitFor(condition: () => boolean, message = 'condition was not met'): Promise<void> {
-  const deadline = Date.now() + 1_000;
-  while (!condition()) {
-    if (Date.now() >= deadline) assert.fail(message);
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
+  await pollFor(condition, { timeoutMs: 1_000, message });
 }
 
 function settleExternal(

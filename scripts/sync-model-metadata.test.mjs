@@ -1,222 +1,725 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import { mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { test } from 'node:test';
+import { loadTypeScriptModule, main, PROVIDERS } from './sync-model-metadata.mjs';
 
-import {
-  PRICING_EXCLUDED_PROVIDER_TYPES,
-  PROVIDERS,
-  toMetadata,
-  toPricing,
-} from './sync-model-metadata.mjs';
-
-const PROVIDER = { doc: 'https://example.com/docs' };
-const BASE_MODEL = {
-  name: 'Test Model',
-  limit: { context: 128_000, output: 8_192 },
-  reasoning: true,
-  tool_call: true,
-};
-
-test('models.dev reasoning_options effort values pass through to thinkingOptions', () => {
-  const metadata = toMetadata('test', 'm', PROVIDER, {
-    ...BASE_MODEL,
-    reasoning_options: [{ type: 'effort', values: ['high', 'max'] }],
-  });
-  assert.deepEqual(metadata.thinkingOptions, { efforts: ['high', 'max'] });
-});
-
-test('models.dev facts preserve the extended metadata contract', () => {
-  const metadata = toMetadata('test', 'm', PROVIDER, {
-    ...BASE_MODEL,
-    description: 'A useful model',
-    knowledge: '2025-12-01',
-    last_updated: '2026-01-02',
-    structured_output: false,
-    status: 'beta',
-    limit: { context: 128_000, input: 96_000, output: 8_192 },
-    modalities: { input: ['text', 'image', 'pdf', 'video'], output: ['text'] },
-  });
-  assert.equal(metadata.description, 'A useful model');
-  assert.equal(metadata.knowledgeCutoff, '2025-12-01');
-  assert.equal(metadata.inputLimit, 96_000);
-  assert.equal(metadata.structuredOutput, false);
-  assert.equal(metadata.lastUpdated, '2026-01-02');
-  assert.equal(metadata.lifecycle, 'beta');
-  assert.deepEqual(metadata.modalities, { input: ['text', 'image', 'pdf'], output: ['text'] });
-
-  assert.equal(
-    toMetadata('test', 'alpha-model', PROVIDER, {
-      ...BASE_MODEL,
-      status: 'alpha',
-    }).lifecycle,
-    'alpha',
-  );
-});
-
-test('models.dev pricing skips models with tiered rates until runtime supports tiers', () => {
-  for (const cost of [
-    { input: 3, output: 15, context_over_200k: { input: 6, output: 30 } },
-    { input: 3, output: 15, tiers: [{ input: 6, output: 30 }] },
-  ]) {
-    assert.equal(toPricing('openai', 'gpt-test', { cost }), undefined);
-  }
-});
-
-test('subscription and plan access paths do not inherit public API pricing', () => {
-  assert.equal(PRICING_EXCLUDED_PROVIDER_TYPES.has('github-copilot'), true);
-  assert.equal(PRICING_EXCLUDED_PROVIDER_TYPES.has('gemini-cli'), true);
-  assert.equal(PRICING_EXCLUDED_PROVIDER_TYPES.has('zai-coding-plan'), true);
-});
-
-test('models.dev reasoning_options toggle passes through to thinkingOptions', () => {
-  const metadata = toMetadata('test', 'm', PROVIDER, {
-    ...BASE_MODEL,
-    reasoning_options: [{ type: 'toggle' }, { type: 'effort', values: ['low', 'high'] }],
-  });
-  assert.deepEqual(metadata.thinkingOptions, { efforts: ['low', 'high'], toggle: true });
-});
-
-test('models without reasoning_options declare no thinkingOptions', () => {
-  const metadata = toMetadata('test', 'm', PROVIDER, BASE_MODEL);
-  assert.equal('thinkingOptions' in metadata, false);
-});
-
-test('a toggle-only model declares thinkingOptions without efforts', () => {
-  const metadata = toMetadata('test', 'm', PROVIDER, {
-    ...BASE_MODEL,
-    reasoning_options: [{ type: 'toggle' }],
-  });
-  assert.deepEqual(metadata.thinkingOptions, { toggle: true });
-});
-
-test('budget_tokens is recognized and skipped until a wire consumes it', () => {
-  const metadata = toMetadata('test', 'm', PROVIDER, {
-    ...BASE_MODEL,
-    reasoning_options: [{ type: 'budget_tokens' }, { type: 'effort', values: ['high'] }],
-  });
-  assert.deepEqual(metadata.thinkingOptions, { efforts: ['high'] });
-});
-
-test('an unknown reasoning_options type fails loudly instead of drifting', () => {
-  assert.throws(
-    () =>
-      toMetadata('test', 'm', PROVIDER, {
-        ...BASE_MODEL,
-        reasoning_options: [{ type: 'mystery' }],
-      }),
-    /unsupported shape/,
-  );
-});
-
-test('an empty reasoning_options list declares no thinkingOptions', () => {
-  const metadata = toMetadata('test', 'm', PROVIDER, { ...BASE_MODEL, reasoning_options: [] });
-  assert.equal('thinkingOptions' in metadata, false);
-});
-
-test('malformed reasoning_options are rejected as an unsupported shape', () => {
-  assert.throws(
-    () => toMetadata('test', 'm', PROVIDER, { ...BASE_MODEL, reasoning_options: 'effort' }),
-    /unsupported shape/,
-  );
-  assert.throws(
-    () =>
-      toMetadata('test', 'm', PROVIDER, {
-        ...BASE_MODEL,
-        reasoning_options: [{ type: 'effort', values: 'high' }],
-      }),
-    /unsupported shape/,
-  );
-});
-
-test('main() syncs only the mapped providers into the generated snapshot', async () => {
-  // End-to-end over the real main() path (the place the kimi/stepfun orphan
-  // bug lived): a fixture catalog covering every mapped source id plus one
-  // unmapped neighbour; only the mapped ones may produce segments.
+function fixtureCatalog() {
   const catalog = {};
-  for (const sourceId of Object.values(PROVIDERS)) {
+  for (const sourceId of new Set(Object.values(PROVIDERS))) {
     catalog[sourceId] = {
       id: sourceId,
-      name: sourceId,
-      doc: `https://${sourceId}.example/docs`,
-      api: `https://${sourceId}.example/v1`,
-      models: {},
+      name: `Provider ${sourceId}`,
+      doc: `https://example.test/${sourceId}`,
+      models: {
+        model: {
+          name: 'Model',
+          limit: { context: 1024, output: 128 },
+          reasoning: false,
+          tool_call: true,
+          cost: { input: 1, output: 2 },
+        },
+      },
     };
   }
-  catalog['kimi-for-coding'].api = 'https://api.kimi.com/coding/v1';
-  catalog['kimi-for-coding'].models.k3 = {
-    name: 'Kimi K3',
-    limit: { context: 1_048_576, output: 131_072 },
-    reasoning: true,
-    tool_call: true,
-    cost: { input: 1, output: 2 },
-    reasoning_options: [{ type: 'toggle' }, { type: 'effort', values: ['low', 'high', 'max'] }],
-  };
-  catalog['github-copilot'].models['gpt-5.5'] = {
-    name: 'GPT-5.5',
-    limit: { context: 400_000, input: 272_000, output: 128_000 },
-    reasoning: true,
-    tool_call: true,
-    cost: { input: 5, output: 30 },
-  };
-  catalog.google.models['gemini-2.5-pro'] = {
-    name: 'Gemini 2.5 Pro',
-    limit: { context: 1_000_000, input: 900_000, output: 64_000 },
-    reasoning: true,
-    tool_call: true,
-    cost: {
-      input: 1.25,
-      output: 10,
-      context_over_200k: { input: 2.5, output: 15 },
-    },
-  };
-  catalog.google.models['gemini-2.5-flash'] = {
-    name: 'Gemini 2.5 Flash',
-    limit: { context: 1_000_000, input: 900_000, output: 64_000 },
-    reasoning: true,
-    tool_call: true,
-    cost: { input: 0.3, output: 2.5 },
-  };
-  catalog['unmapped-provider'] = {
-    id: 'unmapped-provider',
-    name: 'Unmapped',
-    doc: 'https://example.com/docs',
-    api: 'https://unmapped.example/v1',
-    models: {
-      'm-1': {
-        name: 'M1',
-        limit: { context: 8_192, output: 4_096 },
-        reasoning: false,
-        tool_call: true,
-      },
-    },
-  };
-  const { mkdtemp, writeFile, readFile, rm } = await import('node:fs/promises');
-  const { tmpdir } = await import('node:os');
-  const { join } = await import('node:path');
-  const dir = await mkdtemp(join(tmpdir(), 'maka-sync-'));
-  const input = join(dir, 'catalog.json');
-  const output = join(dir, 'out.ts');
-  const pricingOutput = join(dir, 'pricing.ts');
-  await writeFile(input, JSON.stringify(catalog));
-  const { main } = await import('./sync-model-metadata.mjs');
-  await main(['--input', input, '--output', output, '--pricing-output', pricingOutput]);
-  const out = await readFile(output, 'utf8');
-  const pricing = await readFile(pricingOutput, 'utf8');
-  await rm(dir, { recursive: true, force: true });
+  catalog.unused = { id: 'unused', name: 'Unused', doc: 'https://example.test/unused', models: {} };
+  return catalog;
+}
 
-  assert.match(out, /"kimi-coding-plan": \{/);
-  assert.match(out, /"k3": \{/);
-  assert.match(out, /"thinkingOptions":\{"efforts":\["low","high","max"\],"toggle":true\}/);
-  assert.match(out, /"kimi-for-coding": \{/);
-  assert.match(out, /"kimi-for-coding": \{"api":"https:\/\/api\.kimi\.com\/coding\/v1"\}/);
-  assert.doesNotMatch(pricing, /"modelKey":"kimi-coding-plan:k3"/);
-  assert.doesNotMatch(pricing, /"modelKey":"github-copilot:gpt-5\.5"/);
-  assert.doesNotMatch(pricing, /"modelKey":"google:gemini-2\.5-pro"/);
-  assert.match(pricing, /"modelKey":"google:gemini-2\.5-flash","inputUsdPer1M":0\.3/);
-  assert.doesNotMatch(pricing, /"modelKey":"gemini-cli:gemini-2\.5-pro"/);
-  // The unmapped provider must appear only in the directory (the complete
-  // upstream catalog), never as a snapshot segment or provider fact.
-  const directoryStart = out.indexOf('GENERATED_MODELS_DEV_DIRECTORY');
-  assert.ok(directoryStart > 0);
-  assert.doesNotMatch(out.slice(0, directoryStart), /unmapped-provider/);
-  assert.match(out.slice(directoryStart), /"unmapped-provider": \{/);
+test('the committed snapshot generates both TypeScript modules offline', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-model-build-'));
+  try {
+    const metadata = join(root, 'metadata.ts');
+    const pricing = join(root, 'pricing.ts');
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => assert.fail('offline generation must not fetch');
+    try {
+      await main([
+        'node',
+        'sync-model-metadata.mjs',
+        '--output',
+        metadata,
+        '--pricing-output',
+        pricing,
+      ]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    const [metadataSource, pricingSource] = await Promise.all([
+      readFile(metadata, 'utf8'),
+      readFile(pricing, 'utf8'),
+    ]);
+    const [metadataModule, pricingModule] = await Promise.all([
+      loadTypeScriptModule(metadataSource),
+      loadTypeScriptModule(pricingSource),
+    ]);
+
+    assert.ok(Object.keys(metadataModule.GENERATED_MODELS_DEV_METADATA).length > 0);
+    assert.ok(Array.isArray(pricingModule.GENERATED_MODEL_PRICING));
+    assert.ok(pricingModule.GENERATED_MODEL_PRICING.length > 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('a no-op sync preserves generated output mtimes', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-model-noop-'));
+  try {
+    const metadata = join(root, 'metadata.ts');
+    const pricing = join(root, 'pricing.ts');
+    const argv = [
+      'node',
+      'sync-model-metadata.mjs',
+      '--output',
+      metadata,
+      '--pricing-output',
+      pricing,
+    ];
+    await main(argv);
+
+    const oldTime = new Date('2001-01-01T00:00:00.000Z');
+    await Promise.all([utimes(metadata, oldTime, oldTime), utimes(pricing, oldTime, oldTime)]);
+    const before = await Promise.all([stat(metadata), stat(pricing)]);
+
+    await main(argv);
+
+    const after = await Promise.all([stat(metadata), stat(pricing)]);
+    assert.deepEqual(
+      after.map(({ mtimeMs }) => mtimeMs),
+      before.map(({ mtimeMs }) => mtimeMs),
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('a refresh persists the exact selected input and check fails on stale output', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-model-snapshot-'));
+  try {
+    const input = join(root, 'api.json');
+    const snapshot = join(root, 'snapshot.json');
+    const metadata = join(root, 'metadata.ts');
+    const pricing = join(root, 'pricing.ts');
+    await writeFile(input, JSON.stringify(fixtureCatalog()));
+
+    await main([
+      'node',
+      'sync-model-metadata.mjs',
+      '--refresh',
+      '--refresh-input',
+      input,
+      '--snapshot',
+      snapshot,
+      '--output',
+      metadata,
+      '--pricing-output',
+      pricing,
+    ]);
+
+    const persisted = JSON.parse(await readFile(snapshot, 'utf8'));
+    assert.equal(persisted.formatVersion, 1);
+    assert.equal(persisted.origin.kind, 'models-dev-response');
+    assert.equal(persisted.projection.metadata.unused, undefined);
+    assert.deepEqual(
+      Object.keys(persisted.projection.metadata).sort(),
+      Object.keys(PROVIDERS).sort(),
+    );
+    assert.match(await readFile(metadata, 'utf8'), new RegExp(persisted.projectionSha256));
+
+    await main([
+      'node',
+      'sync-model-metadata.mjs',
+      '--check',
+      '--snapshot',
+      snapshot,
+      '--output',
+      metadata,
+      '--pricing-output',
+      pricing,
+    ]);
+
+    const corrected = fixtureCatalog();
+    corrected.anthropic.models.model.name = 'Corrected Model';
+    corrected.anthropic.models.model.cost.input = 1.5;
+    await writeFile(input, JSON.stringify(corrected));
+    await main([
+      'node',
+      'sync-model-metadata.mjs',
+      '--refresh',
+      '--refresh-input',
+      input,
+      '--snapshot',
+      snapshot,
+      '--output',
+      metadata,
+      '--pricing-output',
+      pricing,
+    ]);
+    const correctedProjection = JSON.parse(await readFile(snapshot, 'utf8')).projection;
+    assert.equal(correctedProjection.metadata.anthropic.model.displayName, 'Corrected Model');
+    assert.equal(
+      correctedProjection.pricing.find((entry) => entry.modelKey === 'anthropic:model')
+        .inputUsdPer1M,
+      1.5,
+    );
+
+    await writeFile(
+      metadata,
+      (await readFile(metadata, 'utf8')).replace(
+        '"displayName":"Corrected Model"',
+        '"displayName":"Stale"',
+      ),
+    );
+    await assert.rejects(
+      main([
+        'node',
+        'sync-model-metadata.mjs',
+        '--check',
+        '--snapshot',
+        snapshot,
+        '--output',
+        metadata,
+        '--pricing-output',
+        pricing,
+      ]),
+      /is stale/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('a modified snapshot fails closed before generation', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-model-snapshot-tamper-'));
+  try {
+    const input = join(root, 'api.json');
+    const snapshot = join(root, 'snapshot.json');
+    const metadata = join(root, 'metadata.ts');
+    await writeFile(input, JSON.stringify(fixtureCatalog()));
+    await main([
+      'node',
+      'sync-model-metadata.mjs',
+      '--refresh',
+      '--refresh-input',
+      input,
+      '--snapshot',
+      snapshot,
+      '--output',
+      metadata,
+    ]);
+
+    const persisted = JSON.parse(await readFile(snapshot, 'utf8'));
+    persisted.projection.metadata.anthropic.model.displayName = 'tampered';
+    await writeFile(snapshot, JSON.stringify(persisted));
+    await assert.rejects(
+      main(['node', 'sync-model-metadata.mjs', '--snapshot', snapshot, '--output', metadata]),
+      /digest mismatch/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('refresh rejects an empty required provider before replacing outputs', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-model-snapshot-empty-provider-'));
+  try {
+    const input = join(root, 'api.json');
+    const snapshot = join(root, 'snapshot.json');
+    const metadata = join(root, 'metadata.ts');
+    const catalog = fixtureCatalog();
+    catalog.anthropic.models = {};
+    await writeFile(input, JSON.stringify(catalog));
+    await writeFile(snapshot, 'old snapshot');
+    await writeFile(metadata, 'old metadata');
+
+    await assert.rejects(
+      main([
+        'node',
+        'sync-model-metadata.mjs',
+        '--refresh',
+        '--refresh-input',
+        input,
+        '--snapshot',
+        snapshot,
+        '--output',
+        metadata,
+      ]),
+      /provider anthropic has no non-empty models object/,
+    );
+    assert.equal(await readFile(snapshot, 'utf8'), 'old snapshot');
+    assert.equal(await readFile(metadata, 'utf8'), 'old metadata');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('refresh rejects unknown model modalities instead of dropping them', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-model-snapshot-modalities-'));
+  try {
+    const input = join(root, 'api.json');
+    const snapshot = join(root, 'snapshot.json');
+    const metadata = join(root, 'metadata.ts');
+    const catalog = fixtureCatalog();
+    catalog.anthropic.models.model.modalities = { input: ['text', 'hologram'], output: ['text'] };
+    await writeFile(input, JSON.stringify(catalog));
+
+    await assert.rejects(
+      main([
+        'node',
+        'sync-model-metadata.mjs',
+        '--refresh',
+        '--refresh-input',
+        input,
+        '--snapshot',
+        snapshot,
+        '--output',
+        metadata,
+      ]),
+      /unsupported modalities/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+// The drift report goes to stdout for the scheduled job's summary; tests read
+// the returned buckets instead of the printed text.
+async function drift(argv) {
+  const written = [];
+  const original = process.stdout.write;
+  process.stdout.write = (chunk) => {
+    written.push(String(chunk));
+    return true;
+  };
+  try {
+    return { report: await main(['node', 'sync-model-metadata.mjs', '--drift', ...argv]) };
+  } finally {
+    process.stdout.write = original;
+    assert.ok(written.join('').length > 0, 'drift must print a report');
+  }
+}
+
+test('drift finds nothing when the snapshot still matches upstream', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-model-drift-clean-'));
+  try {
+    const input = join(root, 'api.json');
+    const snapshot = join(root, 'snapshot.json');
+    await writeFile(input, JSON.stringify(fixtureCatalog()));
+    await main([
+      'node',
+      'sync-model-metadata.mjs',
+      '--refresh',
+      '--refresh-input',
+      input,
+      '--snapshot',
+      snapshot,
+      '--output',
+      join(root, 'metadata.ts'),
+    ]);
+
+    const { report } = await drift(['--snapshot', snapshot, '--refresh-input', input]);
+    assert.equal(report.drifted, false);
+    assert.deepEqual(
+      [
+        report.added,
+        report.removed,
+        report.changed,
+        report.rejectedModels,
+        report.rejectedProviders,
+      ],
+      [[], [], [], [], []],
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('drift separates a rejected shape from a real upstream difference', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-model-drift-'));
+  try {
+    const committed = join(root, 'api.json');
+    const upstream = join(root, 'upstream.json');
+    const snapshot = join(root, 'snapshot.json');
+    const before = fixtureCatalog();
+    before.anthropic.models.legacy = { ...before.anthropic.models.model, name: 'Legacy' };
+    await writeFile(committed, JSON.stringify(before));
+    await main([
+      'node',
+      'sync-model-metadata.mjs',
+      '--refresh',
+      '--refresh-input',
+      committed,
+      '--snapshot',
+      snapshot,
+      '--output',
+      join(root, 'metadata.ts'),
+    ]);
+
+    const after = JSON.parse(JSON.stringify(before));
+    delete after.anthropic.models.legacy;
+    after.anthropic.models.added = { ...after.anthropic.models.model, name: 'Added' };
+    after.anthropic.models.model.name = 'Renamed';
+    after.anthropic.models.model.cost = { input: 9, output: 9 };
+    after.groq.models.model.modalities = { input: ['text', 'hologram'], output: ['text'] };
+    delete after.openai;
+    await writeFile(upstream, JSON.stringify(after));
+
+    const { report } = await drift(['--snapshot', snapshot, '--refresh-input', upstream]);
+    assert.equal(report.drifted, true);
+    assert.deepEqual(report.added, ['anthropic/added']);
+    assert.deepEqual(report.removed, ['anthropic/legacy']);
+    assert.deepEqual(report.changed, [
+      'anthropic/model: metadata.displayName, pricing.inputUsdPer1M, pricing.outputUsdPer1M',
+    ]);
+    assert.equal(report.rejectedProviders.length, 1);
+    assert.match(report.rejectedProviders[0], /^openai: .*provider openai is missing/u);
+    assert.equal(report.rejectedModels.length, 1);
+    assert.match(report.rejectedModels[0], /^groq\/model: .*unsupported modalities/u);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('drift reports the projection sections that carry no model metadata', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-model-drift-sections-'));
+  try {
+    const committed = join(root, 'api.json');
+    const upstream = join(root, 'upstream.json');
+    const snapshot = join(root, 'snapshot.json');
+    const before = fixtureCatalog();
+    before.anthropic.models.model.provider = { npm: '@example/before' };
+    await writeFile(committed, JSON.stringify(before));
+    await main([
+      'node',
+      'sync-model-metadata.mjs',
+      '--refresh',
+      '--refresh-input',
+      committed,
+      '--snapshot',
+      snapshot,
+      '--output',
+      join(root, 'metadata.ts'),
+    ]);
+
+    // Neither a renamed provider nor a swapped npm package touches a model's
+    // metadata or its pricing, which is all the report used to compare.
+    const after = JSON.parse(JSON.stringify(before));
+    after.anthropic.name = 'Anthropic Renamed';
+    after.anthropic.models.model.provider = { npm: '@example/after' };
+    await writeFile(upstream, JSON.stringify(after));
+
+    const { report } = await drift(['--snapshot', snapshot, '--refresh-input', upstream]);
+    assert.equal(report.drifted, true);
+    assert.deepEqual(report.changed, [
+      'anthropic: providerFacts.name',
+      'anthropic/model: providerOverrides.npm',
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('drift refuses to combine with the modes that write', async () => {
+  for (const mode of ['--refresh', '--check']) {
+    await assert.rejects(
+      main(['node', 'sync-model-metadata.mjs', '--drift', mode]),
+      /--drift reports without writing/u,
+    );
+  }
+});
+
+test('refresh carries the video and pdf modalities models.dev declares', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-model-snapshot-video-'));
+  try {
+    const input = join(root, 'api.json');
+    const snapshot = join(root, 'snapshot.json');
+    const metadata = join(root, 'metadata.ts');
+    const catalog = fixtureCatalog();
+    const modalities = { input: ['text', 'video'], output: ['text', 'pdf', 'video'] };
+    catalog.anthropic.models.model.modalities = modalities;
+    await writeFile(input, JSON.stringify(catalog));
+
+    await main([
+      'node',
+      'sync-model-metadata.mjs',
+      '--refresh',
+      '--refresh-input',
+      input,
+      '--snapshot',
+      snapshot,
+      '--output',
+      metadata,
+    ]);
+
+    const written = JSON.parse(await readFile(snapshot, 'utf8'));
+    assert.deepEqual(written.projection.metadata.anthropic.model.modalities, modalities);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('refresh rejects a partial provider shrink until it is explicitly accepted', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-model-snapshot-provider-shrink-'));
+  try {
+    const input = join(root, 'api.json');
+    const snapshot = join(root, 'snapshot.json');
+    const metadata = join(root, 'metadata.ts');
+    const pricing = join(root, 'pricing.ts');
+    const initial = fixtureCatalog();
+    initial.anthropic.models['model-two'] = {
+      name: 'Model Two',
+      limit: { context: 2048, output: 256 },
+      reasoning: true,
+      tool_call: true,
+      cost: { input: 3, output: 4 },
+    };
+    await writeFile(input, JSON.stringify(initial));
+    const refreshArgs = [
+      'node',
+      'sync-model-metadata.mjs',
+      '--refresh',
+      '--refresh-input',
+      input,
+      '--snapshot',
+      snapshot,
+      '--output',
+      metadata,
+      '--pricing-output',
+      pricing,
+    ];
+    await main(refreshArgs);
+    const before = {
+      snapshot: await readFile(snapshot, 'utf8'),
+      metadata: await readFile(metadata, 'utf8'),
+      pricing: await readFile(pricing, 'utf8'),
+    };
+
+    await writeFile(input, JSON.stringify(fixtureCatalog()));
+    await assert.rejects(main(refreshArgs), /projection paths: \/metadata\/anthropic\/model-two/);
+    assert.deepEqual(
+      {
+        snapshot: await readFile(snapshot, 'utf8'),
+        metadata: await readFile(metadata, 'utf8'),
+        pricing: await readFile(pricing, 'utf8'),
+      },
+      before,
+    );
+
+    await main([...refreshArgs, '--accept-upstream-removals']);
+    const accepted = JSON.parse(await readFile(snapshot, 'utf8'));
+    assert.equal(accepted.projection.metadata.anthropic['model-two'], undefined);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('refresh rejects lost pricing coverage from an otherwise valid model', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-model-snapshot-pricing-shrink-'));
+  try {
+    const input = join(root, 'api.json');
+    const snapshot = join(root, 'snapshot.json');
+    const metadata = join(root, 'metadata.ts');
+    const pricing = join(root, 'pricing.ts');
+    const refreshArgs = [
+      'node',
+      'sync-model-metadata.mjs',
+      '--refresh',
+      '--refresh-input',
+      input,
+      '--snapshot',
+      snapshot,
+      '--output',
+      metadata,
+      '--pricing-output',
+      pricing,
+    ];
+    await writeFile(input, JSON.stringify(fixtureCatalog()));
+    await main(refreshArgs);
+    const before = {
+      snapshot: await readFile(snapshot, 'utf8'),
+      metadata: await readFile(metadata, 'utf8'),
+      pricing: await readFile(pricing, 'utf8'),
+    };
+
+    const truncated = fixtureCatalog();
+    delete truncated.anthropic.models.model.cost;
+    await writeFile(input, JSON.stringify(truncated));
+    await assert.rejects(main(refreshArgs), /projection paths: \/pricing\/anthropic:model/);
+    assert.deepEqual(
+      {
+        snapshot: await readFile(snapshot, 'utf8'),
+        metadata: await readFile(metadata, 'utf8'),
+        pricing: await readFile(pricing, 'utf8'),
+      },
+      before,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('refresh rejects nested capability and pricing shrinkage', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-model-snapshot-nested-shrink-'));
+  try {
+    const input = join(root, 'api.json');
+    const snapshot = join(root, 'snapshot.json');
+    const metadata = join(root, 'metadata.ts');
+    const pricing = join(root, 'pricing.ts');
+    const refreshArgs = [
+      'node',
+      'sync-model-metadata.mjs',
+      '--refresh',
+      '--refresh-input',
+      input,
+      '--snapshot',
+      snapshot,
+      '--output',
+      metadata,
+      '--pricing-output',
+      pricing,
+    ];
+    const initial = fixtureCatalog();
+    initial.anthropic.models.model.modalities = {
+      input: ['text', 'image'],
+      output: ['text'],
+    };
+    initial.anthropic.models.model.reasoning = true;
+    initial.anthropic.models.model.cost.cache_read = 0.25;
+    await writeFile(input, JSON.stringify(initial));
+    await main(refreshArgs);
+    const before = {
+      snapshot: await readFile(snapshot, 'utf8'),
+      metadata: await readFile(metadata, 'utf8'),
+      pricing: await readFile(pricing, 'utf8'),
+    };
+
+    const truncated = structuredClone(initial);
+    truncated.anthropic.models.model.modalities.input = ['text'];
+    delete truncated.anthropic.models.model.cost.cache_read;
+    await writeFile(input, JSON.stringify(truncated));
+    await assert.rejects(
+      main(refreshArgs),
+      (error) =>
+        /\/metadata\/anthropic\/model\/modalities\/input value "image"/.test(error.message) &&
+        /\/pricing\/anthropic:model\/cacheReadUsdPer1M/.test(error.message),
+    );
+    assert.deepEqual(
+      {
+        snapshot: await readFile(snapshot, 'utf8'),
+        metadata: await readFile(metadata, 'utf8'),
+        pricing: await readFile(pricing, 'utf8'),
+      },
+      before,
+    );
+
+    for (const [sourceField, projectionField] of [
+      ['reasoning', 'reasoning'],
+      ['tool_call', 'functionCalling'],
+    ]) {
+      const capabilityLoss = structuredClone(initial);
+      capabilityLoss.anthropic.models.model[sourceField] = false;
+      await writeFile(input, JSON.stringify(capabilityLoss));
+      await assert.rejects(
+        main(refreshArgs),
+        new RegExp(`/metadata/anthropic/model/capabilities/${projectionField}`),
+      );
+      assert.deepEqual(
+        {
+          snapshot: await readFile(snapshot, 'utf8'),
+          metadata: await readFile(metadata, 'utf8'),
+          pricing: await readFile(pricing, 'utf8'),
+        },
+        before,
+      );
+    }
+
+    const accepted = structuredClone(initial);
+    accepted.anthropic.models.model.tool_call = false;
+    await writeFile(input, JSON.stringify(accepted));
+    await main([...refreshArgs, '--accept-upstream-removals']);
+    assert.equal(
+      JSON.parse(await readFile(snapshot, 'utf8')).projection.metadata.anthropic.model.capabilities
+        .functionCalling,
+      false,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('refresh leaves all targets unchanged when any output cannot be staged', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-model-snapshot-transaction-'));
+  try {
+    const input = join(root, 'api.json');
+    const snapshot = join(root, 'snapshot.json');
+    const metadata = join(root, 'metadata.ts');
+    const pricing = join(root, 'pricing.ts');
+    const missingPricing = join(root, 'missing', 'pricing.ts');
+    await writeFile(input, JSON.stringify(fixtureCatalog()));
+    await main([
+      'node',
+      'sync-model-metadata.mjs',
+      '--refresh',
+      '--refresh-input',
+      input,
+      '--snapshot',
+      snapshot,
+      '--output',
+      metadata,
+      '--pricing-output',
+      pricing,
+    ]);
+    const before = {
+      snapshot: await readFile(snapshot, 'utf8'),
+      metadata: await readFile(metadata, 'utf8'),
+    };
+
+    await assert.rejects(
+      main([
+        'node',
+        'sync-model-metadata.mjs',
+        '--refresh',
+        '--refresh-input',
+        input,
+        '--snapshot',
+        snapshot,
+        '--output',
+        metadata,
+        '--pricing-output',
+        missingPricing,
+      ]),
+      /ENOENT/,
+    );
+    assert.equal(await readFile(snapshot, 'utf8'), before.snapshot);
+    assert.equal(await readFile(metadata, 'utf8'), before.metadata);
+    await assert.rejects(readFile(missingPricing), /ENOENT/);
+    assert.deepEqual((await readdir(root)).sort(), [
+      'api.json',
+      'metadata.ts',
+      'pricing.ts',
+      'snapshot.json',
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

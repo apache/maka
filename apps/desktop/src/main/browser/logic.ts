@@ -1,9 +1,28 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * Pure embedded-browser logic — no electron import, so every rule here is pinned
  * by plain unit tests. The electron-bound view lives in controller.ts.
  */
 
-import { normalizeBrowserAddressInput, type BrowserState, type BrowserViewRect } from '@maka/core';
+import { normalizeBrowserAddressInput, type BrowserState, type BrowserViewRect } from '@maka/core/browser';
 
 export type { BrowserState, BrowserViewRect };
 
@@ -82,7 +101,6 @@ export interface BrowserStateSnapshot {
   canGoBack: boolean;
   canGoForward: boolean;
   loading: boolean;
-  favicon: string | null;
 }
 
 /**
@@ -97,7 +115,6 @@ export function deriveBrowserState(snapshot: BrowserStateSnapshot): BrowserState
     canGoBack: snapshot.canGoBack,
     canGoForward: snapshot.canGoForward,
     loading: snapshot.loading,
-    favicon: snapshot.favicon,
     secure: /^https:\/\//i.test(snapshot.url),
     hasPage: snapshot.url !== '' && !snapshot.url.startsWith('about:'),
   };

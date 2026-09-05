@@ -1,5 +1,24 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { createHash } from 'node:crypto';
-import type { ProjectRecord } from '@maka/core';
+import type { ProjectRecord } from '@maka/core/project';
 import {
   ProjectArchivedError,
   type ProjectCatalog,
@@ -7,7 +26,7 @@ import {
   ProjectPathConflictError,
   ProjectPathMismatchError,
   ProjectUnavailableError,
-} from '@maka/storage';
+} from '@maka/storage/project-catalog';
 import {
   decodeProjectCatalogProject,
   PROJECT_CATALOG_PAGE_MAX_BYTES,
@@ -23,9 +42,11 @@ import {
   type ProjectCatalogView,
 } from '../protocol/index.js';
 import type { ProjectCatalogOperationHandlerMap } from './operation-dispatcher.js';
-import type { HostProjectCatalogChangeService } from './project-catalog-change-service.js';
+import {
+  HostProjectDirectoryAuthority,
+  type ResolvedProjectDirectoryRegistration,
+} from './project-directory-authority.js';
 import type { HostProjectMembershipGate } from './project-membership-gate.js';
-import type { HostSessionCatalogChangeService } from './session-catalog-change-service.js';
 
 export class HostProjectCatalogCoordinator {
   readonly handlers: ProjectCatalogOperationHandlerMap = {
@@ -35,16 +56,24 @@ export class HostProjectCatalogCoordinator {
 
   constructor(
     private readonly catalog: ProjectCatalog,
-    private readonly projectChanges: HostProjectCatalogChangeService,
-    private readonly sessionChanges: HostSessionCatalogChangeService,
+    private readonly projectChanges: { publish(): void },
+    private readonly sessionChanges: { publish(sessionId: string): void },
     private readonly membership: HostProjectMembershipGate,
     private readonly requestDrain: () => void,
+    private readonly directories = new HostProjectDirectoryAuthority(),
   ) {}
 
   async #query(
     input: ProjectCatalogQueryInput,
   ): Promise<OperationOutcome<'project.catalog.query'>> {
     try {
+      if (
+        input.kind === 'directory_roots' ||
+        input.kind === 'directory_list_start' ||
+        input.kind === 'directory_list_continue'
+      ) {
+        return { ok: true, result: await this.directories.query(input) };
+      }
       const records = await this.catalog.list();
       const items = projectCatalogItems(records, input.view);
       const revision = catalogRevision(items);
@@ -65,7 +94,19 @@ export class HostProjectCatalogCoordinator {
         return queryFailure('invalid_request', 'Project catalog cursor is invalid');
       }
       return successQuery(createPage(input.view, revision, records.length, items, offset));
-    } catch {
+    } catch (error) {
+      if (
+        input.kind === 'directory_roots' ||
+        input.kind === 'directory_list_start' ||
+        input.kind === 'directory_list_continue'
+      ) {
+        if (error instanceof TypeError) {
+          return queryFailure('invalid_request', error.message);
+        }
+        return isInvalidPathError(error)
+          ? queryFailure('invalid_request', 'Project directory is unavailable')
+          : queryFailure('internal_failure', 'Unable to list the project directory');
+      }
       return queryFailure('persistence_failed', 'Project catalog is unavailable');
     }
   }
@@ -73,8 +114,18 @@ export class HostProjectCatalogCoordinator {
   async #mutate(
     input: ProjectCatalogMutateInput,
   ): Promise<OperationOutcome<'project.catalog.mutate'>> {
+    let directoryRegistration: ResolvedProjectDirectoryRegistration | undefined;
+    if (input.kind === 'register_directory') {
+      try {
+        directoryRegistration = await this.directories.resolveRegistration(input);
+      } catch {
+        return mutationFailure('invalid_request', 'Project directory is unavailable');
+      }
+    }
     try {
-      const result = await this.membership.run(() => this.#applyMutation(input));
+      const result = await this.membership.run(() =>
+        this.#applyMutation(input, directoryRegistration),
+      );
       this.projectChanges.publish();
       return { ok: true, result };
     } catch (error) {
@@ -100,10 +151,23 @@ export class HostProjectCatalogCoordinator {
     }
   }
 
-  async #applyMutation(input: ProjectCatalogMutateInput): Promise<ProjectCatalogMutateResult> {
+  async #applyMutation(
+    input: ProjectCatalogMutateInput,
+    directoryRegistration?: ResolvedProjectDirectoryRegistration,
+  ): Promise<ProjectCatalogMutateResult> {
     switch (input.kind) {
       case 'register':
-        return projectResult(await this.catalog.register(input.path));
+        return projectResult(
+          await this.catalog.register(input.path, { prefer: input.prefer ?? true }),
+        );
+      case 'register_directory': {
+        if (!directoryRegistration) throw new TypeError('Project directory was not resolved');
+        return projectResult(
+          await this.catalog.register(directoryRegistration.path, {
+            withinRoot: directoryRegistration.rootPath,
+          }),
+        );
+      }
       case 'relink': {
         const result = await this.catalog.relinkWithSessions(input.projectId, input.path);
         for (const sessionId of result.updatedSessionIds) this.sessionChanges.publish(sessionId);
@@ -250,7 +314,7 @@ function successQuery(
 }
 
 function queryFailure(
-  code: 'invalid_request' | 'persistence_failed',
+  code: 'invalid_request' | 'persistence_failed' | 'internal_failure',
   message: string,
 ): OperationOutcome<'project.catalog.query'> {
   return { ok: false, error: { code, message } };

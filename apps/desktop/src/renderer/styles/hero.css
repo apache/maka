@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /* ============================================================================
    Hero / empty-state chrome
    ----------------------------------------------------------------------------
@@ -19,7 +38,7 @@
  * external CSS / smoke fixture references still match.
  */
 /* #1433: the width was a hardcoded `min(750px, 80vw)` — the one content
-   surface that did not use `--maka-chat-measure`. Everything else the user
+   surface that did not use `--maka-reading-measure`. Everything else the user
    reads or types into (message rows, composer, plan mode, permission
    dialog, `.maka-onboarding`) is capped by that token.
    This is a consistency fix, not a bug fix: the hero and the composer are
@@ -28,7 +47,7 @@
    and a viewport unit that ignores the sidebar, so the hero's column drifted
    from the composer's as the window resized. */
 .maka-hero {
-  width: min(var(--maka-chat-measure), 100%);
+  width: min(var(--maka-reading-measure), 100%);
   margin: auto;
   padding: 0;
   display: grid;
@@ -88,7 +107,7 @@
     font: var(--maka-text-body);
     margin: 0;
     max-width: 54ch;
-    color: var(--foreground-secondary);
+    color: var(--muted-foreground);
     text-wrap: pretty;
   }
 /* #1433: the daily empty chat is a returning user's landing surface, not a

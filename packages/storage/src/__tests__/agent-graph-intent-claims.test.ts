@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -123,96 +142,6 @@ describe('SQLite agent graph intent claims', () => {
       );
     } finally {
       store.close();
-    }
-  });
-
-  test('migrates legacy claims conservatively as already executing', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'maka-graph-claim-v7-'));
-    const path = join(root, 'sessions.sqlite');
-    try {
-      const initial = createSqliteSessionMetadataStore(path);
-      await initial.claimAgentGraphIntent(request());
-      initial.close();
-
-      const legacy = new DatabaseSync(path);
-      legacy.exec(`
-        DROP INDEX session_metadata_tombstones_by_retirement_unit;
-        ALTER TABLE session_metadata_tombstones DROP COLUMN cleanup_pending;
-        ALTER TABLE session_metadata_tombstones DROP COLUMN retirement_unit_id;
-        DROP TABLE session_create_claims;
-        DROP TABLE sandbox_boundary_log;
-        DROP TABLE project_aliases;
-        DROP TABLE project_locations;
-        DROP TABLE projects;
-        DROP TABLE session_messages;
-        DROP TABLE agent_graph_supervisor_wake_attempts;
-        DROP TABLE agent_graph_supervisor_wakes;
-        DROP TABLE agent_graph_client_applied_records;
-        DROP TABLE agent_graph_client_terminal_activity;
-        DROP TABLE agent_graph_client_operator_projections;
-        DROP TABLE agent_graph_client_projections;
-        DROP TABLE agent_graph_operator_provisions;
-        DROP INDEX agent_graph_intent_claims_by_graph;
-        ALTER TABLE agent_graph_intent_claims RENAME TO agent_graph_intent_claims_v8;
-        CREATE TABLE agent_graph_intent_claims (
-          claim_id TEXT PRIMARY KEY,
-          schema_version INTEGER NOT NULL CHECK (schema_version = 1),
-          graph_id TEXT NOT NULL,
-          intent_id TEXT NOT NULL,
-          intent_fingerprint TEXT NOT NULL,
-          readiness_context_fingerprint TEXT NOT NULL,
-          target_operator_id TEXT NOT NULL,
-          target_session_id TEXT NOT NULL,
-          target_turn_id TEXT NOT NULL,
-          target_run_id TEXT NOT NULL,
-          claimed_at INTEGER NOT NULL,
-          UNIQUE(graph_id, intent_id),
-          UNIQUE(target_session_id, target_turn_id),
-          UNIQUE(target_session_id, target_run_id)
-        );
-        INSERT INTO agent_graph_intent_claims
-        SELECT
-          claim_id,
-          schema_version,
-          graph_id,
-          intent_id,
-          intent_fingerprint,
-          readiness_context_fingerprint,
-          target_operator_id,
-          target_session_id,
-          target_turn_id,
-          target_run_id,
-          claimed_at
-        FROM agent_graph_intent_claims_v8;
-        DROP TABLE agent_graph_intent_claims_v8;
-        CREATE INDEX agent_graph_intent_claims_by_graph
-          ON agent_graph_intent_claims(graph_id, claimed_at, intent_id);
-        UPDATE session_metadata_schema
-        SET version = 7
-        WHERE scope = 'session_metadata';
-      `);
-      legacy.close();
-
-      const migrated = createSqliteSessionMetadataStore(path);
-      try {
-        assert.equal(migrated.schemaVersion(), SQLITE_SESSION_METADATA_SCHEMA_VERSION);
-        assert.deepEqual(
-          await migrated.beginAgentGraphIntentExecutionAtScheduleRevision(
-            'graph-1',
-            request().intentId,
-            0,
-          ),
-          {
-            state: 'executing',
-            previousState: 'executing',
-            changed: false,
-          },
-        );
-      } finally {
-        migrated.close();
-      }
-    } finally {
-      await rm(root, { recursive: true, force: true });
     }
   });
 });

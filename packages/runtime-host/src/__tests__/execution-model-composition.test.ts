@@ -1,47 +1,77 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { test } from 'node:test';
 import { z } from 'zod';
-import { clientCapabilityConnectionIdentity } from './fixtures/client-capability.js';
+import {
+  clientCapabilityConnectionIdentity,
+  clientCapabilityCoordinatorTestAdmission,
+} from './fixtures/client-capability.js';
 import {
   createBypassExecutionBoundary,
   createManagedExecutionBoundary,
-  createWorkspaceWritePermissionProfile,
-  decodeRunCompositionSnapshot,
-  decodeCanonicalToolResultContent,
-  type ModelCallKind,
-  type RuntimeEvent,
-} from '@maka/core';
+  type ExecutionBoundary,
+} from '@maka/core/sandbox-boundary';
+import { PROVIDER_REGISTRY } from '@maka/core/llm-connections';
+import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
+import { decodeRunCompositionSnapshot } from '@maka/core/run-composition';
+import { readInvocation, testInvocationRecord } from '@maka/runtime/test-only/invocation-fixture';
+import { runtimeInvocationOutcome } from '@maka/core/runtime-invocation';
+import { agentRunCompositionFromEvents } from '@maka/core/agent-run';
+import type { BackendCompactHistoryInput } from '@maka/core/backend-types';
+import { decodeCanonicalToolResultContent } from '@maka/core/tool-result-record-schema';
+import { type ModelCallAttempt, type ModelCallKind } from '@maka/core/model-call-attempt';
+import { type RuntimeEvent } from '@maka/core/runtime-event';
 import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
 import type { PlanSessionState, PlanStore } from '@maka/core/plan';
-import type { TaskLedgerStore } from '@maka/core/task-ledger';
+import type { SessionTodoToolStore } from '@maka/runtime/session-todo-tools';
 import {
   serializeOAuthSubscriptionTokens,
   type OAuthSubscriptionTokens,
-  type BackendFactoryContext,
-  type AiSdkBackendInput,
-  type FilesystemWorkerExecuteInput,
-  type MakaTool,
-  type MakaToolContext,
+} from '@maka/runtime/subscription-credentials';
+import { type BackendFactoryContext } from '@maka/runtime/session-manager';
+import { type AiSdkBackendInput, type RunTraceEvent } from '@maka/runtime/ai-sdk-backend';
+import { type FilesystemWorkerExecuteInput } from '@maka/runtime/filesystem-worker';
+import { type MakaTool, type MakaToolContext } from '@maka/runtime/tool-runtime';
+import {
   type ProxiedFetchProxy,
   type ProxiedFetchTransport,
-  type RunTraceEvent,
-  type ScannedSkill,
-  agentGraphIdForRootSession,
-  buildParentAgentTools,
-  SESSION_RECAP_INSTRUCTION,
-  createToolResultArchiveCapability,
-  stableHash,
-  toolAvailabilityHash,
-  toolCatalogHash,
-} from '@maka/runtime';
-import { createSqliteRuntimeStore } from '@maka/storage';
+} from '@maka/runtime/network/scoped-fetch-transport';
+import { type ScannedSkill } from '@maka/runtime/skills';
+import { agentGraphIdForRootSession } from '@maka/runtime/stream-graph-coordinator';
+import { resolveTurnShellPlan, ShellPreferenceError } from '@maka/runtime/shell-detect';
+import { buildParentAgentTools } from '@maka/runtime/subagent-tools';
+import { SESSION_RECAP_INSTRUCTION } from '@maka/runtime/session-recap';
+import { createToolResultArchiveCapability } from '@maka/runtime/tool-result-archive-capability';
+import { loadHistoryCompactCheckpointsFromRunLedger } from '@maka/runtime/history-compact-ledger';
+import { stableHash, toolCatalogHash } from '@maka/runtime/request-shape';
+import { toolAvailabilityHash } from '@maka/runtime/tool-availability';
+import { createSqliteRuntimeStore } from '@maka/storage/sqlite-runtime-store';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
 import { openInteractiveArtifactStoreForWrite } from '@maka/storage/artifact-stores';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
@@ -50,7 +80,7 @@ import {
   type RuntimePolicyStoresWriter,
 } from '@maka/storage/runtime-policy-stores';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
-import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-authority';
+import { openInteractiveSessionTodoStoreForWrite } from '@maka/storage/session-todo-authority';
 import {
   openInteractiveUsageStoresForWrite,
   type InteractiveUsageStoresWriter,
@@ -58,6 +88,7 @@ import {
 import type { TurnSnapshot, UsageQueryResult } from '../protocol/index.js';
 import type { ClientCapabilityHostFrame } from '../protocol/index.js';
 import { createExecutionRuntimeHostComposition } from '../server/execution-composition.js';
+import { createHostChildAgentToolComposition } from '../server/child-agent-composition.js';
 import {
   createHostDailyReviewModel,
   createHostGoalEvaluator,
@@ -66,6 +97,7 @@ import {
 } from '../server/execution-model-authority.js';
 import {
   createHostAiSdkBackend,
+  prepareHostAiSdkBackend,
   resolveCollaborationPermissionMode,
   type HostAiSdkBackendInput,
 } from '../server/execution-model-composition.js';
@@ -77,6 +109,7 @@ import { HostClientCapabilityCoordinator } from '../server/client-capability-coo
 import type { HostMemoryCoordinator } from '../server/memory-coordinator.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation-gate.js';
+import { HostResidencyRegistry } from '../server/host-residency-registry.js';
 import {
   HostOAuthExecutionAuthority,
   OAuthExecutionCredentialError,
@@ -88,36 +121,69 @@ const MODEL_ID = 'hosted-real-model';
 const API_KEY = 'hosted-provider-key';
 const RESPONSE_TEXT = 'Hosted real-model execution completed.';
 const SUMMARY_TEXT = '## Goal\nContinue hosted real-model execution.';
+// History compaction validates checkpoint structure (#3029), so its requests
+// get a compaction-shaped completion instead of the shared one-section text.
+const COMPACT_SUMMARY_TEXT = [
+  '## Goal',
+  'Continue hosted real-model execution.',
+  '',
+  '## Progress',
+  '- hosted compaction exercised',
+  '',
+  '## Next Steps',
+  '1. continue',
+  '',
+  '## Critical Context',
+  '- (none)',
+].join('\n');
 const CLIENT_CAPABILITY_RESULT_TEXT = 'HOSTED_CLIENT_CAPABILITY_RESULT_SENTINEL';
 const CHILD_AGENT_RESULT_TEXT = 'HOSTED_CHILD_AGENT_RESULT_SENTINEL';
-const WEB_RESEARCH_CHILD_RESULT_TEXT = 'HOSTED_WEB_RESEARCH_RESULT_SENTINEL';
 const MAX_IMPLEMENTATION_CHILD_PTY_READS = 5;
 const MIN_IMPLEMENTATION_CHILD_REQUESTS = 6;
 const MAX_IMPLEMENTATION_CHILD_REQUESTS =
   MIN_IMPLEMENTATION_CHILD_REQUESTS + MAX_IMPLEMENTATION_CHILD_PTY_READS - 1;
+const HEADLESS_CODING_V1_PROMPT_HASH =
+  'sha256:b2773282ac4755dc8d8a663eafdec68c3fa6f5680ec8557d261b5f723672b467';
+const HEADLESS_CODING_V1_TOOLS_HASH =
+  'sha256:aa3ab56a7b67dde133fffe885f4def81735c93015202e31ecb339a84863f6d03';
 const execFileAsync = promisify(execFile);
+test('backend creation resolves a bound Session by immutable Connection identity', async () => {
+  let observedRef: unknown;
+  await createHostAiSdkBackend(
+    backendCreationFixture({
+      abortSignal: new AbortController().signal,
+      connectionId: '11111111-1111-4111-8111-111111111111',
+      resolveExecutionConnection: async (ref) => {
+        observedRef = ref;
+        return readyExecutionConnection();
+      },
+      readPricing: async () => ({ revision: 0, overrides: [] }),
+    }),
+  );
 
-test('Plan mode preserves bypass while narrowing every managed permission mode', () => {
-  assert.equal(
-    resolveCollaborationPermissionMode({
-      collaborationMode: 'plan',
-      permissionMode: 'bypass',
-    }),
-    'bypass',
-  );
-  for (const permissionMode of ['explore', 'ask', 'execute'] as const) {
-    assert.equal(
-      resolveCollaborationPermissionMode({ collaborationMode: 'plan', permissionMode }),
-      'explore',
-    );
-  }
-  assert.equal(
-    resolveCollaborationPermissionMode({
-      collaborationMode: 'agent',
-      permissionMode: 'bypass',
-    }),
-    'bypass',
-  );
+  assert.deepEqual(observedRef, {
+    kind: 'bound',
+    connectionId: '11111111-1111-4111-8111-111111111111',
+    connectionSlug: 'backend-creation-connection',
+  });
+});
+
+test('prepared backend activation builds from its admitted provider snapshot', async () => {
+  let providerReadAvailable = true;
+  const input = backendCreationFixture({
+    abortSignal: new AbortController().signal,
+    resolveExecutionConnection: async () => {
+      if (!providerReadAvailable) throw new Error('provider state was read after admission');
+      return readyExecutionConnection();
+    },
+    readPricing: async () => ({ revision: 0, overrides: [] }),
+  });
+  const { context, ...dependencies } = input;
+  const prepared = await prepareHostAiSdkBackend({ context, ...dependencies });
+  providerReadAvailable = false;
+
+  const backend = await prepared.build(context);
+  await backend.dispose();
 });
 
 test('backend creation aborts a stalled canonical connection read', async () => {
@@ -164,6 +230,548 @@ test('backend creation aborts a stalled pricing snapshot read', async () => {
   });
 });
 
+test('production Host executes Bash against the current live sandbox boundary', {
+  skip: process.platform === 'win32' ? 'Managed arbitrary-shell sandboxing is unavailable' : false,
+}, async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-host-managed-bash-'));
+  const root = join(base, 'interactive');
+  const project = join(base, 'project');
+  let outsideRoot: string | undefined;
+  let sandboxPaths: ManagedSandboxPaths | undefined;
+  const provider = await startProvider();
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) return;
+  const context: ConnectionContext = {
+    hostEpoch: 'managed-bash-test-epoch',
+    connectionId: 'managed-bash-test-client',
+    principal: 'local_os_user',
+    acquireResidency: () => ({ release() {} }),
+  };
+  let composition: Awaited<ReturnType<typeof createExecutionRuntimeHostComposition>> | undefined;
+  try {
+    if (process.platform === 'darwin') {
+      outsideRoot = await mkdtemp(join(homedir(), '.maka-host-sandbox-boundary-'));
+      sandboxPaths = {
+        outsideBash: join(outsideRoot, 'bash-denied.txt'),
+        outsideWrite: join(outsideRoot, 'write-denied.txt'),
+        workspaceBash: join(project, 'bash-allowed.txt'),
+        workspaceWrite: join(project, 'write-allowed.txt'),
+      };
+    }
+    provider.configureManagedBashFlow(sandboxPaths);
+    await mkdir(project);
+    const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+    const created = await policy.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'hosted-managed-bash-provider',
+        name: 'Hosted managed Bash provider',
+        providerType: 'moonshot',
+        baseUrl: provider.baseUrl,
+        enabled: true,
+        enabledModelIds: [MODEL_ID],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const connection = created.snapshot.connections[0];
+    assert.ok(connection);
+    if (!connection) return;
+    assert.equal(
+      (
+        await policy.credentialVault.set({
+          locator: {
+            scope: 'connection',
+            connectionId: connection.connectionId,
+            kind: 'api_key',
+          },
+          expected: null,
+          secret: API_KEY,
+        })
+      ).kind,
+      'committed',
+    );
+    await publishConnectionModel(policy, connection.connectionId, MODEL_ID, 32_768);
+
+    const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const session = await execution.sessionStore.create({
+      cwd: project,
+      llmConnectionId: connection.connectionId,
+      llmConnectionSlug: 'hosted-managed-bash-provider',
+      model: MODEL_ID,
+      permissionMode: 'ask',
+    });
+    const initialBoundary = await execution.sessionStore.readExecutionBoundary(session.id);
+    assert.equal(initialBoundary.kind, 'managed');
+    assert.equal(initialBoundary.revision, 0);
+
+    composition = await createExecutionRuntimeHostComposition({
+      owner,
+      hostEpoch: context.hostEpoch,
+      acquireResidency: context.acquireResidency,
+      retainUntilProcessExit: () => undefined,
+      requestDrain: () => undefined,
+    });
+    await composition.recover();
+
+    const firstTurnId = 'hosted-managed-bash-turn-1';
+    const firstTerminal = await waitForTerminal(
+      composition,
+      session.id,
+      firstTurnId,
+      await startTurn(
+        composition,
+        session.id,
+        firstTurnId,
+        'Run one offline workspace command.',
+        context,
+      ),
+      context,
+    );
+    const firstRun = await readInvocation(execution, session.id, firstTerminal.runId);
+    const firstRunEvents = await execution.agentRunStore.readEvents(
+      session.id,
+      firstTerminal.runId,
+    );
+    assert.equal(
+      firstTerminal.status,
+      'completed',
+      JSON.stringify({
+        firstTerminal,
+        firstRun,
+        firstRunEvents,
+        requests: providerRequestTrace(provider.requests),
+      }),
+    );
+    const mainRequests = provider.requests.filter((request) => request.body.stream === true);
+    assert.equal(mainRequests.length, 2);
+    assert.deepEqual(toolParameterEnum(mainRequests[0]?.body, 'Bash', 'boundary_intent'), [
+      'current',
+      'expand',
+    ]);
+    assert.equal((latestToolResultText(mainRequests[1]!.body) ?? '').includes(project), true);
+    assert.deepEqual(
+      await execution.sessionStore.listPendingSandboxBoundaryRequests(session.id),
+      [],
+    );
+    const unchangedBoundary = await execution.sessionStore.readExecutionBoundary(session.id);
+    assert.equal(unchangedBoundary.kind, 'managed');
+    assert.equal(unchangedBoundary.revision, 0);
+    const firstRuntimeEvents = await execution.runtimeEventStore.readRuntimeEvents(
+      session.id,
+      firstTerminal.runId,
+    );
+    const bashCall = firstRuntimeEvents.find(
+      (event) => event.content?.kind === 'function_call' && event.content.name === 'Bash',
+    );
+    assert.equal(
+      bashCall?.content?.kind === 'function_call'
+        ? (bashCall.content.args as { boundary_intent?: unknown }).boundary_intent
+        : undefined,
+      'current',
+    );
+    const bashResult = firstRuntimeEvents.find(
+      (event) => event.content?.kind === 'function_response' && event.content.name === 'Bash',
+    );
+    assert.equal(bashResult?.content?.kind, 'function_response');
+    if (bashResult?.content?.kind === 'function_response') {
+      assert.notEqual(bashResult.content.isError, true);
+    }
+    assert.equal(
+      firstRuntimeEvents.some(
+        (event) => event.actions?.stateDelta?.sandboxBoundaryRequest !== undefined,
+      ),
+      false,
+    );
+
+    const requestId = 'hosted-managed-bash-network-expansion';
+    await execution.sessionStore.createSandboxBoundaryRequest({
+      sessionId: session.id,
+      requestId,
+      turnId: firstTurnId,
+      runId: firstTerminal.runId,
+      expansion: { network: { enabled: true } },
+      justification: 'Exercise the live per-turn boundary projection.',
+    });
+    const expanded = await execution.sessionStore.settleSandboxBoundaryRequest({
+      sessionId: session.id,
+      requestId,
+      decision: 'allow',
+    });
+    assert.equal(expanded.changed, true);
+    assert.equal(expanded.boundary.revision, 1);
+
+    const secondTurnId = 'hosted-managed-bash-turn-2';
+    const secondTerminal = await waitForTerminal(
+      composition,
+      session.id,
+      secondTurnId,
+      await startTurn(
+        composition,
+        session.id,
+        secondTurnId,
+        'Confirm the expanded live boundary.',
+        context,
+      ),
+      context,
+    );
+    assert.equal(secondTerminal.status, 'completed');
+    const refreshedRequests = provider.requests.filter((request) => request.body.stream === true);
+    assert.equal(refreshedRequests.length, 3);
+    const refreshedBoundary = await execution.sessionStore.readExecutionBoundary(session.id);
+    assert.equal(refreshedBoundary.kind, 'managed');
+    assert.equal(refreshedBoundary.revision, 1);
+
+    if (sandboxPaths) {
+      const sandboxTurnId = 'hosted-managed-sandbox-turn-3';
+      const sandboxTerminal = await waitForTerminal(
+        composition,
+        session.id,
+        sandboxTurnId,
+        await startTurn(
+          composition,
+          session.id,
+          sandboxTurnId,
+          'Exercise the enforced filesystem boundary.',
+          context,
+        ),
+        context,
+      );
+      assert.equal(sandboxTerminal.status, 'completed');
+
+      const sandboxRequests = provider.requests.filter((request) => request.body.stream === true);
+      assert.equal(sandboxRequests.length, 8);
+      assert.match(latestToolResultText(sandboxRequests[4]!.body) ?? '', /macos-seatbelt/u);
+      assert.match(
+        latestToolResultText(sandboxRequests[4]!.body) ?? '',
+        /Operation not permitted/u,
+      );
+      assert.match(
+        latestToolResultText(sandboxRequests[5]!.body) ?? '',
+        /sandbox_boundary_required/u,
+      );
+      assert.equal(await fileExists(sandboxPaths.outsideBash), false);
+      assert.equal(await fileExists(sandboxPaths.outsideWrite), false);
+      assert.equal(await readFile(sandboxPaths.workspaceBash, 'utf8'), 'bash allowed');
+      assert.equal(await readFile(sandboxPaths.workspaceWrite, 'utf8'), 'write allowed');
+
+      const sandboxEvents = await execution.runtimeEventStore.readRuntimeEvents(
+        session.id,
+        sandboxTerminal.runId,
+      );
+      const sandboxResponses = sandboxEvents.filter(
+        (event) => event.content?.kind === 'function_response',
+      );
+      assert.deepEqual(
+        sandboxResponses.map((event) =>
+          event.content?.kind === 'function_response'
+            ? {
+                name: event.content.name,
+                isError: event.content.isError === true,
+              }
+            : undefined,
+        ),
+        [
+          { name: 'Bash', isError: true },
+          { name: 'Write', isError: true },
+          { name: 'Bash', isError: false },
+          { name: 'Write', isError: false },
+        ],
+      );
+      assert.equal(
+        sandboxEvents.some(
+          (event) => event.actions?.stateDelta?.sandboxBoundaryRequest !== undefined,
+        ),
+        false,
+      );
+      assert.deepEqual(
+        await execution.sessionStore.listPendingSandboxBoundaryRequests(session.id),
+        [],
+      );
+      const sandboxBoundary = await execution.sessionStore.readExecutionBoundary(session.id);
+      assert.equal(sandboxBoundary.kind, 'managed');
+      assert.equal(sandboxBoundary.revision, expanded.boundary.revision);
+    }
+  } finally {
+    try {
+      await composition?.close();
+    } finally {
+      try {
+        await owner.close();
+      } finally {
+        try {
+          await provider.close();
+        } finally {
+          try {
+            await rm(base, { recursive: true, force: true });
+          } finally {
+            if (outsideRoot) await rm(outsideRoot, { recursive: true, force: true });
+          }
+        }
+      }
+    }
+  }
+});
+
+test('backend creation admits the enabled bootstrap DeepSeek model before discovery', async () => {
+  const modelId = 'deepseek-v4-flash';
+  const backend = await createHostAiSdkBackend(
+    backendCreationFixture({
+      abortSignal: new AbortController().signal,
+      modelId,
+      resolveExecutionConnection: async () => ({
+        kind: 'ready',
+        connection: {
+          slug: 'backend-creation-connection',
+          providerType: 'deepseek',
+          enabledModelIds: [modelId],
+          models: [],
+        },
+        networkProxy: { enabled: false },
+        secretMaterial: { connection: { secret: API_KEY } },
+      }),
+      readPricing: async () => ({ revision: 0, overrides: [] }),
+    }),
+  );
+
+  await backend.dispose();
+});
+
+test('backend creation admits an enabled model a live list omits', async () => {
+  // A live list is the strongest observation Maka has and still cannot refuse
+  // on the account's behalf: it answers for the moment it was fetched, and a
+  // model added since then, or filtered out on the way in, is one the account
+  // may well serve. The request goes out and DeepSeek answers for itself
+  // (#1584).
+  const modelId = 'deepseek-v4-flash';
+  const backend = await createHostAiSdkBackend(
+    backendCreationFixture({
+      abortSignal: new AbortController().signal,
+      modelId,
+      resolveExecutionConnection: async () => ({
+        kind: 'ready',
+        connection: {
+          slug: 'backend-creation-connection',
+          providerType: 'deepseek',
+          enabledModelIds: [modelId],
+          models: [{ id: 'deepseek-chat' }],
+          modelSource: 'fetched' as const,
+        },
+        networkProxy: { enabled: false },
+        secretMaterial: { connection: { secret: API_KEY } },
+      }),
+      readPricing: async () => ({ revision: 0, overrides: [] }),
+    }),
+  );
+
+  await backend.dispose();
+});
+
+test('backend creation admits an enabled model a snapshot never listed', async () => {
+  // `opencode-free` has no model-list endpoint, so its discovery run replays
+  // the array this build shipped and records `modelSource: 'fallback'`. The
+  // user enabled this id; a release snapshot cannot rule on what an account
+  // serves (#1584). Until now the only id that could get through an absent
+  // inventory was a hardcoded `deepseek` / `deepseek-v4-flash` pair (#2896) —
+  // the same situation, conceded for one provider.
+  const modelId = 'claude-opus-5';
+  const backend = await createHostAiSdkBackend(
+    backendCreationFixture({
+      abortSignal: new AbortController().signal,
+      modelId,
+      resolveExecutionConnection: async () => ({
+        kind: 'ready',
+        connection: {
+          slug: 'backend-creation-connection',
+          providerType: 'opencode-free',
+          enabledModelIds: [modelId],
+          models: [{ id: 'grok-code' }],
+          modelSource: 'fetched' as const,
+        },
+        networkProxy: { enabled: false },
+        secretMaterial: {},
+      }),
+      readPricing: async () => ({ revision: 0, overrides: [] }),
+    }),
+  );
+
+  await backend.dispose();
+});
+
+test('Host reopens one projected image from its ArtifactStore authority', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-host-projection-image-'));
+  const capability = await resolveStorageRoot({
+    path: join(base, 'interactive'),
+    kind: 'interactive',
+  });
+  const runtimePath = join(base, 'runtime.sqlite');
+  const pngBytes = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==',
+    'base64',
+  );
+  const sessionId = 'backend-creation-session';
+  const runId = 'projection-image-run';
+  const turnId = 'projection-image-turn';
+  const head: RuntimeEvent = {
+    id: 'projection-image-head',
+    invocationId: runId,
+    runId,
+    sessionId,
+    turnId,
+    ts: 1,
+    partial: false,
+    role: 'user',
+    author: 'user',
+    content: { kind: 'text', text: 'Return the projected image.' },
+  };
+  let owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) return;
+  const provider = await startProvider();
+  provider.configureProjectionImageFlow('ProjectedImage');
+  const assertProjectedImage = (body: Record<string, unknown> | undefined) => {
+    assert.ok(body);
+    assert.doesNotMatch(JSON.stringify(body), /raw execution fact/u);
+    assert.deepEqual(JSON.parse(latestToolResultText(body) ?? 'null'), [
+      {
+        type: 'file',
+        mediaType: 'image/png',
+        data: { type: 'data', data: pngBytes.toString('base64') },
+      },
+    ]);
+  };
+  let backend: Awaited<ReturnType<typeof createHostAiSdkBackend>> | undefined;
+  let artifacts: Awaited<ReturnType<typeof openInteractiveArtifactStoreForWrite>> | undefined;
+  let runtime = createSqliteRuntimeStore(runtimePath);
+  try {
+    artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
+    await artifacts.recover();
+    await runtime.appendRuntimeEvent(sessionId, runId, head);
+    backend = await createHostAiSdkBackend(
+      backendCreationFixture({
+        abortSignal: new AbortController().signal,
+        resolveExecutionConnection: async () =>
+          readyExecutionConnection(provider.baseUrl, { vision: true }),
+        readPricing: async () => ({ revision: 0, overrides: [] }),
+        executionBoundary: createBypassExecutionBoundary(0),
+        tools: [
+          {
+            name: 'ProjectedImage',
+            description: 'Return one inline image.',
+            parameters: z.object({}),
+            recoveryMode: 'replay_safe',
+            impl: async () => ({ private: 'raw execution fact' }),
+            toModelOutput: () => ({
+              type: 'content',
+              value: [
+                {
+                  type: 'file',
+                  data: { type: 'data', data: pngBytes.toString('base64') },
+                  mediaType: 'image/png',
+                },
+              ],
+            }),
+          },
+        ],
+        artifacts,
+        loadTurnRuntimeEvents: () => runtime.readImmutableRuntimeEvents(sessionId, runId),
+        runtimeCommitSink: runtime,
+      }),
+    );
+    for await (const _event of backend.send({
+      invocationId: runId,
+      runId,
+      turnId,
+      headAnchorRuntimeEvent: head,
+      text: 'Return the projected image.',
+      context: [],
+      runtimeContext: [head],
+    })) {
+      // Drain the complete live tool step.
+    }
+    const liveRequests = provider.requests.filter((request) => request.body.stream === true);
+    assert.equal(liveRequests.length, 2);
+    assertProjectedImage(liveRequests[1]?.body);
+
+    const nextRunId = 'projection-image-next-run';
+    const nextText = 'Continue in the same process.';
+    const nextHead: RuntimeEvent = {
+      id: 'projection-image-next-head',
+      invocationId: nextRunId,
+      runId: nextRunId,
+      sessionId,
+      turnId: 'projection-image-next-turn',
+      ts: 2,
+      partial: false,
+      role: 'user',
+      author: 'user',
+      content: { kind: 'text', text: nextText },
+    };
+    await runtime.appendRuntimeEvent(sessionId, nextRunId, nextHead);
+    const nextTurnContext = [...(await runtime.readRuntimeEvents(sessionId, runId)), nextHead];
+    for await (const _event of backend.send({
+      invocationId: nextRunId,
+      runId: nextRunId,
+      turnId: nextHead.turnId,
+      headAnchorRuntimeEvent: nextHead,
+      text: nextText,
+      context: [],
+      runtimeContext: nextTurnContext,
+    })) {
+      // Drain the next Turn built from the same committed projection.
+    }
+    const nextTurnRequests = provider.requests.filter((request) => request.body.stream === true);
+    assert.equal(nextTurnRequests.length, 3);
+    assertProjectedImage(nextTurnRequests[2]?.body);
+
+    await backend.dispose();
+    backend = undefined;
+    artifacts.close();
+    artifacts = undefined;
+    runtime.close();
+    await owner.close();
+
+    owner = await tryAcquireInteractiveRootOwner(capability);
+    assert.ok(owner);
+    if (!owner) return;
+    artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
+    await artifacts.recover();
+    runtime = createSqliteRuntimeStore(runtimePath);
+    const recoveredEvents = await runtime.readRuntimeEvents(sessionId, runId);
+    backend = await createHostAiSdkBackend(
+      backendCreationFixture({
+        abortSignal: new AbortController().signal,
+        resolveExecutionConnection: async () =>
+          readyExecutionConnection(provider.baseUrl, { vision: true }),
+        readPricing: async () => ({ revision: 0, overrides: [] }),
+        artifacts,
+      }),
+    );
+    for await (const _event of backend.send({
+      invocationId: 'projection-image-replay-invocation',
+      runId: 'projection-image-replay-run',
+      turnId: 'projection-image-replay-turn',
+      text: 'Continue after restart.',
+      context: [],
+      runtimeContext: recoveredEvents,
+    })) {
+      // Drain the replay request built from the reopened authorities.
+    }
+    const streamRequests = provider.requests.filter((request) => request.body.stream === true);
+    assert.equal(streamRequests.length, 4);
+    assertProjectedImage(streamRequests[3]?.body);
+  } finally {
+    await backend?.dispose();
+    artifacts?.close();
+    runtime.close();
+    await owner?.close();
+    await provider.close();
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
 test('provider dispatch fails closed when the Run Composition commit fails', async () => {
   const provider = await startProvider();
   let commits = 0;
@@ -202,57 +810,349 @@ test('provider dispatch fails closed when the Run Composition commit fails', asy
   }
 });
 
-test('provider backend executes a minimal Domain Run Composer without Interactive sources', async () => {
-  const provider = await startProvider();
-  let snapshot: unknown;
-  let backend: Awaited<ReturnType<typeof createHostAiSdkBackend>> | undefined;
+test('Codex OAuth history compaction falls back to a text checkpoint after native rejection', async () => {
+  const modelId = 'gpt-5.6-sol';
+  const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+  const attempts: ModelCallAttempt[] = [];
+  let recordedTextCheckpoint = false;
+  const fallbackSummary = [
+    '## Goal',
+    'Continue the existing task.',
+    '',
+    '## Progress',
+    '- Preserved the completed work.',
+    '',
+    '## Next Steps',
+    '1. Continue from the recent context.',
+    '',
+    '## Critical Context',
+    '- The portable fallback remains available.',
+  ].join('\n');
+  const oauthTokens: OAuthSubscriptionTokens = {
+    access_token: codexAccessToken('compact-account'),
+    refresh_token: 'compact-refresh-token',
+    expires_at: Date.now() + 60_000,
+  };
+  const oauthCredentials = {
+    bind: () => ({
+      providerType: 'openai-codex' as const,
+      connectionSlug: 'backend-creation-connection',
+      resolve: async () => oauthTokens,
+    }),
+  } as unknown as HostOAuthExecutionAuthority;
+  const fixture = backendCreationFixture({
+    abortSignal: new AbortController().signal,
+    modelId,
+    oauthCredentials,
+    resolveExecutionConnection: async () => ({
+      kind: 'ready',
+      connection: {
+        slug: 'backend-creation-connection',
+        providerType: 'openai-codex',
+        enabledModelIds: [modelId],
+        models: [
+          {
+            id: modelId,
+            capabilities: { chat: true, functionCalling: true },
+            contextWindow: 32_768,
+            maxOutputTokens: 1_024,
+          },
+        ],
+      },
+      networkProxy: { enabled: false },
+      secretMaterial: { connection: { secret: 'oauth-material' } },
+    }),
+    readPricing: async () => ({ revision: 0, overrides: [] }),
+    recordHistoryCompactCheckpoint: async (checkpoint) => {
+      recordedTextCheckpoint = 'summary' in checkpoint;
+    },
+    recordModelCallAttempt: async ({ attempt }) => {
+      attempts.push(attempt);
+    },
+    createFetchTransport: () => ({
+      fetch: async (url, init) => {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        requests.push({
+          url: String(url),
+          body,
+        });
+        const providerInput = Array.isArray(body.input) ? body.input : [];
+        if (
+          !providerInput.some(
+            (item) =>
+              typeof item === 'object' &&
+              item !== null &&
+              'type' in item &&
+              item.type === 'compaction_trigger',
+          )
+        ) {
+          return Response.json({
+            id: 'resp-text-fallback',
+            object: 'response',
+            created_at: 1,
+            status: 'completed',
+            model: modelId,
+            output: [
+              {
+                type: 'message',
+                id: 'msg-text-fallback',
+                status: 'completed',
+                role: 'assistant',
+                content: [
+                  {
+                    type: 'output_text',
+                    text: fallbackSummary,
+                    annotations: [],
+                    logprobs: [],
+                  },
+                ],
+              },
+            ],
+            usage: { input_tokens: 4_000, output_tokens: 60, total_tokens: 4_060 },
+          });
+        }
+        return Response.json(
+          {
+            error: {
+              message: 'request rejected without echoing this body',
+              code: 'missing_required_parameter',
+            },
+          },
+          {
+            status: 400,
+            headers: { 'x-request-id': 'req-codex-compact' },
+          },
+        );
+      },
+      close: async () => undefined,
+    }),
+  });
+  const { context, ...dependencies } = fixture;
+  const prepared = await prepareHostAiSdkBackend({ context, ...dependencies });
+  const providerStateIdentity = prepared.providerStateIdentity;
+  assert.ok(providerStateIdentity);
+  const backend = await prepared.build(context);
+  assert.ok(backend.compactHistory);
+
   try {
-    backend = await createHostAiSdkBackend(
-      backendCreationFixture({
-        abortSignal: new AbortController().signal,
-        resolveExecutionConnection: async () => readyExecutionConnection(provider.baseUrl),
-        readPricing: async () => ({ revision: 0, overrides: [] }),
-        executionBoundary: createBypassExecutionBoundary(0),
-        createRunComposer: async () => ({
-          composerId: 'test.minimal',
-          composerRevision: '1',
-          tools: [],
-          toolAvailability: { economy: false },
-          resolveSystemPrompt: async () => ({
-            text: 'Minimal Domain system prompt.',
-            sourceRevisions: [],
-          }),
-          turnTailPrompt: async () => '',
-        }),
-        recordRunComposition: async (_runId, value) => {
-          snapshot = value;
+    const runtimeContext: RuntimeEvent[] = [
+      compactRuntimeTextEvent(
+        'compact-old-user',
+        'turn-old-user',
+        'user',
+        'user',
+        'a'.repeat(8_000),
+      ),
+      compactRuntimeTextEvent(
+        'compact-old-model',
+        'turn-old-model',
+        'model',
+        'agent',
+        'b'.repeat(8_000),
+      ),
+      {
+        id: 'compact-old-reasoning',
+        invocationId: 'compact-invocation',
+        runId: 'compact-source-run',
+        sessionId: 'backend-creation-session',
+        turnId: 'turn-old-model',
+        ts: 2,
+        partial: false,
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'thinking',
+          text: 'CROSS_MODEL_PROVIDER_REASONING',
+          providerOptions: {
+            openai: {
+              itemId: 'cross-model-reasoning-item',
+              reasoningEncryptedContent: 'CROSS_MODEL_ENCRYPTED_REASONING',
+            },
+          },
         },
-      }),
+      },
+      {
+        id: 'compact-current-route-reasoning',
+        invocationId: 'compact-invocation',
+        runId: 'compact-same-route-run',
+        sessionId: 'backend-creation-session',
+        turnId: 'turn-current-route-model',
+        ts: 3,
+        partial: false,
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'thinking',
+          text: 'SAME_ROUTE_PROVIDER_REASONING',
+          providerOptions: {
+            openai: {
+              itemId: 'same-route-reasoning-item',
+              reasoningEncryptedContent: 'SAME_ROUTE_ENCRYPTED_REASONING',
+            },
+          },
+        },
+      },
+      {
+        id: 'compact-provider-tool-call',
+        invocationId: 'compact-invocation',
+        runId: 'compact-same-route-run',
+        sessionId: 'backend-creation-session',
+        turnId: 'turn-current-route-model',
+        ts: 4,
+        partial: false,
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'function_call',
+          id: 'compact-web-search',
+          name: 'WebSearch',
+          args: { query: 'latest Maka' },
+          providerExecuted: true,
+        },
+        refs: { stepId: 'compact-provider-step' },
+      },
+      {
+        id: 'compact-provider-tool-result',
+        invocationId: 'compact-invocation',
+        runId: 'compact-same-route-run',
+        sessionId: 'backend-creation-session',
+        turnId: 'turn-current-route-model',
+        ts: 5,
+        partial: false,
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id: 'compact-web-search',
+          name: 'WebSearch',
+          result: { type: 'web_search_result', query: 'latest Maka' },
+          providerOutput: { type: 'web_search_result', id: 'ws_compact' },
+          providerExecuted: true,
+          isError: false,
+        },
+      },
+      compactRuntimeTextEvent(
+        'compact-recent-user',
+        'turn-recent-user',
+        'user',
+        'user',
+        'recent context',
+      ),
+    ];
+    const compactInput = {
+      turnId: 'turn-compact',
+      runId: 'run-compact',
+      runtimeContext,
+      runtimeContextInvocations: [
+        testInvocationRecord({
+          sessionId: 'backend-creation-session',
+          runId: 'compact-source-run',
+          turnId: 'turn-old-model',
+          openedAt: 1,
+          closedAt: 2,
+          outcome: 'completed',
+          opening: {
+            route: {
+              provenance: 'runtime',
+              backendKind: 'ai-sdk',
+              llmConnectionId: '11111111-1111-4111-8111-111111111111',
+              llmConnectionSlug: 'backend-creation-connection',
+              modelId: 'gpt-5.2',
+            },
+            configuration: {
+              cwd: '/workspace',
+              permissionMode: 'bypass',
+              collaborationMode: 'agent',
+              orchestrationMode: 'default',
+              orchestrationSource: 'session',
+              toolMode: 'direct',
+            },
+          },
+        }),
+        testInvocationRecord({
+          sessionId: 'backend-creation-session',
+          runId: 'compact-same-route-run',
+          turnId: 'turn-current-route-model',
+          openedAt: 2,
+          closedAt: 3,
+          outcome: 'completed',
+          opening: {
+            route: {
+              provenance: 'runtime',
+              backendKind: 'ai-sdk',
+              llmConnectionId: '11111111-1111-4111-8111-111111111111',
+              llmConnectionSlug: 'backend-creation-connection',
+              modelId,
+              providerStateIdentity,
+            },
+            configuration: {
+              cwd: '/workspace',
+              permissionMode: 'bypass',
+              collaborationMode: 'agent',
+              orchestrationMode: 'default',
+              orchestrationSource: 'session',
+              toolMode: 'direct',
+            },
+          },
+        }),
+      ],
+    } satisfies BackendCompactHistoryInput;
+    const result = await backend.compactHistory(compactInput);
+
+    assert.equal(requests.length, 2, JSON.stringify(result));
+    assert.match(requests[0]!.url, /\/codex\/responses$/);
+    assert.match(requests[1]!.url, /\/codex\/responses$/);
+    const nativeRequestText = JSON.stringify(requests[0]!.body);
+    const fallbackRequestText = JSON.stringify(requests[1]!.body);
+    assert.match(nativeRequestText, /"type":"compaction_trigger"/);
+    assert.doesNotMatch(nativeRequestText, /CROSS_MODEL_PROVIDER_REASONING/);
+    assert.doesNotMatch(nativeRequestText, /CROSS_MODEL_ENCRYPTED_REASONING/);
+    assert.match(nativeRequestText, /SAME_ROUTE_PROVIDER_REASONING/);
+    assert.match(nativeRequestText, /SAME_ROUTE_ENCRYPTED_REASONING/);
+    assert.match(nativeRequestText, /recent context/);
+    assert.doesNotMatch(nativeRequestText, /context summarization assistant/i);
+    const nativeInput = requests[0]!.body.input;
+    assert.ok(Array.isArray(nativeInput));
+    const functionCallIds = new Set(
+      nativeInput
+        .filter(
+          (item): item is Record<string, unknown> =>
+            typeof item === 'object' && item !== null && item.type === 'function_call',
+        )
+        .map((item) => String(item.call_id)),
     );
-
-    const events = [];
-    for await (const event of backend.send({
-      invocationId: 'minimal-domain-invocation',
-      runId: 'minimal-domain-run',
-      turnId: 'minimal-domain-turn',
-      text: 'Execute the minimal Domain Run.',
-      context: [],
-    })) {
-      events.push(event);
-    }
-
-    const decoded = decodeRunCompositionSnapshot(snapshot);
-    assert.equal(decoded.composerId, 'test.minimal');
-    assert.deepEqual(decoded.sourceRevisions, []);
-    assert.deepEqual(decoded.toolNames, []);
-    assert.equal(decoded.baseSystemPromptHash, stableHash('Minimal Domain system prompt.'));
-    assert.equal(decoded.toolCatalogHash, toolCatalogHash([]));
-    assert.equal(decoded.toolAvailabilityHash, toolAvailabilityHash({ economy: false }));
-    assert.equal(provider.requests.length, 1);
-    assert.ok(events.some((event) => event.type === 'complete'));
+    const functionOutputIds = nativeInput
+      .filter(
+        (item): item is Record<string, unknown> =>
+          typeof item === 'object' && item !== null && item.type === 'function_call_output',
+      )
+      .map((item) => String(item.call_id));
+    assert.deepEqual([...functionCallIds], ['compact-web-search']);
+    assert.deepEqual(functionOutputIds, ['compact-web-search']);
+    assert.deepEqual(
+      functionOutputIds.filter((callId) => !functionCallIds.has(callId)),
+      [],
+    );
+    assert.doesNotMatch(fallbackRequestText, /"type":"compaction_trigger"/);
+    assert.match(fallbackRequestText, /context summarization assistant/i);
+    assert.equal(result.outcome.kind, 'compacted');
+    assert.equal(recordedTextCheckpoint, true);
+    assert.equal(attempts.length, 2);
+    assert.equal(attempts[0]?.callKind, 'history_compact');
+    assert.equal(attempts[0]?.providerId, 'openai-codex');
+    assert.equal(attempts[0]?.historyCompactRoute, 'provider_native');
+    assert.equal(attempts[0]?.status, 'failed');
+    assert.equal(attempts[0]?.errorClass, 'RequestRejected');
+    assert.equal(attempts[0]?.httpStatus, 400);
+    assert.equal(attempts[0]?.providerCode, 'missing_required_parameter');
+    assert.equal(attempts[0]?.providerRequestId, 'req-codex-compact');
+    assert.equal(attempts[0]?.retryable, false);
+    assert.equal(attempts[1]?.logicalCallId, attempts[0]?.logicalCallId);
+    assert.equal(attempts[1]?.attempt, 1);
+    assert.equal(attempts[1]?.historyCompactRoute, 'text_summary');
+    assert.equal(attempts[1]?.status, 'completed');
   } finally {
-    await backend?.dispose();
-    await provider.close();
+    await backend.dispose();
   }
 });
 
@@ -269,16 +1169,14 @@ test('backend abort cannot cancel the authority-owned OAuth refresh used by its 
   let transports: ReturnType<typeof controlledOAuthTransports> | undefined;
   try {
     const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
-    // claude-subscription discovery is fallback-only (session-scoped OAuth
-    // tokens cannot call GET /v1/models). Create seeds the curated inventory;
-    // pick an id from that inventory rather than opening a fetch ticket.
-    const subscriptionModelId = 'claude-sonnet-5';
+    const subscriptionModelId = PROVIDER_REGISTRY['openai-codex'].fallbackModels[0] ?? '';
+    assert.ok(subscriptionModelId);
     const created = await policy.connectionCatalog.create({
       expectedCatalogRevision: 0,
       connection: {
         slug: 'backend-creation-connection',
         name: 'OAuth backend creation',
-        providerType: 'claude-subscription',
+        providerType: 'openai-codex',
         enabled: true,
         enabledModelIds: [subscriptionModelId],
       },
@@ -288,40 +1186,40 @@ test('backend abort cannot cancel the authority-owned OAuth refresh used by its 
     const connection = created.snapshot.connections[0];
     assert.ok(connection);
     if (!connection) return;
-    assert.ok(
-      connection.models.some((model) => model.id === subscriptionModelId),
-      'create must seed the curated claude-subscription inventory',
-    );
     const tokens: OAuthSubscriptionTokens = {
       access_token: 'expired-oauth-access',
       refresh_token: 'rotating-oauth-refresh',
       expires_at: 0,
-      account_uuid: 'oauth-account-v1',
+      account_id: 'oauth-account-v1',
     };
-    await writeFile(
-      join(capability.canonicalPath, 'credential-vault.json'),
-      `${JSON.stringify(
-        {
-          schemaVersion: 1,
-          revision: 1,
-          entries: [
-            {
-              locator: {
-                scope: 'connection',
-                connectionId: connection.connectionId,
-                kind: 'oauth_token',
-              },
-              credentialId: randomUUID(),
-              revision: 1,
-              secret: serializeOAuthSubscriptionTokens(tokens),
-              updatedAt: Date.now(),
-            },
-          ],
-        },
-        null,
-        2,
-      )}\n`,
-      { encoding: 'utf8', mode: 0o600 },
+    const login = await policy.operations.beginInteractiveOAuthLogin({
+      attemptId: 'execution-model-oauth',
+      target: { kind: 'existing', connectionId: connection.connectionId },
+    });
+    assert.equal(login.kind, 'ready');
+    if (login.kind !== 'ready') return;
+    const storedToken = await policy.operations.completeInteractiveOAuthLogin(
+      login.ticket,
+      serializeOAuthSubscriptionTokens(tokens),
+    );
+    assert.equal(storedToken.kind, 'committed');
+    // Codex model discovery is a live call, so seed the inventory through the
+    // fetch operations instead. This used to lean on create seeding a curated
+    // catalog, which only the retired subscription provider had. The fetch
+    // needs the credential above, so it has to come after the login.
+    const fetchTicket = await policy.operations.beginModelFetch(connection.connectionId);
+    assert.equal(fetchTicket.kind, 'ready');
+    if (fetchTicket.kind !== 'ready') return;
+    const seeded = await policy.operations.completeModelFetch(fetchTicket.ticket, {
+      models: [{ id: subscriptionModelId }],
+      source: 'fetched',
+      fetchedAt: 1_800_000_000_000,
+    });
+    assert.equal(seeded.kind, 'committed');
+    if (seeded.kind !== 'committed') return;
+    assert.ok(
+      seeded.snapshot.connections[0]?.models.some((model) => model.id === subscriptionModelId),
+      'the fetch must seed the inventory the backend resolves against',
     );
     transports = controlledOAuthTransports();
     const authority = new HostOAuthExecutionAuthority(policy);
@@ -329,12 +1227,15 @@ test('backend abort cannot cancel the authority-owned OAuth refresh used by its 
     const firstCreation = createHostAiSdkBackend(
       backendCreationFixture({
         abortSignal: firstAbort.signal,
+        connectionId: connection.connectionId,
         modelId: subscriptionModelId,
         resolveExecutionConnection: () =>
-          policy.operations.resolveExecutionConnection('backend-creation-connection'),
+          policy.operations.resolveExecutionConnection({
+            kind: 'catalog_slug',
+            connectionSlug: 'backend-creation-connection',
+          }),
         runtimePolicy: policy,
         oauthCredentials: authority,
-        claudeDeviceId: capability.rootId,
         readPricing: async () => ({ revision: 0, overrides: [] }),
         createFetchTransport: transports.create,
       }),
@@ -354,21 +1255,25 @@ test('backend abort cannot cancel the authority-owned OAuth refresh used by its 
     secondBackend = await createHostAiSdkBackend(
       backendCreationFixture({
         abortSignal: new AbortController().signal,
+        connectionId: connection.connectionId,
         modelId: subscriptionModelId,
         resolveExecutionConnection: () =>
-          policy.operations.resolveExecutionConnection('backend-creation-connection'),
+          policy.operations.resolveExecutionConnection({
+            kind: 'catalog_slug',
+            connectionSlug: 'backend-creation-connection',
+          }),
         runtimePolicy: policy,
         oauthCredentials: authority,
-        claudeDeviceId: capability.rootId,
         readPricing: async () => ({ revision: 0, overrides: [] }),
         createFetchTransport: transports.create,
       }),
     );
     assert.equal(transports.refreshCalls, 1);
 
-    const resolved = await policy.operations.resolveExecutionConnection(
-      'backend-creation-connection',
-    );
+    const resolved = await policy.operations.resolveExecutionConnection({
+      kind: 'catalog_slug',
+      connectionSlug: 'backend-creation-connection',
+    });
     assert.equal(resolved.kind, 'ready');
     if (resolved.kind === 'ready') {
       const persisted = JSON.parse(
@@ -376,7 +1281,10 @@ test('backend abort cannot cancel the authority-owned OAuth refresh used by its 
       ) as OAuthSubscriptionTokens;
       assert.equal(persisted.access_token, 'refreshed-oauth-access');
       assert.equal(persisted.refresh_token, 'rotated-oauth-refresh');
-      assert.equal(persisted.account_uuid, 'oauth-account-v2');
+      assert.equal(persisted.id_token, 'rotated-id-token');
+      // The token endpoint does not re-state the account, so the refresh has to
+      // carry the identity forward rather than drop it.
+      assert.equal(persisted.account_id, 'oauth-account-v1');
       assert.ok((persisted.expires_at ?? 0) > Date.now());
     }
   } finally {
@@ -421,58 +1329,9 @@ test('backend creation does not acquire Client Capabilities beyond a bound tool 
   }
 });
 
-test('backend creation routes a bound WebSearch tool without widening the child ceiling', async () => {
-  const clientSearch: MakaTool = {
-    name: 'WebSearch',
-    description: 'Client web search',
-    parameters: {},
-    impl: async () => undefined,
-  };
-  const ready = {
-    kind: 'ready' as const,
-    connection: {
-      slug: 'deepseek-responses',
-      providerType: 'deepseek' as const,
-      enabledModelIds: ['deepseek-v4-flash'],
-      models: [{ id: 'deepseek-v4-flash', apiProtocol: 'openai-responses' as const }],
-    },
-    networkProxy: { enabled: false },
-    secretMaterial: { connection: { secret: API_KEY } },
-  };
-  const policy = {
-    ...createDefaultRuntimePolicy(),
-    webSearch: { enabled: true, defaultProvider: 'model' as const },
-  };
-  const runtimePolicy = {
-    operations: { resolveExecutionConnection: async () => ready },
-    runtimePolicy: {
-      getSnapshot: async () => ({ revision: 1, policy }),
-    },
-  } as unknown as RuntimePolicyStoresWriter;
-  const backend = await createHostAiSdkBackend(
-    backendCreationFixture({
-      abortSignal: new AbortController().signal,
-      resolveExecutionConnection: async () => ready,
-      readPricing: async () => ({ revision: 0, overrides: [] }),
-      runtimePolicy,
-      tools: [clientSearch],
-      modelId: 'deepseek-v4-flash',
-    }),
-  );
-  try {
-    const input = (backend as unknown as { input: AiSdkBackendInput }).input;
-    assert.deepEqual(
-      input.tools.map((tool) => tool.name),
-      ['WebSearch'],
-    );
-    assert.equal(input.tools[0]?.providerTool?.kind, 'openai-web-search');
-  } finally {
-    await backend.dispose();
-  }
-});
-
 test('production backend creation continues after a Session Client Capability is lost', async () => {
   const coordinator = new HostClientCapabilityCoordinator({
+    ...clientCapabilityCoordinatorTestAdmission(),
     activation: new RuntimePolicyActivationGate(),
     onModelToolsChanged: () => undefined,
   });
@@ -482,7 +1341,6 @@ test('production backend creation continues after a Session Client Capability is
   const context: ConnectionContext = {
     hostEpoch: 'backend-creation-epoch',
     connectionId: 'provider-a',
-    surface: 'desktop',
     principal: 'local_os_user',
     acquireResidency: () => ({ release() {} }),
   };
@@ -530,7 +1388,7 @@ test('production backend creation continues after a Session Client Capability is
   }
 });
 
-test('production backend preserves coordinator Client Capability semantics across load_tools and T1', async () => {
+test('production backend preserves coordinator Client Capability semantics across tool_search and T1', async () => {
   const sessionId = 'backend-creation-session';
   const turnId = 'client-capability-turn';
   const runId = 'client-capability-run';
@@ -539,6 +1397,7 @@ test('production backend preserves coordinator Client Capability semantics acros
   const trace: RunTraceEvent[] = [];
   const calls: Array<Extract<ClientCapabilityHostFrame, { kind: 'client.capability.call' }>> = [];
   const coordinator = new HostClientCapabilityCoordinator({
+    ...clientCapabilityCoordinatorTestAdmission(),
     activation: new RuntimePolicyActivationGate(),
     onModelToolsChanged: () => undefined,
   });
@@ -549,28 +1408,32 @@ test('production backend preserves coordinator Client Capability semantics acros
       clientCapabilityConnectionIdentity('client-capability-provider'),
       {
         send: async (frame) => {
-          if (frame.kind !== 'client.capability.call') return;
-          calls.push(frame);
-          queueMicrotask(() => {
-            connection?.accept({
-              kind: 'client.capability.accepted',
-              invocationId: frame.invocationId,
+          if (frame.kind === 'client.capability.call') {
+            calls.push(frame);
+            queueMicrotask(() => {
+              connection?.accept({
+                kind: 'client.capability.accepted',
+                invocationId: frame.invocationId,
+                admissionEvidence: { kind: 'none' },
+              });
             });
-            connection?.accept({
-              kind: 'client.capability.result',
-              invocationId: frame.invocationId,
-              result: {
-                content: [{ type: 'text', text: CLIENT_CAPABILITY_RESULT_TEXT }],
-              },
+          } else if (frame.kind === 'client.capability.admitted') {
+            queueMicrotask(() => {
+              connection?.accept({
+                kind: 'client.capability.result',
+                invocationId: frame.invocationId,
+                result: {
+                  content: [{ type: 'text', text: CLIENT_CAPABILITY_RESULT_TEXT }],
+                },
+              });
             });
-          });
+          }
         },
       },
     );
     const context = {
       hostEpoch: 'client-capability-host-epoch',
       connectionId: 'client-capability-provider',
-      surface: 'tui',
       principal: 'local_os_user',
       acquireResidency: () => ({ release() {} }),
     } satisfies ConnectionContext;
@@ -678,7 +1541,7 @@ test('production backend preserves coordinator Client Capability semantics acros
         (event) =>
           event.type === 'tool_started' &&
           event.data?.toolName === tool.name &&
-          event.data?.categoryHint === 'client_capability',
+          event.data?.categoryHint === 'custom_tool',
       ),
     );
     const runtimeEvents = await store.readImmutableRuntimeEvents(sessionId, runId);
@@ -701,9 +1564,9 @@ test('production backend preserves coordinator Client Capability semantics acros
       .filter((request) => request.body.stream === true)
       .map((request) => toolNames(request.body));
     assert.equal(providerToolSets.length, 3);
-    assert.ok(providerToolSets[0]?.includes('load_tools'));
+    assert.ok(providerToolSets[0]?.includes('tool_search'));
     assert.equal(providerToolSets[0]?.includes(tool.name), false);
-    assert.ok(providerToolSets[1]?.includes('load_tools'));
+    assert.ok(providerToolSets[1]?.includes('tool_search'));
     assert.ok(providerToolSets[1]?.includes(tool.name));
     assert.ok(providerToolSets[2]?.includes(tool.name));
   } finally {
@@ -715,11 +1578,169 @@ test('production backend preserves coordinator Client Capability semantics acros
   }
 });
 
+test('hosted execution freezes the headless coding provider wire contract', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-hosted-profile-wire-'));
+  const root = join(base, 'interactive');
+  const provider = await startProvider();
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) return;
+  const residencies = new HostResidencyRegistry();
+  const context: ConnectionContext = {
+    hostEpoch: 'hosted-profile-wire-epoch',
+    connectionId: 'hosted-profile-wire-client',
+    principal: 'runtime_host',
+    acquireResidency: () => residencies.acquire('hosted-profile-wire-operation'),
+  };
+  let composition: Awaited<ReturnType<typeof createExecutionRuntimeHostComposition>> | undefined;
+  try {
+    const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+    const created = await policy.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'profile-deepseek',
+        name: 'Profile DeepSeek',
+        providerType: 'deepseek',
+        baseUrl: provider.baseUrl,
+        enabled: true,
+        enabledModelIds: ['deepseek-v4-flash'],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const connection = created.snapshot.connections[0];
+    assert.ok(connection);
+    if (!connection) return;
+    const configured = await policy.credentialVault.set({
+      locator: {
+        scope: 'connection',
+        connectionId: connection.connectionId,
+        kind: 'api_key',
+      },
+      expected: null,
+      secret: API_KEY,
+    });
+    assert.equal(configured.kind, 'committed');
+    await publishConnectionModel(policy, connection.connectionId, 'deepseek-v4-flash');
+
+    composition = await createExecutionRuntimeHostComposition(
+      {
+        owner,
+        hostEpoch: context.hostEpoch,
+        acquireResidency: (label) => residencies.acquire(label),
+        retainUntilProcessExit: () => undefined,
+        requestDrain: () => composition?.beginDrain(),
+        waitForResidencies: () => residencies.waitForEmpty(),
+        waitForResidenciesExcept: (label) => residencies.waitForEmptyExcept(label),
+      },
+      { bootstrapRuntimePolicy: false },
+    );
+    await composition.recover();
+    const executionId = '00000000-0000-4000-8000-000000000777';
+    const outcome = await composition.handlers['hosted.execution.start'](
+      {
+        executionId,
+        session: {
+          workspace: { kind: 'host_path', path: root },
+          modelTarget: {
+            kind: 'explicit',
+            connectionId: connection.connectionId,
+            connectionSlug: 'profile-deepseek',
+            model: 'deepseek-v4-flash',
+          },
+          permissionMode: 'bypass',
+          collaborationMode: 'agent',
+          orchestrationMode: 'default',
+          toolProfile: 'headless-coding-v1',
+        },
+        content: { text: 'Complete the benchmark task.' },
+        maxSteps: 100_000,
+      },
+      context,
+    );
+    assert.equal(outcome.ok, true);
+    if (!outcome.ok) return;
+    assert.equal(outcome.result.kind, 'settled');
+
+    const request = provider.requests.find(
+      (candidate) => candidate.url === '/v1/responses' && Array.isArray(candidate.body.tools),
+    );
+    assert.ok(request);
+    const instructions = responsesDeveloperPrompt(request?.body);
+    const tools = request?.body.tools;
+    assert.equal(typeof instructions, 'string', JSON.stringify(request?.body));
+    assert.match(instructions ?? '', /^Active model: deepseek-v4-flash$/mu);
+    assert.ok(Array.isArray(tools));
+    assert.equal(stableHash(instructions), HEADLESS_CODING_V1_PROMPT_HASH);
+    assert.equal(stableHash(tools), HEADLESS_CODING_V1_TOOLS_HASH);
+    assert.deepEqual(responsesToolNames(request?.body), [
+      'ArchiveRead',
+      'Bash',
+      'Edit',
+      'Glob',
+      'Grep',
+      'Read',
+      'Write',
+    ]);
+    const bash = (tools as Array<Record<string, unknown>>).find((tool) => tool.name === 'Bash');
+    assert.ok(bash);
+    assert.doesNotMatch(JSON.stringify(bash), /run_in_background|pty/u);
+
+    const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+    assert.equal(
+      (await stores.sessionStore.readHeaderSnapshot(executionId)).toolProfile,
+      'headless-coding-v1',
+    );
+    const secondTurnId = '00000000-0000-4000-8000-000000000778';
+    const secondStarted = await startTurn(
+      composition,
+      executionId,
+      secondTurnId,
+      'Continue the benchmark task.',
+      context,
+    );
+    const secondTerminal = await waitForTerminal(
+      composition,
+      executionId,
+      secondTurnId,
+      secondStarted,
+      context,
+    );
+    assert.equal(secondTerminal.status, 'completed');
+    const profiledRequests = provider.requests.filter(
+      (candidate) => candidate.url === '/v1/responses' && Array.isArray(candidate.body.tools),
+    );
+    assert.equal(profiledRequests.length, 2);
+    for (const profiled of profiledRequests) {
+      assert.equal(
+        stableHash(responsesDeveloperPrompt(profiled.body)),
+        HEADLESS_CODING_V1_PROMPT_HASH,
+      );
+      assert.equal(stableHash(profiled.body.tools), HEADLESS_CODING_V1_TOOLS_HASH);
+    }
+  } finally {
+    try {
+      await composition?.close();
+    } finally {
+      try {
+        await owner.close();
+      } finally {
+        await provider.close();
+        await rm(base, { recursive: true, force: true });
+      }
+    }
+  }
+});
+
 test('production Host executes a canonical ai-sdk Session against a real provider wire', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-host-real-model-'));
   const root = join(base, 'interactive');
   const home = join(base, 'home');
   const provider = await startProvider();
+  // This turn's compaction trigger is anchored on the input tokens the provider
+  // reports, so the stub must report a number that grows with the request.
+  provider.configurePayloadProportionalUsage();
   const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
   const owner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(owner);
@@ -728,7 +1749,6 @@ test('production Host executes a canonical ai-sdk Session against a real provide
   const connectionContext: ConnectionContext = {
     hostEpoch: 'real-model-test-epoch',
     connectionId: 'real-model-test-client',
-    surface: 'tui',
     principal: 'local_os_user',
     acquireResidency: () => ({ release() {} }),
   };
@@ -781,6 +1801,16 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     });
     assert.equal(configured.kind, 'committed');
     await publishConnectionModel(policy, connection.connectionId, MODEL_ID);
+    // The fetched /models value is metadata only. This explicit model-facts
+    // declaration is the Maka compaction target used by the long-session flow.
+    await writeFile(
+      join(root, 'model-facts.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        overrides: { [`moonshot:${MODEL_ID}`]: { contextWindow: 3_072 } },
+      }),
+      'utf8',
+    );
     let policySnapshot = await policy.runtimePolicy.getSnapshot();
     const personalized = await policy.runtimePolicy.mutate({
       expectedRevision: policySnapshot.revision,
@@ -813,15 +1843,18 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     assert.equal(webSearchEnabled.kind, 'committed');
 
     const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const usageStores = await openInteractiveUsageStoresForWrite(owner.lease);
     const session = await execution.sessionStore.create({
       cwd: root,
-      backend: 'ai-sdk',
+      llmConnectionId: connection.connectionId,
       llmConnectionSlug: 'hosted-real-provider',
       model: MODEL_ID,
       permissionMode: 'ask',
     });
-    const taskLedger = await openInteractiveTaskLedgerStoreForWrite(owner.lease);
-    await taskLedger.create(session.id, [{ subject: 'HOSTED_TASK_LEDGER_SENTINEL' }]);
+    const sessionTodo = await openInteractiveSessionTodoStoreForWrite(owner.lease);
+    await sessionTodo.replaceAll(session.id, [
+      { content: 'HOSTED_SESSION_TODO_SENTINEL', status: 'pending' },
+    ]);
 
     composition = await createExecutionRuntimeHostComposition(
       {
@@ -859,6 +1892,8 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     assert.equal(remembered.result.kind, 'committed');
 
     const turnIds: string[] = [];
+    // Cross the explicitly declared Maka window without making the text-only
+    // compact input exceed this fixture's 2,304-token summarizer budget.
     for (let index = 0; index < 5; index += 1) {
       const turnId = randomUUID();
       turnIds.push(turnId);
@@ -867,10 +1902,10 @@ test('production Host executes a canonical ai-sdk Session against a real provide
         session.id,
         turnId,
         index === 0
-          ? `Reply with the hosted execution result.${' HISTORY_PRESSURE'.repeat(160)}`
+          ? `Reply with the hosted execution result.${' HISTORY_PRESSURE'.repeat(128)}`
           : index === 1
-            ? `/skill:hosted-skill Continue hosted execution turn ${index}.${' HISTORY_PRESSURE'.repeat(160)}`
-            : `Continue hosted execution turn ${index}.${' HISTORY_PRESSURE'.repeat(160)}`,
+            ? `/skill:hosted-skill Continue hosted execution turn ${index}.${' HISTORY_PRESSURE'.repeat(128)}`
+            : `Continue hosted execution turn ${index}.${' HISTORY_PRESSURE'.repeat(128)}`,
         connectionContext,
       );
       const terminal = await waitForTerminal(
@@ -882,6 +1917,18 @@ test('production Host executes a canonical ai-sdk Session against a real provide
       );
       assert.equal(terminal.status, 'completed');
     }
+    const hostedCheckpoints = await loadHistoryCompactCheckpointsFromRunLedger(
+      execution.agentRunStore,
+      session.id,
+      (await execution.runtimeEventStore.listSessionInvocations(session.id)).map(
+        (invocation) => invocation.runId,
+      ),
+    );
+    const hostedMemoryBoundary = hostedCheckpoints.find(
+      (checkpoint) => checkpoint.memoryExtractionBoundary,
+    )?.memoryExtractionBoundary;
+    assert.equal(hostedMemoryBoundary?.disposition, 'eligible');
+    await waitForAutomaticMemoryRequestsToSettle(provider.requests);
 
     const mainRequests = provider.requests.filter((request) => request.body.stream === true);
     const compactRequests = provider.requests.filter(
@@ -889,8 +1936,19 @@ test('production Host executes a canonical ai-sdk Session against a real provide
         request.body.stream !== true &&
         /context summarization assistant/.test(JSON.stringify(request.body)),
     );
+    const memoryRequests = provider.requests.filter((request) =>
+      /Perform the first stage of long-term-memory extraction/.test(JSON.stringify(request.body)),
+    );
     assert.equal(mainRequests.length, 5);
     assert.ok(compactRequests.length >= 1);
+    assert.ok(memoryRequests.length >= 1);
+    assert.ok(memoryRequests.every((memoryRequest) => toolNames(memoryRequest.body).length === 0));
+    assert.ok(
+      memoryRequests.every(
+        (memoryRequest) =>
+          !JSON.stringify(memoryRequest.body).includes('HOSTED_WORKSPACE_SENTINEL'),
+      ),
+    );
     const request = mainRequests[0];
     assert.equal(request?.authorization, `Bearer ${API_KEY}`);
     assert.equal(request?.url, '/v1/chat/completions');
@@ -899,44 +1957,27 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     assert.match(requestText, /HOSTED_SKILL_DESCRIPTION_SENTINEL/);
     assert.doesNotMatch(requestText, /HOSTED_SKILL_BODY_MUST_STAY_LAZY/);
     assert.match(requestText, /HOSTED_WORKSPACE_SENTINEL/);
-    assert.match(requestText, /HOSTED_TASK_LEDGER_SENTINEL/);
+    assert.doesNotMatch(requestText, /HOSTED_SESSION_TODO_SENTINEL/);
     assert.match(requestText, /HOSTED_PERSONALIZATION_SENTINEL/);
     assert.match(requestText, /HOSTED_MEMORY_SENTINEL/);
     assert.match(JSON.stringify(mainRequests[1]?.body), /HOSTED_SKILL_BODY_MUST_STAY_LAZY/);
+    // Tavily is selected but no web-search credential exists, so the provider
+    // must never see WebSearch in the effective root tool surface. Non-direct
+    // bound tools stay deferred behind tool_search until activated.
     assert.deepEqual(toolNames(request?.body), [
       'ArchiveRead',
       'AskUserQuestion',
-      'Automation',
       'Bash',
       'Edit',
-      'ExploreAgent',
-      'FormatJson',
       'Glob',
-      'GoalClear',
-      'GoalPause',
-      'GoalResume',
-      'GoalSet',
-      'GoalStatus',
       'Grep',
-      'MakaSettingsGet',
-      'MakaSettingsUpdate',
       'Read',
-      'ScheduledTask',
       'Skill',
       'SkillSearch',
       'StopBackgroundTask',
       'WebFetch',
-      'WebSearch',
       'Write',
-      'WriteStdin',
-      'load_tools',
-      'memory_extract',
-      'memory_remember',
-      'request_sandbox_boundary',
-      'task_create',
-      'task_get',
-      'task_list',
-      'task_update',
+      'tool_search',
     ]);
     assert.match(JSON.stringify(compactRequests[0]?.body), /context summarization assistant/);
 
@@ -971,7 +2012,9 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     );
     assert.equal(usage.providerId, 'moonshot');
     assert.equal(usage.modelId, MODEL_ID);
-    assert.equal(usage.inputTokens, 11);
+    // The stub reports input tokens proportional to the request, so this only
+    // asserts the reported number reached the meter, not a fixed constant.
+    assert.equal(usage.inputTokens > 11, true);
     assert.equal(usage.outputTokens, 5);
     assert.equal(usage.status, 'success');
 
@@ -984,27 +2027,29 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     assert.equal(compactUsage.inputTokens, 7);
     assert.equal(compactUsage.outputTokens, 3);
     const capturedRequestCount = mainRequests.length + compactRequests.length;
-    const evidence = await waitForProviderEvidence(execution, session.id, capturedRequestCount);
-    assert.equal(evidence.captures.length, capturedRequestCount);
-    assert.equal(evidence.attempts.length, capturedRequestCount);
-
-    const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
-    const artifactPage = await artifacts.listPage(session.id, { offset: 0, limit: 100 });
-    const captureArtifacts = artifactPage.records.filter(
-      (artifact) => artifact.source === 'provider_request_capture',
+    const attempts = await waitForCanonicalAttempts(usageStores, session.id, capturedRequestCount);
+    assert.equal(attempts.length, capturedRequestCount);
+    assert.ok(attempts.every((attempt) => attempt.promptComposition));
+    const contextDiagnostics = await composition.handlers['context.diagnostics.query'](
+      { sessionId: session.id },
+      connectionContext,
     );
-    assert.equal(captureArtifacts.length, capturedRequestCount);
-    let summaryCaptureFound = false;
-    for (const artifact of captureArtifacts) {
-      const read = await artifacts.readTextInSession(session.id, artifact.id);
-      if (read.ok && /context summarization assistant/.test(read.text)) {
-        summaryCaptureFound = true;
-        break;
+    assert.equal(contextDiagnostics.ok, true);
+    if (contextDiagnostics.ok) {
+      assert.equal(contextDiagnostics.result.status, 'available');
+      if (contextDiagnostics.result.status === 'available') {
+        assert.ok(
+          contextDiagnostics.result.composition?.segments.some(
+            (segment) => segment.kind === 'messages',
+          ),
+        );
       }
     }
-    assert.equal(summaryCaptureFound, true);
 
-    const requestsBeforeArtifactFailure = provider.requests.length;
+    const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
+    const streamRequestsBeforeArtifactFailure = provider.requests.filter(
+      (request) => request.body.stream === true,
+    ).length;
     artifacts.close();
     const failedTurnId = randomUUID();
     const failedStart = await startTurn(
@@ -1021,9 +2066,16 @@ test('production Host executes a canonical ai-sdk Session against a real provide
       failedStart,
       connectionContext,
     );
-    assert.equal(failedTerminal.status, 'failed');
-    assert.equal(provider.requests.length, requestsBeforeArtifactFailure);
-    assert.equal(drainRequests, 1);
+    assert.equal(failedTerminal.status, 'completed');
+    // A closed artifact store must not stop the turn from reaching the model.
+    // Counted on the streamed turn requests alone: whether this turn also
+    // spends an auxiliary compaction or memory call is the context budget's
+    // business, not this assertion's.
+    assert.equal(
+      provider.requests.filter((request) => request.body.stream === true).length,
+      streamRequestsBeforeArtifactFailure + 1,
+    );
+    assert.equal(drainRequests, 0);
   } finally {
     try {
       await composition?.close();
@@ -1054,7 +2106,6 @@ test('production Host executes and durably supervises an Agent Graph over a real
   const context: ConnectionContext = {
     hostEpoch: 'agent-graph-test-epoch',
     connectionId: 'agent-graph-test-client',
-    surface: 'tui',
     principal: 'local_os_user',
     acquireResidency: () => {
       liveResidencies += 1;
@@ -1109,7 +2160,7 @@ test('production Host executes and durably supervises an Agent Graph over a real
     const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
     const session = await execution.sessionStore.create({
       cwd: project,
-      backend: 'ai-sdk',
+      llmConnectionId: connection.connectionId,
       llmConnectionSlug: 'hosted-graph-provider',
       model: MODEL_ID,
       permissionMode: 'bypass',
@@ -1159,20 +2210,22 @@ test('production Host executes and durably supervises an Agent Graph over a real
     graphStore = createAgentGraphControlStore(root);
     const graphId = agentGraphIdForRootSession(session.id);
     let updates = await graphStore.listAgentGraphScheduleUpdates(graphId);
-    let runs = await execution.agentRunStore.listSessionRuns(session.id);
+    let runs = await execution.runtimeEventStore.listSessionInvocations(session.id);
     for (let attempt = 0; attempt < 400; attempt += 1) {
-      const wakeRuns = runs.filter((run) => run.agentGraphWakeAttemptId !== undefined);
+      const wakeRuns = runs.filter(
+        (run) => run.opening.root.kind === 'agent_graph_supervisor_wake',
+      );
       if (
         updates.at(-1)?.finish &&
         wakeRuns.length > 0 &&
-        wakeRuns.every((run) => ['completed', 'failed', 'cancelled'].includes(run.status)) &&
+        wakeRuns.every((run) => runtimeInvocationOutcome(run) !== undefined) &&
         liveResidencies === 0
       ) {
         break;
       }
       await new Promise<void>((resolve) => setTimeout(resolve, 10));
       updates = await graphStore.listAgentGraphScheduleUpdates(graphId);
-      runs = await execution.agentRunStore.listSessionRuns(session.id);
+      runs = await execution.runtimeEventStore.listSessionInvocations(session.id);
     }
 
     const finish = updates.at(-1)?.finish;
@@ -1183,22 +2236,26 @@ test('production Host executes and durably supervises an Agent Graph over a real
         lastUpdate: updates.at(-1),
         runs: runs.map((run) => ({
           runId: run.runId,
-          status: run.status,
-          wakeAttemptId: run.agentGraphWakeAttemptId,
+          status: runtimeInvocationOutcome(run) ?? 'running',
+          root: run.opening.root,
         })),
         requests: providerRequestTrace(provider.requests),
       }),
     );
     assert.equal(finish?.resultIds.length, 1);
     const rootRun = runs.find((run) => run.runId === initialTerminal.runId);
-    assert.equal(rootRun?.runComposition?.composerId, 'maka.interactive');
-    assert.equal(rootRun?.runComposition?.contextWindow, 32_768);
-    assert.match(rootRun?.runComposition?.baseSystemPromptHash ?? '', /^sha256:[a-f0-9]{64}$/u);
-    assert.ok(rootRun?.runComposition?.toolNames.includes('view_agent_graph'));
-    const wakeRuns = runs.filter((run) => run.agentGraphWakeAttemptId !== undefined);
+    assert.ok(rootRun);
+    const rootComposition = agentRunCompositionFromEvents(
+      await execution.agentRunStore.readEvents(session.id, rootRun.runId),
+    );
+    assert.equal(rootComposition?.composerId, 'maka.interactive');
+    assert.equal(rootComposition?.contextWindow, 32_768);
+    assert.match(rootComposition?.baseSystemPromptHash ?? '', /^sha256:[a-f0-9]{64}$/u);
+    assert.ok(rootComposition?.toolNames.includes('view_agent_graph'));
+    const wakeRuns = runs.filter((run) => run.opening.root.kind === 'agent_graph_supervisor_wake');
     assert.ok(wakeRuns.length > 0);
-    assert.ok(wakeRuns.every((run) => run.status === 'completed'));
-    assert.ok(wakeRuns.every((run) => run.orchestrationMode === 'graph'));
+    assert.ok(wakeRuns.every((run) => runtimeInvocationOutcome(run) === 'completed'));
+    assert.ok(wakeRuns.every((run) => run.opening.configuration.orchestrationMode === 'graph'));
     assert.equal(liveResidencies, 0);
 
     const sessions = await execution.sessionStore.listForRecovery();
@@ -1208,9 +2265,11 @@ test('production Host executes and durably supervises an Agent Graph over a real
     assert.ok(child);
     assert.equal(child?.subagentRuntime?.profile, 'local_read');
     assert.equal(child?.subagentParent?.parentSessionId, session.id);
-    const childRuns = child ? await execution.agentRunStore.listSessionRuns(child.id) : [];
+    const childRuns = child
+      ? await execution.runtimeEventStore.listSessionInvocations(child.id)
+      : [];
     assert.equal(childRuns.length, 1);
-    assert.equal(childRuns[0]?.status, 'completed');
+    assert.equal(childRuns[0] && runtimeInvocationOutcome(childRuns[0]), 'completed');
 
     const graphRequests = provider.requests.filter(
       (request) =>
@@ -1257,7 +2316,6 @@ test('production Host executes a durable runnable child with an exact tool ceili
   const context: ConnectionContext = {
     hostEpoch: 'child-agent-test-epoch',
     connectionId: 'child-agent-test-client',
-    surface: 'tui',
     principal: 'local_os_user',
     acquireResidency: () => ({ release() {} }),
   };
@@ -1310,7 +2368,7 @@ test('production Host executes a durable runnable child with an exact tool ceili
     const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
     const parent = await execution.sessionStore.create({
       cwd: project,
-      backend: 'ai-sdk',
+      llmConnectionId: connection.connectionId,
       llmConnectionSlug: 'hosted-child-provider',
       model: MODEL_ID,
       permissionMode: 'bypass',
@@ -1338,7 +2396,7 @@ test('production Host executes a durable runnable child with an exact tool ceili
       ),
       context,
     );
-    const parentRun = await execution.agentRunStore.readRun(parent.id, terminal.runId);
+    const parentRun = await readInvocation(execution, parent.id, terminal.runId);
     const parentRunEvents = await execution.agentRunStore.readEvents(parent.id, terminal.runId);
     assert.equal(
       terminal.status,
@@ -1355,13 +2413,13 @@ test('production Host executes a durable runnable child with an exact tool ceili
     );
 
     const requests = provider.requests.filter((request) => request.body.stream === true);
-    assert.equal(requests.length, 7);
-    assert.ok(toolNames(requests[0]?.body).includes('load_tools'));
+    assert.equal(requests.length, 4);
+    assert.ok(toolNames(requests[0]?.body).includes('tool_search'));
     assert.equal(toolNames(requests[0]?.body).includes('agent_spawn'), false);
     assert.ok(toolNames(requests[1]?.body).includes('agent_spawn'));
+    // The same routed child surface removes web_research when Tavily cannot run.
     assert.deepEqual(toolParameterEnum(requests[1]?.body, 'agent_spawn', 'profile'), [
       'local_read',
-      'web_research',
       'implementation',
     ]);
     // A child now carries the archive decoder alongside its allowlist (#2026).
@@ -1369,10 +2427,8 @@ test('production Host executes a durable runnable child with an exact tool ceili
     // agent-permission tools cannot be the thing that decides whether the child
     // can read back a result the runtime itself pruned.
     assert.deepEqual(toolNames(requests[2]?.body), ['ArchiveRead', 'Glob', 'Grep', 'Read']);
+    assert.doesNotMatch(JSON.stringify(requests[2]?.body), /## Response format/u);
     assert.ok(toolNames(requests[3]?.body).includes('agent_spawn'));
-    assert.deepEqual(toolNames(requests[4]?.body), ['ArchiveRead', 'WebSearch']);
-    assert.deepEqual(toolNames(requests[5]?.body), ['ArchiveRead', 'WebSearch']);
-    assert.ok(toolNames(requests[6]?.body).includes('agent_spawn'));
 
     const sessions = await execution.sessionStore.listForRecovery();
     const child = sessions.find((session) => session.subagentRuntime?.profile === 'local_read');
@@ -1380,50 +2436,24 @@ test('production Host executes a durable runnable child with an exact tool ceili
       (session) => session.subagentRuntime?.profile === 'web_research',
     );
     assert.ok(child);
-    assert.ok(webChild);
+    assert.equal(webChild, undefined);
     assert.equal(child?.subagentRuntime?.profile, 'local_read');
     assert.equal(child?.subagentParent?.parentSessionId, parent.id);
     if (!child) return;
     assert.equal(child.subagentWorkspace, undefined);
     assert.equal(child.cwd, project);
-    const childRuns = await execution.agentRunStore.listSessionRuns(child.id);
+    const childRuns = await execution.runtimeEventStore.listSessionInvocations(child.id);
     assert.equal(childRuns.length, 1);
-    assert.equal(childRuns[0]?.status, 'completed');
-    assert.equal(childRuns[0]?.parentRunId, undefined);
+    assert.equal(childRuns[0] && runtimeInvocationOutcome(childRuns[0]), 'completed');
+    assert.equal(childRuns[0]?.opening.lineage?.parentRunId, undefined);
     const childMessages = await execution.sessionStore.readMessagesSnapshot(child.id);
     assert.equal(
       childMessages.find((message) => message.type === 'assistant')?.text,
       CHILD_AGENT_RESULT_TEXT,
     );
-    if (!webChild) return;
-    const webChildRuns = await execution.agentRunStore.listSessionRuns(webChild.id);
-    assert.equal(webChildRuns.length, 1);
-    assert.equal(webChildRuns[0]?.status, 'completed');
-    const webChildMessages = await execution.sessionStore.readMessagesSnapshot(webChild.id);
-    assert.equal(
-      webChildMessages.find((message) => message.type === 'assistant')?.text,
-      WEB_RESEARCH_CHILD_RESULT_TEXT,
-    );
-    const webChildEvents = await execution.runtimeEventStore.readRuntimeEvents(
-      webChild.id,
-      webChildRuns[0]!.runId,
-    );
-    const searchResult = webChildEvents.find(
-      (event) => event.content?.kind === 'function_response' && event.content.name === 'WebSearch',
-    );
-    assert.ok(searchResult?.content?.kind === 'function_response');
-    assert.deepEqual(decodeCanonicalToolResultContent(searchResult.content.result), {
-      kind: 'web_search_error',
-      ok: false,
-      provider: 'tavily',
-      query: 'latest hosted web result',
-      reason: 'not_configured',
-      message: 'Configure a Tavily API key before using web search.',
-    });
     const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
     const childArtifacts = await artifacts.listTurnArtifacts(child.id, childRuns[0]!.turnId);
-    assert.equal(childArtifacts.length, 1);
-    assert.equal(childArtifacts[0]?.source, 'provider_request_capture');
+    assert.equal(childArtifacts.length, 0, 'a child turn no longer stores anything of its own');
     const parentRuntimeEvents = await execution.runtimeEventStore.readRuntimeEvents(
       parent.id,
       terminal.runId,
@@ -1436,7 +2466,7 @@ test('production Host executes a durable runnable child with an exact tool ceili
     const typedSpawnResult = decodeCanonicalToolResultContent(spawnResult.content.result);
     assert.equal(typedSpawnResult.kind, 'subagent');
     assert.deepEqual(
-      (typedSpawnResult as { artifactIds?: readonly string[] }).artifactIds,
+      (typedSpawnResult as { artifactIds?: readonly string[] }).artifactIds ?? [],
       childArtifacts.map((artifact) => artifact.id),
     );
   } finally {
@@ -1466,7 +2496,6 @@ test('production Host publishes and retires an implementation child patch', asyn
   const context: ConnectionContext = {
     hostEpoch: 'child-agent-test-epoch',
     connectionId: 'child-agent-test-client',
-    surface: 'tui',
     principal: 'local_os_user',
     acquireResidency: () => ({ release() {} }),
   };
@@ -1536,7 +2565,7 @@ test('production Host publishes and retires an implementation child patch', asyn
     const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
     const parent = await execution.sessionStore.create({
       cwd: project,
-      backend: 'ai-sdk',
+      llmConnectionId: connection.connectionId,
       llmConnectionSlug: 'hosted-child-provider',
       model: MODEL_ID,
       permissionMode: 'bypass',
@@ -1564,7 +2593,7 @@ test('production Host publishes and retires an implementation child patch', asyn
       ),
       context,
     );
-    const parentRun = await execution.agentRunStore.readRun(parent.id, terminal.runId);
+    const parentRun = await readInvocation(execution, parent.id, terminal.runId);
     const parentRunEvents = await execution.agentRunStore.readEvents(parent.id, terminal.runId);
     assert.equal(
       terminal.status,
@@ -1586,7 +2615,7 @@ test('production Host publishes and retires an implementation child patch', asyn
         requests.length <= MAX_IMPLEMENTATION_CHILD_REQUESTS + 3,
       JSON.stringify(providerRequestTrace(requests)),
     );
-    assert.ok(toolNames(requests[0]?.body).includes('load_tools'));
+    assert.ok(toolNames(requests[0]?.body).includes('tool_search'));
     assert.equal(toolNames(requests[0]?.body).includes('agent_spawn'), false);
     assert.ok(toolNames(requests[1]?.body).includes('agent_spawn'));
     assert.deepEqual(toolParameterEnum(requests[1]?.body, 'agent_spawn', 'profile'), [
@@ -1620,14 +2649,19 @@ test('production Host publishes and retires an implementation child patch', asyn
     assert.equal(child?.subagentRuntime?.profile, 'implementation');
     assert.equal(child?.subagentParent?.parentSessionId, parent.id);
     if (!child) return;
+    // The persisted header is a configuration projection, not execution
+    // authority, and may be narrower than the inherited live boundary.
+    assert.notEqual(child.permissionMode, 'bypass');
+    const childBoundary = await execution.sessionStore.readExecutionBoundary(child.id);
+    assert.equal(childBoundary.kind, 'bypass');
     assert.ok(child.subagentWorkspace);
     assert.equal(child.cwd, child.subagentWorkspace?.worktreePath);
     assert.equal(await fileExists(join(project, 'implementation.txt')), false);
     assert.equal(await fileExists(join(child.cwd, 'implementation.txt')), true);
-    const childRuns = await execution.agentRunStore.listSessionRuns(child.id);
+    const childRuns = await execution.runtimeEventStore.listSessionInvocations(child.id);
     assert.equal(childRuns.length, 1);
-    assert.equal(childRuns[0]?.status, 'completed');
-    assert.equal(childRuns[0]?.parentRunId, undefined);
+    assert.equal(childRuns[0] && runtimeInvocationOutcome(childRuns[0]), 'completed');
+    assert.equal(childRuns[0]?.opening.lineage?.parentRunId, undefined);
     const childMessages = await execution.sessionStore.readMessagesSnapshot(child.id);
     assert.equal(
       childMessages.find((message) => message.type === 'assistant')?.text,
@@ -1635,11 +2669,7 @@ test('production Host publishes and retires an implementation child patch', asyn
     );
     const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
     const childArtifacts = await artifacts.listTurnArtifacts(child.id, childRuns[0]!.turnId);
-    assert.equal(childArtifacts.length, childRequests.length + 2);
-    assert.equal(
-      childArtifacts.filter((artifact) => artifact.source === 'provider_request_capture').length,
-      childRequests.length,
-    );
+    assert.equal(childArtifacts.length, 2);
     assert.ok(
       childArtifacts.some(
         (artifact) => artifact.source === 'tool_result' && artifact.name === 'implementation.txt',
@@ -1736,6 +2766,82 @@ test('production Host publishes and retires an implementation child patch', asyn
   }
 });
 
+test('Host auxiliary calls preserve resolved DeepSeek reasoning settings', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-host-deepseek-auxiliary-'));
+  const provider = await startProvider();
+  const capability = await resolveStorageRoot({
+    path: join(base, 'interactive'),
+    kind: 'interactive',
+  });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) return;
+
+  try {
+    const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+    const usage = await openInteractiveUsageStoresForWrite(owner.lease);
+    const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const created = await policy.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'deepseek-auxiliary',
+        name: 'DeepSeek auxiliary',
+        providerType: 'deepseek',
+        baseUrl: provider.baseUrl,
+        enabled: true,
+        enabledModelIds: ['deepseek-v4-flash'],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const connection = created.snapshot.connections[0];
+    assert.ok(connection);
+    if (!connection) return;
+    const credential = await policy.credentialVault.set({
+      locator: {
+        scope: 'connection',
+        connectionId: connection.connectionId,
+        kind: 'api_key',
+      },
+      expected: null,
+      secret: API_KEY,
+    });
+    assert.equal(credential.kind, 'committed');
+    await publishConnectionModel(policy, connection.connectionId, 'deepseek-v4-flash');
+    const session = await execution.sessionStore.create({
+      cwd: capability.canonicalPath,
+      llmConnectionId: connection.connectionId,
+      llmConnectionSlug: 'deepseek-auxiliary',
+      model: 'deepseek-v4-flash',
+      thinkingLevel: 'high',
+      permissionMode: 'ask',
+    });
+    const effects = createHostSessionEffectModel({
+      runtimePolicy: policy,
+      oauthCredentials: new HostOAuthExecutionAuthority(policy),
+      usage,
+      requestDrain: () => assert.fail('Auxiliary telemetry must not drain the Host'),
+      newId: () => 'deepseek-title-call',
+    });
+
+    await effects.generateTitle({
+      sessionId: session.id,
+      header: session,
+      sourceText: 'Explain the DeepSeek auxiliary reasoning seam',
+      abortSignal: new AbortController().signal,
+    });
+    const request = provider.requests.at(-1);
+    assert.ok(request);
+    assert.equal(request.url, '/v1/responses');
+    assert.equal(request.authorization, `Bearer ${API_KEY}`);
+    assert.deepEqual(request.body.reasoning, { effort: 'high' });
+  } finally {
+    await owner.close();
+    await provider.close();
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
 test('Host auxiliary models meter provider usage and abort physical requests', {
   timeout: 20_000,
 }, async () => {
@@ -1758,7 +2864,7 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
       connection: {
         slug: 'goal-evaluator-provider',
         name: 'Goal evaluator provider',
-        providerType: 'moonshot',
+        providerType: 'opencode-go',
         baseUrl: provider.baseUrl,
         enabled: true,
         enabledModelIds: [MODEL_ID],
@@ -1782,7 +2888,7 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
     await publishConnectionModel(policy, connection.connectionId, MODEL_ID);
     const session = await execution.sessionStore.create({
       cwd: capability.canonicalPath,
-      backend: 'ai-sdk',
+      llmConnectionId: connection.connectionId,
       llmConnectionSlug: 'goal-evaluator-provider',
       model: MODEL_ID,
       permissionMode: 'ask',
@@ -1790,7 +2896,6 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
     const evaluatorInput = {
       runtimePolicy: policy,
       oauthCredentials: new HostOAuthExecutionAuthority(policy),
-      claudeDeviceId: capability.rootId,
       usage,
       requestDrain: () => assert.fail('Goal evaluator telemetry must not drain the Host'),
       readSessionHeader: (sessionId: string) =>
@@ -1816,7 +2921,6 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
     const sessionEffects = createHostSessionEffectModel({
       runtimePolicy: policy,
       oauthCredentials: new HostOAuthExecutionAuthority(policy),
-      claudeDeviceId: capability.rootId,
       usage,
       requestDrain: () => assert.fail('Session effect telemetry must not drain the Host'),
       newId: () => 'effect-call-1',
@@ -1861,11 +2965,11 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
     const dailyReview = createHostDailyReviewModel({
       runtimePolicy: policy,
       oauthCredentials: new HostOAuthExecutionAuthority(policy),
-      claudeDeviceId: capability.rootId,
       usage,
       requestDrain: () => assert.fail('Daily Review telemetry must not drain the Host'),
       newId: () => 'daily-review-call-1',
     });
+    const dailyReviewRequestsBefore = provider.requests.length;
     assert.deepEqual(
       await dailyReview.generate({
         modelKey: `goal-evaluator-provider::${MODEL_ID}`,
@@ -1883,11 +2987,13 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
     assert.ok(dailyReviewLog);
     assert.equal(dailyReviewLog.callId, 'daily_review_daily-review-call-1');
     assert.equal(dailyReviewLog.sessionId, undefined);
+    const dailyReviewRequest = provider.requests[dailyReviewRequestsBefore];
+    assert.ok(dailyReviewRequest);
+    assert.equal(dailyReviewRequest.sessionHeader, 'daily-review-call-1');
 
     const memoryModel = createHostMemoryExtractionModel({
       runtimePolicy: policy,
       oauthCredentials: new HostOAuthExecutionAuthority(policy),
-      claudeDeviceId: capability.rootId,
       usage,
       requestDrain: () => assert.fail('Memory extraction telemetry must not drain the Host'),
       newId: () => 'memory-call-1',
@@ -1931,6 +3037,8 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
     const [proposalRequest, canonicalizeRequest] = provider.requests.slice(memoryRequestsBefore);
     assert.ok(proposalRequest);
     assert.ok(canonicalizeRequest);
+    assert.equal(proposalRequest.sessionHeader, session.id);
+    assert.equal(canonicalizeRequest.sessionHeader, session.id);
     assert.deepEqual(toolNames(proposalRequest.body), ['memory_remember']);
     assert.match(JSON.stringify(proposalRequest.body), /SOURCE_SYSTEM_SENTINEL/);
     assert.match(JSON.stringify(proposalRequest.body), /SOURCE_USER_SENTINEL/);
@@ -1962,7 +3070,6 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
     const failingPreflightEffects = createHostSessionEffectModel({
       runtimePolicy: policy,
       oauthCredentials: new HostOAuthExecutionAuthority(policy),
-      claudeDeviceId: capability.rootId,
       usage: {
         pricing: {
           snapshot: async () => {
@@ -2036,7 +3143,6 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
           },
         }),
       } as unknown as HostOAuthExecutionAuthority,
-      claudeDeviceId: capability.rootId,
       usage,
       requestDrain: () => {
         oauthDrainRequests += 1;
@@ -2069,7 +3175,6 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
     const accountingFailure = createHostSessionEffectModel({
       runtimePolicy: policy,
       oauthCredentials: new HostOAuthExecutionAuthority(policy),
-      claudeDeviceId: capability.rootId,
       usage: {
         pricing: usage.pricing,
         telemetry: {
@@ -2106,7 +3211,6 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
     const stalledEffect = createHostSessionEffectModel({
       runtimePolicy: policy,
       oauthCredentials: new HostOAuthExecutionAuthority(policy),
-      claudeDeviceId: capability.rootId,
       usage,
       requestDrain: () => assert.fail('A provider timeout must not drain the Host'),
       createFetchTransport: () => ({
@@ -2232,7 +3336,7 @@ test('one turn shares one canonical Skill inventory across prompt and lazy tools
     runtimePolicy: policy,
     skills,
     memory,
-    taskLedger: {} as TaskLedgerStore,
+    sessionTodo: {} as SessionTodoToolStore,
   });
   const firstContext = {
     sessionId: 'session',
@@ -2283,6 +3387,18 @@ test('one turn shares one canonical Skill inventory across prompt and lazy tools
   assert.match(nextPrompt ?? '', /NEW_DESCRIPTION/);
   assert.doesNotMatch(nextPrompt ?? '', /OLD_DESCRIPTION/);
   assert.equal(inventoryReads, 2);
+
+  for (const prompt of [firstPrompt, nextPrompt]) {
+    assert.match(prompt ?? '', /^## Response format$/mu);
+    assert.equal(prompt?.match(/Use GitHub-Flavored Markdown for responses\./gmu)?.length, 1);
+    assert.match(
+      prompt ?? '',
+      /Keep simple answers simple; do not add headings or lists to simple answers\./u,
+    );
+    assert.match(prompt ?? '', /Use short headings and flat lists to organize longer answers\./u);
+    assert.match(prompt ?? '', /inline commands/u);
+    assert.match(prompt ?? '', /descriptive link text/u);
+  }
 });
 
 test('one composer freezes Runtime Policy while each Run freezes its remaining prompt sources', async () => {
@@ -2306,7 +3422,7 @@ test('one composer freezes Runtime Policy while each Run freezes its remaining p
         body: memoryBody,
       }),
     } as unknown as HostMemoryCoordinator,
-    taskLedger: {} as TaskLedgerStore,
+    sessionTodo: {} as SessionTodoToolStore,
   });
   const context = {
     sessionId: 'session',
@@ -2357,7 +3473,7 @@ test('one composer freezes Runtime Policy while each Run freezes its remaining p
         body: memoryBody,
       }),
     } as unknown as HostMemoryCoordinator,
-    taskLedger: {} as TaskLedgerStore,
+    sessionTodo: {} as SessionTodoToolStore,
   });
   assert.deepEqual(
     (await nextComposition.resolveSystemPrompt({ ...context, turnId: 'turn-3' })).sourceRevisions,
@@ -2370,361 +3486,192 @@ test('one composer freezes Runtime Policy while each Run freezes its remaining p
   );
 });
 
-test('Client Capability tools join the existing load_tools catalog without a parallel loader', () => {
-  const capabilityTool: MakaTool = {
-    name: 'mcp__opaque__inspect',
-    description: 'Fixture Client Capability tool.',
-    parameters: {},
-    categoryHint: 'client_capability',
-    impl: async () => ({ content: [{ type: 'text', text: 'ok' }] }),
+test('backend composition survives a moved saved Git Bash executable while Bash fails closed', async () => {
+  // A previously valid Git Bash path that was moved or uninstalled is a
+  // repairable optional-tool configuration error: it must not fail text-only
+  // backend composition. The turn plan carries the setup error, the tool
+  // description declares the outage, and the Bash boundary rethrows it
+  // instead of silently falling back to another shell.
+  const policy = {
+    ...createDefaultRuntimePolicy(),
+    shell: {
+      preference: 'git_bash' as const,
+      executable: 'C:\\\\Program Files\\\\Git\\\\bin\\\\bash.exe',
+    },
   };
-  const composition = createInteractiveRunComposer({
-    runtimePolicy: { revision: 0, policy: createDefaultRuntimePolicy() },
-    skills: {
-      readCanonicalModelInventory: async () => ({ inventory: [] }),
-    } as unknown as HostSkillCatalogCoordinator,
-    memory: {} as HostMemoryCoordinator,
-    taskLedger: {} as TaskLedgerStore,
-    clientCapabilities: {
-      tools: [capabilityTool],
-      groups: [
-        {
-          id: 'client_fixture',
-          label: 'Opaque fixture',
-          description: 'Loaded through the canonical tool connector.',
-          toolNames: [capabilityTool.name],
-        },
-      ],
-    },
+  const fixture = backendCreationFixture({
+    abortSignal: new AbortController().signal,
+    resolveExecutionConnection: async () => readyExecutionConnection(),
+    readPricing: async () => ({ revision: 0, overrides: [] }),
   });
-
-  assert.ok(composition.tools.includes(capabilityTool));
-  assert.deepEqual(
-    composition.toolAvailability.groups?.find((group) => group.id === 'client_fixture'),
-    {
-      id: 'client_fixture',
-      label: 'Opaque fixture',
-      description: 'Loaded through the canonical tool connector.',
-      toolNames: [capabilityTool.name],
-    },
-  );
-});
-
-test('Side conversations end the Host-owned system prompt with an isolation boundary', async () => {
-  const composition = createInteractiveRunComposer({
-    runtimePolicy: { revision: 0, policy: createDefaultRuntimePolicy() },
+  let shellPolicyResolutions = 0;
+  const factory = createInteractiveRunComposerFactory({
     skills: {
-      readCanonicalModelInventory: async () => ({ inventory: [] }),
+      readCanonicalModelInventory: async () => ({
+        revision: 'skills-fixture',
+        projectRoot: '/workspace',
+        inventory: [],
+        diagnostics: [],
+        discoveryDiagnostics: [],
+      }),
     } as unknown as HostSkillCatalogCoordinator,
     memory: {
       readPromptProjection: async () => ({
+        policy: { revision: 0, policy: createDefaultRuntimePolicy() },
         bundleRevision: null,
         memoryRevision: null,
+        body: '',
       }),
     } as unknown as HostMemoryCoordinator,
-    taskLedger: { list: async () => [] } as unknown as TaskLedgerStore,
-    sideConversation: true,
+    sessionTodo: {} as SessionTodoToolStore,
+    clientCapabilities: {
+      snapshotForSession: () => undefined,
+    } as unknown as HostClientCapabilityCoordinator,
+    resolveTavilyWebSearchReadiness: async () => false,
+    builtinTools: {},
+    resolveTurnShellPlan: (settings) => {
+      shellPolicyResolutions += 1;
+      return resolveTurnShellPlan(settings, {
+        platform: 'win32',
+        fileExists: () => false,
+      });
+    },
+  });
+  const connection = readyExecutionConnection()
+    .connection as unknown as import('@maka/core/llm-connections').RuntimeExecutionConnection;
+
+  const composer = await factory({
+    backendContext: fixture.context,
+    connection,
+    modelId: MODEL_ID,
+    runtimePolicy: { revision: 0, policy },
+    contextWindow: null,
   });
 
-  const prompt =
-    (
-      await composition.resolveSystemPrompt({
-        sessionId: 'side-session',
+  const bash = composer.tools.find((tool) => tool.name === 'Bash') as
+    | MakaTool<{ command: string }, unknown>
+    | undefined;
+  assert.ok(bash, 'expected the default tool surface to include Bash');
+  const unavailableShell = resolveTurnShellPlan(policy.shell, {
+    platform: 'win32',
+    fileExists: () => false,
+  });
+  assert.equal(unavailableShell.setupError?.code, 'executable_missing');
+  assert.match(bash.description, /unavailable this turn/);
+  assert.doesNotMatch(bash.description, /write PowerShell syntax/);
+  await assert.rejects(
+    async () => {
+      await bash.impl({ command: 'echo never-runs' }, {
+        sessionId: 'session',
         turnId: 'turn-1',
         cwd: '/workspace',
-        workspaceRoot: '/workspace',
-      })
-    ).text ?? '';
-  assert.match(prompt, /Side conversation boundary/);
-  assert.match(prompt, /inherited parent history is reference context only/i);
-  assert.equal(
-    prompt.trimEnd().endsWith('Workspace changes may be visible to both conversations.'),
-    true,
-  );
-});
-
-test('Deep Research composition keeps one read-only research surface and prompt', async () => {
-  const tool = (name: string, categoryHint?: MakaTool['categoryHint']): MakaTool => ({
-    name,
-    description: `${name} fixture`,
-    parameters: {},
-    ...(categoryHint ? { categoryHint } : {}),
-    impl: async () => name,
-  });
-  const read = tool('Read');
-  const webSearch = tool('WebSearch');
-  const shell = tool('Shell');
-  const deepResearchStatus = tool('deep_research_status');
-  const unsafeDeepResearchTool = tool('deep_research_unsafe_fixture');
-  const clientMutation = tool('mcp__opaque__mutate', 'client_capability');
-  const composition = createInteractiveRunComposer({
-    runtimePolicy: { revision: 0, policy: createDefaultRuntimePolicy() },
-    skills: {
-      readCanonicalModelInventory: async () => ({ inventory: [] }),
-    } as unknown as HostSkillCatalogCoordinator,
-    memory: {
-      readPromptProjection: async () => ({
-        bundleRevision: null,
-        memoryRevision: null,
-      }),
-    } as unknown as HostMemoryCoordinator,
-    taskLedger: { list: async () => [] } as unknown as TaskLedgerStore,
-    hostTools: [read, webSearch, shell, unsafeDeepResearchTool],
-    parentAgentTools: buildParentAgentTools(),
-    clientCapabilities: {
-      tools: [clientMutation],
-      groups: [
-        {
-          id: 'client_fixture',
-          label: 'Opaque fixture',
-          toolNames: [clientMutation.name],
-        },
-      ],
+        toolCallId: 'tool-call',
+        abortSignal: new AbortController().signal,
+        emitOutput: () => {},
+      } satisfies MakaToolContext);
     },
-    deepResearch: { tools: [deepResearchStatus] },
-  });
-
-  assert.deepEqual(composition.tools.map((candidate) => candidate.name).sort(), [
-    'AskUserQuestion',
-    'ExploreAgent',
-    'Read',
-    'WebSearch',
-    'deep_research_status',
-  ]);
-  assert.equal(composition.tools.includes(shell), false);
-  assert.equal(composition.tools.includes(clientMutation), false);
-  assert.equal(composition.tools.includes(unsafeDeepResearchTool), false);
-  assert.equal(
-    composition.tools.some((candidate) => candidate.categoryHint === 'subagent'),
-    true,
+    (error: unknown) =>
+      error instanceof ShellPreferenceError && error.code === 'executable_missing',
   );
-  assert.equal(
-    composition.toolAvailability.groups?.find((group) => group.id === 'client_fixture'),
-    undefined,
-  );
-  const prompt =
-    (
-      await composition.resolveSystemPrompt({
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        cwd: process.cwd(),
-        workspaceRoot: process.cwd(),
-      })
-    ).text ?? '';
-  assert.match(prompt, /Deep research mode is active/);
-  assert.match(prompt, /ExploreAgent/);
-  // The Deep Research contract is a trailing assertion that constrains the
-  // fragments before it; it must be the last non-empty fragment. With no skills
-  // or workspace instructions in this fixture, the contract follows identity.
-  const drIndex = prompt.indexOf('Deep research mode is active');
-  assert.ok(drIndex > 0, 'deep research contract must be present');
-  assert.ok(prompt.indexOf('You are Maka,') < drIndex, 'identity must lead the contract');
-});
 
-test('Plan composition admits only planning tools before approval and execution controls after', async () => {
-  const proposal = {
-    planId: 'plan-1',
-    proposalId: 'proposal-1',
-    sessionId: 'session-1',
+  // Text-only composition — prompts and the rest of the tool surface — is unaffected.
+  const prompt = await composer.resolveSystemPrompt({
+    sessionId: 'session',
     turnId: 'turn-1',
-    revision: 1,
-    title: 'Host Plan',
-    steps: [{ id: 'step-1', title: 'Implement', description: 'Implement the approved work' }],
-    status: 'pending_approval' as const,
-    submittedAt: 1,
-  };
-  const pending: PlanSessionState = {
-    schemaVersion: 1,
-    sessionId: 'session-1',
-    storeVersion: 1,
-    proposals: [proposal],
-    executions: [],
-    latestProposalId: proposal.proposalId,
-  };
-  const store = { readState: async () => pending } as unknown as PlanStore;
-  const base = {
-    runtimePolicy: { revision: 0, policy: createDefaultRuntimePolicy() },
-    skills: {
-      readCanonicalModelInventory: async () => ({ inventory: [] }),
-    } as unknown as HostSkillCatalogCoordinator,
-    memory: {
-      readPromptProjection: async () => ({
-        bundleRevision: null,
-        memoryRevision: null,
-      }),
-    } as unknown as HostMemoryCoordinator,
-    taskLedger: { list: async () => [] } as unknown as TaskLedgerStore,
-  };
-  const planning = createInteractiveRunComposer({
-    ...base,
-    plan: { store, state: pending, mode: 'plan' },
+    cwd: '/workspace',
   });
-  assert.deepEqual(planning.tools.map((tool) => tool.name).sort(), [
-    'AskUserQuestion',
-    'SubmitPlan',
-  ]);
-  assert.match(
-    (
-      await planning.resolveSystemPrompt({
-        sessionId: 'session-1',
-        turnId: 'turn-2',
-        cwd: process.cwd(),
-        workspaceRoot: process.cwd(),
-      })
-    ).text ?? '',
-    /Collaboration Mode: Plan/,
-  );
+  assert.ok(prompt.sourceRevisions.length > 0);
 
-  const fullAccessPlanning = createInteractiveRunComposer({
-    ...base,
-    hostTools: [
-      {
-        name: 'PlanningWriteFixture',
-        description: 'Mutating planning fixture',
-        parameters: {},
-        categoryHint: 'file_write',
-        impl: () => null,
-      },
-      {
-        name: 'ExploreAgentFixture',
-        description: 'Delegated planning fixture',
-        parameters: {},
-        categoryHint: 'subagent',
-        impl: () => null,
-      },
-    ],
-    plan: { store, state: pending, mode: 'plan', permissionMode: 'bypass' },
+  const capturedChildShell = {
+    plan: {
+      kind: 'git-bash' as const,
+      displayName: 'captured child shell',
+      exe: 'C:\\captured\\bash.exe',
+    },
+  };
+  const capturedChildTools = createHostChildAgentToolComposition({
+    builtinTools: { shell: capturedChildShell },
+    hostTools: [],
+    worktreePatchWriteBackAvailable: true,
+  }).childTools;
+  const childComposer = await factory({
+    backendContext: {
+      ...fixture.context,
+      tools: capturedChildTools,
+      turnShellPlan: capturedChildShell,
+    },
+    connection,
+    modelId: MODEL_ID,
+    runtimePolicy: { revision: 1, policy },
+    contextWindow: null,
   });
-  assert.ok(fullAccessPlanning.tools.some((tool) => tool.name === 'PlanningWriteFixture'));
   assert.equal(
-    fullAccessPlanning.tools.some((tool) => tool.name === 'ExploreAgentFixture'),
-    false,
+    shellPolicyResolutions,
+    1,
+    'a child activation must not re-read shell policy after Runtime captured its plan',
   );
-  assert.match(
-    (
-      await fullAccessPlanning.resolveSystemPrompt({
-        sessionId: 'session-1',
-        turnId: 'turn-full-access',
-        cwd: process.cwd(),
-        workspaceRoot: process.cwd(),
-      })
-    ).text ?? '',
-    /Full access is active/,
-  );
-
-  const execution = {
-    executionId: 'execution-1',
-    planId: proposal.planId,
-    proposalId: proposal.proposalId,
-    sessionId: proposal.sessionId,
-    status: 'active' as const,
-    steps: proposal.steps.map((step) => ({
-      ...step,
-      status: 'pending' as const,
-      updatedAt: 2,
-    })),
-    startedAt: 2,
-    updatedAt: 2,
-  };
-  const interrupted: PlanSessionState = {
-    ...pending,
-    storeVersion: 2,
-    proposals: [{ ...proposal, status: 'approved' }],
-    executions: [
-      {
-        ...execution,
-        status: 'interrupted',
-        interruptedAt: 3,
-        interruptionReason: 'User requested replanning',
-        updatedAt: 3,
-      },
-    ],
-  };
-  const fullAccessReplanning = createInteractiveRunComposer({
-    ...base,
-    plan: { store, state: interrupted, mode: 'plan', permissionMode: 'bypass' },
-  });
-  const replanningTail = await fullAccessReplanning.turnTailPrompt({
-    sessionId: 'session-1',
-    turnId: 'turn-full-access-replanning',
-    cwd: process.cwd(),
-    workspaceRoot: process.cwd(),
-  });
-  assert.match(replanningTail, /Full access remains active/);
-  assert.doesNotMatch(replanningTail, /Do not resume execution or modify files/);
-
-  const active: PlanSessionState = {
-    ...pending,
-    storeVersion: 2,
-    proposals: [{ ...proposal, status: 'approved' }],
-    executions: [execution],
-    activeExecutionId: execution.executionId,
-  };
-  const executing = createInteractiveRunComposer({
-    ...base,
-    parentAgentTools: buildParentAgentTools(),
-    plan: { store, state: active, mode: 'agent' },
-  });
-  assert.ok(executing.tools.some((tool) => tool.name === 'update_plan'));
-  assert.ok(executing.tools.some((tool) => tool.name === 'cancel_plan'));
-  assert.equal(
-    executing.tools.some((tool) => tool.categoryHint === 'subagent'),
-    false,
-  );
-  assert.match(
-    await executing.turnTailPrompt({
-      sessionId: 'session-1',
-      turnId: 'turn-3',
-      cwd: process.cwd(),
-      workspaceRoot: process.cwd(),
-    }),
-    /plan_execution_context/,
-  );
+  const capturedBash = childComposer.tools.find((tool) => tool.name === 'Bash');
+  assert.match(capturedBash?.description ?? '', /captured child shell/);
+  assert.doesNotMatch(capturedBash?.description ?? '', /unavailable this turn/);
 });
 
-test('Host model composition routes managed file tools through its filesystem worker', async () => {
-  let workerInput: FilesystemWorkerExecuteInput | undefined;
-  const composition = createInteractiveRunComposer({
-    runtimePolicy: { revision: 0, policy: createDefaultRuntimePolicy() },
-    skills: {
-      readCanonicalModelInventory: async () => ({ inventory: [] }),
-    } as unknown as HostSkillCatalogCoordinator,
-    memory: {} as HostMemoryCoordinator,
-    taskLedger: {} as TaskLedgerStore,
+test('child execution Bash carries the configured shell guidance and spawn plan', async () => {
+  const calls: unknown[] = [];
+  const shell = {
+    plan: {
+      kind: 'git-bash' as const,
+      displayName: 'Git Bash',
+      exe: 'C:\\Program Files\\Git\\bin\\bash.exe',
+    },
+  };
+  const composition = createHostChildAgentToolComposition({
     builtinTools: {
-      filesystemWorker: {
-        execute: async (input) => {
-          workerInput = input;
-          return { kind: 'read', content: 'read by Host worker' };
+      shell,
+      shellRuns: {
+        async runForegroundBash(input) {
+          calls.push(input);
+          return {
+            kind: 'terminal' as const,
+            cwd: input.cwd,
+            cmd: input.command,
+            status: 'completed' as const,
+            exitCode: 0,
+            output: {
+              mode: 'pipes' as const,
+              stdout: '',
+              stderr: '',
+              stdoutTruncated: false,
+              stderrTruncated: false,
+              redacted: false,
+            },
+          };
+        },
+        async runBackgroundBash() {
+          throw new Error('background execution was not requested');
         },
       },
-      sandboxPlatform: 'darwin',
     },
+    worktreePatchWriteBackAvailable: true,
   });
-  const read = composition.tools.find((tool) => tool.name === 'Read');
-  assert.ok(read);
+  const bash = composition.childTools.find((tool) => tool.name === 'Bash') as
+    | MakaTool<{ command: string }, unknown>
+    | undefined;
+  assert.ok(bash);
+  assert.match(bash.description, /Git Bash/);
+  assert.match(bash.description, /POSIX shell syntax/);
 
-  const result = await read.impl(
-    { path: 'resource.txt' },
+  await bash.impl(
+    { command: 'printf child-shell' },
     {
-      sessionId: 'session',
-      turnId: 'turn',
-      toolCallId: 'read-call',
-      cwd: process.cwd(),
-      permissionMode: 'ask',
-      executionBoundary: createManagedExecutionBoundary(createWorkspaceWritePermissionProfile(), 0),
+      sessionId: 'child-session',
+      turnId: 'child-turn',
+      cwd: '/workspace',
+      toolCallId: 'child-bash',
       abortSignal: new AbortController().signal,
       emitOutput: () => {},
     },
   );
-
-  assert.deepEqual(result, { content: 'read by Host worker' });
-  assert.ok(workerInput);
-  assert.deepEqual(workerInput.operation, { kind: 'read', path: 'resource.txt' });
-  assert.equal(workerInput.cwd, process.cwd());
-  assert.equal(workerInput.executionBoundary?.kind, 'managed');
-  assert.equal(workerInput.mode, 'ask');
-  assert.ok(workerInput.abortSignal instanceof AbortSignal);
+  assert.deepEqual((calls[0] as { shell?: unknown }).shell, shell.plan);
 });
 
 test('a bound tool ceiling excludes dynamic Client Capability tools', () => {
@@ -2741,11 +3688,11 @@ test('a bound tool ceiling excludes dynamic Client Capability tools', () => {
     categoryHint: 'client_capability',
     impl: async () => 'capability',
   };
-  const automationTool: MakaTool = {
-    name: 'Automation',
+  const scheduledTaskTool: MakaTool = {
+    name: 'ScheduledTask',
     description: 'A root-only Host authority outside the exact child ceiling.',
     parameters: {},
-    impl: async () => 'automation',
+    impl: async () => 'scheduled-task',
   };
   const composition = createInteractiveRunComposer({
     runtimePolicy: { revision: 0, policy: createDefaultRuntimePolicy() },
@@ -2753,10 +3700,10 @@ test('a bound tool ceiling excludes dynamic Client Capability tools', () => {
       readCanonicalModelInventory: async () => ({ inventory: [] }),
     } as unknown as HostSkillCatalogCoordinator,
     memory: {} as HostMemoryCoordinator,
-    taskLedger: {} as TaskLedgerStore,
+    sessionTodo: {} as SessionTodoToolStore,
     boundTools: [boundTool],
     parentAgentTools: buildParentAgentTools(),
-    automationTool,
+    scheduledTaskTool,
     builtinTools: {},
     clientCapabilities: {
       tools: [capabilityTool],
@@ -2772,28 +3719,56 @@ test('a bound tool ceiling excludes dynamic Client Capability tools', () => {
 
   assert.deepEqual(composition.tools, [boundTool]);
   assert.equal(
-    composition.toolAvailability.groups?.some((group) => group.id === 'client_fixture'),
+    composition.toolAvailability?.groups?.some((group) => group.id === 'client_fixture') ?? false,
     false,
   );
 });
 
-test('root model composition defers the canonical parent-agent tool group', () => {
-  const parentAgentTools = buildParentAgentTools();
+test('the headless coding profile freezes the Eval prompt and tool ceiling', async () => {
   const composition = createInteractiveRunComposer({
     runtimePolicy: { revision: 0, policy: createDefaultRuntimePolicy() },
     skills: {
-      readCanonicalModelInventory: async () => ({ inventory: [] }),
+      readCanonicalModelInventory: async () => {
+        throw new Error('Profiled prompt must not read the product Skill catalog');
+      },
     } as unknown as HostSkillCatalogCoordinator,
-    memory: {} as HostMemoryCoordinator,
-    taskLedger: {} as TaskLedgerStore,
-    parentAgentTools,
+    memory: {
+      readPromptProjection: async () => {
+        throw new Error('Profiled prompt must not read product Memory');
+      },
+    } as unknown as HostMemoryCoordinator,
+    sessionTodo: {} as SessionTodoToolStore,
+    builtinTools: {},
+    toolProfile: 'headless-coding-v1',
+    parentAgentTools: buildParentAgentTools(),
+    scheduledTaskTool: {
+      name: 'ScheduledTask',
+      description: 'Must stay outside the Eval ceiling.',
+      parameters: {},
+      impl: async () => 'scheduled',
+    },
   });
 
   assert.deepEqual(
-    composition.toolAvailability.groups?.find((group) => group.id === 'agent')?.toolNames,
-    ['agent_spawn', 'agent_list', 'agent_output'],
+    composition.tools.map(({ name }) => name),
+    ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'apply_patch'],
   );
-  assert.ok(parentAgentTools.every((tool) => composition.tools.includes(tool)));
+  assert.equal(composition.toolAvailability, undefined);
+  assert.equal(
+    (
+      await composition.resolveSystemPrompt({
+        sessionId: 'profiled-session',
+        turnId: 'profiled-turn',
+        cwd: '/workspace',
+      })
+    ).text,
+    [
+      'Complete the task by acting with the available tools, not by narrating.',
+      'Prefer Read, Glob, and Grep for inspection, Edit and Write for file changes, and Bash for shell commands and tests.',
+      'Verify the result when practical.',
+      'Stop when the task is complete.',
+    ].join('\n'),
+  );
 });
 
 function skillFixture(id: string, description: string, content: string): ScannedSkill {
@@ -2883,24 +3858,58 @@ async function waitForUsage(
   throw new Error('Hosted real-model usage attribution was not persisted');
 }
 
-async function waitForProviderEvidence(
-  execution: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>>,
+async function waitForCanonicalAttempts(
+  usage: InteractiveUsageStoresWriter,
   sessionId: string,
   expectedRequests: number,
-): Promise<{ captures: unknown[]; attempts: unknown[] }> {
+): Promise<readonly ModelCallAttempt[]> {
   for (let attempt = 0; attempt < 100; attempt += 1) {
-    const runs = await execution.agentRunStore.listSessionRuns(sessionId);
-    const events = (
-      await Promise.all(runs.map((run) => execution.agentRunStore.readEvents(sessionId, run.runId)))
-    ).flat();
-    const captures = events.filter((event) => event.type === 'provider_request_captured');
-    const attempts = events.filter((event) => event.type === 'provider_request_attempt_recorded');
-    if (captures.length >= expectedRequests && attempts.length >= expectedRequests) {
-      return { captures, attempts };
-    }
+    const page = await usage.modelCalls.modelCallAttempts(
+      { from: 0, to: Number.MAX_SAFE_INTEGER },
+      sessionId,
+    );
+    if (page.attempts.length >= expectedRequests) return page.attempts;
     await new Promise<void>((resolve) => setTimeout(resolve, 10));
   }
-  throw new Error('Hosted provider request evidence was not persisted');
+  const page = await usage.modelCalls.modelCallAttempts(
+    { from: 0, to: Number.MAX_SAFE_INTEGER },
+    sessionId,
+  );
+  throw new Error(
+    `Hosted canonical model-call attempts were not persisted: ${JSON.stringify({
+      expectedRequests,
+      attempts: page.attempts.length,
+      unreadableRecords: page.unreadableRecords,
+    })}`,
+  );
+}
+
+async function waitForAutomaticMemoryRequestsToSettle(
+  requests: readonly ProviderRequest[],
+): Promise<void> {
+  let stablePolls = 0;
+  let previousCount = -1;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const memoryCount = requests.filter((request) =>
+      /Perform the first stage of long-term-memory extraction/.test(JSON.stringify(request.body)),
+    ).length;
+    if (memoryCount > 0 && requests.length === previousCount) stablePolls += 1;
+    else stablePolls = 0;
+    if (stablePolls >= 5) return;
+    previousCount = requests.length;
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(
+    `Hosted automatic Memory extraction request did not settle: ${JSON.stringify(
+      requests.map((request) => ({
+        stream: request.body.stream,
+        summary: /context summarization assistant/.test(JSON.stringify(request.body)),
+        memory: /Perform the first stage of long-term-memory extraction/.test(
+          JSON.stringify(request.body),
+        ),
+      })),
+    )}`,
+  );
 }
 
 function isTerminal(snapshot: TurnSnapshot): boolean {
@@ -2937,21 +3946,24 @@ async function publishConnectionModel(
 
 function backendCreationFixture(input: {
   abortSignal: AbortSignal;
-  resolveExecutionConnection: () => Promise<unknown>;
+  connectionId?: string;
+  resolveExecutionConnection: (ref?: unknown) => Promise<unknown>;
   readPricing: () => Promise<unknown>;
   runtimePolicy?: RuntimePolicyStoresWriter;
   oauthCredentials?: HostOAuthExecutionAuthority;
-  claudeDeviceId?: string;
   tools?: readonly MakaTool[];
   modelId?: string;
   snapshotClientCapabilities?: () => unknown;
-  executionBoundary?: unknown;
+  executionBoundary?: ExecutionBoundary;
   loadTurnRuntimeEvents?: () => Promise<RuntimeEvent[]>;
   recordRunTrace?: (event: RunTraceEvent) => unknown;
   runtimeCommitSink?: HostAiSdkBackendInput['runtimeCommitSink'];
   recordRunComposition?: BackendFactoryContext['recordRunComposition'];
+  recordHistoryCompactCheckpoint?: BackendFactoryContext['recordHistoryCompactCheckpoint'];
+  recordModelCallAttempt?: BackendFactoryContext['recordModelCallAttempt'];
   createFetchTransport?: HostAiSdkBackendInput['createFetchTransport'];
   createRunComposer?: HostAiSdkBackendInput['createRunComposer'];
+  artifacts?: HostAiSdkBackendInput['artifacts'];
 }): HostAiSdkBackendInput {
   const runtimePolicy =
     input.runtimePolicy ??
@@ -2986,16 +3998,18 @@ function backendCreationFixture(input: {
           body: '',
         }),
       } as unknown as HostMemoryCoordinator,
-      taskLedger: { list: async () => [] } as unknown as TaskLedgerStore,
+      sessionTodo: {} as SessionTodoToolStore,
       clientCapabilities: {
         snapshotForSession: input.snapshotClientCapabilities ?? (() => undefined),
       } as unknown as HostClientCapabilityCoordinator,
+      resolveTavilyWebSearchReadiness: async () => false,
     });
   return {
     context: {
       sessionId: 'backend-creation-session',
       workspaceRoot: '/workspace',
       header: {
+        llmConnectionId: input.connectionId ?? '11111111-1111-4111-8111-111111111111',
         llmConnectionSlug: 'backend-creation-connection',
         model: input.modelId ?? MODEL_ID,
         cwd: '/workspace',
@@ -3008,16 +4022,22 @@ function backendCreationFixture(input: {
         : {}),
       ...(input.recordRunTrace ? { recordRunTrace: input.recordRunTrace } : {}),
       ...(input.recordRunComposition ? { recordRunComposition: input.recordRunComposition } : {}),
+      ...(input.recordHistoryCompactCheckpoint
+        ? { recordHistoryCompactCheckpoint: input.recordHistoryCompactCheckpoint }
+        : {}),
+      ...(input.recordModelCallAttempt
+        ? { recordModelCallAttempt: input.recordModelCallAttempt }
+        : {}),
       store: {
         appendMessage: async () => undefined,
-        readExecutionBoundary: async () => input.executionBoundary,
+        readExecutionBoundary: async () =>
+          input.executionBoundary ?? createBypassExecutionBoundary(0),
       },
     } as unknown as BackendFactoryContext,
     runtimePolicy,
     ...(input.oauthCredentials ? { oauthCredentials: input.oauthCredentials } : {}),
-    ...(input.claudeDeviceId ? { claudeDeviceId: input.claudeDeviceId } : {}),
     createRunComposer,
-    artifacts: {},
+    artifacts: input.artifacts ?? {},
     executionArtifacts: {
       recordToolArtifacts: async () => undefined,
       toolResultArchive: createToolResultArchiveCapability({
@@ -3034,6 +4054,13 @@ function backendCreationFixture(input: {
         recordLlmCall: async () => undefined,
         recordToolInvocation: async () => undefined,
       },
+      modelCalls: {
+        catchUpModelCallProjection: async () => ({
+          changedSessionIds: [],
+          pendingRuns: 0,
+          unreadableEvents: 0,
+        }),
+      },
     },
     requestDrain: () => undefined,
     ...(input.runtimeCommitSink ? { runtimeCommitSink: input.runtimeCommitSink } : {}),
@@ -3046,6 +4073,7 @@ function readyExecutionConnection(
   customization: {
     readonly requestHeaders?: Readonly<Record<string, string>>;
     readonly requestBodyOverlay?: Readonly<Record<string, unknown>>;
+    readonly vision?: boolean;
   } = {},
 ) {
   return {
@@ -3061,7 +4089,11 @@ function readyExecutionConnection(
       models: [
         {
           id: MODEL_ID,
-          capabilities: { chat: true, functionCalling: true },
+          capabilities: {
+            chat: true,
+            functionCalling: true,
+            ...(customization.vision !== undefined ? { vision: customization.vision } : {}),
+          },
           contextWindow: 8_192,
           maxOutputTokens: 1_024,
         },
@@ -3074,6 +4106,27 @@ function readyExecutionConnection(
         ? { requestHeaders: { secret: JSON.stringify(customization.requestHeaders) } }
         : {}),
     },
+  };
+}
+
+function compactRuntimeTextEvent(
+  id: string,
+  turnId: string,
+  role: 'user' | 'model',
+  author: 'user' | 'agent',
+  text: string,
+): RuntimeEvent {
+  return {
+    id,
+    invocationId: 'compact-invocation',
+    runId: 'compact-source-run',
+    sessionId: 'backend-creation-session',
+    turnId,
+    ts: 1,
+    partial: false,
+    role,
+    author,
+    content: { kind: 'text', text },
   };
 }
 
@@ -3097,17 +4150,6 @@ async function settleWithin<T>(pending: Promise<T>): Promise<T> {
 }
 
 const SETTLE_TIMEOUT_MESSAGE = 'Operation did not settle within five seconds';
-
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((next, fail) => {
-    resolve = next;
-    reject = fail;
-  });
-  return { promise, resolve, reject };
-}
-
 function controlledOAuthTransports(): {
   readonly create: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport;
   readonly refreshStarted: Promise<void>;
@@ -3137,7 +4179,7 @@ function controlledOAuthTransports(): {
     let closed = false;
     return {
       fetch: async (url) => {
-        assert.equal(String(url), 'https://platform.claude.com/v1/oauth/token');
+        assert.equal(String(url), 'https://auth.openai.com/oauth/token');
         usedForRefresh = true;
         refreshCalls += 1;
         markRefreshStarted();
@@ -3181,7 +4223,7 @@ function controlledOAuthTransports(): {
           access_token: 'refreshed-oauth-access',
           refresh_token: 'rotated-oauth-refresh',
           expires_in: 3_600,
-          account: { uuid: 'oauth-account-v2' },
+          id_token: 'rotated-id-token',
         }),
       );
     },
@@ -3200,6 +4242,27 @@ function toolNames(body: Record<string, unknown> | undefined): string[] {
     })
     .filter((name): name is string => Boolean(name))
     .sort();
+}
+
+function responsesToolNames(body: Record<string, unknown> | undefined): string[] {
+  const tools = Array.isArray(body?.tools) ? body.tools : [];
+  return tools
+    .flatMap((tool) => {
+      if (!tool || typeof tool !== 'object') return [];
+      const name = (tool as { name?: unknown }).name;
+      return typeof name === 'string' ? [name] : [];
+    })
+    .sort();
+}
+
+function responsesDeveloperPrompt(body: Record<string, unknown> | undefined): string | undefined {
+  if (typeof body?.instructions === 'string') return body.instructions;
+  const input = Array.isArray(body?.input) ? body.input : [];
+  const developer = input.find(
+    (message): message is Record<string, unknown> =>
+      Boolean(message) && typeof message === 'object' && message.role === 'developer',
+  );
+  return typeof developer?.content === 'string' ? developer.content : undefined;
 }
 
 function providerRequestTrace(requests: readonly ProviderRequest[]): readonly unknown[] {
@@ -3275,16 +4338,29 @@ interface ProviderRequest {
   readonly url: string;
   readonly authorization: string | undefined;
   readonly customHeader: string | undefined;
+  readonly sessionHeader: string | undefined;
   readonly body: Record<string, unknown>;
+}
+
+interface ManagedSandboxPaths {
+  readonly outsideBash: string;
+  readonly outsideWrite: string;
+  readonly workspaceBash: string;
+  readonly workspaceWrite: string;
 }
 
 type ProviderFlow =
   | { readonly kind: 'default' }
   | {
+      readonly kind: 'managed_bash';
+      readonly sandboxPaths?: ManagedSandboxPaths;
+    }
+  | {
       readonly kind: 'client_capability';
       readonly groupId: string;
       readonly toolName: string;
     }
+  | { readonly kind: 'projection_image'; readonly toolName: string }
   | { readonly kind: 'child_agent' }
   | {
       readonly kind: 'implementation_child_agent';
@@ -3296,18 +4372,28 @@ type ProviderFlow =
 async function startProvider(): Promise<{
   readonly baseUrl: string;
   readonly requests: ProviderRequest[];
+  configureManagedBashFlow(sandboxPaths?: ManagedSandboxPaths): void;
   configureClientCapability(input: { groupId: string; toolName: string }): void;
+  configureProjectionImageFlow(toolName: string): void;
   configureChildAgentFlow(): void;
   configureImplementationChildAgentFlow(): void;
   configureAgentGraphFlow(): void;
+  configurePayloadProportionalUsage(): void;
   close(): Promise<void>;
 }> {
   const requests: ProviderRequest[] = [];
   let flow: ProviderFlow = { kind: 'default' };
+  // A real provider's reported input tokens grow with the request. The default
+  // constant is fine for tests that only read the number back; a test whose
+  // subject is the context-budget estimate needs usage that tracks the payload,
+  // because that estimate is anchored on exactly this number.
+  let usageTracksPayload = false;
   const server = createServer((request, response) => {
-    void handleProviderRequest(request, response, requests, flow).catch((error) => {
-      response.destroy(error as Error);
-    });
+    void handleProviderRequest(request, response, requests, flow, usageTracksPayload).catch(
+      (error) => {
+        response.destroy(error as Error);
+      },
+    );
   });
   await listen(server);
   const address = server.address();
@@ -3315,9 +4401,20 @@ async function startProvider(): Promise<{
   return {
     baseUrl: `http://127.0.0.1:${address.port}/v1`,
     requests,
+    configureManagedBashFlow: (sandboxPaths) => {
+      if (flow.kind !== 'default') throw new Error('Provider flow is already configured');
+      flow = {
+        kind: 'managed_bash',
+        ...(sandboxPaths ? { sandboxPaths } : {}),
+      };
+    },
     configureClientCapability: (input) => {
       if (flow.kind !== 'default') throw new Error('Provider flow is already configured');
       flow = { kind: 'client_capability', ...input };
+    },
+    configureProjectionImageFlow: (toolName) => {
+      if (flow.kind !== 'default') throw new Error('Provider flow is already configured');
+      flow = { kind: 'projection_image', toolName };
     },
     configureChildAgentFlow: () => {
       if (flow.kind !== 'default') throw new Error('Provider flow is already configured');
@@ -3334,6 +4431,9 @@ async function startProvider(): Promise<{
         scenario: new AgentGraphProviderScenario(CHILD_AGENT_RESULT_TEXT),
       };
     },
+    configurePayloadProportionalUsage: () => {
+      usageTracksPayload = true;
+    },
     close: () => closeServer(server),
   };
 }
@@ -3343,6 +4443,7 @@ async function handleProviderRequest(
   response: ServerResponse,
   requests: ProviderRequest[],
   flow: ProviderFlow,
+  usageTracksPayload = false,
 ): Promise<void> {
   assert.equal(request.method, 'POST');
   const body = JSON.parse(await readBody(request)) as Record<string, unknown>;
@@ -3350,9 +4451,19 @@ async function handleProviderRequest(
     url: request.url ?? '',
     authorization: request.headers.authorization,
     customHeader: request.headers['x-maka-test'] as string | undefined,
+    sessionHeader: request.headers['x-opencode-session'] as string | undefined,
     body,
   });
+  if (request.url === '/v1/responses') {
+    respondProviderResponsesText(response, RESPONSE_TEXT);
+    return;
+  }
   if (body.stream !== true) {
+    const serialized = JSON.stringify(body);
+    const isMemoryExtraction = /Perform the first stage of long-term-memory extraction/.test(
+      serialized,
+    );
+    const isHistoryCompaction = /context summarization assistant/.test(serialized);
     response.writeHead(200, { 'content-type': 'application/json' });
     response.end(
       JSON.stringify({
@@ -3363,7 +4474,20 @@ async function handleProviderRequest(
         choices: [
           {
             index: 0,
-            message: { role: 'assistant', content: SUMMARY_TEXT },
+            message: {
+              role: 'assistant',
+              content: isMemoryExtraction
+                ? JSON.stringify({
+                    status: 'complete',
+                    coverageStatus: 'processed',
+                    requestedStatus: 'not_applicable',
+                    requestedItems: [],
+                    incidentalItems: [],
+                  })
+                : isHistoryCompaction
+                  ? COMPACT_SUMMARY_TEXT
+                  : SUMMARY_TEXT,
+            },
             finish_reason: 'stop',
           },
         ],
@@ -3373,6 +4497,60 @@ async function handleProviderRequest(
     return;
   }
   const streamRequestIndex = requests.filter((candidate) => candidate.body.stream === true).length;
+  if (flow.kind === 'projection_image' && streamRequestIndex === 1) {
+    assert.ok(toolNames(body).includes(flow.toolName));
+    respondProviderToolCall(response, streamRequestIndex, flow.toolName, {});
+    return;
+  }
+  if (flow.kind === 'projection_image') {
+    respondProviderText(response, RESPONSE_TEXT);
+    return;
+  }
+  if (flow.kind === 'managed_bash' && streamRequestIndex === 1) {
+    assert.ok(toolNames(body).includes('Bash'));
+    respondProviderToolCall(response, streamRequestIndex, 'Bash', {
+      command: '/bin/pwd',
+      required_boundary: {
+        filesystem: {
+          entries: [{ path: '.', access: 'read', scope: 'exact' }],
+        },
+        network: { enabled: true },
+      },
+    });
+    return;
+  }
+  if (flow.kind === 'managed_bash' && flow.sandboxPaths && streamRequestIndex === 4) {
+    respondProviderToolCall(response, streamRequestIndex, 'Bash', {
+      command: `printf denied > ${JSON.stringify(flow.sandboxPaths.outsideBash)}`,
+      boundary_intent: 'current',
+    });
+    return;
+  }
+  if (flow.kind === 'managed_bash' && flow.sandboxPaths && streamRequestIndex === 5) {
+    respondProviderToolCall(response, streamRequestIndex, 'Write', {
+      path: flow.sandboxPaths.outsideWrite,
+      content: 'write denied',
+    });
+    return;
+  }
+  if (flow.kind === 'managed_bash' && flow.sandboxPaths && streamRequestIndex === 6) {
+    respondProviderToolCall(response, streamRequestIndex, 'Bash', {
+      command: `printf 'bash allowed' > ${JSON.stringify(flow.sandboxPaths.workspaceBash)}`,
+      boundary_intent: 'current',
+    });
+    return;
+  }
+  if (flow.kind === 'managed_bash' && flow.sandboxPaths && streamRequestIndex === 7) {
+    respondProviderToolCall(response, streamRequestIndex, 'Write', {
+      path: flow.sandboxPaths.workspaceWrite,
+      content: 'write allowed',
+    });
+    return;
+  }
+  if (flow.kind === 'managed_bash') {
+    respondProviderText(response, RESPONSE_TEXT);
+    return;
+  }
   if (flow.kind === 'agent_graph') {
     flow.scenario.respond(body, {
       text: (text) => respondProviderText(response, text),
@@ -3385,9 +4563,11 @@ async function handleProviderRequest(
     (flow.kind === 'child_agent' || flow.kind === 'implementation_child_agent') &&
     streamRequestIndex === 1
   ) {
-    assert.ok(toolNames(body).includes('load_tools'));
+    assert.ok(toolNames(body).includes('tool_search'));
     assert.equal(toolNames(body).includes('agent_spawn'), false);
-    respondProviderToolCall(response, streamRequestIndex, 'load_tools', { group: 'agent' });
+    respondProviderToolCall(response, streamRequestIndex, 'tool_search', {
+      query: 'agent_spawn',
+    });
     return;
   }
   if (
@@ -3413,25 +4593,7 @@ async function handleProviderRequest(
   }
   if (flow.kind === 'child_agent' && streamRequestIndex === 4) {
     assert.ok(toolNames(body).includes('agent_spawn'));
-    respondProviderToolCall(response, streamRequestIndex, 'agent_spawn', {
-      profile: 'web_research',
-      task: 'Find one current hosted web result.',
-      isolation: 'same_workspace',
-      write_back: 'summary',
-    });
-    return;
-  }
-  if (flow.kind === 'child_agent' && streamRequestIndex === 5) {
-    assert.deepEqual(toolNames(body), ['ArchiveRead', 'WebSearch']);
-    respondProviderToolCall(response, streamRequestIndex, 'WebSearch', {
-      query: 'latest hosted web result',
-      limit: 1,
-    });
-    return;
-  }
-  if (flow.kind === 'child_agent' && streamRequestIndex === 6) {
-    assert.deepEqual(toolNames(body), ['ArchiveRead', 'WebSearch']);
-    respondProviderText(response, WEB_RESEARCH_CHILD_RESULT_TEXT);
+    respondProviderText(response, RESPONSE_TEXT);
     return;
   }
   if (flow.kind === 'implementation_child_agent' && streamRequestIndex === 3) {
@@ -3455,6 +4617,7 @@ async function handleProviderRequest(
   if (flow.kind === 'implementation_child_agent' && streamRequestIndex === 4) {
     respondProviderToolCall(response, streamRequestIndex, 'Bash', {
       command: 'node pty-child.mjs',
+      boundary_intent: 'current',
       run_in_background: true,
       pty: true,
     });
@@ -3508,9 +4671,9 @@ async function handleProviderRequest(
     return;
   }
   if (flow.kind === 'client_capability' && streamRequestIndex === 1) {
-    assert.ok(toolNames(body).includes('load_tools'));
-    respondProviderToolCall(response, streamRequestIndex, 'load_tools', {
-      group: flow.groupId,
+    assert.ok(toolNames(body).includes('tool_search'));
+    respondProviderToolCall(response, streamRequestIndex, 'tool_search', {
+      query: flow.toolName,
     });
     return;
   }
@@ -3521,10 +4684,75 @@ async function handleProviderRequest(
     });
     return;
   }
-  respondProviderText(response, RESPONSE_TEXT);
+  respondProviderText(
+    response,
+    RESPONSE_TEXT,
+    usageTracksPayload ? Math.max(11, Math.ceil(JSON.stringify(body).length / 4)) : 11,
+  );
 }
 
-function respondProviderText(response: ServerResponse, text: string): void {
+function respondProviderResponsesText(response: ServerResponse, text: string): void {
+  const responseId = 'resp-hosted-profile';
+  const messageId = 'msg-hosted-profile';
+  const events = [
+    {
+      type: 'response.created',
+      response: {
+        id: responseId,
+        object: 'response',
+        created_at: 1,
+        model: 'deepseek-v4-flash',
+        status: 'in_progress',
+        output: [],
+      },
+    },
+    {
+      type: 'response.output_item.added',
+      output_index: 0,
+      item: {
+        type: 'message',
+        id: messageId,
+        status: 'in_progress',
+        role: 'assistant',
+        content: [],
+      },
+    },
+    {
+      type: 'response.output_text.delta',
+      content_index: 0,
+      delta: text,
+      item_id: messageId,
+      output_index: 0,
+    },
+    {
+      type: 'response.output_item.done',
+      output_index: 0,
+      item: {
+        type: 'message',
+        id: messageId,
+        status: 'completed',
+        role: 'assistant',
+        content: [{ type: 'output_text', text, annotations: [] }],
+      },
+    },
+    {
+      type: 'response.completed',
+      response: {
+        id: responseId,
+        object: 'response',
+        created_at: 1,
+        model: 'deepseek-v4-flash',
+        status: 'completed',
+        output: [],
+        usage: { input_tokens: 11, output_tokens: 5, total_tokens: 16 },
+      },
+    },
+  ];
+  response.writeHead(200, { 'content-type': 'text/event-stream' });
+  response.end(`${events.map((event) => `data: ${JSON.stringify(event)}`).join('\n\n')}\n\n`);
+}
+
+function respondProviderText(response: ServerResponse, text: string, promptTokens = 11): void {
   response.writeHead(200, { 'content-type': 'text/event-stream' });
   response.write(
     `data: ${JSON.stringify({
@@ -3548,7 +4776,11 @@ function respondProviderText(response: ServerResponse, text: string): void {
       created: 1,
       model: MODEL_ID,
       choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-      usage: { prompt_tokens: 11, completion_tokens: 5, total_tokens: 16 },
+      usage: {
+        prompt_tokens: promptTokens,
+        completion_tokens: 5,
+        total_tokens: promptTokens + 5,
+      },
     })}\n\n`,
   );
   response.end('data: [DONE]\n\n');

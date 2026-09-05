@@ -1,4 +1,23 @@
-import type { ThemePreference } from '@maka/core';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import type { ThemePreference } from '@maka/core/settings';
 
 export type NativeThemeSource = 'system' | 'light' | 'dark';
 
@@ -21,4 +40,21 @@ export function isThemePreference(value: unknown): value is ThemePreference {
  */
 export function toNativeThemeSource(pref: ThemePreference): NativeThemeSource {
   return pref === 'auto' ? 'system' : pref;
+}
+
+/**
+ * Whether the app is currently showing dark appearance.
+ *
+ * The stored preference alone cannot answer this: `auto` defers to the OS, so
+ * the caller has to supply what the OS currently says. Split out as a pure
+ * function because three places need the same answer — the window background,
+ * the window `icon` option, and the dock tile — and a disagreement between
+ * them is visible as a flash of the wrong theme on the first frame.
+ */
+export function isDarkAppearance(
+  pref: ThemePreference | undefined,
+  systemPrefersDark: boolean,
+): boolean {
+  const resolved = isThemePreference(pref) ? pref : 'auto';
+  return resolved === 'dark' || (resolved === 'auto' && systemPrefersDark);
 }

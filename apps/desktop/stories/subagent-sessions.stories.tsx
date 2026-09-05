@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * Subagent sessions — session presentation contract (design lock).
  *
@@ -25,14 +44,15 @@ import {
   ChatMessageMetadata,
 } from '@astryxdesign/core/Chat';
 import { Text } from '@astryxdesign/core/Text';
-import type { SessionSummary, ToolResultContent } from '@maka/core';
+import type { SessionSummary } from '@maka/core/session';
+import type { ToolResultContent } from '@maka/core/events';
 import {
-  SessionListPanel,
   TitlebarSessionIdentity,
 } from '@maka/ui';
+import { SessionRail } from '../../../packages/ui/stories/session-rail-harness.js';
 import { ToolTrow } from '../../../packages/ui/src/tool-activity.js';
 import type { ToolActivityItem } from '../../../packages/ui/src/materialize.js';
-import { deriveSessionRail } from '../src/renderer/session-rail.js';
+import { deriveSessionRail } from '../src/renderer/features/session-navigation/testing';
 
 // ---------------------------------------------------------------------------
 // Fixtures — multi-subagent contiguous tool run
@@ -355,8 +375,8 @@ function ProductRail(props: { activeSessionId: string }) {
   );
   return (
     <div style={shell.rail}>
-      <SessionListPanel
-        selection={{ section: 'sessions', filter: 'chats' }}
+      <SessionRail
+        selection={{ section: 'sessions' }}
         sessions={sessions}
         activeId={activeRowId}
         width={260}

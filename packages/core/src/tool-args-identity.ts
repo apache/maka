@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import * as nodeCrypto from 'node:crypto';
 
 /**
@@ -144,7 +163,7 @@ function canonicalizeMainlineV1(value: unknown, parentKey?: string): unknown {
  * The cost of not doing this was total. The refused write marked the runtime
  * event store unavailable, the turn's terminal write then threw, and every turn
  * that called any tool died a tenth of a second after the tool returned —
- * `load_tools` succeeded, reported the group loaded, and the turn ended there.
+ * `tool_search` succeeded, reported activated tools, and the turn ended there.
  *
  * Dropping the key is lossless in the only sense that matters: JSON cannot tell
  * an absent property from one set to `undefined`, so this writes down what
@@ -152,23 +171,9 @@ function canonicalizeMainlineV1(value: unknown, parentKey?: string): unknown {
  * `null` rather than a removal — JSON writes one there regardless, and removing
  * the entry would shift everything after it.
  *
- * What it does not do: it never rebuilds a value that needed no change, so
- * symbol keys and object identity survive untouched on that path; a value it
- * does rebuild is a plain-object spread, which keeps symbol keys and loses
- * nothing JSON could have seen. An accessor survives that path too, and that
- * is not a benefit to lean on: `canonicalizeStrictJson` throws on any getter it
- * reaches, so at the call site a surviving getter kills the same write a
- * surviving `undefined` would have. Nothing produces one today — provider
- * metadata arrives as parsed plain objects — and widening this function to
- * rebuild accessors would change what it means for callers that hand it
- * anything else. Read this line as "getters are out of scope, and out of
- * scope is fatal downstream", not as a shape this makes safe to pass.
- *
  * It descends into exactly the two shapes the encoder accepts — a plain object
  * and a null-prototype one, the shape prototype-safe JSON parsing produces —
- * and a null prototype is put back on the rebuilt value, because that prototype
- * is what keeps a `__proto__` property as data. Anything with any other
- * prototype is returned as-is rather than flattened.
+ * and restores a null prototype on rebuilt values so `__proto__` remains data.
  */
 export function stripUndefinedDeep<T>(value: T): T {
   if (Array.isArray(value)) {

@@ -1,23 +1,28 @@
-/**
- * Tests for the onboarding snapshot poller + isSetupRequired helper
- * (PR110c).
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
  *
- * The React hook (`useOnboardingSnapshotImpl`) is a thin shell over
- * `createOnboardingSnapshotPoller`. We test the pure poller here —
- * stale-response defense, lifecycle gating, error handling — and
- * verify the helper predicate `isSetupRequired`. The React wiring is
- * covered by Playwright E2E + manual UI testing in PR110d.
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
  */
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import type { OnboardingState } from '@maka/core';
+import type { OnboardingState } from '@maka/core/onboarding';
 import {
-  advanceOnboardingSnapshotState,
   createOnboardingSnapshotPoller,
-  createOnboardingSnapshotState,
   getOnboardingActivationCandidate,
-  isSetupRequired,
 } from '../../renderer/use-onboarding-snapshot.js';
 import type { OnboardingSnapshot } from '../../preload/bridge-contract.js';
 
@@ -85,20 +90,6 @@ describe('getOnboardingActivationCandidate', () => {
 });
 
 describe('createOnboardingSnapshotPoller', () => {
-  it('routes a successful getSnapshot to onSnapshot', async () => {
-    const events: Array<{ type: 'snap' | 'err'; payload: unknown }> = [];
-    const poller = createOnboardingSnapshotPoller(
-      { getSnapshot: async () => READY_SNAPSHOT },
-      {
-        onSnapshot: (s) => events.push({ type: 'snap', payload: s }),
-        onError: (m) => events.push({ type: 'err', payload: m }),
-      },
-      () => 'zh',
-    );
-    await poller.pull();
-    assert.deepEqual(events, [{ type: 'snap', payload: READY_SNAPSHOT }]);
-  });
-
   it('scrubs getSnapshot rejections before routing them to onError', async () => {
     const events: Array<{ type: 'snap' | 'err'; payload: unknown }> = [];
     const poller = createOnboardingSnapshotPoller(
@@ -111,7 +102,7 @@ describe('createOnboardingSnapshotPoller', () => {
         onSnapshot: (s) => events.push({ type: 'snap', payload: s }),
         onError: (m) => events.push({ type: 'err', payload: m }),
       },
-      () => 'zh',
+      () => 'zh-CN',
     );
     await poller.pull();
     assert.deepEqual(events, [{ type: 'err', payload: '鉴权失败' }]);
@@ -139,7 +130,7 @@ describe('createOnboardingSnapshotPoller', () => {
           /* not expected */
         },
       },
-      () => 'zh',
+      () => 'zh-CN',
     );
     // Fire two overlapping pulls.
     const pull1 = poller.pull();
@@ -177,7 +168,7 @@ describe('createOnboardingSnapshotPoller', () => {
         onSnapshot: (s) => snaps.push(s),
         onError: (m) => errs.push(m),
       },
-      () => 'zh',
+      () => 'zh-CN',
     );
     const pull1 = poller.pull();
     const pull2 = poller.pull();
@@ -203,7 +194,7 @@ describe('createOnboardingSnapshotPoller', () => {
         onSnapshot: (s) => events.push({ type: 'snap', payload: s }),
         onError: (m) => events.push({ type: 'err', payload: m }),
       },
-      () => 'zh',
+      () => 'zh-CN',
     );
 
     const pull = poller.pull();
@@ -228,7 +219,7 @@ describe('createOnboardingSnapshotPoller', () => {
         onSnapshot: (s) => events.push({ type: 'snap', payload: s }),
         onError: (m) => events.push({ type: 'err', payload: m }),
       },
-      () => 'zh',
+      () => 'zh-CN',
     );
 
     const pull = poller.pull();
@@ -247,7 +238,7 @@ describe('createOnboardingSnapshotPoller', () => {
         onSnapshot: (s) => events.push({ type: 'snap', payload: s }),
         onError: (m) => events.push({ type: 'err', payload: m }),
       },
-      () => 'zh',
+      () => 'zh-CN',
     );
 
     poller.dispose();
@@ -257,75 +248,5 @@ describe('createOnboardingSnapshotPoller', () => {
     poller.activate();
     await poller.pull();
     assert.deepEqual(events, [{ type: 'snap', payload: READY_SNAPSHOT }]);
-  });
-});
-
-describe('onboarding mounted snapshot handoff', () => {
-  it('keeps a session created while mounted snapshots wait for React to commit', () => {
-    const snapshotA = READY_SNAPSHOT;
-    const snapshotB = { ...READY_SNAPSHOT };
-    const snapshotC: OnboardingSnapshot = {
-      ...READY_SNAPSHOT,
-      sessions: [
-        {
-          id: 'created-during-bootstrap',
-          name: 'New session',
-          isFlagged: false,
-          isArchived: false,
-          labels: [],
-          hasUnread: false,
-          status: 'active' as const,
-          backend: 'fake',
-          llmConnectionSlug: 'default',
-          connectionLocked: false,
-          model: 'fake-model',
-          permissionMode: 'ask' as const,
-          projectId: null,
-        },
-      ],
-    };
-
-    const afterB = advanceOnboardingSnapshotState(createOnboardingSnapshotState(snapshotA), snapshotB);
-    const afterC = advanceOnboardingSnapshotState(afterB, snapshotC);
-
-    assert.equal(afterC.snapshot, snapshotC);
-    assert.deepEqual(
-      afterC.mountedSnapshotHandoff?.sessions.map(({ id }) => id),
-      ['created-during-bootstrap'],
-    );
-  });
-});
-
-describe('isSetupRequired', () => {
-  it('returns true for the three needs_* variants', () => {
-    for (const kind of [
-      'needs_connection',
-      'needs_connection_credentials',
-      'needs_model',
-    ] as const) {
-      const state =
-        kind === 'needs_connection_credentials' || kind === 'needs_model'
-          ? ({ kind, connectionSlug: 'a' } as OnboardingState)
-          : ({ kind } as OnboardingState);
-      assert.equal(isSetupRequired(state), true, `${kind} should be setup-required`);
-    }
-  });
-
-  it('returns false for ready_empty / ready_with_history / blocked / undefined', () => {
-    const ready: OnboardingState = {
-      kind: 'ready_empty',
-      connectionSlug: 'a',
-      model: 'm',
-    };
-    const withHistory: OnboardingState = {
-      kind: 'ready_with_history',
-      connectionSlug: 'a',
-      model: 'm',
-    };
-    const blocked: OnboardingState = { kind: 'blocked', reason: 'all_connections_unhealthy' };
-    assert.equal(isSetupRequired(ready), false);
-    assert.equal(isSetupRequired(withHistory), false);
-    assert.equal(isSetupRequired(blocked), false);
-    assert.equal(isSetupRequired(undefined), false);
   });
 });

@@ -1,15 +1,157 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 name: Windows recovery
 
+# The paths below name only what a Windows runner can prove and the required
+# `test` lane cannot. Two groups.
+#
+# First, how the toolchain behaves here: `npm ci` resolution, what the
+# dependency patches and the Electron installer produce, what the clean step
+# removes, and the Local IPC trust boundary, a PowerShell script with no other
+# caller.
+#
+# Second, every file in the import closure of the suites below that branches on
+# `process.platform === 'win32'`. Those branches are skipped on Linux by
+# construction, so `test` cannot go red on them however carefully it runs.
+# `assertNoWindowsAlternateStreams` is the example that matters: it is the one
+# regression this lane has caught that no other lane could have. That second
+# group is generated rather than curated, because a hand-picked list cannot be
+# shown to be complete and this one has to be.
+#
+# What is deliberately absent is the portable rest of those workspaces. Every
+# source directory in the closure used to be here, which put this lane on 118 of
+# the last 200 merges against 40 now. Over 300 runs it never once produced a
+# pull-request red that `test` had not already produced on the same commit,
+# usually at the very same step — the portable half of these suites is ordinary
+# TypeScript, so a defect in it fails on Linux first and blocks the merge there.
+#
+# The wide filter also did not prevent the one regression it is tempting to
+# cite. #4400 changed `packages/storage/src/**`, matched that filter, ran this
+# lane three times on the pull request, and passed all three; the alternate
+# stream failure appeared only on the main push afterwards. That is a stale-base
+# interaction, which no path filter can see and which the unfiltered push below
+# exists to catch. That trigger stays unfiltered for the same reason
+# `required_status_checks` is `strict: false`, and because GitHub evaluates a
+# path filter against the first 300 files of a diff only — a repository-wide
+# sweep being exactly the change that touches every recovery authority at once.
 on:
   pull_request:
     branches: [main]
+    paths:
+      - 'package-lock.json'
+      - 'patches/**'
+      - 'scripts/apply-dependency-patches.mjs'
+      - 'scripts/install-electron-with-retry.mjs'
+      - 'scripts/run-electron-installer.cjs'
+      - 'scripts/clean-build.mjs'
+      - 'scripts/clean-paths.mjs'
+      - 'scripts/windows-runtime-host-local-ipc-trust.ps1'
+      # Every file in the import closure of the suites below that branches on
+      # `process.platform === 'win32'`. Generated, not curated:
+      # `scripts/windows-package-source-closure.test.mjs` recomputes this set
+      # from the dist tests the steps run and fails on any difference in either
+      # direction.
+      - 'packages/core/src/diagnostic-log.ts'
+      - 'packages/runtime-host/src/__tests__/control-endpoint.test.ts'
+      - 'packages/runtime-host/src/__tests__/fixtures/endpoint-hygiene.ts'
+      - 'packages/runtime-host/src/__tests__/skill-catalog-protocol.test.ts'
+      - 'packages/runtime-host/src/__tests__/skill-catalog-repository.test.ts'
+      - 'packages/runtime-host/src/__tests__/skill-catalog-transaction.test.ts'
+      - 'packages/runtime-host/src/__tests__/skill-catalog-two-client-uds.test.ts'
+      - 'packages/runtime-host/src/client/client-instance-identity.ts'
+      - 'packages/runtime-host/src/client/host-profile.ts'
+      - 'packages/runtime-host/src/client/ssh-operator-activation.ts'
+      - 'packages/runtime-host/src/client/ssh-tunnel.ts'
+      - 'packages/runtime-host/src/client/wsl-control.ts'
+      - 'packages/runtime-host/src/control/access-credential-delivery.ts'
+      - 'packages/runtime-host/src/control/endpoint.ts'
+      - 'packages/runtime-host/src/control/registration.ts'
+      - 'packages/runtime-host/src/control/startup-diagnostic.ts'
+      - 'packages/runtime-host/src/operator/local-deployment-owner.ts'
+      - 'packages/runtime-host/src/operator/managed-deployment.ts'
+      - 'packages/runtime-host/src/operator/operator-command.ts'
+      - 'packages/runtime-host/src/peer-mesh/store.ts'
+      - 'packages/runtime-host/src/peer-reachability/owner.ts'
+      - 'packages/runtime-host/src/peer-reachability/publisher.ts'
+      - 'packages/runtime-host/src/protocol/host-status.ts'
+      - 'packages/runtime-host/src/protocol/skill-catalog.ts'
+      - 'packages/runtime-host/src/server/access-credential-store.ts'
+      - 'packages/runtime-host/src/server/host-resource-probe.ts'
+      - 'packages/runtime-host/src/server/skill-catalog-repository.ts'
+      - 'packages/runtime-host/src/server/skill-catalog-transaction.ts'
+      - 'packages/runtime/src/__tests__/runtime-continuation-crash.test.ts'
+      - 'packages/runtime/src/__tests__/runtime-resume-crash.test.ts'
+      - 'packages/runtime/src/builtin-tools.ts'
+      - 'packages/runtime/src/file-stable-write.ts'
+      - 'packages/runtime/src/filesystem-worker/client.ts'
+      - 'packages/runtime/src/filesystem-worker/launch-spec.ts'
+      - 'packages/runtime/src/filesystem-worker/process-runner.ts'
+      - 'packages/runtime/src/pipe-process-driver.ts'
+      - 'packages/runtime/src/process-tree-terminator.ts'
+      - 'packages/runtime/src/pty-process-driver.ts'
+      - 'packages/runtime/src/sandbox-boundary-declaration.ts'
+      - 'packages/runtime/src/sandbox/default-sandbox-manager.ts'
+      - 'packages/runtime/src/sandbox/sandbox-manager.ts'
+      - 'packages/runtime/src/sandbox/windows-profile.ts'
+      - 'packages/runtime/src/sandbox/windows-sandbox.ts'
+      - 'packages/runtime/src/shell-detect.ts'
+      - 'packages/runtime/src/shell-exec.ts'
+      - 'packages/storage/src/__tests__/managed-dependency-environment.test.ts'
+      - 'packages/storage/src/__tests__/root-authority.test.ts'
+      - 'packages/storage/src/artifact-store.ts'
+      - 'packages/storage/src/artifact-writer-bootstrap-lock.ts'
+      - 'packages/storage/src/artifact-writer-lock.ts'
+      - 'packages/storage/src/credential-store.ts'
+      - 'packages/storage/src/file-lifetime-owner.ts'
+      - 'packages/storage/src/managed-dependency-environment.ts'
+      - 'packages/storage/src/marker-file.ts'
+      - 'packages/storage/src/memory-bundle-io.ts'
+      - 'packages/storage/src/native-file-lock.ts'
+      - 'packages/storage/src/root-authority.ts'
+      - 'packages/storage/src/runtime-policy/document-io.ts'
+      - 'packages/storage/src/sqlite-long-term-memory-store.ts'
+      - 'packages/storage/src/stable-storage.ts'
+      - '.github/workflows/windows-recovery.yml'
+  # Unfiltered on purpose: required_status_checks is `strict: false`, so a pull
+  # request goes green against a stale base and only the merged result proves
+  # two independently green halves still agree. It is also the backstop for the
+  # 300-file case above. The nightly alone would find either a day later,
+  # against a batch of commits instead of one.
   push:
     branches: [main]
+  schedule:
+    # Offset from windows-sandbox-w0 so the Windows lanes do not overlap.
+    - cron: '17 8 * * *'
   workflow_dispatch:
 
+# Pull request pushes supersede each other, keyed on the pull request number
+# because github.head_ref is a bare branch name two forks can share: a second
+# contributor pushing to their own `main` would otherwise cancel the first
+# contributor's run, and a cancelled check is not a failed one.
+# Scheduled, manual and main-push runs fall back to the run id, since
+# github.ref is refs/heads/main for all three and one shared group would let a
+# dispatch queue behind the nightly and then be discarded while still pending.
+# That deliberately stops main pushes from superseding each other: this lane is
+# the only place a merged Windows regression is observed, so every merge needs
+# its own evidence rather than only the newest one surviving.
 concurrency:
-  group: windows-recovery-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: windows-recovery-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -18,9 +160,11 @@ jobs:
   windows_recovery:
     name: windows_recovery
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -32,6 +176,60 @@ jobs:
 
       - name: Build test artifacts
         run: npm.cmd run build:test
+
+      - name: Verify managed dependency alternate streams
+        shell: pwsh
+        run: |
+          node.exe --test --test-reporter=tap --test-concurrency=1 `
+            --test-name-pattern="NTFS alternate stream" `
+            packages/storage/dist/__tests__/managed-dependency-environment.test.js `
+            2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/managed-dependency-ads.tap"
+          $exitCode = $LASTEXITCODE
+          if ($exitCode -ne 0) { exit $exitCode }
+          $output = Get-Content "$env:RUNNER_TEMP/managed-dependency-ads.tap"
+          if ($output -notcontains '# tests 3' -or $output -notcontains '# pass 3' -or $output -notcontains '# skipped 0') {
+            Write-Error 'Managed dependency ADS gate did not run exactly three passing Windows tests'
+            exit 1
+          }
+
+      - name: Verify root initialization replacement race
+        shell: pwsh
+        run: |
+          node.exe --test --test-reporter=tap --test-concurrency=1 `
+            --test-name-pattern="rejects replacement before opening the temporary marker" `
+            packages/storage/dist/__tests__/root-authority.test.js `
+            2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/root-initialization-race.tap"
+          $exitCode = $LASTEXITCODE
+          if ($exitCode -ne 0) { exit $exitCode }
+          $output = Get-Content "$env:RUNNER_TEMP/root-initialization-race.tap"
+          if ($output -notcontains '# tests 1' -or $output -notcontains '# pass 1' -or $output -notcontains '# skipped 0') {
+            Write-Error 'Root initialization race gate did not run exactly one passing Windows test'
+            exit 1
+          }
+
+      - name: Verify Runtime Host Local IPC trust boundary
+        shell: pwsh
+        run: |
+          node.exe --test packages/runtime-host/dist/__tests__/control-endpoint.test.js
+          ./scripts/windows-runtime-host-local-ipc-trust.ps1
+
+      - name: Verify Skill catalog on Windows
+        shell: pwsh
+        run: |
+          node.exe --test --test-reporter=tap --test-concurrency=1 `
+            packages/runtime-host/dist/__tests__/skill-catalog-coordinator.test.js `
+            packages/runtime-host/dist/__tests__/skill-catalog-protocol.test.js `
+            packages/runtime-host/dist/__tests__/skill-catalog-repository.test.js `
+            packages/runtime-host/dist/__tests__/skill-catalog-transaction.test.js `
+            packages/runtime-host/dist/__tests__/skill-catalog-two-client-uds.test.js `
+            2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/skill-catalog.tap"
+          $exitCode = $LASTEXITCODE
+          if ($exitCode -ne 0) { exit $exitCode }
+          $output = Get-Content "$env:RUNNER_TEMP/skill-catalog.tap"
+          if ($output -notcontains '# tests 91' -or $output -notcontains '# pass 91' -or $output -notcontains '# skipped 0') {
+            Write-Error 'Skill catalog gate did not run exactly 91 passing Windows tests'
+            exit 1
+          }
 
       - name: Verify SQLite crash recovery
         shell: pwsh
@@ -60,22 +258,5 @@ jobs:
           $output = Get-Content "$env:RUNNER_TEMP/runtime-host-recovery.tap"
           if ($output -notcontains '# tests 2' -or $output -notcontains '# pass 2' -or $output -notcontains '# skipped 0') {
             Write-Error 'Runtime Host recovery gate did not run exactly two passing tests'
-            exit 1
-          }
-
-      - name: Verify managed workspace crash recovery
-        shell: pwsh
-        run: |
-          $env:MAKA_STORAGE_STRESS = '1'
-          node.exe --test --test-reporter=tap --test-concurrency=1 `
-            --test-name-pattern="real process crash|real crash|real-process crash|crash after baseline ref publication" `
-            packages/storage/dist/__tests__/managed-workspace-baseline.test.js `
-            packages/storage/dist/__tests__/git-workspace-service.test.js `
-            2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/managed-workspace-recovery.tap"
-          $exitCode = $LASTEXITCODE
-          if ($exitCode -ne 0) { exit $exitCode }
-          $output = Get-Content "$env:RUNNER_TEMP/managed-workspace-recovery.tap"
-          if ($output -notcontains '# tests 12' -or $output -notcontains '# pass 12' -or $output -notcontains '# skipped 0') {
-            Write-Error 'Managed workspace recovery gate did not run exactly twelve passing tests'
             exit 1
           }

@@ -1,9 +1,28 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { randomUUID } from 'node:crypto';
 import { readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
-  OPENCODE_FREE_DEFAULT_ENABLED_MODELS,
   OPENCODE_FREE_DEFAULT_MODEL,
+  defaultEnabledModelIdsWhenOmitted,
   type ProviderType,
 } from '@maka/core/llm-connections';
 import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
@@ -12,6 +31,8 @@ import type { RuntimePolicyStoresWriter } from '@maka/storage/runtime-policy-sto
 const JOURNAL_FILE = '.runtime-host-bootstrap.json';
 interface BootstrapEnvironment {
   readonly ANTHROPIC_API_KEY?: string;
+  readonly DEEPSEEK_API_KEY?: string;
+  readonly DEEPSEEK_BASE_URL?: string;
   readonly OPENAI_API_KEY?: string;
 }
 
@@ -20,8 +41,17 @@ interface BootstrapSeed {
   readonly name: string;
   readonly providerType: ProviderType;
   readonly enabledModelIds: readonly string[];
+  readonly baseUrl?: string;
   readonly secret?: string;
 }
+
+/**
+ * What the seeded OpenCode Free connection starts with — the provider's own
+ * declaration of the models a fresh connection to it enables, so the seed and
+ * a hand-added connection cannot drift apart.
+ */
+const OPENCODE_FREE_SEED_MODEL_IDS: readonly string[] =
+  defaultEnabledModelIdsWhenOmitted('opencode-free') ?? [];
 
 interface BootstrapJournal {
   readonly version: 1;
@@ -38,6 +68,23 @@ export async function ensureBootstrapRuntimePolicy(input: {
   const journalPath = join(input.workspaceRoot, JOURNAL_FILE);
   const resuming = await readJournal(journalPath);
   const initialCatalog = await input.stores.connectionCatalog.getSnapshot();
+  if (initialCatalog.connections.length > 0) {
+    // One atomic catalog mutation: enabled ids, static inventory, and a
+    // retarget of a system default the migration removes all land in the same
+    // document write, so no restart can observe a half-migrated row.
+    try {
+      await input.stores.connectionCatalog.migrateSystemSeed({
+        slug: 'opencode-free',
+        providerType: 'opencode-free',
+        legacyEnabledModelIds: LEGACY_OPENCODE_FREE_SEEDS,
+        enabledModelIds: OPENCODE_FREE_SEED_MODEL_IDS,
+        defaultModelId: OPENCODE_FREE_DEFAULT_MODEL,
+        retiredModelIds: retiredOpencodeFreeModelIds(),
+      });
+    } catch (error) {
+      input.onDeferredError?.(error);
+    }
+  }
   if (!resuming) {
     if (initialCatalog.connections.length > 0) return;
     await writeJournal(journalPath);
@@ -75,12 +122,22 @@ function bootstrapSeeds(environment: BootstrapEnvironment): readonly BootstrapSe
       slug: 'opencode-free',
       name: 'OpenCode Free',
       providerType: 'opencode-free',
-      enabledModelIds: OPENCODE_FREE_DEFAULT_ENABLED_MODELS,
+      enabledModelIds: OPENCODE_FREE_SEED_MODEL_IDS,
     },
   ];
+  const deepseek = environment.DEEPSEEK_API_KEY?.trim();
   const anthropic = environment.ANTHROPIC_API_KEY?.trim();
   const openai = environment.OPENAI_API_KEY?.trim();
-  if (anthropic) {
+  if (deepseek) {
+    seeds.push({
+      slug: 'env-deepseek',
+      name: 'DeepSeek (env)',
+      providerType: 'deepseek',
+      enabledModelIds: ['deepseek-v4-flash'],
+      baseUrl: environment.DEEPSEEK_BASE_URL?.trim() || 'https://api.deepseek.com',
+      secret: deepseek,
+    });
+  } else if (anthropic) {
     seeds.push({
       slug: 'env-anthropic',
       name: 'Anthropic (env)',
@@ -119,6 +176,7 @@ async function ensureConnection(
         slug: seed.slug,
         name: seed.name,
         providerType: seed.providerType,
+        ...(seed.baseUrl === undefined ? {} : { baseUrl: seed.baseUrl }),
         enabled: true,
         enabledModelIds: seed.enabledModelIds,
       },
@@ -130,6 +188,26 @@ async function ensureConnection(
     }
   }
   throw new Error(`Bootstrap Connection could not be created: ${seed.slug}`);
+}
+
+/**
+ * Every opencode-free inventory a past release seeded, verbatim. A row still
+ * equal to one of these is provably system-owned and may follow the current
+ * seed; any other value is a user selection and is never touched. Every
+ * release that changes the derived seed must append the previous value here,
+ * or rows it planted read as user selections forever. (This exact-match
+ * enumeration is deliberately lossy; the versioned seed policy discussed in
+ * #3354 is the durable replacement.)
+ */
+const LEGACY_OPENCODE_FREE_SEEDS: readonly (readonly string[])[] = [
+  ['big-pickle'],
+  ['nemotron-3-ultra-free'],
+  ['nemotron-3-ultra-free', 'mimo-v2.5-free', 'deepseek-v4-flash-free'],
+];
+
+function retiredOpencodeFreeModelIds(): readonly string[] {
+  const current = new Set(OPENCODE_FREE_SEED_MODEL_IDS);
+  return [...new Set(LEGACY_OPENCODE_FREE_SEEDS.flat())].filter((id) => !current.has(id));
 }
 
 async function removeFailedBootstrapConnection(

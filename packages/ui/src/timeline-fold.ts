@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { TurnTimelineItem } from './materialize.js';
 
 /**
@@ -9,15 +28,15 @@ import type { TurnTimelineItem } from './materialize.js';
  * maintain a nesting invariant. This module derives the folded view right
  * before rendering:
  *
- *  - answer `text` entries stay in place and are the only grouping boundary;
+ *  - answer `text` and inserted `user` entries stay in place and bound groups;
  *  - a maximal thinking+tools run between two texts folds into ONE
  *    `processing` block when it contains at least one tools group, preserving
  *    the run's interleaved order as `children`;
  *  - a pure-thinking run stays bare (the 深度思考 disclosure renders it
  *    directly — wrapping a lone reasoning block would just double the fold).
  *
- * Each block carries a stable `id` derived from the PRECEDING answer text's
- * messageId (`'start'` when the block opens the turn). Between two texts there
+ * Each block carries a stable `id` derived from the preceding text or inserted
+ * user entry's messageId (`'start'` when the block opens the turn). Between two boundaries there
  * is at most one block, so the id is unique per turn — and, unlike a key
  * guessed from the first child, it survives the first tool being projected
  * away (shell-run folding) without remounting the disclosure or dropping a
@@ -33,7 +52,7 @@ export type FoldedTimelineChild = Extract<TurnTimelineItem, { kind: 'thinking' |
 
 export interface ProcessingFold {
   kind: 'processing';
-  /** Stable identity: `'start'` or the preceding answer text's messageId. */
+  /** Stable identity: `'start'` or the preceding text/user boundary's messageId. */
   id: string;
   children: FoldedTimelineChild[];
 }

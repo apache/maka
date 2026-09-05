@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type {
   CacheMissInputSource,
   CompactionDecisionDiagnostic,
@@ -51,7 +70,7 @@ const COMPACTION_DECISION_SHAPE = defineObjectShape<CompactionDecisionDiagnostic
   ],
 );
 
-const CONTEXT_BUDGET_SHAPE = defineObjectShape<ContextBudgetDiagnostic>()(
+const CURRENT_CONTEXT_BUDGET_SHAPE = defineObjectShape<ContextBudgetDiagnostic>()(
   [
     'enabled',
     'estimatedTokensBefore',
@@ -63,8 +82,6 @@ const CONTEXT_BUDGET_SHAPE = defineObjectShape<ContextBudgetDiagnostic>()(
   ],
   [
     'policyName',
-    'maxHistoryEstimatedTokens',
-    'maxHistoryTurns',
     'prunedToolResults',
     'prunedToolResultEstimatedTokensBefore',
     'prunedToolResultEstimatedTokensAfter',
@@ -73,85 +90,103 @@ const CONTEXT_BUDGET_SHAPE = defineObjectShape<ContextBudgetDiagnostic>()(
     'unarchivedToolResults',
     'archivePlaceholderReasonCounts',
     'activePrunedToolResults',
+    'activeSupersededToolResults',
+    'activeDuplicateToolResults',
     'activeArchiveFailures',
     'activeEstimatedTokensSaved',
-    'semanticCompactEnabled',
-    'semanticCompactMode',
     'compactionDecisions',
-    'archiveRetrievalMode',
-    'archiveRetrievalEligibleTurns',
-    'retrievedArchiveToolResults',
-    'retrievedArchiveEstimatedTokens',
-    'archiveRetrievalSkipped',
-    'archiveRetrievalFailures',
-    'archiveRetrievalSkippedReasonCounts',
-    'archiveRetrievalFailureReasonCounts',
-    'historySearchMatches',
-    'historyAroundRetrievedEvents',
-    'historyAroundEstimatedTokens',
-    'historyAroundSkippedEvents',
-    'synthesisCacheEnabled',
-    'synthesisCacheMode',
-    'synthesisCacheBlocksLoaded',
-    'synthesisCacheLoadSkipped',
-    'synthesisCacheLoadSkippedReasonCounts',
-    'synthesisCacheLoadFailures',
-    'synthesisCacheBlocksAvailable',
-    'synthesisCacheBlocksSelected',
-    'synthesisCacheBlockIds',
-    'synthesisCacheEstimatedTokens',
-    'synthesisCacheSkipped',
-    'synthesisCacheSkippedReasonCounts',
-    'synthesisCacheInvalidated',
-    'synthesisCacheInvalidationReasonCounts',
-    'synthesisCacheWritesAttempted',
-    'synthesisCacheBlocksWritten',
-    'synthesisCacheWrittenBlockIds',
-    'synthesisCacheWriteEstimatedTokens',
-    'synthesisCacheWriteSkipped',
-    'synthesisCacheWriteSkippedReasonCounts',
-    'synthesisCacheWriteFailures',
-    'synthesisCacheEvicted',
-    'synthesisCacheEvictionReasonCounts',
-    'historyCompactEnabled',
-    'historyCompactMode',
-    'historyCompactBlocksLoaded',
-    'historyCompactLoadSkipped',
-    'historyCompactLoadSkippedReasonCounts',
-    'historyCompactLoadFailures',
-    'historyCompactBlocksAvailable',
-    'historyCompactBlocksSelected',
-    'historyCompactBlockIds',
-    'historyCompactedTurns',
-    'historyCompactedEvents',
-    'historyCompactedEstimatedTokensBefore',
-    'historyCompactedEstimatedTokensAfter',
-    'historyCompactSkipped',
-    'historyCompactSkippedReasonCounts',
-    'historyCompactCoverageHashes',
-    'historyCompactWritesAttempted',
-    'historyCompactBlocksWritten',
-    'historyCompactWrittenBlockIds',
-    'historyCompactWriteEstimatedTokens',
-    'historyCompactWriteSkipped',
-    'historyCompactWriteSkippedReasonCounts',
-    'historyCompactWriteFailures',
-    'highWaterName',
-    'highWaterSeq',
-    'highWaterReason',
-    'highWaterRequestShapeHashBefore',
-    'highWaterRequestShapeHashAfter',
-    'historyRewriteVersion',
-    'historyRewriteResetReason',
-    'historyRewriteGate',
   ],
 );
+
+/**
+ * Keys written by retired context-budget implementations. They remain
+ * accepted only so persisted usage records stay readable; current code cannot
+ * produce them through ContextBudgetDiagnostic.
+ */
+const RETIRED_CONTEXT_BUDGET_KEYS = [
+  'maxHistoryEstimatedTokens',
+  'maxHistoryTurns',
+  'semanticCompactEnabled',
+  'semanticCompactMode',
+  'archiveRetrievalMode',
+  'archiveRetrievalEligibleTurns',
+  'retrievedArchiveToolResults',
+  'retrievedArchiveEstimatedTokens',
+  'archiveRetrievalSkipped',
+  'archiveRetrievalFailures',
+  'archiveRetrievalSkippedReasonCounts',
+  'archiveRetrievalFailureReasonCounts',
+  'historySearchMatches',
+  'historyAroundRetrievedEvents',
+  'historyAroundEstimatedTokens',
+  'historyAroundSkippedEvents',
+  'synthesisCacheEnabled',
+  'synthesisCacheMode',
+  'synthesisCacheBlocksLoaded',
+  'synthesisCacheLoadSkipped',
+  'synthesisCacheLoadSkippedReasonCounts',
+  'synthesisCacheLoadFailures',
+  'synthesisCacheBlocksAvailable',
+  'synthesisCacheBlocksSelected',
+  'synthesisCacheBlockIds',
+  'synthesisCacheEstimatedTokens',
+  'synthesisCacheSkipped',
+  'synthesisCacheSkippedReasonCounts',
+  'synthesisCacheInvalidated',
+  'synthesisCacheInvalidationReasonCounts',
+  'synthesisCacheWritesAttempted',
+  'synthesisCacheBlocksWritten',
+  'synthesisCacheWrittenBlockIds',
+  'synthesisCacheWriteEstimatedTokens',
+  'synthesisCacheWriteSkipped',
+  'synthesisCacheWriteSkippedReasonCounts',
+  'synthesisCacheWriteFailures',
+  'synthesisCacheEvicted',
+  'synthesisCacheEvictionReasonCounts',
+  'historyCompactEnabled',
+  'historyCompactMode',
+  'historyCompactBlocksLoaded',
+  'historyCompactLoadSkipped',
+  'historyCompactLoadSkippedReasonCounts',
+  'historyCompactLoadFailures',
+  'historyCompactBlocksAvailable',
+  'historyCompactBlocksSelected',
+  'historyCompactBlockIds',
+  'historyCompactedTurns',
+  'historyCompactedEvents',
+  'historyCompactedEstimatedTokensBefore',
+  'historyCompactedEstimatedTokensAfter',
+  'historyCompactSkipped',
+  'historyCompactSkippedReasonCounts',
+  'historyCompactCoverageHashes',
+  'historyCompactWritesAttempted',
+  'historyCompactBlocksWritten',
+  'historyCompactWrittenBlockIds',
+  'historyCompactWriteEstimatedTokens',
+  'historyCompactWriteSkipped',
+  'historyCompactWriteSkippedReasonCounts',
+  'historyCompactWriteFailures',
+  'highWaterName',
+  'highWaterSeq',
+  'highWaterReason',
+  'highWaterRequestShapeHashBefore',
+  'highWaterRequestShapeHashAfter',
+  'historyRewriteVersion',
+  'historyRewriteResetReason',
+  'historyRewriteGate',
+] as const;
+
+const CONTEXT_BUDGET_SHAPE = {
+  required: CURRENT_CONTEXT_BUDGET_SHAPE.required,
+  allowed: new Set([...CURRENT_CONTEXT_BUDGET_SHAPE.allowed, ...RETIRED_CONTEXT_BUDGET_KEYS]),
+};
 
 const PROMPT_SEGMENT_KINDS = new Set([
   'system_prompt',
   'tool_schema',
   'prior_history',
   'current_user',
+  // Read compatibility for historical usage rows; current writers do not emit it.
   'turn_tail',
 ]);
 
@@ -208,62 +243,13 @@ const CONTEXT_NUMBERS = [
   'archiveWriteFailures',
   'unarchivedToolResults',
   'activePrunedToolResults',
+  'activeSupersededToolResults',
+  'activeDuplicateToolResults',
   'activeArchiveFailures',
   'activeEstimatedTokensSaved',
-  'archiveRetrievalEligibleTurns',
-  'retrievedArchiveToolResults',
-  'retrievedArchiveEstimatedTokens',
-  'archiveRetrievalSkipped',
-  'archiveRetrievalFailures',
-  'historySearchMatches',
-  'historyAroundRetrievedEvents',
-  'historyAroundEstimatedTokens',
-  'historyAroundSkippedEvents',
-  'synthesisCacheBlocksLoaded',
-  'synthesisCacheLoadSkipped',
-  'synthesisCacheLoadFailures',
-  'synthesisCacheBlocksAvailable',
-  'synthesisCacheBlocksSelected',
-  'synthesisCacheEstimatedTokens',
-  'synthesisCacheSkipped',
-  'synthesisCacheInvalidated',
-  'synthesisCacheWritesAttempted',
-  'synthesisCacheBlocksWritten',
-  'synthesisCacheWriteEstimatedTokens',
-  'synthesisCacheWriteSkipped',
-  'synthesisCacheWriteFailures',
-  'synthesisCacheEvicted',
-  'historyCompactBlocksLoaded',
-  'historyCompactLoadSkipped',
-  'historyCompactLoadFailures',
-  'historyCompactBlocksAvailable',
-  'historyCompactBlocksSelected',
-  'historyCompactedTurns',
-  'historyCompactedEvents',
-  'historyCompactedEstimatedTokensBefore',
-  'historyCompactedEstimatedTokensAfter',
-  'historyCompactSkipped',
-  'historyCompactWritesAttempted',
-  'historyCompactBlocksWritten',
-  'historyCompactWriteEstimatedTokens',
-  'historyCompactWriteSkipped',
-  'historyCompactWriteFailures',
-  'highWaterSeq',
 ] as const;
 
-const CONTEXT_REASON_COUNTS = [
-  'archivePlaceholderReasonCounts',
-  'archiveRetrievalSkippedReasonCounts',
-  'archiveRetrievalFailureReasonCounts',
-  'synthesisCacheLoadSkippedReasonCounts',
-  'synthesisCacheSkippedReasonCounts',
-  'synthesisCacheInvalidationReasonCounts',
-  'synthesisCacheWriteSkippedReasonCounts',
-  'synthesisCacheEvictionReasonCounts',
-  'historyCompactLoadSkippedReasonCounts',
-  'historyCompactSkippedReasonCounts',
-  'historyCompactWriteSkippedReasonCounts',
-] as const;
+const CONTEXT_REASON_COUNTS = ['archivePlaceholderReasonCounts'] as const;
 
 /**
  * Token-usage field bundle shared by the runtime-event, message, and event
@@ -297,6 +283,63 @@ export interface TokenUsageFields {
   contextBudget?: ContextBudgetDiagnostic;
   /** Links this aggregate to per-physical-request AgentRun trace rows. */
   providerRequestTraceId?: string;
+  /**
+   * The send's LAST provider request, as a pair: the input tokens the provider
+   * reported for it, and its output tokens. `input` above is the send's sum
+   * across steps and cannot anchor anything; the last step's real input and
+   * output can, so the next turn judges its first request from real usage.
+   * Absent means no anchor, and the next turn has no proactive fold until its
+   * first accepted request.
+   */
+  lastRequestAnchor?: LastRequestAnchor;
+}
+
+/**
+ * The last provider request of a send, as the provider counted it: its real
+ * input tokens and its real output tokens. Together they are the baseline the
+ * next request is judged from — everything the model produced is re-sent as
+ * input — with no local measure involved (#4559).
+ *
+ * `payloadChars` is a retired key from the 0.2.0 anchor, which paired the input
+ * count with a locally measured payload size. It is still accepted on decode so
+ * sessions written by that build keep loading, and ignored.
+ */
+export interface LastRequestAnchor {
+  inputTokens: number;
+  outputTokens?: number;
+  /**
+   * The route that produced these counts.
+   *
+   * A token count is a number in one model's tokenizer against one connection.
+   * The runtime already refuses an anchor across a route change, validating it
+   * against the run header; carrying the route on the record lets every other
+   * reader apply the same rule without reconstructing run headers, and without
+   * pairing counts from one model with another model's window.
+   */
+  modelId?: string;
+  connectionId?: string;
+}
+
+const LAST_REQUEST_ANCHOR_SHAPE = defineObjectShape<LastRequestAnchor>()(
+  ['inputTokens'],
+  ['outputTokens', 'modelId', 'connectionId'],
+);
+const RETIRED_LAST_REQUEST_ANCHOR_KEYS = ['payloadChars'] as const;
+const LAST_REQUEST_ANCHOR_DECODE_SHAPE = {
+  required: LAST_REQUEST_ANCHOR_SHAPE.required,
+  allowed: new Set([...LAST_REQUEST_ANCHOR_SHAPE.allowed, ...RETIRED_LAST_REQUEST_ANCHOR_KEYS]),
+};
+
+export function isLastRequestAnchor(value: unknown): value is LastRequestAnchor {
+  return (
+    isRecord(value) &&
+    hasExactShape(value, LAST_REQUEST_ANCHOR_DECODE_SHAPE) &&
+    isFiniteNumber(value.inputTokens) &&
+    value.inputTokens > 0 &&
+    (value.outputTokens === undefined ||
+      (isFiniteNumber(value.outputTokens) && value.outputTokens >= 0)) &&
+    (value.payloadChars === undefined || isFiniteNumber(value.payloadChars))
+  );
 }
 
 export function isTokenUsageFields(value: unknown): value is TokenUsageFields {
@@ -317,7 +360,8 @@ export function isTokenUsageFields(value: unknown): value is TokenUsageFields {
     (value.promptSegments === undefined ||
       (Array.isArray(value.promptSegments) &&
         value.promptSegments.every(isPromptSegmentEstimate))) &&
-    (value.contextBudget === undefined || isContextBudgetDiagnostic(value.contextBudget))
+    (value.contextBudget === undefined || isContextBudgetDiagnostic(value.contextBudget)) &&
+    (value.lastRequestAnchor === undefined || isLastRequestAnchor(value.lastRequestAnchor))
   );
 }
 
@@ -353,53 +397,9 @@ export function isContextBudgetDiagnostic(value: unknown): value is ContextBudge
   }
   return (
     isOptionalString(value.policyName) &&
-    (value.semanticCompactEnabled === undefined ||
-      typeof value.semanticCompactEnabled === 'boolean') &&
-    (value.semanticCompactMode === undefined ||
-      ['off', 'validate_only', 'prepare_step_dry_run', 'replace'].includes(
-        value.semanticCompactMode as string,
-      )) &&
     (value.compactionDecisions === undefined ||
       (Array.isArray(value.compactionDecisions) &&
-        value.compactionDecisions.every(isCompactionDecisionDiagnostic))) &&
-    (value.archiveRetrievalMode === undefined ||
-      value.archiveRetrievalMode === 'eager' ||
-      value.archiveRetrievalMode === 'history_search_gated') &&
-    (value.synthesisCacheEnabled === undefined ||
-      typeof value.synthesisCacheEnabled === 'boolean') &&
-    (value.synthesisCacheMode === undefined ||
-      ['off', 'lookup', 'read_write', 'write_only', 'fallback_archive_retrieval'].includes(
-        value.synthesisCacheMode as string,
-      )) &&
-    optionalStringArray(value.synthesisCacheBlockIds) &&
-    optionalStringArray(value.synthesisCacheWrittenBlockIds) &&
-    (value.historyCompactEnabled === undefined ||
-      typeof value.historyCompactEnabled === 'boolean') &&
-    (value.historyCompactMode === undefined ||
-      ['off', 'deterministic', 'lookup', 'read_write'].includes(
-        value.historyCompactMode as string,
-      )) &&
-    optionalStringArray(value.historyCompactBlockIds) &&
-    optionalStringArray(value.historyCompactCoverageHashes) &&
-    optionalStringArray(value.historyCompactWrittenBlockIds) &&
-    isOptionalString(value.highWaterName) &&
-    (value.highWaterReason === undefined ||
-      [
-        'archive_prune',
-        'history_search_gated_retrieval',
-        'synthesis_cache_write',
-        'synthesis_cache_select',
-        'history_compact',
-        'manual_reset',
-        'system_change',
-        'tools_change',
-        'log_rewrite',
-      ].includes(value.highWaterReason as string)) &&
-    isOptionalString(value.highWaterRequestShapeHashBefore) &&
-    isOptionalString(value.highWaterRequestShapeHashAfter) &&
-    isOptionalString(value.historyRewriteVersion) &&
-    isOptionalString(value.historyRewriteResetReason) &&
-    isOptionalString(value.historyRewriteGate)
+        value.compactionDecisions.every(isCompactionDecisionDiagnostic)))
   );
 }
 

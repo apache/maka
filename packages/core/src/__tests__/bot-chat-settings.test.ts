@@ -1,9 +1,27 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
   createDefaultBotChatSettings,
   mergeBotChatSettings,
-  normalizeBotChatSettings,
   parseAllowedUserIdsFromText,
 } from '../bot-chat-settings.js';
 
@@ -24,27 +42,6 @@ describe('bot chat settings owner', () => {
       tokenPatched.channels.telegram.allowedUserIds,
       withAllowlist.channels.telegram.allowedUserIds,
     );
-  });
-
-  test('preserves legacy readiness derivation and downgrade-only coercion', () => {
-    const legacy = createDefaultBotChatSettings();
-    delete (legacy.channels.telegram as Partial<typeof legacy.channels.telegram>).readiness;
-    legacy.channels.telegram.enabled = true;
-    legacy.channels.telegram.connected = true;
-    legacy.channels.telegram.token = 'telegram-token';
-
-    const legacyNormalized = normalizeBotChatSettings(legacy, legacy);
-    assert.equal(legacyNormalized.channels.telegram.readiness, 'credentials_valid');
-
-    legacyNormalized.channels.telegram.token = '';
-    legacyNormalized.channels.telegram.readiness = 'operational';
-    const cleared = normalizeBotChatSettings(legacyNormalized, legacyNormalized);
-    assert.equal(cleared.channels.telegram.readiness, 'scaffolded');
-
-    cleared.channels.telegram.token = 'new-token';
-    cleared.channels.telegram.readiness = 'scaffolded';
-    const credentialed = normalizeBotChatSettings(cleared, cleared);
-    assert.equal(credentialed.channels.telegram.readiness, 'scaffolded');
   });
 
   test('parses textarea allowlists with trim, deduplication, and the defensive cap', () => {

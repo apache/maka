@@ -1,13 +1,31 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import {
-  agentRunMatchesHostedRootExecution,
-  type AgentRunHeader,
+  invocationMatchesHostedRootExecution,
   type RootExecutionDescriptor,
-} from '@maka/core/agent-run';
-import {
-  classifyTerminalRuntimeLedger,
-  RuntimeMessageAuthorityInvariantError,
-} from '@maka/runtime';
+  type RuntimeInvocationRecord,
+} from '@maka/core/runtime-invocation';
+import { RuntimeMessageAuthorityInvariantError } from '@maka/runtime/message-authority';
+import { readRunInvocation } from '@maka/core/runtime-event-store';
 import type { ExecutionStoresWriter } from '@maka/storage/execution-stores';
+import { readCanonicalTurnSnapshot } from './canonical-turn-snapshot.js';
 import type { HostedExecutionRef, HostedExecutionSnapshot } from './hosted-execution-authority.js';
 
 export class HostedExecutionProjectionReader {
@@ -15,77 +33,39 @@ export class HostedExecutionProjectionReader {
 
   async read(
     execution: HostedExecutionRef,
-    knownRun?: AgentRunHeader,
+    knownRun?: RuntimeInvocationRecord,
   ): Promise<HostedExecutionSnapshot> {
     const run = knownRun ?? (await this.readRunIfPresent(execution.sessionId, execution.runId));
-    if (!run) return { ...execution, status: 'admitted' };
-    if (run.turnId !== execution.turnId) {
+    if (run && run.turnId !== execution.turnId) {
       throw new RuntimeMessageAuthorityInvariantError(
         `Hosted execution ${execution.turnId} does not match Run ${execution.runId}`,
       );
     }
-
-    const [runEvents, runtimeEvents] = await Promise.all([
-      this.stores.agentRunStore.readEvents(execution.sessionId, execution.runId),
-      this.stores.runtimeEventStore.readImmutableRuntimeEvents(
-        execution.sessionId,
-        execution.runId,
-      ),
-    ]);
-    const terminal = classifyTerminalRuntimeLedger(run, runtimeEvents);
-    if (terminal.kind === 'fact') {
-      const fact = terminal.fact;
-      if (fact.runStatus === 'completed') {
-        return {
-          ...execution,
-          status: 'completed',
-          terminalEventId: fact.terminalEvent.id,
-        };
-      }
-      if (fact.runStatus === 'failed') {
-        if (!fact.failureClass) throw new Error('Failed terminal fact has no failure class');
-        return {
-          ...execution,
-          status: 'failed',
-          terminalEventId: fact.terminalEvent.id,
-          failureClass: fact.failureClass,
-        };
-      }
-      if (!fact.abortSource) throw new Error('Cancelled terminal fact has no abort source');
-      return {
-        ...execution,
-        status: 'cancelled',
-        terminalEventId: fact.terminalEvent.id,
-        abortSource: fact.abortSource,
-      };
-    }
-    if (terminal.kind !== 'none') {
-      throw new Error('Runtime ledger does not contain one canonical terminal fact');
-    }
-    if (run.status === 'completed' || run.status === 'failed' || run.status === 'cancelled') {
-      throw new Error('Terminal Run header has no canonical terminal RuntimeEvent');
-    }
-    if (run.status !== 'created' && !runEvents.some((event) => event.type === 'run_started')) {
-      throw new Error('Non-created Run has no durable start fact');
-    }
-    return { ...execution, status: run.status };
+    return readCanonicalTurnSnapshot(this.stores, execution, run);
   }
 
-  async readRunIfPresent(sessionId: string, runId: string): Promise<AgentRunHeader | undefined> {
+  async readRunIfPresent(
+    sessionId: string,
+    runId: string,
+  ): Promise<RuntimeInvocationRecord | undefined> {
     try {
-      return await this.stores.agentRunStore.readRun(sessionId, runId);
+      return await readRunInvocation(this.stores.runtimeEventStore, sessionId, runId);
     } catch (error) {
       if (isMissingFile(error)) return undefined;
       throw error;
     }
   }
 
-  assertRunIdentity(run: AgentRunHeader, turnId: string, execution: RootExecutionDescriptor): void {
+  assertRunIdentity(
+    run: RuntimeInvocationRecord,
+    turnId: string,
+    execution: RootExecutionDescriptor,
+  ): void {
     assertRunMatchesExecution(run, turnId, execution);
   }
 
   async assertRunIdentityAndContinuation(
-    run: AgentRunHeader,
+    run: RuntimeInvocationRecord,
     turnId: string,
     execution: RootExecutionDescriptor,
   ): Promise<void> {
@@ -117,7 +97,7 @@ export class HostedExecutionProjectionReader {
 }
 
 function assertRunMatchesExecution(
-  run: AgentRunHeader,
+  run: RuntimeInvocationRecord,
   turnId: string,
   execution: RootExecutionDescriptor,
 ): void {
@@ -126,31 +106,40 @@ function assertRunMatchesExecution(
       `Admitted Turn ${turnId} does not match Run ${run.runId}`,
     );
   }
+  const lineage = run.opening.lineage ?? {};
   switch (execution.kind) {
     case 'external_message':
+    case 'workhub_coordination':
       return;
     case 'regenerate':
     case 'context_compact':
-    case 'automation':
+    case 'scheduled_task':
+    case 'legacy_automation':
     case 'goal':
     case 'agent_graph_supervisor_wake':
     case 'safe_boundary_continuation':
-      if (agentRunMatchesHostedRootExecution(run, execution)) return;
+      if (invocationMatchesHostedRootExecution(run, execution)) return;
       break;
     case 'linked_child_initial':
     case 'claimed_agent_graph_intent':
       assertTrustedAgentIdentity(run, turnId, execution);
-      if (run.resumedFromRunId === undefined && run.retriedFromRunId === undefined) return;
+      if (lineage.resumedFromRunId === undefined && lineage.retriedFromRunId === undefined) return;
       break;
     case 'linked_child_resume':
       assertTrustedAgentIdentity(run, turnId, execution);
-      if (run.resumedFromRunId === execution.sourceRunId && run.retriedFromRunId === undefined) {
+      if (
+        lineage.resumedFromRunId === execution.sourceRunId &&
+        lineage.retriedFromRunId === undefined
+      ) {
         return;
       }
       break;
     case 'linked_child_provider_retry':
       assertTrustedAgentIdentity(run, turnId, execution);
-      if (run.retriedFromRunId === execution.sourceRunId && run.resumedFromRunId === undefined) {
+      if (
+        lineage.retriedFromRunId === execution.sourceRunId &&
+        lineage.resumedFromRunId === undefined
+      ) {
         return;
       }
       break;
@@ -163,23 +152,26 @@ function assertRunMatchesExecution(
 }
 
 function assertTrustedAgentIdentity(
-  run: AgentRunHeader,
+  run: RuntimeInvocationRecord,
   turnId: string,
   execution: Exclude<
     RootExecutionDescriptor,
     {
       kind:
         | 'external_message'
+        | 'workhub_coordination'
         | 'regenerate'
         | 'context_compact'
-        | 'automation'
+        | 'scheduled_task'
+        | 'legacy_automation'
         | 'goal'
         | 'agent_graph_supervisor_wake'
         | 'safe_boundary_continuation';
     }
   >,
 ): void {
-  if (run.agentId !== execution.agentId || run.agentName !== execution.agentName) {
+  const lineage = run.opening.lineage;
+  if (lineage?.agentId !== execution.agentId || lineage.agentName !== execution.agentName) {
     throw new RuntimeMessageAuthorityInvariantError(
       `Admitted Turn ${turnId} changed its trusted agent identity`,
     );

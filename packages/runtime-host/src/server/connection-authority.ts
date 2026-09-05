@@ -1,7 +1,28 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import {
   HOST_OPERATION_SPECS,
+  operationAllowsRemoteOwner,
   operationUsesHostPaths,
   type AccessCredentialPrincipalKind,
+  type ClientCapabilityOwnerIdentity,
   type ClientCapabilityClientFrame,
   type OperationKey,
   type RequestFrame,
@@ -11,6 +32,8 @@ export interface RuntimeHostConnectionAuthority {
   readonly principalKind: 'local_owner' | AccessCredentialPrincipalKind;
   readonly principalId: string;
   readonly credentialId?: string;
+  readonly clientInstanceId?: string;
+  readonly capabilityOwner?: ClientCapabilityOwnerIdentity;
   readonly operationGrants: 'all' | readonly OperationKey[];
   readonly canPublishClientCapabilities: boolean;
   readonly canUseHostPaths: boolean;
@@ -36,6 +59,26 @@ export function createRuntimeHostConnectionAuthority(
   ) {
     throw new Error('Runtime Host access credential identity is invalid');
   }
+  if (
+    input.clientInstanceId !== undefined &&
+    (input.clientInstanceId.length === 0 || input.clientInstanceId.length > 128)
+  ) {
+    throw new Error('Runtime Host bound Client identity is invalid');
+  }
+  if (input.capabilityOwner) {
+    if (input.principalKind !== 'capability_provider') {
+      throw new Error('Only a capability provider may declare a Client Capability owner');
+    }
+    if (!/^[A-Za-z0-9_.:-]{1,128}$/u.test(input.capabilityOwner.principalId)) {
+      throw new Error('Runtime Host Client Capability owner principal is invalid');
+    }
+    if (
+      input.capabilityOwner.clientInstanceId.length === 0 ||
+      input.capabilityOwner.clientInstanceId.length > 128
+    ) {
+      throw new Error('Runtime Host Client Capability owner identity is invalid');
+    }
+  }
   const operationGrants =
     input.operationGrants === 'all'
       ? 'all'
@@ -47,7 +90,14 @@ export function createRuntimeHostConnectionAuthority(
             return operation;
           }),
         );
-  return Object.freeze({ ...input, operationGrants });
+  const capabilityOwner = input.capabilityOwner
+    ? Object.freeze({ ...input.capabilityOwner })
+    : undefined;
+  return Object.freeze({
+    ...input,
+    operationGrants,
+    ...(capabilityOwner ? { capabilityOwner } : {}),
+  });
 }
 
 export function authorizeRuntimeHostOperation(
@@ -55,9 +105,9 @@ export function authorizeRuntimeHostOperation(
   frame: RequestFrame,
 ): boolean {
   if (
-    (frame.operation === 'access.credential.issue' ||
-      frame.operation === 'access.credential.revoke') &&
-    authority.principalKind !== 'local_owner'
+    (authority.principalKind === 'remote_owner' ||
+      authority.principalKind === 'capability_provider') &&
+    !operationAllowsRemoteOwner(frame.operation)
   ) {
     return false;
   }

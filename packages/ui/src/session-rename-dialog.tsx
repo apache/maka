@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { useState, type FormEvent } from 'react';
 import { Button, HStack, TextInput } from '@astryxdesign/core';
 import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog';
@@ -45,8 +64,8 @@ export function SessionRenameDialog(props: {
   const [name, setName] = useState(target.name);
 
   const trimmed = name.trim();
-  // The row's own vocabulary: a conversation is 对话 everywhere else in the
-  // sidebar, and the header doubles as the field's (hidden) label.
+  // The row's own vocabulary: a session is 任务 everywhere the user can see
+  // one, and the header doubles as the field's (hidden) label.
   const title = target.kind === 'project' ? copy.renameProjectTitle : copy.renameAriaLabel;
 
   function submit(event: FormEvent<HTMLFormElement>) {
@@ -62,7 +81,6 @@ export function SessionRenameDialog(props: {
   return (
     <Dialog isOpen onOpenChange={props.onOpenChange} purpose="form" width={440}>
       <Layout
-        height="auto"
         header={
           <DialogHeader
             title={title}

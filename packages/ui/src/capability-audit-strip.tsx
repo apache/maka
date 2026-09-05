@@ -1,18 +1,38 @@
-import type { CapabilityAuditReport, UiLocale } from '@maka/core';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import type { CapabilityAuditReport } from '@maka/core/capability-audit';
+import type { UiLocale } from '@maka/core/ui-locale';
 import { useUiLocale } from './locale-context.js';
 import { Banner } from '@astryxdesign/core/Banner';
 import { getSharedUiCopy } from './shared-ui-copy.js';
 
 /**
  * Designer audit P1-7: this used to be a full-width "能力审计" band on both
- * the Skills and Automations pages — engineering jargon ("3 类声明工具",
+ * the Skills and Scheduled tasks pages — engineering jargon ("3 类声明工具",
  * "自动化 0/0 启用") plus counts the page tabs already show. Healthy state
  * carried zero new information, so the strip now reports by exception:
  * render a single warning line when something needs attention (sources
- * waiting for auth / erroring, automations that failed or were skipped
+ * waiting for auth / erroring, scheduled tasks that failed or were skipped
  * last run), and render nothing at all when everything is fine.
  */
-export function CapabilityAuditStrip(props: { report: CapabilityAuditReport; focus?: 'skills' | 'automations' }) {
+export function CapabilityAuditStrip(props: { report: CapabilityAuditReport }) {
   const locale = useUiLocale();
   const copy = getSharedUiCopy(locale).capabilityAudit;
   const issues = capabilityAuditIssues(props.report, locale);
@@ -32,7 +52,7 @@ export function capabilityAuditIssues(report: CapabilityAuditReport, locale: UiL
   const issues: string[] = [];
   if (report.summary.needsAuthSourceCount > 0) issues.push(copy.needsAuthorization(report.summary.needsAuthSourceCount));
   if (report.summary.errorSourceCount > 0) issues.push(copy.sourceErrors(report.summary.errorSourceCount));
-  if (report.summary.failedAutomationCount > 0) issues.push(copy.failedAutomations(report.summary.failedAutomationCount));
-  if (report.summary.skippedAutomationCount > 0) issues.push(copy.skippedAutomations(report.summary.skippedAutomationCount));
+  if (report.summary.failedScheduledTaskCount > 0) issues.push(copy.failedScheduledTasks(report.summary.failedScheduledTaskCount));
+  if (report.summary.skippedScheduledTaskCount > 0) issues.push(copy.skippedScheduledTasks(report.summary.skippedScheduledTaskCount));
   return issues;
 }

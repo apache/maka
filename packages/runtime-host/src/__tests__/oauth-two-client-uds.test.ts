@@ -1,10 +1,30 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { isOAuthEnrollmentProviderEnabled, parseOAuthSubscriptionTokens } from '@maka/runtime';
+import { isOAuthEnrollmentProviderEnabled } from '@maka/runtime/oauth-provider-contracts';
+import { parseOAuthSubscriptionTokens } from '@maka/runtime/subscription-credentials';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import {
@@ -22,8 +42,9 @@ import {
   type DomainOperationHandlerMap,
 } from '../server/operation-dispatcher.js';
 import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation-gate.js';
+import { clientCapabilityCoordinatorTestAdmission } from './fixtures/client-capability.js';
 
-test('OAuth enrollment presents only on the initiating Client over the real endpoint', {
+test('two OAuth creates bind distinct entities and present only on their initiating Clients', {
   timeout: 30_000,
 }, async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-oauth-two-client-'));
@@ -40,11 +61,11 @@ test('OAuth enrollment presents only on the initiating Client over the real endp
     const created = await stores.connectionCatalog.create({
       expectedCatalogRevision: 0,
       connection: {
-        slug: 'uds-claude',
+        slug: 'uds-codex',
         name: 'UDS Claude',
-        providerType: 'claude-subscription',
+        providerType: 'openai-codex',
         enabled: true,
-        enabledModelIds: ['claude-sonnet-4-5'],
+        enabledModelIds: ['gpt-5.6-sol'],
       },
     });
     assert.equal(created.kind, 'committed');
@@ -57,6 +78,7 @@ test('OAuth enrollment presents only on the initiating Client over the real endp
       composition: defineInteractiveRuntimeHostComposition(async (context) => {
         const activation = new RuntimePolicyActivationGate();
         const clientCapabilities = new HostClientCapabilityCoordinator({
+          ...clientCapabilityCoordinatorTestAdmission(),
           activation,
           onModelToolsChanged: () => undefined,
         });
@@ -68,11 +90,23 @@ test('OAuth enrollment presents only on the initiating Client over the real endp
           acquireResidency: () => context.acquireResidency('oauth'),
           invalidateBackends: async () => undefined,
           onFatal: () => context.requestDrain(),
-          exchangeCode: async () => ({
+          // Codex enrolls through device authorization, presented via
+          // `openExternal`.
+          startCodexAuthorization: async () => ({
+            deviceAuthId: 'uds-deviceauth',
+            userCode: 'UDS-CODE',
+            verificationUrl: 'https://auth.openai.com/codex/device',
+            expiresAt: 1_900_000_000_000,
+            intervalMs: 1_000,
+          }),
+          pollCodexAuthorization: async () => ({
+            authorizationCode: 'uds-authorization-code',
+            codeVerifier: 'uds-verifier',
+          }),
+          exchangeCodexCode: async () => ({
             access_token: 'host-access-token',
             refresh_token: 'host-refresh-token',
             expires_at: 1_900_000_000_000,
-            account_uuid: 'host-account',
           }),
         });
         const handlers = {
@@ -96,17 +130,13 @@ test('OAuth enrollment presents only on the initiating Client over the real endp
         };
       }),
     });
-    first = await connectClient(root, 'desktop');
-    second = await connectClient(root, 'tui');
+    first = await connectClient(root);
+    second = await connectClient(root);
     const presentations: string[] = [];
     await first.replaceClientCapabilities(
       createOAuthPresentationClientProvider({
         openExternal: async () => {
           presentations.push('desktop');
-        },
-        requestAuthorizationCode: async () => {
-          presentations.push('desktop');
-          throw new Error('Wrong Client presentation was selected');
         },
       }),
     );
@@ -115,35 +145,46 @@ test('OAuth enrollment presents only on the initiating Client over the real endp
         openExternal: async () => {
           presentations.push('tui');
         },
-        requestAuthorizationCode: async (url) => {
-          presentations.push('tui');
-          const state = new URL(url).searchParams.get('state');
-          assert.ok(state);
-          return `authorization-code#${state}`;
-        },
       }),
     );
 
-    const started = await second.request('oauth.login.start', {
-      attemptId: 'uds-attempt',
-      connectionId: connection.connectionId,
-    });
-    assert.equal(started.phase, 'awaiting_authorization');
-    const terminal = await waitForTerminal(second, 'uds-attempt');
-    assert.equal(terminal.phase, 'authenticated');
-    assert.deepEqual(presentations, ['tui']);
-    const resolved = await stores.operations.resolveExecutionConnection(connection.slug);
-    assert.equal(resolved.kind, 'ready');
-    if (resolved.kind === 'ready') {
-      assert.deepEqual(
-        parseOAuthSubscriptionTokens(resolved.secretMaterial.connection?.secret ?? ''),
-        {
-          access_token: 'host-access-token',
-          refresh_token: 'host-refresh-token',
-          expires_at: 1_900_000_000_000,
-          account_uuid: 'host-account',
-        },
-      );
+    const firstStarted = await first.request(
+      'oauth.login.start',
+      oauthCreateStart('uds-create-first', 'openai-codex'),
+    );
+    assert.equal(firstStarted.phase, 'awaiting_authorization');
+    const firstTerminal = await waitForTerminal(first, 'uds-create-first');
+    assert.equal(firstTerminal.phase, 'authenticated');
+    const secondStarted = await second.request(
+      'oauth.login.start',
+      oauthCreateStart('uds-create-second', 'openai-codex'),
+    );
+    assert.equal(secondStarted.phase, 'awaiting_authorization');
+    const secondTerminal = await waitForTerminal(second, 'uds-create-second');
+    assert.equal(secondTerminal.phase, 'authenticated');
+    assert.deepEqual(presentations, ['desktop', 'tui']);
+    assert.notEqual(firstTerminal.connection.connectionId, secondTerminal.connection.connectionId);
+    assert.equal(firstTerminal.connection.slug, 'codex-subscription');
+    assert.equal(secondTerminal.connection.slug, 'codex-subscription-2');
+    const snapshot = await stores.connectionCatalog.getSnapshot();
+    assert.equal(snapshot.connections.length, 3);
+    for (const terminal of [firstTerminal, secondTerminal]) {
+      const resolved = await stores.operations.resolveExecutionConnection({
+        kind: 'bound',
+        connectionId: terminal.connection.connectionId,
+        connectionSlug: terminal.connection.slug,
+      });
+      assert.equal(resolved.kind, 'ready');
+      if (resolved.kind === 'ready') {
+        assert.deepEqual(
+          parseOAuthSubscriptionTokens(resolved.secretMaterial.connection?.secret ?? ''),
+          {
+            access_token: 'host-access-token',
+            refresh_token: 'host-refresh-token',
+            expires_at: 1_900_000_000_000,
+          },
+        );
+      }
     }
   } finally {
     await first?.close().catch(() => undefined);
@@ -153,12 +194,13 @@ test('OAuth enrollment presents only on the initiating Client over the real endp
   }
 });
 
-test('OAuth enrollment honors Claude and Codex opt-out flags over the real endpoint', {
+test('OAuth enrollment refuses providers this install has not enabled', {
   timeout: 30_000,
 }, async () => {
   const cases = [
-    ['claude-subscription', { MAKA_CLAUDE_SUBSCRIPTION_EXPERIMENTAL: '0' }],
     ['openai-codex', { MAKA_CODEX_SUBSCRIPTION_EXPERIMENTAL: '0' }],
+    // GitHub Copilot is opt-in: an install that says nothing gets no sign-in.
+    ['github-copilot', {}],
   ] as const;
   for (const [provider, environment] of cases) {
     await assertProviderDisabledOverUds(provider, environment);
@@ -166,7 +208,7 @@ test('OAuth enrollment honors Claude and Codex opt-out flags over the real endpo
 });
 
 async function assertProviderDisabledOverUds(
-  provider: 'claude-subscription' | 'openai-codex',
+  provider: 'openai-codex' | 'github-copilot',
   environment: Readonly<Record<string, string | undefined>>,
 ): Promise<void> {
   const base = await mkdtemp(join(tmpdir(), `maka-oauth-disabled-${provider}-`));
@@ -200,6 +242,7 @@ async function assertProviderDisabledOverUds(
       composition: defineInteractiveRuntimeHostComposition(async (context) => {
         const activation = new RuntimePolicyActivationGate();
         const clientCapabilities = new HostClientCapabilityCoordinator({
+          ...clientCapabilityCoordinatorTestAdmission(),
           activation,
           onModelToolsChanged: () => undefined,
         });
@@ -212,9 +255,6 @@ async function assertProviderDisabledOverUds(
           acquireResidency: () => context.acquireResidency('oauth'),
           invalidateBackends: async () => undefined,
           onFatal: () => context.requestDrain(),
-          exchangeCode: async () => {
-            throw new Error('Disabled enrollment must not exchange credentials');
-          },
         });
         return {
           handlers: {
@@ -236,25 +276,21 @@ async function assertProviderDisabledOverUds(
         };
       }),
     });
-    client = await connectClient(root, 'desktop');
+    client = await connectClient(root);
     let presentations = 0;
     await client.replaceClientCapabilities(
       createOAuthPresentationClientProvider({
         openExternal: async () => {
           presentations += 1;
         },
-        requestAuthorizationCode: async () => {
-          presentations += 1;
-          return 'unused-code';
-        },
       }),
     );
 
     await assert.rejects(
-      client.request('oauth.login.start', {
-        attemptId: `uds-disabled-${provider}`,
-        connectionId: connection.connectionId,
-      }),
+      client.request(
+        'oauth.login.start',
+        oauthStart(`uds-disabled-${provider}`, connection.connectionId),
+      ),
       (error: unknown) =>
         error instanceof RuntimeHostOperationError && error.code === 'operation_unavailable',
     );
@@ -266,13 +302,9 @@ async function assertProviderDisabledOverUds(
   }
 }
 
-async function connectClient(
-  rootPath: string,
-  surface: 'desktop' | 'tui',
-): Promise<RuntimeHostConnection> {
+async function connectClient(rootPath: string): Promise<RuntimeHostConnection> {
   const connected = await connectRuntimeHost({
     rootPath,
-    surface,
     protocol: {
       min: RUNTIME_HOST_PROTOCOL_VERSION,
       max: RUNTIME_HOST_PROTOCOL_VERSION,
@@ -291,4 +323,12 @@ async function waitForTerminal(client: RuntimeHostConnection, attemptId: string)
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error('OAuth login did not settle');
+}
+
+function oauthStart(attemptId: string, connectionId: string) {
+  return { attemptId, target: { kind: 'existing' as const, connectionId } };
+}
+
+function oauthCreateStart(attemptId: string, providerType: 'openai-codex' | 'xai-oauth') {
+  return { attemptId, target: { kind: 'create' as const, providerType } };
 }

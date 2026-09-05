@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -5,11 +24,11 @@ import { join } from 'node:path';
 import { after, before, describe, test } from 'node:test';
 import { randomUUID } from 'node:crypto';
 import { isActiveShellRunStatus } from '@maka/core/shell-run';
+import { ShellRunProcessManager } from '@maka/runtime/shell-run-manager';
 import {
-  ShellRunProcessManager,
   ShellRunPtyControlClosedError,
   type ShellRunBashInput,
-} from '@maka/runtime';
+} from '@maka/runtime/shell-run-contract';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import {
   openInteractiveShellRunStoreForWrite,
@@ -18,6 +37,7 @@ import {
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import { HostRuntimeResourceCoordinator } from '../server/runtime-resource-coordinator.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
+import { waitFor } from '@maka/core/test-only/async-primitives';
 
 const SESSION_ID = 'real-resource-session';
 
@@ -262,11 +282,11 @@ describe('real Host Runtime Resource process lifecycle', {
   }
 
   async function waitUntil(check: () => Promise<boolean>): Promise<void> {
-    const deadline = Date.now() + 10_000;
-    while (!(await check())) {
-      if (Date.now() >= deadline) throw new Error('Timed out waiting for PTY control to close');
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+    await waitFor(check, {
+      timeoutMs: 10_000,
+      pollMs: 10,
+      message: 'Timed out waiting for PTY control to close',
+    });
   }
 });
 
@@ -285,7 +305,6 @@ function connection(connectionId: string): ConnectionContext {
   return {
     hostEpoch: 'host-1',
     connectionId,
-    surface: 'tui',
     principal: 'local_os_user',
     acquireResidency: () => ({ release: () => {} }),
   };

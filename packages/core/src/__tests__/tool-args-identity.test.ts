@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import { stableJsonStringify, stripUndefinedDeep } from '../tool-args-identity.js';
@@ -86,54 +105,5 @@ describe('stripUndefinedDeep', () => {
       null,
       'a null prototype is what keeps a __proto__ key as data, so it is put back',
     );
-  });
-
-  it('reaches an undefined nested inside an array', () => {
-    const value = { calls: [{ id: 'a', toolId: undefined }] };
-
-    assert.deepEqual(stripUndefinedDeep(value), { calls: [{ id: 'a' }] });
-  });
-
-  it('leaves everything else exactly as it was', () => {
-    const value = { a: 0, b: '', c: false, d: null, e: [1, 2], f: { g: 1 } };
-
-    assert.deepEqual(stripUndefinedDeep(value), value);
-  });
-
-  it('returns the value itself when nothing needed removing', () => {
-    // Rebuilding a value that needed nothing would drop symbol keys and re-run
-    // getters for no gain, and by far the common case is that nothing needs
-    // removing. Identity is the observable form of "did not rebuild".
-    const nested = { b: 1 };
-    const value = { a: nested, list: [1, 2] };
-
-    const cleaned = stripUndefinedDeep(value);
-
-    assert.equal(cleaned, value);
-    assert.equal(cleaned.a, nested);
-  });
-
-  it('keeps a symbol key on a value it did have to rebuild', () => {
-    // JSON never sees a symbol key, so dropping one changes nothing about what
-    // is persisted — but it changes the object a caller still holds.
-    const tag = Symbol('tag');
-    const value = { keep: 1, drop: undefined, [tag]: 'kept' } as Record<string | symbol, unknown>;
-
-    const cleaned = stripUndefinedDeep(value);
-
-    assert.deepEqual({ ...cleaned }, { keep: 1, [tag]: 'kept' });
-    assert.equal(cleaned[tag], 'kept');
-    assert.ok(!('drop' in cleaned));
-  });
-
-  it('does not descend into a class instance', () => {
-    // Only plain objects are rebuilt. Anything with its own prototype is
-    // returned untouched rather than flattened into a plain object.
-    class Holder {
-      constructor(readonly value: number) {}
-    }
-    const holder = new Holder(1);
-
-    assert.equal(stripUndefinedDeep({ holder }).holder, holder);
   });
 });

@@ -1,5 +1,27 @@
-import type { AgentRunHeader, AgentRunStore, RuntimeEvent, RuntimeEventStore } from '@maka/core';
-import { isSessionInlineRun } from '@maka/core';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
+import { runtimeInvocationOutcome } from '@maka/core/runtime-invocation';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
+import { isSessionInlineInvocation } from '@maka/core/runtime-invocation';
 import { stableHash, stableStringify } from './request-shape.js';
 import { compareAgentGraphIdentity } from './stream-graph-identity.js';
 
@@ -16,6 +38,7 @@ export const AGENT_GRAPH_RECORD_FACETS = [
   'permission_request',
   'permission_decision',
   'user_question_request',
+  'form_request',
   'transfer',
   'usage',
   'completed',
@@ -34,7 +57,10 @@ export type AgentGraphActivationStatus =
   | 'aborted'
   | 'cancelled';
 
-export type AgentGraphSupervisorAttentionReason = 'permission_request' | 'user_question_request';
+export type AgentGraphSupervisorAttentionReason =
+  | 'permission_request'
+  | 'user_question_request'
+  | 'form_request';
 
 export type AgentGraphSupervisorSignal =
   | {
@@ -160,7 +186,7 @@ export interface AgentGraphReplayState {
 
 export interface AgentGraphRunStream {
   operator: AgentGraphOperatorBinding;
-  run: AgentRunHeader;
+  run: RuntimeInvocationRecord;
   events: readonly RuntimeEvent[];
 }
 
@@ -181,18 +207,20 @@ export interface AgentGraphProjection {
 export interface ReadCommittedAgentGraphProjectionInput {
   graphId: string;
   operators: readonly AgentGraphOperatorBinding[];
-  runStore: Pick<AgentRunStore, 'listSessionRuns'>;
-  runtimeEventStore: Pick<RuntimeEventStore, 'readImmutableRuntimeEvents'>;
+  runtimeEventStore: Pick<
+    RuntimeEventStore,
+    'readImmutableRuntimeEvents' | 'listSessionInvocations'
+  >;
 }
 
 export interface AgentGraphProjectionWithRuns {
   projection: AgentGraphProjection;
-  runs: AgentRunHeader[];
+  runs: RuntimeInvocationRecord[];
 }
 
 interface OrderedRuntimeEvent {
   operator: AgentGraphOperatorBinding;
-  run: AgentRunHeader;
+  run: RuntimeInvocationRecord;
   event: RuntimeEvent;
   committedEventOrdinal: number;
 }
@@ -219,10 +247,10 @@ export async function readCommittedAgentGraphProjectionWithRuns(
   const streams = (
     await Promise.all(
       input.operators.map(async (operator) => {
-        const runs = await input.runStore.listSessionRuns(operator.sessionId);
+        const runs = await input.runtimeEventStore.listSessionInvocations(operator.sessionId);
         const orderedRuns = runs
-          .filter(isSessionInlineRun)
-          .sort((a, b) => a.createdAt - b.createdAt || compareAgentGraphIdentity(a.runId, b.runId));
+          .filter((run) => isSessionInlineInvocation(run.opening))
+          .sort((a, b) => a.openedAt - b.openedAt || compareAgentGraphIdentity(a.runId, b.runId));
         return await Promise.all(
           orderedRuns.map(async (run): Promise<AgentGraphRunStream> => {
             if (run.sessionId !== operator.sessionId) {
@@ -325,7 +353,7 @@ export function projectAgentGraphRecords(input: ProjectAgentGraphRecordsInput): 
       agentRunId: item.run.runId,
       eventTime: item.event.ts,
       orderKey: {
-        runCreatedAt: item.run.createdAt,
+        runCreatedAt: item.run.openedAt,
         operatorId: item.operator.operatorId,
         runId: item.run.runId,
         committedEventOrdinal: item.committedEventOrdinal,
@@ -474,7 +502,10 @@ export function replayAgentGraphRecords(
   };
 }
 
-function runtimeEventFacets(event: RuntimeEvent, run: AgentRunHeader): AgentGraphRecordFacet[] {
+function runtimeEventFacets(
+  event: RuntimeEvent,
+  run: RuntimeInvocationRecord,
+): AgentGraphRecordFacet[] {
   const facets: AgentGraphRecordFacet[] = [];
   switch (event.content?.kind) {
     case 'text':
@@ -500,6 +531,7 @@ function runtimeEventFacets(event: RuntimeEvent, run: AgentRunHeader): AgentGrap
   if (actions?.permissionRequest) facets.push('permission_request');
   if (actions?.permissionDecision) facets.push('permission_decision');
   if (actions?.userQuestionRequest) facets.push('user_question_request');
+  if (actions?.formRequest) facets.push('form_request');
   if (actions?.transferToAgent) facets.push('transfer');
   if (actions?.tokenUsage) facets.push('usage');
 
@@ -511,7 +543,7 @@ function runtimeEventFacets(event: RuntimeEvent, run: AgentRunHeader): AgentGrap
 
 function runtimeEventSupervisorSignals(
   event: RuntimeEvent,
-  run: AgentRunHeader,
+  run: RuntimeInvocationRecord,
 ): AgentGraphSupervisorSignal[] {
   const signals: AgentGraphSupervisorSignal[] = [];
   if (event.actions?.permissionRequest) {
@@ -519,6 +551,9 @@ function runtimeEventSupervisorSignals(
   }
   if (event.actions?.userQuestionRequest) {
     signals.push({ kind: 'attention', reason: 'user_question_request' });
+  }
+  if (event.actions?.formRequest) {
+    signals.push({ kind: 'attention', reason: 'form_request' });
   }
   const terminalStatus = runtimeEventTerminalStatus(event, run);
   if (terminalStatus) {
@@ -529,7 +564,7 @@ function runtimeEventSupervisorSignals(
 
 function runtimeEventTerminalStatus(
   event: RuntimeEvent,
-  run: AgentRunHeader,
+  run: RuntimeInvocationRecord,
 ):
   | Extract<AgentGraphActivationStatus, 'completed' | 'failed' | 'aborted' | 'cancelled'>
   | undefined {
@@ -545,18 +580,13 @@ function runtimeEventTerminalStatus(
 }
 
 function terminalStatusFromRun(
-  run: AgentRunHeader,
+  run: RuntimeInvocationRecord,
 ): Extract<AgentGraphRecordFacet, 'completed' | 'failed' | 'cancelled'> {
-  switch (run.status) {
-    case 'completed':
-    case 'failed':
-    case 'cancelled':
-      return run.status;
-    default:
-      throw new Error(
-        `RuntimeEvent ended invocation ${run.runId} while its AgentRun is ${run.status}`,
-      );
-  }
+  const outcome = runtimeInvocationOutcome(run);
+  if (outcome) return outcome;
+  throw new Error(
+    `RuntimeEvent ended invocation ${run.runId} while its ledger records no terminal fact`,
+  );
 }
 
 function activationStatusAfterRecord(
@@ -632,7 +662,7 @@ function assertRunStream(stream: AgentGraphRunStream): void {
       `Run ${stream.run.runId} belongs to ${stream.run.sessionId}, expected ${stream.operator.sessionId}`,
     );
   }
-  if (!isSessionInlineRun(stream.run)) {
+  if (!isSessionInlineInvocation(stream.run.opening)) {
     throw new Error(`Graph activation ${stream.run.runId} must be a session-inline AgentRun`);
   }
 }
@@ -652,7 +682,7 @@ function assertRuntimeEventIdentity(stream: AgentGraphRunStream, event: RuntimeE
 function compareOrderedRuntimeEvents(a: OrderedRuntimeEvent, b: OrderedRuntimeEvent): number {
   return (
     a.event.ts - b.event.ts ||
-    a.run.createdAt - b.run.createdAt ||
+    a.run.openedAt - b.run.openedAt ||
     compareAgentGraphIdentity(a.operator.operatorId, b.operator.operatorId) ||
     compareAgentGraphIdentity(a.run.runId, b.run.runId) ||
     a.committedEventOrdinal - b.committedEventOrdinal ||

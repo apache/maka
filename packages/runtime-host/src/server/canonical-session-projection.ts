@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { SessionHeader } from '@maka/core/session';
 import type { ExecutionStoresWriter } from '@maka/storage/execution-stores';
 import type {
@@ -13,7 +32,11 @@ import {
   SESSION_CONTINUITY_SCHEMA_VERSION,
   SESSION_CONTINUITY_SNAPSHOT_MAX_BYTES,
 } from '../protocol/index.js';
-import { isMissingFile, readCanonicalTurnSnapshot } from './canonical-turn-snapshot.js';
+import {
+  isMissingFile,
+  readCanonicalTurnSnapshot,
+  worstCaseFailedTurnSnapshot,
+} from './canonical-turn-snapshot.js';
 import type { HostMessageCoordinator } from './message-coordinator.js';
 import { worstCaseMessageQueueProjection } from './message-queue-capacity.js';
 import { projectSessionInteractions } from './interaction-projection.js';
@@ -99,9 +122,7 @@ export class CanonicalSessionProjectionReader {
       metadataRevision,
       status: header.status,
       createdAt: header.createdAt,
-      lastUsedAt: header.lastUsedAt,
       isArchived: header.isArchived,
-      ...(header.archivedAt !== undefined ? { archivedAt: header.archivedAt } : {}),
     };
     return { session, rootTurn, goal, queue, interactions };
   }
@@ -115,6 +136,13 @@ export class CanonicalSessionProjectionReader {
     const candidateProjection = {
       ...canonical,
       ...candidate,
+      rootTurn:
+        canonical.rootTurn &&
+        canonical.rootTurn.status !== 'completed' &&
+        canonical.rootTurn.status !== 'failed' &&
+        canonical.rootTurn.status !== 'cancelled'
+          ? worstCaseFailedTurnSnapshot(canonical.rootTurn)
+          : canonical.rootTurn,
       goal: worstCaseGoalProjection(sessionId),
       queue: worstCaseMessageQueueProjection(candidate.queue ?? canonical.queue),
     };

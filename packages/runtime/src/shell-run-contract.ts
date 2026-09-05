@@ -1,14 +1,32 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import {
   encodedTerminalInputActionsByteLength,
-  isShellRunId,
   isWellFormedTerminalInput,
   parseTerminalInputAction,
-  SHELL_RUN_ID_MAX_CHARS,
   type TerminalInputAction,
-  type ShellRunStore,
-  type ShellRunUpdate,
-  type ToolResultContent,
-} from '@maka/core';
+} from '@maka/core/terminal-input';
+
+import { isShellRunId, SHELL_RUN_ID_MAX_CHARS, type ShellRunStore } from '@maka/core/shell-run';
+
+import { type ShellRunUpdate, type ToolResultContent } from '@maka/core/events';
 
 import type { ShellPlan } from './shell-detect.js';
 import type { ChildFdInput } from './child-fd-input.js';
@@ -28,7 +46,6 @@ export const DEFAULT_MAX_LIVE_PTY_RUNS = 8;
 export const DEFAULT_SHELL_RUN_FLUSH_INTERVAL_MS = 1_000;
 export const DEFAULT_SHELL_RUN_FLUSH_BYTES = 64 * 1024;
 export const DEFAULT_PIPE_OUTPUT_DRAIN_MS = 2_000;
-export const SHELL_RUN_CONTEXT_SUMMARY_LIMIT = 8;
 export const SHELL_RUN_RESOURCE_PREFIX = 'maka://runtime/background-tasks';
 export const MAX_SHELL_RUN_RESOURCE_REF_CHARS =
   SHELL_RUN_RESOURCE_PREFIX.length + 1 + SHELL_RUN_ID_MAX_CHARS;
@@ -63,6 +80,8 @@ export interface ShellRunProcessManagerInput {
   pipeOutputDrainMs?: number;
   /** Schedules the automatic durable flush and returns its canceler; injected so tests can drive flush timing. */
   scheduleFlush?: (run: () => void, delayMs: number) => () => void;
+  /** Schedules the run timeout and returns its canceler; injected so tests can drive timeout timing. */
+  scheduleTimeout?: (run: () => void, delayMs: number) => () => void;
 }
 
 export interface ShellRunBashInput {
@@ -70,6 +89,8 @@ export interface ShellRunBashInput {
   sourceRunId?: string;
   sourceTurnId: string;
   sourceToolCallId: string;
+  /** User-owned terminals stay outside model context summaries. */
+  visibility?: 'model' | 'user';
   cwd: string;
   command: string;
   /** Final executable argv. When present, bypasses host-shell parsing. */
@@ -95,6 +116,8 @@ export interface ShellRunWriteInput {
   actions?: readonly TerminalInputAction[];
   size?: { cols: number; rows: number };
   abortSignal?: AbortSignal;
+  /** Client control may reach user-owned resources; model tools may not. */
+  caller?: 'model' | 'client';
 }
 
 export interface ShellRunPtyDataEvent {
@@ -125,6 +148,7 @@ export interface BackgroundTaskStopper {
     sessionId: string,
     ref: string,
     abortSignal: AbortSignal,
+    caller?: 'model' | 'client',
   ): Promise<ToolResultContent>;
 }
 

@@ -1,9 +1,24 @@
-import {
-  buildComputerUseTools,
-  type CuOverlayHook,
-  type ComputerUseToolSet,
-  type CuDispatchBackend,
-} from '@maka/runtime';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { buildComputerUseTools, type ComputerUseToolSet } from '@maka/runtime/computer-use-tools';
+import { type CuOverlayHook, type CuDispatchBackend } from '@maka/runtime/computer-use-types';
 import { createMakaCuBackend } from './maka-cu-backend.js';
 import type { MakaCuBackendOptions } from './maka-cu-backend.js';
 import type { MakaCuServiceSnapshot } from './maka-cu-service.js';
@@ -77,11 +92,6 @@ export interface MakaCuSelection {
   screenLocked?: (context: { sessionId: string }) => boolean | Promise<boolean>;
   overlay?: CuOverlayHook;
   onTrace?: MakaCuBackendOptions['onTrace'];
-  /**
-   * Coordinate and key dispatch post synthetic events. Off unless a host policy
-   * says otherwise; the model-facing contract already states they fail closed.
-   */
-  allowCompatibilityInputDispatch?: boolean;
   createBackend?: (options: MakaCuBackendOptions) => DisposableBackend;
 }
 
@@ -102,9 +112,6 @@ export function selectComputerUseBackend(deps?: MakaCuSelection): SelectedComput
         ? { physicalInputRecentlyActive: deps.physicalInputRecentlyActive }
         : {}),
       ...(deps.onTrace ? { onTrace: deps.onTrace } : {}),
-      ...(deps.allowCompatibilityInputDispatch === undefined
-        ? {}
-        : { allowCompatibilityInputDispatch: deps.allowCompatibilityInputDispatch }),
       onSessionInvalidated: ({ sessionId }) => {
         tools?.sessionEvents.reobserveRequired(sessionId);
       },

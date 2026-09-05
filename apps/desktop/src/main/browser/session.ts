@@ -1,6 +1,29 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { CDPBridge } from '@jackwener/opencli/browser/cdp';
 import type { IPage } from '@jackwener/opencli/types';
-import { browserAutomationAvailable, browserViewHost } from './browser-host.js';
+import {
+  type BrowserOriginLease,
+  browserAutomationAvailable,
+  browserViewHost,
+} from './browser-host.js';
 import { type BrowserActionKind, parseNavigable } from './logic.js';
 
 /**
@@ -254,7 +277,10 @@ async function acquire(sessionId: string): Promise<Connection> {
   return promise;
 }
 
-export type BrowserPageRun<T> = (page: IPage, info: { takeoverReloaded: boolean }) => Promise<T>;
+export type BrowserPageRun<T> = (
+  page: IPage,
+  info: { takeoverReloaded: boolean; originLease?: BrowserOriginLease },
+) => Promise<T>;
 
 /**
  * Run one tool action against the session's embedded-browser page: lazy connect
@@ -266,7 +292,12 @@ export async function withBrowserPage<T>(
   sessionId: string,
   label: string,
   run: BrowserPageRun<T>,
-  opts?: { timeoutMs?: number; abort?: AbortSignal; takeover?: TakeoverMode },
+  opts?: {
+    timeoutMs?: number;
+    abort?: AbortSignal;
+    takeover?: TakeoverMode;
+    originAdmission?: { approvedUrl: string };
+  },
 ): Promise<T> {
   if (opts?.abort?.aborted) throw new BrowserActionCanceledError(label);
   const kind: TakeoverMode = opts?.takeover ?? 'observe';
@@ -287,6 +318,13 @@ export async function withBrowserPage<T>(
   let timer: ReturnType<typeof setTimeout> | undefined;
   let onAbort: (() => void) | undefined;
   let onRevoke: (() => void) | undefined;
+  // Establish the page-host Origin lease before endpoint acquisition and a
+  // possible takeover reload. This closes the Provider-check → first-page-await
+  // gap, while still preserving canDrive's rule that a blocked action creates
+  // no view.
+  const originLease = opts?.originAdmission
+    ? browserViewHost().openOriginLease(sessionId, opts.originAdmission.approvedUrl, kind)
+    : undefined;
   // Track this action so a switch away from the conversation can revoke it (the
   // visible lease is continuous, not just the preflight canDrive above).
   // Registered AFTER canDrive resolved true, with no await between, so the
@@ -343,7 +381,7 @@ export async function withBrowserPage<T>(
         conn.pendingTakeover = false;
       }
     }
-    return await Promise.race([run(conn.page, { takeoverReloaded }), interrupted]);
+    return await Promise.race([run(conn.page, { takeoverReloaded, ...(originLease ? { originLease } : {}) }), interrupted]);
   } catch (err) {
     if (conn && isConnectionLoss(err)) {
       invalidate(conn);
@@ -359,6 +397,7 @@ export async function withBrowserPage<T>(
   } finally {
     clearTimeout(timer);
     if (onAbort) opts?.abort?.removeEventListener('abort', onAbort);
+    originLease?.release();
     untrackInFlight(sessionId, revoke);
   }
 }

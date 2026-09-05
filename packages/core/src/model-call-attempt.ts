@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import {
   defineObjectShape,
   hasExactShape,
@@ -53,6 +72,105 @@ export type ModelCallUsageBasis = (typeof MODEL_CALL_USAGE_BASES)[number];
 export const MODEL_CALL_COST_BASES = ['priced', 'unpriced'] as const;
 export type ModelCallCostBasis = (typeof MODEL_CALL_COST_BASES)[number];
 
+/** How a history-compaction call reduced the covered conversation. */
+export const HISTORY_COMPACT_ROUTES = ['text_summary', 'provider_native'] as const;
+export type HistoryCompactRoute = (typeof HISTORY_COMPACT_ROUTES)[number];
+
+/** Hard bound for provider-supplied diagnostic identifiers stored on an attempt. */
+export const MODEL_CALL_DIAGNOSTIC_FIELD_MAX_LENGTH = 256;
+
+export const PREPARED_REQUEST_OBSERVATION_SCHEMA_VERSION = 1 as const;
+export const PREPARED_REQUEST_OBSERVATION_MAX_SEGMENTS = 256;
+export const PREPARED_REQUEST_OBSERVATION_TEXT_MAX_LENGTH = 256;
+
+export type PreparedRequestObservationSegmentKind =
+  | 'tool_schema'
+  | 'system_prompt'
+  | 'message'
+  | 'provider_options';
+
+/**
+ * One ordered semantic part of what Maka handed to the AI SDK model-call seam.
+ *
+ * `opaque` means the digest is useful for identity and auditing but MUST NOT be
+ * used to claim exact equality. It covers redacted content and bounded
+ * remainders that intentionally summarize more than one source segment.
+ */
+export interface PreparedRequestObservationSegment {
+  kind: PreparedRequestObservationSegmentKind;
+  index: number;
+  cacheable: boolean;
+  comparison: 'exact' | 'opaque';
+  digest: string;
+  bytes: number;
+  /** Present only on an opaque bounded remainder; the value is the source-segment count. */
+  representedSegments?: number;
+  role?: string;
+  label?: string;
+}
+
+export type PromptCompositionSegmentKind =
+  | 'system_instructions'
+  | 'tool_definitions'
+  | 'messages'
+  | 'other';
+
+/**
+ * One part of a prepared request, measured in bytes of serialized request.
+ *
+ * Bytes only. `bytes / 4` is a rule of thumb over serialized JSON — wrong in a
+ * direction nobody here can correct for, badly so for an attachment's base64 —
+ * so the estimate is made where it is shown and labelled `≈` there. A figure
+ * rounded into this contract could no longer be labelled at all (#2323).
+ */
+export interface PromptCompositionSegment {
+  kind: PromptCompositionSegmentKind;
+  bytes: number;
+}
+
+/** One tool's schema, sized on its own, so a reader knows which to remove. */
+export interface PromptCompositionTool {
+  name: string;
+  bytes: number;
+}
+
+/**
+ * What a prepared request was made of, folded at the moment it was prepared.
+ *
+ * This is the whole durable answer to "what filled the context". The per-part
+ * detail it folds is not kept: every reader wanted these buckets, so storing
+ * the parts meant writing hundreds of rows per call for a fold nobody could
+ * do differently.
+ */
+export interface PromptComposition {
+  segments: PromptCompositionSegment[];
+  /** The largest named tool schemas, largest first; bounded at the fold. */
+  tools?: PromptCompositionTool[];
+  /** Everything past the named rows, so the bytes still account for every tool. */
+  remainingTools?: { count: number; bytes: number };
+  /** Tool schemas the payload did not name, so their bytes are still counted. */
+  unlabelledToolBytes?: number;
+}
+
+/**
+ * Bounded, secret-free observation of one prepared semantic model request.
+ *
+ * Historical only: `promptComposition` replaced it. Attempts recorded before
+ * that still carry it, and folding their segments is the only way to say what
+ * those requests were made of, so it stays decodable.
+ */
+export interface PreparedRequestObservation {
+  schemaVersion: typeof PREPARED_REQUEST_OBSERVATION_SCHEMA_VERSION;
+  /**
+   * Identity of the complete secret-free normalized serialization. It does not
+   * prove semantic equality when any segment is `opaque`; continuity consumers
+   * must compare the ordered segment identity and each segment's `comparison`.
+   */
+  digest: string;
+  bytes: number;
+  segments: PreparedRequestObservationSegment[];
+}
+
 export interface ModelCallAttempt {
   schemaVersion: typeof MODEL_CALL_ATTEMPT_SCHEMA_VERSION;
 
@@ -65,7 +183,7 @@ export interface ModelCallAttempt {
   logicalCallId: string;
   /** Idempotency key: appending the same `attemptId` twice records once. */
   attemptId: string;
-  /** Tracker instance id, retained to join request-shape capture artifacts. */
+  /** Tracker instance id, retained to join private prepared-request artifacts. */
   traceId: string;
 
   /**
@@ -84,12 +202,25 @@ export interface ModelCallAttempt {
   attempt: number;
 
   callKind: ModelCallKind;
+  /** Present on history-compaction calls when the selected route is known. */
+  historyCompactRoute?: HistoryCompactRoute;
   connectionSlug?: string;
   providerId: string;
   modelId: string;
   contextWindow?: number;
-  /** Join key for request-shape diagnostics; absent when capture is disabled. */
+  /**
+   * Join key for the private prepared-request artifact.
+   *
+   * Historical only: nothing writes it any more. Every capture was a copy of
+   * the conversation the run already stores, and the copies grew with the
+   * conversation. Attempts recorded before that sink was removed still carry
+   * the key, so it stays decodable.
+   */
   captureArtifactId?: string;
+  /** What the request prepared for this dispatched physical attempt was made of. */
+  promptComposition?: PromptComposition;
+  /** Replaced by `promptComposition`; still read on attempts recorded before it. */
+  requestObservation?: PreparedRequestObservation;
 
   startedAt: number;
   completedAt: number;
@@ -99,6 +230,10 @@ export interface ModelCallAttempt {
   status: ModelCallAttemptStatus;
   finishReason?: string;
   errorClass?: string;
+  httpStatus?: number;
+  providerCode?: string;
+  providerRequestId?: string;
+  retryable?: boolean;
 
   usageBasis: ModelCallUsageBasis;
   inputTokens?: number;
@@ -140,11 +275,18 @@ const MODEL_CALL_ATTEMPT_SHAPE = defineObjectShape<ModelCallAttempt>()(
   ],
   [
     'connectionSlug',
+    'historyCompactRoute',
     'contextWindow',
     'captureArtifactId',
+    'promptComposition',
+    'requestObservation',
     'timeToFirstTokenMs',
     'finishReason',
     'errorClass',
+    'httpStatus',
+    'providerCode',
+    'providerRequestId',
+    'retryable',
     'inputTokens',
     'outputTokens',
     'cacheReadInputTokens',
@@ -166,6 +308,66 @@ const TOKEN_FIELDS = [
   'reasoningTokens',
 ] as const satisfies readonly (keyof ModelCallAttempt)[];
 
+const PREPARED_REQUEST_OBSERVATION_SHAPE = defineObjectShape<PreparedRequestObservation>()(
+  ['schemaVersion', 'digest', 'bytes', 'segments'],
+  [],
+);
+
+const PREPARED_REQUEST_OBSERVATION_SEGMENT_SHAPE =
+  defineObjectShape<PreparedRequestObservationSegment>()(
+    ['kind', 'index', 'cacheable', 'comparison', 'digest', 'bytes'],
+    ['representedSegments', 'role', 'label'],
+  );
+
+const PREPARED_REQUEST_SEGMENT_KINDS: readonly PreparedRequestObservationSegmentKind[] = [
+  'tool_schema',
+  'system_prompt',
+  'message',
+  'provider_options',
+];
+
+const PROMPT_COMPOSITION_SHAPE = defineObjectShape<PromptComposition>()(
+  ['segments'],
+  ['tools', 'remainingTools', 'unlabelledToolBytes'],
+);
+
+const PROMPT_COMPOSITION_SEGMENT_SHAPE = defineObjectShape<PromptCompositionSegment>()(
+  ['kind', 'bytes'],
+  [],
+);
+
+const PROMPT_COMPOSITION_TOOL_SHAPE = defineObjectShape<PromptCompositionTool>()(
+  ['name', 'bytes'],
+  [],
+);
+
+const PROMPT_COMPOSITION_REMAINING_TOOLS_SHAPE = defineObjectShape<{
+  count: number;
+  bytes: number;
+}>()(['count', 'bytes'], []);
+
+/**
+ * The fold's buckets, in the order a composition lists them.
+ *
+ * The order is part of the contract, not presentation: a reader comparing two
+ * compositions compares them position by position, and the projection
+ * validator rejects a record whose segments arrive out of this order.
+ */
+export const PROMPT_COMPOSITION_SEGMENT_KINDS: readonly PromptCompositionSegmentKind[] = [
+  'system_instructions',
+  'tool_definitions',
+  'messages',
+  'other',
+];
+
+/**
+ * The fold names one tool per row, so the row count is what bounds this record.
+ * Generous enough for a normal registry, small enough that a pathological one
+ * cannot make an attempt unbounded. Exported because the fold that produces
+ * these rows has to cut at the same number the decoder accepts.
+ */
+export const PROMPT_COMPOSITION_MAX_TOOLS = 64;
+
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
 }
@@ -180,6 +382,133 @@ function isNonNegativeNumber(value: unknown): value is number {
 
 function isOptionalNonNegativeNumber(value: unknown): boolean {
   return value === undefined || isNonNegativeNumber(value);
+}
+
+function isOptionalDiagnosticString(value: unknown): boolean {
+  return (
+    value === undefined ||
+    (typeof value === 'string' &&
+      value.length > 0 &&
+      value.length <= MODEL_CALL_DIAGNOSTIC_FIELD_MAX_LENGTH)
+  );
+}
+
+function isOptionalHttpStatus(value: unknown): boolean {
+  return (
+    value === undefined ||
+    (isFiniteNumber(value) && Number.isInteger(value) && value >= 100 && value <= 599)
+  );
+}
+
+function isSha256Digest(value: unknown): value is string {
+  return typeof value === 'string' && /^sha256:[a-f0-9]{64}$/.test(value);
+}
+
+function isOptionalBoundedText(value: unknown): boolean {
+  return (
+    value === undefined ||
+    (typeof value === 'string' && value.length <= PREPARED_REQUEST_OBSERVATION_TEXT_MAX_LENGTH)
+  );
+}
+
+function isPreparedRequestObservationSegment(
+  value: unknown,
+): value is PreparedRequestObservationSegment {
+  if (!isRecord(value) || !hasExactShape(value, PREPARED_REQUEST_OBSERVATION_SEGMENT_SHAPE)) {
+    return false;
+  }
+  return (
+    PREPARED_REQUEST_SEGMENT_KINDS.includes(value.kind as PreparedRequestObservationSegmentKind) &&
+    isNonNegativeInteger(value.index) &&
+    typeof value.cacheable === 'boolean' &&
+    (value.comparison === 'exact' || value.comparison === 'opaque') &&
+    isSha256Digest(value.digest) &&
+    isNonNegativeInteger(value.bytes) &&
+    (value.representedSegments === undefined ||
+      (typeof value.representedSegments === 'number' &&
+        Number.isSafeInteger(value.representedSegments) &&
+        value.representedSegments > 0)) &&
+    (value.representedSegments === undefined || value.comparison === 'opaque') &&
+    isOptionalBoundedText(value.role) &&
+    isOptionalBoundedText(value.label)
+  );
+}
+
+function isPromptComposition(value: unknown): value is PromptComposition {
+  if (!isRecord(value) || !hasExactShape(value, PROMPT_COMPOSITION_SHAPE)) return false;
+  if (!Array.isArray(value.segments) || !value.segments.every(isPromptCompositionSegment)) {
+    return false;
+  }
+  // One kind per row: a fold that named the same bucket twice would let a
+  // reader's total disagree with the store's.
+  const kinds = value.segments.map((segment) => segment.kind);
+  if (new Set(kinds).size !== kinds.length) return false;
+  if (value.tools !== undefined) {
+    if (!Array.isArray(value.tools) || value.tools.length > PROMPT_COMPOSITION_MAX_TOOLS) {
+      return false;
+    }
+    if (!value.tools.every(isPromptCompositionTool)) return false;
+  }
+  if (
+    value.remainingTools !== undefined &&
+    !(
+      isRecord(value.remainingTools) &&
+      hasExactShape(value.remainingTools, PROMPT_COMPOSITION_REMAINING_TOOLS_SHAPE) &&
+      isNonNegativeInteger(value.remainingTools.count) &&
+      isNonNegativeInteger(value.remainingTools.bytes)
+    )
+  ) {
+    return false;
+  }
+  return value.unlabelledToolBytes === undefined || isNonNegativeInteger(value.unlabelledToolBytes);
+}
+
+function isPromptCompositionSegment(value: unknown): value is PromptCompositionSegment {
+  return (
+    isRecord(value) &&
+    hasExactShape(value, PROMPT_COMPOSITION_SEGMENT_SHAPE) &&
+    (PROMPT_COMPOSITION_SEGMENT_KINDS as readonly unknown[]).includes(value.kind) &&
+    isNonNegativeInteger(value.bytes)
+  );
+}
+
+function isPromptCompositionTool(value: unknown): value is PromptCompositionTool {
+  return (
+    isRecord(value) &&
+    hasExactShape(value, PROMPT_COMPOSITION_TOOL_SHAPE) &&
+    typeof value.name === 'string' &&
+    value.name.length <= PREPARED_REQUEST_OBSERVATION_TEXT_MAX_LENGTH &&
+    isNonNegativeInteger(value.bytes)
+  );
+}
+
+function isPreparedRequestObservation(value: unknown): value is PreparedRequestObservation {
+  if (!isRecord(value) || !hasExactShape(value, PREPARED_REQUEST_OBSERVATION_SHAPE)) return false;
+  return (
+    value.schemaVersion === PREPARED_REQUEST_OBSERVATION_SCHEMA_VERSION &&
+    isSha256Digest(value.digest) &&
+    isNonNegativeInteger(value.bytes) &&
+    Array.isArray(value.segments) &&
+    value.segments.length <= PREPARED_REQUEST_OBSERVATION_MAX_SEGMENTS &&
+    value.segments.every(isPreparedRequestObservationSegment) &&
+    hasOrderedPreparedRequestSegments(value.segments)
+  );
+}
+
+function hasOrderedPreparedRequestSegments(
+  segments: readonly PreparedRequestObservationSegment[],
+): boolean {
+  let previousKind = -1;
+  let previousIndex = -1;
+  for (const segment of segments) {
+    const kind = PREPARED_REQUEST_SEGMENT_KINDS.indexOf(segment.kind);
+    if (kind < previousKind) return false;
+    if (kind === previousKind && segment.index <= previousIndex) return false;
+    if (kind !== previousKind) previousIndex = -1;
+    previousKind = kind;
+    previousIndex = segment.index;
+  }
+  return true;
 }
 
 const PRICING_RATES_SHAPE = defineObjectShape<PricingConfig>()(
@@ -226,18 +555,27 @@ export function decodeModelCallAttempt(value: unknown): ModelCallAttempt {
     isNonNegativeInteger(value.step) &&
     isNonNegativeInteger(value.attempt) &&
     (MODEL_CALL_KINDS as readonly unknown[]).includes(value.callKind) &&
+    (value.historyCompactRoute === undefined ||
+      (HISTORY_COMPACT_ROUTES as readonly unknown[]).includes(value.historyCompactRoute)) &&
     isOptionalString(value.connectionSlug) &&
     isNonEmptyString(value.providerId) &&
     isNonEmptyString(value.modelId) &&
     isOptionalNonNegativeNumber(value.contextWindow) &&
     isOptionalString(value.captureArtifactId) &&
+    (value.promptComposition === undefined || isPromptComposition(value.promptComposition)) &&
+    (value.requestObservation === undefined ||
+      isPreparedRequestObservation(value.requestObservation)) &&
     isFiniteNumber(value.startedAt) &&
     isFiniteNumber(value.completedAt) &&
     isNonNegativeNumber(value.latencyMs) &&
     isOptionalNonNegativeNumber(value.timeToFirstTokenMs) &&
     (MODEL_CALL_ATTEMPT_STATUSES as readonly unknown[]).includes(value.status) &&
     isOptionalString(value.finishReason) &&
-    isOptionalString(value.errorClass) &&
+    isOptionalDiagnosticString(value.errorClass) &&
+    isOptionalHttpStatus(value.httpStatus) &&
+    isOptionalDiagnosticString(value.providerCode) &&
+    isOptionalDiagnosticString(value.providerRequestId) &&
+    (value.retryable === undefined || typeof value.retryable === 'boolean') &&
     (MODEL_CALL_USAGE_BASES as readonly unknown[]).includes(value.usageBasis) &&
     TOKEN_FIELDS.every((field) => isOptionalNonNegativeNumber(value[field])) &&
     (MODEL_CALL_COST_BASES as readonly unknown[]).includes(value.costBasis) &&
@@ -250,6 +588,9 @@ export function decodeModelCallAttempt(value: unknown): ModelCallAttempt {
   const completedAt = value.completedAt as number;
   if (completedAt < startedAt) {
     throw new Error('ModelCallAttempt completedAt precedes startedAt');
+  }
+  if (value.historyCompactRoute !== undefined && value.callKind !== 'history_compact') {
+    throw new Error('ModelCallAttempt non-compaction call carries historyCompactRoute');
   }
   // `costBasis` and `costUsd` travel together in both directions. A price we
   // could not resolve must never be published as an amount, and a priced record

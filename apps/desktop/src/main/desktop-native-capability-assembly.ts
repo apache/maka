@@ -1,6 +1,23 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { app, nativeImage, powerMonitor, screen } from 'electron';
-import { resolveSystemUiLocale, resolveUiLocale } from '@maka/core';
-import type { AppSettings, UiLocale } from '@maka/core';
 import { createComputerUseOverlayHook } from '@maka/computer-use';
 import { buildBrowserTools } from './browser/browser-tools.js';
 import {
@@ -8,10 +25,8 @@ import {
   createDesktopPhysicalInputGuard,
 } from './computer-use-host.js';
 import { createCursorOverlayController } from './computer-use/cursor-overlay-window.js';
-import {
-  createComputerUsePipController,
-  withComputerUsePip,
-} from './computer-use/pip-window.js';
+import { withComputerUsePip } from './computer-use/pip-feed.js';
+import { createComputerUsePipController } from './computer-use/pip-window.js';
 import {
   createComputerUseStatusItem,
   withComputerUseStatusItem,
@@ -24,12 +39,13 @@ import {
   applyComputerUseRealModelPolicy,
   parseComputerUseRealModelPolicy,
 } from './computer-use-real-model-policy.js';
+import type { DesktopLocaleAuthority } from './desktop-locale-authority.js';
 
 const COMPUTER_USE_WAKE_HOLD = 'computer-use';
 
 export interface DesktopNativeCapabilityAssemblyDeps {
   readonly isComputerUseRealModelE2e: boolean;
-  readonly settings: { get(): Promise<AppSettings> };
+  readonly locale: Pick<DesktopLocaleAuthority, 'current' | 'subscribe'>;
   readonly keepSystemAwake?: { hold(reason: string): void; release(reason: string): void };
   readonly mainWindow?: {
     windowBounds(): { x: number; y: number; width: number; height: number } | undefined;
@@ -56,19 +72,9 @@ export function assembleDesktopNativeCapabilities(
       : {},
   );
 
-  let uiLocale: UiLocale | undefined;
-  const resolveComputerUseLocale = (): UiLocale => {
-    const system = resolveSystemUiLocale(app.getPreferredSystemLanguages());
-    void deps.settings
-      .get()
-      .then((settings) => {
-        uiLocale = resolveUiLocale(settings.personalization.uiLocale, system);
-      })
-      .catch(() => undefined);
-    return uiLocale ?? system;
-  };
   const computerUseStatusItem = createComputerUseStatusItem({
-    resolveLocale: resolveComputerUseLocale,
+    resolveLocale: () => deps.locale.current(),
+    subscribeLocaleChanges: (listener) => deps.locale.subscribe(listener),
     onLiveChanged: (live) => {
       if (live) deps.keepSystemAwake?.hold(COMPUTER_USE_WAKE_HOLD);
       else deps.keepSystemAwake?.release(COMPUTER_USE_WAKE_HOLD);

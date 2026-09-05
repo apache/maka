@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 // Overlay renderer entry — hosts the ported CursorEngine on a full-window canvas.
 // Receives MAIN-computed, window-local coordinates over a one-way bridge and
 // animates the agent cursor. Display-only: it never sends anything back (S15).
@@ -12,11 +31,11 @@ interface MovePayload {
   actionId: string;
   x: number;
   y: number;
-  kind?: 'move' | 'click' | 'drag' | 'scroll';
+  kind?: 'click' | 'scroll';
   pressed?: boolean;
   instant?: boolean;
 }
-interface CompletePayload { actionId?: string; x: number; y: number; kind?: 'move' | 'click' | 'drag' | 'scroll'; pulse?: boolean }
+interface CompletePayload { actionId?: string; x: number; y: number; kind?: 'click' | 'scroll'; pulse?: boolean }
 interface CancelPayload { actionId: string }
 interface ResetPayload { sessionId: string; generation: number }
 declare global {
@@ -36,16 +55,13 @@ declare global {
   }
 }
 
-// Codex `CloseEnoughConfiguration.default`. The thresholds themselves live in
-// the engine module, next to the spring they are read against and next to
-// `cursorPresentationReadyDeadlineMs`, which the runtime's fence is sized from:
-// a gate the fence is shorter than releases the action mid-flight anyway.
+// Maka's independently derived close-enough gate. The thresholds live in the
+// engine module beside the spring and `cursorPresentationReadyDeadlineMs`, so
+// the runtime fence cannot be sized independently below the landing guarantee.
 const CLOSE_ENOUGH_PROGRESS_THRESHOLD = CURSOR_CLOSE_ENOUGH.progress;
 const CLOSE_ENOUGH_DISTANCE_THRESHOLD = CURSOR_CLOSE_ENOUGH.distance;
-// Follow-up: Codex additionally models `CursorNextInteractionTiming { closeEnough,
-// finished }`, letting each caller pick between firing at "close enough" and
-// firing only at full stop. Maka always uses the closeEnough gate below; adding
-// the mode requires a bridge-payload change and is tracked separately.
+// Maka always releases through the close-enough gate below. A future full-stop
+// mode would require a bridge-payload change and is tracked separately.
 
 const canvas = document.getElementById('cursor') as HTMLCanvasElement;
 const ctx = canvas.getContext('2d')!;
@@ -145,6 +161,13 @@ function kick(): void {
 }
 
 window.cursorOverlay?.onReset((p) => {
+  // Reset owns a new lifecycle identity. Stop the old presentation and clear
+  // its reporting state before adopting the new session/generation, so an
+  // already queued frame cannot relabel an old action as part of the new one.
+  engine.cancel();
+  activeActionId = null;
+  readySent = false;
+  waitForNativeCompletion = false;
   sessionId = p.sessionId;
   generation = p.generation;
   engine.setSession(sessionId);
@@ -154,8 +177,16 @@ window.cursorOverlay?.onMove((p) => {
   activeActionId = p.actionId;
   readySent = false;
   waitForNativeCompletion = true;
+  const now = performance.now();
+  // Bring an interrupted path to the submission timestamp before replacing it.
+  // Reusing that timestamp below seeds the new clock without charging the new
+  // motion for time that belonged to its predecessor or to an idle gap.
+  engine.tickTo(now);
   if (p.instant === true) engine.completeAt(p.x, p.y);
-  else engine.moveTo(p.x, p.y);
+  else {
+    engine.moveTo(p.x, p.y);
+    engine.tickTo(now);
+  }
   engine.pressed = p.pressed === true;
   kick();
 });

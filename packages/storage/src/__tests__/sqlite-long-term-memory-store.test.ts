@@ -1,9 +1,28 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { chmod, link, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, test } from 'node:test';
+import { after, describe, test } from 'node:test';
 import { Worker } from 'node:worker_threads';
 import {
   MemoryItemStoreConflictError,
@@ -16,7 +35,6 @@ import {
   openInteractiveLongTermMemoryStoreForWrite,
 } from '../long-term-memory-store.js';
 import {
-  createHeadlessRootLease,
   resolveStorageRoot,
   STORAGE_ROOT_MARKER_FILE,
   tryAcquireInteractiveRootOwner,
@@ -26,6 +44,14 @@ import {
   SqliteMemoryItemStore,
   type SqliteMemoryItemStoreFailpoint,
 } from '../sqlite-long-term-memory-store.js';
+import {
+  removeTrackedControlDirectories,
+  trackControlDirectory,
+} from './fixtures/control-directory-hygiene.js';
+
+// The control directory of each resolved root lives outside that root, so a
+// temporary root's removal leaves it behind; reclaim the recorded rootIds here.
+after(removeTrackedControlDirectories);
 
 const require = createRequire(import.meta.url);
 
@@ -95,6 +121,83 @@ describe('SqliteMemoryItemStore', () => {
       } finally {
         unchanged.close();
       }
+    });
+  });
+
+  test('preserves a pending failure while migrating schema v3 to the current version', async () => {
+    await withTempRoot(async (root) => {
+      const databasePath = join(root, 'v3-pending.sqlite');
+      const initialized = new SqliteMemoryItemStore(databasePath);
+      initialized.close();
+
+      const Database = loadDatabaseSync();
+      const database = new Database(databasePath);
+      database.exec(`
+        DROP TABLE memory_compaction_policy_denials;
+        DROP TABLE memory_extraction_failures;
+        CREATE TABLE memory_extraction_failures (
+          session_id TEXT PRIMARY KEY CHECK (length(session_id) > 0),
+          from_ordinal INTEGER NOT NULL CHECK (from_ordinal > 0),
+          through_ordinal INTEGER NOT NULL CHECK (through_ordinal >= from_ordinal),
+          coverage_hash TEXT NOT NULL CHECK (length(coverage_hash) = 64),
+          first_operation_id TEXT NOT NULL UNIQUE CHECK (length(first_operation_id) > 0),
+          first_trigger TEXT NOT NULL CHECK (first_trigger IN ('remember', 'extract')),
+          first_failure_class TEXT NOT NULL CHECK (
+            first_failure_class IN (
+              'provider', 'schema', 'evidence', 'localization', 'requested_admission'
+            )
+          ),
+          failed_at INTEGER NOT NULL CHECK (failed_at >= 0)
+        );
+        INSERT INTO memory_extraction_failures(
+          session_id, from_ordinal, through_ordinal, coverage_hash,
+          first_operation_id, first_trigger, first_failure_class, failed_at
+        ) VALUES (
+          'session-v3', 2, 7, '${'6'.repeat(64)}',
+          'operation-v3', 'extract', 'provider', 900
+        );
+        PRAGMA user_version = 3;
+      `);
+      database.close();
+
+      const migrated = new SqliteMemoryItemStore(databasePath);
+      assert.equal(migrated.schemaVersion(), SQLITE_LONG_TERM_MEMORY_SCHEMA_VERSION);
+      assert.deepEqual(await migrated.readPendingExtractionFailure('session-v3'), {
+        sessionId: 'session-v3',
+        fromOrdinal: 2,
+        throughOrdinal: 7,
+        coverageHash: '6'.repeat(64),
+        firstOperationId: 'operation-v3',
+        firstTrigger: 'extract',
+        firstFailureClass: 'provider',
+        failedAt: 900,
+      });
+      migrated.close();
+    });
+  });
+
+  test('persists Compaction policy denial independently from Cursor and pending failure', async () => {
+    await withStore(async ({ store }) => {
+      const first = await store.recordCompactionPolicyDenial({
+        sessionId: 'session-denial',
+        compactionCheckpointId: 'checkpoint-denial',
+        deniedAt: 500,
+      });
+      const replay = await store.recordCompactionPolicyDenial({
+        sessionId: 'session-denial',
+        compactionCheckpointId: 'checkpoint-denial',
+        deniedAt: 900,
+      });
+
+      assert.deepEqual(first, {
+        sessionId: 'session-denial',
+        compactionCheckpointId: 'checkpoint-denial',
+        deniedAt: 500,
+      });
+      assert.deepEqual(replay, first);
+      assert.deepEqual(await store.readCompactionPolicyDenials('session-denial'), [first]);
+      assert.equal(await store.readExtractionCursor('session-denial'), undefined);
+      assert.equal(await store.readPendingExtractionFailure('session-denial'), undefined);
     });
   });
 
@@ -1238,6 +1341,155 @@ describe('SqliteMemoryItemStore', () => {
     });
   });
 
+  test('keeps a failed Compaction range bound to its checkpoint through retry', async () => {
+    await withStore(async ({ store }) => {
+      const coverageHash = '3'.repeat(64);
+      const first = await store.settleExtractionFailure({
+        operationId: 'compaction-failure-first',
+        sessionId: 'session-compaction',
+        expectedCursorOrdinal: 0,
+        failedThroughOrdinal: 5,
+        coverageHash,
+        failureClass: 'provider',
+        trigger: 'compaction',
+        compactionCheckpointId: 'checkpoint-1',
+      });
+      assert.equal(first.status, 'retry_later');
+      assert.equal(
+        (await store.readPendingExtractionFailure('session-compaction'))?.compactionCheckpointId,
+        'checkpoint-1',
+      );
+
+      await assert.rejects(
+        store.commitExtraction({
+          operationId: 'compaction-retry-wrong-checkpoint',
+          sessionId: 'session-compaction',
+          expectedCursorOrdinal: 0,
+          nextCursorOrdinal: 5,
+          coverageHash,
+          items: [],
+          requestedItemIndexes: [],
+          trigger: 'compaction',
+          compactionCheckpointId: 'checkpoint-2',
+        }),
+        conflict('cursor_conflict'),
+      );
+
+      const committed = await store.commitExtraction({
+        operationId: 'compaction-retry-correct-checkpoint',
+        sessionId: 'session-compaction',
+        expectedCursorOrdinal: 0,
+        nextCursorOrdinal: 5,
+        coverageHash,
+        items: [],
+        requestedItemIndexes: [],
+        trigger: 'compaction',
+        compactionCheckpointId: 'checkpoint-1',
+      });
+      assert.equal(committed.receipt.status, 'extracted');
+      assert.equal(committed.cursor.processedOrdinal, 5);
+      assert.equal(await store.readPendingExtractionFailure('session-compaction'), undefined);
+
+      await assert.rejects(
+        store.settleExtractionFailure({
+          operationId: 'compaction-missing-checkpoint',
+          sessionId: 'session-missing-checkpoint',
+          expectedCursorOrdinal: 0,
+          failedThroughOrdinal: 1,
+          coverageHash,
+          failureClass: 'provider',
+          trigger: 'compaction',
+        }),
+        /compactionCheckpointId/,
+      );
+    });
+  });
+
+  test('atomically policy-skips through a pending prefix without writing Items', async () => {
+    await withStore(async ({ store }) => {
+      await store.settleExtractionFailure({
+        operationId: 'policy-skip-pending',
+        sessionId: 'session-policy-skip',
+        expectedCursorOrdinal: 0,
+        failedThroughOrdinal: 5,
+        coverageHash: '4'.repeat(64),
+        failureClass: 'provider',
+        trigger: 'compaction',
+        compactionCheckpointId: 'checkpoint-pending-compaction',
+      });
+
+      const skipped = await store.commitExtraction({
+        operationId: 'policy-skip-operation',
+        sessionId: 'session-policy-skip',
+        expectedCursorOrdinal: 0,
+        nextCursorOrdinal: 8,
+        coverageHash: '5'.repeat(64),
+        items: [],
+        requestedItemIndexes: [],
+        skipReason: 'policy_denied',
+        trigger: 'compaction',
+        compactionCheckpointId: 'checkpoint-policy-denied',
+      });
+
+      assert.equal(skipped.receipt.status, 'skipped');
+      assert.equal(skipped.receipt.skipReason, 'policy_denied');
+      assert.equal(skipped.cursor.processedOrdinal, 8);
+      assert.equal(await store.readPendingExtractionFailure('session-policy-skip'), undefined);
+      assert.deepEqual(await store.searchByKeys({ terms: ['concise'], match: 'exact' }), []);
+
+      const replay = await store.commitExtraction({
+        operationId: 'policy-skip-operation',
+        sessionId: 'session-policy-skip',
+        expectedCursorOrdinal: 0,
+        nextCursorOrdinal: 8,
+        coverageHash: '5'.repeat(64),
+        items: [],
+        requestedItemIndexes: [],
+        skipReason: 'policy_denied',
+        trigger: 'compaction',
+        compactionCheckpointId: 'checkpoint-policy-denied',
+      });
+      assert.equal(replay.replayed, true);
+      assert.equal(replay.receipt.status, 'skipped');
+    });
+  });
+
+  test('policy skip never consumes an explicit remember pending failure', async () => {
+    await withStore(async ({ store }) => {
+      await store.settleExtractionFailure({
+        operationId: 'remember-pending',
+        sessionId: 'session-remember-pending',
+        expectedCursorOrdinal: 0,
+        failedThroughOrdinal: 5,
+        coverageHash: '6'.repeat(64),
+        failureClass: 'provider',
+        trigger: 'remember',
+      });
+
+      await assert.rejects(
+        store.commitExtraction({
+          operationId: 'denied-after-remember',
+          sessionId: 'session-remember-pending',
+          expectedCursorOrdinal: 0,
+          nextCursorOrdinal: 8,
+          coverageHash: '7'.repeat(64),
+          items: [],
+          requestedItemIndexes: [],
+          skipReason: 'policy_denied',
+          trigger: 'compaction',
+          compactionCheckpointId: 'checkpoint-policy-denied',
+        }),
+        /does not match the commit/,
+      );
+
+      assert.equal(
+        (await store.readPendingExtractionFailure('session-remember-pending'))?.firstTrigger,
+        'remember',
+      );
+      assert.equal(await store.readExtractionCursor('session-remember-pending'), undefined);
+    });
+  });
+
   test('rolls back Cursor, pending failure, operation, and receipt when discard fails', async () => {
     await withStore(async ({ store, setFailpoint }) => {
       const coverageHash = '2'.repeat(64);
@@ -1286,13 +1538,11 @@ describe('long-term memory Storage Root authority', () => {
     );
   });
 
-  test('rejects a Headless lease at the Interactive opener without creating a database', async () => {
+  test('rejects a forged lease at the Interactive opener without creating a database', async () => {
     await withTempRoot(async (root) => {
-      const capability = await resolveStorageRoot({ path: root, kind: 'headless' });
-      const lease = createHeadlessRootLease(capability, 'write');
       await assert.rejects(
         openInteractiveLongTermMemoryStoreForWrite(
-          lease as unknown as Parameters<typeof openInteractiveLongTermMemoryStoreForWrite>[0],
+          {} as Parameters<typeof openInteractiveLongTermMemoryStoreForWrite>[0],
         ),
         /interactive/,
       );
@@ -1302,7 +1552,9 @@ describe('long-term memory Storage Root authority', () => {
 
   test('snapshots mutation input before crossing the authority boundary', async () => {
     await withTempRoot(async (root) => {
-      const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+      const capability = trackControlDirectory(
+        await resolveStorageRoot({ path: root, kind: 'interactive' }),
+      );
       const owner = await tryAcquireInteractiveRootOwner(capability);
       assert.ok(owner);
       if (!owner) return;
@@ -1341,7 +1593,9 @@ describe('long-term memory Storage Root authority', () => {
 
   test('rejects operations after the durable root identity changes', async () => {
     await withTempRoot(async (root) => {
-      const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+      const capability = trackControlDirectory(
+        await resolveStorageRoot({ path: root, kind: 'interactive' }),
+      );
       const owner = await tryAcquireInteractiveRootOwner(capability);
       assert.ok(owner);
       if (!owner) return;
@@ -1363,7 +1617,9 @@ describe('long-term memory Storage Root authority', () => {
 
   test('single-flights an Interactive writer and closes it explicitly', async () => {
     await withTempRoot(async (root) => {
-      const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+      const capability = trackControlDirectory(
+        await resolveStorageRoot({ path: root, kind: 'interactive' }),
+      );
       const owner = await tryAcquireInteractiveRootOwner(capability);
       assert.ok(owner);
       if (!owner) return;

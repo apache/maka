@@ -1,3 +1,20 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 name: Release Windows check
 
 # The Windows release path used to run for the first time on release day, on
@@ -15,32 +32,94 @@ on:
     paths:
       - 'apps/desktop/electron-builder.config.mjs'
       - 'apps/desktop/package.json'
+      - 'native/runtime-host-peer/**'
+      - 'packages/cli/RUNTIME_HOST_PEER_DEPENDENCIES.rust.tsv'
+      - 'packages/cli/RUNTIME_HOST_PEER_THIRD_PARTY_NOTICES.txt'
       - 'scripts/package-windows-x64.mjs'
-      - 'scripts/prepare-bundled-git.mjs'
-      - 'scripts/prepare-bundled-git.test.mjs'
+      - 'scripts/windows-archive-repro.test.mjs'
+      - 'patches/app-builder-lib+*.patch'
+      - 'scripts/generate-runtime-host-peer-dependencies.mjs'
+      - 'scripts/generate-runtime-host-peer-notices.mjs'
       - 'scripts/verify-windows-x64.mjs'
+      - 'scripts/verify-windows-sandbox-e2e.mjs'
       - 'scripts/verify-windows-installer-lifecycle.mjs'
+      - 'scripts/verify-windows-autoupdate.mjs'
+      - 'scripts/verify-windows-installer-rollback.mjs'
+      - 'scripts/package-windows-autoupdate-next.mjs'
+      # The Abort-path rollback hook ships inside the installer itself.
+      - 'apps/desktop/build/installer.nsh'
+      # The packaged updater's feed behavior is only observable on this path.
+      # The boot wiring that hands MAKA_UPDATE_TEST_FEED to it is not here:
+      # that is a few lines, `scripts/update-test-feed-wiring.test.mjs` asserts
+      # them on every change for free, and naming the file made a 1900-line
+      # module the single largest source of runs on this 25-minute lane.
+      - 'apps/desktop/src/main/app-update-service.ts'
+      - 'apps/desktop/src/main/main-window.ts'
+      - 'packages/runtime-host/src/client/connect-or-spawn.ts'
+      - 'packages/runtime-host/src/client/launcher.ts'
+      - 'apps/desktop/src/main/windows-maximize-renderer-sync.ts'
+      - 'scripts/prepare-windows-upgrade-baseline.mjs'
+      - 'scripts/windows-upgrade-baseline.json'
       - 'scripts/verify-packaged-app.mjs'
       - 'scripts/npm-spawn.mjs'
       - 'scripts/generate-third-party-notices.mjs'
+      - 'scripts/generate-windows-cargo-notices.mjs'
+      - 'scripts/windows-package-source-closure.mjs'
+      - 'scripts/windows-package-source-closure.test.mjs'
+      # The packaged worker and its Windows boundary driver are built from
+      # these sources, so changes here must reach the packaged lifecycle gate.
+      - 'apps/desktop/scripts/copy-runtime-filesystem-worker.mjs'
+      - 'packages/runtime/scripts/build-filesystem-worker.mjs'
+      - 'packages/runtime/src/filesystem-worker/**'
+      - 'packages/runtime/src/sandbox/**'
+      - 'packages/runtime/src/path-containment.ts'
+      - 'packages/runtime/src/sandbox-boundary-path.ts'
+      - 'packages/runtime/src/apply-patch-file.ts'
+      - 'packages/runtime/src/child-fd-input.ts'
+      - 'packages/runtime/src/child-process-lifecycle.ts'
+      - 'packages/runtime/src/edit-replace.ts'
+      - 'packages/runtime/src/file-stable-write.ts'
+      - 'packages/runtime/src/image-file.ts'
+      - 'packages/runtime/src/process-tree-terminator.ts'
+      - 'packages/runtime/src/unified-diff.ts'
+      - 'packages/core/src/absolute-path.ts'
+      - 'packages/core/src/artifacts.ts'
+      - 'packages/core/src/attachments.ts'
+      - 'packages/core/src/permission-profile.ts'
+      - 'packages/core/src/permission-profile-compiler.ts'
+      - 'packages/core/src/sandbox-boundary.ts'
+      - 'packages/core/src/serialized-byte-length.ts'
+      - 'packages/core/src/windows-path.ts'
+      - 'experiments/windows-sandbox/launcher/**'
+      - 'experiments/windows-sandbox/*.ps1'
       - '.gitattributes'
       - 'package.json'
       - 'package-lock.json'
-      - 'apps/desktop/resources/licenses/git/NOTICE.txt'
+      - 'apps/desktop/resources/licenses/cargo/THIRD_PARTY_NOTICES.txt'
+      - '.github/workflows/release.yml'
       - '.github/workflows/release-windows-check.yml'
+  # The list above is a pre-filter, not this lane's import closure, so a
+  # transitive edit it cannot match would otherwise first be observed on release
+  # day. Same pairing as the other two Windows lanes.
+  schedule:
+    - cron: '17 5 * * *'
   workflow_dispatch:
 
 permissions:
   contents: read
 
+# Keyed on the pull request number rather than the ref, because `github.ref` is
+# refs/heads/main for the nightly and for a dispatch alike: one shared group
+# would let a dispatch queue behind the nightly and then be discarded while
+# still pending. Same fix the other two Windows lanes already carry.
 concurrency:
-  group: release-windows-check-${{ github.ref }}
+  group: release-windows-check-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 jobs:
   package:
     runs-on: windows-2025
-    timeout-minutes: 60
+    timeout-minutes: 45
     defaults:
       run:
         shell: bash
@@ -58,15 +137,114 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Update stable Rust for Desktop native artifacts
+        run: rustup update stable --no-self-update
+
+      - id: rustc
+        name: Resolve Rust cache version
+        run: |
+          echo "version=$(rustc --version | cut -d ' ' -f 2)" >> "$GITHUB_OUTPUT"
+          echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          {
+            echo "KACHE_CACHE_DIR=${{ runner.temp }}/kache"
+            echo "KACHE_RUNTIME_DIR=${{ runner.temp }}/kache-runtime"
+            echo "RUSTC_WRAPPER=kache"
+          } >> "$GITHUB_ENV"
+
+      - name: Install Kache
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2
+        with:
+          tool: kache@0.16.0
+
+      - id: kache-cache
+        name: Restore Rust build cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/kache
+          key: kache-windows-release-check-v0.16.0-${{ runner.os }}-${{ runner.arch }}-rust-${{ steps.rustc.outputs.version }}-${{ steps.rustc.outputs.revision }}
+          restore-keys: |
+            kache-windows-release-check-v0.16.0-${{ runner.os }}-${{ runner.arch }}-rust-${{ steps.rustc.outputs.version }}-
+
       - name: Package the Windows installer and ZIP
         run: npm run package:windows-x64
 
-      - name: Verify the Windows release
-        run: |
-          version="$(node -p "require('./apps/desktop/package.json').version")"
-          npm run verify:windows-x64 -- "apps/desktop/release/Maka-${version}-win-x64.exe"
+      - name: Check archive reproducibility with different input timestamps
+        run: npm run test:windows-archives
 
-      - name: Exercise clean install and uninstall
+      - name: Report Rust build cache
+        run: kache report --format github >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save Rust build cache
+        if: github.ref_name == github.event.repository.default_branch
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/kache
+          key: ${{ steps.kache-cache.outputs.cache-primary-key }}
+
+      - name: Verify the Windows release
+        run: npm run verify:windows-x64 -- x64
+
+      # Discovered, not spelled out: this lane builds one installer, and the name
+      # is the target descriptor's to decide. The installer steps below are
+      # handed a path rather than a target, so unlike `verify:windows-x64` they
+      # cannot resolve it themselves.
+      - name: Locate the packaged Windows installer
+        id: installer
+        run: |
+          shopt -s nullglob
+          exes=(apps/desktop/release/*.exe)
+          if [[ ${#exes[@]} -ne 1 ]]; then
+            echo "Expected exactly one Windows installer, found ${#exes[@]}" >&2
+            exit 1
+          fi
+          echo "exe=${exes[0]}" >> "$GITHUB_OUTPUT"
+
+      # The baseline is pinned by version, tag, asset name and SHA-256 in
+      # `scripts/windows-upgrade-baseline.json`, so it is immutable and the
+      # cache key is that file. Downloading it is this lane's most frequent
+      # failure — 14 of 36 across 300 runs, always on branches that could not
+      # have caused it, each false red costing another 25-minute Windows
+      # runner. A hit skips the network; the step below re-verifies the
+      # checksum either way, so a corrupt entry still fails loudly.
+      - name: Restore the pinned Windows upgrade baseline
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: artifacts/windows-upgrade-baseline
+          key: windows-upgrade-baseline-${{ hashFiles('scripts/windows-upgrade-baseline.json') }}
+
+      - name: Download and verify the pinned Windows upgrade baseline
+        id: previous
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           version="$(node -p "require('./apps/desktop/package.json').version")"
-          npm run verify:windows-installer -- "apps/desktop/release/Maka-${version}-win-x64.exe"
+          previous_exe="$(node scripts/prepare-windows-upgrade-baseline.mjs \
+            "$version" artifacts/windows-upgrade-baseline)"
+          echo "exe=$previous_exe" >> "$GITHUB_OUTPUT"
+
+      # The pinned release is only one input here. The other is the installer
+      # this run just built, which this step installs over it, so a pull request
+      # does decide the outcome.
+      - name: Exercise pinned-version upgrade and uninstall
+        run: |
+          npm run verify:windows-installer -- \
+            "${{ steps.installer.outputs.exe }}" \
+            "${{ steps.previous.outputs.exe }}"
+
+      - name: Build the version-bumped autoupdate installer
+        run: npm run package:windows-autoupdate-next
+
+      - name: Verify automatic update end to end
+        run: |
+          npm run verify:windows-autoupdate -- \
+            "${{ steps.installer.outputs.exe }}" \
+            apps/desktop/release-autoupdate-next
+
+      # Consumes only what this run built — the candidate installer and the
+      # version-bumped one — so it is the pull request's own evidence that the
+      # `installer.nsh` Abort path still restores the previous installation.
+      - name: Prove deterministic mid-install failure rollback
+        run: |
+          npm run verify:windows-installer-rollback -- \
+            "${{ steps.installer.outputs.exe }}" \
+            apps/desktop/release-autoupdate-next

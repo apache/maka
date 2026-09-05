@@ -1,4 +1,27 @@
-import type { ScheduledTask, ScheduledTaskRunOutcome } from './scheduled-task.js';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import type {
+  ScheduledTask,
+  ScheduledTaskRunOutcome,
+  ScheduledTaskStatus,
+} from './scheduled-task.js';
 
 export const SOURCE_RECORD_TYPES = ['mcp', 'api', 'local'] as const;
 export type SourceRecordType = (typeof SOURCE_RECORD_TYPES)[number];
@@ -9,14 +32,8 @@ export type SourceAuthType = (typeof SOURCE_AUTH_TYPES)[number];
 export const SOURCE_RECORD_STATUSES = ['ready', 'needs_auth', 'error', 'disabled'] as const;
 export type SourceRecordStatus = (typeof SOURCE_RECORD_STATUSES)[number];
 
-export const CAPABILITY_AUDIT_PERMISSION_MODES = ['explore', 'ask', 'execute'] as const;
-export type CapabilityAuditPermissionMode = (typeof CAPABILITY_AUDIT_PERMISSION_MODES)[number];
-
-export const AUTOMATION_RECORD_TRIGGERS = ['manual', 'schedule', 'event'] as const;
-export type AutomationRecordTrigger = (typeof AUTOMATION_RECORD_TRIGGERS)[number];
-
-export const AUTOMATION_LAST_RUN_STATUSES = ['ok', 'error', 'skipped'] as const;
-export type AutomationLastRunStatus = (typeof AUTOMATION_LAST_RUN_STATUSES)[number];
+export const SCHEDULED_TASK_LAST_RUN_STATUSES = ['ok', 'error', 'skipped'] as const;
+export type ScheduledTaskLastRunStatus = (typeof SCHEDULED_TASK_LAST_RUN_STATUSES)[number];
 
 export const LOCAL_SKILL_SOURCE_SLUG = 'workspace-skills';
 
@@ -46,19 +63,18 @@ export interface SkillAuditRecord {
   name: string;
   description: string;
   declaredTools: string[];
+  hasDeclaredTools: boolean;
   enabled: boolean;
   sourceSlug: string;
-  permissionMode: Exclude<CapabilityAuditPermissionMode, 'execute'>;
 }
 
-export interface AutomationRecord {
+export interface ScheduledTaskAuditRecord {
   id: string;
   name: string;
   enabled: boolean;
-  trigger: AutomationRecordTrigger;
-  permissionMode: CapabilityAuditPermissionMode;
+  status: ScheduledTaskStatus;
   lastRunAt?: number;
-  lastRunStatus?: AutomationLastRunStatus;
+  lastRunStatus?: ScheduledTaskLastRunStatus;
 }
 
 export interface CapabilityAuditSummary {
@@ -71,18 +87,18 @@ export interface CapabilityAuditSummary {
   enabledSkillCount: number;
   skillsWithDeclaredTools: number;
   declaredToolKindCount: number;
-  automationCount: number;
-  enabledAutomationCount: number;
-  executableAutomationCount: number;
-  failedAutomationCount: number;
-  skippedAutomationCount: number;
+  scheduledTaskCount: number;
+  enabledScheduledTaskCount: number;
+  activeScheduledTaskCount: number;
+  failedScheduledTaskCount: number;
+  skippedScheduledTaskCount: number;
 }
 
 export interface CapabilityAuditReport {
   checkedAt: number;
   sources: SourceRecord[];
   skills: SkillAuditRecord[];
-  automations: AutomationRecord[];
+  scheduledTasks: ScheduledTaskAuditRecord[];
   summary: CapabilityAuditSummary;
 }
 
@@ -106,14 +122,14 @@ export function deriveCapabilityAuditReport(
     needsLocalSkillSource && !sources.some((source) => source.slug === LOCAL_SKILL_SOURCE_SLUG)
       ? [localSkillSource(skills.length, declaredToolKindCount, now), ...sources]
       : sources;
-  const automations = (input.scheduledTasks ?? []).map(scheduledTaskToAutomationRecord);
+  const scheduledTasks = (input.scheduledTasks ?? []).map(scheduledTaskToAuditRecord);
 
   return {
     checkedAt: now,
     sources: allSources,
     skills,
-    automations,
-    summary: summarizeCapabilityAudit(allSources, skills, automations),
+    scheduledTasks,
+    summary: summarizeCapabilityAudit(allSources, skills, scheduledTasks),
   };
 }
 
@@ -126,9 +142,9 @@ function normalizeSkillInputs(skills: readonly CapabilityAuditSkillInput[]): Ski
       name: normalizeNonEmptyString(skill.name) ?? id,
       description: normalizeNonEmptyString(skill.description) ?? '',
       declaredTools,
+      hasDeclaredTools: declaredTools.length > 0,
       enabled: skill.enabled ?? true,
       sourceSlug: normalizeNonEmptyString(skill.sourceSlug) ?? LOCAL_SKILL_SOURCE_SLUG,
-      permissionMode: declaredTools.length > 0 ? 'ask' : 'explore',
     };
   });
 }
@@ -172,26 +188,19 @@ function localSkillSource(
   };
 }
 
-function scheduledTaskToAutomationRecord(task: ScheduledTask): AutomationRecord {
+function scheduledTaskToAuditRecord(task: ScheduledTask): ScheduledTaskAuditRecord {
   const lastRun = task.runs[0];
   return {
     id: task.id,
     name: task.title,
     enabled: task.status === 'active',
-    trigger: 'schedule',
-    permissionMode: scheduledTaskPermissionMode(task),
+    status: task.status,
     ...(lastRun ? { lastRunAt: lastRun.at } : {}),
     ...(lastRun ? { lastRunStatus: mapScheduledTaskRunOutcome(lastRun.outcome) } : {}),
   };
 }
 
-function scheduledTaskPermissionMode(task: ScheduledTask): CapabilityAuditPermissionMode {
-  if (task.status === 'completed' || task.status === 'expired') return 'explore';
-  if (task.status === 'paused') return 'ask';
-  return 'execute';
-}
-
-function mapScheduledTaskRunOutcome(outcome: ScheduledTaskRunOutcome): AutomationLastRunStatus {
+function mapScheduledTaskRunOutcome(outcome: ScheduledTaskRunOutcome): ScheduledTaskLastRunStatus {
   if (outcome === 'ok') return 'ok';
   if (outcome === 'blocked') return 'skipped';
   return 'error';
@@ -200,7 +209,7 @@ function mapScheduledTaskRunOutcome(outcome: ScheduledTaskRunOutcome): Automatio
 function summarizeCapabilityAudit(
   sources: readonly SourceRecord[],
   skills: readonly SkillAuditRecord[],
-  automations: readonly AutomationRecord[],
+  scheduledTasks: readonly ScheduledTaskAuditRecord[],
 ): CapabilityAuditSummary {
   return {
     sourceCount: sources.length,
@@ -212,16 +221,13 @@ function summarizeCapabilityAudit(
     enabledSkillCount: skills.filter((skill) => skill.enabled).length,
     skillsWithDeclaredTools: skills.filter((skill) => skill.declaredTools.length > 0).length,
     declaredToolKindCount: distinctDeclaredToolKinds(skills).length,
-    automationCount: automations.length,
-    enabledAutomationCount: automations.filter((automation) => automation.enabled).length,
-    executableAutomationCount: automations.filter(
-      (automation) => automation.permissionMode === 'execute',
-    ).length,
-    failedAutomationCount: automations.filter((automation) => automation.lastRunStatus === 'error')
+    scheduledTaskCount: scheduledTasks.length,
+    enabledScheduledTaskCount: scheduledTasks.filter((task) => task.enabled).length,
+    activeScheduledTaskCount: scheduledTasks.filter((task) => task.status === 'active').length,
+    failedScheduledTaskCount: scheduledTasks.filter((task) => task.lastRunStatus === 'error')
       .length,
-    skippedAutomationCount: automations.filter(
-      (automation) => automation.lastRunStatus === 'skipped',
-    ).length,
+    skippedScheduledTaskCount: scheduledTasks.filter((task) => task.lastRunStatus === 'skipped')
+      .length,
   };
 }
 

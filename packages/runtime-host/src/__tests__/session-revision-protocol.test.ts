@@ -1,41 +1,130 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
   decodeClientFrame,
   decodeHostFrame,
   HOST_OPERATION_SPECS,
-  RuntimeHostProtocolError,
   type SessionCatalogProjection,
 } from '../protocol/index.js';
 
 describe('Session revision protocol', () => {
-  test('declares exact ready-only branch and revision commands', () => {
-    for (const operation of ['session.branch.create', 'session.revision.create'] as const) {
-      assert.equal(HOST_OPERATION_SPECS[operation].mode, 'command');
-      assert.equal(HOST_OPERATION_SPECS[operation].availability, 'ready');
-      assert.deepEqual(
+  test('accepts only the Side Conversation branch intent', () => {
+    assert.deepEqual(
+      decodeClientFrame({
+        requestId: 'request-side-conversation',
+        operation: 'session.branch.create',
+        input: {
+          sourceSessionId: 'source-session',
+          targetSessionId: 'target-session',
+          sourceTurnId: 'turn-1',
+          expectedSourceRevision: 1,
+          intent: 'side_conversation',
+        },
+      }),
+      {
+        requestId: 'request-side-conversation',
+        operation: 'session.branch.create',
+        input: {
+          sourceSessionId: 'source-session',
+          targetSessionId: 'target-session',
+          sourceTurnId: 'turn-1',
+          expectedSourceRevision: 1,
+          intent: 'side_conversation',
+        },
+      },
+    );
+    assert.throws(
+      () =>
         decodeClientFrame({
-          requestId: 'request-1',
-          operation,
+          requestId: 'request-invalid-purpose',
+          operation: 'session.branch.create',
           input: {
             sourceSessionId: 'source-session',
             targetSessionId: 'target-session',
             sourceTurnId: 'turn-1',
-            expectedSourceRevision: 3,
+            expectedSourceRevision: 1,
+            intent: 'ordinary',
           },
         }),
-        {
-          requestId: 'request-1',
-          operation,
+      isInvalidFrame,
+    );
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          requestId: 'request-revision-purpose',
+          operation: 'session.revision.create',
           input: {
             sourceSessionId: 'source-session',
             targetSessionId: 'target-session',
             sourceTurnId: 'turn-1',
-            expectedSourceRevision: 3,
+            expectedSourceRevision: 1,
+            intent: 'side_conversation',
           },
-        },
-      );
-    }
+        }),
+      isInvalidFrame,
+    );
+  });
+
+  test('accepts an empty branch (no sourceTurnId) and rejects it for a revision', () => {
+    const emptyBranch = {
+      requestId: 'request-empty-branch',
+      operation: 'session.branch.create' as const,
+      input: {
+        sourceSessionId: 'source-session',
+        targetSessionId: 'target-session',
+        expectedSourceRevision: 1,
+        intent: 'side_conversation' as const,
+      },
+    };
+    assert.deepEqual(decodeClientFrame(emptyBranch), emptyBranch);
+    // An empty copy (absent sourceTurnId) is only valid for a side conversation.
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          requestId: 'request-empty-plain-branch',
+          operation: 'session.branch.create',
+          input: {
+            sourceSessionId: 'source-session',
+            targetSessionId: 'target-session',
+            expectedSourceRevision: 1,
+          },
+        }),
+      isInvalidFrame,
+    );
+    // A revision must carry a turn boundary.
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          requestId: 'request-empty-revision',
+          operation: 'session.revision.create',
+          input: {
+            sourceSessionId: 'source-session',
+            targetSessionId: 'target-session',
+            expectedSourceRevision: 1,
+          },
+        }),
+      isInvalidFrame,
+    );
   });
 
   test('rejects aliasing, unknown fields, and mismatched response identities', () => {
@@ -154,7 +243,7 @@ function sessionProjection(id: string): SessionCatalogProjection {
       hostCwd: '/workspace',
     },
     createdAt: 1,
-    lastUsedAt: 1,
+    activityAt: 1,
     name: 'Session',
     isFlagged: false,
     isArchived: false,
@@ -163,6 +252,7 @@ function sessionProjection(id: string): SessionCatalogProjection {
     hasUnread: false,
     status: 'active',
     backend: 'fake',
+    llmConnectionId: null,
     llmConnectionSlug: 'fake',
     connectionLocked: false,
     model: 'fake-model',

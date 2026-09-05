@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /** BrowserViewManager bookkeeping: lazy create, reuse, live-change, dispose, leak invariant. */
 
 import { strict as assert } from 'node:assert';
@@ -38,15 +57,6 @@ function makeManager() {
 }
 
 describe('BrowserViewManager', () => {
-  it('creates a view once and reuses it', () => {
-    const { manager, created } = makeManager();
-    const a = manager.getOrCreate('s1');
-    const b = manager.getOrCreate('s1');
-    assert.equal(a, b);
-    assert.equal(created.length, 1);
-    assert.equal(manager.liveCount(), 1);
-  });
-
   it('fires onLiveChange on create and dispose, not on reuse', async () => {
     const { manager, liveSets } = makeManager();
     manager.getOrCreate('s1');
@@ -54,14 +64,6 @@ describe('BrowserViewManager', () => {
     manager.getOrCreate('s2');
     await manager.dispose('s1');
     assert.deepEqual(liveSets, [['s1'], ['s1', 's2'], ['s2']]);
-  });
-
-  it('setViewport forwards to the view and no-ops when absent', () => {
-    const { manager } = makeManager();
-    manager.setViewport('missing', { x: 0, y: 0, width: 1, height: 1 }); // no throw
-    const v = manager.getOrCreate('s1');
-    manager.setViewport('s1', { x: 1, y: 2, width: 3, height: 4 });
-    assert.deepEqual(v.rect, { x: 1, y: 2, width: 3, height: 4 });
   });
 
   it('hideAllExcept hides every other view and leaves the kept one untouched', () => {

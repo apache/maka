@@ -1,23 +1,37 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { createHash } from 'node:crypto';
 import { lstat, mkdir, readFile, realpath, rename, unlink, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, join } from 'node:path';
+import { isPathInside, isSafeSkillId } from '@maka/runtime/path-containment';
+
 import {
-  isPathInside,
-  isSafeSkillId,
   normalizeManagedSkillCategory,
   resolveManagedSkillSourcesRoot,
   validateSkillMetadata,
   type ManagedSkillSourceRecord,
   type SkillValidationIssue,
-} from '@maka/runtime';
+} from '@maka/runtime/skills';
 
-export {
-  listManagedSkillSources,
-  readManagedSkillSource,
-  resolveManagedSkillSourcesRoot,
-  toManagedSkillSourceEntry,
-} from '@maka/runtime';
-export type { ManagedSkillSourceRecord } from '@maka/runtime';
+export { listManagedSkillSources, readManagedSkillSource, resolveManagedSkillSourcesRoot, toManagedSkillSourceEntry } from '@maka/runtime/skills';
+export type { ManagedSkillSourceRecord } from '@maka/runtime/skills';
 
 export type ImportManagedSkillSourceResult =
   | { ok: true; source: ManagedSkillSourceRecord }
@@ -73,7 +87,7 @@ export async function importManagedSkillSource(input: {
     await mkdir(sourceDir, { mode: 0o700 });
     const sourceDirReal = await resolveContainedDirectory(sourceRoot.rootReal, sourceDir);
     if (!sourceDirReal.ok) return { ok: false, reason: 'blocked_path' };
-    if (!await writeContainedBufferFile(sourceDirReal.path, managedSkillPath, bytes, { failIfExists: true })) {
+    if (!(await writeContainedBufferFile(sourceDirReal.path, managedSkillPath, bytes, { failIfExists: true }))) {
       return { ok: false, reason: 'write_failed' };
     }
 

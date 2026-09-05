@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
@@ -45,34 +64,85 @@ test('restarts a paginated catalog read instead of mixing revisions', async () =
   ]);
 
   assert.deepEqual(
-    (await client.listSessions({ isArchived: false })).map(({ id }) => id),
+    (await client.listSessions()).map(({ id }) => id),
     ['fresh-1', 'fresh-2'],
   );
   assert.deepEqual(requests, [
     {
       operation: 'session.catalog.query',
-      input: { kind: 'list_start', filter: { isArchived: false } },
+      input: { kind: 'list_start' },
     },
     {
       operation: 'session.catalog.query',
       input: {
         kind: 'list_continue',
-        filter: { isArchived: false },
         revision: revisionOne,
         cursor: 'stale-cursor',
       },
     },
     {
       operation: 'session.catalog.query',
-      input: { kind: 'list_start', filter: { isArchived: false } },
+      input: { kind: 'list_start' },
     },
     {
       operation: 'session.catalog.query',
       input: {
         kind: 'list_continue',
-        filter: { isArchived: false },
         revision: revisionTwo,
         cursor: 'fresh-cursor',
+      },
+    },
+  ]);
+});
+
+test('resolves WorkHub coordination through the dedicated Host operation', async () => {
+  const { client, requests } = clientWithResponses([
+    { sessionId: 'maka_workhub_coordination' },
+    { candidateSetId: `sha256:${'a'.repeat(64)}`, candidates: [] },
+    { disposition: 'answer_here', coordinationTurnId: 'action-turn' },
+    { turnId: 'summary-turn' },
+  ]);
+
+  assert.deepEqual(await client.resolveWorkHubCoordinationSession(), {
+    sessionId: 'maka_workhub_coordination',
+  });
+  assert.deepEqual(await client.listWorkHubCoordinationCandidates(), {
+    candidateSetId: `sha256:${'a'.repeat(64)}`,
+    candidates: [],
+  });
+  assert.deepEqual(
+    await client.actWorkHubCoordination({
+      actionId: 'action',
+      userText: 'Question',
+      proposal: { disposition: 'answer_here' },
+    }),
+    { disposition: 'answer_here', coordinationTurnId: 'action-turn' },
+  );
+  assert.deepEqual(
+    await client.recordWorkHubCoordination({
+      turnId: 'summary-turn',
+      userText: 'Request',
+      assistantText: 'Summary',
+    }),
+    { turnId: 'summary-turn' },
+  );
+  assert.deepEqual(requests, [
+    { operation: 'workhub.coordination.resolve', input: {} },
+    { operation: 'workhub.coordination.candidates', input: {} },
+    {
+      operation: 'workhub.coordination.act',
+      input: {
+        actionId: 'action',
+        userText: 'Question',
+        proposal: { disposition: 'answer_here' },
+      },
+    },
+    {
+      operation: 'workhub.coordination.record',
+      input: {
+        turnId: 'summary-turn',
+        userText: 'Request',
+        assistantText: 'Summary',
       },
     },
   ]);
@@ -149,7 +219,7 @@ test('settles revision cleanup when abandon observes an already absent target', 
   assert.equal(await client.removeSessionCopy('revision-copy'), 'removed');
 });
 
-test('merges a configuration patch into each fresh CAS projection', async () => {
+test('replays one exact model patch across fresh CAS projections', async () => {
   const { client, requests } = clientWithResponses([
     { kind: 'session', session: session('session-1', 10) },
     { kind: 'revision_conflict', expectedRevision: 10, actualRevision: 11 },
@@ -161,16 +231,22 @@ test('merges a configuration patch into each fresh CAS projection', async () => 
       kind: 'committed',
       session: session('session-1', 12, {
         collaborationMode: 'plan',
-        permissionMode: 'execute',
+        llmConnectionId: 'connection-b',
+        model: 'model-b',
       }),
     },
   ]);
 
   const updated = await client.updateSessionConfiguration('session-1', {
-    permissionMode: 'execute',
+    modelTarget: {
+      kind: 'explicit',
+      connectionId: 'connection-b',
+      connectionSlug: 'test-connection',
+      model: 'model-b',
+    },
   });
 
-  assert.equal(updated.permissionMode, 'execute');
+  assert.equal(updated.llmConnectionId, 'connection-b');
   assert.equal(updated.collaborationMode, 'plan');
   assert.deepEqual(
     requests
@@ -180,31 +256,25 @@ test('merges a configuration patch into each fresh CAS projection', async () => 
       {
         sessionId: 'session-1',
         expectedRevision: 10,
-        configuration: {
+        patch: {
           modelTarget: {
             kind: 'explicit',
+            connectionId: 'connection-b',
             connectionSlug: 'test-connection',
-            model: 'test-model',
+            model: 'model-b',
           },
-          thinkingLevel: null,
-          permissionMode: 'execute',
-          collaborationMode: 'agent',
-          orchestrationMode: 'default',
         },
       },
       {
         sessionId: 'session-1',
         expectedRevision: 11,
-        configuration: {
+        patch: {
           modelTarget: {
             kind: 'explicit',
+            connectionId: 'connection-b',
             connectionSlug: 'test-connection',
-            model: 'test-model',
+            model: 'model-b',
           },
-          thinkingLevel: null,
-          permissionMode: 'execute',
-          collaborationMode: 'plan',
-          orchestrationMode: 'default',
         },
       },
     ],
@@ -238,6 +308,67 @@ test('retries a Session update through transient revision churn', async () => {
 
   assert.equal(updated.revision, 15);
   assert.equal(updated.collaborationMode, 'plan');
+});
+
+test('abandons a remove whose task was restored under it', async () => {
+  // A lifecycle write bumps the revision, so the conflict IS the restore: the
+  // premise the caller decided on ("this task is archived") no longer holds,
+  // and replaying the delete at the fresh revision destroys a task somebody
+  // just pulled back out of the archive.
+  const { client, requests } = clientWithResponses([
+    { kind: 'session', session: session('session-1', 4, { isArchived: true }) },
+    { kind: 'revision_conflict', expectedRevision: 4, actualRevision: 5 },
+    { kind: 'session', session: session('session-1', 5, { isArchived: false }) },
+    // Only a replayed delete reaches this, and reaching it is the defect.
+    { kind: 'removed' },
+  ]);
+
+  assert.deepEqual(await client.removeSession('session-1', { requireArchived: true }), {
+    disposition: 'restored',
+    archivedSubtaskCount: 0,
+  });
+  assert.deepEqual(
+    requests.map(({ operation }) => operation),
+    ['session.catalog.query', 'session.remove', 'session.catalog.query'],
+  );
+});
+
+test('retries a remove through revision churn that left the task archived', async () => {
+  // Not every conflict is a restore. A task still archived at the fresh
+  // revision was only written around, and the delete still means what it did.
+  const { client, requests } = clientWithResponses([
+    { kind: 'session', session: session('session-1', 4, { isArchived: true }) },
+    { kind: 'revision_conflict', expectedRevision: 4, actualRevision: 5 },
+    { kind: 'session', session: session('session-1', 5, { isArchived: true }) },
+    // The Host reports what it archived; the client surfaces it verbatim.
+    { kind: 'removed', archivedSubtaskCount: 2 },
+  ]);
+
+  assert.deepEqual(await client.removeSession('session-1', { requireArchived: true }), {
+    disposition: 'removed',
+    archivedSubtaskCount: 2,
+  });
+  assert.deepEqual(
+    requests.filter(({ operation }) => operation === 'session.remove').map(({ input }) => input),
+    [
+      { sessionId: 'session-1', expectedRevision: 4 },
+      { sessionId: 'session-1', expectedRevision: 5 },
+    ],
+  );
+});
+
+test('removes a task that was never archived when no premise was stated', async () => {
+  // Deleting an active task from the rail has no archived premise to lose, so
+  // the precondition is the caller's to ask for, not the client's to assume.
+  const { client } = clientWithResponses([
+    { kind: 'session', session: session('session-1', 4) },
+    { kind: 'removed' },
+  ]);
+
+  assert.deepEqual(await client.removeSession('session-1'), {
+    disposition: 'removed',
+    archivedSubtaskCount: 0,
+  });
 });
 
 test('rebuilds a Runtime Policy mutation from each fresh CAS projection', async () => {
@@ -321,30 +452,14 @@ test('treats empty configuration patches as read-only lookups', async () => {
   ]);
 });
 
-test('reads the bounded Host execution boundary summary', async () => {
-  const { client, requests } = clientWithResponses([
-    { kind: 'managed', access: 'read_only', revision: 4 },
-  ]);
-
-  assert.deepEqual(await client.readExecutionBoundary('session-1'), {
-    kind: 'managed',
-    access: 'read_only',
-    revision: 4,
-  });
-  assert.deepEqual(requests, [
-    {
-      operation: 'session.execution_boundary.query',
-      input: { sessionId: 'session-1' },
-    },
-  ]);
-});
 
 test('binds message controls to the current Host Epoch', async () => {
   const { client, requests } = clientWithResponses([
     { disposition: 'steering', queueRevision: 2 },
-    { queueRevision: 3, retracted: [] },
+    { queueRevision: 3 },
+    { queueRevision: 4 },
     {
-      queueRevision: 4,
+      queueRevision: 5,
       retracted: [],
       turn: {
         sessionId: 'session-1',
@@ -363,7 +478,18 @@ test('binds message controls to the current Host Epoch', async () => {
     content: { text: 'Steer it' },
     placement: 'current_turn',
   });
-  await client.retractQueue({ sessionId: 'session-1', retractId: 'retract-1' });
+  await client.retractQueueEntry({
+    sessionId: 'session-1',
+    entryId: 'entry-1',
+    retractId: 'retract-1',
+  });
+  await client.updateQueueEntry({
+    sessionId: 'session-1',
+    entryId: 'entry-1',
+    updateId: 'update-1',
+    expectedQueueRevision: 3,
+    text: 'Updated steer',
+  });
   await client.interruptTurn({
     sessionId: 'session-1',
     interruptId: 'interrupt-1',
@@ -383,10 +509,22 @@ test('binds message controls to the current Host Epoch', async () => {
       },
     },
     {
-      operation: 'queue.retract',
+      operation: 'queue.entry.retract',
       input: {
         sessionId: 'session-1',
+        entryId: 'entry-1',
         retractId: 'retract-1',
+        originHostEpoch: 'host-current',
+      },
+    },
+    {
+      operation: 'queue.entry.update',
+      input: {
+        sessionId: 'session-1',
+        entryId: 'entry-1',
+        updateId: 'update-1',
+        expectedQueueRevision: 3,
+        text: 'Updated steer',
         originHostEpoch: 'host-current',
       },
     },
@@ -566,117 +704,10 @@ test('streams Artifact content without mixing chunk offsets or totals', async ()
   );
 });
 
-test('restarts paginated Session traces instead of mixing revisions', async () => {
-  const firstRevision = catalogRevision('a');
-  const secondRevision = catalogRevision('b');
-  const totals = {
-    durationMs: 0,
-    modelAttempts: 0,
-    retries: 0,
-    compactions: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    unpricedAttempts: 0,
-  };
-  const coverage = {
-    modelCalls: 'none' as const,
-    turnsMissingModelCalls: [],
-    unreadableRecords: 0,
-    turnsWithFewerModelCallsThanSteps: [],
-  };
-  const turn = {
-    turnId: 'turn-1',
-    runId: 'run-1',
-    startedAt: 1,
-    endedAt: 1,
-    durationMs: 0,
-    steps: [],
-    totals,
-  };
-  const { client, requests } = clientWithResponses([
-    {
-      kind: 'session_trace_page',
-      schemaVersion: 1,
-      sessionId: 'session-1',
-      revision: firstRevision,
-      offset: 0,
-      turns: [turn],
-      totals,
-      coverage,
-      nextOffset: 1,
-    },
-    {
-      kind: 'session_trace_revision_changed',
-      expectedRevision: firstRevision,
-      actualRevision: secondRevision,
-    },
-    {
-      kind: 'session_trace_page',
-      schemaVersion: 1,
-      sessionId: 'session-1',
-      revision: secondRevision,
-      offset: 0,
-      turns: [turn],
-      totals,
-      coverage,
-      nextOffset: null,
-    },
-  ]);
-
-  assert.deepEqual(await client.loadSessionTrace('session-1'), {
-    schemaVersion: 1,
-    sessionId: 'session-1',
-    turns: [turn],
-    totals,
-    coverage,
-  });
-  assert.deepEqual(
-    requests.map(({ input }) => (input as { kind: string }).kind),
-    ['session_trace_start', 'session_trace_continue', 'session_trace_start'],
-  );
-});
-
-test('fails explicitly when the Host cannot represent a legacy Session', async () => {
-  const { client } = clientWithResponses([
-    {
-      kind: 'session',
-      session: {
-        kind: 'unsupported_legacy_record',
-        id: 'legacy-session',
-        revision: 1,
-        reason: 'not_wire_representable',
-      },
-    },
-  ]);
-
-  await assert.rejects(
-    () => client.getSession('legacy-session'),
-    (error: unknown) =>
-      error instanceof DesktopRuntimeHostClientError && error.code === 'unsupported_session',
-  );
-});
-
 test('restarts Session sidecar reads when a paginated revision changes', async () => {
-  const taskRevisionOne = catalogRevision('3');
-  const taskRevisionTwo = catalogRevision('4');
   const resourceRevisionOne = catalogRevision('5');
   const resourceRevisionTwo = catalogRevision('6');
   const { client, requests } = clientWithResponses([
-    {
-      kind: 'page',
-      sessionId: 'session-1',
-      revision: taskRevisionOne,
-      tasks: [{ id: 'stale' }],
-      nextCursor: 'task-stale',
-    },
-    { kind: 'revision_changed', expected: taskRevisionOne, actual: taskRevisionTwo },
-    {
-      kind: 'page',
-      sessionId: 'session-1',
-      revision: taskRevisionTwo,
-      tasks: [{ id: 'fresh' }],
-      nextCursor: null,
-    },
     {
       kind: 'page',
       sessionId: 'session-1',
@@ -713,28 +744,11 @@ test('restarts Session sidecar reads when a paginated revision changes', async (
     },
   ]);
 
-  assert.deepEqual(
-    (await client.listTasks('session-1')).map((task) => task.id),
-    ['fresh'],
-  );
   const plan = await client.getPlanState('session-1');
   assert.equal(plan.storeVersion, 8);
   assert.equal(plan.latestProposalId, 'proposal-1');
   assert.equal(plan.proposals[0]?.proposalId, 'proposal-1');
   assert.equal((await client.listRuntimeResources('session-1'))[0]?.result.ref, 'shell:1');
-  assert.deepEqual(
-    requests.slice(0, 3).map(({ input }) => input),
-    [
-      { kind: 'list_start', sessionId: 'session-1' },
-      {
-        kind: 'list_continue',
-        sessionId: 'session-1',
-        revision: taskRevisionOne,
-        cursor: 'task-stale',
-      },
-      { kind: 'list_start', sessionId: 'session-1' },
-    ],
-  );
 });
 
 test('retries Goal clear only while the same Goal generation remains active', async () => {
@@ -763,31 +777,135 @@ test('retries Goal clear only while the same Goal generation remains active', as
   );
 });
 
-test('rejects an invalid sidecar continuation without misclassifying it as revision churn', async () => {
-  const revision = catalogRevision('7');
+test('controlGoalWithRetry applies pause/resume with the queried revision', async () => {
+  const active = goalProjection(1);
+  const paused = { ...goalProjection(2), status: 'paused' as const, pausedAt: 5 };
   const { client, requests } = clientWithResponses([
-    {
-      kind: 'page',
-      sessionId: 'session-1',
-      revision,
-      tasks: [],
-      nextCursor: 'next',
-    },
-    {
-      kind: 'page',
-      sessionId: 'session-other',
-      revision,
-      tasks: [],
-      nextCursor: null,
-    },
+    { sessionId: 'session-1', goal: active }, // queryGoal
+    { sessionId: 'session-1', goal: paused }, // goal.control pause result
+    { sessionId: 'session-1', goal: paused }, // queryGoal for resume
+    { sessionId: 'session-1', goal: { ...goalProjection(3) } }, // goal.control resume result
+  ]);
+
+  await client.controlGoalWithRetry('session-1', 'pause');
+  await client.controlGoalWithRetry('session-1', 'resume');
+
+  assert.deepEqual(
+    requests.filter(({ operation }) => operation === 'goal.control').map(({ input }) => input),
+    [
+      { sessionId: 'session-1', goalId: 'goal-1', expectedRevision: 1, action: 'pause' },
+      { sessionId: 'session-1', goalId: 'goal-1', expectedRevision: 2, action: 'resume' },
+    ],
+  );
+});
+
+test('controlGoalWithRetry rethrows a status refusal instead of retrying it away', async () => {
+  // The host folds invalid transitions into operation_conflict. Every accepted
+  // transition bumps the revision, so a conflict at an unchanged revision is a
+  // status refusal — the reason must surface, not a retry-exhaustion error.
+  const paused = { ...goalProjection(2), status: 'paused' as const, pausedAt: 5 };
+  const refusal = new RuntimeHostOperationError(
+    'goal.control',
+    'operation_conflict',
+    'Goal cannot pause from status paused',
+  );
+  const { client, requests } = clientWithResponses([
+    { sessionId: 'session-1', goal: paused }, // queryGoal
+    refusal, // goal.control conflict
+    { sessionId: 'session-1', goal: paused }, // re-query: SAME revision
   ]);
 
   await assert.rejects(
-    () => client.listTasks('session-1'),
+    () => client.controlGoalWithRetry('session-1', 'pause'),
+    /Goal cannot pause from status paused/,
+  );
+  // No futile retries: exactly one control attempt.
+  assert.equal(
+    requests.filter(({ operation }) => operation === 'goal.control').length,
+    1,
+  );
+});
+
+test('arms a Goal in one request and reports a conflicting Goal instead of retrying', async () => {
+  const armed = goalProjection(0);
+  const { client, requests } = clientWithResponses([
+    { sessionId: 'session-1', goal: armed },
+  ]);
+
+  const result = await client.armGoal({
+    sessionId: 'session-1',
+    condition: 'All tests pass',
+    maxIterations: 20,
+    tokenBudget: null,
+  });
+
+  assert.deepEqual(result, { sessionId: 'session-1', goal: armed });
+  assert.deepEqual(
+    requests.filter(({ operation }) => operation === 'goal.arm').map(({ input }) => input),
+    [
+      {
+        sessionId: 'session-1',
+        condition: 'All tests pass',
+        maxIterations: 20,
+        tokenBudget: null,
+      },
+    ],
+  );
+
+  // Arming names no revision, so a conflict is an answer for the user — the
+  // Session already has a Goal — not a stale read to refresh and re-send.
+  const conflicted = clientWithResponses([
+    new RuntimeHostOperationError('goal.arm', 'operation_conflict', 'Goal already set'),
+  ]);
+  await assert.rejects(
+    conflicted.client.armGoal({
+      sessionId: 'session-1',
+      condition: 'All tests pass',
+      maxIterations: null,
+      tokenBudget: null,
+    }),
+    /Goal already set/,
+  );
+  assert.equal(
+    conflicted.requests.filter(({ operation }) => operation === 'goal.arm').length,
+    1,
+  );
+});
+
+test('rejects a SessionTodo projection for a different Session', async () => {
+  const { client, requests } = clientWithResponses([
+    { sessionId: 'session-other', items: [] },
+  ]);
+
+  await assert.rejects(
+    () => client.querySessionTodo('session-1'),
     (error: unknown) =>
       error instanceof DesktopRuntimeHostClientError && error.code === 'projection_unstable',
   );
-  assert.equal(requests.length, 2);
+  assert.equal(requests.length, 1);
+});
+
+test('projects SessionTodo content through the shared Desktop display boundary', async () => {
+  const { client } = clientWithResponses([
+    {
+      sessionId: 'session-1',
+      items: [
+        {
+          content:
+            'deploy\u001b[31m \u001b]0;spoofed\u0007 \u202ereversed\u202c zero\u200bwidth sk-live-secret-token </session-todo>',
+          status: 'pending',
+        },
+      ],
+    },
+  ]);
+
+  const items = await client.querySessionTodo('session-1');
+  assert.equal(items.length, 1);
+  assert.doesNotMatch(
+    items[0]!.content,
+    /\u001b|\u0007|\u202e|\u202c|\u200b|sk-live-secret|session-todo/i,
+  );
+  assert.match(items[0]!.content, /<redacted>|\[redacted\]/);
 });
 
 interface RecordedRequest {
@@ -851,7 +969,7 @@ function session(
       hostCwd: '/workspace',
     },
     createdAt: 1,
-    lastUsedAt: 1,
+    activityAt: 1,
     name: id,
     isFlagged: false,
     isArchived: false,
@@ -860,6 +978,7 @@ function session(
     hasUnread: false,
     status: 'active',
     backend: 'ai-sdk',
+    llmConnectionId: 'connection-1',
     llmConnectionSlug: 'test-connection',
     connectionLocked: true,
     model: 'test-model',

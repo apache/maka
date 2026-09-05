@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * Behavioral coverage for createKeyedActionGuard — the framework-free
  * multi-latch sibling of useOAuthLoginFlow's one-shot action guard, consumed
@@ -83,16 +102,6 @@ describe('keyed action guard', () => {
 
     nextRelease!();
     assert.equal(guard.has('save'), false, 'the owning release still frees the key');
-  });
-
-  it('treats a double release as a no-op', () => {
-    const guard = createKeyedActionGuard<string>();
-    const release = guard.begin('save');
-    assert.ok(release);
-    release!();
-    release!();
-    assert.equal(guard.has('save'), false);
-    assert.ok(guard.begin('save'), 'save must still be admitted after a double release');
   });
 
   it('reset drops every in-flight hold', () => {

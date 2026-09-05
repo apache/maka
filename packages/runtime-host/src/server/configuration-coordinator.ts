@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { RuntimePolicyOperationCoordinator } from '@maka/storage/runtime-policy-stores';
 import type { ConfigurationCredentialExportInput, OperationOutcome } from '../protocol/index.js';
 import type { ConfigurationOperationHandlerMap } from './operation-dispatcher.js';
@@ -15,11 +34,30 @@ export class HostConfigurationCoordinator {
     input: ConfigurationCredentialExportInput,
   ): Promise<OperationOutcome<'configuration.credentials.export'>> {
     try {
-      const material = await this.policy.exportCredentialMaterial(input.locator);
+      const exported = input.expectedConnection
+        ? await this.policy.exportCredentialMaterial(input.locator, input.expectedConnection)
+        : {
+            kind: 'exported' as const,
+            material: await this.policy.exportCredentialMaterial(input.locator),
+          };
+      if (exported.kind === 'connection_stale') {
+        return {
+          ok: true,
+          result: {
+            credential: null,
+            connectionStale: {
+              expected: exported.expected,
+              actual: exported.actual,
+            },
+          },
+        };
+      }
+      const material = exported.material;
       const credential = material
         ? {
             locator: material.locator,
             secretBase64: Buffer.from(material.secret, 'utf8').toString('base64'),
+            ...(material.proxyTarget === undefined ? {} : { proxyTarget: material.proxyTarget }),
           }
         : null;
       return { ok: true, result: { credential } };

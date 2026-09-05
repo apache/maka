@@ -1,10 +1,29 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import type { DailyReviewArchive } from '@maka/core';
+import type { DailyReviewArchive } from '@maka/core/daily-review';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
 import { connectRuntimeHost, type RuntimeHostConnection } from '../client/index.js';
@@ -63,21 +82,21 @@ test('two Clients share Daily Review config, generation, and restart recovery', 
       composition: defineInteractiveRuntimeHostComposition(createExecutionRuntimeHostComposition),
     });
     owner = undefined;
-    [desktop, tui] = await Promise.all([connect(root, 'desktop'), connect(root, 'tui')]);
+    [desktop, tui] = await Promise.all([connect(root), connect(root)]);
 
-    const initial = await desktop.queryDailyReview({ kind: 'config' });
+    const initial = await desktop.request('daily-review.query', { kind: 'config' });
     assert.deepEqual(initial, {
       kind: 'config',
       revision: 0,
       config: { enabled: false, executeTime: '08:00', modelKey: '' },
     });
     const mutations = await Promise.all([
-      desktop.mutateDailyReview({
+      desktop.request('daily-review.mutate', {
         kind: 'update_config',
         expectedRevision: 0,
         config: { enabled: false, executeTime: '09:00', modelKey: '' },
       }),
-      tui.mutateDailyReview({
+      tui.request('daily-review.mutate', {
         kind: 'update_config',
         expectedRevision: 0,
         config: { enabled: false, executeTime: '10:00', modelKey: '' },
@@ -86,8 +105,8 @@ test('two Clients share Daily Review config, generation, and restart recovery', 
     assert.equal(mutations.filter((result) => result.kind === 'config_committed').length, 1);
     assert.equal(mutations.filter((result) => result.kind === 'revision_conflict').length, 1);
     assert.deepEqual(
-      await desktop.queryDailyReview({ kind: 'config' }),
-      await tui.queryDailyReview({ kind: 'config' }),
+      await desktop.request('daily-review.query', { kind: 'config' }),
+      await tui.request('daily-review.query', { kind: 'config' }),
     );
 
     const run = {
@@ -98,15 +117,15 @@ test('two Clients share Daily Review config, generation, and restart recovery', 
       replaceExisting: false,
     };
     const [desktopRun, tuiRun] = await Promise.all([
-      desktop.mutateDailyReview(run),
-      tui.mutateDailyReview(run),
+      desktop.request('daily-review.mutate', run),
+      tui.request('daily-review.mutate', run),
     ]);
     assert.deepEqual(tuiRun, desktopRun);
     assert.equal(desktopRun.kind, 'archive');
     if (desktopRun.kind !== 'archive') return;
     assert.equal(desktopRun.archive.status, 'no_data');
 
-    const noModel = await desktop.mutateDailyReview({
+    const noModel = await desktop.request('daily-review.mutate', {
       ...run,
       offsetDays: 0,
       modelKeyOverride: 'missing-provider::missing-model',
@@ -116,7 +135,7 @@ test('two Clients share Daily Review config, generation, and restart recovery', 
     assert.equal(noModel.archive.status, 'no_model');
     assert.equal(noModel.archive.totals.requestCount, 1);
 
-    const enabled = await desktop.mutateDailyReview({
+    const enabled = await desktop.request('daily-review.mutate', {
       kind: 'update_config',
       expectedRevision: 1,
       config: {
@@ -143,16 +162,16 @@ test('two Clients share Daily Review config, generation, and restart recovery', 
       composition: defineInteractiveRuntimeHostComposition(createExecutionRuntimeHostComposition),
     });
     owner = undefined;
-    tui = await connect(root, 'tui');
+    tui = await connect(root);
     assert.deepEqual(
-      await tui.queryDailyReview({
+      await tui.request('daily-review.query', {
         kind: 'archive',
         archiveId: desktopRun.archive.id,
       }),
       { kind: 'archive', archive: desktopRun.archive },
     );
     assert.deepEqual(
-      await tui.queryDailyReview({
+      await tui.request('daily-review.query', {
         kind: 'archive',
         archiveId: scheduled.id,
       }),
@@ -167,13 +186,9 @@ test('two Clients share Daily Review config, generation, and restart recovery', 
   }
 });
 
-async function connect(
-  rootPath: string,
-  surface: 'desktop' | 'tui',
-): Promise<RuntimeHostConnection> {
+async function connect(rootPath: string): Promise<RuntimeHostConnection> {
   const result = await connectRuntimeHost({
     rootPath,
-    surface,
     protocol: PROTOCOL,
   });
   assert.equal(result.kind, 'connected');
@@ -186,7 +201,7 @@ async function waitForScheduledArchive(
 ): Promise<DailyReviewArchive> {
   const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
-    const page = await connection.queryDailyReview({
+    const page = await connection.request('daily-review.query', {
       kind: 'archives',
       beforeArchiveId: null,
       limit: 10,
@@ -194,7 +209,7 @@ async function waitForScheduledArchive(
     if (page.kind === 'archives') {
       const scheduled = page.archives.find((archive) => archive.trigger === 'cron');
       if (scheduled) {
-        const result = await connection.queryDailyReview({
+        const result = await connection.request('daily-review.query', {
           kind: 'archive',
           archiveId: scheduled.id,
         });

@@ -1,3 +1,23 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -13,6 +33,7 @@ import {
   resolveStorageRoot,
   tryAcquireInteractiveRootOwner,
 } from '@maka/storage/root-authority';
+import { acquireOperationalStateDatabase } from '@maka/storage/operational-state-store';
 import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
 import {
   decodeClientFrame,
@@ -20,11 +41,9 @@ import {
   decodeUsageQueryInput,
   encodePricingQueryResult,
   encodeProtocolMessage,
-  HOST_OPERATION_SPECS,
   PRICING_PAGE_MAX_BYTES,
   PRICING_PAGE_MAX_ITEMS,
   RUNTIME_HOST_MAX_MESSAGE_BYTES,
-  RuntimeHostProtocolError,
   USAGE_PAGE_MAX_BYTES,
   USAGE_PAGE_MAX_ITEMS,
   USAGE_PROJECTION_TEXT_MAX_BYTES,
@@ -39,29 +58,11 @@ import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation
 const CONNECTION_CONTEXT: ConnectionContext = {
   hostEpoch: 'usage-pricing-protocol-test',
   connectionId: 'usage-pricing-protocol-test-connection',
-  surface: 'tui',
   principal: 'local_os_user',
   acquireResidency: () => ({ release() {} }),
 };
 
 describe('Usage/Pricing protocol', () => {
-  test('registers only the closed ready operations with current Kernel metadata', () => {
-    assert.deepEqual(operationMetadata('usage.query'), {
-      mode: 'query',
-      availability: 'ready',
-    });
-    assert.deepEqual(operationMetadata('pricing.query'), {
-      mode: 'query',
-      availability: 'ready',
-    });
-    assert.deepEqual(operationMetadata('pricing.mutate'), {
-      mode: 'command',
-      availability: 'ready',
-    });
-    const mutationErrors = HOST_OPERATION_SPECS['pricing.mutate'].errors;
-    assert.equal(new Set(mutationErrors).size, mutationErrors.length);
-  });
-
   test('decodes exact bounded usage queries', () => {
     assert.deepEqual(
       decodeUsageQueryInput({
@@ -85,6 +86,7 @@ describe('Usage/Pricing protocol', () => {
           connectionSlug: 'primary',
           providerId: 'provider',
           modelId: 'model',
+          sessionId: 'session-1',
           status: 'success',
         },
         groupBy: 'model',
@@ -98,6 +100,7 @@ describe('Usage/Pricing protocol', () => {
           connectionSlug: 'primary',
           providerId: 'provider',
           modelId: 'model',
+          sessionId: 'session-1',
           status: 'success',
         },
         groupBy: 'model',
@@ -205,6 +208,28 @@ describe('Usage/Pricing protocol', () => {
         nextOffset: null,
       }),
     );
+    // The Host-resolved session title rides on both log kinds as bounded text.
+    assert.doesNotThrow(() =>
+      usageResponse({
+        kind: 'logs',
+        source: 'llm',
+        rows: [{ ...validLog(), sessionId: 'session-1', sessionTitle: '重构任务列' }],
+        offset: 0,
+        total: 1,
+        nextOffset: null,
+        provenance: validProvenance(),
+      }),
+    );
+    assert.doesNotThrow(() =>
+      usageResponse({
+        kind: 'logs',
+        source: 'tool',
+        rows: [{ ...validToolLog(), sessionId: 'session-1', sessionTitle: '重构任务列' }],
+        offset: 0,
+        total: 1,
+        nextOffset: null,
+      }),
+    );
 
     const tooMany = Array.from({ length: USAGE_PAGE_MAX_ITEMS + 1 }, () => validBucket());
     const byteHeavy = Array.from({ length: 50 }, (_, index) => ({
@@ -236,6 +261,15 @@ describe('Usage/Pricing protocol', () => {
         kind: 'logs',
         source: 'llm',
         rows: [{ ...validLog(), errorClass: 'x'.repeat(USAGE_PROJECTION_TEXT_MAX_BYTES + 1) }],
+        offset: 0,
+        total: 1,
+        nextOffset: null,
+        provenance: validProvenance(),
+      },
+      {
+        kind: 'logs',
+        source: 'llm',
+        rows: [{ ...validLog(), sessionTitle: 'x'.repeat(USAGE_PROJECTION_TEXT_MAX_BYTES + 1) }],
         offset: 0,
         total: 1,
         nextOffset: null,
@@ -294,6 +328,66 @@ describe('Usage/Pricing protocol', () => {
     ]) {
       assert.throws(() => usageResponse(result), invalidFrame);
     }
+  });
+
+  test('a summary always carries its recorded time; only the tool split is optional', () => {
+    // The epoch bump makes the duration basis a handshake requirement, so a
+    // summary without one is not an older host — it is a malformed frame.
+    assert.doesNotThrow(() =>
+      usageResponse({
+        kind: 'summary',
+        summary: {
+          ...validSummary(),
+          totalDurationMs: 1_500,
+          toolUsage: { requests: 3, durationMs: 450 },
+        },
+        provenance: validProvenance(),
+      }),
+    );
+    assert.doesNotThrow(() =>
+      usageResponse({
+        kind: 'summary',
+        summary: validSummary(),
+        provenance: validProvenance(),
+      }),
+    );
+    assert.throws(
+      () =>
+        usageResponse({
+          kind: 'summary',
+          summary: { ...validSummary(), totalDurationMs: undefined },
+          provenance: validProvenance(),
+        }),
+      invalidFrame,
+    );
+    assert.throws(
+      () =>
+        usageResponse({
+          kind: 'summary',
+          summary: { ...validSummary(), toolUsage: { requests: 3 } },
+          provenance: validProvenance(),
+        }),
+      invalidFrame,
+    );
+    assert.throws(
+      () =>
+        usageResponse({
+          kind: 'summary',
+          summary: { ...validSummary(), totalDurationMs: -1 },
+          provenance: validProvenance(),
+        }),
+      invalidFrame,
+    );
+    // An unknown key is still an unknown key, optional or not.
+    assert.throws(
+      () =>
+        usageResponse({
+          kind: 'summary',
+          summary: { ...validSummary(), totalWallClockMs: 1 },
+          provenance: validProvenance(),
+        }),
+      invalidFrame,
+    );
   });
 
   test('keeps long usage identities distinct through the real coordinator and protocol', async () => {
@@ -359,6 +453,74 @@ describe('Usage/Pricing protocol', () => {
       assert.deepEqual(await queryUsageRows(coordinator, 'llm'), llmRows);
       assert.deepEqual(await queryUsageRows(coordinator, 'tool'), toolRows);
       assert.deepEqual(await queryUsageBuckets(coordinator), buckets);
+    } finally {
+      await stores.close().catch(() => undefined);
+      await owner.close();
+      await rm(join(resolveRootControlNamespace(), capability.rootId), {
+        recursive: true,
+        force: true,
+      });
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
+  test('a Session summary neither repairs nor reports another Session pending projection', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'maka-session-usage-scope-'));
+    const capability = await resolveStorageRoot({
+      path: join(base, 'interactive-root'),
+      kind: 'interactive',
+    });
+    const owner = await tryAcquireInteractiveRootOwner(capability);
+    assert.ok(owner);
+    const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+    try {
+      const lease = acquireOperationalStateDatabase(join(base, 'interactive-root'));
+      try {
+        lease.transaction('write', () => {
+          lease.database
+            .prepare(`
+              INSERT INTO core_agent_runs(session_id, run_id, created_at)
+              VALUES ('session-b', 'run-b', 0)
+            `)
+            .run();
+          lease.database
+            .prepare(`
+              UPDATE core_agent_runs SET latest_model_call_sequence = 0
+              WHERE session_id = 'session-b' AND run_id = 'run-b'
+            `)
+            .run();
+          lease.database
+            .prepare(`
+              INSERT INTO core_agent_run_events(
+                session_id, run_id, sequence, event_id, event_type, event_ts, record_json
+              ) VALUES (
+                'session-b', 'run-b', 0, 'corrupt-model-call',
+                'model_call_attempt_recorded', 0, '{}'
+              )
+            `)
+            .run();
+        });
+      } finally {
+        lease.close();
+      }
+      const coordinator = new HostUsagePricingCoordinator(
+        stores,
+        () => {},
+        new RuntimePolicyActivationGate(),
+        () => {},
+      );
+
+      const outcome = await coordinator.handlers['usage.query'](
+        { kind: 'summary', query: { range: 'all', sessionId: 'session-a' } },
+        CONNECTION_CONTEXT,
+      );
+
+      assert.equal(outcome.ok, true);
+      if (!outcome.ok || outcome.result.kind !== 'summary') return;
+      assert.equal(outcome.result.provenance.pendingRepairs, 0);
+      assert.equal(outcome.result.provenance.unreadableRecords, 0);
+      const global = await stores.modelCalls.catchUpModelCallProjection();
+      assert.equal(global.unreadableEvents, 1);
     } finally {
       await stores.close().catch(() => undefined);
       await owner.close();
@@ -598,11 +760,6 @@ describe('Usage/Pricing protocol', () => {
   });
 });
 
-function operationMetadata(key: 'usage.query' | 'pricing.query' | 'pricing.mutate') {
-  const { mode, availability } = HOST_OPERATION_SPECS[key];
-  return { mode, availability };
-}
-
 function validProvenance() {
   return {
     coverage: {
@@ -636,6 +793,7 @@ function validSummary() {
     cacheHitRequests: 0,
     cacheCreateRequests: 0,
     errorRequests: 0,
+    totalDurationMs: 1_200,
   };
 }
 

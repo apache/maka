@@ -1,6 +1,26 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import type { ComponentProps } from 'react';
-import type { AttachmentRef, SessionSummary, StoredMessage } from '@maka/core';
+import type { AttachmentRef } from '@maka/core/events';
+import type { SessionSummary, StoredMessage } from '@maka/core/session';
 import { ChatSurfaceLayout, ChatView, Composer } from '../src/components.js';
 import type { ChatModelChoice } from '../src/chat-model-helpers.js';
 
@@ -16,9 +36,9 @@ const BLUE_PNG =
 // @maka/ui is host-agnostic: image thumbnails read bytes through the injected
 // `onReadAttachmentBytes` prop, not a host global. The story supplies a fake
 // reader that echoes the two solid-color PNGs above.
-const mockReadBytes = async (_sessionId: string, relativePath: string) => ({
+const mockReadBytes = async (_sessionId: string, artifactId: string) => ({
   ok: true as const,
-  base64: relativePath.includes('metrics') ? BLUE_PNG : RED_PNG,
+  base64: artifactId.includes('metrics') ? BLUE_PNG : RED_PNG,
   mimeType: 'image/png',
 });
 
@@ -37,7 +57,7 @@ type ComposerProps = ComponentProps<typeof Composer>;
 type ChatViewProps = ComponentProps<typeof ChatView>;
 
 const modelChoices: ChatModelChoice[] = [
-  { connectionSlug: 'anthropic-main', providerType: 'anthropic', providerLabel: 'Anthropic', model: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5', isDefault: true, thinkingLevels: [] },
+  { connectionId: 'connection-anthropic-main', connectionSlug: 'anthropic-main', providerType: 'anthropic', providerLabel: 'Anthropic', model: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5', isDefault: true, thinkingLevels: [] },
 ];
 
 function noop() {
@@ -56,6 +76,7 @@ function session(o: Partial<SessionSummary> = {}): SessionSummary {
     lastMessagePreview: '帮我看下这几个文件。',
     status: 'active',
     backend: 'ai-sdk',
+    llmConnectionId: 'connection-anthropic-main',
     llmConnectionSlug: 'anthropic-main',
     connectionLocked: false,
     model: 'claude-sonnet-4-5',
@@ -81,7 +102,6 @@ const baseComposer: ComposerProps = {
   onStop: noop,
   modelLabel: 'Claude Sonnet 4.5',
   activeSession: session(),
-  activeConnectionLabel: 'Anthropic',
   activeModel: 'claude-sonnet-4-5',
   activeModelLabel: 'Claude Sonnet 4.5',
   modelChoices,
@@ -93,6 +113,7 @@ const baseComposer: ComposerProps = {
 
 const baseChat: ChatViewProps = {
   messages: [],
+  scrollBehavior: 'smooth',
   activeSession: session(),
   activeConnectionLabel: 'Anthropic',
   activeModel: 'claude-sonnet-4-5',
@@ -174,6 +195,30 @@ export const ImageThumbnails: Story = {
       <AttachmentChat
         {...baseChat}
         messages={[user('u2', 't2', '这两张截图帮我对比一下。', [imageAttachment, metricsAttachment])]}
+      />
+    </Frame>
+  ),
+};
+
+// Real path: the assistant cites a Session attachment ref in Markdown → the
+// chat's session-scoped reader resolves it through the same image authority as
+// the sent-message thumbnail above.
+export const AssistantMarkdownImage: Story = {
+  render: () => (
+    <Frame>
+      <AttachmentChat
+        {...baseChat}
+        messages={[
+          user('u-markdown', 't-markdown', '把这张图显示在回答里。', []),
+          {
+            type: 'assistant',
+            id: 'a-markdown',
+            turnId: 't-markdown',
+            ts: NOW + 1,
+            text: '会话附件预览：\n\n![dashboard](maka://runtime/attachments/attachment-dashboard)',
+            modelId: 'claude-sonnet-4-5',
+          },
+        ]}
       />
     </Frame>
   ),

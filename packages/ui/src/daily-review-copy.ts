@@ -1,4 +1,25 @@
-import type { DailyReviewArchive, UiCatalog, UiLocale } from '@maka/core';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import type { DailyReviewArchive } from '@maka/core/daily-review';
+
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 type ArchiveSectionKey = keyof DailyReviewArchive['sections'];
 
@@ -83,16 +104,16 @@ export interface DailyReviewCopy {
 }
 
 const DAILY_REVIEW_COPY = {
-  zh: {
+  'zh-CN': {
     archive: {
-      section: { summary: '对话摘要', gaps: '遗漏提醒', usage: '使用洞察', code: '代码建议' },
+      section: { summary: '任务摘要', gaps: '遗漏提醒', usage: '使用洞察', code: '代码建议' },
       status: { ok: '已生成', no_model: '缺少模型', no_data: '无数据', failed: '生成失败', skipped: '已跳过' },
       trigger: { cron: '定时', manual: '手动' },
       title: (date, mode) => `${date} · ${mode}`,
       range: { 1: '单日', 7: '7 天', 30: '30 天' },
       generated: (trigger, time) => `${trigger}生成 ${time}`,
-      sessionCount: (count) => `${count} 对话`,
-      defaultModel: '默认对话模型',
+      sessionCount: (count) => `${count} 任务`,
+      defaultModel: '默认任务模型',
       opening: '正在打开这份报告…',
       noContent: '这份报告没有生成正文内容。',
       noContentHelp: '这一天没有归档内容。',
@@ -102,7 +123,7 @@ const DAILY_REVIEW_COPY = {
       unit: { day: '天', week: '周', month: '月' }, earlier: (unit) => `查看更早一${unit}`, later: (unit) => `查看更晚一${unit}`,
     },
     emptyOverview: {
-      todayTitle: '等待记录今天活动', rangeTitle: (label) => `${label}无活动`, todayBody: '今天还没有发起对话，也没有调用模型。', rangeBody: (label) => `${label}范围内没有发起对话，也没有调用模型。`,
+      todayTitle: '等待记录今天活动', rangeTitle: (label) => `${label}无活动`, todayBody: '今天还没有发起任务，也没有调用模型。', rangeBody: (label) => `${label}范围内没有发起任务，也没有调用模型。`,
     },
     export: {
       ariaLabel: '回顾导出操作', copyTitle: '复制为 Markdown 摘要，方便分享 / 贴到笔记', copying: '复制中…', copy: '复制', appendTitle: '追加到当前输入框草稿', appending: '追加中…', append: '粘到输入框', saveTitle: '保存为 Markdown 文件', saving: '保存中…', save: '保存',
@@ -111,23 +132,58 @@ const DAILY_REVIEW_COPY = {
       title: '每日回顾', generateAnalysis: '生成分析', retryAnalysis: '重新生成', viewAnalysis: '查看分析', backToActivity: '返回活动', timeRange: '时间范围', rangeOptions: [['1', '今日'], ['7', '最近 7 天'], ['30', '最近 30 天']], rangeSwitch: '时间范围切换',
     },
     overview: {
-      ariaLabel: (label) => `${label}概览`, refreshFailed: (error) => `每日回顾刷新失败：${error}`, retry: '重试', conversations: '对话', requests: '请求', tokens: 'Token', cost: '费用', activeConversations: '活跃对话',
+      ariaLabel: (label) => `${label}概览`, refreshFailed: (error) => `每日回顾刷新失败：${error}`, retry: '重试', conversations: '任务', requests: '模型调用', tokens: 'Token', cost: '费用', activeConversations: '活跃任务',
     },
     errorFallback: '每日回顾暂时不可用，请稍后重试。',
     markdown: {
-      separator: '：', title: (dayLabel) => `# Maka · 每日回顾 · ${dayLabel}`, conversations: '对话', requests: '请求', tokens: 'Token', cost: '费用', errors: '错误', activeConversations: '活跃对话', modelUsage: '模型使用', toolCalls: '工具调用', requestCount: (count) => `${count} 次`,
+      separator: '：', title: (dayLabel) => `# Maka · 每日回顾 · ${dayLabel}`, conversations: '任务', requests: '模型调用', tokens: 'Token', cost: '费用', errors: '错误', activeConversations: '活跃任务', modelUsage: '模型使用', toolCalls: '工具调用', requestCount: (count) => `${count} 次`,
+    },
+  },
+  'zh-TW': {
+    archive: {
+      section: { summary: '任務摘要', gaps: '遺漏提醒', usage: '使用洞察', code: '程式碼建議' },
+      status: { ok: '已生成', no_model: '缺少模型', no_data: '無資料', failed: '生成失敗', skipped: '已跳過' },
+      trigger: { cron: '定時', manual: '手動' },
+      title: (date, mode) => `${date} · ${mode}`,
+      range: { 1: '單日', 7: '7 天', 30: '30 天' },
+      generated: (trigger, time) => `${trigger}生成 ${time}`,
+      sessionCount: (count) => `${count} 任務`,
+      defaultModel: '預設任務模型',
+      opening: '正在開啟這份報告…',
+      noContent: '這份報告沒有生成正文內容。',
+      noContentHelp: '這一天沒有歸檔內容。',
+    },
+    date: {
+      today: '今天', yesterday: '昨天', daysAgo: (count) => `${count} 天前`, recent7Days: '最近 7 天', recent30Days: '最近 30 天', shiftedRange: (range, days) => `${range}（往前 ${days} 天）`,
+      unit: { day: '天', week: '周', month: '月' }, earlier: (unit) => `檢視更早一${unit}`, later: (unit) => `檢視更晚一${unit}`,
+    },
+    emptyOverview: {
+      todayTitle: '等待記錄今天活動', rangeTitle: (label) => `${label}無活動`, todayBody: '今天還沒有發起任務，也沒有呼叫模型。', rangeBody: (label) => `${label}範圍內沒有發起任務，也沒有呼叫模型。`,
+    },
+    export: {
+      ariaLabel: '回顧匯出操作', copyTitle: '複製為 Markdown 摘要，方便分享 / 貼到筆記', copying: '複製中…', copy: '複製', appendTitle: '追加到目前輸入框草稿', appending: '追加中…', append: '貼到輸入框', saveTitle: '儲存為 Markdown 檔案', saving: '儲存中…', save: '儲存',
+    },
+    page: {
+      title: '每日回顧', generateAnalysis: '生成分析', retryAnalysis: '重新生成', viewAnalysis: '檢視分析', backToActivity: '返回活動', timeRange: '時間範圍', rangeOptions: [['1', '今日'], ['7', '最近 7 天'], ['30', '最近 30 天']], rangeSwitch: '時間範圍切換',
+    },
+    overview: {
+      ariaLabel: (label) => `${label}概覽`, refreshFailed: (error) => `每日回顧重新整理失敗：${error}`, retry: '重試', conversations: '任務', requests: '請求', tokens: 'Token', cost: '費用', activeConversations: '活躍任務',
+    },
+    errorFallback: '每日回顧暫時不可用，請稍後重試。',
+    markdown: {
+      separator: '：', title: (dayLabel) => `# Maka · 每日回顧 · ${dayLabel}`, conversations: '任務', requests: '請求', tokens: 'Token', cost: '費用', errors: '錯誤', activeConversations: '活躍任務', modelUsage: '模型使用', toolCalls: '工具呼叫', requestCount: (count) => `${count} 次`,
     },
   },
   en: {
     archive: {
-      section: { summary: 'Conversation summary', gaps: 'Missed items', usage: 'Usage insights', code: 'Code suggestions' },
+      section: { summary: 'Task summary', gaps: 'Missed items', usage: 'Usage insights', code: 'Code suggestions' },
       status: { ok: 'Generated', no_model: 'Model unavailable', no_data: 'No data', failed: 'Generation failed', skipped: 'Skipped' },
       trigger: { cron: 'Scheduled', manual: 'Manual' },
       title: (date, mode) => `${date} · ${mode}`,
       range: { 1: '1 day', 7: '7 days', 30: '30 days' },
       generated: (trigger, time) => `${trigger} · ${time}`,
-      sessionCount: (count) => `${count} ${count === 1 ? 'conversation' : 'conversations'}`,
-      defaultModel: 'Default conversation model',
+      sessionCount: (count) => `${count} ${count === 1 ? 'task' : 'tasks'}`,
+      defaultModel: 'Default task model',
       opening: 'Opening this report…',
       noContent: 'This report has no generated content.',
       noContentHelp: 'Nothing archived for this day.',
@@ -137,7 +193,7 @@ const DAILY_REVIEW_COPY = {
       unit: { day: 'day', week: 'week', month: 'month' }, earlier: (unit) => `View previous ${unit}`, later: (unit) => `View next ${unit}`,
     },
     emptyOverview: {
-      todayTitle: "Waiting for today's activity", rangeTitle: (label) => `No activity for ${label.toLowerCase()}`, todayBody: 'No conversations or model requests have started today.', rangeBody: (label) => `No conversations or model requests were made during ${label.toLowerCase()}.`,
+      todayTitle: "Waiting for today's activity", rangeTitle: (label) => `No activity for ${label.toLowerCase()}`, todayBody: 'No tasks or model requests have started today.', rangeBody: (label) => `No tasks or model requests were made during ${label.toLowerCase()}.`,
     },
     export: {
       ariaLabel: 'Review export actions', copyTitle: 'Copy a Markdown summary to share or add to notes', copying: 'Copying…', copy: 'Copy', appendTitle: 'Append to the current composer draft', appending: 'Appending…', append: 'Add to composer', saveTitle: 'Save as a Markdown file', saving: 'Saving…', save: 'Save',
@@ -146,11 +202,11 @@ const DAILY_REVIEW_COPY = {
       title: 'Daily review', generateAnalysis: 'Generate analysis', retryAnalysis: 'Generate again', viewAnalysis: 'View analysis', backToActivity: 'Back to activity', timeRange: 'Time range', rangeOptions: [['1', 'Today'], ['7', 'Last 7 days'], ['30', 'Last 30 days']], rangeSwitch: 'Change time range',
     },
     overview: {
-      ariaLabel: (label) => `${label} overview`, refreshFailed: (error) => `Failed to refresh daily review: ${error}`, retry: 'Retry', conversations: 'Conversations', requests: 'Requests', tokens: 'Tokens', cost: 'Cost', activeConversations: 'Active conversations',
+      ariaLabel: (label) => `${label} overview`, refreshFailed: (error) => `Failed to refresh daily review: ${error}`, retry: 'Retry', conversations: 'Tasks', requests: 'Model calls', tokens: 'Tokens', cost: 'Cost', activeConversations: 'Active tasks',
     },
     errorFallback: 'Daily review is temporarily unavailable. Try again later.',
     markdown: {
-      separator: ':', title: (dayLabel) => `# Maka · Daily review · ${dayLabel}`, conversations: 'Conversations', requests: 'Requests', tokens: 'Tokens', cost: 'Cost', errors: 'Errors', activeConversations: 'Active conversations', modelUsage: 'Model usage', toolCalls: 'Tool calls', requestCount: (count) => `${count} ${count === 1 ? 'request' : 'requests'}`,
+      separator: ':', title: (dayLabel) => `# Maka · Daily review · ${dayLabel}`, conversations: 'Tasks', requests: 'Model calls', tokens: 'Tokens', cost: 'Cost', errors: 'Errors', activeConversations: 'Active tasks', modelUsage: 'Model usage', toolCalls: 'Tool calls', requestCount: (count) => `${count} ${count === 1 ? 'call' : 'calls'}`,
     },
   },
 } satisfies UiCatalog<DailyReviewCopy>;

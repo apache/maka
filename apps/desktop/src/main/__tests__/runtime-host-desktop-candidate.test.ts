@@ -1,30 +1,155 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import test from 'node:test';
 import type { IpcMain } from 'electron';
+import type { BotIncomingMessage, BotRegistry } from '@maka/runtime/bots';
+import type { ComputerUseToolSet } from '@maka/runtime/computer-use-tools';
+import type { ShellRunUpdate } from '@maka/core/events';
+import type { MakaTool } from '@maka/runtime/tool-runtime';
 import type {
-  BotIncomingMessage,
-  BotRegistry,
-  ComputerUseToolSet,
-  MakaTool,
-} from '@maka/runtime';
-import type { ClientCapabilityProvider, RuntimeHostConnection } from '@maka/runtime-host/client';
-import type {
-  ClientCapabilityCallFrame,
-  OperationInput,
-  OperationKey,
-  SessionCatalogProjection,
-  SessionContinuitySnapshot,
-  SubscriptionFrame,
+  ClientCapabilityProvider,
+  ConnectOrSpawnRuntimeHostInput,
+  RuntimeHostConnection,
+} from '@maka/runtime-host/client';
+import { RuntimeHostOperationError } from '@maka/runtime-host/client';
+import {
+  SESSION_CONTINUITY_SCHEMA_VERSION,
+  type ClientCapabilityCallFrame,
+  type OperationInput,
+  type OperationKey,
+  type SessionAssistantStreamIdentity,
+  type SessionCatalogProjection,
+  type SessionContinuitySnapshot,
+  type SubscriptionFrame,
 } from '@maka/runtime-host/protocol';
 import { z } from 'zod';
 import { createAttachmentApprovalRegistry } from '../attachment-approval.js';
 import {
-  createDesktopRuntimeHostCandidate,
+  createDesktopRuntimeHostCandidate as createCandidate,
+  formatLocalRuntimeHostProcessExitDiagnostic,
+  startDesktopRuntimeHostCandidate,
   type DesktopRuntimeHostCandidateControls,
   type DesktopRuntimeHostCandidateDeps,
+  type DesktopRuntimeHostCandidateStartInput,
 } from '../runtime-host-desktop-candidate.js';
 import { RuntimeHostSessionObservationRegistry } from '../runtime-host-session-observation-registry.js';
+import { desktopSessionResourceKey } from '../../shared/runtime-host-identity.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
+
+const TEST_HOST_ID = 'a'.repeat(64);
+const TEST_TARGET_EPOCH = 'test-target-epoch';
+
+test('uses the manager-owned launch barrier for local candidate startup', async () => {
+  let connectedRoot: string | undefined;
+  const result = await startDesktopRuntimeHostCandidate({
+    rootPath: 'C:\\workspace',
+    candidateEntrypoint: 'candidate.js',
+    ipcMain: {
+      epoch: TEST_TARGET_EPOCH,
+      isActive: () => true,
+    },
+    candidateLaunchBarrier: {
+      connect: async (input: ConnectOrSpawnRuntimeHostInput) => {
+        connectedRoot = input.rootPath;
+        return { kind: 'failed', reason: 'startup_timeout' };
+      },
+      pause: () => undefined,
+      retireExcept: async () => undefined,
+      resume: () => undefined,
+      release: () => undefined,
+    },
+  } as unknown as DesktopRuntimeHostCandidateStartInput);
+
+  assert.deepEqual(result, { kind: 'failed', reason: 'startup_timeout' });
+  assert.equal(connectedRoot, 'C:\\workspace');
+});
+
+test('formats bounded local Host exit evidence without leaking stderr secrets', () => {
+  const diagnostic = formatLocalRuntimeHostProcessExitDiagnostic(42, {
+    code: 23,
+    signal: null,
+    stderr: 'partial record\nstartup failed: token=fixture-secret',
+    stderrTruncated: true,
+  });
+
+  assert.match(diagnostic, /pid=42 code=23 signal=none/);
+  assert.match(diagnostic, /token=\[redacted\]/);
+  assert.match(diagnostic, /stderr truncated; showing final 4096 bytes/);
+  assert.doesNotMatch(diagnostic, /fixture-secret/);
+});
+
+test('drops a partial secret record retained across the stderr tail boundary', () => {
+  const secret = 'boundary-secret-value';
+  const fullStderr = `apiKey=${secret}\n${'x'.repeat(4_079)}`;
+  const stderrTail = Buffer.from(fullStderr).subarray(-4 * 1024).toString('utf8');
+  assert.match(stderrTail, /secret-value/);
+
+  const diagnostic = formatLocalRuntimeHostProcessExitDiagnostic(42, {
+    code: 1,
+    signal: null,
+    stderr: stderrTail,
+    stderrTruncated: true,
+  });
+
+  assert.doesNotMatch(diagnostic, /secret-value/);
+  assert.match(diagnostic, /stderr truncated; showing final 4096 bytes/);
+});
+
+test('redacts a compact JSON secret embedded in local Host stderr', () => {
+  const diagnostic = formatLocalRuntimeHostProcessExitDiagnostic(42, {
+    code: 1,
+    signal: null,
+    stderr: 'provider failed: {"apiKey":12345}',
+    stderrTruncated: false,
+  });
+
+  assert.match(diagnostic, /"apiKey":"\[redacted\]"/);
+  assert.doesNotMatch(diagnostic, /12345/);
+});
+
+test('does not claim a blank local Host stderr tail was truncated', () => {
+  const diagnostic = formatLocalRuntimeHostProcessExitDiagnostic(42, {
+    code: 1,
+    signal: null,
+    stderr: ' \r\n\t',
+    stderrTruncated: true,
+  });
+
+  assert.doesNotMatch(diagnostic, /stderr:|stderr truncated/);
+});
+
+function createDesktopRuntimeHostCandidate(
+  connection: RuntimeHostConnection,
+  candidateDeps: DesktopRuntimeHostCandidateDeps,
+  observationRegistry?: RuntimeHostSessionObservationRegistry,
+) {
+  return createCandidate(
+    connection,
+    candidateDeps,
+    observationRegistry,
+    'owned_ephemeral',
+    'local',
+  );
+}
 
 test('owns one complete Desktop candidate generation and can restart cleanly', async () => {
   const ipc = ipcHarness();
@@ -59,6 +184,162 @@ test('owns one complete Desktop candidate generation and can restart cleanly', a
   );
   await reconnected.close();
   assert.equal(ipc.size, 0);
+});
+
+test('routes Guest catalog changes through the mount projection authority', async () => {
+  const ipc = ipcHarness();
+  const sharedResource = sharedShellRunUpdate('session-guest');
+  const host = connectionHarness('guest', { runtimeResourceUpdate: sharedResource });
+  const changes: Array<{ reason: string; sessionId?: string }> = [];
+  let catalogChanges = 0;
+  const rendererEvents: Array<{ channel: string; payload: unknown }> = [];
+  const candidate = await createCandidate(
+    host.connection,
+    {
+      ...deps(ipc),
+      emitSessionsChanged: (_scope, reason, sessionId) => {
+        changes.push({ reason, ...(sessionId === undefined ? {} : { sessionId }) });
+      },
+      onGuestSessionCatalogChanged: () => {
+        catalogChanges += 1;
+      },
+      renderer: {
+        send(channel, _scope, payload) {
+          rendererEvents.push({ channel, payload });
+        },
+      },
+    },
+    undefined,
+    'external',
+    'remote',
+    'session_guest',
+  );
+
+  assert.equal(ipc.channels.includes('sessions:list'), false);
+  assert.equal(ipc.channels.includes('sessions:observe'), true);
+  assert.equal(ipc.channels.includes('sessions:transcript:open'), true);
+  assert.equal(ipc.channels.includes('sessions:send'), false);
+  assert.equal(ipc.channels.includes('sessions:stop'), false);
+  assert.equal(ipc.channels.includes('tasks:list'), false);
+  assert.equal(ipc.channels.includes('attachments:readBytes'), true);
+  assert.deepEqual(await ipc.invoke('shell-runs:list', 'session-guest'), [sharedResource]);
+  assert.equal(ipc.channels.includes('shell-runs:attach'), false);
+  await ipc.invoke('sessions:observe', 'session-guest', 'guest-observer');
+  host.pushSubscriptionFrame({
+    kind: 'subscription.session_domain_changed',
+    hostEpoch: 'host-guest',
+    subscriptionId: 'subscription-guest',
+    sequence: 1,
+    sessionId: 'session-guest',
+    domain: 'runtime_resource',
+    resources: [
+      { sourceSessionId: 'session-guest', ref: sharedResource.result.ref },
+    ],
+  });
+  await waitFor(() =>
+    rendererEvents.some(
+      ({ channel, payload }) =>
+        channel === 'shell-runs:update' &&
+        (payload as ShellRunUpdate).result.ref === sharedResource.result.ref,
+    ),
+  );
+  host.publishSessionCatalogChange('session-guest');
+  assert.equal(catalogChanges, 1);
+  assert.deepEqual(changes, []);
+
+  await candidate.close();
+});
+
+test('rejects a stale Host identity when raw Session IDs collide', async () => {
+  const ipc = ipcHarness();
+  const browserReleased: string[] = [];
+  const computerReleased: string[] = [];
+  const nativeCapabilities: DesktopRuntimeHostCandidateDeps['nativeCapabilities'] = {
+    browserTools: [nativeTool()],
+    resolveBrowserUrl: () => 'https://example.com/',
+    releaseBrowserSession: (sessionId) => {
+      browserReleased.push(sessionId);
+    },
+    computerUseTools: emptyComputerUseTools(),
+    releaseComputerUseSession: (sessionId) => {
+      computerReleased.push(sessionId);
+    },
+  };
+  const first = connectionHarness('collision-a', { sessionId: 'shared-session' });
+  const firstCandidate = await createDesktopRuntimeHostCandidate(
+    first.connection,
+    deps(ipc, nativeCapabilities),
+  );
+  await first.invokeCapability(capabilityFrame('shared-session'));
+  assert.equal(
+    ((await ipc.invokeFor(TEST_HOST_ID, 'sessions:list')) as SessionCatalogProjection[])[0]?.id,
+    'shared-session',
+  );
+  await firstCandidate.close();
+
+  const secondHostId = 'b'.repeat(64);
+  const second = connectionHarness('collision-b', {
+    rootId: secondHostId,
+    sessionId: 'shared-session',
+  });
+  const secondCandidate = await createDesktopRuntimeHostCandidate(
+    second.connection,
+    deps(ipc, nativeCapabilities),
+  );
+  await second.invokeCapability(capabilityFrame('shared-session'));
+  await assert.rejects(
+    () => ipc.invokeFor(TEST_HOST_ID, 'sessions:list'),
+    /different target/,
+  );
+  assert.equal(
+    ((await ipc.invokeFor(secondHostId, 'sessions:list')) as SessionCatalogProjection[])[0]?.id,
+    'shared-session',
+  );
+  await secondCandidate.close();
+  const resourceKeys = [
+    desktopSessionResourceKey({ targetEpoch: TEST_TARGET_EPOCH, hostId: TEST_HOST_ID, sessionId: 'shared-session' }),
+    desktopSessionResourceKey({ targetEpoch: TEST_TARGET_EPOCH, hostId: secondHostId, sessionId: 'shared-session' }),
+  ];
+  assert.deepEqual(browserReleased, resourceKeys);
+  assert.deepEqual(computerReleased, resourceKeys);
+});
+
+test('rejects a stale target generation when two profiles share one Host', async () => {
+  const ipc = ipcHarness();
+  ipc.setEpoch('target-a');
+  const first = connectionHarness('same-host-a');
+  const firstCandidate = await createCandidate(
+    first.connection,
+    deps(ipc),
+    undefined,
+    'owned_ephemeral',
+    'local',
+  );
+  await firstCandidate.close();
+
+  ipc.setEpoch('target-b');
+  const second = connectionHarness('same-host-b');
+  const secondCandidate = await createCandidate(
+    second.connection,
+    deps(ipc),
+    undefined,
+    'owned_ephemeral',
+    'local',
+  );
+
+  await assert.rejects(
+    () => ipc.invokeForTarget('target-a', TEST_HOST_ID, 'sessions:list'),
+    /different target/,
+  );
+  assert.deepEqual(
+    ((await ipc.invokeForTarget(
+      'target-b',
+      TEST_HOST_ID,
+      'sessions:list',
+    )) as SessionCatalogProjection[]).map(({ id }) => id),
+    ['session-same-host-b'],
+  );
+  await secondCandidate.close();
 });
 
 test('tears down the whole candidate when the Host connection closes', async () => {
@@ -98,6 +379,7 @@ test('starts without registering an empty native capability set', async () => {
     host.connection,
     deps(ipc, {
       browserTools: [],
+      resolveBrowserUrl: () => 'https://example.com/',
       releaseBrowserSession() {},
       computerUseTools: emptyComputerUseTools(),
       releaseComputerUseSession() {},
@@ -117,6 +399,7 @@ test('refreshes native capabilities with a new immutable provider snapshot', asy
   const candidate = await createDesktopRuntimeHostCandidate(host.connection, {
     ...deps(ipc, {
       browserTools: [],
+      resolveBrowserUrl: () => 'https://example.com/',
       releaseBrowserSession() {},
       computerUseTools: emptyComputerUseTools(),
       releaseComputerUseSession() {},
@@ -171,6 +454,7 @@ test('releases all native Session resources on retirement and generation close',
     host.connection,
     deps(ipc, {
       browserTools: [nativeTool()],
+      resolveBrowserUrl: () => 'https://example.com/',
       releaseBrowserSession: async (sessionId) => {
         browserReleased.push(sessionId);
       },
@@ -183,13 +467,23 @@ test('releases all native Session resources on retirement and generation close',
 
   await host.invokeCapability(capabilityFrame('session-native-lifecycle'));
   await ipc.invoke('sessions:archive', 'session-native-lifecycle');
-  assert.deepEqual(browserReleased, ['session-native-lifecycle']);
-  assert.deepEqual(computerReleased, ['session-native-lifecycle']);
+  const retiredResource = desktopSessionResourceKey({
+    targetEpoch: TEST_TARGET_EPOCH,
+    hostId: TEST_HOST_ID,
+    sessionId: 'session-native-lifecycle',
+  });
+  assert.deepEqual(browserReleased, [retiredResource]);
+  assert.deepEqual(computerReleased, [retiredResource]);
 
   await host.invokeCapability(capabilityFrame('close-owned-session'));
   await candidate.close();
-  assert.deepEqual(browserReleased, ['session-native-lifecycle', 'close-owned-session']);
-  assert.deepEqual(computerReleased, ['session-native-lifecycle', 'close-owned-session']);
+  const closedResource = desktopSessionResourceKey({
+    targetEpoch: TEST_TARGET_EPOCH,
+    hostId: TEST_HOST_ID,
+    sessionId: 'close-owned-session',
+  });
+  assert.deepEqual(browserReleased, [retiredResource, closedResource]);
+  assert.deepEqual(computerReleased, [retiredResource, closedResource]);
 });
 
 test('drains an accepted Host-backed Bot turn before closing its generation', async () => {
@@ -267,12 +561,15 @@ test('closes the claimed Host connection when native capability construction fai
         host.connection,
         deps(ipc, {
           browserTools: [invalidTool],
+          resolveBrowserUrl: () => 'https://example.com/',
           releaseBrowserSession() {},
           computerUseTools: emptyComputerUseTools(),
           releaseComputerUseSession() {},
         }),
       ),
-    /tool schema must be an object/,
+    // The desktop-local schema check moved into the shared protocol decoder,
+    // which rejects a non-object tool schema root with its own wording.
+    /tool schema root must be an object/,
   );
 
   assert.equal(ipc.size, 0);
@@ -288,6 +585,7 @@ test('does not release or report a Revision the Host retained during cleanup', a
   const candidate = await createDesktopRuntimeHostCandidate(host.connection, {
     ...deps(ipc, {
       browserTools: [],
+      resolveBrowserUrl: () => 'https://example.com/',
       releaseBrowserSession: (sessionId) => {
         released.push(`browser:${sessionId}`);
       },
@@ -296,11 +594,12 @@ test('does not release or report a Revision the Host retained during cleanup', a
         released.push(`computer:${sessionId}`);
       },
     }),
-    emitSessionsChanged: (reason, sessionId) => changes.push({ reason, sessionId }),
+    emitSessionsChanged: (_scope, reason, sessionId) => changes.push({ reason, sessionId }),
     createSessionCopyCleanup: ({ removeSession }) => {
       removeSessionCopy = removeSession;
       return {
         ownCreation: (_creation, operation) => operation(),
+        rejectCreation: async () => undefined,
         cleanup: async () => undefined,
         schedule: async () => undefined,
         abandonOwner: async () => undefined,
@@ -319,7 +618,10 @@ test('does not release or report a Revision the Host retained during cleanup', a
 test('resyncs Goal, exact interaction, and sidecar state after candidate replacement', async () => {
   const ref = 'maka://runtime/background-tasks/shell-1';
   const observations = new RuntimeHostSessionObservationRegistry();
-  const firstIpc = ipcHarness();
+  const resyncs: Array<{ channel: string; payload: unknown }> = [];
+  const firstIpc = ipcHarness((channel, payload) => {
+    resyncs.push({ channel, payload });
+  });
   const firstHost = connectionHarness('first-observer', {
     subscriptionSnapshot: continuitySnapshot({
       interactions: { pending: [pendingQuestion()] },
@@ -334,7 +636,8 @@ test('resyncs Goal, exact interaction, and sidecar state after candidate replace
   await firstIpc.invoke('sessions:observe', 'session-1', 'observer-1');
   assert.ok(
     firstIpc.sender.sent.some(
-      ({ payload }) =>
+      ({ hostId, payload }) =>
+        hostId === TEST_HOST_ID &&
         (payload as { type?: unknown }).type === 'user_question_request',
     ),
   );
@@ -348,34 +651,60 @@ test('resyncs Goal, exact interaction, and sidecar state after candidate replace
     'before replacement',
   );
   await firstCandidate.close();
+  resyncs.length = 0;
 
   const secondIpc = ipcHarness();
-  const resyncs: Array<{ channel: string; payload: unknown }> = [];
   const sessionChanges: Array<{ reason: string; sessionId?: string }> = [];
   let terminalReattach: Promise<unknown> | undefined;
   const secondHost = connectionHarness('second-observer', {
     subscriptionSnapshot: continuitySnapshot({ interactions: { pending: [] } }),
+    activeAssistantStreams: [activeText('message-1')],
     runtimeResourcePty: ptySnapshot(ref, 'after replacement'),
   });
   const secondCandidate = await createDesktopRuntimeHostCandidate(
     secondHost.connection,
     {
       ...deps(secondIpc),
-      emitSessionsChanged: (reason, sessionId) =>
+      emitSessionsChanged: (_hostId, reason, sessionId) =>
         sessionChanges.push({ reason, sessionId }),
-      sendToRenderer: (channel, payload) => {
-        resyncs.push({ channel, payload });
-        if (channel === 'shell-runs:resync') {
-          terminalReattach ??= secondIpc.invoke('shell-runs:attach', {
-            sessionId: 'session-1',
-            ref,
-          });
-        }
+      renderer: {
+        send(channel, _host, payload) {
+          resyncs.push({ channel, payload });
+          if (channel === 'shell-runs:resync') {
+            terminalReattach ??= secondIpc.invoke('shell-runs:attach', {
+              sessionId: 'session-1',
+              ref,
+            });
+          }
+        },
       },
     },
     observations,
   );
 
+  const seedPendingAt = resyncs.findIndex(
+    ({ channel, payload }) =>
+      channel === 'sessions:observation-seed'
+      && (payload as { sessionId?: unknown; phase?: unknown }).sessionId === 'session-1'
+      && (payload as { phase?: unknown }).phase === 'pending',
+  );
+  const seedReadyAt = resyncs.findIndex(
+    ({ channel, payload }) =>
+      channel === 'sessions:observation-seed'
+      && (payload as { sessionId?: unknown; phase?: unknown }).sessionId === 'session-1'
+      && (payload as { phase?: unknown }).phase === 'ready',
+  );
+  assert.ok(seedPendingAt >= 0);
+  assert.ok(seedReadyAt > seedPendingAt);
+  const sessionEventIndexes = resyncs.flatMap(({ channel }, index) =>
+    channel === 'sessions:event:session-1' ? [index] : [],
+  );
+  assert.ok(sessionEventIndexes.length > 0);
+  assert.ok(
+    sessionEventIndexes.every(
+      (index) => index > seedPendingAt && index < seedReadyAt,
+    ),
+  );
   assert.ok(
     resyncs.some(
       ({ channel, payload }) =>
@@ -435,18 +764,230 @@ test('resyncs Goal, exact interaction, and sidecar state after candidate replace
   await observations.close();
 });
 
+test('retries candidate startup when a restored observation cannot seed', async () => {
+  const observations = new RuntimeHostSessionObservationRegistry();
+  const seedEvents: Array<{ channel: string; payload: unknown }> = [];
+  const firstIpc = ipcHarness((channel, payload) => {
+    seedEvents.push({ channel, payload });
+  });
+  const firstHost = connectionHarness('restore-source', {
+    sessionId: 'session-1',
+    subscriptionSnapshot: continuitySnapshot(),
+  });
+  const firstCandidate = await createDesktopRuntimeHostCandidate(
+    firstHost.connection,
+    deps(firstIpc),
+    observations,
+  );
+  await firstIpc.invoke('sessions:observe', 'session-1', 'observer-1');
+  await firstCandidate.close();
+  seedEvents.length = 0;
+
+  const failingHost = connectionHarness('restore-failure', {
+    sessionId: 'session-1',
+    subscriptionError: new Error('restore failed'),
+  });
+  await assert.rejects(
+    () =>
+      createDesktopRuntimeHostCandidate(
+        failingHost.connection,
+        {
+          ...deps(ipcHarness()),
+          renderer: {
+            send(channel, _host, payload) {
+              seedEvents.push({ channel, payload });
+            },
+          },
+        },
+        observations,
+      ),
+    /Failed to restore Session observations: session-1/,
+  );
+  assert.deepEqual(
+    seedEvents
+      .filter(({ channel }) => channel === 'sessions:observation-seed')
+      .map(({ payload }) => (payload as { phase?: unknown }).phase),
+    ['pending'],
+  );
+  seedEvents.length = 0;
+
+  const recoveredHost = connectionHarness('restore-recovered', {
+    sessionId: 'session-1',
+    subscriptionSnapshot: continuitySnapshot(),
+    activeAssistantStreams: [activeText('message-1')],
+  });
+  const recoveredCandidate = await createDesktopRuntimeHostCandidate(
+    recoveredHost.connection,
+    {
+      ...deps(ipcHarness()),
+      renderer: {
+        send(channel, _host, payload) {
+          seedEvents.push({ channel, payload });
+        },
+      },
+    },
+    observations,
+  );
+  const pendingAt = seedEvents.findIndex(
+    ({ channel, payload }) =>
+      channel === 'sessions:observation-seed'
+      && (payload as { phase?: unknown }).phase === 'pending',
+  );
+  const readyAt = seedEvents.findIndex(
+    ({ channel, payload }) =>
+      channel === 'sessions:observation-seed'
+      && (payload as { phase?: unknown }).phase === 'ready',
+  );
+  assert.ok(pendingAt >= 0);
+  assert.ok(readyAt > pendingAt);
+  const catchUpEventIndexes = seedEvents.flatMap(({ channel }, index) =>
+    channel === 'sessions:event:session-1' ? [index] : [],
+  );
+  assert.ok(catchUpEventIndexes.length > 0);
+  assert.ok(
+    catchUpEventIndexes.every(
+      (index) => index > pendingAt && index < readyAt,
+    ),
+  );
+  await recoveredCandidate.close();
+  await observations.close();
+});
+
+test('drops a stale shared Session observation when Guest access is gone', async () => {
+  const observations = new RuntimeHostSessionObservationRegistry();
+  const firstIpc = ipcHarness();
+  const firstHost = connectionHarness('shared-before-revoke', {
+    sessionId: 'session-1',
+    subscriptionSnapshot: continuitySnapshot(),
+  });
+  const firstCandidate = await createCandidate(
+    firstHost.connection,
+    { ...deps(firstIpc), onGuestSessionCatalogChanged: () => undefined },
+    observations,
+    'external',
+    'remote',
+    'session_guest',
+  );
+  await firstIpc.invoke('sessions:observe', 'session-1', 'observer-1');
+  await firstCandidate.close();
+
+  const changes: Array<{ reason: string; sessionId?: string }> = [];
+  const revokedHost = connectionHarness('shared-after-revoke', {
+    sharedSessionAvailable: false,
+  });
+  const candidate = await createCandidate(
+    revokedHost.connection,
+    {
+      ...deps(ipcHarness()),
+      emitSessionsChanged: (_scope, reason, sessionId) => {
+        changes.push({ reason, ...(sessionId === undefined ? {} : { sessionId }) });
+      },
+      onGuestSessionCatalogChanged: () => undefined,
+    },
+    observations,
+    'external',
+    'remote',
+    'session_guest',
+  );
+
+  assert.deepEqual(observations.trackedSessionIds(), []);
+  assert.deepEqual(changes, [{ reason: 'deleted', sessionId: 'session-1' }]);
+  await candidate.close();
+  await observations.close();
+});
+
+test('forgets an observed Session the Host no longer serves instead of blocking every reconnect', async () => {
+  const observations = new RuntimeHostSessionObservationRegistry();
+  const firstIpc = ipcHarness();
+  const firstHost = connectionHarness('missing-session-source', {
+    sessionId: 'session-1',
+    subscriptionSnapshot: continuitySnapshot(),
+  });
+  const firstCandidate = await createDesktopRuntimeHostCandidate(
+    firstHost.connection,
+    deps(firstIpc),
+    observations,
+  );
+  await firstIpc.invoke('sessions:observe', 'session-1', 'observer-1');
+  await firstCandidate.close();
+
+  // The replacement Host no longer serves session-1: subscription.open
+  // deterministically answers not_found.
+  const changes: Array<{ reason: string; sessionId?: string }> = [];
+  const missingHost = connectionHarness('missing-session-host', {
+    sessionId: 'session-1',
+    subscriptionError: new RuntimeHostOperationError(
+      'subscription.open',
+      'not_found',
+      'Runtime Host Session was not found',
+    ),
+  });
+  const secondCandidate = await createDesktopRuntimeHostCandidate(
+    missingHost.connection,
+    {
+      ...deps(ipcHarness()),
+      emitSessionsChanged: (_scope, reason, sessionId) => {
+        changes.push({ reason, ...(sessionId === undefined ? {} : { sessionId }) });
+      },
+    },
+    observations,
+  );
+
+  // The stale active registration is forgotten instead of failing the
+  // candidate start, and the renderer is told to drop the Session view.
+  assert.deepEqual(observations.observedSessionIds(), []);
+  assert.ok(
+    changes.some(
+      ({ reason, sessionId }) => reason === 'deleted' && sessionId === 'session-1',
+    ),
+  );
+  await secondCandidate.close();
+
+  // A later reconnect observes new Sessions on the same registry.
+  const thirdIpc = ipcHarness();
+  const thirdHost = connectionHarness('missing-session-recovered', {
+    sessionId: 'session-2',
+  });
+  const thirdCandidate = await createDesktopRuntimeHostCandidate(
+    thirdHost.connection,
+    deps(thirdIpc),
+    observations,
+  );
+  await thirdIpc.invoke('sessions:observe', 'session-2', 'observer-2');
+  assert.deepEqual(observations.observedSessionIds(), ['session-2']);
+  await thirdCandidate.close();
+  await observations.close();
+});
+
 type IpcHandler = Parameters<Pick<IpcMain, 'handle'>['handle']>[1];
 
-function ipcHarness() {
+function ipcHarness(onSend?: (channel: string, payload: unknown) => void) {
   const handlers = new Map<string, IpcHandler>();
+  let epoch = TEST_TARGET_EPOCH;
   const sender = Object.assign(new EventEmitter(), {
     id: 1,
-    sent: [] as Array<{ channel: string; payload: unknown }>,
-    send(channel: string, payload: unknown): void {
-      sender.sent.push({ channel, payload });
+    sent: [] as Array<{ channel: string; hostId?: string; payload: unknown }>,
+    send(channel: string, ...args: unknown[]): void {
+      const hostId = (args[0] as { hostId?: unknown } | undefined)?.hostId;
+      const payload = args.at(-1);
+      sender.sent.push({
+        channel,
+        ...(typeof hostId === 'string' ? { hostId } : {}),
+        payload,
+      });
+      onSend?.(channel, payload);
     },
   });
   return {
+    get epoch() {
+      return epoch;
+    },
+    isActive() {
+      return true;
+    },
+    setEpoch(value: string) {
+      epoch = value;
+    },
     handle(channel: string, handler: IpcHandler): void {
       if (handlers.has(channel)) throw new Error(`duplicate handler: ${channel}`);
       handlers.set(channel, handler);
@@ -455,9 +996,20 @@ function ipcHarness() {
       handlers.delete(channel);
     },
     async invoke(channel: string, ...args: unknown[]): Promise<unknown> {
+      return this.invokeFor(TEST_HOST_ID, channel, ...args);
+    },
+    async invokeFor(hostId: string, channel: string, ...args: unknown[]): Promise<unknown> {
+      return this.invokeForTarget(TEST_TARGET_EPOCH, hostId, channel, ...args);
+    },
+    async invokeForTarget(
+      targetEpoch: string,
+      hostId: string,
+      channel: string,
+      ...args: unknown[]
+    ): Promise<unknown> {
       const handler = handlers.get(channel);
       assert.ok(handler, `missing handler: ${channel}`);
-      return handler({ sender } as never, ...args);
+      return handler({ sender } as never, { hostId, targetEpoch }, ...args);
     },
     get channels(): string[] {
       return [...handlers.keys()].sort();
@@ -473,6 +1025,7 @@ function deps(
   ipcMain: ReturnType<typeof ipcHarness>,
   nativeCapabilities: DesktopRuntimeHostCandidateDeps['nativeCapabilities'] = {
     browserTools: [nativeTool()],
+    resolveBrowserUrl: () => 'https://example.com/',
     releaseBrowserSession() {},
     computerUseTools: emptyComputerUseTools(),
     releaseComputerUseSession() {},
@@ -491,10 +1044,10 @@ function deps(
     }),
     resolveSessionCreateProject: async () => ({ kind: 'host_path', path: '/workspace' }),
     emitSessionsChanged() {},
-    emitModeChanged() {},
     completeComputerUseTurn() {},
     createSessionCopyCleanup: () => ({
       ownCreation: (_creation, operation) => operation(),
+      rejectCreation: async () => undefined,
       cleanup: async () => undefined,
       schedule: async () => undefined,
       abandonOwner: async () => undefined,
@@ -520,9 +1073,15 @@ function nativeTool(): MakaTool {
 function connectionHarness(
   label: string,
   options: {
+    rootId?: string;
+    sessionId?: string;
     revisionAbandon?: 'abandoned' | 'retained';
     subscriptionSnapshot?: SessionContinuitySnapshot;
+    activeAssistantStreams?: readonly SessionAssistantStreamIdentity[];
+    subscriptionError?: Error;
     runtimeResourcePty?: ReturnType<typeof ptySnapshot>;
+    runtimeResourceUpdate?: ShellRunUpdate;
+    sharedSessionAvailable?: boolean;
   } = {},
 ) {
   let resolveClosed: (() => void) | undefined;
@@ -534,6 +1093,7 @@ function connectionHarness(
     resolveTurnStarted = resolve;
   });
   const closeSubscriptions = new Set<() => void>();
+  const sessionCatalogListeners = new Set<(frame: { sessionId: string }) => void>();
   let provider: ClientCapabilityProvider | undefined;
   let capabilityRegistrations = 0;
   let capabilityUnregistrations = 0;
@@ -544,6 +1104,7 @@ function connectionHarness(
   const connection = {
     hostEpoch: `host-${label}`,
     connectionId: `connection-${label}`,
+    rootId: options.rootId ?? TEST_HOST_ID,
     selectedProtocol: 0,
     closed,
     request: async <K extends OperationKey>(operation: K, input: OperationInput<K>) => {
@@ -554,8 +1115,23 @@ function connectionHarness(
         return {
           kind: 'page',
           revision: catalogRevision(label),
-          sessions: [session(`session-${label}`)],
+          sessions: [session(options.sessionId ?? `session-${label}`)],
           nextCursor: null,
+        };
+      }
+      if (operation === 'session.shared.query') {
+        if (options.sharedSessionAvailable === false) return { session: null };
+        const id = options.sessionId ?? `session-${label}`;
+        return {
+          session: {
+            kind: 'shared_session',
+            id,
+            revision: 1,
+            createdAt: 1,
+            activityAt: 1,
+            name: `Session ${label}`,
+            status: 'idle',
+          },
         };
       }
       if (operation === 'session.create') {
@@ -591,11 +1167,23 @@ function connectionHarness(
         };
       }
       if (operation === 'runtime.resource.query') {
+        const query = input as { kind: string; sessionId: string; ref?: string };
+        if (query.kind === 'get') {
+          return {
+            kind: 'resource',
+            sessionId: query.sessionId,
+            revision: catalogRevision(`${label}-resource`),
+            resource:
+              options.runtimeResourceUpdate?.result.ref === query.ref
+                ? options.runtimeResourceUpdate
+                : null,
+          };
+        }
         return {
           kind: 'page',
-          sessionId: (input as { sessionId: string }).sessionId,
+          sessionId: query.sessionId,
           revision: catalogRevision(`${label}-resource`),
-          resources: [],
+          resources: options.runtimeResourceUpdate ? [options.runtimeResourceUpdate] : [],
           nextCursor: null,
         };
       }
@@ -630,10 +1218,21 @@ function connectionHarness(
       throw new Error(`Unexpected operation: ${operation}`);
     },
     openSessionSubscription: async ({ sessionId }: { sessionId: string }) => {
+      if (options.subscriptionError) throw options.subscriptionError;
       const subscriptionFrames = new AsyncFrameQueue();
       activeSubscriptionFrames = subscriptionFrames;
       const closeSubscription = () => subscriptionFrames.end();
       closeSubscriptions.add(closeSubscription);
+      const emptyPage = {
+        kind: 'page' as const,
+        sessionId,
+        source: 'durable' as const,
+        direction: 'older' as const,
+        throughSequence: null,
+        rawBytes: 0,
+        fragments: [],
+        nextCursor: null,
+      };
       return {
         hostEpoch: `host-${label}`,
         subscriptionId: `subscription-${label}`,
@@ -641,7 +1240,17 @@ function connectionHarness(
           projectionRevision: 1,
           session: { sessionId },
         },
+        activeAssistantStreams: options.activeAssistantStreams ?? [],
+        transcriptBootstrap: {
+          throughSequence: null,
+          overlayMessageCount: 0,
+          durable: emptyPage,
+          overlay: { ...emptyPage, source: 'overlay' },
+        },
         loadTranscript: async () => [],
+        loadTranscriptOverlay: async () => [],
+        decodeTranscriptPage: async () => ({ messages: [], nextCursor: null }),
+        loadTranscriptPage: async () => emptyPage,
         [Symbol.asyncIterator]: () => subscriptionFrames[Symbol.asyncIterator](),
         close: async () => closeSubscription(),
       };
@@ -654,6 +1263,10 @@ function connectionHarness(
     unregisterClientCapabilities: async () => {
       capabilityUnregistrations += 1;
       return { registrationId: `registration-${label}`, revision: 2 };
+    },
+    subscribeSessionCatalogChanges: (listener: (frame: { sessionId: string }) => void) => {
+      sessionCatalogListeners.add(listener);
+      return () => sessionCatalogListeners.delete(listener);
     },
     close: async () => {
       closeCalls += 1;
@@ -670,12 +1283,16 @@ function connectionHarness(
       return provider.call(frame, {
         signal: new AbortController().signal,
         accept: async () => undefined,
+        requestInteraction: async () => assert.fail('Unexpected provider interaction'),
       });
     },
     disconnect: () => resolveClosed?.(),
     pushSubscriptionFrame: (frame: SubscriptionFrame) => {
       assert.ok(activeSubscriptionFrames);
       activeSubscriptionFrames.push(frame);
+    },
+    publishSessionCatalogChange: (sessionId: string) => {
+      for (const listener of sessionCatalogListeners) listener({ sessionId });
     },
     get capabilityRegistrations() {
       return capabilityRegistrations;
@@ -699,13 +1316,12 @@ function continuitySnapshot(
   overrides: Partial<SessionContinuitySnapshot> = {},
 ): SessionContinuitySnapshot {
   return {
-    schemaVersion: 3,
+    schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
     session: {
       sessionId: 'session-1',
       metadataRevision: 1,
       status: 'running',
       createdAt: 1,
-      lastUsedAt: 1,
       isArchived: false,
     },
     projectionRevision: 1,
@@ -725,6 +1341,10 @@ function continuitySnapshot(
     interactions: { pending: [] },
     ...overrides,
   };
+}
+
+function activeText(messageId: string): SessionAssistantStreamIdentity {
+  return { kind: 'text', turnId: 'turn-1', messageId };
 }
 
 function pendingQuestion() {
@@ -757,6 +1377,34 @@ function ptySnapshot(ref: string, buffer: string) {
     sequence: 4,
     buffer,
     size: { cols: 80, rows: 24 },
+  };
+}
+
+function sharedShellRunUpdate(sessionId: string): ShellRunUpdate {
+  return {
+    sessionId,
+    ownership: { kind: 'local' },
+    sourceTurnId: 'turn-shared',
+    sourceToolCallId: 'tool-shared',
+    result: {
+      kind: 'shell_run',
+      ref: 'maka://runtime/background-tasks/shared',
+      mode: 'pipes',
+      status: 'running',
+      cwd: '/workspace',
+      cmd: 'echo shared',
+      startedAt: 1,
+      updatedAt: 1,
+      revision: 1,
+      output: {
+        mode: 'pipes',
+        stdout: 'shared output',
+        stderr: '',
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        redacted: false,
+      },
+    },
   };
 }
 
@@ -795,11 +1443,7 @@ class AsyncFrameQueue implements AsyncIterable<SubscriptionFrame> {
 }
 
 async function waitFor(predicate: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    if (predicate()) return;
-    await new Promise((resolve) => setImmediate(resolve));
-  }
-  assert.fail('Timed out waiting for candidate state');
+  await pollFor(predicate, { attempts: 100, message: 'Timed out waiting for candidate state' });
 }
 
 function capabilityFrame(sessionId: string): ClientCapabilityCallFrame {
@@ -831,7 +1475,7 @@ function session(id: string): SessionCatalogProjection {
       hostCwd: '/workspace',
     },
     createdAt: 1,
-    lastUsedAt: 1,
+    activityAt: 1,
     name: id,
     isFlagged: false,
     isArchived: false,
@@ -840,6 +1484,7 @@ function session(id: string): SessionCatalogProjection {
     hasUnread: false,
     status: 'active',
     backend: 'ai-sdk',
+    llmConnectionId: 'connection-1',
     llmConnectionSlug: 'test-connection',
     connectionLocked: true,
     model: 'test-model',

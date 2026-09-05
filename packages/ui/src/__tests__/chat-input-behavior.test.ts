@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
@@ -6,9 +25,8 @@ import {
   composerWireText,
   createTriggerSearchSource,
   isChatInputComposing,
-  mentionQueryMatches,
-  slashCommandQuery,
   skillMentionQuery,
+  slashCommandQuery,
 } from '../chat-input-behavior.js';
 
 describe('shared chat input behavior', () => {
@@ -96,6 +114,38 @@ describe('shared chat input behavior', () => {
     assert.deepEqual(states, ['drop', null]);
   });
 
+  // The `/` trigger serves two catalogs from one menu. A Skill matches wherever
+  // the trigger is legal, a command only when the slash opens the draft's first
+  // token — otherwise `请看 /Users/me` and `修一下 /compact` would both read as
+  // an instruction to run something.
+  it('offers commands only for a slash that opens the draft', () => {
+    // Caret right after a leading `/`, then after four typed characters.
+    assert.equal(slashCommandQuery('/', '', ''), '');
+    assert.equal(slashCommandQuery('/comp', '', 'comp'), 'comp');
+    // Leading whitespace is still an empty first token.
+    assert.equal(slashCommandQuery('  /comp', '', 'comp'), 'comp');
+    // A slash later in the draft is prose or a path, never a command.
+    assert.equal(slashCommandQuery('explain /', '', ''), null);
+    assert.equal(slashCommandQuery('first line\n/', '', ''), null);
+    // `/skill:` is the explicit Skill grammar and addresses no command.
+    assert.equal(slashCommandQuery('/skill:compact', '', 'skill:compact'), null);
+    assert.equal(slashCommandQuery('/SKILL:compact', '', 'SKILL:compact'), null);
+    // Text after the caret means the user is editing inside a word, not
+    // starting a command — `/side` with the caret between `/` and `side`.
+    assert.equal(slashCommandQuery('/', 'side', ''), null);
+    // A space after the caret is not text the command would swallow.
+    assert.equal(slashCommandQuery('/comp', ' tail', 'comp'), 'comp');
+    // The query must actually sit against the trigger the menu reports.
+    assert.equal(slashCommandQuery('comp', '', 'comp'), null);
+  });
+
+  it('reads `/skill:<query>` and a bare `/<query>` as the same Skill search', () => {
+    assert.equal(skillMentionQuery('skill:comp'), 'comp');
+    assert.equal(skillMentionQuery('SKILL:Comp'), 'Comp');
+    assert.equal(skillMentionQuery('comp'), 'comp');
+    assert.equal(skillMentionQuery('skill:'), '');
+  });
+
   it('does not let late completion clear state after reset', async () => {
     const states: Array<string | null> = [];
     const owner = createChatInputActionOwner<string>((action) => states.push(action));
@@ -105,28 +155,5 @@ describe('shared chat input behavior', () => {
     release();
     await action;
     assert.deepEqual(states, ['drop']);
-  });
-});
-
-describe('mention filtering', () => {
-  it('matches case-insensitive AND tokens and treats an empty query as universal', () => {
-    assert.equal(mentionQueryMatches('SRC APP', 'src/app.tsx'), true);
-    assert.equal(mentionQueryMatches('src app', 'src/main.tsx'), false);
-    assert.equal(mentionQueryMatches('', 'anything'), true);
-  });
-
-  it('normalizes /skill prefixes while preserving bare queries', () => {
-    assert.equal(skillMentionQuery('skill:wri'), 'wri');
-    assert.equal(skillMentionQuery('SKILL:wri'), 'wri');
-    assert.equal(skillMentionQuery('writer'), 'writer');
-  });
-
-  it('offers commands only for a leading token, outside explicit Skill syntax', () => {
-    assert.equal(slashCommandQuery('/', '', ''), '');
-    assert.equal(slashCommandQuery('  /comp', '', 'comp'), 'comp');
-    assert.equal(slashCommandQuery('explain /comp', '', 'comp'), null);
-    assert.equal(slashCommandQuery('/comp', 'act', 'comp'), null);
-    assert.equal(slashCommandQuery('/skill:compact', '', 'skill:compact'), null);
-    assert.equal(slashCommandQuery('/SKILL:compact', '', 'SKILL:compact'), null);
   });
 });

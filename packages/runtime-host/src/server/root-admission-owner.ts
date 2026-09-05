@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { isDeepStrictEqual } from 'node:util';
 import {
   messageContentsEqual,
@@ -11,6 +30,7 @@ import type {
   RootTurnAdmissionStore,
   RootTurnSourceMessage,
 } from '@maka/storage/execution-stores';
+import { submittedTurnIntentsEqual } from '@maka/storage/execution-stores';
 
 type OwnedAdmitRootTurnInput = Omit<AdmitRootTurnInput, 'previousRootTurnId'>;
 type Immutable<T> = T extends (...args: never[]) => unknown
@@ -101,6 +121,7 @@ function sameRootAdmission(left: RootTurnAdmission, right: RootTurnAdmission): b
     isDeepStrictEqual(left.execution, right.execution) &&
     isDeepStrictEqual(left.turnOrchestration, right.turnOrchestration) &&
     isDeepStrictEqual(left.skillInvocation, right.skillInvocation) &&
+    isDeepStrictEqual(left.authorization, right.authorization) &&
     left.previousRootTurnId === right.previousRootTurnId &&
     (left.normalizedInput === null || right.normalizedInput === null
       ? left.normalizedInput === right.normalizedInput
@@ -114,6 +135,10 @@ function sameRootAdmission(left: RootTurnAdmission, right: RootTurnAdmission): b
         source.placement === other.placement &&
         source.disposition === other.disposition &&
         source.submittedContentDigest === other.submittedContentDigest &&
+        (source.submittedPlacement ?? source.placement) ===
+          (other.submittedPlacement ?? other.placement) &&
+        submittedTurnIntentsEqual(source.submittedIntent, other.submittedIntent) &&
+        isDeepStrictEqual(source.skillInvocation, other.skillInvocation) &&
         messageContentsEqual(source.content, other.content)
       );
     }) &&
@@ -135,6 +160,9 @@ function snapshotAdmission(admission: RootTurnAdmission): RootTurnAdmission {
     ...(admission.turnOrchestration
       ? { turnOrchestration: Object.freeze({ ...admission.turnOrchestration }) }
       : {}),
+    ...(admission.authorization
+      ? { authorization: Object.freeze({ ...admission.authorization }) }
+      : {}),
     normalizedInput:
       admission.normalizedInput === null ? null : snapshotMessageContent(admission.normalizedInput),
     sourceMessages: Object.freeze(sourceMessages),
@@ -148,6 +176,8 @@ function snapshotMessageContent(content: MessageContent): MessageContent {
     Object.freeze(attachment);
   }
   if (snapshot.attachments) Object.freeze(snapshot.attachments);
+  for (const reference of snapshot.directoryReferences ?? []) Object.freeze(reference);
+  if (snapshot.directoryReferences) Object.freeze(snapshot.directoryReferences);
   for (const quote of snapshot.quotes ?? []) Object.freeze(quote);
   if (snapshot.quotes) Object.freeze(snapshot.quotes);
   return Object.freeze(snapshot);

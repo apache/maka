@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * Copy for the drag-to-grant card.
  *
@@ -6,7 +25,7 @@
  * resolves the locale and ships the finished strings in the show payload.
  */
 
-import type { UiCatalog, UiLocale } from '@maka/core';
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 import type { DragGrantPermissionId } from './permission-overlay-controller.js';
 
 export interface PermissionOverlayCopy {
@@ -31,7 +50,7 @@ export interface PermissionOverlayCopy {
 type Catalog = UiCatalog<Record<DragGrantPermissionId, PermissionOverlayCopy>>;
 
 const COPY: Catalog = {
-  zh: {
+  'zh-CN': {
     accessibility: {
       headline: (appName) => `把 ${appName} 拖到上面的列表里，即可开启「辅助功能」`,
       fallback: '也可以在系统设置里点 + 号，从「应用程序」中选择本 App。',
@@ -48,6 +67,25 @@ const COPY: Catalog = {
       dragHint: '拖我',
       restartHint: '若仍显示未授权，需要重启 App —— macOS 会缓存上一次的拒绝结果。',
       noBundle: '当前不是以 .app 方式运行，无法拖拽。请在系统设置里手动添加。',
+    },
+  },
+  'zh-TW': {
+    accessibility: {
+      headline: (appName) => `把 ${appName} 拖到上面的列表裡，即可開啟「輔助功能」`,
+      fallback: '也可以在系統設定裡點 + 號，從「應用程式」中選擇本 App。',
+      granted: '輔助功能已開啟',
+      dismiss: '關閉',
+      dragHint: '拖我',
+      noBundle: '目前不是以 .app 方式執行，無法拖拽。請在系統設定裡手動新增。',
+    },
+    screen_recording: {
+      headline: (appName) => `把 ${appName} 拖到上面的列表裡，即可開啟「螢幕錄製」`,
+      fallback: '也可以在系統設定裡點 + 號，從「應用程式」中選擇本 App。',
+      granted: '螢幕錄製已開啟',
+      dismiss: '關閉',
+      dragHint: '拖我',
+      restartHint: '若仍顯示未授權，需要重啟 App —— macOS 會快取上一次的拒絕結果。',
+      noBundle: '目前不是以 .app 方式執行，無法拖拽。請在系統設定裡手動新增。',
     },
   },
   en: {

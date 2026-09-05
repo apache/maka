@@ -1,16 +1,37 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import {
   INLINE_REFERENCE_LABEL_MAX_LENGTH,
   INLINE_REFERENCE_MAX_COUNT,
+  type InlineReference,
+} from '@maka/core/events';
+import {
   SKILL_INVOCATION_ID_MAX_BYTES,
   SKILL_INVOCATION_NAME_MAX_BYTES,
   SKILL_INVOCATION_REF_MAX_BYTES,
   SKILL_INVOCATION_REQUEST_MAX_BYTES,
-  SKILL_INVOCATION_TOKEN_SOURCE,
-  type InlineReference,
   type PerRequestSkillInvocationFailureReason,
   type SkillInvocationMode,
   type SkillInvocationReceipt,
-} from '@maka/core';
+} from '@maka/core/skill-invocation';
+import { SKILL_INVOCATION_TOKEN_SOURCE } from '@maka/core/skill-invocation-token';
 import type { LoadedSkillInstructions } from './skills.js';
 
 export type {
@@ -18,7 +39,7 @@ export type {
   SkillInvocationFailureReason,
   SkillInvocationMode,
   SkillInvocationReceipt,
-} from '@maka/core';
+} from '@maka/core/skill-invocation';
 
 export function loadedSkillInvocationReceipt(
   invocation: SkillInvocationMode,

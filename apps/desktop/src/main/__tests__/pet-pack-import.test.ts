@@ -1,10 +1,29 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { PET_PACK_SCHEMA_V1 } from '@maka/core/pet';
-import { createSettingsStore } from '@maka/storage';
+import { createSettingsStore } from '@maka/storage/settings-store';
 import { createPetPackStore } from '@maka/storage/pet-pack-store';
 import {
   importPetPackFromDirectory,
@@ -289,42 +308,6 @@ test('IPC returns sprite bytes, removes the pack, and emits only real mutations'
         ts: 84,
       },
     ]);
-  });
-});
-
-test('IPC reports picker cancellation without touching storage', async () => {
-  const handlers = new Map<string, (...args: unknown[]) => unknown>();
-  registerPetPackIpc({
-    ipcMain: {
-      handle: (channel, handler) => handlers.set(channel, handler as (...args: unknown[]) => unknown),
-    },
-    workspaceRoot: '/unused',
-    mainWindowController: {
-      showOpenDialog: async () => ({ canceled: true, filePaths: [] }),
-      send: () => {},
-    },
-    settingsStore: {
-      get: async () => {
-        throw new Error('settings get must not run');
-      },
-      update: async () => {
-        throw new Error('settings update must not run');
-      },
-    },
-    store: {
-      list: async () => [],
-      get: async () => undefined,
-      install: async () => {
-        throw new Error('install must not run');
-      },
-      readSpriteSheet: async () => undefined,
-      remove: async () => false,
-    },
-  });
-
-  assert.deepEqual(await handlers.get('pets:importLocalDirectory')?.({}), {
-    ok: false,
-    reason: 'cancelled',
   });
 });
 

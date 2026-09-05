@@ -1,16 +1,35 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import type { CredentialLocator } from '@maka/core/runtime-policy';
+import { buildSubscriptionModelFetch } from '@maka/runtime/subscription-model-fetch';
 import {
-  buildSubscriptionModelFetch,
   isOAuthSubscriptionProvider,
-  openAiCodexHeaders,
   refreshAndPersistOAuthSubscriptionTokens,
   resolveAndPersistOAuthSubscriptionTokens,
   type OAuthSubscriptionCredentialStore,
   type OAuthSubscriptionProvider,
   type OAuthSubscriptionTokens,
-  type ProxiedFetchTransport,
-} from '@maka/runtime';
+} from '@maka/runtime/subscription-credentials';
+import { openAiCodexHeaders } from '@maka/runtime/subscription-auth';
+import { type ProxiedFetchTransport } from '@maka/runtime/network/scoped-fetch-transport';
 import {
   authenticateRuntimePolicyStoresWriter,
   RuntimePolicyStoreError,
@@ -77,6 +96,7 @@ export class HostOAuthExecutionAuthority {
 
   bind(input: {
     providerType: RuntimeExecutionConnection['providerType'];
+    connectionId: string;
     connectionSlug: string;
     material: RuntimePolicyCredentialMaterial;
     createRefreshTransport: () => ProxiedFetchTransport;
@@ -88,6 +108,12 @@ export class HostOAuthExecutionAuthority {
       );
     }
     const locator = requireOAuthLocator(input.material.locator);
+    if (locator.connectionId !== input.connectionId) {
+      throw new OAuthExecutionCredentialError(
+        'persistence_failed',
+        'Canonical OAuth credential does not belong to the bound connection',
+      );
+    }
     let state = this.#states.get(locator.connectionId);
     if (state) {
       if (
@@ -229,7 +255,11 @@ export class HostOAuthExecutionAuthority {
 
     let resolved;
     try {
-      resolved = await this.#stores.operations.resolveExecutionConnection(state.connectionSlug);
+      resolved = await this.#stores.operations.resolveExecutionConnection({
+        kind: 'bound',
+        connectionId: state.locator.connectionId,
+        connectionSlug: state.connectionSlug,
+      });
     } catch (error) {
       throw new OAuthExecutionCredentialError(
         'persistence_failed',
@@ -320,18 +350,8 @@ export function createHostOAuthModelFetch(input: {
   connection: RuntimeExecutionConnection;
   sessionId: string;
   modelId: string;
-  claudeDeviceId: string;
   fetchFn: typeof fetch;
 }): typeof fetch {
-  if (
-    input.binding.providerType === 'claude-subscription' &&
-    !input.initialTokens.account_uuid?.trim()
-  ) {
-    throw new OAuthExecutionCredentialError(
-      'credential_unavailable',
-      'Claude OAuth credential is missing its canonical account identity',
-    );
-  }
   return async (url, init) => {
     const signal = effectiveRequestSignal(url, init);
     signal?.throwIfAborted();
@@ -343,18 +363,22 @@ export function createHostOAuthModelFetch(input: {
       sessionId: input.sessionId,
       modelId: input.modelId,
       fetchFn: authenticatedFetch,
-      ...(input.binding.forceRefresh &&
-      (input.binding.providerType === 'openai-codex' || input.binding.providerType === 'xai-oauth')
+      ...(input.binding.forceRefresh
         ? {
-            refreshOAuthAccessToken: async () =>
-              (tokens = await input.binding.forceRefresh!()).access_token,
-          }
-        : {}),
-      ...(input.binding.providerType === 'claude-subscription'
-        ? {
-            claude: {
-              deviceId: input.claudeDeviceId,
-              accountUuid: tokens.account_uuid ?? '',
+            refreshOAuthAccessToken: async (signal) => {
+              const rejected = tokens.access_token;
+              const refreshing = input.binding.forceRefresh!();
+              // The refresh is left to settle on its own: it may already have
+              // spent the grant, and a CAS-persisted newer generation is worth
+              // keeping even though this request no longer wants it. What the
+              // caller must not do is wait out its timeout after giving up.
+              observeSettled(refreshing);
+              tokens = await waitForCaller(refreshing, signal);
+              // A record with no refresh grant behind it (a GitHub account
+              // token GitHub declared no lifetime for) resolves to the token
+              // the provider just rejected. Replaying it would spend a second
+              // request to be told the same thing.
+              return tokens.access_token === rejected ? null : tokens.access_token;
             },
           }
         : {}),
@@ -368,6 +392,11 @@ function effectiveRequestSignal(
   init: Parameters<typeof fetch>[1],
 ): AbortSignal | null | undefined {
   return init?.signal !== undefined ? init.signal : url instanceof Request ? url.signal : undefined;
+}
+
+/** Keeps a promise the caller stopped awaiting from surfacing as unhandled. */
+function observeSettled(pending: Promise<unknown>): void {
+  void pending.catch(() => undefined);
 }
 
 async function waitForCaller<T>(pending: Promise<T>, signal?: AbortSignal | null): Promise<T> {

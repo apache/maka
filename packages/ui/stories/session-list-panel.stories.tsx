@@ -1,12 +1,28 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { useEffect, useRef, type ReactNode } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import type {
-  ProjectRecord,
-  SessionBlockedReason,
-  SessionStatus,
-  SessionSummary,
-} from '@maka/core';
-import { SessionListPanel } from '../src/session-list-panel.js';
+import { expect, waitFor, within } from 'storybook/test';
+import type { ProjectRecord } from '@maka/core/project';
+import type { SessionBlockedReason, SessionStatus, SessionSummary } from '@maka/core/session';
+import { SessionRail, type SessionRailStoryProps } from './session-rail-harness.js';
 
 const NOW = Date.now();
 
@@ -23,7 +39,7 @@ const meta = {
 export default meta;
 
 type Story = StoryObj<typeof meta>;
-type SessionListPanelProps = Parameters<typeof SessionListPanel>[0];
+type SessionListPanelProps = SessionRailStoryProps;
 
 const noop = () => undefined;
 
@@ -40,12 +56,11 @@ function makeSession(input: {
   llmConnectionSlug?: string;
 }): SessionSummary {
   const status = input.status ?? 'active';
-  const isArchived = input.isArchived ?? status === 'archived';
   return {
     id: input.id,
     name: input.name,
     isFlagged: input.isFlagged ?? false,
-    isArchived,
+    isArchived: input.isArchived ?? false,
     labels: [],
     hasUnread: input.hasUnread ?? false,
     status,
@@ -64,7 +79,6 @@ const rowActions: NonNullable<SessionListPanelProps['rowActions']> = {
   onArchive: noop,
   onUnarchive: noop,
   onRename: noop,
-  onDelete: noop,
 };
 
 function panelProps(input: {
@@ -73,14 +87,19 @@ function panelProps(input: {
   activeId?: string;
   streamingSessionIds?: Set<string>;
   staleSessionIds?: Set<string>;
+  width?: number;
   viewMode?: SessionListPanelProps['viewMode'];
   groups?: SessionListPanelProps['groups'];
   projectActions?: SessionListPanelProps['projectActions'];
   worktreeSessionIds?: SessionListPanelProps['worktreeSessionIds'];
 }): SessionListPanelProps {
   return {
-    selection: input.selection ?? { section: 'sessions', filter: 'chats' },
+    selection: input.selection ?? { section: 'sessions' },
     sessions: input.sessions,
+    // The rail's own width, not just the frame's: SideNav keeps its width in
+    // `resizable`, so a narrow frame alone only clips a 260px rail instead of
+    // showing what the narrow one looks like.
+    ...(input.width === undefined ? {} : { width: input.width }),
     ...(input.activeId ? { activeId: input.activeId } : {}),
     ...(input.streamingSessionIds ? { streamingSessionIds: input.streamingSessionIds } : {}),
     ...(input.staleSessionIds ? { staleSessionIds: input.staleSessionIds } : {}),
@@ -117,29 +136,40 @@ function StoryFrame(props: {
   children: ReactNode;
   width?: number;
   height?: number;
-  focusActiveRow?: boolean;
-  openActiveRowMenu?: boolean;
+  openSessionMenuId?: string;
 }) {
-  const { children, width = 240, height = 680, focusActiveRow = false, openActiveRowMenu = false } = props;
+  // 260 is `SessionListPanel`'s own default width. The frame used to default to
+  // 240 and clip the rail by 20px in every story that did not pass a width —
+  // which lands squarely on the trailing slot, so the stories could not show
+  // whether the timestamp fits. Stories that want a narrow rail pass the width
+  // to both, as `panelProps` explains.
+  const {
+    children,
+    width = 260,
+    height = 680,
+    openSessionMenuId,
+  } = props;
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!focusActiveRow && !openActiveRowMenu) return;
-    let menuTimeout: number | undefined;
-    const focusTimeout = window.setTimeout(() => {
-      const activeRow = ref.current?.querySelector<HTMLElement>('[data-maka-contract="session-row"] [aria-current="true"]');
-      activeRow?.querySelector<HTMLButtonElement>(':scope > button')?.focus({ preventScroll: true });
-      if (openActiveRowMenu) {
-        menuTimeout = window.setTimeout(() => {
-          activeRow?.querySelector<HTMLButtonElement>('[aria-label="对话操作"]')?.click();
-        }, 0);
+    if (!openSessionMenuId) return;
+    const timeout = window.setTimeout(() => {
+      const targetRow = Array.from(
+        ref.current?.querySelectorAll<HTMLElement>('[data-maka-contract="session-row"]') ?? [],
+      ).find((row) => row.dataset.sessionId === openSessionMenuId);
+      if (!targetRow) {
+        throw new Error(`Missing task row fixture: ${openSessionMenuId}`);
       }
+      const menuButton = targetRow.querySelector<HTMLButtonElement>(
+        '[aria-label$="任务操作"]',
+      );
+      if (!menuButton) {
+        throw new Error('Task row is missing its actions menu');
+      }
+      menuButton.click();
     }, 0);
-    return () => {
-      window.clearTimeout(focusTimeout);
-      if (menuTimeout !== undefined) window.clearTimeout(menuTimeout);
-    };
-  }, [focusActiveRow, openActiveRowMenu]);
+    return () => window.clearTimeout(timeout);
+  }, [openSessionMenuId]);
 
   return (
     <div
@@ -179,24 +209,6 @@ const statusSessions = [
     lastMessageAt: NOW - 20 * 60 * 1000,
   }),
   makeSession({
-    id: 'status-review',
-    name: '待审核的文件 diff',
-    status: 'review',
-    lastMessageAt: NOW - 37 * 60 * 1000,
-  }),
-  makeSession({
-    id: 'status-done',
-    name: '已完成的 smoke run',
-    status: 'done',
-    lastMessageAt: NOW - 2 * 60 * 60 * 1000,
-  }),
-  makeSession({
-    id: 'status-archived',
-    name: '归档的旧实验',
-    status: 'archived',
-    lastMessageAt: NOW - 8 * 24 * 60 * 60 * 1000,
-  }),
-  makeSession({
     id: 'status-aborted',
     name: '中止的临时尝试',
     status: 'aborted',
@@ -225,12 +237,48 @@ const longTitleSessions = [
   }),
 ];
 
-// Real path: a fresh workspace with no conversations yet — the sidebar list before
+const liveRunAuthoritySessions: SessionSummary[] = [
+  {
+    ...makeSession({
+      id: 'live-unknown',
+      name: 'Unknown：兼容旧 Host 的 persisted fallback',
+      status: 'running',
+      lastMessageAt: NOW - 4 * 60 * 1000,
+    }),
+  },
+  {
+    ...makeSession({
+      id: 'live-known-empty',
+      name: 'Known empty：忽略崩溃遗留的 running',
+      status: 'running',
+      lastMessageAt: NOW - 3 * 60 * 1000,
+    }),
+    runningTurnIds: [],
+  },
+  {
+    ...makeSession({
+      id: 'live-remote-running',
+      name: 'Remote running：来自机器人或第二窗口',
+      lastMessageAt: NOW - 2 * 60 * 1000,
+    }),
+    runningTurnIds: ['turn-remote'],
+  },
+  {
+    ...makeSession({
+      id: 'live-local-race',
+      name: 'Local streaming：catalog 刷新前仍显示运行',
+      lastMessageAt: NOW - 1 * 60 * 1000,
+    }),
+    runningTurnIds: [],
+  },
+];
+
+// Real path: a fresh workspace with no tasks yet — the rail's list before
 // anything is created.
 export const Empty: Story = {
   render: () => (
     <StoryFrame>
-      <SessionListPanel {...panelProps({ sessions: [] })} />
+      <SessionRail {...panelProps({ sessions: [] })} />
     </StoryFrame>
   ),
 };
@@ -240,7 +288,7 @@ export const Empty: Story = {
 export const ConversationStates: Story = {
   render: () => (
     <StoryFrame>
-      <SessionListPanel {...panelProps({
+      <SessionRail {...panelProps({
         sessions: statusSessions,
         activeId: 'status-waiting',
         streamingSessionIds: new Set(['status-running']),
@@ -250,35 +298,47 @@ export const ConversationStates: Story = {
   ),
 };
 
-// Real path: after choosing Archived in the rail, an archived conversation
-// remains discoverable so its existing row-menu restore action is reachable.
-export const ArchivedConversations: Story = {
+// Real path: the active task row's overflow menu after its semantic trigger is
+// opened. The menu is portaled outside the rail, so the play assertion reads
+// from the owning document rather than only the story canvas.
+export const ActiveTaskActionsOpen: Story = {
+  render: () => (
+    <StoryFrame openSessionMenuId="status-waiting">
+      <SessionRail {...panelProps({
+        sessions: statusSessions,
+        activeId: 'status-waiting',
+      })} />
+    </StoryFrame>
+  ),
+  play: async ({ canvasElement }) => {
+    const page = within(canvasElement.ownerDocument.body);
+    await waitFor(() => expect(page.getByRole('menu')).toBeVisible());
+    expect(page.getByRole('menuitem', { name: '重命名' })).toBeVisible();
+  },
+};
+
+// Real path: Runtime Host catalog refreshes distinguish an older Host (unknown),
+// an authoritative empty run set, a run started by another Client, and the
+// renderer-local synchronization window immediately after send.
+export const LiveRunAuthorityStates: Story = {
   render: () => (
     <StoryFrame>
-      <SessionListPanel
-        {...panelProps({
-          selection: { section: 'sessions', filter: 'archived' },
-          sessions: [
-            makeSession({
-              id: 'archived-release-notes',
-              name: '旧版本发布记录',
-              status: 'archived',
-              lastMessageAt: NOW - 8 * 24 * 60 * 60 * 1000,
-            }),
-          ],
-          activeId: 'archived-release-notes',
-        })}
-      />
+      <SessionRail {...panelProps({
+        sessions: liveRunAuthoritySessions,
+        activeId: 'live-remote-running',
+        streamingSessionIds: new Set(['live-local-race']),
+      })} />
     </StoryFrame>
   ),
 };
 
-// Real path: a workspace with long conversation titles, with the sidebar dragged to its
-// narrow end.
+// Real path: a workspace with long task titles, with the rail dragged to its
+// narrow end (180px, the panel's own minWidth).
 export const LongTitlesAndNarrow: Story = {
   render: () => (
-    <StoryFrame width={176}>
-      <SessionListPanel {...panelProps({
+    <StoryFrame width={180}>
+      <SessionRail {...panelProps({
+        width: 180,
         sessions: longTitleSessions,
         activeId: 'long-title-active',
         staleSessionIds: new Set(['long-title-stale']),
@@ -292,7 +352,7 @@ export const LongTitlesAndNarrow: Story = {
 export const PinnedAndRecentSections: Story = {
   render: () => (
     <StoryFrame>
-      <SessionListPanel
+      <SessionRail
         {...panelProps({
           sessions: [
             makeSession({
@@ -311,7 +371,6 @@ export const PinnedAndRecentSections: Story = {
             makeSession({
               id: 'recent-a',
               name: '刚结束的 smoke 回归',
-              status: 'done',
               lastMessageAt: NOW - 12 * 60 * 1000,
             }),
             makeSession({
@@ -328,8 +387,8 @@ export const PinnedAndRecentSections: Story = {
   ),
 };
 
-// Real path: group-by-project — collapsible project rows, sessions flush under
-// the project (zero nest padding), worktree mark + count badge.
+// Real path: group-by-project — collapsible project rows, sessions nested 8px
+// under the project so titles share one x, worktree mark + project actions.
 export const ProjectGroups: Story = {
   render: () => {
     const maka = makeProject({
@@ -355,6 +414,7 @@ export const ProjectGroups: Story = {
       makeSession({
         id: 'proj-main',
         name: '主仓会话',
+        isFlagged: true,
         lastMessageAt: NOW - 4 * 60 * 1000,
       }),
       makeSession({
@@ -371,7 +431,7 @@ export const ProjectGroups: Story = {
     ];
     return (
       <StoryFrame height={720}>
-        <SessionListPanel
+        <SessionRail
           {...panelProps({
             sessions,
             activeId: 'proj-worktree',
@@ -396,6 +456,87 @@ export const ProjectGroups: Story = {
                 label: missing.name,
                 project: missing,
                 sessions: [],
+              },
+            ],
+            projectActions: {
+              onNew: noop,
+              onRename: noop,
+              onArchive: noop,
+              onRestore: noop,
+              onRelink: noop,
+            },
+          })}
+        />
+      </StoryFrame>
+    );
+  },
+};
+
+// Group-by-project where a project's only task is pinned, so the project row
+// has nothing left to show. What the row says about itself — disclosure,
+// action placement, the hover card's task count — has to follow what is
+// actually under it, and an archived project sits below the live ones.
+export const ProjectGroupsPinnedOnlyTask: Story = {
+  render: () => {
+    const solo = makeProject({
+      id: 'project-solo',
+      name: '独苗项目',
+      preferredPath: '/workspace/solo',
+    });
+    const docs = makeProject({
+      id: 'project-docs',
+      name: '产品文档',
+      preferredPath: '/workspace/docs',
+    });
+    const retired = makeProject({
+      id: 'project-retired',
+      name: '旧版桌面端',
+      preferredPath: '/workspace/legacy',
+      archivedAt: NOW - 30 * 24 * 60 * 60 * 1000,
+    });
+    const sessions = [
+      makeSession({
+        id: 'solo-only',
+        name: '唯一的任务',
+        isFlagged: true,
+        lastMessageAt: NOW - 6 * 60 * 1000,
+      }),
+      makeSession({
+        id: 'docs-a',
+        name: '文档站改版',
+        lastMessageAt: NOW - 30 * 60 * 1000,
+      }),
+      makeSession({
+        id: 'retired-a',
+        name: '旧版遗留任务',
+        lastMessageAt: NOW - 40 * 24 * 60 * 60 * 1000,
+      }),
+    ];
+    return (
+      <StoryFrame height={720}>
+        <SessionRail
+          {...panelProps({
+            sessions,
+            activeId: 'docs-a',
+            viewMode: 'project',
+            groups: [
+              {
+                id: `project:${solo.id}`,
+                label: solo.name,
+                project: solo,
+                sessions: [sessions[0]!],
+              },
+              {
+                id: `project:${docs.id}`,
+                label: docs.name,
+                project: docs,
+                sessions: [sessions[1]!],
+              },
+              {
+                id: `project:${retired.id}`,
+                label: retired.name,
+                project: retired,
+                sessions: [sessions[2]!],
               },
             ],
             projectActions: {

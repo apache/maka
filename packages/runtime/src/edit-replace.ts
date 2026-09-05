@@ -1,18 +1,6 @@
 // packages/runtime/src/edit-replace.ts
 //
-// Shared, fault-tolerant string-edit logic used by BOTH Edit tool
-// implementations:
-//   - the in-process builtin Edit tool (packages/runtime/src/builtin-tools.ts),
-//     which imports and calls computeEditedSource directly, and
-//   - the isolated headless Edit tool (packages/headless/src/tools.ts), which
-//     embeds COMPUTE_EDITED_SOURCE_FN_SOURCE into a `node -e` script that runs
-//     inside the isolated executor process (the actual benchmark path).
-//
-// CONSTRAINT: computeEditedSource must stay fully self-contained — no imports,
-// no references to module-scope bindings, every helper a nested *function
-// declaration* (hoisted, so order-independent), no generators — so that
-// `.toString()` yields a standalone definition that runs unchanged inside the
-// isolated process. This keeps a single source of truth for both call sites.
+// Shared, fault-tolerant string-edit logic used by Runtime Edit tools.
 //
 // SAFETY MODEL (the point of this module): exact-match drift (whitespace,
 // indentation, escaping) is forgiven, but a fuzzy match must never silently
@@ -28,17 +16,54 @@
 // additionally gated to text-sized, non-binary source; exact matching is never
 // gated, so a very large source is still edited with an exact snippet. This
 // function operates on a string — binary-*file* byte safety is the caller's I/O
-// concern (the headless isolated Edit reads/writes bytes and only allows an exact
-// byte-level replacement on non-UTF-8 files; see EDIT_SCRIPT).
+// concern.
 //
-// Strategies are adapted from opencode's edit.ts (sourced from cline diff-apply
-// + gemini-cli editCorrector). We keep the three distinctly-reachable full-span
-// matchers (line-trimmed, whitespace-normalized, escape-normalized) and omit:
+// ATTRIBUTION: the fuzzy matching strategies below are adapted material under
+// more than one license. Maka took them from opencode's edit.ts
+// (packages/opencode/src/tool/edit.ts), which credits cline diff-apply and the
+// gemini-cli editCorrector upstream of itself; those two upstreams are
+// Apache-2.0, so this region is not uniformly MIT. Each piece is listed with
+// the license that governs it. All three are modified here: see below.
+//
+//   `lineTrimmedSpans` — adapted from cline's `lineTrimmedFallbackMatch`.
+//     Source:    https://github.com/cline/cline
+//     Revision:  50b43c0559a9658a4fda79645b2cfe66cfa2f133
+//     Path:      evals/diff-edits/diff-apply/diff-06-23-25.ts
+//     License:   Apache-2.0
+//     Copyright: Copyright 2025 Cline Bot Inc.
+//     Modified:  returns every matching span instead of the first, and rejects
+//                a match at EOF when old_string ended with a newline.
+//
+//   `escapeNormalizedSpans` unescape — the regular expression and the first
+//   eight branches (n, t, r, ', ", `, \, newline), in order, are from
+//   gemini-cli's `unescapeStringForGeminiBug`.
+//     Source:    https://github.com/google-gemini/gemini-cli
+//     Revision:  93909a2dd3bf901e8f98a9fd41e1300faa585a84
+//     Path:      packages/core/src/utils/editCorrector.ts
+//     License:   Apache-2.0
+//     Copyright: Copyright 2025 Google LLC
+//     Modified:  opencode added a ninth branch ($) and changed the pattern;
+//                Maka carries opencode's result and collects spans rather than
+//                rewriting the string in place.
+//
+//   Everything else in the cascade — the whitespace-normalized matcher, the
+//   strategy ordering, and the surrounding structure.
+//     Source:    https://github.com/anomalyco/opencode
+//     Revision:  fc80874f45a595ff6874a4d36b1090f6a64424d2
+//     License:   MIT
+//     Copyright: Copyright (c) 2025 opencode
+//
+// Maka keeps the three distinctly-reachable full-span matchers (line-trimmed,
+// whitespace-normalized, escape-normalized) and omits:
 //   - indentation-flexible and trimmed-boundary, which are strictly shadowed by
 //     line-trimmed / whitespace-normalized here (they add no reachable match);
 //   - block-anchor and context-aware, which match on partial signal (first/last
 //     line + similarity) and need a tuned similarity threshold — deliberately
 //     deferred to keep wrong-location risk out.
+//
+// Scope: the adapted material only. The rest of this file is Maka source under
+// the repository Apache-2.0 license, so there is no whole-file SPDX identifier.
+// See LICENSE, THIRD-PARTY COMPONENTS for the notices.
 
 export type EditMatchStrategy = 'exact' | 'line-trimmed' | 'whitespace' | 'escape';
 
@@ -69,9 +94,7 @@ export function computeEditedSource(
   newString: string,
   where: string,
 ): EditMatch {
-  // Declared inside the function (not module scope) so .toString() carries it
-  // into the isolated EDIT_SCRIPT — module-scope references do not survive
-  // serialization. Minimum trimmed old_string length for a non-exact match.
+  // Minimum trimmed old_string length for a non-exact match.
   const MIN_FUZZY_OLD_STRING_LENGTH = 5;
   // Fuzzy scanning walks the whole source repeatedly, so it is restricted to
   // text-sized inputs. The cap is in UTF-16 code units (String#length) — the
@@ -153,7 +176,7 @@ export function computeEditedSource(
     `old_string not found in ${where}; it must match the file's text including whitespace and indentation`,
   );
 
-  // ---- nested helpers (kept inside for self-contained .toString() embedding) ----
+  // ---- helpers ----
 
   function finish(
     content: string,
@@ -291,10 +314,3 @@ export function computeEditedSource(
     return span.trim().length > Math.max(find.trim().length + 500, find.trim().length * 4);
   }
 }
-
-/**
- * Serialized source of computeEditedSource, captured once at module load for
- * embedding into the isolated headless EDIT_SCRIPT. Using the live function's
- * own source avoids drift between the in-process and serialized forms.
- */
-export const COMPUTE_EDITED_SOURCE_FN_SOURCE: string = computeEditedSource.toString();

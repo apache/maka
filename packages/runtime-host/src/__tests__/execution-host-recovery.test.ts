@@ -1,3 +1,23 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { withTimeout } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { fork, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -7,25 +27,23 @@ import { connect, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { TOOL_BOUNDARY_PROTOCOL_V1 } from '@maka/core';
+import { TOOL_BOUNDARY_PROTOCOL_V1 } from '@maka/core/runtime-event';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
-import type { AgentRunHeader } from '@maka/core/agent-run';
 import type { MessageContent } from '@maka/core/events';
 import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
 import type { StoredMessage } from '@maka/core/session';
-import type { Task } from '@maka/core/task-ledger';
 import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import {
-  buildTaskLedgerTools,
   buildRecoveredTerminalRuntimeEvent,
   classifyTerminalRuntimeLedger,
   commitTerminalRunWithRuntimeFact,
+} from '@maka/runtime/terminal-run-commit';
+import {
   FAKE_ASK_USER_QUESTION_PROMPT,
   FAKE_WAIT_FOR_STEERING_PROMPT,
-  type MakaTool,
-  type MakaToolContext,
-} from '@maka/runtime';
+} from '@maka/runtime/test-only/fake-backend';
+import { type MakaTool, type MakaToolContext } from '@maka/runtime/tool-runtime';
 import {
   openInteractiveExecutionStoresForRead,
   openInteractiveExecutionStoresForWrite,
@@ -38,7 +56,6 @@ import {
   tryAcquireInteractiveRootReader,
   type StorageRootCapability,
 } from '@maka/storage/root-authority';
-import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-authority';
 import {
   connectRuntimeHost,
   RuntimeHostOperationError,
@@ -49,17 +66,13 @@ import {
 import {
   decodeHostFrame,
   RUNTIME_HOST_PROTOCOL_VERSION,
-  TASK_LEDGER_PAGE_MAX_ITEMS,
   type ConnectionCatalogQueryResult,
   type InteractionPendingSnapshot,
   type SubscriptionFrame,
-  type TaskLedgerQueryResult,
-  type TaskLedgerRevision,
   type TurnMessageSubmitInput,
   type TurnSnapshot,
 } from '../protocol/index.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
-import { HostTaskLedgerCoordinator } from '../server/task-ledger-coordinator.js';
 import { FramedTransport } from '../transport/framed-transport.js';
 
 import {
@@ -81,7 +94,6 @@ import {
   waitForTerminalTurn,
   waitForTurn,
   withExecutionRoot,
-  withTimeout,
 } from './fixtures/execution-host-suite.js';
 
 test('startup recovery rejects claimed graph Run lineage drift', async () => {
@@ -102,12 +114,12 @@ test('retry after a discarded turn.start response reuses the durable semantic ad
       turnId,
       text,
     });
-    const observer = await connectClient(fixture.root, 'tui');
+    const observer = await connectClient(fixture.root);
     const committed = await waitForTurn(observer, fixture.sessionId, turnId);
     dropped.abort();
 
     const retried = requireStartedTurn(
-      await observer.startTurn({
+      await observer.request('turn.start', {
         sessionId: fixture.sessionId,
         turnId,
         content: { text },
@@ -116,7 +128,7 @@ test('retry after a discarded turn.start response reuses the durable semantic ad
     assert.equal(retried.runId, committed.runId);
     await assert.rejects(
       () =>
-        observer.startTurn({
+        observer.request('turn.start', {
           sessionId: fixture.sessionId,
           turnId,
           content: { text: `${text} changed` },
@@ -129,10 +141,10 @@ test('retry after a discarded turn.start response reuses the durable semantic ad
 
     await fixture.killHost(host);
     const successorHost = await fixture.startHost();
-    const successorClient = await connectClient(fixture.root, 'run');
+    const successorClient = await connectClient(fixture.root);
     assert.deepEqual(
       requireStartedTurn(
-        await successorClient.startTurn({
+        await successorClient.request('turn.start', {
           sessionId: fixture.sessionId,
           turnId,
           content: { text },
@@ -141,7 +153,7 @@ test('retry after a discarded turn.start response reuses the durable semantic ad
       terminal,
     );
     const successorTurnId = randomUUID();
-    await successorClient.startTurn({
+    await successorClient.request('turn.start', {
       sessionId: fixture.sessionId,
       turnId: successorTurnId,
       content: { text: 'successor must extend the recovered durable tip' },
@@ -166,10 +178,10 @@ test('retry after a discarded turn.start response reuses the durable semantic ad
 test('startup recovery replays an admitted regenerate with its source lineage', async () => {
   await withExecutionRoot(async (fixture) => {
     const firstHost = await fixture.startHost();
-    const first = await connectClient(fixture.root, 'desktop');
+    const first = await connectClient(fixture.root);
     const sourceTurnId = randomUUID();
     const regeneratedTurnId = randomUUID();
-    await first.startTurn({
+    await first.request('turn.start', {
       sessionId: fixture.sessionId,
       turnId: sourceTurnId,
       content: quotedContent('recover this regeneration'),
@@ -183,7 +195,7 @@ test('startup recovery replays an admitted regenerate with its source lineage', 
       regeneratedTurnId,
     );
     const successorHost = await fixture.startHost();
-    const successor = await connectClient(fixture.root, 'tui');
+    const successor = await connectClient(fixture.root);
     const terminal = await waitForTerminalTurn(successor, fixture.sessionId, regeneratedTurnId);
     assert.equal(terminal.runId, admitted.runId);
     await successor.close();
@@ -192,19 +204,164 @@ test('startup recovery replays an admitted regenerate with its source lineage', 
     const ledger = await fixture.readTurn(regeneratedTurnId);
     assert.equal(ledger.runs.length, 1);
     assert.equal(ledger.userMessages.length, 1);
-    assert.equal(ledger.runs[0]?.parentTurnId, sourceTurnId);
-    assert.equal(ledger.runs[0]?.regeneratedFromTurnId, sourceTurnId);
+    assert.equal(ledger.runs[0]?.opening.lineage?.parentTurnId, sourceTurnId);
+    assert.equal(ledger.runs[0]?.opening.lineage?.regeneratedFromTurnId, sourceTurnId);
+  });
+});
+
+test('startup recovery materializes legacy terminal Root sources exactly once', async () => {
+  await withExecutionRoot(async (fixture) => {
+    const legacy = await fixture.seedLegacyRootWithoutSourceTranscripts();
+    assert.deepEqual(
+      (await fixture.readSessionUserMessages()).filter((message) =>
+        legacy.sources.some((source) => source.messageId === message.id),
+      ),
+      [],
+    );
+
+    const firstHost = await fixture.startHost();
+    await fixture.stopHost(firstHost);
+    assert.deepEqual(
+      (await fixture.readSessionUserMessages())
+        .filter((message) => legacy.sources.some((source) => source.messageId === message.id))
+        .map(({ id, turnId, ts, text }) => ({ id, turnId, ts, text })),
+      legacy.sources.map((source) => ({
+        id: source.messageId,
+        turnId: legacy.turnId,
+        ts: source.admittedAt,
+        text: source.content.text,
+      })),
+    );
+
+    const secondHost = await fixture.startHost();
+    await fixture.stopHost(secondHost);
+    assert.deepEqual(
+      (await fixture.readSessionUserMessages())
+        .filter((message) => legacy.sources.some((source) => source.messageId === message.id))
+        .map(({ id, turnId, ts, text }) => ({ id, turnId, ts, text })),
+      legacy.sources.map((source) => ({
+        id: source.messageId,
+        turnId: legacy.turnId,
+        ts: source.admittedAt,
+        text: source.content.text,
+      })),
+    );
+  });
+});
+
+test('startup recovery replays a legacy Root without a Run before materializing its sources', async () => {
+  await withExecutionRoot(async (fixture) => {
+    const legacy = await fixture.seedLegacyRootWithoutSourceTranscripts('missing');
+
+    const firstHost = await fixture.startHost();
+    await fixture.stopHost(firstHost);
+    const secondHost = await fixture.startHost();
+    await fixture.stopHost(secondHost);
+
+    assert.deepEqual(
+      (await fixture.readSessionUserMessages())
+        .filter((message) => legacy.sources.some((source) => source.messageId === message.id))
+        .map(({ id, turnId, ts, text }) => ({ id, turnId, ts, text })),
+      legacy.sources.map((source) => ({
+        id: source.messageId,
+        turnId: legacy.turnId,
+        ts: source.admittedAt,
+        text: source.content.text,
+      })),
+    );
+    const ledger = await fixture.readTurn(legacy.turnId);
+    assert.equal(ledger.runs.length, 1);
+    assert.equal(ledger.terminalEvents.length, 1);
+  });
+});
+
+test('startup recovery closes a legacy non-terminal Run before materializing its sources', async () => {
+  await withExecutionRoot(async (fixture) => {
+    const legacy = await fixture.seedLegacyRootWithoutSourceTranscripts('created');
+
+    const firstHost = await fixture.startHost();
+    await fixture.stopHost(firstHost);
+    const secondHost = await fixture.startHost();
+    await fixture.stopHost(secondHost);
+
+    assert.deepEqual(
+      (await fixture.readSessionUserMessages())
+        .filter((message) => legacy.sources.some((source) => source.messageId === message.id))
+        .map(({ id, turnId, ts, text }) => ({ id, turnId, ts, text })),
+      legacy.sources.map((source) => ({
+        id: source.messageId,
+        turnId: legacy.turnId,
+        ts: source.admittedAt,
+        text: source.content.text,
+      })),
+    );
+    const ledger = await fixture.readTurn(legacy.turnId);
+    assert.equal(ledger.runs.length, 1);
+    assert.equal(ledger.terminalEvents.length, 1);
+  });
+});
+
+test('startup recovery rejects an unproven legacy Root without creating its missing Run', async () => {
+  await withExecutionRoot(async (fixture) => {
+    const legacy = await fixture.seedLegacyRootWithoutSourceTranscripts('missing');
+    fixture.deleteRootSourceProof(legacy.sources[1].messageId);
+
+    await fixture.expectHostStartupFailure();
+    await fixture.assertOwnerAvailable();
+    assert.deepEqual(await fixture.readTurnRuns(legacy.turnId), []);
+    assert.deepEqual(
+      (await fixture.readSessionUserMessages()).filter((message) =>
+        legacy.sources.some((source) => source.messageId === message.id),
+      ),
+      [],
+    );
+  });
+});
+
+test('startup recovery rejects an unproven legacy non-terminal Run before closing it', async () => {
+  await withExecutionRoot(async (fixture) => {
+    const legacy = await fixture.seedLegacyRootWithoutSourceTranscripts('created');
+    fixture.deleteRootSourceProof(legacy.sources[1].messageId);
+
+    await fixture.expectHostStartupFailure();
+    await fixture.assertOwnerAvailable();
+    const ledger = await fixture.readTurn(legacy.turnId);
+    assert.equal(ledger.runs.length, 1);
+    assert.equal(ledger.runs[0]?.terminalEvent, undefined);
+    assert.equal(ledger.terminalEvents.length, 0);
+    assert.deepEqual(
+      (await fixture.readSessionUserMessages()).filter((message) =>
+        legacy.sources.some((source) => source.messageId === message.id),
+      ),
+      [],
+    );
+  });
+});
+
+test('startup recovery rejects a legacy terminal Root source without its durable receipt', async () => {
+  await withExecutionRoot(async (fixture) => {
+    const legacy = await fixture.seedLegacyRootWithoutSourceTranscripts();
+    fixture.deleteRootSourceProof(legacy.sources[1].messageId);
+
+    await fixture.expectHostStartupFailure();
+    await fixture.assertOwnerAvailable();
+    assert.deepEqual(
+      (await fixture.readSessionUserMessages()).filter((message) =>
+        legacy.sources.some((source) => source.messageId === message.id),
+      ),
+      [],
+    );
   });
 });
 
 test('a fresh quoted Turn preserves durable and Runtime handoff content', async () => {
   await withExecutionRoot(async (fixture) => {
     const host = await fixture.startHost();
-    const client = await connectClient(fixture.root, 'desktop');
+    const client = await connectClient(fixture.root);
     const turnId = randomUUID();
     const content = quotedContent('fresh quoted turn');
 
-    await client.startTurn({ sessionId: fixture.sessionId, turnId, content });
+    await client.request('turn.start', { sessionId: fixture.sessionId, turnId, content });
     await waitForTerminalTurn(client, fixture.sessionId, turnId);
     await client.close();
     await fixture.stopHost(host);
@@ -222,8 +379,8 @@ test('a fresh quoted Turn preserves durable and Runtime handoff content', async 
 test('same idle Message submit is connection-independent and starts one canonical root', async () => {
   await withExecutionRoot(async (fixture) => {
     const host = await fixture.startHost();
-    const first = await connectClient(fixture.root, 'desktop');
-    const second = await connectClient(fixture.root, 'tui');
+    const first = await connectClient(fixture.root);
+    const second = await connectClient(fixture.root);
     const messageId = randomUUID();
     const content = {
       text: '<context>canonical model input</context>',
@@ -279,10 +436,110 @@ test('same idle Message submit is connection-independent and starts one canonica
   });
 });
 
+test('a blocked idle Message submit leaves no durable transcript entry', async () => {
+  await withExecutionRoot(async (fixture) => {
+    const host = await fixture.startHost();
+    const client = await connectClient(fixture.root);
+    const messageId = randomUUID();
+    try {
+      // A Skill the Host cannot resolve is an outcome of admission, not a
+      // protocol failure: the submit answers `blocked` and no Turn is opened.
+      const result = await client.request('turn.message.submit', {
+        originHostEpoch: host.hostEpoch,
+        sessionId: fixture.sessionId,
+        messageId,
+        content: { text: '/skill:missing reject this submit' },
+        placement: 'current_turn',
+      });
+      assert.equal(result.disposition, 'blocked');
+      assert.ok(
+        result.disposition === 'blocked' && result.skillInvocation.failed.length > 0,
+        'the blocked outcome carries why the Skill could not be resolved',
+      );
+    } finally {
+      await client.close();
+      await fixture.stopHost(host);
+    }
+
+    assert.deepEqual(
+      (await fixture.readSessionUserMessages())
+        .filter((message) => message.id === messageId)
+        .map((message) => message.id),
+      [],
+    );
+  });
+});
+
+for (const kibibytes of [31, 32]) {
+  test(`an allowed ${kibibytes} KiB idle Message crosses the durable admission boundary`, async () => {
+    await withExecutionRoot(async (fixture) => {
+      const host = await fixture.startHost();
+      const client = await connectClient(fixture.root);
+      const messageId = randomUUID();
+      const text = 'x'.repeat(kibibytes * 1024);
+      try {
+        const started = await client.request('turn.message.submit', {
+          originHostEpoch: host.hostEpoch,
+          sessionId: fixture.sessionId,
+          messageId,
+          content: { text },
+          placement: 'current_turn',
+        });
+        assert.equal(started.disposition, 'turn_started');
+      } finally {
+        await client.close();
+        await fixture.stopHost(host);
+      }
+      assert.deepEqual(
+        (await fixture.readSessionUserMessages())
+          .filter((message) => message.id === messageId)
+          .map((message) => message.text),
+        [text],
+      );
+    });
+  });
+}
+
+for (const kibibytes of [49, 50]) {
+  test(`a ${kibibytes} KiB idle Message is rejected before durable admission`, async () => {
+    await withExecutionRoot(async (fixture) => {
+      const host = await fixture.startHost();
+      const client = await connectClient(fixture.root);
+      const messageId = randomUUID();
+      try {
+        await assert.rejects(
+          () =>
+            client.request('turn.message.submit', {
+              originHostEpoch: host.hostEpoch,
+              sessionId: fixture.sessionId,
+              messageId,
+              content: { text: 'x'.repeat(kibibytes * 1024) },
+              placement: 'current_turn',
+            }),
+          (error: unknown) =>
+            error instanceof Error &&
+            'code' in error &&
+            error.code === 'invalid_frame' &&
+            error.message === 'Invalid Message text',
+        );
+      } finally {
+        await client.close();
+        await fixture.stopHost(host);
+      }
+      assert.deepEqual(
+        (await fixture.readSessionUserMessages())
+          .filter((message) => message.id === messageId)
+          .map((message) => message.id),
+        [],
+      );
+    });
+  });
+}
+
 test('stale Session operations return not_found across the SQLite-backed UDS Host boundary', async () => {
   await withExecutionRoot(async (fixture) => {
     const host = await fixture.startHost();
-    const client = await connectClient(fixture.root, 'desktop');
+    const client = await connectClient(fixture.root);
     const staleSessionId = randomUUID();
     try {
       await assert.rejects(
@@ -309,7 +566,7 @@ test('stale Session operations return not_found across the SQLite-backed UDS Hos
       );
       await assert.rejects(
         () =>
-          client.startTurn({
+          client.request('turn.start', {
             sessionId: staleSessionId,
             turnId: randomUUID(),
             content: { text: 'stale start' },

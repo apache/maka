@@ -1,13 +1,39 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { join } from 'node:path';
+import type { DailyReviewArchive } from '@maka/core/daily-review';
+import type { E2eFixtureScenario } from '@maka/core/e2e-fixture';
 import type {
-  DailyReviewArchive,
-  LlmConnection,
-  E2eFixtureScenario,
-} from '@maka/core';
+  ConnectionCatalogEntryDraft,
+  ConnectionCatalogSnapshot,
+  ConnectionModel,
+} from '@maka/core/runtime-policy';
 import { createDefaultSettings } from '@maka/core/settings';
-import { createSqliteScheduledTaskStore } from '@maka/storage';
+import { openInteractiveDailyReviewAuthorityForWrite } from '@maka/storage/daily-review-authority';
+import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
+import { openInteractiveScheduledTaskStoreForWrite } from '@maka/storage/scheduled-task-store';
+import {
+  resolveStorageRoot,
+  tryAcquireInteractiveRootOwner,
+} from '@maka/storage/root-authority';
 import { writeJson } from './seed-helpers.js';
-import { createDailyReviewArchiveStore } from '../daily-review-archive-store.js';
 
 export async function writeSettings(
   workspaceRoot: string,
@@ -40,67 +66,128 @@ export async function writeSettings(
   await writeJson(join(workspaceRoot, 'settings.json'), settings);
 }
 
-export async function writeConnections(workspaceRoot: string, now: number, scenario: E2eFixtureScenario): Promise<void> {
-  const connections: LlmConnection[] = [
-    {
-      slug: 'zai-live',
-      name: 'Z.ai Live Fixture',
-      providerType: 'zai-coding-plan',
-      baseUrl: 'https://api.z.ai/api/coding/paas/v4',
-      defaultModel: 'glm-5.1',
-      enabled: true,
-      models: [
-        model('glm-4.5', { functionCalling: true }, 128_000),
-        model('glm-4.5-air', { functionCalling: true }, 128_000),
-        model('glm-4.6', { reasoning: true, functionCalling: true }, 200_000),
-        model('glm-4.7', { reasoning: true, functionCalling: true }, 200_000),
-        model('glm-5', { reasoning: true, functionCalling: true }, 200_000),
-        model('glm-5-turbo', { reasoning: true, functionCalling: true }, 200_000),
-        model('glm-5.1', { vision: true, reasoning: true, functionCalling: true }, 1_000_000),
-      ],
-      modelSource: 'fetched',
-      modelsFetchedAt: now - 5 * 60_000,
-      lastTestStatus: 'verified',
-      lastTestAt: new Date(now - 4 * 60_000).toISOString(),
-      lastTestMessage: '连接已验证',
-      createdAt: now - 3_600_000,
-      updatedAt: now - 4 * 60_000,
-    },
-    {
-      slug: 'empty-fetched',
-      name: 'Fetched Empty Fixture',
-      providerType: 'openai-compatible',
-      baseUrl: 'https://empty.example.test/v1',
-      defaultModel: 'empty-placeholder',
-      enabled: true,
-      models: [],
-      modelSource: 'fetched',
-      modelsFetchedAt: now - 15 * 60_000,
-      lastTestStatus: 'verified',
-      lastTestAt: new Date(now - 15 * 60_000).toISOString(),
-      lastTestMessage: '连接已验证',
-      createdAt: now - 3_400_000,
-      updatedAt: now - 15 * 60_000,
-    },
-  ];
-  const focusSlug = scenario === 'fetched-empty' ? 'empty-fetched' : null;
-  const ordered = focusSlug
-    ? [
-        ...connections.filter((connection) => connection.slug === focusSlug),
-        ...connections.filter((connection) => connection.slug !== focusSlug),
-      ]
-    : connections;
-  await writeJson(join(workspaceRoot, 'llm-connections.json'), {
-    defaultSlug: focusSlug ?? 'zai-live',
-    connections: ordered,
-  });
+const ZAI_FIXTURE_MODELS: readonly ConnectionModel[] = [
+  model('glm-4.5', { functionCalling: true }, 128_000),
+  model('glm-4.5-air', { functionCalling: true }, 128_000),
+  model('glm-4.6', { reasoning: true, functionCalling: true }, 200_000),
+  model('glm-4.7', { reasoning: true, functionCalling: true }, 200_000),
+  model('glm-5', { reasoning: true, functionCalling: true }, 200_000),
+  model('glm-5-turbo', { reasoning: true, functionCalling: true }, 200_000),
+  model('glm-5.1', { vision: true, reasoning: true, functionCalling: true }, 1_000_000),
+];
+
+export async function writeConnections(
+  workspaceRoot: string,
+  now: number,
+  scenario: E2eFixtureScenario,
+): Promise<void> {
+  const zaiLive: ConnectionCatalogEntryDraft = {
+    slug: 'zai-live',
+    name: 'Z.ai Live Fixture',
+    providerType: 'zai-coding-plan',
+    baseUrl: 'https://api.z.ai/api/coding/paas/v4',
+    enabled: true,
+    enabledModelIds: ZAI_FIXTURE_MODELS.map((item) => item.id),
+  };
+  const noModels: ConnectionCatalogEntryDraft = {
+    slug: 'no-models',
+    name: 'No Models Fixture',
+    providerType: 'openai-compatible',
+    baseUrl: 'https://empty.example.test/v1',
+    enabled: true,
+    enabledModelIds: [],
+  };
+  const drafts = scenario === 'settings-models' ? [noModels, zaiLive] : [zaiLive, noModels];
+  const capability = await resolveStorageRoot({ path: workspaceRoot, kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  if (!owner) throw new Error('Unable to acquire the connection catalog fixture root');
+  try {
+    const stores = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+    let revision = 0;
+    let defaultConnectionId: string | undefined;
+    for (const draft of drafts) {
+      const created = await stores.connectionCatalog.create({
+        expectedCatalogRevision: revision,
+        connection: draft,
+      });
+      if (created.kind !== 'committed') {
+        throw new Error(`Failed to seed ${draft.slug}: ${created.kind}`);
+      }
+      revision = created.snapshot.revision;
+      const connection = findFixtureConnection(created.snapshot, draft.slug);
+      if (draft.slug === 'zai-live' || scenario === 'settings-models') {
+        const credential = await stores.credentialVault.set({
+          locator: {
+            scope: 'connection',
+            connectionId: connection.connectionId,
+            kind: 'api_key',
+          },
+          expected: null,
+          secret: `fixture-key-${draft.slug}`,
+        });
+        if (credential.kind !== 'committed') {
+          throw new Error(`Failed to seed ${draft.slug} credential: ${credential.kind}`);
+        }
+      }
+      if (draft.slug !== 'zai-live') continue;
+
+      defaultConnectionId = connection.connectionId;
+      const modelFetch = await stores.operations.beginModelFetch(connection.connectionId);
+      if (modelFetch.kind !== 'ready') {
+        throw new Error(`Failed to start the zai-live model fixture: ${modelFetch.kind}`);
+      }
+      const modelInventory = await stores.operations.completeModelFetch(modelFetch.ticket, {
+        models: ZAI_FIXTURE_MODELS,
+        source: 'fetched',
+        fetchedAt: now - 5 * 60_000,
+      });
+      if (modelInventory.kind !== 'committed') {
+        throw new Error(`Failed to seed the zai-live model fixture: ${modelInventory.kind}`);
+      }
+      revision = modelInventory.snapshot.revision;
+
+      const connectionTest = await stores.operations.beginConnectionTest(
+        connection.connectionId,
+        'glm-5.1',
+      );
+      if (connectionTest.kind !== 'ready') {
+        throw new Error(`Failed to start the zai-live test fixture: ${connectionTest.kind}`);
+      }
+      const tested = await stores.operations.completeConnectionTest(connectionTest.ticket, {
+        status: 'verified',
+        checkedAt: new Date(now - 4 * 60_000).toISOString(),
+      });
+      if (tested.kind !== 'committed') {
+        throw new Error(`Failed to seed the zai-live test fixture: ${tested.kind}`);
+      }
+      revision = tested.snapshot.revision;
+    }
+    if (!defaultConnectionId) {
+      throw new Error('Failed to resolve the zai-live fixture connection id');
+    }
+    const defaulted = await stores.connectionCatalog.setDefaultTarget({
+      expectedCatalogRevision: revision,
+      target: { connectionId: defaultConnectionId, modelId: 'glm-5.1' },
+    });
+    if (defaulted.kind !== 'committed') {
+      throw new Error(`Failed to set the fixture default target: ${defaulted.kind}`);
+    }
+  } finally {
+    await owner.close();
+  }
+}
+
+function findFixtureConnection(snapshot: ConnectionCatalogSnapshot, slug: string) {
+  const connection = snapshot.connections.find((item) => item.slug === slug);
+  if (!connection) throw new Error(`Committed fixture connection is missing: ${slug}`);
+  return connection;
 }
 
 function model(
   id: string,
-  capabilities: NonNullable<LlmConnection['models']>[number]['capabilities'],
+  capabilities: NonNullable<ConnectionModel['capabilities']>,
   contextWindow: number,
-): NonNullable<LlmConnection['models']>[number] {
+): ConnectionModel {
   return { id, capabilities, contextWindow };
 }
 
@@ -114,7 +201,10 @@ export async function writeScheduledTasks(workspaceRoot: string, now: number): P
   // assertion in `scheduled-tasks.spec.ts` vary between runs. Seed one
   // explicit minute apart, oldest first, so 创建时间倒序 has a single answer.
   const createdAt = (index: number): number => now - (4 - index) * 60_000;
-  const store = createSqliteScheduledTaskStore(workspaceRoot);
+  const capability = await resolveStorageRoot({ path: workspaceRoot, kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  if (!owner) throw new Error('Unable to acquire the ScheduledTask fixture root');
+  const store = await openInteractiveScheduledTaskStoreForWrite(owner.lease);
   const create = (
     title: string,
     intentBody: string,
@@ -178,7 +268,7 @@ export async function writeScheduledTasks(workspaceRoot: string, now: number): P
     for (const [index, title] of [
       '每日站会前汇总阻塞项',
       '每月依赖许可证审计',
-      '季度收尾清点未归档会话',
+      '季度收尾清点未归档任务',
       '发布前跑一轮回归',
     ].entries()) {
       await create(
@@ -190,12 +280,13 @@ export async function writeScheduledTasks(workspaceRoot: string, now: number): P
     }
   } finally {
     store.close();
+    await owner.close();
   }
 }
 
 export async function writeDailyReviewArchives(workspaceRoot: string, now: number): Promise<void> {
-  const dayFromMs = Date.UTC(2026, 4, 21, 0, 0, 0);
-  const dayToMs = Date.UTC(2026, 4, 22, 0, 0, 0);
+  const dayFromMs = new Date(2026, 4, 21).getTime();
+  const dayToMs = new Date(2026, 4, 22).getTime();
   const daily: DailyReviewArchive = {
     id: '2026-05-21-1d',
     day: { fromMs: dayFromMs, toMs: dayToMs },
@@ -221,7 +312,7 @@ export async function writeDailyReviewArchives(workspaceRoot: string, now: numbe
   const deep: DailyReviewArchive = {
     ...daily,
     id: '2026-05-15-7d',
-    day: { fromMs: Date.UTC(2026, 4, 15, 0, 0, 0), toMs: dayToMs },
+    day: { fromMs: new Date(2026, 4, 15).getTime(), toMs: dayToMs },
     range: 7,
     generatedAt: now - 5 * 60_000,
     trigger: 'cron',
@@ -240,7 +331,18 @@ export async function writeDailyReviewArchives(workspaceRoot: string, now: numbe
       code: '下一步优先建立模块页 PageShell、SettingsActionRow 和 StatusPill primitives，再迁移 Daily Review、权限中心、计划任务和技能页。',
     },
   };
-  const store = createDailyReviewArchiveStore(workspaceRoot);
-  await store.putArchive(daily);
-  await store.putArchive(deep);
+  const capability = await resolveStorageRoot({ path: workspaceRoot, kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  if (!owner) throw new Error('Unable to acquire the Daily Review fixture root');
+  try {
+    const store = await openInteractiveDailyReviewAuthorityForWrite(owner.lease);
+    try {
+      await store.publishArchive(daily, 180);
+      await store.publishArchive(deep, 180);
+    } finally {
+      store.close();
+    }
+  } finally {
+    await owner.close();
+  }
 }

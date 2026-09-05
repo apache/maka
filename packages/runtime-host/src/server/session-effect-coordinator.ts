@@ -1,6 +1,29 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { createHash } from 'node:crypto';
+import type { MessageContent } from '@maka/core/events';
 import type { SessionHeader } from '@maka/core/session';
-import { cleanSessionRecapText, type RuntimeReadModelSessionView } from '@maka/runtime';
+import { DEFAULT_SESSION_NAME } from '@maka/core/session-name';
+import { cleanSessionRecapText } from '@maka/runtime/session-recap';
+import { fallbackSessionTitle, sessionTitleSource } from './session-title.js';
+import { type RuntimeReadModelSessionView } from '@maka/runtime/runtime-read-model';
 import {
   authenticateInteractiveArtifactStoreWriter,
   type InteractiveArtifactStoreWriter,
@@ -32,6 +55,12 @@ export interface HostSessionEffectCoordinatorInput {
   readonly sessions: SessionPresenceReader;
   readonly readSessionHeader: (sessionId: string) => Promise<SessionHeader>;
   readonly sessionAdmission: SessionAdmissionGate;
+  /** Names a Session only while it still carries the default name. */
+  readonly nameSessionIfUnnamed: (
+    sessionId: string,
+    title: string,
+  ) => Promise<SessionHeader | null>;
+  readonly onSessionNamed: (sessionId: string) => void;
   readonly acquireResidency: () => OperationResidency;
   readonly requestDrain: () => void;
 }
@@ -66,6 +95,11 @@ export class HostSessionEffectCoordinator {
   readonly #sessions: SessionPresenceReader;
   readonly #readSessionHeader: (sessionId: string) => Promise<SessionHeader>;
   readonly #sessionAdmission: SessionAdmissionGate;
+  readonly #nameSessionIfUnnamed: (
+    sessionId: string,
+    title: string,
+  ) => Promise<SessionHeader | null>;
+  readonly #onSessionNamed: (sessionId: string) => void;
   readonly #acquireResidency: () => OperationResidency;
   readonly #requestDrain: () => void;
   readonly #active = new Set<Promise<void>>();
@@ -82,25 +116,75 @@ export class HostSessionEffectCoordinator {
     this.#sessions = input.sessions;
     this.#readSessionHeader = input.readSessionHeader;
     this.#sessionAdmission = input.sessionAdmission;
+    this.#nameSessionIfUnnamed = input.nameSessionIfUnnamed;
+    this.#onSessionNamed = input.onSessionNamed;
     this.#acquireResidency = input.acquireResidency;
     this.#requestDrain = input.requestDrain;
   }
 
-  generateTitle(input: {
+  /**
+   * Names a Session from the root Message that opened its Turn. The Turn owns
+   * nothing here: the name is the only authority for "still unnamed", and an
+   * unreachable title model falls back to the Message's first line, so a
+   * Session that carried words is never left at the default name.
+   */
+  nameSessionFromRootMessage(input: {
     readonly sessionId: string;
-    readonly header: SessionHeader;
-    readonly sourceText: string;
-  }): Promise<string | undefined> {
-    if (!this.#accepting) return Promise.resolve(undefined);
+    readonly content: MessageContent;
+  }): void {
+    if (!this.#accepting) return;
+    const sourceText = sessionTitleSource(input.content);
+    if (!sourceText.trim()) return;
+    // One naming attempt per Session at a time: a queued Message can open its
+    // Turn while the first title call is still out, and the second call could
+    // only ever lose the write.
+    for (const titleSessionId of this.#titleAborts.values()) {
+      if (titleSessionId === input.sessionId) return;
+    }
     const residency = this.#acquireResidency();
     const abort = new AbortController();
     this.#titleAborts.set(abort, input.sessionId);
-    return this.#track(
-      this.#model.generateTitle({ ...input, abortSignal: abort.signal }).finally(() => {
+    void this.#track(
+      this.#nameSession(input.sessionId, sourceText, abort.signal).finally(() => {
         this.#titleAborts.delete(abort);
         residency.release();
       }),
     );
+  }
+
+  async #nameSession(
+    sessionId: string,
+    sourceText: string,
+    abortSignal: AbortSignal,
+  ): Promise<void> {
+    let generated: string | undefined;
+    try {
+      const header = await this.#readSessionHeader(sessionId);
+      if (header.titleIsManual || header.name !== DEFAULT_SESSION_NAME) return;
+      generated = await this.#model.generateTitle({
+        sessionId,
+        header,
+        sourceText,
+        abortSignal,
+      });
+    } catch {
+      // An unreachable title model is not a Session failure; the fallback name
+      // below still beats leaving the Session unnamed.
+    }
+    // Shutdown aborts the call, and an abort retires the effect rather than
+    // downgrading it: the next root Message names the Session.
+    if (abortSignal.aborted) return;
+    const title = generated ?? fallbackSessionTitle(sourceText);
+    if (!title) return;
+    try {
+      // Naming answers no caller, so nothing here is a Host-level outcome: a
+      // racing rename wins the conditional write, and a store that cannot
+      // answer leaves the Session unnamed for the next root Message to retry.
+      if (!(await this.#nameSessionIfUnnamed(sessionId, title))) return;
+      this.#onSessionNamed(sessionId);
+    } catch {
+      // The Session keeps the name it already had.
+    }
   }
 
   hasLiveSessionState(sessionId: string): boolean {
@@ -191,7 +275,7 @@ export class HostSessionEffectCoordinator {
       }
 
       const header = await this.#readSessionHeader(input.sessionId);
-      if (header.isArchived || header.status === 'archived') {
+      if (header.isArchived) {
         return settledRecap(
           recapFailure('session_archived', 'Archived Session cannot generate a recap'),
         );

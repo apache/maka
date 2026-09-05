@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * Onboarding service — main-process glue between the @maka/core
  * onboarding contract and the desktop stores/IPC (PR110b).
@@ -10,9 +29,8 @@
  *      and OAuth-subscription connections (Claude/Codex), and MUST be
  *      read-only — it must never refresh an OAuth token or otherwise
  *      mutate credential state just because onboarding status was
- *      read. See `hasConnectionSecret` in main.ts for the production
- *      wiring and why it deliberately does NOT reuse the send-path's
- *      refreshing `resolveConnectionSecret`.
+ *      read. Production wiring queries the Runtime Host credential
+ *      projection without resolving or refreshing credential material.
  *   3. SessionStore.list() (the runtime layer's listSessions handles
  *      this for us; we pass it in as a callback)
  *   4. SettingsStore.get() for milestones (already sanitized by
@@ -27,20 +45,22 @@
  * the SettingsStore.
  */
 
+import { collapseSessionRevisions } from '@maka/core/session-revisions';
+
 import {
-  collapseSessionRevisions,
   deriveOnboardingState,
   hasSettledInitialOnboarding,
   ONBOARDING_MILESTONE_IDS,
-  projectSessionSendOutcome,
-  type ChatModelChoice,
   type OnboardingMilestone,
   type OnboardingMilestoneId,
   type OnboardingState,
-  type SessionSummary,
-  type SessionSendProjection,
-} from '@maka/core';
-import { buildChatModelChoices } from '@maka/core/chat-model-choice';
+} from '@maka/core/onboarding';
+
+import { projectSessionSendOutcome, type SessionSendProjection } from '@maka/core/session-send-projection';
+
+import { type SessionSummary } from '@maka/core/session';
+import { buildChatModelChoices, type ChatModelChoice } from '@maka/core/chat-model-choice';
+import type { ProjectedLlmConnection } from '@maka/core/llm-connections';
 import type { LlmConnection } from '@maka/core/llm-connections';
 
 export interface OnboardingSnapshot {
@@ -51,15 +71,15 @@ export interface OnboardingSnapshot {
    * without a separate `sessions:list` IPC.
    */
   sessions: SessionSummary[];
-  /** Connection list — bundled to avoid a separate `connections:list` + `getDefault` IPC. */
-  connections: LlmConnection[];
+  /** Default Host connection projection used to seed the shell. */
+  connections: ProjectedLlmConnection[];
   defaultSlug: string | null;
   chatModelChoices: ChatModelChoice[];
   sessionSendOutcomes: Record<string, SessionSendProjection>;
 }
 
 export interface OnboardingServiceDeps {
-  listConnections(): Promise<LlmConnection[]>;
+  listConnections(): Promise<ProjectedLlmConnection[]>;
   getDefaultSlug(): Promise<string | null>;
   listSessions(): Promise<SessionSummary[]>;
   getMilestones(): Promise<OnboardingMilestone[]>;
@@ -67,7 +87,6 @@ export interface OnboardingServiceDeps {
     id: OnboardingMilestoneId,
     status: 'completed' | 'skipped',
   ): Promise<OnboardingMilestone[]>;
-  clearMilestone(id: OnboardingMilestoneId): Promise<OnboardingMilestone[]>;
   /**
    * Whether `connection` has a usable credential — an API key OR (for
    * OAuth-subscription providers) a stored OAuth token. MUST be
@@ -83,7 +102,6 @@ export interface OnboardingService {
     id: unknown,
     status: unknown,
   ): Promise<OnboardingSnapshot>;
-  clearMilestone(id: unknown): Promise<OnboardingSnapshot>;
 }
 
 /**
@@ -172,36 +190,6 @@ export function createOnboardingService(deps: OnboardingServiceDeps): Onboarding
       });
       return buildSnapshot(state, milestones, sessions, connections, defaultSlug, secrets);
     },
-
-    async clearMilestone(id: unknown): Promise<OnboardingSnapshot> {
-      if (typeof id !== 'string' || !isOnboardingMilestoneId(id)) {
-        throw new Error('INVALID_MILESTONE_ID');
-      }
-      const milestones = await deps.clearMilestone(id);
-      const [connections, defaultSlug, sessions] = await Promise.all([
-        deps.listConnections(),
-        deps.getDefaultSlug(),
-        deps.listSessions(),
-      ]);
-      const secretEntries = await Promise.all(
-        connections.map(async (connection) => {
-          try {
-            return [connection.slug, await deps.hasCredential(connection)] as const;
-          } catch {
-            return [connection.slug, false] as const;
-          }
-        }),
-      );
-      const secrets: Record<string, boolean> = Object.fromEntries(secretEntries);
-      const logicalSessions = collapseSessionRevisions(sessions);
-      const state = deriveOnboardingState({
-        connections,
-        defaultSlug: defaultSlug ?? undefined,
-        sessions: logicalSessions,
-        secrets,
-      });
-      return buildSnapshot(state, milestones, sessions, connections, defaultSlug, secrets);
-    },
   };
 }
 
@@ -209,7 +197,7 @@ function buildSnapshot(
   state: OnboardingState,
   milestones: OnboardingMilestone[],
   sessions: SessionSummary[],
-  connections: LlmConnection[],
+  connections: ProjectedLlmConnection[],
   defaultSlug: string | null,
   secrets: Readonly<Record<string, boolean>>,
 ): OnboardingSnapshot {
@@ -226,7 +214,6 @@ function buildSnapshot(
         projectSessionSendOutcome({
           session,
           connections,
-          defaultSlug,
           hasSecret: (slug) => secrets[slug] ?? false,
         }),
       ]),
@@ -236,64 +223,4 @@ function buildSnapshot(
 
 function isOnboardingMilestoneId(value: string): value is OnboardingMilestoneId {
   return (ONBOARDING_MILESTONE_IDS as readonly string[]).includes(value);
-}
-
-/**
- * Return a generalized error class string ('error_name' or 'unknown')
- * suitable for dev logs. We never log the underlying error message
- * because it might contain credential bytes / paths / etc.
- */
-/**
- * Bind helpers that wire the live `SettingsStore` + `ConnectionStore`
- * + credential store to `OnboardingServiceDeps`. Exposed separately so
- * tests can mix-and-match: real settings store + fake credential store,
- * etc.
- */
-export function bindOnboardingDeps(input: {
-  settingsStore: {
-    get(): Promise<{ onboarding: { milestones: OnboardingMilestone[] } }>;
-    upsertOnboardingMilestone(
-      id: OnboardingMilestoneId,
-      status: 'completed' | 'skipped',
-    ): Promise<OnboardingMilestone[]>;
-    clearOnboardingMilestone(id: OnboardingMilestoneId): Promise<OnboardingMilestone[]>;
-  };
-  connectionStore: {
-    list(): Promise<LlmConnection[]>;
-    getDefault(): Promise<string | null>;
-  };
-  /**
-   * Read-only credential-presence check, covering both API-key
-   * connections (credential store) and OAuth-subscription connections
-   * (claude-subscription / openai-codex stored tokens). Callers
-   * must pass a resolver that NEVER refreshes an OAuth token or
-   * otherwise mutates credential state — see `hasConnectionSecret` in
-   * main.ts, which deliberately does not reuse the send-path's
-   * refreshing `resolveConnectionSecret`. A resolver that only checks
-   * the API-key credential store makes every OAuth-subscription
-   * connection look like it's missing credentials, even when it's the
-   * verified default.
-   */
-  hasCredential(connection: LlmConnection): Promise<boolean>;
-  listSessions(): Promise<SessionSummary[]>;
-}): OnboardingServiceDeps {
-  return {
-    listConnections: () => input.connectionStore.list(),
-    getDefaultSlug: () => input.connectionStore.getDefault(),
-    listSessions: () => input.listSessions(),
-    getMilestones: async () => (await input.settingsStore.get()).onboarding.milestones,
-    upsertMilestone: (id, status) => input.settingsStore.upsertOnboardingMilestone(id, status),
-    clearMilestone: (id) => input.settingsStore.clearOnboardingMilestone(id),
-    hasCredential: async (connection) => {
-      try {
-        return await input.hasCredential(connection);
-      } catch (error) {
-        console.warn(
-          `[onboarding] failed to read credential for ${connection.slug}; treating as missing.`,
-          error instanceof Error && error.name ? error.name : 'unknown',
-        );
-        return false;
-      }
-    },
-  };
 }

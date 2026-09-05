@@ -1,23 +1,35 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import type {
-  AgentRunEvent,
-  AgentRunEventType,
-  AgentRunHeader,
-  EmittedAgentRunEvent,
-  RuntimeEvent,
-} from '@maka/core';
-import { createSessionStore } from '@maka/storage';
-import { createSqliteAgentRunStore, createWorkspaceRuntimeStore } from '@maka/storage';
-import {
-  inspectAgentRunDocument,
-  inspectSessionDocument,
-  renderAgentRunInspectTree,
-  renderSessionInspectTree,
-} from '../execution-inspect.js';
+import type { AgentRunEvent, AgentRunEventType, EmittedAgentRunEvent } from '@maka/core/agent-run';
+import { buildInvocationOpenedEvent } from '@maka/core/runtime-invocation';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
+import { createSessionStore } from '@maka/storage/session-store';
+import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
+import { createWorkspaceRuntimeStore } from '@maka/storage/runtime-event-persistence';
+import { inspectAgentRunDocument, renderAgentRunInspectTree } from '../execution-inspect.js';
+import { testInvocationOpening } from './invocation-fixture.js';
 
 describe('versioned execution inspect documents', () => {
   test('reports unknown tool outcomes without copying Runtime payloads', async () => {
@@ -27,14 +39,16 @@ describe('versioned execution inspect documents', () => {
       const runtimeStore = createWorkspaceRuntimeStore(root);
       const session = await sessionStore.create({
         cwd: '/tmp/workspace',
-        backend: 'fake',
         llmConnectionSlug: 'fake',
         model: 'fake-model',
         permissionMode: 'ask',
       });
-      const header = runHeader(session.id);
-      await runStore.createRun(header);
-      await runStore.appendEvent(session.id, RUN_ID, runEvent(session.id, 'run_completed'));
+      await runtimeStore.appendRuntimeEvent(session.id, RUN_ID, openingEvent(session.id));
+      await runStore.appendEvent(
+        session.id,
+        RUN_ID,
+        runEvent(session.id, 'model_stream_completed'),
+      );
       await runtimeStore.appendRuntimeEvent(
         session.id,
         RUN_ID,
@@ -73,7 +87,9 @@ describe('versioned execution inspect documents', () => {
           eventId: 'call',
         },
       ]);
-      assert.equal(document.sources.runtimeCoverage?.highWater.sequence, 1);
+      // The opening fact is the run's first runtime event, so the call and the
+      // terminal event that follow it sit at sequences 1 and 2.
+      assert.equal(document.sources.runtimeCoverage?.highWater.sequence, 2);
       assert.equal(
         document.diagnostics.some((item) => item.code === 'tool_response_missing'),
         true,
@@ -87,79 +103,28 @@ describe('versioned execution inspect documents', () => {
       );
     });
   });
-
-  test('projects a Session as bounded AgentRun documents without reading messages', async () => {
-    await withWorkspace(async (root) => {
-      const sessionStore = createSessionStore(root);
-      const runStore = createSqliteAgentRunStore(root);
-      const runtimeStore = createWorkspaceRuntimeStore(root);
-      const session = await sessionStore.create({
-        cwd: '/tmp/workspace',
-        name: 'Inspectable session',
-        backend: 'fake',
-        llmConnectionSlug: 'fake',
-        model: 'fake-model',
-        permissionMode: 'ask',
-        revisionRootSessionId: 'root-session',
-        revisionParentSessionId: 'previous-version',
-        revisionOfTurnId: 'turn-edited',
-        revisionIndex: 2,
-        revisionState: 'committed',
-      });
-      const header = runHeader(session.id);
-      await runStore.createRun(header);
-      await runStore.appendEvent(session.id, RUN_ID, runEvent(session.id, 'run_completed'));
-      await runtimeStore.appendRuntimeEvent(
-        session.id,
-        RUN_ID,
-        runtimeEvent(session.id, 'terminal', {
-          role: 'system',
-          author: 'system',
-          status: 'completed',
-          actions: { endInvocation: true },
-        }),
-      );
-
-      const document = await inspectSessionDocument(
-        { readHeader: (id) => sessionStore.readHeaderSnapshot(id) },
-        runStore,
-        runtimeStore,
-        session.id,
-      );
-
-      assert.equal(document.schemaVersion, 'maka.session_inspect.v1');
-      assert.equal(document.session.name, 'Inspectable session');
-      assert.equal(document.session.revisionRootSessionId, 'root-session');
-      assert.equal(document.session.revisionParentSessionId, 'previous-version');
-      assert.equal(document.session.revisionOfTurnId, 'turn-edited');
-      assert.equal(document.session.revisionIndex, 2);
-      assert.equal(document.session.revisionState, 'committed');
-      assert.equal(document.agentRuns[0]?.agentRun.agentRunId, RUN_ID);
-      assert.match(renderSessionInspectTree(document), /Runtime Events runtime_event:run-1 0–0/);
-    });
-  });
 });
 
 const RUN_ID = 'run-1';
 const TURN_ID = 'turn-1';
 const TS = 1_800_000_000_000;
 
-function runHeader(sessionId: string): AgentRunHeader {
-  return {
-    runId: RUN_ID,
-    invocationId: 'invocation-1',
-    sessionId,
-    turnId: TURN_ID,
-    status: 'completed',
-    backendKind: 'fake',
-    llmConnectionSlug: 'fake',
-    modelId: 'fake-model',
-    cwd: '/tmp/workspace',
-    permissionMode: 'ask',
-    createdAt: TS,
-    updatedAt: TS + 1,
-    completedAt: TS + 1,
-  };
+function openingEvent(sessionId: string) {
+  return buildInvocationOpenedEvent({
+    id: 'rt-open',
+    run: { sessionId, invocationId: 'invocation-1', runId: RUN_ID, turnId: TURN_ID },
+    openedAt: TS,
+    opening: testInvocationOpening({
+      route: {
+        provenance: 'runtime',
+        backendKind: 'fake',
+        llmConnectionId: 'fake-connection',
+        llmConnectionSlug: 'fake',
+        modelId: 'fake-model',
+      },
+      configuration: { cwd: '/tmp/workspace' },
+    }),
+  });
 }
 
 function runEvent(sessionId: string, type: AgentRunEventType): EmittedAgentRunEvent {

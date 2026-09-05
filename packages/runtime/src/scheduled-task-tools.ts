@@ -1,7 +1,26 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * Agent tool for the unified ScheduledTask catalog.
  *
- * Agent-facing access to the Desktop-owned ScheduledTask catalog.
+ * Agent-facing access to the Runtime Host-owned ScheduledTask catalog.
  */
 
 import { z } from 'zod';
@@ -16,8 +35,8 @@ import {
 import type { MakaTool } from './tool-runtime.js';
 
 export const SCHEDULED_TASK_TOOL_NAME = 'ScheduledTask';
-export const SCHEDULED_TASK_AUTHORITY_SERVICE_ID = 'maka_scheduled_task_authority';
-export const SCHEDULED_TASK_AUTHORITY_SERVICE_VERSION = '1';
+export const SCHEDULED_TASK_NATIVE_EFFECT_SERVICE_ID = 'maka_scheduled_task_native_effect';
+export const SCHEDULED_TASK_NATIVE_EFFECT_SERVICE_VERSION = '1';
 
 export interface ScheduledTaskToolAuthority {
   create(input: {
@@ -27,14 +46,14 @@ export interface ScheduledTaskToolAuthority {
       | { kind: 'once'; runAt: number }
       | { kind: 'interval'; everySeconds: number; startAt?: number }
       | { kind: 'cron'; expression: string; startAt?: number };
-    effect: 'agent_run' | 'notify_local';
+    effect: 'session_resume' | 'agent_run' | 'notify_local';
     sessionId: string;
     maxFires?: number;
   }): Promise<ScheduledTask | { error: string }>;
-  list(sessionId: string): Promise<readonly ScheduledTask[]>;
-  pause(id: string, sessionId: string): Promise<ScheduledTask | { error: string }>;
-  resume(id: string, sessionId: string): Promise<ScheduledTask | { error: string }>;
-  remove(id: string, sessionId: string): Promise<{ ok: true } | { error: string }>;
+  list(): Promise<readonly ScheduledTask[]>;
+  pause(id: string): Promise<ScheduledTask | { error: string }>;
+  resume(id: string): Promise<ScheduledTask | { error: string }>;
+  remove(id: string): Promise<{ ok: true } | { error: string }>;
 }
 
 const scheduleSchema = z.union([
@@ -68,10 +87,10 @@ const schema = z.object({
     .describe('[create] Work description or agent prompt to run when due'),
   schedule: scheduleSchema.optional(),
   effect: z
-    .enum(['agent_run', 'notify_local'])
+    .enum(['session_resume', 'agent_run', 'notify_local'])
     .optional()
     .describe(
-      '[create] agent_run (default) starts a fresh agent session; notify_local only shows a local notification',
+      '[create] session_resume (default) resumes this conversation; agent_run starts a fresh session; notify_local only shows a local notification',
     ),
   id: z.string().min(1).optional().describe('[pause|resume|delete] task id'),
   maxFires: z.number().int().min(1).max(10_000).optional(),
@@ -82,16 +101,15 @@ export function buildScheduledTaskTool(deps: { authority: ScheduledTaskToolAutho
     name: SCHEDULED_TASK_TOOL_NAME,
     displayName: 'ScheduledTask',
     description:
-      'Create and manage workspace scheduled tasks (定时任务). ' +
-      'Use for standalone recurring/one-shot work that must appear in the desktop Scheduled tasks page. ' +
-      'Default effect agent_run starts a fresh session with intentBody when due. ' +
-      'For session-internal polling use Automation instead.',
+      'Create and manage global scheduled tasks (定时任务). ' +
+      'Use for every recurring or one-shot task. All tasks appear in the desktop Scheduled tasks page. ' +
+      'The default session_resume effect continues this conversation; use agent_run for independent work.',
     parameters: schema,
     impl: async (raw, ctx) => {
       const input = schema.parse(raw);
       const sessionId = ctx.sessionId;
       if (input.mode === 'list') {
-        const tasks = await deps.authority.list(sessionId);
+        const tasks = await deps.authority.list();
         if (tasks.length === 0) return 'No scheduled tasks.';
         return tasks
           .map(
@@ -108,7 +126,7 @@ export function buildScheduledTaskTool(deps: { authority: ScheduledTaskToolAutho
           title: input.title,
           intentBody: input.intentBody,
           schedule: input.schedule,
-          effect: input.effect ?? 'agent_run',
+          effect: input.effect ?? 'session_resume',
           sessionId,
           ...(input.maxFires !== undefined ? { maxFires: input.maxFires } : {}),
         });
@@ -117,16 +135,16 @@ export function buildScheduledTaskTool(deps: { authority: ScheduledTaskToolAutho
       }
       if (!input.id) return `${input.mode} requires id`;
       if (input.mode === 'pause') {
-        const result = await deps.authority.pause(input.id, sessionId);
+        const result = await deps.authority.pause(input.id);
         if ('error' in result) return result.error;
         return `Paused ${result.title} (${result.id})`;
       }
       if (input.mode === 'resume') {
-        const result = await deps.authority.resume(input.id, sessionId);
+        const result = await deps.authority.resume(input.id);
         if ('error' in result) return result.error;
         return `Resumed ${result.title} (${result.id})`;
       }
-      const result = await deps.authority.remove(input.id, sessionId);
+      const result = await deps.authority.remove(input.id);
       if ('error' in result) return result.error;
       return `Deleted scheduled task ${input.id}`;
     },
@@ -141,7 +159,7 @@ export function buildAgentScheduledTaskCreatePayload(input: {
     | { kind: 'once'; runAt: number }
     | { kind: 'interval'; everySeconds: number; startAt?: number }
     | { kind: 'cron'; expression: string; startAt?: number };
-  effect: 'agent_run' | 'notify_local';
+  effect: 'session_resume' | 'agent_run' | 'notify_local';
   sessionId: string;
   execution?: ScheduledTaskExecutionTemplate;
   maxFires?: number;
@@ -159,6 +177,9 @@ export function buildAgentScheduledTaskCreatePayload(input: {
   const now = input.now ?? Date.now();
   if (input.effect === 'agent_run' && !input.execution) {
     return { error: 'agent_run requires a frozen execution template from the creator session' };
+  }
+  if (input.effect === 'agent_run' && !input.execution?.llmConnectionId) {
+    return { error: 'agent_run requires an immutable model connection identity' };
   }
   const schedule =
     input.schedule.kind === 'once'
@@ -180,6 +201,16 @@ export function buildAgentScheduledTaskCreatePayload(input: {
       intentBody: input.intentBody,
       schedule,
       effect: { kind: 'agent_run', execution: input.execution! },
+      createdBy: { kind: 'agent', sessionId: input.sessionId },
+      ...(input.maxFires !== undefined ? { maxFires: input.maxFires } : {}),
+    };
+  }
+  if (input.effect === 'session_resume') {
+    return {
+      title: input.title,
+      intentBody: input.intentBody,
+      schedule,
+      effect: { kind: 'session_resume', sessionId: input.sessionId },
       createdBy: { kind: 'agent', sessionId: input.sessionId },
       ...(input.maxFires !== undefined ? { maxFires: input.maxFires } : {}),
     };

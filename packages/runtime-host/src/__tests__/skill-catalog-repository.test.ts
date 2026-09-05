@@ -1,19 +1,37 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, test } from 'node:test';
+import { promisify } from 'node:util';
 import {
   BUNDLED_SKILL_CATALOG,
   buildStarterSkillTemplate,
   createManagedSkillLock,
-} from '@maka/runtime';
-import {
-  decodeHostFrame,
-  isSkillCatalogProjectRootLexicallyAbsolute,
-  RuntimeHostProtocolError,
-} from '../protocol/index.js';
+} from '@maka/runtime/skills';
+import { decodeHostFrame, isSkillCatalogProjectRootLexicallyAbsolute } from '../protocol/index.js';
 import type {
   SkillCatalogGovernanceItem,
   SkillCatalogQueryResult,
@@ -31,6 +49,7 @@ import {
 } from '../server/skill-catalog-transaction.js';
 
 const roots = new Set<string>();
+const execFileAsync = promisify(execFile);
 
 afterEach(async () => {
   await Promise.all([...roots].map((root) => rm(root, { recursive: true, force: true })));
@@ -186,6 +205,46 @@ test('governance context status contains structural facts without synthetic budg
   }
 });
 
+test('removed bundled sources lose provenance trust without disabling the local copy', async () => {
+  const fixture = await createFixture();
+  const id = 'retired-bundled-skill';
+  const content = skillBody('Retired Bundled Skill', 'installed by an older Maka release');
+  const skillDirectory = await createSkill(join(fixture.root, 'skills'), id, content);
+  await writeFile(
+    join(skillDirectory, 'skill.lock.json'),
+    `${JSON.stringify({
+      schemaVersion: 1,
+      id,
+      sourceType: 'bundled',
+      sourceName: 'maka-bundled',
+      sourceVersion: '1',
+      contentSha256: sha256(content),
+      installedAt: '2026-07-01T00:00:00.000Z',
+    })}\n`,
+  );
+  const repository = fixture.repository();
+
+  const governance = await start(repository, fixture.project, 'governance');
+  const installed = governanceItem(governance, `workspace:legacy:${id}`);
+  assert.equal(installed.validationStatus, 'metadata_error');
+  assert.deepEqual(installed.validationCodes, ['unsupported_schema']);
+  assert.equal(installed.runtimeStatus, 'enabled');
+  assert.equal(installed.enabled, true);
+
+  const invocable = await repository.queryInvocable(
+    { kind: 'start' },
+    { projectRoot: fixture.project },
+    { toolNames: new Set(['Read']) },
+  );
+  assert.equal(invocable.kind, 'page');
+  if (invocable.kind !== 'page') return;
+  assert.deepEqual(
+    invocable.items.map((item) => item.id),
+    [id],
+  );
+  assert.equal(await readFile(join(skillDirectory, 'SKILL.md'), 'utf8'), content);
+});
+
 test('bounds oversized metadata with an explicit diagnostic and encodable mutation result', async () => {
   const fixture = await createFixture();
   const sourceId = 'oversized-metadata';
@@ -252,183 +311,6 @@ test('external project sources are read-only while Data Root preferences use dur
   assert.match(await readFile(join(skillPath, 'SKILL.md'), 'utf8'), /External/);
 });
 
-test('v1 snapshots use effective migration facts and same-value mutations persist schema v2', async () => {
-  const fixture = await createFixture();
-  await createSkill(
-    join(fixture.project, '.maka', 'skills'),
-    'external',
-    skillBody('External', 'migration target'),
-  );
-  await mkdir(join(fixture.root, '.maka'), { recursive: true });
-  const statePath = join(fixture.root, '.maka', 'skills-state.json');
-  const v1 = `${JSON.stringify({
-    schemaVersion: 1,
-    skills: { external: { enabled: false } },
-  })}\n`;
-  await writeFile(statePath, v1);
-  const repository = fixture.repository();
-  const v1Page = await start(repository, fixture.project, 'governance');
-  assert.equal(governanceItem(v1Page, 'project:maka:external').needsReview, false);
-
-  await writeFile(
-    statePath,
-    stateFile('project:maka:external', false, false, '2026-01-01T00:00:00.000Z'),
-  );
-  const v2Page = await start(repository, fixture.project, 'governance');
-  assert.equal(v2Page.revision, v1Page.revision);
-
-  await writeFile(statePath, v1);
-  const migrationPage = await start(repository, fixture.project, 'governance');
-  const migrated = await repository.mutate({
-    expectedRevision: migrationPage.revision,
-    mutation: { kind: 'set_enabled', ref: 'project:maka:external', enabled: false },
-  });
-  assert.equal(migrated.kind, 'committed');
-  const durable = JSON.parse(await readFile(statePath, 'utf8')) as {
-    schemaVersion: number;
-    skills: Record<string, { enabled: boolean }>;
-  };
-  assert.equal(durable.schemaVersion, 2);
-  assert.equal(durable.skills['project:maka:external']?.enabled, false);
-  assert.equal('external' in durable.skills, false);
-});
-
-test('v1 ambiguous preferences project effective needs-review state', async () => {
-  const fixture = await createFixture();
-  await createSkill(
-    join(fixture.project, '.maka', 'skills'),
-    'shared',
-    skillBody('Project Shared', 'project'),
-  );
-  await createSkill(
-    join(fixture.root, 'skills'),
-    'shared',
-    skillBody('Workspace Shared', 'workspace'),
-  );
-  await mkdir(join(fixture.root, '.maka'), { recursive: true });
-  await writeFile(
-    join(fixture.root, '.maka', 'skills-state.json'),
-    `${JSON.stringify({
-      schemaVersion: 1,
-      skills: { shared: { enabled: false } },
-    })}\n`,
-  );
-
-  const page = await start(fixture.repository(), fixture.project, 'governance');
-  assert.equal(governanceItem(page, 'project:maka:shared').needsReview, true);
-  assert.equal(governanceItem(page, 'workspace:legacy:shared').needsReview, true);
-});
-
-test('v1 case-only duplicates share legacy defaults and clear review through explicit refs', async () => {
-  const fixture = await createFixture();
-  await createSkill(
-    join(fixture.project, '.maka', 'skills'),
-    'Shared',
-    skillBody('Project Shared', 'project'),
-  );
-  await createSkill(
-    join(fixture.root, 'skills'),
-    'shared',
-    skillBody('Workspace Shared', 'workspace'),
-  );
-  await mkdir(join(fixture.root, '.maka'), { recursive: true });
-  const statePath = join(fixture.root, '.maka', 'skills-state.json');
-  await writeFile(
-    statePath,
-    `${JSON.stringify({
-      schemaVersion: 1,
-      skills: { Shared: { enabled: false } },
-    })}\n`,
-  );
-  const repository = fixture.repository();
-  const initial = await start(repository, fixture.project, 'governance');
-  const projectSkill = governanceItem(initial, 'project:maka:Shared');
-  const workspaceSkill = governanceItem(initial, 'workspace:legacy:shared');
-  assert.equal(projectSkill.enabled, false);
-  assert.equal(workspaceSkill.enabled, false);
-  assert.equal(projectSkill.needsReview, true);
-  assert.equal(workspaceSkill.needsReview, true);
-  const initialModel = await repository.readCanonicalModelInventory({
-    projectRoot: fixture.project,
-  });
-  assert.equal(initialModel.inventory.find((skill) => skill.id === 'Shared')?.enabled, false);
-  assert.equal(initialModel.inventory.find((skill) => skill.id === 'shared')?.enabled, false);
-
-  const first = await repository.mutate({
-    expectedRevision: initial.revision,
-    mutation: { kind: 'set_enabled', ref: projectSkill.ref, enabled: false },
-  });
-  assert.equal(first.kind, 'committed');
-  if (first.kind !== 'committed') return;
-  assert.equal(first.entry?.needsReview, true);
-
-  const second = await repository.mutate({
-    expectedRevision: first.revision,
-    mutation: { kind: 'set_enabled', ref: workspaceSkill.ref, enabled: false },
-  });
-  assert.equal(second.kind, 'committed');
-  if (second.kind !== 'committed') return;
-  assert.equal(second.entry?.needsReview, false);
-  const durable = JSON.parse(await readFile(statePath, 'utf8')) as {
-    skills: Record<string, { enabled: boolean }>;
-    migration?: { needsReview: string[] };
-  };
-  assert.deepEqual(Object.keys(durable.skills).sort(), [
-    'project:maka:Shared',
-    'workspace:legacy:shared',
-  ]);
-  assert.equal(durable.migration, undefined);
-});
-
-test('a zero-match v1 preference persisted by Host enters review on future case-only scopes', async () => {
-  const fixture = await createFixture();
-  await createSkill(
-    join(fixture.project, '.maka', 'skills'),
-    'anchor',
-    skillBody('Anchor', 'preference mutation target'),
-  );
-  await mkdir(join(fixture.root, '.maka'), { recursive: true });
-  const statePath = join(fixture.root, '.maka', 'skills-state.json');
-  await writeFile(
-    statePath,
-    `${JSON.stringify({
-      schemaVersion: 1,
-      skills: { Future: { enabled: false } },
-    })}\n`,
-  );
-  const repository = fixture.repository();
-  const initial = await start(repository, fixture.project, 'governance');
-  const persisted = await repository.mutate({
-    expectedRevision: initial.revision,
-    mutation: { kind: 'set_pinned', ref: 'project:maka:anchor', pinned: true },
-  });
-  assert.equal(persisted.kind, 'committed');
-  const durable = JSON.parse(await readFile(statePath, 'utf8')) as {
-    schemaVersion: number;
-    skills: Record<string, { enabled: boolean }>;
-  };
-  assert.equal(durable.schemaVersion, 2);
-  assert.equal(durable.skills.Future?.enabled, false);
-
-  await createSkill(
-    join(fixture.project, '.maka', 'skills'),
-    'FUTURE',
-    skillBody('Project Future', 'future project copy'),
-  );
-  await createSkill(
-    join(fixture.home, '.agents', 'skills'),
-    'future',
-    skillBody('User Future', 'future user copy'),
-  );
-  const conflicted = await start(repository, fixture.project, 'governance');
-  const projectFuture = governanceItem(conflicted, 'project:maka:FUTURE');
-  const userFuture = governanceItem(conflicted, 'user:agents:future');
-  assert.equal(projectFuture.enabled, false);
-  assert.equal(userFuture.enabled, false);
-  assert.equal(projectFuture.needsReview, true);
-  assert.equal(userFuture.needsReview, true);
-});
-
 test('noncanonical external ids remain wire-safe governance entries', async () => {
   const fixture = await createFixture();
   await createSkill(
@@ -438,7 +320,7 @@ test('noncanonical external ids remain wire-safe governance entries', async () =
   );
   await createSkill(
     join(fixture.project, '.maka', 'skills'),
-    'bad\nskill',
+    'bad\u007Fskill',
     skillBody('Control Skill', 'control directory id'),
   );
   const repository = fixture.repository();
@@ -565,10 +447,9 @@ test('repository preserves filesystem-safe ids and codec preserves the 256-byte 
 });
 
 test('managed source read failures are not projected as an empty catalog', async () => {
-  if (process.platform === 'win32') return;
   const fixture = await createFixture();
   await createSkill(fixture.sources, 'restricted', skillBody('Restricted', 'unreadable'));
-  await chmod(fixture.sources, 0o000);
+  const restoreReadAccess = await makeUnreadable(fixture.sources, 0o700);
   try {
     await assert.rejects(
       start(fixture.repository(), fixture.project, 'managed_sources'),
@@ -579,12 +460,11 @@ test('managed source read failures are not projected as an empty catalog', async
       },
     );
   } finally {
-    await chmod(fixture.sources, 0o700);
+    await restoreReadAccess();
   }
 });
 
 test('one unreadable managed source child makes the Host catalog fail closed', async () => {
-  if (process.platform === 'win32') return;
   const fixture = await createFixture();
   await createSkill(fixture.sources, 'readable', skillBody('Readable', 'valid source'));
   const unreadable = await createSkill(
@@ -593,7 +473,7 @@ test('one unreadable managed source child makes the Host catalog fail closed', a
     skillBody('Unreadable', 'restricted source'),
   );
   const unreadableFile = join(unreadable, 'SKILL.md');
-  await chmod(unreadableFile, 0o000);
+  const restoreReadAccess = await makeUnreadable(unreadableFile, 0o600);
   try {
     await assert.rejects(
       start(fixture.repository(), fixture.project, 'managed_sources'),
@@ -604,7 +484,7 @@ test('one unreadable managed source child makes the Host catalog fail closed', a
       },
     );
   } finally {
-    await chmod(unreadableFile, 0o600);
+    await restoreReadAccess();
   }
 });
 
@@ -1023,6 +903,78 @@ test('non-force managed update preserves a local edit made after its snapshot', 
   assert.equal(await readFile(installedPath, 'utf8'), localEdit);
 });
 
+test('managed update blocks a symlink redirected outside its discovery root after scanning', async () => {
+  const fixture = await createFixture();
+  const sourceId = 'managed-symlink-race';
+  const installedContent = skillBody('Managed Symlink Race', 'installed');
+  const updateContent = skillBody('Managed Symlink Race', 'source update');
+  const outsideContent = skillBody('Managed Symlink Race', 'outside replacement');
+  await createSkill(fixture.sources, sourceId, updateContent);
+
+  const containedSkill = await createSkill(
+    join(fixture.root, 'linked-skill-sources'),
+    sourceId,
+    installedContent,
+  );
+  await mkdir(join(containedSkill, '.maka', 'baseline'), { recursive: true });
+  await writeFile(
+    join(containedSkill, 'skill.lock.json'),
+    `${JSON.stringify(
+      createManagedSkillLock(sourceId, sha256(installedContent), sha256(installedContent)),
+      null,
+      2,
+    )}\n`,
+  );
+  await writeFile(join(containedSkill, '.maka', 'baseline', 'SKILL.md'), installedContent);
+
+  const skillsDirectory = join(fixture.root, 'skills');
+  const linkedSkill = join(skillsDirectory, sourceId);
+  await mkdir(skillsDirectory, { recursive: true });
+  await symlink(containedSkill, linkedSkill, 'dir');
+
+  const outsideSkill = await createSkill(
+    await tempDirectory('maka-skill-symlink-race-outside-'),
+    sourceId,
+    outsideContent,
+  );
+  await mkdir(join(outsideSkill, '.maka', 'baseline'), { recursive: true });
+  await writeFile(
+    join(outsideSkill, 'skill.lock.json'),
+    `${JSON.stringify(
+      createManagedSkillLock(sourceId, sha256(outsideContent), sha256(outsideContent)),
+      null,
+      2,
+    )}\n`,
+  );
+  await writeFile(join(outsideSkill, '.maka', 'baseline', 'SKILL.md'), outsideContent);
+
+  let redirectAfterScan = false;
+  const repository = fixture.repository(undefined, {
+    beforeManagedInstalledArtifactsRead: async () => {
+      if (!redirectAfterScan) return;
+      redirectAfterScan = false;
+      await rm(linkedSkill);
+      await symlink(outsideSkill, linkedSkill, 'dir');
+    },
+  });
+  const snapshot = await start(repository, fixture.project, 'governance');
+
+  redirectAfterScan = true;
+  const result = await repository.mutate({
+    expectedRevision: snapshot.revision,
+    mutation: {
+      kind: 'update_managed',
+      ref: `workspace:legacy:${sourceId}`,
+      force: false,
+      expectedCurrentSha256: null,
+      expectedSourceSha256: null,
+    },
+  });
+
+  assert.deepEqual(result, { kind: 'rejected', reason: 'metadata_error' });
+  assert.equal(await readFile(join(outsideSkill, 'SKILL.md'), 'utf8'), outsideContent);
+});
+
 test('revision covers exact managed lock and baseline bytes and rejects post-snapshot edits', async () => {
   const fixture = await createFixture();
   const sourceId = 'managed-artifact-race';
@@ -1345,6 +1297,19 @@ async function tempDirectory(prefix: string): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), prefix));
   roots.add(root);
   return root;
+}
+
+async function makeUnreadable(target: string, restoreMode: number): Promise<() => Promise<void>> {
+  if (process.platform !== 'win32') {
+    await chmod(target, 0o000);
+    return () => chmod(target, restoreMode);
+  }
+  const principal = process.env.USERNAME;
+  assert.ok(principal, 'Windows test identity must be available');
+  await execFileAsync('icacls.exe', [target, '/deny', `${principal}:(R)`]);
+  return async () => {
+    await execFileAsync('icacls.exe', [target, '/remove:d', principal]);
+  };
 }
 
 async function createSkill(parent: string, id: string, content: string): Promise<string> {

@@ -1,3 +1,22 @@
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+
 # Computer Use Evidence Classes
 
 Computer Use reports use one of four evidence classes. The class is part of
@@ -45,10 +64,30 @@ real-machine qualification runner was removed. The five-round process-restart
 runner remains as a non-qualifying soak after its qualification checks moved
 into the canonical Runtime-backed harness.
 
-The canonical operator commands are:
+### Lab fixture setup
 
-```text
-npm run e2e:computer-use-real
-npm run e2e:computer-use-process-restart
-npm run e2e:computer-use-real-model
+The `real-ax` and `restart-soak` commands require a local checkout of the
+[Codex Computer Use Lab](https://github.com/hqhq1025/codex-computer-use-lab).
+Clone it outside this repository and export its absolute repository root:
+
+```bash
+git clone https://github.com/hqhq1025/codex-computer-use-lab.git ../codex-computer-use-lab
+export MAKA_CU_AX_MODEL_LAB_ROOT="$(cd ../codex-computer-use-lab && pwd)"
+```
+
+The path must contain `test-app/launch.sh`. The launchers invoke that script,
+which builds the fixture when its application bundle is absent.
+
+With the variable exported, run the canonical operator commands:
+
+```bash
+npm run computer-use -- real-ax
+npm run computer-use -- real-ax --scenario restart-recovery
+npm run computer-use -- real-model
+```
+
+The non-qualifying five-round restart soak uses the same fixture checkout:
+
+```bash
+npm run computer-use -- restart-soak
 ```

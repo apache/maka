@@ -1,12 +1,33 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   decodeClientFrame,
   decodeHostFrame,
+  decodeOAuthLoginProjection,
   decodeOAuthPresentationRequest,
   decodeOAuthPresentationResult,
-  OAUTH_PRESENTATION_AUTHORIZATION_CODE_MAX_LENGTH,
-  RuntimeHostProtocolError,
+  OAUTH_OPERATION_SPECS,
+  type OAuthPresentationMethod,
 } from '../protocol/index.js';
 
 test('OAuth login protocol binds attempt identity and closes terminal projections', () => {
@@ -14,12 +35,18 @@ test('OAuth login protocol binds attempt identity and closes terminal projection
     decodeClientFrame({
       requestId: 'request',
       operation: 'oauth.login.start',
-      input: { attemptId: 'attempt', connectionId: 'connection' },
+      input: {
+        attemptId: 'attempt',
+        target: { kind: 'existing', connectionId: 'connection' },
+      },
     }),
     {
       requestId: 'request',
       operation: 'oauth.login.start',
-      input: { attemptId: 'attempt', connectionId: 'connection' },
+      input: {
+        attemptId: 'attempt',
+        target: { kind: 'existing', connectionId: 'connection' },
+      },
     },
   );
   assert.deepEqual(
@@ -29,8 +56,11 @@ test('OAuth login protocol binds attempt identity and closes terminal projection
       ok: true,
       result: {
         attemptId: 'attempt',
-        connectionId: 'connection',
-        provider: 'openai-codex',
+        connection: {
+          connectionId: 'connection',
+          slug: 'codex-subscription',
+          providerType: 'openai-codex',
+        },
         phase: 'failed',
         failure: 'provider_rejected',
       },
@@ -41,8 +71,11 @@ test('OAuth login protocol binds attempt identity and closes terminal projection
       ok: true,
       result: {
         attemptId: 'attempt',
-        connectionId: 'connection',
-        provider: 'openai-codex',
+        connection: {
+          connectionId: 'connection',
+          slug: 'codex-subscription',
+          providerType: 'openai-codex',
+        },
         phase: 'failed',
         failure: 'provider_rejected',
       },
@@ -56,65 +89,95 @@ test('OAuth login protocol binds attempt identity and closes terminal projection
         ok: true,
         result: {
           attemptId: 'attempt',
-          connectionId: 'connection',
-          provider: 'openai-codex',
+          connection: {
+            connectionId: 'connection',
+            slug: 'codex-subscription',
+            providerType: 'openai-codex',
+          },
           phase: 'authenticated',
           failure: 'internal_failure',
         },
       }),
     (error: unknown) => error instanceof RuntimeHostProtocolError,
   );
+  assert.throws(
+    () =>
+      decodeClientFrame({
+        requestId: 'epoch-53-request',
+        operation: 'oauth.login.start',
+        input: { attemptId: 'attempt', connectionId: 'connection' },
+      }),
+    RuntimeHostProtocolError,
+  );
+  assert.throws(
+    () =>
+      decodeOAuthLoginProjection({
+        attemptId: 'attempt',
+        connectionId: 'connection',
+        provider: 'openai-codex',
+        phase: 'authenticated',
+      }),
+    RuntimeHostProtocolError,
+  );
 });
 
-test('OAuth account usage exposes only a bounded safe quota projection', () => {
+test('OAuth enrollment query carries the provider and its Host gate answer', () => {
   assert.deepEqual(
-    decodeHostFrame({
+    decodeClientFrame({
       requestId: 'request',
-      operation: 'oauth.account.usage.fetch',
-      ok: true,
-      result: {
-        kind: 'available',
-        provider: 'claude-subscription',
-        quota: {
-          fiveHour: { utilization: 25, resetsAt: '2026-08-05T12:00:00.000Z' },
-          fetchedAt: 1,
-        },
-      },
+      operation: 'oauth.enrollment.query',
+      input: { provider: 'github-copilot' },
     }),
     {
       requestId: 'request',
-      operation: 'oauth.account.usage.fetch',
-      ok: true,
-      result: {
-        kind: 'available',
-        provider: 'claude-subscription',
-        quota: {
-          fiveHour: { utilization: 25, resetsAt: '2026-08-05T12:00:00.000Z' },
-          fetchedAt: 1,
-        },
-      },
+      operation: 'oauth.enrollment.query',
+      input: { provider: 'github-copilot' },
     },
   );
+  assert.deepEqual(
+    decodeHostFrame({
+      requestId: 'request',
+      operation: 'oauth.enrollment.query',
+      ok: true,
+      result: { provider: 'github-copilot', enabled: false },
+    }),
+    {
+      requestId: 'request',
+      operation: 'oauth.enrollment.query',
+      ok: true,
+      result: { provider: 'github-copilot', enabled: false },
+    },
+  );
+  // A missing or non-boolean `enabled` is refused rather than coerced.
+  assert.throws(
+    () =>
+      decodeHostFrame({
+        requestId: 'request',
+        operation: 'oauth.enrollment.query',
+        ok: true,
+        result: { provider: 'github-copilot' },
+      }),
+    (error: unknown) => error instanceof RuntimeHostProtocolError,
+  );
+});
+
+test('OAuth account usage is no longer an operation on the wire', () => {
+  // Reporting subscription usage required the retired provider's own client
+  // identity, so the operation went with it rather than staying as a call that
+  // always answers "unavailable".
   assert.throws(
     () =>
       decodeHostFrame({
         requestId: 'request',
         operation: 'oauth.account.usage.fetch',
         ok: true,
-        result: {
-          kind: 'available',
-          provider: 'claude-subscription',
-          quota: {
-            fiveHour: { utilization: 101, resetsAt: '' },
-            fetchedAt: 1,
-          },
-        },
+        result: { kind: 'unavailable', reason: 'unsupported_provider' },
       }),
-    (error: unknown) => error instanceof RuntimeHostProtocolError,
+    RuntimeHostProtocolError,
   );
 });
 
-test('OAuth presentation methods share one closed request and result contract', () => {
+test('OAuth presentation keeps one closed request and result contract', () => {
   assert.deepEqual(
     decodeOAuthPresentationRequest('open_external', {
       url: 'https://auth.example/authorize',
@@ -126,26 +189,115 @@ test('OAuth presentation methods share one closed request and result contract', 
       stateHint: 'ABCD-1234',
     },
   );
-  assert.deepEqual(
-    decodeOAuthPresentationResult('request_authorization_code', {
-      kind: 'authorization_code',
-      authorizationCode: 'code#state',
-    }),
-    { kind: 'authorization_code', authorizationCode: 'code#state' },
-  );
+  assert.deepEqual(decodeOAuthPresentationResult('open_external', { kind: 'presented' }), {
+    kind: 'presented',
+  });
+  // A peer on an older epoch still offers the removed method. The cast models
+  // that value arriving off the wire; the type no longer admits it, and the
+  // decoder must refuse it rather than serve a method nothing implements.
+  const retiredMethod = 'request_authorization_code' as unknown as OAuthPresentationMethod;
   assert.throws(
     () =>
-      decodeOAuthPresentationRequest('request_authorization_code', {
+      decodeOAuthPresentationRequest(retiredMethod, {
         url: 'https://auth.example/authorize',
+        stateHint: 'ABCD-1234',
       }),
     (error: unknown) => error instanceof RuntimeHostProtocolError,
   );
   assert.throws(
     () =>
-      decodeOAuthPresentationResult('request_authorization_code', {
+      decodeOAuthPresentationResult(retiredMethod, {
         kind: 'authorization_code',
-        authorizationCode: 'x'.repeat(OAUTH_PRESENTATION_AUTHORIZATION_CODE_MAX_LENGTH + 1),
+        authorizationCode: 'code#state',
       }),
     (error: unknown) => error instanceof RuntimeHostProtocolError,
+  );
+});
+
+test('OAuth login projections refuse a retired provider on the wire', () => {
+  // A Host on an older build can still emit this provider. Accepting it would
+  // let a login the Client can no longer drive reach the projection.
+  assert.throws(
+    () =>
+      decodeOAuthLoginProjection({
+        attemptId: 'attempt',
+        connection: {
+          connectionId: 'connection',
+          slug: 'claude-subscription',
+          providerType: 'claude-subscription',
+        },
+        phase: 'awaiting_authorization',
+      }),
+    RuntimeHostProtocolError,
+  );
+  assert.deepEqual(
+    decodeOAuthLoginProjection({
+      attemptId: 'attempt',
+      connection: {
+        connectionId: 'connection',
+        slug: 'codex-subscription',
+        providerType: 'openai-codex',
+      },
+      phase: 'awaiting_authorization',
+    }),
+    {
+      attemptId: 'attempt',
+      connection: {
+        connectionId: 'connection',
+        slug: 'codex-subscription',
+        providerType: 'openai-codex',
+      },
+      phase: 'awaiting_authorization',
+    },
+  );
+});
+
+test('OAuth operations correlate attempt and Connection identity', () => {
+  const projection = decodeOAuthLoginProjection({
+    attemptId: 'attempt-output',
+    connection: {
+      connectionId: 'connection-output',
+      slug: 'codex-subscription',
+      providerType: 'openai-codex',
+    },
+    phase: 'authenticated',
+  });
+  assert.throws(
+    () =>
+      OAUTH_OPERATION_SPECS['oauth.login.query'].assertOutputForInput?.(
+        { attemptId: 'attempt-input' },
+        projection,
+      ),
+    RuntimeHostProtocolError,
+  );
+  assert.throws(
+    () =>
+      OAUTH_OPERATION_SPECS['oauth.login.start'].assertOutputForInput?.(
+        {
+          attemptId: projection.attemptId,
+          target: { kind: 'existing', connectionId: 'another-connection' },
+        },
+        projection,
+      ),
+    RuntimeHostProtocolError,
+  );
+  assert.throws(
+    () =>
+      OAUTH_OPERATION_SPECS['oauth.login.start'].assertOutputForInput?.(
+        {
+          attemptId: projection.attemptId,
+          target: { kind: 'create', providerType: 'xai-oauth' },
+        },
+        projection,
+      ),
+    RuntimeHostProtocolError,
+  );
+  assert.throws(
+    () =>
+      decodeOAuthLoginProjection({
+        ...projection,
+        connection: { ...projection.connection, slug: 'Invalid Slug' },
+      }),
+    RuntimeHostProtocolError,
   );
 });

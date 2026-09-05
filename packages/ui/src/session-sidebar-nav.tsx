@@ -1,37 +1,38 @@
-import type { ScheduledTask } from '@maka/core';
-import {
-  AlertCircle,
-  Archive,
-  Blocks,
-  Download,
-  MessageSquare,
-  Settings,
-  SquarePen,
-  Timer,
-  Upload,
-} from './icons.js';
-import type { NavModuleMemory, NavSelection } from './nav-selection.js';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { AlertCircle, Blocks, Download, Network, Settings, SquarePen, Timer } from './icons.js';
+import { useSessionRailChrome } from './session-rail-context.js';
 import { useUiLocale } from './locale-context.js';
 import { getShellControlsCopy } from './shell-controls-copy.js';
+import { PlatformShortcutText } from './platform-shortcut-text.js';
 import { Icon } from '@astryxdesign/core/Icon';
 import { IconButton } from '@astryxdesign/core/IconButton';
 import { SideNavItem, SideNavSection } from '@astryxdesign/core/SideNav';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
 
-export function SessionSidebarNav(props: {
-  selection: NavSelection;
-  scheduledTasks?: ScheduledTask[];
-  moduleMemory?: NavModuleMemory;
-  onSelect(selection: NavSelection): void;
-  onNew(): void;
-  onImport?(): void;
-}) {
+export function SessionSidebarNav() {
+  const props = useSessionRailChrome();
   const locale = useUiLocale();
   const copy = getShellControlsCopy(locale).navigation;
   const extensionsActive = props.selection.section === 'extensions';
   const automationsActive = props.selection.section === 'automations';
-  const activeSessionFilter =
-    props.selection.section === 'sessions' ? props.selection.filter : undefined;
   const moduleMemory = props.moduleMemory ?? { extensions: 'skills', automations: 'scheduled-tasks' };
   const activeScheduledTaskCount = (props.scheduledTasks ?? []).filter(
     (task) => task.status === 'active',
@@ -43,10 +44,10 @@ export function SessionSidebarNav(props: {
   //
   // SideNavSection, like the footer below, rather than a bare fragment in a
   // product div: the section is what owns the space BETWEEN nav rows
-  // (`items` → --spacing-0-5). Handed to `topContent` as a plain div these three
+  // (`items` → --spacing-0-5). Handed to `topContent` as a plain div these rows
   // were the only group on the rail outside that authority, so they stacked
   // edge to edge — invisible expanded, where the label separates the rows, and
-  // plainly three-icons-as-one-slab at 48px. The header is hidden because the
+  // plainly icons-as-one-slab at 48px. The header is hidden because the
   // rail landmark already names the panel; the title stays for a11y.
   return (
     <SideNavSection title={copy.mainLabel} isHeaderHidden className="maka-session-panel-top">
@@ -55,25 +56,31 @@ export function SessionSidebarNav(props: {
         icon={SquarePen}
         size="md"
         onClick={props.onNew}
-        endContent={<kbd className="maka-nav-kbd" aria-hidden="true">⌘ N</kbd>}
+        endContent={(
+          <kbd className="maka-nav-kbd" aria-hidden="true">
+            <PlatformShortcutText apple="⌘ N" other="Ctrl N" />
+          </kbd>
+        )}
       />
-      {props.onImport && (
-        <SideNavItem label={copy.importSession} icon={Upload} size="md" onClick={props.onImport} />
-      )}
-      <SideNavItem
-        label={copy.conversations}
-        icon={MessageSquare}
-        size="md"
-        isSelected={activeSessionFilter === 'chats'}
-        onClick={() => props.onSelect({ section: 'sessions', filter: 'chats' })}
-      />
-      <SideNavItem
-        label={copy.archivedConversations}
-        icon={Archive}
-        size="md"
-        isSelected={activeSessionFilter === 'archived'}
-        onClick={() => props.onSelect({ section: 'sessions', filter: 'archived' })}
-      />
+      {props.workHubEntry ? (
+        <SideNavItem
+          label={props.workHubEntry.label}
+          icon={Network}
+          size="md"
+          isSelected={props.workHubEntry.active}
+          onClick={props.workHubEntry.onSelect}
+        />
+      ) : null}
+      {/* No 任务 row. Expanded, the list below IS that row's destination, and a
+          control that selects what is already on screen under it is the same
+          redundancy as the 会话 list heading this change deleted one row down.
+          Collapsed, the list is not rendered — but the rail cannot switch tasks
+          there either, so returning from 扩展 already means widening the rail,
+          which the titlebar's 展开侧边栏 toggle does unconditionally
+          (app-shell-chrome-actions.tsx) and which lands on a list where the
+          task you left is still `activeId` and still marked. Adding a row to
+          save that one click would be paying a permanent slot for a state the
+          user is leaving anyway. */}
       <SideNavItem
         label={copy.extensions}
         icon={Blocks}
@@ -109,11 +116,8 @@ export type SidebarUpdateReminder = {
   latestVersion: string;
 };
 
-export function SessionSidebarFooter(props: {
-  updateReminder?: SidebarUpdateReminder;
-  onOpenSettings(): void;
-  onOpenUpdate?(): void;
-}) {
+export function SessionSidebarFooter() {
+  const props = useSessionRailChrome();
   const locale = useUiLocale();
   const copy = getShellControlsCopy(locale).navigation;
   const reminder = props.updateReminder;

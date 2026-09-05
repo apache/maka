@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { fork, spawnSync, type ChildProcess } from 'node:child_process';
 import {
@@ -22,15 +41,16 @@ import {
   adoptStorageRootOnImport,
   assertStorageRootCapability,
   assertStorageRootLease,
-  createHeadlessRootLease,
   discoverMarkedStorageRoot,
   prepareArtifactWriterBootstrapAuthority,
   prepareStorageRootControlDirectory,
   prepareStorageRootIdentityRepair,
+  repairStorageRootAfterRemount,
   repairStorageRootIdentity,
   resolveExistingStorageRoot,
   resolveExistingStorageRootControlDirectory,
   resolveRootControlNamespace,
+  resolveRootOwnershipNamespace,
   resolveStorageRoot,
   runWithStorageRootLease,
   STORAGE_ROOT_MARKER_FILE,
@@ -49,26 +69,20 @@ const RUN_PROCESS_LOCK_TESTS = process.env.MAKA_STORAGE_STRESS === '1';
 describe('storage root authority', () => {
   test('discovers only marked roots without creating or changing filesystem state', async () => {
     await withRoots(async ({ base, root }) => {
-      for (const [kind, markedRoot] of [
-        ['interactive', root],
-        ['headless', join(base, 'headless')],
-      ] as const) {
-        await mkdir(markedRoot, { recursive: true });
-        const initialized = await resolveStorageRoot({ path: markedRoot, kind });
-        const payloadPath = join(markedRoot, 'payload.txt');
-        await writeFile(payloadPath, 'preserve me');
-        const fixedTime = new Date('2020-01-02T03:04:05.000Z');
-        await utimes(join(markedRoot, STORAGE_ROOT_MARKER_FILE), fixedTime, fixedTime);
-        await utimes(payloadPath, fixedTime, fixedTime);
-        await utimes(markedRoot, fixedTime, fixedTime);
-        const before = await snapshotFlatRoot(markedRoot);
+      const initialized = await resolveStorageRoot({ path: root, kind: 'interactive' });
+      const payloadPath = join(root, 'payload.txt');
+      await writeFile(payloadPath, 'preserve me');
+      const fixedTime = new Date('2020-01-02T03:04:05.000Z');
+      await utimes(join(root, STORAGE_ROOT_MARKER_FILE), fixedTime, fixedTime);
+      await utimes(payloadPath, fixedTime, fixedTime);
+      await utimes(root, fixedTime, fixedTime);
+      const before = await snapshotFlatRoot(root);
 
-        const discovered = await discoverMarkedStorageRoot({ path: markedRoot });
-        assert.equal(discovered.kind, kind);
-        assert.equal(discovered.rootId, initialized.rootId);
-        assert.equal(discovered.canonicalPath, initialized.canonicalPath);
-        assert.deepEqual(await snapshotFlatRoot(markedRoot), before);
-      }
+      const discovered = await discoverMarkedStorageRoot({ path: root });
+      assert.equal(discovered.kind, 'interactive');
+      assert.equal(discovered.rootId, initialized.rootId);
+      assert.equal(discovered.canonicalPath, initialized.canonicalPath);
+      assert.deepEqual(await snapshotFlatRoot(root), before);
 
       const unmarked = join(base, 'unmarked');
       await mkdir(unmarked);
@@ -90,7 +104,7 @@ describe('storage root authority', () => {
     });
   });
 
-  test('rejects an existing wrong-kind root without transient marker writes', async () => {
+  test('rejects unsupported root kinds without transient marker writes', async () => {
     await withRoots(async ({ root }) => {
       await resolveStorageRoot({ path: root, kind: 'interactive' });
       const fixedTime = new Date('2020-01-02T03:04:05.000Z');
@@ -99,9 +113,9 @@ describe('storage root authority', () => {
       const before = await snapshotFlatRoot(root);
 
       await assert.rejects(
-        () => resolveStorageRoot({ path: root, kind: 'headless' }),
+        () => resolveStorageRoot({ path: root, kind: 'retired' as never }),
         (error: unknown) =>
-          error instanceof StorageRootAuthorityError && error.code === 'root_kind_mismatch',
+          error instanceof StorageRootAuthorityError && error.code === 'invalid_root_kind',
       );
       assert.deepEqual(await snapshotFlatRoot(root), before);
     });
@@ -198,6 +212,43 @@ describe('storage root authority', () => {
       assert.equal(
         (await resolveStorageRoot({ path: root, kind: 'interactive' })).rootId,
         initialized.rootId,
+      );
+    });
+  });
+
+  test('repairs a remounted device but refuses a different directory inode', async () => {
+    await withRoots(async ({ base, root }) => {
+      const initialized = await resolveStorageRoot({ path: root, kind: 'interactive' });
+      const markerPath = join(root, STORAGE_ROOT_MARKER_FILE);
+      const marker = JSON.parse(await readFile(markerPath, 'utf8')) as {
+        rootIdentity: { dev: string; ino: string };
+      };
+      marker.rootIdentity.dev = (BigInt(marker.rootIdentity.dev) + 1n).toString();
+      await writeFile(markerPath, `${JSON.stringify(marker)}\n`);
+
+      await repairStorageRootAfterRemount({
+        path: root,
+        kind: 'interactive',
+        expectedRootId: initialized.rootId,
+      });
+      assert.equal(
+        (await resolveStorageRoot({ path: root, kind: 'interactive' })).rootId,
+        initialized.rootId,
+      );
+
+      const replacement = join(base, 'replacement');
+      await mkdir(replacement);
+      const replacementMarkerPath = join(replacement, STORAGE_ROOT_MARKER_FILE);
+      const repairedMarker = JSON.parse(await readFile(markerPath, 'utf8')) as {
+        rootIdentity: { dev: string; ino: string };
+      };
+      const replacementStat = await lstat(replacement, { bigint: true });
+      repairedMarker.rootIdentity.ino = (replacementStat.ino + 1n).toString();
+      await writeFile(replacementMarkerPath, `${JSON.stringify(repairedMarker)}\n`);
+      await assert.rejects(
+        () => repairStorageRootAfterRemount({ path: replacement, kind: 'interactive' }),
+        (error: unknown) =>
+          error instanceof StorageRootAuthorityError && error.code === 'root_identity_changed',
       );
     });
   });
@@ -539,18 +590,14 @@ describe('storage root authority', () => {
     });
   });
 
-  test('atomically fixes a root kind under concurrent initialization', async () => {
+  test('concurrent initialization resolves one interactive root identity', async () => {
     await withRoots(
       async ({ root }) => {
-        const outcomes = await Promise.allSettled([
+        const outcomes = await Promise.all([
           resolveStorageRoot({ path: root, kind: 'interactive' }),
-          resolveStorageRoot({ path: root, kind: 'headless' }),
+          resolveStorageRoot({ path: root, kind: 'interactive' }),
         ]);
-        assert.equal(outcomes.filter((outcome) => outcome.status === 'fulfilled').length, 1);
-        const rejection = outcomes.find((outcome) => outcome.status === 'rejected');
-        assert.ok(rejection && rejection.status === 'rejected');
-        assert.ok(rejection.reason instanceof StorageRootAuthorityError);
-        assert.equal(rejection.reason.code, 'root_kind_mismatch');
+        assert.equal(outcomes[0].rootId, outcomes[1].rootId);
       },
       { createRoot: false },
     );
@@ -751,6 +798,24 @@ describe('storage root authority', () => {
     });
   });
 
+  test('cache deletion cannot create a second State Root owner', {
+    skip: process.platform === 'win32' ? 'Windows does not unlink an open native lock file' : false,
+  }, async () => {
+    await withRoots(async ({ root }) => {
+      const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      await rm(owner.controlDirectory, { recursive: true, force: true });
+
+      assert.equal(await tryAcquireInteractiveRootOwner(capability), undefined);
+      await owner.close();
+
+      const successor = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(successor);
+      await successor.close();
+    });
+  });
+
   test('validates an existing control directory without repairing its permissions', {
     skip: process.platform === 'win32',
   }, async () => {
@@ -826,21 +891,6 @@ describe('storage root authority', () => {
         () => assertStorageRootCapability(capability, 'interactive'),
         (error: unknown) =>
           error instanceof StorageRootAuthorityError && error.code === 'root_identity_changed',
-      );
-    });
-  });
-
-  test('headless leases cannot be derived from an interactive capability', async () => {
-    await withRoots(async ({ root }) => {
-      const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
-      assert.throws(
-        () =>
-          createHeadlessRootLease(
-            capability as unknown as StorageRootCapability<'headless'>,
-            'write',
-          ),
-        (error: unknown) =>
-          error instanceof StorageRootAuthorityError && error.code === 'invalid_capability',
       );
     });
   });
@@ -1117,9 +1167,10 @@ async function removeControlDirectoriesForRootsUnder(base: string): Promise<void
   const rootIds = new Set<string>();
   await collectRootIds(base, rootIds);
   await Promise.all(
-    [...rootIds].map((rootId) =>
+    [...rootIds].flatMap((rootId) => [
       rm(join(resolveRootControlNamespace(), rootId), { recursive: true, force: true }),
-    ),
+      rm(join(resolveRootOwnershipNamespace(), `${rootId}.lock`), { force: true }),
+    ]),
   );
 }
 

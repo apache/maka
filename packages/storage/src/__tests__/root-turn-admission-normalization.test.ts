@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { normalizeRootTurnAdmissionPayload } from '../agent-run-store.js';
@@ -32,6 +51,53 @@ test('root admission preserves and validates each source submission digest', () 
   assert.throws(() =>
     normalizeRootTurnAdmissionPayload(source.content, [
       { ...source, submittedContentDigest: 'sha256:not-a-digest' },
+    ]),
+  );
+});
+
+test('root admission preserves and validates each source submitted placement', () => {
+  const content = { text: 'promoted follow-up' } as const;
+  const source = {
+    messageId: 'promoted-message',
+    content,
+    submittedPlacement: 'next_turn' as const,
+    placement: 'current_turn' as const,
+    disposition: 'steering' as const,
+  };
+
+  assert.equal(
+    normalizeRootTurnAdmissionPayload(content, [source]).sourceMessages[0]?.submittedPlacement,
+    'next_turn',
+  );
+  assert.throws(() =>
+    normalizeRootTurnAdmissionPayload(content, [
+      { ...source, submittedPlacement: 'invalid-placement' },
+    ]),
+  );
+});
+
+test('root admission preserves and validates each source Skill outcome', () => {
+  const content = { text: 'prepared', displayText: '/skill:writer draft' } as const;
+  const skillInvocation = {
+    loaded: [{ id: 'writer', name: 'Writer' }],
+    failed: [{ request: 'typo', reason: 'not_found' as const }],
+    receipts: [],
+  };
+  const source = {
+    messageId: 'message-skill',
+    content,
+    skillInvocation,
+    placement: 'next_turn' as const,
+    disposition: 'followup' as const,
+  };
+
+  assert.deepEqual(
+    normalizeRootTurnAdmissionPayload(content, [source]).sourceMessages[0]?.skillInvocation,
+    skillInvocation,
+  );
+  assert.throws(() =>
+    normalizeRootTurnAdmissionPayload(content, [
+      { ...source, skillInvocation: { loaded: [], failed: [], receipts: 'invalid' } },
     ]),
   );
 });

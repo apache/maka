@@ -7,13 +7,28 @@
  * itself) import these names from here — never from `ai` — so AI SDK type
  * changes no longer propagate past the `ModelAdapter` boundary.
  *
- * The shapes defined here are structurally equivalent to the AI SDK 7
- * `@ai-sdk/provider-utils` message/value unions, but they are **Maka-owned**:
- * the generated declaration of this module imports nothing from `ai` or
- * `@ai-sdk/*`. Lowering Maka messages to AI SDK types, and normalizing AI SDK
- * responses back to Maka types, happens only inside `ModelAdapter`
- * (`model-adapter.ts`); that module is the lone runtime file permitted to
- * import the SDK protocol types for the lowering/normalization cast.
+ * The JSON value, provider option, file data, content part, and message
+ * contracts below are adapted from the AI SDK and modified by Maka. The source
+ * material is Copyright 2023 Vercel, Inc. (https://github.com/vercel/ai),
+ * licensed under the Apache License, Version 2.0, fixed at
+ * `@ai-sdk/provider-utils@5.0.11` (`src/types/`) and `@ai-sdk/provider@4.0.3`
+ * (`src/json-value/`, `src/shared/v4/`). Those declarations are unchanged
+ * through `@ai-sdk/provider-utils@5.0.25` and `@ai-sdk/provider@4.0.7`.
+ *
+ * Maka modified the adapted material: the deprecated `file-*` and `image-*`
+ * tool-result content variants were dropped, the inline tool-result content
+ * union was extracted into `ToolResultContentPart`, the shared provider
+ * aliases were inlined instead of re-exported, and the role message shapes
+ * were declared as interfaces. The tool definition, usage, finish reason,
+ * failure, request metadata, and stream contracts in this module are
+ * Maka-authored and have no upstream counterpart.
+ *
+ * The dependency boundary is Maka-owned: the generated declaration of this
+ * module imports nothing from `ai` or `@ai-sdk/*`. Lowering Maka messages to
+ * AI SDK types, and normalizing AI SDK responses back to Maka types, happens
+ * only inside `ModelAdapter` (`model-adapter.ts`); that module is the lone
+ * runtime file permitted to import the SDK protocol types for the
+ * lowering/normalization cast.
  *
  * Schema helpers (`jsonSchema` / `zodSchema`) and SDK value imports
  * (`generateText`, `RetryError`, ...) remain local implementation details or
@@ -46,7 +61,7 @@ export type ProviderOptions = Record<string, JSONObject>;
  * A mapping of provider names to provider-specific file identifiers. A
  * provider reference identifies a file across providers without re-uploading.
  * The `type?: never` constraint excludes any object that has a `type` property,
- * so a provider reference cannot be confused with a tagged file-data shape
+ * so a provider reference cannot be confused with a tagged `FileData` shape
  * (`{ type: 'data', data }` / `{ type: 'reference', reference }`) when both
  * appear in the same union.
  */
@@ -149,12 +164,7 @@ export type ToolApprovalResponse = {
 // Tool result output contract
 // ---------------------------------------------------------------------------
 
-/**
- * One part of a `content`-shaped tool result output. Includes the legacy
- * `file-data` / `file-url` / `file-id` / `file-reference` / `image-*` arms so
- * any provider-emitted tool result stays structurally compatible with the
- * Maka-owned union.
- */
+/** One part of a `content`-shaped tool result output. */
 export type ToolResultContentPart =
   | { type: 'text'; text: string; providerOptions?: ProviderOptions }
   | {
@@ -162,58 +172,6 @@ export type ToolResultContentPart =
       data: FileData;
       mediaType: string;
       filename?: string;
-      providerOptions?: ProviderOptions;
-    }
-  | {
-      /** @deprecated use `{ type: 'file', data: { type: 'data', data } }` */
-      type: 'file-data';
-      data: string;
-      mediaType: string;
-      filename?: string;
-      providerOptions?: ProviderOptions;
-    }
-  | {
-      /** @deprecated use `{ type: 'file', data: { type: 'url', url } }` */
-      type: 'file-url';
-      url: string;
-      mediaType?: string;
-      providerOptions?: ProviderOptions;
-    }
-  | {
-      /** @deprecated use `{ type: 'file', data: { type: 'reference', reference } }` */
-      type: 'file-id';
-      fileId: string | Record<string, string>;
-      providerOptions?: ProviderOptions;
-    }
-  | {
-      /** @deprecated use `{ type: 'file', data: { type: 'reference', reference } }` */
-      type: 'file-reference';
-      providerReference: ProviderReference;
-      providerOptions?: ProviderOptions;
-    }
-  | {
-      /** @deprecated use `{ type: 'file', mediaType: 'image', data }` */
-      type: 'image-data';
-      data: string;
-      mediaType: string;
-      providerOptions?: ProviderOptions;
-    }
-  | {
-      /** @deprecated use `{ type: 'file', mediaType: 'image', data: { type: 'url', url } }` */
-      type: 'image-url';
-      url: string;
-      providerOptions?: ProviderOptions;
-    }
-  | {
-      /** @deprecated use `{ type: 'file', data: { type: 'reference', reference } }` */
-      type: 'image-file-id';
-      fileId: string | Record<string, string>;
-      providerOptions?: ProviderOptions;
-    }
-  | {
-      /** @deprecated use `{ type: 'file', data: { type: 'reference', reference } }` */
-      type: 'image-file-reference';
-      providerReference: ProviderReference;
       providerOptions?: ProviderOptions;
     }
   | { type: 'custom'; providerOptions?: ProviderOptions };
@@ -375,6 +333,7 @@ export type ModelFailureKind =
   | 'auth'
   | 'context_overflow'
   | 'network'
+  | 'provider_capacity'
   | 'provider_billing'
   | 'provider_unavailable'
   | 'rate_limit'
@@ -427,17 +386,35 @@ export interface ModelRequestMetadata {
  *   recovery and terminal error emission.
  */
 export type ModelStreamEvent =
-  | { kind: 'text-start' }
+  | {
+      kind: 'text-start';
+      /** Native Responses output item boundary; internal to adapter/backend replay. */
+      providerItemBoundary?: true;
+    }
   | { kind: 'text'; text: string }
-  | { kind: 'text-metadata'; providerOptions: ProviderOptions }
+  | {
+      kind: 'text-end';
+      providerOptions?: ProviderOptions;
+      /** Native Responses output item boundary; internal to adapter/backend replay. */
+      providerItemBoundary?: true;
+    }
+  | {
+      kind: 'thinking-start';
+      reasoningPartId?: string;
+      providerOptions?: ProviderOptions;
+    }
   | {
       kind: 'thinking';
       text: string;
       providerOptions?: ProviderOptions;
+      /** Bounded SDK-local identity used only while grouping one streamed reasoning part. */
+      reasoningPartId?: string;
+      /** Final provider summary, compared before only its part boundaries are persisted. */
+      reasoningSummaryText?: string;
       /** Maka-authored replay hint; absent provider metadata stays fail-closed. */
       providerOptionsOrigin?: 'maka_transport';
     }
-  | { kind: 'thinking-signature'; signature: string }
+  | { kind: 'thinking-signature'; signature: string; reasoningPartId?: string }
   /** Provider-side tool execution has begun, but no replayable call exists yet. */
   | { kind: 'provider-tool-input' }
   | { kind: 'tool-call'; toolCall: ToolCallPart }
@@ -452,16 +429,24 @@ export type ModelStreamEvent =
   | { kind: 'finish'; finishReason?: ModelFinishReason }
   | { kind: 'error'; failure: ModelFailure };
 
-/**
- * Maka-owned result of a single `ModelAdapter.startStream` provider call. The
- * backend consumes `events` for streaming + step accounting, awaits `usage`
- * for the final billing-relevant token totals, `finishReason` for the terminal
- * stop reason, and `request` for the final Maka-owned message projection. All
- * four are normalized to Maka-owned types; no AI SDK type crosses this surface.
- */
+export type ModelStepOutcome =
+  | {
+      kind: 'completed';
+      finishReason: ModelFinishReason;
+      usage?: NormalizedUsage;
+      request: ModelRequestMetadata;
+      continuation: 'none' | 'pending';
+    }
+  | {
+      kind: 'truncated' | 'retryable-failure' | 'terminal-failure' | 'aborted';
+      failure: ModelFailure;
+      usage?: NormalizedUsage;
+      request: ModelRequestMetadata;
+      continuation: 'none';
+    };
+
+/** One physical provider request: live output plus one authoritative settlement. */
 export interface ModelStreamResult {
   events: AsyncIterable<ModelStreamEvent>;
-  usage: Promise<NormalizedUsage | undefined>;
-  finishReason: Promise<ModelFinishReason | undefined>;
-  request: Promise<ModelRequestMetadata | undefined>;
+  outcome: Promise<ModelStepOutcome>;
 }

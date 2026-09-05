@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import {
   requireCount,
   requireEncodedByteLimit,
@@ -12,11 +31,17 @@ import { decodeSessionCatalogItem, type SessionCatalogItem } from './session-cat
 import { decodeWorkspaceTarget, type WorkspaceTarget } from './workspace.js';
 
 export const EXTERNAL_SESSION_PAGE_MAX_ITEMS = 16;
+
+/** Byte bound for a catalog search term. The 200-char contract in
+ *  `@maka/core/external-session` at 4 bytes per character, so a term the core
+ *  matcher would accept can always reach it. */
+export const EXTERNAL_SESSION_QUERY_TEXT_MAX_BYTES = 800;
 export const EXTERNAL_SESSION_RESULT_MAX_BYTES = 72 * 1024;
 export const EXTERNAL_SESSION_CWD_MAX_BYTES = 4 * 1024;
 export const EXTERNAL_SESSION_NAME_MAX_BYTES = 320;
 export const EXTERNAL_SESSION_SOURCE_SESSION_ID_MAX_BYTES = 512;
 export const EXTERNAL_SESSION_SOURCE_MAX_ITEMS = 16;
+export const EXTERNAL_SESSION_IMPORTED_SESSION_IDS_MAX_ITEMS = 8;
 const EXTERNAL_SESSION_CURSOR_MAX_BYTES = 32;
 
 const QUERY_ERRORS = [
@@ -45,6 +70,8 @@ export interface ExternalSessionCatalogQueryInput {
   readonly includeArchived?: boolean;
   readonly workspace?: WorkspaceTarget;
   readonly cursor?: string;
+  /** Free text matched against a session's title and cwd, applied before paging. */
+  readonly text?: string;
 }
 
 export interface ExternalSessionCatalogQueryResult {
@@ -56,6 +83,11 @@ export interface ExternalSessionCatalogItem {
   readonly id: string;
   readonly name: string;
   readonly hostCwd: string;
+  readonly importState: {
+    readonly importedCount: number;
+    readonly importedSessionIds: readonly string[];
+    readonly isImporting: boolean;
+  };
   readonly createdAt?: number;
   readonly updatedAt?: number;
   readonly archived?: boolean;
@@ -142,7 +174,7 @@ export function decodeExternalSessionCatalogQueryInput(
     value,
     'external Session catalog query input',
     ['adapterId'],
-    ['includeArchived', 'workspace', 'cursor'],
+    ['includeArchived', 'workspace', 'cursor', 'text'],
   );
   return {
     adapterId: adapterId(input.adapterId),
@@ -153,6 +185,7 @@ export function decodeExternalSessionCatalogQueryInput(
       ? { workspace: decodeWorkspaceTarget(input.workspace) }
       : {}),
     ...(Object.hasOwn(input, 'cursor') ? { cursor: cursor(input.cursor) } : {}),
+    ...(Object.hasOwn(input, 'text') ? { text: catalogQueryText(input.text) } : {}),
   };
 }
 
@@ -209,7 +242,7 @@ function decodeExternalSessionSummary(value: unknown): ExternalSessionCatalogIte
   const summary = requireShapedRecord(
     value,
     'external Session summary',
-    ['id', 'name', 'hostCwd'],
+    ['id', 'name', 'hostCwd', 'importState'],
     ['createdAt', 'updatedAt', 'archived'],
   );
   const id = requireUtf8String(
@@ -227,6 +260,7 @@ function decodeExternalSessionSummary(value: unknown): ExternalSessionCatalogIte
       'external Session Host cwd',
       EXTERNAL_SESSION_CWD_MAX_BYTES,
     ),
+    importState: decodeExternalSessionImportState(summary.importState),
     ...(Object.hasOwn(summary, 'createdAt')
       ? { createdAt: requireCount(summary.createdAt, 'external Session createdAt') }
       : {}),
@@ -239,8 +273,49 @@ function decodeExternalSessionSummary(value: unknown): ExternalSessionCatalogIte
   };
 }
 
+function decodeExternalSessionImportState(
+  value: unknown,
+): ExternalSessionCatalogItem['importState'] {
+  const state = requireExactRecord(value, 'external Session import state', [
+    'importedCount',
+    'importedSessionIds',
+    'isImporting',
+  ]);
+  if (
+    !Array.isArray(state.importedSessionIds) ||
+    state.importedSessionIds.length > EXTERNAL_SESSION_IMPORTED_SESSION_IDS_MAX_ITEMS
+  ) {
+    throw invalidProtocolFrame('Invalid external Session imported Session ids');
+  }
+  const importedSessionIds = Array.from(state.importedSessionIds, (id) =>
+    requireEntityId(id, 'imported Session id'),
+  );
+  const importedCount = requireCount(state.importedCount, 'external Session imported count');
+  if (importedCount < importedSessionIds.length) {
+    throw invalidProtocolFrame('Invalid external Session imported count');
+  }
+  return {
+    importedCount,
+    importedSessionIds,
+    isImporting: boolean(state.isImporting, 'external Session import state'),
+  };
+}
+
 function adapterId(value: unknown): string {
   return requireEntityId(value, 'external Session adapter id');
+}
+
+/**
+ * A bounded search term. Bounded rather than free-form because it reaches the
+ * adapters, and an unbounded string from a client would be matched against
+ * every summary on every source.
+ */
+function catalogQueryText(value: unknown): string {
+  return requireUtf8String(
+    value,
+    'external Session catalog query text',
+    EXTERNAL_SESSION_QUERY_TEXT_MAX_BYTES,
+  );
 }
 
 function cursor(value: unknown): string {

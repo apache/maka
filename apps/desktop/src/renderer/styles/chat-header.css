@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /* ============================================================================
    Chat header bar + chat shell layout
    ----------------------------------------------------------------------------
@@ -13,33 +32,30 @@
 /* #1032: hard-block session health notice sits above the composer,
    outside the message scroll area (sibling of maka-composer-interaction-slot).
    It is a peer of the composer form, so it must resolve to the SAME box as the
-   composer card: capped at the chat measure, centered, and inset by the
+   composer card: capped at the reading measure, centered, and inset by the
    composer's own `--space-6` gutters plus Astryx balanced dock's `--space-3`.
    The old `margin: 0 var(--space-3)` left it
    uncapped, so on a wide window the notice ran the full chat column while the
-   composer stayed at 680px — a visibly mismatched edge. Same formula as
+   composer stopped at the measure — a visibly mismatched edge. Same formula as
    `.maka-composer-no-model-hint` / `.maka-composer-revision-notice`.
 
    #1629: the boundary-unreadable notice stands in for the composer it replaces,
    so it is the same kind of peer and shares the formula rather than restating
-   it. `.maka-session-health-notice` stays last in each group — the
-   session-health-notice layout contract reads its rule body by matching the
-   selector immediately before the brace. */
+   it. Composer-adjacent recovery notices share one wrapper and Banner action
+   treatment so task, workspace, and Session recovery cannot drift. */
 .maka-boundary-unreadable-notice,
-.maka-workspace-readiness-notice,
-.maka-session-health-notice {
+.maka-chat-recovery-notice {
   width: min(
-    var(--maka-chat-measure),
+    var(--maka-reading-measure),
     calc(100% - (2 * var(--space-6)) - (2 * var(--space-3)))
   );
-  max-width: var(--maka-chat-measure);
+  max-width: var(--maka-reading-measure);
   margin: 0 auto var(--space-2);
   -webkit-app-region: no-drag;
 }
 
 .maka-boundary-unreadable-notice-alert,
-.maka-workspace-readiness-notice-alert,
-.maka-session-health-notice-alert {
+.maka-chat-recovery-notice-alert {
   width: 100%;
   box-sizing: border-box;
 }
@@ -63,6 +79,16 @@
   background: var(--surface-raised);
   container-type: inline-size;
   -webkit-app-region: no-drag;
+}
+
+/* A live Goal can keep creating Turns after the user stops typing, so its
+   identity and kill switches stay reachable while the transcript scrolls.
+   Ordinary lineage/revision context remains in-flow when no Goal is present. */
+.maka-session-context[data-has-goal="true"] {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-sticky);
+  box-shadow: 0 var(--border-width-hairline) 0 var(--border-soft);
 }
 
 .maka-session-context__inner {
@@ -103,6 +129,23 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.maka-session-context__goal-description {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  padding-left: var(--space-1);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Goal rows are intentionally single-line, but Astryx tooltip layers inherit
+   typography from their trigger subtree even after entering the top layer.
+   Restore the Tooltip contract here so long Goal copy wraps inside its 300px
+   content measure instead of being clipped as one unbreakable line. */
+.maka-session-context [role="tooltip"] {
+  white-space: normal;
 }
 
 .maka-session-context__cluster {
@@ -156,21 +199,6 @@
   display: flex;
   flex-direction: column;
   overscroll-behavior: contain;
-}
-
-/*
- * Compatibility with Astryx #2573 until its fixed ChatLayout ships in a
- * stable package. Published 0.2.0 gives the message area min-height: 100%,
- * then adds the in-flow dock below it, creating a dock-height phantom range.
- * These are the upstream flex contracts and can be removed on that upgrade.
- */
-.maka-chat-layout > :first-child {
-  min-height: 0;
-  flex: 1 0 auto;
-}
-
-.maka-chat-layout > :last-child {
-  flex-shrink: 0;
 }
 
 .maka-chat-shell {

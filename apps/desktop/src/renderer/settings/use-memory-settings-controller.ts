@@ -1,10 +1,33 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { AppSettings, LocalMemoryState, UiLocale } from '@maka/core';
+import type { AppSettings } from '@maka/core/settings';
+import type { LocalMemoryState } from '@maka/core/local-memory';
+import type { UiLocale } from '@maka/core/ui-locale';
 import {
   appendManualLocalMemoryEntryDraft,
   findLocalMemoryEntryDraftRange,
   setLocalMemoryEntryStatusDraft,
-} from '@maka/core';
+  stableLocalMemoryIdMaterial,
+} from '@maka/core/local-memory';
+import { webSha256Digest } from '../local-memory-digest';
 import { useToast, useUiLocale } from '@maka/ui';
 import { openPathFailureCopy, openPathActionLabel } from '../open-path';
 import { settingsActionErrorMessage } from './settings-error-copy';
@@ -18,6 +41,11 @@ import {
 import { deriveMemorySettingsViewModel } from './memory-settings-view-model';
 import { useKeyedActionGuard } from './use-action-guard';
 import { getMemorySettingsCopy } from '../locales/settings-memory-copy';
+import { readScrollMotionBehavior } from '../scroll-motion-policy';
+import {
+  useRuntimeHostSettingsErrorReporter,
+  useRuntimeHostSettingsTarget,
+} from './runtime-host-settings-target.js';
 
 export interface MemoryDocumentControllerProps {
   settings: AppSettings;
@@ -26,6 +54,8 @@ export interface MemoryDocumentControllerProps {
 
 /** Owns the MEMORY.md document lifecycle. */
 export function useMemoryDocumentController(props: MemoryDocumentControllerProps) {
+  const host = useRuntimeHostSettingsTarget();
+  const reportHostError = useRuntimeHostSettingsErrorReporter();
   const locale = useUiLocale();
   const copy = getMemorySettingsCopy(locale);
   type MemoryWriteAction = 'reload' | 'enable' | 'agent-read' | 'save' | 'reset' | 'restore' | 'entry-status';
@@ -122,7 +152,7 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
     const lifecycle = memoryPageLifecycleRef.current;
     const ticket = ++memoryReloadTicketRef.current;
     try {
-      const next = await window.maka.memory.getState();
+      const next = await window.maka.memory.getState(undefined, host);
       if (!isMemoryPageCurrent(lifecycle) || ticket !== memoryReloadTicketRef.current) return false;
       setState(next);
       setDraft(next.content);
@@ -130,7 +160,7 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
       return true;
     } catch (error) {
       if (isMemoryPageCurrent(lifecycle) && ticket === memoryReloadTicketRef.current) {
-        toast.error(copy.text.loadFailed, settingsActionErrorMessage(error, locale));
+        reportHostError(copy.text.loadFailed, settingsActionErrorMessage(error, locale));
       }
       return false;
     } finally {
@@ -154,42 +184,42 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
   async function setEnabled(enabled: boolean) {
     try {
       await runMemoryWriteAction('enable', async (isCurrent) => {
-        const next = await window.maka.memory.setEnabled(enabled);
+        const next = await window.maka.memory.setEnabled(enabled, host);
         await props.onReloadSettings();
         if (!isCurrent()) return;
         setState(next);
         setDraft(next.content);
       });
     } catch (error) {
-      toast.error(copy.text.toggleFailed, settingsActionErrorMessage(error, locale));
+      reportHostError(copy.text.toggleFailed, settingsActionErrorMessage(error, locale));
     }
   }
 
   async function setAgentReadEnabled(agentReadEnabled: boolean) {
     try {
       await runMemoryWriteAction('agent-read', async (isCurrent) => {
-        const next = await window.maka.memory.setAgentReadEnabled(agentReadEnabled);
+        const next = await window.maka.memory.setAgentReadEnabled(agentReadEnabled, host);
         await props.onReloadSettings();
         if (!isCurrent()) return;
         setState(next);
         setDraft(next.content);
       });
     } catch (error) {
-      toast.error(copy.text.agentReadFailed, settingsActionErrorMessage(error, locale));
+      reportHostError(copy.text.agentReadFailed, settingsActionErrorMessage(error, locale));
     }
   }
 
   async function save() {
     try {
       await runMemoryWriteAction('save', async (isCurrent) => {
-        const next = await window.maka.memory.save(draft);
+        const next = await window.maka.memory.save(draft, host);
         if (!isCurrent()) return;
         const redacted = next.content !== draft;
         setState(next);
         setDraft(next.content);
         if (next.status === 'safe_mode') {
           setLastSaveSummary(null);
-          toast.error(copy.text.saveBlocked, copy.text.safeMode);
+          reportHostError(copy.text.saveBlocked, copy.text.safeMode);
         } else if (redacted) {
           const detail = copy.redactedDetail(formatLocalMemorySaveSummary(next, copy));
           setLastSaveSummary({
@@ -209,14 +239,14 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
         }
       });
     } catch (error) {
-      toast.error(copy.text.saveFailed, settingsActionErrorMessage(error, locale));
+      reportHostError(copy.text.saveFailed, settingsActionErrorMessage(error, locale));
     }
   }
 
   async function reset() {
     try {
       await runMemoryWriteAction('reset', async (isCurrent) => {
-        const next = await window.maka.memory.reset();
+        const next = await window.maka.memory.reset(host);
         if (!isCurrent()) return;
         setState(next);
         setDraft(next.content);
@@ -224,7 +254,7 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
         toast.success(copy.text.resetDone, copy.text.resetDoneDetail);
       });
     } catch (error) {
-      toast.error(copy.text.resetFailed, settingsActionErrorMessage(error, locale));
+      reportHostError(copy.text.resetFailed, settingsActionErrorMessage(error, locale));
     }
   }
 
@@ -247,7 +277,7 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
           });
           if (!ok) return;
           if (!isCurrent()) return;
-          const result = await window.maka.memory.restoreLatestBackup();
+          const result = await window.maka.memory.restoreLatestBackup(host);
           if (!isCurrent()) return;
           setState(result.state);
           setDraft(result.state.content);
@@ -255,11 +285,17 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
           if (result.ok) {
             toast.success(copy.text.restoredLatest, `${backupLabel} · ${copy.text.restoredDetail}`);
           } else {
-            toast.error(copy.text.restoreFailed, memoryResultMessage(result.message, locale, copy.text.restoreFailed));
+            reportHostError(
+              copy.text.restoreFailed,
+              memoryResultMessage(result.message, locale, copy.text.restoreFailed),
+            );
           }
         });
       } catch (error) {
-        toast.error(copy.text.restoreLatestFailed, settingsActionErrorMessage(error, locale));
+        reportHostError(
+          copy.text.restoreLatestFailed,
+          settingsActionErrorMessage(error, locale),
+        );
       }
     });
   }
@@ -278,7 +314,7 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
           });
           if (!ok) return;
           if (!isCurrent()) return;
-          const result = await window.maka.memory.restoreBackup(backup.kind);
+          const result = await window.maka.memory.restoreBackup(backup.kind, host);
           if (!isCurrent()) return;
           setState(result.state);
           setDraft(result.state.content);
@@ -286,11 +322,17 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
           if (result.ok) {
             toast.success(copy.text.restoredCandidate, `${backupLabel} · ${copy.text.restoredDetail}`);
           } else {
-            toast.error(copy.text.restoreFailed, memoryResultMessage(result.message, locale, copy.text.restoreFailed));
+            reportHostError(
+              copy.text.restoreFailed,
+              memoryResultMessage(result.message, locale, copy.text.restoreFailed),
+            );
           }
         });
       } catch (error) {
-        toast.error(copy.text.restoreCandidateFailed, settingsActionErrorMessage(error, locale));
+        reportHostError(
+          copy.text.restoreCandidateFailed,
+          settingsActionErrorMessage(error, locale),
+        );
       }
     });
   }
@@ -298,11 +340,18 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
   async function openFile() {
     await runMemoryAction('memory:file:open', async (isCurrent) => {
       try {
-        const result = await window.maka.memory.openFile();
+        const result = await window.maka.memory.openFile(host);
         if (!isCurrent()) return;
-        if (!result.ok) toast.error(copy.text.openFailed, memoryResultMessage(result.message, locale, copy.text.openFailed));
+        if (!result.ok) {
+          reportHostError(
+            copy.text.openFailed,
+            memoryResultMessage(result.message, locale, copy.text.openFailed),
+          );
+        }
       } catch (error) {
-        if (isCurrent()) toast.error(copy.text.openFailed, settingsActionErrorMessage(error, locale));
+        if (isCurrent()) {
+          reportHostError(copy.text.openFailed, settingsActionErrorMessage(error, locale));
+        }
       }
     });
   }
@@ -310,11 +359,21 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
   async function openLatestBackup() {
     await runMemoryAction('backup:latest:open', async (isCurrent) => {
       try {
-        const result = await window.maka.memory.openLatestBackup();
+        const result = await window.maka.memory.openLatestBackup(host);
         if (!isCurrent()) return;
-        if (!result.ok) toast.error(copy.text.openPreviousFailed, memoryResultMessage(result.message, locale, copy.text.openPreviousFailed));
+        if (!result.ok) {
+          reportHostError(
+            copy.text.openPreviousFailed,
+            memoryResultMessage(result.message, locale, copy.text.openPreviousFailed),
+          );
+        }
       } catch (error) {
-        if (isCurrent()) toast.error(copy.text.openPreviousFailed, settingsActionErrorMessage(error, locale));
+        if (isCurrent()) {
+          reportHostError(
+            copy.text.openPreviousFailed,
+            settingsActionErrorMessage(error, locale),
+          );
+        }
       }
     });
   }
@@ -322,14 +381,20 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
   async function openBackupCandidate(backup: NonNullable<LocalMemoryState['latestBackup']>) {
     await runMemoryAction(`backup:${backup.kind}:open`, async (isCurrent) => {
       try {
-        const result = await window.maka.memory.openBackup(backup.kind);
+        const result = await window.maka.memory.openBackup(backup.kind, host);
         if (!isCurrent()) return;
         if (!result.ok) {
-          toast.error(copy.openBackupFailed(localMemoryBackupKindLabel(backup.kind, copy)), memoryResultMessage(result.message, locale, copy.text.openFailed));
+          reportHostError(
+            copy.openBackupFailed(localMemoryBackupKindLabel(backup.kind, copy)),
+            memoryResultMessage(result.message, locale, copy.text.openFailed),
+          );
         }
       } catch (error) {
         if (isCurrent())
-          toast.error(copy.openBackupFailed(localMemoryBackupKindLabel(backup.kind, copy)), settingsActionErrorMessage(error, locale));
+          reportHostError(
+            copy.openBackupFailed(localMemoryBackupKindLabel(backup.kind, copy)),
+            settingsActionErrorMessage(error, locale),
+          );
       }
     });
   }
@@ -337,14 +402,20 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
   async function openFolder() {
     await runMemoryAction('memory:folder:open', async (isCurrent) => {
       try {
-        const result = await window.maka.app.openPath('memory');
+        const result = await window.maka.app.openPath('memory', undefined, host);
         if (!isCurrent()) return;
         if (!result.ok) {
-          toast.error(copy.openBackupFailed(openPathActionLabel('memory', locale)), openPathFailureCopy(result.reason, locale));
+          reportHostError(
+            copy.openBackupFailed(openPathActionLabel('memory', locale)),
+            openPathFailureCopy(result.reason, locale),
+          );
         }
       } catch (error) {
         if (isCurrent())
-          toast.error(copy.openBackupFailed(openPathActionLabel('memory', locale)), settingsActionErrorMessage(error, locale));
+          reportHostError(
+            copy.openBackupFailed(openPathActionLabel('memory', locale)),
+            settingsActionErrorMessage(error, locale),
+          );
       }
     });
   }
@@ -419,47 +490,66 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
       editorRef.current?.setSelectionRange(range.start, range.end);
       editorRef.current?.scrollIntoView({
         block: 'center',
-        behavior: 'smooth',
+        behavior: readScrollMotionBehavior(),
       });
     });
   }
 
   async function addManualMemoryEntry() {
-    const result = appendManualLocalMemoryEntryDraft(draft, {
-      title: newMemoryTitle,
-      content: newMemoryContent,
-      tags: newMemoryTags.split(','),
-    });
-    if (!result.ok) {
-      switch (result.reason) {
-        case 'empty_title':
-          toast.error(copy.text.emptyTitle, copy.text.emptyTitleDetail);
-          return;
-        case 'empty_content':
-          toast.error(copy.text.emptyContent, copy.text.emptyContentDetail);
-          return;
-        case 'oversize':
-          toast.error(copy.text.draftOversize, copy.text.oversizeDetail);
-          return;
-      }
+    const title = newMemoryTitle;
+    const content = newMemoryContent;
+    const tags = newMemoryTags.split(',');
+    const currentDraft = draft;
+    const currentHost = host;
+    if (!title.trim()) {
+      toast.error(copy.text.emptyTitle, copy.text.emptyTitleDetail);
+      return;
     }
+    if (!content.trim()) {
+      toast.error(copy.text.emptyContent, copy.text.emptyContentDetail);
+      return;
+    }
+
     try {
       await runMemoryWriteAction('save', async (isCurrent) => {
-        const next = await window.maka.memory.save(result.draft);
+        const { timestamp, material } = stableLocalMemoryIdMaterial(content, Date.now());
+        const sha256 = await webSha256Digest(material);
+        if (!isCurrent()) return;
+        const result = appendManualLocalMemoryEntryDraft(currentDraft, {
+          title,
+          content,
+          tags,
+          now: timestamp,
+          sha256,
+        });
+        if (!result.ok) {
+          switch (result.reason) {
+            case 'empty_title':
+              toast.error(copy.text.emptyTitle, copy.text.emptyTitleDetail);
+              return;
+            case 'empty_content':
+              toast.error(copy.text.emptyContent, copy.text.emptyContentDetail);
+              return;
+            case 'oversize':
+              toast.error(copy.text.draftOversize, copy.text.oversizeDetail);
+              return;
+          }
+        }
+        const next = await window.maka.memory.save(result.draft, currentHost);
         if (!isCurrent()) return;
         setState(next);
         setDraft(next.content);
         if (next.status === 'safe_mode') {
-          toast.error(copy.text.saveBlocked, copy.text.safeMode);
+          reportHostError(copy.text.saveBlocked, copy.text.safeMode);
           return;
         }
         setNewMemoryTitle('');
         setNewMemoryTags('');
         setNewMemoryContent('');
-        toast.success(copy.text.addedDraft, newMemoryTitle.trim());
+        toast.success(copy.text.addedDraft, title.trim());
       });
     } catch (error) {
-      toast.error(copy.text.saveFailed, settingsActionErrorMessage(error, locale));
+      reportHostError(copy.text.saveFailed, settingsActionErrorMessage(error, locale));
     }
   }
 
@@ -487,18 +577,21 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
 
     try {
       await runMemoryWriteAction('entry-status', async (isCurrent) => {
-        const next = await window.maka.memory.save(result.draft);
+        const next = await window.maka.memory.save(result.draft, host);
         if (!isCurrent()) return;
         setState(next);
         setDraft(next.content);
         if (next.status === 'safe_mode') {
-          toast.error(copy.text.updateBlocked, copy.text.safeMode);
+          reportHostError(copy.text.updateBlocked, copy.text.safeMode);
         } else {
           toast.success(status === 'archived' ? copy.text.archived : copy.text.restored, entry.title);
         }
       });
     } catch (error) {
-      toast.error(status === 'archived' ? copy.text.archiveFailed : copy.text.entryRestoreFailed, settingsActionErrorMessage(error, locale));
+      reportHostError(
+        status === 'archived' ? copy.text.archiveFailed : copy.text.entryRestoreFailed,
+        settingsActionErrorMessage(error, locale),
+      );
     }
   }
 
@@ -596,5 +689,5 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
 }
 
 function memoryResultMessage(message: string, locale: UiLocale, fallback: string): string {
-  return locale === 'zh' || !/[\u3400-\u9fff]/u.test(message) ? message : fallback;
+  return locale === 'zh-CN' || !/[\u3400-\u9fff]/u.test(message) ? message : fallback;
 }

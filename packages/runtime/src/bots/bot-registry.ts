@@ -1,10 +1,28 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { EventEmitter } from 'node:events';
 import {
-  hasBotChannelCredentials,
   type BotChannelSettings,
   type BotChatSettings,
   type BotProvider,
-} from '@maka/core';
+} from '@maka/core/bot-chat-settings';
 import { generalizedErrorMessage } from '@maka/core/redaction';
 import { BOT_PROVIDERS } from '@maka/core/settings';
 import { DingTalkBotBridge } from './dingtalk-bridge.js';
@@ -12,11 +30,13 @@ import { FeishuBotBridge } from './feishu-bridge.js';
 import { DiscordBotBridge } from './discord-bridge.js';
 import { QQBotBridge } from './qq-bridge.js';
 import { SlackBotBridge } from './slack-bridge.js';
-import { SimpleBotBridge } from './simple-bridge.js';
+import { TelegramBotBridge } from './telegram-bridge.js';
 import type {
   BotBridge,
   BotIncomingMessage,
   BotPlatform,
+  BotReplyStream,
+  BotReplyStreamOptions,
   BotSendOptions,
   BotStatus,
   SendCapable,
@@ -29,14 +49,12 @@ export interface BotRegistryDeps {
   onStatusChange: (status: BotStatus) => void;
 }
 
-export class BotRegistry extends EventEmitter {
+export class BotRegistry {
   private bridges = new Map<BotPlatform, BotBridge>();
   private statuses = new Map<BotPlatform, BotStatus>();
   private applyQueue: Promise<void> = Promise.resolve();
 
-  constructor(private readonly deps: BotRegistryDeps) {
-    super();
-  }
+  constructor(private readonly deps: BotRegistryDeps) {}
 
   async applySettings(settings: BotChatSettings): Promise<void> {
     const next = this.applyQueue.then(
@@ -70,6 +88,16 @@ export class BotRegistry extends EventEmitter {
     const bridge = this.bridges.get(platform) as (BotBridge & Partial<SendCapable>) | undefined;
     if (!bridge || typeof bridge.sendMessage !== 'function') return null;
     return bridge.sendMessage(chatId, text, options);
+  }
+
+  startReplyStream(
+    platform: BotPlatform,
+    chatId: string,
+    options: BotReplyStreamOptions,
+  ): BotReplyStream | null {
+    const bridge = this.bridges.get(platform) as (BotBridge & Partial<SendCapable>) | undefined;
+    if (!bridge || typeof bridge.startReplyStream !== 'function') return null;
+    return bridge.startReplyStream(chatId, options);
   }
 
   /**
@@ -117,13 +145,6 @@ export class BotRegistry extends EventEmitter {
       return;
     }
 
-    if (!isImplemented(platform)) {
-      const status = scaffoldStatus(platform, settings);
-      this.statuses.set(platform, status);
-      this.deps.onStatusChange(status);
-      return;
-    }
-
     if (existing) {
       const update = (
         existing as { updateSettings?: (next: BotChannelSettings) => { needsRestart: boolean } }
@@ -160,7 +181,7 @@ export class BotRegistry extends EventEmitter {
                   ? new QQBotBridge(platform, settings)
                   : platform === 'slack'
                     ? new SlackBotBridge(settings)
-                    : new SimpleBotBridge(platform, settings);
+                    : new TelegramBotBridge(platform, settings);
     this.wire(bridge);
     this.bridges.set(platform, bridge);
     await bridge
@@ -177,19 +198,6 @@ export class BotRegistry extends EventEmitter {
   }
 }
 
-function isImplemented(platform: BotPlatform): boolean {
-  return (
-    platform === 'telegram' ||
-    platform === 'feishu' ||
-    platform === 'wecom' ||
-    platform === 'wechat' ||
-    platform === 'discord' ||
-    platform === 'dingtalk' ||
-    platform === 'qq' ||
-    platform === 'slack'
-  );
-}
-
 function defaultStatus(platform: BotPlatform): BotStatus {
   return {
     platform,
@@ -198,39 +206,4 @@ function defaultStatus(platform: BotPlatform): BotStatus {
     reason: 'disabled',
     connection: 'none',
   };
-}
-
-function scaffoldStatus(platform: BotPlatform, settings: BotChannelSettings): BotStatus {
-  // PR-HEALTH-1 (xuan msg `e4887ffd`, I1 — bot readiness single-authority,
-  // read path): the previous behavior inherited `settings.readiness ===
-  // 'credentials_valid'` blindly, which leaked stale persisted state into
-  // `BotStatus.readiness` for unimplemented platforms (everything except
-  // telegram in V0.2). The settings write path (settings.ts
-  // `coerceReadinessForCurrentState`) already downgrades implausible
-  // persisted states; this read path drops the special-case to make the
-  // gate doubly safe.
-  //
-  // Authoritative readiness sources, post-PR-HEALTH-1:
-  //   1. Live bridge (`SimpleBotBridge` for telegram) — writes its own
-  //      `readiness` field during lifecycle; surfaced via `BotBridge.getStatus()`.
-  //   2. Settings-derived for unimplemented platforms — computed FRESH
-  //      from current `channel.{enabled, token, appId, appSecret}` via
-  //      `readinessFromSettings`. Persisted `settings.readiness` is no
-  //      longer trusted at the read boundary.
-  return {
-    platform,
-    running: false,
-    readiness: readinessFromSettings(settings),
-    reason:
-      settings.token.trim() || settings.appId || settings.appSecret
-        ? 'scaffold-only'
-        : 'unimplemented',
-    connection: 'none',
-  };
-}
-
-function readinessFromSettings(settings: BotChannelSettings): BotStatus['readiness'] {
-  if (!settings.enabled) return 'scaffolded';
-  if (!hasBotChannelCredentials(settings)) return 'scaffolded';
-  return 'configured';
 }

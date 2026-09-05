@@ -1,13 +1,33 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type { DatabaseSync } from 'node:sqlite';
-import {
-  decodeAgentRunEvent,
-  decodeAgentRunHeader,
-  decodeRuntimeEvent,
-} from './execution-record-codec.js';
+import { decodeAgentRunEvent, decodeRuntimeEvent } from './execution-record-codec.js';
 import { immutableSteeringMessageId } from './runtime-event-invariants.js';
+import {
+  normalizeSubmittedTurnIntent,
+  submittedTurnIntentsEqual,
+  type SubmittedTurnIntent,
+} from './submitted-turn-intent.js';
 import { assertNoReservedWorkspaceAuthorityAppend } from './runtime-event-authority.js';
 import {
   acquireOperationalStateDatabase,
@@ -21,27 +41,48 @@ import {
 } from './bounded-evidence.js';
 import {
   decodeSkillInvocationResult,
-  DurableStoreWriteError,
+  type SkillInvocationResult,
+} from '@maka/core/skill-invocation';
+import { DurableStoreWriteError, type RuntimeEventStore } from '@maka/core/runtime-event-store';
+import type {
+  RuntimeInvocationPageInput,
+  RuntimeInvocationPageResult,
+  RuntimeInvocationRecord,
+  RuntimeInvocationSearchResult,
+} from '@maka/core/runtime-invocation';
+import {
   aggregateMessageContents,
-  decodeAgentGraphIntentClaim,
   decodeMessageContent,
   isCanonicalAttachmentRef,
-  isTerminalRuntimeEvent,
-  MAX_ATTACHMENT_BYTES,
-  MAX_ATTACHMENT_COUNT,
   messageContentsEqual,
-  type AgentRunEvent,
-  type AgentRunEventType,
-  type AgentRunHeader,
-  type AgentRunStore,
-  type EmittedAgentRunEvent,
   type AttachmentRef,
   type MessageContent,
+} from '@maka/core/events';
+import { decodeAgentGraphIntentClaim } from '@maka/core/agent-graph-control';
+import { isTerminalRuntimeEvent, type RuntimeEvent } from '@maka/core/runtime-event';
+import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
+import { MODEL_CALL_ATTEMPT_EVENT_TYPE } from '@maka/core/model-call-attempt';
+import {
+  LATEST_CONTEXT_PROJECTION_TYPE,
+  RUN_COMPOSITION_RECORDED_EVENT_TYPE,
+  supersedesLatestContext,
+  type LatestContextOrder,
+  type AgentRunProjectionKey,
+  type AgentRunAppendOptions,
+  type LatestContextProjectionInput,
+  type AgentRunEvent,
+  type AgentRunEventType,
+  type AgentRunStore,
+  type EmittedAgentRunEvent,
+} from '@maka/core/agent-run';
+import {
+  isSessionInlineInvocation,
   type RootExecutionDescriptor,
-  type RuntimeEvent,
-  type RuntimeEventStore,
-  type SkillInvocationResult,
-} from '@maka/core';
+} from '@maka/core/runtime-invocation';
+import {
+  decodeRuntimeInvocationOpened,
+  runtimeEventInvocationOpening,
+} from '@maka/core/runtime-event';
 import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
 import {
   isOrchestrationMode,
@@ -66,6 +107,18 @@ export interface RootTurnSourceMessage {
   messageId: string;
   content: MessageContent;
   submittedContentDigest?: `sha256:${string}`;
+  /** The original placement before queue promotion; absent legacy records use `placement`. */
+  submittedPlacement?: 'current_turn' | 'next_turn';
+  /** The admission-time Skill outcome for this exact source Message. */
+  skillInvocation?: SkillInvocationResult;
+  /**
+   * The exact-Turn intent this Message was submitted with — the Skill ids and
+   * the orchestration override. Content and placement do not describe it, so
+   * without this a retry that asks for a different execution mode under the
+   * same Message identity aliases the earlier success. Absent on a record
+   * written for a submit that carried no exact intent.
+   */
+  submittedIntent?: SubmittedTurnIntent;
   placement: 'current_turn' | 'next_turn';
   disposition: 'steering' | 'followup' | 'turn_started';
 }
@@ -81,8 +134,18 @@ export interface RootTurnAdmission {
   normalizedInput: MessageContent | null;
   turnOrchestration?: TurnOrchestration;
   skillInvocation?: SkillInvocationResult;
+  authorization?: RootTurnAdmissionAuthorization;
   sourceMessages: readonly RootTurnSourceMessage[];
   admittedAt: number;
+}
+
+export interface RootTurnAdmissionAuthorization {
+  readonly kind: 'session_turn_access_request';
+  readonly requestId: string;
+  readonly principalId: string;
+  readonly grantId: string;
+  readonly approvedAt: number;
+  readonly approvedBy: string;
 }
 
 export interface RootTurnStartRejection {
@@ -104,6 +167,7 @@ export interface AdmitRootTurnInput {
   normalizedInput: MessageContent | null;
   turnOrchestration?: TurnOrchestration;
   skillInvocation?: SkillInvocationResult;
+  authorization?: RootTurnAdmissionAuthorization;
   sourceMessages: readonly RootTurnSourceMessage[];
   admittedAt: number;
 }
@@ -159,8 +223,6 @@ export interface DurableAgentRunStore
   extends AgentRunStore,
     RootTurnAdmissionStore,
     RootTurnStartRejectionStore {
-  findRunsById(runId: string, limit: number): Promise<AgentRunIdentitySearchResult>;
-  listSessionRunsBounded(sessionId: string, limit: number): Promise<AgentRunIdentitySearchResult>;
   readEventsBounded(
     sessionId: string,
     runId: string,
@@ -172,26 +234,21 @@ export interface DurableAgentRunStore
     type: AgentRunEventType,
     budget: EvidenceReadBudget,
   ): Promise<BoundedEvidenceReadResult<AgentRunEvent>>;
-  listSessionRunsForRecovery(sessionId: string): Promise<AgentRunHeader[]>;
   readEventsForRecovery(sessionId: string, runId: string): Promise<AgentRunEvent[]>;
   readEventsForEvidence(sessionId: string, runId: string): Promise<AgentRunEvent[]>;
   readEventProjection(
     sessionId: string,
-    type: AgentRunEventType,
+    type: AgentRunProjectionKey,
   ): Promise<AgentRunEvent | null | undefined>;
+  readEventLedgerRevision(sessionId: string): Promise<string>;
   repairEventProjection(
     sessionId: string,
-    type: AgentRunEventType,
+    type: AgentRunProjectionKey,
     event: AgentRunEvent | null,
-    options?: { replaceEventId?: string },
+    options: { ifLedgerRevision: string; replaceEventId?: string },
   ): Promise<void>;
   ready?(): Promise<void>;
   close?(): void;
-}
-
-export interface AgentRunIdentitySearchResult {
-  readonly runs: readonly AgentRunHeader[];
-  readonly truncated: boolean;
 }
 
 export type { BoundedEvidenceReadResult, EvidenceReadBudget } from './bounded-evidence.js';
@@ -201,7 +258,36 @@ export interface ConversationCopyRuntimeEventBatch {
   readonly events: readonly RuntimeEvent[];
 }
 
+export interface RuntimeEventScanBudget {
+  readonly maxBatchBytes: number;
+  readonly maxRecordBytes: number;
+  readonly maxImmutableRecords: number;
+  readonly maxImmutableBytes: number;
+  readonly maxPartialRecords: number;
+  readonly maxPartialBytes: number;
+}
+
+export type RuntimeEventScanResult = { readonly status: 'complete' | 'limit_exceeded' };
+
 export interface DurableRuntimeEventStore extends RuntimeEventStore {
+  listSessionInvocations(sessionId: string): Promise<RuntimeInvocationRecord[]>;
+  readRunInvocation(sessionId: string, runId: string): Promise<RuntimeInvocationRecord | undefined>;
+  listSessionInvocationsBounded(
+    sessionId: string,
+    limit: number,
+  ): Promise<RuntimeInvocationSearchResult>;
+  listSessionInvocationsPage(
+    sessionId: string,
+    input: RuntimeInvocationPageInput,
+  ): Promise<RuntimeInvocationPageResult>;
+  readInvocation(sessionId: string, invocationId: string): Promise<RuntimeInvocationRecord>;
+  /** Visit one ordered, bounded SQLite snapshot without retaining the immutable ledger. */
+  scanRuntimeEvents(
+    sessionId: string,
+    runId: string,
+    budget: RuntimeEventScanBudget,
+    visit: (events: readonly RuntimeEvent[]) => void,
+  ): Promise<RuntimeEventScanResult>;
   readRuntimeEventsBounded(
     sessionId: string,
     runId: string,
@@ -251,189 +337,146 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
     return Promise.resolve();
   }
 
-  async createRun(
-    header: AgentRunHeader,
-    _options: { durable?: boolean } = {},
-  ): Promise<AgentRunHeader> {
-    const normalized = normalizeAgentRunHeader(header, header.sessionId, header.runId);
-    this.#lease.transaction('write', () => {
-      const inserted = this.#lease.database
-        .prepare(`
-          INSERT OR IGNORE INTO core_agent_runs(
-            session_id, run_id, created_at, record_json
-          ) VALUES (?, ?, ?, ?)
-        `)
-        .run(
-          normalized.sessionId,
-          normalized.runId,
-          normalized.createdAt,
-          JSON.stringify(normalized, sanitizeJson),
-        );
-      if (inserted.changes !== 1) {
-        throw new Error(`Agent run already exists: ${normalized.runId}`);
-      }
-      const count = this.#lease.database
-        .prepare('SELECT COUNT(*) AS count FROM core_agent_runs WHERE session_id = ?')
-        .get(normalized.sessionId) as { count?: unknown };
-      const projection = this.#lease.database
-        .prepare(`
-          SELECT 1 AS present
-          FROM core_agent_run_projections
-          WHERE session_id = ? AND event_type = 'history_compact_checkpoint_recorded'
-        `)
-        .get(normalized.sessionId);
-      if (count.count === 1 && !projection) {
-        this.#lease.database
-          .prepare(`
-            INSERT INTO core_agent_run_projections(session_id, event_type, event_json)
-            VALUES (?, 'history_compact_checkpoint_recorded', NULL)
-          `)
-          .run(normalized.sessionId);
-      }
-    });
-    return normalized;
-  }
-
-  async updateRun(
-    sessionId: string,
-    runId: string,
-    patch: Partial<AgentRunHeader>,
-    _options: { durable?: boolean } = {},
-  ): Promise<AgentRunHeader> {
-    assertMutableRunHeaderPatch(patch);
-    assertSafeId(sessionId, 'Invalid session id');
-    assertSafeId(runId, 'Invalid run id');
-    return this.#lease.transaction('write', () => {
-      const current = readSqliteAgentRun(this.#lease.database, sessionId, runId);
-      if (Object.hasOwn(patch, 'runComposition')) {
-        if (!patch.runComposition) {
-          throw new Error('AgentRun Run Composition cannot be cleared');
-        }
-        if (
-          current.runComposition &&
-          !isDeepStrictEqual(current.runComposition, patch.runComposition)
-        ) {
-          throw new Error('AgentRun Run Composition is immutable');
-        }
-      }
-      const next = normalizeAgentRunHeader(
-        { ...current, ...patch, sessionId, runId },
-        sessionId,
-        runId,
-      );
-      const result = this.#lease.database
-        .prepare(`
-          UPDATE core_agent_runs
-          SET created_at = ?, record_json = ?
-          WHERE session_id = ? AND run_id = ?
-        `)
-        .run(next.createdAt, JSON.stringify(next, sanitizeJson), sessionId, runId);
-      if (result.changes !== 1) throw new Error(`Failed to update run ${runId}`);
-      return next;
-    });
-  }
-
-  async readRun(sessionId: string, runId: string): Promise<AgentRunHeader> {
-    assertSafeId(sessionId, 'Invalid session id');
-    assertSafeId(runId, 'Invalid run id');
-    return readSqliteAgentRun(this.#lease.database, sessionId, runId);
-  }
-
-  async listSessionRuns(sessionId: string): Promise<AgentRunHeader[]> {
-    return this.listSessionRunsForRecovery(sessionId);
-  }
-
-  async findRunsById(runId: string, limit: number): Promise<AgentRunIdentitySearchResult> {
-    assertSafeId(runId, 'Invalid run id');
-    assertIdentitySearchLimit(limit);
-    const rows = this.#lease.database
-      .prepare(`
-        SELECT session_id, record_json
-        FROM core_agent_runs
-        WHERE run_id = ?
-        ORDER BY session_id
-        LIMIT ?
-      `)
-      .all(runId, limit + 1) as Array<{ session_id?: unknown; record_json?: unknown }>;
-    const truncated = rows.length > limit;
-    const runs = rows.slice(0, limit).map((row) => {
-      if (typeof row.session_id !== 'string' || typeof row.record_json !== 'string') {
-        throw new Error('Invalid SQLite AgentRun identity row');
-      }
-      return normalizeAgentRunHeader(JSON.parse(row.record_json), row.session_id, runId);
-    });
-    return { runs, truncated };
-  }
-
-  async listSessionRunsBounded(
-    sessionId: string,
-    limit: number,
-  ): Promise<AgentRunIdentitySearchResult> {
-    assertSafeId(sessionId, 'Invalid session id');
-    assertIdentitySearchLimit(limit);
-    const rows = this.#lease.database
-      .prepare(`
-        SELECT run_id, record_json
-        FROM core_agent_runs
-        WHERE session_id = ?
-        ORDER BY created_at, run_id
-        LIMIT ?
-      `)
-      .all(sessionId, limit + 1) as Array<{ run_id?: unknown; record_json?: unknown }>;
-    const truncated = rows.length > limit;
-    const runs = rows.slice(0, limit).map((row) => {
-      if (typeof row.run_id !== 'string' || typeof row.record_json !== 'string') {
-        throw new Error('Invalid SQLite AgentRun row');
-      }
-      return normalizeAgentRunHeader(JSON.parse(row.record_json), sessionId, row.run_id);
-    });
-    return { runs, truncated };
-  }
-
-  async listSessionRunsForRecovery(sessionId: string): Promise<AgentRunHeader[]> {
-    assertSafeId(sessionId, 'Invalid session id');
-    const rows = this.#lease.database
-      .prepare(`
-        SELECT run_id, record_json
-        FROM core_agent_runs
-        WHERE session_id = ?
-        ORDER BY created_at, run_id
-      `)
-      .all(sessionId) as Array<{ run_id?: unknown; record_json?: unknown }>;
-    return rows.map((row) => {
-      if (typeof row.run_id !== 'string' || typeof row.record_json !== 'string') {
-        throw new Error('Invalid SQLite AgentRun row');
-      }
-      return normalizeAgentRunHeader(JSON.parse(row.record_json), sessionId, row.run_id);
-    });
-  }
-
   async appendEvent(
     sessionId: string,
     runId: string,
     event: EmittedAgentRunEvent,
-    _options: { durable?: boolean } = {},
+    options: AgentRunAppendOptions = {},
   ): Promise<void> {
     assertSafeId(sessionId, 'Invalid session id');
     assertSafeId(runId, 'Invalid run id');
     this.#lease.transaction('write', () => {
-      const header = readSqliteAgentRun(this.#lease.database, sessionId, runId);
+      const anchor = readSqliteRunAnchor(this.#lease.database, sessionId, runId);
+      this.#openLedgerStream(sessionId, runId, anchor.openedAt);
       const normalized = decodeAgentRunEvent(JSON.parse(JSON.stringify(event, sanitizeJson)), {
         sessionId,
         runId,
-        turnId: header.turnId,
+        turnId: anchor.turnId,
       });
-      const projection =
-        normalized.type === 'history_compact_checkpoint_recorded'
-          ? readSqliteAgentRunProjection(this.#lease.database, sessionId, normalized.type)
-          : undefined;
-      insertAgentRunEvent(this.#lease.database, normalized);
-      if (normalized.type === 'history_compact_checkpoint_recorded') {
-        const projected = shouldPreserveCheckpointProjectionDuringAppend(projection, normalized)
-          ? projection!
-          : normalized;
-        writeSqliteAgentRunProjection(this.#lease.database, sessionId, normalized.type, projected);
+      const type = normalized.type as AgentRunEventType;
+      if (type === RUN_COMPOSITION_RECORDED_EVENT_TYPE) {
+        // Write-once, enforced where the record lives. The composition is what
+        // the run was dispatched against; a second, different one would claim
+        // the run ran on a prompt and tool surface it never saw. An identical
+        // re-append is the writer retrying, so it is absorbed rather than
+        // refused.
+        const recorded = readSqliteRunCompositionEvent(this.#lease.database, sessionId, runId);
+        if (recorded) {
+          if (!isDeepStrictEqual(recorded.data, normalized.data)) {
+            throw new Error('AgentRun Run Composition is immutable');
+          }
+          return;
+        }
       }
+      const projectsCheckpoint = type === 'history_compact_checkpoint_recorded';
+      const projection = projectsCheckpoint
+        ? inspectSqliteAgentRunProjection(this.#lease.database, sessionId, type)
+        : undefined;
+      insertAgentRunEvent(this.#lease.database, normalized);
+      if (projection && projection.state !== 'malformed') {
+        const current = projectionValue(projection);
+        const row = shouldPreserveCheckpointProjectionDuringAppend(current, normalized)
+          ? current!
+          : normalized;
+        writeSqliteAgentRunProjection(this.#lease.database, sessionId, type, row);
+      }
+      // Derived state, committed with the event that authorises it (#2323).
+      // Inside THIS transaction, so the projection cannot outlive a metering
+      // append that failed, nor describe a request the ledger never recorded.
+      //
+      // Skipped for a subagent's run: those requests are real, but presenting
+      // one as the SESSION's latest context attributes another agent's prompt
+      // to this one. The opening fact is already loaded here, so the check is
+      // free.
+      const latestContext = options.latestContext;
+      if (latestContext && anchor.sessionInline) {
+        this.#writeLatestContextProjection(sessionId, normalized, latestContext);
+      }
+    });
+  }
+
+  /**
+   * Give this run's ledger its stream row, and the Session its first one.
+   *
+   * The row carries no semantic state: it is the parent `core_agent_run_events`
+   * hangs off and the place the model-call high water lives. Creating it on the
+   * first append is what stops it from being a second record of the run's
+   * existence — the opening fact already is that.
+   *
+   * The Session's first stream also initialises the compaction-checkpoint
+   * projection to an explicit empty, which is how a reader tells "no checkpoint
+   * yet" from "projection never built".
+   */
+  #openLedgerStream(sessionId: string, runId: string, createdAt: number): void {
+    const inserted = this.#lease.database
+      .prepare(
+        'INSERT OR IGNORE INTO core_agent_runs(session_id, run_id, created_at) VALUES (?, ?, ?)',
+      )
+      .run(sessionId, runId, createdAt);
+    if (inserted.changes !== 1) return;
+    const count = this.#lease.database
+      .prepare('SELECT COUNT(*) AS count FROM core_agent_runs WHERE session_id = ?')
+      .get(sessionId) as { count?: unknown };
+    if (count.count !== 1) return;
+    const projection = this.#lease.database
+      .prepare(`
+        SELECT 1 AS present
+        FROM core_agent_run_projections
+        WHERE session_id = ? AND event_type = 'history_compact_checkpoint_recorded'
+      `)
+      .get(sessionId);
+    if (projection) return;
+    this.#lease.database
+      .prepare(`
+        INSERT INTO core_agent_run_projections(session_id, event_type, event_json)
+        VALUES (?, 'history_compact_checkpoint_recorded', NULL)
+      `)
+      .run(sessionId);
+  }
+
+  /**
+   * Monotonic by the request's own completion, not by arrival.
+   *
+   * Overlapping turns append on independent queues, so a request that finished
+   * at 10 can arrive after one that finished at 20. Taking the newest arrival
+   * would move the answer backwards and leave a warm read disagreeing with a
+   * cold rebuild of the same ledger. Ties break on `attemptId` so two requests
+   * sharing a millisecond still order the same way everywhere.
+   */
+  #writeLatestContextProjection(
+    sessionId: string,
+    event: AgentRunEvent,
+    latest: LatestContextProjectionInput,
+  ): void {
+    const inspected = inspectSqliteAgentRunProjection(
+      this.#lease.database,
+      sessionId,
+      LATEST_CONTEXT_PROJECTION_TYPE,
+    );
+    // The canonical append must survive a damaged derived row, but the row's
+    // ordering is unknowable. Leave it untouched until a ledger rebuild can
+    // select the real latest attempt and repair it without guessing.
+    if (inspected.state === 'malformed') return;
+    const existing = projectionValue(inspected);
+    // Compared against the stored row's own completion, which the snapshot
+    // carries — not against an ordering field the row does not have, which is
+    // how the first version of this guard silently never fired. The rule
+    // itself is shared with the cold rebuild, so the two cannot disagree about
+    // which request is the latest one.
+    const current = existing?.data as { completedAt?: unknown; attemptId?: unknown } | undefined;
+    if (current && typeof current.completedAt === 'number') {
+      const incumbent = {
+        completedAt: current.completedAt,
+        attemptId: String(current.attemptId ?? ''),
+      };
+      const arriving = { completedAt: latest.orderedAt, attemptId: String(latest.attemptId) };
+      if (!supersedesLatestContext(arriving, incumbent)) return;
+    }
+    writeSqliteAgentRunProjection(this.#lease.database, sessionId, LATEST_CONTEXT_PROJECTION_TYPE, {
+      ...event,
+      type: LATEST_CONTEXT_PROJECTION_TYPE,
+      id: `latest-context-${latest.attemptId}`,
+      data: latest.snapshot,
     });
   }
 
@@ -478,25 +521,41 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
 
   async readEventProjection(
     sessionId: string,
-    type: AgentRunEventType,
+    type: AgentRunProjectionKey,
   ): Promise<AgentRunEvent | null | undefined> {
     assertSafeId(sessionId, 'Invalid session id');
     return readSqliteAgentRunProjection(this.#lease.database, sessionId, type);
   }
 
+  async readEventLedgerRevision(sessionId: string): Promise<string> {
+    assertSafeId(sessionId, 'Invalid session id');
+    return readSqliteAgentRunLedgerRevision(this.#lease.database, sessionId);
+  }
+
   async repairEventProjection(
     sessionId: string,
-    type: AgentRunEventType,
+    type: AgentRunProjectionKey,
     event: AgentRunEvent | null,
-    options: { replaceEventId?: string } = {},
+    options: { ifLedgerRevision: string; replaceEventId?: string },
   ): Promise<void> {
     assertSafeId(sessionId, 'Invalid session id');
+    if (!options || typeof options.ifLedgerRevision !== 'string') {
+      throw new Error('AgentRun projection repair requires a canonical ledger revision');
+    }
     if (event !== null && !isProjectedAgentRunEvent(event, sessionId, type)) {
       throw new Error(`Invalid AgentRun event projection repair for ${type}`);
     }
     this.#lease.transaction('write', () => {
-      const current = readSqliteAgentRunProjection(this.#lease.database, sessionId, type);
       if (
+        readSqliteAgentRunLedgerRevision(this.#lease.database, sessionId) !==
+        options.ifLedgerRevision
+      ) {
+        return;
+      }
+      const inspected = inspectSqliteAgentRunProjection(this.#lease.database, sessionId, type);
+      const current = projectionValue(inspected);
+      if (
+        inspected.state !== 'malformed' &&
         current?.id !== options.replaceEventId &&
         shouldPreserveProjectionDuringRepair(current, event, type)
       ) {
@@ -679,30 +738,105 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
   }
 }
 
-function normalizeAgentRunHeader(value: unknown, sessionId: string, runId: string): AgentRunHeader {
-  assertSafeId(sessionId, 'Invalid session id');
-  assertSafeId(runId, 'Invalid run id');
-  return decodeAgentRunHeader(JSON.parse(JSON.stringify(value, sanitizeJson)), {
-    sessionId,
-    runId,
-  });
+function readSqliteAgentRunLedgerRevision(db: DatabaseSync, sessionId: string): string {
+  const rows = db
+    .prepare(`
+      SELECT run.run_id, COUNT(event.sequence) AS event_count,
+             COALESCE(MAX(event.sequence), -1) AS high_water
+      FROM core_agent_runs AS run
+      LEFT JOIN core_agent_run_events AS event
+        ON event.session_id = run.session_id AND event.run_id = run.run_id
+      WHERE run.session_id = ?
+      GROUP BY run.run_id
+      ORDER BY run.run_id
+    `)
+    .all(sessionId) as Array<{
+    run_id?: unknown;
+    event_count?: unknown;
+    high_water?: unknown;
+  }>;
+  return JSON.stringify(
+    rows.map((row) => {
+      if (
+        typeof row.run_id !== 'string' ||
+        typeof row.event_count !== 'number' ||
+        !Number.isSafeInteger(row.event_count) ||
+        typeof row.high_water !== 'number' ||
+        !Number.isSafeInteger(row.high_water)
+      ) {
+        throw new Error('Invalid SQLite AgentRun ledger revision');
+      }
+      return [row.run_id, row.event_count, row.high_water];
+    }),
+  );
 }
 
-function readSqliteAgentRun(db: DatabaseSync, sessionId: string, runId: string): AgentRunHeader {
-  const row = db
+/**
+ * What the operational ledger needs to know about the run it belongs to.
+ *
+ * All of it is read off the event spine rather than kept beside the ledger: the
+ * turn the records must agree with, when the invocation opened, and whether its
+ * output is the owning Session's own conversation. Copying any of it into a
+ * second row is what made the Run header a rival authority.
+ *
+ * An invocation whose opening the migration could not project keeps a readable
+ * ledger: its turn and clock come from the events it does have, and it fails
+ * closed on the one judgement the opening was needed for.
+ */
+interface LedgerRunAnchor {
+  turnId: string;
+  openedAt: number;
+  sessionInline: boolean;
+}
+
+function readSqliteRunAnchor(db: DatabaseSync, sessionId: string, runId: string): LedgerRunAnchor {
+  const opening = db
     .prepare(`
-      SELECT record_json
-      FROM core_agent_runs
-      WHERE session_id = ? AND run_id = ?
+      SELECT turn_id, committed_at, payload_json
+      FROM runtime_events
+      WHERE session_id = ? AND run_id = ? AND event_kind = 'invocation_opened'
+      LIMIT 1
     `)
-    .get(sessionId, runId) as { record_json?: unknown } | undefined;
-  if (!row) {
-    const error = new Error(`Agent run does not exist: ${runId}`) as NodeJS.ErrnoException;
-    error.code = 'ENOENT';
-    throw error;
+    .get(sessionId, runId) as
+    | { turn_id: string; committed_at: number; payload_json: string }
+    | undefined;
+  if (opening) {
+    const content = runtimeEventInvocationOpening(
+      decodeRuntimeEvent(JSON.parse(opening.payload_json), {
+        sessionId,
+        runId,
+        turnId: opening.turn_id,
+      }),
+    );
+    if (!content) throw new Error(`RuntimeEvent for run ${runId} is not an opening fact`);
+    return {
+      turnId: opening.turn_id,
+      openedAt: opening.committed_at,
+      sessionInline: isSessionInlineInvocation(content),
+    };
   }
-  if (typeof row.record_json !== 'string') throw new Error('Invalid SQLite AgentRun row');
-  return normalizeAgentRunHeader(JSON.parse(row.record_json), sessionId, runId);
+  const legacy = db
+    .prepare(`
+      SELECT turn_id, opened_at, opening_json
+      FROM runtime_legacy_invocation_openings
+      WHERE session_id = ? AND run_id = ?
+      LIMIT 1
+    `)
+    .get(sessionId, runId) as
+    | { turn_id: string; opened_at: number; opening_json: string }
+    | undefined;
+  if (legacy) {
+    return {
+      turnId: legacy.turn_id,
+      openedAt: legacy.opened_at,
+      sessionInline: isSessionInlineInvocation(
+        decodeRuntimeInvocationOpened(JSON.parse(legacy.opening_json)),
+      ),
+    };
+  }
+  const error = new Error(`Agent run does not exist: ${runId}`) as NodeJS.ErrnoException;
+  error.code = 'ENOENT';
+  throw error;
 }
 
 function readSqliteAgentRunEvents(
@@ -719,7 +853,7 @@ function readSqliteAgentRunEvents(
     `)
     .all(sessionId, runId) as Array<{ record_json?: unknown }>;
   if (rows.length === 0) return [];
-  const header = readSqliteAgentRun(db, sessionId, runId);
+  const anchor = readSqliteRunAnchor(db, sessionId, runId);
   return rows.map((row) => {
     if (typeof row.record_json !== 'string') {
       throw new Error('Invalid SQLite AgentRun event row');
@@ -727,8 +861,37 @@ function readSqliteAgentRunEvents(
     return decodeAgentRunEvent(JSON.parse(row.record_json), {
       sessionId,
       runId,
-      turnId: header.turnId,
+      turnId: anchor.turnId,
     });
+  });
+}
+
+/** The run's one composition row, or nothing if it has not been dispatched yet. */
+function readSqliteRunCompositionEvent(
+  db: DatabaseSync,
+  sessionId: string,
+  runId: string,
+): AgentRunEvent | undefined {
+  const row = db
+    .prepare(`
+      SELECT record_json
+      FROM core_agent_run_events
+      WHERE session_id = ? AND run_id = ? AND event_type = ?
+      ORDER BY sequence
+      LIMIT 1
+    `)
+    .get(sessionId, runId, RUN_COMPOSITION_RECORDED_EVENT_TYPE) as
+    | { record_json?: unknown }
+    | undefined;
+  if (!row) return undefined;
+  if (typeof row.record_json !== 'string') {
+    throw new Error('Invalid SQLite AgentRun event row');
+  }
+  const anchor = readSqliteRunAnchor(db, sessionId, runId);
+  return decodeAgentRunEvent(JSON.parse(row.record_json), {
+    sessionId,
+    runId,
+    turnId: anchor.turnId,
   });
 }
 
@@ -758,7 +921,7 @@ function readSqliteAgentRunEventsForEvidence(
           .all(sessionId, runId, type)
   ) as Array<{ sequence?: unknown; record_json?: unknown }>;
   if (rows.length === 0) return [];
-  const header = readSqliteAgentRun(db, sessionId, runId);
+  const anchor = readSqliteRunAnchor(db, sessionId, runId);
   return rows.map((row) => {
     const lineNumber =
       typeof row.sequence === 'number' && Number.isSafeInteger(row.sequence) ? row.sequence + 1 : 0;
@@ -769,7 +932,7 @@ function readSqliteAgentRunEventsForEvidence(
       return decodeAgentRunEvent(JSON.parse(row.record_json), {
         sessionId,
         runId,
-        turnId: header.turnId,
+        turnId: anchor.turnId,
       });
     } catch (error) {
       return {
@@ -777,8 +940,8 @@ function readSqliteAgentRunEventsForEvidence(
         id: `run-event-corrupt-${lineNumber}`,
         runId,
         sessionId,
-        turnId: header.turnId,
-        ts: header.updatedAt,
+        turnId: anchor.turnId,
+        ts: anchor.openedAt,
         message: error instanceof Error ? error.message : 'Invalid SQLite AgentRun event row',
         data: { lineNumber },
       };
@@ -851,13 +1014,44 @@ function insertAgentRunEvent(db: DatabaseSync, event: AgentRunEvent): void {
     event.ts,
     JSON.stringify(event, sanitizeJson),
   );
+  if (event.type === MODEL_CALL_ATTEMPT_EVENT_TYPE) {
+    const updated = db
+      .prepare(`
+        UPDATE core_agent_runs
+        SET latest_model_call_sequence = ?
+        WHERE session_id = ? AND run_id = ?
+          AND (latest_model_call_sequence IS NULL OR latest_model_call_sequence < ?)
+      `)
+      .run(row.sequence, event.sessionId, event.runId, row.sequence).changes;
+    if (updated !== 1) throw new Error('Failed to advance model-call authority high-water');
+  }
 }
 
 function readSqliteAgentRunProjection(
   db: DatabaseSync,
   sessionId: string,
-  type: AgentRunEventType,
+  // A projection key, not necessarily an event type: `latest_context` names a
+  // derived row nothing ever appends under (#2323).
+  type: string,
 ): AgentRunEvent | null | undefined {
+  const inspected = inspectSqliteAgentRunProjection(db, sessionId, type);
+  if (inspected.state === 'malformed') {
+    throw new Error(`Invalid AgentRun event projection for ${type}`);
+  }
+  return projectionValue(inspected);
+}
+
+type SqliteAgentRunProjectionInspection =
+  | { state: 'missing' }
+  | { state: 'empty' }
+  | { state: 'malformed' }
+  | { state: 'valid'; event: AgentRunEvent };
+
+function inspectSqliteAgentRunProjection(
+  db: DatabaseSync,
+  sessionId: string,
+  type: string,
+): SqliteAgentRunProjectionInspection {
   const row = db
     .prepare(`
       SELECT event_json
@@ -865,22 +1059,32 @@ function readSqliteAgentRunProjection(
       WHERE session_id = ? AND event_type = ?
     `)
     .get(sessionId, type) as { event_json?: unknown } | undefined;
-  if (!row) return undefined;
-  if (row.event_json === null) return null;
-  if (typeof row.event_json !== 'string') {
-    throw new Error(`Invalid AgentRun event projection for ${type}`);
+  if (!row) return { state: 'missing' };
+  if (row.event_json === null) return { state: 'empty' };
+  if (typeof row.event_json !== 'string') return { state: 'malformed' };
+  let event: unknown;
+  try {
+    event = JSON.parse(row.event_json);
+  } catch {
+    return { state: 'malformed' };
   }
-  const event = JSON.parse(row.event_json);
   if (!isProjectedAgentRunEvent(event, sessionId, type)) {
-    throw new Error(`Invalid AgentRun event projection for ${type}`);
+    return { state: 'malformed' };
   }
-  return event;
+  return { state: 'valid', event };
+}
+
+function projectionValue(
+  inspected: SqliteAgentRunProjectionInspection,
+): AgentRunEvent | null | undefined {
+  if (inspected.state === 'valid') return inspected.event;
+  return inspected.state === 'empty' ? null : undefined;
 }
 
 function writeSqliteAgentRunProjection(
   db: DatabaseSync,
   sessionId: string,
-  type: AgentRunEventType,
+  type: string,
   event: AgentRunEvent | null,
 ): void {
   db.prepare(`
@@ -1014,17 +1218,23 @@ function normalizeAdmitRootTurnInput(input: AdmitRootTurnInput): RootTurnAdmissi
     input.skillInvocation === undefined
       ? undefined
       : decodeSkillInvocationResult(input.skillInvocation);
+  const authorization = normalizeRootTurnAdmissionAuthorization(input.authorization);
+  const execution = normalizeRootExecutionDescriptor(input.execution);
+  if (execution.kind === 'legacy_automation') {
+    throw new Error('New root admission cannot use removed Automation authority');
+  }
   const admission: RootTurnAdmission = {
     schemaVersion: ROOT_TURN_ADMISSION_SCHEMA_VERSION,
     sessionId: input.sessionId,
     turnId: input.turnId,
     runId: input.proposedRunId,
     userMessageId: input.proposedUserMessageId,
-    execution: normalizeRootExecutionDescriptor(input.execution),
+    execution,
     previousRootTurnId: input.previousRootTurnId,
     normalizedInput,
     ...(turnOrchestration ? { turnOrchestration } : {}),
     ...(skillInvocation ? { skillInvocation } : {}),
+    ...(authorization ? { authorization } : {}),
     sourceMessages,
     admittedAt: input.admittedAt,
   };
@@ -1033,23 +1243,13 @@ function normalizeAdmitRootTurnInput(input: AdmitRootTurnInput): RootTurnAdmissi
   return deepFreezeRootTurnAdmission(admission);
 }
 
-const MUTABLE_AGENT_RUN_HEADER_FIELDS = new Set<keyof AgentRunHeader>([
-  'status',
-  'updatedAt',
-  'completedAt',
-  'runComposition',
-  'failureClass',
-  'failureMessage',
-  'abortSource',
-  'traceWriteError',
-]);
-
-function assertMutableRunHeaderPatch(patch: Partial<AgentRunHeader>): void {
-  const immutable = Object.keys(patch).filter(
-    (key) => !MUTABLE_AGENT_RUN_HEADER_FIELDS.has(key as keyof AgentRunHeader),
-  );
-  if (immutable.length > 0) {
-    throw new Error(`AgentRun admission identity is immutable: ${immutable.sort().join(', ')}`);
+/** Whether a proposed admission satisfies the complete durable record contract and size bound. */
+export function rootTurnAdmissionRecordFits(input: AdmitRootTurnInput): boolean {
+  try {
+    normalizeAdmitRootTurnInput(input);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -1072,9 +1272,22 @@ function shouldPreserveCheckpointProjectionDuringAppend(
 function shouldPreserveProjectionDuringRepair(
   current: AgentRunEvent | null | undefined,
   candidate: AgentRunEvent | null,
-  type: AgentRunEventType,
+  type: AgentRunProjectionKey,
 ): boolean {
   if (!current) return false;
+  if (type === LATEST_CONTEXT_PROJECTION_TYPE) {
+    // Same ordering rule as the append-time guard, so repair and write cannot
+    // disagree about which request is the latest one. An incumbent whose order
+    // cannot be read is NOT preserved: the reader already treats an
+    // undecodable row as unanswered and rebuilds from the ledger, so keeping
+    // it would make that rebuild unwritable and leave every later refresh
+    // rescanning the whole session (#2323).
+    const incumbent = latestContextOrder(current);
+    if (!incumbent) return false;
+    const arriving = candidate && latestContextOrder(candidate);
+    if (!arriving) return true;
+    return !supersedesLatestContext(arriving, incumbent);
+  }
   if (type !== 'history_compact_checkpoint_recorded') return true;
   const currentSourceBound = historyCompactProjectionIsSourceBound(current);
   const candidateSourceBound = candidate ? historyCompactProjectionIsSourceBound(candidate) : false;
@@ -1087,6 +1300,19 @@ function shouldPreserveProjectionDuringRepair(
       candidateCoverage === undefined ||
       currentCoverage >= candidateCoverage)
   );
+}
+
+/**
+ * The ordering facts a stored latest-context row carries, or `undefined` when
+ * the row cannot state them — a damaged snapshot, or one written by a shape
+ * this build does not understand.
+ */
+function latestContextOrder(event: AgentRunEvent): LatestContextOrder | undefined {
+  const data = event.data as { completedAt?: unknown; attemptId?: unknown } | undefined;
+  if (!data || typeof data.completedAt !== 'number' || typeof data.attemptId !== 'string') {
+    return undefined;
+  }
+  return { completedAt: data.completedAt, attemptId: data.attemptId };
 }
 
 function historyCompactProjectionIsSourceBound(event: AgentRunEvent): boolean {
@@ -1140,7 +1366,7 @@ function historyCompactProjectionCoverage(event: AgentRunEvent): number | undefi
 function isProjectedAgentRunEvent(
   value: unknown,
   sessionId: string,
-  type: AgentRunEventType,
+  type: string,
 ): value is AgentRunEvent {
   if (!value || typeof value !== 'object') return false;
   const event = value as Partial<AgentRunEvent>;
@@ -1213,6 +1439,7 @@ function normalizeRootTurnAdmission(
     record.skillInvocation === undefined
       ? undefined
       : decodeSkillInvocationResult(record.skillInvocation);
+  const authorization = normalizeRootTurnAdmissionAuthorization(record.authorization);
   const admission: RootTurnAdmission = {
     schemaVersion: ROOT_TURN_ADMISSION_SCHEMA_VERSION,
     sessionId,
@@ -1224,6 +1451,7 @@ function normalizeRootTurnAdmission(
     normalizedInput,
     ...(turnOrchestration ? { turnOrchestration } : {}),
     ...(skillInvocation ? { skillInvocation } : {}),
+    ...(authorization ? { authorization } : {}),
     sourceMessages,
     admittedAt: record.admittedAt as number,
   };
@@ -1414,11 +1642,23 @@ function normalizeRootTurnSourceMessages(value: unknown): readonly RootTurnSourc
         'placement',
         'disposition',
         ...(Object.hasOwn(item, 'submittedContentDigest') ? ['submittedContentDigest'] : []),
+        ...(Object.hasOwn(item, 'submittedPlacement') ? ['submittedPlacement'] : []),
+        ...(Object.hasOwn(item, 'submittedIntent') ? ['submittedIntent'] : []),
+        ...(Object.hasOwn(item, 'skillInvocation') ? ['skillInvocation'] : []),
       ])
     ) {
       throw new Error(`Invalid root turn source message at index ${index}`);
     }
-    const { messageId, content, submittedContentDigest, placement, disposition } = item;
+    const {
+      messageId,
+      content,
+      submittedContentDigest,
+      submittedPlacement,
+      submittedIntent,
+      skillInvocation,
+      placement,
+      disposition,
+    } = item;
     if (
       typeof messageId !== 'string' ||
       !isSafeId(messageId) ||
@@ -1428,6 +1668,9 @@ function normalizeRootTurnSourceMessages(value: unknown): readonly RootTurnSourc
         disposition !== 'turn_started') ||
       (disposition === 'steering' && placement !== 'current_turn') ||
       (disposition === 'followup' && placement !== 'next_turn') ||
+      (submittedPlacement !== undefined &&
+        submittedPlacement !== 'current_turn' &&
+        submittedPlacement !== 'next_turn') ||
       (submittedContentDigest !== undefined && !isSha256Digest(submittedContentDigest))
     ) {
       throw new Error(`Invalid root turn source message at index ${index}`);
@@ -1444,6 +1687,13 @@ function normalizeRootTurnSourceMessages(value: unknown): readonly RootTurnSourc
         MAX_ATTACHMENT_COUNT,
       ),
       ...(submittedContentDigest !== undefined ? { submittedContentDigest } : {}),
+      ...(submittedPlacement !== undefined ? { submittedPlacement } : {}),
+      ...(submittedIntent !== undefined
+        ? { submittedIntent: normalizeSubmittedTurnIntent(submittedIntent) }
+        : {}),
+      ...(skillInvocation !== undefined
+        ? { skillInvocation: decodeSkillInvocationResult(skillInvocation) }
+        : {}),
       placement,
       disposition,
     });
@@ -1459,6 +1709,7 @@ function rootTurnAdmissionPayloadsEqual(
     isDeepStrictEqual(left.execution, right.execution) &&
     isDeepStrictEqual(left.turnOrchestration, right.turnOrchestration) &&
     isDeepStrictEqual(left.skillInvocation, right.skillInvocation) &&
+    isDeepStrictEqual(left.authorization, right.authorization) &&
     (left.normalizedInput === null || right.normalizedInput === null
       ? left.normalizedInput === right.normalizedInput
       : messageContentsEqual(left.normalizedInput, right.normalizedInput)) &&
@@ -1471,6 +1722,10 @@ function rootTurnAdmissionPayloadsEqual(
         source.placement === other.placement &&
         source.disposition === other.disposition &&
         source.submittedContentDigest === other.submittedContentDigest &&
+        (source.submittedPlacement ?? source.placement) ===
+          (other.submittedPlacement ?? other.placement) &&
+        submittedTurnIntentsEqual(source.submittedIntent, other.submittedIntent) &&
+        isDeepStrictEqual(source.skillInvocation, other.skillInvocation) &&
         messageContentsEqual(source.content, other.content)
       );
     })
@@ -1492,7 +1747,8 @@ function assertRootTurnAdmissionContract(admission: RootTurnAdmission): void {
   const providerRetry = execution.kind === 'linked_child_provider_retry';
   const inputlessExecution =
     execution.kind === 'safe_boundary_continuation' || execution.kind === 'context_compact';
-  const messageLessExecution = inputlessExecution || providerRetry;
+  const sourceBatch = execution.kind === 'external_message' && admission.sourceMessages.length > 1;
+  const messageLessExecution = inputlessExecution || providerRetry || sourceBatch;
   if (execution.kind === 'agent_graph_supervisor_wake') {
     if (
       admission.turnOrchestration?.mode !== 'graph' ||
@@ -1525,6 +1781,15 @@ function assertRootTurnAdmissionContract(admission: RootTurnAdmission): void {
   if (admission.skillInvocation && execution.kind !== 'external_message') {
     throw new Error(
       'Invalid root turn admission contract: Skill invocation requires external message execution',
+    );
+  }
+  if (
+    admission.authorization &&
+    execution.kind !== 'external_message' &&
+    execution.kind !== 'regenerate'
+  ) {
+    throw new Error(
+      'Invalid root turn admission contract: authorization proof requires external message or regenerate execution',
     );
   }
   if (execution.kind === 'claimed_agent_graph_intent') {
@@ -1588,6 +1853,7 @@ function deepFreezeRootTurnAdmission(admission: RootTurnAdmission): RootTurnAdmi
   Object.freeze(admission.execution);
   if (admission.turnOrchestration) Object.freeze(admission.turnOrchestration);
   if (admission.skillInvocation) Object.freeze(admission.skillInvocation);
+  if (admission.authorization) Object.freeze(admission.authorization);
   if (admission.normalizedInput) deepFreezeRootTurnMessageContent(admission.normalizedInput);
   for (const sourceMessage of admission.sourceMessages) {
     deepFreezeRootTurnMessageContent(sourceMessage.content);
@@ -1610,6 +1876,44 @@ function normalizeTurnOrchestration(value: unknown): TurnOrchestration | undefin
   return Object.freeze({ mode: value.mode, source: value.source });
 }
 
+function normalizeRootTurnAdmissionAuthorization(
+  value: unknown,
+): RootTurnAdmissionAuthorization | undefined {
+  if (value === undefined) return undefined;
+  if (
+    !isPlainRecord(value) ||
+    !hasExactKeys(value, [
+      'kind',
+      'requestId',
+      'principalId',
+      'grantId',
+      'approvedAt',
+      'approvedBy',
+    ]) ||
+    value.kind !== 'session_turn_access_request' ||
+    typeof value.requestId !== 'string' ||
+    !isSafeId(value.requestId) ||
+    typeof value.principalId !== 'string' ||
+    !isGraphControlIdentity(value.principalId) ||
+    typeof value.grantId !== 'string' ||
+    !isSafeId(value.grantId) ||
+    !Number.isSafeInteger(value.approvedAt) ||
+    (value.approvedAt as number) < 0 ||
+    typeof value.approvedBy !== 'string' ||
+    !isGraphControlIdentity(value.approvedBy)
+  ) {
+    throw new Error('Invalid root turn admission authorization');
+  }
+  return Object.freeze({
+    kind: value.kind,
+    requestId: value.requestId,
+    principalId: value.principalId,
+    grantId: value.grantId,
+    approvedAt: value.approvedAt as number,
+    approvedBy: value.approvedBy,
+  });
+}
+
 function hasRootTurnAdmissionKeys(record: Record<string, unknown>): boolean {
   const keys = [
     'schemaVersion',
@@ -1623,7 +1927,7 @@ function hasRootTurnAdmissionKeys(record: Record<string, unknown>): boolean {
     'sourceMessages',
     'admittedAt',
   ];
-  const optionalKeys = ['turnOrchestration', 'skillInvocation'].filter((key) =>
+  const optionalKeys = ['turnOrchestration', 'skillInvocation', 'authorization'].filter((key) =>
     Object.hasOwn(record, key),
   );
   return hasExactKeys(record, [...keys, ...optionalKeys]);
@@ -1655,6 +1959,15 @@ function normalizeRootExecutionDescriptor(value: unknown): RootExecutionDescript
       ...(value.maxSteps !== undefined ? { maxSteps: value.maxSteps } : {}),
     });
   }
+  if (value.kind === 'workhub_coordination') {
+    if (!hasExactKeys(value, ['kind', 'inputDigest']) || !isSha256Digest(value.inputDigest)) {
+      throw new Error('Invalid root execution descriptor');
+    }
+    return Object.freeze({
+      kind: 'workhub_coordination',
+      inputDigest: value.inputDigest,
+    });
+  }
   if (value.kind === 'regenerate') {
     if (
       !hasExactKeys(value, ['kind', 'sourceTurnId']) ||
@@ -1669,7 +1982,28 @@ function normalizeRootExecutionDescriptor(value: unknown): RootExecutionDescript
     if (!hasExactKeys(value, ['kind'])) throw new Error('Invalid root execution descriptor');
     return Object.freeze({ kind: 'context_compact' });
   }
-  if (value.kind === 'automation') {
+  if (value.kind === 'scheduled_task') {
+    if (
+      !hasExactKeys(value, [
+        'kind',
+        'scheduledTaskId',
+        ...(Object.hasOwn(value, 'executionFingerprint') ? ['executionFingerprint'] : []),
+      ]) ||
+      typeof value.scheduledTaskId !== 'string' ||
+      !isSafeId(value.scheduledTaskId) ||
+      (value.executionFingerprint !== undefined && !isSha256Digest(value.executionFingerprint))
+    ) {
+      throw new Error('Invalid root execution descriptor');
+    }
+    return Object.freeze({
+      kind: 'scheduled_task',
+      scheduledTaskId: value.scheduledTaskId,
+      ...(value.executionFingerprint !== undefined
+        ? { executionFingerprint: value.executionFingerprint }
+        : {}),
+    });
+  }
+  if (value.kind === 'automation' || value.kind === 'legacy_automation') {
     if (
       !hasExactKeys(value, ['kind', 'automationId']) ||
       typeof value.automationId !== 'string' ||
@@ -1677,7 +2011,7 @@ function normalizeRootExecutionDescriptor(value: unknown): RootExecutionDescript
     ) {
       throw new Error('Invalid root execution descriptor');
     }
-    return Object.freeze({ kind: 'automation', automationId: value.automationId });
+    return Object.freeze({ kind: 'legacy_automation', automationId: value.automationId });
   }
   if (value.kind === 'goal') {
     if (
@@ -1825,6 +2159,8 @@ function deepFreezeRootTurnMessageContent(content: MessageContent): void {
     Object.freeze(attachment);
   }
   if (content.attachments) Object.freeze(content.attachments);
+  for (const reference of content.directoryReferences ?? []) Object.freeze(reference);
+  if (content.directoryReferences) Object.freeze(content.directoryReferences);
   for (const quote of content.quotes ?? []) Object.freeze(quote);
   if (content.quotes) Object.freeze(content.quotes);
   Object.freeze(content);

@@ -1,4 +1,23 @@
-import type { UiCatalog, UiLocale } from '@maka/core';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 export type BrowserCopy = {
   unsupportedScheme: string;
@@ -7,6 +26,8 @@ export type BrowserCopy = {
   navigationFailed: string;
   navigationFailedDetail: string;
   panelAria: string;
+  panelAriaWithTitle: (title: string) => string;
+  insecure: string;
   backAria: string;
   back: string;
   forwardAria: string;
@@ -24,13 +45,15 @@ export type BrowserCopy = {
 };
 
 const BROWSER_COPY = {
-  zh: {
+  'zh-CN': {
     unsupportedScheme: '嵌入式浏览器只支持打开 HTTP/HTTPS 网页地址。',
     invalidUrl: '这个地址无法识别，请检查网址后重试。',
     openFailed: '无法打开地址',
     navigationFailed: '浏览器导航失败',
     navigationFailedDetail: '页面暂时无法打开，请稍后重试。',
     panelAria: '嵌入式浏览器',
+    panelAriaWithTitle: (title) => `嵌入式浏览器：${title}`,
+    insecure: '这个站点用 HTTP 传输，连接未加密。',
     backAria: '浏览器后退',
     back: '后退',
     forwardAria: '浏览器前进',
@@ -46,6 +69,30 @@ const BROWSER_COPY = {
     title: '嵌入式浏览器',
     description: '输入网址打开页面，或让助手帮你导航并操作。',
   },
+  'zh-TW': {
+    unsupportedScheme: '嵌入式瀏覽器只支援開啟 HTTP/HTTPS 網頁地址。',
+    invalidUrl: '這個地址無法識別，請檢查網址後重試。',
+    openFailed: '無法開啟地址',
+    navigationFailed: '瀏覽器導航失敗',
+    navigationFailedDetail: '頁面暫時無法開啟，請稍後重試。',
+    panelAria: '嵌入式瀏覽器',
+    panelAriaWithTitle: (title) => `嵌入式瀏覽器：${title}`,
+    insecure: '這個站點用 HTTP 傳輸，連線未加密。',
+    backAria: '瀏覽器後退',
+    back: '後退',
+    forwardAria: '瀏覽器前進',
+    forward: '前進',
+    stopAria: '停止載入頁面',
+    refreshAria: '重新整理頁面',
+    stop: '停止',
+    refresh: '重新整理',
+    addressAria: '瀏覽器地址',
+    addressPlaceholder: '輸入網址並回車',
+    closeAria: '關閉瀏覽器頁面',
+    close: '關閉頁面',
+    title: '嵌入式瀏覽器',
+    description: '輸入網址開啟頁面，或讓助手幫你導航並操作。',
+  },
   en: {
     unsupportedScheme: 'The embedded browser only supports HTTP and HTTPS addresses.',
     invalidUrl: 'This address is not valid. Check it and try again.',
@@ -53,6 +100,8 @@ const BROWSER_COPY = {
     navigationFailed: 'Browser navigation failed',
     navigationFailedDetail: 'The page could not be opened. Try again later.',
     panelAria: 'Embedded browser',
+    panelAriaWithTitle: (title) => `Embedded browser: ${title}`,
+    insecure: 'This site is served over HTTP, so the connection is not encrypted.',
     backAria: 'Go back in browser',
     back: 'Back',
     forwardAria: 'Go forward in browser',

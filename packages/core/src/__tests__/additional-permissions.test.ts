@@ -1,5 +1,24 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { expect } from '../test-helpers.js';
 import {
   compactAdditionalFileSystemPermissions,
   serializeAdditionalPermissionProfile,
@@ -14,9 +33,9 @@ describe('AdditionalPermissionProfile validation', () => {
         entries: [{ path: '/outside/file.txt', access: 'write', scope: 'exact' }],
       },
     });
-    expect(result.ok).toBe(true);
+    assert.strictEqual(result.ok, true);
     if (!result.ok) return;
-    expect(result.profile).toEqual({
+    assert.deepStrictEqual(result.profile, {
       fileSystem: {
         entries: [{ path: '/outside/file.txt', access: 'write', scope: 'exact' }],
       },
@@ -24,7 +43,7 @@ describe('AdditionalPermissionProfile validation', () => {
   });
 
   test('accepts one-command network enable', () => {
-    expect(validateAdditionalPermissionProfile({ network: { enabled: true } })).toEqual({
+    assert.deepStrictEqual(validateAdditionalPermissionProfile({ network: { enabled: true } }), {
       ok: true,
       profile: { network: { enabled: true } },
     });
@@ -45,12 +64,12 @@ describe('AdditionalPermissionProfile validation', () => {
       { network: { enabled: false } },
       { type: 'managed', network: { enabled: true } },
     ]) {
-      expect(validateAdditionalPermissionProfile(profile).ok).toBe(false);
+      assert.strictEqual(validateAdditionalPermissionProfile(profile).ok, false);
     }
   });
 
   test('compacts covered and duplicate entries deterministically', () => {
-    expect(
+    assert.deepStrictEqual(
       compactAdditionalFileSystemPermissions([
         { path: '/outside/tree/file.txt', access: 'read', scope: 'exact' },
         { path: '/outside/tree', access: 'read', scope: 'subtree' },
@@ -58,10 +77,11 @@ describe('AdditionalPermissionProfile validation', () => {
         { path: '/outside/write.txt', access: 'read', scope: 'exact' },
         { path: '/outside/write.txt', access: 'write', scope: 'exact' },
       ]),
-    ).toEqual([
-      { path: '/outside/tree', access: 'read', scope: 'subtree' },
-      { path: '/outside/write.txt', access: 'write', scope: 'exact' },
-    ]);
+      [
+        { path: '/outside/tree', access: 'read', scope: 'subtree' },
+        { path: '/outside/write.txt', access: 'write', scope: 'exact' },
+      ],
+    );
   });
 
   test('canonical serialization is stable across input order', () => {
@@ -78,7 +98,8 @@ describe('AdditionalPermissionProfile validation', () => {
       network: { enabled: true },
       fileSystem: { entries: [...first.fileSystem!.entries].reverse() },
     };
-    expect(serializeAdditionalPermissionProfile(first)).toBe(
+    assert.strictEqual(
+      serializeAdditionalPermissionProfile(first),
       serializeAdditionalPermissionProfile(second),
     );
   });

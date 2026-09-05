@@ -1,4 +1,23 @@
-export type OAuthEnrollmentProvider = 'claude-subscription' | 'openai-codex' | 'xai-oauth';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+export type OAuthEnrollmentProvider = 'openai-codex' | 'xai-oauth' | 'github-copilot';
 
 export type OAuthTokenEndpointErrorCategory =
   | 'invalid_grant'
@@ -40,16 +59,6 @@ export class OAuthDeviceAuthorizationExpiredError extends Error {
 export const OAUTH_MAX_TOKEN_CHARS = 32 * 1024;
 
 export const OAUTH_PROVIDER_CONTRACTS = {
-  'claude-subscription': {
-    clientId: '9d1c250a-e61b-44d9-88ed-5944d1962f5e',
-    authorizationEndpoint: 'https://claude.com/cai/oauth/authorize',
-    tokenEndpoint: 'https://platform.claude.com/v1/oauth/token',
-    redirectUri: 'https://platform.claude.com/oauth/code/callback',
-    scope: 'user:sessions:claude_code user:mcp_servers user:file_upload',
-    tokenUserAgent: 'claude-cli/2.1.153 (external, cli)',
-    presentation: 'paste-code',
-    experimentalEnvironmentVariable: 'MAKA_CLAUDE_SUBSCRIPTION_EXPERIMENTAL',
-  },
   'openai-codex': {
     clientId: 'app_EMoamEEZ73f0CkXaXp7hrann',
     tokenEndpoint: 'https://auth.openai.com/oauth/token',
@@ -62,15 +71,34 @@ export const OAUTH_PROVIDER_CONTRACTS = {
     deviceRedirectUri: 'https://auth.openai.com/deviceauth/callback',
     experimentalEnvironmentVariable: 'MAKA_CODEX_SUBSCRIPTION_EXPERIMENTAL',
   },
+  'github-copilot': {
+    // Borrowed identity, not Maka's. This is the GitHub Copilot editor OAuth
+    // app: GitHub's consent screen names that application while Maka receives
+    // and stores the credential. Copilot entitlement is granted to editor
+    // clients only, so no Maka-owned app can reach a user's own subscription
+    // today — but GitHub has not published an authorization for third-party
+    // reuse of this identity either. Because that basis is missing, the device
+    // sign-in ships off and an operator opts in per install with the variable
+    // below. Provenance, consent identity, and what would settle the question
+    // are recorded in `docs/github-copilot-oauth-identity.md`.
+    clientId: 'Iv1.b507a08c87ecfe98',
+    deviceEndpoint: 'https://github.com/login/device/code',
+    tokenEndpoint: 'https://github.com/login/oauth/access_token',
+    // `read:user` is what the Copilot token endpoint checks; no repository or
+    // workflow scope is requested, so the grant cannot reach a user's code.
+    scope: 'read:user',
+    deviceGrant: 'urn:ietf:params:oauth:grant-type:device_code',
+    experimentalEnvironmentVariable: 'MAKA_GITHUB_COPILOT_DEVICE_LOGIN_EXPERIMENTAL',
+  },
   'xai-oauth': {
     clientId: 'b1a00492-073a-47ea-816f-4c329264a828',
-    authorizationEndpoint: 'https://auth.x.ai/oauth2/authorize',
+    // xAI device-code flow: request a user code at `deviceEndpoint`, then
+    // exchange it at `tokenEndpoint` under `deviceGrant`. The loopback
+    // authorize endpoint, its 127.0.0.1 redirect, and the PKCE extras left
+    // with the paste-code presentation that was the only caller.
     deviceEndpoint: 'https://auth.x.ai/oauth2/device/code',
     tokenEndpoint: 'https://auth.x.ai/oauth2/token',
-    redirectUri: 'http://127.0.0.1:56121/callback',
     scope: 'openid profile email offline_access grok-cli:access api:access',
-    presentation: 'loopback',
-    authorizationExtras: [['plan', 'generic']] as ReadonlyArray<readonly [string, string]>,
     deviceGrant: 'urn:ietf:params:oauth:grant-type:device_code',
     defaultTokenLifetimeSeconds: 3_600,
   },
@@ -81,7 +109,14 @@ export function isOAuthEnrollmentProviderEnabled(
   environment: Readonly<Record<string, string | undefined>> = process.env,
 ): boolean {
   if (provider === 'xai-oauth') return true;
-  return environment[OAUTH_PROVIDER_CONTRACTS[provider].experimentalEnvironmentVariable] !== '0';
+  const flag = environment[OAUTH_PROVIDER_CONTRACTS[provider].experimentalEnvironmentVariable];
+  // GitHub Copilot is opt-in, not kill-switched: the device grant presents an
+  // OAuth identity Maka has no published authorization to use, so the sign-in
+  // stays off until an operator turns it on for their own install. The flag is
+  // how that choice is expressed; it is not the authorization basis.
+  if (provider === 'github-copilot') return flag === '1';
+  // Codex enrollment ships on, with the flag as its kill switch.
+  return flag !== '0';
 }
 
 /**

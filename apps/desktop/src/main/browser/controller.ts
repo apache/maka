@@ -1,7 +1,29 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { type BrowserWindow, type Session, shell, WebContentsView } from 'electron';
 import { CdpBridge, type AutomationEndpoint } from './cdp-bridge.js';
+import type { BrowserOriginLease } from './browser-host.js';
+import { BrowserOriginLeaseTracker } from './browser-origin-lease.js';
 import { browserViewWebPreferences } from './options.js';
 import {
+  type BrowserActionKind,
   type BrowserState,
   type BrowserViewRect,
   deriveBrowserState,
@@ -35,10 +57,12 @@ const VIEWPORT_RESTORE_POLL_MS = 16;
 export class BrowserViewController {
   private readonly view: WebContentsView;
   private destroyed = false;
-  private favicon: string | null = null;
   /** True while the view holds real on-screen bounds (last setViewport painted it). */
   private shownWithBounds = false;
   private automation: CdpBridge | null = null;
+  private readonly originLeases = new BrowserOriginLeaseTracker(() =>
+    this.destroyed || this.wc.isDestroyed() ? '' : this.wc.getURL(),
+  );
 
   constructor(
     private readonly window: BrowserWindow,
@@ -60,16 +84,9 @@ export class BrowserViewController {
     const wc = this.wc;
     wc.on('did-start-loading', () => this.emitState());
     wc.on('did-stop-loading', () => this.emitState());
-    wc.on('did-navigate', () => {
-      this.favicon = null;
-      this.emitState();
-    });
-    wc.on('did-navigate-in-page', () => this.emitState());
+    wc.on('did-navigate', () => this.recordNavigation());
+    wc.on('did-navigate-in-page', () => this.recordNavigation());
     wc.on('page-title-updated', () => this.emitState());
-    wc.on('page-favicon-updated', (_event, favicons: string[]) => {
-      this.favicon = favicons[0] ?? null;
-      this.emitState();
-    });
     wc.on('did-fail-load', () => this.emitState());
 
     // Single-view browser: keep http(s) "open in new window" links in-place and
@@ -123,7 +140,7 @@ export class BrowserViewController {
 
   state(): BrowserState {
     if (this.destroyed || this.wc.isDestroyed()) {
-      return deriveBrowserState({ url: '', title: '', canGoBack: false, canGoForward: false, loading: false, favicon: null });
+      return deriveBrowserState({ url: '', title: '', canGoBack: false, canGoForward: false, loading: false });
     }
     const wc = this.wc;
     return deriveBrowserState({
@@ -132,13 +149,22 @@ export class BrowserViewController {
       canGoBack: wc.navigationHistory.canGoBack(),
       canGoForward: wc.navigationHistory.canGoForward(),
       loading: wc.isLoading(),
-      favicon: this.favicon,
     });
   }
 
   private emitState(): void {
     if (this.destroyed) return;
     this.onState(this.sessionId, this.state());
+  }
+
+  private recordNavigation(): void {
+    if (this.destroyed) return;
+    this.originLeases.recordNavigation(this.wc.getURL());
+    this.emitState();
+  }
+
+  openOriginLease(approvedUrl: string, kind: BrowserActionKind): BrowserOriginLease {
+    return this.originLeases.open(approvedUrl, kind);
   }
 
   async navigate(input: string): Promise<void> {
@@ -256,7 +282,7 @@ export class BrowserViewController {
     // this it would keep showing stale hasPage/url for a page that is gone.
     this.onState(
       this.sessionId,
-      deriveBrowserState({ url: '', title: '', canGoBack: false, canGoForward: false, loading: false, favicon: null }),
+      deriveBrowserState({ url: '', title: '', canGoBack: false, canGoForward: false, loading: false }),
     );
     // Tear down the ws bridge; the debugger detaches with the wc.close() below.
     // Each step guarded so a half-gone window (during quit) can't strand the rest.

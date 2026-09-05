@@ -1,7 +1,30 @@
-import type { CuAction, CuPoint } from '@maka/core';
-import type { CuOverlayHook, CuOverlayHookContext, CuPresentationFence } from '@maka/runtime';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
 
-export type CursorActionKind = 'move' | 'click' | 'drag' | 'scroll';
+import type {
+  CuOverlayHook,
+  CuOverlayHookContext,
+  CuPresentationAction,
+  CuPresentationFence,
+} from '@maka/runtime/computer-use-types';
+
+export type CursorActionKind = 'click' | 'scroll';
 
 export interface CursorMoveInput {
   actionId: string;
@@ -48,59 +71,16 @@ const RESOLVED_PRESENTATION_FENCE: CuPresentationFence = {
   finished: Promise.resolve(),
 };
 
-function beginCoordinateOf(action: CuAction): CuPoint | undefined {
+function kindOf(action: CuPresentationAction): CursorActionKind | undefined {
   switch (action.type) {
-    case 'left_click_drag':
-      return action.startCoordinate;
-    case 'mouse_move':
-    case 'left_click':
-    case 'right_click':
-    case 'middle_click':
-    case 'double_click':
-    case 'triple_click':
-    case 'left_mouse_down':
-    case 'left_mouse_up':
-    case 'scroll':
-      return action.coordinate;
-    default:
-      return undefined;
-  }
-}
-
-function endCoordinateOf(action: CuAction): CuPoint | undefined {
-  switch (action.type) {
-    case 'mouse_move':
-    case 'left_click':
-    case 'right_click':
-    case 'middle_click':
-    case 'double_click':
-    case 'triple_click':
-    case 'left_mouse_down':
-    case 'left_mouse_up':
-    case 'scroll':
-    case 'left_click_drag':
-      return action.coordinate;
-    default:
-      return undefined;
-  }
-}
-
-function kindOf(action: CuAction): CursorActionKind {
-  switch (action.type) {
-    case 'left_click':
-    case 'right_click':
-    case 'middle_click':
-    case 'double_click':
-    case 'triple_click':
-    case 'left_mouse_down':
-    case 'left_mouse_up':
+    case 'click_element':
+    case 'select_text':
+    case 'secondary_action':
       return 'click';
-    case 'left_click_drag':
-      return 'drag';
-    case 'scroll':
+    case 'scroll_element':
       return 'scroll';
     default:
-      return 'move';
+      return undefined;
   }
 }
 
@@ -130,9 +110,9 @@ function keepElevated(context: CuOverlayHookContext): boolean {
 export function createComputerUseOverlayHook(controller: OverlayCursorSink): CuOverlayHook {
   return {
     onActionBegin(action, context) {
-      const declaredPoint = beginCoordinateOf(action);
+      const kind = kindOf(action);
       const screenPoint = context.presentationScreenPoint;
-      if (!declaredPoint || !screenPoint) {
+      if (!kind || !screenPoint) {
         controller.ensure(context.sessionId);
         return RESOLVED_PRESENTATION_FENCE;
       }
@@ -141,14 +121,15 @@ export function createComputerUseOverlayHook(controller: OverlayCursorSink): CuO
         sessionId: context.sessionId,
         screenX: screenPoint.x,
         screenY: screenPoint.y,
-        kind: kindOf(action),
-        instant: action.type !== 'mouse_move',
+        kind,
+        instant: true,
         keepElevated: keepElevated(context),
         ...(context.targetWindowId !== undefined ? { targetWindowId: context.targetWindowId } : {}),
       });
     },
     onActionEnd(action, result, context) {
-      if (!endCoordinateOf(action)) return;
+      const kind = kindOf(action);
+      if (!kind) return;
       if (!result?.outcome.ok) {
         controller.cancel({
           actionId: context.toolCallId,
@@ -156,20 +137,7 @@ export function createComputerUseOverlayHook(controller: OverlayCursorSink): CuO
         });
         return;
       }
-      // Where the executor says the pointer ended, and failing that, where the
-      // cursor was sent.
-      //
-      // Only the coordinate paths report a landing point; `runSemantic` returns
-      // none, because an element action never resolves to a pointer position at
-      // all. Requiring one meant every semantic action — the whole accessibility
-      // path, which is the only path Maka dispatches on by default — ended in
-      // `cancel()`. The cursor flew to the control and was then wiped instead of
-      // landing on it, so what a person saw was an arrow crossing the screen and
-      // vanishing, never touching anything.
-      //
-      // The fallback is not a guess: `presentationScreenPoint` is the point this
-      // same action was addressed to, computed from the element's own frame.
-      const screenPoint = result.resolvedScreenPoint ?? context.presentationScreenPoint;
+      const screenPoint = context.presentationScreenPoint;
       if (!screenPoint) {
         controller.cancel({
           actionId: context.toolCallId,
@@ -177,14 +145,13 @@ export function createComputerUseOverlayHook(controller: OverlayCursorSink): CuO
         });
         return;
       }
-      const kind = kindOf(action);
       controller.complete({
         actionId: context.toolCallId,
         sessionId: context.sessionId,
         screenX: screenPoint.x,
         screenY: screenPoint.y,
         kind,
-        pulse: result.outcome.ok && (kind === 'click' || kind === 'drag'),
+        pulse: kind === 'click',
         // `complete` raises the cursor for the landing, so it has to know
         // where to come back down to.
         ...(context.targetWindowId !== undefined ? { targetWindowId: context.targetWindowId } : {}),

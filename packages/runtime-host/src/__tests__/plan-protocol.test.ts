@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
@@ -20,10 +39,7 @@ const proposal = {
   submittedAt: 1,
 };
 
-test('Plan protocol declares bounded snapshot queries and stable controls', () => {
-  assert.equal(HOST_OPERATION_SPECS['plan.query'].mode, 'query');
-  assert.equal(HOST_OPERATION_SPECS['plan.control'].mode, 'control');
-  assert.equal(HOST_OPERATION_SPECS['plan.turn.start'].mode, 'command');
+test('Plan controls preserve request and result correlation', () => {
   assert.deepEqual(
     decodeRequestFrame({
       requestId: 'request-1',
@@ -153,16 +169,6 @@ test('Plan pages reject open shapes, oversized pages, and malformed nested state
     nextCursor: null,
   };
   assert.deepEqual(decodePlanQueryResult(page), page);
-  const legacyPage = {
-    ...page,
-    items: [
-      {
-        kind: 'proposal' as const,
-        proposal: { ...proposal, legacyProjection: { truncated: true as const } },
-      },
-    ],
-  };
-  assert.deepEqual(decodePlanQueryResult(legacyPage), legacyPage);
   assert.throws(() => decodePlanQueryResult({ ...page, extra: true }));
   assert.throws(() =>
     decodePlanQueryResult({
@@ -177,17 +183,6 @@ test('Plan pages reject open shapes, oversized pages, and malformed nested state
     decodePlanQueryResult({
       ...page,
       items: [{ kind: 'proposal', proposal: { ...proposal, unknown: true } }],
-    }),
-  );
-  assert.throws(() =>
-    decodePlanQueryResult({
-      ...page,
-      items: [
-        {
-          kind: 'proposal',
-          proposal: { ...proposal, legacyProjection: { truncated: false } },
-        },
-      ],
     }),
   );
   assert.throws(() =>

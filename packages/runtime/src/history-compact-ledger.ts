@@ -1,21 +1,77 @@
-import type { AgentRunEvent, AgentRunStore } from '@maka/core';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import type { AgentRunEvent, AgentRunStore } from '@maka/core/agent-run';
 import {
   canReplaceHistoryCompactCheckpoint,
+  isTextHistoryCompactCheckpoint,
   validateHistoryCompactCheckpointShape,
   type HistoryCompactCheckpoint,
 } from './history-compact-checkpoint.js';
+import { findCheckpointSummaryDefect } from './history-compact-summary-validation.js';
 
 interface LedgerCheckpointCandidate {
   checkpoint: HistoryCompactCheckpoint;
   event: AgentRunEvent;
 }
 
+/**
+ * Version-aware semantic admission at the load authority (#3029, #3041).
+ * A checkpoint stamped with the sectioned summary format is held to the
+ * complete shared predicate (minus the size floor, whose covered-span
+ * estimate is not durable), so a malformed summary that slipped through a
+ * direct recorder or copy seam never becomes authoritative again after
+ * restart.
+ */
+function hasLoadableHistoryCompactSummary(checkpoint: HistoryCompactCheckpoint): boolean {
+  if (!isTextHistoryCompactCheckpoint(checkpoint)) return true;
+  return findCheckpointSummaryDefect(checkpoint.summary) === undefined;
+}
+
+export async function loadHistoryCompactCheckpointsFromRunLedger(
+  runStore: Pick<AgentRunStore, 'readEvents'>,
+  sessionId: string,
+  runIds: readonly string[],
+): Promise<HistoryCompactCheckpoint[]> {
+  const checkpoints = new Map<string, HistoryCompactCheckpoint>();
+  for (const runId of runIds) {
+    for (const event of await runStore.readEvents(sessionId, runId)) {
+      if (event.type !== 'history_compact_checkpoint_recorded') continue;
+      const checkpoint = event.data?.checkpoint;
+      if (
+        validateHistoryCompactCheckpointShape(checkpoint, sessionId) &&
+        hasLoadableHistoryCompactSummary(checkpoint)
+      ) {
+        checkpoints.set(checkpoint.checkpointId, checkpoint);
+      }
+    }
+  }
+  return [...checkpoints.values()];
+}
+
 export async function loadLatestHistoryCompactCheckpointFromRunLedger(
   runStore: Pick<
     AgentRunStore,
-    'listSessionRuns' | 'readEvents' | 'readEventProjection' | 'repairEventProjection'
+    'readEvents' | 'readEventProjection' | 'readEventLedgerRevision' | 'repairEventProjection'
   >,
   sessionId: string,
+  runIds: readonly string[],
 ): Promise<HistoryCompactCheckpoint | undefined> {
   let replaceEventId: string | undefined;
   if (runStore.readEventProjection) {
@@ -26,33 +82,47 @@ export async function loadLatestHistoryCompactCheckpointFromRunLedger(
       );
       if (projected === null) return undefined;
       const checkpoint = projected?.data?.checkpoint;
-      if (validateHistoryCompactCheckpointShape(checkpoint, sessionId)) return checkpoint;
+      if (
+        validateHistoryCompactCheckpointShape(checkpoint, sessionId) &&
+        hasLoadableHistoryCompactSummary(checkpoint)
+      ) {
+        return checkpoint;
+      }
       replaceEventId = projected?.id;
     } catch {
       // Recover the derived projection from the canonical ledger below.
     }
   }
-  const runs = await runStore.listSessionRuns(sessionId);
+  const ledgerRevision =
+    runStore.readEventLedgerRevision && runStore.repairEventProjection
+      ? await runStore.readEventLedgerRevision(sessionId)
+      : undefined;
   const candidates: LedgerCheckpointCandidate[] = [];
-  for (let runIndex = runs.length - 1; runIndex >= 0; runIndex -= 1) {
-    const run = runs[runIndex]!;
-    const events = await runStore.readEvents(sessionId, run.runId);
+  for (let runIndex = runIds.length - 1; runIndex >= 0; runIndex -= 1) {
+    const events = await runStore.readEvents(sessionId, runIds[runIndex]!);
     for (let eventIndex = events.length - 1; eventIndex >= 0; eventIndex -= 1) {
       const event = events[eventIndex]!;
       if (event.type !== 'history_compact_checkpoint_recorded') continue;
       const checkpoint = event.data?.checkpoint;
-      if (validateHistoryCompactCheckpointShape(checkpoint, sessionId)) {
+      if (
+        validateHistoryCompactCheckpointShape(checkpoint, sessionId) &&
+        hasLoadableHistoryCompactSummary(checkpoint)
+      ) {
         candidates.push({ checkpoint, event });
       }
     }
   }
   const selected = selectRecoveredCheckpoint(candidates);
+  if (ledgerRevision === undefined) return selected?.checkpoint;
   await runStore
     .repairEventProjection?.(
       sessionId,
       'history_compact_checkpoint_recorded',
       selected?.event ?? null,
-      replaceEventId ? { replaceEventId } : undefined,
+      {
+        ifLedgerRevision: ledgerRevision,
+        ...(replaceEventId ? { replaceEventId } : {}),
+      },
     )
     .catch(() => {
       // Recovery succeeded; a later cold read can retry this derived-state repair.

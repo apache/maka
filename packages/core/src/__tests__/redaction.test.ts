@@ -1,9 +1,30 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { formatWithOptions } from 'node:util';
 import { describe, test } from 'node:test';
 import {
   generalizedErrorMessage,
   generalizedErrorMessageChinese,
+  generalizedErrorMessageForLocale,
+  generalizedErrorMessageTraditionalChinese,
   redactSecrets,
 } from '../redaction.js';
 
@@ -38,6 +59,20 @@ describe('redactSecrets', () => {
 
   test('applies bounded text patterns to top-level JSON number primitives', () => {
     assert.equal(redactSecrets('1234567890123456789012345678901234567890'), '[redacted]');
+  });
+
+  test('replaces bare provider tokens entirely, echoing no part of the match', () => {
+    const cases = [
+      'token sk-abc12345 done',
+      'token sk-ant-abc12345 done',
+      'token AIza0123456789_ABCdefGHIjkl done',
+      'token ghp_0123456789abcdefghij done',
+      'token xoxb-0123456789abcdef done',
+      'token 0123456789abcdef0123456789abcdef01234567 done',
+    ];
+    for (const text of cases) {
+      assert.equal(redactSecrets(text), 'token [redacted] done');
+    }
   });
 
   test('masks only sensitive URL query values', () => {
@@ -345,6 +380,41 @@ describe('generalizedErrorMessageChinese', () => {
         '无法基于该上下文创建新会话。',
       ),
       '无法基于该上下文创建新会话。',
+    );
+  });
+});
+
+describe('localized generalized error messages', () => {
+  test('routes one shared classification through each locale catalog', () => {
+    const error = new Error('HTTP 503 from provider');
+    assert.equal(
+      generalizedErrorMessageForLocale(error, 'fallback', 'en'),
+      'Provider returned an error',
+    );
+    assert.equal(generalizedErrorMessageForLocale(error, '後備', 'zh-CN'), '模型服务返回错误');
+    assert.equal(generalizedErrorMessageForLocale(error, '備援', 'zh-TW'), '模型服務傳回錯誤');
+  });
+
+  test('uses Taiwan terminology for Traditional Chinese categories', () => {
+    for (const [raw, expected] of [
+      ['Request timeout after 30s', '請求逾時'],
+      ['HTTP 429 Too Many Requests', '已達模型速率限制'],
+      ['401 Unauthorized', '驗證失敗'],
+      ['HTTP 500 Internal Server Error', '模型服務傳回錯誤'],
+      ['network unreachable', '網路錯誤'],
+      ['something weird happened', '操作失敗'],
+    ]) {
+      assert.equal(generalizedErrorMessageTraditionalChinese(new Error(raw)), expected);
+    }
+  });
+
+  test('routes each resolved locale without changing the supplied fallback', () => {
+    const error = new Error('something weird happened');
+    assert.equal(generalizedErrorMessageForLocale(error, '简中后备', 'zh-CN'), '简中后备');
+    assert.equal(generalizedErrorMessageForLocale(error, '繁中備援', 'zh-TW'), '繁中備援');
+    assert.equal(
+      generalizedErrorMessageForLocale(error, 'English fallback', 'en'),
+      'English fallback',
     );
   });
 });

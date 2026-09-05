@@ -1,3 +1,23 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
@@ -128,10 +148,27 @@ test('rejects accidental admission re-entry instead of deadlocking', async () =>
   });
 });
 
-function deferred(): { promise: Promise<void>; resolve(): void } {
-  let resolve!: () => void;
-  const promise = new Promise<void>((settle) => {
-    resolve = settle;
+test('work detached from an admission takes admissions of its own', async () => {
+  const gate = new SessionAdmissionGate();
+  const release = deferred();
+  const order: string[] = [];
+  let detached!: Promise<void>;
+
+  // The detached work starts inside the admission and admits before the
+  // admission ends, which is the order a drained Turn reaches its first
+  // admission in. Inherited context would reject it as re-entry.
+  await gate.run('session', async () => {
+    order.push('active:start');
+    detached = gate.detach(async () => {
+      await gate.run('session', () => {
+        order.push('detached:admitted');
+      });
+    });
+    await Promise.resolve();
+    order.push('active:end');
+    release.resolve();
   });
-  return { promise, resolve };
-}
+  await release.promise;
+  await detached;
+  assert.deepEqual(order, ['active:start', 'active:end', 'detached:admitted']);
+});

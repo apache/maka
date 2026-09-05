@@ -1,7 +1,31 @@
-import type { OnboardingState, UiCatalog, UiLocale } from '@maka/core';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import type { OnboardingState } from '@maka/core/onboarding';
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 import type { OnboardingHeroCopy } from '../onboarding-hero-copy.js';
 
-type VisibleOnboardingKind = Exclude<OnboardingState['kind'], 'ready_with_history' | 'ready_empty'>;
+// Blocked states are keyed by reason, not just by kind: a new blocked reason
+// then cannot ship without its own copy.
+type VisibleOnboardingKind =
+  | Exclude<OnboardingState['kind'], 'ready_with_history' | 'ready_empty' | 'blocked'>
+  | `blocked:${Extract<OnboardingState, { kind: 'blocked' }>['reason']}`;
 type LocalizedOnboardingHeroCopy = Omit<
   OnboardingHeroCopy,
   'kind' | 'connectionSlug' | 'cta'
@@ -27,7 +51,7 @@ export interface OnboardingCatalog {
 }
 
 const ONBOARDING_COPY_BY_LOCALE: UiCatalog<OnboardingCatalog> = {
-  zh: {
+  'zh-CN': {
     hero: {
       needs_connection: {
         eyebrow: '欢迎使用 Maka',
@@ -47,11 +71,18 @@ const ONBOARDING_COPY_BY_LOCALE: UiCatalog<OnboardingCatalog> = {
         body: '启用一个可用于对话的模型，新任务就可以开始了。',
         cta: { label: '选择可用模型' },
       },
-      blocked: {
+      'blocked:all_connections_unhealthy': {
         eyebrow: '连接需要处理',
         title: '模型连接暂时不可用。',
         body: '现有连接都没有通过验证。检查凭据、登录状态或网络后重新测试。',
         cta: { label: '修复模型连接' },
+        tone: 'destructive',
+      },
+      'blocked:all_connections_retired': {
+        eyebrow: '连接需要处理',
+        title: '现有连接的登录方式已停用。',
+        body: '这些连接使用的登录方式已从 Maka 移除，无法再登录，也无法用于对话。添加一个新的模型连接即可继续。',
+        cta: { label: '添加模型连接' },
         tone: 'destructive',
       },
     },
@@ -68,6 +99,55 @@ const ONBOARDING_COPY_BY_LOCALE: UiCatalog<OnboardingCatalog> = {
     connectionLabel: '连接',
     skip: '跳过引导',
     snapshotErrorFallback: '首次使用状态暂时不可用，请稍后重试。',
+  },
+  'zh-TW': {
+    hero: {
+      needs_connection: {
+        eyebrow: '歡迎使用 Maka',
+        title: '串接一個 AI，開始第一項任務。',
+        body: 'Maka 在本地執行，使用你自己的模型帳號或 API key。先選一個常用服務商。',
+        cta: { label: '瀏覽全部服務商' },
+      },
+      needs_connection_credentials: {
+        eyebrow: '繼續設定連線',
+        title: '補齊這個連線的憑據。',
+        body: '新增 API key 或完成帳號登入，Maka 才能呼叫模型。',
+        cta: { label: '設定連線憑據' },
+      },
+      needs_model: {
+        eyebrow: '繼續設定連線',
+        title: '為這個連線啟用一個可用模型。',
+        body: '啟用一個可用於對話的模型，新任務就可以開始了。',
+        cta: { label: '選擇可用模型' },
+      },
+      'blocked:all_connections_unhealthy': {
+        eyebrow: '連線需要處理',
+        title: '模型連線暫時不可用。',
+        body: '現有連線都沒有透過驗證。檢查憑據、登入狀態或網路後重新測試。',
+        cta: { label: '修復模型連線' },
+        tone: 'destructive',
+      },
+      'blocked:all_connections_retired': {
+        eyebrow: '連線需要處理',
+        title: '現有連線的登入方式已停用。',
+        body: '這些連線使用的登入方式已從 Maka 移除，無法再登入，也無法用於對話。新增一個新的模型連線即可繼續。',
+        cta: { label: '新增模型連線' },
+        tone: 'destructive',
+      },
+    },
+    needsConnection: {
+      pickLabel: '選擇常用服務商',
+      browseProviders: '瀏覽全部服務商',
+    },
+    refresh: {
+      connection: '重新檢測連線',
+      credentials: '重新檢測憑據',
+      model: '重新檢測模型',
+      blocked: '重新檢測連線',
+    },
+    connectionLabel: '連線',
+    skip: '跳過引導',
+    snapshotErrorFallback: '首次使用狀態暫時不可用，請稍後重試。',
   },
   en: {
     hero: {
@@ -89,11 +169,18 @@ const ONBOARDING_COPY_BY_LOCALE: UiCatalog<OnboardingCatalog> = {
         body: 'Enable a conversation-capable model and your first task can begin.',
         cta: { label: 'Choose an available model' },
       },
-      blocked: {
+      'blocked:all_connections_unhealthy': {
         eyebrow: 'Connection needs attention',
         title: 'Model connections are temporarily unavailable.',
         body: 'No existing connection passed verification. Check credentials, sign-in status, or network access, then test again.',
         cta: { label: 'Fix model connections' },
+        tone: 'destructive',
+      },
+      'blocked:all_connections_retired': {
+        eyebrow: 'Connection needs attention',
+        title: 'The sign-in your connections use is retired.',
+        body: 'The sign-in these connections use was removed from Maka. They can no longer be signed into or used in a conversation. Add a new model connection to continue.',
+        cta: { label: 'Add a model connection' },
         tone: 'destructive',
       },
     },

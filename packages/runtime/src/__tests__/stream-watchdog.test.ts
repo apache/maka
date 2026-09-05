@@ -1,10 +1,25 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { expect } from '../test-helpers.js';
-import {
-  StreamWatchdog,
-  formatStreamWatchdogError,
-  type StreamWatchdogTimeout,
-} from '../stream-watchdog.js';
+import { StreamWatchdog, type StreamWatchdogTimeout } from '../stream-watchdog.js';
 
 describe('StreamWatchdog', () => {
   test('fires connect timeout before any activity', () => {
@@ -21,10 +36,10 @@ describe('StreamWatchdog', () => {
 
     watchdog.start();
     timers.advance(29_999);
-    expect(fired).toEqual([]);
+    assert.deepStrictEqual(fired, []);
     timers.advance(1);
 
-    expect(fired).toEqual([{ phase: 'connect', elapsedMs: 30_000 }]);
+    assert.deepStrictEqual(fired, [{ phase: 'connect', elapsedMs: 30_000 }]);
   });
 
   test('activity switches to idle timeout and resets the clock', () => {
@@ -43,10 +58,10 @@ describe('StreamWatchdog', () => {
     timers.advance(5_000);
     watchdog.markActivity();
     timers.advance(9_999);
-    expect(fired).toEqual([]);
+    assert.deepStrictEqual(fired, []);
     timers.advance(1);
 
-    expect(fired).toEqual([{ phase: 'idle', elapsedMs: 10_000 }]);
+    assert.deepStrictEqual(fired, [{ phase: 'idle', elapsedMs: 10_000 }]);
   });
 
   test('pause suppresses timeout while waiting for user permission', () => {
@@ -65,13 +80,13 @@ describe('StreamWatchdog', () => {
     watchdog.markActivity();
     watchdog.pause();
     timers.advance(600_000);
-    expect(fired).toEqual([]);
+    assert.deepStrictEqual(fired, []);
 
     watchdog.resume();
     timers.advance(9_999);
-    expect(fired).toEqual([]);
+    assert.deepStrictEqual(fired, []);
     timers.advance(1);
-    expect(fired).toEqual([{ phase: 'idle', elapsedMs: 10_000 }]);
+    assert.deepStrictEqual(fired, [{ phase: 'idle', elapsedMs: 10_000 }]);
   });
 
   test('nested pauses require matching resumes before idle timeout restarts', () => {
@@ -91,17 +106,17 @@ describe('StreamWatchdog', () => {
     watchdog.pause();
     watchdog.pause();
     timers.advance(600_000);
-    expect(fired).toEqual([]);
+    assert.deepStrictEqual(fired, []);
 
     watchdog.resume();
     timers.advance(60_000);
-    expect(fired).toEqual([]);
+    assert.deepStrictEqual(fired, []);
 
     watchdog.resume();
     timers.advance(9_999);
-    expect(fired).toEqual([]);
+    assert.deepStrictEqual(fired, []);
     timers.advance(1);
-    expect(fired).toEqual([{ phase: 'idle', elapsedMs: 10_000 }]);
+    assert.deepStrictEqual(fired, [{ phase: 'idle', elapsedMs: 10_000 }]);
   });
 
   test('stop cancels the active timer', () => {
@@ -120,18 +135,7 @@ describe('StreamWatchdog', () => {
     watchdog.stop();
     timers.advance(1_000);
 
-    expect(fired).toEqual([]);
-  });
-});
-
-describe('formatStreamWatchdogError', () => {
-  test('formats timeout phase for classifier-friendly errors', () => {
-    expect(formatStreamWatchdogError({ phase: 'connect', elapsedMs: 30_000 })).toBe(
-      'Model stream connect timeout after 30000ms',
-    );
-    expect(formatStreamWatchdogError({ phase: 'idle', elapsedMs: 120_000 })).toBe(
-      'Model stream idle timeout after 120000ms',
-    );
+    assert.deepStrictEqual(fired, []);
   });
 });
 

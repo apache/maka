@@ -1,6 +1,25 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { createSqliteSessionMetadataStore } from '@maka/storage';
+import { createSqliteSessionMetadataStore } from '@maka/storage/sqlite-session-metadata-store';
 import type { AgentGraphSupervisorObservation } from '../stream-graph-dispatch.js';
 import type { MakaToolContext } from '../tool-runtime.js';
 import {
@@ -18,6 +37,10 @@ describe('stream graph supervisor tools', () => {
       graphId: 'graph-supervised',
       scheduleStore: store,
       observeGraph: async () => observationWithRecords('graph-supervised', ['verified-result']),
+      listHistoricalSelectedResults: async () => ({
+        results: [{ sourceGraphId: 'graph-previous', resultId: 'selected-result' }],
+        nextBeforeEpoch: null,
+      }),
     });
     try {
       assert.equal(viewTool.name, VIEW_AGENT_GRAPH_TOOL_NAME);
@@ -43,6 +66,9 @@ describe('stream graph supervisor tools', () => {
             agent_id: 'fact-checker',
             instruction: 'Verify the conflicting figures.',
             input_ids: ['result-b', 'result-a'],
+            selected_result_inputs: [
+              { source_graph_id: 'graph-previous', result_id: 'selected-result' },
+            ],
           },
           {
             operator_id: 'writer',
@@ -56,6 +82,13 @@ describe('stream graph supervisor tools', () => {
       assert.deepEqual(retry, first);
       assert.equal((await store.listAgentGraphScheduleUpdates('graph-supervised')).length, 1);
       assert.deepEqual(first.schedule.work[0]?.inputIds, ['result-a', 'result-b']);
+      assert.deepEqual(first.schedule.work[0]?.selectedResultInputs, [
+        { sourceGraphId: 'graph-previous', resultId: 'selected-result' },
+      ]);
+      assert.deepEqual(first.historicalSelectedResults, [
+        { sourceGraphId: 'graph-previous', resultId: 'selected-result' },
+      ]);
+      assert.equal(first.nextHistoricalBeforeEpoch, null);
       assert.equal(first.runtime.operators[0]?.status, 'running');
       assert.equal(first.runtime.operators[0]?.childSessionId, 'session-writer');
       assert.equal(first.runtime.operators[0]?.currentRunId, 'run-writer');

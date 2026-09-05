@@ -1,31 +1,147 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, test } from 'node:test';
-import type { AgentGraphOperatorProvisionRequest, CreateSessionInput } from '@maka/core';
-import { agentGraphIdForRootSession } from '@maka/runtime';
-import { createSessionStore } from '@maka/storage';
+import type { AgentGraphOperatorProvisionRequest } from '@maka/core/agent-graph-topology';
+import type { CreateSessionInput } from '@maka/core/runtime-inputs';
+import {
+  WORKHUB_COORDINATION_SESSION_ID,
+  WORKHUB_COORDINATION_SESSION_ROLE,
+} from '@maka/core/session';
+import { agentGraphIdForRootSession } from '@maka/runtime/stream-graph-coordinator';
+import { createSessionStore } from '@maka/storage/session-store';
+import { OPERATIONAL_STATE_DATABASE_NAME } from '@maka/storage/operational-state-store';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
 import {
-  HostAutomationSessionBusyError,
-  type HostAutomationSessionRetirement,
-} from '../server/automation-coordinator.js';
+  HostScheduledTaskSessionBusyError,
+  type HostScheduledTaskSessionRetirement,
+} from '../server/scheduled-task-coordinator.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 import { MemoryExtractionSessionLane } from '../server/memory-extraction-session-lane.js';
 import { HostSessionRetirementCoordinator } from '../server/session-retirement-coordinator.js';
+import { purgeSessionSidecars } from '../server/session-sidecar-purge.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 const CONNECTION_CONTEXT: ConnectionContext = {
   hostEpoch: 'retirement-test',
   connectionId: 'retirement-test-connection',
-  surface: 'tui',
   principal: 'local_os_user',
   acquireResidency: () => ({ release() {} }),
 };
 
 describe('Host Session retirement coordinator', () => {
+  test('retires context refs before draining every physical garbage batch', async () => {
+    const contextActions: string[] = [];
+    let garbageBatches = 0;
+    await purgeSessionSidecars(
+      {
+        artifacts: { purgeSessionArtifacts: async () => {} },
+        sessionTodo: { purgeSessionState: async () => {} },
+        contextOffload: {
+          retireSession: async (sessionId) => {
+            contextActions.push(`retire:${sessionId}`);
+            return { releasedReferences: 1, releasedLogicalBytes: 10 };
+          },
+          collectGarbage: async (input) => {
+            contextActions.push(`collect:${input.maxBlobs}`);
+            garbageBatches += 1;
+            return { deletedBlobs: 1, deletedBytes: 10, hasMore: garbageBatches < 3 };
+          },
+        },
+        purgeOperationalState: async () => {},
+      },
+      'session-context',
+    );
+
+    assert.deepEqual(contextActions, [
+      'retire:session-context',
+      'collect:64',
+      'collect:64',
+      'collect:64',
+    ]);
+  });
+
+  test('rejects ordinary archive and remove operations for the Coordination Session', async () => {
+    await withHarness(async (harness) => {
+      const created = await harness.store.createStableSession({
+        sessionId: WORKHUB_COORDINATION_SESSION_ID,
+        requestFingerprint: `sha256:${'a'.repeat(64)}`,
+        input: {
+          ...sessionInput('WorkHub', { cwd: '/tmp/workhub', projectId: null }),
+          role: WORKHUB_COORDINATION_SESSION_ROLE,
+        },
+      });
+      assert.equal(created.kind, 'created');
+      const database = new DatabaseSync(
+        join(harness.workspaceRoot, OPERATIONAL_STATE_DATABASE_NAME),
+      );
+      try {
+        database
+          .prepare(
+            `UPDATE session_metadata
+             SET payload_json = json_remove(payload_json, '$.role')
+             WHERE session_id = ?`,
+          )
+          .run(WORKHUB_COORDINATION_SESSION_ID);
+      } finally {
+        database.close();
+      }
+
+      const archive = await harness.coordinator.handlers['session.lifecycle.set'](
+        { sessionId: WORKHUB_COORDINATION_SESSION_ID, state: 'archived' },
+        CONNECTION_CONTEXT,
+      );
+      assert.deepEqual(archive, {
+        ok: false,
+        error: {
+          code: 'operation_conflict',
+          message: 'WorkHub Coordination Session lifecycle is owned by WorkHub',
+        },
+      });
+
+      const remove = await harness.coordinator.handlers['session.remove'](
+        {
+          sessionId: WORKHUB_COORDINATION_SESSION_ID,
+          expectedRevision: created.record.revision,
+        },
+        CONNECTION_CONTEXT,
+      );
+      assert.deepEqual(remove, {
+        ok: false,
+        error: {
+          code: 'operation_conflict',
+          message: 'WorkHub Coordination Session lifecycle is owned by WorkHub',
+        },
+      });
+      assert.equal(
+        (await harness.store.readHeaderSnapshot(WORKHUB_COORDINATION_SESSION_ID)).isArchived,
+        false,
+      );
+    });
+  });
+
   test('archives, restores, and removes one whole edit-and-resend family', async () => {
     await withHarness(async (harness) => {
       const archived = await harness.coordinator.handlers['session.lifecycle.set'](
@@ -102,6 +218,180 @@ describe('Host Session retirement coordinator', () => {
     });
   });
 
+  test('archives direct subagent Sessions when their parent family is removed', async () => {
+    await withHarness(async (harness) => {
+      const childSessionIds: string[] = [];
+      for (let index = 0; index < 32; index += 1) {
+        childSessionIds.push(
+          await createClosedSubagent(
+            harness,
+            index % 2 === 0 ? harness.rootId : harness.revisionId,
+            index,
+          ),
+        );
+      }
+      const target = await harness.store.readHeaderRecordSnapshot(harness.revisionId);
+
+      // The read-only preview reports the same deduped count the confirm warns
+      // off, before the delete executes.
+      const preview = await harness.coordinator.handlers['session.remove.preview'](
+        { sessionId: harness.revisionId },
+        CONNECTION_CONTEXT,
+      );
+      assert.deepEqual(preview, { ok: true, result: { archivableSubtaskCount: 32 } });
+
+      const removed = await harness.coordinator.handlers['session.remove'](
+        { sessionId: harness.revisionId, expectedRevision: target.revision },
+        CONNECTION_CONTEXT,
+      );
+
+      assert.deepEqual(removed, {
+        ok: true,
+        // Each of the 32 subagent children is a distinct subtask family, so the
+        // executed count the renderer reports is 32.
+        result: { kind: 'removed', sessionId: harness.revisionId, archivedSubtaskCount: 32 },
+      });
+      for (const sessionId of harness.familyIds) {
+        assert.deepEqual(await harness.store.probeSessionRemoval(sessionId), { kind: 'removed' });
+      }
+      for (const sessionId of childSessionIds) {
+        const probe = await harness.store.probeSessionRemoval(sessionId);
+        assert.equal(probe.kind, 'present');
+        if (probe.kind !== 'present') continue;
+        assert.equal(probe.record.header.isArchived, true);
+        assert.equal(probe.record.header.status, 'active');
+      }
+      assert.deepEqual(new Set(harness.actions.removedContinuity), new Set(harness.familyIds));
+      assert.deepEqual(
+        new Set(harness.actions.retiredMessages),
+        new Set([...harness.familyIds, ...childSessionIds]),
+      );
+      await waitFor(
+        () => harness.actions.purgedArtifacts.length === harness.familyIds.length,
+        'parent retirement cleanup did not converge',
+      );
+      assert.deepEqual(new Set(harness.actions.purgedArtifacts), new Set(harness.familyIds));
+      assert.deepEqual(new Set(harness.actions.retiredContext), new Set(harness.familyIds));
+    });
+  });
+
+  test('guards an already archived child without retiring it again', async () => {
+    await withHarness(async (harness) => {
+      const childSessionId = await createClosedSubagent(harness, harness.rootId, 0);
+      const archived = await harness.coordinator.handlers['session.lifecycle.set'](
+        { sessionId: childSessionId, state: 'archived' },
+        CONNECTION_CONTEXT,
+      );
+      assert.equal(archived.ok, true);
+      const childBeforeRemoval = await harness.store.readHeaderRecordSnapshot(childSessionId);
+      harness.actions.disposed.length = 0;
+      harness.actions.finalizedWorkspacePatches.length = 0;
+      harness.actions.retiredCapabilities.length = 0;
+      harness.actions.retiredMessages.length = 0;
+      harness.actions.retiredGraphWakes.length = 0;
+
+      let releaseDispose!: () => void;
+      const holdDispose = new Promise<void>((resolve) => {
+        releaseDispose = resolve;
+      });
+      let markDisposeStarted!: () => void;
+      const disposeStarted = new Promise<void>((resolve) => {
+        markDisposeStarted = resolve;
+      });
+      let held = false;
+      harness.disposeBackend = async (sessionId) => {
+        if (held || sessionId !== harness.rootId) return;
+        held = true;
+        markDisposeStarted();
+        await holdDispose;
+      };
+
+      const target = await harness.store.readHeaderRecordSnapshot(harness.rootId);
+      const removal = harness.coordinator.handlers['session.remove'](
+        { sessionId: harness.rootId, expectedRevision: target.revision },
+        CONNECTION_CONTEXT,
+      );
+      await disposeStarted;
+
+      let childAdmissionEntered = false;
+      const childAdmission = harness.admission.run(childSessionId, () => {
+        childAdmissionEntered = true;
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const enteredWhileParentRemovalWasHeld = childAdmissionEntered;
+
+      releaseDispose();
+      assert.deepEqual(await removal, {
+        ok: true,
+        result: { kind: 'removed', sessionId: harness.rootId },
+      });
+      await childAdmission;
+      assert.equal(enteredWhileParentRemovalWasHeld, false);
+      assert.equal(childAdmissionEntered, true);
+
+      const childAfterRemoval = await harness.store.readHeaderRecordSnapshot(childSessionId);
+      assert.equal(childAfterRemoval.revision, childBeforeRemoval.revision);
+      assert.equal(childAfterRemoval.committedAt, childBeforeRemoval.committedAt);
+      assert.equal(childAfterRemoval.header.isArchived, true);
+      assert.equal(childAfterRemoval.header.status, childBeforeRemoval.header.status);
+      assert.equal(childAfterRemoval.header.blockedReason, childBeforeRemoval.header.blockedReason);
+      assert.equal(
+        childAfterRemoval.header.statusUpdatedAt,
+        childBeforeRemoval.header.statusUpdatedAt,
+      );
+      for (const actions of [
+        harness.actions.disposed,
+        harness.actions.finalizedWorkspacePatches,
+        harness.actions.retiredCapabilities,
+        harness.actions.retiredMessages,
+        harness.actions.retiredGraphWakes,
+      ]) {
+        assert.equal(actions.includes(childSessionId), false);
+      }
+    });
+  });
+
+  test('blocks parent removal while a direct subagent Session is busy', async () => {
+    await withHarness(async (harness) => {
+      const childSessionId = await createClosedSubagent(harness, harness.rootId, 0);
+      harness.blockers.root.add(childSessionId);
+      const target = await harness.store.readHeaderRecordSnapshot(harness.rootId);
+
+      const removed = await harness.coordinator.handlers['session.remove'](
+        { sessionId: harness.rootId, expectedRevision: target.revision },
+        CONNECTION_CONTEXT,
+      );
+
+      assert.equal(removed.ok, false);
+      if (removed.ok) return;
+      assert.equal(removed.error.code, 'session_busy');
+      assert.match(removed.error.message, new RegExp(childSessionId));
+      assert.equal((await harness.store.probeSessionRemoval(harness.rootId)).kind, 'present');
+      assert.equal((await harness.store.readHeaderSnapshot(childSessionId)).isArchived, false);
+      assert.deepEqual(harness.actions.disposed, []);
+    });
+  });
+
+  test('archives ordinary subagent Sessions orphaned before startup recovery', async () => {
+    await withHarness(async (harness) => {
+      const childSessionId = await createClosedSubagent(harness, harness.rootId, 0);
+      const database = new DatabaseSync(join(harness.workspaceRoot, 'runtime.sqlite'));
+      try {
+        for (const sessionId of harness.familyIds) {
+          database.prepare('DELETE FROM session_metadata WHERE session_id = ?').run(sessionId);
+        }
+      } finally {
+        database.close();
+      }
+
+      await harness.coordinator.recover();
+
+      const child = await harness.store.readHeaderSnapshot(childSessionId);
+      assert.equal(child.isArchived, true);
+      assert.equal(child.status, 'active');
+    });
+  });
+
   test('retires graph operators with their root family and purges graph sidecars', async () => {
     await withHarness(async (harness) => {
       const childSessionIds = [
@@ -131,7 +421,9 @@ describe('Host Session retirement coordinator', () => {
       );
       assert.equal(archived.ok, true);
       for (const childSessionId of childSessionIds) {
-        assert.equal((await harness.store.readHeaderSnapshot(childSessionId)).status, 'archived');
+        const header = await harness.store.readHeaderSnapshot(childSessionId);
+        assert.equal(header.isArchived, true);
+        assert.equal(header.status, 'active');
       }
 
       const restored = await harness.coordinator.handlers['session.lifecycle.set'](
@@ -140,10 +432,19 @@ describe('Host Session retirement coordinator', () => {
       );
       assert.equal(restored.ok, true);
       for (const childSessionId of childSessionIds) {
-        assert.equal((await harness.store.readHeaderSnapshot(childSessionId)).status, 'active');
+        const header = await harness.store.readHeaderSnapshot(childSessionId);
+        assert.equal(header.isArchived, false);
+        assert.equal(header.status, 'active');
       }
 
       const target = await harness.store.readHeaderRecordSnapshot(harness.revisionId);
+      // Graph operators retire with the root rather than archive, so the delete
+      // preview promises nothing — the renderer must not warn about them.
+      const preview = await harness.coordinator.handlers['session.remove.preview'](
+        { sessionId: harness.revisionId },
+        CONNECTION_CONTEXT,
+      );
+      assert.deepEqual(preview, { ok: true, result: { archivableSubtaskCount: 0 } });
       const removed = await harness.coordinator.handlers['session.remove'](
         { sessionId: harness.revisionId, expectedRevision: target.revision },
         CONNECTION_CONTEXT,
@@ -307,7 +608,7 @@ describe('Host Session retirement coordinator', () => {
         harness.blockers.effect,
         harness.blockers.graph,
         harness.blockers.graphWake,
-        harness.blockers.automation,
+        harness.blockers.scheduledTasks,
       ];
       for (const blocker of blockers) {
         blocker.add(harness.rootId);
@@ -340,7 +641,7 @@ describe('Host Session retirement coordinator', () => {
       };
       const { header: child } = await harness.store.createSubagent(
         sessionInput('Worktree child', {
-          permissionMode: 'execute',
+          permissionMode: 'ask',
           subagentParent: {
             kind: 'subagent',
             parentSessionId: harness.rootId,
@@ -429,6 +730,27 @@ describe('Host Session retirement coordinator', () => {
     });
   });
 
+  test('re-resolves a removal plan that changes before admission', async () => {
+    await withHarness(async (harness) => {
+      const target = await harness.store.readHeaderRecordSnapshot(harness.rootId);
+      harness.hideRevisionFromNextFamilyRead = true;
+
+      const removed = await harness.coordinator.handlers['session.remove'](
+        { sessionId: harness.rootId, expectedRevision: target.revision },
+        CONNECTION_CONTEXT,
+      );
+
+      assert.deepEqual(removed, {
+        ok: true,
+        result: { kind: 'removed', sessionId: harness.rootId },
+      });
+      for (const sessionId of harness.familyIds) {
+        assert.deepEqual(await harness.store.probeSessionRemoval(sessionId), { kind: 'removed' });
+      }
+      assert.deepEqual(new Set(harness.actions.disposed), new Set(harness.familyIds));
+    });
+  });
+
   test('commits against metadata refreshed after backend disposal', async () => {
     await withHarness(async (harness) => {
       harness.updateMetadataDuringNextDispose = true;
@@ -453,9 +775,9 @@ describe('Host Session retirement coordinator', () => {
       if (outcome.ok) return;
       assert.equal(outcome.error.code, 'persistence_failed');
       assert.equal(harness.actions.goalRollbacks, 1);
-      assert.equal(harness.actions.automationRollbacks, 1);
+      assert.equal(harness.actions.scheduledTaskRollbacks, 1);
       assert.equal(harness.actions.goalCommits, 0);
-      assert.equal(harness.actions.automationCommits, 0);
+      assert.equal(harness.actions.scheduledTaskCommits, 0);
       assert.deepEqual(harness.actions.retiredCapabilities, []);
       assert.deepEqual(harness.actions.retiredMessages, []);
       for (const sessionId of harness.familyIds) {
@@ -497,7 +819,7 @@ describe('Host Session retirement coordinator', () => {
       assert.equal(outcome.error.code, 'persistence_failed');
       assert.equal(harness.actions.drains, 1);
       assert.equal(harness.actions.goalRollbacks, 1);
-      assert.equal(harness.actions.automationRollbacks, 1);
+      assert.equal(harness.actions.scheduledTaskRollbacks, 1);
       assert.equal((await harness.store.probeSessionRemoval(harness.rootId)).kind, 'present');
     });
   });
@@ -692,7 +1014,7 @@ describe('Host Session retirement coordinator', () => {
         },
       ]);
       assert.equal(harness.actions.goalCommits, 1);
-      assert.equal(harness.actions.automationCommits, 1);
+      assert.equal(harness.actions.scheduledTaskCommits, 1);
     });
   });
 
@@ -737,6 +1059,7 @@ interface RetirementActions {
   readonly retiredCapabilities: string[];
   readonly retiredMessages: string[];
   readonly purgedArtifacts: string[];
+  readonly retiredContext: string[];
   readonly purgedTasks: string[];
   readonly purgedOperationalState: string[];
   readonly purgedAgentGraphs: string[];
@@ -745,8 +1068,8 @@ interface RetirementActions {
   readonly retiredGraphWakes: string[];
   goalCommits: number;
   goalRollbacks: number;
-  automationCommits: number;
-  automationRollbacks: number;
+  scheduledTaskCommits: number;
+  scheduledTaskRollbacks: number;
   drains: number;
 }
 
@@ -775,6 +1098,7 @@ async function withHarness(
       retiredCapabilities: [],
       retiredMessages: [],
       purgedArtifacts: [],
+      retiredContext: [],
       purgedTasks: [],
       purgedOperationalState: [],
       purgedAgentGraphs: [],
@@ -783,8 +1107,8 @@ async function withHarness(
       retiredGraphWakes: [],
       goalCommits: 0,
       goalRollbacks: 0,
-      automationCommits: 0,
-      automationRollbacks: 0,
+      scheduledTaskCommits: 0,
+      scheduledTaskRollbacks: 0,
       drains: 0,
     };
     const blockers = {
@@ -796,9 +1120,10 @@ async function withHarness(
       effect: new Set<string>(),
       graph: new Set<string>(),
       graphWake: new Set<string>(),
-      automation: new Set<string>(),
+      scheduledTasks: new Set<string>(),
     };
     const memoryExtractionLane = new MemoryExtractionSessionLane();
+    const admission = new SessionAdmissionGate();
     const harness: RetirementHarness = {
       workspaceRoot: root,
       store,
@@ -808,6 +1133,7 @@ async function withHarness(
       familyIds: [rootSession.id, revision.id],
       actions,
       blockers,
+      admission,
       memoryExtractionLane,
       failRemoveCommit: false,
       failRemovalPublication: false,
@@ -838,9 +1164,9 @@ async function withHarness(
           store.listPendingSessionRetirementCleanupIds(sessionId),
         completeSessionRetirementCleanup: (sessionId) =>
           store.completeSessionRetirementCleanup(sessionId),
-        setSessionsLifecycleVersioned: (sessions, state) =>
-          store.setSessionsLifecycleVersioned(sessions, state),
-        removeSessionsVersioned: async (sessions) => {
+        setSessionsArchivedVersioned: (sessions, isArchived) =>
+          store.setSessionsArchivedVersioned(sessions, isArchived),
+        removeSessionsVersioned: async (sessions, archiveSessions) => {
           if (harness.failRemoveCommit) throw new Error('injected remove failure');
           if (harness.updateSiblingBeforeRemoveCommit) {
             harness.updateSiblingBeforeRemoveCommit = false;
@@ -848,10 +1174,10 @@ async function withHarness(
               name: 'Racing sibling update',
             });
           }
-          return store.removeSessionsVersioned(sessions);
+          return store.removeSessionsVersioned(sessions, archiveSessions);
         },
       },
-      admission: new SessionAdmissionGate(),
+      admission,
       memoryExtractionLane,
       root: {
         readRootState: (sessionId) =>
@@ -871,12 +1197,12 @@ async function withHarness(
         beginSessionRetirement: async () => retirementHandle(actions, 'goal'),
         unarchiveSessions: () => undefined,
       },
-      automation: {
+      scheduledTasks: {
         beginSessionRetirement: async (sessionIds) => {
-          if (sessionIds.some((sessionId) => blockers.automation.has(sessionId))) {
-            throw new HostAutomationSessionBusyError('Session has a live Automation');
+          if (sessionIds.some((sessionId) => blockers.scheduledTasks.has(sessionId))) {
+            throw new HostScheduledTaskSessionBusyError('Session has a bound ScheduledTask');
           }
-          return retirementHandle(actions, 'automation');
+          return retirementHandle(actions, 'scheduledTasks');
         },
       },
       resources: {
@@ -887,6 +1213,7 @@ async function withHarness(
       },
       graph: {
         hasLiveSessionState: async (sessionId) => blockers.graph.has(sessionId),
+        listGraphIds: async (sessionId) => [agentGraphIdForRootSession(sessionId)],
       },
       graphWake: {
         hasLiveSessionState: (sessionId) => blockers.graphWake.has(sessionId),
@@ -932,10 +1259,17 @@ async function withHarness(
           actions.purgedArtifacts.push(sessionId);
         },
       },
-      taskLedger: {
-        purgeConversationTaskLedger: async (sessionId) => {
+      sessionTodo: {
+        purgeSessionState: async (sessionId) => {
           actions.purgedTasks.push(sessionId);
         },
+      },
+      contextOffload: {
+        retireSession: async (sessionId) => {
+          actions.retiredContext.push(sessionId);
+          return { releasedReferences: 0, releasedLogicalBytes: 0 };
+        },
+        collectGarbage: async () => ({ deletedBlobs: 0, deletedBytes: 0, hasMore: false }),
       },
       purgeOperationalState: async (sessionId) => {
         actions.purgedOperationalState.push(sessionId);
@@ -981,8 +1315,9 @@ interface RetirementHarness {
     readonly effect: Set<string>;
     readonly graph: Set<string>;
     readonly graphWake: Set<string>;
-    readonly automation: Set<string>;
+    readonly scheduledTasks: Set<string>;
   };
+  readonly admission: SessionAdmissionGate;
   readonly memoryExtractionLane: MemoryExtractionSessionLane;
   coordinator: HostSessionRetirementCoordinator;
   failRemoveCommit: boolean;
@@ -995,7 +1330,7 @@ interface RetirementHarness {
   disposeBackend: ((sessionId: string) => Promise<void>) | undefined;
   finalizeWorkspacePatches: ((sessionId: string) => Promise<void>) | undefined;
   retireWorktree:
-    | ((binding: import('@maka/core').SubagentWorkspaceBinding) => Promise<void>)
+    | ((binding: import('@maka/core/subagent-workspace').SubagentWorkspaceBinding) => Promise<void>)
     | undefined;
 }
 
@@ -1003,30 +1338,26 @@ async function waitFor(
   predicate: () => boolean | Promise<boolean>,
   message: string,
 ): Promise<void> {
-  const deadline = Date.now() + 1_000;
-  while (!(await predicate())) {
-    if (Date.now() >= deadline) throw new Error(message);
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
+  await pollFor(predicate, { timeoutMs: 1_000, message });
 }
 
 function retirementHandle(
   actions: RetirementActions,
-  owner: 'goal' | 'automation',
-): HostAutomationSessionRetirement {
+  owner: 'goal' | 'scheduledTasks',
+): HostScheduledTaskSessionRetirement {
   let settled = false;
   return {
     commit: () => {
       if (settled) return;
       settled = true;
       if (owner === 'goal') actions.goalCommits += 1;
-      else actions.automationCommits += 1;
+      else actions.scheduledTaskCommits += 1;
     },
     rollback: () => {
       if (settled) return;
       settled = true;
       if (owner === 'goal') actions.goalRollbacks += 1;
-      else actions.automationRollbacks += 1;
+      else actions.scheduledTaskRollbacks += 1;
     },
   };
 }
@@ -1035,7 +1366,6 @@ async function assertFamilyLifecycle(harness: RetirementHarness, archived: boole
   for (const sessionId of harness.familyIds) {
     const header = await harness.store.readHeaderSnapshot(sessionId);
     assert.equal(header.isArchived, archived);
-    assert.equal(header.status === 'archived', archived);
   }
 }
 
@@ -1045,7 +1375,7 @@ function sessionInput(
 ): CreateSessionInput {
   return {
     cwd: '/workspace',
-    backend: 'fake',
+    llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
     llmConnectionSlug: 'fake',
     model: 'fake-model',
     permissionMode: 'ask',
@@ -1053,6 +1383,46 @@ function sessionInput(
     labels: [],
     ...overrides,
   };
+}
+
+async function createClosedSubagent(
+  harness: RetirementHarness,
+  parentSessionId: string,
+  index: number,
+): Promise<string> {
+  const seed = index.toString(16).padStart(64, '0');
+  const { header } = await harness.store.createSubagent(
+    sessionInput(`Subagent ${index}`, {
+      permissionMode: 'ask',
+      subagentParent: {
+        kind: 'subagent',
+        parentSessionId,
+        spawnedBy: {
+          parentRunId: `parent-run-${index}`,
+          parentTurnId: `parent-turn-${index}`,
+          toolCallId: `spawn-call-${index}`,
+        },
+        lifecycle: 'foreground',
+      },
+      subagentRuntime: {
+        schemaVersion: 1,
+        definitionVersion: 1,
+        agentId: 'implementation',
+        agentName: 'Implementation',
+        profile: 'implementation',
+        systemPrompt: 'Implement the task.',
+        toolNames: ['Read', 'Write'],
+        categoryPolicy: {},
+      },
+      subagentSpawn: {
+        schemaVersion: 1,
+        requestFingerprint: seed,
+        initialTurnId: `child-turn-${index}`,
+        initialRunId: `child-run-${index}`,
+      },
+    }),
+  );
+  return header.id;
 }
 
 async function createClosedGraphOperator(
@@ -1101,7 +1471,7 @@ async function createClosedGraphOperator(
   };
   const child = await harness.store.createAgentGraphOperator(
     sessionInput('Graph operator', {
-      permissionMode: 'execute',
+      permissionMode: 'ask',
       subagentParent: {
         kind: 'subagent',
         parentSessionId: rootSessionId,

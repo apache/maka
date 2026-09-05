@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /* Settings → Health Center page. Relocated from health-center.css — issue #546 PR1. */
 /* =============================================================================
    PR-UI-9 — Health Center page
@@ -13,7 +32,7 @@
 ============================================================================= */
 
 /* One quiet tabular line instead of a five-tile dashboard. Color only where
-   it is a signal: warning/error counts above zero. */
+   it is a signal: non-zero success/warning/error counts. */
 .settingsHealthSummaryLine {
     margin: 0;
     padding-block: var(--space-2);
@@ -22,15 +41,36 @@
     gap: var(--space-1) var(--space-4);
     font: var(--maka-text-body);
     font-variant-numeric: tabular-nums;
-    color: var(--foreground-secondary);
+    color: var(--muted-foreground);
+  }
+
+.settingsHealthSummaryLine [data-tone="success"] {
+    color: var(--success-text);
   }
 
 .settingsHealthSummaryLine [data-tone="warning"] {
-    color: var(--warning-text, var(--info-text));
+    color: var(--warning-text);
   }
 
 .settingsHealthSummaryLine [data-tone="destructive"] {
     color: var(--destructive-text);
+  }
+
+.settingsStatusSummaryFilters {
+    gap: var(--space-1);
+  }
+
+.settingsStatusSummaryFilter {
+    border: var(--border-width-hairline) solid transparent;
+    font-variant-numeric: inherit;
+    transition:
+      background-color var(--duration-quick) var(--ease-standard),
+      border-color var(--duration-quick) var(--ease-standard);
+  }
+
+.settingsStatusSummaryFilter[aria-pressed="true"] {
+    border-color: var(--border);
+    background: var(--state-selected-bg);
   }
 
 .settingsHealthSignalIdentity,
@@ -63,13 +103,13 @@
   }
 
 .settingsHealthSignalMeta [data-tone="warning"] {
-    color: var(--warning-text, var(--info-text));
+    color: var(--warning-text);
   }
 
 
 .settingsHealthMetaLabel {
   font: var(--maka-text-supporting);
- color: var(--foreground-secondary); white-space: nowrap; }
+ color: var(--muted-foreground); white-space: nowrap; }
 .settingsHealthSignalLabel {
   /* A row label, not a heading — the role table's label weight carries it
      (detail audit: heading-4 here was the only heading-as-row-label in

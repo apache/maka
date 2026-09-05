@@ -1,6 +1,27 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import type { DailyReviewArchive, DailyReviewSummary, ScheduledTask, ScheduledTaskRun } from '@maka/core';
+import type { DailyReviewArchive, DailyReviewSummary } from '@maka/core/daily-review';
+import type { ScheduledTask, ScheduledTaskRun } from '@maka/core/scheduled-task';
 import type { McpConfigFile, McpServerStatus } from '@maka/core/mcp';
+import { MCP_CONFIG_VERSION } from '@maka/core/mcp';
 import {
   ScheduledTasksPage,
   DailyReviewPage,
@@ -13,7 +34,18 @@ import {
   useUiLocale,
 } from '@maka/ui';
 import { type ComponentProps, type ReactNode, useState } from 'react';
-import { AppShellWorkspaceTopActions } from '../src/renderer/app-shell-chrome-actions';
+import { WorkbarTitlebarActions } from '../src/renderer/features/workbar';
+import {
+  createModuleHubCommandPort,
+  ModuleHubHost,
+  ModuleHubHostView,
+  ModuleHubProvider,
+  ModuleHubServicesProvider,
+} from '../src/renderer/features/module-hub';
+import {
+  createFakeModuleHubHostModel,
+  createFakeModuleHubServices,
+} from '../src/renderer/features/module-hub/testing';
 import { AppShellDetailPanel } from '../src/renderer/app-shell-detail-panel';
 import { McpPage } from '../src/renderer/mcp-page';
 import { withScopedMakaBridge } from './maka-bridge';
@@ -418,8 +450,62 @@ const DAILY_REVIEW_ARCHIVE: DailyReviewArchive = {
 
 type DailyReviewBridge = NonNullable<ComponentProps<typeof DailyReviewPage>['bridge']>;
 
+// A day with no recorded activity — the panel's own empty state.
+const EMPTY_DAILY_REVIEW_SUMMARY: DailyReviewSummary = {
+  ...DAILY_REVIEW_SUMMARY,
+  totals: { sessionCount: 0, requestCount: 0, totalTokens: 0, costUsd: 0, errorCount: 0 },
+  sessions: [],
+  topTools: [],
+  topModels: [],
+};
+
+// A busy day whose session list runs past its display limit (8).
+// A busy day whose true session count exceeds the list cap. Production caps the
+// list at DAILY_REVIEW_LIST_LIMIT (8) — the coordinator picks 8 and the
+// protocol decoder rejects more — so the fixture lists 8 rows while the higher
+// total lives in totals.sessionCount.
+const MANY_SESSION_SUMMARY: DailyReviewSummary = {
+  ...DAILY_REVIEW_SUMMARY,
+  totals: { ...DAILY_REVIEW_SUMMARY.totals, sessionCount: 12, requestCount: 96 },
+  sessions: Array.from({ length: 8 }, (_, index) => ({
+    id: `s-many-${index + 1}`,
+    name: `第 ${index + 1} 个会话：回归与修复`,
+    lastMessageAt: NOW - (index + 1) * 15 * 60_000,
+    lastMessagePreview: `第 ${index + 1} 条会话的最后一条消息预览。`,
+  })),
+};
+
+// A generation that failed — the host returns a `failed` archive on a model
+// timeout/error. Reached by triggering generate/retry (runOnce → getArchive →
+// report route), where DailyReviewReport shows the error Banner + errorMessage.
+const FAILED_DAILY_REVIEW_ARCHIVE: DailyReviewArchive = {
+  ...DAILY_REVIEW_ARCHIVE,
+  id: '2026-07-01-1d-failed',
+  status: 'failed',
+  errorMessage: '模型在生成分析时超时，未能产出报告，请稍后重试。',
+  sections: {},
+};
+
+// A generated report whose sections run long, to check the report body stays
+// readable instead of clipping.
+const LONG_REVIEW_SECTION = Array.from(
+  { length: 6 },
+  (_, index) =>
+    `## 第 ${index + 1} 节\n\n这一节刻意写得很长，用来检验报告正文在多段落、多标题下仍然可读，` +
+    '不会把布局撑破或截断关键结论：它覆盖了当天的活动重点、发现的问题，以及后续要跟进的改进项，逐条展开说明。',
+).join('\n\n');
+const LONG_DAILY_REVIEW_ARCHIVE: DailyReviewArchive = {
+  ...DAILY_REVIEW_ARCHIVE,
+  sections: {
+    summary: LONG_REVIEW_SECTION,
+    gaps: LONG_REVIEW_SECTION,
+    usage: LONG_REVIEW_SECTION,
+    code: LONG_REVIEW_SECTION,
+  },
+};
+
 const configuredMcpConfig: McpConfigFile = {
-  version: 1,
+  version: MCP_CONFIG_VERSION,
   mcpServers: {
     filesystem: {
       enabled: true,
@@ -435,7 +521,7 @@ const configuredMcpConfig: McpConfigFile = {
 };
 
 const editorMcpConfig: McpConfigFile = {
-  version: 1,
+  version: MCP_CONFIG_VERSION,
   mcpServers: {
     slack: {
       enabled: false,
@@ -478,7 +564,7 @@ const configuredMcpStatuses: McpServerStatus[] = [
 ];
 
 const failedMcpConfig: McpConfigFile = {
-  version: 1,
+  version: MCP_CONFIG_VERSION,
   mcpServers: {
     'team-tools': {
       enabled: true,
@@ -501,7 +587,12 @@ const failedMcpStatuses: McpServerStatus[] = [
   },
 ];
 
+const storyRuntimeHostProfilesBridge = {
+  getDefaultHost: async () => ({ profileId: 'local', hostId: 'storybook-local-host' }),
+};
+
 const withConfiguredMcpBridge = withScopedMakaBridge({
+  runtimeHostProfiles: storyRuntimeHostProfilesBridge,
   mcp: {
     getConfig: async () => configuredMcpConfig,
     listStatuses: async () => configuredMcpStatuses,
@@ -511,12 +602,12 @@ const withConfiguredMcpBridge = withScopedMakaBridge({
     remove: async () => configuredMcpConfig,
     cancelInstall: async () => configuredMcpConfig,
     test: async () => ({ ok: true, status: configuredMcpStatuses[0], latencyMs: 42 }),
-    reconnect: async () => configuredMcpStatuses[0],
     subscribeChanges: () => () => {},
   },
 });
 
 const withEditorMcpBridge = withScopedMakaBridge({
+  runtimeHostProfiles: storyRuntimeHostProfilesBridge,
   mcp: {
     getConfig: async () => editorMcpConfig,
     listStatuses: async () => [editorMcpStatus],
@@ -526,27 +617,27 @@ const withEditorMcpBridge = withScopedMakaBridge({
     remove: async () => editorMcpConfig,
     cancelInstall: async () => editorMcpConfig,
     test: async () => ({ ok: false, status: editorMcpStatus, latencyMs: 0 }),
-    reconnect: async () => editorMcpStatus,
     subscribeChanges: () => () => {},
   },
 });
 
 const withEmptyMcpBridge = withScopedMakaBridge({
+  runtimeHostProfiles: storyRuntimeHostProfilesBridge,
   mcp: {
-    getConfig: async () => ({ version: 1, mcpServers: {} }),
+    getConfig: async () => ({ version: MCP_CONFIG_VERSION, mcpServers: {} }),
     listStatuses: async () => [],
-    setConfig: async () => ({ version: 1, mcpServers: {} }),
-    upsert: async () => ({ version: 1, mcpServers: {} }),
-    install: async () => ({ version: 1, mcpServers: {} }),
-    remove: async () => ({ version: 1, mcpServers: {} }),
-    cancelInstall: async () => ({ version: 1, mcpServers: {} }),
+    setConfig: async () => ({ version: MCP_CONFIG_VERSION, mcpServers: {} }),
+    upsert: async () => ({ version: MCP_CONFIG_VERSION, mcpServers: {} }),
+    install: async () => ({ version: MCP_CONFIG_VERSION, mcpServers: {} }),
+    remove: async () => ({ version: MCP_CONFIG_VERSION, mcpServers: {} }),
+    cancelInstall: async () => ({ version: MCP_CONFIG_VERSION, mcpServers: {} }),
     test: async () => ({ ok: true, status: configuredMcpStatuses[0], latencyMs: 42 }),
-    reconnect: async () => configuredMcpStatuses[0],
     subscribeChanges: () => () => {},
   },
 });
 
 const withFailedMcpBridge = withScopedMakaBridge({
+  runtimeHostProfiles: storyRuntimeHostProfilesBridge,
   mcp: {
     getConfig: async () => failedMcpConfig,
     listStatuses: async () => failedMcpStatuses,
@@ -556,7 +647,6 @@ const withFailedMcpBridge = withScopedMakaBridge({
     remove: async () => failedMcpConfig,
     cancelInstall: async () => failedMcpConfig,
     test: async () => ({ ok: false, status: failedMcpStatuses[0], latencyMs: 30_000 }),
-    reconnect: async () => failedMcpStatuses[0],
     subscribeChanges: () => () => {},
   },
 });
@@ -581,10 +671,10 @@ function ModuleSurface(props: {
       }}
     >
       <AppShellDetailPanel agentsView={props.agentsView}>
-        <AppShellWorkspaceTopActions
-          workbarAvailable={false}
-          workbarCollapsed
-          onToggleWorkbar={noop}
+        <WorkbarTitlebarActions
+          available={false}
+          collapsed
+          onToggle={noop}
         />
         <ToastProvider>{props.children}</ToastProvider>
       </AppShellDetailPanel>
@@ -644,7 +734,11 @@ function ExtensionsMcpSurface() {
   );
 }
 
-function ScheduledTasksSurface(props: { tasks?: ScheduledTask[] }) {
+function ScheduledTasksSurface(props: {
+  tasks?: ScheduledTask[];
+  keepSystemAwake?: boolean;
+  onKeepSystemAwakeChange?: (next: boolean) => Promise<void>;
+}) {
   const copy = getSharedUiCopy(useUiLocale()).moduleHubs.automations;
   return (
     <ModuleSurface agentsView="cron">
@@ -655,8 +749,10 @@ function ScheduledTasksSurface(props: { tasks?: ScheduledTask[] }) {
           badge: <ModuleHubSelector hub="automations" value="scheduled-tasks" onChange={() => {}} />,
         }}
         tasks={props.tasks ?? []}
-        keepSystemAwake={false}
-        onKeepSystemAwakeChange={async () => {}}
+        keepSystemAwake={props.keepSystemAwake ?? false}
+        onKeepSystemAwakeChange={
+          props.onKeepSystemAwakeChange ?? (async () => {})
+        }
         onRefresh={noop}
         onCreate={noop}
         onUpdate={noop}
@@ -690,6 +786,73 @@ function ScheduledDailyReviewSurface(
         onAppendMarkdown={props.onAppendMarkdown}
         onSaveMarkdown={props.onSaveMarkdown}
       />
+    </ModuleSurface>
+  );
+}
+
+function ModuleHubHostSurface(props: {
+  selection:
+    | { section: 'extensions'; module: 'skills' | 'mcp' }
+    | { section: 'automations'; module: 'scheduled-tasks' | 'daily-review' };
+}) {
+  const base = createFakeModuleHubHostModel(props.selection);
+  const model = {
+    ...base,
+    skills: {
+      ...base.skills,
+      skills: INSTALLED_SKILLS,
+      bundledSkillCatalog: BUNDLED_SKILLS,
+    },
+    scheduledTasks: {
+      ...base.scheduledTasks,
+      scheduledTasks: CONFIGURED_TASKS,
+    },
+    dailyReview: {
+      ...base.dailyReview,
+      bridge: {
+        fetchDay: async () => DAILY_REVIEW_SUMMARY,
+      },
+    },
+  };
+  const agentsView = props.selection.section === 'extensions'
+    ? props.selection.module
+    : props.selection.module === 'daily-review'
+      ? 'daily-review'
+      : 'cron';
+  return (
+    <ModuleSurface agentsView={agentsView}>
+      <ModuleHubHostView model={model} />
+    </ModuleSurface>
+  );
+}
+
+function ProductionModuleHubHostSurface() {
+  const [commandPort] = useState(createModuleHubCommandPort);
+  const [services] = useState(() => {
+    const defaults = createFakeModuleHubServices();
+    return createFakeModuleHubServices({
+      skills: {
+        ...defaults.skills,
+        list: async () => INSTALLED_SKILLS,
+        listBundledCatalog: async () => BUNDLED_SKILLS,
+      },
+    });
+  });
+  return (
+    <ModuleSurface agentsView="skills">
+      <ModuleHubServicesProvider services={services}>
+        <ModuleHubProvider
+          selection={{ section: 'extensions', module: 'skills' }}
+          selectModule={noop}
+          useSkillInChat={noop}
+          openSession={noop}
+          appendComposerText={noop}
+          captureActiveComposerClaim={() => undefined}
+          commandPort={commandPort}
+        >
+          <ModuleHubHost />
+        </ModuleHubProvider>
+      </ModuleHubServicesProvider>
     </ModuleSurface>
   );
 }
@@ -729,6 +892,37 @@ async function waitForStoryText(canvasElement: HTMLElement, text: string): Promi
 // Real path: sidebar → 扩展 → 技能, before any Skill or bundled catalog entry exists.
 export const ExtensionsSkillsEmpty: Story = {
   render: () => <ExtensionsSkillsSurface />,
+};
+
+// Full production composition: public Provider → Context → public Host.
+export const HostExtensionsSkills: Story = {
+  render: () => <ProductionModuleHubHostSurface />,
+};
+
+// Focused view seams keep the other route variants deterministic.
+export const HostExtensionsMcp: Story = {
+  decorators: [withEmptyMcpBridge],
+  render: () => (
+    <ModuleHubHostSurface
+      selection={{ section: 'extensions', module: 'mcp' }}
+    />
+  ),
+};
+
+export const HostAutomationsScheduledTasks: Story = {
+  render: () => (
+    <ModuleHubHostSurface
+      selection={{ section: 'automations', module: 'scheduled-tasks' }}
+    />
+  ),
+};
+
+export const HostAutomationsDailyReview: Story = {
+  render: () => (
+    <ModuleHubHostSurface
+      selection={{ section: 'automations', module: 'daily-review' }}
+    />
+  ),
 };
 
 // Real path: sidebar → 扩展 → 技能, with several installed Skills.
@@ -920,6 +1114,59 @@ export const ScheduledTasksConfigured: Story = {
   render: () => <ScheduledTasksSurface tasks={CONFIGURED_TASKS} />,
 };
 
+// A newer external settings read wins over a slow local write in the Module
+// Hub controller. The checkbox must return to the persisted prop when that
+// pending write settles, even when the Boolean prop itself never changed.
+export const ScheduledTasksKeepAwakeExternalWins: Story = {
+  render: () => (
+    <ScheduledTasksSurface
+      keepSystemAwake
+      onKeepSystemAwakeChange={async () => {
+        await new Promise((resolve) => globalThis.setTimeout(resolve, 80));
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const settings = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.getAttribute('aria-label') === '定时任务页面设置',
+    );
+    settings.click();
+    const body = canvasElement.ownerDocument.body;
+    const checkbox = await waitForStorySelector<HTMLElement>(
+      body,
+      '[role="menuitemcheckbox"]',
+    );
+    if (checkbox.getAttribute('aria-checked') !== 'true') {
+      throw new Error('Keep-awake story did not start from persisted true');
+    }
+    checkbox.click();
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const current = body.querySelector<HTMLElement>('[role="menuitemcheckbox"]');
+      if (current?.getAttribute('aria-checked') === 'false') break;
+      await new Promise((resolve) => globalThis.setTimeout(resolve, 10));
+      if (attempt === 49) throw new Error('Keep-awake optimistic value did not render');
+    }
+    // The write resolves asynchronously and Astryx may close the menu while
+    // the panel re-syncs its optimistic value from the persisted prop. Poll
+    // for the confirmed value instead of assuming a fixed 100ms settle time;
+    // the latter is fast locally but flakes under Storybook CI load.
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      let persisted = body.querySelector<HTMLElement>('[role="menuitemcheckbox"]');
+      if (!persisted) {
+        settings.click();
+        persisted = await waitForStorySelector<HTMLElement>(
+          body,
+          '[role="menuitemcheckbox"]',
+        );
+      }
+      if (persisted.getAttribute('aria-checked') === 'true') return;
+      await new Promise((resolve) => globalThis.setTimeout(resolve, 10));
+    }
+    throw new Error('Keep-awake checkbox diverged from the persisted setting');
+  },
+};
+
 // Real path: sidebar → 定时任务 → 定时任务 → click a task row, which opens the
 // inspector where every per-task control now lives. Wide only: below 1024px the
 // page drops the inspector rather than squeeze two columns into one.
@@ -933,6 +1180,13 @@ export const ScheduledTasksInspector: Story = {
     row.click();
     await waitForStoryText(canvasElement, '立即触发');
   },
+};
+
+// Real path: narrow desktop → sidebar → 定时任务.
+// The inspector is intentionally hidden below the two-column breakpoint.
+export const ScheduledTasksNarrow: Story = {
+  render: () => <ScheduledTasksSurface tasks={CONFIGURED_TASKS} />,
+  parameters: { viewport: { defaultViewport: 'mobile2' } },
 };
 
 // Real path: sidebar → 定时任务 → 定时任务, with user-authored content at storage limits.
@@ -1036,5 +1290,104 @@ export const ScheduledDailyReviewReport: Story = {
     );
     view.click();
     await waitForStoryText(canvasElement, '返回活动');
+  },
+};
+
+// Real path: sidebar → scheduled tasks → 每日回顾 on a day with no recorded
+// activity — the panel's own empty state, not a spinner and not an error.
+export const ScheduledDailyReviewEmpty: Story = {
+  render: () => (
+    <ScheduledDailyReviewSurface
+      bridge={{
+        fetchDay: async () => EMPTY_DAILY_REVIEW_SUMMARY,
+        listArchives: async () => [],
+        runOnce: async () => ({ archiveId: DAILY_REVIEW_ARCHIVE.id }),
+        getArchive: async () => DAILY_REVIEW_ARCHIVE,
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await waitForStoryText(canvasElement, '等待记录今天活动');
+  },
+};
+
+// Real path: sidebar → scheduled tasks → 每日回顾 on a busy day. The list caps
+// at DAILY_REVIEW_LIST_LIMIT (8), so a higher total (12) surfaces as 8 rows —
+// the production-reachable "many sessions" shape the seeded two-session fixture
+// never reaches.
+export const ScheduledDailyReviewManySessions: Story = {
+  render: () => (
+    <ScheduledDailyReviewSurface
+      bridge={{
+        fetchDay: async () => MANY_SESSION_SUMMARY,
+        listArchives: async () => [],
+        runOnce: async () => ({ archiveId: DAILY_REVIEW_ARCHIVE.id }),
+        getArchive: async () => DAILY_REVIEW_ARCHIVE,
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await waitForStorySelector<HTMLElement>(canvasElement, '.maka-daily-review-content');
+    await waitForStoryText(canvasElement, '第 1 个会话：回归与修复');
+  },
+};
+
+// Real path: sidebar → scheduled tasks → 每日回顾 → view analysis on a long
+// report — the report body must stay readable across many long sections.
+export const ScheduledDailyReviewLongReport: Story = {
+  render: () => (
+    <ScheduledDailyReviewSurface
+      bridge={{
+        fetchDay: async () => DAILY_REVIEW_SUMMARY,
+        listArchives: async () => [
+          {
+            id: LONG_DAILY_REVIEW_ARCHIVE.id,
+            day: LONG_DAILY_REVIEW_ARCHIVE.day,
+            range: LONG_DAILY_REVIEW_ARCHIVE.range,
+            status: LONG_DAILY_REVIEW_ARCHIVE.status,
+            generatedAt: LONG_DAILY_REVIEW_ARCHIVE.generatedAt,
+            trigger: LONG_DAILY_REVIEW_ARCHIVE.trigger,
+            modelKey: LONG_DAILY_REVIEW_ARCHIVE.modelKey,
+            totals: LONG_DAILY_REVIEW_ARCHIVE.totals,
+          },
+        ],
+        getArchive: async () => LONG_DAILY_REVIEW_ARCHIVE,
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const view = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.includes('查看分析') === true,
+    );
+    view.click();
+    await waitForStoryText(canvasElement, '返回活动');
+    await waitForStoryText(canvasElement, '第 1 节');
+  },
+};
+
+// Real path: sidebar → scheduled tasks → 每日回顾 → generate, when generation
+// fails (model timeout/error). runOnce → getArchive returns a `failed` archive,
+// so the report route shows the error Banner and failure message. This is the
+// only path to a failed archive — it has no "view analysis" affordance, so
+// generate/retry is how it is reached.
+export const ScheduledDailyReviewGenerationFailed: Story = {
+  render: () => (
+    <ScheduledDailyReviewSurface
+      bridge={{
+        fetchDay: async () => DAILY_REVIEW_SUMMARY,
+        listArchives: async () => [],
+        runOnce: async () => ({ archiveId: FAILED_DAILY_REVIEW_ARCHIVE.id }),
+        getArchive: async () => FAILED_DAILY_REVIEW_ARCHIVE,
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const generate = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.includes('生成分析') === true,
+    );
+    generate.click();
+    await waitForStoryText(canvasElement, '生成失败');
   },
 };

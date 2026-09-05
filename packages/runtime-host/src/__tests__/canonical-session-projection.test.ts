@@ -1,17 +1,44 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import type { AgentRunHeader, RuntimeEvent } from '@maka/core';
+import { seedInvocation } from '@maka/runtime/test-only/invocation-fixture';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
 import {
   openInteractiveExecutionStoresForWrite,
   type ExecutionStoresWriter,
 } from '@maka/storage/execution-stores';
 import type { StoredInteractionRequest } from '@maka/storage/interaction-store';
-import { acquireOperationalStateDatabase } from '@maka/storage';
+import { acquireOperationalStateDatabase } from '@maka/storage/operational-state-store';
+import {
+  createSessionEventMapMemory,
+  mapSessionEventToRuntimeEvent,
+} from '@maka/runtime/session-event-runtime-mapper';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
-import { type SessionMessageQueueProjection } from '../protocol/index.js';
+import {
+  TURN_MESSAGE_TEXT_MAX_BYTES,
+  type SessionMessageQueueProjection,
+} from '../protocol/index.js';
 import {
   type CanonicalSessionProjection,
   CanonicalSessionProjectionReader,
@@ -21,6 +48,7 @@ import { type HostMessageRootPort, HostMessageCoordinator } from '../server/mess
 import { worstCaseGoalProjection } from '../server/goal-projection.js';
 import { RootAdmissionOwner } from '../server/root-admission-owner.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
+import { worstCaseFailedTurnSnapshot } from '../server/canonical-turn-snapshot.js';
 
 test('projects the canonical root lifecycle and the attachment queue from real Stores', async () => {
   await withStores(async (root, stores) => {
@@ -40,7 +68,6 @@ test('projects the canonical root lifecycle and the attachment queue from real S
         metadataRevision: 1,
         status: session.status,
         createdAt: session.createdAt,
-        lastUsedAt: session.lastUsedAt,
         isArchived: false,
       },
       rootTurn: null,
@@ -63,18 +90,28 @@ test('projects the canonical root lifecycle and the attachment queue from real S
     assert.ok(admittedProjection);
     assert.equal(admittedProjection.rootTurn?.status, 'admitted');
 
-    await stores.agentRunStore.createRun(runHeader(session.id));
-    await stores.agentRunStore.appendEvent(session.id, 'run-1', {
-      type: 'run_started',
-      id: 'run-started-1',
+    await seedInvocation(stores.runtimeEventStore, {
       sessionId: session.id,
-      turnId: 'turn-1',
       runId: 'run-1',
-      ts: 11,
-    });
-    await stores.agentRunStore.updateRun(session.id, 'run-1', {
-      status: 'running',
-      updatedAt: 11,
+      turnId: 'turn-1',
+      openedAt: 10,
+      opening: {
+        route: {
+          provenance: 'runtime',
+          backendKind: 'fake',
+          llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+          llmConnectionSlug: 'fake',
+          modelId: 'fake-model',
+        },
+        configuration: {
+          cwd: '/private/runtime-cwd',
+          permissionMode: 'ask',
+          collaborationMode: 'agent',
+          orchestrationMode: 'default',
+          orchestrationSource: 'session',
+          toolMode: 'direct',
+        },
+      },
     });
 
     messages.reserveRootTurn({ sessionId: session.id, turnId: 'turn-1', runId: 'run-1' });
@@ -103,11 +140,6 @@ test('projects the canonical root lifecycle and the attachment queue from real S
 
     const terminal = terminalEvent(session.id);
     await stores.runtimeEventStore.appendRuntimeEvent(session.id, 'run-1', terminal);
-    await stores.agentRunStore.updateRun(session.id, 'run-1', {
-      status: 'completed',
-      updatedAt: 12,
-      completedAt: 12,
-    });
     const completed = await reader.read(session.id);
     assert.ok(completed);
     assert.deepEqual(completed.rootTurn, {
@@ -277,6 +309,180 @@ test('preflights queued steering at the exact in-flight snapshot boundary', asyn
   });
 });
 
+test('preflights the worst-case failed Turn before accepting more queued content', async () => {
+  await withStores(async (root, stores) => {
+    const { sessionId, rootAdmissions } = await createRunningRoot(root, stores);
+
+    let currentQueue: SessionMessageQueueProjection = {
+      hostEpoch: 'epoch-1',
+      queueRevision: 1,
+      steering: [],
+      followup: [],
+    };
+    const reader = new CanonicalSessionProjectionReader({
+      stores,
+      rootAdmissions,
+      messages: { projection: () => currentQueue },
+    });
+    const canonical = await reader.read(sessionId);
+    assert.ok(canonical?.rootTurn);
+    const capacityCanonical = {
+      ...canonical,
+      goal: worstCaseGoalProjection(sessionId),
+    };
+    currentQueue = largestFittingFollowupQueue(capacityCanonical);
+
+    assert.doesNotThrow(() =>
+      createSessionContinuitySnapshot(
+        { ...capacityCanonical, queue: currentQueue },
+        Number.MAX_SAFE_INTEGER,
+      ),
+    );
+    const worstCaseFailedTurn = worstCaseFailedTurnSnapshot(capacityCanonical.rootTurn!);
+    assert.equal(worstCaseFailedTurn.status, 'failed');
+    assert.throws(() =>
+      createSessionContinuitySnapshot(
+        {
+          ...capacityCanonical,
+          rootTurn: worstCaseFailedTurn,
+          queue: currentQueue,
+        },
+        Number.MAX_SAFE_INTEGER,
+      ),
+    );
+    assert.equal(await reader.fitsCandidate(sessionId, { queue: currentQueue }), false);
+  });
+});
+
+test('projects a failed Turn message from the canonical terminal event', async () => {
+  await withStores(async (root, stores) => {
+    const { sessionId, rootAdmissions } = await createRunningRoot(root, stores);
+    const memory = createSessionEventMapMemory();
+    const context = {
+      sessionId,
+      invocationId: 'run-1',
+      runId: 'run-1',
+      turnId: 'turn-1',
+      source: 'test',
+      startedAt: 10,
+      request: {
+        sessionId,
+        invocationId: 'run-1',
+        runId: 'run-1',
+        turnId: 'turn-1',
+        text: 'hello',
+        source: 'test',
+      },
+      newId: () => 'unused',
+      now: () => 12,
+    } as const;
+    const errorEvent = mapSessionEventToRuntimeEvent(
+      {
+        type: 'error',
+        id: 'provider-error-1',
+        turnId: 'turn-1',
+        ts: 12,
+        recoverable: false,
+        code: 'provider_error',
+        message: 'canonical provider failure api_key=sk-test-secret-value',
+      },
+      context,
+      memory,
+    );
+    const terminalEvent = mapSessionEventToRuntimeEvent(
+      {
+        type: 'complete',
+        id: 'terminal-failed-1',
+        turnId: 'turn-1',
+        ts: 13,
+        stopReason: 'error',
+      },
+      context,
+      memory,
+    );
+    await stores.runtimeEventStore.appendRuntimeEvent(sessionId, 'run-1', errorEvent);
+    await stores.runtimeEventStore.appendRuntimeEvent(sessionId, 'run-1', terminalEvent);
+
+    const reader = new CanonicalSessionProjectionReader({
+      stores,
+      rootAdmissions,
+      messages: {
+        projection: () => ({ hostEpoch: 'epoch-1', queueRevision: 0, steering: [], followup: [] }),
+      },
+    });
+    const canonical = await reader.read(sessionId);
+    assert.equal(canonical?.rootTurn?.status, 'failed');
+    if (canonical?.rootTurn?.status === 'failed') {
+      assert.equal(
+        canonical.rootTurn.failureMessage,
+        'canonical provider failure api_key=[redacted]',
+      );
+    }
+  });
+});
+
+test('a legacy context_budget_exhausted terminal event still projects, as a context overflow', async () => {
+  await withStores(async (root, stores) => {
+    const { sessionId, rootAdmissions } = await createRunningRoot(root, stores);
+    const context = {
+      sessionId,
+      invocationId: 'run-1',
+      runId: 'run-1',
+      turnId: 'turn-1',
+      source: 'test',
+      startedAt: 10,
+      request: {
+        sessionId,
+        invocationId: 'run-1',
+        runId: 'run-1',
+        turnId: 'turn-1',
+        text: 'hello',
+        source: 'test',
+      },
+      newId: () => 'unused',
+      now: () => 12,
+    } as const;
+    // Exactly what a session written before this outcome was retired holds: the
+    // runtime can no longer emit it, so the durable shape is rebuilt here.
+    const mapped = mapSessionEventToRuntimeEvent(
+      {
+        type: 'complete',
+        id: 'terminal-context-budget-1',
+        turnId: 'turn-1',
+        ts: 13,
+        stopReason: 'error',
+      },
+      context,
+      createSessionEventMapMemory(),
+    );
+    const terminalEvent = {
+      ...mapped,
+      actions: {
+        ...mapped.actions,
+        stateDelta: {
+          stopReason: 'context_budget_exhausted',
+          failureClass: 'context_budget_exhausted',
+          contextBudgetExhaustedDetail: 'malformed_summary_missing_section',
+        },
+      },
+    };
+    await stores.runtimeEventStore.appendRuntimeEvent(sessionId, 'run-1', terminalEvent);
+
+    const reader = new CanonicalSessionProjectionReader({
+      stores,
+      rootAdmissions,
+      messages: {
+        projection: () => ({ hostEpoch: 'epoch-1', queueRevision: 0, steering: [], followup: [] }),
+      },
+    });
+    const canonical = await reader.read(sessionId);
+    assert.equal(canonical?.rootTurn?.status, 'failed');
+    if (canonical?.rootTurn?.status === 'failed') {
+      assert.equal(canonical.rootTurn.failureClass, 'context_overflow');
+    }
+  });
+});
+
 test('propagates canonical Store read failures during candidate preflight', async () => {
   await withStores(async (root, stores) => {
     const session = await stores.sessionStore.create(sessionInput(root));
@@ -386,7 +592,11 @@ function createMessages(
     startFromMessage: async () => {
       throw new Error('unexpected root start');
     },
-    prepareMessage: async (input) => ({ kind: 'ready', content: input.content }),
+    prepareMessage: async (input) => ({
+      kind: 'ready',
+      content: input.content,
+      skillInvocation: { loaded: [], failed: [], receipts: [] },
+    }),
     claimStop: async () => {
       throw new Error('unexpected root stop');
     },
@@ -400,7 +610,7 @@ function createMessages(
       readImmutableSteeringMessageProof: (requestedSessionId, messageId) =>
         stores.runtimeEventStore.readImmutableSteeringMessageProof(requestedSessionId, messageId),
     },
-    receipts: stores.messageReceiptStore,
+    admissions: stores.sessionStore,
     sessionAdmission: new SessionAdmissionGate(),
     acquireResidency: () => ({ release: () => undefined }),
     preflightSessionSnapshot: () => true,
@@ -412,27 +622,54 @@ function sessionInput(root: string) {
   return {
     cwd: root,
     backend: 'fake' as const,
+    llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
     llmConnectionSlug: 'fake',
     model: 'fake-model',
     permissionMode: 'ask' as const,
   };
 }
 
-function runHeader(sessionId: string): AgentRunHeader {
-  return {
-    runId: 'run-1',
-    invocationId: 'run-1',
-    sessionId,
+async function createRunningRoot(
+  root: string,
+  stores: ExecutionStoresWriter<'interactive'>,
+): Promise<{ sessionId: string; rootAdmissions: RootAdmissionOwner }> {
+  const session = await stores.sessionStore.create(sessionInput(root));
+  const rootAdmissions = new RootAdmissionOwner(stores.agentRunStore);
+  await rootAdmissions.recoverSession(session.id);
+  await rootAdmissions.admitRootTurn({
+    sessionId: session.id,
     turnId: 'turn-1',
-    status: 'created',
-    backendKind: 'fake',
-    llmConnectionSlug: 'fake',
-    modelId: 'fake-model',
-    cwd: '/private/runtime-cwd',
-    permissionMode: 'ask',
-    createdAt: 10,
-    updatedAt: 10,
-  };
+    proposedRunId: 'run-1',
+    proposedUserMessageId: 'user-1',
+    execution: { kind: 'external_message' },
+    normalizedInput: { text: 'hello' },
+    sourceMessages: [],
+    admittedAt: 10,
+  });
+  await seedInvocation(stores.runtimeEventStore, {
+    sessionId: session.id,
+    runId: 'run-1',
+    turnId: 'turn-1',
+    openedAt: 10,
+    opening: {
+      route: {
+        provenance: 'runtime',
+        backendKind: 'fake',
+        llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        llmConnectionSlug: 'fake',
+        modelId: 'fake-model',
+      },
+      configuration: {
+        cwd: '/private/runtime-cwd',
+        permissionMode: 'ask',
+        collaborationMode: 'agent',
+        orchestrationMode: 'default',
+        orchestrationSource: 'session',
+        toolMode: 'direct',
+      },
+    },
+  });
+  return { sessionId: session.id, rootAdmissions };
 }
 
 function terminalEvent(sessionId: string): RuntimeEvent {
@@ -455,7 +692,6 @@ function operationContext() {
   return {
     hostEpoch: 'epoch-1',
     connectionId: 'connection-1',
-    surface: 'tui' as const,
     principal: 'local_os_user' as const,
     acquireResidency: () => ({ release: () => undefined }),
   };
@@ -474,7 +710,6 @@ async function withStores(
   if (!owner) throw new Error('Unable to acquire test root');
   try {
     const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
-    await stores.messageReceiptStore.beginHostEpoch('epoch-1');
     await run(capability.canonicalPath, stores);
   } finally {
     await owner.close();
@@ -544,4 +779,49 @@ function largestFittingInFlightSteeringText(canonical: CanonicalSessionProjectio
     else upper = midpoint;
   }
   return lower;
+}
+
+function largestFittingFollowupQueue(
+  canonical: CanonicalSessionProjection,
+): SessionMessageQueueProjection {
+  const queue = (tailBytes: number): SessionMessageQueueProjection => ({
+    hostEpoch: 'epoch-1',
+    queueRevision: Number.MAX_SAFE_INTEGER,
+    steering: [],
+    followup: [
+      {
+        entryId: 'large-entry',
+        messageId: 'large-message',
+        content: { text: 'q'.repeat(TURN_MESSAGE_TEXT_MAX_BYTES) },
+        placement: 'next_turn',
+        state: 'queued',
+      },
+      {
+        entryId: 'tail-entry',
+        messageId: 'tail-message',
+        content: { text: 'q'.repeat(tailBytes) },
+        placement: 'next_turn',
+        state: 'queued',
+      },
+    ],
+  });
+  const fits = (tailBytes: number): boolean => {
+    try {
+      createSessionContinuitySnapshot(
+        { ...canonical, queue: queue(tailBytes) },
+        Number.MAX_SAFE_INTEGER,
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  let lower = 0;
+  let upper = TURN_MESSAGE_TEXT_MAX_BYTES;
+  while (lower + 1 < upper) {
+    const midpoint = Math.floor((lower + upper) / 2);
+    if (fits(midpoint)) lower = midpoint;
+    else upper = midpoint;
+  }
+  return queue(lower);
 }

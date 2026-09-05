@@ -1,7 +1,26 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { randomUUID } from 'node:crypto';
 
 import type { ProviderType } from '@maka/core/llm-connections';
-import { TOKEN_REFRESH_SKEW_MS } from '@maka/core';
+import { TOKEN_REFRESH_SKEW_MS } from '@maka/core/oauth-subscription';
 import {
   OAUTH_MAX_TOKEN_CHARS,
   OAUTH_PROVIDER_CONTRACTS,
@@ -14,7 +33,7 @@ import {
 
 export type OAuthSubscriptionProvider = Extract<
   ProviderType,
-  'claude-subscription' | 'openai-codex' | 'github-copilot' | 'xai-oauth'
+  'openai-codex' | 'github-copilot' | 'xai-oauth'
 >;
 
 export interface OAuthSubscriptionTokens {
@@ -33,7 +52,6 @@ export function isOAuthSubscriptionProvider(
   providerType: ProviderType,
 ): providerType is OAuthSubscriptionProvider {
   return (
-    providerType === 'claude-subscription' ||
     providerType === 'openai-codex' ||
     providerType === 'github-copilot' ||
     providerType === 'xai-oauth'
@@ -121,8 +139,8 @@ export type RefreshAndPersistOAuthSubscriptionTokensInput = {
 export type ResolveAndPersistOAuthSubscriptionTokensInput =
   RefreshAndPersistOAuthSubscriptionTokensInput & { refreshSkewMs?: number };
 
-const CLAUDE = OAUTH_PROVIDER_CONTRACTS['claude-subscription'];
 const CODEX = OAUTH_PROVIDER_CONTRACTS['openai-codex'];
+const COPILOT = OAUTH_PROVIDER_CONTRACTS['github-copilot'];
 const XAI = OAUTH_PROVIDER_CONTRACTS['xai-oauth'];
 
 const OAUTH_REFRESH_LEASE_MS = 30_000;
@@ -444,12 +462,10 @@ export async function refreshOAuthSubscriptionTokens(input: {
   const now = input.now ?? (() => Date.now());
   const fetchFn = input.fetchFn ?? fetch;
   switch (input.providerType) {
-    case 'claude-subscription':
-      return refreshClaudeSubscriptionTokens(input.tokens, now, fetchFn, input.signal);
     case 'openai-codex':
       return refreshOpenAiCodexTokens(input.tokens, now, fetchFn, input.signal);
     case 'github-copilot':
-      return input.tokens;
+      return refreshGitHubCopilotTokens(input.tokens, now, fetchFn, input.signal);
     case 'xai-oauth':
       return refreshXaiOAuthTokens(input.tokens, now, fetchFn, input.signal);
   }
@@ -464,11 +480,29 @@ export const GITHUB_COPILOT_COMPAT_HEADERS = {
   'Copilot-Integration-Id': 'vscode-chat',
 } as const;
 
-export function createGitHubCopilotAccountTokens(githubToken: string): OAuthSubscriptionTokens {
+/**
+ * A GitHub account token GitHub declared no lifetime for. Recorded as an
+ * explicit sentinel because it is the one thing that distinguishes a
+ * non-refreshable record from one carrying a real `expires_in`.
+ */
+export const GITHUB_COPILOT_NON_EXPIRING_AT = Number.MAX_SAFE_INTEGER;
+
+/** The lifetime GitHub returned, when the account token is an expiring one. */
+export interface GitHubCopilotAccountTokenLifetime {
+  readonly expiresAt: number;
+  readonly refreshToken: string;
+}
+
+export function createGitHubCopilotAccountTokens(
+  githubToken: string,
+  lifetime?: GitHubCopilotAccountTokenLifetime,
+): OAuthSubscriptionTokens {
   return {
     access_token: githubToken,
-    refresh_token: githubToken,
-    expires_at: Number.MAX_SAFE_INTEGER,
+    // A non-expiring token has no refresh grant behind it, so it stands in as
+    // its own refresh token; `expires_at` is what tells the two records apart.
+    refresh_token: lifetime?.refreshToken ?? githubToken,
+    expires_at: lifetime?.expiresAt ?? GITHUB_COPILOT_NON_EXPIRING_AT,
     token_type: 'Bearer',
     base_url: GITHUB_COPILOT_DEFAULT_API_ENDPOINT,
   };
@@ -501,45 +535,6 @@ function requireRefreshedTokenFields(payload: unknown): {
 function nextRefreshToken(candidate: unknown, previous: string): string {
   if (candidate === undefined || candidate === '') return previous;
   return requireOAuthBoundedString(candidate, OAUTH_MAX_TOKEN_CHARS);
-}
-
-async function refreshClaudeSubscriptionTokens(
-  tokens: OAuthSubscriptionTokens,
-  now: () => number,
-  fetchFn: typeof fetch,
-  signal?: AbortSignal,
-): Promise<OAuthSubscriptionTokens> {
-  const response = await fetchFn(CLAUDE.tokenEndpoint, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'User-Agent': CLAUDE.tokenUserAgent,
-    },
-    body: JSON.stringify({
-      grant_type: 'refresh_token',
-      refresh_token: tokens.refresh_token,
-      client_id: CLAUDE.clientId,
-    }),
-    signal,
-  });
-  if (!response.ok) throw new Error(`Claude OAuth token refresh failed (${response.status}).`);
-  const {
-    record: payload,
-    accessToken,
-    expiresInSeconds,
-  } = requireRefreshedTokenFields(await response.json());
-  const account =
-    payload.account === undefined ? undefined : requireOAuthDataRecord(payload.account);
-  return {
-    access_token: accessToken,
-    refresh_token: nextRefreshToken(payload.refresh_token, tokens.refresh_token),
-    expires_at: oauthExpiresAt(now(), expiresInSeconds),
-    token_type: optionalOAuthBoundedString(payload.token_type, 256) ?? tokens.token_type,
-    scope: optionalOAuthBoundedString(payload.scope, 4 * 1024) ?? tokens.scope,
-    account_uuid:
-      (account ? optionalOAuthBoundedString(account.uuid, 1_024) : undefined) ??
-      tokens.account_uuid,
-  };
 }
 
 async function refreshOpenAiCodexTokens(
@@ -575,6 +570,49 @@ async function refreshOpenAiCodexTokens(
       optionalOAuthBoundedString(payload.id_token, OAUTH_MAX_TOKEN_CHARS) ?? tokens.id_token,
     expires_at: oauthExpiresAt(now(), expiresInSeconds),
     account_id: tokens.account_id,
+  };
+}
+
+async function refreshGitHubCopilotTokens(
+  tokens: OAuthSubscriptionTokens,
+  now: () => number,
+  fetchFn: typeof fetch,
+  signal?: AbortSignal,
+): Promise<OAuthSubscriptionTokens> {
+  // A non-expiring account token is its own authority: GitHub issues no
+  // refresh grant for it, so returning it unchanged IS the refresh.
+  if (tokens.expires_at === GITHUB_COPILOT_NON_EXPIRING_AT) return tokens;
+  const response = await fetchFn(COPILOT.tokenEndpoint, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: new URLSearchParams({
+      grant_type: 'refresh_token',
+      client_id: COPILOT.clientId,
+      refresh_token: tokens.refresh_token,
+    }).toString(),
+    signal,
+  });
+  if (!response.ok) {
+    throw new Error(`GitHub Copilot OAuth token refresh failed (${response.status}).`);
+  }
+  const payload = requireOAuthDataRecord(await response.json());
+  // GitHub reports a rejected refresh as HTTP 200 with an `error` body, so an
+  // ok status alone must not be allowed to replace the stored authority.
+  if (typeof payload.error === 'string') {
+    throw new Error('GitHub Copilot OAuth token refresh was rejected.');
+  }
+  const { record, accessToken, expiresInSeconds } = requireRefreshedTokenFields(payload);
+  if (!isSupportedGitHubCopilotAccountToken(accessToken)) {
+    throw new Error('GitHub Copilot OAuth token refresh returned an unsupported token.');
+  }
+  return {
+    ...tokens,
+    access_token: accessToken,
+    refresh_token: nextRefreshToken(record.refresh_token, tokens.refresh_token),
+    expires_at: oauthExpiresAt(now(), expiresInSeconds),
   };
 }
 

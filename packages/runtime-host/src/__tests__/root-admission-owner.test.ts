@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -7,8 +26,8 @@ import {
   type RootTurnAdmission,
   type RootTurnAdmissionStore,
   type RootTurnSourceMessage,
-} from '@maka/storage';
-import { createSqliteAgentRunStore } from '@maka/storage';
+} from '@maka/storage/agent-run-store';
+import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
 import { RootAdmissionOwner } from '../server/root-admission-owner.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 
@@ -79,6 +98,55 @@ test('recovery installs the validated tip and the successor extends it', async (
   });
 });
 
+test('recovers the original submitted placement for a promoted source after SQLite reopen', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-root-admission-placement-'));
+  try {
+    const store = createSqliteAgentRunStore(root);
+    let admitted: RootTurnAdmission;
+    try {
+      const owner = new RootAdmissionOwner(store);
+      await owner.recoverSession('session');
+      const content = { text: 'promoted follow-up' };
+      admitted = (
+        await owner.admitRootTurn({
+          sessionId: 'session',
+          turnId: 'turn-promoted',
+          proposedRunId: 'run-promoted',
+          proposedUserMessageId: 'message-promoted',
+          execution: { kind: 'external_message' },
+          normalizedInput: content,
+          sourceMessages: [
+            {
+              messageId: 'message-promoted',
+              content,
+              submittedPlacement: 'next_turn',
+              placement: 'current_turn',
+              disposition: 'steering',
+            },
+          ],
+          admittedAt: 10,
+        })
+      ).admission;
+    } finally {
+      store.close?.();
+    }
+
+    const reopenedStore = createSqliteAgentRunStore(root);
+    try {
+      const reopenedOwner = new RootAdmissionOwner(reopenedStore);
+      const [recovered] = await reopenedOwner.recoverSession('session');
+      assert.ok(recovered);
+      assert.equal(recovered.sourceMessages[0]?.submittedPlacement, 'next_turn');
+      assert.equal(recovered.sourceMessages[0]?.placement, 'current_turn');
+      assert.doesNotThrow(() => reopenedOwner.assertKnownAdmission(admitted));
+    } finally {
+      reopenedStore.close?.();
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('fails closed when a known durable admission identity drifts', async () => {
   await withStore(async (store) => {
     const first = await store.admitRootTurn({
@@ -130,6 +198,15 @@ test('fails closed when a known durable admission identity drifts', async () => 
     );
     const [firstSource] = first.admission.sourceMessages;
     assert.ok(firstSource);
+    assert.doesNotThrow(() =>
+      owner.assertKnownAdmission({
+        ...first.admission,
+        sourceMessages: [
+          { ...firstSource, submittedPlacement: firstSource.placement },
+          ...first.admission.sourceMessages.slice(1),
+        ],
+      }),
+    );
     const sourceDrifts: RootTurnAdmission[] = [
       {
         ...first.admission,
@@ -160,6 +237,37 @@ test('fails closed when a known durable admission identity drifts', async () => 
         ...first.admission,
         sourceMessages: [
           { ...firstSource, disposition: 'followup' },
+          ...first.admission.sourceMessages.slice(1),
+        ],
+      },
+      {
+        ...first.admission,
+        sourceMessages: [
+          { ...firstSource, submittedPlacement: 'next_turn' },
+          ...first.admission.sourceMessages.slice(1),
+        ],
+      },
+      {
+        ...first.admission,
+        sourceMessages: [
+          {
+            ...firstSource,
+            submittedIntent: { skillIds: ['writer'] },
+          },
+          ...first.admission.sourceMessages.slice(1),
+        ],
+      },
+      {
+        ...first.admission,
+        sourceMessages: [
+          {
+            ...firstSource,
+            skillInvocation: {
+              loaded: [{ id: 'writer', name: 'Writer' }],
+              failed: [],
+              receipts: [],
+            },
+          },
           ...first.admission.sourceMessages.slice(1),
         ],
       },
@@ -306,7 +414,7 @@ function multiSourceAdmitInput(sessionId: string, turnId: string, admittedAt: nu
     sessionId,
     turnId,
     proposedRunId: `run-${turnId}`,
-    proposedUserMessageId: `message-${turnId}`,
+    proposedUserMessageId: null,
     execution: { kind: 'external_message' as const },
     normalizedInput: {
       text: 'model text\n\nfollowup text',

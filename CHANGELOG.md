@@ -1,6 +1,91 @@
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+
 # Changelog
 
 ## Unreleased
+
+## 0.2.0 - Unreleased
+
+### Added
+
+- Added `/transcript` to browse long TUI sessions without depending on terminal
+  scrollback, with line, page, and first/last navigation.
+
+### Fixed
+
+- Fixed a renderer crash dialog reporting React error #185 ("Maximum update depth
+  exceeded") coming from the composer's prompt-history inline completion (#4117): the
+  offer engine the 0.1.11 composer fed could flip-flop its announcement state on
+  real-layout measurements until React hit its nested-update limit, which surfaced as
+  the crash dialog. The unstable completion wiring was removed from the composer
+  (#3292), Astryx 0.5.0 no longer ships the engine (#3755), and regression tests now
+  keep that seam closed.
+
+### Changed
+
+- Made typed `request()` the sole direct Runtime Host operation API; removed the 17 forwarding
+  aliases from direct and reconnecting connections while preserving status validation,
+  subscriptions, capabilities, listeners, lifecycle, and close behavior.
+- Collapsed the RuntimeRunner/Flow/Invocation shell into `RuntimeKernel`; backend dispatch,
+  terminal coalescing, stop/drain, and durable continuation admission now have one production
+  owner, immutable request snapshots remain enforced at AgentRun acceptance and backend dispatch,
+  and SessionEvent-to-RuntimeEvent conversion remains a pure mapper.
+- Retired the Task Ledger domain: SessionTodo is now the sole authority for in-session work items, and the operational-state schema drops the `workflow_task_ledger_events` table on first open. **Unfinished Tasks are not migrated and are permanently deleted.** This affects workspaces last opened by `v0.1.0` through `v0.1.11`, `cli-v0.1.0-beta.1`, `v0.2.0-incubating-rc1`, or a `v0.2.0-dev` build; those releases wrote Tasks to a table that no shipped build ever bridged into SessionTodo. Before opening such a workspace with this build, finish or export the Tasks you still need, or copy the workspace's `runtime.sqlite` aside — the migration removes the only live copy, so afterwards recovery requires a backup made in advance.
+- A compaction rejected as too large for the summarizer's own window now retreats to the span the last accepted request's input covered, instead of halving the covered range. That span is the newest reply this route produced, found through the run headers, so it was accepted by this model on this connection and is provably within capacity; halving can overshoot (discarding verbatim history for nothing) or undershoot (paying another round trip), and a span another route accepted proves nothing at all. One retreat, then the fold fails open and the provider decides.
+- `token_usage` anchors now record the model and connection that produced them. A token count is a number in one model's tokenizer against one connection; carrying the route on the record lets any reader apply the rule the runtime already enforces, instead of pairing one model's usage with another model's window. The record decodes against a closed allowlist, so sessions written with these keys do not open in earlier releases, and the Runtime Host compatibility epoch moves to 107.
+- The provider-dropping note now also fires across the send boundary. A provider that truncates to a fixed window reports the same input on every later request while the user keeps adding turns, which a send of one or two steps cannot see from the inside; the first request of a send compares against the persisted anchor instead. Across the boundary the test is equality rather than "did not grow": inside a send Maka knows it only appended, while across it a manual compaction, a smaller tool set or an edited history all shrink the input legitimately, and none of them lands on exactly the same count. The note carries the two counts it compared, and is reported once per backend rather than once per send, because the condition persists once it starts.
+- Let the provider decide whether a request fits. Proactive compaction now uses only a user-declared Maka window and the previous accepted request's provider-reported `inputTokens + outputTokens`; no declaration means no proactive capacity threshold. `/models` and generated model metadata are display hints, not limits. `token_usage` records persist the last-request anchor under `lastRequestAnchor`; its new `{ inputTokens, outputTokens }` shape still decodes the retired `payloadChars` key from older sessions. Requests that are too large are compacted and retried once after a real provider rejection, then reported as a `context_overflow` provider error. Compaction is entered at most once per send, and a request rejected after a fold was actually applied is reported as still too large after compaction. A fold that failed open makes no such claim: that request went out with its full raw history. A reply cut at `finishReason: length` no longer triggers a fold, because the provider running out of window room and the provider's own lower output cap are indistinguishable from outside. Five system notes explain the provider-side cases: dropping context, a window worth declaring, an exchange past the declared window, a request accepted past the window the model reports (once per crossing, while nothing is declared), and a request still too large after compaction. The reply reserve that arms the proactive threshold is twice the last real reply, bounded at 8,000 tokens, rather than the model's maximum output. **Sessions this build writes do not open in earlier releases:** those decode `token_usage` against a closed allowlist, so the reshaped `lastRequestAnchor` key fails the record and, with it, the Session that contains it; downgrading therefore needs a copy of the workspace's `runtime.sqlite` taken before the upgrade. Nothing produces the `context_budget_exhausted` stop reason any more — a request that really is too large is compacted and retried once, then reported as a `context_overflow` provider error — though sessions that already recorded it still decode and present. The Runtime Host compatibility epoch moves to 106.
+- Unified context management under one Runtime-owned policy. `MAKA_CONTEXT_*` environment overrides no longer tune or disable compaction and Tool Result pruning; model-visible archive placeholders are read on demand through bounded `ArchiveRead` calls instead of eager hydration. Previously supported overrides are ignored on upgrade: if Tool Result pruning was set to `off`, pruning is re-enabled, and there is currently no supported replacement opt-out.
+- Moved Read image snapshots into the durable context-offload store with Runtime-owned
+  lifecycle identity, exact branch and revision copying, recovery-safe cleanup, and bounded
+  physical garbage collection after Session retirement.
+
+## 0.1.11 - 2026-08-18
+
+### Highlights
+
+- Expanded Runtime Host from a local execution service into the shared authority for multiple connected Hosts, remote project registration, live run state, and archived session lifecycle (#3097, #3145, #3079, #3074, #3151).
+- Added the installable Maka CLI package and its protected staged npm release pipeline, including cross-platform artifact and Eval validation (#3169, #3173, #3185, #3188, #3192, #3197, #3200, #3201).
+- Added brokered Windows AppContainer sandbox support and tightened local IPC ownership and ACL enforcement (#2961, #3179, #3182).
+- Added Work Board storage foundations, Host-scoped task creation, prompt-history completion, and first-run viewport containment (#3028, #3122, #1874, #3195).
+- Added native Desktop and TUI locale authorities and Qwen3.8 Max Token Plan support (#2686, #2691, #3157).
+
+### Reliability and developer experience
+
+- Preserved live turns across refresh and projected authoritative live execution state through Runtime Host (#3189, #3079).
+- Kept restored tasks safe from concurrent removal, queued busy-raced sends as steering, bounded summarizer inputs, and retired obsolete compact and compatibility paths (#3056, #3032, #3113, #3128, #2742).
+- Hardened MCP rediscovery, provider failure diagnostics, rate-limit handling, session stream completion, and scheduled-task ownership (#2989, #2675, #3115, #2682, #2655).
+- Added fair multi-arm Eval infrastructure and the DeepSeek Harness benchmark arm, while isolating subject metering from framework accounting (#2668, #2971, #3176).
+- Strengthened Windows installer, crash-recovery, remote service restart, and release artifact coverage (#2650, #2562, #3186, #2941).
+
+### Fixed
+
+- Disabled TUI taskbar-progress keepalives by default on native Windows and
+  Windows Terminal sessions, where repeated OSC 9;4 updates can make Explorer's
+  taskbar unresponsive. `MAKA_TASKBAR_PROGRESS=1` restores the prior behavior,
+  while `MAKA_TASKBAR_PROGRESS=0` disables it explicitly.
+
+### Distribution
+
+- Ships for Apple Silicon macOS as a signed and notarized DMG and ZIP, and for Windows x64 as an unsigned NSIS installer and ZIP, built and verified in the same release run.
+- The bundled Computer Use skill ships with the app, but the Computer Use executor remains excluded from this release.
 
 ## 0.1.10 - 2026-08-10
 

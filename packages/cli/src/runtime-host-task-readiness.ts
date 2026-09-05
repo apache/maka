@@ -1,11 +1,29 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { stat } from 'node:fs/promises';
 import {
   deriveTaskSubmissionReadiness,
-  PROVIDER_DEFAULTS,
-  type LlmConnection,
   type TaskSubmissionReadinessDimension,
   type TaskSubmissionReadinessSnapshot,
-} from '@maka/core';
+} from '@maka/core/task-submission-readiness';
+import { PROVIDER_REGISTRY, type LlmConnection } from '@maka/core/llm-connections';
 import { providerAuthRequiresSecret } from '@maka/core/llm-connections';
 import type { ConnectionCatalogEntry, ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
 import type { RuntimeHostConnection } from '@maka/runtime-host/client';
@@ -16,6 +34,7 @@ export interface RuntimeHostCliTaskReadinessInput {
   readonly cwd: string;
   readonly connectionSlug?: string;
   readonly model?: string;
+  readonly workspaceState?: 'ready' | 'missing' | 'unavailable' | 'unknown';
 }
 
 export async function readRuntimeHostCliTaskReadiness(
@@ -40,7 +59,7 @@ export async function readRuntimeHostCliTaskReadiness(
     checkedAt,
     runtime: { state: 'ready', checkedAt },
     modelTarget,
-    workspace: { state: await inspectWorkspace(input.cwd), checkedAt },
+    workspace: { state: input.workspaceState ?? (await inspectWorkspace(input.cwd)), checkedAt },
   });
 }
 
@@ -50,10 +69,11 @@ export function isRuntimeHostCliTaskBlocked(snapshot: TaskSubmissionReadinessSna
 
 export function formatRuntimeHostCliTaskBlockers(
   snapshot: TaskSubmissionReadinessSnapshot,
+  cliCommand = 'maka',
 ): string {
   return snapshot.blockers
     .filter((blocker) => blocker.state !== 'unknown')
-    .map((blocker) => `${blocker.blockerCode ?? blocker.id}: ${repairHint(blocker)}`)
+    .map((blocker) => `${blocker.blockerCode ?? blocker.id}: ${repairHint(blocker, cliCommand)}`)
     .join('\n');
 }
 
@@ -87,7 +107,6 @@ function catalogEntryAsLlmConnection(
     enabledModelIds: [...entry.enabledModelIds],
     models: [...entry.models],
     ...(entry.modelSource ? { modelSource: entry.modelSource } : {}),
-    ...(entry.modelsFetchedAt ? { modelsFetchedAt: entry.modelsFetchedAt } : {}),
     ...(entry.lastTest
       ? { lastTestStatus: entry.lastTest.status, lastTestAt: entry.lastTest.checkedAt }
       : {}),
@@ -101,7 +120,7 @@ async function readHasSecret(
   entry: ConnectionCatalogEntry,
 ): Promise<boolean | undefined> {
   if (!providerAuthRequiresSecret(entry.providerType)) return false;
-  const authKind = PROVIDER_DEFAULTS[entry.providerType].authKind;
+  const authKind = PROVIDER_REGISTRY[entry.providerType].authKind;
   const kind = authKind === 'oauth_token' ? 'oauth_token' : 'api_key';
   try {
     const result = await connection.request('credential.vault.query', {
@@ -126,14 +145,14 @@ async function inspectWorkspace(
   }
 }
 
-function repairHint(blocker: TaskSubmissionReadinessDimension): string {
+function repairHint(blocker: TaskSubmissionReadinessDimension, cliCommand: string): string {
   const target = blocker.repairTarget;
   if (!target) return 'retry the command';
   switch (target.kind) {
     case 'provider_catalog':
-      return 'run `maka` to configure a model provider';
+      return `run \`${cliCommand}\` to configure a model provider`;
     case 'connection':
-      return `repair connection "${target.connectionSlug}" in \`maka\``;
+      return `repair connection "${target.connectionSlug}" in \`${cliCommand}\``;
     case 'models':
       return 'choose an available connection with `--connection`';
     case 'runtime_restart':

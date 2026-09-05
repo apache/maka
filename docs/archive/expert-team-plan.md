@@ -1,3 +1,22 @@
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+
 # 专家团 (Expert Team) — 调研与实现方案
 
 > 目标：在 maka-agent 中实现"专家团 / 数字同事"功能。
@@ -83,7 +102,7 @@ QoderWork **没有**命名人格选择器。它的三层值得参考：
 
 | 关注点 | 复用/扩展 | 位置 |
 |---|---|---|
-| 专家**人格注入** | `mode:` 标签 + prompt fragment（照抄 Deep Research） | `apps/desktop/src/main/system-prompt-main.ts`（已有 `childInstruction` seam）；`packages/core/src/explore-agent.ts`（`mode:deep_research` 先例） |
+| 专家**人格注入** | `mode:` 标签 + prompt fragment（照抄 Deep Research） | `apps/desktop/src/main/system-prompt-main.ts`（已有 `childInstruction` seam）；`packages/core/src/deep-research.ts`（`mode:deep_research` 先例） |
 | 专家=**带工具作用域的专业 agent** | 扩展 `BUILTIN_AGENT_DEFINITIONS`（每条已带 `systemPrompt`） | `packages/runtime/src/agent-catalog.ts`、`subagent-tools.ts`（`agent_spawn`/`SessionManager.spawnChildAgent`） |
 | 专家**目录 + 按需安装** | 克隆 managed/bundled 技能目录 | `apps/desktop/src/main/managed-skill-sources.ts`、`bundled-skill-catalog.generated.ts`、`skills.ts`（install→`skill.lock.json`→baseline→update diff，PR #842） |
 | 专家**定义文件格式** | 复用 SKILL.md frontmatter 解析 | `packages/runtime/src/skills.ts`（`parseSkillFrontMatter`） |
@@ -152,7 +171,7 @@ members:
 |---|---|---|
 | **P0 单专家 MVP** | `EXPERT.md` 格式 + 内置目录 + `mode:expert:` 注入 + 专家中心 UI + 召唤即聊 | Deep Research 注入路径、技能目录/UI、agent-catalog |
 | **P1 专家团** | team schema + lead orchestrator 人格 + member 子代理派发（非隔离）+ 团队卡片 | `spawnChildAgent`/`agent_spawn`、subagent runtime |
-| **P2 数字同事** | 持久化助理外壳（自建昵称/头像/雇佣专家/配置仓库·资料库·模型）+ 定时调度 | 会话标签、automation-store |
+| **P2 数字同事** | 持久化助理外壳（自建昵称/头像/雇佣专家/配置仓库·资料库·模型）+ 定时调度 | 会话标签、scheduled-task-store |
 | **P3 远程专家中心 + 分享** | `sourceType:'remote'` 拉 COS 式 manifest + 缓存校验 + 自建专家导出/导入（安全扫描） | managed-skill-sources 远程化、lock/sha256 |
 | **P4（可选）IM 绑定 / 云端 / @ 协作** | 绑 IM 渠道、云端运行、@ 数字同事 | 需新连接层，评估 |
 

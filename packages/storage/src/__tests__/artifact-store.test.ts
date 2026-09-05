@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import {
@@ -300,6 +319,229 @@ describe('SQLite Artifact store', () => {
         'later-artifact',
         'retained-artifact',
       ]);
+    });
+  });
+
+  test('a conversation copy leaves retired captures behind rather than reintroducing them', async () => {
+    await withWorkspace(async (root) => {
+      const authority = createArtifactStoreWriteAuthority(root);
+      await authority.recover();
+      const { store } = authority;
+      const kept = await store.create(artifactInput('kept-artifact', 'kept', 10));
+      await store.create({
+        ...artifactInput('capture-artifact', 'request', 11),
+        source: 'provider_request_capture',
+      });
+
+      const copied = await store.copyConversationArtifacts({
+        sourceSessionId: 'session-1',
+        targetSessionId: 'session-copy',
+        turnIds: ['turn-1'],
+      });
+
+      // The sweep runs once and stops when nothing is left. A copy that
+      // carried captures would put them back afterwards, so every fork would
+      // hand the new Session a fresh set of bytes nobody reads and nothing
+      // will come back for.
+      assert.equal(copied.artifactIds.get('capture-artifact'), undefined);
+      assert.ok(copied.artifactIds.get(kept.id));
+      assert.deepEqual(
+        (await store.list('session-copy', { includeDeleted: true })).map((record) => record.source),
+        ['fixture'],
+      );
+      // And the source keeps its own until the sweep takes them.
+      assert.deepEqual(await store.purgeRetiredCaptures(8), { purged: 1, remaining: 0 });
+    });
+  });
+
+  test('and leaves them behind on the linked and included paths too', async () => {
+    await withWorkspace(async (root) => {
+      const authority = createArtifactStoreWriteAuthority(root);
+      await authority.recover();
+      const { store } = authority;
+      // A Side Conversation copy names artifacts three ways: by turn, by a
+      // linked child Session, and by an explicit include list for the refs
+      // that carry no conversation turn. All three reach the same records.
+      const linkedKept = await store.create({
+        ...artifactInput('linked-kept', 'child result', 10),
+        sessionId: 'session-child',
+      });
+      await store.create({
+        ...artifactInput('linked-capture', 'child request', 11),
+        sessionId: 'session-child',
+        source: 'provider_request_capture',
+      });
+      await store.create({
+        ...artifactInput('upload-capture', 'uploaded request', 12),
+        turnId: 'upload-1',
+        source: 'provider_request_capture',
+      });
+
+      const copied = await store.copyConversationArtifacts({
+        sourceSessionId: 'session-1',
+        targetSessionId: 'session-copy',
+        turnIds: ['turn-1'],
+        includeArtifactIds: ['upload-capture'],
+        linkedArtifacts: [{ sessionId: 'session-child', artifactIds: [linkedKept.id] }],
+      });
+
+      assert.ok(copied.artifactIds.get(linkedKept.id), 'ordinary linked artifacts still copy');
+      assert.equal(copied.artifactIds.get('upload-capture'), undefined);
+      assert.deepEqual(
+        (await store.list('session-copy', { includeDeleted: true })).map((record) => record.source),
+        ['fixture'],
+      );
+
+      // A child result lists every Artifact its turn held, captures included,
+      // and the ledger holding that list cannot be rewritten. So a request
+      // naming one is answered with what is still copyable, not refused: the
+      // alternative is a Session that can never be forked again.
+      const named = await store.copyConversationArtifacts({
+        sourceSessionId: 'session-1',
+        targetSessionId: 'session-copy-2',
+        turnIds: ['turn-1'],
+        linkedArtifacts: [
+          { sessionId: 'session-child', artifactIds: ['linked-capture', linkedKept.id] },
+        ],
+      });
+      assert.equal(named.artifactIds.get('linked-capture'), undefined);
+      assert.ok(named.artifactIds.get(linkedKept.id));
+    });
+  });
+
+  test('reclaims retired request captures in bounded batches and leaves everything else', async () => {
+    await withWorkspace(async (root) => {
+      const authority = createArtifactStoreWriteAuthority(root);
+      await authority.recover();
+      const { store } = authority;
+      for (let index = 0; index < 3; index += 1) {
+        await store.create({
+          ...artifactInput(`capture-${index}`, `request-${index}`, 10 + index),
+          source: 'provider_request_capture',
+        });
+      }
+      await store.create(artifactInput('kept-artifact', 'kept', 20));
+
+      assert.deepEqual(await store.purgeRetiredCaptures(2), { purged: 2, remaining: 1 });
+      assert.deepEqual(await store.purgeRetiredCaptures(2), { purged: 1, remaining: 0 });
+      // The sweep stops on its own rather than spinning once the residue is gone.
+      assert.deepEqual(await store.purgeRetiredCaptures(2), { purged: 0, remaining: 0 });
+
+      assert.deepEqual(
+        (await store.list('session-1', { includeDeleted: true })).map((record) => record.id),
+        ['kept-artifact'],
+      );
+      // Purge, not a tombstone: the bytes are what this reclaims.
+      const kept = await store.getInSession('session-1', 'kept-artifact');
+      assert.ok(kept.record);
+      assert.deepEqual(await readdir(join(root, 'artifacts', 'session-1')), [
+        basename(kept.record.relativePath),
+      ]);
+    });
+  });
+
+  test('excludes selected Artifacts from a conversation snapshot', async () => {
+    await withWorkspace(async (root) => {
+      const authority = createArtifactStoreWriteAuthority(root);
+      await authority.recover();
+      const { store } = authority;
+      await store.create({
+        ...artifactInput('retained-artifact', 'retained', 10),
+        turnId: 'turn-retained',
+      });
+      await store.create({
+        ...artifactInput('excluded-archive', 'archived child result', 11),
+        turnId: 'turn-retained',
+        source: 'tool_result_archive',
+      });
+
+      const copied = await store.copyConversationArtifacts({
+        sourceSessionId: 'session-1',
+        targetSessionId: 'session-copy',
+        turnIds: ['turn-retained'],
+        excludeArtifactIds: ['excluded-archive'],
+      });
+
+      assert.equal(copied.artifactIds.has('excluded-archive'), false);
+      assert.deepEqual(
+        (await store.list('session-copy')).map((record) => record.name),
+        ['retained-artifact.txt'],
+      );
+      assert.equal((await store.get('excluded-archive'))?.sessionId, 'session-1');
+    });
+  });
+
+  test('copies explicit linked child Artifacts into a conversation snapshot', async () => {
+    await withWorkspace(async (root) => {
+      const authority = createArtifactStoreWriteAuthority(root);
+      await authority.recover();
+      const { store } = authority;
+      await store.create({
+        ...artifactInput('child-artifact', 'child result', 10),
+        sessionId: 'child-session',
+        turnId: 'child-turn',
+      });
+
+      const copied = await store.copyConversationArtifacts({
+        sourceSessionId: 'session-1',
+        targetSessionId: 'session-copy',
+        turnIds: ['turn-retained'],
+        linkedArtifacts: [{ sessionId: 'child-session', artifactIds: ['child-artifact'] }],
+      });
+
+      const copiedId = copied.artifactIds.get('child-artifact');
+      assert.ok(copiedId);
+      assert.deepEqual(await store.readText(copiedId), { ok: true, text: 'child result' });
+      assert.equal((await store.get(copiedId))?.sessionId, 'session-copy');
+      assert.equal((await store.get('child-artifact'))?.sessionId, 'child-session');
+    });
+  });
+
+  test('includes explicit same-Session Artifacts outside the copied turns', async () => {
+    await withWorkspace(async (root) => {
+      const authority = createArtifactStoreWriteAuthority(root);
+      await authority.recover();
+      const { store } = authority;
+      await store.create({
+        ...artifactInput('retained-artifact', 'retained', 10),
+        turnId: 'turn-retained',
+      });
+      // A user upload carries the uploadId sentinel as its turnId, so it is
+      // never a member of the copied conversation turns.
+      const upload = await store.create({
+        ...artifactInput('attachment-upload', 'uploaded bytes', 11),
+        turnId: 'upload-sentinel',
+        source: 'user_upload',
+      });
+
+      const withoutInclude = await store.copyConversationArtifacts({
+        sourceSessionId: 'session-1',
+        targetSessionId: 'session-copy',
+        turnIds: ['turn-retained'],
+      });
+      assert.equal(withoutInclude.artifactIds.has(upload.id), false);
+
+      const withInclude = await store.copyConversationArtifacts({
+        sourceSessionId: 'session-1',
+        targetSessionId: 'session-copy-2',
+        turnIds: ['turn-retained'],
+        includeArtifactIds: [upload.id],
+      });
+      const copiedUploadId = withInclude.artifactIds.get(upload.id);
+      assert.ok(copiedUploadId);
+      assert.deepEqual(await store.readText(copiedUploadId), {
+        ok: true,
+        text: 'uploaded bytes',
+      });
+      assert.equal((await store.get(copiedUploadId))?.sessionId, 'session-copy-2');
+      // Unknown include ids are a no-op, not an error.
+      const withUnknown = await store.copyConversationArtifacts({
+        sourceSessionId: 'session-1',
+        targetSessionId: 'session-copy-3',
+        turnIds: ['turn-retained'],
+        includeArtifactIds: ['does-not-exist'],
+      });
+      assert.equal(withUnknown.artifactIds.has('does-not-exist'), false);
     });
   });
 
@@ -1475,7 +1717,7 @@ async function writeArtifactMetadata(
 ): Promise<string> {
   const repository = createSqliteArtifactMetadataRepository(root);
   try {
-    repository.replaceAll(records);
+    repository.applyChanges({ upserts: records });
   } finally {
     repository.close();
   }

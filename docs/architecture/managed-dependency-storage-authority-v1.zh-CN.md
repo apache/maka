@@ -5,8 +5,28 @@ date: 2026-08-08
 milestone: M1.3-storage-authority
 base: upstream/main@08bcf324b
 ---
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
 
 # Managed Dependency Storage Authority v1
+
+跟踪：[Managed dependencies #4326](https://github.com/apache/maka/issues/4326)
 
 ## 1. 本 PR 只证明一个不变量
 
@@ -20,7 +40,7 @@ base: upstream/main@08bcf324b
 
 - bundled npm 的实现与网络策略；
 - `node_modules/.bin` symlink 的 producer 配额扫描；
-- ManagedWorkspaceOwner/worker logical binding；
+- workspace execution owner/worker logical binding；
 - Desktop/CLI/Runtime Host 接线；
 - release packaging、audit 或 SBOM。
 

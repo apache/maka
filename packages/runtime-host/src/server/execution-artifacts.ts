@@ -1,18 +1,39 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { createHash } from 'node:crypto';
 import { open, realpath, stat } from 'node:fs/promises';
 import { isAbsolute, resolve } from 'node:path';
 import { MAX_ATTACHMENT_BYTES } from '@maka/core/attachments';
 import {
   createToolResultArchiveCapability,
-  isPathInside,
-  stableToolResultArchiveArtifactId,
   type ToolResultArchiveCapability,
-  type ToolArtifactRecorderInput,
+  type ToolResultArchiveRecorderInput,
+} from '@maka/runtime/tool-result-archive-capability';
+import { isPathInside } from '@maka/runtime/path-containment';
+import { stableToolResultArchiveArtifactId } from '@maka/runtime/tool-result-archive';
+import { type ToolArtifactRecorderInput } from '@maka/runtime/tool-artifacts';
+import {
   type ToolResultArchiveReaderInput,
   type ToolResultArchiveReadResult,
-  type ToolResultArchiveRecorderInput,
-  type ToolResultArchiveResourceReadInput,
-} from '@maka/runtime';
+} from '@maka/runtime/context-budget';
+import { type ToolResultArchiveResourceReadInput } from '@maka/runtime/tool-result-archive-resource';
 import type { InteractiveArtifactStoreWriter } from '@maka/storage/artifact-stores';
 
 export interface HostExecutionArtifactServices {

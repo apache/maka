@@ -1,8 +1,30 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
 import {
   decodeMessageContent as decodeCanonicalMessageContent,
+  DIRECTORY_REFERENCE_MAX_COUNT,
   isCanonicalAttachmentRef,
+  type ContextCompactionOutcome,
   type MessageContent,
+  type ProviderRetryReason,
 } from '@maka/core/events';
 import {
   isOrchestrationMode,
@@ -25,6 +47,8 @@ import {
   requireString,
 } from './codec.js';
 import { defineOperation } from './operation-spec.js';
+
+export const TURN_FAILURE_MESSAGE_MAX_BYTES = 256;
 
 export interface TurnStartInput {
   sessionId: string;
@@ -96,7 +120,9 @@ export const TURN_RESUME_PARK_REASONS = [
   'continuation_already_exists',
   'continuation_repair_required',
   'continuation_started_indeterminate',
-  'continuation_unavailable',
+  'resume_feature_disabled',
+  'continuation_authority_unavailable',
+  'safety_observation_unavailable',
   'session_busy',
 ] as const;
 
@@ -138,15 +164,44 @@ interface TurnSnapshotBase {
   runId: string;
 }
 
+export type TurnProviderRetry =
+  | {
+      phase: 'scheduled';
+      attempt: number;
+      maxAttempts: number;
+      delayMs: number;
+      /**
+       * Host-clock time the wait was scheduled at, kept so a re-projection
+       * mid-wait can recompute the authoritative remaining duration. Absent
+       * from snapshots written by older runtimes.
+       */
+      ts?: number;
+      reason: ProviderRetryReason;
+    }
+  | {
+      phase: 'started';
+      attempt: number;
+      maxAttempts: number;
+      reason: ProviderRetryReason;
+    };
+
+export type LiveTurnSnapshot = TurnSnapshotBase & {
+  status: Exclude<TurnRunStatus, 'completed' | 'failed' | 'cancelled'>;
+  providerRetry?: TurnProviderRetry;
+};
+
 export type TurnSnapshot =
+  | LiveTurnSnapshot
   | (TurnSnapshotBase & {
-      status: Exclude<TurnRunStatus, 'completed' | 'failed' | 'cancelled'>;
+      status: 'completed';
+      terminalEventId: string;
+      contextCompactionOutcome?: ContextCompactionOutcome;
     })
-  | (TurnSnapshotBase & { status: 'completed'; terminalEventId: string })
   | (TurnSnapshotBase & {
       status: 'failed';
       terminalEventId: string;
       failureClass: string;
+      failureMessage?: string;
     })
   | (TurnSnapshotBase & {
       status: 'cancelled';
@@ -287,7 +342,7 @@ export const TURN_OPERATION_SPECS = {
   }),
 } as const;
 
-function decodeTurnStartInput(value: unknown): TurnStartInput {
+export function decodeTurnStartInput(value: unknown): TurnStartInput {
   const record = requireShapedRecord(
     value,
     'turn.start input',
@@ -298,7 +353,7 @@ function decodeTurnStartInput(value: unknown): TurnStartInput {
   return {
     sessionId: requireEntityId(record.sessionId, 'sessionId'),
     turnId: requireEntityId(record.turnId, 'turnId'),
-    content: decodeMessageContent(record.content, skillIds.length > 0),
+    content: decodeMessageAdmissionContent(record.content, skillIds.length > 0),
     ...(skillIds.length > 0 ? { skillIds } : {}),
     ...(record.turnOrchestration !== undefined
       ? { turnOrchestration: decodeTurnOrchestration(record.turnOrchestration) }
@@ -315,7 +370,7 @@ function requirePositiveSafeInteger(value: unknown, label: string): number {
   return decoded;
 }
 
-function decodeSkillIds(value: unknown): string[] {
+export function decodeSkillIds(value: unknown): string[] {
   if (value === undefined) return [];
   if (
     !Array.isArray(value) ||
@@ -333,7 +388,7 @@ function decodeSkillIds(value: unknown): string[] {
   return [...value];
 }
 
-function decodeTurnOrchestration(value: unknown): TurnOrchestration {
+export function decodeTurnOrchestration(value: unknown): TurnOrchestration {
   const record = requireExactRecord(value, 'Turn orchestration', ['mode', 'source']);
   if (!isOrchestrationMode(record.mode) || !isTurnOrchestrationSource(record.source)) {
     throw invalidProtocolFrame('Invalid Turn orchestration');
@@ -357,6 +412,9 @@ export function decodeMessageContent(value: unknown, allowEmptyText = false): Me
       true,
     );
   }
+  if ((content.directoryReferences?.length ?? 0) > DIRECTORY_REFERENCE_MAX_COUNT) {
+    throw invalidProtocolFrame('Too many directory references');
+  }
   if ((content.attachments?.length ?? 0) > MAX_ATTACHMENT_COUNT) {
     throw invalidProtocolFrame('Invalid Message attachments');
   }
@@ -374,14 +432,16 @@ export function decodeMessageContent(value: unknown, allowEmptyText = false): Me
     if (attachment.bytes > MAX_ATTACHMENT_BYTES) {
       throw invalidProtocolFrame('Invalid AttachmentRef bytes');
     }
-    if (attachment.ref.kind === 'session_file') {
+    if (attachment.ref.kind === 'session_file' || attachment.ref.kind === 'session_context') {
       requireEntityId(attachment.ref.sessionId, 'AttachmentRef sessionId');
     }
-    const path =
+    const identity =
       attachment.ref.kind === 'external_file'
         ? attachment.ref.absolutePath
-        : attachment.ref.relativePath;
-    requireUtf8String(path, 'AttachmentRef path', ATTACHMENT_PATH_MAX_BYTES, false);
+        : attachment.ref.kind === 'session_context'
+          ? attachment.ref.refId
+          : attachment.ref.relativePath;
+    requireUtf8String(identity, 'AttachmentRef identity', ATTACHMENT_PATH_MAX_BYTES, false);
   }
   if ((content.quotes?.length ?? 0) > TURN_MESSAGE_QUOTE_MAX_COUNT) {
     throw invalidProtocolFrame('Invalid Message quotes');
@@ -396,6 +456,18 @@ export function decodeMessageContent(value: unknown, allowEmptyText = false): Me
     }
   }
   requireEncodedByteLimit(content, 'Message content', TURN_MESSAGE_CONTENT_MAX_BYTES);
+  return content;
+}
+
+/** Client-authored Messages cannot claim Host-owned Session context references. */
+export function decodeMessageAdmissionContent(
+  value: unknown,
+  allowEmptyText = false,
+): MessageContent {
+  const content = decodeMessageContent(value, allowEmptyText);
+  if (content.attachments?.some((attachment) => attachment.ref.kind === 'session_context')) {
+    throw invalidProtocolFrame('Session context references are Host-owned');
+  }
   return content;
 }
 
@@ -590,33 +662,47 @@ export function decodeTurnSnapshot(value: unknown): TurnSnapshot {
   };
   const status = requireTurnRunStatus(record.status);
   if (status === 'completed') {
-    assertExactKeys(record, 'completed Turn snapshot', [
-      'sessionId',
-      'turnId',
-      'runId',
-      'status',
-      'terminalEventId',
-    ]);
+    requireShapedRecord(
+      record,
+      'completed Turn snapshot',
+      ['sessionId', 'turnId', 'runId', 'status', 'terminalEventId'],
+      ['contextCompactionOutcome'],
+    );
     return {
       ...base,
       status,
       terminalEventId: requireId(record.terminalEventId, 'terminalEventId'),
+      ...(record.contextCompactionOutcome !== undefined
+        ? {
+            contextCompactionOutcome: decodeContextCompactionOutcome(
+              record.contextCompactionOutcome,
+            ),
+          }
+        : {}),
     };
   }
   if (status === 'failed') {
-    assertExactKeys(record, 'failed Turn snapshot', [
-      'sessionId',
-      'turnId',
-      'runId',
-      'status',
-      'terminalEventId',
-      'failureClass',
-    ]);
+    requireShapedRecord(
+      record,
+      'failed Turn snapshot',
+      ['sessionId', 'turnId', 'runId', 'status', 'terminalEventId', 'failureClass'],
+      ['failureMessage'],
+    );
     return {
       ...base,
       status,
       terminalEventId: requireId(record.terminalEventId, 'terminalEventId'),
       failureClass: requireString(record.failureClass, 'failureClass', 128),
+      ...(record.failureMessage !== undefined
+        ? {
+            failureMessage: requireUtf8String(
+              record.failureMessage,
+              'failureMessage',
+              TURN_FAILURE_MESSAGE_MAX_BYTES,
+              false,
+            ),
+          }
+        : {}),
     };
   }
   if (status === 'cancelled') {
@@ -635,8 +721,82 @@ export function decodeTurnSnapshot(value: unknown): TurnSnapshot {
       abortSource: requireString(record.abortSource, 'abortSource', 128),
     };
   }
-  assertExactKeys(record, 'non-terminal Turn snapshot', ['sessionId', 'turnId', 'runId', 'status']);
-  return { ...base, status };
+  requireShapedRecord(
+    record,
+    'non-terminal Turn snapshot',
+    ['sessionId', 'turnId', 'runId', 'status'],
+    ['providerRetry'],
+  );
+  return {
+    ...base,
+    status,
+    ...(record.providerRetry !== undefined
+      ? { providerRetry: decodeTurnProviderRetry(record.providerRetry) }
+      : {}),
+  };
+}
+
+export function decodeContextCompactionOutcome(value: unknown): ContextCompactionOutcome {
+  const record = requireRecord(value, 'Context compaction outcome');
+  const kind = requireString(record.kind, 'kind', 32);
+  if (kind === 'compacted') {
+    assertExactKeys(record, 'compacted context outcome', ['kind', 'checkpointId']);
+    return { kind, checkpointId: requireEntityId(record.checkpointId, 'checkpointId') };
+  }
+  if (kind === 'unchanged' || kind === 'failed') {
+    assertExactKeys(record, `${kind} context outcome`, ['kind', 'reason']);
+    return { kind, reason: requireString(record.reason, 'reason', 256) };
+  }
+  throw invalidProtocolFrame('Invalid context compaction outcome kind');
+}
+
+export function decodeTurnProviderRetry(value: unknown): TurnProviderRetry {
+  const record = requireRecord(value, 'Turn provider retry');
+  const phase = record.phase;
+  const attempt = requirePositiveCount(record.attempt, 'attempt');
+  const maxAttempts = requirePositiveCount(record.maxAttempts, 'maxAttempts');
+  if (attempt > maxAttempts) throw invalidProtocolFrame('Invalid Turn provider retry');
+  const reason = requireProviderRetryReason(record.reason);
+  if (phase === 'scheduled') {
+    const requiredKeys = ['phase', 'attempt', 'maxAttempts', 'delayMs', 'reason'] as const;
+    assertExactKeys(
+      record,
+      'scheduled Turn provider retry',
+      record.ts === undefined ? requiredKeys : [...requiredKeys, 'ts'],
+    );
+    return {
+      phase,
+      attempt,
+      maxAttempts,
+      delayMs: requireCount(record.delayMs, 'delayMs'),
+      ...(record.ts !== undefined ? { ts: requireCount(record.ts, 'ts') } : {}),
+      reason,
+    };
+  }
+  if (phase === 'started') {
+    assertExactKeys(record, 'started Turn provider retry', [
+      'phase',
+      'attempt',
+      'maxAttempts',
+      'reason',
+    ]);
+    return { phase, attempt, maxAttempts, reason };
+  }
+  throw invalidProtocolFrame('Invalid Turn provider retry');
+}
+
+function requireProviderRetryReason(value: unknown): ProviderRetryReason {
+  if (
+    value === 'network' ||
+    value === 'provider_capacity' ||
+    value === 'provider_unavailable' ||
+    value === 'rate_limit' ||
+    value === 'timeout' ||
+    value === 'unknown'
+  ) {
+    return value;
+  }
+  throw invalidProtocolFrame('Invalid Turn provider retry reason');
 }
 
 function requireTurnRunStatus(value: unknown): TurnRunStatus {

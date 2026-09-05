@@ -1,4 +1,22 @@
 #!/usr/bin/env node
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
 
 import { existsSync } from 'node:fs';
 import { readdir, readFile, writeFile } from 'node:fs/promises';
@@ -20,7 +38,6 @@ export async function collectWindowsTestSkips(root = REPO_ROOT) {
   const entries = [];
   for (const file of files.sort()) {
     const path = relative(root, file).replaceAll('\\', '/');
-    if (path === 'scripts/windows-test-inventory.test.mjs') continue;
     const sourceText = await readFile(file, 'utf8');
     const sourceLines = sourceText.split(/\r?\n/u);
     for (const skip of findSkipExpressions(sourceText)) {
@@ -223,12 +240,55 @@ function classifySkip(path, title, expression) {
   return 'portable-candidate';
 }
 
-function excludesWindows(expression) {
-  const compact = expression.replaceAll(/\s+/gu, ' ');
+export function excludesWindows(expression) {
+  const compact = stripBalancedOuterParentheses(expression.replaceAll(/\s+/gu, ' ').trim());
+  // A Windows-only regression commonly uses `false` on Windows and a skip
+  // reason elsewhere. Exempt only when that ternary is the complete skip
+  // expression: a surrounding boolean expression may still skip on Windows.
+  if (
+    /^process\.platform\s*===\s*(['"])win32\1\s*\?\s*false\s*:\s*(?:'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*")$/u.test(
+      compact,
+    )
+  ) {
+    return false;
+  }
   return (
     /process\.platform\s*===\s*['"]win32['"]/u.test(compact) ||
     /process\.platform\s*!==\s*['"]darwin['"]/u.test(compact)
   );
+}
+
+function stripBalancedOuterParentheses(expression) {
+  let compact = expression;
+  while (hasCompleteOuterParentheses(compact)) compact = compact.slice(1, -1).trim();
+  return compact;
+}
+
+function hasCompleteOuterParentheses(expression) {
+  if (!expression.startsWith('(') || !expression.endsWith(')')) return false;
+  let depth = 0;
+  let quote;
+  let escaped = false;
+  for (let index = 0; index < expression.length; index += 1) {
+    const char = expression[index];
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === quote) quote = undefined;
+      continue;
+    }
+    if (char === "'" || char === '"' || char === '`') {
+      quote = char;
+      continue;
+    }
+    if (char === '(') depth += 1;
+    else if (char === ')') {
+      depth -= 1;
+      if (depth === 0) return index === expression.length - 1;
+      if (depth < 0) return false;
+    }
+  }
+  return false;
 }
 
 function nearbyTestTitle(lines, skipIndex) {

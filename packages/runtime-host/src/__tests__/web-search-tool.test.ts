@@ -1,12 +1,75 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
-import type { MakaToolContext, ProxiedFetchProxy } from '@maka/runtime';
+import type { MakaToolContext } from '@maka/runtime/tool-runtime';
+import type { ProxiedFetchProxy } from '@maka/runtime/network/scoped-fetch-transport';
 import type {
   ResolveWebSearchExecutionResult,
   RuntimePolicyOperationCoordinator,
 } from '@maka/storage/runtime-policy-stores';
-import { createHostWebSearchTool } from '../server/web-search-tool.js';
+import {
+  createHostWebSearchTool,
+  resolveHostTavilyWebSearchReadiness,
+  shouldResolveHostTavilyWebSearchReadiness,
+} from '../server/web-search-tool.js';
+
+test('Host only resolves Tavily readiness when that execution path can be exposed', () => {
+  const policy = createDefaultRuntimePolicy();
+  assert.equal(shouldResolveHostTavilyWebSearchReadiness(policy), false);
+  assert.equal(
+    shouldResolveHostTavilyWebSearchReadiness({
+      ...policy,
+      webSearch: { enabled: true, defaultProvider: 'tavily' },
+    }),
+    true,
+  );
+  assert.equal(
+    shouldResolveHostTavilyWebSearchReadiness({
+      ...policy,
+      privacy: { incognitoActive: true },
+      webSearch: { enabled: true, defaultProvider: 'tavily' },
+    }),
+    false,
+  );
+});
+
+test('Host Tavily readiness follows the canonical execution resolver', async () => {
+  assert.equal(
+    await resolveHostTavilyWebSearchReadiness(
+      resolver({
+        kind: 'credential_not_configured',
+        status: {
+          locator: { scope: 'web_search', provider: 'tavily', kind: 'api_key' },
+          configured: false,
+          credentialId: null,
+          revision: null,
+          updatedAt: null,
+        },
+      }),
+    ),
+    false,
+  );
+  assert.equal(await resolveHostTavilyWebSearchReadiness(resolver(readyDirectExecution())), true);
+});
 
 test('Host WebSearch fails closed before transport creation for unavailable policy states', async () => {
   const states: readonly ResolveWebSearchExecutionResult[] = [

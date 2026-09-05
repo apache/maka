@@ -1,18 +1,35 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { lstat, readFile, rm } from 'node:fs/promises';
+import { lstat, readFile } from 'node:fs/promises';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import { countDiffLineStats } from '@maka/core/unified-diff';
 import {
-  countDiffLineStats,
   type GitReviewFile,
   type GitReviewFileStatus,
-  type GitReviewMutationAction,
-  type GitReviewMutationResult,
   type GitReviewReadResult,
   type GitReviewSource,
-} from '@maka/core';
-import { resolveProjectGitInfo, resolveProjectRoot } from '@maka/runtime';
+} from '@maka/core/git-review';
+import { resolveProjectGitInfo, resolveProjectRoot } from '@maka/runtime/system-prompt/project-context';
 
 const execFileAsync = promisify(execFile);
 const GIT_TIMEOUT_MS = 10_000;
@@ -124,78 +141,6 @@ export async function readGitReview(
     if (isUnbornRepositoryError(error)) {
       return { ok: false, reason: 'unborn_repository' };
     }
-    return { ok: false, reason: 'git_failed' };
-  }
-}
-
-export async function mutateGitReview(input: {
-  cwd: string;
-  source: GitReviewSource;
-  revision: string;
-  path: string;
-  action: GitReviewMutationAction;
-  runGit?: GitReviewCommandRunner;
-}): Promise<GitReviewMutationResult> {
-  const runGit = input.runGit ?? runGitCommand;
-  try {
-    const current = await readGitReview(input.cwd, input.source, runGit);
-    if (!current.ok) return { ok: false, reason: 'git_failed' };
-    if (current.snapshot.revision !== input.revision) {
-      return { ok: false, reason: 'stale_snapshot' };
-    }
-    if (!current.snapshot.files.some((file) => file.path === input.path)) {
-      return { ok: false, reason: 'path_not_found' };
-    }
-
-    const file = current.snapshot.files.find(
-      (candidate) => candidate.path === input.path,
-    );
-    if (!file) return { ok: false, reason: 'path_not_found' };
-
-    if (input.action === 'stage') {
-      await runGit(current.snapshot.repositoryRoot, ['add', '--', input.path]);
-    } else if (input.action === 'revert') {
-      if (input.source !== 'unstaged') {
-        return { ok: false, reason: 'git_failed' };
-      }
-      if (file.status === 'untracked') {
-        const target = resolve(current.snapshot.repositoryRoot, input.path);
-        const child = relative(current.snapshot.repositoryRoot, target);
-        if (!child || child.startsWith('..') || isAbsolute(child)) {
-          return { ok: false, reason: 'path_not_found' };
-        }
-        await rm(target, { force: true });
-      } else {
-        await runGit(current.snapshot.repositoryRoot, [
-          'restore',
-          '--worktree',
-          '--',
-          input.path,
-        ]);
-      }
-    } else if (
-      await gitRefExists(current.snapshot.repositoryRoot, 'HEAD', runGit)
-    ) {
-      await runGit(current.snapshot.repositoryRoot, [
-        'restore',
-        '--staged',
-        '--',
-        input.path,
-      ]);
-    } else {
-      await runGit(current.snapshot.repositoryRoot, [
-        'rm',
-        '--cached',
-        '--',
-        input.path,
-      ]);
-    }
-
-    return {
-      ok: true,
-      review: await readGitReview(input.cwd, input.source, runGit),
-    };
-  } catch {
     return { ok: false, reason: 'git_failed' };
   }
 }
@@ -495,10 +440,7 @@ function cleanLine(value: string): string | null {
 }
 
 function isUnbornRepositoryError(error: unknown): boolean {
-  return (
-    error instanceof Error &&
-    /unknown revision|bad revision|ambiguous argument|does not have any commits/i.test(
-      error.message,
-    )
-  );
+  return (error instanceof Error && /unknown revision|bad revision|ambiguous argument|does not have any commits/i.test(
+    error.message,
+  ));
 }

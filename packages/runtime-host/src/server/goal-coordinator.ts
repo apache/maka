@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { randomUUID } from 'node:crypto';
 import {
   sameGoalControlLease,
@@ -9,29 +28,35 @@ import {
 import { userFacingText, type StoredMessage } from '@maka/core/session';
 import {
   GoalContinuationCoordinator,
+  type GoalSessionCloseOperation,
+  type GoalObservedTurnStart,
+  type GoalTurnAdmission,
+  type GoalTurnOutcome,
+} from '@maka/runtime/goal-continuation';
+import {
   GoalManager,
   GOAL_REASON_TEXT_LIMIT,
   TERMINAL_GOAL_STATUSES,
-  buildGoalTools,
   truncateGoalText,
-  type GoalEvaluatorResource,
-  type GoalSessionCloseOperation,
   type GoalCheckpoint,
   type GoalControlLease,
-  type GoalObservedTurnStart,
   type GoalState,
-  type GoalTaskGateTrace,
-  type GoalTurnAdmission,
-  type GoalTurnOutcome,
-  type MakaTool,
-} from '@maka/runtime';
+} from '@maka/runtime/goal-state';
+import { buildGoalTools } from '@maka/runtime/goal-tools';
+import { type GoalEvaluatorResource } from '@maka/runtime/goal-evaluator';
+import { type MakaTool } from '@maka/runtime/tool-runtime';
 import { isSessionNotFoundError, type ExecutionStoresWriter } from '@maka/storage/execution-stores';
 import {
   authenticateInteractiveGoalAuthorityWriter,
   type GoalAuthoritySnapshot,
   type InteractiveGoalAuthorityWriter,
 } from '@maka/storage/goal-authority';
-import type { GoalControlInput, GoalProjection, OperationOutcome } from '../protocol/index.js';
+import type {
+  GoalArmInput,
+  GoalControlInput,
+  GoalProjection,
+  OperationOutcome,
+} from '../protocol/index.js';
 import type { RuntimeHostResidency } from './host-kernel.js';
 import type { GoalOperationHandlerMap } from './operation-dispatcher.js';
 import { projectGoalState } from './goal-projection.js';
@@ -59,7 +84,6 @@ export interface HostGoalCoordinatorOptions {
     checkpoint: GoalCheckpoint,
     controlLease: GoalControlLease,
   ) => GoalTurnAdmission;
-  readonly listActionableTaskKeys: (sessionId: string) => Promise<string[]>;
   readonly acquireResidency: () => RuntimeHostResidency;
   readonly onProjectionChanged: (sessionId: string) => void;
   readonly requestDrain: () => void;
@@ -76,6 +100,7 @@ export interface HostGoalSessionRetirement {
 export class HostGoalCoordinator {
   readonly handlers: GoalOperationHandlerMap = {
     'goal.query': (input) => this.#query(input.sessionId),
+    'goal.arm': (input) => this.#arm(input),
     'goal.control': (input) => this.#control(input),
   };
 
@@ -92,6 +117,14 @@ export class HostGoalCoordinator {
   readonly #acquireResidency: () => RuntimeHostResidency;
   readonly #executions: Pick<HostedExecutionAuthority, 'reconcile' | 'subscribe'>;
   readonly #authorityBySession = new Map<string, GoalAuthoritySnapshot>();
+  /**
+   * Token count per Session as of the last continuation read, which is what a
+   * settling Turn reports so the Goal can measure its budget. It is not a
+   * baseline for a new Goal: only an evaluation writes here, so a Session that
+   * has never run one has no entry, and `tokensBaselinePending` on the Goal is
+   * what carries that until the first Turn carrying it settles.
+   */
+  readonly #tokenCache = new Map<string, number>();
   readonly #recoveryWaits = new Set<Promise<void>>();
   readonly #recoveryAbort = new AbortController();
   #persistenceLane: Promise<void> = Promise.resolve();
@@ -118,7 +151,7 @@ export class HostGoalCoordinator {
         this.#onProjectionChanged(goal.sessionId);
       },
     });
-    const tokenCache = new Map<string, number>();
+    const tokenCache = this.#tokenCache;
     this.continuation = new GoalContinuationCoordinator({
       goalManager: this.manager,
       evaluator: options.evaluator,
@@ -129,10 +162,6 @@ export class HostGoalCoordinator {
       },
       getTokenCount: (sessionId) => tokenCache.get(sessionId) ?? 0,
       admitTurn: options.admitTurn,
-      taskGate: {
-        listActionableTaskKeys: options.listActionableTaskKeys,
-        recordDecision: (trace) => this.#recordTaskGateDecision(trace, now),
-      },
       durability: {
         flush: (sessionId) => this.#flushGoalState(sessionId),
         recordCurrentExecution: (current) => this.#recordCurrentExecution(current),
@@ -144,7 +173,6 @@ export class HostGoalCoordinator {
       buildGoalTools({
         goalManager: this.manager,
         goalContinuation: this.continuation,
-        getTokenCount: (sessionId) => tokenCache.get(sessionId) ?? 0,
         isAvailable: () => !this.#draining,
         flush: (sessionId) => this.#flushGoalState(sessionId),
         now,
@@ -158,7 +186,7 @@ export class HostGoalCoordinator {
       const { goal, controlLease } = snapshot.record;
       try {
         const header = await this.#stores.sessionStore.readHeaderSnapshot(goal.sessionId);
-        if (header.isArchived || header.status === 'archived') {
+        if (header.isArchived) {
           await this.#deleteOrphanedAuthority(snapshot);
           continue;
         }
@@ -177,6 +205,20 @@ export class HostGoalCoordinator {
     this.#prepared = true;
   }
 
+  /**
+   * Resume the Goal loop where the last Host epoch left it.
+   *
+   * A durable Goal with no execution of its own is either between
+   * continuations or has never run at all, and `status` cannot tell those
+   * apart: `goal.arm` persists an `active` Goal that takes hold on the user's
+   * next Turn, and arming alone starts nothing. Telling them apart is the
+   * continuation's own rule — only a settled Turn ever starts a Goal driving,
+   * so only a Goal a Turn has carried has a drive to restore — and
+   * `recoverActiveGoal` holds it for every caller. Recovery hands it each
+   * Goal and lets it decide, rather than keeping a second copy of the rule
+   * here that a later change could contradict. An execution that was in
+   * flight is its own proof of carrying, so that branch recovers directly.
+   */
   async recover(): Promise<void> {
     if (!this.#prepared) throw new Error('Goal recovery was not prepared');
     for (const snapshot of this.#authorityBySession.values()) {
@@ -203,12 +245,11 @@ export class HostGoalCoordinator {
     }
     const registration = this.continuation.beginObservedTurn(input.sessionId, input.turnId);
     if (registration.kind !== 'registered') return undefined;
-    return (completion) => {
-      void registration.settle(goalOutcomeFromCompletion(completion)).catch((error) => {
+    return (completion) =>
+      registration.settle(goalOutcomeFromCompletion(completion)).catch((error) => {
         this.#persistenceFailure ??= error;
         this.#requestDrain();
       });
-    };
   }
 
   matchesActive(
@@ -305,6 +346,55 @@ export class HostGoalCoordinator {
     });
   }
 
+  /**
+   * Arm a Goal from outside a Turn — the Host's own entry point for a user who
+   * asked for one, next to the GoalSet tool the model uses from inside a Turn.
+   *
+   * It creates the Goal and nothing else. There is deliberately no continuation
+   * scheduled here: a Goal armed with no Turn running takes effect on the next
+   * Turn, which `beginObservedTurn` binds to the live control lease, and the
+   * loop starts when that Turn settles. Arming does not itself start spending.
+   *
+   * A Turn already in flight keeps the standing it registered with — it was
+   * bound before this Goal existed, so it settles outside the Goal, and the one
+   * after it is the first the Goal drives.
+   */
+  #arm(input: GoalArmInput): Promise<OperationOutcome<'goal.arm'>> {
+    return this.#sessionAdmission.run(input.sessionId, async () => {
+      // Admission is a queue, and the composition begins to drain without
+      // waiting for it to empty. An arm let through before that can still be
+      // waiting behind another operation when the Goal manager is disposed,
+      // and it is the one operation here that would answer by creating state:
+      // the others read a manager that no longer holds anything and say so.
+      if (this.#draining) return hostDraining();
+      let header;
+      try {
+        header = await this.#stores.sessionStore.readHeaderSnapshot(input.sessionId);
+      } catch (error) {
+        if (isSessionNotFoundError(error)) return notFound('Session does not exist');
+        throw error;
+      }
+      if (header.isArchived) {
+        return sessionArchived('Archived Session cannot be given a Goal');
+      }
+      const created = this.manager.create(input.sessionId, input.condition, {
+        armed: true,
+        ...(input.maxIterations === null ? {} : { maxIterations: input.maxIterations }),
+        ...(input.tokenBudget === null ? {} : { tokenBudget: input.tokenBudget }),
+      });
+      if (created.kind === 'unfinished') {
+        return operationConflict(
+          `Session already has an unfinished Goal in status ${created.goal.status}`,
+        );
+      }
+      await this.#flushGoalState(input.sessionId);
+      return {
+        ok: true,
+        result: { sessionId: input.sessionId, goal: projectGoalState(created.goal) },
+      };
+    });
+  }
+
   #control(input: GoalControlInput): Promise<OperationOutcome<'goal.control'>> {
     return this.#sessionAdmission.run(input.sessionId, async () => {
       let header;
@@ -314,7 +404,7 @@ export class HostGoalCoordinator {
         if (isSessionNotFoundError(error)) return notFound('Session does not exist');
         throw error;
       }
-      if (header.isArchived || header.status === 'archived') {
+      if (header.isArchived) {
         return sessionArchived('Archived Session Goal state cannot be controlled');
       }
       const current = this.manager.get(input.sessionId);
@@ -503,28 +593,6 @@ export class HostGoalCoordinator {
     retained?.release();
     this.#residencies.delete(goal.sessionId);
   }
-
-  async #recordTaskGateDecision(trace: GoalTaskGateTrace, now: () => number): Promise<void> {
-    const admission = await this.#stores.agentRunStore.readRootTurnAdmission(
-      trace.sessionId,
-      trace.turnId,
-    );
-    if (!admission) return;
-    await this.#stores.agentRunStore.appendEvent(trace.sessionId, admission.runId, {
-      type: 'task_gate_decided',
-      id: this.#newId(),
-      runId: admission.runId,
-      sessionId: trace.sessionId,
-      turnId: trace.turnId,
-      ts: now(),
-      message: `Task gate: ${trace.decision}`,
-      data: {
-        goalId: trace.goalId,
-        decision: trace.decision,
-        taskKeys: trace.taskKeys,
-      },
-    });
-  }
 }
 
 function recentContext(messages: readonly StoredMessage[]): string {
@@ -563,6 +631,13 @@ function operationConflict(message: string) {
   return {
     ok: false as const,
     error: { code: 'operation_conflict' as const, message },
+  };
+}
+
+function hostDraining() {
+  return {
+    ok: false as const,
+    error: { code: 'host_draining' as const, message: 'Runtime Host is draining' },
   };
 }
 

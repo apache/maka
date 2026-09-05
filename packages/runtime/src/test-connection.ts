@@ -1,13 +1,35 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { randomUUID } from 'node:crypto';
 import {
-  PROVIDER_DEFAULTS,
+  PROVIDER_REGISTRY,
+  providerDefaultsOf,
+  providerFallbackModelIds,
+  connectionModelsEnumerateAccount,
   connectionEnabledModelIds,
   type ConnectionTestErrorClass,
   type ConnectionTestResult,
   type LlmConnection,
 } from '@maka/core/llm-connections';
-import { anthropicV1Url, googleApiUrl } from './provider-urls.js';
+import { anthropicV1Url, googleApiUrl, openResponsesUrl } from './provider-urls.js';
 import { resolveModelRuntime } from './model-runtime.js';
-import { claudeSubscriptionHeaders } from './subscription-auth.js';
 import { fetchGitHubCopilotModels } from './model-fetcher.js';
 import {
   CONNECTION_EFFECT_ERROR_BODY_MAX_BYTES,
@@ -26,6 +48,7 @@ import {
   type ConnectionEffectError,
   type ConnectionTestEffectOutcome,
 } from './connection-effect-outcome.js';
+import { withOpenCodeSessionHeader } from './opencode-session-header.js';
 
 const CONNECTION_TEST_TIMEOUT_MS = 15_000;
 
@@ -37,6 +60,13 @@ export interface ConnectionTestOptions extends ConnectionEffectFetchOptions {
  * Prefer an explicit model, then a still-live configured model. Legacy
  * connections without a discovered inventory keep the historical
  * default/fallback order.
+ *
+ * A `'live'` catalog ORDERS the user's own candidates, it does not filter
+ * them: a model the provider just listed is likelier to answer, so probe that
+ * one first. But no catalog removes a candidate. A snapshot would otherwise
+ * redirect the probe onto a model the user never chose (#1584), and even a
+ * live list can lag the account — when it does, the provider's own error is a
+ * better answer than a model Maka substituted silently.
  */
 function resolveConnectionTestModel(
   connection: ConnectionEffectConnection,
@@ -46,21 +76,17 @@ function resolveConnectionTestModel(
   const explicitModel = model?.trim();
   if (explicitModel) return explicitModel;
 
-  const hasAuthoritativeInventory =
-    connection.modelSource === 'fetched' && Array.isArray(connection.models);
   const discoveredIds =
     connection.models?.map(({ id }) => id.trim()).filter((id) => id.length > 0) ?? [];
-  const discovered =
-    hasAuthoritativeInventory || discoveredIds.length > 0 ? new Set(discoveredIds) : undefined;
-  const candidates = [
-    ...connectionEnabledModelIds(connection),
-    ...fallbackModels,
-    ...discoveredIds,
-  ];
+  const enabled = connectionEnabledModelIds(connection);
+  const listed = connectionModelsEnumerateAccount(connection) ? new Set(discoveredIds) : undefined;
+  const preferred = listed
+    ? [...enabled.filter((id) => listed.has(id)), ...enabled.filter((id) => !listed.has(id))]
+    : enabled;
+  const candidates = [...preferred, ...fallbackModels, ...discoveredIds];
   for (const candidate of candidates) {
     const id = candidate.trim();
-    if (!id || (discovered && !discovered.has(id))) continue;
-    return id;
+    if (id) return id;
   }
   return undefined;
 }
@@ -127,22 +153,27 @@ async function testConnectionStrict(
   t0: number,
   timeoutMs = CONNECTION_TEST_TIMEOUT_MS,
 ): Promise<ConnectionTestResult> {
-  const defaults = PROVIDER_DEFAULTS[connection.providerType];
+  const defaults = PROVIDER_REGISTRY[connection.providerType];
   // Unknown providerType → can't pick an auth path or fallback model. Return a
-  // clear failure rather than crashing. Mirrors `isFakeBackend`.
+  // clear failure rather than crashing. Mirrors `isRealConnection`.
   if (!defaults) {
     return { ok: false, errorMessage: `Unknown provider type "${connection.providerType}"` };
   }
+  const sessionId = connection.providerType === 'opencode-go' ? randomUUID() : undefined;
   const auth = defaults.authKind;
   const secret = auth === 'none' ? '' : apiKey;
-  const testModel = resolveConnectionTestModel(connection, model, defaults.fallbackModels);
+  const testModel = resolveConnectionTestModel(
+    connection,
+    model,
+    providerFallbackModelIds(defaults),
+  );
 
   if (!testModel) {
     return { ok: false, errorMessage: 'No model to test' };
   }
   if (connection.providerType === 'opencode-free' && !model?.trim()) {
     const candidates = [
-      ...new Set([...connectionEnabledModelIds(connection), ...defaults.fallbackModels]),
+      ...new Set([...connectionEnabledModelIds(connection), ...providerFallbackModelIds(defaults)]),
     ];
     let lastFailure: ConnectionTestResult | undefined;
     for (let index = 0; index < candidates.length; index += 1) {
@@ -161,6 +192,7 @@ async function testConnectionStrict(
           fetchFn,
           t0,
           attemptTimeoutMs,
+          sessionId,
         );
         if (result.ok) return result;
         lastFailure = result;
@@ -171,7 +203,15 @@ async function testConnectionStrict(
     return lastFailure ?? connectionTestFailure(new ConnectionEffectFetchError('timeout'), t0);
   }
 
-  return await testConnectionModel(connection, secret, testModel, fetchFn, t0, timeoutMs);
+  return await testConnectionModel(
+    connection,
+    secret,
+    testModel,
+    fetchFn,
+    t0,
+    timeoutMs,
+    sessionId,
+  );
 }
 
 async function testConnectionModel(
@@ -181,23 +221,61 @@ async function testConnectionModel(
   fetchFn: ConnectionEffectFetch | undefined,
   t0: number,
   timeoutMs = CONNECTION_TEST_TIMEOUT_MS,
+  sessionId?: string,
 ): Promise<ConnectionTestResult> {
+  // Ahead of `resolveModelRuntime`, which throws for an adapter it cannot name.
+  // A stored connection can still be opened long after its provider stopped
+  // being offered, and the caller renders this result — so a retired provider
+  // has to fail the test, not crash it.
+  if (providerDefaultsOf(connection.providerType)?.runtimeAdapter.kind === 'unavailable') {
+    return retiredProviderTestResult(connection.providerType);
+  }
   const { adapter, baseUrl, wire } = resolveModelRuntime(connection, testModel);
+  const requestHeaders = withOpenCodeSessionHeader(connection.providerType, sessionId);
 
   switch (adapter.kind) {
     case 'anthropic':
-    case 'claude-subscription':
-      return await probeAnthropic(connection, baseUrl, secret, testModel, t0, fetchFn);
+      return await probeAnthropic(
+        connection,
+        baseUrl,
+        secret,
+        testModel,
+        t0,
+        fetchFn,
+        requestHeaders,
+      );
+    case 'unavailable':
+      // Unreachable: the guard above returns first. The arm keeps the switch
+      // exhaustive so a newly retired provider cannot slip past it.
+      return retiredProviderTestResult(connection.providerType);
     case 'openai':
       return wire === 'openai-responses'
-        ? await probeOpenAIResponses(baseUrl, secret, testModel, t0, fetchFn)
-        : await probeOpenAI(connection, baseUrl, secret, testModel, t0, fetchFn, timeoutMs);
+        ? await probeOpenAIResponses(baseUrl, secret, testModel, t0, fetchFn, requestHeaders)
+        : await probeOpenAI(
+            connection,
+            baseUrl,
+            secret,
+            testModel,
+            t0,
+            fetchFn,
+            timeoutMs,
+            requestHeaders,
+          );
     case 'openai-codex':
       return await probeOpenAI(connection, baseUrl, secret, testModel, t0, fetchFn, timeoutMs);
     case 'openai-compatible':
       return wire === 'openai-responses'
-        ? await probeOpenAIResponses(baseUrl, secret, testModel, t0, fetchFn)
-        : await probeOpenAI(connection, baseUrl, secret, testModel, t0, fetchFn, timeoutMs);
+        ? await probeOpenAIResponses(baseUrl, secret, testModel, t0, fetchFn, requestHeaders)
+        : await probeOpenAI(
+            connection,
+            baseUrl,
+            secret,
+            testModel,
+            t0,
+            fetchFn,
+            timeoutMs,
+            requestHeaders,
+          );
     case 'github-copilot':
       return await probeGitHubCopilot(baseUrl, secret, testModel, t0, fetchFn);
     case 'google':
@@ -211,8 +289,6 @@ async function testConnectionModel(
       );
     case 'cohere':
       return await probeCohere(baseUrl, secret, testModel, t0, fetchFn);
-    case 'unavailable':
-      throw new Error(`${connection.providerType} is experimental and not wired yet`);
   }
 }
 
@@ -239,10 +315,12 @@ async function probeOpenAIResponses(
   model: string,
   t0: number,
   fetchFn: ConnectionEffectFetch | undefined,
+  requestHeaders?: Readonly<Record<string, string>>,
 ): Promise<ConnectionTestResult> {
-  const r = await fetchForConnectionEffect(fetchFn, `${stripTrailing(baseUrl)}/responses`, {
+  const r = await fetchForConnectionEffect(fetchFn, openResponsesUrl(baseUrl), {
     method: 'POST',
     headers: {
+      ...requestHeaders,
       authorization: `Bearer ${apiKey}`,
       'content-type': 'application/json',
     },
@@ -284,6 +362,10 @@ async function probeCohere(
   return { ok: true, latencyMs: Date.now() - t0, modelTested: model };
 }
 
+function retiredProviderTestResult(providerType: string): ConnectionTestResult {
+  return { ok: false, errorMessage: `"${providerType}" is retired and can no longer be used.` };
+}
+
 async function probeAnthropic(
   connection: Pick<ConnectionEffectConnection, 'providerType'>,
   baseUrl: string,
@@ -291,30 +373,14 @@ async function probeAnthropic(
   model: string,
   t0: number,
   fetchFn: ConnectionEffectFetch | undefined,
+  requestHeaders?: Readonly<Record<string, string>>,
 ): Promise<ConnectionTestResult> {
-  const headers: Record<string, string> =
-    connection.providerType === 'claude-subscription'
-      ? {
-          ...claudeSubscriptionHeaders(),
-          Authorization: `Bearer ${secret}`,
-          'anthropic-version': '2023-06-01',
-          'content-type': 'application/json',
-        }
-      : {
-          'x-api-key': secret,
-          'anthropic-version': '2023-06-01',
-          'content-type': 'application/json',
-        };
-
-  if (connection.providerType === 'claude-subscription') {
-    // Claude Subscription credentials are account-scoped OAuth tokens.
-    // The real send path has to use the Claude Code cloak shape; a
-    // separate `/api/oauth/profile` probe can fail with "Invalid
-    // request format" even when the stored login is usable. Treat the
-    // presence of a resolved main-process OAuth token as the connection
-    // test and let send-path failures surface during an actual turn.
-    return { ok: true, latencyMs: Date.now() - t0, modelTested: model };
-  }
+  const headers: Record<string, string> = {
+    ...requestHeaders,
+    'x-api-key': secret,
+    'anthropic-version': '2023-06-01',
+    'content-type': 'application/json',
+  };
 
   const r = await fetchForConnectionEffect(fetchFn, anthropicV1Url(baseUrl, '/messages'), {
     method: 'POST',
@@ -339,6 +405,7 @@ async function probeOpenAI(
   t0: number,
   fetchFn: ConnectionEffectFetch | undefined,
   timeoutMs = CONNECTION_TEST_TIMEOUT_MS,
+  requestHeaders?: Readonly<Record<string, string>>,
 ): Promise<ConnectionTestResult> {
   if (connection.providerType === 'openai-codex') {
     // Codex Subscription credentials are ChatGPT account-scoped OAuth
@@ -353,6 +420,7 @@ async function probeOpenAI(
   const r = await fetchForConnectionEffect(fetchFn, `${stripTrailing(baseUrl)}/chat/completions`, {
     method: 'POST',
     headers: {
+      ...requestHeaders,
       ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
       'content-type': 'application/json',
     },

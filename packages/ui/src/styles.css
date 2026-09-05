@@ -1,49 +1,127 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+@import 'katex/dist/katex.min.css';
+
 /* Maka product compositions shared across desktop renderer surfaces. Astryx
    owns generic component chrome; these selectors own only product semantics. */
+
+/* An Item row draws a focus ring for ITS OWN tab stop, never for a control
+   that already draws one.
+
+   Astryx's Item (and everything built on it — ListItem, and so every settings
+   row) applies `outline: 2px solid accent` at `:has(:focus-visible)`,
+   unconditionally. That is right for an interactive row: `onClick`/`href`
+   makes Item render an INVISIBLE `<button>`/`<a>` as a direct child, and the
+   row's ring is that button's only visible focus indicator. It is wrong for
+   every other row, where the focusable thing is a real control in the end slot
+   that rings itself — the row ring is then a second outline around a whole
+   label + description + control band.
+
+   Two ways this showed up, both measured in a real window:
+
+   1. Tabbing onto any settings-row control — a Selector trigger, a Switch, a
+      SegmentedControl, a ghost Button — lit the control AND the full row.
+   2. Opening the 默认模型 picker outlined the entire row and nothing else.
+      A Selector popup is a native `popover` element: the top layer moves where
+      it PAINTS, not where it sits in the DOM, so it is still a descendant of
+      the row. Focus goes to the popup's search input on open, `:has()` walks
+      up to the row, and the row rings — while the trigger, whose own wrapper
+      is a sibling of the popup, does not. Reported as "点开下拉框时外面整行
+      出现一个蓝色的框".
+
+   `:not(:has(> :is(a, button):focus-visible))` is what separates the two: the
+   only `<a>`/`<button>` that is a DIRECT child of an Item root is that
+   invisible tab stop, since start/end/label content each sit inside their own
+   span. So an interactive row keeps its ring when its own tab stop has focus,
+   and loses it only when focus is on a control that owns its indicator — which
+   is also the case for a row carrying both.
+
+   Product CSS is the last cascade layer (`components`, see
+   cascade-layers.css), so this wins over the compiled StyleX atom regardless
+   of that atom's `:not(#\#)` specificity padding.
+
+   Gated on `forced-colors: none` because the premise — "the control already
+   draws one" — is only true when the page controls its own colors. Under
+   Windows High Contrast the control's affordance is gone: forced-colors drops
+   `box-shadow` entirely and repaints every border in the same system color, so
+   an Astryx field looks identical resting and focused, and its trigger button
+   sets `outline: none` on itself (Selector.tsx: the wrapper is supposed to
+   carry the ring). The row outline is then the ONLY indicator that survives —
+   outline is the one focus property forced-colors preserves — and taking it
+   away leaves a keyboard user with no visible focus at all. So there, the
+   doubled ring is the lesser problem and the row keeps it.
+
+   Fixing it at the control instead was the other option and is not better:
+   it would mean product CSS reaching past the design system into the internals
+   of Selector, Switch, SegmentedControl and Button, one forced-colors rule per
+   control, to restore what each was supposed to draw itself. */
+@media (forced-colors: none) {
+  .astryx-item:has(:focus-visible):not(:has(> :is(a, button):focus-visible)) {
+    outline: none;
+  }
+}
 
 .maka-quote-chip-remove { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; border: 0; color: var(--muted-foreground); background: transparent; transition: color var(--duration-quick) var(--ease-out-strong), background var(--duration-quick) var(--ease-out-strong); }
 .maka-quote-chip-remove:hover { color: var(--foreground); background: var(--state-hover-bg); }
 .maka-quote-chip-remove:focus-visible { color: var(--foreground); background: var(--state-hover-bg); outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: 1px; }
 
-.maka-page-header-title,
-.maka-page-header-eyebrow,
-.maka-page-header-subtitle { margin: 0; }
-.maka-page-header-content { min-width: 0; }
-.maka-page-header-heading-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 
+/* One shape. The tone and emphasis modifiers that used to sit here — a filled
+   plate, four tinted borders, four value inks, a dimmed zero — were reachable
+   only from this package's own story; the product's single call site renders
+   the plain outlined tile. The tinted borders were also the least defensible of
+   them: the value ink already carried the status, and a second tinted edge
+   repeating it is DESIGN.md §8's One Means Rule.
 
-.maka-stat-tile { display: flex; min-width: 0; flex-direction: column; align-items: flex-start; gap: 4px; padding: 12px; }
-/* Visual System 2.0 (T4): flat. DESIGN.md §5 says default surfaces are flat and
+   Visual System 2.0 (T4): flat. DESIGN.md §5 says default surfaces are flat and
    depth comes from the ladder, then a line, then shadow only for something that
    genuinely floats — a stat tile sits on the plate. It already states its edge
    with a border, so the resting shadow was also a second separator on the same
-   edge (§4's One Means Rule). Dropping it retires --card-shadow's last consumer
+   edge (§4's One Means Rule). Dropping it retired --card-shadow's last consumer
    rather than promoting it to --elevation-raised, which would have made a
-   stationary tile float harder than it did before. */
-.maka-stat-tile-outline { border: 1px solid var(--card-border-color, var(--border)); border-radius: var(--radius-surface); background: var(--card-bg, var(--background)); }
-.maka-stat-tile-filled { border-radius: var(--radius-control); background: var(--foreground-5); }
-.maka-stat-tile-border-info { border-color: oklch(from var(--info) l c h / 0.24); }
-.maka-stat-tile-border-success { border-color: oklch(from var(--success) l c h / 0.24); }
-.maka-stat-tile-border-warning { border-color: oklch(from var(--warning) l c h / 0.28); }
-.maka-stat-tile-border-destructive { border-color: oklch(from var(--destructive) l c h / 0.3); }
-.maka-stat-tile-empty { opacity: var(--opacity-disabled); }
-.maka-stat-tile-value-outline { font: var(--maka-text-heading-1); }
-.maka-stat-tile-value-filled { font: var(--maka-text-heading-4); }
-/* After the two role rules, not before them. The `font:` shorthand resets
-   `font-variant-numeric` along with the four axes the role names, and both
-   modifiers land on this same element — so declared first, the tabular figures
-   these tiles exist to align were being reset away by the role. Ordering is
-   the fix rather than repeating the declaration on each modifier: it is one
-   authority, and it is the general rule for any sub-property the roles do not
-   carry. */
-.maka-stat-tile-value { display: block; min-width: 0; max-width: 100%; overflow-wrap: anywhere; color: var(--foreground); font-variant-numeric: tabular-nums; white-space: normal; }
-.maka-stat-tile-value-info { color: var(--info-text); }
-.maka-stat-tile-value-success { color: var(--success-text); }
-.maka-stat-tile-value-warning { color: var(--warning-text); }
-.maka-stat-tile-value-destructive { color: var(--destructive-text); }
+   stationary tile float harder than it did before.
+
+   `.maka-stat-tile-value` is declared after the tile, not before: the `font:`
+   shorthand resets `font-variant-numeric` along with the four axes the role
+   names, so the tabular figures these tiles exist to align have to be set on
+   the element that carries the role, after it. */
+.maka-stat-tile {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid var(--card-border-color, var(--border));
+  border-radius: var(--radius-surface);
+  background: var(--card-bg, var(--background));
+}
+.maka-stat-tile-value {
+  font: var(--maka-text-heading-1);
+ display: block; min-width: 0; max-width: 100%; overflow-wrap: anywhere; color: var(--foreground); font-variant-numeric: tabular-nums; white-space: normal; }
+/* Label and detail share one size, so ink is the only thing ranking them: the
+   label names the metric, the detail qualifies it. Both on muted was one row
+   with no rank at all. */
 .maka-stat-tile-label {
   font: var(--maka-text-supporting);
- color: var(--foreground-secondary); letter-spacing: 0.025em; }
+ color: var(--foreground); letter-spacing: 0.025em; }
 .maka-stat-tile-detail {
   font: var(--maka-text-supporting);
  color: var(--muted-foreground); }
@@ -57,7 +135,6 @@
    type lives on `.maka-quote-chip-text`, which is why the derived scan needed
    two arms rather than three to see it at all. */
 .maka-quote-chip-collapsed { height: var(--h-control-sm); max-width: 240px; align-items: center; padding-block: 2px; border-radius: var(--radius-pill); }
-.maka-composer-running-actions { display: inline-flex; align-items: center; gap: var(--space-1); }
 .maka-quote-chip-removable { padding-right: 2px; }
 .maka-quote-chip-readonly { padding-right: 8px; }
 .maka-quote-chip-icon { width: var(--icon-meta); height: var(--icon-meta); flex: 0 0 auto; color: var(--muted-foreground); }
@@ -70,7 +147,7 @@
   height: auto;
   border: 0;
   padding: 0;
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
   background: transparent;
   text-align: left;
   box-shadow: none;
@@ -94,7 +171,7 @@
 .maka-quote-chip-remove > svg,
 .maka-quote-chip-remove svg { width: var(--icon-meta); height: var(--icon-meta); }
 
-.maka-task-ledger-empty {
+.maka-session-todo-empty {
   margin: 0;
 }
 
@@ -152,12 +229,9 @@
    (they sit on the column's own 8px). Hugging the last tool card read as part
    of that card. */
 .maka-turn-processing { margin-top: 8px; }
+.maka-turn-provider-retry { margin-top: 8px; }
 .maka-turn-indicator-text { display: inline-flex; min-width: 0; align-items: center; gap: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* Duration must match `WORKING_PHRASE_FADE_MS` in chat-turn.tsx: the swap is a
-   fade out, then a text change, then a fade in, and the JS timer is what waits
-   out this transition before rewriting the word. */
-.maka-turn-working-phrase { font-weight: var(--font-weight-medium); transition: opacity var(--duration-large) var(--ease-out-strong); }
-.maka-turn-working-phrase[data-fading="true"] { opacity: 0; }
+.maka-turn-status-label { font-weight: var(--font-weight-medium); }
 .maka-turn-status-separator { color: var(--foreground-alpha-16); }
 /* Tabular figures so a ticking clock changes glyphs without changing width. */
 .maka-turn-elapsed { font-variant-numeric: tabular-nums; }
@@ -167,13 +241,37 @@
    bubble, so it needs its own line and the gap above it. */
 .maka-turn-truncation-badge { display: flex; width: fit-content; margin-top: 6px; cursor: help; }
 .maka-deep-thinking { min-width: 0; }
-/* The reasoning body inside the Astryx ChatReasoning disclosure. The official
-   atoms own no white-space (the shell assumes children are pre-rendered), so
-   the inherited `white-space: normal` collapses every newline in thinking
-   text. Restore the pre-wrap reading contract the pre-Astryx disclosure had
-   (dropped in the #1748 migration). `word-break` keeps long tokens from
-   overflowing the box, as the old body did. */
+/* Reasoning uses the same safe Markdown pipeline as answers, then lowers its
+   visual weight inside the disclosure. Body layout stays with the upstream
+   Astryx atoms (secondary color, 22px inline-start indent, no rail): the
+   #2645 inset added a 2px link-tinted border that visually outweighed the
+   muted text it framed, and its padding-top/inline-start were dead code —
+   the ejected component's higher-specificity atoms already own both. */
 .maka-chat-reasoning-content { white-space: pre-wrap; word-break: break-word; }
+.maka-deep-thinking [data-maka-contract="markdown"] .astryx-markdown {
+  color: var(--muted-foreground);
+  font: var(--maka-text-body);
+}
+.maka-deep-thinking [data-maka-contract="markdown"] .astryx-markdown-heading,
+.maka-deep-thinking [data-maka-contract="markdown"] strong {
+  color: color-mix(in oklch, var(--link) 28%, var(--muted-foreground));
+}
+.maka-deep-thinking [data-maka-contract="markdown"] .astryx-markdown-heading {
+  font: var(--maka-text-label);
+}
+.maka-math {
+  max-width: 100%;
+  color: inherit;
+}
+.maka-math-inline {
+  display: inline;
+}
+.maka-math-display {
+  display: block;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-block: 2px;
+}
 
 @keyframes maka-spin { to { transform: rotate(360deg); } }
 .maka-spin { animation: maka-spin 1s linear infinite; }
@@ -193,16 +291,48 @@
    by owning every compact prose gap in one place:
 
      4px  list items   (same level)
-     8px  blocks       (paragraph, list, quote, table, code)
+     12px blocks       (paragraph, list, quote, table, code)
      16px section      (h3-h6, and either side of an `hr`)
      24px chapter      (h1, h2)
+
+   Why the block rung is 12px and not the 8px this table first shipped: 8px
+   restored the ORDER the table exists to fix, but never argued its value.
+   Body leading here is 20px, so 8px put two paragraphs 0.4 of a line apart —
+   a paragraph break narrower than the line break inside a paragraph, which is
+   the one distance a reader already knows. 12px is Astryx's own paragraph
+   rhythm at document density (spacingParagraphDefault, `--spacing-3`), so this
+   is the block step returning to the design system rather than a Maka number:
+   the transcript keeps its own HEADING scale and its own list rung, and only
+   stops being denser than the design system between two paragraphs. Measured
+   in Storybook (Product/Markdown → TranscriptTurn) rather than estimated.
+
+   It costs contrast at the top of the ladder — the section step falls from 2x
+   the block gap to 1.33x, so a heading now separates mainly on weight, size
+   and colour rather than on space. That is the price of leaving the heading
+   rungs alone, which is deliberate: heading spacing is what #1857 and this
+   table already decided, and this change is about paragraphs only.
+
+   What holds this: __tests__/markdown-rhythm-contract.test.tsx, and it pins
+   only the two ways this table can break SILENTLY — the runtime hooks these
+   selectors need still being emitted (an Astryx rename kills every rule at
+   once, and a selector that matches nothing never complains), and the
+   ListItem control padding still being neutralized (the mechanism that
+   inverted the ladder in the first place). The values below are NOT pinned,
+   deliberately: a wrong number is visible the moment anyone looks at a
+   transcript, so it does not need a test to be noticed — which is not true of
+   either of the other two.
 
    Three deliberate choices:
 
    - Only `[data-density="compact"]`. The document mode is not broken (its
      lists sit 10px apart against 12px paragraphs, which is already in order),
      and the Daily Review renders through it. Fixing only the broken half keeps
-     that surface out of the blast radius.
+     that surface out of the blast radius. Compact is not the transcript
+     alone, though — the desktop Artifact Preview asks for it too, so it takes
+     these gaps as well. For the block rung that is the point rather than a
+     cost: 12px IS the document rhythm, so the preview moves toward Astryx's
+     default rather than further from it. The heading rules below are the ones
+     where sharing is arguable, and they say so.
    - Scoped to Astryx's own `data-density`, not to a `.maka-turn` ancestor.
      `themeProps()` reflects every visual prop as a data attribute for exactly
      this ("consumers target stable data-attribute selectors"), so the rhythm
@@ -211,11 +341,11 @@
      old ancestor-scoped rules could not.
    - Top level only. `>` keeps every gap on the document's own children, so
      blocks nested inside a list item or a blockquote keep Astryx's own compact
-     4px instead of the 8px block gap. That tier difference is the point, not
-     an oversight: a list item should read as one unit, so two paragraphs
-     inside it belong closer together than two paragraphs in the transcript.
-     The ladder extends downward (4px nested < 8px block) rather than
-     inverting, which is the invariant that matters.
+     4px instead of the block gap. That tier difference is the point, not an
+     oversight: a list item should read as one unit, so two paragraphs inside
+     it belong closer together than two paragraphs in the transcript. The
+     ladder extends downward (4px nested < 12px block) rather than inverting,
+     which is the invariant that matters.
 
    A gap is a relation BETWEEN two blocks, so every gap rule is an adjacent
    sibling rule. Two consequences, both load-bearing:
@@ -232,7 +362,7 @@
      two blocks is the value declared here. */
 [data-maka-contract="markdown"] .astryx-markdown[data-density="compact"] {
   --md-gap-list: var(--space-1);
-  --md-gap-block: var(--space-2);
+  --md-gap-block: var(--space-3);
   --md-gap-section: var(--space-4);
   --md-gap-chapter: var(--space-6);
 }
@@ -275,43 +405,87 @@
 [data-maka-contract="markdown"] .astryx-markdown[data-density="compact"] .astryx-list {
   gap: var(--md-gap-list);
 }
-/* Heading scale: size says "this is a heading", weight and colour say which
-   level. Astryx's document ladder (20/18/16/14) is a page scale and an agent
-   turn emits `##` every few lines, so the transcript keeps two size steps —
-   but it keeps TWO, not one. The previous rule flattened h2-h6 onto a single
-   size, which left h2 and h3 identical in size, weight AND colour: three
-   levels of structure rendered as three identical bold lines.
-   Cursor (1.43/1.32/1.21), Claude Code (1.14/1.07/1.0) and Codex
-   (1.71/1.43/1.21) all flatten here relative to their own document styles, and
-   opencode goes further — 17/15/13 with h4+ dropped to a muted colour. Nobody
-   flattens to zero. Two steps plus colour sits inside that range.
+/* Prose reads differently from chrome. Han glyphs fill the whole em box, so
+   the 20px body leading that suits a control row leaves CJK paragraphs with
+   no air between lines; 1.6 is the common CJK reading ratio. Inherited from
+   the document root: headings and fenced code declare their own leading and
+   keep it, inline code follows the line it sits in, which is what keeps that
+   line's box even. `text-autospace` puts the conventional hair space between
+   Han and Latin or digit runs when the model did not type one. */
+[data-maka-contract="markdown"] .astryx-markdown {
+  line-height: 1.6;
+  text-autospace: normal;
+}
+/* Han faces have no italic, so `*emphasis*` in Chinese renders as a synthetic
+   shear of PingFang. Chinese typography marks emphasis with a dot under each
+   character instead. Keyed on the script of the turn's own prose (MarkdownBody
+   sets `data-maka-script`), not on the document `lang`: that is the UI locale,
+   and a model answers in whatever language it was asked in. Latin prose keeps
+   its italic. */
+[data-maka-contract="markdown"][data-maka-script="han"] .astryx-markdown em {
+  font-style: normal;
+  text-emphasis: filled dot;
+  text-emphasis-position: under right;
+}
+/* Heading scale: size says "this is a heading", colour says which level.
+   Astryx's document ladder (20/18/16/14) is a page scale and an agent turn
+   emits `##` and `###` every few lines, so the transcript keeps ONE size step
+   above body — 16 for h1/h2 — and everything below at body size. Chat-first
+   clients sit exactly here: Claude Code (1.07/1.0), opencode (15/13 with h4+
+   muted), Lody (16/14); only the document-leaning ones (Cursor 1.32/1.21,
+   Codex 1.43/1.21) go bigger, and a transcript at those sizes reads as a
+   stack of slabs rather than an answer.
+   h3 cannot be a body-size bold line in CJK, though: PingFang's Regular and
+   Semibold are close enough that it is indistinguishable from a bold
+   sentence, and a Chinese turn lost a whole level of structure. Size would
+   bring the slabs back, so h3 steps down in ink instead and shares the muted
+   tier with h4-h6 — the same axis opencode uses one level lower. `####` is
+   rare in a turn, so h3 and h4 sharing a style costs less than h3 and
+   `<strong>` sharing one.
 
    RISK, not just a choice: these are the only rules here that are typography
    rather than spacing, and Astryx's density RFC (facebook/astryx#839) draws
    the line at "density shifts heights and spacing, not typography". Keying
    them on `data-density` is honest only while `compact` and "transcript" name
-   the same set — true today, since the transcript is the only caller asking
-   for compact and the Daily Review renders a document at the default. A
-   second compact surface would silently inherit transcript heading sizes and
-   dimmed deep headings. Giving typography its own surface attribute would
-   decouple them, but nothing needs it yet; the assumption is held by a test
-   instead (packages/ui/src/__tests__/markdown-rhythm-dom-contract.test.tsx,
-   "keeps compact markdown a transcript-only surface"), which fails the moment
-   the sets diverge and says what the choice is. */
+   the same set, and they DO NOT. Two surfaces ask for compact: the transcript
+   (chat-turn.tsx) and the desktop Artifact Preview
+   (apps/desktop/src/renderer/artifact-preview.tsx, since #2506), so the
+   preview pane has been rendering `.md` files at transcript heading sizes
+   with dimmed h4-h6 ever since. Nothing scopes it out: the
+   `[data-maka-contract="markdown"]` prefix is on every MarkdownBody, so
+   `density` is the whole key.
+
+   Left shared on purpose, not by omission. The preview is a narrow side pane
+   showing a document a few lines at a time, which is the shape the flattening
+   was designed for, and no report has called it wrong. Splitting the key —
+   moving these three rules onto a surface attribute the transcript sets and
+   the preview does not — is a visible change to the preview's typography and
+   belongs in its own change, argued and looked at on that surface rather
+   than smuggled in under a spacing token.
+
+   So: a THIRD compact surface inherits transcript typography silently, and
+   nothing catches it. That is unguarded, and it stays unguarded knowingly —
+   the caller set spans workspaces, so the only test that could hold it is a
+   library test grepping application source. One was written and it was wrong
+   on its first commit, passing while already false. A comment that is checked
+   when these rules are read beats an assertion that lies. */
 [data-maka-contract="markdown"] .astryx-markdown[data-density="compact"] .astryx-markdown-heading:is([data-level="1"], [data-level="2"]) {
   font: var(--maka-text-heading-3);
 }
 [data-maka-contract="markdown"] .astryx-markdown[data-density="compact"] .astryx-markdown-heading:not([data-level="1"], [data-level="2"]) {
   font: var(--maka-text-heading-4);
+  color: var(--muted-foreground);
 }
-/* Below h3 the size ladder is spent — h4-h6 already sit at body size, and
-   growing them back would re-create the slabs the flattening exists to avoid.
-   Colour is the one axis left that costs no vertical space, so the deepest
-   levels step down in ink instead. opencode makes the same call at the same
-   point (13px h4-h6 dropped to muted); it is why a turn can carry four levels
-   of structure inside two type sizes. */
-[data-maka-contract="markdown"] .astryx-markdown[data-density="compact"] .astryx-markdown-heading:not([data-level="1"], [data-level="2"], [data-level="3"]) {
-  color: var(--foreground-secondary);
+
+/* Astryx hands custom images no inline/block placement or spacing wrapper.
+   Session artifacts are content previews rather than sentence badges, so they
+   own a bounded block presentation; compact transcript rhythm resets the
+   top-level margin above through the shared adjacency rules. */
+.maka-markdown-attachment-image {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin-block: var(--space-3) var(--space-4);
 }
 
 /* Markdown code renderers are custom components so Mermaid can be loaded only
@@ -320,6 +494,44 @@
    flow — the compact rhythm above already carries it, and only the document
    mode needs its margins declared here. */
 .maka-markdown-code { min-width: 0; }
+/* Markdown always gives CodeBlock a structural header, keeping its copy button
+   in a real toolbar instead of overlaying the horizontal scroll viewport. */
+.maka-markdown-code .astryx-codeblock-header {
+  min-height: 32px;
+  padding-block: 2px;
+  padding-inline: var(--spacing-2);
+  border-block-end: 1px solid var(--border);
+}
+/* Astryx pulls a headered code body upward by spacing-2. That is useful when
+   the header is only a language caption, but our header is a distinct toolbar:
+   the pull clips the top padding to 4px while leaving 12px below the line. */
+.maka-markdown-code .astryx-codeblock [role="group"] > div {
+  margin-block-start: 0;
+}
+/* A one-line command, key, or token keeps Astryx's native scrolling viewport,
+   selection, keyboard behavior, and platform scrollbar. */
+.maka-markdown-code[data-maka-code-layout="single-line"] .astryx-codeblock [role="group"] {
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.maka-markdown-code[data-maka-code-layout="single-line"] .astryx-codeblock [role="group"] > div > code {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  min-block-size: 40px;
+  padding-block: 0;
+}
+/* The CodeBlock scroll viewport is focusable but Astryx leaves it on the UA
+   outline. Give it one clipped-safe Maka ring, then stop the non-interactive
+   prose ListItem's generic focus-within ring from drawing a second outline
+   around the entire numbered-list row. */
+.maka-markdown-code .astryx-codeblock [role="group"]:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 var(--focus-ring-width) var(--focus-ring);
+}
+[data-maka-contract="markdown"] .astryx-list-item:has(.maka-markdown-code :focus-visible) {
+  outline: none;
+}
 .maka-markdown-code-default { margin-block: var(--space-3) var(--space-4); }
 [role="document"] > .maka-markdown-code:first-child { margin-block-start: 0; }
 [role="document"] > .maka-markdown-code:last-child { margin-block-end: 0; }
@@ -450,15 +662,16 @@
  margin: 0; color: var(--muted-foreground); }
 .maka-tool-output-wrap { min-width: 0; overflow-wrap: anywhere; }
 .maka-tool-output-destructive { color: var(--destructive); }
-.maka-tool-output-warning { color: var(--warning-text, var(--info-text)); }
-.maka-tool-output-warning-border { border-color: oklch(from var(--warning) l c h / 0.32); }
-.maka-tool-output-destructive-border { border-color: oklch(from var(--destructive) l c h / 0.28); }
+/* No tinted edge on the panel: the note text above already states the status in
+   red or amber, and a second tinted edge repeats it (DESIGN.md §8).
+   `.maka-tool-output-panel` keeps its --border hairline. */
+.maka-tool-output-warning { color: var(--warning-text); }
 .maka-tool-output-stack { display: flex; min-width: 0; flex-direction: column; gap: 6px; margin-top: 4px; }
 .maka-pty-shell { gap: 0; overflow: hidden; padding: 0; }
 .maka-pty-shell-header { display: flex; min-width: 0; align-items: center; padding: 10px 12px 4px; }
 .maka-pty-shell-title {
   font: var(--maka-text-label);
- color: var(--foreground-secondary); }
+ color: var(--muted-foreground); }
 .maka-pty-shell-body { display: grid; min-width: 0; gap: 8px; padding: 6px 12px; }
 .maka-pty-shell-footer {
   font: var(--maka-text-body);
@@ -479,9 +692,11 @@
 .maka-web-result-list a {
   font: var(--maka-text-label);
  color: var(--link); }
+/* The snippet is what a reader scans; the <small> beside it is the source
+   line. Same size, so ink is the rank. */
 .maka-web-result-list p {
   font: var(--maka-text-body);
- margin: 0; color: var(--foreground-secondary); }
+ margin: 0; color: var(--foreground); }
 .maka-web-result-error { gap: 6px; }
 .maka-web-result-error-message,
 .maka-web-result-repair {
@@ -511,11 +726,50 @@
      a rhythm no other row in the panel has. */
   --text-supporting-leading: var(--text-code-leading);
 }
+/* A headerless CodeBlock floats its copy button over the viewport's top-right
+   corner, and a long unbroken first line — a maka://archive URI, a long
+   command — runs straight under it (markdown avoids this by always giving the
+   block a header toolbar; tool wells stay quiet on purpose). Reserve the
+   button's footprint with a float on the first line so wrapped text flows
+   around the corner instead of colliding. On the line div, not <code>: 100+
+   line blocks wrap lines in content-visibility chunks whose layout containment
+   would keep an outer float from shortening their line boxes. The lengths are
+   the button's geometry, not tunables: the 28px button inset spacing-2 (8px)
+   ends 20px past the code's spacing-4 (16px) inline padding — plus an 8px gap
+   — and its bottom edge sits 36px − spacing-3 (12px) = 24px below the first
+   line's top. Tool wells never enable line numbers, so the numbered-gutter
+   ::before cannot collide here. */
+.maka-tool-call-detail .astryx-codeblock:not(:has(.astryx-codeblock-header)) [data-line="1"]::before {
+  content: '';
+  float: inline-end;
+  width: 28px;
+  height: 24px;
+}
+/* The headered variant has the same collision inside its header row: the
+   title (often a long unbroken maka://archive URI headline) is a flex span
+   with white-space: pre and visible overflow, so it runs straight under the
+   header's copy button — and headerCompact draws no divider, so the title
+   reads as the well's first content line while colliding like an overlay.
+   Ellipsize it inside the title slot the header already sizes (flex: 1,
+   min-width: 0). display: block because a flex container will not ellipsize
+   its anonymous text; tool wells never render the collapsible chevron that
+   the flex display exists for. white-space stays `pre`, not nowrap: both
+   satisfy text-overflow's no-wrap requirement, but nowrap would collapse
+   runs of spaces — and a title is often a literal path or command where
+   `report  final.txt` and `report final.txt` are different names, with the
+   title as their only display (the copy button copies the body). */
+.maka-tool-call-detail .astryx-codeblock-header .astryx-codeblock-title {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: pre;
+}
 .maka-tool-output-chunk { display: contents; }
 .maka-tool-output-chunk-stderr { color: var(--destructive); }
 .maka-tool-output-chunk-redacted { opacity: 0.65; }
-.maka-tool-output-redacted { display: inline; margin-left: 2px; color: var(--warning-text, var(--info-text)); }
-.maka-sandbox-blocked-banner { margin-bottom: 10px; }
+.maka-tool-output-redacted { display: inline; margin-left: 2px; color: var(--warning-text); }
+.maka-sandbox-blocked-banner,
+.maka-requires-bypass-banner { margin-bottom: 10px; }
 .maka-sandbox-blocked-description {
   font: var(--maka-text-supporting);
  display: flex; flex-direction: column; gap: 4px; white-space: pre-wrap; word-break: break-word; }
@@ -524,14 +778,13 @@
  }
 .maka-sandbox-blocked-copy { align-self: start; }
 .maka-sandbox-blocked-copy[data-pending="true"] { cursor: progress; }
-.maka-sandbox-blocked-copy[data-copy-feedback="copied"] { border-color: oklch(from var(--link) l c h / 0.35); color: var(--link); }
-.maka-sandbox-blocked-copy[data-copy-feedback="failed"] { border-color: oklch(from var(--destructive) l c h / 0.35); color: var(--destructive); }
-.maka-automation-result-icon { display: inline; margin-right: 4px; vertical-align: text-bottom; }
+.maka-sandbox-blocked-copy[data-copy-feedback="copied"] { color: var(--link); }
+/* The failed state is stated by the label ink, so the edge stays --border —
+   one status, one means (DESIGN.md §8). */
+.maka-sandbox-blocked-copy[data-copy-feedback="failed"] { color: var(--destructive); }
 .maka-turn-status-icon { flex: 0 0 auto; }
 
-.maka-turn-aborted-marker,
-.maka-turn-automation-origin,
-.maka-turn-failed-banner {
+.maka-turn-host-origin {
   font: var(--maka-text-supporting);
   display: inline-flex;
   width: fit-content;
@@ -540,18 +793,7 @@
   border-radius: var(--radius-control);
 }
 
-.maka-turn-aborted-marker {
-  gap: var(--space-1);
-  margin-block: var(--space-0-5) var(--space-1);
-  padding: var(--space-0-5) var(--space-1-5);
-  background: var(--foreground-5);
-  color: var(--foreground-secondary);
-  font-style: italic;
-}
-
-.maka-turn-aborted-marker em { font-style: italic; }
-
-.maka-turn-automation-origin {
+.maka-turn-host-origin {
   align-self: flex-end;
   gap: var(--space-1);
   margin-bottom: var(--space-1);
@@ -560,35 +802,18 @@
   color: var(--muted-foreground);
 }
 
-.maka-turn-failed-banner {
-  flex-wrap: wrap;
-  gap: var(--space-1-5);
-  margin-block: var(--space-0-5) var(--space-1-5);
-  padding: var(--space-1) var(--space-2);
-  border: 1px solid oklch(from var(--destructive) l c h / 0.28);
-  background: oklch(from var(--destructive) l c h / 0.1);
-  color: var(--destructive);
-}
-
-.maka-turn-failed-icon { display: inline-flex; align-items: center; }
-.maka-turn-failed-recovery { color: var(--text-muted); }
-.maka-turn-failed-recovery::before {
-  margin-right: var(--space-1-5);
-  color: var(--foreground-alpha-16);
-  content: "·";
-}
+/* Astryx `Banner` paints the failed-turn surface; this only sets the block
+   rhythm between it and the timeline entry above it. */
+.maka-turn-failed-banner { margin-block: var(--space-1) var(--space-0-5); }
 
 .maka-turn-lineage-row,
 .maka-turn-footer {
   display: flex;
   width: 100%;
-  max-width: var(--maka-chat-measure, 680px);
   flex-wrap: wrap;
   align-items: center;
   justify-content: flex-start;
   gap: var(--space-0-5);
-  margin-left: 0;
-  margin-right: auto;
 }
 
 .maka-turn-lineage-row {
@@ -607,8 +832,8 @@
 }
 
 .maka-turn-lineage-badge[data-direction="forward"] {
-  background: oklch(from var(--info) l c h / 0.06);
-  color: oklch(from var(--info-text) calc(l - 0.06) c h);
+  background: var(--color-accent-muted);
+  color: var(--foreground);
 }
 
 .maka-turn-lineage-badge[data-direction="reverse"] {
@@ -672,7 +897,7 @@
   background: var(--foreground-2);
 }
 .maka-tool-terminal-head { align-items: center; font-variant-ligatures: none; }
-.maka-tool-diff-paths code { color: var(--foreground-secondary); background: transparent; }
+.maka-tool-diff-paths code { color: var(--muted-foreground); background: transparent; }
 .maka-tool-diff-body {
   font: var(--maka-text-supporting);
   max-height: 320px;
@@ -728,20 +953,22 @@
    flat single-tint reading the tokens exist to break up; the row's background
    tint and its marker carry add/del on their own.
 
-   This is also what brings context lines up from `--foreground-secondary` to
-   full foreground, which is deliberate rather than collateral: once a context
-   line's keywords and strings are syntax-coloured, dimming only the text
-   between them reads as damage, not as de-emphasis. The row's flat background
-   is what says "unchanged" now. */
+   Context lines read at full foreground, which is deliberate rather than
+   collateral: once a context line's keywords and strings are syntax-coloured,
+   dimming only the text between them reads as damage, not as de-emphasis. The
+   row's flat background is what says "unchanged" now. */
 .maka-tool-diff-code { color: var(--foreground); }
 .maka-tool-diff-line[data-line="meta"] .maka-tool-diff-code { color: inherit; }
-.maka-tool-diff-line[data-line="add"] { background: oklch(from var(--success) l c h / 0.1); color: var(--success-text); }
-.maka-tool-diff-line[data-line="del"] { background: oklch(from var(--destructive) l c h / 0.1); color: var(--destructive); }
+.maka-tool-diff-line[data-line="add"] { background: var(--color-success-muted); color: var(--success-text); }
+.maka-tool-diff-line[data-line="del"] { background: var(--color-error-muted); color: var(--destructive); }
 .maka-tool-diff-line[data-line="hunk"] {
   font: var(--maka-text-heading-5);
- background: oklch(from var(--link) l c h / 0.08); color: var(--foreground-secondary); }
+ background: oklch(from var(--accent) l c h / 0.08); color: var(--muted-foreground); }
 .maka-tool-diff-line[data-line="meta"] { color: var(--muted-foreground); }
-.maka-tool-diff-line[data-line="ctx"] { color: var(--foreground-secondary); }
+/* Full ink, matching `.maka-tool-diff-code` above: a context line is the code
+   the change is read against, and the marker column is the only part this rule
+   still paints on its own. Meta and hunk rows are the ones that recede. */
+.maka-tool-diff-line[data-line="ctx"] { color: var(--foreground); }
 .maka-tool-terminal-cwd { color: var(--muted-foreground); background: transparent; }
 .maka-tool-terminal-cmd {
   font: var(--maka-text-heading-5);
@@ -750,16 +977,12 @@
    `.maka-tool-terminal-*` family is currently unreachable:
    `previewVariants({part: 'terminal-*'})` has no call site — `TerminalPreview`
    renders `maka-tool-output-stack` / `ShellOutputBody` / `ToolCodeBlock`
-   instead — and `check-dead-css` cannot see that because the literals still
-   exist in `previewVariants`. The alternative is an exemption whose reason is
-   "nothing renders this", which is a fact about call sites recorded in a
-   stylesheet and would outlive the day someone wires the family back up.
-   Deleting the family is its own change. */
+   instead. Deleting the family is its own change. */
 .maka-tool-terminal-exit {
   font: var(--maka-text-heading-5);
- height: var(--h-control-sm); display: inline-flex; align-items: center; white-space: nowrap; padding: 1px var(--space-1-5); border-radius: var(--radius-pill); background: var(--foreground-5); color: var(--foreground-secondary); letter-spacing: var(--tracking-wide); }
-.maka-tool-terminal-exit[data-ok="true"] { background: oklch(from var(--success) l c h / 0.14); color: var(--success); }
-.maka-tool-terminal-exit[data-ok="false"] { background: oklch(from var(--destructive) l c h / 0.14); color: var(--destructive); }
+ height: var(--h-control-sm); display: inline-flex; align-items: center; white-space: nowrap; padding: 1px var(--space-1-5); border-radius: var(--radius-pill); background: var(--foreground-5); color: var(--muted-foreground); letter-spacing: var(--tracking-wide); }
+.maka-tool-terminal-exit[data-ok="true"] { background: var(--color-success-muted); color: var(--success); }
+.maka-tool-terminal-exit[data-ok="false"] { background: var(--color-error-muted); color: var(--destructive); }
 .maka-tool-terminal-empty {
   font: var(--maka-text-supporting);
  margin: 0; padding: var(--space-2); color: var(--muted-foreground); font-style: italic; }
@@ -767,61 +990,14 @@
   font: var(--maka-text-supporting);
  max-height: 180px; margin: 0; padding: var(--space-1-5) var(--space-2); overflow: auto; font-variant-ligatures: none; white-space: pre-wrap; word-break: break-word; }
 .maka-tool-terminal-stream[data-stream="stdout"] { color: var(--foreground); }
-.maka-tool-terminal-stream[data-stream="stderr"] { border-top: 1px solid var(--border); background: oklch(from var(--destructive) l c h / 0.04); color: var(--destructive); }
+.maka-tool-terminal-stream[data-stream="stderr"] { border-top: 1px solid var(--border); background: var(--color-error-muted); color: var(--destructive); }
 .maka-tool-terminal-truncated-note {
   font: var(--maka-text-supporting);
- display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: var(--space-1-5) var(--space-2); border-top: 1px solid var(--border); background: oklch(from var(--warning) l c h / 0.06); color: var(--foreground-secondary); }
+ display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: var(--space-1-5) var(--space-2); border-top: 1px solid var(--border); background: var(--color-warning-muted); color: var(--foreground); }
 .maka-tool-terminal-truncated-note > span { min-width: 0; }
-.maka-tool-terminal-copy,
-.maka-agent-preview-copy { flex: 0 0 auto; }
-.maka-tool-terminal-copy[data-pending="true"],
-.maka-agent-preview-copy[data-pending="true"] { cursor: progress; }
-.maka-tool-terminal-copy[data-copy-error="true"],
-.maka-agent-preview-copy[data-copy-error="true"] { border-color: oklch(from var(--destructive) l c h / 0.35); color: var(--destructive); }
-
-.maka-agent-preview {
-  font: var(--maka-text-supporting);
- display: grid; gap: var(--space-2-5); padding: var(--space-2-5) var(--space-3); border: 1px solid var(--foreground-10); border-radius: var(--radius-surface); background: var(--foreground-3); white-space: normal; }
-.maka-agent-preview[data-ok="false"],
-.maka-agent-preview[data-status="failed"],
-.maka-agent-preview[data-status="cancelled"] { border-color: oklch(from var(--destructive) l c h / 0.22); }
-.maka-agent-preview-head { display: grid; gap: var(--space-0-5); padding-bottom: var(--space-1-5); border-bottom: 1px solid var(--foreground-10); }
-.maka-agent-preview-head strong {
-  font: var(--maka-text-heading-4);
- min-width: 0; overflow: hidden; color: var(--foreground); text-overflow: ellipsis; white-space: nowrap; }
-.maka-agent-preview-head small,
-.maka-agent-preview-section small,
-.maka-agent-preview-meta dt {
-  font: var(--maka-text-supporting);
- color: var(--muted-foreground); letter-spacing: var(--tracking-wider); text-transform: uppercase; }
-.maka-agent-preview-summary-line,
-.maka-agent-preview-section-head { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: var(--space-2); }
-.maka-agent-preview-summary-line small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.maka-agent-preview-actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-1-5); margin-top: var(--space-1); }
-.maka-agent-preview-message {
-  font: var(--maka-text-supporting);
- padding: var(--space-2) var(--space-2-5); border-radius: var(--radius-control); background: oklch(from var(--destructive) l c h / 0.07); color: var(--destructive); }
-.maka-agent-preview-meta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); margin: 0; }
-.maka-agent-preview-meta > div { display: grid; min-width: 0; gap: var(--space-0-5); }
-.maka-agent-preview-meta dd {
-  font: var(--maka-text-supporting);
- min-width: 0; margin: 0; overflow: hidden; color: var(--foreground-secondary); text-overflow: ellipsis; white-space: nowrap; }
-.maka-agent-preview-section { display: grid; gap: var(--space-1-5); }
-.maka-agent-preview-section > strong,
-.maka-agent-preview-section-head > strong {
-  font: var(--maka-text-heading-5);
- min-width: 0; color: var(--foreground); }
-.maka-agent-preview-section ul { display: grid; gap: var(--space-1-5); margin: 0; padding: 0; list-style: none; }
-.maka-agent-preview-section li { display: grid; min-width: 0; gap: var(--space-0-5); padding-block: var(--space-1-5); border-top: 1px solid var(--foreground-5); }
-.maka-agent-preview-section li:first-child { padding-top: 0; border-top: 0; }
-.maka-agent-preview-section code {
-  font: var(--maka-text-supporting);
- min-width: 0; overflow: hidden; background: transparent; color: var(--foreground); text-overflow: ellipsis; white-space: nowrap; }
-.maka-agent-preview-section p,
-.maka-agent-preview-section span {
-  font: var(--maka-text-supporting);
- margin: 0; color: var(--foreground-secondary); white-space: pre-wrap; word-break: break-word; }
-.maka-agent-preview-copy[data-copied="true"] { border-color: oklch(from var(--link) l c h / 0.35); color: var(--link); }
+.maka-tool-terminal-copy { flex: 0 0 auto; }
+.maka-tool-terminal-copy[data-pending="true"] { cursor: progress; }
+.maka-tool-terminal-copy[data-copy-error="true"] { border-color: var(--color-error-muted); color: var(--destructive); }
 
 .maka-web-search-preview { display: grid; gap: var(--space-2); padding: var(--space-2-5) var(--space-3); border: 1px solid var(--foreground-10); border-radius: var(--radius-surface); background: var(--foreground-3); }
 .maka-web-search-preview > header { display: flex; flex-direction: column; gap: var(--space-0-5); padding-bottom: var(--space-1-5); border-bottom: 1px solid var(--foreground-10); }
@@ -842,30 +1018,106 @@
 .maka-web-search-preview a:focus-visible { text-decoration: underline; }
 .maka-web-search-preview li p {
   font: var(--maka-text-supporting);
- margin: 0; color: var(--foreground-secondary); white-space: pre-wrap; word-break: break-word; }
-.maka-web-search-error { border-color: color-mix(in oklab, var(--destructive-text) 32%, var(--foreground-10)); background: color-mix(in oklab, var(--destructive-text) 8%, var(--foreground-3)); }
+ margin: 0; color: var(--muted-foreground); white-space: pre-wrap; word-break: break-word; }
+/* The tinted status surface is Astryx's token; the edge around it is --border,
+   because the fill and the message ink already state the error (DESIGN.md §8).
+   Its copy sits on the tint, so it reads at primary ink (§3). */
+.maka-web-search-error { background: var(--color-error-muted); border-color: var(--border); }
 .maka-web-search-error-message,
 .maka-web-search-error-repair {
   font: var(--maka-text-supporting);
  margin: 0; white-space: pre-wrap; word-break: break-word; }
 .maka-web-search-error-message { color: var(--destructive-text); }
-.maka-web-search-error-repair { color: var(--foreground-secondary); }
+.maka-web-search-error-repair { color: var(--foreground); }
 
 .maka-load-tool-preview {
-  font: var(--maka-text-supporting);
- display: grid; gap: var(--space-0-5); margin: var(--space-1) 0 0; padding: var(--space-1) var(--space-2); border-radius: var(--radius-control); background: var(--background); box-shadow: var(--ring-soft); }
+  display: grid;
+  grid-template-columns: var(--space-8) minmax(0, 1fr);
+  gap: var(--space-2-5);
+  align-items: start;
+  margin: var(--space-1) 0 0;
+  padding: var(--space-2) var(--space-2) var(--space-2-5);
+}
 .maka-load-tool-preview p { margin: 0; }
+.maka-load-tool-icon {
+  display: grid;
+  width: var(--space-8);
+  height: var(--space-8);
+  place-items: center;
+  border-radius: var(--radius-element);
+  color: var(--muted-foreground);
+  background: var(--foreground-5);
+}
+.maka-load-tool-summary {
+  min-width: 0;
+  padding-top: var(--space-0-5);
+}
 .maka-load-tool-title {
   font: var(--maka-text-heading-5);
- }
-.maka-load-tool-count,
-.maka-load-tool-footer { color: var(--muted-foreground); }
-.maka-load-tool-tools {
+}
+.maka-load-tool-description {
   font: var(--maka-text-supporting);
- word-break: break-word; }
-.maka-load-tool-footer {
+  margin-top: var(--space-0-5) !important;
+  color: var(--muted-foreground);
+  overflow-wrap: anywhere;
+}
+.maka-load-tool-count {
   font: var(--maka-text-supporting);
- }
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  margin-top: var(--space-1) !important;
+  color: var(--muted-foreground);
+}
+.maka-load-tool-separator {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.55;
+}
+.maka-load-tool-technical {
+  grid-column: 1 / -1;
+  margin-left: calc(var(--space-8) + var(--space-2-5));
+  color: var(--muted-foreground);
+}
+.maka-load-tool-technical > summary {
+  width: fit-content;
+  padding: var(--space-0-5) 0;
+  font: var(--maka-text-supporting);
+  cursor: pointer;
+}
+.maka-load-tool-technical > summary:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 var(--focus-ring-width) var(--focus-ring);
+  border-radius: var(--radius-control);
+}
+.maka-load-tool-technical dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--space-1) var(--space-2);
+  margin: var(--space-1) 0 0;
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border-soft);
+  font: var(--maka-text-supporting);
+}
+.maka-load-tool-technical:not([open]) > dl {
+  display: none;
+}
+.maka-load-tool-technical dt {
+  color: var(--muted-foreground);
+}
+.maka-load-tool-technical dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--muted-foreground);
+}
+.maka-load-tool-technical code {
+  font: var(--maka-text-code);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 
 /* Turn-footer action rings go inset (T5 geometry probe): the Astryx chat
    layout's scrollport clips an outward ring on the first visible row's

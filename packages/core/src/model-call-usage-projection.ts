@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import {
   dedupeModelCallAttempts,
   summarizeModelCallCoverage,
@@ -29,6 +48,8 @@ import type {
  * its coverage repeats that claim.
  */
 export interface ModelCallUsageSummary extends UsageSummaryV2 {
+  /** Always present: the projection measures every attempt it counts. */
+  totalDurationMs: number;
   coverage: ModelCallCoverage;
 }
 
@@ -71,6 +92,7 @@ function matchesQuery(
   range: { from: number; to: number },
 ): boolean {
   if (attempt.completedAt < range.from || attempt.completedAt > range.to) return false;
+  if (query.sessionId !== undefined && attempt.sessionId !== query.sessionId) return false;
   if (query.providerId !== undefined && attempt.providerId !== query.providerId) return false;
   if (query.modelId !== undefined && attempt.modelId !== query.modelId) return false;
   if (query.connectionSlug !== undefined && attempt.connectionSlug !== query.connectionSlug) {
@@ -105,13 +127,24 @@ function tokens(attempt: ModelCallAttempt): {
   reasoning: number;
   total: number;
 } {
+  const reportedCacheRead = attempt.cacheReadInputTokens ?? 0;
   const input = attempt.inputTokens ?? 0;
   const output = attempt.outputTokens ?? 0;
   const cacheMiss = attempt.cacheMissInputTokens ?? 0;
-  const cacheRead = attempt.cacheReadInputTokens ?? 0;
+  // With no reported prompt total there is no denominator to validate against,
+  // but the provider's cache evidence remains authoritative. Presentation code
+  // must leave ratios unavailable while Usage coverage is partial.
+  const cacheRead =
+    attempt.inputTokens === undefined
+      ? reportedCacheRead
+      : clampCacheReadTokens(input, reportedCacheRead);
   const cacheWrite = attempt.cacheWriteInputTokens ?? 0;
   const reasoning = attempt.reasoningTokens ?? 0;
   return { input, output, cacheMiss, cacheRead, cacheWrite, reasoning, total: input + output };
+}
+
+export function clampCacheReadTokens(inputTokens: number, cacheReadTokens: number): number {
+  return Math.min(cacheReadTokens, inputTokens);
 }
 
 /** Cost contributed by an attempt. Unpriced records contribute nothing to the
@@ -136,6 +169,7 @@ export function projectModelCallUsageSummary(
     total: 0,
   };
   let totalCostUsd = 0;
+  let totalDurationMs = 0;
   let cacheHitRequests = 0;
   let cacheCreateRequests = 0;
   let errorRequests = 0;
@@ -149,6 +183,7 @@ export function projectModelCallUsageSummary(
     totals.reasoning += t.reasoning;
     totals.total += t.total;
     totalCostUsd += pricedCost(attempt);
+    totalDurationMs += attempt.latencyMs;
     if (t.cacheRead > 0) cacheHitRequests += 1;
     if (t.cacheWrite > 0) cacheCreateRequests += 1;
     if (usageStatusForAttempt(attempt.status) === 'error') errorRequests += 1;
@@ -157,6 +192,7 @@ export function projectModelCallUsageSummary(
     range,
     totalRequests: rows.length,
     totalCostUsd,
+    totalDurationMs,
     totalTokens: totals,
     cacheHitRequests,
     cacheCreateRequests,

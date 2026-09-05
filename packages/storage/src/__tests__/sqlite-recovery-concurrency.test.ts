@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { writeFile } from 'node:fs/promises';
@@ -7,14 +26,23 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import type { RuntimeEvent } from '@maka/core';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { WorkspaceBaselineAuthorityInput } from '@maka/core/workspace-version-authority';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import { scanToolLedger } from '@maka/core/tool-ledger-scanner';
 import {
   SQLITE_RUNTIME_SCHEMA_VERSION,
   createSqliteRuntimeStore,
 } from '../sqlite-runtime-store.js';
-import { bindWorkspaceBaselineAuthorityStoreRootInternal } from '../workspace-version-authority-internal.js';
+import {
+  acquireOperationalStateDatabase,
+  inspectOperationalStateSchema,
+} from '../operational-state-store.js';
+import {
+  bindWorkspaceBaselineAuthorityStoreRootInternal,
+  commitWorkspaceBaselineInternal,
+  readActiveManagedMutationInternal,
+} from '../workspace-version-authority-internal.js';
 
 const WORKER_READY_TIMEOUT_MS = 15_000;
 const WORKER_EXECUTION_TIMEOUT_MS = 30_000;
@@ -265,18 +293,65 @@ describe('SQLite recovery authority multi-process races', () => {
     });
   });
 
-  it('serializes concurrent schema 6 to the current runtime schema', async () => {
+  it('grants durable managed mutation ownership to exactly one process', async () => {
     await withPreparedDatabase(async ({ dbPath, startPath }) => {
+      const setupStore = createSqliteRuntimeStore(dbPath);
+      try {
+        bindWorkspaceBaselineAuthorityStoreRootInternal(setupStore, 'a'.repeat(64));
+        await commitWorkspaceBaselineInternal(setupStore, workspaceBaselineInput('a'));
+      } finally {
+        setupStore.close();
+      }
+      const results = await runWorkers(dbPath, startPath, [
+        'managed_mutation_a',
+        'managed_mutation_b',
+      ]);
+      assert.deepEqual(results.map(({ code }) => code).sort(), [0, 2]);
+      assert.equal(
+        results.filter(({ stderr }) => /managed mutation reservation conflict/i.test(stderr))
+          .length,
+        1,
+      );
+
+      const store = createSqliteRuntimeStore(dbPath);
+      try {
+        bindWorkspaceBaselineAuthorityStoreRootInternal(store, 'a'.repeat(64));
+        const reservation = await readActiveManagedMutationInternal(
+          store,
+          `instance_${'4'.repeat(32)}`,
+        );
+        assert.ok(
+          reservation?.operationId === 'managed-mutation-a' ||
+            reservation?.operationId === 'managed-mutation-b',
+        );
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it('serializes concurrent operational runtime migration', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-operational-migration-race-'));
+    const dbPath = join(root, 'runtime.sqlite');
+    const startPath = join(root, 'start');
+    try {
+      acquireOperationalStateDatabase(root).close();
       const db = new DatabaseSync(dbPath);
       try {
-        db.exec(
-          "DROP TABLE runtime_session_event_ordinals; DROP TABLE runtime_partial_segments; DROP TABLE runtime_storage_root_binding; DROP TABLE runtime_workspace_heads; DROP TABLE runtime_workspace_versions; DROP TABLE runtime_workspace_epochs; DROP TABLE headless_task_run_events; DELETE FROM runtime_capabilities WHERE capability = 'runtime_workspace_version_authority'; PRAGMA user_version = 6;",
-        );
+        db.exec(`
+          DROP TABLE runtime_managed_mutation_reservations;
+          DROP INDEX runtime_events_by_session_kind;
+          DROP INDEX runtime_events_one_opening_per_invocation;
+          DROP TABLE runtime_legacy_invocation_openings;
+          DROP TABLE runtime_session_event_ordinals;
+          PRAGMA user_version = 10;
+          UPDATE operational_schema_migrations SET version = 10 WHERE scope = 'runtime';
+        `);
       } finally {
         db.close();
       }
 
-      const results = await runOpenWorkers(dbPath, startPath);
+      const results = await runOpenWorkers(dbPath, startPath, 'operational_open_only');
       assert.deepEqual(
         results.map(({ code }) => code),
         [0, 0],
@@ -288,7 +363,15 @@ describe('SQLite recovery authority multi-process races', () => {
       } finally {
         upgraded.close();
       }
-    });
+      const current = new DatabaseSync(dbPath, { readOnly: true });
+      try {
+        assert.equal(inspectOperationalStateSchema(current).status, 'current');
+      } finally {
+        current.close();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('captures a fast worker initialization failure after releasing the barrier', async () => {
@@ -495,10 +578,11 @@ async function stopWorkers(workers: readonly WorkerHandle[]): Promise<void> {
       child.kill('SIGKILL');
     }
   }
-  await Promise.race([
+  await withTimeout(
     Promise.allSettled(workers.map(({ result }) => result)),
-    new Promise<void>((resolve) => setTimeout(resolve, WORKER_SHUTDOWN_TIMEOUT_MS)),
-  ]);
+    WORKER_SHUTDOWN_TIMEOUT_MS,
+    'workers to stop',
+  ).catch(() => {});
 }
 
 function formatWorkerDiagnostics(worker: WorkerHandle): string {
@@ -573,6 +657,36 @@ function preparedCommit() {
     canonicalArgsHash: hash,
     recoveryMode: 'reconcile' as const,
     committedAt: 2,
+  };
+}
+
+function workspaceBaselineInput(variant: 'a' | 'b'): WorkspaceBaselineAuthorityInput {
+  const alternate = variant === 'b';
+  return {
+    epochOpenedEventId: alternate ? 'workspace-epoch-event-b' : 'workspace-epoch-event-a',
+    baselineAcceptedEventId: alternate ? 'workspace-version-event-b' : 'workspace-version-event-a',
+    committedAt: 1_700_000_000_000,
+    epoch: {
+      repositoryId: `repository_${'1'.repeat(32)}`,
+      workspaceId: `workspace_${'2'.repeat(32)}`,
+      workspaceEpochId: `epoch_${'3'.repeat(32)}`,
+      workspaceInstanceId: `instance_${'4'.repeat(32)}`,
+      mode: 'managed_worktree',
+      objectFormat: 'sha1',
+      sourceCommitOid: '1'.repeat(40),
+      sourceTreeOid: '2'.repeat(40),
+      materializationProfileDigest: `sha256:${'3'.repeat(64)}`,
+      materializationSemantics: 'git_tree_materialized_with_fixed_config_v1',
+      policyHash: `sha256:${'4'.repeat(64)}`,
+    },
+    baseline: {
+      workspaceVersionId: `version_${(alternate ? '9' : '5').repeat(32)}`,
+      commitOid: (alternate ? '9' : '5').repeat(40),
+      treeOid: '2'.repeat(40),
+      treeDeltaDigest: `sha256:${'6'.repeat(64)}`,
+      changedFileCount: 7,
+      deletedFileCount: 0,
+    },
   };
 }
 

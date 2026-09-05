@@ -1,21 +1,42 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type { AgentRunHeader, RuntimeEvent } from '@maka/core';
+import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { projectAgentGraphRecords } from '../stream-graph-projection.js';
 import {
   AGENT_GRAPH_TRACE_SCHEMA_VERSION,
   buildAgentGraphTraceSnapshot,
   type AgentGraphTraceTopology,
 } from '../stream-graph-trace.js';
+import { testInvocationRecord } from './invocation-fixture.js';
 
 const baseTs = 1_800_000_000_000;
 
 describe('stream graph trace topology', () => {
   test('materializes deterministic direct-edge routes without putting the supervisor in the path', () => {
-    const research = runHeader('research', baseTs);
-    const verify = runHeader('verify', baseTs + 1);
-    const synthesize = runHeader('synthesize', baseTs + 2);
-    const audit = runHeader('audit', baseTs + 3);
+    const research = runInvocation('research', baseTs);
+    const verify = runInvocation('verify', baseTs + 1);
+    const synthesize = runInvocation('synthesize', baseTs + 2);
+    const audit = runInvocation('audit', baseTs + 3);
     const projection = projectAgentGraphRecords({
       graphId: 'graph-trace',
       streams: [
@@ -103,8 +124,8 @@ describe('stream graph trace topology', () => {
   });
 
   test('is deterministic and idempotent for reordered duplicate observations', () => {
-    const source = runHeader('source', baseTs);
-    const target = runHeader('target', baseTs + 1);
+    const source = runInvocation('source', baseTs);
+    const target = runInvocation('target', baseTs + 1);
     const projection = projectAgentGraphRecords({
       graphId: 'graph-replay',
       streams: [
@@ -149,9 +170,9 @@ describe('stream graph trace topology', () => {
   });
 
   test('fingerprints only declared topology fields in raw identity order', () => {
-    const precomposed = runHeader('unicode-precomposed', baseTs);
-    const decomposed = runHeader('unicode-decomposed', baseTs + 1);
-    const target = runHeader('unicode-target', baseTs + 2);
+    const precomposed = runInvocation('unicode-precomposed', baseTs);
+    const decomposed = runInvocation('unicode-decomposed', baseTs + 1);
+    const target = runInvocation('unicode-target', baseTs + 2);
     const precomposedId = '\u00e9';
     const decomposedId = 'e\u0301';
     assert.equal(precomposedId.localeCompare(decomposedId), 0);
@@ -218,8 +239,8 @@ describe('stream graph trace topology', () => {
   });
 
   test('keeps existing route identities stable as later observations arrive', () => {
-    const source = runHeader('source', baseTs);
-    const target = runHeader('target', baseTs + 1);
+    const source = runInvocation('source', baseTs);
+    const target = runInvocation('target', baseTs + 1);
     const initialProjection = projectAgentGraphRecords({
       graphId: 'graph-incremental',
       streams: [stream(source, 'source', [runtimeEvent(source, 'first', baseTs + 10, 'first')])],
@@ -259,8 +280,8 @@ describe('stream graph trace topology', () => {
   });
 
   test('retains an observable topology before any runtime facts arrive', () => {
-    const source = runHeader('source', baseTs);
-    const target = runHeader('target', baseTs + 1);
+    const source = runInvocation('source', baseTs);
+    const target = runInvocation('target', baseTs + 1);
 
     const snapshot = buildAgentGraphTraceSnapshot({
       topology: {
@@ -288,11 +309,11 @@ describe('stream graph trace topology', () => {
 
   test('materializes reserved JavaScript property names as own snapshot keys', () => {
     const source = {
-      ...runHeader('reserved-source', baseTs),
+      ...runInvocation('reserved-source', baseTs),
       runId: 'constructor',
       invocationId: 'reserved-invocation',
     };
-    const target = runHeader('reserved-target', baseTs + 1);
+    const target = runInvocation('reserved-target', baseTs + 1);
     const projection = projectAgentGraphRecords({
       graphId: 'graph-reserved-keys',
       streams: [
@@ -331,9 +352,9 @@ describe('stream graph trace topology', () => {
   });
 
   test('binds route identity to immutable edge endpoints', () => {
-    const source = runHeader('route-source', baseTs);
-    const targetA = runHeader('route-target-a', baseTs + 1);
-    const targetB = runHeader('route-target-b', baseTs + 2);
+    const source = runInvocation('route-source', baseTs);
+    const targetA = runInvocation('route-target-a', baseTs + 1);
+    const targetB = runInvocation('route-target-b', baseTs + 2);
     const projection = projectAgentGraphRecords({
       graphId: 'graph-edge-rebinding',
       streams: [
@@ -381,9 +402,9 @@ describe('stream graph trace topology', () => {
   });
 
   test('fails closed on invalid topology and record ownership', () => {
-    const one = runHeader('one', baseTs);
-    const two = runHeader('two', baseTs + 1);
-    const three = runHeader('three', baseTs + 2);
+    const one = runInvocation('one', baseTs);
+    const two = runInvocation('two', baseTs + 1);
+    const three = runInvocation('three', baseTs + 2);
     const projection = projectAgentGraphRecords({
       graphId: 'graph-invalid',
       streams: [stream(one, 'one', [runtimeEvent(one, 'one-message', baseTs + 1, 'one')])],
@@ -470,28 +491,22 @@ describe('stream graph trace topology', () => {
   });
 });
 
-function runHeader(name: string, createdAt: number): AgentRunHeader {
-  return {
+/** One still-open invocation, as its opening fact describes it. */
+function runInvocation(name: string, openedAt: number): RuntimeInvocationRecord {
+  return testInvocationRecord({
     sessionId: `session-${name}`,
+    invocationId: `invocation-${name}`,
     runId: `run-${name}`,
     turnId: `turn-${name}`,
-    invocationId: `invocation-${name}`,
-    backendKind: 'ai-sdk',
-    llmConnectionSlug: 'deepseek',
-    modelId: 'deepseek-chat',
-    cwd: '/workspace',
-    permissionMode: 'explore',
-    status: 'running',
-    createdAt,
-    updatedAt: createdAt + 1,
-  };
+    openedAt,
+  });
 }
 
-function binding(run: AgentRunHeader, operatorId: string) {
+function binding(run: RuntimeInvocationRecord, operatorId: string) {
   return { operatorId, sessionId: run.sessionId };
 }
 
-function stream(run: AgentRunHeader, operatorId: string, events: readonly RuntimeEvent[]) {
+function stream(run: RuntimeInvocationRecord, operatorId: string, events: readonly RuntimeEvent[]) {
   return {
     operator: binding(run, operatorId),
     run,
@@ -499,10 +514,15 @@ function stream(run: AgentRunHeader, operatorId: string, events: readonly Runtim
   };
 }
 
-function runtimeEvent(run: AgentRunHeader, id: string, ts: number, text: string): RuntimeEvent {
+function runtimeEvent(
+  run: RuntimeInvocationRecord,
+  id: string,
+  ts: number,
+  text: string,
+): RuntimeEvent {
   return {
     id,
-    invocationId: run.invocationId ?? `invocation-${run.runId}`,
+    invocationId: run.invocationId,
     runId: run.runId,
     sessionId: run.sessionId,
     turnId: run.turnId,

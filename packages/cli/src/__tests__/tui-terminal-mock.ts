@@ -1,10 +1,29 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { Terminal } from '@earendil-works/pi-tui';
 
 export class FakeTerminal implements Terminal {
-  readonly columns = 80;
-  readonly rows = 24;
+  columns: number;
+  rows: number;
   readonly kittyProtocolActive = false;
   readonly progressStates: boolean[] = [];
   readonly writes: string[] = [];
@@ -15,10 +34,17 @@ export class FakeTerminal implements Terminal {
   // start() is called.
   startWriteIndex: number | null = null;
   private onInput: ((data: string) => void) | null = null;
+  private onResize: (() => void) | null = null;
 
-  start(onInput: (data: string) => void, _onResize: () => void): void {
+  constructor(columns = 80, rows = 24) {
+    this.columns = columns;
+    this.rows = rows;
+  }
+
+  start(onInput: (data: string) => void, onResize: () => void): void {
     this.startWriteIndex = this.writes.length;
     this.onInput = onInput;
+    this.onResize = onResize;
   }
 
   stop(): void {
@@ -49,6 +75,12 @@ export class FakeTerminal implements Terminal {
 
   input(data: string): void {
     this.onInput?.(data);
+  }
+
+  resize(columns: number, rows: number): void {
+    this.columns = columns;
+    this.rows = rows;
+    this.onResize?.();
   }
 
   output(): string {
@@ -98,9 +130,12 @@ export function autocompleteSuggestionLines(lines: readonly string[]): readonly 
   const inputRows = findInputSurfaceRows(lines);
   if (!inputRows) return [];
   const [editorTopBorder] = inputRows;
-  let start = editorTopBorder;
+  const end = /^\s*\(\d+\/\d+\)\s*$/.test(lines[editorTopBorder - 1] ?? '')
+    ? editorTopBorder - 1
+    : editorTopBorder;
+  let start = end;
   while (start > 0 && /\/\w/.test(lines[start - 1]!)) start -= 1;
-  return lines.slice(start, editorTopBorder);
+  return lines.slice(start, end);
 }
 
 export function assertBottomPickerPlacement(

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { createHash, randomUUID } from 'node:crypto';
 import { lstat, mkdir, open, readdir, realpath, rename, rm, stat, unlink } from 'node:fs/promises';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
@@ -12,14 +31,11 @@ import {
   getBundledSkillSource,
   gateSkillsByHostCapabilities,
   invalidSkillLockStatus,
-  isPathInside,
-  isSafeSkillId,
   isSkillPreferenceReviewPending,
   MANAGED_SKILL_BASELINE_RELATIVE_PATH,
   migrateSkillRuntimePreferences,
   missingSkillLockStatus,
   patchSkillRuntimePreference,
-  readContainedRegularFile,
   readManagedSkillSource,
   readManagedSkillSources,
   resolveManagedSkillSourcesRoot,
@@ -40,7 +56,12 @@ import {
   type SkillScanResult,
   type SkillManifest,
   type SkillPreferenceMigration,
-} from '@maka/runtime';
+} from '@maka/runtime/skills';
+import {
+  isPathInside,
+  isSafeSkillId,
+  readContainedRegularFile,
+} from '@maka/runtime/path-containment';
 import {
   SKILL_CATALOG_PAGE_MAX_BYTES,
   SKILL_CATALOG_PAGE_MAX_ITEMS,
@@ -382,7 +403,10 @@ export class SkillCatalogRepository {
     if (!validateSkillMetadata(source.content).valid) {
       return { kind: 'rejected', reason: 'source_invalid' };
     }
-    const current = await readContainedArtifact(fact.skill.path, join(fact.skill.path, SKILL_FILE));
+    const current = await readContainedArtifact(
+      fact.skill.discoveryRoot,
+      join(fact.skill.path, SKILL_FILE),
+    );
     if (current.status !== 'available') {
       return { kind: 'rejected', reason: 'metadata_error' };
     }
@@ -991,7 +1015,10 @@ async function governanceForSkill(
     return { governance: missingSkillLockStatus(), baselineAvailable: false };
   }
   const lockPath = join(skill.path, LOCK_FILE);
-  const baselineRead = await readContainedArtifact(skill.path, join(skill.path, BASELINE_FILE));
+  const baselineRead = await readContainedArtifact(
+    skill.discoveryRoot,
+    join(skill.path, BASELINE_FILE),
+  );
   const baselineAvailable = baselineRead.status === 'available';
   const baselineSha256 = baselineRead.status === 'unavailable' ? undefined : baselineRead.sha256;
   const lockStat = await lstat(lockPath).catch((error: NodeJS.ErrnoException) =>
@@ -1018,7 +1045,7 @@ async function governanceForSkill(
       ...(baselineSha256 === undefined ? {} : { baselineSha256 }),
     };
   }
-  const lockRead = await readContainedArtifact(skill.path, lockPath);
+  const lockRead = await readContainedArtifact(skill.discoveryRoot, lockPath);
   if (lockRead.status === 'unavailable') {
     return {
       governance: invalidSkillLockStatus('invalid_json', 'Skill lock could not be read safely.'),
@@ -1660,9 +1687,9 @@ async function readManagedArtifacts(skill: ScannedSkill): Promise<{
   baselineSha256: string;
 } | null> {
   const [skillFile, lock, baseline] = await Promise.all([
-    readContainedArtifact(skill.path, join(skill.path, SKILL_FILE)),
-    readContainedArtifact(skill.path, join(skill.path, LOCK_FILE)),
-    readContainedArtifact(skill.path, join(skill.path, BASELINE_FILE)),
+    readContainedArtifact(skill.discoveryRoot, join(skill.path, SKILL_FILE)),
+    readContainedArtifact(skill.discoveryRoot, join(skill.path, LOCK_FILE)),
+    readContainedArtifact(skill.discoveryRoot, join(skill.path, BASELINE_FILE)),
   ]);
   if (
     skillFile.status !== 'available' ||

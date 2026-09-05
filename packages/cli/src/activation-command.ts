@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { randomUUID } from 'node:crypto';
 import { mkdir, realpath, stat, readFile } from 'node:fs/promises';
 import { isAbsolute, resolve } from 'node:path';
@@ -7,11 +26,10 @@ import type { CreateSessionInput, UserMessageInput } from '@maka/core/runtime-in
 import type { SessionSummary } from '@maka/core/session';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { redactSecrets } from '@maka/core/redaction';
-import { assertSessionBundleRootLayout } from '@maka/storage';
-import { readRuntimeHostSessions } from '@maka/runtime-host/client';
+import { assertSessionBundleRootLayout } from '@maka/storage/session-bundle-policy';
+import { projectSessionCatalogSummary, readRuntimeHostSessions } from '@maka/runtime-host/client';
 import { connectRuntimeHostCli, resolveRuntimeHostCliTarget } from './runtime-host-cli-context.js';
 import { createRuntimeHostRunContext } from './runtime-host-run-command.js';
-import { runtimeHostSessionSummary } from './runtime-host-session-driver.js';
 import type { MakaRunOutcome } from './run-command-core.js';
 import { sessionEventSandboxBoundaryFailureReason } from './sandbox-boundary-failure.js';
 
@@ -34,7 +52,14 @@ export interface MakaActivationOptions {
   input: string;
   timeoutMs?: number;
   maxSteps?: number;
-  permissionMode?: Exclude<PermissionMode, 'ask'>;
+  /**
+   * `ask` was excluded here while `execute` existed, but the two compiled to
+   * the same workspace-write profile and the same confirmation behavior — the
+   * exclusion separated the names, not the boundaries. With `execute` gone,
+   * `ask` is that boundary, and an activation asking for it gets exactly what
+   * `--permission-mode execute` always gave it.
+   */
+  permissionMode?: PermissionMode;
   connection?: string;
   model?: string;
 }
@@ -88,7 +113,7 @@ export interface MakaActivationRuntime {
 
 export interface MakaActivationDeps {
   createContext(input: MakaActivationContextInput): Promise<MakaActivationContext>;
-  listSessions(stateRoot: string, configRoot: string): Promise<SessionSummary[]>;
+  listSessions(stateRoot: string): Promise<SessionSummary[]>;
   workspaceRoot(): string;
   processCwd(): string;
   stdinIsTTY(): boolean;
@@ -104,7 +129,6 @@ export interface MakaActivationDeps {
 }
 
 export interface MakaActivationContextInput {
-  readonly surface: 'activation';
   readonly workspaceRoot: string;
   readonly stateRoot: string;
   readonly configRoot: string;
@@ -206,14 +230,19 @@ export function parseMakaActivateArgs(argv: readonly string[]): ParseMakaActivat
   if (parsedMaxSteps !== undefined && (!Number.isInteger(parsedMaxSteps) || parsedMaxSteps < 1)) {
     return { kind: 'error', message: '--max-steps must be a positive integer' };
   }
-  const permissionMode = values.get('permission-mode');
+  // `execute` stays accepted as an alias for `ask`: this is a public
+  // subcommand whose callers live outside this repo, and the two named the
+  // same boundary for as long as both existed. It is not offered in the error
+  // message, so nothing new learns to send it.
+  const requestedPermissionMode = values.get('permission-mode');
+  const permissionMode = requestedPermissionMode === 'execute' ? 'ask' : requestedPermissionMode;
   if (
     permissionMode !== undefined &&
     permissionMode !== 'explore' &&
-    permissionMode !== 'execute' &&
+    permissionMode !== 'ask' &&
     permissionMode !== 'bypass'
   ) {
-    return { kind: 'error', message: '--permission-mode must be explore, execute, or bypass' };
+    return { kind: 'error', message: '--permission-mode must be explore, ask, or bypass' };
   }
   return {
     kind: 'activate',
@@ -341,7 +370,7 @@ export async function runMakaActivationCli(
   let sessions: SessionSummary[] = [];
   let existing: SessionSummary | undefined;
   try {
-    sessions = await deps.listSessions(roots.stateRoot, roots.configRoot);
+    sessions = await deps.listSessions(roots.stateRoot);
     existing = request.makaSessionId
       ? sessions.find((session) => session.id === request.makaSessionId)
       : undefined;
@@ -428,7 +457,6 @@ export async function runMakaActivationCli(
   };
   try {
     context = await deps.createContext({
-      surface: 'activation',
       workspaceRoot: roots.workspaceRoot,
       stateRoot: roots.stateRoot,
       configRoot: roots.configRoot,
@@ -449,7 +477,6 @@ export async function runMakaActivationCli(
       session = await context.runtime.createSession({
         cwd: roots.workspaceRoot,
         name: `Cloud activation ${request.activationId}`.slice(0, 80),
-        backend: 'ai-sdk',
         llmConnectionSlug: context.target.connection.slug,
         model: context.target.model,
         permissionMode: options.permissionMode ?? 'explore',
@@ -561,10 +588,7 @@ export async function runMakaActivationCli(
   if (invocation?.failure?.class === 'permission_denied') {
     return finish('blocked', 'permission_denied', undefined, 'grant_permission');
   }
-  if (
-    (streamBoundaryFailure && invocation?.sandboxBoundary !== 'recovered') ||
-    invocation?.sandboxBoundary === 'unresolved'
-  ) {
+  if (streamBoundaryFailure || invocation?.sandboxBoundary === 'unresolved') {
     return finish('blocked', 'permission_required', undefined, 'grant_permission');
   }
   if (!invocation) return finish('fatal_failure', 'missing_invocation');
@@ -775,7 +799,7 @@ function makaActivateHelpText(): string {
     '  --input <path>            JSON request file, or - for stdin (default: -)',
     '  --timeout <seconds>       Invocation timeout',
     '  --max-steps <count>       Tool-step cap',
-    '  --permission-mode <mode>  explore|execute|bypass',
+    '  --permission-mode <mode>  explore|ask|bypass',
     '  --connection <slug>       Model connection override',
     '  --model <id>              Model override',
   ].join('\n');
@@ -811,8 +835,6 @@ async function createRuntimeHostActivationContext(
 ): Promise<MakaActivationContext> {
   const connected = await connectRuntimeHostCli({
     rootPath: input.stateRoot,
-    surface: 'activation',
-    legacyConfigurationRoot: input.configRoot,
   });
   try {
     const target = resolveRuntimeHostCliTarget(connected.catalog, {
@@ -820,7 +842,6 @@ async function createRuntimeHostActivationContext(
       ...(input.requestedModel ? { model: input.requestedModel } : {}),
     });
     const runContext = createRuntimeHostRunContext(connected.connection, connected.catalog, {
-      surface: 'activation',
       workspaceRoot: input.stateRoot,
       cwd: input.cwd,
       requestedConnectionSlug: target.connection.slug,
@@ -853,18 +874,13 @@ async function createRuntimeHostActivationContext(
   }
 }
 
-async function listRuntimeHostActivationSessions(
-  stateRoot: string,
-  configRoot: string,
-): Promise<SessionSummary[]> {
+async function listRuntimeHostActivationSessions(stateRoot: string): Promise<SessionSummary[]> {
   const connected = await connectRuntimeHostCli({
     rootPath: stateRoot,
-    surface: 'activation',
-    legacyConfigurationRoot: configRoot,
   });
   try {
     return (await readRuntimeHostSessions(connected.connection)).flatMap((session) =>
-      'kind' in session ? [] : [runtimeHostSessionSummary(session)],
+      'kind' in session ? [] : [projectSessionCatalogSummary(session)],
     );
   } finally {
     await connected.close();

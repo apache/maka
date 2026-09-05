@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type {
   ShellRunSnapshotResult,
   ShellRunStateResult,
@@ -117,61 +136,6 @@ const PTY_CONTROL_OPERATION_KEYS = new Set(['kind', 'failed', 'input', 'resize']
 const PTY_CONTROL_INPUT_KEYS = new Set(['bytes', 'queued']);
 const PTY_CONTROL_RESIZE_KEYS = new Set(['cols', 'rows', 'applied', 'changed']);
 
-const LEGACY_TERMINAL_RESULT_KEYS = new Set([
-  'kind',
-  'cwd',
-  'cmd',
-  'status',
-  'exitCode',
-  'stdout',
-  'stderr',
-  'stdoutTruncated',
-  'stderrTruncated',
-]);
-
-const PRE_STATUS_TERMINAL_RESULT_KEYS = new Set([
-  'kind',
-  'cwd',
-  'cmd',
-  'exitCode',
-  'stdout',
-  'stderr',
-]);
-
-const LEGACY_SHELL_RUN_RESULT_KEYS = new Set([
-  'kind',
-  'ref',
-  'status',
-  'cwd',
-  'cmd',
-  'startedAt',
-  'updatedAt',
-  'completedAt',
-  'exitCode',
-  'failureMessage',
-  'stdout',
-  'stderr',
-  'latestOutputStream',
-  'stdoutTruncated',
-  'stderrTruncated',
-  'timeoutMs',
-  'observedAt',
-  'orphanedReason',
-  'cancelled',
-]);
-
-/** Validate current shell results and normalize only the exact preceding shape. */
-export function normalizeShellToolResultContent(value: unknown): ShellToolResultNormalization {
-  const canonical = decodeCanonicalShellToolResultContent(value);
-  if (canonical.state !== 'invalid') return canonical;
-  if (!isRecord(value)) return canonical;
-  const legacy =
-    value.kind === 'terminal'
-      ? (normalizeLegacyTerminalResult(value) ?? normalizePreStatusTerminalResult(value))
-      : normalizeLegacyShellRunResult(value);
-  return legacy ? { state: 'valid', content: legacy } : { state: 'invalid' };
-}
-
 export function decodeCanonicalShellToolResultContent(
   value: unknown,
 ): ShellToolResultNormalization {
@@ -183,46 +147,12 @@ export function decodeCanonicalShellToolResultContent(
   return current ? { state: 'valid', content: current } : { state: 'invalid' };
 }
 
-function normalizePreStatusTerminalResult(
-  value: Record<string, unknown>,
-): Extract<ToolResultContent, { kind: 'terminal' }> | undefined {
-  if (
-    !hasOnlyKeys(value, PRE_STATUS_TERMINAL_RESULT_KEYS) ||
-    typeof value.cwd !== 'string' ||
-    typeof value.cmd !== 'string' ||
-    value.exitCode !== 0 ||
-    typeof value.stdout !== 'string' ||
-    typeof value.stderr !== 'string'
-  )
-    return undefined;
-
-  return {
-    kind: 'terminal',
-    cwd: value.cwd,
-    cmd: value.cmd,
-    status: 'completed',
-    exitCode: 0,
-    output: {
-      mode: 'pipes',
-      stdout: value.stdout,
-      stderr: value.stderr,
-      stdoutTruncated: hasLegacyTruncationMarker(value.stdout),
-      stderrTruncated: hasLegacyTruncationMarker(value.stderr),
-      redacted: false,
-    },
-  };
-}
-
-function hasLegacyTruncationMarker(value: string): boolean {
-  return /^\.\.\.\d+ (?:bytes|lines) truncated\./.test(value);
-}
-
 function currentTerminalResult(value: Record<string, unknown>): TerminalToolResult | undefined {
   if (
     !hasExactShape(value, CURRENT_TERMINAL_RESULT_SHAPE) ||
     typeof value.cwd !== 'string' ||
     typeof value.cmd !== 'string' ||
-    !isLegacyTerminalStatus(value.status) ||
+    !isTerminalStatus(value.status) ||
     !isOptionalFiniteNumber(value.exitCode) ||
     !isOptionalString(value.failureMessage) ||
     !isOptionalSandboxDenial(value.sandboxDenial) ||
@@ -278,100 +208,7 @@ function currentShellRunResult(value: Record<string, unknown>): ShellRunToolResu
   return value as ShellRunToolResult;
 }
 
-function normalizeLegacyTerminalResult(
-  value: Record<string, unknown>,
-): Extract<ToolResultContent, { kind: 'terminal' }> | undefined {
-  if (
-    !hasOnlyKeys(value, LEGACY_TERMINAL_RESULT_KEYS) ||
-    typeof value.cwd !== 'string' ||
-    typeof value.cmd !== 'string' ||
-    !isLegacyTerminalStatus(value.status) ||
-    !isFiniteNumber(value.exitCode) ||
-    typeof value.stdout !== 'string' ||
-    typeof value.stderr !== 'string' ||
-    typeof value.stdoutTruncated !== 'boolean' ||
-    typeof value.stderrTruncated !== 'boolean' ||
-    !isValidTerminalState(value)
-  )
-    return undefined;
-
-  return {
-    kind: 'terminal',
-    cwd: value.cwd,
-    cmd: value.cmd,
-    status: value.status,
-    exitCode: value.exitCode,
-    output: legacyPipeOutput(value),
-  };
-}
-
-function normalizeLegacyShellRunResult(
-  value: Record<string, unknown>,
-): ShellRunToolResult | undefined {
-  if (
-    !hasOnlyKeys(value, LEGACY_SHELL_RUN_RESULT_KEYS) ||
-    typeof value.ref !== 'string' ||
-    !isShellRunStatus(value.status) ||
-    typeof value.cwd !== 'string' ||
-    typeof value.cmd !== 'string' ||
-    !isFiniteNumber(value.startedAt) ||
-    !isFiniteNumber(value.updatedAt) ||
-    typeof value.stdout !== 'string' ||
-    typeof value.stderr !== 'string' ||
-    typeof value.stdoutTruncated !== 'boolean' ||
-    typeof value.stderrTruncated !== 'boolean' ||
-    !isOptionalFiniteNumber(value.completedAt) ||
-    !isOptionalFiniteNumber(value.exitCode) ||
-    !isOptionalFiniteNumber(value.timeoutMs) ||
-    !isOptionalFiniteNumber(value.observedAt) ||
-    !isOptionalString(value.failureMessage) ||
-    !isOptionalString(value.orphanedReason) ||
-    !isOptionalBoolean(value.cancelled) ||
-    !isOptionalOutputStream(value.latestOutputStream) ||
-    !isValidLegacyShellRunState(value)
-  )
-    return undefined;
-
-  const failureMessage =
-    typeof value.failureMessage === 'string'
-      ? value.failureMessage
-      : value.status === 'orphaned'
-        ? (value.orphanedReason as string)
-        : undefined;
-  return {
-    kind: 'shell_run',
-    ref: value.ref,
-    mode: 'pipes',
-    status: value.status,
-    cwd: value.cwd,
-    cmd: value.cmd,
-    startedAt: value.startedAt,
-    updatedAt: value.updatedAt,
-    ...(isFiniteNumber(value.completedAt) ? { completedAt: value.completedAt } : {}),
-    ...(isFiniteNumber(value.timeoutMs) ? { timeoutMs: value.timeoutMs } : {}),
-    ...(isFiniteNumber(value.exitCode) ? { exitCode: value.exitCode } : {}),
-    ...(failureMessage !== undefined ? { failureMessage } : {}),
-    revision: 1,
-    output: legacyPipeOutput(value),
-    ...(typeof value.cancelled === 'boolean'
-      ? { operation: { kind: 'stop', applied: value.cancelled } as const }
-      : {}),
-  };
-}
-
-function legacyPipeOutput(value: Record<string, unknown>): Extract<ShellOutput, { mode: 'pipes' }> {
-  return {
-    mode: 'pipes',
-    stdout: value.stdout as string,
-    stderr: value.stderr as string,
-    ...(isOutputStream(value.latestOutputStream) ? { latestStream: value.latestOutputStream } : {}),
-    stdoutTruncated: value.stdoutTruncated as boolean,
-    stderrTruncated: value.stderrTruncated as boolean,
-    redacted: false,
-  };
-}
-
-function isLegacyTerminalStatus(
+function isTerminalStatus(
   value: unknown,
 ): value is Exclude<ShellRunStatus, 'starting' | 'running' | 'orphaned'> {
   return (
@@ -412,55 +249,6 @@ function isCurrentShellRunOperation(value: unknown, mode: unknown, hasOutput: bo
   );
 }
 
-export function isValidLegacyShellRunState(value: Record<string, unknown>): boolean {
-  switch (value.status) {
-    case 'running':
-      return (
-        value.completedAt === undefined &&
-        value.exitCode === undefined &&
-        value.failureMessage === undefined &&
-        value.observedAt === undefined &&
-        value.orphanedReason === undefined
-      );
-    case 'completed':
-      return (
-        isFiniteNumber(value.completedAt) &&
-        value.exitCode === 0 &&
-        value.failureMessage === undefined &&
-        value.orphanedReason === undefined
-      );
-    case 'failed':
-      return (
-        isFiniteNumber(value.completedAt) &&
-        isFiniteNumber(value.exitCode) &&
-        value.exitCode !== 0 &&
-        value.orphanedReason === undefined
-      );
-    case 'timed_out':
-      return (
-        isFiniteNumber(value.completedAt) &&
-        value.exitCode === 124 &&
-        value.orphanedReason === undefined
-      );
-    case 'cancelled':
-      return (
-        isFiniteNumber(value.completedAt) &&
-        value.exitCode === 130 &&
-        value.orphanedReason === undefined
-      );
-    case 'orphaned':
-      return (
-        isFiniteNumber(value.completedAt) &&
-        value.exitCode === undefined &&
-        value.failureMessage === undefined &&
-        typeof value.orphanedReason === 'string' &&
-        value.orphanedReason.length > 0
-      );
-    default:
-      return false;
-  }
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
@@ -494,7 +282,10 @@ export function isSandboxDenialSignal(value: unknown): value is SandboxDenialSig
     isRecord(value) &&
     hasExactShape(value, SANDBOX_DENIAL_SIGNAL_SHAPE) &&
     value.likely === true &&
-    (value.backend === undefined || value.backend === 'macos-seatbelt' || value.backend === 'linux')
+    (value.backend === undefined ||
+      value.backend === 'macos-seatbelt' ||
+      value.backend === 'linux' ||
+      value.backend === 'windows')
   );
 }
 
@@ -507,21 +298,10 @@ function isOptionalSandboxDenial(value: unknown): boolean {
       value.likely === true &&
       (value.backend === undefined ||
         value.backend === 'macos-seatbelt' ||
-        value.backend === 'linux') &&
+        value.backend === 'linux' ||
+        value.backend === 'windows') &&
       value.recovery === 'require_escalated')
   );
-}
-
-function isOptionalBoolean(value: unknown): boolean {
-  return value === undefined || typeof value === 'boolean';
-}
-
-function isOutputStream(value: unknown): value is 'stdout' | 'stderr' {
-  return value === 'stdout' || value === 'stderr';
-}
-
-function isOptionalOutputStream(value: unknown): boolean {
-  return value === undefined || isOutputStream(value);
 }
 
 export interface ShellRunStateMerge<Result extends ShellRunStateResult = ShellRunStateResult> {

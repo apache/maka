@@ -1,3 +1,23 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { InteractionRecord, StoredInteractionRequest } from '@maka/storage/interaction-store';
@@ -8,7 +28,6 @@ import {
   decodeSessionInteractionProjection,
   HOST_OPERATION_SPECS,
   INTERACTION_MAX_PENDING_PER_SESSION,
-  RuntimeHostProtocolError,
 } from '../protocol/index.js';
 import {
   answerOutcome,
@@ -147,6 +166,56 @@ describe('Runtime Host Interaction protocol', () => {
         ok: false,
         error: { code: 'already_resolved', message: 'Interaction already resolved' },
       },
+    );
+  });
+
+  test('decodes a form snapshot and exact form answer without widening the wire', () => {
+    const snapshot = {
+      schemaVersion: 1,
+      interactionId: 'form-1',
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      runId: 'run-1',
+      revision: 1,
+      status: 'pending',
+      outcome: null,
+      request: {
+        kind: 'form',
+        toolUseId: 'tool-1',
+        message: 'Choose settings',
+        requester: { name: 'deploy', source: 'Example server' },
+        fields: [
+          {
+            kind: 'boolean',
+            name: 'confirm',
+            label: 'Confirm',
+            required: true,
+          },
+        ],
+      },
+    } as const;
+    assert.deepEqual(decodeInteractionSnapshot(snapshot), snapshot);
+
+    const frame = {
+      requestId: 'answer-form',
+      operation: 'interaction.answer',
+      input: {
+        sessionId: 'session-1',
+        interactionId: 'form-1',
+        answer: { kind: 'form', action: 'accept', values: { confirm: true } },
+      },
+    } as const;
+    assert.deepEqual(decodeClientFrame(frame), frame);
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          ...frame,
+          input: {
+            ...frame.input,
+            answer: { ...frame.input.answer, requestState: 'must-not-cross-host-wire' },
+          },
+        }),
+      isInvalidFrame,
     );
   });
 

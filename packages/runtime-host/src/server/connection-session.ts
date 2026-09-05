@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import {
   decodeClientFrame,
   isClientCapabilityClientFrameKind,
@@ -25,17 +44,10 @@ import type {
   ClientCapabilityService,
 } from './client-capability-service.js';
 import type {
-  ConfigurationChangeConnection,
-  HostConfigurationChangeService,
-} from './configuration-change-service.js';
-import type {
-  HostSessionCatalogChangeService,
-  SessionCatalogChangeConnection,
-} from './session-catalog-change-service.js';
-import type {
-  HostProjectCatalogChangeService,
-  ProjectCatalogChangeConnection,
-} from './project-catalog-change-service.js';
+  HostChangeFeed,
+  HostChangeSubscription,
+  HostChangeSubscriptionMask,
+} from './host-change-feed.js';
 import type { RuntimeHostConnectionAuthority } from './connection-authority.js';
 import {
   authorizeClientCapabilityFrame,
@@ -60,9 +72,8 @@ export interface RuntimeHostConnectionSessionOptions {
   resolveHandlers(): OperationHandlerMap;
   resolveContinuity(): SessionContinuityService | undefined;
   resolveClientCapabilities?(): ClientCapabilityService | undefined;
-  resolveConfigurationChanges?(): HostConfigurationChangeService | undefined;
-  resolveProjectCatalogChanges?(): HostProjectCatalogChangeService | undefined;
-  resolveSessionCatalogChanges?(): HostSessionCatalogChangeService | undefined;
+  resolveHostChanges?(): HostChangeFeed | undefined;
+  resolveSharedSessionId?(): string | undefined;
   beginOperation(frame: RequestFrame): Promise<ConnectionOperationLease | HostOperationErrorCode>;
   onTeardown(): void;
 }
@@ -71,15 +82,14 @@ export class RuntimeHostConnectionSession {
   readonly #options: RuntimeHostConnectionSessionOptions;
   readonly #writer: BoundedSerialOutboundWriter;
   readonly #requests = new Map<string, Promise<void>>();
+  #transcriptPageTail: Promise<void> = Promise.resolve();
   #inFlightStatusRequests = 0;
   #continuityService: SessionContinuityService | undefined;
   #continuity: SessionContinuityConnection | undefined;
   #clientCapabilityService: ClientCapabilityService | undefined;
   #clientCapabilities: ClientCapabilityConnection | undefined;
   #clientCapabilityCloseTask: Promise<void> | undefined;
-  #configurationChanges: ConfigurationChangeConnection | undefined;
-  #projectCatalogChanges: ProjectCatalogChangeConnection | undefined;
-  #sessionCatalogChanges: SessionCatalogChangeConnection | undefined;
+  #hostChanges: HostChangeSubscription | undefined;
   #inputClosed = false;
   #closed = false;
 
@@ -114,9 +124,7 @@ export class RuntimeHostConnectionSession {
     this.#inputClosed = true;
     this.#detachContinuity();
     this.#detachClientCapabilities();
-    this.#detachConfigurationChanges();
-    this.#detachProjectCatalogChanges();
-    this.#detachSessionCatalogChanges();
+    this.#detachHostChanges();
     const outcome = await Promise.race([
       Promise.allSettled([...this.#requests.values()]).then(() => 'drained' as const),
       this.#options.transport.closed.then(() => 'closed' as const),
@@ -167,7 +175,11 @@ export class RuntimeHostConnectionSession {
 
   #dispatch(frame: RequestFrame): void {
     if (frame.operation === 'host.status') this.#inFlightStatusRequests += 1;
-    const task = this.#handleRequest(frame)
+    const handling =
+      frame.operation === 'session.transcript.page'
+        ? this.#transcriptPageTail.then(() => this.#handleRequest(frame))
+        : this.#handleRequest(frame);
+    const task = handling
       .catch(() => this.#teardown())
       .finally(() => {
         if (this.#requests.get(frame.requestId) === task) {
@@ -176,9 +188,13 @@ export class RuntimeHostConnectionSession {
         }
       });
     this.#requests.set(frame.requestId, task);
+    if (frame.operation === 'session.transcript.page') {
+      this.#transcriptPageTail = task.catch(() => undefined);
+    }
   }
 
   async #handleRequest(frame: RequestFrame): Promise<void> {
+    if (this.#closed) return;
     if (!authorizeRuntimeHostOperation(this.#options.connection.authority, frame)) {
       if (this.#closed) return;
       await this.#writer.enqueue(
@@ -205,12 +221,19 @@ export class RuntimeHostConnectionSession {
       const continuity =
         frame.operation === 'subscription.open' ||
         frame.operation === 'subscription.close' ||
-        frame.operation === 'session.transcript.query'
+        frame.operation === 'session.transcript.page'
           ? this.#ensureContinuity()
           : undefined;
       const response = await dispatchOperation(frame, this.#options.resolveHandlers(), {
         ...this.#options.connection,
         principal: this.#options.connection.authority.principalId,
+        principalKind: this.#options.connection.authority.principalKind,
+        ...(this.#options.connection.authority.credentialId
+          ? { credentialId: this.#options.connection.authority.credentialId }
+          : {}),
+        ...(this.#options.connection.authority.clientInstanceId
+          ? { credentialClientInstanceId: this.#options.connection.authority.clientInstanceId }
+          : {}),
         acquireResidency: () => admission.acquireResidency(),
       });
       admission.seal();
@@ -219,9 +242,12 @@ export class RuntimeHostConnectionSession {
         response.ok && response.operation === 'subscription.open'
           ? response.result.subscriptionId
           : undefined;
-      if (openedSubscriptionId) continuity?.activate(openedSubscriptionId);
       try {
         await receipt.flushed;
+        // Subscriber-local queues retain pre-activation events. Expose them
+        // only after the open result leaves the connection-wide writer, or a
+        // restore fan-out can make legal responses and first frames overflow it.
+        if (openedSubscriptionId) continuity?.activate(openedSubscriptionId);
       } catch (error) {
         if (openedSubscriptionId) continuity?.abort(openedSubscriptionId);
         throw error;
@@ -273,7 +299,16 @@ export class RuntimeHostConnectionSession {
           connectionId: this.#options.connection.connectionId,
           principalId: this.#options.connection.authority.principalId,
           clientInstanceId: this.#options.connection.clientInstanceId,
+          ...(this.#options.connection.authority.clientInstanceId
+            ? {
+                credentialBoundClientInstanceId:
+                  this.#options.connection.authority.clientInstanceId,
+              }
+            : {}),
           principalKind: this.#options.connection.authority.principalKind,
+          ...(this.#options.connection.authority.capabilityOwner
+            ? { capabilityOwner: this.#options.connection.authority.capabilityOwner }
+            : {}),
         },
         {
           send: (frame) => {
@@ -298,81 +333,60 @@ export class RuntimeHostConnectionSession {
     void this.#clientCapabilityCloseTask.catch(() => undefined);
   }
 
-  #attachConfigurationChanges(): void {
-    if (!hasRuntimeHostOperationGrant(this.#options.connection.authority, 'runtime.policy.query')) {
-      return;
-    }
-    const service = this.#options.resolveConfigurationChanges?.();
-    if (!service || this.#configurationChanges) return;
-    this.#configurationChanges = service.attachConnection(this.#options.connection.connectionId, {
-      send: (frame) => {
-        try {
-          return this.#writer.enqueue(frame).flushed;
-        } catch (error) {
-          return Promise.reject(error);
-        }
-      },
-    });
-  }
-
   attachGlobalChanges(): void {
     if (this.#closed || this.#inputClosed) return;
-    this.#attachConfigurationChanges();
-    this.#attachProjectCatalogChanges();
-    this.#attachSessionCatalogChanges();
-  }
-
-  #detachConfigurationChanges(): void {
-    this.#configurationChanges?.close();
-    this.#configurationChanges = undefined;
-  }
-
-  #attachProjectCatalogChanges(): void {
-    if (
-      !hasRuntimeHostOperationGrant(this.#options.connection.authority, 'project.catalog.query')
-    ) {
-      return;
-    }
-    const service = this.#options.resolveProjectCatalogChanges?.();
-    if (!service || this.#projectCatalogChanges) return;
-    this.#projectCatalogChanges = service.attachConnection(this.#options.connection.connectionId, {
-      send: (frame) => {
-        try {
-          return this.#writer.enqueue(frame).flushed;
-        } catch (error) {
-          return Promise.reject(error);
-        }
+    const service = this.#options.resolveHostChanges?.();
+    if (!service || this.#hostChanges) return;
+    const sharedSessionId =
+      this.#options.connection.authority.principalKind === 'session_guest' &&
+      hasRuntimeHostOperationGrant(this.#options.connection.authority, 'session.shared.query')
+        ? this.#options.resolveSharedSessionId?.()
+        : undefined;
+    const sessionCatalog: HostChangeSubscriptionMask['sessionCatalog'] =
+      sharedSessionId !== undefined
+        ? {
+            sessionId: sharedSessionId,
+            principalId: this.#options.connection.authority.principalId,
+          }
+        : hasRuntimeHostOperationGrant(this.#options.connection.authority, 'session.catalog.query')
+          ? true
+          : undefined;
+    this.#hostChanges = service.attachConnection(
+      this.#options.connection.connectionId,
+      {
+        configuration: hasRuntimeHostOperationGrant(
+          this.#options.connection.authority,
+          'runtime.policy.query',
+        ),
+        connectionCatalog: hasRuntimeHostOperationGrant(
+          this.#options.connection.authority,
+          'connection.catalog.query',
+        ),
+        projectCatalog: hasRuntimeHostOperationGrant(
+          this.#options.connection.authority,
+          'project.catalog.query',
+        ),
+        sessionCatalog,
+        scheduledTask: hasRuntimeHostOperationGrant(
+          this.#options.connection.authority,
+          'scheduled-task.query',
+        ),
       },
-    });
-  }
-
-  #detachProjectCatalogChanges(): void {
-    this.#projectCatalogChanges?.close();
-    this.#projectCatalogChanges = undefined;
-  }
-
-  #attachSessionCatalogChanges(): void {
-    if (
-      !hasRuntimeHostOperationGrant(this.#options.connection.authority, 'session.catalog.query')
-    ) {
-      return;
-    }
-    const service = this.#options.resolveSessionCatalogChanges?.();
-    if (!service || this.#sessionCatalogChanges) return;
-    this.#sessionCatalogChanges = service.attachConnection(this.#options.connection.connectionId, {
-      send: (frame) => {
-        try {
-          return this.#writer.enqueue(frame).flushed;
-        } catch (error) {
-          return Promise.reject(error);
-        }
+      {
+        send: (frame) => {
+          try {
+            return this.#writer.enqueue(frame).flushed;
+          } catch (error) {
+            return Promise.reject(error);
+          }
+        },
       },
-    });
+    );
   }
 
-  #detachSessionCatalogChanges(): void {
-    this.#sessionCatalogChanges?.close();
-    this.#sessionCatalogChanges = undefined;
+  #detachHostChanges(): void {
+    this.#hostChanges?.close();
+    this.#hostChanges = undefined;
   }
 
   #teardown(): void {
@@ -381,9 +395,7 @@ export class RuntimeHostConnectionSession {
     this.#inputClosed = true;
     this.#detachContinuity();
     this.#detachClientCapabilities();
-    this.#detachConfigurationChanges();
-    this.#detachProjectCatalogChanges();
-    this.#detachSessionCatalogChanges();
+    this.#detachHostChanges();
     this.#writer.close();
     this.#options.transport.abort();
     this.#options.onTeardown();

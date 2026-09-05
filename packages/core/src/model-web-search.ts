@@ -1,4 +1,24 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { ModelInfo, ProviderType } from './llm-connections.js';
+import { deepSeekModelSupportsResponses } from './model-metadata.js';
 
 export type HostedWebSearchAdapter =
   | 'openai-responses'
@@ -57,22 +77,25 @@ function providerHostedWebSearchAdapter(
 ): HostedWebSearchCapability | null {
   switch (providerType) {
     case 'deepseek':
+      // @ai-sdk/open-responses currently serializes function tools only.
+      // Mark native search unavailable so routing never hands it a provider
+      // tool that would be silently filtered from the request.
+      return { adapter: 'openai-responses', implemented: false };
     case 'openai':
     case 'openai-responses-compatible':
     case 'xai':
     case 'xai-oauth':
       return { adapter: 'openai-responses', implemented: true };
     case 'alibaba':
+    case 'alibaba-cn':
       return { adapter: 'openai-responses', implemented: false };
     case 'anthropic':
-    case 'claude-subscription':
     case 'MiniMax':
     case 'MiniMax-cn':
     case 'minimax-coding-plan':
     case 'anthropic-compatible':
       return { adapter: 'anthropic-messages', implemented: true };
     case 'google':
-    case 'gemini-cli':
       return { adapter: 'google-grounding', implemented: false };
     case 'zai':
     case 'zai-coding-plan':
@@ -95,16 +118,16 @@ function providerDefaultHostedWebSearchCapability(
 ): HostedWebSearchCapability | null {
   switch (providerType) {
     case 'deepseek':
-      return modelId === 'deepseek-v4-flash' ? capability : null;
+      return deepSeekModelSupportsResponses(modelId) ? capability : null;
     case 'openai':
       return /^gpt-5(?:[.-]|$)/i.test(modelId) ? capability : null;
     case 'xai':
     case 'xai-oauth':
       return modelId === 'grok-4.5' ? capability : null;
     case 'alibaba':
+    case 'alibaba-cn':
       return /^qwen3\.5-(?:plus|flash)(?:[.-]|$)/i.test(modelId) ? capability : null;
     case 'anthropic':
-    case 'claude-subscription':
       return /^claude-(?:[\d.]+-)*(?:opus|sonnet|haiku|fable)\b/i.test(modelId) ? capability : null;
     case 'MiniMax':
     case 'MiniMax-cn':
@@ -115,7 +138,6 @@ function providerDefaultHostedWebSearchCapability(
     case 'openai-responses-compatible':
       return null;
     case 'google':
-    case 'gemini-cli':
       return /^gemini-(?:2\.0|2\.5|3|3\.1|3\.5)(?:[.-]|$)/i.test(modelId) ? capability : null;
     case 'zai':
     case 'zai-coding-plan':

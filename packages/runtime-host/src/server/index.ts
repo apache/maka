@@ -1,68 +1,66 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 export {
   RuntimeHostKernel,
-  RuntimeHostProcessTerminationRequiredError,
   type RuntimeHostComposition,
-  type RuntimeHostCompositionContext,
-  type RuntimeHostCompositionFactory,
-  type RuntimeHostKernelOptions,
-  type RuntimeHostLifecycleMode,
-  type RuntimeHostResidency,
 } from './host-kernel.js';
-export {
-  beginRuntimeHostDomainModuleDrain,
-  closeRuntimeHostDomainModules,
-  composeRuntimeHostDomainHandlers,
-  defineInteractiveRuntimeHostComposition,
-  defineRuntimeHostComposition,
-  HOST_RECOVERY_PHASES,
-  INTERACTIVE_HOST_COMPOSITION_DESCRIPTOR,
-  normalizeHostCompositionDescriptor,
-  recoverRuntimeHostDomainModules,
-  type HostCompositionDescriptor,
-  type HostRecoveryPhase,
-  type RuntimeHostDomainModule,
-  type RuntimeHostCompositionSource,
-} from './host-composition.js';
-export {
-  startInteractiveRuntimeHostCandidate,
-  type InteractiveRuntimeHostCandidateOptions,
-  type InteractiveRuntimeHostCandidateResult,
-} from './candidate.js';
+export { defineInteractiveRuntimeHostComposition } from './host-composition.js';
 export { createUnavailableDomainOperationHandlers } from './operation-dispatcher.js';
+export { startExecutionRuntimeHostService } from './execution-service.js';
+export { runRuntimeHostProcessLifecycle } from './process-lifecycle.js';
 export {
-  RuntimeHostRootAlreadyOwnedError,
-  startExecutionRuntimeHostService,
-  type ExecutionRuntimeHostServiceDependencies,
-  type ExecutionRuntimeHostServiceOptions,
-} from './execution-service.js';
-export {
-  runRuntimeHostProcessLifecycle,
-  type RuntimeHostProcessLifecycleOptions,
-} from './process-lifecycle.js';
+  createPeerMeshOperationHandlers,
+  projectPeerMeshQuery,
+  projectPeerMeshStatus,
+} from './peer-mesh-authority.js';
 export { installRuntimeHostLogCapture } from '../process-diagnostics.js';
 export {
-  createRuntimeHostListenerSet,
-  startRuntimeHostServiceListenerSet,
-  startLocalRuntimeHostListenerSet,
-  type RuntimeHostListenerSet,
-  type RuntimeHostListener,
-  type RuntimeHostListenerConnection,
-  type RuntimeHostListenerKind,
-  type RuntimeHostListenerSetFactory,
-  type RuntimeHostListenerSetFactoryInput,
-} from './listener-set.js';
+  readRuntimeHostAccessCredentialMetadata,
+  type RuntimeHostAccessCredentialMetadata,
+} from './access-credential-metadata.js';
 export {
-  startRuntimeHostWebSocketListener,
-  type RuntimeHostWebSocketTls,
-  type StartRuntimeHostWebSocketListenerOptions,
-} from './websocket-listener.js';
+  ExtensionBundleError,
+  exportExtensionBundle,
+  materializeExtensionPackage,
+} from './extension-bundle.js';
 export {
-  openRuntimeHostAccessAuthority,
-  type RuntimeHostAccessAuthority,
-} from './access-authority.js';
+  EXTENSION_PACKAGE_MANIFEST_FILE,
+  ExtensionPackageManifestError,
+  decodeExtensionPackageManifest,
+  loadExtensionPackageManifest,
+  validateExtensionConfiguration,
+  type ExtensionConfigurationProperty,
+  type ExtensionConfigurationScalar,
+  type ExtensionConfigurationSchema,
+  type ExtensionPackageDependency,
+  type ExtensionPackageComposition,
+  type ExtensionPackageManifest,
+  type ExtensionPackageRuntime,
+} from './extension-package-manifest.js';
 export {
-  createRuntimeHostConnectionAuthority,
-  LOCAL_OWNER_CONNECTION_AUTHORITY,
-  type RuntimeHostConnectionAuthority,
-} from './connection-authority.js';
-export type { RuntimeHostMessageTransport } from '../transport/message-transport.js';
+  PluginCompositionPatchError,
+  loadPluginCompositionPatch,
+} from './plugin-composition-patch.js';
+export {
+  HostPluginPlatform,
+  HostPluginPlatformError,
+  type HostPluginPlatformFailure,
+} from './plugin-platform.js';
+export { HostPluginPlatformCoordinator } from './plugin-platform-coordinator.js';

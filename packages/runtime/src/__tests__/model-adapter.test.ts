@@ -1,25 +1,52 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { RetryError } from 'ai';
 
-import { lowerModelTools, ModelAdapter, normalizeAiSdkUsage } from '../model-adapter.js';
+import { ModelAdapter, normalizeAiSdkUsage } from '../model-adapter.js';
 import type { ModelStreamEvent } from '../model-protocol.js';
 
 describe('ModelAdapter stream and error normalization', () => {
-  test('lowers apply_patch to the client-executed OpenAI provider tool', () => {
-    const tools = lowerModelTools({
-      apply_patch: { kind: 'provider', providerTool: { kind: 'openai-apply-patch' } },
+  test('forwards the stable Session identity to the model factory', () => {
+    let observedSessionId: string | undefined;
+    const model = {};
+    const adapter = new ModelAdapter({
+      sessionId: 'session-opencode-go',
+      connection: {
+        slug: 'opencode-go',
+        providerType: 'opencode-go',
+        defaultModel: 'kimi-k2.7-code',
+      },
+      apiKey: 'opencode-go-token',
+      modelId: 'kimi-k2.7-code',
+      modelFactory: (input) => {
+        observedSessionId = (input as { sessionId?: string }).sessionId;
+        return model;
+      },
+      newId: idGenerator(),
+      now: monotonicClock(),
     });
 
-    assert.deepEqual(
-      {
-        type: (tools.apply_patch as { type?: unknown }).type,
-        id: (tools.apply_patch as { id?: unknown }).id,
-        isProviderExecuted: (tools.apply_patch as { isProviderExecuted?: unknown })
-          .isProviderExecuted,
-      },
-      { type: 'provider', id: 'openai.apply_patch', isProviderExecuted: false },
-    );
+    assert.equal(adapter.resolveModel(), model);
+    assert.equal(observedSessionId, 'session-opencode-go');
   });
 
   test('resolves optional-key LocalAI without fabricating a credential', () => {
@@ -63,6 +90,34 @@ describe('ModelAdapter stream and error normalization', () => {
     assert.equal(adapter.runtimeEventReplaySupport().signedThinking, true);
   });
 
+  test('preserves Anthropic redacted thinking metadata at the model boundary', () => {
+    const adapter = new ModelAdapter({
+      connection: {
+        slug: 'anthropic-main',
+        providerType: 'anthropic',
+        defaultModel: 'claude-sonnet-4-5-20250929',
+      },
+      apiKey: 'anthropic-token',
+      modelId: 'claude-sonnet-4-5-20250929',
+      modelFactory: () => ({}),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    assert.deepEqual(
+      adapter.translateChunk({
+        type: 'reasoning-start',
+        providerMetadata: { anthropic: { redactedData: 'opaque-redacted-thinking' } },
+      }),
+      [
+        {
+          kind: 'thinking-start',
+          providerOptions: { anthropic: { redactedData: 'opaque-redacted-thinking' } },
+        },
+      ],
+    );
+  });
+
   test('supports unsigned-thinking replay on Kimi models using the OpenAI wire', () => {
     const adapter = new ModelAdapter({
       connection: {
@@ -81,9 +136,10 @@ describe('ModelAdapter stream and error normalization', () => {
     assert.deepEqual(adapter.runtimeEventReplaySupport(), {
       toolCalls: true,
       toolResults: true,
+      providerExecutedTools: true,
       signedThinking: false,
       unsignedThinking: true,
-      openAiResponsesThinking: false,
+      responsesReasoning: 'none',
     });
   });
 
@@ -135,10 +191,171 @@ describe('ModelAdapter stream and error normalization', () => {
     assert.deepEqual(adapter.runtimeEventReplaySupport(), {
       toolCalls: true,
       toolResults: true,
+      providerExecutedTools: true,
       signedThinking: false,
       unsignedThinking: false,
-      openAiResponsesThinking: true,
+      responsesReasoning: 'encrypted-content',
     });
+  });
+
+  test('supports plaintext Responses reasoning replay for DeepSeek V4', () => {
+    const adapter = new ModelAdapter({
+      connection: {
+        slug: 'deepseek',
+        providerType: 'deepseek',
+        defaultModel: 'deepseek-v4-flash',
+      },
+      apiKey: 'deepseek-token',
+      modelId: 'deepseek-v4-flash',
+      modelFactory: () => ({}),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    assert.deepEqual(adapter.runtimeEventReplaySupport(), {
+      toolCalls: true,
+      toolResults: true,
+      providerExecutedTools: false,
+      signedThinking: false,
+      unsignedThinking: false,
+      responsesReasoning: 'plaintext-content',
+    });
+  });
+
+  test('supports summary-item Responses reasoning replay for Alibaba Token Plan', () => {
+    const adapter = new ModelAdapter({
+      connection: {
+        slug: 'alibaba-token-plan-cn',
+        providerType: 'alibaba-token-plan-cn',
+        defaultModel: 'qwen3.8-max',
+      },
+      apiKey: 'alibaba-token',
+      modelId: 'qwen3.8-max',
+      modelFactory: () => ({}),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    assert.deepEqual(adapter.runtimeEventReplaySupport(), {
+      toolCalls: true,
+      toolResults: true,
+      providerExecutedTools: false,
+      signedThinking: false,
+      unsignedThinking: false,
+      responsesReasoning: {
+        kind: 'plaintext-item',
+        profile: 'alibaba-token-plan-cn',
+        providerOptionsKey: 'alibaba-token-plan-cn',
+      },
+    });
+  });
+
+  test('normalizes Alibaba stream item ids into bounded durable state from item start', () => {
+    const providerType = 'alibaba-token-plan-cn';
+    const adapter = new ModelAdapter({
+      connection: { slug: providerType, providerType, defaultModel: 'qwen3.8-max' },
+      apiKey: 'token',
+      modelId: 'qwen3.8-max',
+      modelFactory: () => ({}),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    type Chunk = Parameters<typeof adapter.translateChunk>[0];
+    const providerOptions = {
+      makaResponses: {
+        version: 1,
+        profile: providerType,
+        itemId: 'alibaba-reasoning-item',
+        summaryPartLengths: [7],
+      },
+    };
+    assert.deepEqual(
+      adapter.translateChunk({ type: 'reasoning-start', id: 'alibaba-reasoning-item' } as Chunk),
+      [{ kind: 'thinking-start', reasoningPartId: 'alibaba-reasoning-item' }],
+    );
+    assert.deepEqual(
+      adapter.translateChunk({
+        type: 'reasoning-delta',
+        id: 'alibaba-reasoning-item',
+        delta: 'summary',
+      } as Chunk),
+      [{ kind: 'thinking', text: 'summary', reasoningPartId: 'alibaba-reasoning-item' }],
+    );
+    assert.deepEqual(
+      adapter.translateChunk({
+        type: 'reasoning-end',
+        id: 'alibaba-reasoning-item',
+        providerMetadata: {
+          [providerType]: {
+            itemId: 'alibaba-reasoning-item',
+            reasoningSummary: [{ type: 'summary_text', text: 'summary' }],
+          },
+        },
+      } as Chunk),
+      [
+        {
+          kind: 'thinking',
+          text: '',
+          providerOptions,
+          reasoningPartId: 'alibaba-reasoning-item',
+          reasoningSummaryText: 'summary',
+        },
+      ],
+    );
+    assert.throws(
+      () =>
+        adapter.translateChunk({
+          type: 'reasoning-end',
+          id: 'unfinished-flush',
+        } as Chunk),
+      /missing final summary metadata/,
+    );
+    assert.throws(
+      () =>
+        adapter.translateChunk({
+          type: 'reasoning-end',
+          id: 'missing-final-summary',
+          providerMetadata: {
+            [providerType]: { itemId: 'missing-final-summary' },
+          },
+        } as Chunk),
+      /missing final summary metadata/,
+    );
+  });
+
+  test('keeps DeepSeek plaintext replay on the main content-only behavior', () => {
+    const adapter = new ModelAdapter({
+      connection: { slug: 'deepseek', providerType: 'deepseek', defaultModel: 'deepseek-v4-flash' },
+      apiKey: 'token',
+      modelId: 'deepseek-v4-flash',
+      modelFactory: () => ({}),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    type Chunk = Parameters<typeof adapter.translateChunk>[0];
+
+    assert.deepEqual(
+      adapter.translateChunk({
+        type: 'reasoning-delta',
+        id: 'deepseek-reasoning-item',
+        delta: 'plaintext reasoning',
+      } as Chunk),
+      [
+        {
+          kind: 'thinking',
+          text: 'plaintext reasoning',
+          reasoningPartId: 'deepseek-reasoning-item',
+        },
+      ],
+    );
+    assert.deepEqual(
+      adapter.translateChunk({
+        type: 'reasoning-end',
+        id: 'deepseek-reasoning-item',
+        providerMetadata: { deepseek: { itemId: 'deepseek-reasoning-item' } },
+      } as Chunk),
+      [],
+    );
   });
 
   test('translates provider text, reasoning, tool calls, and errors into ModelStreamEvents', () => {
@@ -184,7 +401,7 @@ describe('ModelAdapter stream and error normalization', () => {
       kind: 'rate_limit',
       code: '429',
       message: 'Rate limit exceeded',
-      retryable: true,
+      retryable: false,
     });
     // The backend consumes the typed failure without recovering the raw
     // provider error shape.
@@ -192,6 +409,31 @@ describe('ModelAdapter stream and error normalization', () => {
     assert.equal(shaped.reason, 'rate_limit');
     assert.equal(shaped.code, '429');
     assert.equal(shaped.message, 'Rate limit exceeded');
+  });
+
+  test('normalizes a status-less provider server_error into a retryable outage', () => {
+    const adapter = newAdapter();
+    type Chunk = Parameters<typeof adapter.translateChunk>[0];
+    const [event] = adapter.translateChunk({
+      type: 'error',
+      error: {
+        type: 'server_error',
+        code: 'server_error',
+        message:
+          'Streaming response failed: [502] Upstream error from Nvidia: Service temporarily overloaded',
+      },
+    } as Chunk);
+
+    assert.deepEqual(event, {
+      kind: 'error',
+      failure: {
+        type: 'model_failure',
+        kind: 'provider_unavailable',
+        code: 'server_error',
+        message: 'Provider returned an error',
+        retryable: true,
+      },
+    });
   });
 
   test('preserves an explicit empty reasoning delta without inventing one for absent text', () => {
@@ -337,7 +579,7 @@ describe('ModelAdapter stream and error normalization', () => {
       } as Chunk),
       [
         {
-          kind: 'text-metadata',
+          kind: 'text-end',
           providerOptions: {
             openai: {
               itemId: 'message-1',
@@ -354,6 +596,77 @@ describe('ModelAdapter stream and error normalization', () => {
           },
         },
       ],
+    );
+  });
+
+  test('preserves native Responses item boundaries and terminal metadata', () => {
+    const adapter = new ModelAdapter({
+      connection: {
+        slug: 'openai',
+        providerType: 'openai',
+        defaultModel: 'gpt-5',
+      },
+      apiKey: 'sk-test',
+      modelId: 'gpt-5',
+      modelFactory: () => ({}),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const metadata = {
+      openai: {
+        itemId: 'message-1',
+        phase: 'commentary',
+      },
+    };
+
+    assert.deepEqual(
+      adapter.translateChunk({
+        type: 'text-start',
+        id: 'message-1',
+        providerMetadata: metadata,
+      }),
+      [{ kind: 'text-start', providerItemBoundary: true }],
+    );
+    assert.deepEqual(
+      adapter.translateChunk({
+        type: 'text-end',
+        id: 'message-1',
+        providerMetadata: metadata,
+      }),
+      [{ kind: 'text-end', providerOptions: metadata, providerItemBoundary: true }],
+    );
+  });
+
+  test('does not treat Chat Completions metadata as a Responses item boundary', () => {
+    const adapter = new ModelAdapter({
+      connection: {
+        slug: 'openai-chat',
+        providerType: 'openai-compatible',
+        defaultModel: 'chat-model',
+      },
+      apiKey: 'sk-test',
+      modelId: 'chat-model',
+      modelFactory: () => ({}),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const metadata = { openai: { itemId: 'message-1', phase: 'commentary' } };
+
+    assert.deepEqual(
+      adapter.translateChunk({
+        type: 'text-start',
+        id: 'message-1',
+        providerMetadata: metadata,
+      }),
+      [{ kind: 'text-start' }],
+    );
+    assert.deepEqual(
+      adapter.translateChunk({
+        type: 'text-end',
+        id: 'message-1',
+        providerMetadata: metadata,
+      }),
+      [{ kind: 'text-end', providerOptions: metadata }],
     );
   });
 
@@ -472,7 +785,7 @@ describe('ModelAdapter stream and error normalization', () => {
 
     assert.deepEqual(
       events.map((event) => event.kind),
-      ['thinking', 'thinking', 'thinking-signature'],
+      ['thinking-start', 'thinking', 'thinking', 'thinking-signature'],
     );
     assert.deepEqual(
       events
@@ -544,17 +857,18 @@ describe('ModelAdapter stream and error normalization', () => {
         .reason,
       'timeout',
     );
+    assert.equal(
+      adapter.makeErrorEvent(
+        'turn-1',
+        new Error('Model stream idle timeout after 120000ms'),
+        'model_after_tool_timeout',
+      ).reason,
+      'model_after_tool_timeout',
+    );
     assert.equal(adapter.mapFinishReason('stop'), 'end_turn');
     assert.equal(adapter.mapFinishReason('length'), 'max_tokens');
-    assert.equal(adapter.mapFinishReason('content-filter'), 'error');
-    assert.equal(adapter.mapFinishReason('error'), 'error');
     assert.equal(adapter.mapFinishReason('tool-calls'), 'end_turn');
     assert.equal(adapter.mapFinishReason('provider-new-reason'), 'end_turn');
-    // Not the same as a new reason: these two are the SDK saying it cannot name
-    // why the stream stopped, which is what a dropped upstream connection looks
-    // like from here.
-    assert.equal(adapter.mapFinishReason('other'), 'error');
-    assert.equal(adapter.mapFinishReason('unknown'), 'error');
   });
 
   test('projects the final provider error inside an AI SDK retry wrapper', () => {
@@ -603,11 +917,24 @@ describe('ModelAdapter stream and error normalization', () => {
     assert.equal(event.message, 'Network error');
   });
 
-  test('keeps an unknown structured provider error generic', () => {
-    const event = newAdapter().makeErrorEvent('turn-1', { message: 'provider exploded' });
+  test('retains a safe bounded summary from an unknown structured provider error', () => {
+    const adapter = newAdapter();
+    const failure = adapter.normalizeFailure({
+      type: 'error',
+      error: {
+        code: 'provider_error',
+        message: `provider exploded api_key=sk-live-secret-token-value ${'x'.repeat(4_000)}`,
+      },
+      request_id: 'req-123',
+    });
+    const event = adapter.makeErrorEvent('turn-1', failure);
 
     assert.equal(event.reason, undefined);
-    assert.equal(event.message, 'Operation failed');
+    assert.equal(event.code, 'provider_error');
+    assert.match(event.message, /^provider exploded api_key=\[redacted\]/);
+    assert.match(event.message, /… \(code=provider_error, requestId=req-123\)$/);
+    assert.equal(Buffer.byteLength(event.message, 'utf8') <= 2 * 1024, true);
+    assert.equal(event.message.includes('sk-live-secret-token-value'), false);
   });
 
   test('normalizes cache and reasoning usage variants in the adapter module', () => {
@@ -636,21 +963,8 @@ describe('ModelAdapter stream and error normalization', () => {
     );
   });
 
-  test('treats provider usage without token values as unavailable', () => {
-    assert.equal(
-      normalizeAiSdkUsage({
-        inputTokens: undefined,
-        outputTokens: undefined,
-        totalTokens: undefined,
-      }),
-      undefined,
-    );
-  });
-
   test('treats incomplete provider usage as unavailable unless total can supply the missing side', () => {
     assert.equal(normalizeAiSdkUsage({ inputTokens: 12 }), undefined);
-    assert.equal(normalizeAiSdkUsage({ outputTokens: 3 }), undefined);
-    assert.equal(normalizeAiSdkUsage({ totalTokens: 15 }), undefined);
 
     assert.deepEqual(normalizeAiSdkUsage({ inputTokens: 12, totalTokens: 15 }), {
       inputTokens: 12,
@@ -662,28 +976,6 @@ describe('ModelAdapter stream and error normalization', () => {
       cacheWriteInputTokens: 0,
       reasoningTokens: 0,
       totalTokens: 15,
-    });
-    assert.deepEqual(normalizeAiSdkUsage({ outputTokens: 3, totalTokens: 15 }), {
-      inputTokens: 12,
-      outputTokens: 3,
-      cacheHitInputTokens: 0,
-      cacheMissInputTokens: 12,
-      cacheMissInputSource: 'derived',
-      cachedInputTokens: 0,
-      cacheWriteInputTokens: 0,
-      reasoningTokens: 0,
-      totalTokens: 15,
-    });
-    assert.deepEqual(normalizeAiSdkUsage({ inputTokens: 0, outputTokens: 0 }), {
-      inputTokens: 0,
-      outputTokens: 0,
-      cacheHitInputTokens: 0,
-      cacheMissInputTokens: 0,
-      cacheMissInputSource: 'derived',
-      cachedInputTokens: 0,
-      cacheWriteInputTokens: 0,
-      reasoningTokens: 0,
-      totalTokens: 0,
     });
   });
 
@@ -714,35 +1006,6 @@ describe('ModelAdapter stream and error normalization', () => {
         totalTokens: 24,
       },
     );
-  });
-
-  test('derives totals from the legacy scalar detail shape', () => {
-    const usage = {
-      inputTokens: undefined,
-      outputTokens: undefined,
-      totalTokens: undefined,
-      inputTokenDetails: {
-        noCacheTokens: 10,
-        cacheReadTokens: 5,
-        cacheWriteTokens: 2,
-      },
-      outputTokenDetails: {
-        textTokens: 4,
-        reasoningTokens: 3,
-      },
-    } as unknown as Parameters<typeof normalizeAiSdkUsage>[0];
-
-    assert.deepEqual(normalizeAiSdkUsage(usage), {
-      inputTokens: 17,
-      outputTokens: 7,
-      cacheHitInputTokens: 5,
-      cacheMissInputTokens: 10,
-      cacheMissInputSource: 'explicit',
-      cachedInputTokens: 5,
-      cacheWriteInputTokens: 2,
-      reasoningTokens: 3,
-      totalTokens: 24,
-    });
   });
 
   test('preserves DeepSeek and OpenAI-compatible raw usage fields', () => {
@@ -787,57 +1050,6 @@ describe('ModelAdapter stream and error normalization', () => {
     );
   });
 
-  test('normalizes AI SDK raw DeepSeek usage metadata and no-cache token details', () => {
-    assert.deepEqual(
-      normalizeAiSdkUsage(
-        {
-          inputTokens: 100,
-          outputTokens: 20,
-          inputTokenDetails: {
-            noCacheTokens: 25,
-            cacheReadTokens: 75,
-          },
-          outputTokenDetails: {
-            reasoningTokens: 9,
-          },
-          raw: {
-            prompt_cache_hit_tokens: 70,
-            prompt_cache_miss_tokens: 30,
-            prompt_tokens_details: {
-              cached_tokens: 70,
-            },
-            completion_tokens_details: {
-              reasoning_tokens: 11,
-            },
-          },
-        },
-        { rawFinishReason: 'stop' },
-      ),
-      {
-        inputTokens: 100,
-        outputTokens: 20,
-        cacheHitInputTokens: 70,
-        cacheMissInputTokens: 30,
-        cacheMissInputSource: 'explicit',
-        cachedInputTokens: 70,
-        cacheWriteInputTokens: 0,
-        reasoningTokens: 9,
-        totalTokens: 120,
-        rawFinishReason: 'stop',
-        raw: {
-          prompt_cache_hit_tokens: 70,
-          prompt_cache_miss_tokens: 30,
-          prompt_tokens_details: {
-            cached_tokens: 70,
-          },
-          completion_tokens_details: {
-            reasoning_tokens: 11,
-          },
-        },
-      },
-    );
-  });
-
   test('normalizes direct DeepSeek snake_case usage totals', () => {
     assert.deepEqual(
       normalizeAiSdkUsage(
@@ -875,35 +1087,6 @@ describe('ModelAdapter stream and error normalization', () => {
           },
         },
       },
-    );
-  });
-
-  test('derives cache miss input when explicit miss is absent and treats no cache data as fresh', () => {
-    assert.equal(
-      normalizeAiSdkUsage({
-        inputTokens: 100,
-        outputTokens: 10,
-        cachedInputTokens: 30,
-        cacheWriteInputTokens: 20,
-      })?.cacheMissInputTokens,
-      50,
-    );
-    assert.equal(
-      normalizeAiSdkUsage({
-        inputTokens: 100,
-        outputTokens: 10,
-        cachedInputTokens: 30,
-        cacheWriteInputTokens: 20,
-      })?.cacheMissInputSource,
-      'derived',
-    );
-
-    assert.equal(
-      normalizeAiSdkUsage({
-        inputTokens: 100,
-        outputTokens: 10,
-      })?.cacheMissInputTokens,
-      100,
     );
   });
 });

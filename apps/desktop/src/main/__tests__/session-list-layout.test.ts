@@ -1,0 +1,140 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import assert from 'node:assert/strict';
+import { afterEach, describe, it, mock } from 'node:test';
+import {
+  createSessionRailLayoutStore,
+  readSessionListViewMode,
+  writeSessionListViewMode,
+} from '../../renderer/features/session-navigation/testing.js';
+
+const VIEW_MODE_KEY = 'maka-chat-list-view-mode-v1';
+const WIDTH_KEY = 'maka-chat-list-width-v1';
+
+function installMemoryLocalStorage(initial: Record<string, string> = {}) {
+  const store = new Map<string, string>(Object.entries(initial));
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  const memory: Storage = {
+    get length() {
+      return store.size;
+    },
+    clear() {
+      store.clear();
+    },
+    getItem(key) {
+      return store.has(key) ? store.get(key)! : null;
+    },
+    key(index) {
+      return [...store.keys()][index] ?? null;
+    },
+    removeItem(key) {
+      store.delete(key);
+    },
+    setItem(key, value) {
+      store.set(key, String(value));
+    },
+  };
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    writable: true,
+    value: memory,
+  });
+  return {
+    store,
+    restore() {
+      if (previous) Object.defineProperty(globalThis, 'localStorage', previous);
+      else Reflect.deleteProperty(globalThis, 'localStorage');
+    },
+  };
+}
+
+describe('session list view mode persistence', () => {
+  const cleanups: Array<() => void> = [];
+  afterEach(() => {
+    while (cleanups.length > 0) cleanups.pop()?.();
+  });
+
+  it('defaults to conversation when nothing is stored', () => {
+    cleanups.push(installMemoryLocalStorage().restore);
+    assert.equal(readSessionListViewMode(), 'conversation');
+  });
+
+  it('round-trips a project grouping through the same key the shell hydrates', () => {
+    const memory = installMemoryLocalStorage();
+    cleanups.push(memory.restore);
+    writeSessionListViewMode('project');
+    assert.equal(memory.store.get(VIEW_MODE_KEY), 'project');
+    assert.equal(readSessionListViewMode(), 'project');
+  });
+
+  it('keeps conversation when that is what was written', () => {
+    cleanups.push(installMemoryLocalStorage({ [VIEW_MODE_KEY]: 'project' }).restore);
+    writeSessionListViewMode('conversation');
+    assert.equal(readSessionListViewMode(), 'conversation');
+  });
+
+  it('fails open to conversation for garbage or empty stored values', () => {
+    for (const stored of ['', 'time', 'true', 'PROJECT', 'conversation\n']) {
+      const memory = installMemoryLocalStorage({ [VIEW_MODE_KEY]: stored });
+      assert.equal(readSessionListViewMode(), 'conversation', stored);
+      memory.restore();
+    }
+  });
+});
+
+describe('session rail width persistence', () => {
+  const cleanups: Array<() => void> = [];
+  afterEach(() => {
+    mock.timers.reset();
+    while (cleanups.length > 0) cleanups.pop()?.();
+  });
+
+  it('persists a width the user dragged to', () => {
+    const memory = installMemoryLocalStorage();
+    cleanups.push(memory.restore);
+    mock.timers.enable({ apis: ['setTimeout'] });
+    const store = createSessionRailLayoutStore();
+
+    store.setWidth(400);
+    mock.timers.tick(200);
+
+    assert.equal(store.getState().width, 400);
+    assert.equal(memory.store.get(WIDTH_KEY), '400');
+  });
+
+  // Astryx reports a collapse as `onSizeChange(0)`. Clamping that to the minimum
+  // and storing it loses the width the user chose: collapse, reload, expand, and
+  // the rail comes back at 180 instead of 400.
+  it("ignores the collapse sentinel instead of storing it as the user's width", () => {
+    const memory = installMemoryLocalStorage();
+    cleanups.push(memory.restore);
+    mock.timers.enable({ apis: ['setTimeout'] });
+    const store = createSessionRailLayoutStore();
+    store.setWidth(400);
+    mock.timers.tick(200);
+
+    store.setCollapsed(true);
+    store.setWidth(0);
+    mock.timers.tick(200);
+
+    assert.equal(store.getState().width, 400);
+    assert.equal(memory.store.get(WIDTH_KEY), '400');
+  });
+});

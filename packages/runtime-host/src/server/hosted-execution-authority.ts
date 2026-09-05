@@ -1,7 +1,27 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { BackendStopMode } from '@maka/core/backend-types';
-import type { RootExecutionDescriptor } from '@maka/core/agent-run';
+import type { RootExecutionDescriptor } from '@maka/core/runtime-invocation';
 import type { MessageContent, SessionEvent } from '@maka/core/events';
 import type { UserMessageInput } from '@maka/core/runtime-inputs';
+import type { StopSessionInput } from '@maka/runtime/session-manager';
 import type { TurnSnapshot } from '../protocol/index.js';
 
 export interface HostedExecutionRef {
@@ -47,7 +67,9 @@ export interface HostedExecutionObservation extends HostedExecutionRef {
   readonly descriptor: RootExecutionDescriptor;
 }
 
-export type HostedExecutionCompletionObserver = (completion: HostedExecutionCompletion) => void;
+export type HostedExecutionCompletionObserver = (
+  completion: HostedExecutionCompletion,
+) => void | Promise<void>;
 
 export interface HostedExecutionAdmissionResult {
   readonly snapshot: HostedExecutionSnapshot;
@@ -59,11 +81,9 @@ export interface HostedExecutionObserver {
   begin(input: HostedExecutionObservation): HostedExecutionCompletionObserver | undefined;
 }
 
-export interface HostedExecutionStopInput {
+export type HostedExecutionStopInput = {
   readonly execution: HostedExecutionRef;
-  readonly source?: 'stop_button' | 'benchmark_deadline' | 'graph_supervisor';
-  readonly mode?: BackendStopMode;
-}
+} & StopSessionInput;
 
 export type HostedExecutionListener = (execution: HostedExecutionRef) => void;
 
@@ -99,7 +119,7 @@ export interface HostedExecutionAuthority {
     input: {
       readonly sessionId: string;
       readonly abortSignal: AbortSignal;
-      readonly stopSource?: HostedExecutionStopInput['source'];
+      readonly stopSource?: Exclude<HostedExecutionStopInput['source'], 'workhub_direct_stop'>;
     },
     operation: () => Promise<T>,
   ): Promise<T>;

@@ -1,14 +1,35 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { Buffer } from 'node:buffer';
 import type {
   AgentGraphIntentAdmissionState,
   AgentGraphScheduleUpdateSource,
-  AgentGraphSupervisorWakeStatus,
+} from '@maka/core/agent-graph-schedule';
+import type { AgentGraphSupervisorWakeStatus } from '@maka/core/agent-graph-supervisor-wake';
+import type {
   AgentGraphTimelineMetadataSnapshot,
   AgentGraphTimelineMetadataStore,
-  AgentRunHeader,
-  AgentRunStore,
-  RuntimeEventStore,
-} from '@maka/core';
+} from '@maka/core/agent-graph-timeline';
+import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
+import { runtimeInvocationOutcome } from '@maka/core/runtime-invocation';
+import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
 import { stableHash } from './request-shape.js';
 import {
   readCommittedAgentGraphProjectionWithRuns,
@@ -52,7 +73,7 @@ export type AgentGraphTimelineEvent =
   | (AgentGraphTimelineEventBase & {
       kind: 'supervisor_turn_terminal';
       run: AgentGraphTimelineRunRef;
-      status: Extract<AgentRunHeader['status'], 'completed' | 'failed' | 'cancelled'>;
+      status: 'completed' | 'failed' | 'cancelled';
       wake?: { wakeId: string; attemptId: string };
     })
   | (AgentGraphTimelineEventBase & {
@@ -180,8 +201,10 @@ export interface ReadAgentGraphTimelinePageInput {
   rootSessionId: string;
   graphId: string;
   controlStore: AgentGraphTimelineMetadataStore;
-  runStore: Pick<AgentRunStore, 'listSessionRuns'>;
-  runtimeEventStore: Pick<RuntimeEventStore, 'readImmutableRuntimeEvents'>;
+  runtimeEventStore: Pick<
+    RuntimeEventStore,
+    'readImmutableRuntimeEvents' | 'listSessionInvocations'
+  >;
   options?: AgentGraphTimelinePageOptions;
 }
 
@@ -189,8 +212,8 @@ export interface BuildAgentGraphTimelineInput {
   rootSessionId: string;
   graphId: string;
   metadata: AgentGraphTimelineMetadataSnapshot;
-  rootRuns: readonly AgentRunHeader[];
-  childRuns: readonly AgentRunHeader[];
+  rootRuns: readonly RuntimeInvocationRecord[];
+  childRuns: readonly RuntimeInvocationRecord[];
   projection: AgentGraphProjection;
 }
 
@@ -239,11 +262,10 @@ export async function readAgentGraphTimelinePage(
     sessionId: provision.targetSessionId,
   }));
   const [rootRuns, projected] = await Promise.all([
-    input.runStore.listSessionRuns(input.rootSessionId),
+    input.runtimeEventStore.listSessionInvocations(input.rootSessionId),
     readCommittedAgentGraphProjectionWithRuns({
       graphId: input.graphId,
       operators,
-      runStore: input.runStore,
       runtimeEventStore: input.runtimeEventStore,
     }),
   ]);
@@ -283,9 +305,10 @@ export function buildAgentGraphTimeline(
     ),
   );
   for (const run of input.rootRuns) {
+    const root = run.opening.root;
     const wake =
-      run.agentGraphWakeId && run.agentGraphWakeAttemptId
-        ? { wakeId: run.agentGraphWakeId, attemptId: run.agentGraphWakeAttemptId }
+      root.kind === 'agent_graph_supervisor_wake'
+        ? { wakeId: root.wakeId, attemptId: root.attemptId }
         : undefined;
     if (!relevantRootRunIds.has(run.runId) && !wakeAttemptIds.has(wake?.attemptId ?? '')) {
       continue;
@@ -300,16 +323,14 @@ export function buildAgentGraphTimeline(
           sessionId: run.sessionId,
           runId: run.runId,
         },
-        run.createdAt,
+        run.openedAt,
       ),
       kind: 'supervisor_turn_started',
       run: runRef,
       ...(wake ? { wake } : {}),
     });
-    if (
-      run.completedAt !== undefined &&
-      (run.status === 'completed' || run.status === 'failed' || run.status === 'cancelled')
-    ) {
+    const outcome = runtimeInvocationOutcome(run);
+    if (outcome && run.terminalEvent) {
       push({
         ...eventBase(
           input.graphId,
@@ -317,13 +338,13 @@ export function buildAgentGraphTimeline(
           {
             sessionId: run.sessionId,
             runId: run.runId,
-            status: run.status,
+            status: outcome,
           },
-          run.completedAt,
+          run.terminalEvent.ts,
         ),
         kind: 'supervisor_turn_terminal',
         run: runRef,
-        status: run.status,
+        status: outcome,
         ...(wake ? { wake } : {}),
       });
     }
@@ -388,7 +409,7 @@ export function buildAgentGraphTimeline(
       provision.targetSessionId,
     ]),
   );
-  const childRunByIdentity = new Map<string, AgentRunHeader>();
+  const childRunByIdentity = new Map<string, RuntimeInvocationRecord>();
   for (const run of input.childRuns) {
     const key = `${run.sessionId}\0${run.runId}`;
     if (childRunByIdentity.has(key)) {
@@ -427,7 +448,7 @@ export function buildAgentGraphTimeline(
         input.graphId,
         'activation_started',
         { operatorId: claim.targetOperatorId, runId: run.runId },
-        run.createdAt,
+        run.openedAt,
       ),
       kind: 'activation_started',
       operatorId: claim.targetOperatorId,
@@ -731,7 +752,7 @@ function eventBase(
   };
 }
 
-function timelineRunRef(run: AgentRunHeader): AgentGraphTimelineRunRef {
+function timelineRunRef(run: RuntimeInvocationRecord): AgentGraphTimelineRunRef {
   return {
     sessionId: run.sessionId,
     runId: run.runId,
@@ -739,7 +760,7 @@ function timelineRunRef(run: AgentRunHeader): AgentGraphTimelineRunRef {
   };
 }
 
-function assertRunRef(run: AgentRunHeader, sessionId: string): void {
+function assertRunRef(run: RuntimeInvocationRecord, sessionId: string): void {
   if (run.sessionId !== sessionId) {
     throw new Error(`AgentRun ${run.runId} belongs to ${run.sessionId}, expected ${sessionId}`);
   }

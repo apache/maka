@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -7,20 +26,24 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import {
   AGENT_GRAPH_INTENT_CLAIM_SCHEMA_VERSION,
-  AGENT_GRAPH_OPERATOR_PROVISION_SCHEMA_VERSION,
   type AgentGraphIntentClaim,
-  type AgentGraphOperatorProvision,
-  type AgentGraphScheduleUpdate,
-  type AgentRunHeader,
-  type RuntimeEvent,
-} from '@maka/core';
+} from '@maka/core/agent-graph-control';
 import {
-  createSessionStore,
-  createSqliteSessionMetadataStore,
-  OPERATIONAL_STATE_DATABASE_NAME,
-} from '@maka/storage';
-import { createSqliteAgentRunStore, createWorkspaceRuntimeStore } from '@maka/storage';
-import { FakeBackend } from '../fake-backend.js';
+  AGENT_GRAPH_OPERATOR_PROVISION_SCHEMA_VERSION,
+  type AgentGraphOperatorProvision,
+} from '@maka/core/agent-graph-topology';
+import { type AgentGraphScheduleUpdate } from '@maka/core/agent-graph-schedule';
+import {
+  runtimeInvocationOutcome,
+  type RuntimeInvocationRecord,
+} from '@maka/core/runtime-invocation';
+import { type RuntimeEvent } from '@maka/core/runtime-event';
+import { OPERATIONAL_STATE_DATABASE_NAME } from '@maka/storage/operational-state-store';
+import { createSessionStore, isSessionNotFoundError } from '@maka/storage/session-store';
+import { createSqliteSessionMetadataStore } from '@maka/storage/sqlite-session-metadata-store';
+import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
+import { createWorkspaceRuntimeStore } from '@maka/storage/runtime-event-persistence';
+import { FakeBackend } from '../test-only/fake-backend.js';
 import { BackendRegistry, SessionManager } from '../session-manager.js';
 import { SessionActivityRegistry } from '../goal-turn-lifecycle.js';
 import { AgentGraphSupervisorWakeCoordinator } from '../agent-graph-supervisor-wake.js';
@@ -29,16 +52,226 @@ import {
   AgentGraphClientOperationError,
   AgentGraphCoordinator,
   agentGraphIdForRootSession,
+  agentGraphIdForRootSessionEpoch,
   type AgentGraphCoordinatorInput,
 } from '../stream-graph-coordinator.js';
 import { encodeAgentGraphTerminalCursor } from '../stream-graph-read-model.js';
 import {
   UPDATE_AGENT_GRAPH_TOOL_NAME,
+  VIEW_AGENT_GRAPH_TOOL_NAME,
   YIELD_AGENT_GRAPH_TOOL_NAME,
   compileAgentGraphScheduleUpdate,
+  type UpdateAgentGraphToolInput,
 } from '../stream-graph-supervisor-tools.js';
+import { projectAgentGraphRecords } from '../stream-graph-projection.js';
+import { testInvocationOpening } from './invocation-fixture.js';
 
 describe('host-managed agent graph coordinator', () => {
+  test('authorizes only selected committed results from an earlier epoch of the same root', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    const rootSessionId = 'root-session';
+    const sourceGraphId = agentGraphIdForRootSession(rootSessionId);
+    const currentGraphId = agentGraphIdForRootSessionEpoch(rootSessionId, 2);
+    const sourceRun: RuntimeInvocationRecord = {
+      sessionId: 'source-child',
+      runId: 'source-run',
+      turnId: 'source-turn',
+      invocationId: 'source-invocation',
+      openedAt: 1,
+      opening: testInvocationOpening({
+        route: {
+          provenance: 'runtime',
+          backendKind: 'fake',
+          llmConnectionId: 'fake-connection',
+          llmConnectionSlug: 'fake',
+          modelId: 'fake',
+        },
+        configuration: { cwd: '/workspace', permissionMode: 'explore' },
+      }),
+      terminalEvent: {
+        id: 'source-terminal',
+        sessionId: 'source-child',
+        invocationId: 'source-invocation',
+        runId: 'source-run',
+        turnId: 'source-turn',
+        ts: 2,
+        partial: false,
+        role: 'system',
+        author: 'system',
+        status: 'completed',
+      },
+    };
+    const sourceEvent: RuntimeEvent = {
+      id: 'source-result-event',
+      invocationId: 'source-invocation',
+      sessionId: sourceRun.sessionId,
+      runId: sourceRun.runId,
+      turnId: sourceRun.turnId,
+      ts: 2,
+      role: 'model',
+      author: 'agent',
+      partial: false,
+      content: { kind: 'text', text: 'Outcome: retain this result.' },
+    };
+    const selectedRecord = projectAgentGraphRecords({
+      graphId: sourceGraphId,
+      streams: [
+        {
+          operator: { operatorId: 'source-operator', sessionId: sourceRun.sessionId },
+          run: sourceRun,
+          events: [sourceEvent],
+        },
+      ],
+    }).records[0]!;
+    const sourceProvision: AgentGraphOperatorProvision = {
+      schemaVersion: AGENT_GRAPH_OPERATOR_PROVISION_SCHEMA_VERSION,
+      provisionId: `graph_provision_${'1'.repeat(32)}`,
+      provisionFingerprint: `sha256:${'2'.repeat(64)}`,
+      graphId: sourceGraphId,
+      workId: `graph_work_${'3'.repeat(32)}`,
+      agentId: 'source-agent',
+      operatorId: 'source-operator',
+      initialTurnId: sourceRun.turnId,
+      initialRunId: sourceRun.runId,
+      edges: [],
+      targetSessionId: sourceRun.sessionId,
+      provisionedAt: 1,
+    };
+    const controlStore = new Proxy(store, {
+      get(target, property) {
+        if (property === 'listAgentGraphOperatorProvisions') {
+          return async (graphId: string) =>
+            graphId === sourceGraphId ? [structuredClone(sourceProvision)] : [];
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    await store.resolveCurrentAgentGraphEpoch({ rootSessionId, legacyGraphId: sourceGraphId });
+    await store.commitAgentGraphScheduleUpdate(
+      compileAgentGraphScheduleUpdate({
+        graphId: sourceGraphId,
+        input: {
+          operation: 'finish',
+          finish: { result_ids: [selectedRecord.recordId], reason: 'Publish selected output.' },
+        },
+        context: toolContext(rootSessionId, 'root-run-1', 'root-turn-1', 'finish-source'),
+      }),
+    );
+    await store.advanceAgentGraphEpoch({
+      rootSessionId,
+      expectedEpoch: 1,
+      expectedGraphId: sourceGraphId,
+      nextGraphId: currentGraphId,
+    });
+    const coordinator = new AgentGraphCoordinator({
+      sessionStore: {
+        listForRecovery: async () => [],
+        readHeader: async (sessionId: string) =>
+          ({ id: sessionId, status: 'active', isArchived: false }) as never,
+      },
+      runtimeEventStore: {
+        listSessionInvocations: async (sessionId: string) =>
+          sessionId === sourceRun.sessionId ? [sourceRun] : [],
+        readImmutableRuntimeEvents: async (sessionId, runId) =>
+          sessionId === sourceRun.sessionId && runId === sourceRun.runId ? [sourceEvent] : [],
+      },
+      controlStore,
+      epochStore: store,
+      runtime: {
+        provisionAgentGraphOperator: async () => {
+          throw new Error('test does not reconcile new work');
+        },
+        runClaimedAgentGraphIntent: async () => {
+          throw new Error('test does not dispatch new work');
+        },
+        stopSession: async () => {},
+      },
+      newId: randomUUID,
+    });
+    try {
+      const tools = await coordinator.toolsForSession(rootSessionId);
+      const view = tools.find((tool) => tool.name === VIEW_AGENT_GRAPH_TOOL_NAME) as MakaTool<
+        Record<string, never>,
+        {
+          historicalSelectedResults: Array<{ sourceGraphId: string; resultId: string }>;
+          nextHistoricalBeforeEpoch: number | null;
+        }
+      >;
+      const update = tools.find((tool) => tool.name === UPDATE_AGENT_GRAPH_TOOL_NAME) as MakaTool<
+        UpdateAgentGraphToolInput,
+        unknown
+      >;
+      assert.ok(view);
+      assert.ok(update);
+      const viewed = await view.impl({}, toolContext(rootSessionId, 'root-run-2', 'root-turn-2'));
+      assert.deepEqual(viewed.historicalSelectedResults, [
+        { sourceGraphId, resultId: selectedRecord.recordId },
+      ]);
+      assert.equal(viewed.nextHistoricalBeforeEpoch, null);
+      await update.impl(
+        {
+          operation: 'add_work',
+          add_work: [
+            {
+              target_kind: 'new_agent',
+              agent_id: 'reader',
+              instruction: 'Continue from the selected result.',
+              selected_result_inputs: [
+                { source_graph_id: sourceGraphId, result_id: selectedRecord.recordId },
+              ],
+            },
+          ],
+        },
+        toolContext(rootSessionId, 'root-run-2', 'root-turn-2', 'use-selected'),
+      );
+      await assert.rejects(
+        async () =>
+          await update.impl(
+            {
+              operation: 'add_work',
+              add_work: [
+                {
+                  target_kind: 'new_agent',
+                  agent_id: 'reader',
+                  instruction: 'Try an unselected record.',
+                  selected_result_inputs: [
+                    { source_graph_id: sourceGraphId, result_id: 'unselected-record' },
+                  ],
+                },
+              ],
+            },
+            toolContext(rootSessionId, 'root-run-2', 'root-turn-2', 'use-unselected'),
+          ),
+        /did not select result/,
+      );
+      await assert.rejects(
+        async () =>
+          await update.impl(
+            {
+              operation: 'add_work',
+              add_work: [
+                {
+                  target_kind: 'new_agent',
+                  agent_id: 'reader',
+                  instruction: 'Try the current graph.',
+                  selected_result_inputs: [
+                    { source_graph_id: currentGraphId, result_id: selectedRecord.recordId },
+                  ],
+                },
+              ],
+            },
+            toolContext(rootSessionId, 'root-run-2', 'root-turn-2', 'use-current'),
+          ),
+        /not a completed earlier epoch/,
+      );
+      assert.equal((await store.listAgentGraphScheduleUpdates(currentGraphId)).length, 1);
+    } finally {
+      await coordinator.close();
+      store.close();
+    }
+  });
+
   test('boots an empty graph from agent work and recovers it without duplicate topology', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-graph-coordinator-'));
     const sessionStore = createSessionStore(root);
@@ -58,7 +291,7 @@ describe('host-managed agent graph coordinator', () => {
       },
     });
     const backends = new BackendRegistry();
-    backends.register('fake', (context) => new FakeBackend(context));
+    backends.register('ai-sdk', (context) => new FakeBackend(context));
     const manager = new SessionManager({
       store: sessionStore,
       runStore,
@@ -79,7 +312,6 @@ describe('host-managed agent graph coordinator', () => {
     try {
       const rootSession = await manager.createSession({
         cwd: root,
-        backend: 'fake',
         llmConnectionSlug: 'fake',
         permissionMode: 'ask',
         name: 'Graph supervisor',
@@ -91,7 +323,7 @@ describe('host-managed agent graph coordinator', () => {
       })) {
         // Drain the ordinary root turn so its source AgentRun is durable.
       }
-      const sourceRun = (await runStore.listSessionRuns(rootSession.id)).find(
+      const sourceRun = (await runtimeEventStore.listSessionInvocations(rootSession.id)).find(
         (run) => run.turnId === sourceTurnId,
       );
       assert.ok(sourceRun);
@@ -113,11 +345,14 @@ describe('host-managed agent graph coordinator', () => {
           return { kind: 'completed', turnId: input.turnId };
         },
         inspectAttempt: async (sessionId, attemptId, turnId) => {
-          const run = (await runStore.listSessionRuns(sessionId)).find(
+          const run = (await runtimeEventStore.listSessionInvocations(sessionId)).find(
             (candidate) =>
-              candidate.agentGraphWakeAttemptId === attemptId && candidate.turnId === turnId,
+              candidate.opening.root.kind === 'agent_graph_supervisor_wake' &&
+              candidate.opening.root.attemptId === attemptId &&
+              candidate.turnId === turnId,
           );
-          return run?.status ?? 'missing';
+          if (!run) return 'missing';
+          return runtimeInvocationOutcome(run) ?? 'running';
         },
         newId: randomUUID,
         onError: (_rootSessionId, error) => {
@@ -208,15 +443,32 @@ describe('host-managed agent graph coordinator', () => {
         ),
         'the original root Agent must run again and produce a deliverable response',
       );
-      const wakeRun = (await runStore.listSessionRuns(rootSession.id)).find(
+      const wakeRun = (await runtimeEventStore.listSessionInvocations(rootSession.id)).find(
         (run) => run.turnId === graphWake.turnId,
       );
       assert.ok(wakeRun);
-      assert.equal(wakeRun.agentGraphWakeId, graphWake.origin.wakeId);
-      assert.equal(wakeRun.agentGraphWakeAttemptId, graphWake.origin.attemptId);
+      assert.deepEqual(wakeRun.opening.root, {
+        kind: 'agent_graph_supervisor_wake',
+        wakeId: graphWake.origin.wakeId,
+        attemptId: graphWake.origin.attemptId,
+      });
+      const wakeEvents = await runtimeEventStore.readImmutableRuntimeEvents(
+        rootSession.id,
+        wakeRun.runId,
+      );
+      assert.deepEqual(
+        wakeEvents[0]?.content?.kind === 'invocation_opened'
+          ? wakeEvents[0].content.root
+          : undefined,
+        {
+          kind: 'agent_graph_supervisor_wake',
+          wakeId: graphWake.origin.wakeId,
+          attemptId: graphWake.origin.attemptId,
+        },
+        'the opening fact must name the host authority that woke this invocation',
+      );
       assert.equal(
-        (await runtimeEventStore.readImmutableRuntimeEvents(rootSession.id, wakeRun.runId))[0]
-          ?.author,
+        wakeEvents[1]?.author,
         'host',
         'canonical provenance must distinguish the host-authored wake from human input',
       );
@@ -325,9 +577,19 @@ describe('host-managed agent graph coordinator', () => {
         coordinator.toolsForSession(childSessions[0]!.id),
         /only to root Sessions/,
       );
+      await assert.rejects(
+        coordinator.listGraphEpochPage(childSessions[0]!.id, { limit: 32 }),
+        (error: unknown) =>
+          error instanceof AgentGraphClientOperationError && error.code === 'operation_conflict',
+      );
+      await assert.rejects(
+        coordinator.listGraphEpochPage(randomUUID(), { limit: 32 }),
+        (error: unknown) => isSessionNotFoundError(error),
+      );
       let childStopEntered = false;
       await assert.rejects(
         coordinator.stopExecution(childSessions[0]!.id, {
+          expectedGraphId: graphId,
           stopSupervisor: async () => {
             childStopEntered = true;
           },
@@ -444,9 +706,24 @@ describe('host-managed agent graph coordinator', () => {
       );
       await gate.started;
       try {
+        let mismatchedStopEntered = false;
+        await assert.rejects(
+          recovered.stopExecution(rootSession.id, {
+            expectedGraphId: 'agent_graph_stale',
+            stopSupervisor: async () => {
+              mismatchedStopEntered = true;
+            },
+            withSupervisorWakesSuppressed: (operation) => operation(),
+          }),
+          (error: unknown) =>
+            error instanceof AgentGraphClientOperationError && error.code === 'operation_conflict',
+        );
+        assert.equal(mismatchedStopEntered, false);
+
         const supervisorStopFailure = new Error('supervisor stop failed');
         await assert.rejects(
           recovered.stopExecution(rootSession.id, {
+            expectedGraphId: graphId,
             stopSupervisor: async () => {
               throw supervisorStopFailure;
             },
@@ -486,6 +763,371 @@ describe('host-managed agent graph coordinator', () => {
     assert.notEqual(graphId, agentGraphIdForRootSession('other-root'));
   });
 
+  test('reports asynchronous epoch lookup failures from a fire-and-forget wake', async () => {
+    const controlStore = createSqliteSessionMetadataStore(':memory:');
+    const failure = new Error('epoch authority unavailable');
+    const errors: unknown[] = [];
+    const coordinator = new AgentGraphCoordinator({
+      sessionStore: {
+        listForRecovery: async () => [],
+        readHeader: async () => {
+          throw new Error('wake must fail before reading the Session');
+        },
+      },
+      runtimeEventStore: {
+        listSessionInvocations: async () => [],
+        readImmutableRuntimeEvents: async () => [],
+      },
+      controlStore,
+      epochStore: {
+        resolveCurrentAgentGraphEpoch: async () => {
+          throw failure;
+        },
+        advanceAgentGraphEpoch: async () => {
+          throw new Error('unexpected epoch advance');
+        },
+        listAgentGraphEpochs: async () => [],
+        readAgentGraphEpochByGraphId: async () => undefined,
+        listAgentGraphEpochPage: async () => ({
+          epochs: [],
+          nextBeforeEpoch: null,
+          currentEpoch: null,
+        }),
+      },
+      runtime: {
+        provisionAgentGraphOperator: async () => {
+          throw new Error('unexpected operator provision');
+        },
+        runClaimedAgentGraphIntent: async () => {
+          throw new Error('unexpected operator dispatch');
+        },
+        stopSession: async () => {},
+      },
+      newId: randomUUID,
+      onError: (_rootSessionId, error) => {
+        errors.push(error);
+      },
+    });
+    try {
+      assert.equal(coordinator.wake('root-session'), undefined);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.deepEqual(errors, [failure]);
+    } finally {
+      await coordinator.close();
+      controlStore.close();
+    }
+  });
+
+  test('reads the epoch page and current marker from one storage observation', async () => {
+    const controlStore = createSqliteSessionMetadataStore(':memory:');
+    let resolveCalls = 0;
+    let headerReads = 0;
+    const coordinator = new AgentGraphCoordinator({
+      sessionStore: {
+        listForRecovery: async () => [],
+        readHeader: async (sessionId: string) => {
+          headerReads += 1;
+          return {
+            id: sessionId,
+            status: 'active',
+            isArchived: false,
+            orchestrationMode: 'graph',
+          } as never;
+        },
+      },
+      runtimeEventStore: {
+        listSessionInvocations: async () => [],
+        readImmutableRuntimeEvents: async () => [],
+      },
+      controlStore,
+      epochStore: {
+        resolveCurrentAgentGraphEpoch: async () => {
+          resolveCalls += 1;
+          // A second, separate read could observe a stale epoch after a
+          // rollover; the listing must not consult it when the page is
+          // authoritative.
+          return {
+            schemaVersion: 1 as const,
+            rootSessionId: 'root-session',
+            epoch: 2,
+            graphId: 'agent_graph_2',
+            createdAt: 2,
+          };
+        },
+        advanceAgentGraphEpoch: async () => {
+          throw new Error('unexpected epoch advance');
+        },
+        listAgentGraphEpochs: async () => [],
+        readAgentGraphEpochByGraphId: async () => undefined,
+        listAgentGraphEpochPage: async () => ({
+          epochs: [
+            {
+              schemaVersion: 1 as const,
+              rootSessionId: 'root-session',
+              epoch: 3,
+              graphId: 'agent_graph_3',
+              createdAt: 3,
+            },
+            {
+              schemaVersion: 1 as const,
+              rootSessionId: 'root-session',
+              epoch: 2,
+              graphId: 'agent_graph_2',
+              createdAt: 2,
+            },
+          ],
+          nextBeforeEpoch: null,
+          currentEpoch: 3,
+        }),
+      },
+      runtime: {
+        provisionAgentGraphOperator: async () => {
+          throw new Error('unexpected operator provision');
+        },
+        runClaimedAgentGraphIntent: async () => {
+          throw new Error('unexpected operator dispatch');
+        },
+        stopSession: async () => {},
+      },
+      newId: randomUUID,
+      onError: () => {},
+    });
+    try {
+      const page = await coordinator.listGraphEpochPage('root-session', { limit: 32 });
+      assert.equal(page.currentEpoch, 3);
+      assert.equal(page.epochs[0]?.graphId, 'agent_graph_3');
+      assert.equal(resolveCalls, 0);
+      assert.equal(headerReads, 1);
+      await assert.rejects(
+        coordinator.listGraphEpochPage('root-session', { beforeEpoch: 999, limit: 32 }),
+        (error: unknown) =>
+          error instanceof AgentGraphClientOperationError && error.code === 'invalid_request',
+      );
+    } finally {
+      await coordinator.close();
+      controlStore.close();
+    }
+  });
+
+  test('lists graph ids for tombstone cleanup without reading the Session header', async () => {
+    const controlStore = createSqliteSessionMetadataStore(':memory:');
+    const epochs = [
+      {
+        schemaVersion: 1 as const,
+        rootSessionId: 'removed-root',
+        epoch: 2,
+        graphId: 'agent_graph_2',
+        createdAt: 2,
+      },
+      {
+        schemaVersion: 1 as const,
+        rootSessionId: 'removed-root',
+        epoch: 1,
+        graphId: 'agent_graph_1',
+        createdAt: 1,
+      },
+    ];
+    const coordinator = new AgentGraphCoordinator({
+      sessionStore: {
+        listForRecovery: async () => [],
+        readHeader: async () => {
+          throw new Error('removed Session header must not be read during cleanup');
+        },
+      },
+      runtimeEventStore: {
+        listSessionInvocations: async () => [],
+        readImmutableRuntimeEvents: async () => [],
+      },
+      controlStore,
+      epochStore: {
+        resolveCurrentAgentGraphEpoch: async () => epochs[0]!,
+        advanceAgentGraphEpoch: async () => {
+          throw new Error('unexpected epoch advance');
+        },
+        listAgentGraphEpochs: async () => epochs,
+        readAgentGraphEpochByGraphId: async () => undefined,
+        listAgentGraphEpochPage: async () => ({
+          epochs,
+          nextBeforeEpoch: null,
+          currentEpoch: 2,
+        }),
+      },
+      runtime: {
+        provisionAgentGraphOperator: async () => {
+          throw new Error('unexpected operator provision');
+        },
+        runClaimedAgentGraphIntent: async () => {
+          throw new Error('unexpected operator dispatch');
+        },
+        stopSession: async () => {},
+      },
+      newId: randomUUID,
+      onError: () => {},
+    });
+    try {
+      assert.deepEqual(await coordinator.listGraphIds('removed-root'), [
+        'agent_graph_2',
+        'agent_graph_1',
+      ]);
+    } finally {
+      await coordinator.close();
+      controlStore.close();
+    }
+  });
+
+  test('advances only a finished and quiescent graph to a deterministic next epoch', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-graph-epoch-cutover-'));
+    const controlStore = createSqliteSessionMetadataStore(
+      join(root, OPERATIONAL_STATE_DATABASE_NAME),
+    );
+    const rootSessionId = 'root-session';
+    const graphId = agentGraphIdForRootSession(rootSessionId);
+    const coordinator = new AgentGraphCoordinator({
+      sessionStore: {
+        listForRecovery: async () => [],
+        readHeader: async (sessionId: string) =>
+          ({
+            id: sessionId,
+            status: 'active',
+            isArchived: false,
+            orchestrationMode: 'graph',
+          }) as never,
+      },
+      runtimeEventStore: {
+        listSessionInvocations: async () => [],
+        readImmutableRuntimeEvents: async () => [],
+      },
+      controlStore,
+      epochStore: controlStore,
+      runtime: {
+        provisionAgentGraphOperator: async () => {
+          throw new Error('epoch cutover cannot provision operators');
+        },
+        runClaimedAgentGraphIntent: async () => {
+          throw new Error('epoch cutover cannot dispatch operators');
+        },
+        stopSession: async () => {},
+      },
+      newId: randomUUID,
+    });
+    let suppressions = 0;
+    const withWakesSuppressed = async (operation: () => Promise<void>) => {
+      suppressions += 1;
+      await operation();
+    };
+    try {
+      assert.equal(
+        (await coordinator.beginNextGraphEpoch(rootSessionId, withWakesSuppressed)).graphId,
+        graphId,
+      );
+      assert.equal(suppressions, 0);
+
+      await controlStore.commitAgentGraphScheduleUpdate(
+        compileAgentGraphScheduleUpdate({
+          graphId,
+          input: {
+            operation: 'finish',
+            finish: { result_ids: ['result-1'], reason: 'No work remains.' },
+          },
+          context: toolContext(rootSessionId, 'run-root', 'turn-root', 'tool-finish'),
+        }),
+      );
+      const next = await coordinator.beginNextGraphEpoch(rootSessionId, withWakesSuppressed);
+      assert.equal(next.epoch, 2);
+      assert.equal(next.graphId, agentGraphIdForRootSessionEpoch(rootSessionId, 2));
+      assert.equal(suppressions, 1);
+
+      const retry = await coordinator.beginNextGraphEpoch(rootSessionId, withWakesSuppressed);
+      assert.equal(retry.graphId, next.graphId);
+      assert.equal(suppressions, 1);
+      assert.deepEqual(
+        (await controlStore.listAgentGraphEpochs(rootSessionId)).map(({ epoch, graphId }) => ({
+          epoch,
+          graphId,
+        })),
+        [
+          { epoch: 1, graphId },
+          { epoch: 2, graphId: next.graphId },
+        ],
+      );
+    } finally {
+      await coordinator.close();
+      controlStore.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('concurrent cutovers converge on epoch 2 without skipping an epoch', async () => {
+    const controlStore = createSqliteSessionMetadataStore(':memory:');
+    const rootSessionId = 'root-session';
+    const graphId = agentGraphIdForRootSession(rootSessionId);
+    const coordinatorInput = {
+      sessionStore: {
+        listForRecovery: async () => [],
+        readHeader: async (sessionId: string) =>
+          ({
+            id: sessionId,
+            status: 'active',
+            isArchived: false,
+            orchestrationMode: 'graph',
+          }) as never,
+      },
+      runtimeEventStore: {
+        listSessionInvocations: async () => [],
+        readImmutableRuntimeEvents: async () => [],
+      },
+      controlStore,
+      epochStore: controlStore,
+      runtime: {
+        provisionAgentGraphOperator: async () => {
+          throw new Error('epoch cutover cannot provision operators');
+        },
+        runClaimedAgentGraphIntent: async () => {
+          throw new Error('epoch cutover cannot dispatch operators');
+        },
+        stopSession: async () => {},
+      },
+      newId: randomUUID,
+    } satisfies AgentGraphCoordinatorInput;
+    const first = new AgentGraphCoordinator(coordinatorInput);
+    const second = new AgentGraphCoordinator(coordinatorInput);
+    await controlStore.commitAgentGraphScheduleUpdate(
+      compileAgentGraphScheduleUpdate({
+        graphId,
+        input: {
+          operation: 'finish',
+          finish: { result_ids: ['result-1'], reason: 'No work remains.' },
+        },
+        context: toolContext(rootSessionId, 'run-root', 'turn-root', 'tool-finish'),
+      }),
+    );
+    const gate = deferredGate();
+    let entrants = 0;
+    const withWakesSuppressed = async (operation: () => Promise<void>) => {
+      entrants += 1;
+      if (entrants === 2) gate.release();
+      await gate.ready;
+      await operation();
+    };
+    try {
+      const [left, right] = await Promise.all([
+        first.beginNextGraphEpoch(rootSessionId, withWakesSuppressed),
+        second.beginNextGraphEpoch(rootSessionId, withWakesSuppressed),
+      ]);
+      assert.equal(left.epoch, 2);
+      assert.equal(right.epoch, 2);
+      assert.deepEqual(
+        (await controlStore.listAgentGraphEpochs(rootSessionId)).map(({ epoch }) => epoch),
+        [1, 2],
+      );
+    } finally {
+      gate.release();
+      await first.close();
+      await second.close();
+      controlStore.close();
+    }
+  });
+
   test('persists work-keyed reconciliation failures across coordinator recovery', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-graph-failure-recovery-'));
     const sessionStore = createSessionStore(root);
@@ -495,7 +1137,7 @@ describe('host-managed agent graph coordinator', () => {
       join(root, OPERATIONAL_STATE_DATABASE_NAME),
     );
     const backends = new BackendRegistry();
-    backends.register('fake', (context) => new FakeBackend(context));
+    backends.register('ai-sdk', (context) => new FakeBackend(context));
     const manager = new SessionManager({
       store: sessionStore,
       runStore,
@@ -510,7 +1152,6 @@ describe('host-managed agent graph coordinator', () => {
     try {
       const rootSession = await manager.createSession({
         cwd: root,
-        backend: 'fake',
         llmConnectionSlug: 'fake',
         permissionMode: 'ask',
         orchestrationMode: 'swarm',
@@ -523,7 +1164,7 @@ describe('host-managed agent graph coordinator', () => {
       })) {
         // Drain the source turn so its AgentRun is durable.
       }
-      const sourceRun = (await runStore.listSessionRuns(rootSession.id)).find(
+      const sourceRun = (await runtimeEventStore.listSessionInvocations(rootSession.id)).find(
         (run) => run.turnId === sourceTurnId,
       );
       assert.ok(sourceRun);
@@ -537,7 +1178,6 @@ describe('host-managed agent graph coordinator', () => {
       const create = () =>
         new AgentGraphCoordinator({
           sessionStore,
-          runStore,
           runtimeEventStore,
           controlStore,
           runtime: failingRuntime,
@@ -598,49 +1238,103 @@ describe('host-managed agent graph coordinator', () => {
     }
   });
 
-  test('keeps completed graph snapshots readable after the root Session is archived', async () => {
-    let projection:
-      | {
-          schemaVersion: 1;
-          graphId: string;
-          rootSessionId: string;
-          snapshotVersion: string;
-          payload: unknown;
-          materializedAt: number;
-        }
-      | undefined;
+  test('rebuilds an exact historical graph projection without falling through to current', async () => {
+    const historicalGraphId = agentGraphIdForRootSession('root-session');
+    const currentGraphId = agentGraphIdForRootSessionEpoch('root-session', 2);
+    const projections = new Map<
+      string,
+      {
+        schemaVersion: 1;
+        graphId: string;
+        rootSessionId: string;
+        snapshotVersion: string;
+        payload: unknown;
+        materializedAt: number;
+      }
+    >();
     const coordinator = new AgentGraphCoordinator({
       sessionStore: {
         listForRecovery: async () => [],
         readHeader: async (sessionId: string) =>
           ({
             id: sessionId,
-            status: 'archived',
+            status: 'active',
             isArchived: true,
           }) as never,
       },
-      runStore: { listSessionRuns: async () => [] },
-      runtimeEventStore: { readImmutableRuntimeEvents: async () => [] },
+      runtimeEventStore: {
+        listSessionInvocations: async () => [],
+        readImmutableRuntimeEvents: async () => [],
+      },
+      epochStore: {
+        resolveCurrentAgentGraphEpoch: async () => ({
+          schemaVersion: 1,
+          rootSessionId: 'root-session',
+          epoch: 2,
+          graphId: currentGraphId,
+          createdAt: 2,
+        }),
+        listAgentGraphEpochs: async () => [
+          {
+            schemaVersion: 1 as const,
+            rootSessionId: 'root-session',
+            epoch: 1,
+            graphId: historicalGraphId,
+            createdAt: 1,
+          },
+          {
+            schemaVersion: 1,
+            rootSessionId: 'root-session',
+            epoch: 2,
+            graphId: currentGraphId,
+            createdAt: 2,
+          },
+        ],
+        readAgentGraphEpochByGraphId: async (graphId: string) =>
+          graphId === historicalGraphId
+            ? {
+                schemaVersion: 1 as const,
+                rootSessionId: 'root-session',
+                epoch: 1,
+                graphId: historicalGraphId,
+                createdAt: 1,
+              }
+            : graphId === currentGraphId
+              ? {
+                  schemaVersion: 1 as const,
+                  rootSessionId: 'root-session',
+                  epoch: 2,
+                  graphId: currentGraphId,
+                  createdAt: 2,
+                }
+              : undefined,
+        listAgentGraphEpochPage: async () => ({
+          epochs: [],
+          nextBeforeEpoch: null,
+          currentEpoch: null,
+        }),
+      },
       controlStore: {
         listAgentGraphOperatorProvisions: async () => [],
         listAgentGraphScheduleUpdates: async () => [],
         listAgentGraphIntentClaims: async () => [],
         listAgentGraphClientClaimAdmissions: async () => [],
-        readAgentGraphClientProjection: async () => projection,
+        readAgentGraphClientProjection: async (graphId: string) => projections.get(graphId),
         commitAgentGraphClientProjection: async (request: {
           graphId: string;
           rootSessionId: string;
           snapshotVersion: string;
           snapshot: unknown;
         }) => {
-          projection = {
-            schemaVersion: 1,
+          const projection = {
+            schemaVersion: 1 as const,
             graphId: request.graphId,
             rootSessionId: request.rootSessionId,
             snapshotVersion: request.snapshotVersion,
             payload: request.snapshot,
             materializedAt: 1,
           };
+          projections.set(request.graphId, projection);
           return projection;
         },
         readAgentGraphClientOperatorProjection: async () => undefined,
@@ -653,8 +1347,16 @@ describe('host-managed agent graph coordinator', () => {
       newId: randomUUID,
       rootSessionId: 'root-session',
     } as unknown as AgentGraphCoordinatorInput);
-    const snapshot = await coordinator.getSnapshot('root-session');
-    assert.equal(snapshot.status, 'empty');
+    const historical = await coordinator.getGraphSnapshot('root-session', historicalGraphId);
+    assert.equal(historical.graphId, historicalGraphId);
+    assert.equal(historical.status, 'empty');
+    const current = await coordinator.getSnapshot('root-session');
+    assert.equal(current.graphId, currentGraphId);
+    await assert.rejects(
+      coordinator.getGraphSnapshot('root-session', agentGraphIdForRootSession('another-root')),
+      (error: unknown) =>
+        error instanceof AgentGraphClientOperationError && error.code === 'not_found',
+    );
     await assert.rejects(
       coordinator.toolsForSession('root-session'),
       /Archived Sessions cannot supervise/,
@@ -732,19 +1434,22 @@ describe('host-managed agent graph coordinator', () => {
       targetRunId: runId,
       claimedAt: 12,
     };
-    const runningRun: AgentRunHeader = {
+    const runningRun: RuntimeInvocationRecord = {
       sessionId: childSessionId,
+      invocationId: 'child-invocation',
       runId,
       turnId,
-      invocationId: 'child-invocation',
-      backendKind: 'fake',
-      llmConnectionSlug: 'fake',
-      modelId: 'fake',
-      cwd: '/workspace',
-      permissionMode: 'explore',
-      status: 'running',
-      createdAt: 12,
-      updatedAt: 12,
+      openedAt: 12,
+      opening: testInvocationOpening({
+        route: {
+          provenance: 'runtime',
+          backendKind: 'fake',
+          llmConnectionId: 'fake-connection',
+          llmConnectionSlug: 'fake',
+          modelId: 'fake',
+        },
+        configuration: { cwd: '/workspace', permissionMode: 'explore' },
+      }),
     };
     const runningEvent: RuntimeEvent = {
       id: 'child-started',
@@ -761,7 +1466,7 @@ describe('host-managed agent graph coordinator', () => {
     let scheduleUpdates: AgentGraphScheduleUpdate[] = [];
     let provisions: AgentGraphOperatorProvision[] = [];
     let claims: AgentGraphIntentClaim[] = [];
-    let runs: AgentRunHeader[] = [runningRun];
+    let runs: RuntimeInvocationRecord[] = [runningRun];
     let runtimeEvents: RuntimeEvent[] = [runningEvent];
     let projection:
       | {
@@ -777,10 +1482,16 @@ describe('host-managed agent graph coordinator', () => {
       sessionStore: {
         listForRecovery: async () => [],
         readHeader: async (sessionId: string) =>
-          ({ id: sessionId, status: 'active', isArchived: false }) as never,
+          ({
+            id: sessionId,
+            status: 'active',
+            isArchived: false,
+          }) as never,
       },
-      runStore: { listSessionRuns: async () => runs },
-      runtimeEventStore: { readImmutableRuntimeEvents: async () => runtimeEvents },
+      runtimeEventStore: {
+        listSessionInvocations: async () => runs,
+        readImmutableRuntimeEvents: async () => runtimeEvents,
+      },
       controlStore: {
         listAgentGraphOperatorProvisions: async () => provisions,
         listAgentGraphScheduleUpdates: async () => scheduleUpdates,
@@ -838,7 +1549,23 @@ describe('host-managed agent graph coordinator', () => {
       assert.equal(await coordinator.readSessionState(rootSessionId), 'live');
       assert.equal(await coordinator.hasLiveSessionState(rootSessionId), true);
 
-      runs = [{ ...runningRun, status: 'completed', completedAt: 14, updatedAt: 14 }];
+      runs = [
+        {
+          ...runningRun,
+          terminalEvent: {
+            id: 'child-terminal',
+            sessionId: childSessionId,
+            invocationId: 'child-invocation',
+            runId,
+            turnId,
+            ts: 14,
+            partial: false,
+            role: 'system',
+            author: 'system',
+            status: 'completed',
+          },
+        },
+      ];
       runtimeEvents = [
         runningEvent,
         {
@@ -874,8 +1601,10 @@ describe('host-managed agent graph coordinator', () => {
             isArchived: false,
           }) as never,
       },
-      runStore: { listSessionRuns: async () => [] },
-      runtimeEventStore: { readImmutableRuntimeEvents: async () => [] },
+      runtimeEventStore: {
+        listSessionInvocations: async () => [],
+        readImmutableRuntimeEvents: async () => [],
+      },
       controlStore: {
         listAgentGraphOperatorProvisions: async () => {
           throw topologyFailure;
@@ -906,6 +1635,14 @@ describe('host-managed agent graph coordinator', () => {
   test('attempts every operator stop and surfaces all close failures', async () => {
     const graphId = agentGraphIdForRootSession('root-session');
     const stopped: string[] = [];
+    let releaseStops!: () => void;
+    const stopsReleased = new Promise<void>((resolve) => {
+      releaseStops = resolve;
+    });
+    let markStopsStarted!: () => void;
+    const stopsStarted = new Promise<void>((resolve) => {
+      markStopsStarted = resolve;
+    });
     const coordinator = new AgentGraphCoordinator({
       sessionStore: {
         listForRecovery: async () => [],
@@ -916,8 +1653,10 @@ describe('host-managed agent graph coordinator', () => {
             isArchived: false,
           }) as never,
       },
-      runStore: { listSessionRuns: async () => [] },
-      runtimeEventStore: { readImmutableRuntimeEvents: async () => [] },
+      runtimeEventStore: {
+        listSessionInvocations: async () => [],
+        readImmutableRuntimeEvents: async () => [],
+      },
       controlStore: {
         listAgentGraphOperatorProvisions: async () =>
           ['a', 'b'].map((suffix, index) => ({
@@ -932,6 +1671,8 @@ describe('host-managed agent graph coordinator', () => {
       runtime: {
         stopSession: async (sessionId: string) => {
           stopped.push(sessionId);
+          if (stopped.length === 2) markStopsStarted();
+          await stopsReleased;
           throw new Error(`cannot stop ${sessionId}`);
         },
       },
@@ -939,6 +1680,10 @@ describe('host-managed agent graph coordinator', () => {
       rootSessionId: 'root-session',
     } as unknown as AgentGraphCoordinatorInput);
     await coordinator.toolsForSession('root-session');
+    coordinator.beginDrain();
+    await stopsStarted;
+    assert.deepEqual(stopped.sort(), ['child-a', 'child-b']);
+    releaseStops();
     await assert.rejects(
       coordinator.close(),
       (error: unknown) =>
@@ -948,7 +1693,6 @@ describe('host-managed agent graph coordinator', () => {
             (failure) => failure instanceof AggregateError && failure.errors.length === 2,
           )),
     );
-    assert.deepEqual(stopped.sort(), ['child-a', 'child-b']);
   });
 
   test('rejects concurrent yield when reconciliation only waits for uncommitted input', async () => {
@@ -985,10 +1729,16 @@ describe('host-managed agent graph coordinator', () => {
       sessionStore: {
         listForRecovery: async () => [],
         readHeader: async (sessionId: string) =>
-          ({ id: sessionId, status: 'active', isArchived: false }) as never,
+          ({
+            id: sessionId,
+            status: 'active',
+            isArchived: false,
+          }) as never,
       },
-      runStore: { listSessionRuns: async () => [] },
-      runtimeEventStore: { readImmutableRuntimeEvents: async () => [] },
+      runtimeEventStore: {
+        listSessionInvocations: async () => [],
+        readImmutableRuntimeEvents: async () => [],
+      },
       controlStore: gatedStore,
       runtime: {
         provisionAgentGraphOperator: async () => {
@@ -1215,6 +1965,14 @@ function localReadTools(): MakaTool[] {
     categoryHint: 'read',
     impl: async () => ({ ok: true }),
   }));
+}
+
+function deferredGate(): { readonly ready: Promise<void>; release(): void } {
+  let release!: () => void;
+  const ready = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { ready, release };
 }
 
 function toolContext(

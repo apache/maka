@@ -1,26 +1,49 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { ToolOutputStream, ToolResultContent } from '@maka/core/events';
+import { formatQuietJsonValue, formatToolInvocationLine } from '@maka/core/tool-quiet-preview';
+import { redactSecrets } from '@maka/core/display-redaction';
 import {
-  formatQuietJsonValue,
-  formatToolInvocationLine,
   isActiveShellRunStatus,
-  countDiffLineStats,
-  ptyTuiTerminalRows,
-  ptyTuiTerminalView,
-  readWriteStdinInputPreview,
   type PtyShellOutput,
   type ShellRunOperation,
-} from '@maka/core';
+} from '@maka/core/shell-run';
+import { countDiffLineStats } from '@maka/core/unified-diff';
+import { ptyTuiTerminalRows, ptyTuiTerminalView } from '@maka/core/pty-output-view';
+import { readWriteStdinInputPreview } from '@maka/core/tool-activity-args';
 import { truncateToWidth, visibleWidth } from '@earendil-works/pi-tui';
 import { ansi, disc } from './tui-ansi.js';
 import { colorDiff } from './tui-diff.js';
 import {
   collapseToSingleLine,
   fitLine,
+  formatToolResultContent,
   formatUnknownInline,
   limitText,
   renderIndented,
 } from './pi-transcript-format.js';
-import type { MakaPiToolEntry, MakaPiToolOutputDelta } from './pi-transcript.js';
+import {
+  makaPiToolPresentationStatus,
+  type MakaPiToolEntry,
+  type MakaPiToolOutputDelta,
+} from './pi-transcript.js';
 
 export function renderToolBlock(
   entry: MakaPiToolEntry,
@@ -32,10 +55,10 @@ export function renderToolBlock(
 
 /** Status disc for a tool row: green = done, accent = running, danger = error/aborted/failed, muted = detached/unavailable. */
 function toolDisc(entry: MakaPiToolEntry): string {
-  if (entry.status === 'running') return disc('accent');
-  if (entry.status === 'error' || entry.status === 'aborted' || entry.status === 'failed')
-    return disc('danger');
-  if (entry.status === 'detached' || entry.status === 'unavailable') return disc('muted');
+  const status = makaPiToolPresentationStatus(entry);
+  if (status === 'running') return disc('accent');
+  if (status === 'error' || status === 'aborted' || status === 'failed') return disc('danger');
+  if (status === 'detached' || status === 'unavailable') return disc('muted');
   return disc('ok');
 }
 
@@ -47,14 +70,15 @@ function toolDisc(entry: MakaPiToolEntry): string {
  * `source unavailable`) are dimmed like the other placeholders.
  */
 function toolDurationText(entry: MakaPiToolEntry): string {
+  const status = makaPiToolPresentationStatus(entry);
   const subSecond = entry.durationMs !== undefined && entry.durationMs < 1000;
   const secs =
     entry.durationMs === undefined ? undefined : Math.max(0, Math.round(entry.durationMs / 1000));
-  if (entry.status === 'running') {
+  if (status === 'running') {
     return secs === undefined || subSecond ? 'running' : `running ${secs}s`;
   }
-  if (entry.status === 'detached') return ansi.dim('detached');
-  if (entry.status === 'unavailable') return ansi.dim('source unavailable');
+  if (status === 'detached') return ansi.dim('detached');
+  if (status === 'unavailable') return ansi.dim('source unavailable');
   return secs === undefined || subSecond ? '' : `${secs}s`;
 }
 
@@ -70,14 +94,19 @@ function toolDurationText(entry: MakaPiToolEntry): string {
  * expand, so the row needs neither
  * a separator glyph nor an expand marker. Short annotations are reserved
  * whole during truncation: a long command can never hide an `exit 1`.
+ *
+ * The `no output` placeholder appears only when the row cannot name the call
+ * (no input summary): once the target says what ran, `● Bash  $ git add -A`
+ * reads complete on its own and the disclaimer is noise.
  */
 function renderCompactToolBlock(entry: MakaPiToolEntry, width: number): string[] {
   const inputSummary = collapseToSingleLine(toolInputSummary(entry));
   const head = `${toolDisc(entry)} ${entry.title ?? entry.toolName}`;
   const annotation = compactAnnotation(entry);
+  const annotationText = annotation.placeholderOnly && inputSummary ? '' : annotation.text;
   return [
     fitLine(
-      assembleCompactToolRow(head, inputSummary, annotation.text, width, annotation.protect),
+      assembleCompactToolRow(head, inputSummary, annotationText, width, annotation.protect),
       width,
     ),
   ];
@@ -91,19 +120,26 @@ function renderCompactToolBlock(entry: MakaPiToolEntry, width: number): string[]
  * `protect` reports whether every part is a fixed shape (durations always
  * are): only protected annotations are reserved whole during truncation.
  */
-function compactAnnotation(entry: MakaPiToolEntry): { text: string; protect: boolean } {
+function compactAnnotation(entry: MakaPiToolEntry): {
+  text: string;
+  protect: boolean;
+  /** True when the annotation is solely the dim `no output` placeholder. */
+  placeholderOnly: boolean;
+} {
   const parts: string[] = [];
   const duration = toolDurationText(entry);
   if (duration) parts.push(duration);
   let protect = true;
-  if (entry.status !== 'running') {
+  let placeholderOnly = false;
+  if (makaPiToolPresentationStatus(entry) !== 'running') {
     const summary = compactToolSummary(entry);
     if (summary && !(summary.placeholder && parts.length > 0)) {
       parts.push(collapseToSingleLine(summary.text));
       protect = summary.protect === true;
+      placeholderOnly = summary.placeholder === true && parts.length === 1;
     }
   }
-  return { text: parts.length > 0 ? `(${parts.join(' · ')})` : '', protect };
+  return { text: parts.length > 0 ? `(${parts.join(' · ')})` : '', protect, placeholderOnly };
 }
 
 /**
@@ -176,12 +212,12 @@ function renderExpandedToolBlock(entry: MakaPiToolEntry, width: number): string[
     }
     lines.push(...renderToolStreams(entry.outputDeltas.values(), width));
   }
-  if (entry.result || entry.output) {
+  if (entry.result || makaPiToolPresentationStatus(entry) === 'aborted') {
     lines.push(...renderToolResult(entry, width));
   }
   if (
     entry.toolName === 'Bash' &&
-    entry.status === 'running' &&
+    makaPiToolPresentationStatus(entry) === 'running' &&
     entry.result?.kind === 'shell_run'
   ) {
     lines.push(...renderIndented(ansi.dim('Ask Maka to stop this task'), width, 2));
@@ -294,7 +330,7 @@ function compactToolSummary(entry: MakaPiToolEntry): CompactToolSummary | undefi
   // fabricated file count.
   if (
     entry.toolName === 'Read' &&
-    entry.status !== 'error' &&
+    makaPiToolPresentationStatus(entry) !== 'error' &&
     isFilesystemReadPath(entry) &&
     isReadBodyResult(result)
   ) {
@@ -507,7 +543,7 @@ function renderToolResult(entry: MakaPiToolEntry, width: number): string[] {
   // visible instead of being mistaken for a one-line file.
   if (
     entry.toolName === 'Read' &&
-    entry.status !== 'error' &&
+    makaPiToolPresentationStatus(entry) !== 'error' &&
     isFilesystemReadPath(entry) &&
     isReadBodyResult(result)
   ) {
@@ -532,8 +568,8 @@ function renderToolResult(entry: MakaPiToolEntry, width: number): string[] {
   }
   // A generic `text` dump — a Bash body or raw tool text — is what the head/tail
   // cap targets: the model already holds the full body, so the transcript only
-  // needs enough to orient. An undefined result with a formatted `output` string
-  // is treated the same way. `json` is deliberately excluded: a Read json is
+  // needs enough to orient. An interrupted call with no result uses the same
+  // capped path for its explanation. `json` is deliberately excluded: a Read json is
   // summarized above, a Grep/Glob json is a structured list the user expands to
   // scan in full, and any other json collapses to a single inline line where the
   // cap would be a no-op anyway.
@@ -549,6 +585,11 @@ function renderToolResult(entry: MakaPiToolEntry, width: number): string[] {
 /** Best-effort extraction of the human-readable body from a tool result. */
 function plainResultText(entry: MakaPiToolEntry): string {
   const result = entry.result;
+  if (!result) {
+    return makaPiToolPresentationStatus(entry) === 'aborted'
+      ? 'Interrupted before the tool returned a result.'
+      : '';
+  }
   if (result?.kind === 'text') return typeof result.text === 'string' ? result.text : '';
   if (result?.kind === 'json') {
     const value = result.value;
@@ -563,12 +604,12 @@ function plainResultText(entry: MakaPiToolEntry): string {
     // dumping a single-line JSON blob. It extracts headline + body from
     // known shapes (lists, text payloads, Write/Edit results, key-value) and
     // never produces escaped JSON braces (#1065). AskUserQuestion, GoalSet,
-    // Automation, and any future tool without a custom case render
+    // ScheduledTask, and any future tool without a custom case render
     // human-readable text here.
     const preview = formatQuietJsonValue(value, 'en');
     return preview.headline ? `${preview.headline}\n${preview.body}` : preview.body;
   }
-  return entry.output ?? '';
+  return formatToolResultContent(result);
 }
 
 function renderTerminalResult(
@@ -651,7 +692,7 @@ function renderShellRunResult(
   const inputShowsFullCommand =
     typeof command === 'string' && command.trim() !== '' && !command.includes('\n');
   if (!inputShowsFullCommand) {
-    lines.push(...renderIndented(ansi.dim(`$ ${content.cmd}`), width, 2));
+    lines.push(...renderIndented(ansi.dim(`$ ${redactSecrets(content.cmd)}`), width, 2));
   }
   lines.push(...renderIndented(ansi.dim(`cwd: ${content.cwd}`), width, 2));
   const settled = !isActiveShellRunStatus(content.status) && content.status !== 'completed';
@@ -715,6 +756,10 @@ function formatPtyControlOperation(
 }
 
 function toolInputSummary(entry: MakaPiToolEntry): string {
+  if (entry.intent) {
+    const safe = redactSecrets(entry.intent.replace(/\s+/g, ' ').trim());
+    if (safe) return safe.length > 240 ? `${safe.slice(0, 240)}…` : safe;
+  }
   const input = entry.input;
   const obj =
     input !== null && typeof input === 'object' ? (input as Record<string, unknown>) : undefined;
@@ -728,7 +773,7 @@ function toolInputSummary(entry: MakaPiToolEntry): string {
           .split('\n')
           .map((line) => line.trim())
           .find((line) => line !== '' && !line.startsWith('#'));
-        return `$ ${firstRealLine ?? command.split('\n')[0]!.trim()}`;
+        return `$ ${redactSecrets(firstRealLine ?? command.split('\n')[0]!.trim())}`;
       }
       break;
     }
@@ -791,11 +836,15 @@ function toolInputSummary(entry: MakaPiToolEntry): string {
   // dumping raw JSON. It extracts headline fields (command/path/pattern/query/
   // name/…) and never produces escaped JSON braces (#1065). The explicit per-
   // tool cases above are an optimization for the common tools; this fallback
-  // covers Skill, AskUserQuestion, GoalSet, Automation, and any future tool.
+  // covers Skill, AskUserQuestion, GoalSet, ScheduledTask, and any future tool.
   const line = formatToolInvocationLine({ toolName: entry.toolName, args: input }, 'en');
   if (line) return limitText(line, 600);
   // Absolute last resort — still single-line for the compact header contract.
-  return `input: ${limitText(formatUnknownInline(input), 600)}`;
+  // An empty args object carries no information; leave the row bare instead of
+  // printing `input: {}` noise (and let a quiet result keep its placeholder).
+  const inline = formatUnknownInline(input);
+  if (inline === '{}') return '';
+  return `input: ${limitText(inline, 600)}`;
 }
 
 /**

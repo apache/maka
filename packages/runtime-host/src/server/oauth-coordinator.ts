@@ -1,19 +1,45 @@
-import { randomBytes } from 'node:crypto';
-import { constantTimeStringEqual, parsePastedAuthorization } from '@maka/core/oauth-subscription';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { OAuthTokenEndpointError } from '@maka/runtime/oauth-login';
+import { createProxiedFetchTransport } from '@maka/runtime/network/scoped-fetch-transport';
 import {
-  buildOAuthLoginAuthorization,
-  createProxiedFetchTransport,
   exchangeCodexDeviceAuthorizationCode,
-  exchangeOAuthAuthorizationCode,
-  fetchClaudeSubscriptionUsage,
-  OAuthDeviceAuthorizationExpiredError,
-  OAuthTokenEndpointError,
   pollCodexDeviceAuthorization,
-  pollXaiDeviceAuthorization,
-  serializeOAuthSubscriptionTokens,
   startCodexDeviceAuthorization,
+} from '@maka/runtime/codex-oauth-enrollment';
+import { OAuthDeviceAuthorizationExpiredError } from '@maka/runtime/oauth-provider-contracts';
+import {
+  GitHubCopilotEntitlementError,
+  GitHubCopilotEntitlementUnavailableError,
+  pollGitHubCopilotDeviceAuthorization,
+  startGitHubCopilotDeviceAuthorization,
+  verifyGitHubCopilotModelEntitlement,
+} from '@maka/runtime/github-copilot-oauth-enrollment';
+import {
+  pollXaiDeviceAuthorization,
   startXaiDeviceAuthorization,
-} from '@maka/runtime';
+} from '@maka/runtime/xai-oauth-enrollment';
+import {
+  serializeOAuthSubscriptionTokens,
+  type OAuthSubscriptionTokens,
+} from '@maka/runtime/subscription-credentials';
 import {
   RuntimePolicyStoreError,
   type RuntimePolicyStoresWriter,
@@ -25,16 +51,13 @@ import {
   type OAuthLoginFailureCode,
   type OAuthLoginProjection,
   type OAuthLoginProvider,
+  type OAuthLoginTarget,
   type OAuthPresentationRequest,
   type OAuthPresentationResult,
-  type OAuthPresentationResultForMethod,
   type OperationOutcome,
 } from '../protocol/index.js';
 import type { RuntimeHostResidency } from './host-kernel.js';
-import {
-  HostOAuthExecutionAuthority,
-  OAuthExecutionCredentialError,
-} from './oauth-execution-authority.js';
+import { HostOAuthExecutionAuthority } from './oauth-execution-authority.js';
 import {
   ClientCapabilityInvocationError,
   type HostClientCapabilityCoordinator,
@@ -44,9 +67,6 @@ import type { RuntimePolicyActivationGate } from './runtime-policy-activation-ga
 import { toRuntimePolicyProxy } from './runtime-policy-proxy.js';
 
 const MAX_TERMINAL_ATTEMPTS = 256;
-const DEFAULT_AUTHORIZATION_TIMEOUT_MS = 10 * 60_000;
-const MAX_AUTHORIZATION_TIMEOUT_MS = 60 * 60_000;
-const PRESENTATION_TIMEOUT_MARGIN_MS = 5_000;
 
 export class HostOAuthFatalError extends Error {
   constructor(
@@ -68,15 +88,15 @@ export interface HostOAuthCoordinatorInput {
   readonly invalidateBackends: () => Promise<void>;
   readonly onFatal: (error: HostOAuthFatalError) => void;
   readonly now?: () => number;
-  readonly exchangeCode?: typeof exchangeOAuthAuthorizationCode;
   readonly startXaiAuthorization?: typeof startXaiDeviceAuthorization;
   readonly pollXaiAuthorization?: typeof pollXaiDeviceAuthorization;
+  readonly startGitHubCopilotAuthorization?: typeof startGitHubCopilotDeviceAuthorization;
+  readonly pollGitHubCopilotAuthorization?: typeof pollGitHubCopilotDeviceAuthorization;
+  readonly verifyGitHubCopilotEntitlement?: typeof verifyGitHubCopilotModelEntitlement;
   readonly startCodexAuthorization?: typeof startCodexDeviceAuthorization;
   readonly pollCodexAuthorization?: typeof pollCodexDeviceAuthorization;
   readonly exchangeCodexCode?: typeof exchangeCodexDeviceAuthorizationCode;
-  readonly fetchAccountUsage?: typeof fetchClaudeSubscriptionUsage;
   readonly createFetchTransport?: typeof createProxiedFetchTransport;
-  readonly authorizationTimeoutMs?: number;
 }
 
 type OAuthLoginAdmission = Extract<
@@ -87,7 +107,8 @@ type OAuthLoginAdmission = Extract<
 interface ActiveLoginAttempt {
   readonly kind: 'active';
   readonly attemptId: string;
-  readonly connectionId: string;
+  readonly target: OAuthLoginTarget;
+  readonly connection: OAuthLoginProjection['connection'];
   readonly initiatingConnectionId: string;
   readonly provider: OAuthLoginProvider;
   readonly ticket: OAuthLoginAdmission;
@@ -102,6 +123,7 @@ interface ActiveLoginAttempt {
 
 interface TerminalLoginAttempt {
   readonly kind: 'terminal';
+  readonly target: OAuthLoginTarget;
   readonly projection: OAuthLoginProjection;
 }
 
@@ -113,7 +135,7 @@ export class HostOAuthCoordinator {
     'oauth.login.start': (input, context) => this.#start(input, context.connectionId),
     'oauth.login.query': (input) => this.#query(input.attemptId),
     'oauth.login.cancel': (input) => this.#cancel(input.attemptId),
-    'oauth.account.usage.fetch': (input) => this.#fetchAccountUsage(input.connectionId),
+    'oauth.enrollment.query': (input) => this.#enrollment(input.provider),
   };
 
   readonly #runtimePolicy: RuntimePolicyStoresWriter;
@@ -125,20 +147,20 @@ export class HostOAuthCoordinator {
   readonly #invalidateBackends: () => Promise<void>;
   readonly #onFatal: (error: HostOAuthFatalError) => void;
   readonly #now: () => number;
-  readonly #exchangeCode: typeof exchangeOAuthAuthorizationCode;
   readonly #startXaiAuthorization: typeof startXaiDeviceAuthorization;
   readonly #pollXaiAuthorization: typeof pollXaiDeviceAuthorization;
+  readonly #startGitHubCopilotAuthorization: typeof startGitHubCopilotDeviceAuthorization;
+  readonly #pollGitHubCopilotAuthorization: typeof pollGitHubCopilotDeviceAuthorization;
+  readonly #verifyGitHubCopilotEntitlement: typeof verifyGitHubCopilotModelEntitlement;
   readonly #startCodexAuthorization: typeof startCodexDeviceAuthorization;
   readonly #pollCodexAuthorization: typeof pollCodexDeviceAuthorization;
   readonly #exchangeCodexCode: typeof exchangeCodexDeviceAuthorizationCode;
-  readonly #fetchUsageSnapshot: typeof fetchClaudeSubscriptionUsage;
   readonly #createFetchTransport: typeof createProxiedFetchTransport;
-  readonly #authorizationTimeoutMs: number;
   readonly #attempts = new Map<string, LoginAttemptRecord>();
   #activeAttempt: ActiveLoginAttempt | undefined;
   /**
    * Serializes oauth.login.start admissions so concurrent starts cannot dual-open
-   * interactive logins after supersede replaced operation_conflict.
+   * interactive logins around the active-attempt conflict check.
    */
   #startGate: Promise<void> = Promise.resolve();
   #admissionClosed = false;
@@ -155,15 +177,18 @@ export class HostOAuthCoordinator {
     this.#invalidateBackends = input.invalidateBackends;
     this.#onFatal = input.onFatal;
     this.#now = input.now ?? Date.now;
-    this.#exchangeCode = input.exchangeCode ?? exchangeOAuthAuthorizationCode;
     this.#startXaiAuthorization = input.startXaiAuthorization ?? startXaiDeviceAuthorization;
     this.#pollXaiAuthorization = input.pollXaiAuthorization ?? pollXaiDeviceAuthorization;
+    this.#startGitHubCopilotAuthorization =
+      input.startGitHubCopilotAuthorization ?? startGitHubCopilotDeviceAuthorization;
+    this.#pollGitHubCopilotAuthorization =
+      input.pollGitHubCopilotAuthorization ?? pollGitHubCopilotDeviceAuthorization;
+    this.#verifyGitHubCopilotEntitlement =
+      input.verifyGitHubCopilotEntitlement ?? verifyGitHubCopilotModelEntitlement;
     this.#startCodexAuthorization = input.startCodexAuthorization ?? startCodexDeviceAuthorization;
     this.#pollCodexAuthorization = input.pollCodexAuthorization ?? pollCodexDeviceAuthorization;
     this.#exchangeCodexCode = input.exchangeCodexCode ?? exchangeCodexDeviceAuthorizationCode;
-    this.#fetchUsageSnapshot = input.fetchAccountUsage ?? fetchClaudeSubscriptionUsage;
     this.#createFetchTransport = input.createFetchTransport ?? createProxiedFetchTransport;
-    this.#authorizationTimeoutMs = authorizationTimeout(input.authorizationTimeoutMs);
   }
 
   beginDrain(): void {
@@ -182,94 +207,13 @@ export class HostOAuthCoordinator {
     return this.#closeTask;
   }
 
-  async #fetchAccountUsage(
-    connectionId: string,
-  ): Promise<OperationOutcome<'oauth.account.usage.fetch'>> {
-    const residency = this.#acquireResidency();
-    let transport: ReturnType<typeof createProxiedFetchTransport> | undefined;
-    try {
-      const catalog = await this.#runtimePolicy.connectionCatalog.getSnapshot();
-      const connection = catalog.connections.find(
-        (candidate) => candidate.connectionId === connectionId,
-      );
-      if (!connection) return notFound('OAuth account Connection was not found');
-      if (connection.providerType !== 'claude-subscription') {
-        return {
-          ok: true,
-          result: { kind: 'unavailable', reason: 'unsupported_provider' },
-        };
-      }
-      const resolved = await this.#runtimePolicy.operations.resolveExecutionConnection(
-        connection.slug,
-      );
-      if (resolved.kind !== 'ready' || resolved.connection.connectionId !== connectionId) {
-        return {
-          ok: true,
-          result: { kind: 'unavailable', reason: 'credential_unavailable' },
-        };
-      }
-      const material = resolved.secretMaterial.connection;
-      if (!material) {
-        return {
-          ok: true,
-          result: { kind: 'unavailable', reason: 'credential_unavailable' },
-        };
-      }
-      const proxy = toRuntimePolicyProxy(
-        resolved.networkProxy,
-        resolved.secretMaterial.networkProxy?.secret,
-      );
-      const binding = this.#oauthCredentials.bind({
-        providerType: connection.providerType,
-        connectionSlug: connection.slug,
-        material,
-        createRefreshTransport: () => this.#createFetchTransport(proxy),
-      });
-      const tokens = await binding.resolve();
-      transport = this.#createFetchTransport(proxy);
-      const quota = await this.#fetchUsageSnapshot({
-        accessToken: tokens.access_token,
-        fetchFn: transport.fetch,
-        now: this.#now,
-      });
-      return {
-        ok: true,
-        result: { kind: 'available', provider: connection.providerType, quota },
-      };
-    } catch (error) {
-      if (error instanceof RuntimePolicyStoreError) {
-        return persistenceFailure('OAuth account usage could not read Runtime Policy');
-      }
-      if (error instanceof OAuthExecutionCredentialError) {
-        return {
-          ok: true,
-          result: { kind: 'unavailable', reason: 'credential_unavailable' },
-        };
-      }
-      if (error instanceof OAuthTokenEndpointError) {
-        const reason =
-          error.category === 'invalid_response' || error.category === 'response_too_large'
-            ? 'invalid_response'
-            : 'provider_unavailable';
-        return { ok: true, result: { kind: 'unavailable', reason } };
-      }
-      return {
-        ok: true,
-        result: { kind: 'unavailable', reason: 'provider_unavailable' },
-      };
-    } finally {
-      await transport?.close().catch(() => undefined);
-      residency.release();
-    }
-  }
-
   async #start(
-    input: { readonly attemptId: string; readonly connectionId: string },
+    input: { readonly attemptId: string; readonly target: OAuthLoginTarget },
     initiatingConnectionId: string,
   ): Promise<OperationOutcome<'oauth.login.start'>> {
     const existing = this.#attempts.get(input.attemptId);
     if (existing) {
-      if (projection(existing).connectionId !== input.connectionId) {
+      if (!sameOAuthLoginTarget(existing.target, input.target)) {
         return invalidRequest('OAuth attemptId is already bound to another connection');
       }
       return { ok: true, result: projection(existing) };
@@ -285,14 +229,34 @@ export class HostOAuthCoordinator {
     try {
       const again = this.#attempts.get(input.attemptId);
       if (again) {
-        if (projection(again).connectionId !== input.connectionId) {
+        if (!sameOAuthLoginTarget(again.target, input.target)) {
           return invalidRequest('OAuth attemptId is already bound to another connection');
         }
         return { ok: true, result: projection(again) };
       }
-      // User re-clicked 登录 after the browser already authorized (or abandoned)
-      // an earlier attempt. Supersede instead of blocking until process restart.
-      if (this.#activeAttempt) await this.#supersedeActiveLogin();
+      let durable: Awaited<
+        ReturnType<RuntimePolicyStoresWriter['operations']['queryInteractiveOAuthLogin']>
+      >;
+      try {
+        durable = await this.#runtimePolicy.operations.queryInteractiveOAuthLogin(input.attemptId);
+      } catch (error) {
+        if (error instanceof RuntimePolicyStoreError) {
+          return persistenceFailure('OAuth login receipt query failed');
+        }
+        throw error;
+      }
+      if (durable.kind === 'authenticated') {
+        if (!sameOAuthLoginTarget(durable.target, input.target)) {
+          return invalidRequest('OAuth attemptId is already bound to another connection');
+        }
+        const terminal = authenticatedAttempt(input.target, input.attemptId, durable.connection);
+        this.#attempts.set(input.attemptId, terminal);
+        this.#pruneTerminalAttempts();
+        return { ok: true, result: terminal.projection };
+      }
+      if (this.#activeAttempt) {
+        return operationConflict('Another OAuth login is already in progress');
+      }
       if (this.#admissionClosed) return hostDraining();
       return await this.#prepareStart(input, initiatingConnectionId);
     } finally {
@@ -300,39 +264,15 @@ export class HostOAuthCoordinator {
     }
   }
 
-  /**
-   * Cancel the active interactive login and wait until its residency is released.
-   * Used when the user starts a new login while a prior device-code poll is still open.
-   */
-  async #supersedeActiveLogin(): Promise<void> {
-    const previous = this.#activeAttempt;
-    if (!previous) return;
-    // Align with cancel: once a token poll is admitted or credentials are
-    // committing, finish that path instead of aborting a browser-approved grant.
-    if (previous.phase === 'committing' || previous.cancellationDeferred) {
-      await previous.settlement.catch(() => undefined);
-      return;
-    }
-    const reason = new DOMException('OAuth login superseded by a new attempt', 'AbortError');
-    previous.cancelRequested = true;
-    if (previous.phase !== 'authenticated' && previous.phase !== 'failed') {
-      previous.phase = 'cancelled';
-    }
-    if (!previous.abort.signal.aborted) previous.abort.abort(reason);
-    await previous.settlement.catch(() => undefined);
-  }
-
   async #prepareStart(
-    input: { readonly attemptId: string; readonly connectionId: string },
+    input: { readonly attemptId: string; readonly target: OAuthLoginTarget },
     initiatingConnectionId: string,
   ): Promise<OperationOutcome<'oauth.login.start'>> {
     let admitted: Awaited<
       ReturnType<RuntimePolicyStoresWriter['operations']['beginInteractiveOAuthLogin']>
     >;
     try {
-      admitted = await this.#runtimePolicy.operations.beginInteractiveOAuthLogin(
-        input.connectionId,
-      );
+      admitted = await this.#runtimePolicy.operations.beginInteractiveOAuthLogin(input);
     } catch (error) {
       if (error instanceof RuntimePolicyStoreError) {
         return persistenceFailure('OAuth login admission failed');
@@ -341,6 +281,18 @@ export class HostOAuthCoordinator {
     }
     if (admitted.kind === 'connection_not_found') {
       return notFound('OAuth connection was not found');
+    }
+    if (admitted.kind === 'catalog_full') {
+      return operationConflict('OAuth Connection capacity is exhausted');
+    }
+    if (admitted.kind === 'attempt_conflict') {
+      return invalidRequest('OAuth attemptId is already bound to another connection');
+    }
+    if (admitted.kind === 'authenticated') {
+      const terminal = authenticatedAttempt(input.target, input.attemptId, admitted.connection);
+      this.#attempts.set(input.attemptId, terminal);
+      this.#pruneTerminalAttempts();
+      return { ok: true, result: terminal.projection };
     }
     if (admitted.kind !== 'ready') {
       return invalidRequest('Connection cannot start an interactive OAuth login');
@@ -367,7 +319,8 @@ export class HostOAuthCoordinator {
     const attempt: ActiveLoginAttempt = {
       kind: 'active',
       attemptId: input.attemptId,
-      connectionId: input.connectionId,
+      target: input.target,
+      connection: admitted.identity,
       initiatingConnectionId,
       provider: admitted.connection.providerType,
       ticket: admitted,
@@ -385,20 +338,44 @@ export class HostOAuthCoordinator {
     return { ok: true, result: projection(attempt) };
   }
 
-  #query(attemptId: string): Promise<OperationOutcome<'oauth.login.query'>> {
+  async #query(attemptId: string): Promise<OperationOutcome<'oauth.login.query'>> {
     const attempt = this.#attempts.get(attemptId);
-    return Promise.resolve(
-      attempt ? { ok: true, result: projection(attempt) } : notFound('OAuth login was not found'),
-    );
+    if (attempt) return { ok: true, result: projection(attempt) };
+    let durable: Awaited<
+      ReturnType<RuntimePolicyStoresWriter['operations']['queryInteractiveOAuthLogin']>
+    >;
+    try {
+      durable = await this.#runtimePolicy.operations.queryInteractiveOAuthLogin(attemptId);
+    } catch (error) {
+      if (error instanceof RuntimePolicyStoreError) {
+        return persistenceFailure('OAuth login receipt query failed');
+      }
+      throw error;
+    }
+    if (durable.kind === 'not_found') return notFound('OAuth login was not found');
+    const terminal = authenticatedAttempt(durable.target, attemptId, durable.connection);
+    this.#attempts.set(attemptId, terminal);
+    this.#pruneTerminalAttempts();
+    return { ok: true, result: terminal.projection };
   }
 
-  #cancel(attemptId: string): Promise<OperationOutcome<'oauth.login.cancel'>> {
+  async #cancel(attemptId: string): Promise<OperationOutcome<'oauth.login.cancel'>> {
     const attempt = this.#attempts.get(attemptId);
-    if (!attempt) return Promise.resolve(notFound('OAuth login was not found'));
+    if (!attempt) return this.#query(attemptId);
     if (attempt.kind === 'active') {
       this.#requestCancellation(attempt, new DOMException('OAuth login cancelled', 'AbortError'));
     }
-    return Promise.resolve({ ok: true, result: projection(attempt) });
+    return { ok: true, result: projection(attempt) };
+  }
+
+  // The Host owns the enrollment gate: whether a provider may begin an
+  // interactive login is this Host's answer, and only the Host has it. Surfaces
+  // read it to avoid presenting a primary action that a default install refuses.
+  #enrollment(provider: OAuthLoginProvider): Promise<OperationOutcome<'oauth.enrollment.query'>> {
+    return Promise.resolve({
+      ok: true,
+      result: { provider, enabled: this.#isProviderEnabled(provider) },
+    });
   }
 
   #requestCancellation(attempt: ActiveLoginAttempt, reason: Error): void {
@@ -417,12 +394,9 @@ export class HostOAuthCoordinator {
           attempt.ticket.secretMaterial.networkProxy?.secret,
         ),
       );
-      const tokens =
-        attempt.provider === 'xai-oauth'
-          ? await this.#runXaiLogin(attempt, transport.fetch)
-          : attempt.provider === 'openai-codex'
-            ? await this.#runCodexDeviceLogin(attempt, transport.fetch)
-            : await this.#runAuthorizationCodeLogin(attempt, transport.fetch);
+      // Switched rather than defaulted: routing any future provider into an
+      // unrelated device flow must be a compiler error, not a silent default.
+      const tokens = await this.#runProviderLogin(attempt, transport.fetch);
       attempt.abort.signal.throwIfAborted();
       attempt.cancellationDeferred = true;
       attempt.phase = 'committing';
@@ -431,7 +405,11 @@ export class HostOAuthCoordinator {
           attempt.ticket.ticket,
           serializeOAuthSubscriptionTokens(tokens),
         );
-        if (completion.kind !== 'committed') throw new LoginFailure('credential_changed');
+        if (completion.kind !== 'committed') {
+          throw new LoginFailure(
+            completion.changed.includes('connection') ? 'connection_changed' : 'credential_changed',
+          );
+        }
         await this.#invalidateAfterCredentialMutation();
       });
       attempt.phase = 'authenticated';
@@ -454,41 +432,6 @@ export class HostOAuthCoordinator {
         this.#pruneTerminalAttempts();
       }
     }
-  }
-
-  async #runAuthorizationCodeLogin(attempt: ActiveLoginAttempt, fetchFn: typeof fetch) {
-    const provider = attempt.provider;
-    if (provider !== 'claude-subscription') {
-      throw new Error(`Unsupported authorization code provider: ${provider}`);
-    }
-    const verifier = randomOpaqueValue();
-    const state = randomOpaqueValue();
-    const authorization = buildOAuthLoginAuthorization({ provider, verifier, state });
-    const result = await this.#present(attempt, {
-      method: 'request_authorization_code',
-      url: authorization.authorizationUrl,
-      stateHint: state.slice(0, 8),
-    });
-    const pasted = parsePastedAuthorization(result.authorizationCode);
-    if (!pasted || !constantTimeStringEqual(pasted.state, state)) {
-      throw new LoginFailure('authorization_failed');
-    }
-    attempt.abort.signal.throwIfAborted();
-    attempt.cancellationDeferred = true;
-    attempt.phase = 'exchanging';
-    const tokens = await this.#exchangeCode({
-      provider,
-      code: pasted.code,
-      verifier,
-      state,
-      signal: new AbortController().signal,
-      fetchFn,
-      now: this.#now,
-    });
-    if (provider === 'claude-subscription' && tokens.account_uuid === undefined) {
-      throw new LoginFailure('authorization_failed');
-    }
-    return tokens;
   }
 
   async #runCodexDeviceLogin(attempt: ActiveLoginAttempt, fetchFn: typeof fetch) {
@@ -529,6 +472,57 @@ export class HostOAuthCoordinator {
     });
   }
 
+  #runProviderLogin(
+    attempt: ActiveLoginAttempt,
+    fetchFn: typeof fetch,
+  ): Promise<OAuthSubscriptionTokens> {
+    switch (attempt.provider) {
+      case 'xai-oauth':
+        return this.#runXaiLogin(attempt, fetchFn);
+      case 'openai-codex':
+        return this.#runCodexDeviceLogin(attempt, fetchFn);
+      case 'github-copilot':
+        return this.#runGitHubCopilotLogin(attempt, fetchFn);
+    }
+  }
+
+  async #runGitHubCopilotLogin(attempt: ActiveLoginAttempt, fetchFn: typeof fetch) {
+    const authorization = await this.#startGitHubCopilotAuthorization({
+      fetchFn,
+      signal: attempt.abort.signal,
+      now: this.#now,
+    });
+    await this.#present(attempt, {
+      method: 'open_external',
+      url: authorization.verificationUrl,
+      stateHint: authorization.userCode,
+    });
+    attempt.phase = 'exchanging';
+    const tokens = await this.#pollGitHubCopilotAuthorization({
+      authorization,
+      fetchFn,
+      signal: attempt.abort.signal,
+      now: this.#now,
+      onPollAdmission: () => {
+        attempt.cancellationDeferred = true;
+      },
+      onPollRetry: () => {
+        attempt.cancellationDeferred = false;
+        if (attempt.cancelRequested) {
+          this.#requestCancellation(
+            attempt,
+            new DOMException('OAuth login cancelled', 'AbortError'),
+          );
+        }
+      },
+    });
+    // A GitHub account is not a Copilot subscription. Adopt the account only
+    // once the provider says it can reach a model, so the commit below never
+    // stores a credential the connection cannot use.
+    await this.#verifyGitHubCopilotEntitlement({ tokens, fetchFn });
+    return tokens;
+  }
+
   async #runXaiLogin(attempt: ActiveLoginAttempt, fetchFn: typeof fetch) {
     const authorization = await this.#startXaiAuthorization({
       fetchFn,
@@ -561,14 +555,6 @@ export class HostOAuthCoordinator {
     });
   }
 
-  #present(
-    attempt: ActiveLoginAttempt,
-    request: Extract<OAuthPresentationRequest, { readonly method: 'open_external' }>,
-  ): Promise<OAuthPresentationResultForMethod<'open_external'>>;
-  #present(
-    attempt: ActiveLoginAttempt,
-    request: Extract<OAuthPresentationRequest, { readonly method: 'request_authorization_code' }>,
-  ): Promise<OAuthPresentationResultForMethod<'request_authorization_code'>>;
   async #present(
     attempt: ActiveLoginAttempt,
     request: OAuthPresentationRequest,
@@ -583,9 +569,6 @@ export class HostOAuthCoordinator {
         method,
         input,
         signal: attempt.abort.signal,
-        ...(method === 'request_authorization_code'
-          ? { timeoutMs: this.#authorizationTimeoutMs + PRESENTATION_TIMEOUT_MARGIN_MS }
-          : {}),
       });
     } catch (error) {
       if (error instanceof ClientCapabilityInvocationError) {
@@ -639,20 +622,55 @@ function projection(attempt: LoginAttemptRecord): OAuthLoginProjection {
   if (attempt.kind === 'terminal') return attempt.projection;
   return {
     attemptId: attempt.attemptId,
-    connectionId: attempt.connectionId,
-    provider: attempt.provider,
+    connection: attempt.connection,
     phase: attempt.phase,
     ...(attempt.phase === 'failed' ? { failure: attempt.failure ?? 'internal_failure' } : {}),
   };
 }
 
 function terminalAttempt(attempt: ActiveLoginAttempt): TerminalLoginAttempt {
-  return Object.freeze({ kind: 'terminal', projection: Object.freeze(projection(attempt)) });
+  return Object.freeze({
+    kind: 'terminal',
+    target: attempt.target,
+    projection: Object.freeze(projection(attempt)),
+  });
+}
+
+function authenticatedAttempt(
+  target: OAuthLoginTarget,
+  attemptId: string,
+  connection: OAuthLoginProjection['connection'],
+): TerminalLoginAttempt {
+  return Object.freeze({
+    kind: 'terminal',
+    target: structuredClone(target),
+    projection: Object.freeze({
+      attemptId,
+      connection: structuredClone(connection),
+      phase: 'authenticated',
+    }),
+  });
+}
+
+function sameOAuthLoginTarget(actual: OAuthLoginTarget, expected: OAuthLoginTarget): boolean {
+  return (
+    actual.kind === expected.kind &&
+    (actual.kind === 'create'
+      ? expected.kind === 'create' && actual.providerType === expected.providerType
+      : expected.kind === 'existing' && actual.connectionId === expected.connectionId)
+  );
 }
 
 function loginFailureCode(error: unknown): OAuthLoginFailureCode {
   if (error instanceof LoginFailure) return error.code;
   if (error instanceof RuntimePolicyStoreError) return 'persistence_failed';
+  // The account authorized the grant and the provider then refused it: the
+  // login worked, the subscription behind it did not.
+  if (error instanceof GitHubCopilotEntitlementError) return 'provider_rejected';
+  // The provider never answered the entitlement question. Nothing is known
+  // about the subscription, so this is a login that did not complete — the
+  // user retries, they do not go looking for a plan they already have.
+  if (error instanceof GitHubCopilotEntitlementUnavailableError) return 'authorization_failed';
   // A local device window that elapsed without approval is a timeout, not
   // a provider rejection of the account.
   if (error instanceof OAuthDeviceAuthorizationExpiredError) return 'authorization_failed';
@@ -662,22 +680,6 @@ function loginFailureCode(error: unknown): OAuthLoginFailureCode {
       : 'authorization_failed';
   }
   return 'internal_failure';
-}
-
-function randomOpaqueValue(): string {
-  return randomBytes(32).toString('base64url');
-}
-
-function authorizationTimeout(value: number | undefined): number {
-  const timeoutMs = value ?? DEFAULT_AUTHORIZATION_TIMEOUT_MS;
-  if (
-    !Number.isSafeInteger(timeoutMs) ||
-    timeoutMs <= 0 ||
-    timeoutMs > MAX_AUTHORIZATION_TIMEOUT_MS
-  ) {
-    throw new Error('OAuth authorization timeout is invalid');
-  }
-  return timeoutMs;
 }
 
 function isCommitOutcomeUnknown(error: unknown): error is RuntimePolicyStoreError {
@@ -698,6 +700,10 @@ function persistenceFailure(message: string) {
 
 function operationUnavailable(message: string) {
   return { ok: false, error: { code: 'operation_unavailable', message } } as const;
+}
+
+function operationConflict(message: string) {
+  return { ok: false, error: { code: 'operation_conflict', message } } as const;
 }
 
 function hostDraining(): OperationOutcome<'oauth.login.start'> {

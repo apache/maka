@@ -1,10 +1,31 @@
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+
 > **Superseded for file-level coverage:** see [astryx-surface-file-inventory.md](./astryx-surface-file-inventory.md) (one row per product surface file). This document remains the family-level wiki map and fix log from the first alignment pass.
 
 # Astryx alignment inventory
 
 Maps [Astryx wiki](https://github.com/facebook/astryx/wiki) conventions onto
 Maka product surfaces. Severity: **blocker** (raw control when an Astryx twin
-exists / broken hierarchy) · **polish** (off-scale px, density).
+exists / broken hierarchy) · **reimplementation** (a public `@maka/ui` export
+shadows a shipped Astryx component — a review signal, not proof) · **polish**
+(off-scale px, density).
 
 ## Wiki smell checklist (searchable)
 
@@ -15,6 +36,7 @@ exists / broken hierarchy) · **polish** (off-scale px, density).
 | Design · radius | Nested radii not `outer − gap` | Role radii |
 | Design · elevation | Raw `box-shadow` / magic z-index | Elevation tokens |
 | API · Use the System | Raw `<button>` / `<input>` / `<select>` with Astryx twin | `Button`, `TextInput`, `Selector`, `List`/`Item`, `EmptyState`, `Dialog`, `ToggleButton`, `Collapsible`, `SegmentedControl` |
+| API · Use the System | Public `@maka/ui` export whose name shadows a shipped Astryx component (defined locally, not a re-export) | Re-export the Astryx component, or confirm the local one is intentional |
 | Theming | One-off hex for ladder roles | Bridge + product tokens |
 | Container padding | Product padding fighting `--container-padding-*` | Let Card/Section/Layout own inset |
 
@@ -70,7 +92,6 @@ exists / broken hierarchy) · **polish** (off-scale px, density).
 - External import source + session pick → `SegmentedControl` / `Item`.
 - Plan execution expand → Astryx `Collapsible`.
 - Workbar tool picker → Astryx `List` + `ListItem`; visible descriptions and native row interaction.
-- `scripts/check-astryx-alignment.mjs` + unit test gate.
 
 ## Remaining polish (non-blocker)
 - Quote chips / prompt-rail ticks stay product-shaped hit targets.

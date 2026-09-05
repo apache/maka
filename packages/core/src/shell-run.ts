@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 export const SHELL_RUN_STATUSES = [
   'starting',
   'running',
@@ -50,6 +69,13 @@ const PTY_CURSOR_KEYS = new Set(['x', 'y', 'visible']);
 export type ShellRunTerminalStatus = (typeof SHELL_RUN_TERMINAL_STATUSES)[number];
 export type ShellRunActiveStatus = (typeof SHELL_RUN_ACTIVE_STATUSES)[number];
 export type ShellMode = 'pipes' | 'pty';
+
+/**
+ * Determines whether a runtime shell resource may be summarized to the model.
+ * User-owned interactive terminals remain observable to their attached Client,
+ * but their command stream and output are not part of an agent turn.
+ */
+export type ShellRunVisibility = 'model' | 'user';
 
 export interface PipeShellOutput {
   mode: 'pipes';
@@ -106,6 +132,8 @@ export interface ShellRunRecord {
   sourceRunId?: string;
   sourceTurnId: string;
   sourceToolCallId: string;
+  /** Defaults to `model` for model-initiated Bash runs. */
+  visibility?: ShellRunVisibility;
   cwd: string;
   command: string;
   status: ShellRunStatus;
@@ -119,7 +147,7 @@ export interface ShellRunRecord {
   observedAt?: number;
   output: ShellOutput;
   sandboxExecution?: {
-    type: 'none' | 'macos-seatbelt' | 'linux';
+    type: 'none' | 'macos-seatbelt' | 'linux' | 'windows';
     enforced: boolean;
   };
   sandboxEscalation?: {
@@ -270,8 +298,7 @@ export function isValidShellRunState(value: {
  * Store-independent ShellRun invariants.
  *
  * Every ShellRunStore has to enforce the same shape, patch, and transition
- * rules — the SQLite store persists across processes, the headless in-memory
- * store lives for one benchmark task — and ShellRunProcessManager reads those
+ * rules — regardless of storage medium — and ShellRunProcessManager reads those
  * rules back as behaviour (monotonic revisions, immutable terminal outcomes).
  * They live here so a second store is a storage-medium change, not a second
  * copy of the state machine.
@@ -294,6 +321,7 @@ const SHELL_RUN_RECORD_KEYS: ReadonlySet<string> = new Set([
   'sourceRunId',
   'sourceTurnId',
   'sourceToolCallId',
+  'visibility',
   'cwd',
   'command',
   'status',
@@ -346,6 +374,9 @@ export function normalizeShellRunRecord(
     hasOnlyKeys(record, SHELL_RUN_RECORD_KEYS) &&
     requiredStrings.every((item) => typeof item === 'string') &&
     isShellRunSourceToolCallId(record.sourceToolCallId) &&
+    (record.visibility === undefined ||
+      record.visibility === 'model' ||
+      record.visibility === 'user') &&
     record.sessionId === sessionId &&
     record.shellRunId === shellRunId &&
     isShellRunStatus(record.status) &&
@@ -460,7 +491,8 @@ function isShellRunSandboxExecution(value: unknown): boolean {
   return (
     (execution.type === 'none' ||
       execution.type === 'macos-seatbelt' ||
-      execution.type === 'linux') &&
+      execution.type === 'linux' ||
+      execution.type === 'windows') &&
     typeof execution.enforced === 'boolean' &&
     execution.enforced === (execution.type !== 'none')
   );
@@ -488,6 +520,7 @@ function canonicalShellRunRecord(record: ShellRunRecord): ShellRunRecord {
     ...(record.sourceRunId !== undefined ? { sourceRunId: record.sourceRunId } : {}),
     sourceTurnId: record.sourceTurnId,
     sourceToolCallId: record.sourceToolCallId,
+    ...(record.visibility !== undefined ? { visibility: record.visibility } : {}),
     cwd: record.cwd,
     command: record.command,
     status: record.status,

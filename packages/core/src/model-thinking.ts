@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * Controllable thinking level for reasoning-capable models.
  *
@@ -85,9 +104,7 @@ export interface ThinkingOptions {
  * `ThinkingLevel`) are dropped. Returns `[]` for models with no declared
  * options (miss → no thinking menu, fallback default).
  */
-export function deriveThinkingChoices(
-  options: ThinkingOptions | undefined,
-): readonly ThinkingLevel[] {
+function deriveThinkingChoices(options: ThinkingOptions | undefined): readonly ThinkingLevel[] {
   if (!options) return [];
   const choices = new Set<ThinkingLevel>();
   if (options.offBehavior) choices.add('off');
@@ -101,26 +118,42 @@ export function deriveThinkingChoices(
 }
 
 /**
- * One model behind an `openai-compatible` relay, as declared by the user:
- * the facts neither the relay's /models report nor built-in metadata can be
- * trusted to know. Every field is independent, and every ABSENT field means
- * "Auto" — the /models report and the metadata chain decide. The single
- * exception in shape, not spirit, is `vision: false`: an explicit DISABLE
- * that overrides Auto, because the runtime would otherwise believe a vision
- * report the relay may emit regardless.
+ * One model as declared by the user: the facts no other source can be trusted
+ * to know. Every field is independent, and every ABSENT field means "Auto" —
+ * the provider's /models report and the metadata chain decide. The single
+ * exception in shape, not spirit, is `vision: false`: an explicit DISABLE that
+ * overrides Auto, because the runtime would otherwise believe a vision report
+ * the provider may emit regardless.
  *
- * Profiles live on the connection as a first-class typed field
- * (`relayModelProfiles`, keyed by model id): relay models are unknown to
- * `model-metadata.ts` and a catalog refresh rewrites `models[]` rows, so
- * declarations sit next to the user-edited connection fields. Two invariants
- * are enforced at the store boundaries — profiles exist only for
- * `openai-compatible` connections, and only for models in `enabledModelIds`
- * (disabling a model deletes its profile).
+ * Declarations live on the connection as a first-class typed field
+ * (`relayModelProfiles`, keyed by model id) rather than on the `models[]` rows
+ * a catalog refresh rewrites, so they sit next to the user-edited connection
+ * fields and survive it.
+ *
+ * The name is historical, and the table now splits by FIELD rather than by
+ * provider. `contextWindow` and `vision` state facts about a model: a relay's
+ * models are unknown to `model-metadata.ts`, but so is any model newer than
+ * the bundled snapshot on any provider, and a provider without a model-list
+ * endpoint cannot describe one either. Confining those to relays left the user
+ * no way to state a context window Maka had no other way to learn (#1584).
+ *
+ * `thinkingLevels` and `serviceTier` stay relay-only: they name wire features
+ * (`reasoning_effort` tiers, priority processing) that only the
+ * OpenAI-compatible relays accept. `assertProfileFieldsFitProvider` in the
+ * catalog codec is the write seam that enforces it, so reads here do not
+ * re-derive it; `supportsRelayFastServiceTier` below is a narrower read-side
+ * question — which relay MODELS carry the tier.
+ *
+ * One invariant is still enforced at the store boundaries: declarations exist
+ * only for models in `enabledModelIds` (disabling a model deletes its
+ * declaration).
  */
 export interface RelayModelProfile {
   readonly thinkingLevels?: readonly ThinkingLevel[];
   readonly vision?: boolean;
   readonly contextWindow?: number;
+  /** Use OpenAI's low-latency service tier for this relay model. */
+  readonly serviceTier?: 'fast';
 }
 
 export type RelayModelProfiles = Readonly<Record<string, RelayModelProfile>>;
@@ -135,6 +168,7 @@ function normalizeRelayModelProfile(entry: unknown): RelayModelProfile | undefin
     thinkingLevels?: readonly ThinkingLevel[];
     vision?: boolean;
     contextWindow?: number;
+    serviceTier?: 'fast';
   } = {};
   if (Array.isArray(entry.thinkingLevels)) {
     // Declared levels are filtered to the declarable vocabulary, not merely
@@ -166,6 +200,7 @@ function normalizeRelayModelProfile(entry: unknown): RelayModelProfile | undefin
   ) {
     declared.contextWindow = entry.contextWindow;
   }
+  if (entry.serviceTier === 'fast') declared.serviceTier = 'fast';
   return Object.keys(declared).length > 0 ? (declared as RelayModelProfile) : undefined;
 }
 
@@ -220,10 +255,9 @@ export interface ConnectionThinkingContext {
 }
 
 /**
- * The one gated read seam for relay profiles. Profiles are an
- * `openai-compatible` feature — on every other provider the metadata chain
- * is the truth — and thinking, vision, and context window reads all enter
- * through here so the gate cannot leak. Entries ride through
+ * The one read seam for user declarations: thinking, vision, and context
+ * window reads all enter through here, so the precedence of a declaration over
+ * the metadata chain is decided in exactly one place. Entries ride through
  * `normalizeRelayModelProfile` so even a hand-edited local file degrades to
  * Auto instead of trusting a malformed field.
  */
@@ -231,12 +265,63 @@ export function relayModelProfile(
   connection: ConnectionThinkingContext,
   modelId: string,
 ): RelayModelProfile | undefined {
-  if (connection.providerType !== 'openai-compatible') return undefined;
   return normalizeRelayModelProfile(connection.relayModelProfiles?.[modelId]);
 }
 
+/** The connection fields the declared-window rule reads; structural so runtime and UI projections both fit. */
+export interface DeclaredContextWindowContext extends ConnectionThinkingContext {
+  readonly models?: readonly {
+    readonly id: string;
+    readonly contextWindow?: number;
+    readonly inputLimit?: number;
+    readonly factOverriddenFields?: readonly string[];
+  }[];
+}
+
 /**
- * `openai-compatible` connections declare thinking support **per model** via
+ * The context window the USER declared for a model — the Maka window: the
+ * proactive compaction target, and nothing else. Exactly two sources count as
+ * a declaration: a model-facts pin (`factOverriddenFields` includes
+ * `contextWindow`, narrowest of window/input limit) and a relay model profile.
+ * A provider's `/models` report and generated metadata describe the model and
+ * are shown as a hint; they never become a threshold on their own. This is the
+ * single owner of that rule for runtime and UI (#4559).
+ */
+export function declaredContextWindow(
+  connection: DeclaredContextWindowContext,
+  modelId: string,
+): number | undefined {
+  const model = connection.models?.find((candidate) => candidate.id === modelId);
+  if (model?.factOverriddenFields?.includes('contextWindow')) {
+    const values = [model.contextWindow, model.inputLimit].filter(
+      (value): value is number => typeof value === 'number' && Number.isFinite(value) && value > 0,
+    );
+    return values.length > 0 ? Math.min(...values) : undefined;
+  }
+  return relayModelProfile(connection, modelId)?.contextWindow;
+}
+
+/**
+ * Mirrors @ai-sdk/openai@4.0.42 priority-processing detection. The UI and
+ * runtime share this gate so a saved Fast declaration always reaches the wire.
+ */
+export function supportsRelayFastServiceTier(providerType: ProviderType, modelId: string): boolean {
+  if (providerType !== 'openai-responses-compatible') return false;
+  const oSeriesVersion = /^o(\d+)(?:-|$)/.exec(modelId)?.[1];
+  const gptMatch = /^gpt-(\d+)(?:\.(\d+))?(?:-(.+))?$/.exec(modelId);
+  const gptMajor = gptMatch?.[1] === undefined ? undefined : Number(gptMatch[1]);
+  const gptVariant = gptMatch?.[3];
+  const isGptNanoModel = gptVariant?.startsWith('nano') ?? false;
+  const isGptChatModel = gptVariant?.startsWith('chat') ?? false;
+  return (
+    modelId.startsWith('gpt-4') ||
+    (gptMajor !== undefined && gptMajor >= 5 && !isGptNanoModel && !isGptChatModel) ||
+    (oSeriesVersion !== undefined && Number(oSeriesVersion) >= 3)
+  );
+}
+
+/**
+ * OpenAI-compatible relay connections declare thinking support **per model** via
  * `relayModelProfiles[modelId].thinkingLevels` — a relay may front a
  * DeepSeek-family reasoner and a plain instruct model side by side, so the
  * declaration granularity is the model, not the connection. Without a usable

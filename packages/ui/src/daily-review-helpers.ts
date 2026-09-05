@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * Pure helpers backing the DailyReviewPanel — formatters, error
  * mappers, and the Markdown serializer.
@@ -22,9 +41,11 @@ import type {
   DailyReviewArchiveSummary,
   DailyReviewRange,
   DailyReviewSummary,
-  UiLocale,
-} from '@maka/core';
-import { generalizedErrorMessage, generalizedErrorMessageChinese, uiLocaleToIntlLocale } from '@maka/core';
+} from '@maka/core/daily-review';
+
+import type { UiLocale } from '@maka/core/ui-locale';
+import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
+import { uiLocaleToIntlLocale } from '@maka/core/ui-locale';
 import { getDailyReviewCopy } from './daily-review-copy.js';
 
 export function dailyReviewScopeKey(offsetDays: number, range: DailyReviewRange): string {
@@ -33,9 +54,7 @@ export function dailyReviewScopeKey(offsetDays: number, range: DailyReviewRange)
 
 export function dailyReviewPanelErrorMessage(error: unknown, locale: UiLocale): string {
   const fallback = getDailyReviewCopy(locale).errorFallback;
-  return locale === 'zh'
-    ? generalizedErrorMessageChinese(error, fallback)
-    : generalizedErrorMessage(error, fallback);
+  return generalizedErrorMessageForLocale(error, fallback, locale);
 }
 
 export function formatDailyReviewArchiveTitle(

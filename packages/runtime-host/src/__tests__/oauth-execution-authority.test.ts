@@ -1,3 +1,23 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { open, writeFile, mkdtemp, rm } from 'node:fs/promises';
@@ -6,10 +26,11 @@ import { join } from 'node:path';
 import { mock, test } from 'node:test';
 import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import {
+  GITHUB_COPILOT_NON_EXPIRING_AT,
   serializeOAuthSubscriptionTokens,
   type OAuthSubscriptionTokens,
-  type ProxiedFetchTransport,
-} from '@maka/runtime';
+} from '@maka/runtime/subscription-credentials';
+import { type ProxiedFetchTransport } from '@maka/runtime/network/scoped-fetch-transport';
 import {
   openInteractiveRuntimePolicyStoresForWrite,
   type RuntimePolicyCredentialMaterial,
@@ -25,28 +46,75 @@ import {
 
 const CONNECTION_SLUG = 'host-oauth-execution';
 const MODEL_ID = 'gpt-5';
-const CLAUDE_TOKEN_ENDPOINT = 'https://platform.claude.com/v1/oauth/token';
 const CODEX_TOKEN_ENDPOINT = 'https://auth.openai.com/oauth/token';
+const COPILOT_TOKEN_ENDPOINT = 'https://github.com/login/oauth/access_token';
 const FIXED_NOW = 1_785_600_000_000;
 
 test('one OAuth generation singleflights refresh and persists its lease with canonical CAS', async () => {
-  await withCopilotCredential(expiredTokens('access-v1'), async (fixture) => {
+  await withCopilotCredential(expiredTokens('gho_access_v1'), async (fixture) => {
+    const before = fixture.material;
+    let refreshes = 0;
+    const binding = fixture.authority.bind({
+      providerType: 'github-copilot',
+      connectionId: connectionId(before),
+      connectionSlug: CONNECTION_SLUG,
+      material: before,
+      createRefreshTransport: () =>
+        testRefreshTransport(async () => {
+          refreshes += 1;
+          return Response.json({
+            access_token: 'gho_access_v2',
+            refresh_token: 'ghr_renewal_v2',
+            expires_in: 28_800,
+          });
+        }),
+    });
+
+    const [first, second] = await Promise.all([binding.resolve(), binding.resolve()]);
+
+    // Two resolves, one refresh grant spent: the second rides the first.
+    assert.equal(refreshes, 1);
+    assert.equal(first.access_token, 'gho_access_v2');
+    assert.equal(first.refresh_token, 'ghr_renewal_v2');
+    assert.deepEqual(second, first);
+    const after = await readMaterial(fixture.stores);
+    assert.equal(after.credentialId, before.credentialId);
+    assert.equal(after.revision, before.revision + 2);
+    assert.notEqual(after.secret, before.secret);
+  });
+});
+
+test('a GitHub account token with no declared lifetime refreshes without provider I/O', async () => {
+  await withCopilotCredential(nonExpiringCopilotTokens('gho_durable'), async (fixture) => {
     const before = fixture.material;
     const binding = fixture.authority.bind({
       providerType: 'github-copilot',
+      connectionId: connectionId(before),
       connectionSlug: CONNECTION_SLUG,
       material: before,
       createRefreshTransport: () => testRefreshTransport(unexpectedFetch),
     });
 
-    const [first, second] = await Promise.all([binding.resolve(), binding.resolve()]);
-
-    assert.deepEqual(first, expiredTokens('access-v1'));
-    assert.deepEqual(second, first);
+    assert.deepEqual(await binding.resolve(), nonExpiringCopilotTokens('gho_durable'));
     const after = await readMaterial(fixture.stores);
-    assert.equal(after.credentialId, before.credentialId);
-    assert.equal(after.revision, before.revision + 2);
     assert.equal(after.secret, before.secret);
+  });
+});
+
+test('rejects OAuth material from a different bound Connection entity', async () => {
+  await withCopilotCredential(currentTokens('access-v1'), async (fixture) => {
+    assert.throws(
+      () =>
+        fixture.authority.bind({
+          providerType: 'github-copilot',
+          connectionId: '11111111-1111-4111-8111-111111111111',
+          connectionSlug: CONNECTION_SLUG,
+          material: fixture.material,
+          createRefreshTransport: () => testRefreshTransport(unexpectedFetch),
+        }),
+      (error: unknown) =>
+        error instanceof OAuthExecutionCredentialError && error.code === 'persistence_failed',
+    );
   });
 });
 
@@ -54,6 +122,7 @@ test('an active OAuth binding cannot use a credential generation replaced by the
   await withCopilotCredential(currentTokens('old-access'), async (fixture) => {
     const oldBinding = fixture.authority.bind({
       providerType: 'github-copilot',
+      connectionId: connectionId(fixture.material),
       connectionSlug: CONNECTION_SLUG,
       material: fixture.material,
       createRefreshTransport: () => testRefreshTransport(unexpectedFetch),
@@ -71,6 +140,7 @@ test('an active OAuth binding cannot use a credential generation replaced by the
     const replacementMaterial = await readMaterial(fixture.stores);
     const newBinding = fixture.authority.bind({
       providerType: 'github-copilot',
+      connectionId: connectionId(replacementMaterial),
       connectionSlug: CONNECTION_SLUG,
       material: replacementMaterial,
       createRefreshTransport: () => testRefreshTransport(unexpectedFetch),
@@ -86,64 +156,6 @@ test('an active OAuth binding cannot use a credential generation replaced by the
     assert.equal(canonical.secret, replacementMaterial.secret);
     assert.equal(canonical.revision, replacementMaterial.revision);
   });
-});
-
-test('a rotated Claude token crosses canonical CAS into request auth and identity', async () => {
-  await withSeededOAuthCredential(
-    'claude-subscription',
-    expiredTokens('access-v1', 'account-v1'),
-    async (fixture) => {
-      const observed: Array<{ headers: Headers; body: Record<string, unknown> }> = [];
-      let refreshCalls = 0;
-      const providerFetch: typeof fetch = async (url, init) => {
-        if (String(url) === CLAUDE_TOKEN_ENDPOINT) {
-          refreshCalls += 1;
-          return claudeRefreshResponse('access-v2', 'refresh-v2', 'account-v2');
-        }
-        observed.push({
-          headers: new Headers(init?.headers),
-          body: JSON.parse(String(init?.body)) as Record<string, unknown>,
-        });
-        return Response.json({ ok: true });
-      };
-      const binding = fixture.authority.bind({
-        providerType: 'claude-subscription',
-        connectionSlug: CONNECTION_SLUG,
-        material: fixture.material,
-        createRefreshTransport: () => testRefreshTransport(providerFetch),
-      });
-
-      const initialTokens = await binding.resolve();
-      const modelFetch = createHostOAuthModelFetch({
-        binding,
-        initialTokens,
-        connection: claudeConnection(),
-        sessionId: 'rotation-session',
-        modelId: 'claude-sonnet-4-5',
-        claudeDeviceId: 'b'.repeat(64),
-        fetchFn: providerFetch,
-      });
-      await modelFetch('https://api.anthropic.com/v1/messages', claudeRequest());
-
-      assert.equal(refreshCalls, 1);
-      assert.equal(observed[0]?.headers.get('authorization'), 'Bearer access-v2');
-      assert.deepEqual(claudeIdentity(observed[0]?.body), {
-        device_id: 'b'.repeat(64),
-        account_uuid: 'account-v2',
-        session_id: 'rotation-session',
-      });
-      const canonical = await readMaterial(fixture.stores);
-      assert.deepEqual(JSON.parse(canonical.secret), {
-        access_token: 'access-v2',
-        refresh_token: 'refresh-v2',
-        expires_at: FIXED_NOW + 3_600_000,
-        account_uuid: 'account-v2',
-      });
-      assert.equal(canonical.revision, fixture.material.revision + 2);
-      assert.equal((await binding.resolve()).access_token, initialTokens.access_token);
-      assert.equal(refreshCalls, 1);
-    },
-  );
 });
 
 test('request abort stops waiting for shared OAuth resolution without dispatching the model call', async () => {
@@ -168,7 +180,6 @@ test('request abort stops waiting for shared OAuth resolution without dispatchin
     },
     sessionId: 'abort-session',
     modelId: 'gpt-5.6-sol',
-    claudeDeviceId: 'unused',
     fetchFn: async () => {
       modelCalls += 1;
       return Response.json({ ok: true });
@@ -204,15 +215,16 @@ test('request abort stops waiting for shared OAuth resolution without dispatchin
 
 test('reconciles a published OAuth lease claim before the next demand', async () => {
   await withSeededOAuthCredential(
-    'claude-subscription',
+    'openai-codex',
     expiredTokens('claim-v1', 'account-v1'),
     async (fixture) => {
       let refreshCalls = 0;
-      const providerFetch = successfulClaudeRefresh(() => {
+      const providerFetch = successfulCodexRefresh(() => {
         refreshCalls += 1;
       });
       const binding = fixture.authority.bind({
-        providerType: 'claude-subscription',
+        providerType: 'openai-codex',
+        connectionId: connectionId(fixture.material),
         connectionSlug: CONNECTION_SLUG,
         material: fixture.material,
         createRefreshTransport: () => testRefreshTransport(providerFetch),
@@ -224,16 +236,18 @@ test('reconciles a published OAuth lease claim before the next demand', async ()
           await assert.rejects(() => binding.resolve(), isOAuthError('persistence_failed'));
         });
         assert.equal(refreshCalls, 0);
+        const secondMaterial = await readMaterial(fixture.stores);
         const secondBinding = fixture.authority.bind({
-          providerType: 'claude-subscription',
+          providerType: 'openai-codex',
+          connectionId: connectionId(secondMaterial),
           connectionSlug: CONNECTION_SLUG,
-          material: await readMaterial(fixture.stores),
+          material: secondMaterial,
           createRefreshTransport: () => testRefreshTransport(providerFetch),
         });
         leaseNow += 30_001;
         const [first, second] = await Promise.all([binding.resolve(), secondBinding.resolve()]);
-        assert.equal(first.access_token, 'access-v2');
-        assert.equal(second.access_token, 'access-v2');
+        assert.equal(first.access_token, codexAccessToken('account-v2'));
+        assert.equal(second.access_token, codexAccessToken('account-v2'));
         assert.equal(refreshCalls, 1);
       } finally {
         nowMock.mock.restore();
@@ -244,15 +258,16 @@ test('reconciles a published OAuth lease claim before the next demand', async ()
 
 test('reconciles a published OAuth refresh finalization before the next demand', async () => {
   await withSeededOAuthCredential(
-    'claude-subscription',
+    'openai-codex',
     expiredTokens('finalize-v1', 'account-v1'),
     async (fixture) => {
       let refreshCalls = 0;
-      const providerFetch = successfulClaudeRefresh(() => {
+      const providerFetch = successfulCodexRefresh(() => {
         refreshCalls += 1;
       });
       const binding = fixture.authority.bind({
-        providerType: 'claude-subscription',
+        providerType: 'openai-codex',
+        connectionId: connectionId(fixture.material),
         connectionSlug: CONNECTION_SLUG,
         material: fixture.material,
         createRefreshTransport: () => testRefreshTransport(providerFetch),
@@ -261,7 +276,7 @@ test('reconciles a published OAuth refresh finalization before the next demand',
       await withPublishedSyncFailure(fixture.root, 4, async () => {
         await assert.rejects(() => binding.resolve(), isOAuthError('persistence_failed'));
       });
-      assert.equal((await binding.resolve()).access_token, 'access-v2');
+      assert.equal((await binding.resolve()).access_token, codexAccessToken('account-v2'));
       assert.equal(refreshCalls, 1);
     },
   );
@@ -269,19 +284,24 @@ test('reconciles a published OAuth refresh finalization before the next demand',
 
 test('reconciles a published OAuth lease release before retrying refresh', async () => {
   await withSeededOAuthCredential(
-    'claude-subscription',
+    'openai-codex',
     expiredTokens('release-v1', 'account-v1'),
     async (fixture) => {
       let refreshCalls = 0;
       const providerFetch: typeof fetch = async (url) => {
-        assert.equal(String(url), CLAUDE_TOKEN_ENDPOINT);
+        assert.equal(String(url), CODEX_TOKEN_ENDPOINT);
         refreshCalls += 1;
         return refreshCalls === 1
           ? Response.json({ error: 'temporary failure' }, { status: 503 })
-          : claudeRefreshResponse('access-v2', 'refresh-v2', 'account-v2');
+          : Response.json({
+              access_token: codexAccessToken('account-v2'),
+              refresh_token: 'refresh-v2',
+              expires_in: 3_600,
+            });
       };
       const binding = fixture.authority.bind({
-        providerType: 'claude-subscription',
+        providerType: 'openai-codex',
+        connectionId: connectionId(fixture.material),
         connectionSlug: CONNECTION_SLUG,
         material: fixture.material,
         createRefreshTransport: () => testRefreshTransport(providerFetch),
@@ -290,66 +310,10 @@ test('reconciles a published OAuth lease release before retrying refresh', async
       await withPublishedSyncFailure(fixture.root, 4, async () => {
         await assert.rejects(() => binding.resolve(), isOAuthError('persistence_failed'));
       });
-      assert.equal((await binding.resolve()).access_token, 'access-v2');
+      assert.equal((await binding.resolve()).access_token, codexAccessToken('account-v2'));
       assert.equal(refreshCalls, 2);
     },
   );
-});
-
-test('each Claude request uses one current token snapshot for auth and cloak identity', async () => {
-  const observed: Array<{ headers: Headers; body: Record<string, unknown> }> = [];
-  let tokens = currentTokens('access-v1', 'account-v1');
-  const binding: HostOAuthExecutionBinding = {
-    providerType: 'claude-subscription',
-    connectionSlug: CONNECTION_SLUG,
-    resolve: async () => tokens,
-  };
-  const modelFetch = createHostOAuthModelFetch({
-    binding,
-    initialTokens: tokens,
-    connection: claudeConnection(),
-    sessionId: 'session-v1',
-    modelId: 'claude-sonnet-4-5',
-    claudeDeviceId: 'a'.repeat(64),
-    fetchFn: async (_url, init) => {
-      observed.push({
-        headers: new Headers(init?.headers),
-        body: JSON.parse(String(init?.body)) as Record<string, unknown>,
-      });
-      return Response.json({ ok: true });
-    },
-  });
-  const request = {
-    method: 'POST',
-    headers: {
-      authorization: 'Bearer stale-sdk-token',
-      'x-api-key': 'stale-sdk-token',
-    },
-    body: JSON.stringify({
-      stream: false,
-      system: 'Use the Host prompt.',
-      messages: [{ role: 'user', content: 'hello' }],
-    }),
-  } satisfies RequestInit;
-
-  await modelFetch('https://api.anthropic.com/v1/messages', request);
-  tokens = currentTokens('access-v2', 'account-v2');
-  await modelFetch('https://api.anthropic.com/v1/messages', request);
-
-  assert.equal(observed.length, 2);
-  assert.equal(observed[0]?.headers.get('authorization'), 'Bearer access-v1');
-  assert.equal(observed[1]?.headers.get('authorization'), 'Bearer access-v2');
-  for (const item of observed) assert.equal(item.headers.get('x-api-key'), null);
-  assert.deepEqual(claudeIdentity(observed[0]?.body), {
-    device_id: 'a'.repeat(64),
-    account_uuid: 'account-v1',
-    session_id: 'session-v1',
-  });
-  assert.deepEqual(claudeIdentity(observed[1]?.body), {
-    device_id: 'a'.repeat(64),
-    account_uuid: 'account-v2',
-    session_id: 'session-v1',
-  });
 });
 
 test('Codex request auth and account identity advance from the same token snapshot', async () => {
@@ -370,7 +334,6 @@ test('Codex request auth and account identity advance from the same token snapsh
     },
     sessionId: 'codex-session',
     modelId: 'gpt-5.6-sol',
-    claudeDeviceId: 'unused',
     fetchFn: async (_url, init) => {
       observed.push(new Headers(init?.headers));
       return Response.json({ ok: true });
@@ -418,6 +381,7 @@ test('a Codex 401 force-refreshes canonical credentials and replays once', async
     };
     const binding = fixture.authority.bind({
       providerType: 'openai-codex',
+      connectionId: connectionId(fixture.material),
       connectionSlug: CONNECTION_SLUG,
       material: fixture.material,
       createRefreshTransport: () => testRefreshTransport(providerFetch),
@@ -433,7 +397,6 @@ test('a Codex 401 force-refreshes canonical credentials and replays once', async
       },
       sessionId: 'codex-401-session',
       modelId: 'gpt-5.6-sol',
-      claudeDeviceId: 'unused',
       fetchFn: providerFetch,
     });
 
@@ -463,6 +426,7 @@ test('concurrent forced refreshes join one Host credential refresh', async () =>
     let refreshCalls = 0;
     const binding = fixture.authority.bind({
       providerType: 'openai-codex',
+      connectionId: connectionId(fixture.material),
       connectionSlug: CONNECTION_SLUG,
       material: fixture.material,
       createRefreshTransport: () =>
@@ -489,6 +453,182 @@ test('concurrent forced refreshes join one Host credential refresh', async () =>
     assert.equal(firstTokens.access_token, refreshedAccess);
     assert.equal(secondTokens.access_token, refreshedAccess);
   });
+});
+
+test('a GitHub Copilot 401 force-refreshes canonical credentials and replays once', async () => {
+  const staleAccess = 'gho_account_v1';
+  const refreshedAccess = 'gho_account_v2';
+  await withSeededOAuthCredential(
+    'github-copilot',
+    expiringCopilotTokens(staleAccess),
+    async (fixture) => {
+      let refreshCalls = 0;
+      const modelHeaders: Headers[] = [];
+      const providerFetch: typeof fetch = async (url, init) => {
+        if (String(url) === COPILOT_TOKEN_ENDPOINT) {
+          refreshCalls += 1;
+          return Response.json({
+            access_token: refreshedAccess,
+            refresh_token: 'ghr_rotated',
+            expires_in: 28_800,
+          });
+        }
+        modelHeaders.push(new Headers(init?.headers));
+        return modelHeaders.length === 1
+          ? Response.json({ message: 'Bad credentials' }, { status: 401 })
+          : Response.json({ ok: true });
+      };
+      const binding = fixture.authority.bind({
+        providerType: 'github-copilot',
+        connectionId: connectionId(fixture.material),
+        connectionSlug: CONNECTION_SLUG,
+        material: fixture.material,
+        createRefreshTransport: () => testRefreshTransport(providerFetch),
+      });
+      const initialTokens = await binding.resolve();
+      const modelFetch = createHostOAuthModelFetch({
+        binding,
+        initialTokens,
+        connection: {
+          slug: CONNECTION_SLUG,
+          providerType: 'github-copilot',
+          defaultModel: MODEL_ID,
+        },
+        sessionId: 'copilot-401-session',
+        modelId: MODEL_ID,
+        fetchFn: providerFetch,
+      });
+
+      const response = await modelFetch('https://api.githubcopilot.com/chat/completions', {
+        method: 'POST',
+        body: JSON.stringify({ messages: [] }),
+      });
+
+      assert.equal(response.ok, true);
+      assert.equal(refreshCalls, 1);
+      assert.equal(modelHeaders.length, 2);
+      assert.equal(modelHeaders[1]?.get('authorization'), `Bearer ${refreshedAccess}`);
+      // The replay is the same Copilot request, editor headers included.
+      assert.equal(modelHeaders[1]?.get('copilot-integration-id'), 'vscode-chat');
+      const canonical = JSON.parse(
+        (await readMaterial(fixture.stores)).secret,
+      ) as OAuthSubscriptionTokens;
+      assert.equal(canonical.access_token, refreshedAccess);
+      assert.equal(canonical.refresh_token, 'ghr_rotated');
+    },
+  );
+});
+
+test('a caller who cancels during the post-401 refresh is released, not made to wait', async () => {
+  await withSeededOAuthCredential(
+    'github-copilot',
+    expiringCopilotTokens('gho_account_v1'),
+    async (fixture) => {
+      const refreshBlocked = deferred<Response>();
+      let refreshRequests = 0;
+      const modelHeaders: Headers[] = [];
+      const providerFetch: typeof fetch = async (url, init) => {
+        if (String(url) === COPILOT_TOKEN_ENDPOINT) {
+          refreshRequests += 1;
+          return refreshBlocked.promise;
+        }
+        modelHeaders.push(new Headers(init?.headers));
+        return Response.json({ message: 'Bad credentials' }, { status: 401 });
+      };
+      const binding = fixture.authority.bind({
+        providerType: 'github-copilot',
+        connectionId: connectionId(fixture.material),
+        connectionSlug: CONNECTION_SLUG,
+        material: fixture.material,
+        createRefreshTransport: () => testRefreshTransport(providerFetch),
+      });
+      const modelFetch = createHostOAuthModelFetch({
+        binding,
+        initialTokens: await binding.resolve(),
+        connection: {
+          slug: CONNECTION_SLUG,
+          providerType: 'github-copilot',
+          defaultModel: MODEL_ID,
+        },
+        sessionId: 'copilot-401-cancel-session',
+        modelId: MODEL_ID,
+        fetchFn: providerFetch,
+      });
+
+      const controller = new AbortController();
+      const reason = new Error('run stopped');
+      const request = modelFetch('https://api.githubcopilot.com/chat/completions', {
+        method: 'POST',
+        signal: controller.signal,
+        body: JSON.stringify({ messages: [] }),
+      });
+      // Let the 401 land and the refresh begin before the user gives up.
+      await waitFor(() => refreshRequests === 1);
+      controller.abort(reason);
+
+      await assert.rejects(request, (error) => error === reason);
+      // One model request: the replay never went out on a cancelled turn.
+      assert.equal(modelHeaders.length, 1);
+      // The refresh is left to settle rather than stranding a spent grant.
+      refreshBlocked.resolve(
+        Response.json({
+          access_token: 'gho_account_v2',
+          refresh_token: 'ghr_rotated',
+          expires_in: 28_800,
+        }),
+      );
+      await waitFor(async () => {
+        const canonical = JSON.parse(
+          (await readMaterial(fixture.stores)).secret,
+        ) as OAuthSubscriptionTokens;
+        return canonical.access_token === 'gho_account_v2';
+      });
+    },
+  );
+});
+
+test('a GitHub 401 on a non-expiring account token is not replayed with the same token', async () => {
+  await withSeededOAuthCredential(
+    'github-copilot',
+    nonExpiringCopilotTokens('gho_durable'),
+    async (fixture) => {
+      const modelHeaders: Headers[] = [];
+      const providerFetch: typeof fetch = async (url, init) => {
+        // GitHub issues no refresh grant for this record, so any call to the
+        // token endpoint here would be a request that cannot help.
+        assert.notEqual(String(url), COPILOT_TOKEN_ENDPOINT);
+        modelHeaders.push(new Headers(init?.headers));
+        return Response.json({ message: 'Bad credentials' }, { status: 401 });
+      };
+      const binding = fixture.authority.bind({
+        providerType: 'github-copilot',
+        connectionId: connectionId(fixture.material),
+        connectionSlug: CONNECTION_SLUG,
+        material: fixture.material,
+        createRefreshTransport: () => testRefreshTransport(providerFetch),
+      });
+      const modelFetch = createHostOAuthModelFetch({
+        binding,
+        initialTokens: await binding.resolve(),
+        connection: {
+          slug: CONNECTION_SLUG,
+          providerType: 'github-copilot',
+          defaultModel: MODEL_ID,
+        },
+        sessionId: 'copilot-401-durable-session',
+        modelId: MODEL_ID,
+        fetchFn: providerFetch,
+      });
+
+      const response = await modelFetch('https://api.githubcopilot.com/chat/completions', {
+        method: 'POST',
+        body: JSON.stringify({ messages: [] }),
+      });
+
+      assert.equal(response.status, 401);
+      assert.equal(modelHeaders.length, 1);
+    },
+  );
 });
 
 interface CopilotCredentialFixture {
@@ -550,7 +690,7 @@ async function withCopilotCredential(
 }
 
 async function withSeededOAuthCredential(
-  providerType: 'claude-subscription' | 'openai-codex',
+  providerType: 'openai-codex' | 'github-copilot',
   tokens: OAuthSubscriptionTokens,
   run: (fixture: CopilotCredentialFixture) => Promise<void>,
 ): Promise<void> {
@@ -619,12 +759,22 @@ async function withSeededOAuthCredential(
 async function readMaterial(
   stores: RuntimePolicyStoresWriter,
 ): Promise<RuntimePolicyCredentialMaterial> {
-  const resolved = await stores.operations.resolveExecutionConnection(CONNECTION_SLUG);
+  const resolved = await stores.operations.resolveExecutionConnection({
+    kind: 'catalog_slug',
+    connectionSlug: CONNECTION_SLUG,
+  });
   assert.equal(resolved.kind, 'ready');
   if (resolved.kind !== 'ready' || !resolved.secretMaterial.connection) {
     throw new Error('OAuth execution material was not ready');
   }
   return resolved.secretMaterial.connection;
+}
+
+function connectionId(material: RuntimePolicyCredentialMaterial): string {
+  if (material.locator.scope !== 'connection') {
+    throw new Error('Expected connection-scoped OAuth material');
+  }
+  return material.locator.connectionId;
 }
 
 function expiredTokens(accessToken: string, accountUuid?: string): OAuthSubscriptionTokens {
@@ -645,10 +795,29 @@ function currentTokens(accessToken: string, accountUuid?: string): OAuthSubscrip
   };
 }
 
+/** What GitHub returns when its OAuth app issues expiring user tokens. */
+function expiringCopilotTokens(accessToken: string): OAuthSubscriptionTokens {
+  return {
+    access_token: accessToken,
+    refresh_token: `ghr_${accessToken}`,
+    expires_at: FIXED_NOW + 8 * 60 * 60 * 1_000,
+    base_url: 'https://api.githubcopilot.com',
+  };
+}
+
+/** What GitHub returns when its OAuth app does not issue expiring user tokens. */
+function nonExpiringCopilotTokens(accessToken: string): OAuthSubscriptionTokens {
+  return {
+    access_token: accessToken,
+    refresh_token: accessToken,
+    expires_at: GITHUB_COPILOT_NON_EXPIRING_AT,
+  };
+}
+
 function claudeConnection(): RuntimeExecutionConnection {
   return {
     slug: CONNECTION_SLUG,
-    providerType: 'claude-subscription',
+    providerType: 'openai-codex',
     defaultModel: 'claude-sonnet-4-5',
   };
 }
@@ -668,24 +837,15 @@ function claudeRequest(): RequestInit {
   };
 }
 
-function claudeRefreshResponse(
-  accessToken: string,
-  refreshToken: string,
-  accountUuid: string,
-): Response {
-  return Response.json({
-    access_token: accessToken,
-    refresh_token: refreshToken,
-    expires_in: 3_600,
-    account: { uuid: accountUuid },
-  });
-}
-
-function successfulClaudeRefresh(onRefresh: () => void): typeof fetch {
+function successfulCodexRefresh(onRefresh: () => void): typeof fetch {
   return async (url) => {
-    assert.equal(String(url), CLAUDE_TOKEN_ENDPOINT);
+    assert.equal(String(url), CODEX_TOKEN_ENDPOINT);
     onRefresh();
-    return claudeRefreshResponse('access-v2', 'refresh-v2', 'account-v2');
+    return Response.json({
+      access_token: codexAccessToken('account-v2'),
+      refresh_token: 'refresh-v2',
+      expires_in: 3_600,
+    });
   };
 }
 
@@ -715,18 +875,6 @@ async function withPublishedSyncFailure(
 function isOAuthError(code: OAuthExecutionCredentialError['code']): (error: unknown) => boolean {
   return (error) => error instanceof OAuthExecutionCredentialError && error.code === code;
 }
-
-function deferred<T>(): {
-  readonly promise: Promise<T>;
-  readonly resolve: (value: T) => void;
-} {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((complete) => {
-    resolve = complete;
-  });
-  return { promise, resolve };
-}
-
 function claudeIdentity(body: Record<string, unknown> | undefined): Record<string, unknown> {
   assert.ok(body);
   const metadata = body.metadata as { user_id?: unknown } | undefined;
@@ -749,4 +897,16 @@ const unexpectedFetch: typeof fetch = async () => {
 
 function testRefreshTransport(fetchFn: typeof fetch): ProxiedFetchTransport {
   return { fetch: fetchFn, close: async () => undefined };
+}
+
+/** Polls until a condition holds, so a test never races a background settle. */
+async function waitFor(
+  predicate: () => boolean | Promise<boolean>,
+  timeoutMs = 2_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!(await predicate())) {
+    if (Date.now() >= deadline) throw new Error('Timed out waiting for OAuth execution state');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
 }

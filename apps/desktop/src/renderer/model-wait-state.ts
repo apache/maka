@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * Pure model-wait derivation + rising-edge debounce for the two turn-wait cues
  * (#646).
@@ -56,7 +75,7 @@ export type TurnPhase = 'waiting' | 'streamed';
  * `runningTurnIds` is read only for turns OTHER than the arm's. For the arm's
  * own turn the local projection knows more — it sees the terminal event first —
  * so a snapshot taken before that event must not light Stop back up. For any
- * other turn (another client, an automation, one still running across a reload)
+ * other turn (another client, a scheduled task, one still running across a reload)
  * it is the only witness there is. It is a set because a session can run
  * concurrent turns, and the arm's own turn lingering in it must not hide a
  * sibling that is genuinely still running.

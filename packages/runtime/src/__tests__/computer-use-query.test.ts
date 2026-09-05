@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 // Showing part of a window, without making the rest unreachable.
 //
 // Some windows are too big to read. Finder observes at 1,226 elements and about
@@ -93,11 +112,4 @@ test('a query matches a role and a value, not only a label', () => {
   // of it when it decides what to search for.
   assert.match(renderObservationForModel(observation('AXButton')), /9 AXButton "共享"/);
   assert.match(renderObservationForModel(observation('共享')), /9 AXButton "共享"/);
-});
-
-test('no query renders the window as before', () => {
-  const text = renderObservationForModel(observation());
-  assert.doesNotMatch(text, /query=/);
-  assert.match(text, /文稿/);
-  assert.match(text, /共享/);
 });

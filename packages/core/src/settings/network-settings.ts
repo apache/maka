@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 export type ProxyType = 'http' | 'https' | 'socks5';
 
 export const SENSITIVE_PLACEHOLDER = '••••••••' as const;
@@ -34,9 +53,6 @@ export interface RuntimeNetworkSettings {
   preferIpv4: boolean;
 }
 
-/** @deprecated Use RuntimeNetworkSettings for the runtime network contract. */
-export type NetworkSettings = RuntimeNetworkSettings;
-
 export const PROXY_DEFAULTS: ProxySettings = {
   enabled: false,
   type: 'http',
@@ -52,8 +68,12 @@ export const NETWORK_DEFAULTS: RuntimeNetworkSettings = {
   preferIpv4: false,
 };
 
+export interface TestProxySettings extends Omit<ProxySettings, 'password'> {
+  authEnabled?: boolean;
+}
+
 export interface TestProxyInput {
-  proxy?: ProxySettings;
+  proxy?: TestProxySettings;
   url?: string;
   timeoutMs?: number;
 }

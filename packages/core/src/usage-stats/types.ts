@@ -1,3 +1,26 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+/**
+ * Stored model-call kinds. `semantic_compact` is decode-only for historical
+ * usage records; the Runtime no longer has a writer or execution path for it.
+ */
 export const MODEL_CALL_KINDS = [
   'main',
   'semantic_compact',
@@ -16,6 +39,7 @@ export type UsageGroupBy = 'provider' | 'model' | 'tool' | 'day' | 'hour';
 
 export interface UsageQuery {
   range: TimeRange;
+  sessionId?: string;
   connectionSlug?: string;
   providerId?: string;
   modelId?: string;
@@ -39,6 +63,23 @@ export interface UsageSummaryV2 {
   cacheHitRequests: number;
   cacheCreateRequests: number;
   errorRequests: number;
+  /**
+   * Recorded model-call time, summed over the same rows as `totalTokens`.
+   *
+   * Every summary writes it, and the protocol epoch refuses peers that predate
+   * it at the handshake, so a total without a time basis cannot cross the wire.
+   */
+  totalDurationMs: number;
+  /**
+   * Recorded tool executions behind the same query, from the tool-invocation
+   * ledger — the model-call ledger does not describe them, so there is no
+   * canonical source to merge and this comes from the store alone.
+   *
+   * Optional because tool rows that predate connection attribution cannot
+   * answer a `connectionSlug` filter honestly: the Host omits the split for
+   * that query rather than drawing a ring from rows it cannot scope.
+   */
+  toolUsage?: { requests: number; durationMs: number };
 }
 
 export interface UsageBucket {
@@ -181,16 +222,15 @@ export type ToolSchemaChangeReason =
 
 /**
  * Diagnostic shell describing the provider-visible (active) tool subset for a
- * turn, produced by the unified `ToolAvailabilityRuntime`. A "source" id here is
- * a catalog *group* id — the shell retains the historical `*SourceIds` field
- * names while the config-side vocabulary is `groups`.
+ * turn, produced by `ToolAvailabilityRuntime`. A "source" id here is a catalog
+ * group id; the historical field names remain stable for telemetry readers.
  */
 export interface ToolAvailabilityDiagnostic {
   /**
-   * Always `'economy'`: a diagnostic is only produced when economy gates the
-   * tool surface. The full-surface case emits no diagnostic at all.
+   * `'search'` is the current provider-independent lazy-loading policy.
+   * `'economy'` remains readable for historical telemetry.
    */
-  mode: 'economy';
+  mode: 'economy' | 'search';
   enabledSourceIds: ToolSourceId[];
   availableSourceIds?: ToolSourceId[];
   connectorToolName?: string;
@@ -211,6 +251,7 @@ export type PromptSegmentKind =
   | 'tool_schema'
   | 'prior_history'
   | 'current_user'
+  /** Historical usage rows only; no current request builder emits this segment. */
   | 'turn_tail';
 
 export interface PromptSegmentEstimate {
@@ -260,8 +301,6 @@ export interface CompactionDecisionDiagnostic {
 export interface ContextBudgetDiagnostic {
   enabled: boolean;
   policyName?: string;
-  maxHistoryEstimatedTokens?: number;
-  maxHistoryTurns?: number;
   estimatedTokensBefore: number;
   estimatedTokensAfter: number;
   keptTurns: number;
@@ -276,91 +315,11 @@ export interface ContextBudgetDiagnostic {
   unarchivedToolResults?: number;
   archivePlaceholderReasonCounts?: Record<string, number>;
   activePrunedToolResults?: number;
+  activeSupersededToolResults?: number;
+  activeDuplicateToolResults?: number;
   activeArchiveFailures?: number;
   activeEstimatedTokensSaved?: number;
-  semanticCompactEnabled?: boolean;
-  semanticCompactMode?: 'off' | 'validate_only' | 'prepare_step_dry_run' | 'replace';
   compactionDecisions?: CompactionDecisionDiagnostic[];
-  archiveRetrievalMode?: 'eager' | 'history_search_gated';
-  archiveRetrievalEligibleTurns?: number;
-  retrievedArchiveToolResults?: number;
-  retrievedArchiveEstimatedTokens?: number;
-  archiveRetrievalSkipped?: number;
-  archiveRetrievalFailures?: number;
-  archiveRetrievalSkippedReasonCounts?: Record<string, number>;
-  archiveRetrievalFailureReasonCounts?: Record<string, number>;
-  historySearchMatches?: number;
-  historyAroundRetrievedEvents?: number;
-  historyAroundEstimatedTokens?: number;
-  historyAroundSkippedEvents?: number;
-  synthesisCacheEnabled?: boolean;
-  synthesisCacheMode?:
-    | 'off'
-    | 'lookup'
-    | 'read_write'
-    | 'write_only'
-    | 'fallback_archive_retrieval';
-  synthesisCacheBlocksLoaded?: number;
-  synthesisCacheLoadSkipped?: number;
-  synthesisCacheLoadSkippedReasonCounts?: Record<string, number>;
-  synthesisCacheLoadFailures?: number;
-  synthesisCacheBlocksAvailable?: number;
-  synthesisCacheBlocksSelected?: number;
-  synthesisCacheBlockIds?: string[];
-  synthesisCacheEstimatedTokens?: number;
-  synthesisCacheSkipped?: number;
-  synthesisCacheSkippedReasonCounts?: Record<string, number>;
-  synthesisCacheInvalidated?: number;
-  synthesisCacheInvalidationReasonCounts?: Record<string, number>;
-  synthesisCacheWritesAttempted?: number;
-  synthesisCacheBlocksWritten?: number;
-  synthesisCacheWrittenBlockIds?: string[];
-  synthesisCacheWriteEstimatedTokens?: number;
-  synthesisCacheWriteSkipped?: number;
-  synthesisCacheWriteSkippedReasonCounts?: Record<string, number>;
-  synthesisCacheWriteFailures?: number;
-  synthesisCacheEvicted?: number;
-  synthesisCacheEvictionReasonCounts?: Record<string, number>;
-  historyCompactEnabled?: boolean;
-  historyCompactMode?: 'off' | 'deterministic' | 'lookup' | 'read_write';
-  historyCompactBlocksLoaded?: number;
-  historyCompactLoadSkipped?: number;
-  historyCompactLoadSkippedReasonCounts?: Record<string, number>;
-  historyCompactLoadFailures?: number;
-  historyCompactBlocksAvailable?: number;
-  historyCompactBlocksSelected?: number;
-  historyCompactBlockIds?: string[];
-  historyCompactedTurns?: number;
-  historyCompactedEvents?: number;
-  historyCompactedEstimatedTokensBefore?: number;
-  historyCompactedEstimatedTokensAfter?: number;
-  historyCompactSkipped?: number;
-  historyCompactSkippedReasonCounts?: Record<string, number>;
-  historyCompactCoverageHashes?: string[];
-  historyCompactWritesAttempted?: number;
-  historyCompactBlocksWritten?: number;
-  historyCompactWrittenBlockIds?: string[];
-  historyCompactWriteEstimatedTokens?: number;
-  historyCompactWriteSkipped?: number;
-  historyCompactWriteSkippedReasonCounts?: Record<string, number>;
-  historyCompactWriteFailures?: number;
-  highWaterName?: string;
-  highWaterSeq?: number;
-  highWaterReason?:
-    | 'archive_prune'
-    | 'history_search_gated_retrieval'
-    | 'synthesis_cache_write'
-    | 'synthesis_cache_select'
-    | 'history_compact'
-    | 'manual_reset'
-    | 'system_change'
-    | 'tools_change'
-    | 'log_rewrite';
-  highWaterRequestShapeHashBefore?: string;
-  highWaterRequestShapeHashAfter?: string;
-  historyRewriteVersion?: string;
-  historyRewriteResetReason?: string;
-  historyRewriteGate?: string;
 }
 
 export interface ToolInvocationResultSummary {

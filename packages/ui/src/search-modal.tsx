@@ -1,14 +1,26 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import type {
-  SearchErrorReason,
-  SearchRequest,
-  SearchResult,
-  UiLocale,
-} from '@maka/core';
-import {
-  generalizedErrorMessage,
-  generalizedErrorMessageChinese,
-} from '@maka/core';
+import type { SearchErrorReason, SearchRequest, SearchResult } from '@maka/core/search';
+import type { UiLocale } from '@maka/core/ui-locale';
+import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
 import {
   CommandPalette as AstryxCommandPalette,
   CommandPaletteFooter,
@@ -116,9 +128,7 @@ function searchModalThrownErrorMessage(
   locale: UiLocale,
   fallback: string,
 ): string {
-  return locale === 'zh'
-    ? generalizedErrorMessageChinese(error, fallback)
-    : generalizedErrorMessage(error, fallback);
+  return generalizedErrorMessageForLocale(error, fallback, locale);
 }
 
 /**
@@ -130,7 +140,7 @@ function searchModalThrownErrorMessage(
 export function SearchModal(props: {
   isOpen: boolean;
   onOpenChange(isOpen: boolean): void;
-  onNavigateToSession?(sessionId: string, turnId?: string): void;
+  onNavigateToSession?(sessionId: string, turnId?: string, sequence?: number): void;
   deps?: SearchModalDeps;
 }) {
   const locale = useUiLocale();
@@ -150,6 +160,7 @@ export function SearchModal(props: {
   const pendingNavigationRef = useRef<{
     sessionId: string;
     turnId?: string;
+    sequence?: number;
   } | null>(null);
 
   useEffect(() => {
@@ -158,7 +169,11 @@ export function SearchModal(props: {
     pendingNavigationRef.current = null;
     if (!navigation || !props.onNavigateToSession) return;
     const frame = window.requestAnimationFrame(() => {
-      props.onNavigateToSession?.(navigation.sessionId, navigation.turnId);
+      props.onNavigateToSession?.(
+        navigation.sessionId,
+        navigation.turnId,
+        navigation.sequence,
+      );
     });
     return () => window.cancelAnimationFrame(frame);
   }, [props.isOpen, props.onNavigateToSession]);
@@ -230,6 +245,7 @@ export function SearchModal(props: {
           pendingNavigationRef.current = {
             sessionId: result.target.sessionId,
             turnId: result.target.turnId,
+            sequence: result.target.sequence,
           };
         }}
         renderItem={(item) => {

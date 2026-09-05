@@ -1,4 +1,37 @@
-import { PROVIDER_DEFAULTS, validateSlug, type ProviderType } from '../llm-connections.js';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import {
+  isModelModality,
+  isRelayProviderType,
+  effectiveBaseUrl,
+  PROVIDER_REGISTRY,
+  providerDefaultsOf,
+  validateSlug,
+  type ModelModality,
+  type ProviderType,
+} from '../llm-connections.js';
+import {
+  CONNECTION_MODEL_DESCRIPTION_MAX_LENGTH,
+  CONNECTION_MODEL_DISPLAY_NAME_MAX_LENGTH,
+  MAX_PREPENDED_FALLBACK_MODELS,
+} from '../model-catalog.js';
 import {
   DECLARABLE_RELAY_THINKING_LEVELS,
   isThinkingLevel,
@@ -7,6 +40,7 @@ import {
 } from '../model-thinking.js';
 import type {
   ConnectionCatalogEntry,
+  ConnectionCredentialTarget,
   ConnectionCatalogEntryDraft,
   ConnectionCatalogEntryUpdate,
   ConnectionModel,
@@ -37,11 +71,25 @@ import {
   stringValue,
 } from './domain-codec.js';
 
-const PROVIDER_TYPES = new Set<string>(Object.keys(PROVIDER_DEFAULTS));
-
 export const CONNECTION_CATALOG_MAX_CONNECTIONS = 1_024;
 export const CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION = 2_048;
 export const CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS = 512;
+/**
+ * A resolved entry exists for every stored model, for every enabled id the
+ * inventory never listed, for the connection default when it lists none, and —
+ * on a provider with no model-list endpoint — for every model that provider
+ * ships, which the resolver prepends rather than substitutes.
+ *
+ * That last term is why this cannot be the sum of the two persisted lists
+ * alone: without it, a catalog the storage decoder accepts at its own maxima
+ * resolves to more entries than the wire admits, and the Host's own page is
+ * rejected on arrival, leaving every client with no models to choose from.
+ */
+export const CONNECTION_CATALOG_MAX_ENTRIES_PER_CONNECTION =
+  CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION +
+  CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS +
+  MAX_PREPENDED_FALLBACK_MODELS +
+  1;
 export const CONNECTION_NAME_MAX_LENGTH = 256;
 export const CONNECTION_MODEL_ID_MAX_LENGTH = 512;
 
@@ -121,9 +169,7 @@ export function normalizeConnectionCatalogEntryDraft(value: unknown): Connection
     item.relayModelProfiles === undefined
       ? {}
       : nonEmptyRelayProfiles(item.relayModelProfiles, enabledModelIds);
-  if (profiles.relayModelProfiles !== undefined) {
-    rejectForeignProfiles(providerType);
-  }
+  assertProfileFieldsFitProvider(profiles.relayModelProfiles, providerType);
   return {
     slug: decodeConnectionSlug(item.slug),
     name: decodeConnectionName(item.name),
@@ -186,11 +232,7 @@ export function normalizeConnectionCatalogEntryUpdateForProvider(
 ): ConnectionCatalogEntryUpdate {
   const update = normalizeConnectionCatalogEntryUpdate(value);
   const baseUrl = normalizeCatalogConnectionBaseUrl(update.baseUrl, providerType);
-  // A `null` (clear stale data) or absent (untouched) instruction is legal on
-  // any provider; only a non-empty table is relay-only.
-  if (update.relayModelProfiles !== undefined && update.relayModelProfiles !== null) {
-    rejectForeignProfiles(providerType);
-  }
+  assertProfileFieldsFitProvider(update.relayModelProfiles, providerType);
   return {
     name: update.name,
     ...(baseUrl === undefined ? {} : { baseUrl }),
@@ -203,15 +245,6 @@ export function normalizeConnectionCatalogEntryUpdateForProvider(
       ? {}
       : { requestBodyOverlay: update.requestBodyOverlay }),
   };
-}
-
-// Relay profiles are an openai-compatible feature: on any other provider the
-// metadata chain is the truth, and a table here would either sit as dead
-// state or silently shadow metadata for the ungated read seams.
-function rejectForeignProfiles(providerType: ProviderType): void {
-  if (providerType !== 'openai-compatible') {
-    throw domainError('relay model profiles are only supported for openai-compatible connections');
-  }
 }
 
 /**
@@ -244,13 +277,14 @@ export function decodeRelayModelProfilesTable(
     const entry = exactRecord(
       rawEntry,
       `relay model profile for ${modelId}`,
-      ['thinkingLevels', 'vision', 'contextWindow'],
+      ['thinkingLevels', 'vision', 'contextWindow', 'serviceTier'],
       [],
     );
     const declared: {
       thinkingLevels?: readonly ThinkingLevel[];
       vision?: boolean;
       contextWindow?: number;
+      serviceTier?: 'fast';
     } = {};
     if (entry.thinkingLevels !== undefined) {
       if (!Array.isArray(entry.thinkingLevels) || entry.thinkingLevels.length === 0) {
@@ -283,12 +317,53 @@ export function decodeRelayModelProfilesTable(
         Number.MAX_SAFE_INTEGER,
       );
     }
+    if (entry.serviceTier !== undefined) {
+      if (entry.serviceTier !== 'fast') {
+        throw domainError(`declared service tier for ${modelId} must be fast`);
+      }
+      declared.serviceTier = 'fast';
+    }
     if (Object.keys(declared).length === 0) {
       throw domainError(`relay model profile for ${modelId} declares nothing`);
     }
     parsed.push([modelId, declared]);
   }
   return Object.fromEntries(parsed);
+}
+
+/**
+ * Which declarations a provider can actually carry.
+ *
+ * `contextWindow` and `vision` state facts about a model. A user has them when
+ * Maka does not — a model newer than the bundled snapshot, or any model on a
+ * provider with no model-list endpoint — and that need is not confined to
+ * relays (#1584), so they are legal everywhere.
+ *
+ * `thinkingLevels` and `serviceTier` name a wire feature instead. They encode
+ * into request shapes only the OpenAI-compatible relays accept —
+ * `reasoning_effort` tiers and priority processing — and
+ * `supportsRelayFastServiceTier` gates the read side by provider for the same
+ * reason. A table carrying them on another provider describes a request Maka
+ * would never send: dead state at best, and on a provider whose wire rejects
+ * the unknown value, a 400 the user cannot explain.
+ */
+function assertProfileFieldsFitProvider(
+  profiles: Readonly<Record<string, RelayModelProfile>> | null | undefined,
+  providerType: ProviderType,
+): void {
+  if (!profiles || isRelayProviderType(providerType)) return;
+  for (const [modelId, profile] of Object.entries(profiles)) {
+    if (profile.thinkingLevels !== undefined) {
+      throw domainError(
+        `declared thinking levels for ${modelId} require an OpenAI-compatible connection`,
+      );
+    }
+    if (profile.serviceTier !== undefined) {
+      throw domainError(
+        `declared service tier for ${modelId} requires an OpenAI-compatible connection`,
+      );
+    }
+  }
 }
 
 // An empty table is not a state worth storing: drafts/canonical entries omit
@@ -322,6 +397,7 @@ export function decodeCanonicalConnectionCatalogEntry(value: unknown): Connectio
       'modelSource',
       'modelsFetchedAt',
       'lastTest',
+      'lastTestModelFactsFingerprint',
     ],
     [
       'connectionId',
@@ -390,6 +466,15 @@ export function decodeCanonicalConnectionCatalogEntry(value: unknown): Connectio
     ...(item.lastTest === undefined
       ? {}
       : { lastTest: decodeConnectionTestSummary(item.lastTest) }),
+    ...(item.lastTestModelFactsFingerprint === undefined
+      ? {}
+      : {
+          lastTestModelFactsFingerprint: stringValue(
+            item.lastTestModelFactsFingerprint,
+            'connection test model facts fingerprint',
+            128,
+          ),
+        }),
   };
   assertCanonicalValue(value, decoded, 'connection catalog entry');
   return decoded;
@@ -400,6 +485,67 @@ export function decodeConnectionVersionBasis(value: unknown): ConnectionVersionB
   return {
     connectionId: entityIdValue(item.connectionId, 'connection id'),
     revision: positiveRevisionValue(item.revision, 'connection revision'),
+  };
+}
+
+export function canonicalConnectionEffectiveBaseUrl(
+  connection: Pick<ConnectionCatalogEntry, 'providerType' | 'baseUrl'>,
+): string {
+  const endpoint = effectiveBaseUrl(connection);
+  try {
+    return new URL(endpoint).toString();
+  } catch {
+    throw domainError('connection has an invalid effective base URL');
+  }
+}
+
+export function connectionCredentialTarget(
+  connection: Pick<
+    ConnectionCatalogEntry,
+    'connectionId' | 'revision' | 'slug' | 'providerType' | 'baseUrl'
+  >,
+): ConnectionCredentialTarget {
+  return {
+    connectionId: connection.connectionId,
+    revision: connection.revision,
+    slug: connection.slug,
+    providerType: connection.providerType,
+    effectiveBaseUrl: canonicalConnectionEffectiveBaseUrl(connection),
+  };
+}
+
+export function decodeConnectionCredentialTarget(value: unknown): ConnectionCredentialTarget {
+  const item = exactRecord(value, 'connection credential target', [
+    'connectionId',
+    'revision',
+    'slug',
+    'providerType',
+    'effectiveBaseUrl',
+  ]);
+  const version = decodeConnectionVersionBasis({
+    connectionId: item.connectionId,
+    revision: item.revision,
+  });
+  const providerType = decodeProviderType(item.providerType);
+  const effectiveBaseUrl = stringValue(
+    item.effectiveBaseUrl,
+    'connection credential target effective base URL',
+    2_048,
+  );
+  let canonical: string;
+  try {
+    canonical = new URL(effectiveBaseUrl).toString();
+  } catch {
+    throw domainError('connection credential target effective base URL must be valid');
+  }
+  if (canonical !== effectiveBaseUrl) {
+    throw domainError('connection credential target effective base URL must be canonical');
+  }
+  return {
+    ...version,
+    slug: decodeConnectionSlug(item.slug),
+    providerType,
+    effectiveBaseUrl,
   };
 }
 
@@ -415,7 +561,20 @@ export function decodeConnectionModel(value: unknown): ConnectionModel {
   const item = exactRecord(
     value,
     'connection model',
-    ['id', 'displayName', 'apiProtocol', 'contextWindow', 'maxOutputTokens', 'capabilities'],
+    [
+      'id',
+      'displayName',
+      'description',
+      'apiProtocol',
+      'contextWindow',
+      'inputLimit',
+      'maxOutputTokens',
+      'knowledgeCutoff',
+      'structuredOutput',
+      'lastUpdated',
+      'capabilities',
+      'modalities',
+    ],
     ['id'],
   );
   if (
@@ -431,7 +590,15 @@ export function decodeConnectionModel(value: unknown): ConnectionModel {
     const raw = exactRecord(
       item.capabilities,
       'connection model capabilities',
-      ['chat', 'vision', 'reasoning', 'functionCalling', 'imageGeneration', 'webSearch'],
+      [
+        'chat',
+        'vision',
+        'reasoning',
+        'functionCalling',
+        'parallelToolCalls',
+        'imageGeneration',
+        'webSearch',
+      ],
       [],
     );
     capabilities = {};
@@ -442,11 +609,28 @@ export function decodeConnectionModel(value: unknown): ConnectionModel {
       );
     }
   }
+  const modalities =
+    item.modalities === undefined ? undefined : decodeModelModalities(item.modalities);
   return {
     id: decodeConnectionModelId(item.id),
     ...(item.displayName === undefined
       ? {}
-      : { displayName: stringValue(item.displayName, 'model display name', 512) }),
+      : {
+          displayName: stringValue(
+            item.displayName,
+            'model display name',
+            CONNECTION_MODEL_DISPLAY_NAME_MAX_LENGTH,
+          ),
+        }),
+    ...(item.description === undefined
+      ? {}
+      : {
+          description: stringValue(
+            item.description,
+            'model description',
+            CONNECTION_MODEL_DESCRIPTION_MAX_LENGTH,
+          ),
+        }),
     ...(item.apiProtocol === undefined ? {} : { apiProtocol: item.apiProtocol }),
     ...(item.contextWindow === undefined
       ? {}
@@ -454,6 +638,16 @@ export function decodeConnectionModel(value: unknown): ConnectionModel {
           contextWindow: integerValue(
             item.contextWindow,
             'model context window',
+            1,
+            Number.MAX_SAFE_INTEGER,
+          ),
+        }),
+    ...(item.inputLimit === undefined
+      ? {}
+      : {
+          inputLimit: integerValue(
+            item.inputLimit,
+            'model input limit',
             1,
             Number.MAX_SAFE_INTEGER,
           ),
@@ -468,8 +662,39 @@ export function decodeConnectionModel(value: unknown): ConnectionModel {
             Number.MAX_SAFE_INTEGER,
           ),
         }),
+    ...(item.knowledgeCutoff === undefined
+      ? {}
+      : { knowledgeCutoff: stringValue(item.knowledgeCutoff, 'model knowledge cutoff', 2048) }),
+    ...(item.structuredOutput === undefined
+      ? {}
+      : { structuredOutput: booleanValue(item.structuredOutput, 'model structured output') }),
+    ...(item.lastUpdated === undefined
+      ? {}
+      : { lastUpdated: stringValue(item.lastUpdated, 'model last updated', 2048) }),
     ...(capabilities === undefined ? {} : { capabilities }),
+    ...(modalities === undefined ? {} : { modalities }),
   };
+}
+
+function decodeModelModalities(value: unknown): NonNullable<ConnectionModel['modalities']> {
+  const item = exactRecord(value, 'connection model modalities', ['input', 'output']);
+  if (!Array.isArray(item.input) || !Array.isArray(item.output)) {
+    throw domainError('connection model modalities must contain input and output arrays');
+  }
+  const input = Array.from(item.input, (entry) => decodeModelModality(entry, 'input'));
+  const output = Array.from(item.output, (entry) => decodeModelModality(entry, 'output'));
+  return { input, output };
+}
+
+// Both directions accept the same set. models.dev declares video on either
+// side and pdf on both, so splitting them again only invites one direction to
+// drift behind the catalog it decodes.
+function decodeModelModality(value: unknown, direction: 'input' | 'output'): ModelModality {
+  const modality = stringValue(value, `connection model ${direction} modality`, 16);
+  if (!isModelModality(modality)) {
+    throw domainError(`connection model ${direction} modality is invalid`);
+  }
+  return modality;
 }
 
 export function decodeConnectionTestSummary(value: unknown): ConnectionTestSummary {
@@ -566,7 +791,7 @@ function decodeConnectionModelIds(value: unknown): string[] {
 }
 
 export function decodeProviderType(value: unknown): ProviderType {
-  if (typeof value !== 'string' || !PROVIDER_TYPES.has(value)) {
+  if (typeof value !== 'string' || providerDefaultsOf(value) === undefined) {
     throw domainError('connection provider type is not registered');
   }
   return value as ProviderType;
@@ -605,7 +830,7 @@ export function normalizeCatalogConnectionBaseUrl(
   if (
     override !== undefined &&
     providerType &&
-    PROVIDER_DEFAULTS[providerType].authKind === 'oauth_token'
+    PROVIDER_REGISTRY[providerType].authKind === 'oauth_token'
   ) {
     throw domainError('OAuth provider endpoint cannot be overridden');
   }
@@ -622,7 +847,7 @@ export function decodeCanonicalConnectionBaseUrl(
 }
 
 function canonicalProviderBaseUrl(providerType: ProviderType): string | undefined {
-  const raw = PROVIDER_DEFAULTS[providerType].baseUrl.trim();
+  const raw = PROVIDER_REGISTRY[providerType].baseUrl.trim();
   if (!raw) return undefined;
   try {
     return new URL(raw).toString();

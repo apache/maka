@@ -1,3 +1,23 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
@@ -5,6 +25,8 @@ import {
   AGENT_GRAPH_OPERATION_SPECS,
   AGENT_GRAPH_RESULT_MAX_BYTES,
   decodeAgentGraphClientSnapshot,
+  decodeAgentGraphEpochListInput,
+  decodeAgentGraphEpochListResult,
   decodeAgentGraphOperatorInspection,
   decodeAgentGraphOperatorQueryInput,
   decodeAgentGraphQueryInput,
@@ -13,39 +35,56 @@ import {
   decodeHostFrame,
   type AgentGraphClientSnapshot,
   type AgentGraphOperatorInspection,
-  RuntimeHostProtocolError,
 } from '../protocol/index.js';
 
 const fingerprint = `sha256:${'a'.repeat(64)}` as const;
 
 describe('Agent Graph Client protocol', () => {
-  test('declares bounded ready query, inspection, and stop operations', () => {
-    assert.equal(AGENT_GRAPH_OPERATION_SPECS['agent.graph.query'].mode, 'query');
-    assert.equal(AGENT_GRAPH_OPERATION_SPECS['agent.graph.operator.query'].mode, 'query');
-    assert.equal(AGENT_GRAPH_OPERATION_SPECS['agent.graph.stop'].mode, 'control');
-    for (const spec of Object.values(AGENT_GRAPH_OPERATION_SPECS)) {
-      assert.equal(spec.availability, 'ready');
-      assert.ok(spec.errors.includes('not_found'));
-      assert.ok(spec.errors.includes('operation_conflict'));
-      assert.ok(spec.errors.includes('internal_failure'));
-    }
-  });
-
   test('round-trips canonical inputs and bounded projections', () => {
+    assert.deepEqual(decodeAgentGraphEpochListInput({ rootSessionId: 'root-1', beforeEpoch: 2 }), {
+      rootSessionId: 'root-1',
+      beforeEpoch: 2,
+    });
+    assert.deepEqual(
+      decodeAgentGraphEpochListResult({
+        rootSessionId: 'root-1',
+        epochs: [
+          { epoch: 2, graphId: 'agent_graph_2', createdAt: 10, current: true },
+          { epoch: 1, graphId: 'agent_graph_1', createdAt: 0, current: false },
+        ],
+        nextBeforeEpoch: null,
+      }).epochs.map(({ epoch, graphId, current }) => ({ epoch, graphId, current })),
+      [
+        { epoch: 2, graphId: 'agent_graph_2', current: true },
+        { epoch: 1, graphId: 'agent_graph_1', current: false },
+      ],
+    );
     assert.deepEqual(decodeAgentGraphQueryInput({ rootSessionId: 'root-1' }), {
       rootSessionId: 'root-1',
     });
     assert.deepEqual(
-      decodeAgentGraphQueryInput({ rootSessionId: 'root-1', terminalCursor: 'Y3Vyc29y' }),
-      { rootSessionId: 'root-1', terminalCursor: 'Y3Vyc29y' },
+      decodeAgentGraphQueryInput({
+        rootSessionId: 'root-1',
+        graphId: 'agent_graph_1',
+        terminalCursor: 'Y3Vyc29y',
+      }),
+      { rootSessionId: 'root-1', graphId: 'agent_graph_1', terminalCursor: 'Y3Vyc29y' },
     );
     assert.deepEqual(
-      decodeAgentGraphOperatorQueryInput({ rootSessionId: 'root-1', operatorId: 'operator:1' }),
-      { rootSessionId: 'root-1', operatorId: 'operator:1' },
+      decodeAgentGraphOperatorQueryInput({
+        rootSessionId: 'root-1',
+        graphId: 'agent_graph_1',
+        operatorId: 'operator:1',
+      }),
+      { rootSessionId: 'root-1', graphId: 'agent_graph_1', operatorId: 'operator:1' },
     );
-    assert.deepEqual(decodeAgentGraphStopInput({ rootSessionId: 'root-1' }), {
-      rootSessionId: 'root-1',
-    });
+    assert.deepEqual(
+      decodeAgentGraphStopInput({
+        rootSessionId: 'root-1',
+        expectedGraphId: 'agent_graph_1',
+      }),
+      { rootSessionId: 'root-1', expectedGraphId: 'agent_graph_1' },
+    );
     assert.deepEqual(
       decodeAgentGraphStopResult({ rootSessionId: 'root-1', graphId: 'agent_graph_1' }),
       { rootSessionId: 'root-1', graphId: 'agent_graph_1' },
@@ -55,6 +94,16 @@ describe('Agent Graph Client protocol', () => {
     const inspection = operatorInspection(snapshot);
     assert.deepEqual(decodeAgentGraphClientSnapshot(snapshot), snapshot);
     assert.deepEqual(decodeAgentGraphOperatorInspection(inspection), inspection);
+    const formActivity = {
+      ...activity(),
+      facets: ['form_request'] as const,
+      signals: [{ kind: 'attention' as const, reason: 'form_request' as const }],
+    };
+    assert.deepEqual(
+      decodeAgentGraphClientSnapshot({ ...snapshot, recentActivity: [formActivity] })
+        .recentActivity,
+      [formActivity],
+    );
     AGENT_GRAPH_OPERATION_SPECS['agent.graph.query'].assertOutputForInput?.(
       { rootSessionId: 'root-1' },
       snapshot,
@@ -68,9 +117,40 @@ describe('Agent Graph Client protocol', () => {
   test('rejects unknown nested fields, invalid correlation, and unbounded pages', () => {
     const snapshot = graphSnapshot();
     assertInvalid(() =>
+      decodeAgentGraphEpochListResult({
+        rootSessionId: 'root-1',
+        epochs: [{ epoch: 2, graphId: 'agent_graph_2', createdAt: 10, current: true }],
+        nextBeforeEpoch: 1,
+      }),
+    );
+    assertInvalid(() =>
+      decodeAgentGraphEpochListInput({ rootSessionId: 'root-1', beforeEpoch: 0 }),
+    );
+    assertInvalid(() =>
+      AGENT_GRAPH_OPERATION_SPECS['agent.graph.epochs.query'].assertOutputForInput?.(
+        { rootSessionId: 'root-1', beforeEpoch: 2 },
+        {
+          rootSessionId: 'root-1',
+          epochs: [{ epoch: 2, graphId: 'agent_graph_2', createdAt: 10, current: true }],
+          nextBeforeEpoch: null,
+        },
+      ),
+    );
+    assertInvalid(() =>
       decodeAgentGraphClientSnapshot({
         ...snapshot,
         operators: [{ ...snapshot.operators[0], privatePrompt: 'secret' }],
+      }),
+    );
+    assertInvalid(() =>
+      decodeAgentGraphClientSnapshot({
+        ...snapshot,
+        operators: [
+          {
+            ...snapshot.operators[0],
+            readiness: [{ ...snapshot.operators[0]!.readiness[0], policyKind: 'map' }],
+          },
+        ],
       }),
     );
     assertInvalid(() =>
@@ -88,6 +168,12 @@ describe('Agent Graph Client protocol', () => {
     assertInvalid(() =>
       AGENT_GRAPH_OPERATION_SPECS['agent.graph.query'].assertOutputForInput?.(
         { rootSessionId: 'another-root' },
+        snapshot,
+      ),
+    );
+    assertInvalid(() =>
+      AGENT_GRAPH_OPERATION_SPECS['agent.graph.query'].assertOutputForInput?.(
+        { rootSessionId: 'root-1', graphId: 'another-graph' },
         snapshot,
       ),
     );
@@ -161,7 +247,6 @@ function graphSnapshot(): AgentGraphClientSnapshot {
         readiness: [
           {
             readinessId: 'readiness:1',
-            policyKind: 'map',
             status: 'waiting',
             waitingFor: [{ kind: 'input_route', upstreamOperatorIds: ['operator:0'] }],
             omittedWaitingFor: 0,

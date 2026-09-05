@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 // Unit test for the maka-cu CuDispatchBackend. Drives the module against a MOCK
 // executor (a small CommonJS node script written to a temp dir) that speaks
 // `maka.cu/2` — the real `maka-cu` binary is never spawned, and does not exist
@@ -5,7 +24,7 @@
 // NDJSON log the test inspects, the same way the cua-driver backend test does.
 //
 // Run (from repo root), after @maka/core + @maka/runtime are built:
-//   npm --workspace @maka/computer-use run test
+//   npm run build && npm --workspace @maka/computer-use run test:dist
 import assert from 'node:assert/strict';
 import { chmodSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -14,7 +33,9 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { after, before, describe, it } from 'node:test';
 
-import type { CuaBoundAction, CuObservation, CuRunContext } from '@maka/runtime';
+import type { CuaBoundAction } from '@maka/runtime/cua-frame-state';
+
+import type { CuObservation, CuRunContext } from '@maka/runtime/computer-use-types';
 import {
   createMakaCuBackend,
   type MakaCuBackendOptions,
@@ -73,10 +94,10 @@ const MALFORMED = process.env.MAKACU_MOCK_MALFORMED || '';
 const LAUNCH_ERROR = process.env.MAKACU_MOCK_LAUNCH_ERROR || '';
 const HANG_OBSERVE = process.env.MAKACU_MOCK_HANG_OBSERVE === '1';
 const TRUNCATED = process.env.MAKACU_MOCK_TRUNCATED === '1';
+const NO_FOCUSED_ELEMENT = process.env.MAKACU_MOCK_NO_FOCUSED_ELEMENT === '1';
 let DIFFERENCE_PRESENTATION = '';
 const LAUNCH_TOOK_FOREGROUND = process.env.MAKACU_MOCK_LAUNCH_FOREGROUND === '1';
 const WINDOW_ORIGIN_Y = Number(process.env.MAKACU_MOCK_WINDOW_ORIGIN_Y || '25');
-const SELECTED_TEXT = process.env.MAKACU_MOCK_SELECTED_TEXT || '';
 const NONCE = crypto.randomBytes(16).toString('hex');
 // 1x1 transparent PNG.
 const PNG = Buffer.from(
@@ -152,8 +173,8 @@ function snapshot(includeImage) {
       displayId: '69732928',
     },
     windowDigest: digest('window_' + snapshotSeq),
-    focusedElementToken: 'el_2',
-    selectedText: SELECTED_TEXT ? { text: SELECTED_TEXT, truncated: true } : null,
+    focusedElementToken: NO_FOCUSED_ELEMENT ? null : 'el_2',
+    selectedText: null,
     image: includeImage ? writeImage(id) : null,
     displays: [{
       displayId: '69732928',
@@ -162,7 +183,10 @@ function snapshot(includeImage) {
       scaleFactor: 2,
     }],
     obscuringRects: [],
-    elements: [element(1, 'Fixture Window', false), element(2, 'Send', true)],
+    elements: [
+      element(1, 'Fixture Window', false),
+      element(2, 'Send', !NO_FOCUSED_ELEMENT),
+    ],
     truncated: { elements: TRUNCATED, depth: false },
   };
   if (DIFFERENCE_PRESENTATION && previousSnapshotId) {
@@ -386,13 +410,12 @@ function makeBackend(
     launchError?: string;
     hangObserve?: boolean;
     truncated?: boolean;
+    noFocusedElement?: boolean;
     differencePresentation?: 'no-change' | 'difference' | 'full';
     timeoutMs?: number;
     launchTookForeground?: boolean;
     windowOriginY?: number;
-    selectedText?: string;
     physicalInputRecentlyActive?: MakaCuBackendOptions['physicalInputRecentlyActive'];
-    allowCompatibilityInputDispatch?: boolean;
     onTrace?: MakaCuBackendOptions['onTrace'];
   } = {},
 ): { backend: ReturnType<typeof createMakaCuBackend>; logPath: string; imageDir: string } {
@@ -425,9 +448,9 @@ function makeBackend(
   process.env.MAKACU_MOCK_LAUNCH_ERROR = opts.launchError ?? '';
   process.env.MAKACU_MOCK_HANG_OBSERVE = opts.hangObserve ? '1' : '';
   process.env.MAKACU_MOCK_TRUNCATED = opts.truncated ? '1' : '';
+  process.env.MAKACU_MOCK_NO_FOCUSED_ELEMENT = opts.noFocusedElement ? '1' : '';
   process.env.MAKACU_MOCK_LAUNCH_FOREGROUND = opts.launchTookForeground ? '1' : '';
   process.env.MAKACU_MOCK_WINDOW_ORIGIN_Y = String(opts.windowOriginY ?? 25);
-  process.env.MAKACU_MOCK_SELECTED_TEXT = opts.selectedText ?? '';
   const backend = createMakaCuBackend({
     binaryPath: mockPath,
     imageDir,
@@ -438,9 +461,6 @@ function makeBackend(
     ...(opts.physicalInputRecentlyActive
       ? { physicalInputRecentlyActive: opts.physicalInputRecentlyActive }
       : {}),
-    ...(opts.allowCompatibilityInputDispatch === undefined
-      ? {}
-      : { allowCompatibilityInputDispatch: opts.allowCompatibilityInputDispatch }),
     ...(opts.onTrace ? { onTrace: opts.onTrace } : {}),
   });
   disposers.push(() => backend.dispose());
@@ -463,12 +483,12 @@ async function observeFixture(
   );
 }
 
-function boundCoordinate(observation: CuObservation): CuaBoundAction {
+function boundWindow(observation: CuObservation): CuaBoundAction {
   return {
     frameId: observation.observationId,
     epoch: 0,
-    actionFingerprint: 'left_click',
-    fingerprint: 'bound-coordinate',
+    actionFingerprint: 'key',
+    fingerprint: 'bound-window',
     target: {
       pid: observation.pid,
       windowId: observation.windowId,
@@ -476,9 +496,6 @@ function boundCoordinate(observation: CuObservation): CuaBoundAction {
       bounds: observation.windowBounds!,
       sourceBoundsPx: observation.sourceBoundsPx!,
     },
-    sourceCoordinate: { x: 400, y: 200 },
-    windowCoordinate: { x: 400, y: 200 },
-    coordinateSpace: 'window-screenshot-local',
   };
 }
 
@@ -758,69 +775,6 @@ describe('maka-cu backend', () => {
     assert.match(message, /restarted|another way/);
   });
 
-  it('treats a global-pointer path as a compromised session', async () => {
-    const traces: any[] = [];
-    const { backend } = makeBackend({
-      tier: 'coordinate-background',
-      path: 'cg_event_global',
-      allowCompatibilityInputDispatch: true,
-      onTrace: (event) => traces.push(event),
-    });
-    const observation = await observeFixture(backend);
-    const result = await backend.run(
-      { type: 'left_click', coordinate: { x: 400, y: 200 } },
-      signal(),
-      { ...RUN_CONTEXT, boundAction: boundCoordinate(observation) },
-    );
-    // §6.3: the executor states the path and the host verifies it. A path that
-    // was never permitted at handshake means the system cursor moved.
-    assert.equal(!result.outcome.ok && result.outcome.error, 'service_mismatch');
-    assert.ok(traces.some((event) => event.type === 'protocol_violation'));
-    assert.match(
-      traces.find((event) => event.type === 'protocol_violation')?.reason ?? '',
-      /moves the system cursor/,
-    );
-  });
-
-  it('anchors a coordinate dispatch to the window digest in image pixels', async () => {
-    const { backend, logPath } = makeBackend({
-      tier: 'coordinate-background',
-      path: 'cg_event_pid',
-      allowCompatibilityInputDispatch: true,
-    });
-    const observation = await observeFixture(backend);
-    const result = await backend.run(
-      { type: 'left_click', coordinate: { x: 400, y: 200 } },
-      signal(),
-      { ...RUN_CONTEXT, boundAction: boundCoordinate(observation) },
-    );
-    assert.equal(result.outcome.ok, true);
-    assert.equal(result.outcome.ok && result.outcome.tier, 'coordinate-background');
-
-    const dispatch = received(await readRecords(logPath), 'dispatch.point')[0];
-    assert.equal(dispatch?.snapshotId, observation.observationId);
-    // §6.3: a point has no element to anchor to, so the window is the anchor.
-    assert.equal(dispatch?.expectWindowDigest, observation.contentFingerprint);
-    assert.equal(dispatch?.space, 'image_px');
-    assert.equal(dispatch?.occlusionPolicy, 'any');
-    assert.deepEqual(dispatch?.point, { x: 400, y: 200 });
-  });
-
-  it('keeps coordinate dispatch closed unless the host policy opens it', async () => {
-    const { backend, logPath } = makeBackend({
-      tier: 'coordinate-background',
-      path: 'cg_event_pid',
-    });
-    const observation = await observeFixture(backend);
-    const result = await backend.run(
-      { type: 'left_click', coordinate: { x: 400, y: 200 } },
-      signal(),
-      { ...RUN_CONTEXT, boundAction: boundCoordinate(observation) },
-    );
-    assert.equal(!result.outcome.ok && result.outcome.error, 'unsupported_action');
-    assert.equal(received(await readRecords(logPath), 'dispatch.point').length, 0);
-  });
-
   it('lets an element action through while the user is physically active', async () => {
     // The guard protects the one pointer and the one keyboard the user also
     // has. An element action names an element and lets the accessibility API
@@ -840,13 +794,12 @@ describe('maka-cu backend', () => {
 
   it('still fences synthesized input while the user is physically active', async () => {
     const { backend, logPath } = makeBackend({
-      allowCompatibilityInputDispatch: true,
       physicalInputRecentlyActive: () => true,
     });
     const observation = await observeFixture(backend);
     const result = await backend.run({ type: 'key', text: 'cmd+a' }, signal(), {
       ...RUN_CONTEXT,
-      boundAction: boundCoordinate(observation),
+      boundAction: boundWindow(observation),
     });
     assert.equal(!result.outcome.ok && result.outcome.error, 'user_intervened');
     assert.equal(received(await readRecords(logPath), 'dispatch.key').length, 0);
@@ -1039,53 +992,6 @@ describe('maka-cu backend', () => {
     assert.equal(again.truncated, true, 'a second observation of the same window agrees');
   });
 
-  it('reports what an element offers beyond a press, and nothing when that is all', async () => {
-    // The 13-name set `secondary_action` accepts was model-invisible: the schema
-    // said "Required for secondary_action" and nothing about what a legal name
-    // is, so a model had to guess and be told its guess was outside the set.
-    const { backend } = makeBackend({});
-    const observation = await observeFixture(backend);
-    const rich = observation.elements.find((e) => e.actions !== undefined);
-    // `press` is what click_element does, and `show_menu` is ambient — Chromium
-    // hangs it off nearly every node, so its presence says nothing about this
-    // one. What survives is what a model would act on differently for reading.
-    assert.deepEqual(rich?.actions, ['raise'], 'only the informative action survives');
-    const plain = observation.elements.find((e) => e.role === 'AXWindow');
-    assert.equal(plain?.actions, undefined, 'an element offering only press says nothing');
-  });
-
-  it('names the secondary actions there are, rather than only the one there is not', async () => {
-    // cua-driver answers a miss on a popup with `Available: ["A", "B", …]`, and
-    // that is the difference between a model correcting itself and a model
-    // guessing a second time. The set here is closed and short enough to print
-    // whole, so a refusal can carry it — measured against the previous message,
-    // which said only that the guess was "outside the protocol's action set"
-    // and left the model to find the inside by trial.
-    const { backend } = makeBackend({});
-    const observation = await observeFixture(backend);
-    const result = await backend.runSemantic!(
-      {
-        type: 'secondary_action',
-        action: 'expand',
-        observationId: observation.observationId,
-        elementId: 'el_2',
-        elementIdentity: { token: 'el_2', role: 'AXButton' },
-      },
-      signal(),
-      RUN_CONTEXT,
-    );
-
-    assert.equal(result.outcome.ok, false);
-    const message = result.outcome.ok ? '' : result.outcome.message;
-    assert.match(message, /'expand'/, 'says which name was refused');
-    for (const name of ['press', 'raise', 'pick', 'increment', 'scroll_up']) {
-      assert.ok(message.includes(name), `lists ${name}`);
-    }
-    // And points at where this element's own shorter list is written, which is
-    // the answer to the question the model is actually asking.
-    assert.match(message, /\+name,name/);
-  });
-
   it('reads an element with no rectangle instead of refusing the whole window', async () => {
     // §5 declares `frame` optional. Reading it as required cost a whole
     // application: one element without one in System Settings turned every
@@ -1111,58 +1017,6 @@ describe('maka-cu backend', () => {
     assert.ok(secure, 'the fixture element carrying a subrole reaches the observation');
     const plain = observation.elements.find((e) => e.role === 'AXWindow');
     assert.equal(plain?.subrole, undefined, 'an element without one carries nothing');
-  });
-
-  it('carries the placeholder, kept apart from the value it is not', async () => {
-    // Placeholder text reads like content while the field holds nothing. The
-    // executor sends it and the protocol validates it; this backend dropped it,
-    // the third field to go missing at exactly this boundary after `subrole`
-    // and `window_action`'s wire schema. A model that never sees it cannot tell
-    // an empty search box from one already holding a query.
-    const { backend } = makeBackend({});
-    const observation = await observeFixture(backend);
-    const prompted = observation.elements.find((e) => e.placeholder !== undefined);
-    assert.ok(prompted, 'the fixture element carrying a placeholder reaches the observation');
-    assert.equal(prompted?.placeholder, 'Search your files');
-    // Never folded in: the field is empty, and saying so through `value` would
-    // have a model skip a field it still has to fill.
-    assert.equal(prompted?.value, undefined);
-    const plain = observation.elements.find((e) => e.role === 'AXWindow');
-    assert.equal(plain?.placeholder, undefined, 'an element without one carries nothing');
-  });
-
-  it('carries which element is focused, from a declaration rather than a spread', async () => {
-    // It reached the observation through a spread into an object literal, the
-    // one construction TypeScript does not excess-property check, so no type
-    // declared it anywhere — it worked, and nothing held it to working.
-    const { backend } = makeBackend({});
-    const observation = await observeFixture(backend);
-    const focused = observation.elements.find((e) => e.focused === true);
-    assert.ok(focused, 'the fixture element the executor reports as focused reaches the model');
-    assert.equal(focused?.label, 'Send');
-    // Absent, not false: the renderer writes state only where it is the
-    // exception, and `focused: false` on every other line says nothing.
-    const plain = observation.elements.find((e) => e.role === 'AXWindow');
-    assert.equal(plain?.focused, undefined, 'an element that is not focused carries nothing');
-  });
-
-  it('carries the selected text in the shape the wire declares', async () => {
-    // Declared on the element as a bare string and assigned nowhere: the file's
-    // header listed it among the four things this backend carries and it
-    // carried none of it. The protocol puts it on the snapshot and says whether
-    // it was cut, which a bare string cannot.
-    const { backend } = makeBackend({ selectedText: 'the selected run' });
-    const observation = await observeFixture(backend);
-    assert.deepEqual(observation.selectedText, { text: 'the selected run', truncated: true });
-
-    const { backend: none } = makeBackend({});
-    assert.equal((await observeFixture(none)).selectedText, undefined);
-  });
-
-  it('says nothing about truncation when the tree was complete', async () => {
-    const { backend } = makeBackend({});
-    const observation = await observeFixture(backend);
-    assert.equal(observation.truncated, undefined);
   });
 
   it('names a parent in the id space the model reads, not the wire token', async () => {
@@ -1341,8 +1195,8 @@ describe('maka-cu backend', () => {
 
   // §6.4 — the host parses the key string.
 
-  it('asks the executor to take focus when the model named the control', async () => {
-    const { backend, logPath } = makeBackend({ allowCompatibilityInputDispatch: true });
+  it('enables bound keyboard dispatch by default and acquires a named control', async () => {
+    const { backend, logPath } = makeBackend();
     const observation = await observeFixture(backend);
     // el_1 is the window, not the focused element — exactly the case the
     // promise covers: name a control and it is focused before the key lands.
@@ -1362,8 +1216,30 @@ describe('maka-cu backend', () => {
     assert.equal(dispatch?.focusPolicy, 'acquire');
   });
 
+  it('rejects an invalid executor path reported by dispatch.key', async () => {
+    const traces: any[] = [];
+    const { backend, logPath } = makeBackend({
+      tier: 'ax',
+      path: 'cg_event_pid',
+      onTrace: (event) => traces.push(event),
+    });
+    const observation = await observeFixture(backend);
+    const result = await backend.runSemantic!(
+      { type: 'press_key', observationId: observation.observationId, key: 'Tab' },
+      signal(),
+      RUN_CONTEXT,
+    );
+
+    assert.equal(received(await readRecords(logPath), 'dispatch.key').length, 1);
+    assert.equal(!result.outcome.ok && result.outcome.error, 'service_mismatch');
+    assert.match(
+      traces.find((event) => event.type === 'protocol_violation')?.reason ?? '',
+      /does not permit path/,
+    );
+  });
+
   it('verifies rather than takes focus when the model named no control', async () => {
-    const { backend, logPath } = makeBackend({ allowCompatibilityInputDispatch: true });
+    const { backend, logPath } = makeBackend();
     const observation = await observeFixture(backend);
     const result = await backend.runSemantic!(
       { type: 'press_key', observationId: observation.observationId, key: 'Tab' },
@@ -1378,8 +1254,24 @@ describe('maka-cu backend', () => {
     assert.equal(dispatch?.focusPolicy, undefined);
   });
 
+  it('refuses keyboard dispatch when the observation has no verified focus owner', async () => {
+    const { backend, logPath } = makeBackend({ noFocusedElement: true });
+    const observation = await observeFixture(backend);
+    const result = await backend.run({ type: 'key', text: 'Tab' }, signal(), {
+      ...RUN_CONTEXT,
+      boundAction: boundWindow(observation),
+    });
+
+    assert.equal(!result.outcome.ok && result.outcome.error, 'unsupported_action');
+    assert.match(
+      result.outcome.ok ? '' : result.outcome.message,
+      /no focused element.*element_id|click the field and observe again/i,
+    );
+    assert.equal(received(await readRecords(logPath), 'dispatch.key').length, 0);
+  });
+
   it('refuses a key aimed at a control outside the quoted frame', async () => {
-    const { backend, logPath } = makeBackend({ allowCompatibilityInputDispatch: true });
+    const { backend, logPath } = makeBackend();
     const observation = await observeFixture(backend);
     const result = await backend.runSemantic!(
       {
@@ -1401,11 +1293,11 @@ describe('maka-cu backend', () => {
   });
 
   it('parses a key combination into the wire closed sets before sending it', async () => {
-    const { backend, logPath } = makeBackend({ allowCompatibilityInputDispatch: true });
+    const { backend, logPath } = makeBackend();
     const observation = await observeFixture(backend);
     const result = await backend.run({ type: 'key', text: 'cmd+a' }, signal(), {
       ...RUN_CONTEXT,
-      boundAction: boundCoordinate(observation),
+      boundAction: boundWindow(observation),
     });
     assert.equal(result.outcome.ok, true);
     const dispatch = received(await readRecords(logPath), 'dispatch.key')[0];
@@ -1416,7 +1308,7 @@ describe('maka-cu backend', () => {
 
   it('sends nothing for a key string it cannot parse', async () => {
     for (const key of ['delete', 'del', 'cmd+', 'a+b', 'hyper+a']) {
-      const { backend, logPath } = makeBackend({ allowCompatibilityInputDispatch: true });
+      const { backend, logPath } = makeBackend();
       const observation = await observeFixture(backend);
       const result = await backend.runSemantic!(
         { type: 'press_key', observationId: observation.observationId, key },

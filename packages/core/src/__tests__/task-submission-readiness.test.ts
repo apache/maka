@@ -1,32 +1,39 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { LlmConnection } from '../llm-connections.js';
 import {
   deriveTaskSubmissionReadiness,
   type DeriveTaskSubmissionReadinessInput,
 } from '../task-submission-readiness.js';
-import { expect } from '../test-helpers.js';
 
 describe('task submission readiness', () => {
-  test('projects a ready baseline from current authorities', () => {
-    const snapshot = deriveTaskSubmissionReadiness(readyInput());
-
-    expect(snapshot.state).toBe('ready');
-    expect(snapshot.blockers).toEqual([]);
-    expect(snapshot.dimensions.map((dimension) => dimension.id)).toEqual([
-      'runtime',
-      'model_target',
-      'workspace',
-    ]);
-  });
-
   test('reuses connection readiness and routes an invalid model to its connection', () => {
     const input = readyInput();
     if (input.modelTarget.kind !== 'resolved') throw new Error('expected resolved model target');
     input.modelTarget.requestedModel = 'removed-model';
     const snapshot = deriveTaskSubmissionReadiness(input);
 
-    expect(snapshot.state).toBe('repair_required');
-    expect(snapshot.blockers[0]).toEqual({
+    assert.strictEqual(snapshot.state, 'repair_required');
+    assert.deepStrictEqual(snapshot.blockers[0], {
       id: 'model_target',
       state: 'repair_required',
       authority: 'connection_readiness',
@@ -42,41 +49,21 @@ describe('task submission readiness', () => {
     input.modelTarget.hasSecret = undefined;
     const snapshot = deriveTaskSubmissionReadiness(input);
 
-    expect(snapshot.state).toBe('unknown');
-    expect(snapshot.blockers[0]?.blockerCode).toBe('model_credentials_unknown');
-    expect(snapshot.blockers[0]?.repairTarget).toBe(undefined);
-  });
-
-  test('normalizes a legacy Codex session model exactly like the send path', () => {
-    const input = readyInput();
-    input.modelTarget = {
-      kind: 'resolved',
-      connection: {
-        ...connection(),
-        slug: 'codex-sub',
-        providerType: 'openai-codex',
-        defaultModel: 'gpt-5.6-sol',
-        enabledModelIds: ['gpt-5.6-sol'],
-        models: [{ id: 'gpt-5.6-sol' }],
-      },
-      hasSecret: true,
-      requestedModel: 'gpt-5-codex',
-      checkedAt: 90,
-    };
-
-    expect(deriveTaskSubmissionReadiness(input).state).toBe('ready');
+    assert.strictEqual(snapshot.state, 'unknown');
+    assert.strictEqual(snapshot.blockers[0]?.blockerCode, 'model_credentials_unknown');
+    assert.strictEqual(snapshot.blockers[0]?.repairTarget, undefined);
   });
 
   test('distinguishes unavailable runtime and workspace from repairable setup', () => {
     const runtimeInput = readyInput();
     runtimeInput.runtime.state = 'unavailable';
-    expect(deriveTaskSubmissionReadiness(runtimeInput).state).toBe('unavailable');
+    assert.strictEqual(deriveTaskSubmissionReadiness(runtimeInput).state, 'unavailable');
 
     const workspaceInput = readyInput();
     workspaceInput.workspace.state = 'missing';
     const workspace = deriveTaskSubmissionReadiness(workspaceInput);
-    expect(workspace.state).toBe('repair_required');
-    expect(workspace.blockers[0]?.repairTarget).toEqual({ kind: 'workspace_picker' });
+    assert.strictEqual(workspace.state, 'repair_required');
+    assert.deepStrictEqual(workspace.blockers[0]?.repairTarget, { kind: 'workspace_picker' });
   });
 
   test('only requested capabilities participate in submission readiness', () => {
@@ -87,13 +74,13 @@ describe('task submission readiness', () => {
     ];
 
     const ordinaryTask = deriveTaskSubmissionReadiness(input);
-    expect(ordinaryTask.state).toBe('ready');
-    expect(ordinaryTask.dimensions).toHaveLength(3);
+    assert.strictEqual(ordinaryTask.state, 'ready');
+    assert.strictEqual(ordinaryTask.dimensions.length, 3);
 
     input.requestedCapabilityIds = ['computer_use'];
     const computerUseTask = deriveTaskSubmissionReadiness(input);
-    expect(computerUseTask.state).toBe('unavailable');
-    expect(computerUseTask.blockers[0]?.id).toBe('capability:computer_use');
+    assert.strictEqual(computerUseTask.state, 'unavailable');
+    assert.strictEqual(computerUseTask.blockers[0]?.id, 'capability:computer_use');
   });
 
   test('treats a missing requested capability observation as unknown', () => {
@@ -101,9 +88,9 @@ describe('task submission readiness', () => {
     input.requestedCapabilityIds = ['git'];
     const snapshot = deriveTaskSubmissionReadiness(input);
 
-    expect(snapshot.state).toBe('unknown');
-    expect(snapshot.blockers[0]?.blockerCode).toBe('capability_unknown');
-    expect(snapshot.blockers[0]?.repairTarget).toBe(undefined);
+    assert.strictEqual(snapshot.state, 'unknown');
+    assert.strictEqual(snapshot.blockers[0]?.blockerCode, 'capability_unknown');
+    assert.strictEqual(snapshot.blockers[0]?.repairTarget, undefined);
   });
 });
 

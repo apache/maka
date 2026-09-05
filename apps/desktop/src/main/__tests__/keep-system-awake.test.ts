@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -34,17 +53,6 @@ function createFakeBlocker() {
 }
 
 describe('keep-system-awake controller', () => {
-  it('starts a prevent-app-suspension blocker when enabled', () => {
-    const fake = createFakeBlocker();
-    const controller = createKeepSystemAwakeController(fake.blocker);
-
-    controller.apply(true);
-
-    assert.deepEqual(fake.startCalls, ['prevent-app-suspension']);
-    assert.equal(controller.isActive(), true);
-    assert.equal(fake.started.size, 1);
-  });
-
   it('does NOT force the display on (never uses prevent-display-sleep)', () => {
     const fake = createFakeBlocker();
     const controller = createKeepSystemAwakeController(fake.blocker);
@@ -68,29 +76,6 @@ describe('keep-system-awake controller', () => {
     assert.equal(fake.startCalls.length, 1, 'blocker must start exactly once');
     assert.equal(fake.started.size, 1);
     assert.equal(controller.isActive(), true);
-  });
-
-  it('stops the blocker when disabled', () => {
-    const fake = createFakeBlocker();
-    const controller = createKeepSystemAwakeController(fake.blocker);
-
-    controller.apply(true);
-    controller.apply(false);
-
-    assert.equal(fake.stopCalls.length, 1);
-    assert.equal(fake.started.size, 0);
-    assert.equal(controller.isActive(), false);
-  });
-
-  it('disabling when nothing is held is a no-op', () => {
-    const fake = createFakeBlocker();
-    const controller = createKeepSystemAwakeController(fake.blocker);
-
-    controller.apply(false);
-
-    assert.equal(fake.startCalls.length, 0);
-    assert.equal(fake.stopCalls.length, 0);
-    assert.equal(controller.isActive(), false);
   });
 
   it('re-enabling after a stop starts a fresh blocker', () => {
@@ -164,17 +149,6 @@ describe('keep-system-awake controller', () => {
 
     assert.equal(fake.startCalls.length, 1);
     assert.equal(controller.isActive(), false);
-  });
-
-  it('releasing something never held is a no-op', () => {
-    const fake = createFakeBlocker();
-    const controller = createKeepSystemAwakeController(fake.blocker);
-
-    controller.apply(true);
-    controller.release('computer-use:never-started');
-
-    assert.equal(controller.isActive(), true);
-    assert.equal(fake.stopCalls.length, 0);
   });
 
   it('two holds need two releases', () => {

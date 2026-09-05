@@ -1,7 +1,26 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { CuAction } from '@maka/core';
-import { buildComputerUseTools } from '@maka/runtime';
+import type { CuAction } from '@maka/core/computer-use';
+import { buildComputerUseTools } from '@maka/runtime/computer-use-tools';
 import { parseObservationText } from '@maka/runtime/test-only/observation-text-reader';
 import { createComputerUseOverlayHook } from '../computer-use-overlay-hook.js';
 
@@ -36,7 +55,7 @@ test('presentation starts from the Runtime-bound screen point', () => {
   const { controller, moves } = fakeController();
   const hook = createComputerUseOverlayHook(controller as never);
   hook.onActionBegin(
-    { type: 'left_click', coordinate: { x: 400, y: 300 } },
+    { type: 'click_element' },
     {
       sessionId: 's1',
       toolCallId: 'a1',
@@ -64,7 +83,7 @@ test('a window to order against replaces the level as what keeps the cursor visi
   const { controller, moves } = fakeController();
   const hook = createComputerUseOverlayHook(controller as never);
   hook.onActionBegin(
-    { type: 'left_click', coordinate: { x: 400, y: 300 } },
+    { type: 'click_element' },
     {
       sessionId: 's1',
       toolCallId: 'a1',
@@ -81,7 +100,7 @@ test('with no window to order against the cursor stays elevated', () => {
   const { controller, moves } = fakeController();
   const hook = createComputerUseOverlayHook(controller as never);
   hook.onActionBegin(
-    { type: 'left_click', coordinate: { x: 400, y: 300 } },
+    { type: 'click_element' },
     {
       sessionId: 's1',
       toolCallId: 'a1',
@@ -101,7 +120,7 @@ test('the landing carries the window the cursor has to come back down to', () =>
   const { controller, completions } = fakeController();
   const hook = createComputerUseOverlayHook(controller as never);
   hook.onActionEnd?.(
-    { type: 'left_click', coordinate: { x: 400, y: 300 } },
+    { type: 'click_element' },
     { outcome: { ok: true, tier: 'semantic-background', verified: true } },
     {
       sessionId: 's1',
@@ -113,16 +132,17 @@ test('the landing carries the window the cursor has to come back down to', () =>
   assert.equal((completions[0] as { targetWindowId?: number }).targetWindowId, 20);
 });
 
-test('the executor-resolved point wins when there is one', () => {
+test('the Runtime-bound presentation point completes the cursor animation', () => {
   const { controller, completions } = fakeController();
   const hook = createComputerUseOverlayHook(controller as never);
   hook.onActionEnd?.(
-    { type: 'left_click', coordinate: { x: 400, y: 300 } },
+    { type: 'click_element' },
+    { outcome: { ok: true, tier: 'semantic-background', verified: true } },
     {
-      outcome: { ok: true, tier: 'semantic-background', verified: true },
-      resolvedScreenPoint: { x: 202, y: 152 },
+      sessionId: 's1',
+      toolCallId: 'a1',
+      presentationScreenPoint: { x: 202, y: 152 },
     },
-    { sessionId: 's1', toolCallId: 'a1' },
   );
   assert.deepEqual(completions, [
     {
@@ -140,7 +160,7 @@ test('a successful action with no point anywhere still cancels', () => {
   const { controller, completions, cancellations } = fakeController();
   const hook = createComputerUseOverlayHook(controller as never);
   hook.onActionEnd?.(
-    { type: 'left_click', coordinate: { x: 400, y: 300 } },
+    { type: 'click_element' },
     { outcome: { ok: true, tier: 'ax', verified: false } },
     { sessionId: 's1', toolCallId: 'a1' },
   );
@@ -148,11 +168,11 @@ test('a successful action with no point anywhere still cancels', () => {
   assert.deepEqual(cancellations, [{ actionId: 'a1', sessionId: 's1' }]);
 });
 
-test('failed pointer action without a resolved point cancels presentation', () => {
+test('failed semantic action cancels presentation', () => {
   const { controller, completions, cancellations } = fakeController();
   const hook = createComputerUseOverlayHook(controller as never);
   hook.onActionEnd?.(
-    { type: 'left_click', coordinate: { x: 40, y: 30 } },
+    { type: 'click_element' },
     { outcome: { ok: false, error: 'capture_failed', message: 'no effect' } },
     { sessionId: 's1', toolCallId: 'a1' },
   );
@@ -160,45 +180,7 @@ test('failed pointer action without a resolved point cancels presentation', () =
   assert.deepEqual(cancellations, [{ actionId: 'a1', sessionId: 's1' }]);
 });
 
-test('failed pointer action with a diagnostic point still cancels', () => {
-  const { controller, completions, cancellations } = fakeController();
-  const hook = createComputerUseOverlayHook(controller as never);
-  hook.onActionEnd?.(
-    { type: 'left_click', coordinate: { x: 40, y: 30 } },
-    {
-      outcome: { ok: false, error: 'target_changed', message: 'moved' },
-      resolvedScreenPoint: { x: 140, y: 130 },
-    },
-    { sessionId: 's1', toolCallId: 'a1' },
-  );
-  assert.deepEqual(completions, []);
-  assert.deepEqual(cancellations, [{ actionId: 'a1', sessionId: 's1' }]);
-});
-
-test('mouse_move completion is reconciled from executor evidence', () => {
-  const { controller, completions } = fakeController();
-  const hook = createComputerUseOverlayHook(controller as never);
-  hook.onActionEnd?.(
-    { type: 'mouse_move', coordinate: { x: 40, y: 30 } },
-    {
-      outcome: { ok: true, tier: 'coordinate-background' },
-      resolvedScreenPoint: { x: 140, y: 130 },
-    },
-    { sessionId: 's1', toolCallId: 'move1' },
-  );
-  assert.deepEqual(completions, [
-    {
-      actionId: 'move1',
-      sessionId: 's1',
-      screenX: 140,
-      screenY: 130,
-      kind: 'move',
-      pulse: false,
-    },
-  ]);
-});
-
-test('non-pointer actions keep the session cursor without moving it', () => {
+test('non-presented actions keep the session cursor without moving it', () => {
   const { controller, moves, ensured } = fakeController();
   const hook = createComputerUseOverlayHook(controller as never);
   for (const action of [
@@ -348,18 +330,6 @@ test('a semantic action reaches the sink with the point it is aimed at', async (
     pulse: true,
     targetWindowId: 4321,
   });
-});
-
-test('a coordinate action is unchanged', async () => {
-  const events = await driveRealTool({}, { action: 'left_click', coordinate: [400, 300] });
-  assert.deepEqual(
-    events.map((event) => event.call),
-    ['move', 'complete'],
-  );
-  // 400/800 and 300/600 of a 400x300 window at (100, 50).
-  const move = events[0]?.input as { screenX: number; screenY: number };
-  assert.equal(move.screenX, 300);
-  assert.equal(move.screenY, 200);
 });
 
 test('an element whose observed frame is outside its window is not aimed at', async () => {

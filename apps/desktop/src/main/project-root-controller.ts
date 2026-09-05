@@ -1,6 +1,25 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { randomUUID } from 'node:crypto';
 import { readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { resolveProjectRoot } from '@maka/runtime';
+import { resolveProjectRoot } from '@maka/runtime/system-prompt/project-context';
 
 export interface CurrentProjectSelection {
   projectId: string | null | undefined;
@@ -22,7 +41,6 @@ export interface ProjectRootController {
 export interface ProjectRootControllerDeps {
   readonly rootId: string;
   readonly preferenceFile: string;
-  readonly legacySelectionFile: string;
   readonly fallbackRoots: () => string[];
 }
 
@@ -76,24 +94,14 @@ async function loadInitialSelection(
 ): Promise<CurrentProjectSelection> {
   const fallbackPath = await resolveProjectRoot(deps.fallbackRoots());
   const preference = await readPreference(deps.preferenceFile, deps.rootId);
-  if (preference !== undefined) return { projectId: preference, path: fallbackPath };
-
-  const legacy = await readLegacySelection(deps.legacySelectionFile);
-  if (!legacy) return { projectId: undefined, path: fallbackPath };
-  if (typeof legacy.projectId !== 'string') return legacy;
-  if (!(await savePreference(deps, legacy.projectId))) {
-    return legacy;
-  }
-  await rm(deps.legacySelectionFile, { force: true }).catch(() => undefined);
-  return legacy;
+  return { projectId: preference, path: fallbackPath };
 }
 
 async function persistSelection(
   deps: ProjectRootControllerDeps,
   projectId: string | null,
 ): Promise<void> {
-  if (!(await savePreference(deps, projectId))) return;
-  await rm(deps.legacySelectionFile, { force: true }).catch(() => undefined);
+  await savePreference(deps, projectId);
 }
 
 async function readPreference(file: string, rootId: string): Promise<string | null | undefined> {
@@ -106,23 +114,6 @@ async function readPreference(file: string, rootId: string): Promise<string | nu
     return typeof value === 'string' || value === null ? value : undefined;
   } catch {
     return undefined;
-  }
-}
-
-async function readLegacySelection(file: string): Promise<CurrentProjectSelection | null> {
-  try {
-    const parsed = JSON.parse(await readFile(file, 'utf8')) as Record<string, unknown>;
-    if (typeof parsed.projectPath !== 'string' || !parsed.projectPath) return null;
-    await stat(parsed.projectPath);
-    return {
-      projectId:
-        typeof parsed.projectId === 'string' || parsed.projectId === null
-          ? parsed.projectId
-          : undefined,
-      path: await resolveProjectRoot([parsed.projectPath]),
-    };
-  } catch {
-    return null;
   }
 }
 

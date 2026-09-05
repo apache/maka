@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 .maka-onboarding {
   min-width: 0;
 }
@@ -33,11 +52,34 @@
   overscroll-behavior: contain;
 }
 
+/* The first-run screen is a viewport, not a transcript. ChatMessageList keeps
+   an empty flex spacer before its empty state so ordinary chat heroes settle
+   low in the message flow; here that spacer gives the full-height onboarding
+   surface only half of the available block size. The surface then overflows
+   ChatLayout and its self-scroll root exposes a phantom page scrollbar.
+
+   AppShell already owns `showOnboardingHero` and projects it onto ChatLayout.
+   Keep that direct composition state here: a descendant `:has()` made every
+   prompt-rail `aria-current` change invalidate the entire chat subtree during
+   scrolling. */
+.maka-chat-layout[data-maka-onboarding='true'] {
+  overflow-y: hidden;
+}
+
+.maka-chat-layout[data-maka-onboarding='true'] > :first-child {
+  flex: 1 1 auto;
+  padding-block-end: 0;
+  overflow: hidden;
+}
+
+.maka-chat-message-list:has(.maka-onboarding-surface) > div > [aria-hidden]:has(+ :last-child) {
+  display: none;
+}
+
 /* ChatLayout always paints its frosted composer dock, even when the Composer
    itself is hidden. Onboarding owns the whole empty surface, so that dock has
-   no content to support and would blur the card actions behind it. Derive the
-   opt-out from the mounted surface instead of duplicating onboarding state. */
-.maka-chat-layout:has(.maka-onboarding-surface) > :last-child {
+   no content to support and would blur the card actions behind it. */
+.maka-chat-layout[data-maka-onboarding='true'] > :last-child {
   display: none;
 }
 
@@ -62,8 +104,11 @@
   display: grid;
   place-items: center;
   width: 100%;
-  min-height: calc(100dvh - 84px);
+  height: 100%;
+  min-height: 0;
   padding: var(--space-8) var(--space-6);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 @media (max-width: 560px) {

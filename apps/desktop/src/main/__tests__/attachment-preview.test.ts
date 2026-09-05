@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createAttachmentApprovalRegistry } from '../attachment-approval.js';
@@ -7,7 +26,7 @@ import {
   type AttachmentPreviewResult,
 } from '../attachment-preview.js';
 
-const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 function fakeRenderPreview(bytes: Uint8Array): Promise<{ bytes: Uint8Array; mimeType: string } | null> {
   return Promise.resolve({ bytes, mimeType: 'image/png' });
@@ -63,21 +82,7 @@ describe('staged attachment preview (approval source)', () => {
     assert.equal(read, 0);
   });
 
-  it('guesses the image mime from the name when the approval has none', async () => {
-    const approvals = createAttachmentApprovalRegistry();
-    // pickFiles issues approvals without a mimeType — the common path.
-    const [issued] = approvals.issueApprovals(1, [{ path: '/tmp/shot.png', name: 'shot.png', size: 4 }]);
-    const result = await loadApprovalPreview({
-      senderId: 1,
-      approvalId: issued.approvalId,
-      approvals,
-      readFile: async () => PNG,
-      renderPreview: fakeRenderPreview,
-    });
-    assert.equal(result.ok, true);
-  });
-
-  it('refuses non-image approvals without touching the file', async () => {
+  it('reads non-image approvals once to verify their content before refusing them', async () => {
     const approvals = createAttachmentApprovalRegistry();
     const [issued] = approvals.issueApprovals(1, [{ path: '/tmp/notes.md', name: 'notes.md', size: 4 }]);
     let read = 0;
@@ -87,12 +92,102 @@ describe('staged attachment preview (approval source)', () => {
       approvals,
       readFile: async () => {
         read += 1;
-        return PNG;
+        return Buffer.from('text');
       },
       renderPreview: fakeRenderPreview,
     });
     assert.deepEqual(result, { ok: false, reason: 'not_image' });
-    assert.equal(read, 0);
+    assert.equal(read, 1);
+  });
+
+  it('previews real image bytes even when the file name claims PDF', async () => {
+    const approvals = createAttachmentApprovalRegistry();
+    const [issued] = approvals.issueApprovals(1, [
+      { path: '/tmp/report.pdf', name: 'report.pdf', mimeType: 'application/pdf', size: PNG.byteLength },
+    ]);
+    let renderCalls = 0;
+    const result = await loadApprovalPreview({
+      senderId: 1,
+      approvalId: issued.approvalId,
+      approvals,
+      readFile: async () => PNG,
+      renderPreview: async (bytes) => {
+        renderCalls += 1;
+        return { bytes, mimeType: 'image/png' };
+      },
+    });
+
+    assert.deepEqual(result, {
+      ok: true,
+      base64: Buffer.from(PNG).toString('base64'),
+      mimeType: 'image/png',
+    });
+    assert.equal(renderCalls, 1);
+  });
+
+  it('does not send PDF bytes with a spoofed PNG name to the image decoder', async () => {
+    const pdf = Buffer.from('%PDF-1.4\nfixture');
+    const approvals = createAttachmentApprovalRegistry();
+    const [issued] = approvals.issueApprovals(1, [
+      { path: '/tmp/report.png', name: 'report.png', size: pdf.byteLength },
+    ]);
+    let renderCalls = 0;
+    const result = await loadApprovalPreview({
+      senderId: 1,
+      approvalId: issued.approvalId,
+      approvals,
+      readFile: async () => pdf,
+      renderPreview: async () => {
+        renderCalls += 1;
+        return null;
+      },
+    });
+
+    assert.deepEqual(result, { ok: false, reason: 'not_image' });
+    assert.equal(renderCalls, 0);
+  });
+
+  it('does not send unknown bytes with a spoofed PNG name to the image decoder', async () => {
+    const unknown = Buffer.from('not an image');
+    const approvals = createAttachmentApprovalRegistry();
+    const [issued] = approvals.issueApprovals(1, [
+      { path: '/tmp/payload.png', name: 'payload.png', size: unknown.byteLength },
+    ]);
+    let renderCalls = 0;
+    const result = await loadApprovalPreview({
+      senderId: 1,
+      approvalId: issued.approvalId,
+      approvals,
+      readFile: async () => unknown,
+      renderPreview: async () => {
+        renderCalls += 1;
+        return null;
+      },
+    });
+
+    assert.deepEqual(result, { ok: false, reason: 'not_image' });
+    assert.equal(renderCalls, 0);
+  });
+
+  it('uses the sniffed MIME when returning original image bytes as the preview', async () => {
+    const webp = Buffer.from('RIFF0000WEBPVP8 ', 'ascii');
+    const approvals = createAttachmentApprovalRegistry();
+    const [issued] = approvals.issueApprovals(1, [
+      { path: '/tmp/photo.png', name: 'photo.png', size: webp.byteLength },
+    ]);
+    const result = await loadApprovalPreview({
+      senderId: 1,
+      approvalId: issued.approvalId,
+      approvals,
+      readFile: async () => webp,
+      renderPreview: async () => null,
+    });
+
+    assert.deepEqual(result, {
+      ok: true,
+      base64: webp.toString('base64'),
+      mimeType: 'image/webp',
+    });
   });
 
   it('registers the client-owned attachment preview IPC boundary', async () => {
@@ -134,24 +229,6 @@ describe('staged attachment preview (approval source)', () => {
       await loadApprovalPreview({ senderId: 2, approvalId: issued.approvalId, ...deps }),
       { ok: false, reason: 'not_found' },
     );
-  });
-
-  it('ships the original bytes when the thumbnailer cannot decode a small image (GIF path)', async () => {
-    const approvals = createAttachmentApprovalRegistry();
-    const [issued] = approvals.issueApprovals(1, [{ path: '/tmp/loop.gif', name: 'loop.gif', size: 4 }]);
-    const result = await loadApprovalPreview({
-      senderId: 1,
-      approvalId: issued.approvalId,
-      approvals,
-      readFile: async () => PNG,
-      // nativeImage has no GIF decoder — this is what it reports for one.
-      renderPreview: async () => null,
-    });
-    assert.deepEqual(result, {
-      ok: true,
-      base64: Buffer.from(PNG).toString('base64'),
-      mimeType: 'image/gif',
-    });
   });
 
   it('soft-fails when the bytes cannot be read, or cannot decode and exceed the inline cap', async () => {

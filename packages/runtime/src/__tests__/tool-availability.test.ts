@@ -1,18 +1,47 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { z } from 'zod';
 
 import {
+  TOOL_SEARCH_MAX_SCHEMA_CHARS,
+  TOOL_SEARCH_NAME,
   ToolAvailabilityRuntime,
-  LOAD_TOOLS_NAME,
   toolAvailabilityHash,
-  type RuntimeEventLike,
-  type StepLike,
+  type ToolSearchResult,
 } from '../tool-availability.js';
-import type { MakaTool } from '../tool-runtime.js';
+import type { MakaTool, MakaToolContext } from '../tool-runtime.js';
 
-function tool(name: string): MakaTool {
-  return { name, description: name, parameters: z.object({}), impl: () => ({ ok: true }) };
+function tool(name: string, description = name): MakaTool {
+  return { name, description, parameters: z.object({}), impl: () => ({ ok: true }) };
+}
+
+function withCategory(name: string, categoryHint: MakaTool['categoryHint']): MakaTool {
+  return {
+    name,
+    description: name,
+    parameters: z.object({}),
+    impl: () => ({ ok: true }),
+    categoryHint,
+  };
 }
 
 const invalid: MakaTool = {
@@ -22,7 +51,7 @@ const invalid: MakaTool = {
   impl: () => ({}),
 };
 
-const ctx = {
+const ctx: MakaToolContext = {
   sessionId: 's',
   turnId: 't',
   cwd: '/tmp',
@@ -31,29 +60,32 @@ const ctx = {
   emitOutput: () => {},
 };
 
-test('tool availability hash captures policy while canonicalizing group members', () => {
-  const full = toolAvailabilityHash({ economy: false });
-  const economy = toolAvailabilityHash({
-    economy: true,
+test('tool availability hash canonicalizes group members', () => {
+  const grouped = toolAvailabilityHash({
     groups: [{ id: 'docs', toolNames: ['docs_read', 'docs_edit', 'docs_read'] }],
   });
   const reordered = toolAvailabilityHash({
-    economy: true,
     groups: [{ id: 'docs', toolNames: ['docs_edit', 'docs_read'] }],
   });
-
-  assert.notEqual(full, economy);
-  assert.equal(economy, reordered);
+  assert.equal(grouped, reordered);
 });
 
-// rive/docs grouped; Read/Write ungrouped (always visible).
-function runtime(economy: boolean) {
+test('tool availability hash distinguishes full and search-enabled bindings', () => {
+  assert.notEqual(toolAvailabilityHash(undefined), toolAvailabilityHash({}));
+});
+
+function runtime() {
   return new ToolAvailabilityRuntime(
-    [tool('Read'), tool('Write'), tool('rive_run'), tool('docs_edit'), tool('docs_read')],
+    [
+      tool('Read'),
+      tool('Write'),
+      tool('browser_click', 'Click an element in the browser'),
+      tool('docs_edit', 'Edit a document'),
+      tool('docs_read', 'Read a document'),
+    ],
     {
-      economy,
       groups: [
-        { id: 'rive', toolNames: ['rive_run'], label: 'Rive' },
+        { id: 'browser', toolNames: ['browser_click'], description: 'Browser automation' },
         { id: 'docs', toolNames: ['docs_edit', 'docs_read'], description: 'Document tools' },
       ],
     },
@@ -61,239 +93,311 @@ function runtime(economy: boolean) {
   );
 }
 
-function loadStep(group: string): StepLike {
-  return { toolCalls: [{ toolName: LOAD_TOOLS_NAME, input: { group } }] };
+function searchTool(plan: ReturnType<ToolAvailabilityRuntime['prepare']>): MakaTool {
+  const connector = plan.providerTools.find((candidate) => candidate.name === TOOL_SEARCH_NAME);
+  assert.ok(connector);
+  return connector;
 }
 
-describe('ToolAvailabilityRuntime — full mode', () => {
-  test('economy off advertises every tool, no connector / gating / diagnostics', () => {
-    const plan = runtime(false).prepare([]);
-    assert.ok(
-      plan.activeTools.includes('rive_run'),
-      'grouped tools are active when economy is off',
-    );
-    assert.ok(plan.activeTools.includes('docs_edit'));
-    assert.ok(!plan.activeTools.includes(LOAD_TOOLS_NAME), 'no connector in full mode');
-    assert.equal(plan.projectActiveTools, undefined);
-    assert.equal(plan.gating, undefined);
-    assert.equal(plan.diagnostics([], 0), undefined);
-  });
-
-  test('economy on but no hideable groups falls back to full mode', () => {
-    const r = new ToolAvailabilityRuntime([tool('Read')], { economy: true }, invalid);
-    const plan = r.prepare([]);
-    assert.equal(plan.gating, undefined, 'nothing to hide → no gating');
+describe('ToolAvailabilityRuntime — search activation', () => {
+  test('step 0 exposes direct tools and tool_search, but not searchable schemas', () => {
+    const plan = runtime().prepare(new Map());
     assert.ok(plan.activeTools.includes('Read'));
-  });
-});
-
-describe('ToolAvailabilityRuntime — economy mode', () => {
-  test('only ungrouped tools + connector are active at step 0; group tools hidden', () => {
-    const plan = runtime(true).prepare([]);
-    assert.ok(plan.activeTools.includes('Read'), 'ungrouped tool is visible');
-    assert.ok(plan.activeTools.includes('Write'), 'ungrouped defaults to visible');
-    assert.ok(plan.activeTools.includes(LOAD_TOOLS_NAME), 'connector is always visible');
-    assert.ok(!plan.activeTools.includes('rive_run'), 'grouped tool hidden until loaded');
+    assert.ok(plan.activeTools.includes('Write'));
+    assert.ok(plan.activeTools.includes(TOOL_SEARCH_NAME));
+    assert.ok(!plan.activeTools.includes('browser_click'));
     assert.ok(!plan.activeTools.includes('docs_edit'));
   });
 
-  test('a required orchestration tool stays pinned for the whole turn', () => {
-    const plan = runtime(true).prepare([], new Set(['rive_run']));
-    assert.ok(plan.activeTools.includes('rive_run'), 'required tool is visible at step 0');
-    assert.ok(plan.gating?.activeNames().has('rive_run'));
-    const next = plan.projectActiveTools!({ completedSteps: [] });
-    assert.ok(next.activeTools.includes('rive_run'), 'required tool remains visible later');
-    assert.ok(!next.activeTools.includes('docs_edit'), 'other deferred groups remain hidden');
+  test('a group cannot defer the fixed direct baseline', () => {
+    const plan = new ToolAvailabilityRuntime(
+      [tool('Read'), tool('browser_click')],
+      { groups: [{ id: 'bad-source', toolNames: ['Read', 'browser_click'] }] },
+      invalid,
+    ).prepare(new Map());
+    assert.ok(plan.activeTools.includes('Read'));
+    assert.ok(!plan.activeTools.includes('browser_click'));
+    assert.doesNotMatch(searchTool(plan).description, /- Read/);
   });
 
-  test('unknown required tool names are ignored', () => {
-    const plan = runtime(true).prepare([], new Set(['not-a-tool']));
-    assert.ok(!plan.activeTools.includes('not-a-tool'));
-    assert.ok(!plan.activeTools.includes('rive_run'));
+  test('skill discovery tools stay direct while search is enabled', () => {
+    const plan = new ToolAvailabilityRuntime(
+      [tool('Skill'), tool('SkillSearch'), tool('custom')],
+      {},
+      invalid,
+    ).prepare(new Map());
+    assert.deepEqual(plan.activeTools, ['Skill', 'SkillSearch', TOOL_SEARCH_NAME]);
   });
 
-  test('providerTools keeps every tool dispatchable, including hidden groups + invalid', () => {
-    const names = runtime(true)
-      .prepare([])
-      .providerTools.map((t) => t.name);
-    for (const n of [
-      'Read',
-      'Write',
-      'rive_run',
-      'docs_edit',
-      'docs_read',
-      LOAD_TOOLS_NAME,
-      'invalid',
-    ]) {
-      assert.ok(names.includes(n), `${n} present in providerTools`);
-    }
+  test('provider-routed apply_patch inherits direct editing visibility', () => {
+    const plan = new ToolAvailabilityRuntime(
+      [tool('apply_patch'), tool('custom')],
+      {},
+      invalid,
+    ).prepare(new Map());
+    assert.deepEqual(plan.activeTools, ['apply_patch', TOOL_SEARCH_NAME]);
   });
 
-  test('the connector activates a group in the next request projection', () => {
-    const plan = runtime(true).prepare([]);
-    assert.ok(plan.projectActiveTools);
-    const next = plan.projectActiveTools!({ completedSteps: [loadStep('docs')] });
-    assert.ok(next.activeTools.includes('docs_edit'), 'docs group active after load_tools(docs)');
-    assert.ok(next.activeTools.includes('docs_read'));
-    assert.ok(!next.activeTools.includes('rive_run'), 'an unloaded group stays hidden');
+  test('inventory contains group and canonical names without tool descriptions', () => {
+    const connector = searchTool(runtime().prepare(new Map()));
+    assert.match(connector.description, /browser:\n- browser_click/);
+    assert.match(connector.description, /docs:\n- docs_edit\n- docs_read/);
+    assert.doesNotMatch(connector.description, /Click an element/);
+    assert.doesNotMatch(connector.description, /Edit a document/);
   });
 
-  test('gating exposes group members and tracks the current step snapshot', () => {
-    const plan = runtime(true).prepare([]);
-    assert.ok(plan.gating);
-    assert.deepEqual([...plan.gating!.gatedNames].sort(), ['docs_edit', 'docs_read', 'rive_run']);
-    assert.ok(!plan.gating!.activeNames().has('rive_run'), 'rive hidden at step 0');
-    plan.projectActiveTools!({ completedSteps: [loadStep('rive')] });
-    assert.ok(plan.gating!.activeNames().has('rive_run'), 'snapshot updated after rive load');
-  });
+  test('search indexes group meaning without exposing it in the initial inventory', async () => {
+    const plan = new ToolAvailabilityRuntime(
+      [tool('remote_invoke', 'Invoke a provider-defined operation')],
+      {
+        groups: [
+          {
+            id: 'calendar_provider',
+            label: 'Team calendar',
+            description: 'Schedule a calendar meeting and manage events.',
+            toolNames: ['remote_invoke'],
+          },
+        ],
+      },
+      invalid,
+    ).prepare(new Map());
+    const connector = searchTool(plan);
 
-  test('connector impl returns the group tool names; unknown group throws', async () => {
-    const connector = runtime(true)
-      .prepare([])
-      .providerTools.find((t) => t.name === LOAD_TOOLS_NAME);
-    assert.ok(connector);
-    assert.deepEqual(await connector!.impl({ group: 'docs' }, ctx), {
-      loaded: ['docs_edit', 'docs_read'],
+    assert.doesNotMatch(connector.description, /Team calendar|Schedule a calendar meeting/);
+    assert.deepEqual(await connector.impl({ query: 'schedule calendar meeting' }, ctx), {
+      activated: ['remote_invoke'],
     });
-    await assert.rejects(async () => connector!.impl({ group: 'nope' }, ctx), /Unknown tool group/);
-  });
-});
-
-describe('ToolAvailabilityRuntime — durable ledger seed', () => {
-  function event(name: string, args: unknown): RuntimeEventLike {
-    return { content: { kind: 'function_call', name, args } };
-  }
-
-  test('a prior-turn load_tools call re-activates the group at step 0', () => {
-    const plan = runtime(true).prepare([event(LOAD_TOOLS_NAME, { group: 'rive' })]);
-    assert.ok(plan.activeTools.includes('rive_run'), 'seeded group active from turn start');
-    assert.ok(!plan.activeTools.includes('docs_edit'), 'unseeded group still hidden');
   });
 
-  test('historical load_tool (PR#30) and connect_tool_source (PR#34) calls also seed', () => {
-    const fromDeferred = runtime(true).prepare([event('load_tool', { namespace: 'docs' })]);
+  test('a successful search activates bounded matches for the next projection', async () => {
+    const active = new Map<string, MakaTool>();
+    const traces: Record<string, unknown>[] = [];
+    const plan = runtime().prepare(active);
+    const connector = searchTool(plan);
+    const tracedContext: MakaToolContext = {
+      ...ctx,
+      emitRunTrace: (type, _message, data) => {
+        if (type === 'tool_searched') traces.push(data ?? {});
+      },
+    };
+
+    assert.deepEqual(await connector.impl({ query: 'edit document', limit: 1 }, tracedContext), {
+      activated: ['docs_edit'],
+    });
+    assert.ok(active.has('docs_edit'), 'turn-owned activation map changed');
     assert.ok(
-      fromDeferred.activeTools.includes('docs_edit'),
-      'load_tool namespace seeds the group',
+      !plan.currentRepairToolNames().includes('docs_edit'),
+      'step snapshot stayed immutable',
     );
 
-    const fromEconomy = runtime(true).prepare([event('connect_tool_source', { source: 'rive' })]);
-    assert.ok(
-      fromEconomy.activeTools.includes('rive_run'),
-      'connect_tool_source source seeds the group',
-    );
+    const next = plan.projectActiveTools!();
+    assert.ok(next.activeTools.includes('docs_edit'));
+    assert.ok(!next.activeTools.includes('docs_read'));
+    assert.equal(traces[0]?.query, 'edit document');
+    assert.deepEqual(traces[0]?.activated, ['docs_edit']);
   });
 
-  test('an unknown seeded group id is ignored (forward compatible)', () => {
-    const plan = runtime(true).prepare([event(LOAD_TOOLS_NAME, { group: 'ghost' })]);
-    assert.ok(!plan.activeTools.includes('rive_run'));
-    assert.ok(!plan.activeTools.includes('docs_edit'));
-  });
-});
-
-describe('ToolAvailabilityRuntime — diagnostics', () => {
-  test('reports the active subset, enabled/available groups, and schema reduction', () => {
-    const plan = runtime(true).prepare([]);
-    const d = plan.diagnostics(plan.activeTools, 100);
-    assert.ok(d);
-    assert.equal(d!.mode, 'economy');
-    assert.equal(d!.connectorToolName, LOAD_TOOLS_NAME);
-    assert.deepEqual(d!.enabledSourceIds, [], 'no group loaded at step 0');
-    assert.deepEqual(d!.availableSourceIds, ['docs', 'rive']);
-    assert.deepEqual(d!.visibleToolNamesBySource, {
-      docs: ['docs_edit', 'docs_read'],
-      rive: ['rive_run'],
+  test('ordinary result is thin and contains no complete schemas', async () => {
+    const connector = searchTool(runtime().prepare(new Map()));
+    const output = await connector.impl({ query: 'browser click' }, ctx);
+    assert.deepEqual(output, { activated: ['browser_click'] });
+    assert.deepEqual(await connector.toModelOutput?.({ toolCallId: 'tc', input: {}, output }), {
+      type: 'json',
+      value: { activated: ['browser_click'] },
     });
-    assert.ok(
-      (d!.fullToolSchemaChars ?? 0) > (d!.visibleToolSchemaChars ?? 0),
-      'hidden schemas reduce the visible chars',
-    );
-    assert.ok((d!.toolSchemaCharReduction ?? 0) > 0);
-    // full = visible + hidden must hold (the connector is counted on both
-    // sides, so it cancels — guards against the hiddenToolCount off-by-one).
-    assert.equal(d!.hiddenToolCount, 3, 'rive(1) + docs(2) tools are hidden at step 0');
-    assert.equal(d!.fullToolCount, (d!.visibleToolCount ?? 0) + (d!.hiddenToolCount ?? 0));
   });
 
-  test('enabledSourceIds grows once a group is loaded', () => {
-    const plan = runtime(true).prepare([]);
-    const active = plan.projectActiveTools!({ completedSteps: [loadStep('rive')] }).activeTools;
-    const d = plan.diagnostics(active, 100);
-    assert.deepEqual(d!.enabledSourceIds, ['rive']);
-    assert.deepEqual(d!.availableSourceIds, ['docs']);
-  });
-});
-
-describe('ToolAvailabilityRuntime — connector shape', () => {
-  function connector() {
-    const found = runtime(true)
-      .prepare([])
-      .providerTools.find((t) => t.name === LOAD_TOOLS_NAME);
-    assert.ok(found);
-    return found!;
-  }
-
-  test('lists every group in its description and never requires permission', () => {
-    const c = connector();
-    assert.match(c.description, /rive/);
-    assert.match(c.description, /docs/);
-    assert.match(c.description, /Rive/); // rive group's label
-    assert.match(c.description, /Document tools/); // docs group's description
-  });
-
-  test('loading a group returns exactly its tool names — a thin result, no schema', async () => {
-    const result = await connector().impl({ group: 'docs' }, ctx);
-    assert.deepEqual(result, { loaded: ['docs_edit', 'docs_read'] });
-    const keys = Object.keys(result as object);
-    assert.ok(
-      !keys.includes('schema') && !keys.includes('parameters') && !keys.includes('inputSchema'),
-    );
-  });
-});
-
-describe('ToolAvailabilityRuntime — activation robustness', () => {
-  test('parses a stringified connector input, ignores malformed input', () => {
-    const plan = runtime(true).prepare([]);
-    const ok = plan.projectActiveTools!({
-      completedSteps: [
-        { toolCalls: [{ toolName: LOAD_TOOLS_NAME, input: JSON.stringify({ group: 'rive' }) }] },
-      ],
-    });
-    assert.ok(ok.activeTools.includes('rive_run'), 'stringified { group } is parsed');
-
-    const bad = runtime(true).prepare([]);
-    const after = bad.projectActiveTools!({
-      completedSteps: [{ toolCalls: [{ toolName: LOAD_TOOLS_NAME, input: 'not json' }] }],
-    });
-    assert.ok(!after.activeTools.includes('rive_run'), 'malformed input activates nothing');
-  });
-
-  test('same-turn activation honors only load_tools({group}) — historical names and other keys are inert', () => {
-    const cases: Array<{ toolName: string; input: unknown }> = [
-      { toolName: 'load_tool', input: { namespace: 'rive' } }, // PR#30 name — ledger-only
-      { toolName: 'connect_tool_source', input: { source: 'rive' } }, // PR#34 name — ledger-only
-      { toolName: LOAD_TOOLS_NAME, input: { namespace: 'rive' } }, // right name, wrong key
-      { toolName: LOAD_TOOLS_NAME, input: { source: 'rive' } }, // right name, wrong key
-    ];
-    for (const c of cases) {
-      const plan = runtime(true).prepare([]);
-      const next = plan.projectActiveTools!({ completedSteps: [{ toolCalls: [c] }] });
-      assert.ok(
-        !next.activeTools.includes('rive_run'),
-        `step ${c.toolName}(${JSON.stringify(c.input)}) must NOT activate a group`,
-      );
-    }
-    // Only the live connector with the `group` arg activates same-turn.
-    const ok = runtime(true).prepare([]).projectActiveTools!({
-      completedSteps: [loadStep('rive')],
-    });
-    assert.ok(ok.activeTools.includes('rive_run'));
-  });
-
-  test('a non-function_call ledger event does not seed a group', () => {
-    const plan = runtime(true).prepare([
-      { content: { kind: 'function_response', name: LOAD_TOOLS_NAME, args: { group: 'rive' } } },
+  test('repeated and parallel searches union and deduplicate turn activation', async () => {
+    const active = new Map<string, MakaTool>();
+    const plan = runtime().prepare(active);
+    const connector = searchTool(plan);
+    await Promise.all([
+      connector.impl({ query: 'document read', limit: 1 }, ctx),
+      connector.impl({ query: 'browser click', limit: 1 }, ctx),
+      connector.impl({ query: 'browser click', limit: 1 }, ctx),
     ]);
-    assert.ok(!plan.activeTools.includes('rive_run'), 'only committed function_call events seed');
+    assert.deepEqual([...active.keys()].sort(), ['browser_click', 'docs_read']);
+  });
+
+  test('already-active matches do not consume a later search limit or schema budget', async () => {
+    const active = new Map<string, MakaTool>();
+    const largeDescription = `Perform a calendar action ${'x'.repeat(40 * 1024)}`;
+    const plan = new ToolAvailabilityRuntime(
+      [tool('calendar_primary', largeDescription), tool('calendar_secondary', largeDescription)],
+      {
+        groups: [
+          {
+            id: 'calendar',
+            toolNames: ['calendar_primary', 'calendar_secondary'],
+          },
+        ],
+      },
+      invalid,
+    ).prepare(active);
+    const connector = searchTool(plan);
+
+    const first = (await connector.impl(
+      { query: 'calendar action', limit: 1 },
+      ctx,
+    )) as ToolSearchResult;
+    const second = (await connector.impl(
+      { query: 'calendar action', limit: 2 },
+      ctx,
+    )) as ToolSearchResult;
+
+    assert.equal(first.activated.length, 1);
+    assert.equal(second.activated.length, 1);
+    assert.notEqual(second.activated[0], first.activated[0]);
+    assert.equal(active.size, 2);
+  });
+
+  test('reports and skips an oversized tool without hiding a smaller later match', async () => {
+    const active = new Map<string, MakaTool>();
+    const plan = new ToolAvailabilityRuntime(
+      [
+        tool('oversized_target', `Oversized target ${'x'.repeat(TOOL_SEARCH_MAX_SCHEMA_CHARS)}`),
+        tool('smaller_fallback', 'An oversized target fallback'),
+      ],
+      {
+        groups: [
+          {
+            id: 'oversized',
+            toolNames: ['oversized_target', 'smaller_fallback'],
+          },
+        ],
+      },
+      invalid,
+    ).prepare(active);
+
+    const connector = searchTool(plan);
+    const result = (await connector.impl({ query: 'oversized target' }, ctx)) as ToolSearchResult;
+
+    assert.deepEqual(result.activated, ['smaller_fallback']);
+    assert.equal(result.blocked?.name, 'oversized_target');
+    assert.equal(result.blocked?.reason, 'schema_too_large');
+    assert.ok((result.blocked?.schemaChars ?? 0) > TOOL_SEARCH_MAX_SCHEMA_CHARS);
+    assert.equal(active.has('smaller_fallback'), true);
+    assert.deepEqual(
+      await connector.toModelOutput?.({ toolCallId: 'tc', input: {}, output: result }),
+      {
+        type: 'json',
+        value: { activated: ['smaller_fallback'], blocked: result.blocked },
+      },
+    );
+  });
+
+  test('stops at the schema ceiling instead of silently changing relevance order', async () => {
+    const largeDescription = `Budget branch ${'x'.repeat(40 * 1024)}`;
+    const active = new Map<string, MakaTool>();
+    const plan = new ToolAvailabilityRuntime(
+      [
+        tool('budget_branch_primary', largeDescription),
+        tool('budget_branch_secondary', largeDescription),
+        tool('lower_ranked_tool', 'A lower ranked budget branch tool'),
+      ],
+      {
+        groups: [
+          {
+            id: 'budget',
+            toolNames: ['budget_branch_primary', 'budget_branch_secondary', 'lower_ranked_tool'],
+          },
+        ],
+      },
+      invalid,
+    ).prepare(active);
+
+    const result = (await searchTool(plan).impl(
+      { query: 'budget branch', limit: 3 },
+      ctx,
+    )) as ToolSearchResult;
+
+    assert.equal(result.activated.length, 1);
+    assert.equal(result.blocked?.reason, 'schema_budget_exhausted');
+    assert.equal(active.size, 1);
+    assert.equal(active.has('lower_ranked_tool'), false);
+  });
+
+  test('required orchestration tools are visible without changing activation state', () => {
+    const active = new Map<string, MakaTool>();
+    const plan = runtime().prepare(active, new Set(['docs_read']));
+    assert.ok(plan.activeTools.includes('docs_read'));
+    assert.equal(active.size, 0);
+    assert.ok(plan.projectActiveTools!().activeTools.includes('docs_read'));
+  });
+
+  test('activation maps isolate overlapping and subsequent turns', async () => {
+    const first = new Map<string, MakaTool>();
+    const firstPlan = runtime().prepare(first);
+    await searchTool(firstPlan).impl({ query: 'browser click' }, ctx);
+    assert.ok(firstPlan.projectActiveTools!().activeTools.includes('browser_click'));
+
+    const secondPlan = runtime().prepare(new Map());
+    assert.ok(!secondPlan.activeTools.includes('browser_click'));
+  });
+
+  test('an ungrouped bound tool is deferred by default', () => {
+    const plan = new ToolAvailabilityRuntime(
+      [tool('Read'), tool('future_tool')],
+      {},
+      invalid,
+    ).prepare(new Map());
+    assert.deepEqual(plan.activeTools, ['Read', TOOL_SEARCH_NAME]);
+    assert.match(searchTool(plan).description, /- future_tool/);
+    assert.ok(plan.gating?.gatedNames.has('future_tool'));
+  });
+
+  test('omitting availability keeps an explicit binding fully visible', () => {
+    const plan = new ToolAvailabilityRuntime(
+      [tool('Read'), tool('custom')],
+      undefined,
+      invalid,
+    ).prepare(new Map());
+    assert.deepEqual(plan.activeTools, ['custom', 'Read']);
+    assert.ok(!plan.providerTools.some((candidate) => candidate.name === TOOL_SEARCH_NAME));
+    assert.equal(plan.gating, undefined);
+  });
+
+  test('buckets ungrouped native tools into capability families by categoryHint', () => {
+    const plan = new ToolAvailabilityRuntime(
+      [
+        withCategory('agent_spawn', 'subagent'),
+        withCategory('web_search', 'web_read'),
+        withCategory('screen_click', 'computer_use'),
+        withCategory('session_tool', 'custom_tool'), // no family mapping -> other
+        tool('legacy_tool'), // no categoryHint -> other
+      ],
+      { groups: [] },
+      invalid,
+    ).prepare(new Map());
+
+    const bySource = plan.diagnostics([], 0)!.visibleToolNamesBySource!;
+    // Distinct permission hints land in distinct browsing families, not one `other`.
+    assert.deepEqual(bySource.agents, ['agent_spawn']);
+    assert.deepEqual(bySource.web, ['web_search']);
+    assert.deepEqual(bySource.computer_use, ['screen_click']);
+    // Only hint-less / custom_tool tools fall back to `other`.
+    assert.deepEqual(bySource.other, ['legacy_tool', 'session_tool']);
+    // A hint present in the exhaustive family map but mapped to `null`
+    // (custom_tool) still resolves to `other`, not a family of its own.
+    assert.equal(bySource.custom_tool, undefined);
+
+    // Family ids surface in the searchable inventory the model sees.
+    const description = searchTool(plan).description;
+    assert.match(description, /agents:\n- agent_spawn/);
+    assert.match(description, /web:\n- web_search/);
+    assert.match(description, /computer_use:\n- screen_click/);
+  });
+
+  test('a caller-supplied group keeps precedence over a categoryHint family', () => {
+    const plan = new ToolAvailabilityRuntime(
+      [withCategory('agent_spawn', 'subagent'), withCategory('agent_list', 'subagent')],
+      { groups: [{ id: 'orchestration', label: 'Orchestration', toolNames: ['agent_spawn'] }] },
+      invalid,
+    ).prepare(new Map());
+
+    const bySource = plan.diagnostics([], 0)!.visibleToolNamesBySource!;
+    // The explicit group claims agent_spawn; only the remaining hinted tool is family-bucketed.
+    assert.deepEqual(bySource.orchestration, ['agent_spawn']);
+    assert.deepEqual(bySource.agents, ['agent_list']);
   });
 });

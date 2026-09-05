@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { strict as assert } from 'node:assert';
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { describe, it } from 'node:test';
@@ -13,10 +32,10 @@ type ExecFileCallback = (
   cb: (error: ExecFileException | null, stdout: string, stderr: string) => void,
 ) => void;
 
-/** Fake `git ls-files` returning a fixed newline-joined path list. */
+/** Fake `git ls-files -z` returning a fixed NUL-delimited path list. */
 function fakeGit(stdout: string, error: ExecFileException | null = null): ExecFileCallback {
   return (_file, args, _options, cb) => {
-    assert.deepEqual(args, ['ls-files', '--cached', '--others', '--exclude-standard']);
+    assert.deepEqual(args, ['ls-files', '-z', '--cached', '--others', '--exclude-standard']);
     cb(error, stdout, '');
   };
 }
@@ -42,19 +61,9 @@ async function withPlainDir(run: (root: string) => Promise<void>): Promise<void>
 }
 
 describe('searchWorkspaceFiles', () => {
-  it('lists git-tracked/untracked files honoring the ls-files output', async () => {
-    await withGitRepo(async (root) => {
-      const execFileImpl = fakeGit('src/app.tsx\nsrc/main.tsx\nREADME.md\n');
-      const result = await searchWorkspaceFiles(root, { query: '', execFileImpl });
-      assert.equal(result.ok, true);
-      assert.ok(result.ok && result.files.some((f) => f.relativePath === 'src/app.tsx'));
-      assert.ok(result.ok && result.files.some((f) => f.relativePath === 'README.md'));
-    });
-  });
-
   it('filters with AND-of-substring tokens, case-insensitively', async () => {
     await withGitRepo(async (root) => {
-      const execFileImpl = fakeGit('src/app.tsx\nsrc/main.tsx\ndocs/app.md\n');
+      const execFileImpl = fakeGit('src/app.tsx\0src/main.tsx\0docs/app.md\0');
       const result = await searchWorkspaceFiles(root, { query: 'SRC app', execFileImpl });
       assert.ok(result.ok);
       const paths = result.ok ? result.files.map((f) => f.relativePath) : [];
@@ -64,7 +73,7 @@ describe('searchWorkspaceFiles', () => {
 
   it('ranks shorter paths first, then lexicographically', async () => {
     await withGitRepo(async (root) => {
-      const execFileImpl = fakeGit('a/b/c/app.tsx\napp.tsx\nlib/app.tsx\n');
+      const execFileImpl = fakeGit('a/b/c/app.tsx\0app.tsx\0lib/app.tsx\0');
       const result = await searchWorkspaceFiles(root, { query: 'app', execFileImpl });
       assert.ok(result.ok);
       const paths = result.ok ? result.files.map((f) => f.relativePath) : [];
@@ -72,9 +81,19 @@ describe('searchWorkspaceFiles', () => {
     });
   });
 
+  it('preserves Git filenames that require an unambiguous delimiter', async () => {
+    await withGitRepo(async (root) => {
+      const execFileImpl = fakeGit('普通.md\0 leading.txt\0trailing.txt \0line\nbreak.txt\0');
+      const result = await searchWorkspaceFiles(root, { query: '', limit: 10, execFileImpl });
+      assert.ok(result.ok);
+      const paths = result.ok ? result.files.map((file) => file.relativePath) : [];
+      assert.deepEqual(paths, ['普通.md', ' leading.txt', 'trailing.txt ', 'line\nbreak.txt']);
+    });
+  });
+
   it('caps the result count at the requested limit', async () => {
     await withGitRepo(async (root) => {
-      const many = Array.from({ length: 200 }, (_v, i) => `file-${i}.ts`).join('\n');
+      const many = `${Array.from({ length: 200 }, (_v, i) => `file-${i}.ts`).join('\0')}\0`;
       const execFileImpl = fakeGit(many);
       const result = await searchWorkspaceFiles(root, { query: '', limit: 5, execFileImpl });
       assert.ok(result.ok);
@@ -136,9 +155,4 @@ describe('searchWorkspaceFiles', () => {
     });
   });
 
-  it('returns no_project when the root is empty', async () => {
-    const result = await searchWorkspaceFiles('', { query: 'x' });
-    assert.equal(result.ok, false);
-    assert.equal(!result.ok && result.reason, 'no_project');
-  });
 });

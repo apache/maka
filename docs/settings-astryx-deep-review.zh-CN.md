@@ -1,3 +1,22 @@
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+
 # Maka 设置页深度 Review——以 Astryx 设计语言为基准
 
 > 2026-08-03,基于 `settings/astryx-refactor` 分支(已 rebase 到最新 main)。
@@ -115,7 +134,7 @@
    Badge;彩色药丸只保留真正的计数/枚举 `Token`。
 4. **逐页清理 C4/C5/C6**(按第三节清单),记忆页单独做(动作收纳进
    `MoreMenu`、条目行化)。
-5. **验证闭环**:四组合(zh/en × light/dark)截图全过;check-dead-css 归零
+5. **验证闭环**:四组合(zh/en × light/dark)截图全过;dead CSS review 归零
    (预计再删 memory.css/permission.css/health.css 大半);typecheck + 全检查。
 
 预计削减:settings 专属 CSS 从 ~1900 行降到 <600 行;页面代码同步变薄。

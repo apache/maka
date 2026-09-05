@@ -1,14 +1,409 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { describe, test } from 'node:test';
-import type { CreateSessionInput } from '@maka/core';
-import { createSessionStore, isSessionNotFoundError } from '../session-store.js';
+import type { CreateSessionInput } from '@maka/core/runtime-inputs';
+import { DEFAULT_SESSION_NAME } from '@maka/core/session-name';
+import {
+  WORKHUB_COORDINATION_SESSION_ID,
+  WORKHUB_COORDINATION_SESSION_ROLE,
+  type StoredMessage,
+} from '@maka/core/session';
+import {
+  EXTERNAL_SESSION_IMPORT_LOOKUP_MAX_RECENT_SESSION_IDS,
+  EXTERNAL_SESSION_IMPORT_LOOKUP_MAX_SOURCE_IDS,
+  createSessionStore,
+  isSessionNotFoundError,
+  normalizeSessionHeader,
+} from '../session-store.js';
+import type { SessionConversationCopy, SessionHeader } from '@maka/core/session';
 import { OPERATIONAL_STATE_DATABASE_NAME } from '../operational-state-store.js';
 import { createSqliteSessionMetadataStore } from '../sqlite-session-metadata-store.js';
 
 describe('SQLite SessionStore', () => {
+  test('requires the reserved WorkHub Coordination identity and role together', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-workhub-coordination-identity-role-'));
+    const store = createSessionStore(root);
+    try {
+      await assert.rejects(
+        store.createStableSession({
+          sessionId: WORKHUB_COORDINATION_SESSION_ID,
+          requestFingerprint: `sha256:${'a'.repeat(64)}`,
+          input: makeInput({ cwd: root, projectId: null, name: 'Reserved without role' }),
+        }),
+        /identity and role must be claimed together/,
+      );
+      await assert.rejects(
+        store.createStableSession({
+          sessionId: 'ordinary-with-coordination-role',
+          requestFingerprint: `sha256:${'b'.repeat(64)}`,
+          input: {
+            ...makeInput({ cwd: root, projectId: null, name: 'Role without identity' }),
+            role: WORKHUB_COORDINATION_SESSION_ROLE,
+          },
+        }),
+        /identity and role must be claimed together/,
+      );
+      assert.deepEqual(await store.listHeaders(), []);
+
+      // The invariant lives in the header builder, so the creators that share
+      // it inherit it even though their inputs carry no role today.
+      await assert.rejects(
+        store.createSubagent({
+          ...makeInput({ cwd: root, name: 'Subagent claiming the role' }),
+          role: WORKHUB_COORDINATION_SESSION_ROLE,
+        } as Parameters<typeof store.createSubagent>[0]),
+        /identity and role must be claimed together/,
+      );
+      await assert.rejects(
+        store.createAgentGraphOperator(
+          {
+            ...makeInput({ cwd: root, name: 'Operator claiming the role' }),
+            role: WORKHUB_COORDINATION_SESSION_ROLE,
+          } as Parameters<typeof store.createAgentGraphOperator>[0],
+          {
+            schemaVersion: 1,
+            provisionId: `graph_provision_${'4'.repeat(32)}`,
+            provisionFingerprint: `sha256:${'5'.repeat(64)}`,
+            graphId: 'graph-1',
+            workId: `graph_work_${'3'.repeat(32)}`,
+            agentId: 'local-read',
+            operatorId: `graph_operator_${'6'.repeat(32)}`,
+            initialTurnId: 'graph-turn',
+            initialRunId: 'graph-run',
+            edges: [],
+          },
+          0,
+        ),
+        /identity and role must be claimed together/,
+      );
+      assert.deepEqual(await store.listHeaders(), []);
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('keeps the WorkHub Coordination Session durable but outside ordinary catalogs and route candidates', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-workhub-coordination-session-'));
+    const store = createSessionStore(root);
+    try {
+      const created = await store.createStableSession({
+        sessionId: WORKHUB_COORDINATION_SESSION_ID,
+        requestFingerprint: `sha256:${'a'.repeat(64)}`,
+        input: {
+          ...makeInput({ cwd: root, projectId: null, name: 'WorkHub' }),
+          role: WORKHUB_COORDINATION_SESSION_ROLE,
+        },
+      });
+      assert.equal(created.kind, 'created');
+
+      assert.deepEqual(await store.list(), []);
+      const page = await store.listCatalogPage(undefined, undefined, 10);
+      assert.equal(page.kind, 'page');
+      if (page.kind !== 'page') assert.fail('expected a catalog page');
+      assert.deepEqual(page.records, []);
+      await assert.rejects(store.readCatalogRecord(WORKHUB_COORDINATION_SESSION_ID), (error) =>
+        isSessionNotFoundError(error),
+      );
+
+      const recovery = await store.listForRecovery();
+      assert.equal(recovery.length, 1);
+      assert.equal(recovery[0]?.id, WORKHUB_COORDINATION_SESSION_ID);
+      assert.equal(recovery[0]?.role, WORKHUB_COORDINATION_SESSION_ROLE);
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('quarantines the reserved Coordination identity when its role is missing', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-workhub-coordination-missing-role-'));
+    const store = createSessionStore(root);
+    try {
+      const ordinary = await store.create(makeInput({ name: 'Keep me' }));
+      await store.createStableSession({
+        sessionId: WORKHUB_COORDINATION_SESSION_ID,
+        requestFingerprint: `sha256:${'a'.repeat(64)}`,
+        input: {
+          ...makeInput({ cwd: root, projectId: null, name: 'WorkHub' }),
+          role: WORKHUB_COORDINATION_SESSION_ROLE,
+        },
+      });
+      const database = new DatabaseSync(join(root, OPERATIONAL_STATE_DATABASE_NAME));
+      try {
+        database
+          .prepare(
+            `UPDATE session_metadata
+             SET payload_json = json_remove(payload_json, '$.role')
+             WHERE session_id = ?`,
+          )
+          .run(WORKHUB_COORDINATION_SESSION_ID);
+      } finally {
+        database.close();
+      }
+
+      assert.deepEqual(
+        (await store.list()).map((session) => session.id),
+        [ordinary.id],
+      );
+      const page = await store.listCatalogPage(undefined, undefined, 10);
+      assert.equal(page.kind, 'page');
+      if (page.kind !== 'page') assert.fail('expected a catalog page');
+      assert.deepEqual(
+        page.records.map((record) => record.header.id),
+        [ordinary.id],
+      );
+      await assert.rejects(store.readCatalogRecord(WORKHUB_COORDINATION_SESSION_ID), (error) =>
+        isSessionNotFoundError(error),
+      );
+      assert.deepEqual(
+        (await store.listForRecovery()).map((session) => session.id),
+        [ordinary.id],
+      );
+      assert.equal(
+        (await store.readHeaderSnapshot(WORKHUB_COORDINATION_SESSION_ID)).name,
+        'WorkHub',
+      );
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('ordinary Sessions have no external origin and provenance metadata is immutable', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-external-origin-'));
+    const store = createSessionStore(root);
+    try {
+      const ordinary = await store.create(makeInput());
+
+      assert.equal(ordinary.externalOrigin, undefined);
+      await assert.rejects(
+        store.updateHeader(ordinary.id, { externalOrigin: undefined }),
+        /external.*origin.*immutable/i,
+      );
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('folds retired Session and transcript values only on persisted reads', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-persisted-decode-'));
+    const store = createSessionStore(root);
+    const currentMessage = {
+      type: 'tool_result',
+      id: 'result-1',
+      turnId: 'turn-1',
+      ts: 1,
+      toolUseId: 'call-1',
+      isError: false,
+      content: {
+        kind: 'subagent',
+        childSessionId: 'child-1',
+        agentName: 'Explore',
+        turnId: 'child-turn-1',
+        status: 'completed',
+        permissionMode: 'ask',
+        summary: 'done',
+        artifactIds: [],
+      },
+    } as const satisfies StoredMessage;
+    let sessionId: string;
+    try {
+      const session = await store.create(makeInput({ permissionMode: 'ask' }));
+      sessionId = session.id;
+      await store.appendMessage(session.id, currentMessage);
+      await assert.rejects(
+        () =>
+          store.appendMessage(session.id, {
+            ...currentMessage,
+            id: 'result-retired',
+            content: { ...currentMessage.content, permissionMode: 'execute' },
+          } as unknown as StoredMessage),
+        /Invalid tool result content/,
+      );
+    } finally {
+      await store.close?.();
+    }
+
+    const database = new DatabaseSync(join(root, OPERATIONAL_STATE_DATABASE_NAME));
+    try {
+      database.exec(`
+        UPDATE session_metadata
+        SET payload_json = json_set(payload_json, '$.permissionMode', 'execute')
+        WHERE session_id = '${sessionId!}';
+        UPDATE session_messages
+        SET record_json = json_set(record_json, '$.content.permissionMode', 'execute')
+        WHERE session_id = '${sessionId!}';
+      `);
+    } finally {
+      database.close();
+    }
+
+    const reopened = createSessionStore(root);
+    try {
+      assert.equal((await reopened.readHeaderSnapshot(sessionId!)).permissionMode, 'ask');
+      const [message] = await reopened.readMessages(sessionId!);
+      assert.equal(
+        message?.type === 'tool_result' && message.content.kind === 'subagent'
+          ? message.content.permissionMode
+          : undefined,
+        'ask',
+      );
+    } finally {
+      await reopened.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('looks up complete published import counts with bounded newest Session ids', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-external-origin-lookup-'));
+    const store = createSessionStore(root);
+    const importSession = async (sourceSessionId: string) =>
+      store.createImportedSession(makeInput(), [], {
+        adapterId: 'fake',
+        sourceSessionId,
+      });
+    try {
+      const duplicates = await Promise.all([
+        importSession('duplicate'),
+        importSession('duplicate'),
+        importSession('duplicate'),
+      ]);
+      await Promise.all(
+        duplicates.map((session, index) =>
+          store.updateHeader(session.id, {
+            createdAt: index === 0 ? 100 : 200,
+            transcriptLedgerVersion: 1,
+          }),
+        ),
+      );
+      const archived = await importSession('archived');
+      await store.updateHeader(archived.id, { transcriptLedgerVersion: 1 });
+      const archivedSnapshot = await store.readHeaderRecordSnapshot(archived.id);
+      await store.setSessionsArchivedVersioned(
+        [{ sessionId: archived.id, expectedVersion: archivedSnapshot.revision }],
+        true,
+      );
+      await importSession('staging');
+      const deleted = await importSession('deleted');
+      await store.updateHeader(deleted.id, { transcriptLedgerVersion: 1 });
+      await store.remove(deleted.id);
+      await store.create(makeInput({ parentSessionId: duplicates[0]!.id }));
+
+      const result = await store.lookupExternalSessionImports(
+        'fake',
+        ['duplicate', 'archived', 'staging', 'deleted', 'ordinary', 'missing'],
+        2,
+      );
+      const newestDuplicateIds = duplicates
+        .slice(1)
+        .map(({ id }) => id)
+        .sort((left, right) => left.localeCompare(right));
+
+      assert.deepEqual(result, [
+        {
+          sourceSessionId: 'duplicate',
+          livePublishedImportCount: 3,
+          recentSessionIds: newestDuplicateIds,
+        },
+        {
+          sourceSessionId: 'archived',
+          livePublishedImportCount: 1,
+          recentSessionIds: [archived.id],
+        },
+      ]);
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('bounds external import lookup source and recent-id requests', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-external-origin-bounds-'));
+    const store = createSessionStore(root);
+    try {
+      await assert.rejects(
+        store.lookupExternalSessionImports(
+          'fake',
+          Array.from(
+            { length: EXTERNAL_SESSION_IMPORT_LOOKUP_MAX_SOURCE_IDS + 1 },
+            (_, index) => `source-${index}`,
+          ),
+          1,
+        ),
+        /at most .* source ids/,
+      );
+      await assert.rejects(
+        store.lookupExternalSessionImports(
+          'fake',
+          ['source-1'],
+          EXTERNAL_SESSION_IMPORT_LOOKUP_MAX_RECENT_SESSION_IDS + 1,
+        ),
+        /recent id limit must be between/,
+      );
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('fails closed when persisted external origin metadata is malformed', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-external-origin-invalid-'));
+    const store = createSessionStore(root);
+    let sessionId = '';
+    try {
+      const session = await store.create(makeInput());
+      sessionId = session.id;
+    } finally {
+      await store.close?.();
+    }
+
+    const database = new DatabaseSync(join(root, OPERATIONAL_STATE_DATABASE_NAME));
+    try {
+      database
+        .prepare(
+          `UPDATE session_metadata
+           SET payload_json = json_set(payload_json, '$.externalOrigin', json(?))
+           WHERE session_id = ?`,
+        )
+        .run(JSON.stringify({ adapterId: '', sourceSessionId: 42 }), sessionId);
+    } finally {
+      database.close();
+    }
+
+    const reopened = createSessionStore(root);
+    try {
+      await assert.rejects(reopened.readHeaderSnapshot(sessionId), /malformed fields/);
+    } finally {
+      await reopened.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('persists session metadata and messages in one SQLite authority', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-session-sqlite-'));
     const store = createSessionStore(root);
@@ -27,6 +422,7 @@ describe('SQLite SessionStore', () => {
       assert.equal(page.kind, 'page');
       if (page.kind !== 'page') assert.fail('expected a catalog page');
       assert.equal(page.records[0]?.summary.lastMessagePreview, 'hello from SQLite');
+      assert.equal(page.records[0]?.activityAt, 10);
     } finally {
       await store.close?.();
     }
@@ -49,7 +445,10 @@ describe('SQLite SessionStore', () => {
       const visible = await store.create(makeInput({ name: 'Visible Session' }));
       const staging = await Promise.all(
         Array.from({ length: 32 }, (_, index) =>
-          store.createImportedSession(makeInput({ name: `Staging Session ${index}` }), []),
+          store.createImportedSession(makeInput({ name: `Staging Session ${index}` }), [], {
+            adapterId: 'fake',
+            sourceSessionId: `source-${index}`,
+          }),
         ),
       );
 
@@ -65,6 +464,123 @@ describe('SQLite SessionStore', () => {
       await assert.rejects(store.readCatalogRecord(staging[0]!.id), (error) =>
         isSessionNotFoundError(error),
       );
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('a generated title fills an absence and never overwrites a rename', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-generated-title-'));
+    const store = createSessionStore(root);
+    try {
+      const unnamed = await store.create(makeInput({ cwd: root, name: DEFAULT_SESSION_NAME }));
+      assert.equal(
+        (await store.setGeneratedTitleIfAbsent(unnamed.id, 'draft the release notes'))?.name,
+        'draft the release notes',
+      );
+      assert.equal((await store.readHeaderSnapshot(unnamed.id)).name, 'draft the release notes');
+      // An already-named Session is never renamed by a later generation.
+      assert.equal(await store.setGeneratedTitleIfAbsent(unnamed.id, 'a second guess'), null);
+
+      // A rename landing between the check and the write wins: the write is
+      // conditional on the revision the check read.
+      const raced = await store.create(makeInput({ cwd: root, name: DEFAULT_SESSION_NAME }));
+      const readHeaderRecordSnapshot = store.readHeaderRecordSnapshot.bind(store);
+      let renamed = false;
+      store.readHeaderRecordSnapshot = async (sessionId: string) => {
+        const record = await readHeaderRecordSnapshot(sessionId);
+        if (sessionId === raced.id && !renamed) {
+          renamed = true;
+          await store.rename(sessionId, '我自己起的名字');
+        }
+        return record;
+      };
+      assert.equal(await store.setGeneratedTitleIfAbsent(raced.id, 'generated loses'), null);
+      const header = await readHeaderRecordSnapshot(raced.id);
+      assert.equal(header.header.name, '我自己起的名字');
+      assert.equal(header.header.titleIsManual, true);
+
+      // A revision that moved for any other reason is re-read, not mistaken
+      // for a rename.
+      const flagged = await store.create(makeInput({ cwd: root, name: DEFAULT_SESSION_NAME }));
+      let flaggedOnce = false;
+      store.readHeaderRecordSnapshot = async (sessionId: string) => {
+        const record = await readHeaderRecordSnapshot(sessionId);
+        if (sessionId === flagged.id && !flaggedOnce) {
+          flaggedOnce = true;
+          await store.setFlagged(sessionId, true);
+        }
+        return record;
+      };
+      assert.equal(
+        (await store.setGeneratedTitleIfAbsent(flagged.id, 'generated survives'))?.name,
+        'generated survives',
+      );
+
+      // A Session whose revision moves under every attempt answers null like any
+      // other lost race, so a caller reading null never has to also expect a throw.
+      const busy = await store.create(makeInput({ cwd: root, name: DEFAULT_SESSION_NAME }));
+      let flips = 0;
+      store.readHeaderRecordSnapshot = async (sessionId: string) => {
+        const record = await readHeaderRecordSnapshot(sessionId);
+        if (sessionId === busy.id) {
+          flips += 1;
+          await store.setFlagged(sessionId, flips % 2 === 1);
+        }
+        return record;
+      };
+      assert.equal(await store.setGeneratedTitleIfAbsent(busy.id, 'never lands'), null);
+      assert.equal((await readHeaderRecordSnapshot(busy.id)).header.name, DEFAULT_SESSION_NAME);
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('a Session freezes its route on the first user message, a subagent at birth', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-route-freeze-'));
+    const store = createSessionStore(root);
+    try {
+      const ordinary = await store.create(makeInput({ cwd: root }));
+      assert.equal(ordinary.connectionLocked, false);
+
+      // A subagent's route is chosen by the spawn that created it and is never
+      // re-targeted, so it needs no first Message to be frozen.
+      const child = await store.createSubagent(
+        makeInput({
+          cwd: root,
+          name: 'Child',
+          subagentParent: {
+            kind: 'subagent',
+            parentSessionId: ordinary.id,
+            spawnedBy: {
+              parentRunId: 'parent-run',
+              parentTurnId: 'parent-turn',
+              toolCallId: 'tool-call',
+            },
+            lifecycle: 'foreground',
+          },
+          subagentRuntime: {
+            schemaVersion: 1,
+            definitionVersion: 1,
+            agentId: 'local-read',
+            agentName: 'Local Read',
+            profile: 'local_read',
+            systemPrompt: 'Read the assigned workspace task.',
+            toolNames: ['Read'],
+            categoryPolicy: { read: 'allow' },
+          },
+          subagentSpawn: {
+            schemaVersion: 1,
+            requestFingerprint: 'a'.repeat(64),
+            initialTurnId: 'child-turn',
+            initialRunId: 'child-run',
+          },
+        }),
+      );
+      assert.equal(child.header.connectionLocked, true);
+      assert.equal((await store.readHeaderSnapshot(child.header.id)).connectionLocked, true);
     } finally {
       await store.close?.();
       await rm(root, { recursive: true, force: true });
@@ -121,6 +637,714 @@ describe('SQLite SessionStore', () => {
     }
   });
 
+  test('pages the durable transcript by sequence, bytes, and a fixed watermark', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-transcript-pages-'));
+    const store = createSessionStore(root);
+    try {
+      const session = await store.create(makeInput());
+      const messages = ['zero', 'one', 'two', '三🙂'].map((text, index) => ({
+        type: 'user' as const,
+        id: `message-${index}`,
+        turnId: `turn-${index}`,
+        ts: index + 1,
+        text,
+      }));
+      await store.appendMessages(session.id, messages);
+
+      const tail = await store.readTranscriptPageSnapshot(session.id, {
+        direction: 'older',
+        maxBytes: 64 * 1024,
+        maxMessages: 2,
+      });
+      assert.equal(tail.throughSequence, 3);
+      assert.deepEqual(
+        tail.fragments.map(({ sequence }) => sequence),
+        [3, 2],
+      );
+      assert.deepEqual(tail.next, { position: 1, byteOffset: null });
+
+      const decodedTail = await store.readTranscriptRecordsSnapshot(session.id, {
+        direction: 'older',
+        maxStoredBytes: 1,
+        maxMessages: 2,
+      });
+      assert.equal(decodedTail.throughSequence, 3);
+      assert.deepEqual(decodedTail.records, [{ sequence: 3, message: messages[3] }]);
+      assert.equal(decodedTail.nextPosition, 2);
+
+      await store.appendMessage(session.id, {
+        type: 'user',
+        id: 'message-4',
+        turnId: 'turn-4',
+        ts: 5,
+        text: 'appended after the watermark',
+      });
+      assert.deepEqual(
+        await store.readTranscriptMessagesSnapshot(session.id, {
+          messageIds: ['message-4'],
+          throughSequence: 3,
+          maxBytes: 1024,
+          maxMessages: 1,
+        }),
+        [],
+      );
+      assert.deepEqual(
+        await store.readTranscriptMessagesSnapshot(session.id, {
+          messageIds: ['message-4'],
+          throughSequence: null,
+          maxBytes: 1024,
+          maxMessages: 1,
+        }),
+        [],
+      );
+      assert.deepEqual(
+        await store.readTranscriptMessagesSnapshot(session.id, {
+          messageIds: ['message-4'],
+          throughSequence: 4,
+          maxBytes: 1024,
+          maxMessages: 1,
+        }),
+        [
+          {
+            type: 'user',
+            id: 'message-4',
+            turnId: 'turn-4',
+            ts: 5,
+            text: 'appended after the watermark',
+          },
+        ],
+      );
+      assert.deepEqual(
+        await store.readTranscriptPageSnapshot(session.id, {
+          direction: 'older',
+          throughSequence: null,
+          maxBytes: 64 * 1024,
+          maxMessages: 2,
+        }),
+        { throughSequence: null, fragments: [], rawBytes: 0, next: null },
+      );
+      const older = await store.readTranscriptPageSnapshot(session.id, {
+        direction: 'older',
+        throughSequence: tail.throughSequence ?? undefined,
+        position: 1,
+        maxBytes: 64 * 1024,
+        maxMessages: 2,
+      });
+      assert.equal(older.throughSequence, 3);
+      assert.deepEqual(
+        older.fragments.map(({ sequence }) => sequence),
+        [1, 0],
+      );
+      assert.equal(older.next, null);
+
+      const newer = await store.readTranscriptPageSnapshot(session.id, {
+        direction: 'newer',
+        throughSequence: 3,
+        position: 2,
+        maxBytes: 64 * 1024,
+        maxMessages: 10,
+      });
+      assert.deepEqual(
+        newer.fragments.map(({ sequence }) => sequence),
+        [2, 3],
+      );
+      assert.equal(newer.next, null);
+
+      const oversized = await store.readTranscriptPageSnapshot(session.id, {
+        direction: 'older',
+        throughSequence: 3,
+        maxBytes: 1,
+        maxMessages: 10,
+      });
+      assert.deepEqual(
+        oversized.fragments.map(({ sequence }) => sequence),
+        [3],
+      );
+      assert.equal(oversized.fragments[0]!.data.byteLength, 1);
+      assert.ok(oversized.fragments[0]!.totalBytes > 1);
+      assert.deepEqual(oversized.next, {
+        position: 3,
+        byteOffset: oversized.fragments[0]!.byteOffset,
+      });
+      const fragments = [...oversized.fragments];
+      let continuation: {
+        readonly position: number;
+        readonly byteOffset: number | null;
+      } | null = oversized.next;
+      while (continuation?.position === 3 && continuation.byteOffset !== null) {
+        const page = await store.readTranscriptPageSnapshot(session.id, {
+          direction: 'older',
+          throughSequence: 3,
+          position: continuation.position,
+          byteOffset: continuation.byteOffset,
+          maxBytes: 7,
+          maxMessages: 10,
+        });
+        fragments.push(...page.fragments);
+        continuation = page.next;
+      }
+      const reconstructed = Buffer.concat(
+        fragments
+          .filter((fragment) => fragment.sequence === 3)
+          .sort((left, right) => left.byteOffset - right.byteOffset)
+          .map((fragment) => fragment.data),
+      );
+      assert.deepEqual(JSON.parse(reconstructed.toString('utf8')), messages[3]);
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('pages both new chunked messages and legacy inline v22 records', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-transcript-chunks-'));
+    const message = {
+      type: 'user' as const,
+      id: 'message-large',
+      turnId: 'turn-large',
+      ts: 1,
+      text: '三🙂x'.repeat(40_000),
+    };
+    const smallMessage = {
+      type: 'user' as const,
+      id: 'message-small',
+      turnId: 'turn-small',
+      ts: 2,
+      text: 'small inline record',
+    };
+    let sessionId = '';
+    const store = createSessionStore(root);
+    try {
+      const session = await store.create(makeInput());
+      sessionId = session.id;
+      await store.appendMessages(session.id, [message, smallMessage]);
+      const fragments = [];
+      let position = 0;
+      let byteOffset: number | undefined;
+      do {
+        const page = await store.readTranscriptPageSnapshot(session.id, {
+          direction: 'newer',
+          throughSequence: 0,
+          position,
+          ...(byteOffset === undefined ? {} : { byteOffset }),
+          maxBytes: 50_000,
+          maxMessages: 1,
+        });
+        fragments.push(...page.fragments);
+        position = page.next?.position ?? 1;
+        byteOffset = page.next?.byteOffset ?? undefined;
+      } while (position === 0);
+      assert.deepEqual(
+        JSON.parse(Buffer.concat(fragments.map(({ data }) => data)).toString('utf8')),
+        message,
+      );
+      assert.equal(new Set(fragments.map(({ payloadDigest }) => payloadDigest)).size, 1);
+      assert.match(fragments[0]?.payloadDigest ?? '', /^sha256:[0-9a-f]{64}$/);
+    } finally {
+      await store.close?.();
+    }
+
+    const path = join(root, OPERATIONAL_STATE_DATABASE_NAME);
+    const legacy = new DatabaseSync(path);
+    const legacyRecord = JSON.stringify(message);
+    legacy
+      .prepare(
+        `
+        UPDATE session_messages SET record_json = ?
+        WHERE session_id = ? AND sequence = 0
+      `,
+      )
+      .run(legacyRecord, sessionId);
+    legacy.exec(`
+      DROP INDEX session_metadata_one_workhub_coordination_session;
+      DROP TABLE agent_graph_epochs;
+      DROP TABLE session_message_chunks;
+      DROP TABLE session_message_payloads;
+      ALTER TABLE session_metadata ADD COLUMN status TEXT NOT NULL DEFAULT 'active';
+      ALTER TABLE session_metadata ADD COLUMN status_updated_at INTEGER;
+      CREATE INDEX session_metadata_by_status
+        ON session_metadata(status, status_updated_at DESC, session_id);
+      DROP INDEX session_metadata_by_external_origin;
+      ALTER TABLE session_metadata DROP COLUMN external_adapter_id;
+      ALTER TABLE session_metadata DROP COLUMN external_source_session_id;
+      UPDATE session_metadata_schema SET version = 22 WHERE scope = 'session_metadata';
+    `);
+    legacy.close();
+
+    const migrated = createSessionStore(root);
+    try {
+      const page = await migrated.readTranscriptPageSnapshot(sessionId, {
+        direction: 'older',
+        throughSequence: 0,
+        maxBytes: 50_000,
+        maxMessages: 1,
+      });
+      assert.equal(page.fragments[0]?.data.byteLength, 50_000);
+      assert.equal(
+        page.fragments[0]?.totalBytes,
+        Buffer.byteLength(JSON.stringify(message), 'utf8'),
+      );
+      assert.deepEqual(await migrated.readMessages(sessionId), [message, smallMessage]);
+    } finally {
+      await migrated.close?.();
+    }
+
+    await rm(root, { recursive: true, force: true });
+  });
+
+  test('rejects corrupt chunked messages on paged and ordinary reads', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-transcript-corruption-'));
+    const store = createSessionStore(root);
+    let sessionId = '';
+    try {
+      const session = await store.create(makeInput());
+      sessionId = session.id;
+      await store.appendMessage(sessionId, {
+        type: 'user',
+        id: 'message-large',
+        turnId: 'turn-large',
+        ts: 1,
+        text: 'x'.repeat(128 * 1024),
+      });
+    } finally {
+      await store.close?.();
+    }
+
+    const path = join(root, OPERATIONAL_STATE_DATABASE_NAME);
+    const inspect = new DatabaseSync(path);
+    try {
+      inspect
+        .prepare(
+          `
+          UPDATE session_message_chunks
+          SET data = zeroblob(length(data))
+          WHERE session_id = ? AND sequence = 0 AND chunk_index = 1
+        `,
+        )
+        .run(sessionId);
+    } finally {
+      inspect.close();
+    }
+
+    const corrupted = createSessionStore(root);
+    try {
+      await assert.rejects(
+        corrupted.readTranscriptPageSnapshot(sessionId, {
+          direction: 'newer',
+          throughSequence: 0,
+          position: 0,
+          byteOffset: 64 * 1024,
+          maxBytes: 1_000,
+          maxMessages: 1,
+        }),
+        /incompatible/i,
+      );
+      const rewritten = new DatabaseSync(path);
+      try {
+        const chunk = rewritten
+          .prepare(
+            `
+            SELECT data FROM session_message_chunks
+            WHERE session_id = ? AND sequence = 0 AND chunk_index = 1
+          `,
+          )
+          .get(sessionId) as { data: Uint8Array };
+        rewritten
+          .prepare(
+            `
+            UPDATE session_message_chunks SET sha256 = ?
+            WHERE session_id = ? AND sequence = 0 AND chunk_index = 1
+          `,
+          )
+          .run(createHash('sha256').update(chunk.data).digest('hex'), sessionId);
+      } finally {
+        rewritten.close();
+      }
+      const page = await corrupted.readTranscriptPageSnapshot(sessionId, {
+        direction: 'newer',
+        throughSequence: 0,
+        position: 0,
+        byteOffset: 64 * 1024,
+        maxBytes: 1_000,
+        maxMessages: 1,
+      });
+      assert.match(page.fragments[0]?.payloadDigest ?? '', /^sha256:[0-9a-f]{64}$/);
+      await assert.rejects(corrupted.readMessages(sessionId), /incompatible/i);
+    } finally {
+      await corrupted.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('bounds transcript identity reconciliation before message materialization', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-transcript-reconciliation-'));
+    const store = createSessionStore(root);
+    try {
+      const session = await store.create(makeInput());
+      const messages = Array.from({ length: 257 }, (_, index) => ({
+        type: 'user' as const,
+        id: `message-${index}`,
+        turnId: `turn-${index}`,
+        ts: index + 1,
+        text: `text-${index}`,
+      }));
+      await store.appendMessages(session.id, messages);
+
+      assert.deepEqual(
+        await store.readTranscriptMessagesSnapshot(session.id, {
+          messageIds: [...messages.map(({ id }) => id), messages[0]!.id],
+          throughSequence: 256,
+          maxBytes: 64 * 1024,
+          maxMessages: 257,
+        }),
+        messages,
+      );
+      await assert.rejects(
+        store.readTranscriptMessagesSnapshot(session.id, {
+          messageIds: messages.map(({ id }) => id),
+          throughSequence: 256,
+          maxBytes: 64 * 1024,
+          maxMessages: 256,
+        }),
+        /exceeds its message limit/,
+      );
+      await assert.rejects(
+        store.readTranscriptMessagesSnapshot(session.id, {
+          messageIds: [messages[0]!.id],
+          throughSequence: 256,
+          maxBytes: 1,
+          maxMessages: 1,
+        }),
+        /exceeds its byte limit/,
+      );
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('notifies transcript observers only after successful durable appends', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-transcript-observer-'));
+    const store = createSessionStore(root);
+    try {
+      const session = await store.create(makeInput());
+      const changed: string[] = [];
+      const unsubscribe = store.subscribeTranscriptChanges((sessionId) => changed.push(sessionId));
+      await store.appendMessages(session.id, [
+        { type: 'user', id: 'message-1', turnId: 'turn-1', ts: 1, text: 'one' },
+        { type: 'user', id: 'message-2', turnId: 'turn-2', ts: 2, text: 'two' },
+      ]);
+      assert.deepEqual(changed, [session.id]);
+      await assert.rejects(
+        store.appendMessage('missing-session', {
+          type: 'user',
+          id: 'message-2',
+          turnId: 'turn-duplicate',
+          ts: 3,
+          text: 'duplicate',
+        }),
+      );
+      assert.deepEqual(changed, [session.id]);
+      unsubscribe();
+      await store.appendMessage(session.id, {
+        type: 'user',
+        id: 'message-3',
+        turnId: 'turn-3',
+        ts: 3,
+        text: 'three',
+      });
+      assert.deepEqual(changed, [session.id]);
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('pages turn contributions at a fixed transcript watermark', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-turn-contributions-'));
+    const store = createSessionStore(root);
+    try {
+      const session = await store.create(makeInput());
+      await store.appendMessages(session.id, [
+        { type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'one' },
+        {
+          type: 'assistant',
+          id: 'assistant-1',
+          turnId: 'turn-1',
+          ts: 2,
+          text: 'answer',
+          modelId: 'model-1',
+        },
+        {
+          type: 'turn_state',
+          id: 'state-1',
+          turnId: 'turn-1',
+          ts: 3,
+          status: 'completed',
+          partialOutputRetained: true,
+        },
+        { type: 'user', id: 'user-2', turnId: 'turn-2', ts: 4, text: 'two' },
+      ]);
+
+      const first = await store.readTurnContributionsSnapshot(session.id, null, 0, 1);
+      assert.equal(first.throughSequence, 3);
+      assert.equal(first.nextPosition, 3);
+      assert.deepEqual(first.contributions, [
+        {
+          turnId: 'turn-1',
+          firstSequence: 0,
+          latestState: {
+            sequence: 2,
+            message: {
+              type: 'turn_state',
+              id: 'state-1',
+              turnId: 'turn-1',
+              ts: 3,
+              status: 'completed',
+              partialOutputRetained: true,
+            },
+          },
+          userPromptPreview: 'one',
+          hasAssistantMessage: true,
+          hasAssistantOutput: true,
+          hasToolResult: false,
+          hasFailedToolResult: false,
+          hasAbortNote: false,
+        },
+      ]);
+
+      await store.appendMessage(session.id, {
+        type: 'assistant',
+        id: 'assistant-2',
+        turnId: 'turn-2',
+        ts: 5,
+        text: 'later',
+        modelId: 'model-1',
+      });
+      const second = await store.readTurnContributionsSnapshot(
+        session.id,
+        first.throughSequence,
+        first.nextPosition!,
+        1,
+      );
+      assert.equal(second.throughSequence, 3);
+      assert.deepEqual(
+        second.contributions.map((entry) => entry.turnId),
+        ['turn-2'],
+      );
+      assert.equal(second.nextPosition, null);
+
+      await store.appendMessage(session.id, {
+        type: 'assistant',
+        id: 'assistant-large',
+        turnId: 'turn-large',
+        ts: 6,
+        text: 'x'.repeat(70 * 1024),
+        modelId: 'model-1',
+      });
+      const chunked = await store.readTurnContributionsSnapshot(session.id, null, 0, 128);
+      assert.deepEqual(
+        chunked.contributions.find((entry) => entry.turnId === 'turn-large'),
+        {
+          turnId: 'turn-large',
+          firstSequence: 5,
+          latestState: null,
+          userPromptPreview: null,
+          hasAssistantMessage: true,
+          hasAssistantOutput: true,
+          hasToolResult: false,
+          hasFailedToolResult: false,
+          hasAbortNote: false,
+        },
+      );
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('bounds turn contribution source scanning independently of turn count', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-turn-source-bound-'));
+    const store = createSessionStore(root);
+    try {
+      const session = await store.create(makeInput());
+      await store.appendMessages(
+        session.id,
+        Array.from({ length: 1_025 }, (_, index) => ({
+          type: 'assistant' as const,
+          id: `assistant-${index}`,
+          turnId: 'turn-1',
+          ts: index,
+          text: 'x',
+          modelId: 'model-1',
+        })),
+      );
+
+      const first = await store.readTurnContributionsSnapshot(session.id, null, 0, 128);
+      assert.equal(first.nextPosition, 1_024);
+      assert.equal(first.contributions.length, 1);
+      const second = await store.readTurnContributionsSnapshot(
+        session.id,
+        first.throughSequence,
+        first.nextPosition!,
+        128,
+      );
+      assert.equal(second.nextPosition, null);
+      assert.equal(second.contributions.length, 1);
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('samples a bounded prompt landmark index across the durable transcript', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-turn-landmarks-'));
+    const store = createSessionStore(root);
+    try {
+      const session = await store.create(makeInput());
+      await store.appendMessages(
+        session.id,
+        Array.from({ length: 40 }, (_, index) => [
+          {
+            type: 'user' as const,
+            id: `user-${index}`,
+            turnId: `turn-${index}`,
+            ts: index * 2,
+            text: index === 20 ? 'x'.repeat(70 * 1024) : `prompt ${index}`,
+          },
+          {
+            type: 'assistant' as const,
+            id: `assistant-${index}`,
+            turnId: `turn-${index}`,
+            ts: index * 2 + 1,
+            text: 'answer',
+            modelId: 'model-1',
+          },
+        ]).flat(),
+      );
+
+      const snapshot = await store.readTurnLandmarksSnapshot(session.id, 8);
+
+      assert.equal(snapshot.throughSequence, 79);
+      assert.ok(snapshot.landmarks.length <= 8);
+      assert.ok(snapshot.landmarks.length > 1);
+      assert.equal(
+        snapshot.landmarks.some((landmark) => landmark.turnId === 'turn-20'),
+        false,
+      );
+      assert.deepEqual(
+        [...snapshot.landmarks].sort((left, right) => left.sequence - right.sequence),
+        snapshot.landmarks,
+      );
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('keeps every prompt landmark when long turns fit within the landmark limit', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-turn-landmarks-long-turns-'));
+    const store = createSessionStore(root);
+    try {
+      const session = await store.create(makeInput());
+      await store.appendMessages(
+        session.id,
+        Array.from({ length: 3 }, (_, turnIndex) => [
+          {
+            type: 'user' as const,
+            id: `user-${turnIndex}`,
+            turnId: `turn-${turnIndex}`,
+            ts: turnIndex * 10_000,
+            text: `prompt ${turnIndex}`,
+          },
+          ...Array.from({ length: turnIndex === 0 ? 1_000 : 4_000 }, (_, messageIndex) => ({
+            type: 'assistant' as const,
+            id: `assistant-${turnIndex}-${messageIndex}`,
+            turnId: `turn-${turnIndex}`,
+            ts: turnIndex * 10_000 + messageIndex + 1,
+            text: 'x',
+            modelId: 'model-1',
+          })),
+        ]).flat(),
+      );
+      const database = new DatabaseSync(join(root, OPERATIONAL_STATE_DATABASE_NAME));
+      try {
+        const insert = database.prepare(`
+          INSERT INTO core_root_turn_admissions(session_id, turn_id, admitted_at, record_json)
+          VALUES (?, ?, ?, ?)
+        `);
+        for (let turnIndex = 0; turnIndex < 3; turnIndex += 1) {
+          insert.run(
+            session.id,
+            `turn-${turnIndex}`,
+            turnIndex,
+            JSON.stringify({ userMessageId: `user-${turnIndex}` }),
+          );
+        }
+      } finally {
+        database.close();
+      }
+
+      const snapshot = await store.readTurnLandmarksSnapshot(session.id, 64);
+
+      assert.deepEqual(
+        snapshot.landmarks.map((landmark) => landmark.turnId),
+        ['turn-0', 'turn-1', 'turn-2'],
+      );
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('keeps legacy prompts when newer turns have indexed admissions', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-turn-landmarks-mixed-'));
+    const store = createSessionStore(root);
+    try {
+      const session = await store.create(makeInput());
+      await store.appendMessages(
+        session.id,
+        Array.from({ length: 10 }, (_, index) => [
+          {
+            type: 'user' as const,
+            id: `user-${index}`,
+            turnId: `turn-${index}`,
+            ts: index * 2,
+            text: `prompt ${index}`,
+          },
+          {
+            type: 'assistant' as const,
+            id: `assistant-${index}`,
+            turnId: `turn-${index}`,
+            ts: index * 2 + 1,
+            text: 'answer',
+            modelId: 'model-1',
+          },
+        ]).flat(),
+      );
+      const database = new DatabaseSync(join(root, OPERATIONAL_STATE_DATABASE_NAME));
+      try {
+        database
+          .prepare(`
+          INSERT INTO core_root_turn_admissions(session_id, turn_id, admitted_at, record_json)
+          VALUES (?, ?, ?, ?)
+        `)
+          .run(session.id, 'turn-9', 9, JSON.stringify({ userMessageId: 'user-9' }));
+      } finally {
+        database.close();
+      }
+
+      const snapshot = await store.readTurnLandmarksSnapshot(session.id, 8);
+
+      assert.equal(snapshot.landmarks.length, 8);
+      assert.equal(snapshot.landmarks[0]?.turnId, 'turn-0');
+      assert.equal(snapshot.landmarks.at(-1)?.turnId, 'turn-9');
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('clears unread when the current read marker is already the latest visible message', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-session-read-marker-'));
     const store = createSessionStore(root);
@@ -143,6 +1367,78 @@ describe('SQLite SessionStore', () => {
 
       assert.equal(updated.header.lastReadMessageId, 'message-1');
       assert.equal(updated.header.hasUnread, false);
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('reads back a legacy fake-backend session instead of migrating or rejecting it', async () => {
+    // #3211: `'fake'` was retired as a live backend but never migrated out of
+    // storage. Narrowing the header validator would make these rows decode as
+    // malformed and rewriting them to `'ai-sdk'` would make an unrunnable task
+    // look runnable, since `llmConnectionSlug` still points at nothing.
+    //
+    // The legacy row is seeded under the writer, not through `create`: `'fake'`
+    // is a value only an older build could write, so a test that asks today's
+    // creation path for one would be asserting a write that must not exist.
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-legacy-fake-'));
+    const store = createSessionStore(root);
+    let sessionId: string;
+    try {
+      sessionId = (await store.create(makeInput())).id;
+    } finally {
+      await store.close?.();
+    }
+
+    const legacy = new DatabaseSync(join(root, OPERATIONAL_STATE_DATABASE_NAME));
+    try {
+      const row = legacy
+        .prepare(`SELECT payload_json FROM session_metadata WHERE session_id = ?`)
+        .get(sessionId) as { payload_json: string };
+      const payload = JSON.parse(row.payload_json) as Record<string, unknown>;
+      payload.backend = 'fake';
+      payload.llmConnectionSlug = 'fake';
+      legacy
+        .prepare(
+          `UPDATE session_metadata
+             SET payload_json = ?, backend = ?, llm_connection_slug = ?
+           WHERE session_id = ?`,
+        )
+        .run(JSON.stringify(payload), 'fake', 'fake', sessionId);
+    } finally {
+      legacy.close();
+    }
+
+    const reopened = createSessionStore(root);
+    try {
+      const [header] = await reopened.listHeaders();
+      assert.equal(header?.backend, 'fake');
+      assert.equal(header?.llmConnectionId, undefined);
+      assert.equal(header?.llmConnectionSlug, 'fake');
+      assert.equal((await reopened.readHeaderSnapshot(sessionId)).backend, 'fake');
+    } finally {
+      await reopened.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('persists an immutable Connection identity when supplied by Host admission', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-connection-identity-'));
+    const store = createSessionStore(root);
+    try {
+      const created = await store.create(
+        makeInput({ llmConnectionId: '11111111-1111-4111-8111-111111111111' }),
+      );
+      assert.equal(created.llmConnectionId, '11111111-1111-4111-8111-111111111111');
+      assert.equal(
+        (await store.readHeader(created.id)).llmConnectionId,
+        '11111111-1111-4111-8111-111111111111',
+      );
+      assert.equal(
+        (await store.readCatalogRecord(created.id)).summary.llmConnectionId,
+        '11111111-1111-4111-8111-111111111111',
+      );
     } finally {
       await store.close?.();
       await rm(root, { recursive: true, force: true });
@@ -175,14 +1471,81 @@ describe('SQLite SessionStore', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  test('normalizeSessionHeader accepts an empty side-conversation copy but rejects a fabricated branch turn', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-empty-copy-lineage-'));
+    const store = createSessionStore(root);
+    try {
+      const source = await store.create(makeInput({ cwd: root, name: 'Source' }));
+      const base = await store.create(makeInput({ cwd: root, name: 'Side chat' }));
+      const emptyCopy: SessionConversationCopy = {
+        kind: 'branch',
+        sourceSessionId: source.id,
+        // sourceTurnId intentionally absent: an empty copy carries no source turn.
+        requestFingerprint: `sha256:${'a'.repeat(64)}`,
+        state: 'committed',
+        intent: 'side_conversation',
+      };
+      const emptyHeader: SessionHeader = {
+        ...base,
+        parentSessionId: source.id,
+        conversationCopy: emptyCopy,
+      };
+
+      // An empty side-conversation copy records provenance (parentSessionId)
+      // without fabricating a branchOfTurnId, and round-trips unchanged.
+      const normalized = normalizeSessionHeader(emptyHeader);
+      assert.equal(normalized.conversationCopy?.sourceTurnId, undefined);
+      assert.equal(normalized.branchOfTurnId, undefined);
+      assert.equal(normalized.parentSessionId, source.id);
+
+      // An empty copy must not fabricate a branchOfTurnId.
+      assert.throws(
+        () => normalizeSessionHeader({ ...emptyHeader, branchOfTurnId: 'fabricated-turn' }),
+        /malformed fields/,
+      );
+
+      // An empty copy is only valid for the side_conversation intent.
+      assert.throws(
+        () =>
+          normalizeSessionHeader({
+            ...emptyHeader,
+            conversationCopy: { ...emptyCopy, intent: undefined },
+          }),
+        /malformed fields/,
+      );
+
+      // A through-turn copy must anchor its branchOfTurnId to the source turn:
+      // absent here, so it is rejected...
+      assert.throws(
+        () =>
+          normalizeSessionHeader({
+            ...emptyHeader,
+            conversationCopy: { ...emptyCopy, sourceTurnId: 'source-turn' },
+          }),
+        /malformed fields/,
+      );
+      // ...and accepted once the header anchors to the same turn.
+      assert.equal(
+        normalizeSessionHeader({
+          ...emptyHeader,
+          branchOfTurnId: 'source-turn',
+          conversationCopy: { ...emptyCopy, sourceTurnId: 'source-turn' },
+        }).conversationCopy?.sourceTurnId,
+        'source-turn',
+      );
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 function makeInput(overrides: Partial<CreateSessionInput> = {}): CreateSessionInput {
   return {
     cwd: '/tmp/cwd',
-    backend: 'fake',
-    llmConnectionSlug: 'fake',
-    model: 'fake-model',
+    llmConnectionSlug: 'test-connection',
+    model: 'test-model',
     permissionMode: 'ask',
     name: 'Session',
     labels: [],

@@ -1,24 +1,46 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type { AgentRunHeader, RuntimeEvent, RuntimeEventStore } from '@maka/core';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
+import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import {
   projectAgentGraphRecords,
   readCommittedAgentGraphProjection,
   replayAgentGraphRecords,
 } from '../stream-graph-projection.js';
+import { testInvocationRecord } from './invocation-fixture.js';
 
 const baseTs = 1_800_000_000_000;
 
 describe('committed stream graph projection', () => {
   test('projects immutable child-session events into a stable reference-only graph trace', async () => {
-    const runA = runHeader({
+    const runA = runInvocation({
       sessionId: 'child-a',
       runId: 'run-a',
       turnId: 'turn-a',
       status: 'completed',
       createdAt: baseTs,
     });
-    const runB = runHeader({
+    const runB = runInvocation({
       sessionId: 'child-b',
       runId: 'run-b',
       turnId: 'turn-b',
@@ -118,12 +140,10 @@ describe('committed stream graph projection', () => {
         { operatorId: 'research', sessionId: runA.sessionId },
         { operatorId: 'verify', sessionId: runB.sessionId },
       ],
-      runStore: {
-        async listSessionRuns(sessionId) {
+      runtimeEventStore: {
+        async listSessionInvocations(sessionId) {
           return sessionId === runA.sessionId ? [runA] : [runB];
         },
-      },
-      runtimeEventStore: {
         async readImmutableRuntimeEvents(_sessionId, runId) {
           return eventsByRun.get(runId) ?? [];
         },
@@ -191,7 +211,7 @@ describe('committed stream graph projection', () => {
   });
 
   test('replay is deterministic for reordered delivery and idempotent duplicates', () => {
-    const run = runHeader({
+    const run = runInvocation({
       sessionId: 'child-a',
       runId: 'run-a',
       turnId: 'turn-a',
@@ -233,7 +253,7 @@ describe('committed stream graph projection', () => {
   });
 
   test('replays reserved JavaScript property names as ordinary graph identities', () => {
-    const run = runHeader({
+    const run = runInvocation({
       sessionId: 'reserved-session',
       runId: 'constructor',
       turnId: 'reserved-turn',
@@ -265,7 +285,7 @@ describe('committed stream graph projection', () => {
   });
 
   test('rejects one Session projected under different operators across observations', () => {
-    const run = runHeader({
+    const run = runInvocation({
       sessionId: 'child-a',
       runId: 'run-a',
       turnId: 'turn-a',
@@ -308,14 +328,14 @@ describe('committed stream graph projection', () => {
   });
 
   test('keeps existing records byte-stable when a late operator contributes earlier event time', () => {
-    const runA = runHeader({
+    const runA = runInvocation({
       sessionId: 'child-a',
       runId: 'run-a',
       turnId: 'turn-a',
       status: 'running',
       createdAt: baseTs,
     });
-    const runB = runHeader({
+    const runB = runInvocation({
       sessionId: 'child-b',
       runId: 'run-b',
       turnId: 'turn-b',
@@ -370,14 +390,14 @@ describe('committed stream graph projection', () => {
   });
 
   test('allows equal event times and resolves them with the stable source order key', () => {
-    const first = runHeader({
+    const first = runInvocation({
       sessionId: 'child-z',
       runId: 'run-z',
       turnId: 'turn-z',
       status: 'running',
       createdAt: baseTs,
     });
-    const second = runHeader({
+    const second = runInvocation({
       sessionId: 'child-a',
       runId: 'run-a',
       turnId: 'turn-a',
@@ -413,7 +433,7 @@ describe('committed stream graph projection', () => {
   });
 
   test('projects concurrent tool commits whose immutable event times are not commit-monotonic', () => {
-    const run = runHeader({
+    const run = runInvocation({
       sessionId: 'child-concurrent',
       runId: 'run-concurrent',
       turnId: 'turn-concurrent',
@@ -457,14 +477,14 @@ describe('committed stream graph projection', () => {
     const precomposedId = '\u00e9';
     const decomposedId = 'e\u0301';
     assert.equal(precomposedId.localeCompare(decomposedId), 0);
-    const precomposed = runHeader({
+    const precomposed = runInvocation({
       sessionId: 'child-precomposed',
       runId: precomposedId,
       turnId: 'turn-precomposed',
       status: 'running',
       createdAt: baseTs,
     });
-    const decomposed = runHeader({
+    const decomposed = runInvocation({
       sessionId: 'child-decomposed',
       runId: decomposedId,
       turnId: 'turn-decomposed',
@@ -497,7 +517,7 @@ describe('committed stream graph projection', () => {
   });
 
   test('routes human-interaction facts to the always-on supervisor without blocking lifecycle', () => {
-    const run = runHeader({
+    const run = runInvocation({
       sessionId: 'child-a',
       runId: 'run-a',
       turnId: 'turn-a',
@@ -545,6 +565,19 @@ describe('committed stream graph projection', () => {
                 userQuestionAnswerAccepted: { requestId: 'question-1' },
               },
             }),
+            runtimeEvent(run, {
+              id: 'form-request',
+              ts: baseTs + 4,
+              actions: {
+                formRequest: {
+                  requestId: 'form-1',
+                  toolUseId: 'tool-3',
+                  message: 'Choose settings',
+                  requester: { name: 'fixture' },
+                  fields: [{ kind: 'boolean', name: 'confirm', label: 'Confirm', required: true }],
+                },
+              },
+            }),
           ],
         },
       ],
@@ -556,21 +589,23 @@ describe('committed stream graph projection', () => {
         [{ kind: 'attention', reason: 'permission_request' }],
         [{ kind: 'attention', reason: 'user_question_request' }],
         [],
+        [{ kind: 'attention', reason: 'form_request' }],
       ],
     );
     assert.deepEqual(records[2]?.facets, ['runtime_fact']);
+    assert.deepEqual(records[3]?.facets, ['form_request']);
     assert.equal(replayAgentGraphRecords(records).operators.research?.status, 'running');
   });
 
   test('keeps later session-inline runs as distinct activations of one operator', () => {
-    const first = runHeader({
+    const first = runInvocation({
       sessionId: 'child-a',
       runId: 'run-1',
       turnId: 'turn-1',
       status: 'completed',
       createdAt: baseTs,
     });
-    const followup = runHeader({
+    const followup = runInvocation({
       sessionId: 'child-a',
       runId: 'run-2',
       turnId: 'turn-2',
@@ -610,86 +645,27 @@ describe('committed stream graph projection', () => {
     assert.equal(state.operators.research?.currentActivationId, 'run-2');
   });
 
-  test('reads only session-inline activations while legacy child runs remain compatible', async () => {
-    const inline = runHeader({
-      sessionId: 'child-a',
-      runId: 'inline-run',
-      turnId: 'inline-turn',
-      status: 'completed',
-      createdAt: baseTs,
-    });
-    const legacy = {
-      ...runHeader({
-        sessionId: 'child-a',
-        runId: 'legacy-child-run',
-        turnId: 'legacy-turn',
-        status: 'completed',
-        createdAt: baseTs + 1,
-      }),
-      parentRunId: 'legacy-parent-run',
-    };
-    const reads: string[] = [];
-    const projection = await readCommittedAgentGraphProjection({
-      graphId: 'graph-inline-only',
-      operators: [{ operatorId: 'research', sessionId: inline.sessionId }],
-      runStore: {
-        async listSessionRuns() {
-          return [legacy, inline];
-        },
-      },
-      runtimeEventStore: {
-        async readImmutableRuntimeEvents(_sessionId, runId) {
-          reads.push(runId);
-          return [
-            runtimeEvent(inline, {
-              id: 'inline-complete',
-              ts: baseTs + 2,
-              status: 'completed',
-            }),
-          ];
-        },
-      },
-    });
-
-    assert.deepEqual(reads, ['inline-run']);
-    assert.deepEqual(Object.keys(projection.state.operators.research?.activations ?? {}), [
-      'inline-run',
-    ]);
-    assert.throws(
-      () =>
-        projectAgentGraphRecords({
-          graphId: 'graph-reject-legacy',
-          streams: [
-            {
-              operator: { operatorId: 'research', sessionId: legacy.sessionId },
-              run: legacy,
-              events: [],
-            },
-          ],
-        }),
-      /must be a session-inline AgentRun/,
-    );
-  });
-
   test('fails closed on ambiguous authority or impossible replay order', async () => {
-    const run = runHeader({
+    const run = runInvocation({
       sessionId: 'child-a',
       runId: 'run-a',
       turnId: 'turn-a',
       status: 'completed',
       createdAt: baseTs,
     });
-    const runtimeEventStore: Pick<RuntimeEventStore, 'readImmutableRuntimeEvents'> = {};
+    const runtimeEventStore = {
+      async listSessionInvocations() {
+        return [run];
+      },
+    } as unknown as Pick<
+      RuntimeEventStore,
+      'listSessionInvocations' | 'readImmutableRuntimeEvents'
+    >;
 
     await assert.rejects(
       readCommittedAgentGraphProjection({
         graphId: 'graph-no-immutable-reader',
         operators: [{ operatorId: 'research', sessionId: run.sessionId }],
-        runStore: {
-          async listSessionRuns() {
-            return [run];
-          },
-        },
         runtimeEventStore,
       }),
       /requires immutable RuntimeEvent reads/,
@@ -721,12 +697,10 @@ describe('committed stream graph projection', () => {
     const projection = await readCommittedAgentGraphProjection({
       graphId: 'graph-empty',
       operators: [],
-      runStore: {
-        async listSessionRuns() {
+      runtimeEventStore: {
+        async listSessionInvocations() {
           return [];
         },
-      },
-      runtimeEventStore: {
         async readImmutableRuntimeEvents() {
           return [];
         },
@@ -741,34 +715,34 @@ describe('committed stream graph projection', () => {
   });
 });
 
-function runHeader(input: {
+/** One invocation, as its opening fact and its terminal event describe it. */
+function runInvocation(input: {
   sessionId: string;
   runId: string;
   turnId: string;
-  status: AgentRunHeader['status'];
+  status: 'created' | 'running' | 'completed' | 'failed' | 'aborted';
   createdAt: number;
-}): AgentRunHeader {
-  return {
-    ...input,
+}): RuntimeInvocationRecord {
+  const ended =
+    input.status === 'completed' || input.status === 'failed' || input.status === 'aborted'
+      ? input.status
+      : undefined;
+  return testInvocationRecord({
+    sessionId: input.sessionId,
     invocationId: `invocation-${input.runId}`,
-    backendKind: 'ai-sdk',
-    llmConnectionSlug: 'deepseek',
-    modelId: 'deepseek-chat',
-    cwd: '/workspace',
-    permissionMode: 'explore',
-    updatedAt: input.createdAt + 1,
-    ...(input.status === 'completed' || input.status === 'failed' || input.status === 'cancelled'
-      ? { completedAt: input.createdAt + 1 }
-      : {}),
-  };
+    runId: input.runId,
+    turnId: input.turnId,
+    openedAt: input.createdAt,
+    ...(ended ? { outcome: ended } : {}),
+  });
 }
 
 function runtimeEvent(
-  run: AgentRunHeader,
+  run: RuntimeInvocationRecord,
   overrides: Partial<RuntimeEvent> & Pick<RuntimeEvent, 'id' | 'ts'>,
 ): RuntimeEvent {
   return {
-    invocationId: run.invocationId ?? `invocation-${run.runId}`,
+    invocationId: run.invocationId,
     runId: run.runId,
     sessionId: run.sessionId,
     turnId: run.turnId,

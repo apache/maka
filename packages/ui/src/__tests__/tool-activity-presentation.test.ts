@@ -1,106 +1,305 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { createElement, type ReactNode } from 'react';
 import { renderToStaticMarkup as renderReactToStaticMarkup } from 'react-dom/server';
+import { computerUseModelCallArgs } from '@maka/core/computer-use';
 import { ToolCallDetail, ToolTrow } from '../tool-activity.js';
-import { diffLineKind, ToolResultPreview } from '../tool-activity/tool-result-preview.js';
 import type { ToolActivityItem } from '../materialize.js';
 import { LocaleProvider } from '../locale-context.js';
+import { ToolResultPreview } from '../tool-activity/tool-result-preview.js';
+import {
+  computerActionLabel,
+  computerRunningLabel,
+  isComputerTool,
+} from '../tool-activity/computer-action-label.js';
 
-function renderToStaticMarkup(node: ReactNode): string {
+function renderToStaticMarkup(node: ReactNode, locale: 'zh-CN' | 'en' = 'zh-CN'): string {
   return renderReactToStaticMarkup(createElement(LocaleProvider, {
-    locale: 'zh',
+    locale,
     children: node,
   }));
 }
 
-/** The collapsed row. Astryx owns its expansion, so detail asserts use ToolCallDetail. */
-function renderTool(item: ToolActivityItem): string {
-  return renderToStaticMarkup(createElement(ToolTrow, { items: [item] }));
-}
-
 describe('tool activity presentation', () => {
-  it('presents a command sandbox denial as blocked instead of failed', () => {
+  it('localizes client capability boundary failures and offers recovery', () => {
     const item: ToolActivityItem = {
-      toolUseId: 'tool-sandbox-blocked',
-      toolName: 'Bash',
-      activityKind: 'command',
-      intent: '写入工作区外文件',
+      toolUseId: 'client-capability-boundary',
+      toolName: 'maka_computer',
+      displayName: '列出打开的应用',
+      activityKind: 'computer',
       status: 'errored',
-      args: { command: 'printf blocked > ../outside.txt' },
+      args: { action: 'list_apps' },
       result: {
-        kind: 'terminal',
-        cwd: '/tmp/maka',
-        cmd: 'printf blocked > ../outside.txt',
-        status: 'failed',
-        exitCode: 1,
-        output: pipeOutput('', 'Operation not permitted\n'),
-        sandboxDenial: {
-          likely: true,
-          backend: 'macos-seatbelt',
-          recovery: 'require_escalated',
+        kind: 'text',
+        text: 'Client Capability tools require the Bypass execution boundary.',
+        sandboxFailure: {
+          reason: 'requires_bypass',
+          source: 'client_capability',
         },
       },
     };
 
-    // The row says "blocked", never "failed"; the raw stderr stays available to
-    // assistive tech via Astryx's errorMessage but is not the visible word.
-    const collapsed = renderTool(item);
-    assert.match(collapsed, /可能被沙箱阻止/);
-    assert.doesNotMatch(collapsed, /失败/);
+    const zh = renderToStaticMarkup(createElement(ToolCallDetail, {
+      item,
+      onSwitchToBypassAndRetry: async () => undefined,
+    }));
+    const en = renderToStaticMarkup(createElement(ToolCallDetail, {
+      item,
+      onSwitchToBypassAndRetry: async () => undefined,
+    }), 'en');
 
-    const expanded = renderToStaticMarkup(createElement(ToolCallDetail, { item }));
-    assert.match(expanded, /可能被沙箱阻止/);
-    assert.match(expanded, /操作可能被沙箱阻止/);
-    assert.match(expanded, /失败前可能已经产生部分结果/);
-    assert.doesNotMatch(expanded, /因此未执行/);
-    assert.doesNotMatch(expanded, /工具调用失败/);
+    assert.match(zh, /需要“绕过”模式/);
+    assert.match(zh, /此操作会直接控制本机应用，无法在沙箱模式下执行。/);
+    assert.match(zh, /切换并重试/);
+    assert.doesNotMatch(zh, /Client Capability tools require/);
+    assert.match(en, /Bypass mode required/);
+    assert.match(en, /Switch and retry/);
   });
 
-  it('keeps an ordinary filesystem permission error as Astryx error detail, not a sandbox block', () => {
+  it('keeps generic requires-bypass failures verbatim', () => {
     const markup = renderToStaticMarkup(createElement(ToolCallDetail, {
       item: {
-        toolUseId: 'tool-filesystem-denied',
-        toolName: 'Read',
-        activityKind: 'read',
-        intent: '读取受限文件',
+        toolUseId: 'filesystem-boundary',
+        toolName: 'Write',
         status: 'errored',
-        args: { path: '/workspace/private.txt' },
+        args: { path: '/etc/hosts' },
         result: {
           kind: 'text',
-          text: 'Filesystem access was denied.',
+          text: 'This path requires the Bypass execution boundary.',
+          sandboxFailure: { reason: 'requires_bypass' },
         },
       } satisfies ToolActivityItem,
+      onSwitchToBypassAndRetry: async () => undefined,
     }));
 
-    // Product: error text surfaces; sandbox copy must not fire for ordinary FS denial.
-    assert.match(markup, /Filesystem access was denied/);
-    assert.doesNotMatch(markup, /工具调用失败/);
-    assert.doesNotMatch(markup, /可能被沙箱阻止/);
+    assert.match(markup, /This path requires the Bypass execution boundary./);
+    assert.doesNotMatch(markup, /控制本机应用|切换并重试/);
   });
 
-  it('shows diagnostic flags without exposing transport chunk counts', () => {
-    const markup = renderToStaticMarkup(createElement(ToolCallDetail, {
-      item: {
-        toolUseId: 'tool-output',
-        toolName: 'Bash',
-        status: 'errored',
-        args: { command: 'npm test' },
-        outputChunks: [
-          { seq: 1, stream: 'stdout', text: 'one\n', redacted: false, createdAt: 1 },
-          { seq: 2, stream: 'stdout', text: 'two\n', redacted: true, createdAt: 2 },
-          { seq: 3, stream: 'stderr', text: 'failed\n', redacted: false, createdAt: 3 },
-        ],
-        outputTruncated: true,
-      } satisfies ToolActivityItem,
-    }));
+  it('localizes file-write result summaries', () => {
+    const result = {
+      kind: 'file_write' as const,
+      path: '/tmp/output.txt',
+      bytes: 42,
+    };
+    assert.match(
+      renderToStaticMarkup(createElement(ToolResultPreview, { content: result })),
+      /已向 \/tmp\/output.txt 写入 42 字节/,
+    );
+    assert.match(
+      renderToStaticMarkup(createElement(ToolResultPreview, { content: result }), 'en'),
+      /Wrote 42 bytes to \/tmp\/output.txt/,
+    );
+  });
 
-    assert.doesNotMatch(markup, /stdout\s+2/i);
-    assert.doesNotMatch(markup, /stderr\s+1/i);
-    // Body still carries the failed stream text; no transport counts.
-    assert.match(markup, /failed/);
-    assert.match(markup, /已脱敏/);
-    assert.match(markup, /已截断|输出已截断/);
+  it('describes Computer Use proxy calls by action instead of the generic tool name', () => {
+    const item: ToolActivityItem = {
+      toolUseId: 'computer-observe',
+      toolName: 'mcp__desktop_computer_use__maka_computer',
+      displayName: 'Maka Computer',
+      activityKind: 'tool',
+      status: 'completed',
+      args: computerUseModelCallArgs({
+        action: 'observe',
+        app: '计算器',
+        window_id: 7,
+      }),
+    };
+
+    assert.equal(isComputerTool(item), true);
+    assert.equal(computerActionLabel(item, 'zh-CN'), '观察「计算器」窗口');
+    const markup = renderToStaticMarkup(
+      createElement(ToolTrow, { items: [item] }),
+    );
+    assert.match(markup, /观察「计算器」窗口/);
+    assert.doesNotMatch(markup, /Maka Computer/);
+  });
+
+  it('inherits the confirmed target and exposes live sequence progress', () => {
+    const observed: ToolActivityItem = {
+      toolUseId: 'computer-observe',
+      toolName: 'maka_computer',
+      activityKind: 'computer',
+      status: 'completed',
+      args: computerUseModelCallArgs({
+        action: 'observe',
+        app: '计算器',
+        window_id: 7,
+      }),
+    };
+    const sequence: ToolActivityItem = {
+      toolUseId: 'computer-sequence',
+      toolName: 'maka_computer',
+      activityKind: 'computer',
+      status: 'running',
+      args: computerUseModelCallArgs({
+        action: 'element_sequence',
+        observation_id: '00000000-0000-0000-0000-000000000001',
+        steps: Array.from({ length: 11 }, (_, index) => ({ label: String(index) })),
+      }),
+      progress: { current: 7, total: 11 },
+    };
+
+    const markup = renderToStaticMarkup(
+      createElement(ToolTrow, { items: [observed, sequence] }),
+    );
+    assert.match(markup, /连续操作 11 个控件/);
+    assert.match(markup, /「计算器」窗口/);
+    assert.match(markup, />7\/11</);
+    assert.equal(
+      computerRunningLabel([observed, sequence], 'zh-CN'),
+      '正在操作「计算器」窗口 · 连续操作第 7/11 步',
+    );
+  });
+
+  it('renders a tool_search activation as a localized capability summary', () => {
+    const item: ToolActivityItem = {
+      toolUseId: 'search-computer-use',
+      toolName: 'tool_search',
+      activityKind: 'tool',
+      status: 'completed',
+      args: { query: 'operate local desktop application' },
+      result: {
+        kind: 'json',
+        value: {
+          activated: ['mcp__desktop_computer_use__maka_computer'],
+        },
+      },
+    };
+
+    const row = renderToStaticMarkup(createElement(ToolTrow, { items: [item] }));
+    assert.match(row, /启用桌面操作/);
+    const detail = renderToStaticMarkup(createElement(ToolCallDetail, { item }));
+    assert.match(detail, /桌面操作已启用/);
+    assert.match(detail, /可以查看和操作已授权的本地应用/);
+    assert.match(detail, /1 项能力可用/);
+    assert.match(detail, /技术详情/);
+    assert.match(detail, /mcp__desktop_computer_use__maka_computer/);
+  });
+
+  it('keeps legacy Computer Use activations friendly without result metadata', () => {
+    const item: ToolActivityItem = {
+      toolUseId: 'legacy-load-computer-use',
+      toolName: 'load_tool',
+      status: 'completed',
+      args: { namespace: 'client_legacy_desktop_computer_use' },
+      result: {
+        kind: 'json',
+        value: { loaded: ['mcp__desktop_computer_use__maka_computer'] },
+      },
+    };
+
+    const markup = renderToStaticMarkup(createElement(ToolCallDetail, { item }));
+    assert.match(markup, /桌面操作已启用/);
+    assert.doesNotMatch(markup, /已加载 client_legacy_desktop_computer_use 工具组/);
+  });
+
+  it('uses supplied labels for third-party capability groups', () => {
+    const item: ToolActivityItem = {
+      toolUseId: 'load-third-party',
+      toolName: 'load_tools',
+      status: 'completed',
+      args: { group: 'client_external_notionsuite' },
+      result: {
+        kind: 'json',
+        value: {
+          loaded: ['mcp__notion__search', 'mcp__notion__create_page'],
+          group: {
+            id: 'client_external_notionsuite',
+            label: 'Notion',
+            description: 'Search and update the connected workspace.',
+          },
+        },
+      },
+    };
+
+    const row = renderToStaticMarkup(createElement(ToolTrow, { items: [item] }));
+    assert.match(row, /启用 Notion/);
+    const detail = renderToStaticMarkup(createElement(ToolCallDetail, { item }));
+    assert.match(detail, /Notion 已启用/);
+    assert.match(detail, /Search and update the connected workspace/);
+    assert.match(detail, /2 项能力可用/);
+  });
+
+  it('uses one localized presentation model for every first-party capability group', () => {
+    const cases = [
+      {
+        id: 'browser',
+        label: 'Browser',
+        tool: 'browser_navigate',
+        row: '启用浏览器操作',
+        title: '浏览器操作已启用',
+      },
+      {
+        id: 'client_desktop_mcp',
+        label: 'MCP',
+        tool: 'mcp__desktop_mcp__list',
+        row: '连接 MCP',
+        title: 'MCP 工具已连接',
+      },
+      {
+        id: 'rive',
+        label: 'Rive',
+        tool: 'RiveWorkflow',
+        row: '启用 Rive 工作流',
+        title: 'Rive 工作流已启用',
+      },
+      {
+        id: 'agent',
+        label: 'Agent',
+        tool: 'agent_spawn',
+        row: '启用子智能体',
+        title: '子智能体协作已启用',
+      },
+      {
+        id: 'client_desktop_settings',
+        label: 'Client settings',
+        tool: 'mcp__desktop_settings__MakaSettingsGet',
+        row: '启用设置工具',
+        title: '设置工具已启用',
+      },
+    ] as const;
+
+    for (const capability of cases) {
+      const item: ToolActivityItem = {
+        toolUseId: `load-${capability.id}`,
+        toolName: 'load_tools',
+        status: 'completed',
+        args: { group: capability.id },
+        result: {
+          kind: 'json',
+          value: {
+            loaded: [capability.tool],
+            group: { id: capability.id, label: capability.label },
+          },
+        },
+      };
+
+      const row = renderToStaticMarkup(createElement(ToolTrow, { items: [item] }));
+      assert.match(row, new RegExp(capability.row));
+      const detail = renderToStaticMarkup(createElement(ToolCallDetail, { item }));
+      assert.match(detail, new RegExp(capability.title));
+      assert.doesNotMatch(detail, new RegExp(`>${capability.id}</p>`));
+    }
   });
 
   it('contains a malformed persisted terminal result instead of crashing the renderer', () => {
@@ -124,31 +323,6 @@ describe('tool activity presentation', () => {
     assert.match(markup, /npm test/);
     assert.match(markup, /终端输出不可用/);
     assert.doesNotMatch(markup, /失败 · 退出码|退出码 1/);
-  });
-
-  it('never dumps pretty JSON for an arbitrary tool result object', () => {
-    const markup = renderToStaticMarkup(createElement(ToolCallDetail, {
-      item: {
-        toolUseId: 'tool-custom',
-        toolName: 'CustomInspect',
-        status: 'running',
-        args: { target: 'packages/ui', depth: 2 },
-        result: {
-          kind: 'json',
-          value: {
-            ok: true,
-            notes: 'looks fine',
-            detail: 'line one\nline two',
-          },
-        },
-      } satisfies ToolActivityItem,
-    }));
-
-    assert.match(markup, /packages\/ui|target: packages\/ui/);
-    assert.match(markup, /looks fine|notes:/);
-    assert.match(markup, /line one/);
-    assert.doesNotMatch(markup, /\{\s*&quot;ok&quot;/);
-    assert.doesNotMatch(markup, /line one\\nline two/);
   });
 
   it('redacts secrets in sensitive values and property names', () => {
@@ -175,126 +349,6 @@ describe('tool activity presentation', () => {
       );
       assert.match(markup, /redacted/i);
     }
-  });
-
-  it('keeps error diagnostics when a list field is also present', () => {
-    const markup = renderToStaticMarkup(createElement(ToolCallDetail, {
-      item: {
-        toolUseId: 'tool-mixed',
-        toolName: 'CustomInspect',
-        status: 'errored',
-        args: {},
-        result: {
-          kind: 'json',
-          value: { results: [], error: 'permission denied', ok: false },
-        },
-      } satisfies ToolActivityItem,
-    }));
-
-    assert.match(markup, /permission denied/);
-    assert.match(markup, /ok:\s*false|未完成|false/);
-  });
-
-  it('labels a running inherited PTY by source-session ownership', () => {
-    const markup = renderToStaticMarkup(createElement(ToolResultPreview, {
-      toolName: 'Bash',
-      shellRunSource: 'owned',
-      content: {
-        kind: 'shell_run',
-        ref: 'maka://runtime/background-tasks/pty-branch',
-        mode: 'pty',
-        status: 'running',
-        cwd: '/repo',
-        cmd: 'interactive',
-        startedAt: 1,
-        updatedAt: 2,
-        revision: 2,
-        output: {
-          mode: 'pty',
-          screen: 'ready',
-          scrollback: '',
-          cols: 80,
-          rows: 24,
-          cursor: { x: 5, y: 0, visible: true },
-          alternateScreen: false,
-          truncated: false,
-          redacted: false,
-        },
-      },
-    }));
-
-    assert.match(markup, /由源会话管理/);
-    assert.doesNotMatch(markup, />运行中</);
-
-    const unavailableMarkup = renderToStaticMarkup(createElement(ToolResultPreview, {
-      toolName: 'Bash',
-      shellRunSource: 'unavailable',
-      content: {
-        kind: 'shell_run',
-        ref: 'maka://runtime/background-tasks/pty-branch',
-        mode: 'pty',
-        status: 'running',
-        cwd: '/repo',
-        cmd: 'interactive',
-        startedAt: 1,
-        updatedAt: 2,
-        revision: 2,
-      },
-    }));
-    assert.match(unavailableMarkup, /源会话不可用/);
-    assert.doesNotMatch(unavailableMarkup, />运行中</);
-  });
-
-  it('renders a failed WriteStdin as operation metadata without its ShellRun panel', () => {
-    const markup = renderToStaticMarkup(createElement(ToolCallDetail, {
-      item: {
-        toolUseId: 'tool-pty-control',
-        toolName: 'WriteStdin',
-        activityKind: 'command',
-        status: 'errored',
-        args: {
-          ref: 'maka://runtime/background-tasks/pty-1',
-          inputPreview: { text: 'echo x\\n', bytes: 7, truncated: false },
-          size: { cols: 100, rows: 30 },
-        },
-        result: {
-          kind: 'shell_run',
-          ref: 'maka://runtime/background-tasks/pty-1',
-          mode: 'pty',
-          status: 'failed',
-          cwd: '/PRIVATE-CWD',
-          cmd: 'PRIVATE-COMMAND',
-          startedAt: 1,
-          updatedAt: 2,
-          completedAt: 2,
-          failureMessage: 'PRIVATE-FAILURE',
-          revision: 2,
-          output: {
-            mode: 'pty',
-            screen: 'PRIVATE-TERMINAL-FRAME',
-            scrollback: '',
-            cols: 100,
-            rows: 30,
-            cursor: { x: 0, y: 0, visible: true },
-            alternateScreen: false,
-            truncated: false,
-            redacted: false,
-          },
-          operation: {
-            kind: 'pty_control',
-            failed: true,
-            input: { bytes: 7, queued: false },
-            resize: { cols: 100, rows: 30, applied: true, changed: true },
-          },
-        },
-      } satisfies ToolActivityItem,
-    }));
-
-    assert.match(markup, /未输入：echo x\\n/);
-    assert.match(markup, /已调整为 100x30/);
-    assert.match(markup, /后台终端交互失败/);
-    assert.doesNotMatch(markup, /PRIVATE-CWD|PRIVATE-COMMAND|PRIVATE-FAILURE|PRIVATE-TERMINAL-FRAME/);
-    assert.equal((markup.match(/data-slot="tool-output"/g) ?? []).length, 0);
   });
 
   it('keeps pre-handoff live output when shell_run lands with empty streams', () => {
@@ -363,184 +417,124 @@ describe('tool activity presentation', () => {
     assert.equal(panels.length, 1);
   });
 
-  it('surfaces terminal cancel and runtime truncation flags', () => {
-    const cancelled = renderToStaticMarkup(createElement(ToolCallDetail, {
-      item: {
-        toolUseId: 'tool-cancel',
-        toolName: 'Bash',
-        status: 'interrupted',
-        args: { command: 'sleep 99' },
-        result: {
-          kind: 'terminal',
-          cwd: '/repo',
-          cmd: 'sleep 99',
-          status: 'cancelled',
-          exitCode: 130,
-          output: pipeOutput(),
-        },
-      } satisfies ToolActivityItem,
-    }));
-    assert.match(cancelled, /已取消/);
-    assert.doesNotMatch(cancelled, /失败 · 退出码 130/);
-    assert.doesNotMatch(cancelled, /工具调用失败/);
-    // Outer status must not say 失败 either.
-    assert.doesNotMatch(cancelled, />失败</);
-
-    const cancelledTrow = renderToStaticMarkup(createElement(ToolTrow, {
-      items: [{
-        toolUseId: 'tool-cancel-trow',
-        toolName: 'Bash',
-        activityKind: 'command',
-        status: 'interrupted',
-        args: { command: 'sleep 99' },
-        result: {
-          kind: 'terminal',
-          cwd: '/repo',
-          cmd: 'sleep 99',
-          status: 'cancelled',
-          exitCode: 130,
-          output: pipeOutput(),
-        },
-      } satisfies ToolActivityItem],
-    }));
-    assert.match(cancelledTrow, /已中断/);
-    assert.doesNotMatch(cancelledTrow, /失败/);
-
-    const truncated = renderToStaticMarkup(createElement(ToolCallDetail, {
-      item: {
-        toolUseId: 'tool-trunc',
-        toolName: 'Bash',
-        status: 'running',
-        args: { command: 'run' },
-        result: {
-          kind: 'terminal',
-          cwd: '/repo',
-          cmd: 'run',
-          status: 'completed',
-          exitCode: 0,
-          output: { ...pipeOutput('tail only'), stdoutTruncated: true },
-        },
-      } satisfies ToolActivityItem,
-    }));
-    assert.match(truncated, /tail only/);
-    assert.match(truncated, /输出已截断/);
-  });
-
-  // Astryx's tokenizer has no `diff` language, so `language="diff"` was a
-  // no-op and every line painted `--color-syntax-variable`. The tints are the
-  // product's own; what has to hold is the classification, above all that the
-  // `---`/`+++` file markers are not read as a deletion and an addition.
-  it('tints a diff by line kind instead of painting it one colour', () => {
-    const markup = renderToStaticMarkup(createElement(ToolResultPreview, {
-      content: {
-        kind: 'file_diff',
-        paths: ['packages/ui/src/tool-activity.tsx'],
-        diff: [
-          'diff --git a/packages/ui/src/tool-activity.tsx b/packages/ui/src/tool-activity.tsx',
-          'index 1111111..2222222 100644',
-          '--- a/packages/ui/src/tool-activity.tsx',
-          '+++ b/packages/ui/src/tool-activity.tsx',
-          '@@ -1,3 +1,3 @@',
-          ' const kept = true;',
-          '-const removed = 1;',
-          '+const added = 2;',
-        ].join('\n'),
-      },
-    }));
-
-    const kinds = Array.from(markup.matchAll(/data-line="(\w+)"/g)).map((m) => m[1]);
-    // `index` and the `---`/`+++` file headers are hidden: the heading already
-    // names the path. The `diff --git` separator stays — it is the only
-    // in-body boundary between files in a multi-file diff.
-    assert.deepEqual(kinds, ['meta', 'ctx', 'del', 'add']);
-    assert.doesNotMatch(markup, /index 1111111/);
-    assert.doesNotMatch(markup, /--- a\/packages/);
-    assert.doesNotMatch(markup, /\+\+\+ b\/packages/);
-    // Every content row carries its line number: new-side for ctx/add,
-    // old-side for del; the hunk header feeds the counters and is not a row.
-    assert.deepEqual(diffGutterNumbers(markup), ['', '1', '2', '2']);
-    // The heading is the changed path, in the same surface a command uses.
-    assert.equal((markup.match(/data-slot="tool-output"/g) ?? []).length, 1);
-    assert.match(markup, /class="maka-tool-output-command"[^>]*>packages\/ui\/src\/tool-activity\.tsx</);
-  });
-
-  // The row-level counterpart of the sweep below, one level down: the detail
-  // panel used to draw the same command three ways — a CodeBlock card while
-  // streaming, that block's `title` slot once a foreground run settled, and
-  // the panel for a background one. Settling a command must not restyle it.
-  it('gives a command and its output one surface in every phase', () => {
-    const base = {
-      toolUseId: 'tool-command-surface',
-      toolName: 'Bash',
-      activityKind: 'command' as const,
-      args: { command: 'npm test' },
-    };
-    const phases: Record<string, ToolActivityItem> = {
-      live: {
-        ...base,
-        status: 'running',
-        outputChunks: [
-          { seq: 1, stream: 'stdout', text: 'streaming\n', redacted: false, createdAt: 1 },
-        ],
-      },
-      foreground: {
-        ...base,
-        status: 'completed',
-        result: {
-          kind: 'terminal',
-          cwd: '/repo',
-          cmd: 'npm test',
-          status: 'completed',
-          exitCode: 0,
-          output: pipeOutput('settled\n'),
-        },
-      },
-      background: {
-        ...base,
-        status: 'running',
-        result: {
-          kind: 'shell_run',
-          ref: 'maka://runtime/background-tasks/bg-surface',
-          mode: 'pipes',
+  it('keeps provider call ids out of output action names', () => {
+    const render = (toolUseId: string) =>
+      renderToStaticMarkup(createElement(ToolCallDetail, {
+        item: {
+          toolUseId,
+          toolName: 'Bash',
           status: 'running',
-          cwd: '/repo',
-          cmd: 'npm test',
-          startedAt: 1,
-          updatedAt: 2,
-          revision: 1,
-          output: pipeOutput('tracked\n'),
-        },
-      },
-    };
+          args: { command: 'npm test' },
+          outputChunks: [
+            { seq: 1, stream: 'stdout', text: 'running\n', redacted: false, createdAt: 1 },
+          ],
+        } satisfies ToolActivityItem,
+      }));
+    const firstId = 'provider-call-first-12345678';
+    const secondId = 'provider-call-second-12345678';
 
-    for (const [phase, item] of Object.entries(phases)) {
-      const markup = renderToStaticMarkup(createElement(ToolCallDetail, { item }));
-      assert.equal(
-        (markup.match(/data-slot="tool-output"/g) ?? []).length,
-        1,
-        `${phase} draws exactly one surface`,
-      );
-      assert.match(
-        markup,
-        /class="maka-tool-output-command"[^>]*>npm test</,
-        `${phase} puts the command in the surface header`,
-      );
-    }
+    assert.doesNotMatch(render(firstId), new RegExp(firstId));
+    assert.doesNotMatch(render(secondId), new RegExp(secondId));
+    assert.match(render(firstId), /Bash/);
   });
 
+  it('disambiguates code copy actions by their tool call', () => {
+    const details = createElement('div', null,
+      createElement(ToolCallDetail, {
+        item: {
+          toolUseId: 'tool-alpha',
+          toolName: 'AlphaTool',
+          status: 'completed',
+          args: {},
+          result: { kind: 'json', value: { ok: true } },
+        } satisfies ToolActivityItem,
+      }),
+      createElement(ToolCallDetail, {
+        item: {
+          toolUseId: 'tool-beta',
+          toolName: 'BetaTool',
+          status: 'completed',
+          args: {},
+          result: { kind: 'json', value: { ok: true } },
+        } satisfies ToolActivityItem,
+      }),
+    );
+    const zhMarkup = renderToStaticMarkup(details);
+    const enMarkup = renderToStaticMarkup(details, 'en');
+
+    assert.match(zhMarkup, /aria-label="复制：AlphaTool"/);
+    assert.match(zhMarkup, /aria-label="复制：BetaTool"/);
+    assert.match(enMarkup, /aria-label="Copy: AlphaTool"/);
+    assert.match(enMarkup, /aria-label="Copy: BetaTool"/);
+  });
 });
 
-function diffGutterNumbers(markup: string): string[] {
-  return Array.from(markup.matchAll(/maka-tool-diff-gutter"[^>]*>([^<]*)</g)).map((m) => m[1]);
-}
-
-function pipeOutput(stdout = '', stderr = '') {
-  return {
-    mode: 'pipes' as const,
-    stdout,
-    stderr,
-    stdoutTruncated: false,
-    stderrTruncated: false,
-    redacted: false,
+describe('collapsed tool row target', () => {
+  const baseItem = {
+    toolUseId: 'tool-collapsed',
+    toolName: 'Bash',
+    status: 'running' as const,
   };
-}
+
+  it('shows the invocation line derived from args when no intent exists', async () => {
+    const { ToolTrow } = await import('../tool-activity.js');
+    const markup = renderToStaticMarkup(createElement(ToolTrow, {
+      items: [{
+        ...baseItem,
+        args: { command: 'git status --porcelain' },
+      }],
+    }));
+    assert.match(markup, /git status --porcelain/);
+  });
+
+  it('prefers the runtime-authored intent over the args-derived line', async () => {
+    const { ToolTrow } = await import('../tool-activity.js');
+    const markup = renderToStaticMarkup(createElement(ToolTrow, {
+      items: [{
+        ...baseItem,
+        intent: '检查渲染入口',
+        args: { command: 'rg renderEntry' },
+      }],
+    }));
+    assert.match(markup, /检查渲染入口/);
+  });
+
+  it('names a live call from the wire args preview before full args arrive', async () => {
+    const { ToolTrow } = await import('../tool-activity.js');
+    const markup = renderToStaticMarkup(createElement(ToolTrow, {
+      items: [{
+        ...baseItem,
+        args: undefined,
+        argsPreview: { command: 'npm test' },
+      }],
+    }));
+    assert.match(markup, /npm test/);
+  });
+
+  it('caps a long command so the collapsed row stays single-line', async () => {
+    const { ToolTrow } = await import('../tool-activity.js');
+    const markup = renderToStaticMarkup(createElement(ToolTrow, {
+      items: [{
+        ...baseItem,
+        args: { command: `echo ${'x'.repeat(300)}` },
+      }],
+    }));
+    const matches = markup.match(/x{100,}/g) ?? [];
+    for (const run of matches) {
+      assert.ok(run.length <= 119, `expected a capped run, got ${run.length}`);
+    }
+    assert.match(markup, /…/);
+  });
+
+  it('redacts secrets in the collapsed target', async () => {
+    const { ToolTrow } = await import('../tool-activity.js');
+    const markup = renderToStaticMarkup(createElement(ToolTrow, {
+      items: [{
+        ...baseItem,
+        args: { command: 'curl -H "Authorization: Bearer live-secret-token" https://example.com' },
+      }],
+    }));
+    assert.doesNotMatch(markup, /live-secret-token/);
+    assert.match(markup, /redacted/i);
+  });
+});

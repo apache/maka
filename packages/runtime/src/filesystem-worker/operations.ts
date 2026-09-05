@@ -1,24 +1,49 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import { glob as nodeGlob } from 'node:fs/promises';
 import { dirname, isAbsolute, parse, resolve } from 'node:path';
-import {
-  isPathInside,
-  realpathAllowMissing,
-  resolveCanonicalDirectoryEntryTarget,
-} from '../path-containment.js';
-import { sandboxBoundaryExpansionAllowsPath } from '@maka/core';
+import { isPathInside } from '../path-containment.js';
+import { sandboxPathApi } from './sandbox-paths.js';
+import { sandboxBoundaryExpansionAllowsPath } from '@maka/core/sandbox-boundary';
 import {
   ApplyPatchRejectedError,
+  applyUpdateToContent,
   createPatchedFile,
-  updatePatchedFile,
 } from '../apply-patch-file.js';
 
 import { computeEditedSource } from '../edit-replace.js';
-import { createUnifiedDiff } from '../unified-diff.js';
+import { createEditUnifiedDiff, createUnifiedDiff } from '../unified-diff.js';
+import {
+  compareAndDeleteEntry,
+  hostVisibilityAfterWrite,
+  openStableTarget,
+  readModifyWriteThroughHandle,
+  StableWriteFailure,
+  writeThroughHandle,
+} from '../file-stable-write.js';
 import { isSupportedImagePath, readWorkspaceImage } from '../image-file.js';
 import {
   FILESYSTEM_WORKER_PROTOCOL_VERSION,
+  operationAccess,
   operationUsesDirectoryEntry,
   type FilesystemWorkerErrorCode,
   type FilesystemWorkerOperation,
@@ -29,6 +54,11 @@ import {
 } from './protocol.js';
 import { isLikelySandboxDenial } from '../sandbox/detect.js';
 
+// Canonicalisation must match the sandbox the worker runs in: realpath-based
+// on POSIX, lexical + reparse-rejecting inside the Windows AppContainer where
+// realpath is denied. See sandbox-paths.ts.
+const { realpath, realpathAllowMissing, resolveCanonicalDirectoryEntryTarget } = sandboxPathApi();
+
 const DEFAULT_GLOB_LIMIT = 200;
 const MAX_GREP_OUTPUT_BYTES = 8 * 1024 * 1024;
 const MAX_GREP_STDERR_BYTES = 16 * 1024;
@@ -36,6 +66,8 @@ const MAX_GREP_STDERR_BYTES = 16 * 1024;
 export interface FilesystemWorkerOperationDependencies {
   grepExecutable?: string;
   runGrep?: FilesystemWorkerGrepRunner;
+  /** Set when the worker runs inside the Windows AppContainer sandbox. */
+  windowsSandboxed?: boolean;
 }
 
 export interface FilesystemWorkerGrepRunInput {
@@ -65,6 +97,7 @@ export async function executeFilesystemWorkerRequest(
       request.operation.path,
       request.expectedTarget,
       operationUsesDirectoryEntry(request.operation),
+      operationAccess(request.operation.kind),
     );
     return {
       version: FILESYSTEM_WORKER_PROTOCOL_VERSION,
@@ -74,6 +107,7 @@ export async function executeFilesystemWorkerRequest(
         request.operation,
         request.operationBoundary,
         dependencies,
+        request.expectedTarget,
       ),
     };
   } catch (error) {
@@ -91,6 +125,7 @@ export async function executeFilesystemOperation(
   operation: FilesystemWorkerOperation,
   operationBoundary: FilesystemWorkerRequest['operationBoundary'],
   dependencies: FilesystemWorkerOperationDependencies = {},
+  expectedTarget?: FilesystemWorkerTarget,
 ): Promise<FilesystemWorkerResult> {
   switch (operation.kind) {
     case 'read': {
@@ -131,29 +166,52 @@ export async function executeFilesystemOperation(
         'Write',
         operationBoundary,
       );
-      // Read-before-write: the diff of an overwrite is what tells the reader
-      // what was lost. Only a missing file means the whole content is new —
-      // any other read failure leaves the previous state unknown, and
-      // claiming `--- /dev/null` would report the file as created.
-      let previous: 'new' | 'unknown' | string;
-      try {
-        previous = await fs.readFile(path, 'utf8');
-      } catch (error) {
-        const code = (error as NodeJS.ErrnoException).code;
-        previous = code === 'ENOENT' || code === 'ENOTDIR' ? 'new' : 'unknown';
-      }
-      await fs.writeFile(path, operation.content, 'utf8');
-      const diff =
-        previous === 'unknown'
-          ? undefined
-          : createUnifiedDiff(path, previous === 'new' ? undefined : previous, operation.content);
-      return {
-        kind: 'write',
-        ok: true,
+      // Pin the approved object (#2600): open once, validate the identity on
+      // the descriptor, and write through that descriptor — a path swap between
+      // validation and the write cannot divert the bytes onto the replacement.
+      // An approved-missing target is created exclusively; anything that
+      // appeared in the gap is `path_changed`, never truncated.
+      const handle = await openStableTarget({
         path,
-        bytes: Buffer.byteLength(operation.content, 'utf8'),
-        ...(diff !== undefined ? { diff } : {}),
-      };
+        approvedIdentity:
+          typeof expectedTarget?.identity === 'object' ? expectedTarget.identity : undefined,
+        targetType: expectedTarget?.targetType,
+      });
+      try {
+        // Read-before-write (for the diff): only through the pinned descriptor.
+        // An approved-missing target was just created by 'wx', so it is new.
+        // The wire identity is three-state (#3484): 'missing' is a truthy
+        // string, so a truthiness test can no longer stand in for "the target
+        // was approved as missing" — targetType is the authority here.
+        let previous: 'new' | 'unknown' | string;
+        if (expectedTarget?.targetType === 'missing') {
+          previous = 'new';
+        } else {
+          try {
+            previous = await handle.readFile('utf8');
+          } catch {
+            previous = 'unknown';
+          }
+        }
+        await writeThroughHandle(handle, operation.content);
+        // Host visibility: if the path no longer resolves to the pinned inode,
+        // the bytes went to an orphan and the visible file is the replacement.
+        const visibility = await hostVisibilityAfterWrite(path, handle);
+        if (visibility) throw visibility;
+        const diff =
+          previous === 'unknown'
+            ? undefined
+            : createUnifiedDiff(path, previous === 'new' ? undefined : previous, operation.content);
+        return {
+          kind: 'write',
+          ok: true,
+          path,
+          bytes: Buffer.byteLength(operation.content, 'utf8'),
+          ...(diff !== undefined ? { diff } : {}),
+        };
+      } finally {
+        await handle.close();
+      }
     }
     case 'apply_patch': {
       if (operation.action !== 'update') {
@@ -164,7 +222,16 @@ export async function executeFilesystemOperation(
           operationBoundary,
         );
         if (operation.action === 'create') await createPatchedFile(path, operation.diff);
-        else await fs.unlink(path);
+        // Compare-and-delete (#2600): rename the entry to a tombstone,
+        // verify the approved identity, then unlink — a replacement swapped
+        // in after the check is restored and reported, never silently
+        // deleted.
+        else
+          await compareAndDeleteEntry({
+            path,
+            approvedIdentity:
+              typeof expectedTarget?.identity === 'object' ? expectedTarget.identity : undefined,
+          });
         return { kind: 'apply_patch', ok: true, path };
       }
       const path = await resolveExistingAllowed(
@@ -174,7 +241,23 @@ export async function executeFilesystemOperation(
         'write',
         operationBoundary,
       );
-      await updatePatchedFile(path, operation.diff);
+      // Pin the target and apply the diff through one descriptor (#2600); a
+      // rejected patch propagates before any truncation, so the file is intact.
+      const handle = await openStableTarget({
+        path,
+        approvedIdentity:
+          typeof expectedTarget?.identity === 'object' ? expectedTarget.identity : undefined,
+        targetType: expectedTarget?.targetType,
+      });
+      try {
+        await readModifyWriteThroughHandle(handle, (existing) =>
+          applyUpdateToContent(existing, operation.diff),
+        );
+        const visibility = await hostVisibilityAfterWrite(path, handle);
+        if (visibility) throw visibility;
+      } finally {
+        await handle.close();
+      }
       return { kind: 'apply_patch', ok: true, path };
     }
     case 'edit': {
@@ -185,33 +268,45 @@ export async function executeFilesystemOperation(
         'write',
         operationBoundary,
       );
-      const content = await fs.readFile(path, 'utf8');
-      let edited: ReturnType<typeof computeEditedSource>;
-      try {
-        edited = computeEditedSource(
-          content,
-          operation.oldString,
-          operation.newString,
-          operation.path,
-        );
-      } catch (error) {
-        throw operationError(
-          'edit_conflict',
-          error instanceof Error ? error.message : 'Edit could not be applied.',
-        );
-      }
-      await fs.writeFile(path, edited.content, 'utf8');
-      const diff = createUnifiedDiff(path, content, edited.content);
-      return {
-        kind: 'edit',
-        ok: true,
+      const handle = await openStableTarget({
         path,
-        replacements: 1,
-        matchedVia: edited.matchedVia,
-        startLine: edited.startLine,
-        endLine: edited.endLine,
-        ...(diff !== undefined ? { diff } : {}),
-      };
+        approvedIdentity:
+          typeof expectedTarget?.identity === 'object' ? expectedTarget.identity : undefined,
+        targetType: expectedTarget?.targetType,
+      });
+      try {
+        const content = await handle.readFile('utf8');
+        let source: ReturnType<typeof computeEditedSource>;
+        try {
+          source = computeEditedSource(
+            content,
+            operation.oldString,
+            operation.newString,
+            operation.path,
+          );
+        } catch (error) {
+          throw operationError(
+            'edit_conflict',
+            error instanceof Error ? error.message : 'Edit could not be applied.',
+          );
+        }
+        await writeThroughHandle(handle, source.content);
+        const visibility = await hostVisibilityAfterWrite(path, handle);
+        if (visibility) throw visibility;
+        const diff = createEditUnifiedDiff(path, content, source.content, source);
+        return {
+          kind: 'edit',
+          ok: true,
+          path,
+          replacements: 1,
+          matchedVia: source.matchedVia,
+          startLine: source.startLine,
+          endLine: source.endLine,
+          ...(diff !== undefined ? { diff } : {}),
+        };
+      } finally {
+        await handle.close();
+      }
     }
     case 'format_json': {
       const path = await resolveExistingAllowed(
@@ -221,39 +316,58 @@ export async function executeFilesystemOperation(
         'write',
         operationBoundary,
       );
-      const original = await fs.readFile(path, 'utf8');
-      const bytesBefore = Buffer.byteLength(original, 'utf8');
-      let parsed: unknown;
+      const handle = await openStableTarget({
+        path,
+        approvedIdentity:
+          typeof expectedTarget?.identity === 'object' ? expectedTarget.identity : undefined,
+        targetType: expectedTarget?.targetType,
+      });
       try {
-        parsed = JSON.parse(original);
-      } catch (error) {
+        const original = await handle.readFile('utf8');
+        const bytesBefore = Buffer.byteLength(original, 'utf8');
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(original);
+        } catch (error) {
+          // Invalid JSON: return the structured failure without writing.
+          return {
+            kind: 'format_json',
+            ok: false,
+            valid: false,
+            path,
+            error: `FormatJson: invalid JSON: ${error instanceof Error ? error.message : 'parse failed'}`,
+            bytesBefore,
+            byteDelta: 0,
+            changed: false,
+          };
+        }
+        const formatted = JSON.stringify(
+          operation.sortKeys ? sortKeysDeep(parsed) : parsed,
+          null,
+          2,
+        );
+        if (formatted !== original) {
+          await writeThroughHandle(handle, formatted);
+        }
+        const visibility = await hostVisibilityAfterWrite(path, handle);
+        if (visibility) throw visibility;
+        const bytesAfter = Buffer.byteLength(formatted, 'utf8');
+        const diff =
+          formatted === original ? undefined : createUnifiedDiff(path, original, formatted);
         return {
           kind: 'format_json',
-          ok: false,
-          valid: false,
+          ok: true,
+          valid: true,
           path,
-          error: `FormatJson: invalid JSON: ${error instanceof Error ? error.message : 'parse failed'}`,
           bytesBefore,
-          byteDelta: 0,
-          changed: false,
+          bytesAfter,
+          byteDelta: bytesAfter - bytesBefore,
+          changed: formatted !== original,
+          ...(diff !== undefined ? { diff } : {}),
         };
+      } finally {
+        await handle.close();
       }
-      const formatted = JSON.stringify(operation.sortKeys ? sortKeysDeep(parsed) : parsed, null, 2);
-      await fs.writeFile(path, formatted, 'utf8');
-      const bytesAfter = Buffer.byteLength(formatted, 'utf8');
-      const diff =
-        formatted === original ? undefined : createUnifiedDiff(path, original, formatted);
-      return {
-        kind: 'format_json',
-        ok: true,
-        valid: true,
-        path,
-        bytesBefore,
-        bytesAfter,
-        byteDelta: bytesAfter - bytesBefore,
-        changed: formatted !== original,
-        ...(diff !== undefined ? { diff } : {}),
-      };
     }
     case 'glob': {
       assertContainedGlobPattern(operation.pattern);
@@ -280,11 +394,26 @@ export async function executeFilesystemOperation(
         'read',
         operationBoundary,
       );
+      // The Windows AppContainer cannot create grandchild processes (the
+      // desktop object is not granted to the container SID), so ripgrep
+      // cannot run there — and no in-process substitute preserves Grep's
+      // advertised regex/ripgrep contract (pattern dialect, gitignore
+      // filtering, glob and truncation behavior). The Windows sandbox
+      // preview therefore does not expose Grep: failing closed keeps the
+      // public contract honest until a contract-preserving search engine
+      // exists. Glob and Read remain available; an unsandboxed Windows
+      // worker never carries this marker and keeps full ripgrep behavior.
+      if (dependencies.windowsSandboxed) {
+        throw operationError(
+          'grep_unavailable',
+          'Grep is not available inside the Windows sandbox preview; use Glob and Read instead.',
+        );
+      }
       if (!dependencies.grepExecutable)
         throw operationError('grep_unavailable', 'Grep is unavailable in this runtime.');
       const args = ['-n', '--no-heading', `--max-count=${operation.maxCountPerFile}`];
       if (operation.glob) args.push('--glob', operation.glob);
-      args.push(operation.pattern, path);
+      args.push('--', operation.pattern, path);
       const result = await (dependencies.runGrep ?? runRipgrep)({
         executable: dependencies.grepExecutable,
         args,
@@ -344,6 +473,9 @@ function sortKeysDeep(value: unknown): unknown {
 
 function normalizeOperationError(error: unknown): FilesystemOperationError {
   if (error instanceof FilesystemOperationError) return error;
+  if (error instanceof StableWriteFailure) {
+    return operationError(error.code, error.message);
+  }
   if (error instanceof ApplyPatchRejectedError) {
     return operationError('edit_conflict', error.message);
   }
@@ -360,6 +492,7 @@ async function assertTargetUnchanged(
   path: string,
   expected: FilesystemWorkerTarget,
   noFollowFinalSymlink = false,
+  access: 'read' | 'write' = 'read',
 ): Promise<void> {
   const enforcementPath = noFollowFinalSymlink
     ? (await resolveCanonicalDirectoryEntryTarget(cwd, path)).path
@@ -373,6 +506,40 @@ async function assertTargetUnchanged(
       'The approved filesystem target changed before execution.',
     );
   }
+  // Compare the on-disk identity against the one captured at authorisation
+  // time. This is the load-bearing check for the queue window: a path swapped
+  // while the call waited for the lock has a different inode even when its
+  // canonical path and type still match.
+  //
+  // The wire carries one required three-state identity contract (#3484):
+  // - { dev, ino }: CAS against the on-disk inode.
+  // - 'missing': T0 saw no target but T1 does — something created it while
+  //   this call waited. Writing would clobber content the caller never saw.
+  // - 'unchecked': the caller deliberately does not participate in CAS.
+  //   Reads never mutate and are exempt either way.
+  if (access === 'write' && expected.targetType !== 'missing') {
+    if (expected.identity === 'missing') {
+      throw operationError(
+        'path_changed',
+        'The target was created while this call waited for the lock; re-read before writing.',
+      );
+    }
+    if (typeof expected.identity === 'object') {
+      const metadata = noFollowFinalSymlink
+        ? await fs.lstat(enforcementPath, { bigint: true })
+        : await fs.stat(enforcementPath, { bigint: true });
+      if (
+        String(metadata.dev) !== expected.identity.dev ||
+        String(metadata.ino) !== expected.identity.ino
+      ) {
+        throw operationError(
+          'path_changed',
+          'The approved filesystem target changed before execution.',
+        );
+      }
+    }
+    // identity === 'unchecked': nothing to compare, nothing to fail.
+  }
 }
 
 async function resolveWritableAllowed(
@@ -383,7 +550,7 @@ async function resolveWritableAllowed(
 ): Promise<string> {
   const { root, candidate } = await resolveCandidate(cwd, inputPath, label, 'write', permission);
   try {
-    const target = await fs.realpath(candidate);
+    const target = await realpath(candidate);
     assertAllowed(root, target, label, 'write', permission);
     return target;
   } catch (error) {
@@ -395,7 +562,7 @@ async function resolveWritableAllowed(
   // so the worker enforces its own boundary instead of trusting the caller to
   // have canonicalised the path for it.
   const followed = await realpathAllowMissing(candidate);
-  const parent = await fs.realpath(dirname(followed));
+  const parent = await realpath(dirname(followed));
   assertAllowed(root, followed, label, 'write', permission);
   if (!isPathInside(root, parent) && !exactWriteCoversParent(permission, followed, parent)) {
     throw operationError(
@@ -425,7 +592,7 @@ async function resolveExistingAllowed(
   permission: FilesystemWorkerRequest['operationBoundary'],
 ): Promise<string> {
   const { root, candidate } = await resolveCandidate(cwd, inputPath, label, access, permission);
-  const target = await fs.realpath(candidate);
+  const target = await realpath(candidate);
   assertAllowed(root, target, label, access, permission);
   return target;
 }
@@ -437,7 +604,7 @@ async function resolveCandidate(
   access: 'read' | 'write',
   permission: FilesystemWorkerRequest['operationBoundary'],
 ): Promise<{ root: string; candidate: string }> {
-  const root = await fs.realpath(cwd);
+  const root = await realpath(cwd);
   const candidate = resolve(root, inputPath);
   if (
     !isPathInside(root, candidate) &&

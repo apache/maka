@@ -1,3 +1,23 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { deferred } from '@maka/core/test-only/async-primitives';
 import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
 import assert from 'node:assert/strict';
 import { lstat, mkdtemp, rename, rm } from 'node:fs/promises';
@@ -9,10 +29,10 @@ import {
   PRICING_MODEL_KEY_MAX_CHARS,
 } from '@maka/core/usage-stats/pricing';
 import type { PricingConfig } from '@maka/core/usage-stats/types';
-import { BUILTIN_PRICING } from '@maka/runtime';
+import { BUILTIN_PRICING } from '@maka/runtime/telemetry';
 import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
+import { SessionNotFoundError } from '@maka/storage/session-store';
 import {
-  createHeadlessRootLease,
   resolveRootControlNamespace,
   resolveStorageRoot,
   StorageRootAuthorityError,
@@ -23,7 +43,6 @@ import {
 import { connectRuntimeHost, type RuntimeHostConnection } from '../client/index.js';
 import {
   RUNTIME_HOST_PROTOCOL_VERSION,
-  type ClientSurface,
   type EffectivePricingEntry,
   type PricingQueryResult,
 } from '../protocol/index.js';
@@ -41,29 +60,16 @@ const REQUEST_TIMEOUT_MS = 5_000;
 const CONNECTION_CONTEXT: ConnectionContext = {
   hostEpoch: 'usage-pricing-test',
   connectionId: 'usage-pricing-test-connection',
-  surface: 'tui',
   principal: 'local_os_user',
   acquireResidency: () => ({ release() {} }),
 };
 
-test('Headless root leases cannot open the Interactive usage authority', async () => {
-  const base = await mkdtemp(join(tmpdir(), 'maka-usage-pricing-headless-'));
-  try {
-    const capability = await resolveStorageRoot({
-      path: join(base, 'headless-root'),
-      kind: 'headless',
-    });
-    const headlessLease = createHeadlessRootLease(capability, 'write');
-    await assert.rejects(
-      openInteractiveUsageStoresForWrite(
-        headlessLease as unknown as StorageRootLease<'interactive', 'write'>,
-      ),
-      (error: unknown) =>
-        error instanceof StorageRootAuthorityError && error.code === 'invalid_lease',
-    );
-  } finally {
-    await rm(base, { recursive: true, force: true });
-  }
+test('forged root leases cannot open the Interactive usage authority', async () => {
+  await assert.rejects(
+    openInteractiveUsageStoresForWrite({} as StorageRootLease<'interactive', 'write'>),
+    (error: unknown) =>
+      error instanceof StorageRootAuthorityError && error.code === 'invalid_lease',
+  );
 });
 
 test('usage authority drain rejects a new pricing mutation with typed lifecycle failure', async () => {
@@ -291,6 +297,151 @@ test('pricing root identity failure requests drain while expected failures do no
   });
 });
 
+test('usage logs carry the Host-resolved session title and tolerate unreadable sessions', async () => {
+  await withUsageAuthority('session-title', async ({ stores }) => {
+    await Promise.all([
+      stores.telemetry.recordLlmCall({
+        ...usageRecord('llm-named', 10, 'openai', 'gpt-a'),
+        sessionId: 'session-named',
+        turnId: 'turn-1',
+      }),
+      stores.telemetry.recordLlmCall({
+        ...usageRecord('llm-blank', 11, 'openai', 'gpt-a'),
+        sessionId: 'session-blank',
+        turnId: 'turn-2',
+      }),
+      stores.telemetry.recordLlmCall({
+        ...usageRecord('llm-missing', 12, 'openai', 'gpt-a'),
+        sessionId: 'session-missing',
+        turnId: 'turn-3',
+      }),
+      stores.telemetry.recordToolInvocation({
+        ...toolRecord('tool-a', 13),
+        sessionId: 'session-named',
+      }),
+    ]);
+    const titles = new Map([
+      // Leading/trailing whitespace must be trimmed; a blank title is not a title.
+      ['session-named', '  重构使用统计页请求日志的任务列  '],
+      ['session-blank', '   '],
+    ]);
+    const coordinator = new HostUsagePricingCoordinator(
+      stores,
+      () => {},
+      new RuntimePolicyActivationGate(),
+      () => {},
+      async (sessionId) => {
+        // A genuinely missing session is tolerated: its row stays untitled.
+        if (sessionId === 'session-missing') throw new SessionNotFoundError('session-missing');
+        return titles.get(sessionId);
+      },
+    );
+
+    const llm = await coordinator.handlers['usage.query'](
+      { kind: 'logs', source: 'llm', query: { range: 'all' }, offset: 0, limit: 100 },
+      CONNECTION_CONTEXT,
+    );
+    assert.ok(llm.ok);
+    assert.equal(llm.result.kind, 'logs');
+    if (llm.result.kind !== 'logs' || llm.result.source !== 'llm')
+      throw new Error('expected llm logs');
+    const llmById = new Map(llm.result.rows.map((row) => [row.id, row]));
+    assert.equal(llmById.get('llm-named')?.sessionTitle, '重构使用统计页请求日志的任务列');
+    // Whitespace-only title is dropped; the row stays untitled and the UI falls back.
+    assert.equal(llmById.get('llm-blank')?.sessionTitle, undefined);
+    // A genuinely missing session is tolerated — one missing session never blanks the rest.
+    assert.equal(llmById.get('llm-missing')?.sessionTitle, undefined);
+    assert.equal(llmById.get('llm-named')?.sessionId, 'session-named');
+
+    const tool = await coordinator.handlers['usage.query'](
+      { kind: 'logs', source: 'tool', query: { range: 'all' }, offset: 0, limit: 100 },
+      CONNECTION_CONTEXT,
+    );
+    assert.ok(tool.ok);
+    if (tool.result.kind !== 'logs' || tool.result.source !== 'tool')
+      throw new Error('expected tool logs');
+    assert.equal(
+      tool.result.rows.find((row) => row.id === 'tool-a')?.sessionTitle,
+      '重构使用统计页请求日志的任务列',
+    );
+  });
+});
+
+test('a connection-scoped summary omits the tool split instead of sending an unscoped one', async () => {
+  await withUsageAuthority('summary-slug-omission', async ({ stores }) => {
+    await Promise.all([
+      stores.telemetry.recordLlmCall({
+        ...usageRecord('llm-slug', 30, 'openai', 'gpt-a'),
+        connectionSlug: 'openai',
+      }),
+      stores.telemetry.recordToolInvocation(toolRecord('tool-slug', 31)),
+    ]);
+    const coordinator = new HostUsagePricingCoordinator(
+      stores,
+      () => {},
+      new RuntimePolicyActivationGate(),
+      () => {},
+      async () => undefined,
+    );
+
+    // Tool rows predate connection attribution, so a connectionSlug-filtered
+    // query cannot scope them; the summary omits the split rather than let the
+    // tool ring quietly contradict the model totals beside it.
+    const scoped = await coordinator.handlers['usage.query'](
+      { kind: 'summary', query: { range: 'all', connectionSlug: 'openai' } },
+      CONNECTION_CONTEXT,
+    );
+    assert.ok(scoped.ok);
+    if (scoped.result.kind !== 'summary') throw new Error('expected summary');
+    assert.equal(scoped.result.summary.toolUsage, undefined);
+    assert.equal(scoped.result.summary.totalRequests, 1);
+
+    const unscoped = await coordinator.handlers['usage.query'](
+      { kind: 'summary', query: { range: 'all' } },
+      CONNECTION_CONTEXT,
+    );
+    assert.ok(unscoped.ok);
+    if (unscoped.result.kind !== 'summary') throw new Error('expected summary');
+    assert.deepEqual(unscoped.result.summary.toolUsage, { requests: 1, durationMs: 12 });
+  });
+});
+
+test('a non–not-found title read failure propagates out of usage.query instead of blanking the row', async () => {
+  await withUsageAuthority('session-title-failure', async ({ stores }) => {
+    await stores.telemetry.recordLlmCall({
+      ...usageRecord('llm-live', 20, 'openai', 'gpt-a'),
+      sessionId: 'session-live',
+      turnId: 'turn-1',
+    });
+    const coordinator = new HostUsagePricingCoordinator(
+      stores,
+      () => {},
+      new RuntimePolicyActivationGate(),
+      () => {},
+      // The production reader is SessionStore.readHeaderSnapshot. A closed
+      // metadata store rejects with exactly this generic error — not a
+      // usage-store lifecycle type — so it classifies as `unknown` and must
+      // reach #queryUsage's failure mapping rather than be swallowed into an
+      // untitled row.
+      async () => {
+        throw new Error('SQLite session metadata store is closed');
+      },
+    );
+
+    // Not swallowed: the read failure propagates rather than yielding a
+    // false-success page. (A genuinely draining host is caught earlier by the
+    // primary usage read; this narrow case is a session store that fails on its
+    // own, which surfaces instead of masking the problem.)
+    await assert.rejects(
+      coordinator.handlers['usage.query'](
+        { kind: 'logs', source: 'llm', query: { range: 'all' }, offset: 0, limit: 100 },
+        CONNECTION_CONTEXT,
+      ),
+      /SQLite session metadata store is closed/,
+    );
+  });
+});
+
 test('pricing query rejects continue offsets at and past the effective catalog end', async () => {
   await withUsageAuthority('pricing-offset', async ({ stores }) => {
     const coordinator = new HostUsagePricingCoordinator(
@@ -464,10 +615,7 @@ describe('production Usage/Pricing UDS', () => {
       preHostUsageStores = undefined;
       endpoint = host.endpoint;
 
-      const [desktop, tui] = await Promise.all([
-        connectClient(root, 'desktop'),
-        connectClient(root, 'tui'),
-      ]);
+      const [desktop, tui] = await Promise.all([connectClient(root), connectClient(root)]);
       clients.push(desktop, tui);
       const [desktopUsage, tuiUsage] = await Promise.all([readUsage(desktop), readUsage(tui)]);
       assert.deepEqual(tuiUsage, desktopUsage);
@@ -657,8 +805,8 @@ describe('production Usage/Pricing UDS', () => {
       });
       successorOwner = undefined;
       const [desktopAfterRestart, tuiAfterRestart] = await Promise.all([
-        connectClient(root, 'desktop'),
-        connectClient(root, 'tui'),
+        connectClient(root),
+        connectClient(root),
       ]);
       clients.push(desktopAfterRestart, tuiAfterRestart);
       const [usageAfterRestart, pricingAfterRestart, pricingFromSecondClient] = await Promise.all([
@@ -707,13 +855,9 @@ describe('production Usage/Pricing UDS', () => {
   });
 });
 
-async function connectClient(
-  rootPath: string,
-  surface: ClientSurface,
-): Promise<RuntimeHostConnection> {
+async function connectClient(rootPath: string): Promise<RuntimeHostConnection> {
   const result = await connectRuntimeHost({
     rootPath,
-    surface,
     protocol: PROTOCOL,
     connectTimeoutMs: REQUEST_TIMEOUT_MS,
     handshakeTimeoutMs: REQUEST_TIMEOUT_MS,
@@ -816,18 +960,6 @@ function requirePricingPage(
   if (result.kind !== 'page') throw new Error('Pricing revision changed during page read');
   return result;
 }
-
-function deferred(): {
-  readonly promise: Promise<void>;
-  resolve(): void;
-} {
-  let resolve!: () => void;
-  const promise = new Promise<void>((settle) => {
-    resolve = settle;
-  });
-  return { promise, resolve };
-}
-
 function usageRecord(
   id: string,
   ts: number,

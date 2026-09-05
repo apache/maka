@@ -1,9 +1,28 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import {
   decodeCanonicalShellToolResultContent,
   isSandboxDenialSignal,
-  normalizeShellToolResultContent,
 } from './shell-run-result.js';
-import { isPermissionMode } from './permission.js';
+import { decodePersistedPermissionMode, isPermissionMode } from './permission.js';
+import type { PersistedValue } from './persisted-value.js';
 import { isStorageRef, type ToolResultContent } from './events.js';
 import { validateSandboxBoundaryExpansion } from './sandbox-boundary.js';
 import {
@@ -17,7 +36,6 @@ import {
 } from './record-schema.js';
 
 type Result<K extends ToolResultContent['kind']> = Extract<ToolResultContent, { kind: K }>;
-type ExploreResult = Result<'explore_agent'>;
 type AgentSwarmResult = Result<'agent_swarm'>;
 type RiveResult = Result<'rive_workflow'>;
 
@@ -27,7 +45,7 @@ const TEXT_SHAPE = defineObjectShape<Result<'text'>>()(
 );
 const SANDBOX_FAILURE_SHAPE = defineObjectShape<NonNullable<Result<'text'>['sandboxFailure']>>()(
   ['reason'],
-  ['requiredExpansion'],
+  ['requiredExpansion', 'source'],
 );
 const UNCERTAIN_OUTCOME_SHAPE = defineObjectShape<
   NonNullable<Result<'text'>['uncertainOutcome']>
@@ -66,61 +84,6 @@ const WEB_SEARCH_ROW_SHAPE = defineObjectShape<WebSearchRow>()(
 const WEB_SEARCH_ERROR_SHAPE = defineObjectShape<Result<'web_search_error'>>()(
   ['kind', 'ok', 'provider', 'reason', 'message'],
   ['query', 'credentialSource'],
-);
-const EXPLORE_SHAPE = defineObjectShape<ExploreResult>()(
-  [
-    'kind',
-    'ok',
-    'mode',
-    'objective',
-    'roots',
-    'queries',
-    'filesInspected',
-    'filesSkipped',
-    'bytesRead',
-    'progress',
-    'candidateFiles',
-    'matches',
-    'notes',
-  ],
-  [
-    'partial',
-    'terminalStatus',
-    'ignoredPaths',
-    'stoppingCondition',
-    'limitReasons',
-    'filesDiscovered',
-    'sensitiveFilesSkipped',
-    'startedAt',
-    'completedAt',
-    'durationMs',
-    'recentEvents',
-    'evidence',
-    'summary',
-    'report',
-    'reason',
-    'message',
-  ],
-);
-type ExploreRecentEvent = NonNullable<ExploreResult['recentEvents']>[number];
-type ExploreEvidence = NonNullable<ExploreResult['evidence']>[number];
-type ExploreCandidate = ExploreResult['candidateFiles'][number];
-type ExploreMatch = ExploreResult['matches'][number];
-const EXPLORE_RECENT_EVENT_SHAPE = defineObjectShape<ExploreRecentEvent>()(
-  ['type', 'at', 'message'],
-  [],
-);
-const EXPLORE_EVIDENCE_SHAPE = defineObjectShape<ExploreEvidence>()(
-  ['type', 'path', 'label'],
-  ['line', 'score'],
-);
-const EXPLORE_CANDIDATE_SHAPE = defineObjectShape<ExploreCandidate>()(
-  ['path', 'score', 'reasons'],
-  [],
-);
-const EXPLORE_MATCH_SHAPE = defineObjectShape<ExploreMatch>()(
-  ['path', 'line', 'query', 'snippet'],
-  [],
 );
 const SUBAGENT_SHAPE = defineObjectShape<Result<'subagent'>>()(
   ['kind', 'agentName', 'turnId', 'status', 'permissionMode', 'summary', 'artifactIds'],
@@ -190,17 +153,6 @@ const RIVE_ERROR_SHAPE = defineObjectShape<RiveError>()(
   ['code', 'suggestedAction'],
 );
 
-export function normalizeToolResultContentForRead(value: unknown): ToolResultContent {
-  const shell = normalizeShellToolResultContent(value);
-  if (shell.state === 'invalid') throw new Error('Invalid shell tool result content');
-  const normalized = shell.state === 'valid' ? shell.content : value;
-  return decodeCanonicalToolResultContent(normalizeLegacySubagentToolResultContent(normalized));
-}
-
-export function decodePersistedToolResultContentForRecovery(value: unknown): ToolResultContent {
-  return decodeCanonicalToolResultContent(normalizeLegacySubagentToolResultContent(value));
-}
-
 export function decodeCanonicalToolResultContent(value: unknown): ToolResultContent {
   const shell = decodeCanonicalShellToolResultContent(value);
   if (shell.state === 'invalid') throw new Error('Invalid shell tool result content');
@@ -211,16 +163,37 @@ export function decodeCanonicalToolResultContent(value: unknown): ToolResultCont
   return value;
 }
 
-function normalizeLegacySubagentToolResultContent(value: unknown): unknown {
-  if (
-    !isRecord(value) ||
-    value.kind !== 'subagent' ||
-    value.status !== 'waiting_permission' ||
-    !hasValidSubagentResultFields(value)
-  ) {
-    return value;
+export function decodePersistedToolResultContent(
+  persisted: PersistedValue<ToolResultContent>,
+): ToolResultContent {
+  const value = persisted as unknown;
+  if (isRecord(value) && value.kind === 'explore_agent') {
+    if (value.mode !== 'read_only' || typeof value.ok !== 'boolean') {
+      throw new Error('Invalid tool result content');
+    }
+    const summary = firstNonEmptyString(
+      typeof value.report === 'string' ? value.report : undefined,
+      typeof value.summary === 'string' ? value.summary : undefined,
+      typeof value.message === 'string' ? value.message : undefined,
+    );
+    return {
+      kind: 'text',
+      text:
+        summary ??
+        (isFiniteNumber(value.filesInspected)
+          ? `Inspected ${value.filesInspected} files`
+          : 'Historical repository scan result'),
+    };
   }
-  return { ...value, status: 'waiting_for_user' };
+  if (!isRecord(value) || value.kind !== 'subagent') {
+    return decodeCanonicalToolResultContent(value);
+  }
+  const permissionMode = decodePersistedPermissionMode(value.permissionMode);
+  return decodeCanonicalToolResultContent({ ...value, permissionMode });
+}
+
+function firstNonEmptyString(...values: Array<string | undefined>): string | undefined {
+  return values.find((value) => value !== undefined && value.trim().length > 0);
 }
 
 function isNonShellToolResultContent(value: unknown): value is ToolResultContent {
@@ -236,6 +209,9 @@ function isNonShellToolResultContent(value: unknown): value is ToolResultContent
             hasExactShape(value.sandboxFailure, SANDBOX_FAILURE_SHAPE) &&
             (value.sandboxFailure.reason === 'sandbox_boundary_required' ||
               value.sandboxFailure.reason === 'requires_bypass') &&
+            (value.sandboxFailure.source === undefined ||
+              (value.sandboxFailure.reason === 'requires_bypass' &&
+                value.sandboxFailure.source === 'client_capability')) &&
             (value.sandboxFailure.requiredExpansion === undefined ||
               validateSandboxBoundaryExpansion(value.sandboxFailure.requiredExpansion).ok))) &&
         (value.uncertainOutcome === undefined ||
@@ -270,7 +246,8 @@ function isNonShellToolResultContent(value: unknown): value is ToolResultContent
         isFiniteNumber(value.originalEstimatedTokens) &&
         isFiniteNumber(value.originalBytes) &&
         isFiniteNumber(value.rewriteVersion) &&
-        value.reason === 'stale_tool_result_pruned_before_compact'
+        (value.reason === 'stale_tool_result_pruned_before_compact' ||
+          value.reason === 'active_current_turn_tool_result_pruned_before_next_step')
       );
     case 'image':
       return (
@@ -303,8 +280,6 @@ function isNonShellToolResultContent(value: unknown): value is ToolResultContent
         typeof value.message === 'string' &&
         isOptionalString(value.credentialSource)
       );
-    case 'explore_agent':
-      return isExploreResult(value);
     case 'subagent':
       return (
         hasValidSubagentResultFields(value) &&
@@ -374,97 +349,6 @@ function isAgentSwarmItem(value: unknown): value is AgentSwarmItem {
     isOptionalFiniteNumber(value.completedAt) &&
     isOptionalFiniteNumber(value.durationMs) &&
     isOptionalString(value.failureClass)
-  );
-}
-
-function isExploreResult(value: Record<string, unknown>): value is ExploreResult {
-  return (
-    hasExactShape(value, EXPLORE_SHAPE) &&
-    typeof value.ok === 'boolean' &&
-    (value.partial === undefined || typeof value.partial === 'boolean') &&
-    (value.terminalStatus === undefined ||
-      ['completed', 'completed_empty', 'failed', 'canceled', 'canceled_partial'].includes(
-        value.terminalStatus as string,
-      )) &&
-    value.mode === 'read_only' &&
-    typeof value.objective === 'string' &&
-    isStringArray(value.roots) &&
-    isStringArray(value.queries) &&
-    (value.ignoredPaths === undefined || isStringArray(value.ignoredPaths)) &&
-    isOptionalString(value.stoppingCondition) &&
-    (value.limitReasons === undefined ||
-      (Array.isArray(value.limitReasons) &&
-        value.limitReasons.every((reason) =>
-          ['candidate_budget', 'file_budget', 'match_budget', 'byte_budget'].includes(reason),
-        ))) &&
-    isOptionalFiniteNumber(value.filesDiscovered) &&
-    isFiniteNumber(value.filesInspected) &&
-    isFiniteNumber(value.filesSkipped) &&
-    isOptionalFiniteNumber(value.sensitiveFilesSkipped) &&
-    isFiniteNumber(value.bytesRead) &&
-    isOptionalFiniteNumber(value.startedAt) &&
-    isOptionalFiniteNumber(value.completedAt) &&
-    isOptionalFiniteNumber(value.durationMs) &&
-    isStringArray(value.progress) &&
-    (value.recentEvents === undefined ||
-      (Array.isArray(value.recentEvents) && value.recentEvents.every(isExploreRecentEvent))) &&
-    (value.evidence === undefined ||
-      (Array.isArray(value.evidence) && value.evidence.every(isExploreEvidence))) &&
-    isOptionalString(value.summary) &&
-    isOptionalString(value.report) &&
-    Array.isArray(value.candidateFiles) &&
-    value.candidateFiles.every(isExploreCandidate) &&
-    Array.isArray(value.matches) &&
-    value.matches.every(isExploreMatch) &&
-    isStringArray(value.notes) &&
-    (value.reason === undefined ||
-      ['invalid_objective', 'invalid_root', 'no_readable_roots', 'aborted'].includes(
-        value.reason as string,
-      )) &&
-    isOptionalString(value.message)
-  );
-}
-
-function isExploreRecentEvent(value: unknown): value is ExploreRecentEvent {
-  return (
-    isRecord(value) &&
-    hasExactShape(value, EXPLORE_RECENT_EVENT_SHAPE) &&
-    typeof value.type === 'string' &&
-    isFiniteNumber(value.at) &&
-    typeof value.message === 'string'
-  );
-}
-
-function isExploreEvidence(value: unknown): value is ExploreEvidence {
-  return (
-    isRecord(value) &&
-    hasExactShape(value, EXPLORE_EVIDENCE_SHAPE) &&
-    (value.type === 'match' || value.type === 'candidate') &&
-    typeof value.path === 'string' &&
-    isOptionalFiniteNumber(value.line) &&
-    typeof value.label === 'string' &&
-    isOptionalFiniteNumber(value.score)
-  );
-}
-
-function isExploreCandidate(value: unknown): value is ExploreCandidate {
-  return (
-    isRecord(value) &&
-    hasExactShape(value, EXPLORE_CANDIDATE_SHAPE) &&
-    typeof value.path === 'string' &&
-    isFiniteNumber(value.score) &&
-    isStringArray(value.reasons)
-  );
-}
-
-function isExploreMatch(value: unknown): value is ExploreMatch {
-  return (
-    isRecord(value) &&
-    hasExactShape(value, EXPLORE_MATCH_SHAPE) &&
-    typeof value.path === 'string' &&
-    isFiniteNumber(value.line) &&
-    typeof value.query === 'string' &&
-    typeof value.snippet === 'string'
   );
 }
 

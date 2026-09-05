@@ -12,16 +12,16 @@ Maka 是一个 local-first AI agent runtime 和 workspace。它使用 append-onl
 
 h2. 项目说明（Proposal）
 
-Maka 提供一个统一的 execution runtime，供 desktop application、terminal TUI、non-interactive CLI 和 headless task runner 共同使用。其设计将持久化的 execution fact 与临时发送给 model 的 context 分离。
+Maka 提供一个由 Runtime Host 统一拥有的 execution runtime，供 desktop application、terminal TUI、non-interactive CLI 和 Eval client 共同使用。其设计将持久化的 execution fact 与临时发送给 model 的 context 分离。
 
 Maka 提供以下能力：
 
 * *Append-only execution record。* Model message、tool call、tool result、permission decision 和 termination event 会先持久化，再被投影为面向用户的状态。
 * *可重建的状态。* Session、active context、UI state 和 recovery decision 均从 event log 派生，而不是分别维护为彼此独立的事实来源。
 * *不删除历史记录的 context management。* Tool-result pruning 和 LLM compaction 可以减少下一次 inference 使用的 context，同时完整保留原始 execution record。
-* *跨越单个 turn 的 durable work。* Headless runner 为每个 task 提供独立的 identity、event log、budget、permission pause、continuation 和 resume 行为。
+* *跨越单个 turn 的 durable work。* Runtime Host 为每个 Session 和 Turn 提供独立的 identity、event log、permission pause、continuation 和 resume 行为。
 * *基于证据的完成判定。* Runtime 会将 model 声称“工作已完成”与经过验证的 process 和 tool outcome 分开记录。
-* *一个 runtime，多种使用界面。* Maka 提供 Electron desktop application、terminal TUI、non-interactive CLI 和 headless runner。
+* *一个 runtime，多种使用界面。* Maka 提供 Electron desktop application、terminal TUI、non-interactive CLI，以及只通过 Runtime Host 执行 Maka subject 的 Eval client。
 
 Maka 主要使用 TypeScript 编写，运行于 Node.js。默认情况下，session、setting、credential 和 run record 都保留在用户本地设备上。
 
@@ -58,7 +58,7 @@ h3. Core Developers
 
 * *Jie Wen（jackwener）* — 项目发起人，负责 runtime architecture 和 distributed-systems design。他是 Apache Arrow、Apache DataFusion 和 Apache Doris 的 PMC member 与 committer。
 * *Yuhan Lei（Astro-Han）* — 负责 runtime、evaluation、benchmarking 和 desktop development，同时也是 OpenCLI contributor。
-* *Kun Li（likun666661）* — 负责 runtime event-log architecture、headless task loop 和 completion verification。
+* *Kun Li（likun666661）* — 负责 runtime event-log architecture、execution lifecycle 和 completion verification。
 
 其他 module owners 和持续贡献者包括 Haoqing Wang（hqhq1025，computer-use）、Zhanghan Gao（YayoiNanoka）、sunheyi6、Nyvo-io、Yongtao Wang（M4n5ter）、Colafornia、GabrielDrapor、MicroGery、zhiiw 等。
 
@@ -74,7 +74,7 @@ h3. 项目名称（Project Name）
 
 h3. 项目被遗弃的风险（Orphan Products）
 
-项目仍然年轻，尚未证明长期持续性。当前已有多位活跃 maintainer 和 contributor 分别负责 runtime、desktop、headless 和 computer-use component，这在一定程度上降低了风险。Incubation 期间将重点记录这些 ownership boundary、增加 committer，并让 release knowledge 在社区内共享，而不是依赖某一个人。
+项目仍然年轻，尚未证明长期持续性。当前已有多位活跃 maintainer 和 contributor 分别负责 runtime、desktop、Eval 和 computer-use component，这在一定程度上降低了风险。Incubation 期间将重点记录这些 ownership boundary、增加 committer，并让 release knowledge 在社区内共享，而不是依赖某一个人。
 
 h3. Open Source 经验不足（Inexperience with Open Source）
 
@@ -127,11 +127,11 @@ Maka 是一个 TypeScript monorepo。Runtime 的大部分功能由 Maka 自己�
 
 这些依赖分为五类：
 
-* *Runtime 和 user interface。* Node.js（当前要求 22.19 或更高版本）运行共享 runtime、CLI 和 headless surface。Electron/Chromium 承载 desktop application；React 和 Astryx 提供 desktop UI；{{@earendil-works/pi-tui}} 提供 terminal TUI。CLI 和 headless runner 不需要 Electron 或 React。
+* *Runtime 和 user interface。* Node.js（当前要求 22.19 或更高版本）运行共享 Runtime Host、CLI 和 Eval client。Electron/Chromium 承载 desktop application；React 和 Astryx 提供 desktop UI；{{@earendil-works/pi-tui}} 提供 terminal TUI。CLI 和 Eval client 不需要 Electron 或 React。
 * *Model access。* 采用 Apache-2.0 license 的 Vercel {{ai}} SDK，以及 Anthropic、Cohere、Google、OpenAI 和 OpenAI-compatible adapter，用于统一不同 model provider protocol。Maka 不依赖特定 commercial model service，也不需要 Maka 自己运营的 control plane。用户既可以配置 remote provider，也可以配置本地 compatible endpoint；credential 保存在本地，不属于 release 内容。
 * *Agent protocol 和本地执行。* {{@modelcontextprotocol/sdk}} 用于实现 MCP interoperability；{{node-pty}} 和 headless xterm package 提供 interactive shell session 与 terminal emulation；{{fs-native-extensions}} 提供跨 process file locking；{{@jackwener/opencli}} 通过 CDP 提供 browser automation。{{undici}}、{{ws}}、{{yaml}} 和 {{zod}} 等较小 library 用于 networking、configuration 和 validation。
 * *可选 integration。* Slack、Lark/Feishu 和 WeCom SDK 只在用户启用对应 bot channel 时使用。这些 service 是可选 integration，并不是 build 或启动 Maka 所必需的 infrastructure。
-* *Build 和 test tooling。* TypeScript、esbuild、Vite、Electron Builder、Playwright、Storybook 和 Tailwind CSS 用于 build 和 test；Biome 用于 linting 和 formatting。这些 tool 不会被 CLI 或 headless runtime 加载。进入 binary release 的 build output 将接受下文所述的 release audit。
+* *Build 和 test tooling。* TypeScript、esbuild、Vite、Electron Builder、Playwright、Storybook 和 Tailwind CSS 用于 build 和 test；Biome 用于 linting 和 formatting。这些 tool 不会被 CLI 或 Runtime Host 加载。进入 binary release 的 build output 将接受下文所述的 release audit。
 
 h4. License 和 Release 处理（License and Release Treatment）
 

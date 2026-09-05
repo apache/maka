@@ -1,12 +1,30 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { ExecutionBoundary } from '@maka/core';
+import type { ExecutionBoundary } from '@maka/core/sandbox-boundary';
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
-import { expect } from '../test-helpers.js';
 import { buildBuiltinTools } from '../builtin-tools.js';
 import { SandboxCommandError } from '../sandbox/errors.js';
 import { createLocalWorkspaceExecutor } from '../workspace-executor.js';
@@ -60,6 +78,7 @@ function runTool(
       turnId: 'turn-1',
       cwd,
       toolCallId: 'tool-1',
+      operationId: 'toolop-1',
       abortSignal: new AbortController().signal,
       emitOutput: () => {},
       ...(executionBoundary ? { executionBoundary } : {}),
@@ -80,13 +99,14 @@ describe('file tools follow the execution boundary', () => {
         cwd,
         BYPASS,
       );
-      expect(written).toMatchObject({ kind: 'file_diff', paths: [target] });
-      expect((written as { diff: string }).diff).toContain('--- /dev/null');
-      expect((written as { diff: string }).diff).toContain('+hello');
-      expect(await readFile(target, 'utf8')).toBe('hello');
+      assert.partialDeepStrictEqual(written, { kind: 'file_diff' });
+      assert.deepStrictEqual((written as { paths: string[] }).paths, [target]);
+      assert.ok((written as { diff: string }).diff.includes('--- /dev/null'));
+      assert.ok((written as { diff: string }).diff.includes('+hello'));
+      assert.strictEqual(await readFile(target, 'utf8'), 'hello');
 
       const read = await runTool(toolNamed(tools, 'Read'), { path: target }, cwd, BYPASS);
-      expect(read).toEqual({ content: 'hello' });
+      assert.deepStrictEqual(read, { content: 'hello' });
 
       const edited = await runTool(
         toolNamed(tools, 'Edit'),
@@ -94,10 +114,11 @@ describe('file tools follow the execution boundary', () => {
         cwd,
         BYPASS,
       );
-      expect(edited).toMatchObject({ kind: 'file_diff', paths: [target] });
-      expect((edited as { diff: string }).diff).toContain('-hello');
-      expect((edited as { diff: string }).diff).toContain('+bye');
-      expect(await readFile(target, 'utf8')).toBe('bye');
+      assert.partialDeepStrictEqual(edited, { kind: 'file_diff' });
+      assert.deepStrictEqual((edited as { paths: string[] }).paths, [target]);
+      assert.ok((edited as { diff: string }).diff.includes('-hello'));
+      assert.ok((edited as { diff: string }).diff.includes('+bye'));
+      assert.strictEqual(await readFile(target, 'utf8'), 'bye');
 
       await writeFile(join(outside, 'data.json'), '{"b":1,"a":2}', 'utf8');
       const formatted = await runTool(
@@ -106,7 +127,7 @@ describe('file tools follow the execution boundary', () => {
         cwd,
         BYPASS,
       );
-      expect(formatted).toMatchObject({ kind: 'file_diff' });
+      assert.partialDeepStrictEqual(formatted, { kind: 'file_diff' });
 
       const globbed = (await runTool(
         toolNamed(tools, 'Glob'),
@@ -114,7 +135,7 @@ describe('file tools follow the execution boundary', () => {
         cwd,
         BYPASS,
       )) as { files: string[] };
-      expect(globbed.files).toEqual(['note.md']);
+      assert.deepStrictEqual(globbed.files, ['note.md']);
     } finally {
       await cleanup();
     }
@@ -151,7 +172,7 @@ describe('file tools follow the execution boundary', () => {
         );
       }
       // The write never landed under any of them.
-      expect(await readFile(target, 'utf8')).toBe('hello');
+      assert.strictEqual(await readFile(target, 'utf8'), 'hello');
     } finally {
       await cleanup();
     }
@@ -169,9 +190,12 @@ describe('file tools follow the execution boundary', () => {
         /Read path must stay inside session cwd/,
       );
       // Under bypass the same link resolves, because nothing is being escaped.
-      expect(await runTool(toolNamed(tools, 'Read'), { path: 'link.txt' }, cwd, BYPASS)).toEqual({
-        content: 'secret',
-      });
+      assert.deepStrictEqual(
+        await runTool(toolNamed(tools, 'Read'), { path: 'link.txt' }, cwd, BYPASS),
+        {
+          content: 'secret',
+        },
+      );
     } finally {
       await cleanup();
     }
@@ -194,7 +218,7 @@ describe('file tools follow the execution boundary', () => {
         cwd,
         BYPASS,
       )) as { files: string[] };
-      expect(globbed.files).toHaveLength(1);
+      assert.strictEqual(globbed.files.length, 1);
     } finally {
       await cleanup();
     }
@@ -220,8 +244,8 @@ describe('file tools follow the execution boundary', () => {
         cwd,
         MANAGED,
       );
-      expect(result).toMatchObject({ kind: 'file_write', path: target, bytes: 1 });
-      expect(calls).toHaveLength(1);
+      assert.partialDeepStrictEqual(result, { kind: 'file_write', path: target, bytes: 1 });
+      assert.strictEqual(calls.length, 1);
       // The worker decided; nothing was written by the host backend.
       await assert.rejects(readFile(target, 'utf8'));
     } finally {
@@ -273,6 +297,10 @@ describe('file tools follow the execution boundary', () => {
       const secondKeyResolvedPromise = new Promise<void>((resolve) => {
         secondKeyResolved = resolve;
       });
+      const pinnedReadModifyWrite = host.readModifyWrite;
+      if (!pinnedReadModifyWrite) {
+        throw new Error('LocalWorkspaceExecutor must provide readModifyWrite');
+      }
       const tools = toolsFor({
         executor: Object.assign(Object.create(host) as typeof host, {
           writeLockKey: async (input: Parameters<typeof host.writeLockKey>[0]) => {
@@ -295,6 +323,23 @@ describe('file tools follow the execution boundary', () => {
               active -= 1;
             }
           },
+          readModifyWrite: async (input: Parameters<typeof pinnedReadModifyWrite>[0]) => {
+            // The pinned read-modify-write is the mutation's read step now
+            // (#2600); the causal barrier lives here for the same reason it
+            // lived on readFile before.
+            active += 1;
+            overlapped ||= active > 1;
+            reads += 1;
+            if (reads === 1) {
+              firstReadStarted();
+              await secondKeyResolvedPromise;
+            }
+            try {
+              return await pinnedReadModifyWrite(input);
+            } finally {
+              active -= 1;
+            }
+          },
         }),
       });
       const edit = toolNamed(tools, 'Edit');
@@ -309,10 +354,10 @@ describe('file tools follow the execution boundary', () => {
       );
       await Promise.all([first, second]);
 
-      expect(overlapped).toBe(false);
+      assert.strictEqual(overlapped, false);
       // The second edit saw the first one's output, so they ran in sequence
       // against one file rather than racing two reads of the same start state.
-      expect(await readFile(target, 'utf8')).toBe('c');
+      assert.strictEqual(await readFile(target, 'utf8'), 'c');
     } finally {
       await cleanup();
     }
@@ -329,7 +374,7 @@ describe('file tools follow the execution boundary', () => {
         cwd,
         path: join('..', 'outside', 'note.md'),
       });
-      expect(absolute.key).toBe(relative.key);
+      assert.strictEqual(absolute.key, relative.key);
     } finally {
       await cleanup();
     }
@@ -347,8 +392,8 @@ describe('file tools follow the execution boundary', () => {
         cwd,
         BYPASS,
       )) as { matches: string[] };
-      expect(found.matches).toHaveLength(1);
-      expect(found.matches[0]).toContain('needle here');
+      assert.strictEqual(found.matches.length, 1);
+      assert.ok(found.matches[0].includes('needle here'));
     } finally {
       await cleanup();
     }
@@ -370,8 +415,8 @@ describe('file tools follow the execution boundary', () => {
 
       await runTool(toolNamed(tools, 'Write'), { path: target, content: 'host' }, cwd, BYPASS);
 
-      expect(calls).toHaveLength(0);
-      expect(await readFile(target, 'utf8')).toBe('host');
+      assert.strictEqual(calls.length, 0);
+      assert.strictEqual(await readFile(target, 'utf8'), 'host');
     } finally {
       await cleanup();
     }
@@ -391,15 +436,15 @@ describe('file tools follow the execution boundary', () => {
         },
         snapshotImage: async (input) => {
           snapshots.push(input.bytes);
-          return { kind: 'session_file', sessionId: input.sessionId, relativePath: 'artifact-1' };
+          return { kind: 'session_context', sessionId: input.sessionId, refId: 'context-1' };
         },
       });
 
       const result = await runTool(toolNamed(tools, 'Read'), { path: 'image.png' }, cwd, MANAGED);
 
-      expect(result).toMatchObject({ kind: 'image', mimeType: 'image/png' });
-      expect(snapshots).toHaveLength(1);
-      expect(Buffer.from(snapshots[0] ?? new Uint8Array()).toString('hex')).toBe('89504e47');
+      assert.partialDeepStrictEqual(result, { kind: 'image', mimeType: 'image/png' });
+      assert.strictEqual(snapshots.length, 1);
+      assert.strictEqual(Buffer.from(snapshots[0] ?? new Uint8Array()).toString('hex'), '89504e47');
     } finally {
       await cleanup();
     }

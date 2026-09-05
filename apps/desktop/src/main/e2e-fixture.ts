@@ -1,30 +1,60 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { E2eFixtureScenario, E2eFixtureState, UiLocale } from '@maka/core';
+import type { E2eFixtureScenario, E2eFixtureState } from '@maka/core/e2e-fixture';
+import type { AgentGraphClientSnapshot } from '@maka/runtime/stream-graph-read-model';
+import { agentGraphIdForRootSession } from '@maka/runtime/stream-graph-coordinator';
+import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
+import { AGENT_GRAPH_CLIENT_PROJECTION_SCHEMA_VERSION } from '@maka/core/agent-graph-client-projection';
+import { MODEL_CALL_ATTEMPT_EVENT_TYPE } from '@maka/core/model-call-attempt';
+import type { UiLocale } from '@maka/core/ui-locale';
+import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
+import { createWorkspaceRuntimeStore } from '@maka/storage/runtime-event-persistence';
+import { createProjectCatalog } from '@maka/storage/project-catalog';
 import {
-  backfillSessionProjects,
-  createFileCredentialStore,
-  createProjectCatalog,
-  createSessionStore,
-} from '@maka/storage';
-import type { CredentialStore } from '@maka/storage';
-import { resolveStorageRoot } from '@maka/storage/root-authority';
+  resolveStorageRoot,
+  tryAcquireInteractiveRootOwner,
+} from '@maka/storage/root-authority';
+import { openInteractiveSessionTodoStoreForWrite } from '@maka/storage/session-todo-authority';
+import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
 import {
-  ARTIFACT_SESSION_ID,
   E2E_FIXTURE_NOW,
   LONG_SIDEBAR_PROJECT_ID,
   LONG_SIDEBAR_PROJECT_NAME,
   LONG_SIDEBAR_SESSION_PREFIX,
+  PARTIAL_HISTORY_SESSION_ID,
+  PROMPT_RAIL_SESSION_ID,
+  AGENT_GRAPH_SESSION_ID,
   TURN_SESSION_ID,
-  writeJson,
   writeSession,
 } from './e2e-fixture/seed-helpers.js';
 import {
-  artifactMessages,
-  artifactSession,
-  writeArtifacts,
-} from './e2e-fixture/scenarios-artifacts.js';
-import { turnMessages, turnSession } from './e2e-fixture/scenarios-chat.js';
+  partialHistoryMessages,
+  partialHistorySession,
+  promptRailMessages,
+  promptRailSession,
+  turnMessages,
+  turnSession,
+  agentGraphSession,
+} from './e2e-fixture/scenarios-chat.js';
 import { seedMcpFixture, seedSkillsMarketFixture } from './e2e-fixture/scenarios-modules.js';
 import { longSidebarSessions } from './e2e-fixture/scenarios-sessions.js';
 import {
@@ -33,12 +63,14 @@ import {
   writeScheduledTasks,
   writeSettings,
 } from './e2e-fixture/scenarios-settings.js';
-import { usageStatsSessions } from './e2e-fixture/scenarios-usage.js';
+import { usageStatsRecords, usageStatsSessions } from './e2e-fixture/scenarios-usage.js';
 
 const E2E_FIXTURE_SCENARIOS = new Set<E2eFixtureScenario>([
-  'fetched-empty',
+  'settings-models',
   'turn-narrative',
-  'artifact-pane',
+  'turn-narrative-browser',
+  'chat-prompt-rail',
+  'chat-partial-history',
   'settings-data',
   'settings-bots-onboarding',
   'settings-general',
@@ -48,6 +80,7 @@ const E2E_FIXTURE_SCENARIOS = new Set<E2eFixtureScenario>([
   'module-mcp',
   'module-daily-review',
   'scheduled-tasks',
+  'agent-graph-layout',
   'sidebar-search-modal-open',
 ]);
 
@@ -59,6 +92,7 @@ export interface E2eFixture {
   locale: UiLocale | null;
   timezone: string | null;
   platform: 'darwin' | 'win32' | 'linux' | null;
+  scrollMotion: 'auto' | 'smooth' | null;
 }
 
 export function resolveE2eFixture(
@@ -69,6 +103,7 @@ export function resolveE2eFixture(
   rawLocale: string | undefined = undefined,
   rawTimezone: string | undefined = undefined,
   rawPlatform: string | undefined = undefined,
+  rawScrollMotion: string | undefined = undefined,
 ): E2eFixture | null {
   if (!rawScenario) return null;
   if (isPackaged) throw new Error('MAKA_E2E_FIXTURE is only available in dev/test builds.');
@@ -84,7 +119,13 @@ export function resolveE2eFixture(
     locale: parseLocaleFlag(rawLocale),
     timezone: parseTimezoneFlag(rawTimezone),
     platform: parsePlatformFlag(rawPlatform),
+    scrollMotion: parseScrollMotionFlag(rawScrollMotion),
   };
+}
+
+function parseScrollMotionFlag(raw: string | undefined): 'auto' | 'smooth' | null {
+  const normalized = raw?.trim().toLowerCase();
+  return normalized === 'auto' || normalized === 'smooth' ? normalized : null;
 }
 
 function parseThemeFlag(raw: string | undefined): 'light' | 'dark' | 'auto' | null {
@@ -96,7 +137,9 @@ function parseThemeFlag(raw: string | undefined): 'light' | 'dark' | 'auto' | nu
 
 function parseLocaleFlag(raw: string | undefined): UiLocale | null {
   const normalized = raw?.trim().toLowerCase();
-  return normalized === 'zh' || normalized === 'en' ? normalized : null;
+  if (normalized === 'zh-cn') return 'zh-CN';
+  if (normalized === 'zh-tw') return 'zh-TW';
+  return normalized === 'en' ? 'en' : null;
 }
 
 function parseTimezoneFlag(raw: string | undefined): string | null {
@@ -131,20 +174,26 @@ export function getE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState 
     ...(fixture.theme ? { theme: fixture.theme } : {}),
     ...(fixture.locale ? { locale: fixture.locale } : {}),
     ...(fixture.timezone ? { timezone: fixture.timezone } : {}),
+    ...(fixture.scrollMotion ? { scrollMotion: fixture.scrollMotion } : {}),
   };
   switch (fixture.scenario) {
-    case 'fetched-empty':
+    case 'settings-models':
       return { ...state, activeSessionId: TURN_SESSION_ID, openSettingsSection: 'models' };
     case 'turn-narrative':
-      return { ...state, activeSessionId: TURN_SESSION_ID, workbarCollapsed: false, workbarTab: 'tasks' };
-    case 'artifact-pane':
-      return {
-        ...state,
-        activeSessionId: ARTIFACT_SESSION_ID,
-        workbarCollapsed: false,
-        workbarTab: 'files',
-        workbarPreview: true,
-      };
+      // Any open face will do — the scenario is about focus order through the
+      // transcript, and the workbar is here only so the panel is on screen.
+      // This was the Task face until it was retired.
+      return { ...state, activeSessionId: TURN_SESSION_ID, workbarCollapsed: false, workbarTab: 'review' };
+    case 'turn-narrative-browser':
+      return { ...state, activeSessionId: TURN_SESSION_ID, workbarCollapsed: false, workbarTab: 'browser' };
+    case 'chat-prompt-rail':
+      // Workbar collapsed: the rail lives on the chat scrollport's right edge,
+      // and the panel would take the width the measurements are about. Whether
+      // this window scrolls smoothly is a per-launch choice (`scrollMotion`),
+      // because only the jump case needs it and it costs seconds of settling.
+      return { ...state, activeSessionId: PROMPT_RAIL_SESSION_ID, workbarCollapsed: true };
+    case 'chat-partial-history':
+      return { ...state, activeSessionId: PARTIAL_HISTORY_SESSION_ID, workbarCollapsed: true };
     case 'settings-data':
       return { ...state, activeSessionId: TURN_SESSION_ID, openSettingsSection: 'data' };
     case 'settings-bots-onboarding':
@@ -168,6 +217,8 @@ export function getE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState 
       return { ...state, activeSessionId: TURN_SESSION_ID, sidebarSection: 'daily-review', sidebarCollapsed: false };
     case 'scheduled-tasks':
       return { ...state, activeSessionId: TURN_SESSION_ID, sidebarSection: 'automations', sidebarCollapsed: false };
+    case 'agent-graph-layout':
+      return { ...state, activeSessionId: AGENT_GRAPH_SESSION_ID };
     case 'sidebar-search-modal-open':
       return {
         ...state,
@@ -182,42 +233,48 @@ export function getE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState 
 export async function seedE2eFixture(input: {
   workspaceRoot: string;
   fixture: E2eFixture;
-  credentialStore?: Pick<CredentialStore, 'setSecret'>;
   now?: number;
 }): Promise<void> {
   const now = input.now ?? E2E_FIXTURE_NOW;
   const scenario = input.fixture.scenario;
   await rm(input.workspaceRoot, { recursive: true, force: true });
   await mkdir(input.workspaceRoot, { recursive: true });
-  await resolveStorageRoot({ path: input.workspaceRoot, kind: 'interactive' });
+  const storageRoot = await resolveStorageRoot({ path: input.workspaceRoot, kind: 'interactive' });
   await writeSettings(input.workspaceRoot, scenario);
   await writeConnections(input.workspaceRoot, now, scenario);
+  await writeSession(
+    input.workspaceRoot,
+    scenario === 'agent-graph-layout' ? agentGraphSession(now) : turnSession(now),
+    turnMessages(now),
+  );
 
-  const credentialStore = input.credentialStore ?? createFileCredentialStore(input.workspaceRoot);
-  await credentialStore.setSecret('zai-live', 'api_key', 'fixture-key-zai-live');
-  if (scenario === 'fetched-empty') {
-    await credentialStore.setSecret('empty-fetched', 'api_key', 'fixture-key-empty-fetched');
+  if (scenario === 'agent-graph-layout') await seedAgentGraphLayout(input.workspaceRoot, now);
+
+
+  if (scenario === 'chat-prompt-rail') {
+    await writeSession(input.workspaceRoot, promptRailSession(now), promptRailMessages(now));
   }
-  await writeSession(input.workspaceRoot, turnSession(now), turnMessages(now));
-
-  if (scenario === 'artifact-pane') {
-    await writeSession(input.workspaceRoot, artifactSession(now), artifactMessages(now));
-    await writeArtifacts(input.workspaceRoot, now);
+  if (scenario === 'chat-partial-history') {
+    await writeSession(
+      input.workspaceRoot,
+      partialHistorySession(now),
+      partialHistoryMessages(now),
+    );
   }
   if (scenario === 'sidebar-search-modal-open') {
     for (const seed of longSidebarSessions(now)) {
       await writeSession(input.workspaceRoot, seed.header, seed.messages);
     }
-    await writeJson(join(input.workspaceRoot, 'projects.json'), {
-      schemaVersion: 1,
-      projects: [{
-        id: LONG_SIDEBAR_PROJECT_ID,
-        name: LONG_SIDEBAR_PROJECT_NAME,
-        identity: `folder:${input.workspaceRoot}`,
-        locations: [{ path: input.workspaceRoot, isWorktree: false, lastUsedAt: now }],
-        lastUsedAt: now,
-      }],
+    const catalog = createProjectCatalog(input.workspaceRoot, {
+      now: () => now,
+      createId: () => LONG_SIDEBAR_PROJECT_ID,
     });
+    try {
+      const project = await catalog.register(input.workspaceRoot);
+      await catalog.rename(project.id, LONG_SIDEBAR_PROJECT_NAME);
+    } finally {
+      catalog.close();
+    }
   }
   if (scenario === 'scheduled-tasks') await writeScheduledTasks(input.workspaceRoot, now);
   if (scenario === 'module-daily-review') await writeDailyReviewArchives(input.workspaceRoot, now);
@@ -227,17 +284,126 @@ export async function seedE2eFixture(input: {
     for (const seed of usageStatsSessions(now)) {
       await writeSession(input.workspaceRoot, seed.header, seed.messages);
     }
+    const owner = await tryAcquireInteractiveRootOwner(storageRoot);
+    if (!owner) throw new Error('Unable to acquire the E2E fixture storage root');
+    const usage = await openInteractiveUsageStoresForWrite(owner.lease);
+    // The AgentRun store and the interactive usage stores share one refcounted
+    // operational-state DB keyed by the lease's resolved path, so the canonical
+    // model-call events written here are visible to `catchUpModelCallProjection`
+    // below. It MUST be the lease's canonicalPath, not the raw workspaceRoot —
+    // a /var vs /private/var realpath difference would open a different DB.
+    const runStore = createSqliteAgentRunStore(owner.lease.canonicalPath);
+    const runtimeEventStore = createWorkspaceRuntimeStore(owner.lease.canonicalPath);
+    try {
+      const records = usageStatsRecords(now);
+      // Model calls seed the CANONICAL ledger through the AgentRun event stream;
+      // tools stay on the legacy telemetry table (there is no canonical tool
+      // ledger). This is what actually exercises the canonical merge branch.
+      for (const { opening, attempt } of records.modelCalls) {
+        await runtimeEventStore.appendRuntimeEvent(attempt.sessionId, attempt.runId, opening);
+        await runStore.appendEvent(attempt.sessionId, attempt.runId, {
+          id: attempt.attemptId,
+          type: MODEL_CALL_ATTEMPT_EVENT_TYPE,
+          ts: attempt.completedAt,
+          sessionId: attempt.sessionId,
+          runId: attempt.runId,
+          turnId: attempt.turnId,
+          data: { ...attempt },
+        });
+      }
+      for (const record of records.tools) await usage.telemetry.recordToolInvocation(record);
+      runtimeEventStore.close();
+      await runStore.close?.();
+      // Fold the appended attempts into the read model so the page's first read
+      // sees canonical usage (production's readCanonicalUsage also repairs).
+      await usage.modelCalls.catchUpModelCallProjection();
+      await usage.flush();
+    } finally {
+      await usage.close();
+      await owner.close();
+    }
   }
-  await seedSessionProjects(input.workspaceRoot);
 }
 
-async function seedSessionProjects(workspaceRoot: string): Promise<void> {
-  const sessions = createSessionStore(workspaceRoot);
-  const catalog = createProjectCatalog(workspaceRoot);
+async function seedAgentGraphLayout(workspaceRoot: string, now: number): Promise<void> {
+  const graphId = agentGraphIdForRootSession(AGENT_GRAPH_SESSION_ID);
+  const operators: AgentGraphClientSnapshot['operators'] = Array.from(
+    { length: 24 },
+    (_, index) => ({
+      operatorId: `operator-${index + 1}`,
+      childSessionId: `child-session-${index + 1}`,
+      provisionId: `provision-${index + 1}`,
+      agentId: `agent-${index + 1}`,
+      provisionedAt: now - (24 - index) * 1_000,
+      status: 'completed' as const,
+      inboundEdgeIds: [],
+      outboundEdgeIds: [],
+      scheduledWorkIds: [`work-${index + 1}`],
+      readiness: [],
+      omitted: {
+        inboundEdgeIds: 0,
+        outboundEdgeIds: 0,
+        scheduledWorkIds: 0,
+        readiness: 0,
+        readinessWaits: 0,
+      },
+    }),
+  );
+  const snapshot: AgentGraphClientSnapshot = {
+    schemaVersion: 1,
+    rootSessionId: AGENT_GRAPH_SESSION_ID,
+    graphId,
+    orchestrationMode: 'graph',
+    snapshotVersion: `sha256:${'a'.repeat(64)}`,
+    status: 'active',
+    scheduleRevision: 1,
+    topologyFingerprint: `sha256:${'b'.repeat(64)}`,
+    closed: false,
+    latestEventTime: now,
+    operators,
+    edges: [],
+    work: operators.map((operator, index) => ({
+      workId: `work-${index + 1}`,
+      target: { kind: 'agent' as const, agentId: operator.agentId },
+      inputIds: [],
+      status: 'requested' as const,
+      instructionPreview: `布局回归 operator ${index + 1}`,
+      instructionTruncated: false,
+      revision: 1,
+      committedAt: now - (24 - index) * 1_000,
+    })),
+    reconciliationFailures: [],
+    stoppedTargets: [],
+    claims: [],
+    recentControlDecisions: [],
+    recentActivity: [],
+    terminalHistory: { records: [] },
+    omitted: {
+      operators: 0,
+      edges: 0,
+      work: 0,
+      reconciliationFailures: 0,
+      stoppedTargets: 0,
+      claims: 0,
+      controlDecisions: 0,
+      recentActivity: 0,
+    },
+  };
+  const controlStore = createAgentGraphControlStore(workspaceRoot);
   try {
-    await backfillSessionProjects({ sessions, catalog });
+    await controlStore.commitAgentGraphClientProjection({
+      schemaVersion: AGENT_GRAPH_CLIENT_PROJECTION_SCHEMA_VERSION,
+      graphId,
+      rootSessionId: AGENT_GRAPH_SESSION_ID,
+      expectedSnapshotVersion: null,
+      snapshotVersion: snapshot.snapshotVersion,
+      snapshot,
+      replaceOperators: true,
+      operators: [],
+      terminalActivities: [],
+      activityRecords: [],
+    });
   } finally {
-    await sessions.close?.();
-    catalog.close();
+    controlStore.close();
   }
 }

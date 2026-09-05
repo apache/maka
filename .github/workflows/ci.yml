@@ -1,3 +1,20 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 name: CI
 
 on:
@@ -5,101 +22,163 @@ on:
     branches: [main]
   push:
     branches: [main]
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+permissions:
+  contents: read
+
 jobs:
-  changes:
-    runs-on: ubuntu-latest
-    outputs:
-      code: ${{ steps.plan.outputs.code }}
-      e2e: ${{ steps.plan.outputs.e2e }}
-      headless: ${{ steps.plan.outputs.headless }}
-      runtime_host: ${{ steps.plan.outputs.runtime_host }}
-      runtime_sandbox: ${{ steps.plan.outputs.runtime_sandbox }}
-      script_mode: ${{ steps.plan.outputs.script_mode }}
-      standard_workspaces: ${{ steps.plan.outputs.standard_workspaces }}
-      storage_stress: ${{ steps.plan.outputs.storage_stress }}
-      storybook: ${{ steps.plan.outputs.storybook }}
-      unit: ${{ steps.plan.outputs.unit }}
-      workspaces: ${{ steps.plan.outputs.workspaces }}
+  # One job, not three. A runner slot is scarcer than a minute on shared
+  # infrastructure, and splitting planning from validation made every pull
+  # request queue for a runner three times to reach one verdict. Planning is
+  # the first step; every later step gates on its outputs, so a
+  # documentation-only change costs one short allocation rather than two.
+  #
+  # The name is `test` because that is the required context in `.asf.yaml`.
+  # Renaming it would leave that check unreported on every open pull request
+  # until the rename merged, and nothing could merge while it was unreported.
+  test:
+    # Pinned, not `ubuntu-latest`. The two resolve to the same image, but only
+    # the alias makes this required context wait at the tail, and the steps
+    # below already assume this image. `ci-workflow-policy.test.mjs` holds the
+    # rule for every lane.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
+
       - id: plan
         name: Select affected test surfaces
         env:
           BASE_SHA: ${{ github.event_name == 'push' && github.event.before || github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event_name == 'push' && github.sha || github.event.pull_request.head.sha }}
         run: |
-          # A merged PR has already been tested by impact. Re-run the same
-          # affected surfaces for the exact main-branch delta instead of
-          # turning every push (including docs-only pushes) into a full suite.
-          # New branches and unavailable history still fail safe to full.
-          if [[ "$BASE_SHA" =~ ^0+$ ]] || ! git cat-file -e "${BASE_SHA}^{commit}"; then
+          # PR checks may predate later main changes, so the planning lane also
+          # validates the exact merged delta. Dispatches and unavailable history
+          # fail safe to every surface.
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]] || [[ "$BASE_SHA" =~ ^0+$ ]] || ! git cat-file -e "${BASE_SHA}^{commit}"; then
             node scripts/ci-test-plan.mjs --full >> "$GITHUB_OUTPUT"
           else
             node scripts/ci-test-plan.mjs --base "$BASE_SHA" --head "$HEAD_SHA" >> "$GITHUB_OUTPUT"
           fi
 
-  typecheck:
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '24'
-          cache: npm
-      - run: npm ci
-      - run: npm run lint
-      - run: npm run format:check
-      - run: npm run build
-      - run: npm run typecheck
-      # Generated-artifact governance. astryx-theme/maka.{css,js} are built
-      # from makaTheme.ts, which is now the renderer's type-scale authority —
-      # editing the scale without regenerating would leave the authority and
-      # the shipped ladder disagreeing, and nothing else would notice.
-      - name: Astryx theme drift
-        run: npm run astryx:theme -- --check
-      # Dead-code / dependency governance. Entry points and reasoned ignores
-      # live in knip.json; both workspaces must stay at zero findings.
-      - name: Knip (apps/desktop)
-        run: npx knip --workspace apps/desktop
-      - name: Knip (packages/ui)
-        run: npx knip --workspace packages/ui
-      # Dead-CSS governance. Lived only under `check:release`, so a regression
-      # stayed invisible until a release was cut; it was red on main when this
-      # step was added. Same class of source-scanning guard as knip above.
-      - name: Dead CSS
-        run: node scripts/check-dead-css.mjs --check
-      # Storybook fidelity: every Product/* story must name the real user path
-      # to the state it renders. Presence is mechanical; truth stays with the
-      # reviewer. See apps/desktop/stories/FIDELITY.md.
-      - name: Story annotations
-        run: node scripts/check-story-annotations.mjs
+      - name: Test CI planner
+        run: >-
+          node --test --test-concurrency=1 scripts/ci-test-plan.test.mjs
+          scripts/ci-workflow-policy.test.mjs scripts/verify-windows-harness.test.mjs
 
-  test_workspaces:
-    needs: changes
-    if: needs.changes.outputs.standard_workspaces != '' || needs.changes.outputs.script_mode != 'none'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Pure Node like the planner test, and the labelling workflow imports this
+      # module directly, so a tier or exclusion change is caught here rather
+      # than by mislabelling live pull requests.
+      - name: Test PR effort classification
+        run: node --test --test-concurrency=1 scripts/pr-effort.test.mjs
+
+      # The scheduled lifecycle workflow imports this pure policy module. Keep
+      # its time boundaries and exemptions deterministic before it can write.
+      - name: Test issue and PR lifecycle policy
+        run: node --test --test-concurrency=1 scripts/issue-pr-lifecycle.test.mjs
+
+      # Same shape and the same needs: a regenerate-and-diff contract that runs
+      # on Node alone, so it belongs beside the planner test rather than behind
+      # an install.
+      - name: Check Windows test inventory
+        run: npm run windows:inventory
+
+      # Runs on the PR merge result: after a sibling protocol change lands on
+      # main with the same epoch text, the silently merged tree still carries
+      # the current base parent's epoch and this fails instead of shipping two
+      # incompatible protocols under one number (#3313).
+      - name: Guard the protocol compatibility epoch
+        if: github.event_name == 'pull_request'
+        run: node scripts/protocol-epoch-check.mjs --base 'HEAD^1'
+
+      - name: Test the epoch guard
+        run: node --test --test-concurrency=1 scripts/protocol-epoch-check.test.mjs
+
+      - name: Test Storybook audit contracts
+        run: node --test scripts/ax-tree-audit.test.mjs scripts/storybook-visual-smoke.test.mjs
+      - name: Test Computer Use script contracts
+        run: node --test scripts/ax-tree-audit.test.mjs scripts/computer-use/lab-root.test.mjs
+
+      - name: Test script entrypoint contracts
+        run: node --test scripts/script-entrypoints.test.mjs
+
+      # The packaged Windows lane drives the updater through this wiring. It
+      # is a few lines, so it is asserted here on every change rather than by
+      # naming its module in that lane's 25-minute path filter.
+      - name: Test the packaged update feed wiring
+        run: node --test --test-concurrency=1 scripts/update-test-feed-wiring.test.mjs
+
+      # Install-free like its neighbours: the gate reads one source file and
+      # compares it to a hand-edited inventory, so a hook that silently widens
+      # its scope to the whole tree fails here rather than in a profile (#4109).
+      - name: Check the hooks scoped to the whole shell
+        run: npm run check:app-shell-hooks
+
+      - name: Test the app-shell hook gate
+        run: node --test --test-concurrency=1 scripts/check-app-shell-hooks.test.mjs
+
+      - name: Verify ASF npm preflight policy
+        run: npm run check:asf-npm
+
+      # The source-header gate has to see every file that lands, not only the
+      # files an affected surface selects, so it runs unconditionally beside
+      # the other install-free checks.
+      - name: Check ASF source headers
+        run: npm run check:asf-headers
+
+      # Locale hygiene ratchet (node built-ins only, so it runs install-free): a new UI locale must only ever mean a new
+      # UiCatalog key, so locale-literal branches, silent locale defaults,
+      # and payload sniffing may shrink but never grow.
+      - name: Check locale hygiene
+        if: steps.plan.outputs.code == 'true'
+        env:
+          BASE_SHA: ${{ github.event_name == 'push' && github.event.before || github.event.pull_request.base.sha }}
+        run: |
+          node --test scripts/check-locale-hygiene.test.mjs
+          if [[ -n "$BASE_SHA" && ! "$BASE_SHA" =~ ^0+$ ]]; then
+            npm run check:locale-hygiene -- --base "$BASE_SHA"
+          else
+            npm run check:locale-hygiene
+          fi
+
+      # Everything below this line may need an installed toolchain, so each
+      # step names the selections it belongs to. `setup-node` itself is
+      # unconditional: it costs seconds on a runner the job is already holding,
+      # and gating it needed a twelve-term disjunction over every other
+      # selection that a new lane had to remember to join (#4475).
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
           cache: npm
+
+      - name: Select the release npm toolchain
+        if: steps.plan.outputs.cli_package == 'true'
+        run: npm install --global --no-audit --no-fund "$(node -p 'require("./package.json").packageManager')"
+
+      - name: Restore Electron artifact cache
+        if: steps.plan.outputs.code == 'true'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/electron
+          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: electron-${{ runner.os }}-
+
       - name: Install Linux runtime dependencies
-        if: needs.changes.outputs.runtime_sandbox == 'true'
+        if: steps.plan.outputs.runtime_sandbox == 'true' || steps.plan.outputs.state_root_compat == 'true'
         run: sudo apt-get update && sudo apt-get install -y ripgrep bubblewrap
+
       # Ubuntu 24.04 hosted runners gate unprivileged user namespaces through
       # AppArmor, which otherwise makes bwrap fail while configuring loopback.
       - name: Enable bubblewrap user namespaces
-        if: needs.changes.outputs.runtime_sandbox == 'true'
+        if: steps.plan.outputs.runtime_sandbox == 'true' || steps.plan.outputs.state_root_compat == 'true'
         run: |
           if [[ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
@@ -107,171 +186,298 @@ jobs:
           if [[ -e /proc/sys/kernel/unprivileged_userns_clone ]]; then
             sudo sysctl -w kernel.unprivileged_userns_clone=1
           fi
-      - run: npm ci
-      # build:test skips the renderer bundle (vite); test:dist only consumes
-      # tsc outputs (dist/main + dist/renderer side-files), never the vite
-      # bundle. e2e builds its own renderer in a separate job.
-      - run: npm run build:test
+
+      - name: Install dependencies
+        if: steps.plan.outputs.code == 'true' || steps.plan.outputs.astryx_surface == 'true' || steps.plan.outputs.asf_source == 'true' || steps.plan.outputs.cli_package == 'true' || steps.plan.outputs.release_contract == 'true'
+        run: npm ci
+
+      - name: Check localized TUI copy boundaries
+        if: steps.plan.outputs.code == 'true'
+        run: |
+          npm run check:tui-copy
+          node --test scripts/check-tui-copy.test.mjs
+
+      - name: Test staged Biome hook
+        if: steps.plan.outputs.code == 'true'
+        run: node --test scripts/biome-staged-check.test.mjs
+
+      # The header audit above remains install-free. The complete source gate
+      # also exercises generation and therefore runs after its pinned formatter
+      # dependency is installed, matching the source-candidate workflow.
+      - name: Verify ASF source release mechanics
+        if: steps.plan.outputs.asf_source == 'true'
+        run: npm run check:asf-source
+
+      # Parsed dependency rules and an exact legacy-debt ledger keep the
+      # renderer root from absorbing new feature or Desktop ownership while
+      # the existing AppShell is migrated behind stable boundaries.
+      - name: Check renderer architecture
+        if: steps.plan.outputs.code == 'true'
+        env:
+          BASE_SHA: ${{ github.event_name == 'push' && github.event.before || github.event.pull_request.base.sha }}
+        run: |
+          if [[ -n "$BASE_SHA" && ! "$BASE_SHA" =~ ^0+$ ]]; then
+            npm run check:renderer-architecture -- --base "$BASE_SHA"
+          else
+            npm run check:renderer-architecture
+          fi
+
+      - name: Lint
+        if: steps.plan.outputs.code == 'true'
+        run: npm run lint
+
+      - name: Check formatting
+        if: steps.plan.outputs.code == 'true'
+        run: npm run format:check
+
+      # This generated artifact describes the whole renderer/UI tree, so every
+      # code-validation run checks it even when the triggering diff is outside
+      # an Astryx surface. Keep it before Build so stale output is reported
+      # directly instead of being hidden behind an earlier compilation failure.
+      - name: Astryx surface inventory
+        if: steps.plan.outputs.code == 'true' || steps.plan.outputs.astryx_surface == 'true'
+        run: |
+          npm run astryx:surface-inventory
+          npm run astryx:surface-inventory:test
+
+      - name: Build
+        if: steps.plan.outputs.code == 'true' || steps.plan.outputs.cli_package == 'true' || steps.plan.outputs.release_contract == 'true'
+        run: npm run build
+
+      - name: Release contracts
+        if: steps.plan.outputs.release_contract == 'true'
+        run: npm run check:release
+
+      - name: Typecheck
+        if: steps.plan.outputs.code == 'true'
+        run: npm run typecheck
+
+      # Two drift contracts over the shipped app-icon artwork, sitting beside
+      # the theme drift check for the same reason: the committed bytes are a
+      # build output that nothing else re-derives, so without this a change to
+      # the generator, to the `APP_ICONS` catalog, or to the packaged-resource
+      # list can go green while the artwork it names no longer matches. Those
+      # are the inputs it selects on; regenerating the artwork costs about a
+      # minute, and every other code change used to pay it.
+      - name: App icon artwork drift
+        if: steps.plan.outputs.app_icons == 'true'
+        run: node --test scripts/verify-packaged-app-icons.test.mjs scripts/generate-app-icons.test.mjs
+
+      - name: Astryx theme drift
+        if: steps.plan.outputs.code == 'true'
+        run: npm run astryx:theme -- --check
+
+      - name: Knip (apps/desktop)
+        if: steps.plan.outputs.code == 'true'
+        run: npx knip --workspace apps/desktop
+
+      - name: Knip (packages/ui)
+        if: steps.plan.outputs.code == 'true'
+        run: npx knip --workspace packages/ui
+
       - name: Linux sandbox smoke
-        if: needs.changes.outputs.runtime_sandbox == 'true'
+        if: steps.plan.outputs.runtime_sandbox == 'true'
         env:
           MAKA_REQUIRE_LINUX_SANDBOX_SMOKE: '1'
         run: npm exec -w @maka/runtime -- node --test dist/__tests__/linux-sandbox-smoke.test.js
-      - name: Run fast script tests
-        if: needs.changes.outputs.script_mode == 'fast' || needs.changes.outputs.script_mode == 'full'
-        run: npm run test:scripts
-      - name: Run extended script tests
-        if: needs.changes.outputs.script_mode == 'extended' || needs.changes.outputs.script_mode == 'full'
-        run: npm run test:scripts:extended
-      # Workspaces consume the dist built above. Selection includes reverse
-      # dependencies, while bounded concurrency avoids both the old serial
-      # critical path and an unbounded process stampede on two-core runners.
+
       - name: Run affected standard workspace tests
-        if: needs.changes.outputs.standard_workspaces != ''
+        if: steps.plan.outputs.standard_workspaces != ''
         env:
-          STORAGE_STRESS: ${{ needs.changes.outputs.storage_stress }}
-          WORKSPACES: ${{ needs.changes.outputs.standard_workspaces }}
+          STORAGE_STRESS: ${{ steps.plan.outputs.storage_stress }}
+          WORKSPACES: ${{ steps.plan.outputs.standard_workspaces }}
         run: |
           if [[ "$STORAGE_STRESS" == "true" ]]; then
             export MAKA_STORAGE_STRESS=1
           fi
           node scripts/run-workspace-tests-parallel.mjs --concurrency=3 --workspaces="$WORKSPACES"
 
-  test_runtime_host:
-    needs: changes
-    if: needs.changes.outputs.runtime_host == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '24'
-          cache: npm
-      - run: npm ci
-      - run: npm run build:test
+      - name: Run live Eval egress proxy test
+        if: contains(steps.plan.outputs.standard_workspaces, 'packages/eval')
+        env:
+          MAKA_EVAL_EGRESS_PROXY_TEST: '1'
+        run: |
+          docker pull python:3.12-slim
+          docker build \
+            --tag maka-eval-egress-proxy:12.2.3 \
+            --file packages/eval/harbor/egress-proxy/Dockerfile \
+            packages/eval/harbor
+          npm --workspace @maka/eval run test:egress-proxy:live
+
       - name: Run Runtime Host tests
+        if: steps.plan.outputs.runtime_host == 'true'
         run: npm --workspace @maka/runtime-host run test:dist
 
-  test_headless:
-    needs: changes
-    if: needs.changes.outputs.headless == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '24'
-          cache: npm
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
-      - name: Install pinned Harbor contract runtime
-        run: |
-          uv tool install "harbor==0.13.2"
-          uv tool dir --bin >> "$GITHUB_PATH"
-      - name: Install Linux runtime dependencies
-        run: sudo apt-get update && sudo apt-get install -y ripgrep bubblewrap
-      - run: npm ci
-      - run: npm run build:test
-      - name: Run Headless tests
-        env:
-          MAKA_REQUIRE_HARBOR_CONTRACT: '1'
-        run: npm --workspace @maka/headless run test:dist
-      # The Harbor adapters are Python, so their contracts cannot ride the
-      # workspace suite. This one needs only the stdlib.
-      - name: Run Harbor adapter tests
-        run: python3 packages/headless/harbor/tests/test_process_scope.py
+      # A published predecessor writes the durable state; the workspace built
+      # above reads it. Release packaging is deliberately not in front of this:
+      # it takes minutes and changes nothing about whether these decoders can
+      # read that state. The release lanes still qualify exact tarballs.
+      - id: forward-roll-baseline
+        name: Resolve the published forward-roll baseline
+        if: steps.plan.outputs.state_root_compat == 'true'
+        run: node scripts/release-cli-publication.mjs resolve-nightly-predecessor "$GITHUB_OUTPUT"
 
-  # Preserve one stable required check while letting independent heavy suites
-  # occupy their own runners. The aggregator waits for every selected lane.
-  test:
-    needs: [changes, test_workspaces, test_runtime_host, test_headless]
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - name: Require successful test lanes
+      - name: Download the forward-roll baseline
+        if: steps.plan.outputs.state_root_compat == 'true'
         env:
-          CHANGES_RESULT: ${{ needs.changes.result }}
-          HEADLESS_RESULT: ${{ needs.test_headless.result }}
-          HEADLESS_SELECTED: ${{ needs.changes.outputs.headless }}
-          RUNTIME_HOST_RESULT: ${{ needs.test_runtime_host.result }}
-          RUNTIME_HOST_SELECTED: ${{ needs.changes.outputs.runtime_host }}
-          SCRIPT_MODE: ${{ needs.changes.outputs.script_mode }}
-          STANDARD_WORKSPACES: ${{ needs.changes.outputs.standard_workspaces }}
-          WORKSPACES_RESULT: ${{ needs.test_workspaces.result }}
+          SOURCE_URL: ${{ steps.forward-roll-baseline.outputs.tarball_url }}
+          SOURCE_INTEGRITY: ${{ steps.forward-roll-baseline.outputs.integrity }}
         run: |
-          if [[ "$CHANGES_RESULT" != "success" ]]; then
-            echo "changes failed: $CHANGES_RESULT" >&2
-            exit 1
-          fi
-          require_lane() {
-            local name="$1"
-            local selected="$2"
-            local result="$3"
-            local expected="skipped"
-            if [[ "$selected" == "true" ]]; then
-              expected="success"
-            fi
-            if [[ "$result" != "$expected" ]]; then
-              echo "$name expected $expected but was $result" >&2
+          set -euo pipefail
+          source_path="$RUNNER_TEMP/forward-roll-source.tgz"
+          curl --fail --location --max-filesize 67108864 --proto '=https' --tlsv1.2 \
+            --retry 3 --retry-connrefused --retry-delay 2 "$SOURCE_URL" --output "$source_path"
+          node - "$source_path" "$SOURCE_INTEGRITY" <<'NODE'
+          const { createHash } = require('node:crypto');
+          const { readFileSync } = require('node:fs');
+          const bytes = readFileSync(process.argv[2]);
+          const actual = `sha512-${createHash('sha512').update(bytes).digest('base64')}`;
+          if (actual !== process.argv[3]) throw new Error('Forward-roll baseline integrity mismatch');
+          NODE
+          {
+            echo "FORWARD_ROLL_SOURCE=$source_path"
+            echo "FORWARD_ROLL_SOURCE_SHA256=$(sha256sum "$source_path" | cut -d ' ' -f 1)"
+          } >> "$GITHUB_ENV"
+
+      - name: Qualify durable state against the published baseline
+        if: steps.plan.outputs.state_root_compat == 'true'
+        env:
+          MAKA_QUALIFICATION_BWRAP_USE_SUDO: '1'
+        run: |
+          set -o pipefail
+          npm run --silent release:cli:qualify-state-root -- \
+            --source "$FORWARD_ROLL_SOURCE" \
+            --source-sha256 "$FORWARD_ROLL_SOURCE_SHA256" \
+            --target-workspace "$PWD" \
+            | tee "$RUNNER_TEMP/durable-state-report.json"
+
+      - name: Ensure xvfb
+        if: steps.plan.outputs.e2e == 'true'
+        run: command -v xvfb-run >/dev/null 2>&1 || { sudo apt-get update && sudo apt-get install -y xvfb; }
+
+      - name: Desktop e2e
+        if: steps.plan.outputs.e2e == 'true'
+        run: |
+          set -euo pipefail
+          display_base=90
+          worker_count=4
+          xvfb_pids=()
+          cleanup() {
+            kill "${xvfb_pids[@]}" 2>/dev/null || true
+            wait "${xvfb_pids[@]}" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          for ((index = 0; index < worker_count; index += 1)); do
+            display=$((display_base + index))
+            Xvfb ":$display" -screen 0 1280x1024x24 -nolisten tcp \
+              >"$RUNNER_TEMP/xvfb-$display.log" 2>&1 &
+            xvfb_pids+=("$!")
+          done
+          for ((index = 0; index < worker_count; index += 1)); do
+            display=$((display_base + index))
+            for _ in {1..50}; do
+              [[ -S "/tmp/.X11-unix/X$display" ]] && break
+              kill -0 "${xvfb_pids[$index]}" 2>/dev/null || break
+              sleep 0.1
+            done
+            if [[ ! -S "/tmp/.X11-unix/X$display" ]]; then
+              cat "$RUNNER_TEMP/xvfb-$display.log"
               exit 1
             fi
-          }
-          workspaces_selected="false"
-          if [[ -n "$STANDARD_WORKSPACES" || "$SCRIPT_MODE" != "none" ]]; then
-            workspaces_selected="true"
-          fi
-          require_lane "workspace tests" "$workspaces_selected" "$WORKSPACES_RESULT"
-          require_lane "Runtime Host tests" "$RUNTIME_HOST_SELECTED" "$RUNTIME_HOST_RESULT"
-          require_lane "Headless tests" "$HEADLESS_SELECTED" "$HEADLESS_RESULT"
+          done
+          MAKA_E2E_X_DISPLAY_BASE="$display_base" \
+            npm exec -w @maka/desktop -- playwright test \
+              --config e2e/playwright.config.ts --workers="$worker_count"
 
-  # One Electron job: install once, run the (now small) e2e suite, then the
-  # CDP alignment audit against the same built renderer. Dual shards plus a
-  # separate audit job each paid full npm ci + cold build after the suite
-  # slash; that was pure wall-clock and runner waste.
-  e2e:
-    needs: changes
-    if: needs.changes.outputs.e2e == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      # Playwright keeps a trace, a video and a screenshot for every failed
+      # test. Without this they die with the runner, and an e2e flake can only
+      # be diagnosed by reproducing it.
+      - name: Upload Desktop e2e results
+        if: failure() && steps.plan.outputs.e2e == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          node-version: '24'
-          cache: npm
-      - name: Restore Electron artifact cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: ~/.cache/electron
-          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-          restore-keys: electron-${{ runner.os }}-
-      - run: npm ci
-      - name: Ensure xvfb
-        run: command -v xvfb-run >/dev/null 2>&1 || { sudo apt-get update && sudo apt-get install -y xvfb; }
-      - name: Desktop e2e
-        run: xvfb-run -a npm --workspace @maka/desktop run e2e
+          name: desktop-e2e-results
+          path: apps/desktop/e2e/test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Browser WebContentsView semantic smoke
+        if: steps.plan.outputs.e2e == 'true'
+        # Hosted Linux runners cannot configure Electron's SUID helper. This
+        # smoke loads only its loopback fixture; production stays sandboxed.
+        run: xvfb-run -a npm exec --workspace @maka/desktop -- electron --no-sandbox scripts/browser-observe-act-smoke.mjs
+
       - name: Alignment audit
+        if: steps.plan.outputs.e2e == 'true'
         run: xvfb-run -a node scripts/audit-alignment.mjs
-  # Storybook build + initial render smoke. Embedded mode disables every play
-  # function, so this lane never duplicates desktop interaction or layout E2E.
-  # It launches Chromium only to catch catalog runtime errors. See FIDELITY.md.
-  storybook:
-    needs: changes
-    if: needs.changes.outputs.storybook == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '24'
-          cache: npm
-      - run: npm ci
-      # Stories import @maka/core / @maka/ui package exports (dist/). The old
-      # e2e job paid for this via `build:with-deps`; the split job must too.
-      - name: Build workspace packages
-        run: npm --workspace @maka/desktop run build:workspace-deps
-      # The smoke calls `chromium.launch()`; Electron's binary is irrelevant.
+
       - name: Install Playwright Chromium
+        if: steps.plan.outputs.storybook == 'true'
         run: npx playwright install --with-deps chromium
+
       - name: Build Storybook
+        if: steps.plan.outputs.storybook == 'true'
         run: npm --workspace @maka/desktop run build-storybook
+
       - name: Storybook smoke
+        if: steps.plan.outputs.storybook == 'true'
         run: npm --workspace @maka/desktop run smoke:storybook
+
+      - name: Update stable Rust for CLI packaging
+        if: steps.plan.outputs.cli_package == 'true'
+        run: rustup update stable --no-self-update
+
+      - id: cli-rustc
+        name: Resolve CLI Rust cache version
+        if: steps.plan.outputs.cli_package == 'true'
+        shell: bash
+        run: |
+          echo "version=$(rustc --version | cut -d ' ' -f 2)" >> "$GITHUB_OUTPUT"
+          echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          {
+            echo "KACHE_CACHE_DIR=${{ runner.temp }}/kache-cli-package"
+            echo "KACHE_RUNTIME_DIR=${{ runner.temp }}/kache-cli-package-runtime"
+            echo "RUSTC_WRAPPER=kache"
+          } >> "$GITHUB_ENV"
+
+      - name: Install Kache for CLI packaging
+        if: steps.plan.outputs.cli_package == 'true'
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2
+        with:
+          tool: kache@0.16.0
+
+      - id: cli-kache-cache
+        name: Restore CLI Rust build cache
+        if: steps.plan.outputs.cli_package == 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/kache-cli-package
+          key: kache-runtime-host-peer-cli-package-v0.16.0-${{ runner.os }}-${{ runner.arch }}-rust-${{ steps.cli-rustc.outputs.version }}-${{ steps.cli-rustc.outputs.revision }}
+          restore-keys: |
+            kache-runtime-host-peer-cli-package-v0.16.0-${{ runner.os }}-${{ runner.arch }}-rust-${{ steps.cli-rustc.outputs.version }}-
+
+      - name: Install cargo-deny for CLI packaging
+        if: steps.plan.outputs.cli_package == 'true'
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2
+        with:
+          tool: cargo-deny@0.20.2
+
+      - name: Build CLI release candidate
+        if: steps.plan.outputs.cli_package == 'true'
+        run: npm run release:cli:pack -- --allow-dirty
+
+      - name: Report CLI Rust build cache
+        if: steps.plan.outputs.cli_package == 'true'
+        shell: bash
+        run: kache report --format github >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save CLI Rust build cache
+        if: steps.plan.outputs.cli_package == 'true' && github.ref_name == github.event.repository.default_branch
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/kache-cli-package
+          key: ${{ steps.cli-kache-cache.outputs.cache-primary-key }}
+
+      - name: Validate installed CLI release candidate
+        if: steps.plan.outputs.cli_package == 'true'
+        run: npm run release:cli:smoke -- packages/cli/release/*.tgz

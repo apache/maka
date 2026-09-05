@@ -1,16 +1,36 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { after, describe, it } from 'node:test';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 
+import { applySandboxBoundaryExpansion } from '@maka/core/sandbox-boundary';
+
 import {
-  applySandboxBoundaryExpansion,
   createWorkspaceWritePermissionProfile,
   type PermissionProfile,
-} from '@maka/core';
+} from '@maka/core/permission-profile';
 
 import { MACOS_SEATBELT_EXECUTABLE, MacosSeatbeltBackend } from '../sandbox/macos-seatbelt.js';
 import { SandboxManager } from '../sandbox/sandbox-manager.js';
@@ -48,6 +68,7 @@ function runSeatbeltCommand(
   workspaceRoot: string,
   command: string,
   profile: PermissionProfile = createWorkspaceWritePermissionProfile(),
+  includeTempRoots = false,
 ) {
   const manager = new SandboxManager([new MacosSeatbeltBackend()]);
   const result = manager.transform({
@@ -59,6 +80,7 @@ function runSeatbeltCommand(
       profile,
       pathContext: {
         workspaceRoots: [workspaceRoot],
+        ...(includeTempRoots ? { tmpdir: tmpdir(), slashTmp: '/tmp' } : {}),
       },
     },
   });
@@ -88,6 +110,40 @@ describe('macOS Seatbelt smoke', { skip: !canRunSeatbelt }, () => {
 
     assert.equal(child.status, 0, child.stderr);
     assert.equal(await readFile(join(workspaceRoot, 'allowed.txt'), 'utf8'), 'ok');
+  });
+
+  it('allows ancestor directory reads without exposing ancestor file contents', async () => {
+    const ancestorRoot = await realpath(await mkdtemp(join(tmpdir(), 'maka-seatbelt-ancestors-')));
+    const workspaceRoot = join(ancestorRoot, 'level-one', 'level-two');
+    const ancestorFile = join(ancestorRoot, 'private.txt');
+    await mkdir(workspaceRoot, { recursive: true });
+    await writeFile(ancestorFile, 'private');
+    cleanup.push(ancestorRoot);
+
+    const listAncestor = runSeatbeltCommand(workspaceRoot, '/bin/ls ..');
+    assert.equal(listAncestor.status, 0, listAncestor.stderr);
+
+    const readAncestorFile = runSeatbeltCommand(
+      workspaceRoot,
+      `/bin/cat ${JSON.stringify(ancestorFile)}`,
+    );
+    assert.notEqual(readAncestorFile.status, 0);
+    assert.match(readAncestorFile.stderr, /Operation not permitted/);
+  });
+
+  it('allows temp writes when workspace and temp roots use symlinked paths', async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), 'maka-seatbelt-temp-workspace-'));
+    const slashTmpFile = join('/tmp', `maka-seatbelt-slash-tmp-${process.pid}-${Date.now()}`);
+    cleanup.push(workspaceRoot, slashTmpFile);
+
+    const child = runSeatbeltCommand(
+      workspaceRoot,
+      `created=$(/usr/bin/mktemp -d "$TMPDIR/maka-seatbelt.XXXXXX") && /usr/bin/touch ${JSON.stringify(slashTmpFile)} && /bin/rm -rf "$created" ${JSON.stringify(slashTmpFile)}`,
+      createWorkspaceWritePermissionProfile(),
+      true,
+    );
+
+    assert.equal(child.status, 0, child.stderr);
   });
 
   it('denies writes outside the workspace root', async () => {

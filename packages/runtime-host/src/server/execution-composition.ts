@@ -1,75 +1,98 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { createHash, randomUUID } from 'node:crypto';
+import { MAX_READ_IMAGE_BYTES } from '@maka/core/attachments';
+import type { ContextOffloadLimits } from '@maka/core/context-offload';
+import { messageContentDigest, normalizeMessageContent } from '@maka/core/events';
+import { NO_REAL_CONNECTION_CODE } from '@maka/core/connection-error-copy';
+import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import { generalizedErrorMessage } from '@maka/core/redaction';
 import { emptyPlanSessionState } from '@maka/core/plan';
 import type { PermissionMode } from '@maka/core/permission';
-import { isDeepResearchSession } from '@maka/core/session';
-import { filterModelVisibleTaskLedgerTasks } from '@maka/core/task-ledger';
 import {
-  AgentGraphCoordinator,
-  AgentGraphSupervisorWakeCoordinator,
-  agentGraphIdForRootSession,
+  runtimeInvocationOutcome,
+  type RuntimeInvocationRecord,
+} from '@maka/core/runtime-invocation';
+import {
+  isDeepResearchSession,
+  type SessionHeader,
+  WORKHUB_COORDINATION_SESSION_ID,
+  WORKHUB_COORDINATION_REPLACEMENT_SCHEMA_VERSION,
+} from '@maka/core/session';
+import { AgentGraphCoordinator } from '@maka/runtime/stream-graph-coordinator';
+import { AgentGraphSupervisorWakeCoordinator } from '@maka/runtime/agent-graph-supervisor-wake';
+import {
   BackendRegistry,
-  buildToolsForAgentDefinition,
-  buildHostCapabilitiesFromBinding,
-  createLocalContinuationSafetyInspector,
-  createConfiguredSubagentCatalog,
-  createBuiltinSandboxManager,
-  createFilesystemWorkerLaunchSpecProvider,
-  FakeBackend,
-  FilesystemWorkerClient,
-  isOAuthEnrollmentProviderEnabled,
-  isBuiltinFilesystemWorkerSandboxAvailable,
-  loadLatestHistoryCompactCheckpointFromRunLedger,
-  prepareSkillInvocationMessageFromInventory,
-  RuntimeReadModel,
-  routeWebSearchTools,
-  renderAgentSwarmSupervisorWake,
   SessionManager,
-  shouldWakeAgentSwarmSupervisor,
-  SessionActivityRegistry,
-  ShellRunProcessManager,
+  workHubDirectStopAbortSource,
   type BackendFactory,
-  type MakaTool,
-  type RuntimeHostedRootAuthority,
-} from '@maka/runtime';
+  type BackendPreparationContext,
+} from '@maka/runtime/session-manager';
+import { buildToolsForAgentDefinition } from '@maka/runtime/agent-catalog';
+import { buildHistoryTools } from '@maka/runtime/history-tools';
+import { createLocalContinuationSafetyInspector } from '@maka/runtime/continuation-safety';
+import { createConfiguredSubagentCatalog } from '@maka/runtime/configured-subagent-catalog';
+import { buildHostCapabilitiesFromBinding } from '@maka/runtime/skills';
 import {
-  openInteractiveProjectCatalogForWrite,
-  type InteractiveProjectCatalogWriter,
-} from '@maka/storage';
+  createBuiltinSandboxManager,
+  isBuiltinFilesystemWorkerSandboxAvailable,
+} from '@maka/runtime/sandbox';
+import {
+  createFilesystemWorkerLaunchSpecProvider,
+  FilesystemWorkerClient,
+} from '@maka/runtime/filesystem-worker';
+import { isOAuthEnrollmentProviderEnabled } from '@maka/runtime/oauth-provider-contracts';
+import {
+  loadHistoryCompactCheckpointsFromRunLedger,
+  loadLatestHistoryCompactCheckpointFromRunLedger,
+} from '@maka/runtime/history-compact-ledger';
+import { prepareSkillInvocationMessageFromInventory } from '@maka/runtime/skill-invocation';
+import { RuntimeReadModel } from '@maka/runtime/runtime-read-model';
+import {
+  renderAgentSwarmSupervisorWake,
+  shouldWakeAgentSwarmSupervisor,
+} from '@maka/runtime/agent-swarm-status-tool';
+import { SessionActivityRegistry } from '@maka/runtime/goal-turn-lifecycle';
+import { ShellRunProcessManager } from '@maka/runtime/shell-run-manager';
+import {
+  resolveShellPlan,
+  resolveTurnShellPlan,
+  validateShellPreference,
+} from '@maka/runtime/shell-detect';
+import { type MakaTool } from '@maka/runtime/tool-runtime';
+import { type RuntimeHostedRootAuthority } from '@maka/runtime/message-authority';
+import { isHostedExecutionTerminal } from './hosted-execution-authority.js';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
 import {
   createArtifactAttachmentResourceReader,
-  createReadImageSnapshotter,
-  openInteractiveArtifactStoreForWrite,
+  startRetiredCaptureSweep,
 } from '@maka/storage/artifact-stores';
-import { openInteractiveAutomationAuthorityForWrite } from '@maka/storage/automation-authority';
-import { openInteractiveDeepResearchStoreForWrite } from '@maka/storage/deep-research-authority';
-import { openInteractiveDailyReviewAuthorityForWrite } from '@maka/storage/daily-review-authority';
-import { openInteractiveGoalAuthorityForWrite } from '@maka/storage/goal-authority';
-import { openInteractivePlanStoreForWrite } from '@maka/storage/plan-authority';
-import {
-  isSessionNotFoundError,
-  openInteractiveExecutionStoresForWrite,
-} from '@maka/storage/execution-stores';
+import { createReadImageSnapshotStore } from '@maka/storage/read-image-snapshot-store';
+import { isSessionNotFoundError } from '@maka/storage/execution-stores';
 import { createExternalSessionAdapterRegistry } from '@maka/storage/external-sessions';
 import { createGitWorktreeChildExecutor } from '@maka/storage/git-worktree-child-executor';
-import {
-  type InteractiveLongTermMemoryWriter,
-  openInteractiveLongTermMemoryStoreForWrite,
-} from '@maka/storage/long-term-memory-store';
-import { openInteractiveMemoryBundleStoreForWrite } from '@maka/storage/memory-bundle-store';
 import { runWithStorageRootLease } from '@maka/storage/root-authority';
-import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
-import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-authority';
-import { openInteractiveShellRunStoreForWrite } from '@maka/storage/shell-run-authority';
-import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
+import { createInteractiveContextOffloadReader } from '@maka/storage/context-offload-store';
+import { openStorageWriterComposition } from '@maka/storage/storage-writer-composition';
+import type { RuntimePolicyStoresWriter } from '@maka/storage/runtime-policy-stores';
 import { resolveWorkspaceIdentity } from '@maka/storage/workspace-identity';
-import {
-  openManagedWorkspaceOwner,
-  type ManagedWorkspaceFilesystemWorker,
-  type ManagedWorkspaceOwner,
-  type VerifiedGitRuntimeInput,
-} from '@maka/storage/managed-workspace-owner';
 import { CanonicalSessionProjectionReader } from './canonical-session-projection.js';
 import {
   bindHostChildAgentBackend,
@@ -79,23 +102,22 @@ import { HostCanonicalPermissionOutcomeReader } from './canonical-permission-out
 import { HostArtifactCoordinator } from './artifact-coordinator.js';
 import { HostAgentGraphCoordinator } from './agent-graph-coordinator.js';
 import { HostAgentGraphExecutionCoordinator } from './agent-graph-execution-coordinator.js';
-import { HostAutomationCoordinator } from './automation-coordinator.js';
-import { HostScheduledTaskAuthority } from './scheduled-task-authority.js';
-import { buildScheduledTaskTool } from '@maka/runtime';
+import { HostScheduledTaskCoordinator } from './scheduled-task-coordinator.js';
 import { recoverClientCapabilityOutcomes } from './client-capability-recovery.js';
 import { HostConnectionEffectCoordinator } from './connection-effect-coordinator.js';
-import { HostConfigurationChangeService } from './configuration-change-service.js';
-import { HostSessionCatalogChangeService } from './session-catalog-change-service.js';
+import { HostChangeFeed } from './host-change-feed.js';
 import { HostConfigurationCoordinator } from './configuration-coordinator.js';
 import { HostContextCoordinator } from './context-coordinator.js';
 import { HostClientCapabilityCoordinator } from './client-capability-coordinator.js';
 import { HostDeepResearchCoordinator } from './deep-research-coordinator.js';
 import { HostDailyReviewCoordinator } from './daily-review-coordinator.js';
-import { createHostAiSdkBackend } from './execution-model-composition.js';
+import { prepareHostAiSdkBackend } from './execution-model-composition.js';
 import {
   createInteractiveRunComposer,
   createInteractiveRunComposerFactory,
+  routeInteractiveRunToolSurface,
 } from './interactive-run-composer.js';
+
 import {
   createHostGoalEvaluator,
   createHostDailyReviewModel,
@@ -106,6 +128,8 @@ import { HostExecutionInspectCoordinator } from './execution-inspect-coordinator
 import { HostExternalSessionCoordinator } from './external-session-coordinator.js';
 import { HostGoalCoordinator } from './goal-coordinator.js';
 import { HostGoalExecutionCoordinator } from './goal-execution-coordinator.js';
+import { HostHostedExecutionCoordinator } from './hosted-execution-coordinator.js';
+import { HostHostedExecutionRunner } from './hosted-execution-runner.js';
 import { executeHostedExecutionToSettlement } from './hosted-execution-wait.js';
 import type { RuntimeHostComposition, RuntimeHostCompositionContext } from './host-kernel.js';
 import {
@@ -118,8 +142,9 @@ import {
 } from './host-composition.js';
 import { HostInteractionCoordinator } from './interaction-coordinator.js';
 import { HostInteractiveTurnCoordinator } from './interactive-turn-coordinator.js';
-import { migrateLegacyRuntimePolicy } from './legacy-runtime-policy-migration.js';
+import { SessionTurnAccessRequestCoordinator } from './session-turn-access-request-coordinator.js';
 import { ensureBootstrapRuntimePolicy } from './bootstrap-runtime-policy.js';
+import { hostedExecutionRunProfile } from './hosted-execution-tool-profile.js';
 import { HostMemoryCoordinator } from './memory-coordinator.js';
 import { HostMemoryExtractionCoordinator } from './memory-extraction-coordinator.js';
 import { MemoryExtractionSessionLane } from './memory-extraction-session-lane.js';
@@ -128,14 +153,20 @@ import { HostNetworkProxyCoordinator } from './network-proxy-coordinator.js';
 import { HostOAuthExecutionAuthority } from './oauth-execution-authority.js';
 import { HostOAuthCoordinator, type HostOAuthCoordinatorInput } from './oauth-coordinator.js';
 import { HostPlanCoordinator } from './plan-coordinator.js';
-import { HostProjectCatalogChangeService } from './project-catalog-change-service.js';
+import {
+  HostProjectDirectoryAuthority,
+  type PublishedProjectDirectoryRoot,
+} from './project-directory-authority.js';
 import { HostProjectCatalogCoordinator } from './project-catalog-coordinator.js';
 import { HostProjectMembershipGate } from './project-membership-gate.js';
+import { HostPluginPlatformCoordinator } from './plugin-platform-coordinator.js';
+import { HostPluginPlatform } from './plugin-platform.js';
 import { RootAdmissionOwner } from './root-admission-owner.js';
 import { RootTurnCoordinator } from './root-turn-coordinator.js';
 import { RuntimePolicyActivationGate } from './runtime-policy-activation-gate.js';
 import { notifySandboxBoundaryGraphWake } from './sandbox-boundary-graph-wake.js';
 import { HostRuntimePolicyCoordinator } from './runtime-policy-coordinator.js';
+import { startHostModelMetadataRefresh } from './model-metadata-refresh.js';
 import { HostRuntimeResourceCoordinator } from './runtime-resource-coordinator.js';
 import { SessionAdmissionGate } from './session-admission-gate.js';
 import { HostSessionCatalogCoordinator } from './session-catalog-coordinator.js';
@@ -147,13 +178,22 @@ import { SessionContinuityCoordinator } from './session-continuity-coordinator.j
 import { createSessionTranscriptReader } from './session-transcript-reader.js';
 import { HostSkillCatalogCoordinator } from './skill-catalog-coordinator.js';
 import { SkillCatalogRepository } from './skill-catalog-repository.js';
-import { HostTaskLedgerCoordinator } from './task-ledger-coordinator.js';
+import { HostSessionTodoCoordinator } from './session-todo-coordinator.js';
 import { HostTurnControlCoordinator } from './turn-control-coordinator.js';
+import type { TurnOperationHandlerMap } from './operation-dispatcher.js';
 import { HostUsagePricingCoordinator } from './usage-pricing-coordinator.js';
 import { HostWebSearchCoordinator } from './web-search-coordinator.js';
+import { HostWorkHubCoordinationCoordinator } from './workhub-coordination-coordinator.js';
+import { WorkHubActionEffectFailure } from './workhub-coordination-action-gate.js';
+
+type ExecutionConnectionRef = Parameters<
+  RuntimePolicyStoresWriter['operations']['resolveExecutionConnection']
+>[0];
 import {
   createHostWebSearchService,
   createHostWebSearchToolFromService,
+  resolveHostTavilyWebSearchReadiness,
+  shouldResolveHostTavilyWebSearchReadiness,
 } from './web-search-tool.js';
 import { createHostWebFetchService, createHostWebFetchToolFromService } from './web-fetch-tool.js';
 import { createHostExecutionArtifactServices } from './execution-artifacts.js';
@@ -161,17 +201,30 @@ import {
   createRuntimeHostWorkspaceExecutionComposition,
   RuntimeHostWorkspaceExecutionError,
   type RuntimeHostWorkspaceExecutionComposition,
+  type RuntimeHostWorkspaceFilesystemWorker,
 } from './workspace-execution-composition.js';
 
 export interface ExecutionRuntimeHostComposition extends RuntimeHostComposition {
   readonly workspaceExecution: RuntimeHostWorkspaceExecutionComposition;
+  readonly plugins: HostPluginPlatform;
 }
 
+const GIBIBYTE = 1024 * 1024 * 1024;
+const CONTEXT_OFFLOAD_LIMITS: ContextOffloadLimits = Object.freeze({
+  ownerMaxBytes: Object.freeze({
+    read_image_snapshot: MAX_READ_IMAGE_BYTES,
+    tool_result_archive: 0,
+  }),
+  // Read images are bounded individually and logically per Session. Physical
+  // bytes are content-addressed across Sessions and bounded per workspace.
+  sessionLogicalBytes: GIBIBYTE,
+  workspacePhysicalBytes: 20 * GIBIBYTE,
+});
+
 export interface CreateExecutionRuntimeHostCompositionOptions {
-  readonly managedWorkspaceGitRuntime?: VerifiedGitRuntimeInput;
-  readonly legacyConfigurationRoot?: string;
   readonly bootstrapRuntimePolicy?: boolean;
   readonly skillHomeDirectory?: string;
+  readonly projectDirectoryRoots?: readonly PublishedProjectDirectoryRoot[];
 }
 
 export interface ExecutionRuntimeHostCompositionDependencies {
@@ -189,102 +242,111 @@ export function runtimeHostFilesystemWorkerRuntime(versions: {
 }
 
 export async function createExecutionRuntimeHostComposition(
-  context: RuntimeHostCompositionContext<'interactive'>,
+  context: RuntimeHostCompositionContext,
   options: CreateExecutionRuntimeHostCompositionOptions = {},
   dependencies: ExecutionRuntimeHostCompositionDependencies = {},
 ): Promise<ExecutionRuntimeHostComposition> {
-  const stores = await openInteractiveExecutionStoresForWrite(context.owner.lease);
-  await stores.sessionStore.ready();
+  const storage = await openStorageWriterComposition(context.owner.lease, {
+    contextOffloadLimits: CONTEXT_OFFLOAD_LIMITS,
+    afterRuntimePolicyOpened: async (stores) => {
+      if (options.bootstrapRuntimePolicy !== false) {
+        await ensureBootstrapRuntimePolicy({
+          workspaceRoot: context.owner.capability.canonicalPath,
+          stores,
+          onDeferredError: (error) =>
+            console.error(
+              `[runtime-host] optional bootstrap target could not be configured: ${generalizedErrorMessage(error)}`,
+            ),
+        });
+      }
+    },
+  });
+  if (storage.contextOffloadUnavailable) {
+    console.error(
+      `[runtime-host] optional context-offload Store could not be opened: ${generalizedErrorMessage(storage.contextOffloadUnavailable.cause)}`,
+    );
+  }
+  let stopRetiredCaptureSweep: (() => void) | undefined;
+  const stores = storage.execution;
   let graphControlStore: ReturnType<typeof createAgentGraphControlStore> | undefined;
-  let taskLedgerStore:
-    | Awaited<ReturnType<typeof openInteractiveTaskLedgerStoreForWrite>>
-    | undefined;
-  let usageStores: Awaited<ReturnType<typeof openInteractiveUsageStoresForWrite>> | undefined;
-  let artifactStore: Awaited<ReturnType<typeof openInteractiveArtifactStoreForWrite>> | undefined;
-  let shellRunStore: Awaited<ReturnType<typeof openInteractiveShellRunStoreForWrite>> | undefined;
-  let longTermMemoryStore: InteractiveLongTermMemoryWriter | undefined;
-  let automationStore:
-    | Awaited<ReturnType<typeof openInteractiveAutomationAuthorityForWrite>>
-    | undefined;
-  let planStore: Awaited<ReturnType<typeof openInteractivePlanStoreForWrite>> | undefined;
-  let deepResearchStore:
-    | Awaited<ReturnType<typeof openInteractiveDeepResearchStoreForWrite>>
-    | undefined;
-  let dailyReviewStore:
-    | Awaited<ReturnType<typeof openInteractiveDailyReviewAuthorityForWrite>>
-    | undefined;
-  let goalStore: Awaited<ReturnType<typeof openInteractiveGoalAuthorityForWrite>> | undefined;
   let graphClient: HostAgentGraphCoordinator | undefined;
   let sessionEffects: HostSessionEffectCoordinator | undefined;
   let memoryExtraction: HostMemoryExtractionCoordinator | undefined;
-  let unsubscribeTaskLedger: (() => void) | undefined;
-  let managedWorkspaceOwner: ManagedWorkspaceOwner | undefined;
+  let unsubscribeTranscriptChanges: (() => void) | undefined;
+  let unsubscribeUsageChanges: (() => void) | undefined;
   let workspaceExecution: RuntimeHostWorkspaceExecutionComposition | undefined;
-  let projectCatalog: InteractiveProjectCatalogWriter | undefined;
   let goalExecutions: HostGoalExecutionCoordinator | undefined;
+  let pluginPlatform: HostPluginPlatform | undefined;
+  let modelMetadataRefresh: ReturnType<typeof startHostModelMetadataRefresh> | undefined;
   try {
-    const openedProjectCatalog = await openInteractiveProjectCatalogForWrite(context.owner.lease, {
-      onLegacyImportFailure: (error) =>
-        console.error('[runtime-host] projects.json could not be imported:', error),
-    });
-    projectCatalog = openedProjectCatalog;
-    const runtimePolicyStores = await openInteractiveRuntimePolicyStoresForWrite(
-      context.owner.lease,
-    );
-    await migrateLegacyRuntimePolicy({
-      workspaceRoot: context.owner.capability.canonicalPath,
-      ...(options.legacyConfigurationRoot
-        ? { legacyConfigurationRoot: options.legacyConfigurationRoot }
-        : {}),
-      stores: runtimePolicyStores,
-    });
-    if (options.bootstrapRuntimePolicy !== false) {
-      await ensureBootstrapRuntimePolicy({
-        workspaceRoot: context.owner.capability.canonicalPath,
-        stores: runtimePolicyStores,
-        onDeferredError: (error) =>
-          console.error(
-            `[runtime-host] optional bootstrap target could not be configured: ${generalizedErrorMessage(error)}`,
-          ),
-      });
-    }
+    pluginPlatform = new HostPluginPlatform(context.owner.controlDirectory);
+    const pluginPlatformCoordinator = new HostPluginPlatformCoordinator(pluginPlatform);
+    const openedProjectCatalog = storage.projectCatalog;
+    const runtimePolicyStores = storage.runtimePolicy;
     const oauthCredentials = new HostOAuthExecutionAuthority(runtimePolicyStores);
-    const openedAutomationStore = await openInteractiveAutomationAuthorityForWrite(
-      context.owner.lease,
-    );
-    automationStore = openedAutomationStore;
-    const openedPlanStore = await openInteractivePlanStoreForWrite(context.owner.lease);
-    planStore = openedPlanStore;
-    const openedDeepResearchStore = await openInteractiveDeepResearchStoreForWrite(
-      context.owner.lease,
-    );
-    deepResearchStore = openedDeepResearchStore;
-    const openedDailyReviewStore = await openInteractiveDailyReviewAuthorityForWrite(
-      context.owner.lease,
-    );
-    dailyReviewStore = openedDailyReviewStore;
-    const openedGoalStore = await openInteractiveGoalAuthorityForWrite(context.owner.lease);
-    goalStore = openedGoalStore;
-    const memoryStore = await openInteractiveMemoryBundleStoreForWrite(context.owner.lease);
-    longTermMemoryStore = await openInteractiveLongTermMemoryStoreForWrite(context.owner.lease);
-    taskLedgerStore = await openInteractiveTaskLedgerStoreForWrite(context.owner.lease);
-    const openedArtifactStore = await openInteractiveArtifactStoreForWrite(context.owner.lease);
-    artifactStore = openedArtifactStore;
-    const openedUsageStores = await openInteractiveUsageStoresForWrite(context.owner.lease);
-    usageStores = openedUsageStores;
-    const openedShellRunStore = await openInteractiveShellRunStoreForWrite(context.owner.lease);
-    shellRunStore = openedShellRunStore;
+    const openedScheduledTaskStore = storage.scheduledTasks;
+    const openedPlanStore = storage.plan;
+    const openedDeepResearchStore = storage.deepResearch;
+    const openedDailyReviewStore = storage.dailyReview;
+    const openedGoalStore = storage.goal;
+    const memoryStore = storage.memoryBundle;
+    const longTermMemoryStore = storage.longTermMemory;
+    const sessionTodoStore = storage.sessionTodo;
+    const openedArtifactStore = storage.artifacts;
+    const openedContextOffloadStore = storage.contextOffload;
+    const openedContextOffloadReader = openedContextOffloadStore
+      ? createInteractiveContextOffloadReader(openedContextOffloadStore)
+      : undefined;
+    const contextOffloadAuthority = openedContextOffloadStore
+      ? openedContextOffloadStore
+      : storage.contextOffloadUnavailable
+        ? {
+            copyReferences: async (): Promise<never> => {
+              throw new Error('Context-offload Store is unavailable during Session copy', {
+                cause: storage.contextOffloadUnavailable?.cause,
+              });
+            },
+            retireSession: async (_sessionId: string): Promise<never> => {
+              throw new Error('Context-offload Store is unavailable during Session retirement', {
+                cause: storage.contextOffloadUnavailable?.cause,
+              });
+            },
+            collectGarbage: async (): Promise<never> => {
+              throw new Error(
+                'Context-offload Store is unavailable during context garbage collection',
+                { cause: storage.contextOffloadUnavailable?.cause },
+              );
+            },
+          }
+        : undefined;
+    const openedUsageStores = storage.usage;
+    const openedShellRunStore = storage.shellRuns;
     const worktreeChildExecutor = createGitWorktreeChildExecutor({
       storageRoot: context.owner.capability.canonicalPath,
     });
-    await stores.messageReceiptStore.beginHostEpoch(context.hostEpoch);
     const backends = new BackendRegistry();
-    backends.register('fake', (backendContext) => new FakeBackend(backendContext));
+    // `fake` is a retired backend kind: this build never writes it, but a
+    // session or Automation persisted by an older one still can, and activation
+    // dispatches straight off that durable value. Registering an explicit
+    // refusal — rather than the test backend, or a read-path rewrite of the
+    // durable header — is what turns "no factory for kind=fake" into the
+    // product's existing answer for these rows: this task came from the retired
+    // local simulation, configure a real model and start a new one.
+    backends.register('fake', () => {
+      throw new Error(
+        `${NO_REAL_CONNECTION_CODE}:fake_backend: Runtime Host cannot send on a retired local-simulation connection; configure a real model and start a new task`,
+      );
+    });
     const runtimePolicyActivation = new RuntimePolicyActivationGate();
     const runtimePolicy = new HostRuntimePolicyCoordinator(
       runtimePolicyStores,
       runtimePolicyActivation,
       applyRuntimePolicyMutationEffects,
+      async (input) => {
+        if (input.operation.kind === 'set_shell') {
+          await validateShellPreference(input.operation.value);
+        }
+      },
     );
     const sessionAdmission = new SessionAdmissionGate();
     const memoryExtractionLane = new MemoryExtractionSessionLane();
@@ -321,30 +383,18 @@ export async function createExecutionRuntimeHostComposition(
             getLaunchSpec: filesystemWorkerLaunchSpecProvider,
           })
         : undefined;
-    const managedFilesystemWorker = filesystemWorker
-      ? adaptManagedWorkspaceFilesystemWorker(filesystemWorker)
+    const workspaceFilesystemWorker = filesystemWorker
+      ? adaptWorkspaceFilesystemWorker(filesystemWorker)
       : undefined;
-    if (options.managedWorkspaceGitRuntime) {
-      if (!managedFilesystemWorker) {
-        throw new RuntimeHostWorkspaceExecutionError(
-          'filesystem_worker_unavailable',
-          'Managed workspace execution requires the sandboxed filesystem worker',
-        );
-      }
-      managedWorkspaceOwner = await openManagedWorkspaceOwner({
-        rootOwner: context.owner,
-        gitRuntime: options.managedWorkspaceGitRuntime,
-        filesystemWorker: managedFilesystemWorker,
-      });
-    }
     workspaceExecution = createRuntimeHostWorkspaceExecutionComposition({
-      ...(managedFilesystemWorker ? { filesystemWorker: managedFilesystemWorker } : {}),
-      ...(managedWorkspaceOwner ? { managedOwner: managedWorkspaceOwner } : {}),
+      ...(workspaceFilesystemWorker ? { filesystemWorker: workspaceFilesystemWorker } : {}),
     });
-    const taskLedger = new HostTaskLedgerCoordinator(
-      taskLedgerStore,
+    const sessionTodo = new HostSessionTodoCoordinator(
+      sessionTodoStore,
       sessionAdmission,
       stores.sessionStore,
+      (sessionId) => requireContinuity(continuity).enqueueSessionDomainChanged(sessionId, 'todo'),
+      context.requestDrain,
     );
     runtimeResources = new HostRuntimeResourceCoordinator({
       manager: shellRuns,
@@ -358,6 +408,11 @@ export async function createExecutionRuntimeHostComposition(
       sessionAdmission,
       acquireResidency: () => context.acquireResidency('runtime-resource'),
       requestDrain: context.requestDrain,
+      ...(context.sessionAccessAuthority
+        ? { sessionAccessAuthority: context.sessionAccessAuthority }
+        : {}),
+      resolveShell: async () =>
+        resolveShellPlan((await runtimePolicyStores.runtimePolicy.getSnapshot()).policy.shell),
       onProjectionChanged: (update) =>
         requireContinuity(continuity).enqueueRuntimeResourceChanged(update),
     });
@@ -373,7 +428,27 @@ export async function createExecutionRuntimeHostComposition(
       }),
       backgroundTasks: runtimeResources,
       ptyControls: runtimeResources,
-      snapshotImage: createReadImageSnapshotter(openedArtifactStore),
+      ...(openedContextOffloadStore
+        ? {
+            snapshotImage: async (input: {
+              readonly sessionId: string;
+              readonly ownerId: string;
+              readonly bytes: Uint8Array;
+              readonly mimeType: string;
+            }) =>
+              createReadImageSnapshotStore(openedContextOffloadStore, input.sessionId).snapshot({
+                ownerId: input.ownerId,
+                bytes: input.bytes,
+                mimeType: input.mimeType,
+              }),
+            releaseImageSnapshot: async (input: {
+              readonly sessionId: string;
+              readonly refId: string;
+            }) => {
+              await openedContextOffloadStore.releaseReference(input);
+            },
+          }
+        : {}),
       ...(sandboxManager ? { sandboxManager } : {}),
       ...(filesystemWorker ? { filesystemWorker } : {}),
     };
@@ -383,15 +458,29 @@ export async function createExecutionRuntimeHostComposition(
     const webFetchService = createHostWebFetchService({
       policy: runtimePolicyStores.operations,
     });
-    const hostTools = [
+    const historyTools = buildHistoryTools({
+      listSessions: () => requireSessionManager(manager).listSessions(),
+      readMessages: async (sessionId, abortSignal) => {
+        if (abortSignal?.aborted) return null;
+        const messages = await requireSessionManager(manager)
+          .getMessages(sessionId)
+          .catch(() => null);
+        return abortSignal?.aborted ? null : messages;
+      },
+      getPrivacyContext: async () => ({
+        incognitoActive: (await runtimePolicyStores.runtimePolicy.getSnapshot()).policy.privacy
+          .incognitoActive,
+      }),
+    });
+    const childHostTools = [
       createHostWebSearchToolFromService(webSearchService),
       createHostWebFetchToolFromService(webFetchService),
       ...runtimePolicy.modelTools,
     ];
+    const hostTools = [...childHostTools, ...historyTools];
     const childAgentTools = createHostChildAgentToolComposition({
-      taskLedger,
       builtinTools,
-      hostTools,
+      hostTools: childHostTools,
       worktreePatchWriteBackAvailable: true,
     });
     const openedGraphControlStore = createAgentGraphControlStore(
@@ -407,14 +496,19 @@ export async function createExecutionRuntimeHostComposition(
           initiatingConnectionId: string,
         ) => Promise<string[]>)
       | undefined;
-    const configurationChanges = new HostConfigurationChangeService();
-    const sessionCatalogChanges = new HostSessionCatalogChangeService();
-    const projectCatalogChanges = new HostProjectCatalogChangeService();
+    const hostChanges = new HostChangeFeed();
+    // Startup, once, in the background: the Host owns the model catalog, so it
+    // is the one process that gets to ask models.dev what is true today. On any
+    // failure the build's committed snapshot stands.
+    modelMetadataRefresh = startHostModelMetadataRefresh({
+      policy: runtimePolicyStores.operations,
+      publish: () => hostChanges.publishConnectionCatalog(),
+    });
     const projectMembership = new HostProjectMembershipGate();
     const workspaceResolver = new HostWorkspaceResolver(
       openedProjectCatalog,
       projectMembership,
-      () => projectCatalogChanges.publish(),
+      () => hostChanges.publishProjectCatalog(),
     );
     const skills = new HostSkillCatalogCoordinator(
       new SkillCatalogRepository({
@@ -454,18 +548,20 @@ export async function createExecutionRuntimeHostComposition(
     );
     const projects = new HostProjectCatalogCoordinator(
       openedProjectCatalog,
-      projectCatalogChanges,
-      sessionCatalogChanges,
+      { publish: () => hostChanges.publishProjectCatalog() },
+      {
+        publish: (sessionId: string) => hostChanges.publishSessionCatalog(sessionId),
+      },
       projectMembership,
       context.requestDrain,
+      new HostProjectDirectoryAuthority(options.projectDirectoryRoots),
     );
     let rootCoordinator: RootTurnCoordinator | undefined;
     let canonicalProjection: CanonicalSessionProjectionReader | undefined;
     let memory: HostMemoryCoordinator | undefined;
     let clientCapabilities: HostClientCapabilityCoordinator | undefined;
     let oauth: HostOAuthCoordinator | undefined;
-    let automations: HostAutomationCoordinator | undefined;
-    let scheduledTaskAuthority: HostScheduledTaskAuthority | undefined;
+    let scheduledTasks: HostScheduledTaskCoordinator | undefined;
     let scheduledTaskTool: MakaTool | undefined;
     let goal: HostGoalCoordinator | undefined;
     let deepResearch: HostDeepResearchCoordinator | undefined;
@@ -477,8 +573,10 @@ export async function createExecutionRuntimeHostComposition(
         requireRootCoordinator(rootCoordinator).readRootState(sessionId),
       claimStopFence: (input, commitQueueFence, admission) =>
         requireRootCoordinator(rootCoordinator).claimStopFence(input, commitQueueFence, admission),
-      startFromMessage: (input, admission) =>
-        requireRootCoordinator(rootCoordinator).startFromMessage(input, admission),
+      startFromMessage: (input, admission, commitAdmission) =>
+        requireRootCoordinator(rootCoordinator).startFromMessage(input, admission, commitAdmission),
+      startRecoveredMessages: (input, admission) =>
+        requireRootCoordinator(rootCoordinator).startRecoveredMessages(input, admission),
       prepareMessage: (input) => requireRootCoordinator(rootCoordinator).prepareMessage(input),
       claimStop: (input, commitQueueFence, admission) =>
         requireRootCoordinator(rootCoordinator).claimStop(input, commitQueueFence, admission),
@@ -492,7 +590,7 @@ export async function createExecutionRuntimeHostComposition(
         readImmutableSteeringMessageProof: (sessionId, messageId) =>
           stores.runtimeEventStore.readImmutableSteeringMessageProof(sessionId, messageId),
       },
-      receipts: stores.messageReceiptStore,
+      admissions: stores.sessionStore,
       sessionAdmission,
       acquireResidency: () => context.acquireResidency('message-queue'),
       requestDrain: context.requestDrain,
@@ -518,11 +616,15 @@ export async function createExecutionRuntimeHostComposition(
       sessionAdmission,
       context.requestDrain,
       createSessionTranscriptReader({ stores, canonicalPermissionOutcomes }),
-      (sessionId) => sessionCatalogChanges.publish(sessionId),
+      (sessionId) => hostChanges.publishSessionCatalog(sessionId),
+      context.sessionAccessAuthority,
     );
     const continuityCoordinator = continuity;
-    unsubscribeTaskLedger = taskLedger.subscribe(({ sessionId }) =>
-      continuityCoordinator.enqueueSessionDomainChanged(sessionId, 'task'),
+    unsubscribeTranscriptChanges = stores.sessionStore.subscribeTranscriptChanges((sessionId) =>
+      continuityCoordinator.enqueueCanonicalRefresh(sessionId),
+    );
+    unsubscribeUsageChanges = openedUsageStores.subscribeSessionUsageChanges((sessionId) =>
+      continuityCoordinator.enqueueSessionDomainChanged(sessionId, 'usage'),
     );
     deepResearch = new HostDeepResearchCoordinator({
       store: openedDeepResearchStore,
@@ -536,11 +638,9 @@ export async function createExecutionRuntimeHostComposition(
       store: openedDailyReviewStore,
       usage: openedUsageStores,
       sessions: stores.sessionStore,
-      readRunEvents: (sessionId, runId) => stores.agentRunStore.readEvents(sessionId, runId),
       model: createHostDailyReviewModel({
         runtimePolicy: runtimePolicyStores,
         oauthCredentials,
-        claudeDeviceId: context.owner.capability.rootId,
         usage: openedUsageStores,
         requestDrain: context.requestDrain,
       }),
@@ -581,8 +681,15 @@ export async function createExecutionRuntimeHostComposition(
         context.requestDrain();
       },
       onSandboxBoundarySettled: (sessionId) =>
-        notifySandboxBoundaryGraphWake(sessionId, stores.sessionStore, (rootSessionId) =>
-          requireGraphSupervisorWake(graphSupervisorWake).notifyPermissionResponse(rootSessionId),
+        notifySandboxBoundaryGraphWake(
+          sessionId,
+          stores.sessionStore,
+          {
+            listGraphIds: (rootSessionId) =>
+              requireGraphCoordinator(graphCoordinator).listGraphIds(rootSessionId),
+          },
+          (rootSessionId) =>
+            requireGraphSupervisorWake(graphSupervisorWake).notifyPermissionResponse(rootSessionId),
         ),
     });
     memory = new HostMemoryCoordinator({
@@ -602,59 +709,73 @@ export async function createExecutionRuntimeHostComposition(
           stores.runtimeEventStore.readSessionRuntimeEventEntries(sessionId),
       },
       historyCompaction: {
-        readLatestCheckpoint: (sessionId) =>
-          loadLatestHistoryCompactCheckpointFromRunLedger(stores.agentRunStore, sessionId),
+        readLatestCheckpoint: async (sessionId) =>
+          loadLatestHistoryCompactCheckpointFromRunLedger(
+            stores.agentRunStore,
+            sessionId,
+            await sessionRunIds(stores.runtimeEventStore, sessionId),
+          ),
+        readCheckpoints: async (sessionId) =>
+          loadHistoryCompactCheckpointsFromRunLedger(
+            stores.agentRunStore,
+            sessionId,
+            await sessionRunIds(stores.runtimeEventStore, sessionId),
+          ),
       },
       model: createHostMemoryExtractionModel({
         runtimePolicy: runtimePolicyStores,
         oauthCredentials,
-        claudeDeviceId: context.owner.capability.rootId,
         usage: openedUsageStores,
         requestDrain: context.requestDrain,
       }),
       lane: memoryExtractionLane,
       acquireResidency: () => context.acquireResidency('memory-extraction'),
     });
+    const hostAiSdkBackendInput = <T extends BackendPreparationContext>(backendContext: T) => ({
+      context: backendContext,
+      runtimePolicy: runtimePolicyStores,
+      oauthCredentials,
+      createRunComposer: createInteractiveRunComposerFactory({
+        skills,
+        memory: requireMemory(memory),
+        sessionTodo,
+        clientCapabilities: requireClientCapabilities(clientCapabilities),
+        resolveTavilyWebSearchReadiness: () =>
+          resolveHostTavilyWebSearchReadiness(runtimePolicyStores.operations),
+        ...(scheduledTaskTool ? { scheduledTaskTool } : {}),
+        planStore: openedPlanStore,
+        deepResearchTools: requireDeepResearch(deepResearch).toolsForSession(
+          backendContext.sessionId,
+        ),
+        goalTools: requireGoal(goal).tools,
+        builtinTools,
+        hostTools,
+        resolveRootTools: (sessionId) =>
+          requireGraphCoordinator(graphCoordinator).toolsForSession(sessionId),
+        parentAgentTools: childAgentTools.parentTools,
+        childTools: childAgentTools.childTools,
+        worktreePatchWriteBackAvailable: true,
+      }),
+      ...(hostedExecutionRunProfile(backendContext.header.toolProfile)?.memoryExtraction === false
+        ? {}
+        : { memoryExtraction }),
+      artifacts: openedArtifactStore,
+      ...(openedContextOffloadReader ? { contextOffload: openedContextOffloadReader } : {}),
+      ...(storage.contextOffloadUnavailable ? { contextOffloadUnavailable: true } : {}),
+      executionArtifacts,
+      usage: openedUsageStores,
+      childAgents: bindHostChildAgentBackend(
+        requireSessionManager(manager),
+        backendContext.sessionId,
+      ),
+      runtimeCommitSink: stores.runtimeEventStore,
+      requestDrain: context.requestDrain,
+    });
     backends.register(
       'ai-sdk',
-      dependencies.primaryBackendFactory ??
-        ((backendContext) =>
-          createHostAiSdkBackend({
-            context: backendContext,
-            runtimePolicy: runtimePolicyStores,
-            oauthCredentials,
-            claudeDeviceId: context.owner.capability.rootId,
-            createRunComposer: createInteractiveRunComposerFactory({
-              skills,
-              memory: requireMemory(memory),
-              taskLedger,
-              clientCapabilities: requireClientCapabilities(clientCapabilities),
-              automationTool: requireAutomationCoordinator(automations).modelTool,
-              ...(scheduledTaskTool ? { scheduledTaskTool } : {}),
-              planStore: openedPlanStore,
-              deepResearchTools: requireDeepResearch(deepResearch).toolsForSession(
-                backendContext.sessionId,
-              ),
-              goalTools: requireGoal(goal).tools,
-              builtinTools,
-              hostTools,
-              resolveRootTools: (sessionId) =>
-                requireGraphCoordinator(graphCoordinator).toolsForSession(sessionId),
-              parentAgentTools: childAgentTools.parentTools,
-              childTools: childAgentTools.childTools,
-              worktreePatchWriteBackAvailable: true,
-            }),
-            memoryExtraction,
-            artifacts: openedArtifactStore,
-            executionArtifacts,
-            usage: openedUsageStores,
-            childAgents: bindHostChildAgentBackend(
-              requireSessionManager(manager),
-              backendContext.sessionId,
-            ),
-            runtimeCommitSink: stores.runtimeEventStore,
-            requestDrain: context.requestDrain,
-          })),
+      dependencies.primaryBackendFactory ?? {
+        prepare: (backendContext) => prepareHostAiSdkBackend(hostAiSdkBackendInput(backendContext)),
+      },
     );
     const runtimeAuthority: RuntimeHostedRootAuthority = {
       bindRun: (identity) => messages.bindRun(identity),
@@ -664,6 +785,48 @@ export async function createExecutionRuntimeHostComposition(
         requireRootCoordinator(rootCoordinator).stopRoot(identity, input),
       stopSession: (sessionId, input) =>
         requireRootCoordinator(rootCoordinator).stopSession(sessionId, input),
+    };
+    const resolveInteractiveToolSurface = async (input: {
+      readonly connectionRef?: ExecutionConnectionRef;
+      readonly modelId: string;
+      readonly hostTools: readonly MakaTool[];
+      readonly boundTools?: readonly MakaTool[];
+      readonly childTools?: readonly MakaTool[];
+      readonly parentAgentTools?: readonly MakaTool[];
+    }) => {
+      const [runtimePolicy, resolved] = await Promise.all([
+        runtimePolicyStores.runtimePolicy.getSnapshot(),
+        input.connectionRef
+          ? runtimePolicyStores.operations.resolveExecutionConnection(input.connectionRef)
+          : Promise.resolve(undefined),
+      ]);
+      let connection: RuntimeExecutionConnection | undefined;
+      if (resolved?.kind === 'ready') {
+        const { models, ...configuration } = resolved.connection;
+        connection = {
+          ...configuration,
+          defaultModel: input.modelId,
+          ...(models ? { models: [...models] } : {}),
+        };
+      }
+      const tavilyReady =
+        connection && shouldResolveHostTavilyWebSearchReadiness(runtimePolicy.policy)
+          ? await resolveHostTavilyWebSearchReadiness(runtimePolicyStores.operations)
+          : false;
+      return {
+        runtimePolicy,
+        surface: routeInteractiveRunToolSurface({
+          runtimePolicy,
+          ...(connection ? { connection } : {}),
+          modelId: input.modelId,
+          hostTools: input.hostTools,
+          ...(input.boundTools ? { boundTools: input.boundTools } : {}),
+          ...(input.childTools ? { childTools: input.childTools } : {}),
+          ...(input.parentAgentTools ? { parentAgentTools: input.parentAgentTools } : {}),
+          worktreePatchWriteBackAvailable: true,
+          tavilyReady,
+        }),
+      };
     };
     resolveAvailableToolNames = async (sessionId: string): Promise<string[]> => {
       const header = await stores.sessionStore.readHeaderSnapshot(sessionId);
@@ -679,7 +842,13 @@ export async function createExecutionRuntimeHostComposition(
         if (tools.length !== header.subagentRuntime.toolNames.length) {
           throw new Error('Subagent runtime tool snapshot is unavailable');
         }
-        return tools.map((tool) => tool.name);
+        const { surface } = await resolveInteractiveToolSurface({
+          connectionRef: sessionExecutionConnectionRef(header),
+          modelId: header.model,
+          hostTools: [],
+          boundTools: tools,
+        });
+        return (surface.boundTools ?? []).map((tool) => tool.name);
       }
       if (header.subagentParent) {
         throw new Error('Linked child session is missing its durable runtime snapshot');
@@ -687,23 +856,31 @@ export async function createExecutionRuntimeHostComposition(
       const capabilitySnapshot =
         requireClientCapabilities(clientCapabilities).snapshotForSession(sessionId);
       try {
-        const [graphTools, planState, runtimePolicySnapshot] = await Promise.all([
+        const [graphTools, planState] = await Promise.all([
           requireGraphCoordinator(graphCoordinator).toolsForSession(sessionId),
           openedPlanStore.readState(sessionId),
-          runtimePolicyStores.runtimePolicy.getSnapshot(),
         ]);
+        const { runtimePolicy, surface } = await resolveInteractiveToolSurface({
+          connectionRef: sessionExecutionConnectionRef(header),
+          modelId: header.model,
+          hostTools: [...hostTools, ...graphTools],
+          childTools: childAgentTools.childTools,
+          parentAgentTools: childAgentTools.parentTools,
+        });
+        const runProfile = hostedExecutionRunProfile(header.toolProfile);
         return createInteractiveRunComposer({
-          runtimePolicy: runtimePolicySnapshot,
+          runtimePolicy,
+          shell: resolveTurnShellPlan(runtimePolicy.policy.shell),
           skills,
           memory: requireMemory(memory),
-          taskLedger,
+          sessionTodo,
+          ...(runProfile ? { toolProfile: header.toolProfile } : {}),
           ...(capabilitySnapshot ? { clientCapabilities: capabilitySnapshot } : {}),
           builtinTools,
-          hostTools: [...hostTools, ...graphTools],
-          automationTool: requireAutomationCoordinator(automations).modelTool,
+          hostTools: surface.hostTools,
           ...(scheduledTaskTool ? { scheduledTaskTool } : {}),
           goalTools: requireGoal(goal).tools,
-          parentAgentTools: childAgentTools.parentTools,
+          ...(surface.parentAgentTools ? { parentAgentTools: surface.parentAgentTools } : {}),
           plan: {
             store: openedPlanStore,
             state: planState,
@@ -734,19 +911,40 @@ export async function createExecutionRuntimeHostComposition(
         const capabilitySnapshot =
           requireClientCapabilities(clientCapabilities).snapshotForSession(previewSessionId);
         try {
-          const runtimePolicySnapshot = await runtimePolicyStores.runtimePolicy.getSnapshot();
+          const catalog = await runtimePolicyStores.connectionCatalog.getSnapshot();
+          const target = catalog.defaultTarget;
+          const connection = target
+            ? catalog.connections.find(
+                (candidate) => candidate.connectionId === target.connectionId,
+              )
+            : undefined;
+          const { runtimePolicy, surface } = await resolveInteractiveToolSurface({
+            ...(connection
+              ? {
+                  connectionRef: {
+                    kind: 'bound' as const,
+                    connectionId: connection.connectionId,
+                    connectionSlug: connection.slug,
+                  },
+                }
+              : {}),
+            modelId: target?.modelId ?? '',
+            hostTools,
+            childTools: childAgentTools.childTools,
+            parentAgentTools: childAgentTools.parentTools,
+          });
           return createInteractiveRunComposer({
-            runtimePolicy: runtimePolicySnapshot,
+            runtimePolicy,
+            shell: resolveTurnShellPlan(runtimePolicy.policy.shell),
             skills,
             memory: requireMemory(memory),
-            taskLedger,
+            sessionTodo,
             ...(capabilitySnapshot ? { clientCapabilities: capabilitySnapshot } : {}),
             builtinTools,
-            hostTools,
-            automationTool: requireAutomationCoordinator(automations).modelTool,
+            hostTools: surface.hostTools,
             ...(scheduledTaskTool ? { scheduledTaskTool } : {}),
             goalTools: requireGoal(goal).tools,
-            parentAgentTools: childAgentTools.parentTools,
+            ...(surface.parentAgentTools ? { parentAgentTools: surface.parentAgentTools } : {}),
             plan: {
               store: openedPlanStore,
               state: emptyPlanSessionState(previewSessionId),
@@ -765,12 +963,10 @@ export async function createExecutionRuntimeHostComposition(
       model: createHostSessionEffectModel({
         runtimePolicy: runtimePolicyStores,
         oauthCredentials,
-        claudeDeviceId: context.owner.capability.rootId,
         usage: openedUsageStores,
         requestDrain: context.requestDrain,
       }),
       readModel: new RuntimeReadModel({
-        runStore: stores.agentRunStore,
         runtimeEventStore: stores.runtimeEventStore,
         projectionCache: stores.sessionStore,
         canonicalPermissionOutcomes,
@@ -779,31 +975,30 @@ export async function createExecutionRuntimeHostComposition(
       sessions: stores.sessionStore,
       readSessionHeader: (sessionId) => stores.sessionStore.readHeaderSnapshot(sessionId),
       sessionAdmission,
+      nameSessionIfUnnamed: (sessionId, title) =>
+        stores.sessionStore.setGeneratedTitleIfAbsent(sessionId, title),
+      onSessionNamed: (sessionId) => continuityCoordinator.enqueueCanonicalRefresh(sessionId),
       acquireResidency: () => context.acquireResidency('session-effect'),
       requestDrain: context.requestDrain,
     });
     sessionEffects = sessionEffectCoordinator;
-    const resolveChildTools = async (sessionId: string): Promise<readonly MakaTool[]> => {
+    const resolveChildTools = async (sessionId: string) => {
       const header = await stores.sessionStore.readHeader(sessionId);
-      const [resolved, snapshot] = await Promise.all([
-        runtimePolicyStores.operations.resolveExecutionConnection(header.llmConnectionSlug),
-        runtimePolicyStores.runtimePolicy.getSnapshot(),
-      ]);
-      if (resolved.kind !== 'ready') {
-        return childAgentTools.childTools.filter((tool) => tool.name !== 'WebSearch');
-      }
-      const { models, ...connection } = resolved.connection;
-      return routeWebSearchTools({
-        tools: childAgentTools.childTools,
-        settings: snapshot.policy.webSearch,
-        connection: {
-          ...connection,
-          defaultModel: header.model,
-          ...(models ? { models: [...models] } : {}),
-        },
-        model: header.model,
-        privacy: snapshot.policy.privacy,
+      const shell = resolveTurnShellPlan(
+        (await runtimePolicyStores.runtimePolicy.getSnapshot()).policy.shell,
+      );
+      const childTools = createHostChildAgentToolComposition({
+        builtinTools: { ...builtinTools, shell },
+        hostTools,
+        worktreePatchWriteBackAvailable: true,
+      }).childTools;
+      const { surface } = await resolveInteractiveToolSurface({
+        connectionRef: sessionExecutionConnectionRef(header),
+        modelId: header.model,
+        hostTools: [],
+        childTools,
       });
+      return { tools: surface.childTools ?? [], shell };
     };
     const subagentCatalog = createConfiguredSubagentCatalog({
       getPresets: async () =>
@@ -823,9 +1018,6 @@ export async function createExecutionRuntimeHostComposition(
       newId: randomUUID,
       now: Date.now,
       safeBoundaryResumeEnabled: process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME === '1',
-      generateSessionTitle: (input) => sessionEffectCoordinator.generateTitle(input),
-      onSessionTitleChanged: (sessionId) =>
-        continuityCoordinator.enqueueCanonicalRefresh(sessionId),
       inspectContinuationSafety: createLocalContinuationSafetyInspector({
         readSessionCwd: async (sessionId) =>
           (await stores.sessionStore.readHeaderSnapshot(sessionId)).cwd,
@@ -839,7 +1031,7 @@ export async function createExecutionRuntimeHostComposition(
             graph.hasLiveSessionState(sessionId),
             hasLiveLinkedDescendantState(
               requireSessionManager(manager),
-              stores.agentRunStore,
+              stores.runtimeEventStore,
               sessionId,
               async (descendantSessionId) =>
                 (await runtimeResources!.hasLiveSessionResources(descendantSessionId)) ||
@@ -868,7 +1060,6 @@ export async function createExecutionRuntimeHostComposition(
       canonicalPermissionOutcomes,
       shellRuns,
       planStore: openedPlanStore,
-      childTools: childAgentTools.childTools,
       resolveChildTools,
       worktreeChildExecutor,
       listArtifactsForTurn: (sessionId, turnId) =>
@@ -895,9 +1086,9 @@ export async function createExecutionRuntimeHostComposition(
     });
     graphCoordinator = new AgentGraphCoordinator({
       sessionStore: stores.sessionStore,
-      runStore: stores.agentRunStore,
       runtimeEventStore: stores.runtimeEventStore,
       controlStore: openedGraphControlStore,
+      epochStore: openedGraphControlStore,
       runtime: manager,
       newId: randomUUID,
       acquireResidency: () => context.acquireResidency('agent-graph'),
@@ -911,10 +1102,12 @@ export async function createExecutionRuntimeHostComposition(
     graphClient = new HostAgentGraphCoordinator({
       authority: graphCoordinator,
       continuity: continuityCoordinator,
-      stopExecution: (rootSessionId) =>
+      stopExecution: (rootSessionId, expectedGraphId) =>
         requireGraphCoordinator(graphCoordinator).stopExecution(rootSessionId, {
+          expectedGraphId,
           stopSupervisor: () =>
             requireRootCoordinator(rootCoordinator).stopAgentGraphSupervisor(rootSessionId, {
+              expectedGraphId,
               source: 'stop_button',
             }),
           withSupervisorWakesSuppressed: (operation) =>
@@ -935,12 +1128,14 @@ export async function createExecutionRuntimeHostComposition(
       observeBackendInvalidation(manager.refreshIdleBackends());
     };
     const registerConfigurationMutation = (): void => {
-      configurationChanges.publish();
+      hostChanges.publishConfiguration();
       registerBackendInvalidation();
     };
     clientCapabilities = new HostClientCapabilityCoordinator({
       activation: runtimePolicyActivation,
       onModelToolsChanged: registerBackendInvalidation,
+      interactions,
+      grants: stores.interactionStore,
     });
     oauth = new HostOAuthCoordinator({
       runtimePolicy: runtimePolicyStores,
@@ -950,7 +1145,7 @@ export async function createExecutionRuntimeHostComposition(
       isProviderEnabled: isOAuthEnrollmentProviderEnabled,
       acquireResidency: () => context.acquireResidency('oauth'),
       invalidateBackends: () => {
-        configurationChanges.publish();
+        hostChanges.publishConfiguration();
         return manager.refreshIdleBackends();
       },
       onFatal: (error) => {
@@ -968,8 +1163,10 @@ export async function createExecutionRuntimeHostComposition(
       context.requestDrain,
       runtimePolicyActivation,
       registerBackendInvalidation,
-      // The authority read behind Usage read-model repair (#1679).
-      (sessionId, runId) => stores.agentRunStore.readEvents(sessionId, runId),
+      // Name the Task column from the durable session header. Reads by id
+      // straight from the session store, so it also names reserved-role,
+      // coordination, and legacy sessions the filtered catalog omits.
+      async (sessionId) => (await stores.sessionStore.readHeaderSnapshot(sessionId)).name,
     );
     const webSearch = new HostWebSearchCoordinator(webSearchService);
     const networkProxy = new HostNetworkProxyCoordinator(runtimePolicyStores.operations);
@@ -979,6 +1176,8 @@ export async function createExecutionRuntimeHostComposition(
       context.requestDrain,
       sessionAdmission,
       stores.sessionStore,
+      Date.now,
+      context.sessionAccessAuthority,
     );
     rootCoordinator = new RootTurnCoordinator(
       manager,
@@ -992,7 +1191,8 @@ export async function createExecutionRuntimeHostComposition(
       context.requestDrain,
       clientCapabilities,
       () => requireGoal(goal),
-      (admission) => requireAutomationCoordinator(automations).assertRecoveryAdmission(admission),
+      (admission, state) =>
+        requireScheduledTasks(scheduledTasks).assertRecoveryAdmission(admission, state),
       artifacts,
       async ({ sessionId, text, skillIds }) => {
         const header = await stores.sessionStore.readHeaderSnapshot(sessionId);
@@ -1007,6 +1207,24 @@ export async function createExecutionRuntimeHostComposition(
           host: buildHostCapabilitiesFromBinding(toolNames),
         });
       },
+      {
+        currentGraphId: (rootSessionId) =>
+          requireGraphCoordinator(graphCoordinator).currentGraphId(rootSessionId),
+        beginNextGraphEpoch: async (rootSessionId) =>
+          (
+            await requireGraphCoordinator(graphCoordinator).beginNextGraphEpoch(
+              rootSessionId,
+              (operation) =>
+                requireGraphSupervisorWake(graphSupervisorWake).runWithSessionWakesSuppressed(
+                  rootSessionId,
+                  operation,
+                  'agent_graph_epoch_advanced',
+                ),
+            )
+          ).graphId,
+      },
+      (input) => sessionEffectCoordinator.nameSessionFromRootMessage(input),
+      context.owner.capability.rootId,
     );
     const coordinator = rootCoordinator;
     const contextOperations = new HostContextCoordinator({
@@ -1024,9 +1242,32 @@ export async function createExecutionRuntimeHostComposition(
       turns: stores.agentRunStore,
       runtime: manager,
     });
+    // Compile-time guarantee that the three Turn coordinators together cover
+    // every key in TURN_OPERATION_SPECS. Domain composition seeds all domain
+    // operations with the operation_unavailable fallback, so a Turn operation
+    // that no coordinator claims would otherwise be swept into that fallback
+    // silently; `satisfies` turns such an omission into a typecheck error here.
+    ({
+      ...turnControl.handlers,
+      ...interactiveTurns.handlers,
+      ...coordinator.handlers,
+    }) satisfies TurnOperationHandlerMap;
+    const turnAccessRequests = context.sessionAccessAuthority
+      ? new SessionTurnAccessRequestCoordinator({
+          authority: context.sessionAccessAuthority,
+          startTurn: interactiveTurns.handlers['turn.start'],
+          regenerateTurn: interactiveTurns.handlers['turn.regenerate'],
+          hostEpoch: context.hostEpoch,
+          acquireResidency: () => context.acquireResidency('collaboration-turn-request'),
+          requestDrain: context.requestDrain,
+          whenIdle: (sessionId) => coordinator.whenIdle(sessionId),
+        })
+      : undefined;
     const graphExecutions = new HostAgentGraphExecutionCoordinator({
       executions: coordinator,
       runtime: manager,
+      currentGraphId: (rootSessionId) =>
+        requireGraphCoordinator(graphCoordinator).currentGraphId(rootSessionId),
     });
     graphSupervisorWake = new AgentGraphSupervisorWakeCoordinator({
       activityRegistry: graphWakeActivities,
@@ -1036,15 +1277,24 @@ export async function createExecutionRuntimeHostComposition(
       startTurn: (sessionId, input, _activity, abortSignal, isCurrent) =>
         graphExecutions.run(sessionId, input, abortSignal, isCurrent),
       inspectAttempt: async (rootSessionId, attemptId, turnId) => {
-        const runs = (await stores.agentRunStore.listSessionRuns(rootSessionId)).filter(
-          (run) => run.agentGraphWakeAttemptId === attemptId && run.turnId === turnId,
+        const runs = (await stores.runtimeEventStore.listSessionInvocations(rootSessionId)).filter(
+          (run) => {
+            const root = run.opening.root;
+            return (
+              root.kind === 'agent_graph_supervisor_wake' &&
+              root.attemptId === attemptId &&
+              run.turnId === turnId
+            );
+          },
         );
         if (runs.length > 1) {
           throw new Error(
             `Agent graph supervisor wake attempt ${attemptId} has multiple AgentRuns`,
           );
         }
-        return runs[0]?.status ?? 'missing';
+        const attempt = runs[0];
+        if (!attempt) return 'missing';
+        return runtimeInvocationOutcome(attempt) ?? 'running';
       },
       recoverContextOverflow: (rootSessionId, { abortSignal }) =>
         graphExecutions.recoverContextOverflow(rootSessionId, randomUUID(), abortSignal),
@@ -1054,7 +1304,7 @@ export async function createExecutionRuntimeHostComposition(
       isSessionDeliverable: async (sessionId) => {
         try {
           const header = await stores.sessionStore.readHeaderSnapshot(sessionId);
-          return !header.isArchived && header.status !== 'archived';
+          return !header.isArchived;
         } catch (error) {
           if (isSessionNotFoundError(error)) return false;
           throw error;
@@ -1063,26 +1313,6 @@ export async function createExecutionRuntimeHostComposition(
       acquireResidency: () => context.acquireResidency('agent-graph-supervisor'),
       onError: () => context.requestDrain(),
     });
-    automations = new HostAutomationCoordinator({
-      store: openedAutomationStore,
-      sessions: stores.sessionStore,
-      runs: stores.agentRunStore,
-      runtime: manager,
-      root: coordinator,
-      runtimePolicy: runtimePolicyStores,
-      clientCapabilities,
-      isSessionActive: (sessionId) => coordinator.readRootState(sessionId).kind !== 'idle',
-      sessionAdmission,
-      acquireResidency: () => context.acquireResidency('automation'),
-      requestDrain: context.requestDrain,
-    });
-    // Unified 定时任务 catalog (agent + desktop). Heartbeat stays on Automation.
-    scheduledTaskAuthority = new HostScheduledTaskAuthority({
-      sessions: stores.sessionStore,
-      clientCapabilities,
-    });
-    await scheduledTaskAuthority.ready();
-    scheduledTaskTool = buildScheduledTaskTool({ authority: scheduledTaskAuthority });
     const goalExecutionCoordinator = new HostGoalExecutionCoordinator({
       executions: coordinator,
       runtime: manager,
@@ -1098,23 +1328,12 @@ export async function createExecutionRuntimeHostComposition(
       evaluator: createHostGoalEvaluator({
         runtimePolicy: runtimePolicyStores,
         oauthCredentials,
-        claudeDeviceId: context.owner.capability.rootId,
         usage: openedUsageStores,
         requestDrain: context.requestDrain,
         readSessionHeader: (sessionId) => stores.sessionStore.readHeaderSnapshot(sessionId),
       }),
       admitTurn: (sessionId, text, checkpoint, controlLease) =>
         goalExecutionCoordinator.admitTurn(sessionId, text, checkpoint, controlLease),
-      listActionableTaskKeys: async (sessionId) => {
-        const tasks = await taskLedger.list(sessionId, {
-          includeTerminal: false,
-          includeArchived: false,
-          classifyResumeTrust: true,
-        });
-        return filterModelVisibleTaskLedgerTasks(tasks)
-          .filter((task) => task.status === 'pending' || task.status === 'in_progress')
-          .map((task) => task.key);
-      },
       acquireResidency: () => context.acquireResidency('goal'),
       onProjectionChanged: (sessionId) => continuityCoordinator.enqueueCanonicalRefresh(sessionId),
       requestDrain: context.requestDrain,
@@ -1142,7 +1361,223 @@ export async function createExecutionRuntimeHostComposition(
       continuity: continuityCoordinator,
       workspaceResolver,
       requestDrain: context.requestDrain,
+      ...(context.sessionAccessAuthority
+        ? { sessionAccessAuthority: context.sessionAccessAuthority }
+        : {}),
     });
+    const workHubCoordination = new HostWorkHubCoordinationCoordinator({
+      stateRoot: context.owner.capability.canonicalPath,
+      stores: stores.sessionStore,
+      admission: sessionAdmission,
+      continuity: continuityCoordinator,
+      executions: coordinator,
+      sessionActions: {
+        readDelegationRetirement: async (assignment) => {
+          const disposition = await messages.readMessageExecutionDisposition(
+            assignment.targetSessionId,
+            assignment.targetMessageId,
+          );
+          if (disposition.kind === 'recovering') return 'recovering';
+          if (disposition.kind === 'pending') return 'not_retired';
+          if (disposition.kind === 'cancelled' || disposition.kind === 'shared_turn') {
+            return 'retired';
+          }
+          const identity = {
+            sessionId: assignment.targetSessionId,
+            turnId: disposition.turnId,
+            runId: disposition.runId,
+          };
+          if (isActiveWorkHubRoot(coordinator, identity)) return 'not_retired';
+          // The same restart window as `stopOwnedWorkHubRoot`: an unregistered
+          // root is not evidence that its work ended.
+          const snapshot = await coordinator.read(identity);
+          return isHostedExecutionTerminal(snapshot) ? 'retired' : 'recovering';
+        },
+        retireDelegation: async (assignment, retirement) => {
+          const disposition = await messages.cancelMessageIfPending(
+            assignment.targetSessionId,
+            assignment.targetMessageId,
+            retirement.cancellationClaimId,
+          );
+          if (disposition.kind === 'recovering') {
+            return { outcome: 'recovering' as const };
+          }
+          if (disposition.kind === 'cancelled') {
+            return { outcome: 'already_terminal' as const };
+          }
+          if (disposition.kind === 'cancelled_pending') {
+            return { outcome: 'cancelled_pending' as const };
+          }
+          if (disposition.kind === 'shared_turn') {
+            return { outcome: 'not_owned' as const, targetTurnId: disposition.turnId };
+          }
+          if (disposition.kind === 'owned_root') {
+            const identity = {
+              sessionId: assignment.targetSessionId,
+              turnId: disposition.turnId,
+              runId: disposition.runId,
+            };
+            return retirement.cause === 'direct_stop'
+              ? stopOwnedWorkHubRoot(coordinator, identity, retirement.cancellationClaimId)
+              : stopReplacedWorkHubRoot(coordinator, identity);
+          }
+          disposition satisfies never;
+          throw new Error('Unhandled WorkHub Message retirement disposition');
+        },
+        assign: async (input) => {
+          const durable = await stores.sessionStore.readWorkHubAssignment(input.actionId);
+          if (durable) {
+            await messages.consumePendingAdmissions([durable.targetSessionId]);
+          }
+          const create =
+            !durable && input.create
+              ? await sessionCatalog.prepareWorkHubCreate({
+                  sessionId: input.targetSessionId,
+                  workspace: input.create.workspace,
+                  name: input.create.title,
+                  modelTarget: { kind: 'default' },
+                  collaborationMode: 'agent',
+                  orchestrationMode: 'default',
+                })
+              : undefined;
+          const suffix = createHash('sha256')
+            .update(input.actionId, 'utf8')
+            .digest('hex')
+            .slice(0, 48);
+          const messageId = `whm_${suffix}`;
+          const content = normalizeMessageContent({ text: input.userText });
+          const persisted =
+            durable ??
+            (await sessionAdmission.runMany(
+              [WORKHUB_COORDINATION_SESSION_ID, input.targetSessionId],
+              async (lease) => {
+                const rootState = coordinator.readRootState(input.targetSessionId);
+                if (!create && rootState.kind === 'reserved') {
+                  throw new WorkHubActionEffectFailure(
+                    'session_busy',
+                    'A target root Turn is being admitted',
+                  );
+                }
+                const steered = rootState.kind === 'active';
+                const turnId = steered ? rootState.turnId : `wht_${suffix}`;
+                const runId = steered ? rootState.runId : `whr_${suffix}`;
+                const assignedAt = Date.now();
+                const delegationId = `whd_${suffix}`;
+                const supersession =
+                  input.replacesActionId && input.replacesDelegationId
+                    ? {
+                        type: 'workhub_coordination' as const,
+                        id: `whx_${createHash('sha256')
+                          .update(input.replacesDelegationId, 'utf8')
+                          .digest('hex')
+                          .slice(0, 48)}`,
+                        turnId: input.actionId,
+                        ts: assignedAt,
+                        schemaVersion: WORKHUB_COORDINATION_REPLACEMENT_SCHEMA_VERSION,
+                        kind: 'delegation_superseded' as const,
+                        actionId: input.actionId,
+                        actionFingerprint: input.actionFingerprint,
+                        coordinationTurnId: input.actionId,
+                        supersededActionId: input.replacesActionId,
+                        supersededDelegationId: input.replacesDelegationId,
+                        replacementDelegationId: delegationId,
+                      }
+                    : undefined;
+                const result = await stores.sessionStore.assignWorkHubMessage({
+                  assignment: {
+                    type: 'workhub_coordination',
+                    id: `wha_${suffix}`,
+                    turnId: input.actionId,
+                    ts: assignedAt,
+                    schemaVersion: supersession
+                      ? WORKHUB_COORDINATION_REPLACEMENT_SCHEMA_VERSION
+                      : 1,
+                    kind: 'delegation_assigned',
+                    actionId: input.actionId,
+                    actionFingerprint: input.actionFingerprint,
+                    coordinationTurnId: input.actionId,
+                    targetSessionId: input.targetSessionId,
+                    targetSessionName: input.targetSessionName,
+                    targetTurnId: turnId,
+                    targetMessageId: messageId,
+                    delegationId,
+                    disposition: input.disposition,
+                    userText: input.userText,
+                    ...(steered ? { steered: true as const } : {}),
+                    ...(input.create ? { create: input.create } : {}),
+                    ...(input.replacesActionId && input.replacesDelegationId
+                      ? {
+                          replacesActionId: input.replacesActionId,
+                          replacesDelegationId: input.replacesDelegationId,
+                        }
+                      : {}),
+                  },
+                  admission: {
+                    sessionId: input.targetSessionId,
+                    turnId,
+                    runId,
+                    messageId,
+                    content,
+                    submittedContentDigest: messageContentDigest(content),
+                    submittedPlacement: 'current_turn',
+                    placement: 'current_turn',
+                    disposition: 'steering',
+                    skillInvocation: { loaded: [], failed: [], receipts: [] },
+                    admittedAt: assignedAt,
+                  },
+                  ...(create ? { create } : {}),
+                  ...(supersession ? { supersession } : {}),
+                });
+                // Keep the durable steering identity and its live queue owner
+                // under one Session admission. A terminal transition must not
+                // observe the committed Message before the queue does.
+                await messages.consumePendingAdmissionsAdmitted(input.targetSessionId, lease);
+                try {
+                  await continuityCoordinator.refreshCanonical(
+                    WORKHUB_COORDINATION_SESSION_ID,
+                    lease,
+                  );
+                  await continuityCoordinator.refreshCanonical(input.targetSessionId, lease);
+                } catch {
+                  // The atomic assignment is already committed. Projection
+                  // refresh is rebuildable and must not reject the action.
+                }
+                return result.assignment;
+              },
+            ));
+
+          return {
+            turnId: persisted.targetTurnId,
+            ...(persisted.steered ? { steered: true as const } : {}),
+          };
+        },
+      },
+      resolveCreateTarget: async () => {
+        const { projectId: _projectId, ...target } =
+          await sessionCatalog.resolveExternalSessionImportTarget();
+        return { ...target, permissionMode: 'explore' };
+      },
+      requestDrain: context.requestDrain,
+    });
+    scheduledTasks = new HostScheduledTaskCoordinator({
+      store: openedScheduledTaskStore,
+      sessions: stores.sessionStore,
+      runtime: manager,
+      root: coordinator,
+      runtimePolicy: runtimePolicyStores,
+      nativeEffects: clientCapabilities,
+      createSession: (input) => sessionCatalog.createForHost(input),
+      changes: {
+        publish: (
+          revision: number,
+          reason: Parameters<HostChangeFeed['publishScheduledTask']>[1],
+          taskId: string,
+        ) => hostChanges.publishScheduledTask(revision, reason, taskId),
+      },
+      acquireResidency: () => context.acquireResidency('scheduled-task'),
+      requestDrain: context.requestDrain,
+    });
+    scheduledTaskTool = scheduledTasks.modelTool;
     const externalSessions = new HostExternalSessionCoordinator({
       adapters: createExternalSessionAdapterRegistry(),
       admission: sessionAdmission,
@@ -1154,6 +1589,7 @@ export async function createExecutionRuntimeHostComposition(
       discardImportedSession: async (sessionId) => {
         const outcomes = await Promise.allSettled([
           stores.purgeConversationOperationalState(sessionId),
+          sessionTodoStore.purgeSessionState(sessionId),
           stores.sessionStore.remove(sessionId),
         ]);
         for (const outcome of outcomes) {
@@ -1179,7 +1615,8 @@ export async function createExecutionRuntimeHostComposition(
     const sessionRevisions = new HostSessionRevisionCoordinator({
       stores,
       artifacts: openedArtifactStore,
-      taskLedger: taskLedgerStore,
+      sessionTodo: sessionTodoStore,
+      ...(contextOffloadAuthority ? { contextOffload: contextOffloadAuthority } : {}),
       manager,
       admission: sessionAdmission,
       continuity: continuityCoordinator,
@@ -1194,7 +1631,7 @@ export async function createExecutionRuntimeHostComposition(
       messages,
       interactions,
       goals: requireGoal(goal),
-      automation: automations,
+      scheduledTasks,
       resources: runtimeResources,
       sessionEffects: sessionEffectCoordinator,
       graph: requireGraphCoordinator(graphCoordinator),
@@ -1203,23 +1640,66 @@ export async function createExecutionRuntimeHostComposition(
       capabilities: clientCapabilities,
       continuity: continuityCoordinator,
       artifacts: openedArtifactStore,
-      taskLedger: taskLedgerStore,
+      sessionTodo: sessionTodoStore,
+      ...(contextOffloadAuthority ? { contextOffload: contextOffloadAuthority } : {}),
       purgeOperationalState: async (sessionId) => {
         await stores.purgeConversationOperationalState(sessionId);
         await openedPlanStore.purgeSessionState(sessionId);
         await openedDeepResearchStore.purgeSessionState(sessionId);
       },
       purgeAgentGraphState: async (sessionId) => {
-        await openedGraphControlStore.purgeAgentGraphControlState(
-          agentGraphIdForRootSession(sessionId),
-        );
+        for (const graphId of await requireGraphCoordinator(graphCoordinator).listGraphIds(
+          sessionId,
+        )) {
+          await openedGraphControlStore.purgeAgentGraphControlState(graphId);
+        }
+        await openedGraphControlStore.purgeAgentGraphEpochs(sessionId);
       },
       worktrees: worktreeChildExecutor,
       requestDrain: context.requestDrain,
       memoryExtractionLane,
     });
+    const hostedExecutionRunner = new HostHostedExecutionRunner({
+      handlers: {
+        'session.create': sessionCatalog.handlers['session.create'],
+        'turn.start': interactiveTurns.handlers['turn.start'],
+        'turn.query': turnControl.handlers['turn.query'],
+        'turn.stop': turnControl.handlers['turn.stop'],
+        'usage.query': usagePricing.handlers['usage.query'],
+      },
+      context: {
+        hostEpoch: context.hostEpoch,
+        connectionId: 'hosted-execution',
+        principal: 'runtime_host',
+        acquireResidency: () => context.acquireResidency('hosted-execution'),
+      },
+      requestDrain: context.requestDrain,
+      waitForExecutionResidencies: () => {
+        if (!context.waitForResidenciesExcept) {
+          throw new Error('Runtime Host execution settlement barrier is unavailable');
+        }
+        return context.waitForResidenciesExcept('runtime-resource');
+      },
+      waitForAllResidencies: () => {
+        if (!context.waitForResidencies) {
+          throw new Error('Runtime Host complete settlement barrier is unavailable');
+        }
+        return context.waitForResidencies();
+      },
+    });
+    const hostedExecutions = new HostHostedExecutionCoordinator(
+      (input, signal) => hostedExecutionRunner.run(input, signal),
+      context.requestDrain,
+    );
     let recoverySessions: Awaited<ReturnType<typeof stores.sessionStore.listForRecovery>> = [];
     domainModules = [
+      createRuntimeHostDomainModule({
+        id: 'plugin-platform',
+        handlers: [pluginPlatformCoordinator.handlers],
+        recovery: { state: () => pluginPlatform!.recover() },
+        drain: [() => pluginPlatform!.beginDrain()],
+        close: [() => pluginPlatform!.close()],
+      }),
       createRuntimeHostDomainModule({
         id: 'memory',
         handlers: [requireMemory(memory).handlers],
@@ -1227,11 +1707,7 @@ export async function createExecutionRuntimeHostComposition(
           state: () => requireMemory(memory).recover(),
         },
         drain: [() => memoryExtraction?.beginDrain(), () => memory?.beginDrain()],
-        close: [
-          () => memoryExtraction?.close(),
-          () => memory?.close(),
-          () => longTermMemoryStore?.close(),
-        ],
+        close: [() => memoryExtraction?.close(), () => memory?.close()],
         releaseConnection: [
           (connectionId) => requireMemory(memory).releaseConnection(connectionId),
         ],
@@ -1239,12 +1715,10 @@ export async function createExecutionRuntimeHostComposition(
       createRuntimeHostDomainModule({
         id: 'plan',
         handlers: [plans.handlers],
-        close: [() => openedPlanStore.close()],
       }),
       createRuntimeHostDomainModule({
         id: 'project-catalog',
         handlers: [projects.handlers],
-        close: [() => openedProjectCatalog.close()],
       }),
       createRuntimeHostDomainModule({
         id: 'session',
@@ -1266,14 +1740,17 @@ export async function createExecutionRuntimeHostComposition(
             }
           },
         },
-        close: [() => stores.sessionStore.close?.()],
+      }),
+      createRuntimeHostDomainModule({
+        id: 'workhub',
+        handlers: [workHubCoordination.handlers],
       }),
       createRuntimeHostDomainModule({
         id: 'configuration',
         handlers: [
           runtimePolicy.handlers,
           connectionEffects.handlers,
-          taskLedger.handlers,
+          sessionTodo.handlers,
           artifacts.handlers,
           skills.handlers,
           usagePricing.handlers,
@@ -1286,6 +1763,21 @@ export async function createExecutionRuntimeHostComposition(
           state: async () => {
             await skills.recover();
             await openedArtifactStore.recover();
+            // Only now: a write authority refuses every mutation until it has
+            // recovered, and the sweep gives up on its first failure.
+            stopRetiredCaptureSweep = startRetiredCaptureSweep(storage.artifacts, {
+              onError: async (error) => {
+                console.error(
+                  `[runtime-host] retired provider-request captures could not be reclaimed: ${generalizedErrorMessage(error)}`,
+                );
+                // A purge that fails part way leaves the write authority
+                // refusing every mutation until something recovers it -- not
+                // just this sweep's, but the live turn's tool results and the
+                // user's uploads. Recovering here is what hands those back,
+                // and it replays the purge intent the failed batch left.
+                await openedArtifactStore.recover();
+              },
+            });
           },
         },
         drain: [
@@ -1294,17 +1786,16 @@ export async function createExecutionRuntimeHostComposition(
           () => oauth?.beginDrain(),
         ],
         close: [
+          () => modelMetadataRefresh?.close(),
           () => connectionEffects.close(),
           () => (backendInvalidationPoisoned ? undefined : manager.refreshIdleBackends()),
           () => skills.close(),
           () => oauth?.close(),
-          () => openedUsageStores.close(),
-          () => openedArtifactStore.close(),
           () => {
-            unsubscribeTaskLedger?.();
-            taskLedgerStore?.close();
+            unsubscribeTranscriptChanges?.();
+            unsubscribeUsageChanges?.();
+            stopRetiredCaptureSweep?.();
           },
-          () => shellRunStore?.close(),
         ],
         releaseConnection: [(connectionId) => artifacts.releaseConnection(connectionId)],
       }),
@@ -1325,7 +1816,7 @@ export async function createExecutionRuntimeHostComposition(
       createRuntimeHostDomainModule({
         id: 'deep-research',
         handlers: [requireDeepResearch(deepResearch).handlers],
-        close: [() => deepResearch?.close(), () => openedDeepResearchStore.close()],
+        close: [() => deepResearch?.close()],
       }),
       createRuntimeHostDomainModule({
         id: 'daily-review',
@@ -1338,19 +1829,15 @@ export async function createExecutionRuntimeHostComposition(
         close: [() => requireDailyReview(dailyReview).close()],
       }),
       createRuntimeHostDomainModule({
-        id: 'automation',
-        handlers: [requireAutomationCoordinator(automations).handlers],
+        id: 'scheduled-task',
+        handlers: [requireScheduledTasks(scheduledTasks).handlers],
         recovery: {
-          executions: () => requireAutomationCoordinator(automations).prepareRecovery(),
-          domains: () => requireAutomationCoordinator(automations).recover(),
-          schedulers: () => requireAutomationCoordinator(automations).start(),
+          executions: () => requireScheduledTasks(scheduledTasks).prepareRecovery(),
+          domains: () => requireScheduledTasks(scheduledTasks).recover(),
+          schedulers: () => requireScheduledTasks(scheduledTasks).start(),
         },
-        drain: [() => automations?.beginDrain()],
-        close: [
-          () => automations?.close(),
-          () => openedAutomationStore.close(),
-          () => scheduledTaskAuthority?.close(),
-        ],
+        drain: [() => scheduledTasks?.beginDrain()],
+        close: [() => scheduledTasks?.close()],
       }),
       createRuntimeHostDomainModule({
         id: 'execution',
@@ -1377,10 +1864,15 @@ export async function createExecutionRuntimeHostComposition(
               ),
             );
             await coordinator.recover();
+            await messages.recoverPendingAfterHostRestart(
+              recoverySessions.map((session) => session.id),
+            );
+            await turnAccessRequests?.recover();
             rootRecoveryCompleted = true;
           },
         },
         drain: [
+          () => turnAccessRequests?.beginDrain(),
           () => rootCoordinator?.beginDrain(),
           () => workspaceExecution?.beginDrain(),
           () => runtimeResources?.beginDrain(),
@@ -1399,6 +1891,7 @@ export async function createExecutionRuntimeHostComposition(
           () => sessionEffects?.close(),
           () => messages.close(),
           () => interactions.close(),
+          () => turnAccessRequests?.close(),
           () => continuityCoordinator.close(),
         ],
         releaseConnection: [(connectionId) => runtimeResources?.releaseConnection(connectionId)],
@@ -1412,6 +1905,7 @@ export async function createExecutionRuntimeHostComposition(
             await requireGraphCoordinator(graphCoordinator).recover();
           },
         },
+        drain: [() => graphSupervisorWake?.beginDrain(), () => graphCoordinator?.beginDrain()],
         close: [
           () => graphSupervisorWake?.close(),
           () => graphClient?.close(),
@@ -1427,7 +1921,7 @@ export async function createExecutionRuntimeHostComposition(
           domains: () => requireGoal(goal).recover(),
         },
         drain: [() => goalExecutions?.beginDrain(), () => goal?.beginDrain()],
-        close: [() => requireGoal(goal).close(), () => openedGoalStore.close()],
+        close: [() => requireGoal(goal).close()],
       }),
       createRuntimeHostDomainModule({
         id: 'session-retirement',
@@ -1436,6 +1930,12 @@ export async function createExecutionRuntimeHostComposition(
           state: () => sessionRetirement.recover(),
         },
         close: [() => sessionRetirement.close()],
+      }),
+      createRuntimeHostDomainModule({
+        id: 'hosted-execution',
+        handlers: [hostedExecutions.handlers],
+        drain: [() => hostedExecutions.beginDrain()],
+        close: [() => hostedExecutions.close()],
       }),
     ];
     if (draining) beginDrain();
@@ -1458,6 +1958,11 @@ export async function createExecutionRuntimeHostComposition(
         } catch (error) {
           errors.push(error);
         }
+        try {
+          await storage.close();
+        } catch (error) {
+          errors.push(error);
+        }
         if (poisonFailure && !errors.includes(poisonFailure)) errors.push(poisonFailure);
         if (errors.length > 0) {
           throw new AggregateError(errors, 'Unable to close Runtime Host execution composition');
@@ -1469,11 +1974,10 @@ export async function createExecutionRuntimeHostComposition(
       handlers,
       moduleIds: Object.freeze(domainModules.map(({ id }) => id)),
       workspaceExecution: requireWorkspaceExecution(workspaceExecution),
+      plugins: pluginPlatform,
       continuity: continuityCoordinator,
       clientCapabilities,
-      configurationChanges,
-      projectCatalogChanges,
-      sessionCatalogChanges,
+      hostChanges,
       releaseConnection: (connectionId: string) => {
         for (const module of domainModules) module.releaseConnection?.(connectionId);
       },
@@ -1483,25 +1987,24 @@ export async function createExecutionRuntimeHostComposition(
     };
   } catch (error) {
     const errors: unknown[] = [error];
+    try {
+      await modelMetadataRefresh?.close();
+    } catch (closeError) {
+      errors.push(closeError);
+    }
+    try {
+      await pluginPlatform?.close();
+    } catch (closeError) {
+      errors.push(closeError);
+    }
     goalExecutions?.beginDrain();
     try {
       await workspaceExecution?.close();
-      if (!workspaceExecution) await managedWorkspaceOwner?.close();
     } catch (closeError) {
       errors.push(closeError);
     }
     try {
       await sessionEffects?.close();
-    } catch (closeError) {
-      errors.push(closeError);
-    }
-    try {
-      dailyReviewStore?.close();
-    } catch (closeError) {
-      errors.push(closeError);
-    }
-    try {
-      deepResearchStore?.close();
     } catch (closeError) {
       errors.push(closeError);
     }
@@ -1516,23 +2019,8 @@ export async function createExecutionRuntimeHostComposition(
       errors.push(closeError);
     }
     try {
-      await usageStores?.close();
-    } catch (closeError) {
-      errors.push(closeError);
-    }
-    try {
-      artifactStore?.close();
-    } catch (closeError) {
-      errors.push(closeError);
-    }
-    try {
-      unsubscribeTaskLedger?.();
-      taskLedgerStore?.close();
-    } catch (closeError) {
-      errors.push(closeError);
-    }
-    try {
-      shellRunStore?.close();
+      unsubscribeTranscriptChanges?.();
+      unsubscribeUsageChanges?.();
     } catch (closeError) {
       errors.push(closeError);
     }
@@ -1542,38 +2030,93 @@ export async function createExecutionRuntimeHostComposition(
       errors.push(closeError);
     }
     try {
-      longTermMemoryStore?.close();
-    } catch (closeError) {
-      errors.push(closeError);
-    }
-    try {
-      automationStore?.close();
-    } catch (closeError) {
-      errors.push(closeError);
-    }
-    try {
-      await goalStore?.close();
-    } catch (closeError) {
-      errors.push(closeError);
-    }
-    try {
-      planStore?.close();
-    } catch (closeError) {
-      errors.push(closeError);
-    }
-    try {
-      projectCatalog?.close();
-    } catch (closeError) {
-      errors.push(closeError);
-    }
-    try {
-      await stores.sessionStore.close?.();
+      await storage.close();
     } catch (closeError) {
       errors.push(closeError);
     }
     if (errors.length === 1) throw error;
     throw new AggregateError(errors, 'Unable to clean up Runtime Host execution composition');
   }
+}
+
+/**
+ * Confirmed direct stop. The action-derived abort source is written onto the
+ * exact root Turn so a retry after a crash can tell WorkHub's own delivery
+ * apart from an earlier or concurrent manual Stop.
+ */
+export async function stopOwnedWorkHubRoot(
+  coordinator: Pick<RootTurnCoordinator, 'readRootState' | 'read' | 'stopRoot'>,
+  identity: { readonly sessionId: string; readonly turnId: string; readonly runId: string },
+  actionId: string,
+): Promise<{
+  readonly outcome: 'stop_delivered' | 'already_terminal' | 'recovering';
+  readonly targetTurnId: string;
+}> {
+  if (isActiveWorkHubRoot(coordinator, identity)) {
+    await coordinator.stopRoot(identity, {
+      source: 'workhub_direct_stop',
+      workHubActionId: actionId,
+    });
+  }
+  const terminal = await coordinator.read(identity);
+  if (
+    terminal.status === 'cancelled' &&
+    terminal.abortSource === workHubDirectStopAbortSource(actionId)
+  ) {
+    return { outcome: 'stop_delivered', targetTurnId: identity.turnId };
+  }
+  // Registration is in-memory, so between Host restart and execution recovery
+  // this root looks inactive while it is still running. `already_terminal` is
+  // committed as an immutable fact, so only a durably terminal snapshot may
+  // claim it; anything else is still resolving.
+  return isHostedExecutionTerminal(terminal)
+    ? { outcome: 'already_terminal', targetTurnId: identity.turnId }
+    : { outcome: 'recovering', targetTurnId: identity.turnId };
+}
+
+/**
+ * Route correction retiring the root it is replacing. It carries its own
+ * cancellation claim, but it is not a direct stop: recording direct-stop
+ * provenance here would let replay mistake a correction for one, so the
+ * retirement keeps the neutral Stop source ordinary supersession has always
+ * used.
+ */
+export async function stopReplacedWorkHubRoot(
+  coordinator: Pick<RootTurnCoordinator, 'readRootState' | 'read' | 'stopRoot'>,
+  identity: { readonly sessionId: string; readonly turnId: string; readonly runId: string },
+): Promise<{
+  readonly outcome: 'stop_delivered' | 'already_terminal';
+  readonly targetTurnId: string;
+}> {
+  if (!isActiveWorkHubRoot(coordinator, identity)) {
+    return { outcome: 'already_terminal', targetTurnId: identity.turnId };
+  }
+  await coordinator.stopRoot(identity);
+  return { outcome: 'stop_delivered', targetTurnId: identity.turnId };
+}
+
+function isActiveWorkHubRoot(
+  coordinator: Pick<RootTurnCoordinator, 'readRootState'>,
+  identity: { readonly sessionId: string; readonly turnId: string; readonly runId: string },
+): boolean {
+  const rootState = coordinator.readRootState(identity.sessionId);
+  return (
+    rootState.kind === 'active' &&
+    rootState.turnId === identity.turnId &&
+    rootState.runId === identity.runId
+  );
+}
+
+function sessionExecutionConnectionRef(
+  header: Pick<SessionHeader, 'llmConnectionId' | 'llmConnectionSlug'>,
+): ExecutionConnectionRef {
+  return header.llmConnectionId === undefined
+    ? { kind: 'catalog_slug', connectionSlug: header.llmConnectionSlug }
+    : {
+        kind: 'bound',
+        connectionId: header.llmConnectionId,
+        connectionSlug: header.llmConnectionSlug,
+      };
 }
 
 function requireRootCoordinator(coordinator: RootTurnCoordinator | undefined): RootTurnCoordinator {
@@ -1588,12 +2131,17 @@ function requireWorkspaceExecution(
   return composition;
 }
 
-function adaptManagedWorkspaceFilesystemWorker(
+function adaptWorkspaceFilesystemWorker(
   worker: Pick<FilesystemWorkerClient, 'execute'>,
-): ManagedWorkspaceFilesystemWorker {
+): RuntimeHostWorkspaceFilesystemWorker {
   return {
     async execute(input) {
-      const result = await worker.execute(input);
+      // Read-only operations never participate in CAS; the adapter says so
+      // explicitly (#3484) instead of relying on an absent optional field.
+      const result = await worker.execute({
+        ...input,
+        expectedIdentity: 'unchecked',
+      });
       switch (result.kind) {
         case 'read':
         case 'read_image':
@@ -1673,10 +2221,10 @@ function requireNewSessionToolNameResolver(
   return resolver;
 }
 
-function requireAutomationCoordinator(
-  coordinator: HostAutomationCoordinator | undefined,
-): HostAutomationCoordinator {
-  if (!coordinator) throw new Error('Runtime Host Automation coordinator is not composed');
+function requireScheduledTasks(
+  coordinator: HostScheduledTaskCoordinator | undefined,
+): HostScheduledTaskCoordinator {
+  if (!coordinator) throw new Error('Runtime Host ScheduledTask coordinator is not composed');
   return coordinator;
 }
 
@@ -1727,11 +2275,23 @@ function requireGoal(coordinator: HostGoalCoordinator | undefined): HostGoalCoor
   return coordinator;
 }
 
+/** Every run this Session has opened, named by the event spine that defines it. */
+async function sessionRunIds(
+  runtimeEventStore: SessionInvocationLister,
+  sessionId: string,
+): Promise<string[]> {
+  return (await runtimeEventStore.listSessionInvocations(sessionId)).map(
+    (invocation) => invocation.runId,
+  );
+}
+
+interface SessionInvocationLister {
+  listSessionInvocations(sessionId: string): Promise<readonly RuntimeInvocationRecord[]>;
+}
+
 async function hasLiveLinkedDescendantState(
   manager: SessionManager,
-  runStore: {
-    listSessionRuns(sessionId: string): Promise<readonly { status: string }[]>;
-  },
+  runtimeEventStore: SessionInvocationLister,
   rootSessionId: string,
   hasLiveSessionState: (sessionId: string) => Promise<boolean>,
 ): Promise<boolean> {
@@ -1745,20 +2305,12 @@ async function hasLiveLinkedDescendantState(
       seen.add(child.id);
       pending.push(child.id);
       const [runs, liveState] = await Promise.all([
-        runStore.listSessionRuns(child.id),
+        runtimeEventStore.listSessionInvocations(child.id),
         hasLiveSessionState(child.id),
       ]);
       if (liveState) return true;
-      if (
-        runs.some(
-          (run) =>
-            run.status === 'created' ||
-            run.status === 'running' ||
-            run.status === 'waiting_for_user',
-        )
-      ) {
-        return true;
-      }
+      // A run whose events never closed it is still live.
+      if (runs.some((run) => runtimeInvocationOutcome(run) === undefined)) return true;
     }
   }
   return false;

@@ -1,3 +1,23 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -17,7 +37,6 @@ import {
   type SkillCatalogPreviewUpdateResult,
   type SkillCatalogRevision,
 } from '../protocol/index.js';
-import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import { SkillCatalogRepository } from '../server/skill-catalog-repository.js';
 
 const REVISION = `sha256:${'a'.repeat(64)}` as SkillCatalogRevision;
@@ -64,70 +83,36 @@ export type SkillCatalogManagedUpdateMutationTypeContract = [
 ];
 
 describe('Runtime Host Skill catalog protocol', () => {
-  test('declares the four frozen ready operations and their error sets', () => {
-    assert.deepEqual(Object.keys(SKILL_CATALOG_OPERATION_SPECS).sort(), [
-      'skill.catalog.invocable.query',
-      'skill.catalog.mutate',
-      'skill.catalog.preview-update',
-      'skill.catalog.query',
-    ]);
-    const queryErrors = [
-      'host_not_ready',
-      'host_draining',
-      'operation_unavailable',
-      'invalid_request',
-      'persistence_failed',
-      'internal_failure',
-    ];
-    assert.deepEqual(
-      {
-        mode: SKILL_CATALOG_OPERATION_SPECS['skill.catalog.invocable.query'].mode,
-        availability: SKILL_CATALOG_OPERATION_SPECS['skill.catalog.invocable.query'].availability,
-        errors: SKILL_CATALOG_OPERATION_SPECS['skill.catalog.invocable.query'].errors,
-      },
-      { mode: 'query', availability: 'ready', errors: queryErrors },
-    );
-    assert.deepEqual(
-      {
-        mode: SKILL_CATALOG_OPERATION_SPECS['skill.catalog.query'].mode,
-        availability: SKILL_CATALOG_OPERATION_SPECS['skill.catalog.query'].availability,
-        errors: SKILL_CATALOG_OPERATION_SPECS['skill.catalog.query'].errors,
-      },
-      { mode: 'query', availability: 'ready', errors: queryErrors },
-    );
-    assert.deepEqual(
-      {
-        mode: SKILL_CATALOG_OPERATION_SPECS['skill.catalog.preview-update'].mode,
-        availability: SKILL_CATALOG_OPERATION_SPECS['skill.catalog.preview-update'].availability,
-        errors: SKILL_CATALOG_OPERATION_SPECS['skill.catalog.preview-update'].errors,
-      },
-      { mode: 'query', availability: 'ready', errors: queryErrors },
-    );
-    assert.deepEqual(
-      {
-        mode: SKILL_CATALOG_OPERATION_SPECS['skill.catalog.mutate'].mode,
-        availability: SKILL_CATALOG_OPERATION_SPECS['skill.catalog.mutate'].availability,
-        errors: SKILL_CATALOG_OPERATION_SPECS['skill.catalog.mutate'].errors,
-      },
-      {
-        mode: 'command',
-        availability: 'ready',
-        errors: [...queryErrors, 'commit_outcome_unknown'],
-      },
-    );
+  test('only treats explicit Host-path Skill workspaces as Host-path input', () => {
     assert.equal(
       SKILL_CATALOG_OPERATION_SPECS['skill.catalog.query'].usesHostPaths?.({
         kind: 'start',
         context: { workspace: { kind: 'project', projectId: 'project-1' } },
         view: 'governance',
       }),
-      true,
+      false,
     );
     assert.equal(
       SKILL_CATALOG_OPERATION_SPECS['skill.catalog.query'].usesHostPaths?.({
         kind: 'start',
         context: CONTEXT,
         view: 'governance',
+      }),
+      true,
+    );
+    assert.equal(
+      SKILL_CATALOG_OPERATION_SPECS['skill.catalog.mutate'].usesHostPaths?.({
+        context: { workspace: { kind: 'project', projectId: 'project-1' } },
+        expectedRevision: REVISION,
+        mutation: { kind: 'create_starter' },
+      }),
+      false,
+    );
+    assert.equal(
+      SKILL_CATALOG_OPERATION_SPECS['skill.catalog.preview-update'].usesHostPaths?.({
+        context: CONTEXT,
+        expectedRevision: REVISION,
+        ref: 'workspace:legacy:research-brief',
       }),
       true,
     );
@@ -398,8 +383,10 @@ describe('Runtime Host Skill catalog protocol', () => {
       const bundledItems = result.items.filter(
         (item): item is SkillCatalogBundledItem => item.kind === 'bundled',
       );
-      assert.ok(bundledItems.length > 0);
-      assert.ok(bundledItems.some((item) => item.id === 'deep-research'));
+      assert.deepEqual(
+        bundledItems.map((item) => item.id),
+        ['computer-use'],
+      );
       assert.equal(
         bundledItems.every((item) => item.category.length > 0),
         true,

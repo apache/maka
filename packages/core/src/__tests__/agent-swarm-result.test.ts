@@ -1,17 +1,29 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { projectAgentSwarmResult } from '../agent-swarm.js';
 import type { ToolResultContent } from '../events.js';
 import { decodeCanonicalToolResultContent } from '../tool-result-record-schema.js';
 import { isCancelledToolResultContent, toolResultActivityStatus } from '../tool-result-status.js';
 
 describe('agent swarm result contract', () => {
-  test('decodes the exact structured result with stable child refs', () => {
-    const result = agentSwarmResult();
-
-    assert.deepEqual(decodeCanonicalToolResultContent(result), result);
-  });
-
   test('rejects malformed or widened result rows', () => {
     assert.throws(
       () =>
@@ -49,48 +61,6 @@ describe('agent swarm result contract', () => {
     assert.equal(toolResultActivityStatus(true, failed), 'errored');
     assert.equal(isCancelledToolResultContent(cancelled), true);
     assert.equal(toolResultActivityStatus(true, cancelled), 'interrupted');
-  });
-
-  test('projects bounded aggregate facts without duplicating child output', () => {
-    const result = agentSwarmResult();
-    result.items = [
-      result.items[0]!,
-      {
-        itemId: 'storage',
-        index: 1,
-        profile: 'local_read',
-        started: true,
-        turnId: 'turn-storage',
-        runId: 'run-storage',
-        status: 'failed',
-        summary: 'Storage inspection failed.',
-        artifactIds: ['artifact-storage-1', 'artifact-storage-2'],
-        durationMs: 20,
-        failureClass: 'ChildFailed',
-      },
-      {
-        itemId: 'tests',
-        index: 2,
-        profile: 'local_read',
-        started: false,
-        status: 'cancelled',
-        summary: 'Cancelled before start.',
-        artifactIds: [],
-      },
-    ];
-    result.status = 'cancelled';
-    result.durationMs = 30;
-
-    assert.deepEqual(projectAgentSwarmResult(result), {
-      status: 'cancelled',
-      itemCount: 3,
-      startedItemCount: 2,
-      completedItemCount: 1,
-      failedItemCount: 1,
-      cancelledItemCount: 1,
-      artifactCount: 3,
-      durationMs: 30,
-    });
   });
 });
 

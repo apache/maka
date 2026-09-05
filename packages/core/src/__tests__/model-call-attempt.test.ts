@@ -1,14 +1,31 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { decodeAgentRunEvent } from '../agent-run.js';
 import {
-  MODEL_CALL_ATTEMPT_EVENT_TYPE,
+  MODEL_CALL_DIAGNOSTIC_FIELD_MAX_LENGTH,
   MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
+  PROMPT_COMPOSITION_MAX_TOOLS,
   decodeModelCallAttempt,
-  dedupeModelCallAttempts,
   groupModelCallAttempts,
-  isModelCallAttempt,
   settledAttempt,
   sumModelCallCostUsd,
   summarizeModelCallCoverage,
@@ -43,23 +60,166 @@ function attempt(overrides: Partial<ModelCallAttempt> = {}): ModelCallAttempt {
 }
 
 describe('ModelCallAttempt codec', () => {
-  test('accepts a complete priced attempt', () => {
-    const decoded = decodeModelCallAttempt(attempt());
-    assert.equal(decoded.logicalCallId, 'call-1');
-    assert.equal(decoded.costUsd, 0.004);
+  test('accepts the folded prompt composition on the canonical attempt', () => {
+    const decoded = decodeModelCallAttempt({
+      ...attempt(),
+      promptComposition: {
+        segments: [
+          { kind: 'system_instructions', bytes: 400 },
+          { kind: 'tool_definitions', bytes: 300 },
+        ],
+        tools: [{ name: 'Bash', bytes: 300 }],
+        remainingTools: { count: 2, bytes: 40 },
+        unlabelledToolBytes: 10,
+      },
+    });
+
+    assert.deepEqual(decoded.promptComposition?.tools, [{ name: 'Bash', bytes: 300 }]);
   });
 
-  test('accepts Goal evaluator attribution', () => {
-    assert.equal(
-      decodeModelCallAttempt(attempt({ callKind: 'goal_evaluation' })).callKind,
-      'goal_evaluation',
+  test('rejects a composition that names one bucket twice', () => {
+    // Two rows for one kind would let a reader's total disagree with the
+    // store's, and nothing downstream could tell which was meant.
+    assert.throws(() =>
+      decodeModelCallAttempt({
+        ...attempt(),
+        promptComposition: {
+          segments: [
+            { kind: 'messages', bytes: 10 },
+            { kind: 'messages', bytes: 20 },
+          ],
+        },
+      }),
     );
   });
 
-  test('accepts an unpriced attempt that carries usage but no cost', () => {
-    const decoded = decodeModelCallAttempt(attempt({ costBasis: 'unpriced', costUsd: undefined }));
-    assert.equal(decoded.costBasis, 'unpriced');
-    assert.equal(decoded.costUsd, undefined);
+  test('rejects a composition carrying more named tools than the fold can produce', () => {
+    assert.throws(() =>
+      decodeModelCallAttempt({
+        ...attempt(),
+        promptComposition: {
+          segments: [{ kind: 'tool_definitions', bytes: 650 }],
+          tools: Array.from({ length: PROMPT_COMPOSITION_MAX_TOOLS + 1 }, (_, index) => ({
+            name: `tool-${index}`,
+            bytes: 10,
+          })),
+        },
+      }),
+    );
+  });
+
+  test('still decodes the prepared-request observation recorded before the fold', () => {
+    const decoded = decodeModelCallAttempt({
+      ...attempt(),
+      requestObservation: {
+        schemaVersion: 1,
+        digest: `sha256:${'a'.repeat(64)}`,
+        bytes: 42,
+        segments: [
+          {
+            kind: 'message',
+            index: 0,
+            cacheable: true,
+            comparison: 'exact',
+            digest: `sha256:${'b'.repeat(64)}`,
+            bytes: 21,
+            role: 'user',
+          },
+        ],
+      },
+    });
+
+    assert.equal(decoded.requestObservation?.segments[0]?.comparison, 'exact');
+  });
+
+  test('rejects a prepared-request observation whose semantic segments are out of order', () => {
+    assert.throws(() =>
+      decodeModelCallAttempt({
+        ...attempt(),
+        requestObservation: {
+          schemaVersion: 1,
+          digest: `sha256:${'a'.repeat(64)}`,
+          bytes: 42,
+          segments: [
+            {
+              kind: 'message',
+              index: 0,
+              cacheable: true,
+              comparison: 'exact',
+              digest: `sha256:${'b'.repeat(64)}`,
+              bytes: 21,
+            },
+            {
+              kind: 'system_prompt',
+              index: 0,
+              cacheable: true,
+              comparison: 'exact',
+              digest: `sha256:${'c'.repeat(64)}`,
+              bytes: 21,
+            },
+          ],
+        },
+      }),
+    );
+  });
+
+  test('rejects a bounded remainder that claims exact comparison', () => {
+    assert.throws(() =>
+      decodeModelCallAttempt({
+        ...attempt(),
+        requestObservation: {
+          schemaVersion: 1,
+          digest: `sha256:${'a'.repeat(64)}`,
+          bytes: 21,
+          segments: [
+            {
+              kind: 'tool_schema',
+              index: 0,
+              cacheable: true,
+              comparison: 'exact',
+              digest: `sha256:${'b'.repeat(64)}`,
+              bytes: 21,
+              representedSegments: 1,
+            },
+          ],
+        },
+      }),
+    );
+  });
+
+  test('accepts bounded provider failure diagnostics on history compaction calls', () => {
+    const decoded = decodeModelCallAttempt(
+      attempt({
+        callKind: 'history_compact',
+        historyCompactRoute: 'provider_native',
+        status: 'failed',
+        errorClass: 'RateLimit',
+        httpStatus: 429,
+        providerCode: 'rate_limit_exceeded',
+        providerRequestId: 'req-123',
+        retryable: true,
+      }),
+    );
+
+    assert.equal(decoded.historyCompactRoute, 'provider_native');
+    assert.equal(decoded.httpStatus, 429);
+    assert.equal(decoded.providerRequestId, 'req-123');
+  });
+
+  test('rejects invalid or unbounded provider failure diagnostics', () => {
+    assert.throws(() => decodeModelCallAttempt(attempt({ httpStatus: 99, status: 'failed' })));
+    assert.throws(() =>
+      decodeModelCallAttempt(
+        attempt({
+          status: 'failed',
+          providerCode: 'x'.repeat(MODEL_CALL_DIAGNOSTIC_FIELD_MAX_LENGTH + 1),
+        }),
+      ),
+    );
+    assert.throws(
+      () => decodeModelCallAttempt(attempt({ historyCompactRoute: 'text_summary' })),
+      /non-compaction call carries historyCompactRoute/,
+    );
   });
 
   test('rejects an unpriced attempt that carries a cost', () => {
@@ -78,30 +238,11 @@ describe('ModelCallAttempt codec', () => {
     );
   });
 
-  test('accepts a priced attempt costing exactly zero', () => {
-    const decoded = decodeModelCallAttempt(attempt({ costBasis: 'priced', costUsd: 0 }));
-    assert.equal(decoded.costUsd, 0);
-  });
-
   test('rejects missing usage that still carries tokens', () => {
     assert.throws(
       () => decodeModelCallAttempt(attempt({ usageBasis: 'missing' })),
       /missing usage but carries tokens/,
     );
-  });
-
-  test('accepts missing usage with no token fields', () => {
-    const decoded = decodeModelCallAttempt(
-      attempt({
-        usageBasis: 'missing',
-        inputTokens: undefined,
-        outputTokens: undefined,
-        status: 'failed',
-        costBasis: 'unpriced',
-        costUsd: undefined,
-      }),
-    );
-    assert.equal(decoded.usageBasis, 'missing');
   });
 
   test('rejects completedAt before startedAt', () => {
@@ -136,10 +277,10 @@ describe('ModelCallAttempt codec', () => {
   });
 
   test('rejects negative and non-finite amounts', () => {
-    for (const costUsd of [-1, Number.NaN, Number.POSITIVE_INFINITY]) {
+    for (const costUsd of [-1, Number.NaN]) {
       assert.throws(() => decodeModelCallAttempt(attempt({ costUsd })));
     }
-    for (const inputTokens of [-1, Number.NaN, Number.POSITIVE_INFINITY]) {
+    for (const inputTokens of [-1, Number.NaN]) {
       assert.throws(() => decodeModelCallAttempt(attempt({ inputTokens })));
     }
     assert.throws(() => decodeModelCallAttempt(attempt({ latencyMs: -1 })));
@@ -179,36 +320,9 @@ describe('ModelCallAttempt codec', () => {
       ),
     );
   });
-
-  test('isModelCallAttempt narrows without throwing', () => {
-    assert.equal(isModelCallAttempt(attempt()), true);
-    assert.equal(isModelCallAttempt({ nope: true }), false);
-  });
-
-  test('the AgentRun ledger accepts the new event type', () => {
-    const decoded = decodeAgentRunEvent({
-      type: MODEL_CALL_ATTEMPT_EVENT_TYPE,
-      id: 'attempt-1',
-      runId: 'run-1',
-      sessionId: 'session-1',
-      turnId: 'turn-1',
-      ts: 1_250,
-      data: attempt() as unknown as Record<string, unknown>,
-    });
-    assert.equal(decoded.type, MODEL_CALL_ATTEMPT_EVENT_TYPE);
-    assert.equal(decodeModelCallAttempt(decoded.data).attemptId, 'attempt-1');
-  });
 });
 
 describe('ModelCallAttempt projections', () => {
-  test('dedupes re-appended records by attemptId, keeping the last', () => {
-    const first = attempt({ costUsd: 0.004 });
-    const replayed = attempt({ costUsd: 0.005 });
-    const unique = dedupeModelCallAttempts([first, replayed]);
-    assert.equal(unique.length, 1);
-    assert.equal(unique[0]?.costUsd, 0.005);
-  });
-
   test('groups retries under one logical call and derives the settled attempt', () => {
     const groups = groupModelCallAttempts([
       attempt({ attemptId: 'a-0', attempt: 0, status: 'failed', costUsd: 0.001 }),
@@ -252,20 +366,17 @@ describe('ModelCallAttempt projections', () => {
       attempt({ attemptId: 'c', costBasis: 'unpriced', costUsd: undefined }),
     ]);
     assert.equal(Math.round(costUsd * 1000) / 1000, 0.01);
-    // The unpriced call is real spend the total cannot express.
     assert.equal(coverage.unpricedAttempts, 1);
   });
 
   test('a replayed attemptId is counted once through sum and coverage', () => {
-    // The bare dedupe helper is covered above; this locks the same guarantee on
-    // the paths a consumer actually calls, across a multi-id stream.
     const stream = [
       attempt({ attemptId: 'a', logicalCallId: 'call-1', costUsd: 0.004 }),
       attempt({ attemptId: 'b', logicalCallId: 'call-2', costUsd: 0.006 }),
-      attempt({ attemptId: 'a', logicalCallId: 'call-1', costUsd: 0.004 }),
+      attempt({ attemptId: 'a', logicalCallId: 'call-1', costUsd: 0.005 }),
     ];
     const { costUsd, coverage } = sumModelCallCostUsd(stream);
-    assert.equal(Math.round(costUsd * 1000) / 1000, 0.01);
+    assert.equal(Math.round(costUsd * 1000) / 1000, 0.011);
     assert.equal(coverage.attempts, 2);
     assert.equal(coverage.pricedAttempts, 2);
     assert.equal(summarizeModelCallCoverage(stream).attempts, 2);

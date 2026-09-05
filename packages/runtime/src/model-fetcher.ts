@@ -1,9 +1,31 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import {
-  PROVIDER_DEFAULTS,
+  PROVIDER_REGISTRY,
+  providerFallbackModelIds,
   effectiveBaseUrl,
+  isModelModality,
   providerAuthSupportsApiKey,
   type LlmConnection,
   type ModelInfo,
+  type ModelModality,
 } from '@maka/core/llm-connections';
 import { generalizedErrorMessage } from '@maka/core/redaction';
 import {
@@ -12,7 +34,7 @@ import {
   normalizeConnectionModelDiscoveryResult,
 } from '@maka/core/runtime-policy';
 import { anthropicV1Url, googleApiUrl } from './provider-urls.js';
-import { claudeSubscriptionHeaders, openAiCodexHeaders } from './subscription-auth.js';
+import { openAiCodexHeaders } from './subscription-auth.js';
 import {
   GITHUB_COPILOT_API_VERSION,
   GITHUB_COPILOT_COMPAT_HEADERS,
@@ -112,7 +134,7 @@ type RawGitHubCopilotModel = {
 };
 
 type FireworksModelDiscovery = Extract<
-  (typeof PROVIDER_DEFAULTS)[keyof typeof PROVIDER_DEFAULTS]['modelDiscovery'],
+  (typeof PROVIDER_REGISTRY)[keyof typeof PROVIDER_REGISTRY]['modelDiscovery'],
   { kind: 'fireworks' }
 >;
 
@@ -161,17 +183,17 @@ async function fetchProviderModelsStrict(
   fetchFn: ConnectionEffectFetch | undefined,
 ): Promise<ModelInfo[]> {
   const baseUrl = effectiveBaseUrl(connection);
-  const definition = PROVIDER_DEFAULTS[connection.providerType];
+  const definition = PROVIDER_REGISTRY[connection.providerType];
   // Unknown providerType → no discovery path. Throw a clear error (caught and
   // generalized by the caller) rather than crashing on `.modelDiscovery`.
-  // Mirrors `isFakeBackend` in @maka/core/connection-readiness.ts.
+  // Mirrors `isRealConnection` in @maka/core/connection-readiness.ts.
   if (!definition) {
     throw new Error(`Unknown provider type "${connection.providerType}"`);
   }
   const discovery = definition.modelDiscovery;
 
   if (discovery.kind === 'fallback') {
-    return definition.fallbackModels.map((id) => ({ id }));
+    return providerFallbackModelIds(definition).map((id) => ({ id }));
   }
   if (discovery.kind === 'ollama') {
     const r = await fetchForConnectionEffect(fetchFn, `${ollamaRoot(baseUrl)}/api/tags`, {
@@ -202,13 +224,13 @@ async function fetchProviderModelsStrict(
     return fetchOpenAiCodexModels(baseUrl, apiKey, fetchFn);
   }
 
-  switch (definition.protocol) {
+  // The wire is the Runtime adapter's, not a second field beside it. Only four
+  // adapter kinds reach here: every other one returned above on its own
+  // discovery branch, and both OpenAI-shaped kinds speak the same /models wire.
+  switch (definition.runtimeAdapter.kind) {
     case 'anthropic': {
       const r = await fetchForConnectionEffect(fetchFn, anthropicV1Url(baseUrl, '/models'), {
-        headers: anthropicModelHeaders(
-          discovery.auth === 'claude-subscription' ? discovery.auth : undefined,
-          apiKey,
-        ),
+        headers: anthropicModelHeaders(apiKey),
         timeoutMs: MODEL_FETCH_TIMEOUT_MS,
       });
       if (!r.ok) {
@@ -219,9 +241,10 @@ async function fetchProviderModelsStrict(
       const models = providerObjectArray<RawProviderModel>(data.data, 'Anthropic models')
         .map(toModelInfo)
         .filter((model): model is ModelInfo => model !== null);
-      return filterDiscoveredModels(models, discovery.filter, definition.fallbackModels);
+      return filterDiscoveredModels(models, discovery.filter);
     }
-    case 'openai': {
+    case 'openai':
+    case 'openai-compatible': {
       const r = await fetchForConnectionEffect(
         fetchFn,
         modelListUrl(baseUrl, discovery.path, discovery.query),
@@ -257,7 +280,7 @@ async function fetchProviderModelsStrict(
         .filter((model) => discovery.filter !== 'language-models' || model.type === 'language')
         .map(toModelInfo)
         .filter((model): model is ModelInfo => model !== null);
-      return filterDiscoveredModels(models, discovery.filter, definition.fallbackModels);
+      return filterDiscoveredModels(models, discovery.filter);
     }
     case 'google': {
       const r = await fetchForConnectionEffect(fetchFn, googleApiUrl(baseUrl, '/models', apiKey), {
@@ -275,8 +298,11 @@ async function fetchProviderModelsStrict(
         },
       );
     }
-    case 'cohere':
-      throw new Error('Cohere requires native model discovery');
+    default:
+      // Every other adapter kind returned above on its own discovery branch;
+      // an adapter that reaches here has a `protocol` discovery declaration it
+      // has no wire to serve.
+      throw new Error(`Provider type "${connection.providerType}" has no model discovery wire`);
   }
 }
 
@@ -613,17 +639,22 @@ async function fetchCohereModels(
   }
 }
 
+/**
+ * Provider-reported filters only. `tool-capable` and `language-models` keep
+ * what the provider itself said about each model; there is no filter that
+ * intersects a live response with the array this build shipped. Doing that
+ * made "the provider listed this" mean "this build has heard of it", so a
+ * model the account gained after release was dropped on arrival and could
+ * never be selected (#1584).
+ */
 function filterDiscoveredModels(
   models: ModelInfo[],
-  filter: 'fallback-models' | 'language-models' | 'tool-capable' | undefined,
-  fallbackModels: readonly string[],
+  filter: 'language-models' | 'tool-capable' | undefined,
 ): ModelInfo[] {
   if (filter === 'tool-capable') {
     return models.filter((model) => model.capabilities?.functionCalling === true);
   }
-  if (filter !== 'fallback-models') return models;
-  const supported = new Set(fallbackModels);
-  return models.filter((model) => supported.has(model.id));
+  return models;
 }
 
 function modelListUrl(
@@ -780,6 +811,22 @@ function toModelInfo(model: RawProviderModel): ModelInfo | null {
   if (model.tags?.includes('vision')) capabilities.vision = true;
   if (model.tags?.includes('reasoning')) capabilities.reasoning = true;
   if (model.tags?.includes('tool-use')) capabilities.functionCalling = true;
+  // `output_modalities` was validated above and then dropped, so a relay that
+  // advertised an image-only model handed back a row indistinguishable from a
+  // chat model's. Declared output that names modalities but not text is the
+  // provider stating the model cannot answer in text; record it the way the
+  // rest of this function records modality facts, as a capability.
+  //
+  // Read through `knownOutputModalities` rather than the raw array. Every
+  // other modality read here ADDS a capability, so a value this code fails to
+  // recognize costs a fact; this one REMOVES chat, where the same miss would
+  // silently disable a working model. `assertOptionalArray` checks the
+  // container and not its items, so `['Text']` or `[null]` reach here intact.
+  const declaredOutput = knownOutputModalities(model.output_modalities);
+  if (declaredOutput.length > 0 && !declaredOutput.includes('text')) {
+    capabilities.chat = false;
+    if (declaredOutput.includes('image')) capabilities.imageGeneration = true;
+  }
   if (model.providers) {
     capabilities.functionCalling = providers.some(
       (provider) => provider.status === 'live' && provider.supports_tools === true,
@@ -794,17 +841,7 @@ function toModelInfo(model: RawProviderModel): ModelInfo | null {
   };
 }
 
-function anthropicModelHeaders(
-  auth: 'claude-subscription' | undefined,
-  apiKey: string,
-): Record<string, string> {
-  if (auth === 'claude-subscription') {
-    return {
-      ...claudeSubscriptionHeaders(),
-      Authorization: `Bearer ${apiKey}`,
-      'anthropic-version': '2023-06-01',
-    };
-  }
+function anthropicModelHeaders(apiKey: string): Record<string, string> {
   return {
     'x-api-key': apiKey,
     'anthropic-version': '2023-06-01',
@@ -840,6 +877,17 @@ function providerObjectArray<T extends object>(
     throw new ConnectionEffectInvalidResponseError(`Invalid ${label} response`);
   }
   return value as T[];
+}
+
+/**
+ * The declared output modalities this build understands, in the provider's
+ * order. Anything else — a value from a newer spec, a capitalized spelling, a
+ * non-string — is dropped rather than guessed at, so an unrecognized list
+ * reads as "said nothing" instead of "said not text".
+ */
+function knownOutputModalities(declared: readonly unknown[] | undefined): ModelModality[] {
+  if (declared === undefined) return [];
+  return declared.filter(isModelModality);
 }
 
 function assertOptionalArray(

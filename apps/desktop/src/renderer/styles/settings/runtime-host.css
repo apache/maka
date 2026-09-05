@@ -1,0 +1,902 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+.settingsRuntimeHostTransportField {
+  padding-block: var(--space-4);
+}
+
+.settingsRuntimeHostTransport {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.settingsRuntimeHostTransport legend {
+  padding: 0;
+  color: var(--foreground-primary);
+  font: var(--maka-text-body);
+  font-weight: 600;
+}
+
+.settingsRuntimeHostTransport p {
+  margin: 0 0 var(--space-1);
+  color: var(--muted-foreground);
+  font: var(--maka-text-supporting);
+}
+
+.settingsRuntimeHostTransport [role='radiogroup'] {
+  max-width: 100%;
+}
+
+.settingsRuntimeHostSshTerminalDialog {
+  min-width: min(720px, calc(100vw - 32px));
+}
+
+.settingsRuntimeHostSshTerminalBody {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.settingsRuntimeHostSshTerminal {
+  width: 100%;
+  height: clamp(220px, 40vh, 340px);
+  overflow: hidden;
+  border: var(--border-width-hairline) solid var(--border-soft);
+  border-radius: var(--radius-container);
+  background: #111;
+}
+
+.settingsRuntimeHostSshTerminal .xterm {
+  box-sizing: border-box;
+  height: 100%;
+  padding: var(--space-3);
+}
+
+.settingsRuntimeHostSshTerminal .xterm-viewport {
+  scrollbar-width: thin;
+}
+
+.settingsRuntimeHostSshTerminalActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.settingsRuntimeHostSetupProgress {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 88px;
+}
+
+.settingsRuntimeHostManagement {
+  display: grid;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.settingsRuntimeHostManagementFacts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3) var(--space-5);
+  margin: 0;
+}
+
+.settingsRuntimeHostManagementFacts div {
+  min-width: 0;
+}
+
+.settingsRuntimeHostManagementFacts .settingsRuntimeHostManagementFactWide {
+  grid-column: 1 / -1;
+}
+
+.settingsRuntimeHostManagementFacts dt {
+  color: var(--muted-foreground);
+  font: var(--maka-text-supporting);
+}
+
+.settingsRuntimeHostManagementFacts dd {
+  overflow-wrap: anywhere;
+  margin: var(--space-1) 0 0;
+  color: var(--foreground-primary);
+  font: var(--maka-text-body);
+}
+
+.settingsRuntimeHostResources {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.settingsRuntimeHostResources dd {
+  white-space: pre-line;
+}
+
+.settingsRuntimeHostManagementDirectoryRoots {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: var(--border-width-hairline) solid var(--border-soft);
+  border-radius: var(--radius-container);
+  background: var(--background-secondary);
+}
+
+.settingsRuntimeHostManagementRootEditor {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.settingsRuntimeHostManagementRootRow {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.35fr) minmax(0, 1fr) auto;
+  align-items: end;
+  gap: var(--space-2);
+}
+
+.settingsRuntimeHostManagementDirectoryRootActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.settingsRuntimeHostUpdatePolicy,
+.settingsRuntimeHostDirectPeer {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: var(--border-width-hairline) solid var(--border-soft);
+  border-radius: var(--radius-container);
+  background: var(--background-secondary);
+}
+
+.settingsRuntimeHostUpdatePolicyHeading,
+.settingsRuntimeHostUpdatePolicyActions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.settingsRuntimeHostUpdatePolicyHeading > div:first-child,
+.settingsRuntimeHostUpdatePolicyControls {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.settingsRuntimeHostUpdatePolicyActions {
+  justify-content: flex-end;
+}
+
+.settingsRuntimeHostDirectPeerDiscovery {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.settingsRuntimeHostDirectPeerDiscovery > div {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.settingsRuntimeHostDirectPeerAdvanced {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.settingsRuntimeHostDirectPeerAdvanced summary {
+  width: fit-content;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  font: var(--maka-text-supporting);
+}
+
+.settingsRuntimeHostDirectPeerAdvanced[open] summary {
+  margin-bottom: var(--space-2);
+}
+
+.settingsRuntimeHostDirectPeerStun {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.settingsRuntimeHostManagementLogs {
+  overflow-wrap: anywhere;
+  color: var(--muted-foreground);
+  font: var(--maka-text-code);
+}
+
+.settingsRuntimeHostAccess {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.settingsRuntimeHostAccessList {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.settingsRuntimeHostAccessList li {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: var(--border-width-hairline) solid var(--border-soft);
+  border-radius: var(--radius-container);
+  background: var(--background-secondary);
+}
+
+.settingsRuntimeHostAccessIdentity,
+.settingsRuntimeHostAccessMeta,
+.settingsRuntimeHostAccessBadges {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.settingsRuntimeHostAccessIdentity,
+.settingsRuntimeHostAccessMeta {
+  justify-content: space-between;
+}
+
+.settingsRuntimeHostAccessIdentity > div:first-child {
+  display: grid;
+  min-width: 0;
+}
+
+.settingsRuntimeHostAccessIdentity strong {
+  overflow-wrap: anywhere;
+  color: var(--foreground-primary);
+  font: var(--maka-text-body);
+}
+
+.settingsRuntimeHostAccessIdentity span,
+.settingsRuntimeHostAccessMeta > span {
+  color: var(--muted-foreground);
+  font: var(--maka-text-supporting);
+}
+
+.settingsRuntimeHostManagementLogs {
+  max-height: 240px;
+  overflow: auto;
+  margin: 0;
+  padding: var(--space-3);
+  border: var(--border-width-hairline) solid var(--border-soft);
+  border-radius: var(--radius-container);
+  background: var(--background-secondary);
+  white-space: pre-wrap;
+}
+
+.settingsRuntimeHostManagementActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.settingsPeerMesh {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.settingsPeerMeshEndpoint {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.settingsPeerMeshConnectivity {
+  padding: var(--space-3);
+  border: 1px solid var(--border-secondary);
+  border-radius: var(--radius-container);
+  background: var(--background-secondary);
+}
+
+.settingsPeerMeshConnectivity summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  cursor: pointer;
+  list-style: none;
+}
+
+.settingsPeerMeshConnectivity summary::-webkit-details-marker {
+  display: none;
+}
+
+.settingsPeerMeshConnectivitySummary {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.settingsPeerMeshConnectivitySummary > span:first-child {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settingsPeerMeshConnectivityChevron {
+  flex: 0 0 auto;
+  color: var(--muted-foreground);
+  transition: transform 120ms ease;
+}
+
+.settingsPeerMeshConnectivity[open] .settingsPeerMeshConnectivityChevron {
+  transform: rotate(180deg);
+}
+
+.settingsPeerMeshConnectivityHelp {
+  display: inline-flex;
+  color: var(--muted-foreground);
+}
+
+.settingsPeerMeshConnectivityBody {
+  display: grid;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: var(--border-width-hairline) solid var(--border-soft);
+}
+
+.settingsPeerMeshConnectivitySection {
+  display: grid;
+  gap: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: var(--border-width-hairline) solid var(--border-soft);
+}
+
+.settingsPeerMeshConnectivityHeading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.settingsPeerMeshTechnicalIdentity {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.settingsPeerMeshTechnicalIdentity > div:first-child {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settingsPeerMeshIdentity,
+.settingsPeerMeshToolbar,
+.settingsPeerMeshCardHeading,
+.settingsPeerMeshMembersHeading,
+.settingsPeerMeshMember,
+.settingsPeerMeshMemberActions,
+.settingsPeerMeshInvitationLabel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.settingsPeerMeshIdentity {
+  min-height: 48px;
+  padding: var(--space-2);
+  border-radius: var(--radius-container);
+  background: var(--background-secondary);
+}
+
+.settingsPeerMeshRename {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--border-secondary);
+  border-radius: var(--radius-container);
+  background: var(--background-secondary);
+}
+
+.settingsPeerMeshPeerId {
+  width: fit-content;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  color: var(--text-secondary);
+  background: transparent;
+  cursor: copy;
+  text-align: start;
+}
+
+.settingsPeerMeshPeerId:hover,
+.settingsPeerMeshPeerId:focus-visible {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.settingsRuntimeHostPeerId {
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  cursor: copy;
+  font: inherit;
+  text-align: start;
+}
+
+.settingsRuntimeHostPeerId:hover,
+.settingsRuntimeHostPeerId:focus-visible {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.settingsPeerMeshIdentity > div,
+.settingsPeerMeshToolbar > div:first-child,
+.settingsPeerMeshMemberIdentity > div,
+.settingsPeerMeshFocusedHeading > div {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settingsPeerMeshIdentityIcon,
+.settingsPeerMeshFocusedIcon,
+.settingsPeerMeshEmptyIcon {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  color: var(--accent);
+  background: oklch(from var(--accent) l c h / 0.1);
+}
+
+.settingsPeerMeshIdentityIcon {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-control);
+}
+
+.settingsPeerMeshIdentity code {
+  overflow: hidden;
+  max-width: 100%;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settingsPeerMeshEmpty {
+  display: flex;
+  min-height: 240px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-5);
+  text-align: center;
+}
+
+.settingsPeerMeshEmpty > p {
+  max-width: 360px;
+}
+
+.settingsPeerMeshEmpty > div:last-child {
+  margin-top: var(--space-2);
+}
+
+.settingsPeerMeshEmptyIcon {
+  width: 56px;
+  height: 56px;
+  margin-bottom: var(--space-2);
+  border-radius: 18px;
+}
+
+.settingsPeerMeshList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.settingsPeerMeshFilter {
+  display: flex;
+  justify-content: flex-end;
+  padding-block: var(--space-1);
+  border-top: var(--border-width-hairline) solid var(--border-soft);
+}
+
+.settingsPeerMeshFilteredEmpty {
+  display: flex;
+  min-height: 120px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+  padding: var(--space-4);
+  text-align: center;
+}
+
+.settingsPeerMeshFilteredEmpty > p {
+  max-width: 360px;
+}
+
+.settingsPeerMeshCard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  border: var(--border-width-hairline) solid var(--border-soft);
+  border-radius: var(--radius-container);
+  background: var(--background-secondary);
+}
+
+.settingsPeerMeshCardDisclosure {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+  text-align: start;
+}
+
+.settingsPeerMeshCardDisclosure > span:first-child {
+  width: 100%;
+  min-width: 0;
+  justify-content: space-between;
+}
+
+.settingsPeerMeshCardDisclosure > span:first-child > span:first-child {
+  min-width: 0;
+  flex: 1;
+}
+
+.settingsPeerMeshCardTitleBlock {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settingsPeerMeshCardTitle {
+  min-width: 0;
+  overflow: hidden;
+  font: var(--maka-text-body);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settingsPeerMeshCardSubtitle {
+  color: var(--muted-foreground);
+  font: var(--maka-text-supporting);
+}
+
+.settingsPeerMeshChevron {
+  flex: 0 0 auto;
+  color: var(--muted-foreground);
+  transition: transform 120ms ease;
+}
+
+.settingsPeerMeshChevron.isExpanded {
+  transform: rotate(180deg);
+}
+
+.settingsPeerMeshCardControls,
+.settingsPeerMeshMemberIdentity,
+.settingsPeerMeshFocusedHeading,
+.settingsPeerMeshInvitationNote {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.settingsPeerMeshCardControls {
+  flex: 0 0 auto;
+}
+
+.settingsPeerMeshCardDetails {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: var(--border-width-hairline) solid var(--border-soft);
+}
+
+.settingsPeerMeshTransit {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border-radius: var(--radius-control);
+  background: var(--foreground-2);
+}
+
+.settingsPeerMeshTransitIdentity,
+.settingsPeerMeshTransitTitle {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.settingsPeerMeshTransitIdentity > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settingsPeerMeshTransitIcon {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: var(--radius-control);
+  color: var(--accent);
+  background: oklch(from var(--accent) l c h / 0.1);
+}
+
+.settingsPeerMeshTransitHelp {
+  display: inline-flex;
+  cursor: help;
+}
+
+.settingsPeerMeshTransitHelp svg {
+  color: var(--muted-foreground);
+}
+
+.settingsPeerMeshTransitMetrics {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-2);
+}
+
+.settingsPeerMeshTransitMetrics > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-width-hairline) solid var(--border-soft);
+  border-radius: var(--radius-control);
+}
+
+.settingsPeerMeshMembersHeading {
+  margin-top: var(--space-1);
+  padding-block: var(--space-1);
+  border-bottom: var(--border-width-hairline) solid var(--border-soft);
+}
+
+.settingsPeerMeshMembers {
+  display: flex;
+  flex-direction: column;
+}
+
+.settingsPeerMeshMeshId {
+  margin-top: var(--space-1);
+  padding-top: var(--space-3);
+  border-top: var(--border-width-hairline) solid var(--border-soft);
+}
+
+.settingsPeerMeshMember {
+  padding-block: var(--space-2);
+}
+
+.settingsPeerMeshMember + .settingsPeerMeshMember {
+  border-top: var(--border-width-hairline) solid var(--border-soft);
+}
+
+.settingsPeerMeshMemberState {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--foreground-alpha-16);
+}
+
+.settingsPeerMeshMemberState-local,
+.settingsPeerMeshMemberState-reachable {
+  background: var(--success);
+}
+
+.settingsPeerMeshMemberState-reconnecting {
+  background: var(--warning);
+}
+
+.settingsPeerMeshMemberIdentity code {
+  overflow: hidden;
+  max-width: min(360px, 55vw);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settingsPeerMeshMemberHeading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.settingsPeerMeshMemberName {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settingsPeerMeshMemberHeading code {
+  min-width: 0;
+}
+
+.settingsPeerMeshFocusedView {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  min-height: 280px;
+}
+
+.settingsPeerMeshFocusedIcon {
+  width: 36px;
+  height: 36px;
+  border-radius: 13px;
+}
+
+.settingsPeerMeshInvitation {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.settingsPeerMeshInvitationLabel {
+  min-width: 0;
+}
+
+.settingsPeerMeshInvitationCode {
+  box-sizing: border-box;
+  max-height: 200px;
+  overflow: auto;
+  padding: var(--space-4);
+  border: var(--border-width-hairline) solid var(--border-soft);
+  border-radius: var(--radius-container);
+  background: var(--foreground-2);
+}
+
+.settingsPeerMeshInvitationCode code {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.settingsPeerMeshInvitationNote {
+  align-items: flex-start;
+  padding: 0 var(--space-1);
+}
+
+.settingsPeerMeshInvitationNote svg {
+  margin-top: 2px;
+  color: var(--muted-foreground);
+}
+
+@media (max-width: 620px) {
+  .settingsPeerMeshToolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .settingsPeerMeshToolbar > div:last-child {
+    align-self: stretch;
+  }
+
+  .settingsPeerMeshTransitMetrics {
+    grid-template-columns: 1fr;
+  }
+
+  .settingsPeerMeshTechnicalIdentity {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
+@media (max-height: 620px) {
+  .settingsRuntimeHostSshTerminal {
+    height: 220px;
+  }
+}
+.sessionCollaborationStack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.sessionCollaborationInvitationAction {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.sessionCollaborationDisclosure {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--background-subtle);
+}
+
+.sessionCollaborationAccess {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.sessionCollaborationAccessRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+}
+
+.sessionCollaborationAccessActions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.sessionCollaborationTurnRequest {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--background-subtle);
+}
+
+.sessionCollaborationTurnRequest > div:first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.sessionCollaborationTurnRequestText {
+  white-space: pre-wrap;
+}

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import {
@@ -21,13 +40,13 @@ import {
   DEEP_RESEARCH_STEP_STATUSES,
   DEEP_RESEARCH_STEP_TEXT_MAX_CHARS,
   normalizeDeepResearchObjective,
-  redactSecrets,
-  type ArtifactRecord,
   type DeepResearchRun,
   type DeepResearchArtifactRef,
   type DeepResearchEvent,
   type DeepResearchStore,
-} from '@maka/core';
+} from '@maka/core/deep-research-run';
+import { redactSecrets } from '@maka/core/redaction';
+import { type ArtifactRecord } from '@maka/core/artifacts';
 import type { MakaTool, MakaToolContext } from './tool-runtime.js';
 
 export const DEEP_RESEARCH_START_TOOL_NAME = 'deep_research_start';
@@ -44,7 +63,6 @@ const DEEP_RESEARCH_ALLOWED_TOOL_NAMES = new Set([
   'Read',
   'Glob',
   'Grep',
-  'ExploreAgent',
   'WebSearch',
   DEEP_RESEARCH_START_TOOL_NAME,
   DEEP_RESEARCH_SAVE_ARTIFACT_TOOL_NAME,
@@ -630,7 +648,6 @@ function buildCheckpointTool(deps: BuildDeepResearchToolsDeps): MakaTool<
     summary: string;
     open_questions?: string[];
     next_steps?: string[];
-    task_ids?: string[];
     artifact_ids?: string[];
   },
   string
@@ -644,7 +661,7 @@ function buildCheckpointTool(deps: BuildDeepResearchToolsDeps): MakaTool<
     displayName: 'Checkpoint Research',
     description:
       'Record a durable research checkpoint after a meaningful round or before context compaction. ' +
-      'Include unresolved questions, next steps, task ids, and the artifacts needed to resume.',
+      'Include unresolved questions, next steps, and the artifacts needed to resume.',
     parameters: z.object({
       round: z.number().int().min(1).describe('Monotonic research round number.'),
       stage: z.enum(DEEP_RESEARCH_ACTIVE_STAGES).describe('Current two-stage workflow phase.'),
@@ -661,7 +678,6 @@ function buildCheckpointTool(deps: BuildDeepResearchToolsDeps): MakaTool<
         .optional()
         .describe('Questions still requiring evidence or resolution.'),
       next_steps: itemArray.optional().describe('Concrete continuation steps.'),
-      task_ids: refArray.optional().describe('Related ids from the session Task Ledger.'),
       artifact_ids: refArray.optional().describe('Known research artifact ids required to resume.'),
     }),
     impl: async (input, ctx) => {
@@ -675,7 +691,7 @@ function buildCheckpointTool(deps: BuildDeepResearchToolsDeps): MakaTool<
           summary: input.summary,
           openQuestions: dedupe(input.open_questions ?? []),
           nextSteps: dedupe(input.next_steps ?? []),
-          taskIds: dedupe(input.task_ids ?? []),
+          taskIds: [],
           artifactIds: dedupe(input.artifact_ids ?? []),
         },
         mutationContext(ctx),

@@ -1,23 +1,40 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type {
   AppSettings,
-  BotProvider,
+  RuntimeHostAppSettings,
   SettingsTestResult,
   SettingsTestResultCode,
   UpdateAppSettingsInput,
   UpdateAppSettingsResult,
-} from "@maka/core";
-import {
-  botDisplayLabel,
-  generalizedErrorMessage,
-  redactSecrets,
-} from "@maka/core";
+} from '@maka/core/settings';
+import type { BotProvider } from '@maka/core/bot-chat-settings';
+import { botDisplayLabel } from '@maka/core/bot-events';
+import { generalizedErrorMessage, redactSecrets } from '@maka/core/redaction';
 import {
   SENSITIVE_PLACEHOLDER,
   maskSensitive,
   type TestProxyResult,
 } from "@maka/core/settings/network-settings";
-import type { BotTestResult } from "@maka/runtime";
-import { collectPersonalizationWarnings } from "@maka/runtime";
+import type { BotTestResult } from '@maka/runtime/bots';
+import { collectPersonalizationWarnings } from '@maka/runtime/system-prompt/personalization-prompt';
 import { getTavilyCredentialSource } from "./web-search/credentials.js";
 
 export function proxyTestFailure(result: TestProxyResult): {
@@ -34,6 +51,11 @@ export function proxyTestFailure(result: TestProxyResult): {
       code: "proxy_configuration_missing",
       message: "The proxy host or port is missing.",
     };
+  if (lower.includes("proxy credential is not configured"))
+    return {
+      code: "proxy_credential_missing",
+      message: "The proxy credential is not configured.",
+    };
   if (lower.includes("proxy test timeout") || lower.includes("timeout"))
     return { code: "proxy_timeout", message: "The proxy test timed out." };
   if (result.status)
@@ -48,72 +70,20 @@ export function proxyTestFailure(result: TestProxyResult): {
   };
 }
 
-export function preserveSensitivePlaceholders(
-  patch: UpdateAppSettingsInput,
-  current: AppSettings,
-): UpdateAppSettingsInput {
-  const botChannels = patch.botChat?.channels
-    ? Object.fromEntries(
-        Object.entries(patch.botChat.channels).map(
-          ([provider, channelPatch]) => {
-            const currentChannel =
-              current.botChat.channels[provider as BotProvider];
-            return [
-              provider,
-              {
-                ...channelPatch,
-                ...(channelPatch?.token === SENSITIVE_PLACEHOLDER
-                  ? { token: currentChannel.token }
-                  : {}),
-                ...(channelPatch?.appSecret === SENSITIVE_PLACEHOLDER
-                  ? { appSecret: currentChannel.appSecret }
-                  : {}),
-              },
-            ];
-          },
-        ),
-      )
-    : undefined;
-
-  return {
-    ...patch,
-    ...(patch.network?.proxy?.password === SENSITIVE_PLACEHOLDER
-      ? {
-          network: {
-            ...patch.network,
-            proxy: {
-              ...patch.network.proxy,
-              password: current.network.proxy.password,
-            },
-          },
-        }
-      : {}),
-    ...(botChannels
-      ? {
-          botChat: {
-            ...patch.botChat,
-            channels: botChannels,
-          },
-        }
-      : {}),
-  };
-}
-
+export function maskAppSettings(
+  settings: RuntimeHostAppSettings,
+  revealPatch?: UpdateAppSettingsInput,
+): RuntimeHostAppSettings;
+export function maskAppSettings(
+  settings: AppSettings,
+  revealPatch?: UpdateAppSettingsInput,
+): AppSettings;
 export function maskAppSettings(
   settings: AppSettings,
   revealPatch: UpdateAppSettingsInput = {},
 ): AppSettings {
   return {
     ...settings,
-    network: {
-      ...settings.network,
-      proxy: {
-        ...settings.network.proxy,
-        password: shouldReveal(revealPatch.network?.proxy?.password)
-          ? settings.network.proxy.password
-          : (maskSensitive(settings.network.proxy.password) ?? ""),
-      },
-    },
     botChat: {
       ...settings.botChat,
       channels: Object.fromEntries(
@@ -167,6 +137,7 @@ export function stripSettingsSecretsForExport(
 ): Record<string, unknown> {
   const proxy = { ...settings.network.proxy } as Record<string, unknown>;
   delete proxy.password;
+  delete proxy.passwordConfigured;
 
   const channels: Record<string, unknown> = {};
   for (const [provider, channel] of Object.entries(settings.botChat.channels)) {
@@ -193,6 +164,14 @@ export function stripSettingsSecretsForExport(
   };
 }
 
+export function buildSettingsUpdateResult(
+  settings: RuntimeHostAppSettings,
+  patch: UpdateAppSettingsInput,
+): UpdateAppSettingsResult<RuntimeHostAppSettings>;
+export function buildSettingsUpdateResult(
+  settings: AppSettings,
+  patch: UpdateAppSettingsInput,
+): UpdateAppSettingsResult;
 export function buildSettingsUpdateResult(
   settings: AppSettings,
   patch: UpdateAppSettingsInput,

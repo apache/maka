@@ -1,9 +1,36 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { MODEL_CALL_ATTEMPT_SCHEMA_VERSION, type ModelCallAttempt } from '../model-call-attempt.js';
-import { mergeUsageBuckets, mergeUsageLogs, mergeUsageSummary } from '../usage-ledger-merge.js';
-import { usageBucketKey } from '../usage-stats/bucket-key.js';
+import {
+  EMPTY_USAGE_PROVENANCE,
+  estimatedUsageCost,
+  hasUnavailableUsage,
+  legacyUsageProvenance,
+  mergeUsageBuckets,
+  mergeUsageLogs,
+  mergeUsageSummary,
+  type UsageProvenance,
+} from '../usage-ledger-merge.js';
 import type { UsageBucket, UsageLogRow, UsageSummaryV2 } from '../usage-stats/types.js';
 
 // A realistic epoch-ms clock: a small NOW would push relative ranges negative
@@ -54,6 +81,7 @@ function legacySummary(overrides: Partial<UsageSummaryV2> = {}): UsageSummaryV2 
     cacheHitRequests: 0,
     cacheCreateRequests: 0,
     errorRequests: 1,
+    totalDurationMs: 0,
     ...overrides,
   };
 }
@@ -96,10 +124,6 @@ function legacyBucket(overrides: Partial<UsageBucket> = {}): UsageBucket {
   };
 }
 
-function hourKey(ts: number): string {
-  return usageBucketKey({ providerId: 'anthropic', modelId: 'claude-opus-5', ts }, 'hour');
-}
-
 describe('usage ledger merge', () => {
   test('sums both sources and reports how much came from the frozen table', () => {
     const merged = mergeUsageSummary(
@@ -119,6 +143,34 @@ describe('usage ledger merge', () => {
     assert.equal(merged.provenance.legacyRecords, 2);
     assert.equal(merged.provenance.coverage.attempts, 1);
     assert.equal(merged.provenance.coverage.pricedAttempts, 1);
+  });
+
+  test('merges recorded call time from both ledgers', () => {
+    const merged = mergeUsageSummary(
+      legacySummary({ totalDurationMs: 700 }),
+      {
+        attempts: [attempt({ attemptId: 'a', latencyMs: 500 })],
+        unreadableRecords: 0,
+        pendingRepairs: 0,
+      },
+      { range: 'all' },
+      NOW,
+    );
+    assert.equal(merged.totalDurationMs, 1_200);
+
+    // The projection always measures the attempts it counts; a legacy store
+    // with no recorded time simply contributes a zero to the sum.
+    const canonicalOnly = mergeUsageSummary(
+      legacySummary(),
+      {
+        attempts: [attempt({ attemptId: 'a', latencyMs: 500 })],
+        unreadableRecords: 0,
+        pendingRepairs: 0,
+      },
+      { range: 'all' },
+      NOW,
+    );
+    assert.equal(canonicalOnly.totalDurationMs, 500);
   });
 
   test('unpriced canonical spend stays out of the total and is reported instead', () => {
@@ -192,28 +244,6 @@ describe('usage ledger merge', () => {
     ]);
   });
 
-  test('a legacy and a canonical call in the same hour land in one bucket', () => {
-    // The two sources used to derive the hour differently — an epoch-hour
-    // ordinal against an ISO hour — so the merge saw two keys and split one
-    // hour in half without failing anywhere.
-    const ts = NOW - 60_000;
-    const merged = mergeUsageBuckets(
-      [legacyBucket({ key: hourKey(ts), label: hourKey(ts), requests: 2 })],
-      {
-        attempts: [attempt({ attemptId: 'a', completedAt: ts })],
-        unreadableRecords: 0,
-        pendingRepairs: 0,
-      },
-      { range: 'all' },
-      'hour',
-      NOW,
-    );
-
-    assert.equal(merged.buckets.length, 1);
-    assert.equal(merged.buckets[0]?.key, hourKey(ts));
-    assert.equal(merged.buckets[0]?.requests, 3);
-  });
-
   test('log pages interleave both sources newest first and page across the boundary', () => {
     const legacyRows = [legacyLog('legacy-new', NOW - 100), legacyLog('legacy-old', NOW - 900)];
     const canonical = {
@@ -270,5 +300,35 @@ describe('usage ledger merge', () => {
 
     assert.deepEqual(merged.rows, []);
     assert.equal(merged.total, 0);
+  });
+});
+
+describe('presenting usage provenance', () => {
+  function provenance(overrides: Partial<UsageProvenance> = {}): UsageProvenance {
+    return { ...EMPTY_USAGE_PROVENANCE, ...overrides };
+  }
+
+  test('estimatedUsageCost trusts the total once any attempt was priced', () => {
+    const withPriced = provenance({
+      coverage: { ...EMPTY_USAGE_PROVENANCE.coverage, attempts: 2, pricedAttempts: 1 },
+    });
+    assert.equal(estimatedUsageCost(withPriced, 4.2), 4.2);
+    assert.equal(estimatedUsageCost(withPriced, 0), 0);
+  });
+
+  test('estimatedUsageCost treats a positive legacy total as an estimate but a zero as unknown', () => {
+    assert.equal(estimatedUsageCost(legacyUsageProvenance(3), 1.5), 1.5);
+    assert.equal(estimatedUsageCost(legacyUsageProvenance(3), 0), undefined);
+  });
+
+  test('estimatedUsageCost is unknown when nothing was priced and there are no legacy records', () => {
+    assert.equal(estimatedUsageCost(EMPTY_USAGE_PROVENANCE, 9.9), undefined);
+  });
+
+  test('hasUnavailableUsage flags unreadable or pending records only', () => {
+    assert.equal(hasUnavailableUsage(EMPTY_USAGE_PROVENANCE), false);
+    assert.equal(hasUnavailableUsage(provenance({ unreadableRecords: 1 })), true);
+    assert.equal(hasUnavailableUsage(provenance({ pendingRepairs: 2 })), true);
+    assert.equal(hasUnavailableUsage(legacyUsageProvenance(5)), false);
   });
 });

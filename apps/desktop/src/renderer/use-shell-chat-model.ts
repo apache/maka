@@ -1,23 +1,58 @@
-import { useMemo, useState } from 'react';
-import type { ChatModelChoice, LlmConnection, SessionSendProjection, SessionSummary, SettingsSection, ThinkingLevel, UiLocale } from '@maka/core';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { useMemo } from 'react';
+import type { ChatModelChoice } from '@maka/core/chat-model-choice';
+import type {
+  IdentifiedLlmConnection,
+  ProjectedLlmConnection,
+} from '@maka/core/llm-connections';
+import type { SessionSendProjection } from '@maka/core/session-send-projection';
+import type { SessionSummary } from '@maka/core/session';
+import type { SettingsSection } from '@maka/core/settings';
+import type { ThinkingLevel } from '@maka/core/model-thinking';
+import type { UiLocale } from '@maka/core/ui-locale';
 import {
   chatModelChoiceLabel,
-  normalizeActiveChatModel,
+  composerModelSupportsVision,
   pickNewChatModel,
   type NewChatModel,
-} from './shell-chat-model-selection';
-import { deriveSessionHealthNotice } from './session-health-notice';
-import type { ComposerDefaults } from './composer-defaults';
+  type NewChatModelCandidate,
+} from './shell-chat-model-selection.js';
+import {
+  deriveSessionHealthNotice,
+  type SessionHealthNoticeTarget,
+} from './session-health-notice.js';
+import type { ComposerDefaults } from './composer-defaults.js';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
+import { useNewTaskChoice } from './use-new-task-choice.js';
 
-export type { NewChatModel } from './shell-chat-model-selection';
+export type { NewChatModel } from './shell-chat-model-selection.js';
 
 export type SessionHealthNoticeView = {
   tone: 'info' | 'warning' | 'destructive';
   label: string;
   tooltip?: string;
+  actionLabel?: string;
+  actionDisabled?: boolean;
   onClick(): void;
-  onClickTarget: 'models';
+  onClickTarget: SessionHealthNoticeTarget;
 };
 
 /**
@@ -27,29 +62,32 @@ export type SessionHealthNoticeView = {
  * sticky pick, the thinking-variant lists, and the hard-only session health
  * notice (#1032).
  *
- * Pure move out of AppShell — every memo keeps its exact dependency array (so
- * `chatModelChoices` / `activeThinkingLevels` / `newChatThinkingLevels` retain
- * their referential-stability behavior) and the sticky-pick validation still
- * drops a `pendingNewChatModel` that is no longer an offered choice. The
- * `openSettingsSection` jump is injected so `sessionHealthNotice` can wrap the
- * derived click target; its memo deliberately omits the injected handler from
- * the dep array (see the inline note).
+ * The model catalog is derived from the same Host-scoped connection list as
+ * the labels and selectors, so switching between Hosts cannot mix catalogs.
+ * Sticky picks still drop out when their model is no longer offered.
  */
 export function useShellChatModel(options: {
   uiLocale: UiLocale;
-  connections: LlmConnection[];
-  snapshotChoices: ChatModelChoice[] | undefined;
+  connections: ProjectedLlmConnection[];
+  chatModelChoices: ChatModelChoice[];
   sessionSendOutcome: SessionSendProjection | undefined;
   defaultConnection: string | null;
-  activationCandidate?: NewChatModel;
+  newTaskKey: string;
+  activationCandidate?: NewChatModelCandidate;
   activeSession: SessionSummary | undefined;
+  sessionHealthSession: SessionSummary | undefined;
   persistedComposerDefaults: ComposerDefaults | null;
+  usePersistedComposerDefaults: boolean;
   /** Settings → 通用 → 默认思考级别; undefined means "no preference". */
   defaultThinkingLevel?: ThinkingLevel;
+  connectionSnapshotReady: boolean;
+  modelPickerDisabled: boolean;
   openSettingsSection: (section: SettingsSection) => void;
+  openModelPicker(): void;
+  refreshModelChoices(): void | Promise<void>;
 }): {
   chatModelChoices: ChatModelChoice[];
-  activeConnection: LlmConnection | undefined;
+  activeConnection: IdentifiedLlmConnection | undefined;
   activeConnectionLabel: string | undefined;
   activeModel: string | undefined;
   activeModelLabel: string | undefined;
@@ -59,40 +97,67 @@ export function useShellChatModel(options: {
   newChatModelLabel: string | undefined;
   newChatThinkingLevels: readonly ThinkingLevel[];
   newChatThinkingLevel: ThinkingLevel | undefined;
-  pendingNewChatModel: NewChatModel | null;
-  setPendingNewChatModel: (next: NewChatModel | null) => void;
+  composerSupportsVision: boolean | undefined;
+  pendingNewChatModel: NewChatModelCandidate | null;
+  setPendingNewChatModel: (next: NewChatModelCandidate | null) => void;
   pendingNewChatThinkingLevel: ThinkingLevel | null;
   setPendingNewChatThinkingLevel: (next: ThinkingLevel | null) => void;
   sessionHealthNotice: SessionHealthNoticeView | undefined;
 } {
-  const { uiLocale, connections, defaultConnection, activationCandidate, activeSession, persistedComposerDefaults, openSettingsSection } = options;
+  const {
+    uiLocale,
+    connections,
+    defaultConnection,
+    activationCandidate,
+    activeSession,
+    sessionHealthSession,
+    persistedComposerDefaults,
+    openSettingsSection,
+    openModelPicker,
+  } = options;
   const conversationCopy = getDesktopConversationCopy(uiLocale);
-  // Persisted composer defaults seed the empty-state model so the home view is
-  // populated before the async `app:info` round-trip completes on mount.
-  const [pendingNewChatModel, setPendingNewChatModel] = useState<NewChatModel | null>(
-    persistedComposerDefaults?.model ?? null,
+  const [pendingNewChatModelChoice, setPendingNewChatModel] = useNewTaskChoice<
+    NewChatModelCandidate | null
+  >(
+    options.newTaskKey,
   );
+  const pendingNewChatModel = pendingNewChatModelChoice !== undefined
+    ? pendingNewChatModelChoice
+    : options.usePersistedComposerDefaults
+      ? persistedComposerDefaults?.model ?? null
+      : null;
   const activeConnection = activeSession
-    ? connections.find((connection) => connection.slug === activeSession.llmConnectionSlug)
+    ? connections.find(
+        (connection) =>
+          activeSession.llmConnectionId !== undefined &&
+          connection.connectionId === activeSession.llmConnectionId &&
+          connection.slug === activeSession.llmConnectionSlug,
+      )
     : undefined;
-  const chatModelChoices = options.snapshotChoices ?? [];
+  const sessionHealthConnection = sessionHealthSession
+    ? connections.find(
+        (connection) =>
+          connection.connectionId === sessionHealthSession.llmConnectionId &&
+          connection.slug === sessionHealthSession.llmConnectionSlug,
+      )
+    : undefined;
+  const { chatModelChoices } = options;
   // Home / empty-state composer: which model the next NEW chat starts with.
   // An explicit pick stays sticky; otherwise onboarding's readiness-checked
   // candidate wins before the legacy catalog default and first offered choice.
   // Renderer-only — it never mutates the persisted Settings · 模型 default.
   // Three states, because two cannot say this: `undefined` is an untouched
   // picker, so Settings → 通用 → 默认思考级别 applies; `null` is the user
-  // explicitly choosing 模型默认 for this one chat, which must beat the
-  // configured default or the per-chat picker could not undo it.
+  // explicitly choosing the per-chat `默认` option (use the model default),
+  // which must beat the configured Settings default or the picker could not
+  // undo it.
   //
-  // The settings value is read here rather than seeded into useState because it
-  // arrives from an async settings fetch, after this hook first mounts — a
-  // useState initializer would silently keep the mount-time `undefined` and the
-  // setting would never take effect. (`persistedComposerDefaults` above can use
-  // an initializer only because it is read synchronously from localStorage.)
-  const [pendingNewChatThinkingLevel, setPendingNewChatThinkingLevel] = useState<
-    ThinkingLevel | null | undefined
-  >(undefined);
+  // The pick carries its target key so a Host or Project switch cannot apply it
+  // to a different execution authority, even for an identically named model.
+  const [pendingNewChatThinkingLevel, setPendingNewChatThinkingLevel] =
+    useNewTaskChoice<ThinkingLevel | null>(
+      options.newTaskKey,
+    );
   const requestedNewChatThinkingLevel =
     pendingNewChatThinkingLevel === undefined
       ? options.defaultThinkingLevel ?? null
@@ -104,7 +169,11 @@ export function useShellChatModel(options: {
     (choice) => choice.connectionSlug === defaultConnection && choice.isDefault,
   );
   const catalogDefaultNewChatModel = catalogDefaultChoice
-    ? { llmConnectionSlug: catalogDefaultChoice.connectionSlug, model: catalogDefaultChoice.model }
+    ? {
+        llmConnectionId: catalogDefaultChoice.connectionId,
+        llmConnectionSlug: catalogDefaultChoice.connectionSlug,
+        model: catalogDefaultChoice.model,
+      }
     : undefined;
   const newChatModel = pickNewChatModel({
     pending: pendingNewChatModel,
@@ -112,20 +181,38 @@ export function useShellChatModel(options: {
     catalogDefault: catalogDefaultNewChatModel,
     choices: chatModelChoices,
   });
-  const activeConnectionLabel = activeSession?.backend === 'fake'
+  // A task whose backend was retired has no model to name (#3211). That verdict
+  // comes from the readiness projection, not from reading `activeSession.backend`
+  // here: the projection is the single authority on whether a task is usable,
+  // and it already answers `fake_backend` for these rows.
+  const isRetiredBackend =
+    options.sessionSendOutcome?.kind === 'blocked' &&
+    options.sessionSendOutcome.reason === 'fake_backend';
+  const activeConnectionLabel = isRetiredBackend
     ? conversationCopy.model.fakeBackendLabel
     : activeConnection?.name ?? activeSession?.llmConnectionSlug;
-  const activeModel = activeSession?.backend === 'fake'
+  const activeModel = isRetiredBackend
     ? undefined
-    : normalizeActiveChatModel(activeSession, activeConnection, chatModelChoices);
-  const activeModelLabel = activeSession?.backend === 'fake'
+    : activeSession?.model || activeConnection?.defaultModel;
+  const activeModelLabel = isRetiredBackend
     ? undefined
-    : chatModelChoiceLabel(chatModelChoices, activeSession?.llmConnectionSlug, activeModel);
+    : activeSession?.llmConnectionId
+      ? chatModelChoiceLabel(
+          chatModelChoices,
+          activeSession.llmConnectionId,
+          activeSession.llmConnectionSlug,
+          activeModel,
+        )
+      : activeModel;
   const activeThinkingLevels = useMemo(
-    () => chatModelChoices.find(
-      (choice) => choice.connectionSlug === activeSession?.llmConnectionSlug && choice.model === activeModel,
-    )?.thinkingLevels ?? [],
-    [activeSession?.llmConnectionSlug, activeModel, chatModelChoices],
+    () =>
+      chatModelChoices.find(
+        (choice) =>
+          choice.connectionId === activeSession?.llmConnectionId &&
+          choice.connectionSlug === activeSession?.llmConnectionSlug &&
+          choice.model === activeModel,
+      )?.thinkingLevels ?? [],
+    [activeSession?.llmConnectionId, activeSession?.llmConnectionSlug, activeModel, chatModelChoices],
   );
   // Only surface a stored level when the current model still supports it;
   // if the model changed (setModel clears it) or the catalog reconfigured so
@@ -140,7 +227,10 @@ export function useShellChatModel(options: {
     () => {
       if (!newChatModel) return [];
       return chatModelChoices.find(
-        (choice) => choice.connectionSlug === newChatModel.llmConnectionSlug && choice.model === newChatModel.model,
+        (choice) =>
+          choice.connectionId === newChatModel.llmConnectionId &&
+          choice.connectionSlug === newChatModel.llmConnectionSlug &&
+          choice.model === newChatModel.model,
       )?.thinkingLevels ?? [];
     },
     [newChatModel, chatModelChoices],
@@ -151,17 +241,37 @@ export function useShellChatModel(options: {
   const newChatThinkingLevel = requestedNewChatThinkingLevel && newChatThinkingLevels.includes(requestedNewChatThinkingLevel)
     ? requestedNewChatThinkingLevel
     : undefined;
-  const newChatModelLabel = chatModelChoiceLabel(chatModelChoices, newChatModel?.llmConnectionSlug, newChatModel?.model);
+  const newChatModelLabel = chatModelChoiceLabel(
+    chatModelChoices,
+    newChatModel?.llmConnectionId,
+    newChatModel?.llmConnectionSlug,
+    newChatModel?.model,
+  );
+  const composerSupportsVision = composerModelSupportsVision({
+    active: activeSession
+      ? {
+          llmConnectionId: activeSession.llmConnectionId,
+          llmConnectionSlug: activeSession.llmConnectionSlug,
+          model: activeModel,
+        }
+      : undefined,
+    next: newChatModel,
+    choices: chatModelChoices,
+  });
 
-  // Notice derivation is a pure function (see `session-health-notice.ts`); we
-  // wrap the returned `onClickTarget` here with the Settings-jump action.
+  // Notice derivation is a pure function (see `session-health-notice.ts`); this
+  // adapter routes configuration repair to Settings, catalog retries to the
+  // existing Host snapshot read, and identity recovery to the exact picker.
   const sessionHealthNotice = useMemo<SessionHealthNoticeView | undefined>(() => {
     const derived = deriveSessionHealthNotice({
       locale: uiLocale,
-      session: activeSession,
+      session: sessionHealthSession,
       outcome: options.sessionSendOutcome,
       connections,
-      lastTestStatus: activeConnection?.lastTestStatus,
+      hasModelChoices: chatModelChoices.length > 0,
+      modelChoicesSettled: options.connectionSnapshotReady,
+      modelPickerDisabled: options.modelPickerDisabled,
+      lastTestStatus: sessionHealthConnection?.lastTestStatus,
     });
     if (!derived) return undefined;
     const target = derived.onClickTarget;
@@ -169,21 +279,33 @@ export function useShellChatModel(options: {
       tone: derived.tone,
       label: derived.label,
       ...(derived.tooltip ? { tooltip: derived.tooltip } : {}),
+      ...(derived.actionLabel ? { actionLabel: derived.actionLabel } : {}),
+      ...(derived.actionDisabled ? { actionDisabled: true } : {}),
       onClickTarget: target,
-      onClick: () => openSettingsSection(target),
+      onClick: target === 'model_picker'
+        ? openModelPicker
+        : target === 'model_choices_refresh'
+          ? () => void options.refreshModelChoices()
+          : () => openSettingsSection(target),
     };
     // openSettingsSection is stable enough for our purposes — main.tsx
     // doesn't depend on it changing, and including it would force the
     // effect to re-create on every render due to its function identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
-    activeSession?.id,
-    activeSession?.llmConnectionSlug,
-    activeSession?.model,
+    sessionHealthSession?.id,
+    sessionHealthSession?.llmConnectionId,
+    sessionHealthSession?.llmConnectionSlug,
+    sessionHealthSession?.model,
     options.sessionSendOutcome,
     connections,
-    activeConnection?.lastTestStatus,
+    chatModelChoices.length,
+    options.connectionSnapshotReady,
+    options.modelPickerDisabled,
+    options.refreshModelChoices,
+    sessionHealthConnection?.lastTestStatus,
     uiLocale,
+    openModelPicker,
   ]);
 
   return {
@@ -198,6 +320,7 @@ export function useShellChatModel(options: {
     newChatModelLabel,
     newChatThinkingLevels,
     newChatThinkingLevel,
+    composerSupportsVision,
     pendingNewChatModel,
     setPendingNewChatModel,
     // Resolved, not raw: callers want the level the next chat would actually

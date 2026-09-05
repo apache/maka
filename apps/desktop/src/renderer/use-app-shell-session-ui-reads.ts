@@ -1,20 +1,47 @@
-import type { InteractionQueues } from '@maka/ui';
-import type { AppShellSessionUiState, AppShellSessionUiStateController } from './app-shell-session-ui-state.js';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import type {
+  AppShellSessionUiState,
+  AppShellSessionUiStateController,
+} from './app-shell-session-ui-state.js';
 import {
   deriveLiveTurnSnapshot,
   liveTurnSnapshotsEqual,
   selectStreamingSessionIds,
   sessionIdSetsEqual,
-  type LiveTurnSnapshot,
 } from './live-turn-snapshot.js';
-import { useAppShellSessionUiSelector } from './use-app-shell-session-ui-selector.js';
+import { useExternalStoreSelector } from './use-external-store-selector.js';
 
-const selectMessageLoadError = (state: AppShellSessionUiState) => state.messageLoadErrorBySession;
+const selectMessageLoadState = (state: AppShellSessionUiState) => ({
+  messageLoadErrorBySession: state.messageLoadErrorBySession,
+  transcriptRestoreUnavailableBySession: state.transcriptRestoreUnavailableBySession,
+});
+const messageLoadStateEqual = (
+  left: ReturnType<typeof selectMessageLoadState>,
+  right: ReturnType<typeof selectMessageLoadState>,
+) => left.messageLoadErrorBySession === right.messageLoadErrorBySession
+  && left.transcriptRestoreUnavailableBySession === right.transcriptRestoreUnavailableBySession;
 const selectMessageRetryPending = (state: AppShellSessionUiState) => state.messageRetryPendingBySession;
 const selectStopPending = (state: AppShellSessionUiState) => state.stopPendingBySession;
 const selectInteraction = (state: AppShellSessionUiState) => state.interactionBySession;
-const selectPendingPermissionMode = (state: AppShellSessionUiState) => state.pendingPermissionModeBySession;
-const selectPendingSessionModel = (state: AppShellSessionUiState) => state.pendingSessionModelBySession;
+const selectMessageQueue = (state: AppShellSessionUiState) => state.messageQueueBySession;
 const selectPulseSet = (state: AppShellSessionUiState) => selectStreamingSessionIds(state.liveTurnBySession);
 
 /**
@@ -47,25 +74,21 @@ const selectActiveSnapshot = (state: AppShellSessionUiState, sessionId: string |
 export function useAppShellSessionUiReads(
   controller: AppShellSessionUiStateController,
   activeId: string | undefined,
-): {
-  messageLoadErrorBySession: Record<string, string>;
-  messageRetryPendingBySession: Record<string, boolean>;
-  stopPendingBySession: Record<string, boolean>;
-  interactionBySession: InteractionQueues;
-  pendingPermissionModeBySession: Record<string, boolean>;
-  pendingSessionModelBySession: Record<string, boolean>;
-  streamingSessionIds: Set<string>;
-  activeLiveTurnSnapshot: LiveTurnSnapshot;
-} {
+) {
+  const messageLoadState = useExternalStoreSelector(
+    controller,
+    selectMessageLoadState,
+    undefined,
+    messageLoadStateEqual,
+  );
   return {
-    messageLoadErrorBySession: useAppShellSessionUiSelector(controller, selectMessageLoadError),
-    messageRetryPendingBySession: useAppShellSessionUiSelector(controller, selectMessageRetryPending),
-    stopPendingBySession: useAppShellSessionUiSelector(controller, selectStopPending),
-    interactionBySession: useAppShellSessionUiSelector(controller, selectInteraction),
-    pendingPermissionModeBySession: useAppShellSessionUiSelector(controller, selectPendingPermissionMode),
-    pendingSessionModelBySession: useAppShellSessionUiSelector(controller, selectPendingSessionModel),
-    streamingSessionIds: useAppShellSessionUiSelector(controller, selectPulseSet, undefined, sessionIdSetsEqual),
-    activeLiveTurnSnapshot: useAppShellSessionUiSelector(
+    ...messageLoadState,
+    messageRetryPendingBySession: useExternalStoreSelector(controller, selectMessageRetryPending),
+    stopPendingBySession: useExternalStoreSelector(controller, selectStopPending),
+    interactionBySession: useExternalStoreSelector(controller, selectInteraction),
+    messageQueueBySession: useExternalStoreSelector(controller, selectMessageQueue),
+    streamingSessionIds: useExternalStoreSelector(controller, selectPulseSet, undefined, sessionIdSetsEqual),
+    activeLiveTurnSnapshot: useExternalStoreSelector(
       controller,
       selectActiveSnapshot,
       activeId,

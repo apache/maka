@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { existsSync, promises as fs } from 'node:fs';
@@ -52,18 +71,15 @@ function findPwsh(): string | undefined {
 }
 
 describe('runShellWithBoundedTail', () => {
-  test('returns full small output and exit 0 without throwing', async () => {
-    const r = await runShellWithBoundedTail("printf 'hello\\nworld\\n'", base());
-    assert.deepEqual(
-      {
-        exitCode: r.exitCode,
-        stdout: r.stdout,
-        stderr: r.stderr,
-        timedOut: r.timedOut,
-        aborted: r.aborted,
-      },
-      { exitCode: 0, stdout: 'hello\nworld\n', stderr: '', timedOut: false, aborted: false },
+  test('writes a legacy WSL Bash command through stdin', {
+    skip: process.platform === 'win32' ? 'uses /bin/sh as a portable stdin probe' : false,
+  }, async () => {
+    const result = await runShellWithBoundedTail(
+      "printf 'legacy-stdin-ready\\n'",
+      base({ shell: { kind: 'legacy-wsl-bash', displayName: 'Legacy WSL Bash', exe: '/bin/sh' } }),
     );
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdout, 'legacy-stdin-ready\n');
   });
 
   test('keeps only the bounded, line-aligned TAIL of large output (never killed by size)', async () => {
@@ -243,7 +259,7 @@ describe('runShellWithBoundedTail', () => {
 
   test('spawns a detected PowerShell explicitly with non-interactive flags (not via shell:true)', async () => {
     // /bin/echo stands in for pwsh.exe: if the spawn plan is honoured, the
-    // "shell" receives the flags plus the command as argv and echoes them back.
+    // "shell" receives the flags plus the command wrapper as argv and echoes them back.
     // If the command were still run via shell:true, stdout would be plain
     // 'wired-marker' with no flags.
     const r = await runShellWithBoundedTail(
@@ -254,13 +270,13 @@ describe('runShellWithBoundedTail', () => {
     );
     assert.equal(r.exitCode, 0);
     assert.ok(
-      r.stdout.startsWith('-NoLogo -NoProfile -NonInteractive -Command echo wired-marker\n'),
-      `flags then verbatim command, got: ${r.stdout}`,
+      r.stdout.startsWith(
+        '-NoLogo -NoProfile -NonInteractive -Command $__makaUtf8 = [System.Text.UTF8Encoding]::new($false)\n',
+      ),
+      `flags then PowerShell wrapper, got: ${r.stdout}`,
     );
-    assert.ok(
-      r.stdout.includes('exit $LASTEXITCODE'),
-      'exit-code wrapper is part of the command argument',
-    );
+    assert.ok(r.stdout.includes("GetEnvironmentVariable('__MAKA_RUNTIME_POWERSHELL_COMMAND')"));
+    assert.doesNotMatch(r.stdout, /wired-marker/u, 'user syntax stays outside argv');
   });
 
   test('a native command exit code survives the PowerShell -Command path (requires pwsh)', async (t) => {

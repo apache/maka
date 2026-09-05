@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * Pure helpers and presentation data for the ScheduledTaskPanel.
  *
@@ -16,20 +35,20 @@
  * between "what to render" and "how to compute display state".
  */
 
+import type { BotProvider } from '@maka/core/bot-chat-settings';
+
 import type {
-  BotProvider,
   ScheduledTask,
   ScheduledTaskEffect,
   ScheduledTaskSchedule,
   ScheduledTaskStatus,
-  UiLocale,
-} from '@maka/core';
-import {
-  BOT_DELIVERY_PROVIDERS,
-  botDisplayLabel,
-  compileCronExpression,
-  uiLocaleToIntlLocale,
-} from '@maka/core';
+} from '@maka/core/scheduled-task';
+
+import type { UiLocale } from '@maka/core/ui-locale';
+import { BOT_DELIVERY_PROVIDERS } from '@maka/core/bot-chat-settings';
+import { botDisplayLabel } from '@maka/core/bot-events';
+import { compileCronExpression } from '@maka/core/cron-expression';
+import { uiLocaleToIntlLocale } from '@maka/core/ui-locale';
 import {
   getScheduledTaskCopy,
   type ScheduledTaskExampleTemplate,
@@ -243,7 +262,7 @@ export function runStatusLabel(status: ScheduledTask['runs'][number]['outcome'],
 
 export function formatScheduledTaskDeliveryTargetLabel(effect: ScheduledTaskEffect, locale: UiLocale): string {
   const copy = getScheduledTaskCopy(locale).delivery;
-  if (effect.kind === 'agent_run') return getScheduledTaskCopy(locale).detail.agentDelivery;
+  if (effect.kind !== 'notify') return getScheduledTaskCopy(locale).detail.agentDelivery;
   if (effect.channel === 'local') return copy.local;
   return copy.bot(botDisplayLabel(effect.platform), effect.chatId);
 }
@@ -268,7 +287,7 @@ export interface ScheduledTaskFormSeed {
   /** UI does not expose interval cadence editing; preserve it instead of coercing to once. */
   lockedSchedule?: Extract<ScheduledTaskSchedule, { kind: 'interval' }>;
   /** Agent execution is frozen at creation and must never be rewritten as notification delivery. */
-  lockedEffect?: Extract<ScheduledTaskEffect, { kind: 'agent_run' }>;
+  lockedEffect?: Exclude<ScheduledTaskEffect, { kind: 'notify' }>;
 }
 
 /**
@@ -339,7 +358,7 @@ function scheduledTaskFormSeedFromTask(task: ScheduledTask): ScheduledTaskFormSe
       ? { deliveryPlatform: task.effect.platform, deliveryChatId: task.effect.chatId }
       : { deliveryPlatform: 'telegram' as BotProvider, deliveryChatId: '' }),
     ...(task.schedule.kind === 'interval' ? { lockedSchedule: task.schedule } : {}),
-    ...(task.effect.kind === 'agent_run' ? { lockedEffect: task.effect } : {}),
+    ...(task.effect.kind !== 'notify' ? { lockedEffect: task.effect } : {}),
   };
 }
 

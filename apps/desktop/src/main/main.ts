@@ -1,8 +1,53 @@
-import { app, dialog } from 'electron';
-import { installMainProcessLogCapture } from './main-process-diagnostics.js';
-import { isIsolatedE2e } from './startup-context.js';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
 
-installMainProcessLogCapture();
+import { resolveSystemUiLocale } from '@maka/core/ui-locale';
+import {
+  DEV_LOSER_EXIT_CODE,
+  developmentLaunchResultFile,
+  shouldShowLoserDialog,
+} from '@maka/core/dev-single-instance';
+import { app, clipboard, dialog, ipcMain } from 'electron';
+import { join } from 'node:path';
+import { resolveBuildInfo } from './build-info.js';
+import { resolveUpdateTestUserDataDirectory } from './app-update-test-context.js';
+import { desktopDiagnosticUpdateChannel } from './app-update-attestation.js';
+import {
+  captureDesktopDiagnosticEnvironment,
+  copyDesktopDiagnosticReport,
+  createDesktopPreviousMainProcessDiagnosticInput,
+  installMainProcessLogCapture,
+  mainProcessLogBuffer,
+} from './main-process-diagnostics.js';
+import {
+  appendUncaughtMainProcessError,
+  createMainProcessRecoveryJournal,
+  type MainProcessRecoveryJournal,
+} from './main-process-recovery-journal.js';
+import { showFatalStartupError } from './native-diagnostic-dialog.js';
+import { isIsolatedE2e } from './startup-context.js';
+import { reportDevelopmentLaunchResult } from './dev-single-instance-result.js';
+import { registerPreviousMainProcessDiagnosticsIpc } from './desktop-diagnostics-ipc-main.js';
+import { showBrowserMessageBox } from './browser-message-box.js';
+
+let recoveryJournal: MainProcessRecoveryJournal | undefined;
+installMainProcessLogCapture(mainProcessLogBuffer, () => recoveryJournal?.markDirty());
 
 // The macOS app menu title and app.getName() consumers read this name. Set it
 // before ready, unchanged from its historical pre-ready position.
@@ -14,6 +59,21 @@ installMainProcessLogCapture();
 // path logic. See https://github.com/maka-agent/maka-agent/issues/2252.
 app.setName(app.isPackaged ? 'Maka' : 'Maka Dev');
 
+// Electron otherwise quits implicitly when the last BrowserWindow closes.
+// Startup and fatal-recovery surfaces can be the only window, so keep process
+// lifetime explicit; runtime-host-boot installs the normal platform policy
+// after startup, and every early terminal path calls app.exit itself.
+app.on('window-all-closed', () => {});
+
+const updateTestUserData = resolveUpdateTestUserDataDirectory({
+  feedUrl: process.env.MAKA_UPDATE_TEST_FEED,
+  explicitDirectory: process.env.MAKA_UPDATE_TEST_USER_DATA_DIR,
+  isPackaged: app.isPackaged,
+  appPath: app.getAppPath(),
+  executablePath: process.execPath,
+});
+if (updateTestUserData) app.setPath('userData', updateTestUserData);
+
 // E2E isolation: redirect userData BEFORE the single-instance lock so the
 // lock judges the throwaway dir, not the real user data — otherwise a
 // developer with Maka open makes the E2E process exit as a "second instance".
@@ -24,12 +84,121 @@ if (isIsolatedE2e && process.env.MAKA_E2E_USER_DATA_DIR) {
 }
 
 // Electron does not enforce single-instance by default. Must run before any
-// workspace/store setup below -- a losing second process exits immediately,
-// before touching shared state. See the 'second-instance' listener in
-// runtime-host-boot.ts for what the surviving process does about it.
+// workspace/store setup below -- a losing second process never touches shared
+// state. See the 'second-instance' listener in runtime-host-boot.ts for what
+// the surviving process does about it.
 if (!app.requestSingleInstanceLock()) {
-  app.exit(0);
+  if (!app.isPackaged) {
+    // Dev: losing the lock must NOT pretend to have started (exit 0 would be
+    // read as a clean launch while the app was absorbed). A direct launcher
+    // reads the child exit code; a detached TCC launcher reads its private,
+    // one-shot result file. A direct launcher explicitly promises to consume
+    // the exit code; a TCC launcher proves it has a consumer only when the
+    // result write succeeds. Any other entry (Dock, Spotlight, Quit & Reopen)
+    // waits for ready and gets the same product-styled temporary window as
+    // startup recovery. Packaged builds keep the existing UX (double-click
+    // focuses the first window) — the gate is a semantic boundary.
+    const resultReported = reportDevelopmentLaunchResult(process.argv, { status: 'loser' });
+    if (!resultReported && shouldShowLoserDialog(process.argv)) {
+      const profilePath = app.getPath('userData');
+      void app
+        .whenReady()
+        .then(() => {
+          const locale = resolveSystemUiLocale(app.getPreferredSystemLanguages());
+          const isSimplifiedChinese = locale === 'zh-CN';
+          const isTraditionalChinese = locale === 'zh-TW';
+          return showBrowserMessageBox(
+            {
+              type: 'warning',
+              title: isSimplifiedChinese
+                ? 'Maka Dev 已在运行'
+                : isTraditionalChinese
+                  ? 'Maka Dev 已在執行'
+                  : 'Maka Dev is already running',
+              message: isSimplifiedChinese
+                ? '另一个 Maka Dev 实例正在使用此开发配置。'
+                : isTraditionalChinese
+                  ? '另一個 Maka Dev 執行個體正在使用此開發設定。'
+                  : 'Another Maka Dev instance is using this development profile.',
+              detail: isSimplifiedChinese
+                ? `开发配置：${profilePath}\n\n请先退出正在运行的实例，然后重试。`
+                : isTraditionalChinese
+                  ? `開發設定：${profilePath}\n\n請先退出正在執行的執行個體，然後重試。`
+                  : `Development profile: ${profilePath}\n\nQuit the running instance, then retry.`,
+              buttons: [isSimplifiedChinese ? '退出' : isTraditionalChinese ? '退出' : 'Exit'],
+              defaultId: 0,
+              cancelId: 0,
+            },
+            undefined,
+            { locale },
+          );
+        })
+        .catch((error) => {
+          console.error('[dev] styled single-instance dialog failed:', error);
+          dialog.showErrorBox(
+            'Maka Dev',
+            `Another instance holds the Maka Dev profile (${profilePath}). Quit it and retry.`,
+          );
+        })
+        .finally(() => {
+          app.exit(DEV_LOSER_EXIT_CODE);
+        });
+    } else app.exit(DEV_LOSER_EXIT_CODE);
+  } else {
+    app.exit(0);
+  }
 } else {
+  if (!app.isPackaged) {
+    const resultReported = reportDevelopmentLaunchResult(process.argv, {
+      status: 'winner',
+    });
+    if (developmentLaunchResultFile(process.argv) && !resultReported) {
+      console.error('[dev] could not publish the single-instance launch result');
+    }
+  }
+  const buildInfo = resolveBuildInfo(app.isPackaged, app.getAppPath());
+  try {
+    recoveryJournal = createMainProcessRecoveryJournal({
+      root: join(app.getPath('userData'), 'main-process-recovery'),
+      appVersion: app.getVersion(),
+      buildMode: buildInfo.mode,
+      buildCommit: buildInfo.commit,
+      logs: () => mainProcessLogBuffer.snapshot(),
+      onError: (error) => console.error('[diagnostics] main-process recovery failed:', error),
+    });
+    const journal = recoveryJournal;
+    process.on('uncaughtExceptionMonitor', (error, origin) => {
+      appendUncaughtMainProcessError(mainProcessLogBuffer, journal, error, origin);
+    });
+    app.on('quit', () => journal.markClean());
+    app.on('browser-window-created', (_event, window) => {
+      window.on('session-end', () => journal.markClean());
+    });
+  } catch (error) {
+    console.error('[diagnostics] main-process recovery unavailable:', error);
+  }
+  if (isIsolatedE2e) recoveryJournal?.discardPending();
+  registerPreviousMainProcessDiagnosticsIpc({
+    ipcMain,
+    evidence: isIsolatedE2e ? undefined : recoveryJournal?.pending,
+    acknowledge: () => recoveryJournal?.discardPending(),
+    environment: () =>
+      captureDesktopDiagnosticEnvironment({
+        appVersion: app.getVersion(),
+        buildMode: buildInfo.mode,
+        updateChannel: desktopDiagnosticUpdateChannel({
+          isPackaged: app.isPackaged,
+          appPath: app.getAppPath(),
+        }),
+        buildCommit: buildInfo.commit,
+        locale: app.getLocale(),
+        workspacePath: join(app.getPath('userData'), 'workspaces', 'default'),
+      }),
+    mainLogs: () => mainProcessLogBuffer.snapshot(),
+    resolveActiveRuntimeHost: () => undefined,
+    resolveRuntimeHost: () => undefined,
+    writeClipboard: (report) => clipboard.writeText(report),
+  });
   // The full boot must not run in the top-level module-evaluation chain:
   // Electron ESM emits `ready` only after the entry module finishes
   // evaluating, so a top-level `await app.whenReady()` (which the
@@ -43,14 +212,37 @@ if (!app.requestSingleInstanceLock()) {
       console.log('[startup] app ready');
       return import('./runtime-host-boot.js');
     })
-    .catch((error: unknown) => {
+    .catch(async (error: unknown) => {
       console.error('[startup] fatal:', error);
-      // E2E runs must not hang on a modal error box (same reasoning as the
-      // fixture-fatal path in runtime-host-boot.ts: print a parseable line and exit fast).
-      if (!isIsolatedE2e) {
-        const message = error instanceof Error ? error.message : String(error);
-        dialog.showErrorBox('Maka failed to start', message);
+      try {
+        // E2E runs must not hang on a modal error box (same reasoning as the
+        // fixture-fatal path in runtime-host-boot.ts: print a parseable line and exit fast).
+        if (!isIsolatedE2e) {
+          const buildInfo = resolveBuildInfo(app.isPackaged, app.getAppPath());
+          const locale = resolveSystemUiLocale(app.getPreferredSystemLanguages());
+          await showFatalStartupError(error, {
+            locale,
+            environment: () =>
+              captureDesktopDiagnosticEnvironment({
+                appVersion: app.getVersion(),
+                buildMode: buildInfo.mode,
+                updateChannel: desktopDiagnosticUpdateChannel({
+                  isPackaged: app.isPackaged,
+                  appPath: app.getAppPath(),
+                }),
+                buildCommit: buildInfo.commit,
+                locale: app.getLocale(),
+                workspacePath: join(app.getPath('userData'), 'workspaces', 'default'),
+              }),
+            mainLogs: () => mainProcessLogBuffer.snapshot(),
+            writeClipboard: (report) => clipboard.writeText(report),
+            showMessageBox: (options) =>
+              showBrowserMessageBox(options, undefined, { locale }),
+          });
+        }
+      } finally {
+        recoveryJournal?.markClean();
+        app.exit(1);
       }
-      app.exit(1);
     });
 }

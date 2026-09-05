@@ -1,11 +1,31 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import {
   AGENT_GRAPH_SUPERVISOR_WAKE_SCHEMA_VERSION,
-  type AgentRunHeader,
   type AgentGraphSupervisorWakeRecord,
   type AgentGraphSupervisorWakeStore,
-  type SessionEvent,
-  type UserMessageInput,
-} from '@maka/core';
+} from '@maka/core/agent-graph-supervisor-wake';
+import type { ContextCompactionOutcome } from '@maka/core/events';
+import { type SessionEvent } from '@maka/core/events';
+import { type UserMessageInput } from '@maka/core/runtime-inputs';
+import type { RuntimeInvocationOutcome } from '@maka/core/runtime-invocation';
 import type {
   GoalTurnOutcome,
   SessionActivityLease,
@@ -72,8 +92,7 @@ export interface AgentGraphSupervisorContextRecoveryDiagnostic {
   estimatedTokensAfter?: number;
   droppedTurns?: number;
   droppedEvents?: number;
-  historyCompactedEvents?: number;
-  historyCompactBlocksWritten?: number;
+  outcome?: ContextCompactionOutcome;
 }
 
 export type AgentGraphSupervisorTurnOutcome =
@@ -85,31 +104,31 @@ export async function recoverAgentGraphSupervisorContextOverflow(input: {
   rootSessionId: string;
   compactTurnId: string;
   abortSignal: AbortSignal;
-  compactSession(
-    sessionId: string,
-    input: { turnId: string; minRecentTurns: number },
-  ): AsyncIterable<SessionEvent>;
+  compactSession(sessionId: string, input: { turnId: string }): AsyncIterable<SessionEvent>;
 }): Promise<AgentGraphSupervisorContextRecoveryDiagnostic | undefined> {
   input.abortSignal.throwIfAborted();
   let recovery: AgentGraphSupervisorContextRecoveryDiagnostic | undefined;
   for await (const event of input.compactSession(input.rootSessionId, {
     turnId: input.compactTurnId,
-    minRecentTurns: 0,
   })) {
     input.abortSignal.throwIfAborted();
     if (event.type !== 'token_usage' || !event.contextBudget) continue;
     const diagnostic = event.contextBudget;
+    const decision = diagnostic.compactionDecisions?.at(-1);
+    const outcome: ContextCompactionOutcome | undefined =
+      decision?.decision === 'replaced' && decision.boundaryIds?.[0]
+        ? { kind: 'compacted', checkpointId: decision.boundaryIds[0] }
+        : decision?.decision === 'unchanged'
+          ? { kind: 'unchanged', reason: decision.reason ?? 'unchanged' }
+          : decision?.decision === 'failedOpen'
+            ? { kind: 'failed', reason: decision.failOpenReason ?? 'failed' }
+            : undefined;
     recovery = {
       estimatedTokensBefore: diagnostic.estimatedTokensBefore,
       estimatedTokensAfter: diagnostic.estimatedTokensAfter,
       droppedTurns: diagnostic.droppedTurns,
       droppedEvents: diagnostic.droppedEvents,
-      ...(diagnostic.historyCompactedEvents !== undefined
-        ? { historyCompactedEvents: diagnostic.historyCompactedEvents }
-        : {}),
-      ...(diagnostic.historyCompactBlocksWritten !== undefined
-        ? { historyCompactBlocksWritten: diagnostic.historyCompactBlocksWritten }
-        : {}),
+      ...(outcome ? { outcome } : {}),
     };
   }
   input.abortSignal.throwIfAborted();
@@ -155,6 +174,14 @@ export type AgentGraphSupervisorWakeDiagnostic =
       };
     };
 
+/**
+ * What the delivering invocation has to say for itself when the wake is settled.
+ *
+ * An invocation the events never closed is `running`, whether it is still on a
+ * provider or was parked on an interaction the host restart threw away.
+ */
+export type AgentGraphWakeAttemptStatus = RuntimeInvocationOutcome | 'running' | 'missing';
+
 export interface AgentGraphSupervisorWakeInput {
   activityRegistry: SessionActivityRegistry;
   wakeStore: AgentGraphSupervisorWakeStore;
@@ -170,7 +197,7 @@ export interface AgentGraphSupervisorWakeInput {
     rootSessionId: string,
     attemptId: string,
     turnId: string,
-  ): Promise<AgentRunHeader['status'] | 'missing'>;
+  ): Promise<AgentGraphWakeAttemptStatus>;
   shouldWake?(
     rootSessionId: string,
     result: AgentGraphScheduleReconciliationResult | undefined,
@@ -308,6 +335,7 @@ export class AgentGraphSupervisorWakeCoordinator {
   async runWithSessionWakesSuppressed<T>(
     rootSessionId: string,
     operation: () => Promise<T>,
+    reason = 'agent_graph_stopped',
   ): Promise<T> {
     this.#beginSessionWakeSuppression(rootSessionId);
     try {
@@ -315,7 +343,7 @@ export class AgentGraphSupervisorWakeCoordinator {
     } finally {
       try {
         await this.#waitForSessionIdle(rootSessionId);
-        await this.#supersedeSession(rootSessionId, 'agent_graph_stopped');
+        await this.#supersedeSession(rootSessionId, reason);
       } finally {
         this.#endSessionWakeSuppression(rootSessionId);
       }
@@ -333,10 +361,14 @@ export class AgentGraphSupervisorWakeCoordinator {
     });
   }
 
-  async close(): Promise<void> {
+  beginDrain(): void {
     if (this.#closed) return;
     this.#closed = true;
     this.#abortController.abort();
+  }
+
+  async close(): Promise<void> {
+    this.beginDrain();
     await this.waitForIdle();
     this.#sessionAbortControllers.clear();
     this.#tasksBySession.clear();
@@ -422,12 +454,15 @@ export class AgentGraphSupervisorWakeCoordinator {
       return;
     }
     const snapshot = await this.#input.readSnapshot(wake.rootSessionId);
-    if (
-      this.#closed ||
-      snapshot.closed ||
-      snapshot.graphId !== wake.graphId ||
-      snapshot.scheduleRevision === 0
-    ) {
+    if (snapshot.graphId !== wake.graphId) {
+      await this.#input.wakeStore.supersedeAgentGraphSupervisorWakes({
+        rootSessionIds: [wake.rootSessionId],
+        graphIds: [wake.graphId],
+        reason: 'agent_graph_epoch_advanced',
+      });
+      return;
+    }
+    if (this.#closed || snapshot.closed || snapshot.scheduleRevision === 0) {
       return;
     }
     abortSignal.throwIfAborted();

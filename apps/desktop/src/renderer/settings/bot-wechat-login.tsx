@@ -1,6 +1,25 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { useEffect, useRef, useState } from 'react';
-import type { BotChannelSettings } from '@maka/core';
-import type { WechatBridgeQrCodeResult } from '@maka/runtime';
+import type { BotChannelSettings } from '@maka/core/bot-chat-settings';
+import type { WechatBridgeQrCodeResult } from '@maka/runtime/bots';
 import { Button, EmptyState, FormLayout, Spinner, TextInput, useUiLocale, Banner } from '@maka/ui';
 import { ICON_SIZE, MessageSquare } from '@maka/ui/icons';
 import { Collapsible } from '@astryxdesign/core/Collapsible';
@@ -174,22 +193,22 @@ export function WechatQrLoginModal(props: {
           {loading ? (
             /* Loading is a wait, not an absence (§10): a page-centred spinner
                with one muted line, never a Spinner in an EmptyState icon slot. */
-            <>
+            (<>
               <Spinner size="lg" />
               <p className="settingsWechatQrCaption">{copy.generating}</p>
-            </>
+            </>)
           ) : loggedIn ? (
             <Banner status="success" title={copy.loggedIn} />
           ) : expired ? (
             /* First-run empties (DESIGN.md §10 tier 3) below; headingLevel 4 is
                derived from the dialog outline — DialogHeader owns the title level. */
-            <EmptyState
+            (<EmptyState
               headingLevel={4}
               icon={<MessageSquare size={ICON_SIZE.empty} />}
               title={copy.expired}
               description={copy.expiredHint}
               actions={<Button variant="secondary" size="sm" isDisabled={loading} onClick={reloadQrCode} label={loading ? copy.refreshing : copy.refresh} />}
-            />
+            />)
           ) : qrDataUrl ? (
             <>
               <div className="settingsWechatQrFrame">

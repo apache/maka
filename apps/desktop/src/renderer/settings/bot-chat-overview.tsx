@@ -1,7 +1,26 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { ReactNode } from 'react';
 import { ICON_SIZE, ChevronRight } from '@maka/ui/icons';
-import type { BotChannelSettings, BotProvider } from '@maka/core';
-import type { BotStatus } from '@maka/runtime';
+import type { BotChannelSettings, BotProvider } from '@maka/core/bot-chat-settings';
+import type { BotStatus } from '@maka/runtime/bots';
 import { BOT_PROVIDERS } from '@maka/core/settings';
 import { EmptyState, Item, StatusDot } from '@astryxdesign/core';
 import { Button, RelativeTime, useUiLocale, Banner } from '@maka/ui';
@@ -76,7 +95,7 @@ export function BotChatOverview(props: {
           {activeChannels.length === 0 ? (
             // Section-local absence (DESIGN.md §10 tier 1): no icon, no
             // description — the catalog below is the way forward.
-            <EmptyState isCompact title={copy.empty} />
+            (<EmptyState isCompact title={copy.empty} />)
           ) : activeChannels.map((entry) => (
             <Item
               key={entry.provider}
@@ -85,13 +104,13 @@ export function BotChatOverview(props: {
               startContent={<BotBrandLogo provider={entry.provider} />}
               label={(
                 // a11y-allow: this label names the ROW, not the span. Astryx's Item puts consumer props on its outer wrapper and renders a separate invisible <button> for the click target, so an aria-label on the Item never reaches that button — measured. The button is named from its content, and this span is how the status reaches that name. Removing it drops the runtime error from the row's accessible name (settings.spec:226).
-                <span className="settingsRemoteAccessItemTitle" aria-label={copy.manageAria(botCopy.providers[entry.provider].label, entry.copy.label)}>
+                (<span className="settingsRemoteAccessItemTitle" aria-label={copy.manageAria(botCopy.providers[entry.provider].label, entry.copy.label)}>
                   {botCopy.providers[entry.provider].label}
                   <span className="settingsStatus">
                     <StatusDot variant={dotForStatus(entry.copy.tone)} label={entry.copy.label} />
                     <span>{entry.copy.label}</span>
                   </span>
-                </span>
+                </span>)
               )}
               description={(
                 <span className="settingsRemoteAccessItemDescription" id={`settings-remote-access-${entry.provider}-summary`}>
@@ -126,7 +145,7 @@ function botOverviewDetail(
   currentError: string | undefined,
   fallback: string,
   liveOperational: boolean,
-  locale: 'zh' | 'en',
+  locale: 'zh-CN' | 'zh-TW' | 'en',
 ): ReactNode {
   const copy = getBotSettingsCopy(locale).overview;
   const identity = status?.identity?.username ?? status?.identity?.displayName;
@@ -138,7 +157,7 @@ function botOverviewDetail(
       </>
     );
   }
-  if (currentError) return locale === 'zh' ? currentError : fallback;
+  if (currentError) return locale === 'zh-CN' ? currentError : fallback;
   if (status?.reason) return botStatusDetail(status, locale);
   return fallback;
 }

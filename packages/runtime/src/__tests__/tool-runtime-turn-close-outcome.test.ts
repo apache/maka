@@ -1,10 +1,33 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { nextId } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { LlmConnection, SessionEvent, SessionHeader, StoredMessage } from '@maka/core';
+import type { LlmConnection } from '@maka/core/llm-connections';
+import type { SessionEvent } from '@maka/core/events';
+import type { SessionHeader, StoredMessage } from '@maka/core/session';
 import type { ToolOutcomeCommit, ToolPreparedCommit } from '../runtime-commit-sink.js';
 import type { MakaTool } from '../tool-runtime.js';
 
 import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 /**
  * #2253: a stop that lands while an AskUserQuestion is parked ends the turn
@@ -107,11 +130,11 @@ describe('ToolRuntime turn-close outcome identity', () => {
 });
 
 async function waitFor(predicate: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 500; attempt += 1) {
-    if (predicate()) return;
-    await new Promise((resolve) => setTimeout(resolve, 2));
-  }
-  throw new Error('condition never became true');
+  await pollFor(predicate, {
+    attempts: 500,
+    pollMs: 2,
+    message: 'condition never became true',
+  });
 }
 
 function header(): SessionHeader {
@@ -120,7 +143,6 @@ function header(): SessionHeader {
     workspaceRoot: '/workspace/repo',
     cwd: '/workspace/repo',
     createdAt: 1,
-    lastUsedAt: 1,
     name: 'test',
     titleIsManual: false,
     isFlagged: false,
@@ -149,12 +171,6 @@ function connection(): LlmConnection {
     updatedAt: 1,
   };
 }
-
-function nextId(): () => string {
-  let value = 0;
-  return () => `id-${++value}`;
-}
-
 function nextNow(): () => number {
   let value = 0;
   return () => ++value;

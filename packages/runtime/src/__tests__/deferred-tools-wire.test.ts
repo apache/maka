@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { z } from 'zod';
@@ -20,6 +39,7 @@ import { ModelAdapter } from '../model-adapter.js';
 import type { ModelStreamEvent, ModelToolSet } from '../model-protocol.js';
 import { canonicalizeToolSet } from '../request-shape.js';
 import type { MakaTool } from '../tool-runtime.js';
+import { TOOL_SEARCH_PROVIDER_NAME, ToolAvailabilityRuntime } from '../tool-availability.js';
 
 // A tool with a real (non-trivial) zod schema so the AI SDK actually serializes it.
 function tool(name: string): MakaTool {
@@ -49,7 +69,7 @@ function newAdapter(): ModelAdapter {
  * wire after the AI SDK applies `activeTools`.
  */
 async function toolNamesSeenByProvider(activeNames: ReadonlySet<string>): Promise<string[]> {
-  const tools: MakaTool[] = [tool('Read'), tool('load_tools'), tool('Rive')];
+  const tools: MakaTool[] = [tool('Read'), tool('tool_search'), tool('Rive')];
   const invalid = tool('invalid');
   const canonical = canonicalizeToolSet(tools, invalid, activeNames);
 
@@ -85,74 +105,126 @@ async function toolNamesSeenByProvider(activeNames: ReadonlySet<string>): Promis
 
 describe('hidden tools are trimmed from the provider request (wire-level)', () => {
   test('a tool outside the active set never reaches the model; invalid is never advertised', async () => {
-    const seen = await toolNamesSeenByProvider(new Set(['Read', 'load_tools']));
+    const seen = await toolNamesSeenByProvider(new Set(['Read', 'tool_search']));
     assert.ok(seen.includes('Read'), 'active Read should reach the provider');
-    assert.ok(seen.includes('load_tools'), 'load_tools should reach the provider');
+    assert.ok(seen.includes('tool_search'), 'tool_search should reach the provider');
     assert.ok(!seen.includes('Rive'), 'unloaded Rive must NOT reach the provider');
     assert.ok(!seen.includes('invalid'), 'invalid is providerTools-only, never advertised');
   });
 
   test('a tool added to the active set does reach the model (ratchet activates it)', async () => {
-    const seen = await toolNamesSeenByProvider(new Set(['Read', 'load_tools', 'Rive']));
+    const seen = await toolNamesSeenByProvider(new Set(['Read', 'tool_search', 'Rive']));
     assert.ok(seen.includes('Rive'), 'activated Rive should reach the provider');
     assert.ok(seen.includes('Read'), 'active tools stay present after a load');
   });
 });
 
 describe('ModelAdapter provider-step boundary', () => {
-  test('one startStream call ends after the provider returns tool calls', async () => {
-    let providerCalls = 0;
+  test('uses a provider-safe alias for Maka tool_search on OpenAI Responses', async () => {
+    const adapter = new ModelAdapter({
+      connection: {
+        slug: 'codex-subscription',
+        providerType: 'openai-codex',
+        defaultModel: 'gpt-5.6-sol',
+      } as never,
+      apiKey: 'test',
+      modelId: 'gpt-5.6-sol',
+      modelFactory: () => ({}),
+      providerOptions: {},
+      newId: () => 'id',
+      now: () => 0,
+    });
+    const modelTools: ModelToolSet = {
+      tool_search: {
+        description: 'Search Maka deferred tools',
+        inputSchema: z.object({ query: z.string() }),
+      },
+    };
+    let seenTools: string[] = [];
     const model = new MockLanguageModelV4({
-      doStream: async () => {
-        providerCalls += 1;
+      doStream: async ({ tools }) => {
+        seenTools = (tools ?? []).map((tool) => tool.name);
         return {
-          stream: convertArrayToReadableStream<LanguageModelV4StreamPart>(
-            providerCalls === 1
-              ? [
-                  { type: 'stream-start', warnings: [] },
-                  {
-                    type: 'tool-call',
-                    toolCallId: 'tool-1',
-                    toolName: 'Read',
-                    input: JSON.stringify({ q: 'README.md' }),
-                  },
-                  {
-                    type: 'finish',
-                    finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
-                    usage: ZERO_USAGE,
-                  },
-                ]
-              : [
-                  { type: 'stream-start', warnings: [] },
-                  {
-                    type: 'finish',
-                    finishReason: { unified: 'stop', raw: 'stop' },
-                    usage: ZERO_USAGE,
-                  },
-                ],
-          ),
+          stream: convertArrayToReadableStream<LanguageModelV4StreamPart>([
+            { type: 'stream-start', warnings: [] },
+            {
+              type: 'tool-call',
+              toolCallId: 'next-search-call',
+              toolName: TOOL_SEARCH_PROVIDER_NAME,
+              input: JSON.stringify({ query: 'settings' }),
+            },
+            {
+              type: 'tool-result',
+              providerExecuted: true,
+              toolCallId: 'provider-result',
+              toolName: TOOL_SEARCH_PROVIDER_NAME,
+              result: { activated: [] },
+            } as unknown as LanguageModelV4StreamPart,
+            {
+              type: 'finish',
+              finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+              usage: ZERO_USAGE,
+            },
+          ]),
         };
       },
     });
-    const result = await newAdapter().startStream({
+
+    const result = await adapter.startStream({
       model,
-      messages: [{ role: 'user', content: 'read it' }],
-      tools: {
-        Read: {
-          inputSchema: z.object({ q: z.string() }),
+      messages: [
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool-call',
+              toolCallId: 'search-call',
+              toolName: 'tool_search',
+              input: { query: 'browser' },
+            },
+          ],
         },
-      },
-      activeTools: ['Read'],
+        {
+          role: 'tool',
+          content: [
+            {
+              type: 'tool-result',
+              toolCallId: 'search-call',
+              toolName: 'tool_search',
+              output: {
+                type: 'json',
+                value: { activated: ['browser_click'] },
+              },
+            },
+          ],
+        },
+      ],
+      tools: modelTools,
+      activeTools: ['tool_search'],
       onStreamActivity: () => {},
       abortSignal: new AbortController().signal,
       repairToolCall: async () => null,
     });
 
-    for await (const _event of result.events) {
-      void _event;
-    }
+    const events: ModelStreamEvent[] = [];
+    for await (const event of result.events) events.push(event);
+    assert.deepEqual(seenTools, [TOOL_SEARCH_PROVIDER_NAME]);
+    assert.equal(
+      events.find((event) => event.kind === 'tool-call')?.toolCall.toolName,
+      'tool_search',
+    );
+    assert.equal(
+      events.find((event) => event.kind === 'provider-tool-result')?.toolName,
+      'tool_search',
+    );
+  });
 
-    assert.equal(providerCalls, 1);
+  test('rejects a real tool that collides with the provider-safe alias', () => {
+    assert.throws(
+      () =>
+        new ToolAvailabilityRuntime([tool(TOOL_SEARCH_PROVIDER_NAME)], undefined, tool('invalid')),
+      /reserved by Runtime/,
+    );
   });
 
   test('returns provider tool calls without executing tool behavior inside the SDK', async () => {

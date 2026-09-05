@@ -1,6 +1,25 @@
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+
 # Storybook fidelity convention
 
-Applies to every `Product/*` story in `apps/desktop/stories` and `packages/ui/stories`. `Primitives/*` and `Design System/*` are exempt: they demonstrate a component's states, not a product surface, and there is no user path to a StatTile emphasis.
+Applies to every `Product/*` story in `apps/desktop/stories` and `packages/ui/stories`. `Primitives/*` and `Design System/*` are exempt: they demonstrate a component's states, not a product surface.
 
 ## Every product story maps to a state a real user can reach
 
@@ -15,7 +34,7 @@ So each story carries a `// Real path:` comment directly above it, naming how a 
 export const Populated: Story = { … }
 ```
 
-The annotation is prose on purpose. Its value is that someone traced the path and wrote it down; a machine-checkable schema would be satisfied by a plausible-looking lie just as easily. So the convention splits along what a machine can decide. `scripts/check-story-annotations.mjs` checks that the sentence *exists*, and fails on any export it cannot classify rather than skipping it — write stories as `export const Name: Story = …` and nothing else. **It cannot tell you the sentence is true.** Only a reviewer following the call chain can, and reviewing that sentence is the point of writing it. The script's header explains why it stops there.
+The annotation is prose on purpose. Its value is that someone traced the path and wrote it down; a mechanical presence check would be satisfied by a plausible-looking lie just as easily. Only a reviewer following the call chain can determine whether it is true.
 
 Two of the first batch of annotations were wrong, and both were caught by reading rather than by running anything: one named a path through a builder that cannot produce the state (`CommandPaletteDisabledCommand`), and one named two hosts for a frame that is only one of them. Write the sentence narrow enough to be falsifiable — the host, the builder, the gate — because a sentence vague enough to always be true buys nothing.
 
@@ -26,7 +45,7 @@ A story earns its place by rendering pixels no other story renders. A second lev
 Two facts decide it, and both were guessed wrong once:
 
 - **Where a story renders.** CI mounts every story exactly once at 1280 wide in light. It does not maintain a viewport, theme or screenshot matrix. Responsive and theme behaviour belongs in a focused component contract or the real desktop E2E harness.
-- **Whether `play` reaches the state.** Local Storybook can use `play` to drive a story into the state a reviewer needs to see. CI deliberately mounts stories with `embed=true`, so it does not execute those interactions or treat them as product tests.
+- **Whether `play` reaches the state.** `play` drives a story into the state a reviewer needs to see, and CI runs it — so the state it lands on is the state the smoke reads, and a story that only differs by a `play` step is a second state, not a variant.
 
 Extra stories still cost: a reviewer scanning the sidebar cannot tell which entry is the page, and duplicates re-render the same pixels every run while claiming coverage they do not add. Where a state matters but renders nothing new, pin it somewhere that runs — a `packages/ui` test or an e2e journey.
 
@@ -42,11 +61,15 @@ When a component has two hosts, one frame is not both. `capability-audit-strip.s
 
 If the runtime computes a field, ask the runtime for it. A story that hardcodes what a classifier would have returned is asserting a fact rather than showing one, and nothing fails when the classifier moves.
 
-## A `play` function is a local review driver, not a CI test
+## A `play` function runs in CI, and its assertions are real
 
-The render smoke uses Storybook's embedded mode, which mounts the story but disables autoplay. That keeps the Storybook lane responsible for one thing: every production-backed story must render without runtime, console or page errors. It does not turn keyboard, pointer, focus, geometry or state-transition interactions into a second desktop E2E suite.
+The render smoke waits for Storybook's `storyFinished` event before it reads the accessibility tree, so every `play` function executes and a failed assertion inside one fails the lane. This paragraph used to say the opposite — that the smoke mounts with autoplay disabled — and it was wrong: nothing passes `embed`, and #4766 landed 18 stories whose assertions are the coverage.
 
-Put behavioural and computed-style contracts where they can name what they check — a `packages/ui` test or a real Electron E2E journey. Use `play` only when a local reviewer needs help navigating to a visual state; do not put product assertions in it.
+That makes `play` the right home for a behavioural contract whose subject is the browser: a live Selection, a caret between text nodes, an undo transaction, a portal's identity across a re-render. None of those exist in a `packages/ui` DOM shim, and none of them need Electron.
+
+It is still not a place for geometry or theme matrices. CI mounts every story once, at 1280 wide, in light; a contract that depends on any other viewport or scheme belongs in a `packages/ui` test or the desktop E2E harness. And a rule that is pure state — which commands a Session offers, what a query parses to — belongs in a unit test, where it costs milliseconds instead of a browser.
+
+Write the assertion so it can only pass for the reason it names. A story that mounts the surface and then observes it cannot see anything that happened during the mount, so a probe that must be installed first (a constructor count, an event before the first paint) belongs in a test that owns the global.
 
 ## A story that renders nothing is not a story
 

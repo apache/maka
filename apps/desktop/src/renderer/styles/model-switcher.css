@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /* Model + thinking sit as one left-footer pair after permission. */
 .maka-model-selection-controls {
   display: inline-flex;
@@ -21,9 +40,32 @@
   padding-block: var(--space-1);
   padding-inline: var(--space-2);
   font: var(--maka-text-supporting);
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
   user-select: none;
   white-space: nowrap;
+}
+
+/* Switching can abandon a provider prompt cache, but that is a property of
+   the pending action, not the current model. Keep the notice inside the open
+   picker so a healthy resting control never looks unhealthy. */
+.maka-model-switch-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-1-5);
+  margin: var(--space-1);
+  padding: var(--space-1-5) var(--space-2);
+  border: var(--border-width-hairline) solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--color-warning-muted);
+  color: var(--foreground);
+  font: var(--maka-text-supporting);
+  white-space: normal;
+}
+
+.maka-model-switch-notice > svg {
+  margin-top: 1px;
+  color: var(--warning-text);
+  flex: 0 0 auto;
 }
 
 .maka-model-picker-root {

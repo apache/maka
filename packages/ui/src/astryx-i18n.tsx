@@ -1,8 +1,30 @@
-import { useMemo, type ReactNode } from 'react';
-import { InternationalizationProvider } from '@astryxdesign/core/i18n';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { useContext, useMemo, type ReactNode } from 'react';
+import {
+  InternationalizationContext,
+  InternationalizationProvider,
+} from '@astryxdesign/core/i18n';
 import type { Overrides } from '@astryxdesign/core/i18n';
 import { getSharedUiCopy } from './shared-ui-copy.js';
-import { ASTRYX_COPY_ZH } from './astryx-copy.js';
+import { ASTRYX_COPY_ZH, ASTRYX_COPY_ZH_TW } from './astryx-copy.js';
 import { useUiLocale } from './locale-context.js';
 import type { UiLocale } from './locale-helpers.js';
 
@@ -38,16 +60,30 @@ export function AstryxLocaleProvider({
   overrides?: Record<string, string>;
 }) {
   const locale = useUiLocale();
+  const ambient = useContext(InternationalizationContext);
   // Referentially stable per locale: the provider memoises its context value
   // on the overrides object, so a fresh map every render would re-render
   // every Astryx i18n consumer on every AppShell render.
   const overrides = useMemo(() => {
     const base = astryxMessageOverrides(locale)?.[locale];
-    if (!scopedOverrides) return base ? { [locale]: base } : undefined;
-    return { [locale]: { ...base, ...scopedOverrides } };
-  }, [locale, scopedOverrides]);
+    const inherited = ambient.locale === locale
+      ? ambient.overrides?.[locale]
+      : undefined;
+    const merged = { ...base, ...inherited, ...scopedOverrides };
+    if (Object.keys(merged).length === 0) return undefined;
+    return {
+      ...(ambient.locale === locale ? ambient.overrides : undefined),
+      [locale]: merged,
+    };
+  }, [ambient.locale, ambient.overrides, locale, scopedOverrides]);
+  const inheritAmbient = ambient.locale === locale;
   return (
-    <InternationalizationProvider locale={locale} overrides={overrides}>
+    <InternationalizationProvider
+      locale={locale}
+      messages={inheritAmbient ? ambient.messages : undefined}
+      dir={inheritAmbient ? ambient.direction : undefined}
+      overrides={overrides}
+    >
       {children}
     </InternationalizationProvider>
   );
@@ -69,9 +105,9 @@ export function astryxMessageOverrides(locale: UiLocale): Overrides | undefined 
   }
   const shared = getSharedUiCopy(locale);
   const form = shared.formControls;
-  // `locale` is narrowed to 'zh' past the early return; the catalogue lives
+  // `locale` is narrowed to a Chinese locale past the early return; the catalogues live
   // off-barrel in astryx-copy.ts because nothing outside this map consumes it.
-  const astryx = ASTRYX_COPY_ZH;
+  const astryx = locale === 'zh-TW' ? ASTRYX_COPY_ZH_TW : ASTRYX_COPY_ZH;
   return {
     [locale]: {
       '@astryx.codeBlock.copyCode': shared.markdown.copyCode,
@@ -91,6 +127,11 @@ export function astryxMessageOverrides(locale: UiLocale): Overrides | undefined 
       '@astryx.selector.placeholder': form.selectPlaceholder,
       '@astryx.selector.clearLabel': form.clear,
       '@astryx.numberInput.clearLabel': form.clear,
+
+      // App shell — the skip link is always the first focusable control, so an
+      // untranslated fallback pollutes every Chinese Computer Use observation.
+      '@astryx.appShell.mobileNavigation': astryx.appShell.mobileNavigation,
+      '@astryx.appShell.skipToContent': astryx.appShell.skipToContent,
 
       // Chat — the transcript, composer and scroll affordances Astryx owns
       // since #1795 moved the chat surfaces onto ChatLayout.

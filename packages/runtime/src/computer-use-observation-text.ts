@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 // How an observation is written for the model.
 //
 // The previous rendering was `JSON.stringify` over the element array, which
@@ -95,9 +114,9 @@ export function matching(
 /**
  * Knobs the shipped rendering does not turn.
  *
- * They exist for `scripts/cu-prune-eval.mjs`, which measures what a rendering
- * change would cost and save against recorded trajectories before anyone tries
- * it on a real machine. The evaluator has to run the real renderer — the two
+ * They exist for offline evaluation of what a rendering change would cost and
+ * save against recorded trajectories before anyone tries it on a real machine.
+ * The evaluator has to run the real renderer — the two
  * previous attempts at this elsewhere both reached a *reversed* conclusion
  * because the evaluator carried its own copy of the policy and the copy was
  * subtly wrong. So the policy stays here, in one place, and the offline harness
@@ -318,8 +337,8 @@ const STRUCTURAL_ROLES = new Set([
  *
  * The clause that went was "exactly one child". The argument for it — that
  * holding several children is a statement that they belong together — sounded
- * right and did not survive being measured: `scripts/cu-prune-eval.mjs` replays
- * both forms over 76 recorded observations and the relaxed one keeps every
+ * right and did not survive being measured: replaying both forms over 76
+ * recorded observations shows the relaxed one keeps every
  * operated element and every named ancestor that identifies one, at 87% of the
  * tokens. It cannot do otherwise, because lifting a child into its parent is
  * not a deletion; what it erases is a line, and that line said nothing.

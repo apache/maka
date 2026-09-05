@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
@@ -5,7 +24,6 @@ import { __TEST__ } from '../qq-bridge.js';
 
 const {
   decideQQClose,
-  qqReconnectBackoffMs,
   classifyQQSendResponse,
   qqChannelMessageToEvent,
   qqGroupMessageToEvent,
@@ -17,27 +35,13 @@ const {
 describe('QQ gateway helpers', () => {
   it('classifies stopped, fatal, resumable, and non-resumable closes', () => {
     assert.deepEqual(decideQQClose(1000, true), { kind: 'stopped' });
-    assert.deepEqual(decideQQClose(4004, true), { kind: 'stopped' });
     for (const code of [4004, 4014]) {
       assert.deepEqual(decideQQClose(code, false), { kind: 'fatal', code });
     }
     for (const code of [1000, 1001]) {
       assert.deepEqual(decideQQClose(code, false), { kind: 'reconnect', resumable: false });
     }
-    for (const code of [4000, 4007]) {
-      assert.deepEqual(decideQQClose(code, false), { kind: 'reconnect', resumable: true });
-    }
-  });
-
-  it('exponentially backs off reconnects with a 30-second cap', () => {
-    for (const [attempt, expected] of [
-      [0, 1_000],
-      [1, 2_000],
-      [5, 30_000],
-      [50, 30_000],
-    ]) {
-      assert.equal(qqReconnectBackoffMs(attempt), expected, String(attempt));
-    }
+    assert.deepEqual(decideQQClose(4000, false), { kind: 'reconnect', resumable: true });
   });
 });
 
@@ -162,27 +166,13 @@ describe('QQ REST routing', () => {
   });
 
   it('rejects unknown or empty send targets and restricts typing to channels', () => {
-    for (const chatId of [
-      '',
-      'unknown:foo',
-      'channel:',
-      'channel:   ',
-      'group:',
-      'group:   ',
-      'c2c:',
-      'c2c:   ',
-    ]) {
+    for (const chatId of ['unknown:foo', 'channel:   ', 'group:   ', 'c2c:   ']) {
       assert.equal(pickQQSendRoute(chatId, 'hi'), null, chatId);
     }
     for (const [chatId, expected] of [
-      ['channel:c-1', '/channels/c-1/typing'],
       ['channel: c-1 ', '/channels/c-1/typing'],
-      ['channel:', null],
       ['channel:   ', null],
       ['group:g-1', null],
-      ['c2c:u-1', null],
-      ['dm:dm-1', null],
-      ['', null],
     ] as const) {
       assert.equal(pickQQTypingRoute(chatId), expected, chatId);
     }

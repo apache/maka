@@ -1,15 +1,47 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { InteractiveRuntimeHostCandidateOptions } from './server/candidate.js';
-import { isAbsolute } from 'node:path';
+import { isCandidateStartupAttemptId } from './candidate-startup-failure.js';
+import {
+  decodeRuntimeHostManagedLaunchClaim,
+  type RuntimeHostManagedLaunchClaim,
+} from './operator/managed-deployment.js';
+
+export interface ParsedInteractiveRuntimeHostCandidateArguments
+  extends InteractiveRuntimeHostCandidateOptions {
+  readonly startupAttemptId: string;
+}
 
 export function parseInteractiveRuntimeHostCandidateArguments(
   args: readonly string[],
-): InteractiveRuntimeHostCandidateOptions {
+): ParsedInteractiveRuntimeHostCandidateArguments {
   const allowedKeys = new Set([
     'root',
     'expected-root-id',
+    'startup-attempt-id',
+    'initial-connection-timeout-ms',
     'idle-grace-ms',
     'handshake-timeout-ms',
-    'legacy-configuration-root',
+    'generation',
+    'managed-deployment-id',
+    'managed-config-revision',
   ]);
   const values = new Map<string, string>();
   for (let index = 0; index < args.length; index += 2) {
@@ -30,23 +62,45 @@ export function parseInteractiveRuntimeHostCandidateArguments(
   if (!expectedRootId || !/^[a-f0-9]{64}$/.test(expectedRootId)) {
     throw new Error('Runtime Host candidate requires a valid --expected-root-id');
   }
+  const startupAttemptId = values.get('startup-attempt-id');
+  if (!isCandidateStartupAttemptId(startupAttemptId)) {
+    throw new Error('Runtime Host candidate requires a valid --startup-attempt-id');
+  }
+  const managedLaunchClaim = readManagedLaunchClaim(values);
   return {
     rootPath,
     expectedRootId,
-    ...(values.has('legacy-configuration-root')
-      ? {
-          legacyConfigurationRoot: readOptionalAbsolutePath(values, 'legacy-configuration-root'),
-        }
-      : {}),
+    startupAttemptId,
+    initialConnectionTimeoutMs: readOptionalInteger(values, 'initial-connection-timeout-ms'),
     idleGraceMs: readOptionalInteger(values, 'idle-grace-ms'),
     handshakeTimeoutMs: readOptionalInteger(values, 'handshake-timeout-ms'),
+    ...(values.has('generation') ? { generation: readGeneration(values) } : {}),
+    ...(managedLaunchClaim === undefined ? {} : { managedLaunchClaim }),
   };
 }
 
-function readOptionalAbsolutePath(values: Map<string, string>, key: string): string | undefined {
-  const value = values.get(key);
-  if (value === undefined) return undefined;
-  if (!isAbsolute(value)) throw new Error(`Invalid --${key}`);
+function readManagedLaunchClaim(
+  values: ReadonlyMap<string, string>,
+): RuntimeHostManagedLaunchClaim | undefined {
+  const deploymentId = values.get('managed-deployment-id');
+  const rawRevision = values.get('managed-config-revision');
+  if (deploymentId === undefined && rawRevision === undefined) return undefined;
+  if (deploymentId === undefined || rawRevision === undefined) {
+    throw new Error('Runtime Host candidate requires a complete managed launch claim');
+  }
+  const configRevision = Number(rawRevision);
+  if (!Number.isSafeInteger(configRevision) || configRevision <= 0) {
+    throw new Error('Invalid --managed-config-revision');
+  }
+  return decodeRuntimeHostManagedLaunchClaim({
+    deploymentId,
+    configRevision,
+  });
+}
+
+function readGeneration(values: Map<string, string>): string {
+  const value = values.get('generation');
+  if (!value || value.length > 128) throw new Error('Invalid --generation');
   return value;
 }
 

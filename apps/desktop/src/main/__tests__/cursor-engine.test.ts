@@ -1,31 +1,48 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
 
-import { DEFAULT_PRESENTATION_FINISHED_TIMEOUT_MS } from '@maka/runtime';
+import { DEFAULT_PRESENTATION_FINISHED_TIMEOUT_MS } from '@maka/runtime/computer-use-tools';
 
 import {
-  CODEX_CURSOR_GLYPH,
-  CODEX_CURSOR_MOTION,
+  CURSOR_GLYPH,
+  CURSOR_MOTION,
   CubicCursorPath,
   CURSOR_CLOSE_ENOUGH,
   CursorEngine,
   cursorHeadingAt,
   cursorPresentationReadyDeadlineMs,
   measureCursorPath,
-  oddAtLeastThree,
   planCursorPath,
   scoreCursorPath,
 } from '../../renderer/computer-use-overlay/engine/cursor-engine.js';
-import { paletteForInstance, defaultPalette, gradientAt } from '../../renderer/computer-use-overlay/engine/palette.js';
+import { cursorCandidatePairs } from '../../renderer/computer-use-overlay/engine/cursor-candidate-grid.js';
 
 const finite = (value: number): boolean => Number.isFinite(value);
 
 type Vec = readonly [number, number];
 
 const CLICK_DIRECTION: Vec = [
-  Math.cos(CODEX_CURSOR_MOTION.clickAngle),
-  Math.sin(CODEX_CURSOR_MOTION.clickAngle),
+  Math.cos(CURSOR_MOTION.clickAngle),
+  Math.sin(CURSOR_MOTION.clickAngle),
 ];
 
 /**
@@ -33,7 +50,7 @@ const CLICK_DIRECTION: Vec = [
  * given perpendicular bulge, departing straight at the target.
  */
 function candidateWithArc(start: Vec, end: Vec, arc: number): CubicCursorPath {
-  const config = CODEX_CURSOR_MOTION;
+  const config = CURSOR_MOTION;
   const dx = end[0] - start[0];
   const dy = end[1] - start[1];
   const distance = Math.hypot(dx, dy);
@@ -77,35 +94,11 @@ const scoreOf = (path: CubicCursorPath, start: Vec, end: Vec): number => scoreCu
   CLICK_DIRECTION,
 );
 
-test('recovered Codex cursor constants keep their inspected-build values', () => {
-  assert.equal(CODEX_CURSOR_MOTION.candidateCount, 20);
-  assert.equal(CODEX_CURSOR_MOTION.straightPathDistanceThreshold, 10);
-  assert.equal(CODEX_CURSOR_MOTION.scootDistanceThreshold, 196);
-  assert.equal(CODEX_CURSOR_MOTION.scootStretchXAmount, 0.38);
-  assert.equal(CODEX_CURSOR_MOTION.scootSquashYAmount, 0.18);
-  assert.equal(CODEX_CURSOR_MOTION.scootRotationMax, 76 * Math.PI / 180);
-  assert.equal(CODEX_CURSOR_MOTION.terminalTangentBlendStart, 0.99);
-  // `cursorRadius = 9.0` drawn at `width: 2r`, which is also what the white
-  // rim's outer edge measures per pixel in a captured frame. The 14 this was
-  // measured only the black core, with the outline outside the ruler.
-  assert.equal(CODEX_CURSOR_GLYPH.size, 18);
-  assert.deepEqual(CODEX_CURSOR_GLYPH.start, [0.00599, 0.15864]);
-});
-
-test('MotionConfiguration keeps exactly the 30 recovered fields', () => {
-  const fields = Object.keys(CODEX_CURSOR_MOTION);
-  assert.equal(fields.length, 30, fields.join(','));
-  // The native config bounds rotation with a single maximum. A separate base
-  // rotation ceiling was never in the struct, and inventing one is what let the
-  // glyph rotate twice as far as Codex does.
-  assert.ok(!fields.includes('scootBaseRotationMax'));
-});
-
 test('planner takes the straightest acceptable path, not the bendiest', () => {
   const start: Vec = [100, 100];
   const end: Vec = [700, 360];
   const distance = Math.hypot(end[0] - start[0], end[1] - start[1]);
-  const maxArc = Math.min(distance * CODEX_CURSOR_MOTION.arcSize, 120);
+  const maxArc = Math.min(distance * CURSOR_MOTION.arcSize, 120);
 
   const chosen = planCursorPath(start, end, null, null);
   const bulged = candidateWithArc(start, end, maxArc);
@@ -128,50 +121,9 @@ test('planner takes the straightest acceptable path, not the bendiest', () => {
   assert.ok(Math.hypot(landing[0] - end[0], landing[1] - end[1]) < 1e-9);
 });
 
-test('candidate score is arc length plus a cost for every kind of deviation', () => {
-  // Straight, in bounds, arriving along the click angle: nothing to charge for,
-  // so the score collapses to the path length itself.
-  const start: Vec = [0, 0];
-  const end: Vec = [400, -400];
-  const straight = measureCursorPath(candidateWithArc(start, end, 0), start, end, null);
-  assert.ok(straight.staysInBounds);
-  assert.ok(Math.abs(straight.length - Math.hypot(400, 400)) < 1e-6);
-  assert.ok(
-    Math.abs(scoreCursorPath(straight, Math.hypot(400, 400), CLICK_DIRECTION) - straight.length)
-      < 1e-6,
-  );
-
-  // Bending the same move costs detour, turning energy, and the sharpest turn.
-  const bent = measureCursorPath(candidateWithArc(start, end, 110), start, end, null);
-  assert.ok(bent.length > straight.length);
-  assert.ok(bent.totalTurn > 0.1);
-  assert.ok(bent.maxAngleChange > 0);
-  assert.ok(
-    scoreCursorPath(bent, Math.hypot(400, 400), CLICK_DIRECTION)
-      > scoreCursorPath(straight, Math.hypot(400, 400), CLICK_DIRECTION) + 40,
-  );
-
-  // Leaving the viewport is a flat surcharge, not a hard veto.
-  const escapingStart: Vec = [40, 40];
-  const escapingEnd: Vec = [500, 40];
-  const escaping = measureCursorPath(
-    candidateWithArc(escapingStart, escapingEnd, -400),
-    escapingStart,
-    escapingEnd,
-    { width: 800, height: 600 },
-  );
-  assert.equal(escaping.staysInBounds, false);
-  const contained = measureCursorPath(
-    candidateWithArc(escapingStart, escapingEnd, 200),
-    escapingStart,
-    escapingEnd,
-    { width: 800, height: 600 },
-  );
-  assert.equal(contained.staysInBounds, true);
-});
 
 test('a fresh move departs toward its target, never along the parked rest angle', () => {
-  // Down and to the left: the exact opposite of the -44 degree rest angle that
+  // Down and to the left: the exact opposite of the -45 degree rest angle that
   // every fresh move used to launch along.
   const start: Vec = [600, 400];
   const end: Vec = [200, 700];
@@ -201,7 +153,7 @@ test('an interrupted move can be planned dead straight', () => {
   const end: Vec = [800, 400];
   const carried = Math.PI / 2; // travelling straight down when retargeted
   const distance = 400;
-  const maxArc = Math.min(distance * CODEX_CURSOR_MOTION.arcSize, 120);
+  const maxArc = Math.min(distance * CURSOR_MOTION.arcSize, 120);
   assert.ok(maxArc > 100, `the bulge ceiling should bite on this move, got ${maxArc}`);
 
   const straight = candidateWithArc(start, end, 0);
@@ -225,15 +177,6 @@ test('an interrupted move can be planned dead straight', () => {
   );
 });
 
-test('the candidate grid always contains its own midpoint', () => {
-  for (const count of [1, 2, 3, 4, 5, 19, 20]) {
-    const arcCount = oddAtLeastThree(count);
-    assert.equal(arcCount % 2, 1, `${count} → ${arcCount} is odd`);
-    assert.ok(arcCount >= 3, `${count} → ${arcCount} leaves room for a midpoint`);
-    const arcs = Array.from({ length: arcCount }, (_, a) => (a / (arcCount - 1)) * 2 - 1);
-    assert.ok(arcs.some((arc) => arc === 0), `${arcCount} candidates include arc = 0`);
-  }
-});
 
 test('the presentation deadline covers the slowest release the gate can ask for', () => {
   // The renderer releases an action at CURSOR_CLOSE_ENOUGH.progress; the runtime
@@ -247,8 +190,8 @@ test('the presentation deadline covers the slowest release the gate can ask for'
     value: 0,
     velocity: 0,
     target: 1,
-    response: CODEX_CURSOR_MOTION.springResponseMax,
-    damping: CODEX_CURSOR_MOTION.springDampingFraction,
+    response: CURSOR_MOTION.springResponseMax,
+    damping: CURSOR_MOTION.springDampingFraction,
   };
   const dt = 1 / 240;
   let seconds = 0;
@@ -430,35 +373,8 @@ test('an interrupted move may still honour the heading it is already carrying', 
   assert.deepEqual(continued.sample(1), fresh.sample(1));
 });
 
-test('terminal blend is a cubic-eased vector blend, not a scalar angle lerp', () => {
-  const tangent: Vec = [0, 1]; // straight down; ~134 degrees from the click angle
-  const clickAngle = CODEX_CURSOR_MOTION.clickAngle;
-  const blendStart = CODEX_CURSOR_MOTION.terminalTangentBlendStart;
 
-  assert.equal(cursorHeadingAt(tangent, 0), Math.atan2(tangent[1], tangent[0]));
-  assert.equal(cursorHeadingAt(tangent, blendStart), Math.atan2(tangent[1], tangent[0]));
-  assert.ok(Math.abs(cursorHeadingAt(tangent, 1) - clickAngle) < 1e-12);
-
-  const progress = 0.995;
-  const w = (progress - blendStart) / (1 - blendStart);
-  const k = 1 - (1 - w) ** 3;
-  const x = tangent[0] * (1 - k) + Math.cos(clickAngle) * k;
-  const y = tangent[1] * (1 - k) + Math.sin(clickAngle) * k;
-  assert.ok(Math.abs(cursorHeadingAt(tangent, progress) - Math.atan2(y, x)) < 1e-12);
-
-  // The old scalar lerp would sit at the arithmetic midpoint of the two angles.
-  const scalarLerp = Math.atan2(tangent[1], tangent[0])
-    + (clickAngle - Math.atan2(tangent[1], tangent[0])) * w;
-  assert.ok(Math.abs(cursorHeadingAt(tangent, progress) - scalarLerp) > 0.5);
-
-  // Exactly opposed vectors must not produce NaN anywhere along the blend.
-  const opposed: Vec = [-Math.cos(clickAngle), -Math.sin(clickAngle)];
-  for (let step = 0; step <= 100; step++) {
-    assert.ok(finite(cursorHeadingAt(opposed, blendStart + (1 - blendStart) * (step / 100))));
-  }
-});
-
-test('first appearance uses the requested center hotspot without an off-screen glide', () => {
+test('first appearance uses the requested action hotspot without an off-screen glide', () => {
   const engine = new CursorEngine();
   engine.moveTo(400, 300);
   assert.deepEqual(engine.pos, [400, 300]);
@@ -468,7 +384,7 @@ test('first appearance uses the requested center hotspot without an off-screen g
   assert.ok(!engine.isMoving());
 });
 
-test('subsequent move spring-settles exactly on the center hotspot', () => {
+test('subsequent move spring-settles exactly on the action hotspot', () => {
   const engine = new CursorEngine();
   engine.moveTo(100, 100);
   engine.moveTo(700, 360);
@@ -578,135 +494,14 @@ test('a long fast move keeps the glyph inside a single scootRotationMax', () => 
   // chasing it is underdamped, so allow it a few percent of settling overshoot.
   // The two-term version reached 1.62 rad here, well past this line.
   assert.ok(
-    widest <= CODEX_CURSOR_MOTION.scootRotationMax * 1.05,
-    `glyph rotated ${widest} rad, past the ${CODEX_CURSOR_MOTION.scootRotationMax} rad ceiling`,
+    widest <= CURSOR_MOTION.scootRotationMax * 1.05,
+    `glyph rotated ${widest} rad, past the ${CURSOR_MOTION.scootRotationMax} rad ceiling`,
   );
 });
 
-test('paint uses exact three-curve AgentCursor shape centered on the hotspot', () => {
-  const engine = new CursorEngine();
-  engine.moveTo(320, 240);
 
-  const moves: Point[] = [];
-  const curves: number[][] = [];
-  const transforms: string[] = [];
-  const gradient = { addColorStop() {} };
-  type Point = [number, number];
-  const ctx = {
-    createLinearGradient: () => gradient,
-    beginPath() {},
-    fill() {},
-    stroke() {},
-    moveTo(x: number, y: number) { moves.push([x, y]); },
-    lineTo() {},
-    bezierCurveTo(...args: number[]) { curves.push(args); },
-    closePath() {},
-    save() { transforms.push('save'); },
-    restore() { transforms.push('restore'); },
-    translate(x: number, y: number) { transforms.push(`translate:${x},${y}`); },
-    rotate() {},
-    scale() {},
-    set fillStyle(_value: unknown) {},
-    set strokeStyle(_value: unknown) {},
-    set lineWidth(_value: number) {},
-    set lineJoin(_value: CanvasLineJoin) {},
-    set lineCap(_value: CanvasLineCap) {},
-    set shadowColor(_value: string) {},
-    set shadowBlur(_value: number) {},
-    set shadowOffsetX(_value: number) {},
-    set shadowOffsetY(_value: number) {},
-    set globalAlpha(_value: number) {},
-  } as unknown as CanvasRenderingContext2D;
 
-  engine.paint(ctx, 0, 0);
-  assert.equal(curves.length, 3);
-  assert.deepEqual(transforms, ['save', 'translate:320,240', 'restore']);
-  const expectedStartX = -CODEX_CURSOR_GLYPH.size / 2
-    + CODEX_CURSOR_GLYPH.start[0] * CODEX_CURSOR_GLYPH.size;
-  const expectedStartY = -CODEX_CURSOR_GLYPH.size / 2
-    + CODEX_CURSOR_GLYPH.start[1] * CODEX_CURSOR_GLYPH.size;
-  assert.ok(Math.abs(moves[0][0] - expectedStartX) < 1e-9);
-  assert.ok(Math.abs(moves[0][1] - expectedStartY) < 1e-9);
-});
-
-test('paints the arrow the way the native cursor is drawn', () => {
-  // What a user reported was "a blue dot, not a cursor". Every one of these
-  // values was a reason for that: a third-transparent fill let the control
-  // underneath show through, a 1.55pt round join took the point off the arrow,
-  // and both sat in a frame a third smaller than the native one.
-  const engine = new CursorEngine();
-  engine.moveTo(100, 100);
-
-  const stops: Array<[number, string]> = [];
-  const gradient = {
-    addColorStop(offset: number, colour: string) {
-      stops.push([offset, colour]);
-    },
-  };
-  const seen: Record<string, unknown> = {};
-  const ctx = {
-    createLinearGradient: () => gradient,
-    beginPath() {},
-    fill() {
-      seen.fillAt = stops.length;
-    },
-    stroke() {
-      seen.strokeAt = stops.length;
-    },
-    moveTo() {},
-    lineTo() {},
-    bezierCurveTo() {},
-    closePath() {},
-    save() {},
-    restore() {},
-    translate() {},
-    rotate() {},
-    scale() {},
-    set fillStyle(value: unknown) {
-      seen.fillStyle = value;
-    },
-    set strokeStyle(value: unknown) {
-      seen.strokeStyle = value;
-    },
-    set lineWidth(value: number) {
-      seen.lineWidth = value;
-    },
-    set lineJoin(value: CanvasLineJoin) {
-      seen.lineJoin = value;
-    },
-    set miterLimit(value: number) {
-      seen.miterLimit = value;
-    },
-    set lineCap(value: CanvasLineCap) {
-      seen.lineCap = value;
-    },
-    set shadowColor(_value: string) {},
-    set shadowBlur(_value: number) {},
-    set shadowOffsetX(_value: number) {},
-    set shadowOffsetY(_value: number) {},
-    set globalAlpha(_value: number) {},
-  } as unknown as CanvasRenderingContext2D;
-
-  engine.paint(ctx, 0, 0);
-
-  // `Color.white.opacity(0.8)` — the one colour literal in the native drawing
-  // code, and it is the outline, not the fill.
-  assert.equal(seen.strokeStyle, 'rgba(255,255,255,0.8)');
-  assert.equal(seen.lineWidth, 2);
-  assert.equal(seen.lineJoin, 'miter');
-  assert.equal(seen.miterLimit, 10);
-  assert.equal(seen.lineCap, 'butt');
-  // Opaque: the arrow has an interior of its own.
-  assert.equal(stops.length, 3);
-  for (const [offset, colour] of stops) {
-    const alpha = Number(colour.slice(colour.lastIndexOf(',') + 1, -1));
-    assert.ok(alpha > 0.9, `stop ${offset} is ${alpha}, which lets the screen through`);
-  }
-  // The outline goes on after the fill, or the fill covers it.
-  assert.ok((seen.strokeAt as number) >= (seen.fillAt as number));
-});
-
-test('native completion snaps the center hotspot and cancels the planned move', () => {
+test('native completion snaps the action hotspot and cancels the planned move', () => {
   const engine = new CursorEngine();
   engine.moveTo(100, 100);
   engine.moveTo(500, 300);
@@ -770,17 +565,6 @@ test('cancel during first fade restores full opacity for the next move', () => {
   assert.equal(globalAlpha, 1);
 });
 
-test('overlay cancel waits for the renderer frame before reporting finished', async () => {
-  const source = await readFile(
-    new URL('../../../src/overlay/cursor-overlay.ts', import.meta.url),
-    'utf8',
-  );
-  const cancelBlock = source.match(/onCancel\(\(p\) => \{([\s\S]*?)\n\}\);/)?.[1] ?? '';
-  assert.match(cancelBlock, /engine\.cancel\(\)/);
-  assert.match(cancelBlock, /kick\(\)/);
-  assert.doesNotMatch(cancelBlock, /reportPhase\('finished'\)/);
-});
-
 test('click press animation clears over about 0.25 seconds', () => {
   const engine = new CursorEngine();
   engine.moveTo(100, 100);
@@ -793,11 +577,305 @@ test('click press animation clears over about 0.25 seconds', () => {
   assert.ok(ticks >= 14 && ticks <= 18, `${ticks} ticks`);
 });
 
-test('palette selection remains deterministic', () => {
-  assert.equal(paletteForInstance('run-1').name, paletteForInstance('run-1').name);
-  assert.equal(paletteForInstance('default').name, 'default_blue');
-  assert.equal(paletteForInstance('').name, 'default_blue');
-  const names = new Set([1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => paletteForInstance(`run-${n}`).name));
-  assert.ok(names.size >= 5);
-  assert.notEqual(gradientAt(defaultPalette(), 0).join(), gradientAt(defaultPalette(), 1).join());
+function slowestSpringSamples(seconds = 10): number[] {
+  const dt = 1 / 240;
+  const omega = (Math.PI * 2) / CURSOR_MOTION.springResponseMax;
+  let value = 0;
+  let velocity = 0;
+  const samples: number[] = [];
+  for (let step = 0; step < seconds / dt; step++) {
+    velocity += (
+      omega * omega * (1 - value)
+      - 2 * CURSOR_MOTION.springDampingFraction * omega * velocity
+    ) * dt;
+    value += velocity * dt;
+    samples.push(value);
+  }
+  return samples;
+}
+
+function signedAngleDifference(value: number): number {
+  let result = value;
+  while (result > Math.PI) result -= Math.PI * 2;
+  while (result < -Math.PI) result += Math.PI * 2;
+  return result;
+}
+
+test('independent score charges a direct route less than an equal-length detour', () => {
+  const common = {
+    length: 100,
+    angleChangeEnergy: 0,
+    maxAngleChange: 0,
+    totalTurn: 0,
+    staysInBounds: true,
+    arrivalDirection: [1, 0] as const,
+  };
+  const directScore = scoreCursorPath(common, 100, [1, 0]);
+  const detourScore = scoreCursorPath(common, 80, [1, 0]);
+
+  assert.ok(directScore < detourScore);
+  assert.equal(detourScore - directScore, 8 * 0.25);
+});
+
+test('independent score rejects an out-of-bounds shortcut in favour of a usable route', () => {
+  const usable = {
+    length: 200,
+    angleChangeEnergy: 0,
+    maxAngleChange: 0,
+    totalTurn: 0,
+    staysInBounds: true,
+    arrivalDirection: [1, 0] as const,
+  };
+  const shortcut = { ...usable, length: 100, staysInBounds: false };
+
+  assert.ok(
+    scoreCursorPath(shortcut, 100, [1, 0]) > scoreCursorPath(usable, 100, [1, 0]),
+    'leaving the viewport must lose even when it halves the raw path length',
+  );
+});
+
+test('the rendered glyph tip is the action hotspot and every path lands exactly on it', () => {
+  const engine = new CursorEngine();
+  engine.moveTo(320, 240);
+  engine.tick(1);
+  const translations: Array<readonly [number, number]> = [];
+  const starts: Array<readonly [number, number]> = [];
+  const curves: number[][] = [];
+  const gradient = { addColorStop() {} };
+  const ctx = {
+    createLinearGradient: () => gradient,
+    beginPath() {},
+    fill() {},
+    stroke() {},
+    moveTo(x: number, y: number) { starts.push([x, y]); },
+    lineTo() {},
+    bezierCurveTo(...points: number[]) { curves.push(points); },
+    closePath() {},
+    save() {},
+    restore() {},
+    translate(x: number, y: number) { translations.push([x, y]); },
+    rotate() {},
+    scale() {},
+    set fillStyle(_value: unknown) {},
+    set strokeStyle(_value: unknown) {},
+    set lineWidth(_value: number) {},
+    set lineJoin(_value: CanvasLineJoin) {},
+    set lineCap(_value: CanvasLineCap) {},
+    set shadowColor(_value: string) {},
+    set shadowBlur(_value: number) {},
+    set shadowOffsetX(_value: number) {},
+    set shadowOffsetY(_value: number) {},
+    set globalAlpha(_value: number) {},
+  } as unknown as CanvasRenderingContext2D;
+
+  engine.paint(ctx, 0, 0);
+  assert.deepEqual(engine.pos, [320, 240]);
+  assert.deepEqual(translations[0], engine.pos);
+  assert.deepEqual(CURSOR_GLYPH.start, [0, 0]);
+  assert.deepEqual(starts[0], [0, 0]);
+  assert.deepEqual(curves.at(-1)?.slice(-2), [0, 0]);
+
+  const destination: Vec = [987, 654];
+  assert.deepEqual(planCursorPath([320, 240], destination, null, null).sample(1), destination);
+});
+
+test('the independently tuned position spring never overshoots its target', () => {
+  const samples = slowestSpringSamples();
+  assert.ok(samples.some((value) => value >= CURSOR_CLOSE_ENOUGH.progress));
+  assert.ok(
+    samples.every((value) => value <= 1 + Number.EPSILON),
+    `position spring overshot by ${Math.max(...samples) - 1}`,
+  );
+});
+
+test('five-nines progress and the two-pixel gate cover the same landing', () => {
+  assert.equal(CURSOR_CLOSE_ENOUGH.progress, 0.99999);
+  assert.equal(CURSOR_CLOSE_ENOUGH.distance, 2);
+  const remainingAtFiveNines = 100_000 * (1 - CURSOR_CLOSE_ENOUGH.progress);
+  assert.ok(
+    remainingAtFiveNines <= CURSOR_CLOSE_ENOUGH.distance,
+    `${remainingAtFiveNines}px remains after the progress gate opens`,
+  );
+});
+
+test('the 2100ms deadline covers 240Hz release and one-fps observability', () => {
+  const samples = slowestSpringSamples();
+  const releaseStep = samples.findIndex((value) => value >= CURSOR_CLOSE_ENOUGH.progress) + 1;
+  assert.ok(releaseStep > 0, 'the slowest spring reaches the progress gate');
+  const releaseMs = releaseStep * 1000 / 240;
+  assert.equal(releaseMs, 1725);
+
+  const observableAtOneFpsMs = Math.ceil(releaseMs / 1000) * 1000;
+  assert.equal(observableAtOneFpsMs, 2000);
+  assert.equal(cursorPresentationReadyDeadlineMs(), observableAtOneFpsMs + 100);
+  assert.ok(cursorPresentationReadyDeadlineMs() < 5000);
+});
+
+test('terminal heading smoothsteps through the shortest signed angle', () => {
+  const tangentAngle = 170 * Math.PI / 180;
+  const tangent: Vec = [Math.cos(tangentAngle), Math.sin(tangentAngle)];
+  const progress = 0.85;
+  const phase = (progress - 0.80) / 0.20;
+  const smoothstep = phase * phase * (3 - 2 * phase);
+  const shortest = signedAngleDifference(CURSOR_MOTION.clickAngle - tangentAngle);
+  const expected = signedAngleDifference(tangentAngle + shortest * smoothstep);
+  const actual = cursorHeadingAt(tangent, progress);
+
+  assert.ok(Math.abs(signedAngleDifference(actual - expected)) < 1e-12);
+  assert.ok(
+    Math.abs(signedAngleDifference(cursorHeadingAt(tangent, 1) - CURSOR_MOTION.clickAngle))
+      < 1e-12,
+  );
+});
+
+test('independent score preserves detour ratios for positive subpixel chords', () => {
+  const measurement = {
+    length: 0.75,
+    angleChangeEnergy: 0,
+    maxAngleChange: 0,
+    totalTurn: 0,
+    staysInBounds: true,
+    arrivalDirection: [1, 0] as const,
+  };
+
+  assert.equal(scoreCursorPath(measurement, 0.5, [1, 0]), 4.75);
+});
+
+test('fresh planning spends all nine candidates on a symmetric direct-departure arc grid', () => {
+  const pairs = cursorCandidatePairs(CURSOR_MOTION.candidateCount, 5, false);
+  assert.equal(pairs.length, 9);
+  assert.deepEqual([...new Set(pairs.map(({ departureWeight }) => departureWeight))], [0]);
+  assert.deepEqual(
+    pairs.map(({ arcWeight }) => arcWeight),
+    [-1, -0.75, -0.5, -0.25, 0, 0.25, 0.5, 0.75, 1],
+  );
+});
+
+test('interrupted planning selects nine candidates across all five departure weights', () => {
+  const pairs = cursorCandidatePairs(CURSOR_MOTION.candidateCount, 5, true);
+  assert.equal(pairs.length, 9);
+  assert.deepEqual(
+    pairs.filter(({ departureWeight }) => departureWeight === 0).map(({ arcWeight }) => arcWeight),
+    [-1, -0.5, 0, 0.5, 1],
+    'direct departure keeps five symmetric arcs including zero',
+  );
+  assert.deepEqual(
+    pairs.filter(({ arcWeight }) => arcWeight === 0).map(({ departureWeight }) => departureWeight),
+    [0, 0.25, 0.5, 0.75, 1],
+    'zero arc covers every DEPARTURE_FAN weight including direct and incoming endpoints',
+  );
+});
+
+test('zero path length over a zero chord has no detour', () => {
+  const stationary = {
+    length: 0,
+    angleChangeEnergy: 0,
+    maxAngleChange: 0,
+    totalTurn: 0,
+    staysInBounds: true,
+    arrivalDirection: [1, 0] as const,
+  };
+
+  assert.equal(scoreCursorPath(stationary, 0, [1, 0]), 0);
+});
+
+test('positive path length over a zero chord is rejected', () => {
+  const impossible = {
+    length: 0.5,
+    angleChangeEnergy: 0,
+    maxAngleChange: 0,
+    totalTurn: 0,
+    staysInBounds: true,
+    arrivalDirection: [1, 0] as const,
+  };
+
+  assert.equal(scoreCursorPath(impossible, 0, [1, 0]), Number.POSITIVE_INFINITY);
+});
+
+test('moving and pressed canvas transforms keep the local tip on engine.pos', () => {
+  type Matrix = [number, number, number, number, number, number];
+  let matrix: Matrix = [1, 0, 0, 1, 0, 0];
+  const stack: Matrix[] = [];
+  const transformedStarts: Array<readonly [number, number]> = [];
+  const rotations: number[] = [];
+  const scales: Array<readonly [number, number]> = [];
+  const gradient = { addColorStop() {} };
+  const ctx = {
+    createLinearGradient: () => gradient,
+    beginPath() {},
+    fill() {},
+    stroke() {},
+    moveTo(x: number, y: number) {
+      transformedStarts.push([
+        matrix[0] * x + matrix[2] * y + matrix[4],
+        matrix[1] * x + matrix[3] * y + matrix[5],
+      ]);
+    },
+    lineTo() {},
+    bezierCurveTo() {},
+    closePath() {},
+    save() { stack.push([...matrix]); },
+    restore() { matrix = stack.pop() ?? [1, 0, 0, 1, 0, 0]; },
+    translate(x: number, y: number) {
+      matrix[4] += matrix[0] * x + matrix[2] * y;
+      matrix[5] += matrix[1] * x + matrix[3] * y;
+    },
+    rotate(angle: number) {
+      rotations.push(angle);
+      const [a, b, c, d, e, f] = matrix;
+      const cosine = Math.cos(angle);
+      const sine = Math.sin(angle);
+      matrix = [
+        a * cosine + c * sine,
+        b * cosine + d * sine,
+        -a * sine + c * cosine,
+        -b * sine + d * cosine,
+        e,
+        f,
+      ];
+    },
+    scale(x: number, y: number) {
+      scales.push([x, y]);
+      matrix[0] *= x;
+      matrix[1] *= x;
+      matrix[2] *= y;
+      matrix[3] *= y;
+    },
+    set fillStyle(_value: unknown) {},
+    set strokeStyle(_value: unknown) {},
+    set lineWidth(_value: number) {},
+    set lineJoin(_value: CanvasLineJoin) {},
+    set lineCap(_value: CanvasLineCap) {},
+    set shadowColor(_value: string) {},
+    set shadowBlur(_value: number) {},
+    set shadowOffsetX(_value: number) {},
+    set shadowOffsetY(_value: number) {},
+    set globalAlpha(_value: number) {},
+  } as unknown as CanvasRenderingContext2D;
+
+  const engine = new CursorEngine();
+  engine.moveTo(100, 100);
+  engine.tick(1);
+  engine.moveTo(900, 500);
+  engine.pressed = true;
+  engine.tick(1 / 60);
+  assert.equal(engine.hasMotionPath(), true);
+
+  engine.paint(ctx, 0, 0);
+  assert.equal(rotations.length, 3, 'stretch axis, unwind, and rotation offset apply');
+  assert.equal(scales.length, 2, 'stretch and pressed scale apply');
+  assert.ok(Math.abs(rotations[0]) > 1e-9, 'moving stretch axis is rotated');
+  assert.ok(Math.abs(rotations[0] + rotations[1]) < 1e-12, 'stretch axis is unwound');
+  assert.ok(Math.abs(rotations[2]) > 1e-9, 'moving rotation offset is active');
+  assert.ok(
+    Math.abs(scales[0][0] - 1) > 1e-9 || Math.abs(scales[0][1] - 1) > 1e-9,
+    'moving stretch scale is active',
+  );
+  assert.ok(scales[1][0] < 1 && scales[1][1] < 1, 'pressed scale is active');
+  const transformedTip = transformedStarts[0];
+  assert.ok(transformedTip, 'glyph path starts at its local tip');
+  assert.ok(
+    Math.hypot(transformedTip[0] - engine.pos[0], transformedTip[1] - engine.pos[1]) < 1e-9,
+    `transformed tip ${transformedTip} diverged from action coordinate ${engine.pos}`,
+  );
 });

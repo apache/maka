@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * Chinese copy for Astryx's own message catalog, which ships no `zh`: without
  * an override every `@astryx.*` string falls back to the shipped `en` catalog
@@ -16,6 +35,7 @@
  * config drifting against upstream.
  */
 export interface AstryxCopy {
+  appShell: { mobileNavigation: string; skipToContent: string };
   banner: { collapse: string; expand: string };
   breadcrumbs: { label: string };
   calendar: {
@@ -85,6 +105,7 @@ export interface AstryxCopy {
 }
 
 export const ASTRYX_COPY_ZH: AstryxCopy = {
+  appShell: { mobileNavigation: '移动端导航', skipToContent: '跳到主要内容' },
   banner: { collapse: '收起', expand: '展开' },
   breadcrumbs: { label: '面包屑导航' },
   calendar: {
@@ -152,5 +173,77 @@ export const ASTRYX_COPY_ZH: AstryxCopy = {
   tabList: { label: '标签页' },
   table: { label: '表格' },
   thumbnail: { fallbackName: '缩略图', open: '打开{accessibleName}', remove: '移除{accessibleName}' },
+  token: { remove: '移除{label}' },
+};
+
+export const ASTRYX_COPY_ZH_TW: AstryxCopy = {
+  appShell: { mobileNavigation: '移動端導航', skipToContent: '跳到主要內容' },
+  banner: { collapse: '收起', expand: '展開' },
+  breadcrumbs: { label: '麵包屑導航' },
+  calendar: {
+    dayInRange: '{date}，在所選範圍內',
+    dayRangeEnd: '{date}，範圍結束',
+    dayRangeStart: '{date}，範圍開始',
+    dayRangeStartAndEnd: '{date}，範圍開始與結束',
+    daySelected: '{date}，已選擇',
+    nextMonth: '下個月',
+    previousMonth: '上個月',
+    rangeCompleteAnnounce: '已選擇範圍：{start} 至 {end}。',
+    rangeStartAnnounce: '開始日期 {date}。請選擇結束日期。',
+  },
+  chat: {
+    composerPlaceholder: '輸入訊息…',
+    composerDrawerLabel: '附加內容',
+    composerInputLabel: '訊息輸入框',
+    messageAriaLabel: '訊息：{status}',
+    pastedTextExpand: '展開',
+    statusDelivered: '已送達',
+    statusFailed: '傳送失敗',
+    statusRead: '已讀',
+    statusSending: '傳送中',
+    statusSent: '已傳送',
+    // «點選» is deliberate: the string doubles as the toggle band's visible
+    // hover tooltip (composer.css renders attr(aria-label)), where the click
+    // affordance is the whole point.
+    drawerCollapse: '點選收起{label}',
+    drawerExpand: '點選展開{label}',
+    newMessages: '跳到最新訊息',
+    scrollToBottom: '滾動到底部',
+    toolCallsError: '錯誤：{message}',
+    toolCallsGroupLabel: '{count} 次工具呼叫',
+    triggerSuggestions: '建議',
+  },
+  commandPalette: {
+    emptyBootstrap: '輸入以搜尋',
+    emptySearch: '無結果',
+    inputPlaceholder: '搜尋…',
+    label: '命令面板',
+    noResultsFor: '沒有與「{query}」符合的結果',
+    resultCount: '{count, number} 條結果',
+  },
+  dateTime: {
+    closeCalendar: '關閉日曆',
+    openCalendar: '開啟日曆',
+    dialogLabel: '選擇日期',
+    datePlaceholder: '選擇日期',
+    timePlaceholder: '選擇時間',
+    timeSuffix: '{label}時間',
+  },
+  inputStatus: { error: '錯誤詳情', success: '成功詳情', warning: '警告詳情' },
+  lightbox: { mediaViewer: '媒體檢視器', previous: '上一張', next: '下一張' },
+  menus: { dropdown: '選單', more: '更多選項' },
+  multiSelector: { clearAll: '清除全部{label}', selectAll: '全選' },
+  search: { options: '搜尋選項', placeholder: '搜尋…' },
+  sideNav: {
+    label: '側邊導航',
+    resizeSidebar: '調整側邊欄寬度',
+    collapseSidebar: '收起側邊欄',
+    expandSidebar: '展開側邊欄',
+    itemCollapse: '收起{label}',
+    itemExpand: '展開{label}',
+  },
+  tabList: { label: '標籤頁' },
+  table: { label: '表格' },
+  thumbnail: { fallbackName: '縮圖', open: '開啟{accessibleName}', remove: '移除{accessibleName}' },
   token: { remove: '移除{label}' },
 };

@@ -1,4 +1,25 @@
-import type { SettingsTestResult, UiCatalog, UiLocale } from "@maka/core";
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import type { SettingsTestResult } from '@maka/core/settings';
+
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 type SettingsTestResultCopy = {
   proxy: {
@@ -8,6 +29,7 @@ type SettingsTestResultCopy = {
     ) => string;
     disabled: string;
     configurationMissing: string;
+    credentialMissing: string;
     timeout: string;
     httpError: (status: number | undefined) => string;
     unreachable: string;
@@ -22,12 +44,13 @@ type SettingsTestResultCopy = {
 };
 
 const COPY = {
-  zh: {
+  'zh-CN': {
     proxy: {
       reachable: (endpoint, location) =>
         ["代理配置有效", endpoint, location].filter(Boolean).join(" · "),
       disabled: "请先启用代理服务器，再进行测试。",
       configurationMissing: "请填写代理服务器地址和端口后再测试。",
+      credentialMissing: "代理认证已开启，请输入代理密码后再测试。",
       timeout: "代理测试超时，请检查代理服务是否可达。",
       httpError: (status) =>
         status === undefined
@@ -46,6 +69,31 @@ const COPY = {
       connectionFailed: "请检查凭据和网络设置后重试。",
     },
   },
+  'zh-TW': {
+    proxy: {
+      reachable: (endpoint, location) =>
+        ["代理設定有效", endpoint, location].filter(Boolean).join(" · "),
+      disabled: "請先啟用代理伺服器，再進行測試。",
+      configurationMissing: "請填寫代理伺服器地址和埠後再測試。",
+      credentialMissing: "代理認證已開啟，請輸入代理密碼後再測試。",
+      timeout: "代理測試超時，請檢查代理服務是否可達。",
+      httpError: (status) =>
+        status === undefined
+          ? "代理測試回傳了錯誤回應，請檢查代理服務或測試地址。"
+          : `代理測試回傳 HTTP ${status}，請檢查代理服務或測試地址。`,
+      unreachable: "代理不可達，請檢查伺服器地址、埠和認證資訊。",
+    },
+    bot: {
+      credentialsValid: (username) =>
+        username
+          ? `憑據檢查已透過 · ${username}。這不代表訊息收發服務已啟動。`
+          : "憑據檢查已透過。這不代表訊息收發服務已啟動。",
+      tokenMissing: "請填寫 Bot Token 後再測試。",
+      tokenInvalid: "Bot Token 無效，請檢查後重試。",
+      appCredentialsMissing: "請填寫 App ID 和 App Secret 後再測試。",
+      connectionFailed: "請檢查憑據和網路設定後重試。",
+    },
+  },
   en: {
     proxy: {
       reachable: (endpoint, location) =>
@@ -54,6 +102,8 @@ const COPY = {
           .join(" · "),
       disabled: "Enable the proxy server before testing it.",
       configurationMissing: "Enter a proxy host and port before testing it.",
+      credentialMissing:
+        "Proxy authentication is enabled. Enter a proxy password before testing.",
       timeout:
         "The proxy test timed out. Check whether the proxy service is reachable.",
       httpError: (status) =>
@@ -94,6 +144,8 @@ export function settingsTestResultMessage(
       return copy.proxy.disabled;
     case "proxy_configuration_missing":
       return copy.proxy.configurationMissing;
+    case "proxy_credential_missing":
+      return copy.proxy.credentialMissing;
     case "proxy_timeout":
       return copy.proxy.timeout;
     case "proxy_http_error":

@@ -1,4 +1,26 @@
-import type { SandboxBoundaryExpansion, SandboxBoundarySettlement } from '@maka/core';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import type {
+  SandboxBoundaryExpansion,
+  SandboxBoundarySettlement,
+} from '@maka/core/sandbox-boundary';
 import { z } from 'zod';
 
 import { sandboxBoundaryExpansionSchema } from './sandbox-boundary-declaration.js';
@@ -18,14 +40,29 @@ export const SANDBOX_BOUNDARY_UNAVAILABLE =
   'Retrying will fail the same way — redo the work inside the paths already allowed, or tell the ' +
   'user which path needs access.';
 
+export const REQUEST_SANDBOX_BOUNDARY_TOOL_NAME = 'request_sandbox_boundary';
+
+export const SANDBOX_BOUNDARY_DENIED_FOR_TURN =
+  'The user denied a sandbox boundary expansion for this Turn. Do not request another expansion. ' +
+  'Continue only with the authority already available, or explain the remaining blocker.';
+
+export const SANDBOX_BOUNDARY_FINALIZATION_PROMPT = [
+  '<sandbox_boundary_finalization>',
+  'Sandbox boundary negotiation cannot continue in this Turn.',
+  'Do not call tools. Give the user a concise final status from the evidence already available.',
+  'State what remains blocked and which existing-authority alternatives, if any, were tried.',
+  '</sandbox_boundary_finalization>',
+].join('\n');
+
 export function buildRequestSandboxBoundaryTool(): MakaTool<
   { expansion: SandboxBoundaryExpansion; justification: string },
   SandboxBoundarySettlement
 > {
   return {
-    name: 'request_sandbox_boundary',
+    name: REQUEST_SANDBOX_BOUNDARY_TOOL_NAME,
+    executionSemantics: 'exclusive_step',
     description:
-      'Request the smallest session sandbox boundary expansion needed to retry a local tool that returned sandbox_boundary_required.',
+      'Request the smallest session sandbox boundary expansion needed to retry a local tool that returned sandbox_boundary_required. If the user denies it, do not request another expansion in this Turn.',
     parameters: z
       .object({
         expansion: sandboxBoundaryExpansionSchema,

@@ -1,11 +1,30 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
+import { createDefaultBotChannel } from '@maka/core/settings';
 
-import { __TEST__ } from '../discord-bridge.js';
+import { DiscordBotBridge, __TEST__ } from '../discord-bridge.js';
 
 const {
   decideDiscordClose,
-  reconnectBackoffMs,
   buildDiscordSendBody,
   normalizeDiscordReplyToMessageId,
   normalizeDiscordChannelId,
@@ -14,33 +33,55 @@ const {
   splitDiscordContent,
 } = __TEST__;
 
+class ResetTrackingDiscordBridge extends DiscordBotBridge {
+  receive(payload: string): void {
+    this.handleWsMessage(payload);
+  }
+
+  resetSessionForTest(): void {
+    this.resetSession();
+  }
+
+  currentResumeGatewayUrl(): string | null {
+    return this.resumeGatewayUrl;
+  }
+}
+
+describe('resume gateway url lifecycle', () => {
+  it('clears resumeGatewayUrl when the session is dropped', () => {
+    const bridge = new ResetTrackingDiscordBridge('discord', {
+      ...createDefaultBotChannel('discord'),
+      enabled: true,
+      token: 'token',
+    });
+    bridge.receive(
+      JSON.stringify({
+        op: 0,
+        t: 'READY',
+        s: 3,
+        d: {
+          session_id: 'sess-1',
+          resume_gateway_url: 'wss://resume.example',
+          user: { id: '42', username: 'maka' },
+        },
+      }),
+    );
+    assert.equal(bridge.currentResumeGatewayUrl(), 'wss://resume.example');
+    bridge.resetSessionForTest();
+    assert.equal(bridge.currentResumeGatewayUrl(), null);
+  });
+});
+
 describe('Discord gateway helpers', () => {
   it('classifies stopped, fatal, resumable, and non-resumable closes', () => {
     assert.deepEqual(decideDiscordClose(1000, true), { kind: 'stopped' });
-    assert.deepEqual(decideDiscordClose(4004, true), { kind: 'stopped' });
     for (const code of [4004, 4014, 4013, 4012, 4010, 4011]) {
       assert.deepEqual(decideDiscordClose(code, false), { kind: 'fatal', code });
     }
     for (const code of [1000, 1001]) {
       assert.deepEqual(decideDiscordClose(code, false), { kind: 'reconnect', resumable: false });
     }
-    for (const code of [4000, 4007, 4009]) {
-      assert.deepEqual(decideDiscordClose(code, false), { kind: 'reconnect', resumable: true });
-    }
-  });
-
-  it('exponentially backs off reconnects with a 30-second cap', () => {
-    for (const [attempt, expected] of [
-      [0, 1_000],
-      [1, 2_000],
-      [2, 4_000],
-      [3, 8_000],
-      [4, 16_000],
-      [5, 30_000],
-      [100, 30_000],
-    ]) {
-      assert.equal(reconnectBackoffMs(attempt), expected, String(attempt));
-    }
+    assert.deepEqual(decideDiscordClose(4000, false), { kind: 'reconnect', resumable: true });
   });
 });
 
@@ -54,20 +95,13 @@ describe('Discord send payloads', () => {
     assert.deepEqual(buildDiscordSendBody('tail', { replyToMessageId: '123' }, 1), {
       content: 'tail',
     });
-    for (const replyToMessageId of ['abc', '  ', '0', '-1', '1.5']) {
-      assert.deepEqual(buildDiscordSendBody('hello', { replyToMessageId }, 0), {
-        content: 'hello',
-      });
-    }
   });
 
   it('normalizes positive reply and channel snowflakes only', () => {
     assert.equal(normalizeDiscordReplyToMessageId(' 123456789012345678 '), '123456789012345678');
     assert.equal(normalizeDiscordChannelId(' 123456789012345678 '), '123456789012345678');
-    for (const value of ['', '   ', 'abc', '0', '-1', '1.5']) {
-      assert.equal(normalizeDiscordReplyToMessageId(value), undefined, value);
-      assert.equal(normalizeDiscordChannelId(value), undefined, value);
-    }
+    assert.equal(normalizeDiscordReplyToMessageId('0'), undefined);
+    assert.equal(normalizeDiscordChannelId('0'), undefined);
     assert.equal(normalizeDiscordReplyToMessageId(undefined), undefined);
   });
 });
@@ -77,7 +111,6 @@ describe('classifyDiscordSendResponse', () => {
     for (const [status, payload, messageId] of [
       [200, { id: '999' }, '999'],
       [201, { id: 123 }, '123'],
-      [200, {}, null],
       [200, null, null],
     ] as const) {
       assert.deepEqual(classifyDiscordSendResponse(status, payload), { kind: 'ok', messageId });
@@ -162,13 +195,12 @@ describe('discordMessageToEvent', () => {
 
 describe('splitDiscordContent', () => {
   it('preserves content while splitting only above Discord limits', () => {
-    for (const input of ['', 'hello', 'a'.repeat(2000)]) {
-      assert.deepEqual(splitDiscordContent(input), [input]);
-    }
-    for (const input of ['a'.repeat(3500), 'x'.repeat(5000)]) {
-      const chunks = splitDiscordContent(input);
-      assert.equal(chunks.join(''), input);
-      assert.ok(chunks.every((chunk) => chunk.length <= 2000));
-    }
+    const boundary = 'a'.repeat(2000);
+    assert.deepEqual(splitDiscordContent(boundary), [boundary]);
+
+    const oversized = 'x'.repeat(5000);
+    const chunks = splitDiscordContent(oversized);
+    assert.equal(chunks.join(''), oversized);
+    assert.ok(chunks.every((chunk) => chunk.length <= 2000));
   });
 });

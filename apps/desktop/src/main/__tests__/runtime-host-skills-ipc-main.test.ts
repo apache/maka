@@ -1,105 +1,111 @@
-import assert from 'node:assert/strict';
-import test from 'node:test';
-import { registerRuntimeHostSkillsIpc } from '../runtime-host-skills-ipc-main.js';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
 
-test('keeps a resolved Skill mutation on one project root', async () => {
-  const handlers = new Map<string, (...args: unknown[]) => unknown>();
-  const catalogContexts: unknown[] = [];
-  const mutationContexts: unknown[] = [];
-  let workspaceReads = 0;
-  let mutationAttempts = 0;
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import type { IpcHandler } from "../ipc-reconnect-policy.js";
+import type { DesktopRuntimeHostClient } from "../runtime-host-client.js";
+import { registerRuntimeHostSkillsIpc } from "../runtime-host-skills-ipc-main.js";
+
+test("projects an empty Skill surface until a remote Project is selected", async () => {
+  const handlers = new Map<string, IpcHandler>();
   registerRuntimeHostSkillsIpc({
     ipcMain: {
-      handle: (channel, handler) => {
-        handlers.set(channel, handler as (...args: unknown[]) => unknown);
+      handle: (channel, listener) => {
+        handlers.set(channel, listener);
+      },
+      handleReconnectableRead: (channel, listener) => {
+        handlers.set(channel, listener);
       },
     },
-    client: {
-      loadSkillCatalog: async ({ workspace }: { workspace: unknown }) => {
-        catalogContexts.push(workspace);
-        return {
-          revision: `sha256:${'a'.repeat(64)}`,
-          view: 'governance',
-          items: [{ kind: 'skill', id: 'writer', ref: 'project:writer' }],
-          workspace: {
-            target: { kind: 'project', projectId: 'project-a' },
-            hostCwd: '/tmp/project-a',
-          },
-        };
+    client: new Proxy(
+      {},
+      {
+        get() {
+          throw new Error("Skill reads must not reach the Host without a Project");
+        },
       },
-      mutateSkillCatalog: async ({ context }: { context: { workspace: unknown } }) => {
-        mutationContexts.push(context.workspace);
-        mutationAttempts += 1;
-        if (mutationAttempts === 1) return { kind: 'revision_conflict' };
-        return {
-          kind: 'rejected',
-          reason: 'not_found',
-          resolvedWorkspace: {
-            target: { kind: 'project', projectId: 'project-a' },
-            hostCwd: '/tmp/project-a',
-          },
-        };
-      },
-    } as never,
-    workspaceRoot: '/tmp/maka-runtime-host-skills-workspace',
+    ) as DesktopRuntimeHostClient,
+    workspaceRoot: "/client-workspace",
     mainWindowController: {} as never,
-    getCurrentWorkspaceTarget: async () => {
-      workspaceReads += 1;
-      const suffix = workspaceReads === 1 ? 'a' : 'b';
-      return { kind: 'project', projectId: `project-${suffix}` };
-    },
-    getDefaultPermissionMode: async () => 'ask',
-    openPath: async () => '',
+    getSelectedWorkspaceTarget: async () => undefined,
+    resolveNewSessionWorkspaceTarget: async () => undefined,
+    getDefaultPermissionMode: async () => "ask",
+    openPath: async () => "",
+    allowLocalPaths: false,
   });
 
-  await handlers.get('skills:setEnabled')?.({}, 'writer', true);
-
-  assert.equal(workspaceReads, 1);
-  assert.deepEqual(catalogContexts, [
-    { kind: 'project', projectId: 'project-a' },
-    { kind: 'project', projectId: 'project-a' },
-  ]);
-  assert.deepEqual(mutationContexts, catalogContexts);
+  for (const channel of [
+    "skills:list",
+    "skills:listInvocable",
+    "skills:catalog:list",
+    "skills:sources:list",
+  ]) {
+    const handler = handlers.get(channel);
+    assert.ok(handler, `missing ${channel} handler`);
+    assert.deepEqual(await handler({} as never), []);
+  }
 });
 
-test('requests the Host-owned invocable projection for existing and new Sessions', async () => {
-  const handlers = new Map<string, (...args: unknown[]) => unknown>();
-  const targets: unknown[] = [];
+test("binds new-session Skill discovery to its explicit Project", async () => {
+  const handlers = new Map<string, IpcHandler>();
+  const resolvedProjectIds: Array<string | null | undefined> = [];
+  let target: unknown;
   registerRuntimeHostSkillsIpc({
     ipcMain: {
-      handle: (channel, handler) => {
-        handlers.set(channel, handler as (...args: unknown[]) => unknown);
-      },
+      handle: (channel, listener) => handlers.set(channel, listener),
+      handleReconnectableRead: (channel, listener) => handlers.set(channel, listener),
     },
     client: {
-      listInvocableSkills: async (target: unknown) => {
-        targets.push(target);
-        return [{ ref: 'project:review', id: 'review', name: 'Review', description: 'Review code' }];
+      listInvocableSkills: async (next: unknown) => {
+        target = next;
+        return [];
       },
-    } as never,
-    workspaceRoot: '/tmp/maka-runtime-host-skills-workspace',
+    } as unknown as DesktopRuntimeHostClient,
+    workspaceRoot: "/client-workspace",
     mainWindowController: {} as never,
-    getCurrentWorkspaceTarget: async () => ({
-      kind: 'project',
-      projectId: 'project-a',
-    }),
-    getDefaultPermissionMode: async () => 'bypass',
-    openPath: async () => '',
+    getSelectedWorkspaceTarget: async () => undefined,
+    resolveNewSessionWorkspaceTarget: async (projectId) => {
+      resolvedProjectIds.push(projectId);
+      return typeof projectId === "string"
+        ? { kind: "project", projectId }
+        : undefined;
+    },
+    getDefaultPermissionMode: async () => "ask",
+    openPath: async () => "",
   });
 
-  const list = handlers.get('skills:listInvocable');
-  assert.ok(list);
-  assert.deepEqual(await list({}, 'session-1'), [
-    { ref: 'project:review', id: 'review', name: 'Review', description: 'Review code' },
-  ]);
-  await list({}, undefined, { collaborationMode: 'plan', model: 'ignored-model' });
-  assert.deepEqual(targets, [
-    { kind: 'session', sessionId: 'session-1' },
-    {
-      kind: 'new_session',
-      context: { workspace: { kind: 'project', projectId: 'project-a' } },
-      collaborationMode: 'plan',
-      permissionMode: 'bypass',
-    },
-  ]);
+  const handler = handlers.get("skills:listInvocable");
+  assert.ok(handler);
+  assert.deepEqual(
+    await handler({} as never, undefined, {
+      projectId: "project-docs",
+      collaborationMode: "plan",
+      permissionMode: "bypass",
+    }),
+    [],
+  );
+  assert.deepEqual(resolvedProjectIds, ["project-docs"]);
+  assert.deepEqual(target, {
+    kind: "new_session",
+    context: { workspace: { kind: "project", projectId: "project-docs" } },
+    collaborationMode: "plan",
+    permissionMode: "bypass",
+  });
 });

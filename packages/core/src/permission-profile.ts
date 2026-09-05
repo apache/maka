@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * Platform-independent permission profile model.
  *
@@ -230,9 +249,21 @@ export function isProtectedMetadataPath(
   for (const workspaceRoot of workspaceRoots) {
     const segments = relativeSegments(path, workspaceRoot);
     if (!segments) continue;
-    if (segments.some((segment) => names.includes(segment))) return true;
+    // Windows filesystems and pathWithinRoot are case-insensitive, so the
+    // metadata names must match case-insensitively there too — otherwise a
+    // write to `.GIT\config` bypasses a `.git` deny and still lands in the
+    // real metadata directory.
+    const foldCase = isWindowsDrivePathRoot(workspaceRoot);
+    const matchesName = foldCase
+      ? (segment: string) => names.some((name) => name.toLowerCase() === segment.toLowerCase())
+      : (segment: string) => names.includes(segment);
+    if (segments.some(matchesName)) return true;
   }
   return false;
+}
+
+function isWindowsDrivePathRoot(root: string): boolean {
+  return /^[A-Za-z]:\\/.test(root);
 }
 
 function fileSystemPolicy(profile: PermissionProfile): FileSystemSandboxPolicy | undefined {
@@ -309,26 +340,17 @@ function relativeSegments(path: string, root: string): string[] | undefined {
   const normalizedRoot = trimTrailingSlashes(root);
   if (!pathWithinRoot(normalizedPath, normalizedRoot)) return undefined;
   if (normalizedPath === normalizedRoot) return [];
+  const separator = normalizedRoot.includes('\\') ? '\\' : '/';
   const relative =
     normalizedRoot === '/'
       ? normalizedPath.slice(1)
-      : normalizedPath.slice(normalizedRoot.length + 1);
-  return relative.split('/').filter(Boolean);
+      : normalizedPath.slice(normalizedRoot.length + (normalizedRoot.endsWith(separator) ? 0 : 1));
+  return relative.split(separator).filter(Boolean);
 }
 
-function pathWithinRoot(path: string, root: string): boolean {
-  const normalizedPath = trimTrailingSlashes(path);
-  const normalizedRoot = trimTrailingSlashes(root);
-  if (!normalizedPath || !normalizedRoot) return false;
-  if (normalizedRoot === '/') return normalizedPath.startsWith('/');
-  return normalizedPath === normalizedRoot || normalizedPath.startsWith(normalizedRoot + '/');
-}
-
-function samePath(path: string, expected: string): boolean {
-  return trimTrailingSlashes(path) === trimTrailingSlashes(expected);
-}
 function trimTrailingSlashes(value: string): string {
   if (!value) return '';
-  const trimmed = value.replace(/\/+$/, '');
+  const trimmed = trimTrailingPathSeparators(value);
   return trimmed || '/';
 }
+import { pathWithinRoot, samePath, trimTrailingPathSeparators } from './absolute-path.js';

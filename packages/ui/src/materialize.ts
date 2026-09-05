@@ -1,34 +1,52 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { deriveTurnRecords, isUserVisibleSessionSystemNote } from '@maka/core/session';
 import {
-  deriveTurnRecords,
   isInFlightToolStatus,
-  isActiveShellRunStatus,
-  mergeShellRunStateWithDiagnostics,
-  projectToolActivityArgs,
-  STEP_LIMIT_NOTICE_TEXT,
   toolResultActivityStatus,
   unfinishedToolActivityStatus,
-} from "@maka/core";
+} from '@maka/core/tool-result-status';
+import { isActiveShellRunStatus } from '@maka/core/shell-run';
+import { mergeShellRunStateWithDiagnostics } from '@maka/core/shell-run-result';
+import { projectToolActivityArgs } from '@maka/core/tool-activity-args';
 import type {
   AttachmentRef,
-  ToolActivityStatus,
   InlineReference,
+  MessageContent,
   QuoteRef,
-  ShellRunToolResult,
   ShellRunUpdate,
-  StoredMessage,
   ToolActivityKind,
   ToolResultContent,
-  TurnRecord,
-  TurnStatus,
-  UserMessage,
-} from "@maka/core";
-import type { LiveTurnProjection } from "./live-turn-projection.js";
+  ToolStepProgress,
+} from '@maka/core/events';
+import type { ToolActivityStatus } from '@maka/core/tool-result-status';
+import type { ShellRunToolResult } from '@maka/core/shell-run-result';
+import type { StoredMessage, TurnRecord, TurnStatus, UserMessage } from '@maka/core/session';
+import type { UiLocale } from '@maka/core/ui-locale';
+import type {
+  LiveSteeringProjection,
+  LiveTurnProjection,
+} from "./live-turn-projection.js";
+import { getConversationCopy } from "./conversation-copy.js";
 
-export {
-  isCancelledToolResultContent,
-  isInFlightToolStatus,
-  toolResultActivityStatus,
-} from "@maka/core";
+export { isCancelledToolResultContent, isInFlightToolStatus, toolResultActivityStatus } from '@maka/core/tool-result-status';
 
 export interface ChatItem {
   id: string;
@@ -38,6 +56,8 @@ export interface ChatItem {
   ts?: number;
   /** User-message attachments projected from StoredMessage; absent on assistant/system rows. */
   attachments?: AttachmentRef[];
+  /** Host-bound directory references projected from StoredMessage; user rows only. */
+  directoryReferences?: import('@maka/core/events').DirectoryReference[];
   /** Inline quoted excerpts projected from StoredMessage; user rows only. */
   quotes?: QuoteRef[];
   /** Frozen inline token metadata projected from StoredMessage; user rows only. */
@@ -67,6 +87,12 @@ export interface ToolActivityItem {
   activityKind?: ToolActivityKind;
   displayName?: string;
   intent?: string;
+  /**
+   * Live-only bounded/redacted args subset from the Runtime Host wire (full
+   * args arrive with the durable transcript at turn end). Display formatters
+   * read `args ?? argsPreview`; never rendered as raw JSON.
+   */
+  argsPreview?: unknown;
   origin?: 'provider' | 'code_mode';
   modelVisibility?: 'visible' | 'hidden';
   parentToolCallId?: string;
@@ -79,10 +105,13 @@ export interface ToolActivityItem {
    * legacy call with no step association.
    */
   stepId?: string;
+  /** Lifecycle of the tool invocation itself, independent of a returned resource. */
   status: ToolActivityStatus;
   args: unknown;
   result?: ToolResultContent;
   durationMs?: number;
+  /** Live-only progress for a bounded multi-step tool invocation. */
+  progress?: ToolStepProgress;
   /**
    * Live streamed output buffer (PR-UI-12). Append-only from the
    * renderer's perspective — runtime side already enforces the
@@ -111,28 +140,56 @@ export interface ToolActivityItem {
   shellRunSource?: "owned" | "unavailable";
 }
 
-// system_note kinds that we surface inline to the user. Everything else
-// (session_resume, connection_locked, mode_change-as-internal-audit, …)
-// stays in the JSONL audit trail but is hidden from the chat surface so
-// the conversation reads like a conversation, not a debug log.
-const VISIBLE_SYSTEM_NOTES = new Set<string>([
-  "context_compacted",
-  "context_compaction_failed_open",
-  "step_limit",
-]);
-
-const SYSTEM_NOTE_LABELS: Record<string, string> = {
-  context_compacted:
-    "Context compacted to keep this session within the model window.",
-  context_compaction_failed_open:
-    "Context summary failed; the session continued without a new summary.",
-  step_limit: STEP_LIMIT_NOTICE_TEXT,
-  mode_change: "Permission mode changed",
-  turn_aborted: "Turn aborted",
-};
+function systemNoteLabel(kind: string, data: unknown, locale: UiLocale): string {
+  const copy = getConversationCopy(locale).messages.systemNotes;
+  if (kind === "context_compacted") return copy.contextCompacted;
+  if (kind === "context_compaction_failed_open") return copy.contextCompactionFailedOpen;
+  if (kind === "context_provider_dropping") {
+    const dropping = data as { inputTokens?: unknown; priorInputTokens?: unknown } | undefined;
+    const used = typeof dropping?.inputTokens === "number" ? dropping.inputTokens : 0;
+    const prior = typeof dropping?.priorInputTokens === "number" ? dropping.priorInputTokens : 0;
+    return copy.contextProviderDropping(used, prior);
+  }
+  if (kind === "context_overflow_after_compaction") return copy.contextOverflowAfterCompaction;
+  if (kind === "context_reported_window_exceeded") {
+    const exceeded = data as
+      | { usedTokens?: unknown; reportedContextWindow?: unknown }
+      | undefined;
+    const used = typeof exceeded?.usedTokens === "number" ? exceeded.usedTokens : 0;
+    const reported =
+      typeof exceeded?.reportedContextWindow === "number" ? exceeded.reportedContextWindow : 0;
+    return copy.contextReportedWindowExceeded(used, reported);
+  }
+  if (kind === "context_window_overrun") {
+    const overrun = data as
+      | { usedTokens?: unknown; declaredContextWindow?: unknown }
+      | undefined;
+    const used = typeof overrun?.usedTokens === "number" ? overrun.usedTokens : 0;
+    const declared =
+      typeof overrun?.declaredContextWindow === "number" ? overrun.declaredContextWindow : 0;
+    return copy.contextWindowOverrun(used, declared);
+  }
+  if (kind === "context_window_suggestion") {
+    const suggestion = data as
+      | { suggestedContextWindow?: unknown; declaredContextWindow?: unknown }
+      | undefined;
+    const tokens =
+      typeof suggestion?.suggestedContextWindow === "number"
+        ? suggestion.suggestedContextWindow
+        : 0;
+    const declared =
+      typeof suggestion?.declaredContextWindow === "number"
+        ? suggestion.declaredContextWindow
+        : undefined;
+    return copy.contextWindowSuggestion(tokens, declared);
+  }
+  if (kind === "step_limit") return copy.stepLimit;
+  return kind;
+}
 
 export function materializeChat(
   messages: readonly StoredMessage[],
+  locale: UiLocale,
 ): ChatItem[] {
   const items: ChatItem[] = [];
   for (const message of messages) {
@@ -148,6 +205,7 @@ export function materializeChat(
         ...(message.quotes && message.quotes.length > 0
           ? { quotes: message.quotes }
           : {}),
+        ...(message.directoryReferences ? { directoryReferences: message.directoryReferences } : {}),
         ...(message.inlineReferences !== undefined
           ? { inlineReferences: message.inlineReferences }
           : {}),
@@ -163,12 +221,12 @@ export function materializeChat(
       });
     if (
       message.type === "system_note" &&
-      VISIBLE_SYSTEM_NOTES.has(message.kind)
+      isUserVisibleSessionSystemNote(message.kind)
     ) {
       items.push({
         id: message.id,
         role: "system",
-        text: SYSTEM_NOTE_LABELS[message.kind] ?? message.kind,
+        text: systemNoteLabel(message.kind, message.data, locale),
         ts: message.ts,
       });
     }
@@ -247,15 +305,10 @@ function mergeLiveOverPersisted(
   if (live.args === undefined) {
     merged.args = persisted.args;
   }
-  const liveResultIsEmpty =
-    live.result === undefined ||
-    (live.result.kind === "text" && live.result.text.length === 0);
-  if (persisted.result !== undefined && liveResultIsEmpty) {
-    // Runtime Host represents its deliberately omitted result payload as an
-    // empty text result at the SessionEvent compatibility seam. A transcript
-    // refresh can also win the race with the terminal live event, leaving no
-    // live result at all. In both cases the committed result supplies detail
-    // without taking a newer, meaningful live result away.
+  if (persisted.result !== undefined && live.result === undefined) {
+    // `applyLiveTurnEvent` removes deliberately omitted payloads before this
+    // merge. Only absence asks durable state to fill the result; an explicit
+    // empty result is still meaningful newer evidence.
     merged.result = persisted.result;
   }
   // A settled turn always yields a settled persisted status — materializeTools
@@ -290,8 +343,8 @@ function mergeLiveOverPersisted(
 }
 
 /**
- * One entry on a turn's render timeline — the interleaved thinking / answer /
- * tool sequence in the order the model actually produced it. This is the
+ * One entry on a turn's render timeline — interleaved thinking, answer, tool,
+ * and mid-turn user messages in conversational order. This is the
  * rendering source of truth (see `TurnViewModel.timeline`); the aggregate
  * `assistant` / `assistantThinking` fields are kept only for older consumers
  * (copy, export, prompt rail).
@@ -303,6 +356,8 @@ function mergeLiveOverPersisted(
  * - `tools`: one contiguous group of tool activity. Adjacent groups are
  *   pre-merged; presentation may split ordinary evidence and linked-session
  *   navigation into adjacent native Astryx segments without reordering them.
+ * - `user`: an instruction inserted after the turn began, kept at the ledger
+ *   position where Runtime acknowledged it.
  *
  * The model stays FLAT: the collapsed "Processing" fold (#1307) is a render
  * concern applied by `foldTimeline` (timeline-fold.ts) at the component layer,
@@ -310,6 +365,12 @@ function mergeLiveOverPersisted(
  * folding) never have to maintain a nesting invariant.
  */
 export type TurnTimelineItem =
+  | {
+      kind: "user";
+      message: ChatItem;
+      messageId: string;
+      steeringEventId?: string;
+    }
   | {
       kind: "thinking";
       text: string;
@@ -356,8 +417,6 @@ export interface TurnViewModel {
   errorClass?: string;
   partialOutputRetained: boolean;
   user?: ChatItem;
-  /** User instructions inserted while this turn was already running. */
-  userInterjections?: ChatItem[];
   tools: ToolActivityItem[];
   assistant?: ChatItem;
   /**
@@ -368,7 +427,7 @@ export interface TurnViewModel {
    */
   assistantThinking?: string;
   /**
-   * Interleaved thinking / answer / tool sequence in production order — the
+   * Interleaved thinking / answer / tool / steering sequence in production order — the
    * rendering source of truth for the turn body. Built from the per-step
    * assistant rows and each step's paired tools (see buildTurnTimeline).
    */
@@ -404,7 +463,18 @@ export function overlayLiveTurn(
   if (
     targetIndex >= 0
     && liveTurn.steps.length === 0
-    && (liveTurn.steering?.length ?? 0) === 0
+    && (liveTurn.pendingSteering?.length ?? 0) === 0
+  ) {
+    return turns;
+  }
+  // A send arm is only a presentation claim that the next message may still
+  // arrive. It is not a Turn record and must not manufacture one while the
+  // canonical transcript is catching up. A real live step (or steering
+  // message) is sufficient evidence to project a missing external Turn.
+  if (
+    targetIndex < 0
+    && liveTurn.steps.length === 0
+    && (liveTurn.pendingSteering?.length ?? 0) === 0
   ) {
     return turns;
   }
@@ -429,7 +499,9 @@ export function overlayLiveTurn(
   );
   const liveToolIds = new Set<string>();
   const liveContentKeys = new Set<string>();
+  const liveSteeringIds = new Set<string>();
   for (const step of liveTurn.steps) {
+    for (const message of step.leadingSteering ?? []) liveSteeringIds.add(message.id);
     if (step.thinking) liveContentKeys.add(`thinking\0${step.stepId}`);
     if (step.text) liveContentKeys.add(`text\0${step.stepId}`);
     for (const liveTool of step.tools) {
@@ -443,9 +515,21 @@ export function overlayLiveTurn(
       );
     }
   }
+  for (const message of liveTurn.pendingSteering ?? []) liveSteeringIds.add(message.id);
   const timeline: TurnTimelineItem[] = [];
-  for (const item of current.timeline) {
+  const lastSettledContentIndex = current.timeline.findLastIndex((item) => item.kind !== "user");
+  const deferredSteering: Extract<TurnTimelineItem, { kind: "user" }>[] = [];
+  for (const [index, item] of current.timeline.entries()) {
     if (item.kind !== "tools") {
+      if (item.kind === "user" && liveSteeringIds.has(item.messageId)) continue;
+      if (
+        item.kind === "user" &&
+        item.steeringEventId !== undefined &&
+        index > lastSettledContentIndex
+      ) {
+        deferredSteering.push(item);
+        continue;
+      }
       if (liveContentKeys.has(`${item.kind}\0${item.messageId}`)) continue;
       timeline.push(item);
       continue;
@@ -456,7 +540,22 @@ export function overlayLiveTurn(
     if (settledItems.length > 0)
       timeline.push({ kind: "tools", items: settledItems });
   }
+  const emittedSteeringIds = new Set<string>();
+  const appendLiveSteering = (
+    messages: readonly LiveSteeringProjection[],
+  ): void => {
+    for (const message of messages) {
+      if (emittedSteeringIds.has(message.id)) continue;
+      emittedSteeringIds.add(message.id);
+      timeline.push({
+        kind: "user",
+        message: chatItemFromContent(message.id, message.ts, message.content),
+        messageId: message.id,
+      });
+    }
+  };
   for (const step of liveTurn.steps) {
+    appendLiveSteering(step.leadingSteering ?? []);
     const contentOrder = step.contentOrder ?? [
       ...(step.thinking ? ["thinking" as const] : []),
       ...(step.text ? ["text" as const] : []),
@@ -490,27 +589,11 @@ export function overlayLiveTurn(
       }
     }
   }
+  appendLiveSteering(liveTurn.pendingSteering ?? []);
+  timeline.push(...deferredSteering);
   const mergedTimeline = mergeAdjacentTimeline(timeline);
-  const persistedUserIds = new Set([
-    ...(current.user ? [current.user.id] : []),
-    ...(current.userInterjections ?? []).map((message) => message.id),
-  ]);
-  const userInterjections = [
-    ...(current.userInterjections ?? []),
-    ...(liveTurn.steering ?? []).flatMap((message) =>
-      persistedUserIds.has(message.id)
-        ? []
-        : [{
-            id: message.id,
-            role: "user" as const,
-            text: message.text,
-            ts: message.ts,
-          }],
-    ),
-  ];
   const next = {
     ...current,
-    ...(userInterjections.length > 0 ? { userInterjections } : {}),
     tools: timelineTools(mergedTimeline),
     timeline: mergedTimeline,
   };
@@ -543,15 +626,19 @@ export function foldShellRunUpdates(
       update.result,
       "ui.overlay-shell-run-updates",
     );
+    const acceptedOwnership = merged.result.revision === update.result.revision;
     byToolUseId.set(update.sourceToolCallId, {
       result: merged.result,
-      source:
+      source: acceptedOwnership
+        ? (
         !isActiveShellRunStatus(merged.result.status) ||
         update.ownership.kind === "local"
           ? undefined
           : update.ownership.kind === "source_owned"
             ? "owned"
-            : "unavailable",
+            : "unavailable"
+        )
+        : current?.source,
     });
   }
   return byToolUseId;
@@ -579,10 +666,35 @@ export function applyShellRunOverlayEntry(
     entry.result,
     "ui.overlay-shell-run-update",
   );
-  return merged.changed || tool.shellRunSource !== entry.source
-    ? { ...tool, result: merged.result, shellRunSource: entry.source }
+  const source = merged.result.revision === entry.result.revision
+    ? entry.source
+    : tool.shellRunSource;
+  return merged.changed || tool.shellRunSource !== source
+    ? { ...tool, result: merged.result, shellRunSource: source }
     : tool;
 }
+
+/** Presentation is derived from invocation and resource facts, never persisted as another state. */
+export function toolActivityPresentationStatus(item: ToolActivityItem): ToolActivityStatus {
+  if (item.status === "errored") return "errored";
+  if (item.toolName === "Bash" && item.result?.kind === "shell_run") {
+    return SHELL_RUN_PRESENTATION_STATUS[item.result.status];
+  }
+  return item.status;
+}
+
+const SHELL_RUN_PRESENTATION_STATUS = {
+  starting: "running",
+  running: "running",
+  completed: "completed",
+  cancelled: "interrupted",
+  failed: "errored",
+  timed_out: "errored",
+  orphaned: "errored",
+} as const satisfies Record<
+  Extract<ToolResultContent, { kind: "shell_run" }>["status"],
+  ToolActivityStatus
+>;
 
 /**
  * Group materialized chat + tool items by `turnId` into ordered turns. Items
@@ -591,6 +703,7 @@ export function applyShellRunOverlayEntry(
  */
 export function materializeTurns(
   messages: readonly StoredMessage[],
+  locale: UiLocale,
 ): TurnViewModel[] {
   const turnRecords = deriveTurnRecords(messages);
   const turnRecordById = new Map(
@@ -653,26 +766,9 @@ export function materializeTurns(
     if (turnMessageList) turnMessageList.push(message);
     else messagesByTurn.set(turnId, [message]);
     if (message.type === "user") {
-      const user: ChatItem = {
-        id: message.id,
-        role: "user",
-        text: message.displayText ?? message.text,
-        ts: message.ts,
-        ...(message.attachments && message.attachments.length > 0
-          ? { attachments: message.attachments }
-          : {}),
-        ...(message.quotes && message.quotes.length > 0
-          ? { quotes: message.quotes }
-          : {}),
-        ...(message.inlineReferences !== undefined
-          ? { inlineReferences: message.inlineReferences }
-          : {}),
-        ...(message.origin ? { hostOrigin: message.origin } : {}),
-      };
+      const user = chatItemFromUserMessage(message);
       if (!turn.user) {
         turn.user = user;
-      } else {
-        turn.userInterjections = [...(turn.userInterjections ?? []), user];
       }
     } else if (message.type === "assistant") {
       // A turn now holds one AssistantMessage per model step. Concatenate their
@@ -710,12 +806,12 @@ export function materializeTurns(
       }
     } else if (
       message.type === "system_note" &&
-      VISIBLE_SYSTEM_NOTES.has(message.kind)
+      isUserVisibleSessionSystemNote(message.kind)
     ) {
       turn.notes.push({
         id: message.id,
         role: "system",
-        text: SYSTEM_NOTE_LABELS[message.kind] ?? message.kind,
+        text: systemNoteLabel(message.kind, message.data, locale),
         ts: message.ts,
       });
     } else if (message.type === "token_usage") {
@@ -925,11 +1021,25 @@ function buildTurnTimeline(
 ): TurnTimelineItem[] {
   const raw: TurnTimelineItem[] = [];
   let pending: ToolActivityItem[] = [];
+  let sawUser = false;
   const flushTools = (items: ToolActivityItem[]): void => {
     if (items.length > 0) raw.push({ kind: "tools", items });
   };
   for (const message of turnMessages) {
-    if (message.type === "tool_call") {
+    if (message.type === "user") {
+      if (!sawUser) {
+        sawUser = true;
+        continue;
+      }
+      flushTools(pending);
+      pending = [];
+      raw.push({
+        kind: "user",
+        message: chatItemFromUserMessage(message),
+        messageId: message.id,
+        ...(message.steeringEventId ? { steeringEventId: message.steeringEventId } : {}),
+      });
+    } else if (message.type === "tool_call") {
       const item = toolItemByUseId.get(message.id);
       if (item) pending.push(item);
     } else if (message.type === "assistant") {
@@ -1000,6 +1110,35 @@ function buildTurnTimeline(
   }
   flushTools(pending);
   return mergeAdjacentTimeline(raw);
+}
+
+function chatItemFromUserMessage(message: UserMessage): ChatItem {
+  return chatItemFromContent(message.id, message.ts, message, message.origin);
+}
+
+function chatItemFromContent(
+  id: string,
+  ts: number,
+  content: MessageContent,
+  hostOrigin?: NonNullable<UserMessage["origin"]>,
+): ChatItem {
+  return {
+    id,
+    role: "user",
+    text: content.displayText ?? content.text,
+    ts,
+    ...(content.attachments && content.attachments.length > 0
+      ? { attachments: content.attachments }
+      : {}),
+    ...(content.quotes && content.quotes.length > 0
+      ? { quotes: content.quotes }
+      : {}),
+    ...(content.directoryReferences ? { directoryReferences: content.directoryReferences } : {}),
+    ...(content.inlineReferences !== undefined
+      ? { inlineReferences: content.inlineReferences }
+      : {}),
+    ...(hostOrigin ? { hostOrigin } : {}),
+  };
 }
 
 function mergeAdjacentTimeline(

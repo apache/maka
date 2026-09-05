@@ -1,11 +1,29 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import {
   normalizeConnectionBaseUrl,
-  normalizeOptionalRequestBodyOverlay,
-  normalizeRequestHeaders,
   type CreateConnectionInput,
   type UpdateConnectionInput,
-} from '@maka/core';
-import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
+} from '@maka/core/llm-connections';
+import { normalizeOptionalRequestBodyOverlay, normalizeRequestHeaders } from '@maka/core/runtime-policy';
+import { PROVIDER_REGISTRY, providerDefaultsOf } from '@maka/core/llm-connections';
 import { normalizeRelayModelProfiles } from '@maka/core/model-thinking';
 
 const IPC_CONNECTION_SLUG_MAX_LENGTH = 64;
@@ -46,7 +64,9 @@ export function normalizeCreateConnectionInputForIpc(value: unknown): CreateConn
     typeof input.name !== 'string' ||
     input.name.length === 0 ||
     typeof input.providerType !== 'string' ||
-    !(input.providerType in PROVIDER_DEFAULTS)
+    // `in` traverses the prototype chain, so it admitted `__proto__`,
+    // `toString` and `constructor` as provider types across the IPC boundary.
+    providerDefaultsOf(input.providerType) === undefined
   ) {
     throw new Error('Invalid Connection input');
   }
@@ -92,8 +112,8 @@ export function normalizeConnectionPatchSecretsForIpc(value: unknown): UpdateCon
 }
 
 export function normalizeConnectionBaseUrlForIpc<T extends CreateConnectionInput>(input: T): T {
-  if (PROVIDER_DEFAULTS[input.providerType].authKind === 'oauth_token') {
-    return { ...input, baseUrl: PROVIDER_DEFAULTS[input.providerType].baseUrl };
+  if (PROVIDER_REGISTRY[input.providerType].authKind === 'oauth_token') {
+    return { ...input, baseUrl: PROVIDER_REGISTRY[input.providerType].baseUrl };
   }
   if (input.baseUrl === undefined) return input;
   return {
@@ -106,7 +126,7 @@ export function normalizeConnectionBaseUrlValueForIpc(
   providerType: CreateConnectionInput['providerType'],
   value: string,
 ): string {
-  const defaults = PROVIDER_DEFAULTS[providerType];
+  const defaults = PROVIDER_REGISTRY[providerType];
   if (defaults.authKind === 'oauth_token') return defaults.baseUrl;
   const result = normalizeConnectionBaseUrl(value);
   if (!result.ok) throw new Error(result.error);

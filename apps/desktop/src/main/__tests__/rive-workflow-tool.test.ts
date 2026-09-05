@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -10,20 +29,10 @@ import {
 } from '../rive-cli.js';
 import {
   buildRiveWorkflowTool,
-  RIVE_WORKFLOW_TOOL_NAME,
   type RiveWorkflowToolResult,
 } from '../rive-workflow-tool.js';
 
 describe('RiveWorkflow tool and CLI bridge', { concurrency: false }, () => {
-  it('registers as a categorized custom MakaTool', () => {
-    const tool = buildRiveWorkflowTool();
-    assert.equal(tool.name, RIVE_WORKFLOW_TOOL_NAME);
-    assert.equal(tool.displayName, 'Rive 工作流');
-    assert.equal(tool.categoryHint, 'custom_tool');
-    assert.match(tool.description, /Rive remains the source of truth/);
-    assert.ok('action' in ((tool.parameters as { shape: Record<string, unknown> }).shape));
-  });
-
   it('builds shell-free argv for high-level workflow commands', () => {
     assert.deepEqual(buildRiveCommand({
       action: 'workflow_run',

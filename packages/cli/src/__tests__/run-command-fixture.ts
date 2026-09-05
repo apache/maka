@@ -1,34 +1,44 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { SessionEvent } from '@maka/core/events';
-import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import type { SessionSummary } from '@maka/core/session';
 import {
   runMakaTextCliCore,
   type MakaRunContext,
   type MakaRunContextInput,
-  type MakaRunOutcome,
   type MakaRunRuntime,
 } from '../run-command-core.js';
 
-const scenario = process.env.MAKA_RUN_FIXTURE_SCENARIO ?? 'completed';
+// Subprocess entry for the run-command process-contract tests: real piped
+// stdin, SIGINT delivered by the operating system and observed as an exit
+// code, and the fail-closed sandbox boundary reaching a non-interactive run.
+// Ordinary command semantics are covered in process through the same adapter
+// seam — keep this fixture limited to what a real child process is genuinely
+// needed for.
+const scenario = process.env.MAKA_RUN_FIXTURE_SCENARIO ?? 'echo';
 let observer: MakaRunContextInput['runOutcomeObserver'];
-let permissionDenied = false;
+let boundaryDenied = false;
 let releaseStop: (() => void) | undefined;
 let releaseGraphWait: (() => void) | undefined;
-let graphActivityReleased = false;
 
-const target = {
-  connection: {
-    slug: 'fixture',
-    name: 'Fixture',
-    providerType: 'ollama',
-    enabled: true,
-    defaultModel: 'fixture-model',
-  },
-  apiKey: '',
-  model: 'fixture-model',
-};
-
-const summary = {
+const summary: SessionSummary = {
   id: 'session-fixture',
   cwd: process.cwd(),
   name: 'fixture',
@@ -39,85 +49,18 @@ const summary = {
   status: 'active',
   backend: 'ai-sdk',
   llmConnectionSlug: 'fixture',
-  connectionLocked: false,
+  connectionLocked: true,
   model: 'fixture-model',
-  permissionMode: 'explore',
-} satisfies SessionSummary;
+  permissionMode: 'ask',
+  collaborationMode: 'agent',
+  orchestrationMode: 'default',
+};
 
 const runtime: MakaRunRuntime = {
-  async createSession(input) {
-    if (process.env.MAKA_RUN_EXPECT_NO_CREATE === '1') {
-      throw new Error('unexpected createSession call');
-    }
-    if (
-      process.env.MAKA_RUN_EXPECT_PERMISSION_MODE &&
-      input.permissionMode !== process.env.MAKA_RUN_EXPECT_PERMISSION_MODE
-    ) {
-      throw new Error(`unexpected permissionMode ${input.permissionMode}`);
-    }
-    if (
-      process.env.MAKA_RUN_EXPECT_SESSION_NAME &&
-      input.name !== process.env.MAKA_RUN_EXPECT_SESSION_NAME
-    ) {
-      throw new Error(`unexpected Session name ${JSON.stringify(input.name)}`);
-    }
-    return summary;
-  },
-  async readExecutionBoundary() {
-    const kind = process.env.MAKA_RUN_BOUNDARY_KIND ?? 'managed';
-    return kind === 'managed'
-      ? {
-          kind,
-          profile: createWorkspaceWritePermissionProfile(),
-          revision: 0,
-        }
-      : { kind: kind as 'bypass' | 'external', revision: 0 };
-  },
-  async setExecutionBoundaryKind(_sessionId, kind) {
-    if (
-      process.env.MAKA_RUN_EXPECT_BOUNDARY_KIND &&
-      kind !== process.env.MAKA_RUN_EXPECT_BOUNDARY_KIND
-    ) {
-      throw new Error(`unexpected boundary kind ${kind}`);
-    }
-  },
-  async *sendMessage(sessionId, input): AsyncIterable<SessionEvent> {
-    if (process.env.MAKA_RUN_EXPECT_NO_SEND === '1') {
-      throw new Error('unexpected sendMessage call');
-    }
-    if (
-      process.env.MAKA_RUN_EXPECT_SESSION_ID &&
-      sessionId !== process.env.MAKA_RUN_EXPECT_SESSION_ID
-    ) {
-      throw new Error(`unexpected sessionId ${sessionId}`);
-    }
-    if (scenario === 'runtime-error') throw new Error('provider failed after startup');
-    if (scenario === 'graph-runtime-error') {
-      if (input.turnOrchestration?.mode !== 'graph') {
-        throw new Error('expected graph orchestration');
-      }
-      await notify(failedResult('provider_unavailable', 'provider failed before graph creation'));
-      return;
-    }
-    if (scenario === 'graph-wait') {
-      if (input.turnOrchestration?.mode !== 'graph') {
-        throw new Error('expected graph orchestration');
-      }
-      await notify(completedResult('initial graph supervisor output'));
-      return;
-    }
-    if (process.env.MAKA_RUN_EXPECT_GRAPH === '1') {
-      if (
-        input.turnOrchestration?.mode !== 'graph' ||
-        input.turnOrchestration.source !== 'host_api'
-      ) {
-        throw new Error(
-          `unexpected graph orchestration ${JSON.stringify(input.turnOrchestration)}`,
-        );
-      }
-      await notify(completedResult('initial graph supervisor output'));
-      return;
-    }
+  createSession: async () => summary,
+  readExecutionBoundary: async () => ({ kind: 'managed', access: 'writable', revision: 0 }),
+  setExecutionBoundaryKind: async () => {},
+  async *sendMessage(_sessionId, input): AsyncIterable<SessionEvent> {
     if (scenario === 'sandbox-boundary') {
       yield {
         type: 'sandbox_boundary_request',
@@ -133,200 +76,77 @@ const runtime: MakaRunRuntime = {
           },
         },
       };
-      if (!permissionDenied) throw new Error('sandbox boundary request was not denied');
+      if (!boundaryDenied) throw new Error('sandbox boundary request was not denied');
+      // A completed outcome with output makes the fail-closed exit code
+      // load-bearing: only the boundary-failure classification may turn
+      // this run into exit 1 with empty stdout.
+      await observer?.({
+        outcomeId: 'run-fixture',
+        status: 'completed',
+        finalOutput: 'should not be emitted',
+        sandboxBoundary: 'none',
+      });
       return;
     }
-    if (scenario === 'sandbox-boundary-tool-result') {
-      yield {
-        type: 'tool_result',
-        id: 'event-boundary-result',
-        turnId: input.turnId,
-        ts: 1,
-        toolUseId: 'tool-boundary',
-        isError: true,
-        content: {
-          kind: 'text',
-          text: 'Bash requires an approved session sandbox boundary expansion.',
-          sandboxFailure: {
-            reason: 'sandbox_boundary_required',
-            requiredExpansion: { network: { enabled: true } },
-          },
-        },
-      } as unknown as SessionEvent;
-      await notify(completedResult('should not be emitted'));
-      return;
-    }
-    if (scenario === 'sandbox-boundary-recovered') {
-      yield {
-        type: 'tool_result',
-        id: 'event-boundary-result',
-        turnId: input.turnId,
-        ts: 1,
-        toolUseId: 'tool-boundary',
-        isError: true,
-        content: {
-          kind: 'text',
-          text: 'Bash requires an approved session sandbox boundary expansion.',
-          sandboxFailure: {
-            reason: 'sandbox_boundary_required',
-            requiredExpansion: { network: { enabled: true } },
-          },
-        },
-      } as unknown as SessionEvent;
-      yield {
-        type: 'tool_result',
-        id: 'event-safe-result',
-        turnId: input.turnId,
-        ts: 2,
-        toolUseId: 'tool-safe',
-        isError: false,
-        content: { kind: 'text', text: 'completed within the current boundary' },
-      };
-      await notify({ ...completedResult('recovered safely'), sandboxBoundary: 'recovered' });
-      return;
+    if (scenario === 'graph-wait' && input.turnOrchestration?.mode !== 'graph') {
+      throw new Error('expected graph orchestration');
     }
     if (scenario === 'slow') {
+      // Ready is written only once the core has installed its SIGINT handler
+      // (it registers before consuming this stream), so the test's signal
+      // cannot race the default handler. The interval keeps the child alive
+      // while it waits for the interrupt.
       process.stderr.write('fixture-ready\n');
       const keepAlive = setInterval(() => {}, 1_000);
       await new Promise<void>((resolve) => {
         releaseStop = resolve;
       });
       clearInterval(keepAlive);
-      await notify(failedResult('aborted', 'fixture stopped'));
       return;
     }
-    if (scenario === 'missing-output') {
-      await notify(
-        failedResult('missing_final_output', 'completed invocation produced no final output'),
-      );
-      return;
-    }
-    if (scenario === 'step-limit') {
-      await notify(
-        failedResult('step_limit', 'explicit tool-step limit reached; send continue to resume'),
-      );
-      return;
-    }
-    const maxSteps = process.env.MAKA_RUN_EXPECT_MAX_STEPS;
-    const output = maxSteps ? `maxSteps=${maxSteps};prompt=${input.text}` : `prompt=${input.text}`;
-    await notify(completedResult(output));
+    await observer?.({
+      outcomeId: 'run-fixture',
+      status: 'completed',
+      finalOutput:
+        scenario === 'graph-wait' ? 'initial graph supervisor output' : `prompt=${input.text}`,
+      sandboxBoundary: 'none',
+    });
   },
-  async respondToSandboxBoundary(_sessionId, response) {
-    permissionDenied = response.decision === 'deny' && response.requestId === 'boundary-1';
+  respondToSandboxBoundary: async (_sessionId, response) => {
+    boundaryDenied = response.decision === 'deny' && response.requestId === 'boundary-1';
   },
-  async stopSession() {
+  stopSession: async () => {
     releaseStop?.();
   },
 };
 
 async function createContext(input: MakaRunContextInput): Promise<MakaRunContext> {
-  if (scenario === 'config-error') throw new Error('unknown connection fixture-missing');
-  if (
-    process.env.MAKA_RUN_EXPECT_MAX_STEPS &&
-    input.maxSteps !== Number(process.env.MAKA_RUN_EXPECT_MAX_STEPS)
-  ) {
-    throw new Error(`unexpected maxSteps ${String(input.maxSteps)}`);
-  }
-  if (
-    process.env.MAKA_RUN_EXPECT_CONTEXT_CWD &&
-    input.cwd !== process.env.MAKA_RUN_EXPECT_CONTEXT_CWD
-  ) {
-    throw new Error(`unexpected context cwd ${input.cwd}`);
-  }
-  if (
-    process.env.MAKA_RUN_EXPECT_CONTEXT_CONNECTION &&
-    input.requestedConnectionSlug !== process.env.MAKA_RUN_EXPECT_CONTEXT_CONNECTION
-  ) {
-    throw new Error(`unexpected context connection ${String(input.requestedConnectionSlug)}`);
-  }
-  if (
-    process.env.MAKA_RUN_EXPECT_CONTEXT_MODEL &&
-    input.requestedModel !== process.env.MAKA_RUN_EXPECT_CONTEXT_MODEL
-  ) {
-    throw new Error(`unexpected context model ${String(input.requestedModel)}`);
-  }
-  if (process.env.MAKA_RUN_EXPECT_CWD_OVERRIDE) {
-    const actual = JSON.stringify(input.sessionCwdOverride);
-    if (actual !== process.env.MAKA_RUN_EXPECT_CWD_OVERRIDE) {
-      throw new Error(`unexpected sessionCwdOverride ${actual}`);
-    }
-  }
   observer = input.runOutcomeObserver;
-  if (
-    process.env.MAKA_RUN_EXPECT_GRAPH === '1' ||
-    scenario === 'graph-runtime-error' ||
-    scenario === 'graph-wait'
-  ) {
-    if (!input.enableAgentGraph) throw new Error('Graph host was not enabled');
-    return {
-      runtime,
-      target,
-      agentGraph: {
-        reserveActivity: () => ({
-          release: () => {
-            graphActivityReleased = true;
+  return {
+    runtime,
+    target: { connection: { slug: 'fixture' }, model: 'fixture-model' },
+    ...(input.enableAgentGraph
+      ? {
+          agentGraph: {
+            reserveActivity: () => ({ release: () => {} }),
+            waitForCompletion: async () => {
+              process.stderr.write('fixture-ready\n');
+              const keepAlive = setInterval(() => {}, 1_000);
+              await new Promise<void>((resolve) => {
+                releaseGraphWait = resolve;
+              });
+              clearInterval(keepAlive);
+            },
           },
-        }),
-        waitForCompletion: async () => {
-          if (!graphActivityReleased) throw new Error('Graph activity was not released');
-          if (scenario === 'graph-runtime-error') {
-            process.stderr.write('graph-wait-called\n');
-            throw new Error('unexpected graph wait after failed invocation');
-          }
-          if (scenario === 'graph-wait') {
-            process.stderr.write('fixture-ready\n');
-            const keepAlive = setInterval(() => {}, 1_000);
-            await new Promise<void>((resolve) => {
-              releaseGraphWait = resolve;
-            });
-            clearInterval(keepAlive);
-            return;
-          }
-          if (process.env.MAKA_RUN_GRAPH_BOUNDARY_FAILURE === '1') {
-            await notify({
-              ...completedResult('child could not complete'),
-              outcomeId: 'run-child',
-              sandboxBoundary: 'unresolved',
-            });
-          }
-          await notify(completedResult('graph completed'));
-        },
-      },
-      close: async () => {
-        releaseGraphWait?.();
-      },
-    };
-  }
-  return { runtime, target, close: async () => {} };
-}
-
-async function listSessions(): Promise<SessionSummary[]> {
-  return JSON.parse(process.env.MAKA_RUN_FIXTURE_SESSIONS ?? '[]') as SessionSummary[];
-}
-
-function completedResult(finalOutput: string): MakaRunOutcome {
-  return {
-    outcomeId: 'run-fixture',
-    status: 'completed',
-    finalOutput,
-    sandboxBoundary: 'none',
+        }
+      : {}),
+    close: async () => {
+      releaseGraphWait?.();
+    },
   };
 }
 
-function failedResult(failureClass: string, message: string): MakaRunOutcome {
-  return {
-    outcomeId: 'run-fixture',
-    status: 'failed',
-    failure: { class: failureClass, message },
-    sandboxBoundary: 'none',
-  };
-}
-
-async function notify(result: MakaRunOutcome): Promise<void> {
-  await observer?.(result);
-}
-
-runMakaTextCliCore(process.argv.slice(2), { createContext, listSessions }).then(
+runMakaTextCliCore(process.argv.slice(2), { createContext, listSessions: async () => [] }).then(
   (code) => {
     process.exitCode = code;
   },

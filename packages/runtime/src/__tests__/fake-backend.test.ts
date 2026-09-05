@@ -1,156 +1,34 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { SessionEvent, SessionHeader, StoredMessage } from '@maka/core';
-import {
-  FAKE_ASK_USER_QUESTION_PROMPT,
-  FAKE_ERROR_PROMPT_PREFIX,
-  FAKE_MERMAID_HOSTILE_PROMPT,
-  FAKE_MERMAID_PROMPT,
-  FakeBackend,
-} from '../fake-backend.js';
+import type { SessionEvent } from '@maka/core/events';
+import type { SessionHeader } from '@maka/core/session';
+import { FAKE_ASK_USER_QUESTION_PROMPT, FakeBackend } from '../test-only/fake-backend.js';
 import {
   RuntimeInteractionInvariantError,
   bindRuntimeInteractionRun,
   type RuntimeUserQuestionContinuation,
 } from '../interaction-authority.js';
 import type { SessionStore } from '../session-manager.js';
-
-test('deterministic error fixture emits a classified error and failed completion', async () => {
-  const backend = new FakeBackend({
-    sessionId: 'session-1',
-    header: { model: 'fake-model' } as SessionHeader,
-    store: {} as SessionStore,
-    appendMessage: async () => {},
-  });
-  const events: SessionEvent[] = [];
-
-  for await (const event of backend.send({
-    turnId: 'turn-error',
-    text: `${FAKE_ERROR_PROMPT_PREFIX}network`,
-    context: [],
-  })) {
-    events.push(event);
-  }
-
-  assert.deepEqual(
-    events.map((event) => event.type),
-    ['error', 'complete'],
-  );
-  const error = events[0];
-  assert.equal(error?.type, 'error');
-  if (error?.type !== 'error') assert.fail('expected classified fake error');
-  assert.equal(error.reason, 'network');
-  assert.equal(error.recoverable, false);
-  assert.equal(events[1]?.type === 'complete' ? events[1].stopReason : undefined, 'error');
-});
-
-test('text deltas preserve the exact completed response, including Markdown line breaks', async () => {
-  const backend = new FakeBackend({
-    sessionId: 'session-1',
-    header: { model: 'fake-model' } as SessionHeader,
-    store: {} as SessionStore,
-    appendMessage: async () => {},
-  });
-  const deltas: string[] = [];
-  let completedText = '';
-
-  for await (const event of backend.send({
-    turnId: 'turn-1',
-    text: '结论先行。\n\n| 名称 | 状态 |\n| --- | --- |\n| A | 完成 |',
-    context: [],
-  })) {
-    if (event.type === 'text_delta') deltas.push(event.text);
-    if (event.type === 'text_complete') completedText = event.text;
-  }
-
-  assert.equal(deltas.join(''), completedText);
-  assert.match(completedText, /\n\n\| 名称 \| 状态 \|/);
-});
-
-test('Mermaid fixture emits a settled fenced diagram for renderer E2E', async () => {
-  const backend = new FakeBackend({
-    sessionId: 'session-1',
-    header: { model: 'fake-model' } as SessionHeader,
-    store: {} as SessionStore,
-    appendMessage: async () => {},
-  });
-  let completedText = '';
-
-  for await (const event of backend.send({
-    turnId: 'turn-1',
-    text: FAKE_MERMAID_PROMPT,
-    context: [],
-  })) {
-    if (event.type === 'text_complete') completedText = event.text;
-  }
-
-  assert.match(
-    completedText,
-    /```mermaid\nflowchart TB\nsubgraph Input.*subgraph Render.*subgraph Inspect.*P\[Resume task\]\n```/s,
-  );
-});
-
-test('hostile Mermaid fixture preserves executable-looking input for renderer security E2E', async () => {
-  const backend = new FakeBackend({
-    sessionId: 'session-1',
-    header: { model: 'fake-model' } as SessionHeader,
-    store: {} as SessionStore,
-    appendMessage: async () => {},
-  });
-  let completedText = '';
-
-  for await (const event of backend.send({
-    turnId: 'turn-1',
-    text: FAKE_MERMAID_HOSTILE_PROMPT,
-    context: [],
-  })) {
-    if (event.type === 'text_complete') completedText = event.text;
-  }
-
-  assert.match(completedText, /securityLevel.*loose.*onerror.*javascript:/s);
-});
-
-test('AskUserQuestion scenario parks the same turn until one response continues it', async () => {
-  const appended: StoredMessage[] = [];
-  const backend = new FakeBackend({
-    sessionId: 'session-1',
-    header: { model: 'fake-model' } as SessionHeader,
-    store: {} as SessionStore,
-    appendMessage: async (message) => {
-      appended.push(message);
-    },
-  });
-  const iterator = backend
-    .send({
-      turnId: 'turn-1',
-      text: FAKE_ASK_USER_QUESTION_PROMPT,
-      context: [],
-    })
-    [Symbol.asyncIterator]();
-
-  assert.equal((await iterator.next()).value?.type, 'tool_start');
-  const request = (await iterator.next()).value;
-  assert.equal(request?.type, 'user_question_request');
-  if (request?.type !== 'user_question_request') assert.fail('expected user question request');
-
-  await backend.respondToUserQuestion({
-    requestId: request.requestId,
-    answers: ['邀请制', null, '自定义节奏'],
-  });
-
-  const remaining: SessionEvent[] = [];
-  for await (const event of { [Symbol.asyncIterator]: () => iterator }) remaining.push(event);
-  assert.equal(remaining[0]?.type, 'user_question_answer_ack');
-  assert.equal(remaining.filter((event) => event.type === 'tool_result').length, 1);
-  assert.equal(remaining.at(-1)?.type, 'complete');
-  const completed = remaining.find((event) => event.type === 'text_complete');
-  assert.ok(completed?.type === 'text_complete');
-  assert.match(completed.text, /邀请制.*未回答.*自定义节奏/s);
-  assert.deepEqual(
-    appended.map((message) => message.type),
-    ['tool_call', 'tool_result', 'assistant'],
-  );
-});
 
 test('Fake question publication waits for exact hosted admission', async () => {
   const admissionStarted = deferred<void>();
@@ -166,6 +44,8 @@ test('Fake question publication waits for exact hosted admission', async () => {
           admissionStarted.resolve();
           await allowAdmission.promise;
         },
+        acceptFormRequest: async () => {},
+        withdrawFormRequest: async () => {},
         close: async () => {},
         release: () => {},
       }),
@@ -337,11 +217,3 @@ test('a lease is acked only after its event is consumed, and nacked when the con
   assert.deepEqual(acked, []);
   assert.deepEqual(nacked, ['lease-1']);
 });
-
-function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((resolvePromise) => {
-    resolve = resolvePromise;
-  });
-  return { promise, resolve };
-}

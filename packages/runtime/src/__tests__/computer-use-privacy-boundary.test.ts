@@ -1,13 +1,30 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { nextId } from '@maka/core/test-only/async-primitives';
 import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type {
-  LlmConnection,
-  SessionEvent,
-  SessionHeader,
-  StoredMessage,
-  ToolInvocationRecord,
-} from '@maka/core';
+import type { LlmConnection } from '@maka/core/llm-connections';
+import type { SessionEvent } from '@maka/core/events';
+import type { SessionHeader, StoredMessage } from '@maka/core/session';
+import type { ToolInvocationRecord } from '@maka/core/usage-stats/types';
 import { ToolRuntime, type MakaTool } from '../tool-runtime.js';
 
 /**
@@ -28,17 +45,17 @@ import { ToolRuntime, type MakaTool } from '../tool-runtime.js';
  * read (`e12`). Not screen content; it is admitted only when it is a stable
  * identifier, so an accessibility label arriving under that key is dropped.
  *
- * `coordinate`, `start_coordinate`, `region` — geometry the model wrote into
- * the call itself. Not read off the screen; integers only, so a mistyped value
- * still degrades to a shape. Withholding them left a model that clicked a
- * point and missed unable to tell that it had already tried that point.
+ * `position` and `size` — semantic window geometry the model wrote into a
+ * `window_action`. They place or resize the observed window and never address
+ * a control by pixel. Integers are preserved so the model can replay its own
+ * valid call; malformed values still degrade to a shape.
  *
  * What still does not cross: the value of `text` for `type` and `select_text`,
  * the value of `set_value`, and anything else whose value is screen content or
- * something a person asked to have typed. `text` for `press_key`, `key`,
- * `hold_key` and `secondary_action` is a name from a closed set the executor
- * publishes, so it is carried — that is one argument name meaning six things,
- * and only two of the six come from outside the model.
+ * something a person asked to have typed. `text` for `press_key`, `key`, and
+ * `secondary_action` is a name from a closed set the executor publishes, so it
+ * is carried — that is one argument name meaning five things, and only two of
+ * the five come from outside the model.
  */
 test('Computer Use snapshots execution args and persists the model-facing projection', async () => {
   const messages: StoredMessage[] = [];
@@ -119,8 +136,10 @@ test('Computer Use snapshots execution args and persists the model-facing projec
     // The typed value never crosses; the key does, or the model reads back a
     // `type` call it never made.
     text: '<text:11>',
-    // The model's own four digits, so it can see that it already tried here.
-    coordinate: [123, 456],
+    // Coordinate input is outside the live action space. An invalid or legacy
+    // caller may still send the field before schema validation, but it crosses
+    // the durable boundary only as a shape.
+    coordinate: '<point>',
   };
   const call = messages.find((message) => message.type === 'tool_call');
   assert.deepEqual(call?.type === 'tool_call' ? call.args : undefined, expectedArgs);
@@ -443,17 +462,14 @@ test('Computer Use validation failures still persist a redacted call and result'
   assert.equal((result as { error?: string }).error, 'Computer Use arguments failed validation');
   const serialized = JSON.stringify({ messages, events, invocations });
   // The AX label thrown by `permissionArgs` and the value the model asked to
-  // have typed both stay out. `123|456` is no longer part of this pattern: it
-  // matched the model's own coordinate, which now crosses on purpose, and it
-  // also matched the first three digits of the SSN, so the two could not be
-  // told apart. The SSN is asserted in full instead.
-  assert.doesNotMatch(serialized, /Customer SSN|123-45-6789|private text/);
+  // have typed both stay out. Invalid coordinate values stay out too.
+  assert.doesNotMatch(serialized, /Customer SSN|123-45-6789|private text|123|456/);
   // A rejected call is exactly when the model most needs to see what it sent.
   const start = events.find((event) => event.type === 'tool_start');
   assert.deepEqual(start?.type === 'tool_start' ? start.args : undefined, {
     action: 'type',
     text: '<text:12>',
-    coordinate: [123, 456],
+    coordinate: '<point>',
   });
   assert.equal(
     messages.some((message) => message.type === 'tool_call'),
@@ -473,19 +489,12 @@ test('Computer Use validation failures still persist a redacted call and result'
   );
   assert.equal(invocations[0]?.errorClass, 'InvalidArguments');
 });
-
-function nextId(): () => string {
-  let sequence = 0;
-  return () => `id-${++sequence}`;
-}
-
 function header(): SessionHeader {
   return {
     id: 'session-1',
     workspaceRoot: '/workspace',
     cwd: '/workspace',
     createdAt: 1,
-    lastUsedAt: 1,
     name: 'Test',
     titleIsManual: true,
     isFlagged: false,

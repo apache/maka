@@ -1,5 +1,28 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { CapabilityId, CapabilityReadinessState, CapabilitySnapshot } from './capabilities.js';
-import type { LlmConnection } from './llm-connections.js';
+import {
+  connectionEnabledModelIds,
+  type ConnectionTestErrorClass,
+  type LlmConnection,
+} from './llm-connections.js';
 import type { UsageLogRow } from './usage-stats/types.js';
 
 export const HEALTH_SIGNAL_STATUSES = ['ok', 'info', 'warning', 'error', 'unknown'] as const;
@@ -17,15 +40,45 @@ export const HEALTH_SIGNAL_LAYERS = [
 ] as const;
 export type HealthSignalLayer = (typeof HEALTH_SIGNAL_LAYERS)[number];
 
-export type HealthSignalScope = 'app' | 'llm_connection' | 'bot' | 'capability' | 'storage';
+export type HealthSignalScope = 'llm_connection' | 'bot' | 'capability';
 
 export type HealthSignalSource =
   | 'connection_test'
   | 'capability_snapshot'
   | 'permission_snapshot'
   | 'runtime_probe'
-  | 'settings'
-  | 'storage';
+  | 'settings';
+
+export type HealthSignalMessageCode =
+  | 'connection_disabled'
+  | 'awaiting_default_model'
+  | 'validation_passed'
+  | 'needs_reauth'
+  | 'validation_failed'
+  | 'no_models_enabled'
+  | 'not_default_source'
+  | 'awaiting_validation'
+  | 'runtime_probe_pending'
+  | 'send_completed'
+  | 'send_aborted'
+  | 'send_failed'
+  | 'capability_ok'
+  | 'capability_paused'
+  | 'capability_not_configured'
+  | 'capability_denied'
+  | 'capability_degraded';
+
+export type HealthConnectionTestErrorClass = ConnectionTestErrorClass;
+
+export type HealthSignalDetail =
+  | { kind: 'validation_scope_note' }
+  | { kind: 'no_models_enabled_hint' }
+  | { kind: 'not_default_source_hint' }
+  | { kind: 'runtime_probe_layers_note' }
+  | { kind: 'runtime_probe_result'; modelId: string; latencyMs: number; errorClass?: string }
+  | { kind: 'capability_reason'; reason: string }
+  | { kind: 'last_test_error_class'; errorClass: HealthConnectionTestErrorClass }
+  | { kind: 'last_test_message' };
 
 export interface HealthSignal {
   id: string;
@@ -35,8 +88,8 @@ export interface HealthSignal {
   status: HealthSignalStatus;
   source: HealthSignalSource;
   checkedAt: number;
-  message: string;
-  detail?: string;
+  message: HealthSignalMessageCode;
+  detail?: HealthSignalDetail;
   relatedCapabilityId?: CapabilityId;
   blocksSend?: boolean;
   blocksCapability?: boolean;
@@ -92,9 +145,35 @@ export function healthSignalFromCapability(capability: CapabilitySnapshot): Heal
   };
 }
 
+/** Whether some ENABLED connection holds the workspace's default model
+ * target. The catalog projects `defaultModel` purely from the default
+ * target's connection id — a DISABLED holder keeps its projected value,
+ * but cannot serve a new chat: counting it would show an all-clear health
+ * page in exactly the state where sends fail with connection_disabled.
+ * The one derivation, exported so the caller and the tests cannot drift. */
+export function workspaceHasDefaultModelTarget(
+  connections: readonly Pick<LlmConnection, 'defaultModel' | 'enabled'>[],
+): boolean {
+  return connections.some((connection) => Boolean(connection.defaultModel) && connection.enabled);
+}
+
 export function healthSignalFromConnection(
   connection: LlmConnection,
   checkedAt: number,
+  options: {
+    /** Whether SOME connection in the workspace carries the default model
+     * target. The catalog projects `defaultModel` onto exactly one
+     * connection — the default target — so with a default configured,
+     * every OTHER enabled connection has an empty `defaultModel` BY
+     * CONSTRUCTION. That is the connection model's documented normal state
+     * (设置 · 通用 is the one control for which model a new chat starts
+     * on; see reconcileConnectionAfterEnabledModelsChange), not a
+     * configuration gap — warning on it sent users hunting for a
+     * per-connection setting that deliberately does not exist. Only when
+     * NO default exists anywhere is a missing model an actionable,
+     * send-blocking problem. */
+    workspaceHasDefaultTarget?: boolean;
+  } = {},
 ): HealthSignal {
   const configured = Boolean(connection.defaultModel);
   if (!connection.enabled) {
@@ -106,12 +185,12 @@ export function healthSignalFromConnection(
       status: 'info',
       source: 'settings',
       checkedAt,
-      message: '连接已关闭。',
+      message: 'connection_disabled',
       blocksSend: false,
     };
   }
 
-  if (!configured) {
+  if (!configured && !options.workspaceHasDefaultTarget) {
     return {
       id: `connection:${connection.slug}`,
       label: connection.name,
@@ -120,7 +199,7 @@ export function healthSignalFromConnection(
       status: 'warning',
       source: 'settings',
       checkedAt,
-      message: '等待选择默认模型。',
+      message: 'awaiting_default_model',
       blocksSend: true,
     };
   }
@@ -134,8 +213,8 @@ export function healthSignalFromConnection(
       status: 'ok',
       source: 'connection_test',
       checkedAt: timeFromIso(connection.lastTestAt) ?? checkedAt,
-      message: '凭据与端点验证已通过。',
-      detail: '这是连接验证结果，不代表发送、流式输出或中断通路已经运行通过。',
+      message: 'validation_passed',
+      detail: { kind: 'validation_scope_note' },
       blocksSend: false,
     };
   }
@@ -149,8 +228,10 @@ export function healthSignalFromConnection(
       status: 'error',
       source: 'connection_test',
       checkedAt: timeFromIso(connection.lastTestAt) ?? checkedAt,
-      message: '连接需要重新修复认证。',
-      detail: connection.lastTestMessage,
+      message: 'needs_reauth',
+      ...(connection.lastTestMessage
+        ? { detail: connectionLastTestDetail(connection.lastTestMessage) }
+        : {}),
       blocksSend: true,
     };
   }
@@ -164,9 +245,45 @@ export function healthSignalFromConnection(
       status: 'warning',
       source: 'connection_test',
       checkedAt: timeFromIso(connection.lastTestAt) ?? checkedAt,
-      message: '上次连接验证失败。',
-      detail: connection.lastTestMessage,
+      message: 'validation_failed',
+      ...(connection.lastTestMessage
+        ? { detail: connectionLastTestDetail(connection.lastTestMessage) }
+        : {}),
       blocksSend: true,
+    };
+  }
+
+  if (!configured) {
+    // A non-default connection reaches here only with nothing above firing:
+    // enabled, workspace default lives elsewhere, no failing validation.
+    // Ordered AFTER the validation branches on purpose — a needs_reauth or
+    // failed test on a non-default connection is a real blocker and must
+    // not be papered over by the "not the default source" note.
+    if (connectionEnabledModelIds(connection).length === 0) {
+      return {
+        id: `connection:${connection.slug}`,
+        label: connection.name,
+        scope: 'llm_connection',
+        layer: 'configuration',
+        status: 'warning',
+        source: 'settings',
+        checkedAt,
+        message: 'no_models_enabled',
+        detail: { kind: 'no_models_enabled_hint' },
+        blocksSend: false,
+      };
+    }
+    return {
+      id: `connection:${connection.slug}`,
+      label: connection.name,
+      scope: 'llm_connection',
+      layer: 'configuration',
+      status: 'info',
+      source: 'settings',
+      checkedAt,
+      message: 'not_default_source',
+      detail: { kind: 'not_default_source_hint' },
+      blocksSend: false,
     };
   }
 
@@ -178,7 +295,7 @@ export function healthSignalFromConnection(
     status: 'unknown',
     source: 'connection_test',
     checkedAt,
-    message: '等待验证连接。',
+    message: 'awaiting_validation',
     blocksSend: false,
   };
 }
@@ -193,14 +310,14 @@ export function healthSignalFromConnectionRuntime(
   if (!latestRuntimeProbe) {
     return {
       id: `connection:${connection.slug}:runtime`,
-      label: `${connection.name} 运行态`,
+      label: connection.name,
       scope: 'llm_connection',
       layer: 'runtime_probe',
       status: 'unknown',
       source: 'runtime_probe',
       checkedAt,
-      message: '等待完成发送运行态探测。',
-      detail: '凭据验证与真实发送、流式输出、中断通路是两层健康信号。',
+      message: 'runtime_probe_pending',
+      detail: { kind: 'runtime_probe_layers_note' },
       blocksSend: false,
     };
   }
@@ -208,7 +325,7 @@ export function healthSignalFromConnectionRuntime(
   const status = runtimeStatusToHealth(latestRuntimeProbe.status);
   return {
     id: `connection:${connection.slug}:runtime`,
-    label: `${connection.name} 运行态`,
+    label: connection.name,
     scope: 'llm_connection',
     layer: 'runtime_probe',
     status,
@@ -216,24 +333,7 @@ export function healthSignalFromConnectionRuntime(
     checkedAt: latestRuntimeProbe.ts,
     message: runtimeProbeMessage(latestRuntimeProbe.status),
     detail: runtimeProbeDetail(latestRuntimeProbe),
-    // PR-HEALTH-1 (xuan msg `e4887ffd` + kenji msg `bd8ee4c1`, I2 — demote):
-    // runtime_probe is a HISTORICAL observation, not a current send gate.
-    // The previous behavior (`blocksSend: latestRuntimeProbe.status === 'error'`)
-    // conflated "last send failed" with "next send will fail" — a one-off
-    // network blip became a hard UI block until a fresh probe overwrote
-    // it. The authoritative send gate lives at `requireReadyConnection`
-    // (chat-readiness.ts) backed by `isConnectionReady` (connection-readiness.ts);
-    // health snapshot is for surfacing observations, not gating future
-    // sends.
-    //
-    // After demote: runtime_probe still reports `status: 'warning'` on
-    // historical error so the user sees the past failure in the Health
-    // Center; the signal just no longer claims `blocksSend`. The
-    // HealthCenter "N 条 signal 会阻塞发送" pill correctly excludes it.
-    //
-    // No recency window is introduced — that would require a product
-    // threshold ("how recent is recent enough?") which is out of scope
-    // for PR-HEALTH-1.
+    // Historical probe failures inform health UI but never gate the next send.
     blocksSend: false,
   };
 }
@@ -280,41 +380,41 @@ function healthLayerFromCapability(capability: CapabilitySnapshot): HealthSignal
   return 'feature';
 }
 
-function capabilityMessage(readiness: CapabilityReadinessState): string {
+function capabilityMessage(readiness: CapabilityReadinessState): HealthSignalMessageCode {
   switch (readiness) {
     case 'enabled':
-      return '能力门禁已满足。';
+      return 'capability_ok';
     case 'paused':
-      return '能力已关闭或暂停。';
+      return 'capability_paused';
     case 'not_configured':
-      return '等待补齐能力配置。';
+      return 'capability_not_configured';
     case 'denied':
-      return '能力被必要系统权限阻塞。';
+      return 'capability_denied';
     case 'degraded':
-      return '能力运行态探测处于降级状态。';
+      return 'capability_degraded';
   }
 }
 
-function capabilityDetail(capability: CapabilitySnapshot): string | undefined {
-  return userVisibleCapabilityReason(
-    capability.runtimeProbe.reason ?? capability.feature.reason ?? capability.configuration.reason,
-  );
+function capabilityDetail(capability: CapabilitySnapshot): HealthSignalDetail | undefined {
+  const reason = (
+    capability.runtimeProbe.reason ??
+    capability.feature.reason ??
+    capability.configuration.reason
+  )?.trim();
+  return reason ? { kind: 'capability_reason', reason } : undefined;
 }
 
-function userVisibleCapabilityReason(reason: string | undefined): string | undefined {
-  const raw = reason?.trim();
-  if (!raw) return undefined;
-  switch (raw) {
-    case 'disabled':
-      return '该能力当前已关闭。';
-    case 'missing platform credentials':
-      return '等待填写平台凭据。';
-    case 'macOS TCC only':
-      return '仅 macOS 系统权限可探测。';
-    case 'no Electron API for per-target Apple Events TCC status':
-      return '系统未提供可直接读取的授权状态。';
+function connectionLastTestDetail(message: string): HealthSignalDetail {
+  const normalized = message.trim().toLowerCase();
+  switch (normalized) {
+    case 'auth':
+    case 'timeout':
+    case 'provider_unavailable':
+    case 'network':
+    case 'unknown':
+      return { kind: 'last_test_error_class', errorClass: normalized };
     default:
-      return /[\u3400-\u9fff]/.test(raw) ? raw : '状态详情请见对应设置页。';
+      return { kind: 'last_test_message' };
   }
 }
 
@@ -335,19 +435,22 @@ function runtimeStatusToHealth(status: UsageLogRow['status']): HealthSignalStatu
   }
 }
 
-function runtimeProbeMessage(status: UsageLogRow['status']): string {
+function runtimeProbeMessage(status: UsageLogRow['status']): HealthSignalMessageCode {
   switch (status) {
     case 'success':
-      return '最近一次发送已完成。';
+      return 'send_completed';
     case 'aborted':
-      return '最近一次发送已由用户停止。';
+      return 'send_aborted';
     case 'error':
-      return '最近一次发送失败。';
+      return 'send_failed';
   }
 }
 
-function runtimeProbeDetail(row: UsageLogRow): string {
-  const parts = [`模型=${row.modelId}`, `延迟=${row.latencyMs}ms`];
-  if (row.errorClass) parts.push(`错误类型=${row.errorClass}`);
-  return parts.join(' · ');
+function runtimeProbeDetail(row: UsageLogRow): HealthSignalDetail {
+  return {
+    kind: 'runtime_probe_result',
+    modelId: row.modelId,
+    latencyMs: row.latencyMs,
+    ...(row.errorClass ? { errorClass: row.errorClass } : {}),
+  };
 }

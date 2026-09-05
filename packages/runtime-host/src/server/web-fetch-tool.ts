@@ -1,16 +1,35 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { buildWebFetchTool } from '@maka/runtime/web-fetch-tool';
+import { createLocalWebFetchExecutor } from '@maka/runtime/local-web-fetch';
 import {
-  buildWebFetchTool,
-  createLocalWebFetchExecutor,
   createProxiedFetchTransport,
-  type MakaTool,
   type ProxiedFetchProxy,
   type ProxiedFetchTransport,
-} from '@maka/runtime';
+} from '@maka/runtime/network/scoped-fetch-transport';
+import { type MakaTool } from '@maka/runtime/tool-runtime';
 import type { RuntimePolicyOperationCoordinator } from '@maka/storage/runtime-policy-stores';
 import { toRuntimePolicyProxy } from './runtime-policy-proxy.js';
 
 interface HostWebFetchServiceInput {
-  readonly policy: Pick<RuntimePolicyOperationCoordinator, 'resolveWebFetchExecution'>;
+  readonly policy: Pick<RuntimePolicyOperationCoordinator, 'resolveHostOutboundExecution'>;
   readonly createFetchTransport?: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport;
 }
 
@@ -26,7 +45,7 @@ export function createHostWebFetchService(input: HostWebFetchServiceInput): Host
   const createFetchTransport = input.createFetchTransport ?? createProxiedFetchTransport;
   return {
     fetch: async ({ url, sessionId, abortSignal }) => {
-      const resolved = await input.policy.resolveWebFetchExecution();
+      const resolved = await input.policy.resolveHostOutboundExecution();
       if (resolved.kind === 'privacy_mode') {
         throw new Error('WebFetch is disabled while privacy mode is active.');
       }

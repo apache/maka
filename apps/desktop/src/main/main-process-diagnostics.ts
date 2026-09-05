@@ -1,8 +1,37 @@
-import { DiagnosticLogBuffer, truncateUtf8 } from '@maka/core/diagnostic-log';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { collapseHomePath, DiagnosticLogBuffer, truncateUtf8 } from '@maka/core/diagnostic-log';
 import { installConsoleDiagnosticLogCapture } from '@maka/core/node-diagnostic-log';
 import { redactSecrets } from '@maka/core/redaction';
+import type { TurnTrace } from '@maka/core/session-trace';
 import type { HostDiagnosticsResult } from '@maka/runtime-host/protocol';
-import type { DesktopErrorDiagnosticInput } from '../preload/diagnostics-contract.js';
+import { arch as osArch, homedir, release as osRelease } from 'node:os';
+import type {
+  DesktopDiagnosticWireInput,
+  DesktopExecutionDiagnosticTarget,
+} from '../preload/diagnostics-contract.js';
+import {
+  requireDesktopTargetScope,
+  type DesktopTargetScope,
+} from '../shared/runtime-host-identity.js';
+import type { MainProcessRecoveryEvidence } from './main-process-recovery-journal.js';
 
 const INPUT_LIMITS = {
   title: 512,
@@ -12,10 +41,21 @@ const INPUT_LIMITS = {
   rendererLocale: 64,
 } as const;
 const INPUT_TRUNCATION_MARKER = '\n<diagnostic input truncated>';
+const EXECUTION_DIAGNOSTIC_TIMEOUT_MS = 2_000;
+export const MAIN_PROCESS_DIAGNOSTIC_LOG_MAX_BYTES = 256 * 1024;
+
+/**
+ * The release feed a build follows, as a report names it. `buildMode` alone
+ * cannot say this: every packaged install reports `packaged`, so a nightly and
+ * a release looked identical in a report while following different feeds and
+ * different attestation signers. `dev` is not a feed — a checkout follows none.
+ */
+export type DesktopDiagnosticChannel = 'release' | 'nightly' | 'dev' | 'unknown';
 
 export interface DesktopDiagnosticEnvironment {
   readonly appVersion: string;
   readonly buildMode: 'dev' | 'packaged';
+  readonly updateChannel: DesktopDiagnosticChannel;
   readonly buildCommit: string | null;
   readonly electronVersion: string;
   readonly nodeVersion: string;
@@ -29,86 +69,398 @@ export interface DesktopDiagnosticEnvironment {
   readonly processUptimeSeconds: number;
 }
 
+export interface DesktopDiagnosticEnvironmentSource {
+  readonly appVersion: string;
+  readonly buildMode: 'dev' | 'packaged';
+  readonly updateChannel: DesktopDiagnosticChannel;
+  readonly buildCommit: string | null;
+  readonly locale: string;
+  readonly workspacePath: string;
+}
+
+export interface DesktopStartupDiagnosticInput {
+  readonly surface: 'startup';
+  readonly title: string;
+  readonly description?: string;
+  readonly details?: string;
+  readonly hostTarget: 'none';
+}
+
+export interface DesktopMainRendererDiagnosticInput {
+  readonly surface: 'renderer_process_gone';
+  readonly title: string;
+  readonly description?: string;
+  readonly details?: string;
+  readonly hostTarget: 'none';
+}
+
+export interface DesktopPreviousMainProcessDiagnosticInput {
+  readonly surface: 'previous_main_process_interruption';
+  readonly title: string;
+  readonly description?: string;
+  readonly details?: string;
+  readonly hostTarget: 'none';
+  readonly evidence: MainProcessRecoveryEvidence;
+}
+
+export type DesktopDiagnosticReportInput =
+  | DesktopDiagnosticWireInput
+  | DesktopStartupDiagnosticInput
+  | DesktopMainRendererDiagnosticInput
+  | DesktopPreviousMainProcessDiagnosticInput;
+
 export type RuntimeHostDiagnosticRead =
   | { readonly ok: true; readonly value: HostDiagnosticsResult }
   | { readonly ok: false; readonly error: string };
 
-export const mainProcessLogBuffer = new DiagnosticLogBuffer();
+export type RuntimeHostExecutionDiagnosticRead =
+  | { readonly ok: true; readonly value: TurnTrace }
+  | { readonly ok: false; readonly error: string };
+
+type RuntimeHostDiagnosticsClient = {
+  readonly getDiagnostics: () => Promise<HostDiagnosticsResult>;
+  readonly getTurnTrace: (
+    sessionId: string,
+    turnId: string,
+    timeoutMs: number,
+  ) => Promise<TurnTrace | undefined>;
+};
+
+export interface DesktopDiagnosticsDeps {
+  readonly environment: () => DesktopDiagnosticEnvironment;
+  readonly mainLogs: () => readonly string[];
+  readonly runtimeHostProcessLogs?: () => readonly string[];
+  readonly resolveActiveRuntimeHost: () => RuntimeHostDiagnosticsClient | undefined;
+  readonly resolveRuntimeHost: (scope: DesktopTargetScope) => RuntimeHostDiagnosticsClient | undefined;
+  readonly writeClipboard: (value: string) => void;
+}
+
+export const mainProcessLogBuffer = new DiagnosticLogBuffer({
+  maxBytes: MAIN_PROCESS_DIAGNOSTIC_LOG_MAX_BYTES,
+});
+export const runtimeHostProcessLogBuffer = new DiagnosticLogBuffer({
+  maxBytes: 16 * 1024,
+  maxEntries: 4,
+});
 
 let logCaptureInstalled = false;
 
-export function installMainProcessLogCapture(buffer: DiagnosticLogBuffer = mainProcessLogBuffer): void {
+export function installMainProcessLogCapture(
+  buffer: DiagnosticLogBuffer = mainProcessLogBuffer,
+  onAppend?: () => void,
+): void {
   if (logCaptureInstalled) return;
   logCaptureInstalled = true;
-  installConsoleDiagnosticLogCapture(buffer);
+  installConsoleDiagnosticLogCapture(buffer, onAppend);
 }
 
-export function parseDesktopErrorDiagnosticInput(input: unknown): DesktopErrorDiagnosticInput {
+export function captureDesktopDiagnosticEnvironment(
+  source: DesktopDiagnosticEnvironmentSource,
+): DesktopDiagnosticEnvironment {
+  return {
+    ...source,
+    electronVersion: process.versions.electron ?? '',
+    nodeVersion: process.versions.node,
+    chromeVersion: process.versions.chrome ?? '',
+    platform: process.platform,
+    arch: osArch(),
+    osRelease: osRelease(),
+    homePath: homedir(),
+    processUptimeSeconds: process.uptime(),
+  };
+}
+
+export function createDesktopStartupDiagnosticInput(input: {
+  readonly title: string;
+  readonly description?: string;
+  readonly details?: string;
+}): DesktopStartupDiagnosticInput {
+  return {
+    surface: 'startup',
+    ...createDesktopNativeDiagnosticFields(input),
+  };
+}
+
+export function createDesktopMainRendererDiagnosticInput(input: {
+  readonly title: string;
+  readonly description?: string;
+  readonly details?: string;
+}): DesktopMainRendererDiagnosticInput {
+  return {
+    surface: 'renderer_process_gone',
+    ...createDesktopNativeDiagnosticFields(input),
+  };
+}
+
+export function createDesktopPreviousMainProcessDiagnosticInput(
+  evidence: MainProcessRecoveryEvidence,
+): DesktopPreviousMainProcessDiagnosticInput {
+  return {
+    surface: 'previous_main_process_interruption',
+    hostTarget: 'none',
+    title: 'Previous Maka session ended before shutdown completed',
+    evidence,
+  };
+}
+
+function createDesktopNativeDiagnosticFields(input: {
+  readonly title: string;
+  readonly description?: string;
+  readonly details?: string;
+}): Omit<DesktopStartupDiagnosticInput, 'surface'> {
+  return {
+    hostTarget: 'none',
+    title: requireDiagnosticString(input.title, 'title', INPUT_LIMITS.title),
+    ...(input.description
+      ? {
+          description: requireDiagnosticString(
+            input.description,
+            'description',
+            INPUT_LIMITS.description,
+          ),
+        }
+      : {}),
+    ...(input.details
+      ? { details: requireDiagnosticString(input.details, 'details', INPUT_LIMITS.details) }
+      : {}),
+  };
+}
+
+export function parseDesktopDiagnosticInput(input: unknown): DesktopDiagnosticWireInput {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     throw new TypeError('Invalid Desktop diagnostic input');
   }
   const record = input as Record<string, unknown>;
-  const allowedKeys = new Set([
+  const sharedKeys = new Set([
     'surface',
-    'title',
-    'description',
-    'details',
+    'hostTarget',
     'rendererUserAgent',
     'rendererLocale',
   ]);
-  if (Object.keys(record).some((key) => !allowedKeys.has(key))) {
-    throw new TypeError('Invalid Desktop diagnostic input');
+  if (record.surface === 'manual') {
+    if (Object.keys(record).some((key) => !sharedKeys.has(key))) {
+      throw new TypeError('Invalid Desktop diagnostic input');
+    }
+    return {
+      surface: 'manual',
+      hostTarget: parseManualDiagnosticHostTarget(record.hostTarget),
+      ...optionalBoundedString(record, 'rendererUserAgent', INPUT_LIMITS.rendererUserAgent),
+      ...optionalBoundedString(record, 'rendererLocale', INPUT_LIMITS.rendererLocale),
+    };
   }
   if (record.surface !== 'toast' && record.surface !== 'renderer_crash') {
     throw new TypeError('Invalid Desktop diagnostic surface');
   }
+  const allowedKeys = new Set([
+    ...sharedKeys,
+    'title',
+    'description',
+    'details',
+    ...(record.surface === 'toast' ? ['execution'] : []),
+  ]);
+  if (Object.keys(record).some((key) => !allowedKeys.has(key))) {
+    throw new TypeError('Invalid Desktop diagnostic input');
+  }
   const title = requireDiagnosticString(record.title, 'title', INPUT_LIMITS.title);
-  return {
-    surface: record.surface,
+  const errorDetails = {
     title,
     ...optionalBoundedString(record, 'description', INPUT_LIMITS.description),
     ...optionalBoundedString(record, 'details', INPUT_LIMITS.details),
     ...optionalBoundedString(record, 'rendererUserAgent', INPUT_LIMITS.rendererUserAgent),
     ...optionalBoundedString(record, 'rendererLocale', INPUT_LIMITS.rendererLocale),
   };
+  if (record.surface === 'renderer_crash') {
+    if (record.hostTarget !== 'none') {
+      throw new TypeError('Renderer crash diagnostics cannot target a Runtime Host');
+    }
+    return {
+      surface: 'renderer_crash',
+      hostTarget: 'none',
+      ...errorDetails,
+    };
+  }
+  if (record.hostTarget !== 'none' && record.hostTarget !== 'task') {
+    throw new TypeError('Toast diagnostics require an explicit Runtime Host target');
+  }
+  if (record.hostTarget === 'none') {
+    if (record.execution !== undefined) {
+      throw new TypeError('Desktop-only diagnostics cannot carry Runtime Host execution');
+    }
+    return {
+      surface: 'toast',
+      hostTarget: 'none',
+      ...errorDetails,
+    };
+  }
+  return {
+    surface: 'toast',
+    hostTarget: 'task',
+    ...errorDetails,
+    ...(record.execution !== undefined
+      ? { execution: parseExecutionDiagnosticTarget(record.execution) }
+      : {}),
+  };
 }
 
-export function formatDesktopErrorDiagnosticReport(
-  input: DesktopErrorDiagnosticInput,
+export async function copyDesktopDiagnosticReport(
+  deps: DesktopDiagnosticsDeps,
+  input: DesktopDiagnosticReportInput,
+  scope: unknown = undefined,
+): Promise<void> {
+  let runtime: RuntimeHostDiagnosticsClient | undefined;
+  if (input.hostTarget === 'none') {
+    if (scope !== undefined) {
+      throw new Error('Desktop-only diagnostics must not carry a Host scope');
+    }
+  } else if (input.hostTarget === 'default') {
+    if (scope !== undefined) {
+      throw new Error('Default Desktop diagnostics must not carry a Host scope');
+    }
+    try {
+      runtime = deps.resolveActiveRuntimeHost();
+    } catch {
+      runtime = undefined;
+    }
+  } else if (scope !== undefined) {
+    const target = requireDesktopTargetScope(scope);
+    try {
+      runtime = deps.resolveRuntimeHost(target);
+    } catch {
+      // A task's Host may disappear between preload scope resolution and
+      // this capture. The Desktop report remains useful on its own.
+      runtime = undefined;
+    }
+  }
+  let runtimeHost: RuntimeHostDiagnosticRead;
+  if (!runtime) {
+    let error: string;
+    if (input.hostTarget === 'none') {
+      error =
+        input.surface === 'startup'
+          ? 'Runtime Host diagnostics were unavailable before the app opened'
+          : input.surface === 'previous_main_process_interruption'
+            ? 'Runtime Host diagnostics were not persisted for the previous Desktop session'
+            : 'No Runtime Host authority was associated with this error';
+    } else if (input.hostTarget === 'default') {
+      error = input.surface === 'manual'
+        ? 'Runtime Host is unavailable'
+        : 'Runtime Host is reconnecting';
+    } else {
+      error = input.surface !== 'manual' && scope !== undefined
+        ? 'Runtime Host is reconnecting'
+        : 'Runtime Host for this task is unavailable';
+    }
+    runtimeHost = { ok: false, error };
+  } else {
+    try {
+      runtimeHost = { ok: true, value: await runtime.getDiagnostics() };
+    } catch (error) {
+      runtimeHost = {
+        ok: false,
+        error: boundedDiagnosticError(error),
+      };
+    }
+  }
+  let runtimeExecution: RuntimeHostExecutionDiagnosticRead | undefined;
+  const execution = input.surface === 'toast' ? input.execution : undefined;
+  if (execution && runtime) {
+    try {
+      const turn = await runtime.getTurnTrace(
+        execution.sessionId,
+        execution.turnId,
+        EXECUTION_DIAGNOSTIC_TIMEOUT_MS,
+      );
+      runtimeExecution = turn
+        ? { ok: true, value: turn }
+        : { ok: false, error: 'Execution evidence was not found' };
+    } catch (error) {
+      runtimeExecution = {
+        ok: false,
+        error: boundedDiagnosticError(error),
+      };
+    }
+  }
+  deps.writeClipboard(
+    formatDesktopDiagnosticReport(
+      input,
+      deps.environment(),
+      deps.mainLogs(),
+      runtimeHost,
+      runtimeExecution,
+      undefined,
+      deps.runtimeHostProcessLogs?.() ?? [],
+    ),
+  );
+}
+
+export function formatDesktopDiagnosticReport(
+  input: DesktopDiagnosticReportInput,
   environment: DesktopDiagnosticEnvironment,
   mainLogs: readonly string[],
   runtimeHost: RuntimeHostDiagnosticRead,
+  runtimeExecution: RuntimeHostExecutionDiagnosticRead | undefined = undefined,
   capturedAt = new Date(),
+  runtimeHostProcessLogs: readonly string[] = [],
 ): string {
-  const lines = [
-    'Maka Desktop diagnostic report',
-    `Captured at: ${capturedAt.toISOString()}`,
-    '',
-    'Error',
-    `Surface: ${input.surface}`,
-    `Title: ${input.title}`,
-  ];
-  if (input.description) lines.push(`Description: ${input.description}`);
-  if (input.details) lines.push('', 'Details:', input.details);
+  const lines = ['Maka Desktop diagnostic report', `Captured at: ${capturedAt.toISOString()}`];
+  const rendererContext =
+    input.surface === 'manual' ||
+    input.surface === 'toast' ||
+    input.surface === 'renderer_crash'
+      ? input
+      : undefined;
+  if (input.surface === 'manual') {
+    lines.push('', 'Capture', 'Surface: manual');
+  } else {
+    lines.push('', 'Error', `Surface: ${input.surface}`, `Title: ${input.title}`);
+    if (input.description) lines.push(`Description: ${input.description}`);
+    if (input.details) lines.push('', 'Details:', input.details);
+  }
 
-  lines.push(
-    '',
-    'Environment',
-    `Maka: ${environment.appVersion}`,
-    `Build: ${environment.buildMode}${environment.buildCommit ? ` @ ${environment.buildCommit.slice(0, 12)}` : ''}`,
-    `Electron: ${environment.electronVersion}`,
-    `Chrome: ${environment.chromeVersion}`,
-    `Node: ${environment.nodeVersion}`,
-    `OS: ${environment.platform} ${environment.osRelease} (${environment.arch})`,
-    `Locale: ${environment.locale}`,
-    `Renderer locale: ${input.rendererLocale ?? '<unknown>'}`,
-    `Renderer user agent: ${input.rendererUserAgent ?? '<unknown>'}`,
-    `Workspace: ${environment.workspacePath}`,
-    `Main process uptime: ${Math.max(0, Math.floor(environment.processUptimeSeconds))}s`,
-    '',
-    `Recent main-process logs (${mainLogs.length})`,
-    ...(mainLogs.length > 0 ? mainLogs : ['<none captured>']),
-  );
+  if (input.surface === 'previous_main_process_interruption') {
+    const { run, snapshotAt, logs } = input.evidence;
+    lines.push(
+      'Classification: clean shutdown was not observed; the termination cause is unknown',
+      '',
+      'Previous run',
+      `Started at: ${run.startedAt}`,
+      `Last snapshot: ${snapshotAt ?? '<none captured>'}`,
+      `Maka: ${run.appVersion}`,
+      `Build: ${run.buildMode}${run.buildCommit ? ` @ ${run.buildCommit.slice(0, 12)}` : ''}`,
+      `Electron: ${run.electronVersion}`,
+      `Chrome: ${run.chromeVersion}`,
+      `Node: ${run.nodeVersion}`,
+      `OS: ${run.platform} ${run.osRelease} (${run.arch})`,
+      '',
+      `Recent previous main-process logs (${logs.length})`,
+      ...(logs.length > 0 ? logs : ['<none captured>']),
+    );
+  } else {
+    lines.push(
+      '',
+      'Environment',
+      `Maka: ${environment.appVersion}`,
+      `Build: ${environment.buildMode}${environment.buildCommit ? ` @ ${environment.buildCommit.slice(0, 12)}` : ''}`,
+      `Channel: ${environment.updateChannel}`,
+      `Electron: ${environment.electronVersion}`,
+      `Chrome: ${environment.chromeVersion}`,
+      `Node: ${environment.nodeVersion}`,
+      `OS: ${environment.platform} ${environment.osRelease} (${environment.arch})`,
+      `Locale: ${environment.locale}`,
+      `Renderer locale: ${rendererContext?.rendererLocale ?? '<unknown>'}`,
+      `Renderer user agent: ${rendererContext?.rendererUserAgent ?? '<unknown>'}`,
+      `Workspace: ${environment.workspacePath}`,
+      `Main process uptime: ${Math.max(0, Math.floor(environment.processUptimeSeconds))}s`,
+      '',
+      `Recent main-process logs (${mainLogs.length})`,
+      ...(mainLogs.length > 0 ? mainLogs : ['<none captured>']),
+      '',
+      `Recent local Runtime Host process exits (${runtimeHostProcessLogs.length})`,
+      ...(runtimeHostProcessLogs.length > 0
+        ? runtimeHostProcessLogs
+        : ['<none captured>']),
+    );
+  }
 
   lines.push('', 'Runtime Host');
   if (runtimeHost.ok) {
@@ -127,8 +479,137 @@ export function formatDesktopErrorDiagnosticReport(
     lines.push(`Diagnostics unavailable: ${runtimeHost.error}`);
   }
 
+  const execution = input.surface === 'toast' ? input.execution : undefined;
+  if (execution) {
+    lines.push('', 'Runtime Host execution');
+    if (!runtimeExecution?.ok) {
+      lines.push(`Execution evidence unavailable: ${runtimeExecution?.error ?? 'not queried'}`);
+    } else {
+      appendTurnTrace(lines, execution, runtimeExecution.value);
+    }
+  }
+
   const redacted = redactSecrets(lines.join('\n'));
   return collapseHomePath(redacted, environment.homePath, environment.platform);
+}
+
+function parseManualDiagnosticHostTarget(
+  value: unknown,
+): 'default' | 'task' {
+  if (value === 'default' || value === 'task') return value;
+  if (value === 'none') {
+    throw new TypeError('Manual Desktop diagnostics require Runtime Host authority');
+  }
+  throw new TypeError('Invalid Desktop diagnostic Runtime Host target');
+}
+
+function parseExecutionDiagnosticTarget(value: unknown): DesktopExecutionDiagnosticTarget {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError('Invalid Desktop execution diagnostic target');
+  }
+  const record = value as Record<string, unknown>;
+  const keys = ['sessionId', 'turnId', 'eventId'] as const;
+  if (
+    Object.keys(record).length !== keys.length ||
+    keys.some((key) => !Object.hasOwn(record, key))
+  ) {
+    throw new TypeError('Invalid Desktop execution diagnostic target');
+  }
+  return {
+    sessionId: requireDiagnosticEntityId(record.sessionId, 'sessionId'),
+    turnId: requireDiagnosticEntityId(record.turnId, 'turnId'),
+    eventId: requireDiagnosticId(record.eventId, 'eventId'),
+  };
+}
+
+function requireDiagnosticEntityId(value: unknown, label: string): string {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(value)) {
+    throw new TypeError(`Invalid Desktop diagnostic ${label}`);
+  }
+  return value;
+}
+
+function requireDiagnosticId(value: unknown, label: string): string {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    /[\u0000-\u001f\u007f]/.test(value) ||
+    Buffer.byteLength(value, 'utf8') > 512
+  ) {
+    throw new TypeError(`Invalid Desktop diagnostic ${label}`);
+  }
+  return value;
+}
+
+function appendTurnTrace(
+  lines: string[],
+  target: DesktopExecutionDiagnosticTarget,
+  turn: TurnTrace,
+): void {
+  if (turn.turnId !== target.turnId) {
+    lines.push('Execution evidence unavailable: Turn identity did not match');
+    return;
+  }
+  lines.push(
+    `Session: ${target.sessionId}`,
+    `Turn: ${target.turnId}`,
+    `Run: ${turn.runId}`,
+    `Event: ${target.eventId}`,
+    `Duration: ${turn.durationMs}ms`,
+  );
+  if (turn.failure) {
+    lines.push(`Failure: ${turn.failure.code}`);
+    if (turn.failure.message) lines.push(`Failure message: ${turn.failure.message}`);
+    if (turn.failure.attributedToStepId) {
+      lines.push(`Failure step: ${turn.failure.attributedToStepId}`);
+    }
+  }
+  lines.push(`Steps (${turn.steps.length})`);
+  if (turn.steps.length === 0) {
+    lines.push('<none recorded>');
+    return;
+  }
+  for (const step of turn.steps) {
+    switch (step.kind) {
+      case 'model_call':
+        lines.push(
+          `- [${step.id}] model ${step.callKind} · ${step.providerId}/${step.modelId} · ${step.status} · ${step.durationMs}ms · ${step.attempts.length} attempt(s)`,
+        );
+        for (const attempt of step.attempts) {
+          const details = [
+            attempt.errorClass,
+            attempt.httpStatus === undefined ? undefined : `HTTP ${attempt.httpStatus}`,
+            attempt.providerCode === undefined ? undefined : `provider ${attempt.providerCode}`,
+            attempt.providerRequestId === undefined
+              ? undefined
+              : `request ${attempt.providerRequestId}`,
+            attempt.retryable === undefined ? undefined : `retryable ${attempt.retryable}`,
+          ].filter((detail): detail is string => detail !== undefined);
+          lines.push(
+            `  - ${attempt.attemptId} · ${attempt.status} · ${attempt.latencyMs}ms${details.length > 0 ? ` · ${details.join(' · ')}` : ''}`,
+          );
+        }
+        break;
+      case 'tool':
+        lines.push(
+          `- [${step.id}] tool ${step.toolName} · ${step.status}${step.durationMs === undefined ? '' : ` · ${step.durationMs}ms`}${step.recoveryPolicy ? ` · recovery ${step.recoveryPolicy}` : ''}${step.recovered ? ` · ${step.recovered.disposition} (${step.recovered.reasonCode})` : ''}`,
+        );
+        break;
+      case 'permission':
+        lines.push(
+          `- [${step.id}] permission${step.toolName ? ` ${step.toolName}` : ''} · ${step.decision}`,
+        );
+        break;
+      case 'compaction':
+        lines.push(
+          `- [${step.id}] compaction${step.checkpointId ? ` · checkpoint ${step.checkpointId}` : ''}`,
+        );
+        break;
+      case 'error':
+        lines.push(`- [${step.id}] error · ${step.message}`);
+        break;
+    }
+  }
 }
 
 function optionalBoundedString(
@@ -148,8 +629,9 @@ function requireDiagnosticString(value: unknown, label: string, maximumBytes: nu
   return truncateUtf8(value, maximumBytes, INPUT_TRUNCATION_MARKER);
 }
 
-function collapseHomePath(value: string, homePath: string, platform: NodeJS.Platform): string {
-  if (!homePath) return value;
-  const escaped = homePath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return value.replace(new RegExp(escaped, platform === 'win32' ? 'gi' : 'g'), '~');
+function boundedDiagnosticError(error: unknown): string {
+  return truncateUtf8(
+    redactSecrets(error instanceof Error ? error.message : String(error)),
+    1024,
+  );
 }

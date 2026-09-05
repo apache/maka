@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import {
   comparePricingModelKeys,
   normalizePricingModelKey,
@@ -37,6 +56,7 @@ const PRICING_QUERY_ERRORS = [...QUERY_ERRORS, 'invalid_request'] as const;
 const MUTATION_ERRORS = [...QUERY_ERRORS, 'invalid_request', 'commit_outcome_unknown'] as const;
 const LLM_USAGE_QUERY_FIELDS = new Set([
   'range',
+  'sessionId',
   'connectionSlug',
   'providerId',
   'modelId',
@@ -82,6 +102,7 @@ const LLM_USAGE_LOG_FIELDS = new Set([
   'status',
   'errorClass',
   'sessionId',
+  'sessionTitle',
   'turnId',
 ]);
 const TOOL_USAGE_LOG_FIELDS = new Set([
@@ -101,6 +122,7 @@ const TOOL_USAGE_LOG_FIELDS = new Set([
   'bytesOut',
   'startedAt',
   'sessionId',
+  'sessionTitle',
   'turnId',
 ]);
 const TOOL_RESULT_SUMMARY_FIELDS = new Set([
@@ -147,6 +169,8 @@ export interface LlmUsageLogProjection {
   readonly status: 'success' | 'error' | 'aborted';
   readonly errorClass?: string;
   readonly sessionId?: string;
+  /** Human-readable session title, resolved on the Host; absent for untitled sessions. */
+  readonly sessionTitle?: string;
   readonly turnId?: string;
 }
 
@@ -167,6 +191,8 @@ export interface ToolUsageLogProjection {
   readonly bytesOut: number;
   readonly startedAt: number;
   readonly sessionId?: string;
+  /** Human-readable session title, resolved on the Host; absent for untitled sessions. */
+  readonly sessionTitle?: string;
   readonly turnId?: string;
 }
 
@@ -646,6 +672,7 @@ function decodeLlmUsageQuery(value: unknown): LlmUsageQuery {
   if (!Object.hasOwn(query, 'range')) throw invalidProtocolFrame('Invalid usage query fields');
   return {
     range: decodeUsageRange(query.range),
+    ...optionalQueryText(query, 'sessionId'),
     ...optionalQueryText(query, 'connectionSlug'),
     ...optionalQueryText(query, 'providerId'),
     ...optionalQueryText(query, 'modelId'),
@@ -789,15 +816,22 @@ function decodeUsagePagePosition(
 }
 
 function decodeUsageSummary(value: unknown): UsageSummaryV2 {
-  const summary = requireExactRecord(value, 'usage summary', [
-    'range',
-    'totalRequests',
-    'totalCostUsd',
-    'totalTokens',
-    'cacheHitRequests',
-    'cacheCreateRequests',
-    'errorRequests',
-  ]);
+  const summary = requireRecord(value, 'usage summary');
+  assertOptionalExactKeys(
+    summary,
+    'usage summary',
+    [
+      'range',
+      'totalRequests',
+      'totalCostUsd',
+      'totalTokens',
+      'cacheHitRequests',
+      'cacheCreateRequests',
+      'errorRequests',
+      'totalDurationMs',
+    ],
+    ['toolUsage'],
+  );
   const range = requireExactRecord(summary.range, 'usage summary range', ['from', 'to']);
   const tokens = requireExactRecord(summary.totalTokens, 'usage summary tokens', [
     'input',
@@ -827,6 +861,19 @@ function decodeUsageSummary(value: unknown): UsageSummaryV2 {
     cacheHitRequests: requireCount(summary.cacheHitRequests, 'usage cache hit requests'),
     cacheCreateRequests: requireCount(summary.cacheCreateRequests, 'usage cache create requests'),
     errorRequests: requireCount(summary.errorRequests, 'usage error requests'),
+    totalDurationMs: requireCount(summary.totalDurationMs, 'usage total duration'),
+    // Optional for a data reason, not a version one: tool rows that predate
+    // connection attribution cannot answer a `connectionSlug` filter, so the
+    // Host omits the split for that query rather than send an unscoped total.
+    ...(summary.toolUsage !== undefined ? { toolUsage: decodeToolUsage(summary.toolUsage) } : {}),
+  };
+}
+
+function decodeToolUsage(value: unknown): NonNullable<UsageSummaryV2['toolUsage']> {
+  const toolUsage = requireExactRecord(value, 'usage tool usage', ['requests', 'durationMs']);
+  return {
+    requests: requireCount(toolUsage.requests, 'usage tool requests'),
+    durationMs: requireCount(toolUsage.durationMs, 'usage tool duration'),
   };
 }
 
@@ -971,6 +1018,7 @@ function decodeLlmUsageLog(value: unknown): LlmUsageLogProjection {
     status: decodeUsageLogStatus(row.status),
     ...optionalProjectionText(row, 'errorClass'),
     ...optionalProjectionText(row, 'sessionId'),
+    ...optionalProjectionText(row, 'sessionTitle'),
     ...optionalProjectionText(row, 'turnId'),
   };
 }
@@ -1009,6 +1057,7 @@ function decodeToolUsageLog(value: unknown): ToolUsageLogProjection {
     bytesOut: requireCount(row.bytesOut, 'tool usage log bytes out'),
     startedAt: nonnegativeFinite(row.startedAt, 'tool usage log start time'),
     ...optionalProjectionText(row, 'sessionId'),
+    ...optionalProjectionText(row, 'sessionTitle'),
     ...optionalProjectionText(row, 'turnId'),
   };
 }

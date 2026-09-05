@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 export const SEARCH_QUERY_MAX_CHARS = 500;
 export const SEARCH_DOMAIN_MAX_CHARS = 253;
 export const SEARCH_URL_MAX_CHARS = 4096;
@@ -8,6 +27,15 @@ const TRACKING_PARAM_PREFIXES = ['utm_'];
 const TRACKING_PARAM_NAMES = new Set(['fbclid', 'gclid', 'yclid', 'mc_cid', 'mc_eid']);
 
 export type SearchSourceKind = 'web' | 'web_fetch' | 'thread' | 'memory' | 'activity' | 'tool';
+
+export const THREAD_SEARCH_MATCH_KINDS = [
+  'session_title',
+  'user_message',
+  'assistant_message',
+  'tool_intent',
+  'tool_result',
+] as const;
+export type ThreadSearchMatchKind = (typeof THREAD_SEARCH_MATCH_KINDS)[number];
 
 export type SearchProviderKind = 'disabled' | 'api' | 'browser_scrape' | 'local';
 
@@ -25,20 +53,7 @@ export type SearchErrorReason =
   | 'needs_human_browser'
   | 'provider_error'
   | 'parse_error'
-  // PR-SEARCH-2.5 (xuan msg `57ca05cd` + `a91c61c6`): incognito gate.
-  // Returned when the workspace is currently incognito and search is
-  // disabled by policy. ALSO returned when the workspace privacy
-  // authority returned a malformed snapshot (`validateWorkspacePrivacyContext`
-  // failed) — fail-closed behavior treats unverifiable state as
-  // incognito to preserve privacy. The two paths share this reason so
-  // consumers do not need an extra UI state; the `message` field
-  // distinguishes them when needed:
-  //   - active: "Search is disabled while incognito is active."
-  //   - malformed: "Search is disabled because workspace privacy state could not be verified."
-  // The state is user-visible (the user toggled incognito on, or the
-  // system failed closed), so exposing the reason is intentional —
-  // the data we don't expose is session content / result counts /
-  // snippets.
+  // Malformed privacy state fails closed to the same user-visible reason.
   | 'incognito_active';
 
 export type SearchSourceSnapshot =
@@ -58,6 +73,8 @@ export interface SearchRequest {
   source: SearchSourceKind;
   query: string;
   limit: number;
+  /** Opaque continuation returned by a previous bounded search page. */
+  cursor?: string;
   allowedDomains?: string[];
   blockedDomains?: string[];
   includeMarkdown?: boolean;
@@ -89,19 +106,26 @@ export interface WebFetchRequest {
  * route via the existing renderer-side session-pane state (sessionId →
  * load session, turnId → scroll-into-view), NOT via a URL router.
  */
-export type SearchResultTarget = { kind: 'thread'; sessionId: string; turnId?: string };
+export type SearchResultTarget = {
+  kind: 'thread';
+  sessionId: string;
+  turnId?: string;
+  /** Existing transcript pagination/navigation coordinate used by Desktop. */
+  sequence?: number;
+  /** Stable message anchor for Agent reads; absent for session-title matches. */
+  messageId?: string;
+  /** Stable machine-readable classification of the matched transcript surface. */
+  matchKind?: ThreadSearchMatchKind;
+  /** Timestamp of the matched stored message; absent for session-title matches. */
+  messageTimestamp?: number;
+};
 
 export interface SearchResult {
   source: SearchSourceKind;
   citationIndex?: number;
   title: string;
   url?: string;
-  /**
-   * Closed-union navigation target. Populated for source kinds whose
-   * navigation does NOT map to a URL — currently only `thread`. Future
-   * memory/activity variants extend this union without polluting the
-   * top-level shape.
-   */
+  /** Navigation target for source kinds that do not map to a URL. */
   target?: SearchResultTarget;
   snippet?: string;
   summary?: string;

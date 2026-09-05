@@ -1,8 +1,28 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { Dispatch, SetStateAction } from 'react';
-import type { SettingsSection, ThemePreference, UiLocale } from '@maka/core';
+import type { SettingsSection, ThemePreference } from '@maka/core/settings';
+import type { UiLocale } from '@maka/core/ui-locale';
 import type { NavSelection } from '@maka/ui';
 import { applyTheme } from './theme';
-import type { SessionWorkbarTabKind } from './session-workbar-tabs';
+import type { SessionWorkbarTabKind } from './features/workbar';
 
 export interface AppShellE2eFixtureActions {
   applyE2eFixture(): Promise<void>;
@@ -14,13 +34,15 @@ export function createAppShellE2eFixtureActions(options: {
   setActiveId: (sessionId: string | undefined) => void;
   setNavSelection: Dispatch<SetStateAction<NavSelection>>;
   setSearchModalOpen: Dispatch<SetStateAction<boolean>>;
-  setSessionListCollapsed: Dispatch<SetStateAction<boolean>>;
-  setWorkbarCollapsed: Dispatch<SetStateAction<boolean>>;
-  openWorkbarTab: (
-    kind: Exclude<SessionWorkbarTabKind, 'side-chat'>,
-    placement?: 'right' | 'bottom',
-    options?: { preview?: boolean },
-  ) => void;
+  setSessionListCollapsed(collapsed: boolean): void;
+  workbar: {
+    rightCollapsed: boolean;
+    toggleRight(): void;
+    openTool(
+      kind: SessionWorkbarTabKind,
+      placement?: 'right' | 'bottom',
+    ): void;
+  };
   setThemePref: Dispatch<SetStateAction<ThemePreference>>;
   setUiLocaleOverride: Dispatch<SetStateAction<UiLocale | null>>;
 }): AppShellE2eFixtureActions {
@@ -31,8 +53,7 @@ export function createAppShellE2eFixtureActions(options: {
     setNavSelection,
     setSearchModalOpen,
     setSessionListCollapsed,
-    setWorkbarCollapsed,
-    openWorkbarTab,
+    workbar,
     setThemePref,
     setUiLocaleOverride,
   } = options;
@@ -48,6 +69,12 @@ export function createAppShellE2eFixtureActions(options: {
       Date.now = () => state.now!;
     }
     document.documentElement.setAttribute('data-maka-e2e-fixture', 'true');
+    // Read by `scroll-motion-policy`: a fixture whose subject is scrolling
+    // asks for the production behavior back, since the blanket collapse would
+    // finish every scroll in one frame and hide what it is testing.
+    if (state.scrollMotion) {
+      document.documentElement.setAttribute('data-maka-scroll-motion', state.scrollMotion);
+    }
     // PR-IR-01b: theme override applied BEFORE the persisted user pref so
     // the rendered fixture matches the `<theme>-<viewport>-<motion>` variant
     // exactly. `applyTheme` writes both the React state + the `.dark` class
@@ -96,18 +123,20 @@ export function createAppShellE2eFixtureActions(options: {
     if (state.sidebarCollapsed !== undefined) {
       setSessionListCollapsed(state.sidebarCollapsed);
     }
-    if (state.workbarCollapsed !== undefined) setWorkbarCollapsed(state.workbarCollapsed);
+    if (
+      state.workbarCollapsed !== undefined &&
+      state.workbarCollapsed !== workbar.rightCollapsed
+    ) {
+      workbar.toggleRight();
+    }
     if (
       state.workbarTab === 'review' ||
       state.workbarTab === 'terminal' ||
-      state.workbarTab === 'tasks' ||
       state.workbarTab === 'browser' ||
       state.workbarTab === 'files' ||
       state.workbarTab === 'inspector'
     ) {
-      openWorkbarTab(state.workbarTab, 'right', {
-        preview: state.workbarPreview,
-      });
+      workbar.openTool(state.workbarTab, 'right');
     }
     if (state.openSettingsSection) {
       openSettingsSection(state.openSettingsSection);
@@ -129,7 +158,7 @@ export function createAppShellE2eFixtureActions(options: {
     } else if (state.sidebarSection === 'daily-review') {
       setNavSelection({ section: 'automations', module: 'daily-review' });
     } else if (state.sidebarSection === 'sessions') {
-      setNavSelection({ section: 'sessions', filter: 'chats' });
+      setNavSelection({ section: 'sessions' });
     }
   }
 

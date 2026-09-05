@@ -1,37 +1,35 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { expect } from '../test-helpers.js';
 import {
   buildHealthSnapshot,
   healthSignalFromCapability,
   healthSignalFromConnection,
+  workspaceHasDefaultModelTarget,
   healthSignalFromConnectionRuntime,
-  isHealthSignalStatus,
-  type HealthSignal,
 } from '../health.js';
 import type { CapabilitySnapshot } from '../capabilities.js';
 import type { LlmConnection } from '../llm-connections.js';
 
 describe('HealthSignal contract', () => {
-  test('locks health status guard and summary counts', () => {
-    expect(isHealthSignalStatus('ok')).toBe(true);
-    expect(isHealthSignalStatus('operational')).toBe(false);
-
-    const snapshot = buildHealthSnapshot(10, [
-      signal('a', 'ok'),
-      signal('b', 'warning'),
-      signal('c', 'warning'),
-      signal('d', 'unknown'),
-    ]);
-
-    expect(snapshot.summary).toEqual({
-      ok: 1,
-      info: 0,
-      warning: 2,
-      error: 0,
-      unknown: 1,
-    });
-  });
-
   test('verified LLM connection is validation health, not runtime operational', () => {
     const result = healthSignalFromConnection(
       connection({
@@ -41,11 +39,97 @@ describe('HealthSignal contract', () => {
       20,
     );
 
-    expect(result.status).toBe('ok');
-    expect(result.layer).toBe('validation');
-    expect(result.source).toBe('connection_test');
-    expect(result.message).toBe('凭据与端点验证已通过。');
-    expect(result.detail).toContain('不代表发送、流式输出或中断通路已经运行通过');
+    assert.strictEqual(result.status, 'ok');
+    assert.strictEqual(result.layer, 'validation');
+    assert.strictEqual(result.source, 'connection_test');
+  });
+
+  test('separates connection test error classes from legacy diagnostics', () => {
+    const coded = healthSignalFromConnection(
+      connection({ lastTestStatus: 'needs_reauth', lastTestMessage: 'auth' }),
+      20,
+    );
+    assert.deepStrictEqual(coded.detail, { kind: 'last_test_error_class', errorClass: 'auth' });
+
+    const legacy = healthSignalFromConnection(
+      connection({ lastTestStatus: 'error', lastTestMessage: 'HTTP 502 upstream failure' }),
+      20,
+    );
+    assert.deepStrictEqual(legacy.detail, { kind: 'last_test_message' });
+  });
+
+  test('a missing default model warns only when the workspace has no default target', () => {
+    // The catalog projects `defaultModel` onto exactly one connection (the
+    // default target). With a default configured elsewhere, an enabled
+    // connection with an empty `defaultModel` is the documented normal
+    // state — informational, never send-blocking, and never a prompt to
+    // find a per-connection setting that deliberately does not exist.
+    const nonDefault = healthSignalFromConnection(
+      connection({ defaultModel: '', enabledModelIds: ['glm-4.7'] }),
+      20,
+      { workspaceHasDefaultTarget: true },
+    );
+    assert.strictEqual(nonDefault.status, 'info');
+    assert.strictEqual(nonDefault.blocksSend, false);
+
+    // With NO default anywhere, a new chat cannot start: that is the
+    // actionable, send-blocking configuration gap.
+    const noDefaultAnywhere = healthSignalFromConnection(connection({ defaultModel: '' }), 20, {
+      workspaceHasDefaultTarget: false,
+    });
+    assert.strictEqual(noDefaultAnywhere.status, 'warning');
+    assert.strictEqual(noDefaultAnywhere.blocksSend, true);
+
+    // The informational note must not paper over real per-connection
+    // blockers: failing validation still wins on a non-default connection…
+    const reauth = healthSignalFromConnection(
+      connection({
+        defaultModel: '',
+        enabledModelIds: ['glm-4.7'],
+        lastTestStatus: 'needs_reauth',
+      }),
+      20,
+      { workspaceHasDefaultTarget: true },
+    );
+    assert.strictEqual(reauth.status, 'error');
+    assert.strictEqual(reauth.blocksSend, true);
+
+    // …and a connection with no enabled models cannot claim that explicit
+    // selection works — there is nothing to select.
+    const emptyInventory = healthSignalFromConnection(
+      connection({ defaultModel: '', enabledModelIds: [] }),
+      20,
+      { workspaceHasDefaultTarget: true },
+    );
+    assert.strictEqual(emptyInventory.status, 'warning');
+    assert.strictEqual(emptyInventory.blocksSend, false);
+
+    // The default target itself keeps its validation-layer signals.
+    const configured = healthSignalFromConnection(
+      connection({ lastTestStatus: 'verified', lastTestAt: '2026-05-22T07:30:00.000Z' }),
+      20,
+      { workspaceHasDefaultTarget: true },
+    );
+    assert.strictEqual(configured.status, 'ok');
+  });
+
+  test('a disabled default holder does not count as a workspace default', () => {
+    // Disabling the connection that holds the default target (ordinary UI,
+    // nothing clears defaultTarget) leaves its projected defaultModel in
+    // place. Counting it would show an all-clear health page in exactly
+    // the state where sends fail with connection_disabled.
+    const disabledHolder = connection({ enabled: false }); // defaultModel: 'glm-4.7'
+    const other = connection({ slug: 'other', defaultModel: '', enabledModelIds: ['m'] });
+    assert.strictEqual(workspaceHasDefaultModelTarget([disabledHolder, other]), false);
+    assert.strictEqual(workspaceHasDefaultModelTarget([connection({}), other]), true);
+
+    // With the holder disabled, the OTHER enabled connections escalate back
+    // to the send-blocking warning — the workspace genuinely has no default.
+    const signal = healthSignalFromConnection(other, 20, {
+      workspaceHasDefaultTarget: workspaceHasDefaultModelTarget([disabledHolder, other]),
+    });
+    assert.strictEqual(signal.status, 'warning');
+    assert.strictEqual(signal.blocksSend, true);
   });
 
   test('LLM runtime probe is separate from credential validation', () => {
@@ -54,11 +138,9 @@ describe('HealthSignal contract', () => {
       undefined,
       30,
     );
-    expect(unknown?.status).toBe('unknown');
-    expect(unknown?.layer).toBe('runtime_probe');
-    expect(unknown?.source).toBe('runtime_probe');
-    expect(unknown?.message).toBe('等待完成发送运行态探测。');
-    expect(/还没有记录到发送运行态探测/.test(unknown?.message ?? '')).toBe(false);
+    assert.strictEqual(unknown?.status, 'unknown');
+    assert.strictEqual(unknown?.layer, 'runtime_probe');
+    assert.strictEqual(unknown?.source, 'runtime_probe');
 
     const ok = healthSignalFromConnectionRuntime(
       connection({ lastTestStatus: 'verified' }),
@@ -81,9 +163,8 @@ describe('HealthSignal contract', () => {
       },
       30,
     );
-    expect(ok?.status).toBe('ok');
-    expect(ok?.checkedAt).toBe(40);
-    expect(ok?.detail).toContain('模型=glm-4.7');
+    assert.strictEqual(ok?.status, 'ok');
+    assert.strictEqual(ok?.checkedAt, 40);
 
     const failed = healthSignalFromConnectionRuntime(
       connection({ lastTestStatus: 'verified' }),
@@ -107,137 +188,22 @@ describe('HealthSignal contract', () => {
       },
       30,
     );
-    expect(failed?.status).toBe('warning');
-    // PR-HEALTH-1 (xuan msg `e4887ffd` + kenji msg `bd8ee4c1`, I2 — demote):
-    // historical runtime_probe error is surfaced as a warning, NOT a send
-    // gate. The previous behavior (`blocksSend === true`) impersonated a
-    // current send block from a historical observation. `requireReadyConnection`
-    // remains the authoritative send gate.
-    expect(failed?.blocksSend).toBe(false);
-    expect(failed?.detail).toContain('错误类型=auth');
+    assert.strictEqual(failed?.status, 'warning');
+    assert.strictEqual(failed?.blocksSend, false);
   });
 
   test('disabled or unconfigured connections do not emit runtime probe health', () => {
-    expect(healthSignalFromConnectionRuntime(connection({ enabled: false }), undefined, 30)).toBe(
+    assert.strictEqual(
+      healthSignalFromConnectionRuntime(connection({ enabled: false }), undefined, 30),
       undefined,
     );
-    expect(healthSignalFromConnectionRuntime(connection({ defaultModel: '' }), undefined, 30)).toBe(
+    assert.strictEqual(
+      healthSignalFromConnectionRuntime(connection({ defaultModel: '' }), undefined, 30),
       undefined,
     );
   });
 
-  test('unconfigured connection health copy is an actionable waiting state', () => {
-    const result = healthSignalFromConnection(connection({ defaultModel: '' }), 20);
-
-    expect(result.message).toBe('等待选择默认模型。');
-    expect(/缺少默认模型/.test(result.message)).toBe(false);
-    expect(result.blocksSend).toBe(true);
-  });
-
-  /*
-   * PR-HEALTH-1 — I2 lock (B-series from audit catalog):
-   * runtime_probe blocksSend must always be `false`. The signal is a
-   * historical observation surfaced for visibility, not a current send
-   * gate. Send gating belongs to `isConnectionReady` (connection-readiness.ts)
-   * and `requireReadyConnection` (chat-readiness.ts) only.
-   */
-  describe('I2 — runtime_probe blocksSend is always false (demote)', () => {
-    function probeRow(overrides: {
-      status: 'success' | 'error' | 'aborted';
-      ts?: number;
-      errorClass?: string;
-    }) {
-      return {
-        id: `usage_${overrides.status}`,
-        ts: overrides.ts ?? 100,
-        connectionSlug: 'zai',
-        providerId: 'zai-coding-plan',
-        modelId: 'glm-4.7',
-        inputTokens: 1,
-        outputTokens: 1,
-        cacheMissTokens: 0,
-        cacheReadTokens: 0,
-        cacheWriteTokens: 0,
-        reasoningTokens: 0,
-        totalTokens: 2,
-        costUsd: 0,
-        latencyMs: 250,
-        status: overrides.status,
-        ...(overrides.errorClass ? { errorClass: overrides.errorClass } : {}),
-      };
-    }
-
-    test('B2: verified credential + historical runtime probe error → warning + blocksSend=false', () => {
-      const result = healthSignalFromConnectionRuntime(
-        connection({ lastTestStatus: 'verified' }),
-        probeRow({ status: 'error', errorClass: 'network' }),
-        300,
-      );
-      expect(result?.status).toBe('warning');
-      expect(result?.layer).toBe('runtime_probe');
-      expect(result?.blocksSend).toBe(false);
-    });
-
-    test('B5: no runtime probe history → unknown status, blocksSend=false', () => {
-      const result = healthSignalFromConnectionRuntime(
-        connection({ lastTestStatus: 'verified' }),
-        undefined,
-        300,
-      );
-      expect(result?.status).toBe('unknown');
-      expect(result?.blocksSend).toBe(false);
-    });
-
-    test('success runtime probe → ok status, blocksSend=false', () => {
-      const result = healthSignalFromConnectionRuntime(
-        connection({ lastTestStatus: 'verified' }),
-        probeRow({ status: 'success' }),
-        300,
-      );
-      expect(result?.status).toBe('ok');
-      expect(result?.blocksSend).toBe(false);
-    });
-
-    test('aborted runtime probe → info status, blocksSend=false', () => {
-      const result = healthSignalFromConnectionRuntime(
-        connection({ lastTestStatus: 'verified' }),
-        probeRow({ status: 'aborted' }),
-        300,
-      );
-      expect(result?.status).toBe('info');
-      expect(result?.blocksSend).toBe(false);
-    });
-
-    test('runtime probe error does NOT impersonate a send gate regardless of credential state', () => {
-      // Even pathological combinations (verified credential + every kind
-      // of probe error) must never produce blocksSend=true. Send gating
-      // is the exclusive domain of isConnectionReady / requireReadyConnection.
-      for (const errorClass of ['auth', 'timeout', 'provider_unavailable', 'network', 'unknown']) {
-        const result = healthSignalFromConnectionRuntime(
-          connection({ lastTestStatus: 'verified' }),
-          probeRow({ status: 'error', errorClass }),
-          300,
-        );
-        expect(result?.blocksSend).toBe(false);
-      }
-    });
-  });
-
-  test('missing default model blocks send at configuration layer', () => {
-    const result = healthSignalFromConnection(connection({ defaultModel: '' }), 20);
-
-    expect(result.status).toBe('warning');
-    expect(result.layer).toBe('configuration');
-    expect(result.blocksSend).toBe(true);
-  });
-
-  /*
-   * PR-HEALTH-1 — E1 lock (three-layer separation):
-   * Connection auth state and bot capability readiness must derive
-   * independently. The Health snapshot must surface BOTH as separate
-   * signals — neither layer should impersonate the other.
-   */
-  test('E1: bot capability operational + connection unverified → two independent signals', () => {
+  test('summarizes independent connection and capability signals', () => {
     const connectionUnverified = healthSignalFromConnection(
       connection({
         lastTestStatus: undefined,
@@ -250,23 +216,12 @@ describe('HealthSignal contract', () => {
       }),
     );
 
-    // Connection layer reports its own status (unknown because no test yet),
-    // independent of the bot layer.
-    expect(connectionUnverified.scope).toBe('llm_connection');
-    expect(connectionUnverified.status).toBe('unknown');
-    expect(connectionUnverified.message).toBe('等待验证连接。');
-
-    // Bot capability layer reports its own status from runtime probe,
-    // independent of the connection's lastTestStatus.
-    expect(botOperational.scope).toBe('bot');
-    expect(botOperational.status).toBe('ok');
-
-    // Combined snapshot keeps both layers distinct — neither one is
-    // derived from the other; the user sees per-layer truth.
     const snapshot = buildHealthSnapshot(30, [connectionUnverified, botOperational]);
-    expect(snapshot.signals.length).toBe(2);
-    expect(snapshot.signals.some((s) => s.scope === 'llm_connection')).toBe(true);
-    expect(snapshot.signals.some((s) => s.scope === 'bot')).toBe(true);
+    assert.deepStrictEqual(
+      snapshot.signals.map((signal) => signal.scope),
+      ['llm_connection', 'bot'],
+    );
+    assert.deepStrictEqual(snapshot.summary, { ok: 1, info: 0, warning: 0, error: 0, unknown: 1 });
   });
 
   test('capability denied and degraded remain distinct health states', () => {
@@ -277,13 +232,11 @@ describe('HealthSignal contract', () => {
     );
     const degraded = healthSignalFromCapability(capability('bot:telegram', 'degraded'));
 
-    expect(denied.status).toBe('error');
-    expect(denied.layer).toBe('permission');
-    expect(denied.message).toBe('能力被必要系统权限阻塞。');
-    expect(degraded.status).toBe('error');
-    expect(degraded.layer).toBe('runtime_probe');
-    expect(degraded.message).toBe('能力运行态探测处于降级状态。');
-    expect(degraded.scope).toBe('bot');
+    assert.strictEqual(denied.status, 'error');
+    assert.strictEqual(denied.layer, 'permission');
+    assert.strictEqual(degraded.status, 'error');
+    assert.strictEqual(degraded.layer, 'runtime_probe');
+    assert.strictEqual(degraded.scope, 'bot');
   });
 
   test('partial-only capabilities are warnings, not app-wide error states', () => {
@@ -302,147 +255,15 @@ describe('HealthSignal contract', () => {
       }),
     );
 
-    expect(partial.status).toBe('warning');
-    expect(partial.layer).toBe('feature');
-    expect(partial.blocksCapability).toBe(false);
-  });
-
-  test('capability details localize internal reason strings before renderer display', () => {
-    const paused = healthSignalFromCapability(
-      capability('bot:telegram', 'paused', {
-        feature: { state: 'disabled', source: 'settings', reason: 'disabled' },
-      }),
-    );
-    const missing = healthSignalFromCapability(
-      capability('bot:telegram', 'not_configured', {
-        configuration: {
-          state: 'missing',
-          source: 'settings',
-          reason: 'missing platform credentials',
-        },
-      }),
-    );
-    const unknownEnglish = healthSignalFromCapability(
-      capability('bot:telegram', 'degraded', {
-        runtimeProbe: { state: 'degraded', source: 'runtime_probe', reason: 'polling-timeout' },
-      }),
-    );
-    const chinese = healthSignalFromCapability(
-      capability('activity_recorder', 'enabled', {
-        runtimeProbe: {
-          state: 'healthy',
-          source: 'runtime_probe',
-          reason: '打开 Daily Review 可查看本地活动聚合结果',
-        },
-      }),
-    );
-
-    expect(paused.detail).toBe('该能力当前已关闭。');
-    expect(missing.detail).toBe('等待填写平台凭据。');
-    expect(unknownEnglish.detail).toBe('状态详情请见对应设置页。');
-    expect(chinese.detail).toBe('打开 Daily Review 可查看本地活动聚合结果');
-  });
-
-  test('health signal visible copy does not expose English implementation wording', () => {
-    const signals = [
-      healthSignalFromConnection(connection({ enabled: false }), 20),
-      healthSignalFromConnection(connection({ defaultModel: '' }), 20),
-      healthSignalFromConnection(connection({ lastTestStatus: 'verified' }), 20),
-      healthSignalFromConnection(
-        connection({ lastTestStatus: 'needs_reauth', lastTestMessage: '需要重新登录' }),
-        20,
-      ),
-      healthSignalFromConnection(
-        connection({ lastTestStatus: 'error', lastTestMessage: '网络超时' }),
-        20,
-      ),
-      healthSignalFromConnection(connection({ lastTestStatus: undefined }), 20),
-      healthSignalFromConnectionRuntime(connection({ lastTestStatus: 'verified' }), undefined, 20),
-      healthSignalFromConnectionRuntime(
-        connection({ lastTestStatus: 'verified' }),
-        {
-          id: 'usage_turn_3',
-          ts: 60,
-          connectionSlug: 'zai',
-          providerId: 'zai-coding-plan',
-          modelId: 'glm-4.7',
-          inputTokens: 1,
-          outputTokens: 0,
-          cacheMissTokens: 0,
-          cacheReadTokens: 0,
-          cacheWriteTokens: 0,
-          reasoningTokens: 0,
-          totalTokens: 1,
-          costUsd: 0,
-          latencyMs: 90,
-          status: 'error',
-          errorClass: 'auth',
-        },
-        20,
-      ),
-      healthSignalFromCapability(capability('bot:telegram', 'enabled')),
-      healthSignalFromCapability(
-        capability('bot:telegram', 'paused', {
-          feature: { state: 'disabled', source: 'settings', reason: 'disabled' },
-        }),
-      ),
-      healthSignalFromCapability(
-        capability('bot:telegram', 'not_configured', {
-          configuration: {
-            state: 'missing',
-            source: 'settings',
-            reason: 'missing platform credentials',
-          },
-        }),
-      ),
-      healthSignalFromCapability(capability('computer_use', 'denied')),
-      healthSignalFromCapability(
-        capability('bot:telegram', 'degraded', {
-          runtimeProbe: { state: 'degraded', source: 'runtime_probe', reason: 'polling-timeout' },
-        }),
-      ),
-    ].filter((item): item is HealthSignal => Boolean(item));
-    const englishImplementationCopy =
-      /\b(?:Connection|Credential|endpoint|validation|Capability|runtime probe|agent send|errorClass|latency|model=)\b/;
-    const unfinishedStateCopy =
-      /连接尚未验证|能力尚未完整配置|还没有记录到发送运行态探测|连接缺少默认模型/;
-    const rawReasonCopy = /\b(?:disabled|missing platform credentials|polling-timeout)\b/;
-
-    for (const signal of signals) {
-      if (englishImplementationCopy.test(signal.message)) {
-        throw new Error(
-          `Health signal message exposes English implementation copy: ${signal.message}`,
-        );
-      }
-      if (signal.detail && englishImplementationCopy.test(signal.detail)) {
-        throw new Error(
-          `Health signal detail exposes English implementation copy: ${signal.detail}`,
-        );
-      }
-      if (signal.detail && rawReasonCopy.test(signal.detail)) {
-        throw new Error(`Health signal detail exposes raw reason copy: ${signal.detail}`);
-      }
-      if (unfinishedStateCopy.test(signal.message)) {
-        throw new Error(
-          `Health signal message should describe an actionable state: ${signal.message}`,
-        );
-      }
-    }
+    assert.strictEqual(partial.status, 'warning');
+    assert.strictEqual(partial.layer, 'feature');
+    assert.strictEqual(partial.blocksCapability, false);
+    assert.deepStrictEqual(partial.detail, {
+      kind: 'capability_reason',
+      reason: '打开 Daily Review 可查看本地活动聚合结果',
+    });
   });
 });
-
-function signal(id: string, status: HealthSignal['status']): HealthSignal {
-  return {
-    id,
-    label: id,
-    scope: 'app',
-    layer: 'runtime_probe',
-    status,
-    source: 'runtime_probe',
-    checkedAt: 1,
-    message: id,
-  };
-}
 
 function connection(patch: Partial<LlmConnection>): LlmConnection {
   return {

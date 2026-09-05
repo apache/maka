@@ -1,35 +1,70 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import test from 'node:test';
 import { parseInteractiveRuntimeHostCandidateArguments } from '../candidate-cli.js';
 
-test('accepts an absolute legacy configuration root for the elected Candidate', () => {
-  assert.deepEqual(
-    parseInteractiveRuntimeHostCandidateArguments([
-      '--root',
-      '/runtime-host-root',
-      '--expected-root-id',
-      'a'.repeat(64),
-      '--legacy-configuration-root',
-      '/legacy-configuration',
-    ]),
-    {
-      rootPath: '/runtime-host-root',
-      expectedRootId: 'a'.repeat(64),
-      legacyConfigurationRoot: '/legacy-configuration',
-      idleGraceMs: undefined,
-      handshakeTimeoutMs: undefined,
-    },
-  );
+const ROOT_ID = 'a'.repeat(64);
+const STARTUP_ATTEMPT_ID = '00000000-0000-4000-8000-000000000001';
+const DEPLOYMENT_ID = '00000000-0000-4000-8000-000000000002';
+
+test('parses the production candidate flags', () => {
+  const parsed = parseInteractiveRuntimeHostCandidateArguments([
+    '--root',
+    '/tmp/workspace',
+    '--expected-root-id',
+    ROOT_ID,
+    '--startup-attempt-id',
+    STARTUP_ATTEMPT_ID,
+    '--idle-grace-ms',
+    '10000',
+    '--managed-deployment-id',
+    DEPLOYMENT_ID,
+    '--managed-config-revision',
+    '7',
+  ]);
+  assert.equal(parsed.rootPath, '/tmp/workspace');
+  assert.equal(parsed.expectedRootId, ROOT_ID);
+  assert.equal(parsed.startupAttemptId, STARTUP_ATTEMPT_ID);
+  assert.equal(parsed.idleGraceMs, 10_000);
+  assert.deepEqual(parsed.managedLaunchClaim, {
+    deploymentId: DEPLOYMENT_ID,
+    configRevision: 7,
+  });
+});
+
+// The Desktop E2E composition is selected by its own entry module, not by a
+// flag on the production CLI — so `--desktop-e2e` is simply unknown here.
+test('rejects the retired desktop E2E flag as an unknown argument', () => {
   assert.throws(
     () =>
       parseInteractiveRuntimeHostCandidateArguments([
         '--root',
-        '/runtime-host-root',
+        '/tmp/workspace',
         '--expected-root-id',
-        'a'.repeat(64),
-        '--legacy-configuration-root',
-        'relative/configuration',
+        ROOT_ID,
+        '--startup-attempt-id',
+        STARTUP_ATTEMPT_ID,
+        '--desktop-e2e',
+        '1',
       ]),
-    /Invalid --legacy-configuration-root/,
+    /Invalid Runtime Host candidate argument: --desktop-e2e/,
   );
 });

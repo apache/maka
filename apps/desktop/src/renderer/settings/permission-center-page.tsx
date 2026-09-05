@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { StatusSemantic } from '@maka/ui';
 import { useEffect, useState, type ComponentType } from 'react';
 import {
@@ -15,9 +34,9 @@ import type {
   OsPermissionId,
   OsPermissionSnapshot,
   PermissionSnapshot,
-  UiLocale,
-} from '@maka/core';
-import { isDragGrantPermissionId, OS_PERMISSION_IDS } from '@maka/core';
+} from '@maka/core/capabilities';
+import type { UiLocale } from '@maka/core/ui-locale';
+import { isDragGrantPermissionId, OS_PERMISSION_IDS } from '@maka/core/capabilities';
 import {
   Banner,
   Button,
@@ -31,13 +50,21 @@ import {
   Text,
   VStack,
 } from '@astryxdesign/core';
-import { RelativeTime, StatusDot, useMountedRef, useToast, useUiLocale } from '@maka/ui';
+import { RelativeTime, StatusDot, useMountedRef, useUiLocale } from '@maka/ui';
 import { SettingsPage, SettingsSection } from './settings-section';
 import { getPermissionCenterCopy, type PermissionCenterCopy } from '../locales/permission-center-copy';
 import { settingsActionErrorMessage } from './settings-error-copy';
+import {
+  useRuntimeHostSettingsErrorReporter,
+  useRuntimeHostSettingsTarget,
+} from './runtime-host-settings-target.js';
 import { dotForStatus } from '@maka/ui';
 import { SettingsSkeletonStack } from './settings-skeleton';
 import { useActionGuard } from './use-action-guard';
+import {
+  SettingsStatusSummaryFilter,
+  type SettingsStatusSummaryOption,
+} from './settings-status-summary-filter';
 
 /**
  * PR-UI-8 — Permission Center read-only page. Consumes `window.maka.permissions.getSnapshot()`
@@ -65,7 +92,10 @@ const OS_PERMISSION_ICONS: Record<OsPermissionId, ComponentType<LucideProps>> = 
   automation: MousePointer2,
 };
 
+type PermissionStatusFilter = 'granted' | 'pending' | 'denied' | 'other';
+
 export function PermissionCenterPage() {
+  const host = useRuntimeHostSettingsTarget();
   const locale = useUiLocale();
   const copy = getPermissionCenterCopy(locale);
   const [permissions, setPermissions] = useState<PermissionSnapshot | null>(null);
@@ -74,7 +104,8 @@ export function PermissionCenterPage() {
   const [error, setError] = useState<string | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
   const [pendingPermAction, setPendingPermAction] = useState<string | null>(null);
-  const toast = useToast();
+  const [permissionFilter, setPermissionFilter] = useState<PermissionStatusFilter | null>(null);
+  const reportHostError = useRuntimeHostSettingsErrorReporter();
   const mountedRef = useMountedRef();
   const permissionActionGuard = useActionGuard<string>();
 
@@ -83,8 +114,8 @@ export function PermissionCenterPage() {
     setLoading(true);
     setError(null);
     Promise.all([
-      window.maka.permissions.getSnapshot(),
-      window.maka.capabilities.getSnapshot(),
+      window.maka.permissions.getSnapshot(host),
+      window.maka.capabilities.getSnapshot(host),
     ])
       .then(([perm, caps]) => {
         if (cancelled) return;
@@ -100,7 +131,7 @@ export function PermissionCenterPage() {
     return () => {
       cancelled = true;
     };
-  }, [locale, refreshTick]);
+  }, [host, locale, refreshTick]);
 
   useEffect(() => {
     const refreshAfterSystemSettings = () => {
@@ -116,6 +147,14 @@ export function PermissionCenterPage() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!permissions) return;
+    setPermissionFilter((current) => {
+      if (!current) return current;
+      return permissionIdsForFilter(permissions, current).length > 0 ? current : null;
+    });
+  }, [permissions]);
+
   async function runPermissionAction(
     permId: OsPermissionId,
     kind: 'request' | 'openSettings' | 'dragGrant',
@@ -126,10 +165,10 @@ export function PermissionCenterPage() {
     try {
       const result =
         kind === 'request'
-          ? await window.maka.permissions.requestAccess(permId)
+          ? await window.maka.permissions.requestAccess(permId, host)
           : kind === 'dragGrant'
-            ? await window.maka.permissions.startDragOnboarding(permId)
-            : await window.maka.permissions.openSystemSettings(permId);
+            ? await window.maka.permissions.startDragOnboarding(permId, host)
+            : await window.maka.permissions.openSystemSettings(permId, host);
       if (result.ok) {
         // A direct request resolves after the user has answered, so refresh
         // now. Deep links and the drag guide resolve as soon as System
@@ -138,10 +177,18 @@ export function PermissionCenterPage() {
           setRefreshTick((tick) => tick + 1);
         }
       } else if (mountedRef.current) {
-        toast.error(copy.actionFailed, permissionActionFailureCopy(result.reason, result.message, copy));
+        reportHostError(
+          copy.actionFailed,
+          permissionActionFailureCopy(result.reason, result.message, copy),
+        );
       }
     } catch (err) {
-      if (mountedRef.current) toast.error(copy.actionFailed, settingsActionErrorMessage(err, locale));
+      if (mountedRef.current) {
+        reportHostError(
+          copy.actionFailed,
+          settingsActionErrorMessage(err, locale),
+        );
+      }
     } finally {
       if (permissionActionGuard.current === actionKey) {
         permissionActionGuard.finish();
@@ -174,6 +221,15 @@ export function PermissionCenterPage() {
 
   const checkedAtMs = capabilities.checkedAt;
   const counts = summarizePermissionStatuses(permissions);
+  const visiblePermissionIds = permissionFilter
+    ? permissionIdsForFilter(permissions, permissionFilter)
+    : OS_PERMISSION_IDS;
+  const summaryFilters: Array<SettingsStatusSummaryOption<PermissionStatusFilter>> = [
+    { value: 'granted', label: copy.granted, count: counts.granted, tone: 'success' },
+    { value: 'pending', label: copy.pending, count: counts.pending, tone: 'warning' },
+    { value: 'denied', label: copy.denied, count: counts.denied, tone: 'destructive' },
+    { value: 'other', label: copy.other, count: counts.other, tone: 'neutral' },
+  ];
 
   return (
     <SettingsPage>
@@ -203,14 +259,15 @@ export function PermissionCenterPage() {
           </div>
         )}
       >
-        <p className="settingsHealthSummaryLine" role="group" aria-label={copy.summaryAria}>
-          <span data-tone="neutral">{copy.granted} {counts.granted}</span>
-          <span data-tone={counts.pending > 0 ? 'warning' : 'neutral'}>{copy.pending} {counts.pending}</span>
-          <span data-tone={counts.denied > 0 ? 'destructive' : 'neutral'}>{copy.denied} {counts.denied}</span>
-          <span data-tone="neutral">{copy.other} {counts.other}</span>
-        </p>
+        <SettingsStatusSummaryFilter<PermissionStatusFilter>
+          value={permissionFilter}
+          options={summaryFilters}
+          label={copy.summaryAria}
+          optionLabel={(option, selected) => copy.summaryFilterAria(option.label, option.count, selected)}
+          onChange={setPermissionFilter}
+        />
         <List hasDividers aria-label={copy.osListAria}>
-            {OS_PERMISSION_IDS.map((id) => (
+            {visiblePermissionIds.map((id) => (
               <OsPermissionRow
                 key={id}
                 snapshot={permissions.permissions[id]}
@@ -306,6 +363,18 @@ function summarizePermissionStatuses(snapshot: PermissionSnapshot): {
     }
   }
   return { granted, pending, denied, other };
+}
+
+function permissionIdsForFilter(
+  snapshot: PermissionSnapshot,
+  filter: PermissionStatusFilter,
+): OsPermissionId[] {
+  return OS_PERMISSION_IDS.filter((id) => {
+    const status = snapshot.permissions[id]?.status;
+    if (filter === 'pending') return status === 'not_determined';
+    if (filter === 'other') return status !== 'granted' && status !== 'not_determined' && status !== 'denied';
+    return status === filter;
+  });
 }
 
 function permissionActionFailureCopy(reason: string, message: string | undefined, copy: PermissionCenterCopy): string {
@@ -418,6 +487,7 @@ function CapabilityRow(props: {
               row grew ~5x. `label position: start` keeps each readout on
               one line (label left, value right) like the <dl> it replaced. */}
           <MetadataList
+            className="settingsCapabilityMetadata"
             columns={2}
             label={{ position: 'start', width: 92 }}
             aria-label={copy.layers.aria(capabilityLabel)}
@@ -428,7 +498,7 @@ function CapabilityRow(props: {
                     an unwrapped reason ran straight into the state value
                     ("探测降级maka-cu 未响应握手…"). */}
                 <VStack gap={0.5}>
-                  <Text type="body" size="sm">{layer.value}</Text>
+                  <Text type="body">{layer.value}</Text>
                   {layer.reason ? (
                     <Text type="supporting" size="sm" color="secondary">{layer.reason}</Text>
                   ) : null}
@@ -438,6 +508,7 @@ function CapabilityRow(props: {
           </MetadataList>
           {capability.osPermissions.length > 0 && (
             <MetadataList
+              className="settingsCapabilityMetadata"
               columns={2}
               label={{ position: 'start', width: 92 }}
               aria-label={copy.requiredPermissionsAria(capabilityLabel)}
@@ -544,7 +615,7 @@ function OsPermissionRow(props: {
        crushed the label column into a one-word-per-line sliver. Three
        buttons are a flow, not a row control — they move under the
        description and keep the full card width. */
-    <HStack gap={2} align="center" wrap="wrap">
+    (<HStack gap={2} align="center" wrap="wrap">
       {showOpenSettings && (
             <Button
               variant={showRequest || showDragGrant ? 'secondary' : 'primary'}
@@ -555,38 +626,39 @@ function OsPermissionRow(props: {
               label={pendingKey === 'openSettings' ? props.copy.opening : props.copy.openSettings}
             />
           )}
-          {/* The guided flow is the primary action where it exists: it does
-              what 前往系统设置 does and then stays to help. The plain link
-              keeps its place beside it so the manual route is never removed. */}
-          {showDragGrant && (
-            <Button
-              variant="primary"
-              size="sm"
-              onClick={props.onDragGrant}
-              isDisabled={busy}
-              aria-busy={pendingKey === 'dragGrant' ? 'true' : undefined}
-              label={pendingKey === 'dragGrant' ? props.copy.dragGranting : props.copy.dragGrant}
-            />
-          )}
-          {showRequest && (
-            <Button
-              /* One primary per row. When the guided flow is present it owns
-                 the primary slot (see above), so 请求授权 steps down to
-                 secondary — otherwise the row shipped two filled accent
-                 buttons side by side and named no recommended path. */
-              variant={showDragGrant ? 'secondary' : 'primary'}
-              size="sm"
-              onClick={props.onRequest}
-              isDisabled={busy}
-              aria-busy={pendingKey === 'request' ? 'true' : undefined}
-              label={pendingKey === 'request' ? props.copy.requesting : props.copy.request}
-            />
-          )}
-    </HStack>
+      {/* The guided flow is the primary action where it exists: it does
+          what 前往系统设置 does and then stays to help. The plain link
+          keeps its place beside it so the manual route is never removed. */}
+      {showDragGrant && (
+        <Button
+          variant="primary"
+          size="sm"
+          onClick={props.onDragGrant}
+          isDisabled={busy}
+          aria-busy={pendingKey === 'dragGrant' ? 'true' : undefined}
+          label={pendingKey === 'dragGrant' ? props.copy.dragGranting : props.copy.dragGrant}
+        />
+      )}
+      {showRequest && (
+        <Button
+          /* One primary per row. When the guided flow is present it owns
+             the primary slot (see above), so 请求授权 steps down to
+             secondary — otherwise the row shipped two filled accent
+             buttons side by side and named no recommended path. */
+          variant={showDragGrant ? 'secondary' : 'primary'}
+          size="sm"
+          onClick={props.onRequest}
+          isDisabled={busy}
+          aria-busy={pendingKey === 'request' ? 'true' : undefined}
+          label={pendingKey === 'request' ? props.copy.requesting : props.copy.request}
+        />
+      )}
+    </HStack>)
   );
 
   return (
     <ListItem
+      data-permission-id={snapshot.id}
       data-state={snapshot.status}
       /* The plate keeps its class: a status-tinted rounded icon well is
          product artwork (it turns red when a permission is denied), not
@@ -633,7 +705,7 @@ function localizedCapabilityLabel(capability: CapabilitySnapshot, locale: UiLoca
 }
 
 function localizedSnapshotText(value: string | undefined, locale: UiLocale): string | undefined {
-  if (!value || (locale === 'en' && /[\u3400-\u9fff]/u.test(value))) return undefined;
+  if (!value || (locale !== 'zh-CN' && /[\u3400-\u9fff]/u.test(value))) return undefined;
   return value;
 }
 
@@ -642,7 +714,7 @@ function localizedCapabilityGuidance(
   locale: UiLocale,
   copy: PermissionCenterCopy,
 ): readonly string[] {
-  return capability.guidance.filter((item) => locale === 'zh' || !/[\u3400-\u9fff]/u.test(item));
+  return capability.guidance.filter((item) => locale === 'zh-CN' || !/[\u3400-\u9fff]/u.test(item));
 }
 
 function featureTone(state: CapabilitySnapshot['feature']['state']): StatusSemantic {

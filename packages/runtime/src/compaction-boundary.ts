@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type {
   CompactionDecisionDiagnostic,
   ContextBudgetDiagnostic,
@@ -7,11 +26,8 @@ export type CompactionStage = 'priorReplay' | 'activeStep';
 export type CompactionSourceKind = 'runtimeEvents' | 'providerMessages';
 export type CompactionBoundaryKind =
   | 'historyCompact'
-  | 'synthesisCache'
   | 'staleToolResultPrune'
-  | 'activeToolResultPrune'
-  | 'activeFullCompact'
-  | 'semanticCompact';
+  | 'activeToolResultPrune';
 export type CompactionDecisionKind = 'unchanged' | 'replaced' | 'failedOpen';
 
 export interface CompactionCoverage {
@@ -90,76 +106,6 @@ export interface CompactionDecision {
   failOpenReason?: string;
   skippedReasonCounts?: Readonly<Record<string, number>>;
   validationReasonCounts?: Readonly<Record<string, number>>;
-}
-
-export interface HistoryCompactBoundaryLike {
-  version: number;
-  blockId: string;
-  sessionId: string;
-  createdAt: number;
-  highWaterName: string;
-  highWaterSeq: number;
-  coverage: {
-    turnIds: readonly string[];
-    runtimeEventIds: readonly string[];
-    contentKinds: readonly string[];
-    bodySha256: readonly string[];
-  };
-  sourceArchiveRefs?: readonly {
-    runtimeEventId: string;
-    artifactId: string;
-    bodySha256: string;
-    originalEstimatedTokens: number;
-    originalBytes: number;
-  }[];
-  estimatedTokens?: number;
-}
-
-export function historyCompactBlockToCompactionBoundary(
-  block: HistoryCompactBoundaryLike,
-  options: {
-    stage?: CompactionStage;
-    renderedText?: string;
-    preservedAnchor?: CompactionBoundary['preservedAnchor'];
-    validationStatus?: CompactionBoundary['validationStatus'];
-    validationReason?: string;
-  } = {},
-): CompactionBoundary {
-  return {
-    kind: 'historyCompact',
-    stage: options.stage ?? 'priorReplay',
-    schemaVersion: block.version,
-    boundaryId: block.blockId,
-    sessionId: block.sessionId,
-    createdAt: block.createdAt,
-    highWaterName: block.highWaterName,
-    highWaterSeq: block.highWaterSeq,
-    coverage: {
-      turnIds: block.coverage.turnIds,
-      runtimeEventIds: block.coverage.runtimeEventIds,
-      contentKinds: block.coverage.contentKinds,
-      bodySha256: block.coverage.bodySha256,
-    },
-    ...(options.preservedAnchor ? { preservedAnchor: options.preservedAnchor } : {}),
-    ...(block.sourceArchiveRefs && block.sourceArchiveRefs.length > 0
-      ? {
-          archiveRefs: block.sourceArchiveRefs.map((ref) => ({
-            kind: 'runtimeEventSource' as const,
-            sessionId: block.sessionId,
-            runtimeEventId: ref.runtimeEventId,
-            artifactId: ref.artifactId,
-            bodySha256: ref.bodySha256,
-            originalEstimatedTokens: ref.originalEstimatedTokens,
-            originalBytes: ref.originalBytes,
-          })),
-        }
-      : {}),
-    sourceHashes: block.coverage.bodySha256,
-    ...(options.renderedText !== undefined ? { renderedText: options.renderedText } : {}),
-    ...(block.estimatedTokens !== undefined ? { estimatedTokens: block.estimatedTokens } : {}),
-    validationStatus: options.validationStatus ?? 'notValidated',
-    ...(options.validationReason ? { validationReason: options.validationReason } : {}),
-  };
 }
 
 export function compactionDecisionToDiagnostic(

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /* The open row group (SettingsSection variant='rows'). The Astryx settings
    idiom — the CLI's settings/settings-dialog templates and `astryx docs
    layout` — is edge-to-edge rows split by hairline dividers, with NO card
@@ -67,7 +86,7 @@
 .settingsReadOnlyValue {
   min-width: 0;
   max-width: var(--settings-row-end-cap);
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
   font: var(--maka-text-body);
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
@@ -111,7 +130,7 @@
   display: inline-flex;
   align-items: center;
   gap: var(--space-1-5);
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
   font: var(--maka-text-body);
   white-space: nowrap;
 }
@@ -177,10 +196,12 @@
   min-width: 0;
 }
 
+/* Centre the remove control against the field, not the full cell. Keep
+   this min-height aligned with the input control height token. */
 .requestHeaderRemove {
   display: flex;
   align-items: center;
-  min-height: 2.5rem;
+  min-height: var(--h-control-lg);
 }
 
 @container settings-rows (max-width: 460px) {
@@ -230,4 +251,18 @@
 .settingsRowsGroup > *:last-child {
   border-end-start-radius: var(--radius-surface);
   border-end-end-radius: var(--radius-surface);
+}
+
+/*
+ * Import · the batch selection bar.
+ *
+ * It heads the catalog List directly below it, so it carries no rule of its
+ * own: the List already draws dividers between its rows, and a second line
+ * here would read as a divider above a row that is not one.
+ *
+ * The spacer takes the leftover width so 导入所选 stays on the trailing edge
+ * whatever the locale does to the count's length.
+ */
+.maka-import-selection-spacer {
+  flex: 1 1 auto;
 }

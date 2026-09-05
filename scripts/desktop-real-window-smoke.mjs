@@ -1,4 +1,23 @@
 #!/usr/bin/env node
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * PR-DESKTOP-SMOKE-0: real Electron window smoke runner.
  *
@@ -10,9 +29,9 @@
  */
 
 import { execFile, spawn } from 'node:child_process';
-import { terminateChildProcessTree } from '@maka/runtime';
+import { terminateChildProcessTree } from '@maka/runtime/process-tree-terminator';
 import { closeElectronApplication } from './electron-lifecycle.mjs';
-import { buildFixtureEnv } from './fixture-env.mjs';
+import { buildFixtureEnv, inactiveWindowPlatformArgs } from './fixture-env.mjs';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createInterface } from 'node:readline/promises';
@@ -284,9 +303,11 @@ async function launchElectron(args, diagnostics) {
   // a developer with `npm run dev` open smoked the dev server instead of the
   // build this script just made (VITE_DEV_SERVER_URL), and the run touched
   // the real $HOME. A fixture window also starts hidden for its whole
-  // lifecycle (`startHidden` in `main.ts`), which leaves this gate with
-  // nothing to look at — showWindow opts this run back into a visible window,
-  // and the dock rule follows it.
+  // lifecycle (the `hidden` reveal mode — see `window-reveal.ts`), which
+  // leaves this gate with nothing to look at. showWindow opts this run into a
+  // visible window; it stays an accessory app that never takes the foreground,
+  // so the window appears without interrupting whoever launched it. Clicking
+  // it still brings it forward when someone wants to drive it by hand.
   const env = buildFixtureEnv(userDataDir, homeDir, {
     scenario: args.startupOnly ? undefined : args.scenario,
     showWindow: true,
@@ -294,7 +315,9 @@ async function launchElectron(args, diagnostics) {
   env.MAKA_E2E_FIXTURE_WIDTH = String(args.width);
   env.MAKA_E2E_FIXTURE_HEIGHT = String(args.height);
   env.MAKA_REAL_WINDOW_SMOKE = '1';
-  const launchArgs = ['.', `--user-data-dir=${userDataDir}`];
+  // This run always reveals its window inactively, which needs XWayland on a
+  // native Wayland session.
+  const launchArgs = ['.', ...inactiveWindowPlatformArgs(), `--user-data-dir=${userDataDir}`];
   const child = spawn(electronBin, launchArgs, {
     cwd: DESKTOP_DIR,
     env,

@@ -1,3 +1,24 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { withTimeout } from '@maka/core/test-only/async-primitives';
+import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { fork, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -6,7 +27,8 @@ import { connect, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { DEEP_RESEARCH_SESSION_LABEL, DEEP_RESEARCH_SESSION_NAME } from '@maka/core';
+import { DatabaseSync } from 'node:sqlite';
+import { DEEP_RESEARCH_SESSION_LABEL, DEEP_RESEARCH_SESSION_NAME } from '@maka/core/deep-research';
 import { openInteractiveArtifactStoreForWrite } from '@maka/storage/artifact-stores';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
@@ -16,9 +38,10 @@ import {
   tryAcquireInteractiveRootOwner,
   type StorageRootCapability,
 } from '@maka/storage/root-authority';
-import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-authority';
+import { openInteractiveSessionTodoStoreForWrite } from '@maka/storage/session-todo-authority';
 import {
   connectRuntimeHost,
+  readRuntimeHostConnectionCatalog,
   RuntimeHostOperationError,
   type RuntimeHostConnection,
 } from '../client/index.js';
@@ -27,7 +50,7 @@ import {
   encodeProtocolMessage,
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_PROTOCOL_VERSION,
-  RuntimeHostProtocolError,
+  SESSION_CATALOG_LIVE_RUN_STATE_SCHEMA_VERSION,
   type ClientFrame,
   type SessionCatalogItem,
   type SessionCatalogProjection,
@@ -43,6 +66,10 @@ const CURRENT_PROTOCOL = {
 } as const;
 const PROCESS_TIMEOUT_MS = 10_000;
 const WIRE_OVERSIZED_MODEL_ID = '😀'.repeat(256);
+const KNOWN_EMPTY_LIVE_RUN_STATE = {
+  schemaVersion: SESSION_CATALOG_LIVE_RUN_STATE_SCHEMA_VERSION,
+  runningTurnIds: [],
+} as const;
 
 test('two Clients share stable Session creation, CAS configuration, and catalog continuity', {
   skip: process.platform === 'win32' ? 'Windows SQLite shutdown lifecycle' : false,
@@ -63,8 +90,8 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
   let host: ExecutionHostHandle | undefined;
   try {
     host = await startHost(root, capability.rootId);
-    const desktop = await connectClient(root, 'desktop');
-    const tui = await connectClient(root, 'tui');
+    const desktop = await connectClient(root);
+    const tui = await connectClient(root);
     try {
       const catalogChanged = new Promise<string>((resolve) => {
         tui.subscribeSessionCatalogChanges(({ sessionId }) => resolve(sessionId));
@@ -215,6 +242,7 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
 
       const subscription = await tui.openSessionSubscription({
         sessionId: created.id,
+        transcript: { kind: 'none' },
       });
       const iterator = subscription[Symbol.asyncIterator]();
       assert.equal(subscription.snapshot.session.metadataRevision, created.revision);
@@ -245,22 +273,16 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
         desktop.request('session.configuration.update', {
           sessionId: created.id,
           expectedRevision: configurationRevision,
-          configuration: {
-            modelTarget: { kind: 'default' },
-            thinkingLevel: null,
+          patch: {
             permissionMode: 'bypass',
-            collaborationMode: 'agent',
             orchestrationMode: 'graph',
           },
         }),
         tui.request('session.configuration.update', {
           sessionId: created.id,
           expectedRevision: configurationRevision,
-          configuration: {
-            modelTarget: { kind: 'default' },
-            thinkingLevel: null,
+          patch: {
             permissionMode: 'bypass',
-            collaborationMode: 'agent',
             orchestrationMode: 'default',
           },
         }),
@@ -277,20 +299,15 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
         assert.fail('One Session configuration must commit');
       }
       const configuredSession = requireSessionProjection(committedConfiguration.session);
-      assert.deepEqual(await querySession(desktop, created.id), configuredSession);
+      assert.deepEqual(await querySession(desktop, created.id), {
+        ...configuredSession,
+        liveRunState: KNOWN_EMPTY_LIVE_RUN_STATE,
+      });
       const unchangedConfiguration = await desktop.request('session.configuration.update', {
         sessionId: configuredSession.id,
         expectedRevision: configuredSession.revision,
-        configuration: {
-          modelTarget: {
-            kind: 'explicit',
-            connectionSlug: configuredSession.llmConnectionSlug,
-            model: configuredSession.model,
-          },
-          thinkingLevel: configuredSession.thinkingLevel ?? null,
+        patch: {
           permissionMode: configuredSession.permissionMode,
-          collaborationMode: configuredSession.collaborationMode,
-          orchestrationMode: configuredSession.orchestrationMode,
         },
       });
       assert.deepEqual(unchangedConfiguration, {
@@ -300,16 +317,8 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
       const narrowedConfiguration = await desktop.request('session.configuration.update', {
         sessionId: configuredSession.id,
         expectedRevision: configuredSession.revision,
-        configuration: {
-          modelTarget: {
-            kind: 'explicit',
-            connectionSlug: configuredSession.llmConnectionSlug,
-            model: configuredSession.model,
-          },
-          thinkingLevel: configuredSession.thinkingLevel ?? null,
+        patch: {
           permissionMode: 'explore',
-          collaborationMode: configuredSession.collaborationMode,
-          orchestrationMode: configuredSession.orchestrationMode,
         },
       });
       assert.equal(narrowedConfiguration.kind, 'committed');
@@ -323,12 +332,12 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
       const secondCwd = join(base, 'workspace-second');
       await Promise.all([mkdir(firstCwd), mkdir(secondCwd)]);
       const relocationOutcomes = await Promise.all([
-        desktop.relocateSessionWorkspace({
+        desktop.request('session.workspace.relocate', {
           sessionId: narrowedSession.id,
           expectedRevision: narrowedSession.revision,
           workspace: { kind: 'host_path', path: firstCwd },
         }),
-        tui.relocateSessionWorkspace({
+        tui.request('session.workspace.relocate', {
           sessionId: narrowedSession.id,
           expectedRevision: narrowedSession.revision,
           workspace: { kind: 'host_path', path: secondCwd },
@@ -346,7 +355,10 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
         relocatedSession.workspace.hostCwd === (await realpath(firstCwd)) ||
           relocatedSession.workspace.hostCwd === (await realpath(secondCwd)),
       );
-      assert.deepEqual(await querySession(tui, narrowedSession.id), relocatedSession);
+      assert.deepEqual(await querySession(tui, narrowedSession.id), {
+        ...relocatedSession,
+        liveRunState: KNOWN_EMPTY_LIVE_RUN_STATE,
+      });
 
       await setDefaultModel(desktop, connectionId, WIRE_OVERSIZED_MODEL_ID);
       const rejectedSessionId = 'wire-oversized-default-model';
@@ -369,17 +381,22 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
         desktop.request('session.configuration.update', {
           sessionId: relocatedSession.id,
           expectedRevision: relocatedSession.revision,
-          configuration: {
-            modelTarget: { kind: 'default' },
-            thinkingLevel: null,
-            permissionMode: relocatedSession.permissionMode,
-            collaborationMode: relocatedSession.collaborationMode,
-            orchestrationMode: relocatedSession.orchestrationMode,
+          patch: {
+            modelTarget: {
+              kind: 'explicit',
+              connectionId: relocatedSession.llmConnectionId!,
+              connectionSlug: relocatedSession.llmConnectionSlug,
+              model: WIRE_OVERSIZED_MODEL_ID,
+            },
           },
         }),
-        operationError('invalid_request'),
+        (error: unknown) =>
+          error instanceof RuntimeHostProtocolError && error.code === 'invalid_frame',
       );
-      assert.deepEqual(await querySession(desktop, relocatedSession.id), relocatedSession);
+      assert.deepEqual(await querySession(desktop, relocatedSession.id), {
+        ...relocatedSession,
+        liveRunState: KNOWN_EMPTY_LIVE_RUN_STATE,
+      });
       await setDefaultModel(tui, connectionId, 'gpt-5');
 
       const read = requireSessionProjection(
@@ -433,41 +450,6 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
         bulk.length + catalogBeforeBulk.sessions.length,
       );
 
-      const filteredStart = await desktop.request('session.catalog.query', {
-        kind: 'list_start',
-        filter: { labelSlug: 'paged' },
-      });
-      assert.equal(filteredStart.kind, 'page');
-      if (filteredStart.kind !== 'page' || !filteredStart.nextCursor) {
-        assert.fail('Filtered Session catalog must provide a continuation');
-      }
-      assert.equal(filteredStart.sessions.length, 32);
-      const filteredContinuation = await tui.request('session.catalog.query', {
-        kind: 'list_continue',
-        revision: filteredStart.revision,
-        cursor: filteredStart.nextCursor,
-      });
-      assert.equal(filteredContinuation.kind, 'page');
-      if (filteredContinuation.kind !== 'page') {
-        assert.fail('Filtered Session catalog continuation must return a page');
-      }
-      assert.equal(filteredContinuation.sessions.length, 2);
-      assert.equal(
-        [...filteredStart.sessions, ...filteredContinuation.sessions].every((session) =>
-          requireSessionProjection(session).labels.includes('paged'),
-        ),
-        true,
-      );
-      await assert.rejects(
-        desktop.request('session.catalog.query', {
-          kind: 'list_continue',
-          filter: { isFlagged: true },
-          revision: filteredStart.revision,
-          cursor: filteredStart.nextCursor,
-        }),
-        operationError('invalid_request'),
-      );
-
       const staleStart = await desktop.request('session.catalog.query', {
         kind: 'list_start',
       });
@@ -488,33 +470,27 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
         cursor: staleStart.nextCursor,
       });
       assert.equal(staleContinuation.kind, 'revision_changed');
-      const flagged = await tui.request('session.catalog.query', {
-        kind: 'list_start',
-        filter: { isFlagged: true },
-      });
-      assert.equal(flagged.kind, 'page');
-      if (flagged.kind !== 'page') assert.fail('Flagged Session query must return a page');
-      assert.deepEqual(
-        flagged.sessions.map((session) => session.id).sort(),
-        [created.id, bulkSession.id, oversizedSessionId].sort(),
-      );
 
       await subscription.close();
       const retirementSubscription = await tui.openSessionSubscription({
         sessionId: created.id,
+        transcript: { kind: 'none' },
       });
       const retirementIterator = retirementSubscription[Symbol.asyncIterator]();
       const beforeArchive = await querySession(desktop, created.id);
-      const heartbeat = await desktop.request('automation.mutate', {
+      assert.equal(beforeArchive.status, 'active');
+      const heartbeat = await desktop.request('scheduled-task.mutate', {
         kind: 'create',
-        sessionId: created.id,
-        name: 'Retirement blocker',
-        prompt: 'Remain attached to this Session.',
-        schedule: { type: 'interval', seconds: 3_600 },
+        input: {
+          title: 'Retirement blocker',
+          intentBody: 'Remain attached to this Session.',
+          schedule: { kind: 'interval', everySeconds: 3_600, startAt: Date.now() },
+          effect: { kind: 'session_resume', sessionId: created.id },
+        },
       });
-      assert.equal(heartbeat.kind, 'committed');
-      if (heartbeat.kind !== 'committed' || !heartbeat.automation) {
-        assert.fail('Heartbeat creation must commit');
+      assert.equal(heartbeat.kind, 'task');
+      if (heartbeat.kind !== 'task') {
+        assert.fail('ScheduledTask creation must commit');
       }
       await assert.rejects(
         tui.request('session.lifecycle.set', {
@@ -523,12 +499,11 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
         }),
         operationError('session_busy'),
       );
-      const deletedHeartbeat = await tui.request('automation.mutate', {
+      const deletedHeartbeat = await tui.request('scheduled-task.mutate', {
         kind: 'delete',
-        sessionId: created.id,
-        automationId: heartbeat.automation.id,
+        taskId: heartbeat.task.id,
       });
-      assert.equal(deletedHeartbeat.kind, 'committed');
+      assert.equal(deletedHeartbeat.kind, 'deleted');
       const archived = requireSessionProjection(
         await desktop.request('session.lifecycle.set', {
           sessionId: created.id,
@@ -536,9 +511,15 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
         }),
       );
       assert.equal(archived.isArchived, true);
+      assert.equal(archived.status, beforeArchive.status);
+      assert.deepEqual(
+        (await desktop.request('session.todo.query', { sessionId: created.id })).items,
+        [{ content: 'Retain archived task', status: 'in_progress' }],
+      );
       assert.equal((await querySession(tui, created.id)).isArchived, true);
       const archivedContinuity = await nextProjection(retirementIterator);
       assert.equal(archivedContinuity.snapshot.session.isArchived, true);
+      assert.equal(archivedContinuity.snapshot.session.status, beforeArchive.status);
       assert.ok(archived.revision > beforeArchive.revision);
 
       const restored = requireSessionProjection(
@@ -548,8 +529,13 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
         }),
       );
       assert.equal(restored.isArchived, false);
+      assert.equal(restored.status, beforeArchive.status);
+      assert.deepEqual((await tui.request('session.todo.query', { sessionId: created.id })).items, [
+        { content: 'Retain archived task', status: 'in_progress' },
+      ]);
       const restoredContinuity = await nextProjection(retirementIterator);
       assert.equal(restoredContinuity.snapshot.session.isArchived, false);
+      assert.equal(restoredContinuity.snapshot.session.status, beforeArchive.status);
 
       assert.deepEqual(
         await desktop.request('session.remove', {
@@ -583,13 +569,6 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
         }),
         operationError('not_found'),
       );
-      await assert.rejects(
-        tui.request('automation.query', {
-          kind: 'list_start',
-          sessionId: created.id,
-        }),
-        operationError('not_found'),
-      );
       assert.deepEqual(
         await tui.request('session.remove', {
           sessionId: created.id,
@@ -608,15 +587,10 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
         assert.fail('Retirement Artifact must be readable before Session removal');
       }
       assert.equal(artifactBeforeRemoval.artifact?.id, 'retirement-artifact');
-      const tasksBeforeRemoval = await tui.request('task.ledger.query', {
-        kind: 'list_start',
+      const todoBeforeRemoval = await tui.request('session.todo.query', {
         sessionId: retirementSessionId,
       });
-      assert.equal(tasksBeforeRemoval.kind, 'page');
-      if (tasksBeforeRemoval.kind !== 'page') {
-        assert.fail('Retirement Task Ledger must be readable before Session removal');
-      }
-      assert.equal(tasksBeforeRemoval.tasks.length, 1);
+      assert.equal(todoBeforeRemoval.items.length, 1);
 
       assert.deepEqual(
         await desktop.request('session.remove', {
@@ -635,10 +609,7 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
           operationError('not_found'),
         );
         await assert.rejects(
-          connection.request('task.ledger.query', {
-            kind: 'list_start',
-            sessionId: retirementSessionId,
-          }),
+          connection.request('session.todo.query', { sessionId: retirementSessionId }),
           operationError('not_found'),
         );
       }
@@ -651,10 +622,7 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
         operationError('not_found'),
       );
       await assert.rejects(
-        tui.request('task.ledger.query', {
-          kind: 'list_start',
-          sessionId: recoverySessionId,
-        }),
+        tui.request('session.todo.query', { sessionId: recoverySessionId }),
         operationError('not_found'),
       );
     } finally {
@@ -663,6 +631,113 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
     await stopHost(host);
     host = undefined;
     await assertRetirementCleanup(root, capability, [retirementSessionId, recoverySessionId]);
+  } finally {
+    await terminateHost(host);
+    await rm(join(resolveRootControlNamespace(), capability.rootId), {
+      recursive: true,
+      force: true,
+    });
+    await removePosixEndpointDirectories(capability.rootId);
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('deleted account identity survives same-slug reuse until explicit recovery', {
+  skip: process.platform === 'win32' ? 'Windows SQLite shutdown lifecycle' : false,
+  timeout: 120_000,
+}, async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-session-identity-'));
+  const root = join(base, 'root');
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+  const { connectionId: originalConnectionId } = await seedAuthority(root, capability);
+  let host: ExecutionHostHandle | undefined;
+  try {
+    host = await startHost(root, capability.rootId);
+    const client = await connectClient(root);
+    try {
+      const created = requireSessionProjection(
+        await client.request('session.create', {
+          sessionId: 'same-slug-recovery',
+          workspace: { kind: 'host_path', path: root },
+          modelTarget: { kind: 'default' },
+        }),
+      );
+      assert.equal(created.llmConnectionId, originalConnectionId);
+
+      const originalCatalog = await readRuntimeHostConnectionCatalog(client);
+      const original = originalCatalog.connections.find(
+        (entry) => entry.connectionId === originalConnectionId,
+      );
+      assert.ok(original);
+      if (!original) assert.fail('Original Connection must exist');
+      const removed = await client.request('connection.catalog.remove', {
+        expected: {
+          connectionId: original.connectionId,
+          revision: original.revision,
+        },
+      });
+      assert.equal(removed.kind, 'committed');
+
+      const afterRemoval = await readRuntimeHostConnectionCatalog(client);
+      const replacement = await client.request('connection.catalog.create', {
+        expectedCatalogRevision: afterRemoval.revision,
+        connection: {
+          slug: original.slug,
+          name: 'Replacement OpenAI',
+          providerType: 'openai',
+          enabled: true,
+          enabledModelIds: ['gpt-5'],
+        },
+      });
+      assert.equal(replacement.kind, 'committed');
+      if (replacement.kind !== 'committed') assert.fail('Replacement Connection must commit');
+      assert.notEqual(replacement.connection.connectionId, originalConnectionId);
+      const credential = await client.request('credential.vault.set', {
+        locator: {
+          scope: 'connection',
+          connectionId: replacement.connection.connectionId,
+          kind: 'api_key',
+        },
+        expected: null,
+        secret: 'replacement-test-key',
+      });
+      assert.equal(credential.kind, 'committed');
+
+      const preserved = await client.request('session.configuration.update', {
+        sessionId: created.id,
+        expectedRevision: created.revision,
+        patch: { permissionMode: 'bypass' },
+      });
+      assert.equal(preserved.kind, 'committed');
+      if (preserved.kind !== 'committed' || 'kind' in preserved.session) {
+        assert.fail('Permission update must preserve the deleted account identity');
+      }
+      assert.equal(preserved.session.llmConnectionId, originalConnectionId);
+
+      const recovered = await client.request('session.configuration.update', {
+        sessionId: preserved.session.id,
+        expectedRevision: preserved.session.revision,
+        patch: {
+          modelTarget: {
+            kind: 'explicit',
+            connectionId: replacement.connection.connectionId,
+            connectionSlug: original.slug,
+            model: 'gpt-5',
+          },
+        },
+      });
+      assert.equal(recovered.kind, 'committed');
+      if (recovered.kind !== 'committed' || 'kind' in recovered.session) {
+        assert.fail('Explicit replacement recovery must commit');
+      }
+      assert.equal(recovered.session.llmConnectionId, replacement.connection.connectionId);
+      assert.equal(recovered.session.llmConnectionSlug, original.slug);
+      assert.equal(recovered.session.model, 'gpt-5');
+    } finally {
+      await client.close();
+    }
+    await stopHost(host);
+    host = undefined;
   } finally {
     await terminateHost(host);
     await rm(join(resolveRootControlNamespace(), capability.rootId), {
@@ -694,7 +769,7 @@ test('stable Session creation survives response loss and Host restart', {
       modelTarget: { kind: 'default' },
     };
     dropped = await sendCreateWithoutReadingResponse(host.endpoint, input);
-    const observer = await connectClient(root, 'tui');
+    const observer = await connectClient(root);
     const committed = await waitForSession(observer, input.sessionId);
     dropped.abort();
     dropped = undefined;
@@ -702,12 +777,12 @@ test('stable Session creation survives response loss and Host restart', {
 
     await terminateHost(host);
     host = await startHost(root, capability.rootId);
-    const retrying = await connectClient(root, 'desktop');
+    const retrying = await connectClient(root);
     try {
-      assert.deepEqual(
-        requireSessionProjection(await retrying.request('session.create', input)),
-        committed,
-      );
+      const retried = requireSessionProjection(await retrying.request('session.create', input));
+      const { liveRunState, ...persistedCommitted } = committed;
+      assert.deepEqual(liveRunState, KNOWN_EMPTY_LIVE_RUN_STATE);
+      assert.deepEqual(retried, persistedCommitted);
     } finally {
       await retrying.close();
     }
@@ -744,7 +819,7 @@ async function seedAuthority(
     const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
     const unread = await execution.sessionStore.create({
       cwd: root,
-      backend: 'fake',
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -781,7 +856,7 @@ async function seedAuthority(
         'visible',
         ...Array.from({ length: 700 }, (_, index) => `label-${index}`),
       ],
-      backend: 'fake',
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -789,7 +864,7 @@ async function seedAuthority(
     const oversized = await execution.sessionStore.create({
       cwd: root,
       projectId: 'p'.repeat(257),
-      backend: 'fake',
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -797,7 +872,7 @@ async function seedAuthority(
     const retirement = await execution.sessionStore.create({
       cwd: root,
       name: 'Retirement sidecars',
-      backend: 'fake',
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -805,13 +880,13 @@ async function seedAuthority(
     const recovery = await execution.sessionStore.create({
       cwd: root,
       name: 'Retirement recovery',
-      backend: 'fake',
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
     });
     const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
-    const tasks = await openInteractiveTaskLedgerStoreForWrite(owner.lease);
+    const todos = await openInteractiveSessionTodoStoreForWrite(owner.lease);
     await artifacts.recover();
     await Promise.all([
       artifacts.create({
@@ -836,8 +911,13 @@ async function seedAuthority(
         source: 'fixture',
         now: 2,
       }),
-      tasks.create(retirement.id, [{ subject: 'Remove retirement task' }]),
-      tasks.create(recovery.id, [{ subject: 'Recover retirement task cleanup' }]),
+      todos.replaceAll(retirement.id, [{ content: 'Remove retirement task', status: 'pending' }]),
+      todos.replaceAll('stable-session', [
+        { content: 'Retain archived task', status: 'in_progress' },
+      ]),
+      todos.replaceAll(recovery.id, [
+        { content: 'Recover retirement task cleanup', status: 'pending' },
+      ]),
     ]);
     const retirementSnapshot = await execution.sessionStore.readHeaderRecordSnapshot(retirement.id);
     await execution.sessionStore.remove(recovery.id);
@@ -916,12 +996,23 @@ async function assertRetirementCleanup(
   try {
     const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
     const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
-    const tasks = await openInteractiveTaskLedgerStoreForWrite(owner.lease);
     await artifacts.recover();
     assert.deepEqual(await execution.sessionStore.listPendingSessionRetirementCleanupIds(), []);
     for (const sessionId of sessionIds) {
       assert.equal((await artifacts.listPage(sessionId, { offset: 0, limit: 1 })).total, 0);
-      assert.deepEqual(await tasks.list(sessionId, { includeTerminal: true }), []);
+      const database = new DatabaseSync(join(root, 'runtime.sqlite'), { readOnly: true });
+      try {
+        assert.equal(
+          database
+            .prepare(
+              'SELECT COUNT(*) AS count FROM workflow_session_todo_documents WHERE session_id = ?',
+            )
+            .get(sessionId)!.count,
+          0,
+        );
+      } finally {
+        database.close();
+      }
     }
   } finally {
     await owner.close();
@@ -1044,13 +1135,9 @@ async function terminateChild(child: ChildProcess): Promise<void> {
   );
 }
 
-async function connectClient(
-  rootPath: string,
-  surface: 'desktop' | 'tui',
-): Promise<RuntimeHostConnection> {
+async function connectClient(rootPath: string): Promise<RuntimeHostConnection> {
   const result = await connectRuntimeHost({
     rootPath,
-    surface,
     protocol: CURRENT_PROTOCOL,
   });
   assert.equal(result.kind, 'connected');
@@ -1066,7 +1153,6 @@ async function sendCreateWithoutReadingResponse(
   await writeClientFrame(transport, {
     kind: 'hello',
     clientInstanceId: randomUUID(),
-    surface: 'desktop',
     protocolMin: CURRENT_PROTOCOL.min,
     protocolMax: CURRENT_PROTOCOL.max,
     compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
@@ -1171,19 +1257,6 @@ function waitForExit(
     child.once('exit', onExit);
   });
 }
-
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
-  let timer: NodeJS.Timeout | undefined;
-  return Promise.race([
-    promise,
-    new Promise<T>((_resolve, reject) => {
-      timer = setTimeout(() => reject(new Error(message)), timeoutMs);
-    }),
-  ]).finally(() => {
-    if (timer) clearTimeout(timer);
-  });
-}
-
 function operationError(code: RuntimeHostOperationError['code']) {
   return (error: unknown): boolean =>
     error instanceof RuntimeHostOperationError && error.code === code;

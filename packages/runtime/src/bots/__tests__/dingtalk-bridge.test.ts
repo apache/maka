@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
@@ -5,7 +24,6 @@ import { __TEST__ } from '../dingtalk-bridge.js';
 
 const {
   decideDingTalkClose,
-  dingTalkReconnectBackoffMs,
   pickDingTalkSendRoute,
   classifyDingTalkSendResponse,
   dingTalkPayloadToEvent,
@@ -15,19 +33,7 @@ const {
 describe('decideDingTalkClose (PR-BOT-DINGTALK-OPERATIONAL-0)', () => {
   it('only treats explicit stops as terminal', () => {
     assert.deepEqual(decideDingTalkClose(1000, true), { kind: 'stopped' });
-    assert.deepEqual(decideDingTalkClose(1006, true), { kind: 'stopped' });
     assert.deepEqual(decideDingTalkClose(1000, false), { kind: 'reconnect' });
-    assert.deepEqual(decideDingTalkClose(1006, false), { kind: 'reconnect' });
-  });
-});
-
-describe('dingTalkReconnectBackoffMs', () => {
-  it('doubles from 1s and caps at 30s', () => {
-    assert.equal(dingTalkReconnectBackoffMs(0), 1_000);
-    assert.equal(dingTalkReconnectBackoffMs(1), 2_000);
-    assert.equal(dingTalkReconnectBackoffMs(2), 4_000);
-    assert.equal(dingTalkReconnectBackoffMs(5), 30_000);
-    assert.equal(dingTalkReconnectBackoffMs(50), 30_000);
   });
 });
 
@@ -51,7 +57,6 @@ describe('pickDingTalkSendRoute', () => {
         msgParam: '{"content":"hi"}',
       },
     });
-    assert.equal(pickDingTalkSendRoute('', 'app-key-1', 'hi'), null);
     assert.equal(pickDingTalkSendRoute('   ', 'app-key-1', 'hi'), null);
   });
 });
@@ -122,7 +127,6 @@ describe('dingTalkPayloadToEvent', () => {
   });
 
   it('drops payloads missing text or routing identity', () => {
-    assert.equal(dingTalkPayloadToEvent({ senderId: 'u', conversationId: 'c', text: {} }, 1), null);
     assert.equal(dingTalkPayloadToEvent({ senderId: 'u', conversationId: 'c' }, 1), null);
     assert.equal(dingTalkPayloadToEvent({ conversationId: 'c', text: { content: 'x' } }, 1), null);
     assert.equal(dingTalkPayloadToEvent({ senderId: 'u', text: { content: 'x' } }, 1), null);

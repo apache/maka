@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * Pure helpers backing the Composer panel's draft + history behavior.
  *
@@ -16,6 +35,40 @@
  * `forwardRef` made it impossible to read either the helpers OR the
  * panel in isolation.
  */
+
+import type { SessionSummary } from '@maka/core/session';
+
+export type ComposerModelSwitchBlockReason =
+  | 'streaming'
+  | 'running'
+  | 'permission'
+  | 'pending';
+
+export type ComposerModelSwitchAvailability =
+  | { readonly available: true; readonly pending: false }
+  | {
+      readonly available: false;
+      readonly pending: boolean;
+      readonly reason: ComposerModelSwitchBlockReason;
+    };
+
+/** One model-picker availability contract shared by its host CTA and Composer. */
+export function deriveComposerModelSwitchAvailability(input: {
+  streaming?: boolean;
+  sessionStatus?: SessionSummary['status'];
+  pending?: boolean;
+}): ComposerModelSwitchAvailability {
+  const pending = input.pending === true;
+  if (input.streaming) return { available: false, pending, reason: 'streaming' };
+  if (input.sessionStatus === 'running') {
+    return { available: false, pending, reason: 'running' };
+  }
+  if (input.sessionStatus === 'waiting_for_user') {
+    return { available: false, pending, reason: 'permission' };
+  }
+  if (pending) return { available: false, pending: true, reason: 'pending' };
+  return { available: true, pending: false };
+}
 
 /**
  * Maximum number of characters retained for a single draft. Drafts

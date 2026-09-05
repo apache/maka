@@ -7,12 +7,32 @@ counterpart: ./runtime-resume-architecture.md
 implementation_status: phase_0_2_and_phase_3a_authority_current
 document_status: current
 translation_status: synced
-last_verified: 2026-07-28
+last_verified: 2026-09-02
 owners:
   - maka-backend
 ---
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
 
 # 第八章：Resume 不是重试——Maka 如何从崩溃事实安全继续
+
+跟踪：[生产级 Write/Edit 恢复 #4319](https://github.com/apache/maka/issues/4319)、[safe-boundary continuation 加固 #4324](https://github.com/apache/maka/issues/4324)、[sandbox boundary negotiation #3731](https://github.com/apache/maka/issues/3731)
 
 > 本章回答一个看起来简单、实际上很危险的问题：Maka 在模型调用工具时崩溃，重启后怎样知道哪些事情已经发生、哪些事情可以继续、哪些事情必须停下来等人处理？核心答案是：**先从不可变的 RuntimeEvent 恢复事实，再由唯一的 RecoveryResolver 判定工具状态；只有历史、执行和 workspace 三条边界都能证明安全时，才创建新的 Run 继续。Resume 从不复活旧进程，也不把“再试一次”伪装成恢复。**
 
@@ -113,7 +133,7 @@ flowchart TD
 
 | 词 | 处理对象 | 结果 |
 |---|---|---|
-| Repair | 旧 Run 的持久化状态 | 补齐或对齐 terminal RuntimeEvent、Run header 和 Turn 状态 |
+| Repair | 旧 Run 的持久化状态 | 给被中断的 Run 补上 terminal RuntimeEvent，并对齐 Turn 状态 |
 | Resume / Continuation | 一段已经证明安全的历史边界 | 创建新身份，继续 provider loop |
 | Reconcile | T1 已派发但没有 T2 outcome 的工具操作 | 观察外部世界，提交 completed 或 parked recovery decision |
 
@@ -186,7 +206,8 @@ Resume 安全性的核心不是“数据都写进 SQLite”，而是每类数据
 | 数据 | 性质 | 用途 |
 |---|---|---|
 | Immutable `RuntimeEvent` | canonical semantic fact | 模型历史、工具 call/dispatch/outcome、recovery observation/decision、terminal fact |
-| `AgentRunHeader` 与 AgentRun events | durable operational envelope | 一次执行尝试的身份、状态、lineage、诊断 |
+| invocation 开场事实 | 一次执行尝试的不可变声明 | 身份、route、配置、root authority、lineage |
+| AgentRun events | durable operational record | Runtime 逐阶段做了什么，以及诊断 |
 | `tool_operations` | SQLite projection | 快速读取某个 operation 当前状态 |
 | `tool_journal_events` | SQLite projection | 快速查看 prepared/outcome/recovery 状态变化 |
 | Session messages / Turn state | 产品与 UI 投影 | 展示对话和 Turn 状态，不参与工具恢复裁决 |
@@ -387,14 +408,11 @@ sequenceDiagram
   participant UI as Renderer
 
   App->>SM: recoverInterruptedSessions()
-  SM->>RS: 列出非终态 / 可疑 AgentRun
+  SM->>ES: 列出没有 terminal event 的 invocation
   SM->>ES: 读取 immutable RuntimeEvents
-  SM->>SM: 检查 terminal ledger 与 run header
-  alt 已有 terminal RuntimeEvent，header 落后
-    SM->>RS: 修复 matching run header
-  else 没有 terminal RuntimeEvent
-    SM->>ES: 先提交 recovered terminal RuntimeEvent
-    SM->>RS: 再提交 matching failed/cancelled header
+  SM->>RS: 读取这次 Run 的 operational events
+  alt 没有 terminal RuntimeEvent
+    SM->>ES: 提交 recovered terminal RuntimeEvent
   else ledger ambiguous / unreadable
     SM-->>UI: 保留可检查状态，fail closed
   end
@@ -404,9 +422,9 @@ sequenceDiagram
 
 这里保护一个贯穿 Runtime 的不变量：
 
-> terminal RuntimeEvent 必须先于 terminal Run header 提交；header 不能凭自己宣布一次执行已经结束。
+> 一次执行结束，当且仅当它的 terminal RuntimeEvent 已经落盘；没有别的东西记录它结束了。
 
-如果在两次提交之间再次崩溃，下次启动仍能从 terminal RuntimeEvent 修好 header。反过来先写 header，就会出现一个没有语义事实支持的“完成”状态。
+因为不存在第二次提交，崩溃也就没有可以落进去的缝隙。
 
 Desktop 还会恢复 Graph coordinator 和 supervisor wake。只有这些 startup repair 完成，并且 safe-boundary flag 开启后，才会尝试自动 continuation。
 
@@ -417,7 +435,7 @@ Phase 1 不处理未知副作用。它只允许“所有工具都已经有 commi
 Planner 需要同时通过这些 gate：
 
 - source Run 与 RuntimeEvent ledger 可读；
-- Run header 与唯一 terminal RuntimeEvent 一致；
+- source invocation 有且只有一个 terminal event；
 - 所有事件属于同一个 source execution identity；
 - Phase 0 得到 `safe_replay`；
 - 没有 pending permission；
@@ -455,7 +473,7 @@ sequenceDiagram
   participant Planner as RuntimeContinuationPlanner
   participant Kernel as RuntimeKernel
   participant Run as New AgentRun
-  participant Runner as RuntimeRunner
+  participant Kernel as RuntimeKernel
   participant Provider as Model provider
 
   User->>UI: 点击 Safe resume
@@ -472,14 +490,32 @@ sequenceDiagram
     SM->>Kernel: resumeSafeBoundaryContinuation
     Kernel->>Kernel: 重新读取并 revalidate 全部边界
     Kernel->>Run: 创建新 Run，写 continuationSource
-    Run->>Runner: begin continuation
-    Runner->>Run: durable continuation-start RuntimeEvent
-    Runner->>Provider: replay history，不追加重复 user message
+    Run->>Kernel: 返回 durable continuation-start proof
+    Kernel->>Kernel: 消费一次性 start proof
+    Kernel->>Provider: replay history，不追加重复 user message
     Provider-->>UI: 新 Turn 的流式事件
   end
 ```
 
-CLI/TUI 的 `/resume` 走同一个 `SessionManager` plan/execute seam，只是把 park 作为命令错误展示。Desktop startup auto-resume 也复用同一 planner 和 execution path，不维护第三套恢复逻辑。
+CLI/TUI 的 `/resume` 走同一个 `SessionManager` plan/execute seam。Desktop startup auto-resume 也复用同一 planner 和 execution path，不维护第三套恢复逻辑。
+
+### 当前的 parked 原因边界
+
+Runtime Host 负责把 Runtime planner 的 rejection reasons 投影成封闭的
+`TurnResumeParkReason` wire union；CLI 不能重新推断 Host 内部状态。当前 Host 会保留三种容易混淆的原因：
+
+- `resume_feature_disabled`：feature flag 未开启；
+- `continuation_authority_unavailable`：Host 无法取得 continuation authority；
+- `safety_observation_unavailable`：Host 无法取得安全观测事实。
+
+旧的 `continuation_unavailable` 不再出现在当前 wire contract 中。`/resume` driver 通过
+`SafeBoundaryResumeParkedError` 原样携带原因，TUI 只把预期的用户状态显示为普通提示：
+`resume_feature_disabled`、`resume_candidate_missing` 和 `session_busy`。authority、safety
+以及其他恢复失败仍显示为红色错误，并保留原始 reason 供诊断。
+
+这是不兼容的封闭协议变更，因此 Runtime Host compatibility epoch 推进到 57；旧 Client/Host
+组合会在握手阶段被拒绝，而不是把新的 failure reason 误判成“功能未开启”。这次变更只修正
+Host 投影和 CLI 展示，不改变 planner、durable continuation claim 或 feature flag 的 owner。
 
 ## 为什么 Continuation 不复制原用户消息
 
@@ -487,7 +523,7 @@ CLI/TUI 的 `/resume` 走同一个 `SessionManager` plan/execute seam，只是�
 
 1. 不创建第二条相同的 user event；
 2. 先提交一个 system-owned、model-invisible 的 continuation-start RuntimeEvent；
-3. 在新 Run header 中记录 source identity 和 high-water；
+3. 在新 invocation 的开场事实里记录 source identity 和 high-water；
 4. 直接把验证过的 history 交给 provider。
 
 这样既避免模型看到重复请求，也避免 completed tool call 因为“新建了一轮”而再次执行。
@@ -591,7 +627,7 @@ Writer、projection rebuild 和 `RecoveryResolver` 共享同一个 scanner/inter
 | observation | 动作 |
 |---|---|
 | `matches_expected_state` | 只做 cleanup/finalize，合成 outcome，提交 completed bundle |
-| `matches_prior_state` | park，`redo_disabled_pending_cas` |
+| `matches_prior_state` | park，`reconcile_matches_prior_state` |
 | `diverged` | park，不覆盖外部写入 |
 | `unreadable` | park，不猜测 |
 
@@ -602,7 +638,7 @@ flowchart TD
   Expected -->|"是"| Finalize["Finalize only<br/>不再次写文件"]
   Finalize --> Completed["提交 recovered outcome<br/>+ completed decision"]
   Expected -->|"否"| Prior{"current == before?"}
-  Prior -->|"是"| ParkPrior["Park<br/>redo_disabled_pending_cas"]
+  Prior -->|"是"| ParkPrior["Park<br/>reconcile_matches_prior_state"]
   Prior -->|"否，内容分叉"| ParkDiverged["Park<br/>保护外部写入"]
   Prior -->|"无法读取"| ParkUnreadable["Park<br/>不猜测"]
 ```
@@ -701,7 +737,7 @@ flowchart LR
     RP["RuntimeContinuationPlanner"]
     CS["Continuation safety inspector"]
     RK["RuntimeKernel"]
-    AR["AgentRun / RuntimeRunner"]
+    AR["AgentRun"]
     TR["ToolRuntime"]
   end
 
@@ -743,7 +779,7 @@ flowchart LR
 - `packages/runtime` 负责 T1/T2 时序、Resolver、plan、execution revalidation、新 Run lineage 和 startup repair；
 - Desktop main / CLI / runtime-host 负责真实 store、工具目录、后台任务、入口与生命周期；
 - renderer 和 TUI 只触发、展示，不拥有恢复判定；
-- Headless/Harbor 要在 Runtime high-water 之外额外提供 workspace checkpoint 和新 Attempt 语义，不能只复用聊天历史。
+- Eval 把 Runtime continuation 视为 Runtime Host 内部行为，不把它当作实验 retry。
 
 ## 当前 Host 入口
 
@@ -767,30 +803,9 @@ flowchart LR
 
 Runtime host 使用 strict recovery stores 执行 startup repair。严格模式不会把 unreadable ledger 吞成 best-effort fallback，适合服务端 composition 在接收新写入前建立清楚的恢复边界。
 
-### Managed workspace execution admission（M1.1）
+### Eval
 
-Resume 的 workspace plane 已经有一层 storage-owned 的执行准入地基，但它还没有接入 Runtime host：
-
-- baseline open 只返回绑定 `ManagedWorkspaceOwner` 的 opaque handle，不公开 raw cwd；
-- 每次 admission 都重新证明 storage-root identity、exact SQLite canonical head 和 exact Git receipt/binding/HEAD/tree/ownership；普通生产路径只在签发 scope 前做一次最终 Git verification；
-- 一次 admission 签发一个 callback-scoped、`workspaceEffect: none` 的 opaque scope；同一 handle 可以并发多个只读 scope；
-- `close()` 拒绝新 admission，并等待所有 active scope drain；callback 退出后 scope 立即失效，伪造与过期分别返回 typed `managed_workspace_execution_scope_invalid` / `managed_workspace_execution_scope_expired`；
-- crash harness 可配置 preliminary-verification failpoint，但该测试路径仍须再次通过 final verification 才能签发 scope。
-
-M1.2 在同一交付中完成 owner-bound storage worker bridge 与 runtime-host lifecycle composition：只允许 Read/Glob/Grep，把无 owner 校验的 inspect 降为显式 test support，拒绝 active callback 内 reentrant `owner.close()`，用不可混淆的 attached/managed typed profile 阻止 silent fallback，并固定 tool operations → managed owner → root owner 的关闭顺序。本切片不让 Desktop/CLI 默认开启 managed execution；Write/Edit/Format/Bash/未知工具必须 fail closed。详细合同见 [Managed Workspace Execution Admission v1](./runtime-managed-workspace-execution-admission-v1.zh-CN.md)。
-
-### Headless / Harbor
-
-当前 Runtime resume 可以提供 immutable history high-water 和 replay gate，但 timeout Attempt 的真正恢复还必须绑定：
-
-- Task/Attempt identity；
-- compaction summary ref；
-- Git-managed workspace ref；
-- workspace lease/worktree identity；
-- dirty/include policy；
-- durable budget。
-
-缺少这些事实时，应回退为新的 attempt-level retry，并明确记录 fallback reason；不能把它叫作同一 workspace 上的 resume。
+Eval 不恢复或重建 Runtime execution，只请求 Runtime Host 执行 Maka subject。基础设施替换会向同一个 experiment cell 追加新 attempt；Runtime continuation 留在该 subject 内部，不成为 repetition 或 retry。
 
 ## 一个完整的运行流程应该怎样走
 
@@ -802,7 +817,7 @@ M1.2 在同一交付中完成 owner-bound storage worker bridge 与 runtime-host
 4. T1 原子提交 call、dispatch 和 projection。
 5. 执行外部副作用，不持有数据库长事务。
 6. T2 原子提交 outcome，再把结果交给模型。
-7. terminal RuntimeEvent 先提交，Run header 后提交。
+7. 一次执行只以提交唯一一个 terminal RuntimeEvent 来结束。
 8. 崩溃重启后先 repair 旧 Run。
 9. Resolver 只读 immutable facts，判定 completed / not-dispatched / indeterminate / parked / corruption。
 10. 有 production reconciler 时，对 indeterminate 提交一个原子 recovery bundle；没有时 park。
@@ -944,8 +959,7 @@ Process crash、SQLite transaction atomicity 和应用级 `fsync` 不能自动�
 4. `packages/runtime/src/continuation-safety.ts`：host safety observation。
 5. `packages/runtime/src/session-manager.ts`：startup repair、authoritative plan 和 continuation API。
 6. `packages/runtime/src/runtime-kernel.ts`：claim、execution revalidation 和新 Run 创建。
-7. `packages/runtime/src/runtime-runner.ts`：continuation-start 与无重复 user message 的 provider dispatch。
-8. `packages/runtime/src/agent-run.ts`：Run lineage、terminal persistence 与 crash failpoints。
+7. `packages/runtime/src/agent-run.ts`：Run lineage、continuation-start、terminal persistence 与 crash failpoints。
 
 ### Product wiring
 
@@ -975,7 +989,6 @@ Process crash、SQLite transaction atomicity 和应用级 `fsync` 不能自动�
 - [RecoveryResolver ADR](./runtime-recovery-resolver-adr.zh-CN.md)
 - [Runtime Resume Phase 3–4 实施路线](./runtime-resume-phase3-phase4-workspace-checkpoint-design.zh-CN.md)
 - [Runtime Resume 拆分与提取账本](./runtime-resume-extraction-ledger.zh-CN.md)
-- [Runtime Resume 与 Tool Journal 设计草案](../runtime-resume-tool-journal-design-draft.zh-CN.md)
 - [第一章：Log Is the Runtime](./runtime-core-architecture-draft.zh-CN.md)
 
 ## 小结

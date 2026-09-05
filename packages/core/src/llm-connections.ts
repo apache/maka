@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * LLM provider connection metadata.
  *
@@ -5,7 +24,10 @@
  * tokens live in the desktop credential store, keyed by connection slug.
  */
 
-import type { BackendKind } from './session.js';
+// Type-only, and the one edge back to the catalog: a connection is what holds
+// a catalog, so the projected-connection shape belongs here beside the stored
+// one rather than in the module that computes entries.
+import type { ModelCatalogEntry } from './model-catalog.js';
 import type { RelayModelProfiles } from './model-thinking.js';
 import type {
   JsonObject,
@@ -15,32 +37,31 @@ import type {
 import { CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS } from './codex-model-compatibility.js';
 import {
   CATALOG_PROVIDER_TYPES,
-  OPENCODE_FREE_DEFAULT_ENABLED_MODELS,
   OPENCODE_FREE_DEFAULT_MODEL,
   PROVIDER_REGISTRY,
-  READY_PROVIDER_TYPES,
   RECOMMENDED_PROVIDER_TYPES,
-  isWiredOAuthProvider,
-  normalizeProviderType,
+  providerDefaultsOf,
+  providerFallbackModelIds,
+  providerMenuLabel,
   type ApplyPatchProtocol,
   type ProviderCatalogGroup,
   type ProviderCategory,
   type ProviderDefaults,
   type ProviderRuntimeAdapter,
+  type ProviderRuntimeProfileId,
+  type ProviderResponsesContract,
   type ProviderType,
 } from './provider-registry.js';
 
-export type { BackendKind } from './session.js';
 export { CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS };
 export {
   CATALOG_PROVIDER_TYPES,
-  OPENCODE_FREE_DEFAULT_ENABLED_MODELS,
   OPENCODE_FREE_DEFAULT_MODEL,
   PROVIDER_REGISTRY,
-  READY_PROVIDER_TYPES,
   RECOMMENDED_PROVIDER_TYPES,
-  isWiredOAuthProvider,
-  normalizeProviderType,
+  providerDefaultsOf,
+  providerFallbackModelIds,
+  providerMenuLabel,
 };
 export type {
   ApplyPatchProtocol,
@@ -48,14 +69,36 @@ export type {
   ProviderCategory,
   ProviderDefaults,
   ProviderRuntimeAdapter,
+  ProviderRuntimeProfileId,
+  ProviderResponsesContract,
   ProviderType,
 };
+
+export function isRelayProviderType(
+  providerType: ProviderType,
+): providerType is 'openai-compatible' | 'openai-responses-compatible' {
+  return PROVIDER_REGISTRY[providerType].relayModelProfiles === true;
+}
 
 export type ConnectionAuth =
   | { kind: 'api_key'; apiKey: string }
   | { kind: 'optional_api_key'; apiKey?: string }
   | { kind: 'oauth_token'; oauthToken: string; expiresAt?: number }
   | { kind: 'none' };
+
+/**
+ * The modalities a model may declare on either side. Every validator that
+ * admits a modality reads this one set: a decoder, an overlay normalizer, and
+ * a live-fetch reader each holding their own copy is how one of them stayed a
+ * catalog behind the others.
+ */
+export type ModelModality = 'text' | 'image' | 'audio' | 'pdf' | 'video';
+
+const MODEL_MODALITIES: readonly ModelModality[] = ['text', 'image', 'audio', 'pdf', 'video'];
+
+export function isModelModality(value: unknown): value is ModelModality {
+  return MODEL_MODALITIES.includes(value as ModelModality);
+}
 
 export interface ModelInfo {
   id: string;
@@ -79,16 +122,37 @@ export interface ModelInfo {
     vision?: boolean;
     reasoning?: boolean;
     functionCalling?: boolean;
+    /** Whether one response may contain multiple independent tool calls. */
+    parallelToolCalls?: boolean;
     imageGeneration?: boolean;
     /** Provider-hosted live web search, using this exact model and connection. */
     webSearch?: boolean;
   };
   /** Multimodal input/output support from provider catalog metadata. */
   modalities?: {
-    input: Array<'text' | 'image' | 'audio' | 'pdf'>;
-    output: Array<'text' | 'image' | 'audio'>;
+    input: ModelModality[];
+    output: ModelModality[];
   };
+  /**
+   * Read-time provenance for values overlaid from model-facts.json. This is
+   * never persisted in a provider inventory; it lets catalog consumers show
+   * where a projected value came from.
+   */
+  factOverriddenFields?: readonly ModelFactField[];
 }
+
+export type ModelFactField =
+  | 'displayName'
+  | 'description'
+  | 'apiProtocol'
+  | 'contextWindow'
+  | 'inputLimit'
+  | 'maxOutputTokens'
+  | 'knowledgeCutoff'
+  | 'structuredOutput'
+  | 'lastUpdated'
+  | 'capabilities'
+  | 'modalities';
 
 export type ModelDiscoverySource = 'fetched' | 'fallback';
 
@@ -109,13 +173,13 @@ export interface RuntimeExecutionConnection {
   defaultModel: string;
   models?: ModelInfo[];
   /**
-   * Per-model user declarations for an `openai-compatible` relay: the facts
+   * Per-model user declarations for a custom OpenAI relay: the facts
    * (offered thinking levels, vision enable/disable, context window) that
    * neither the relay's /models report nor built-in metadata can decide
    * (see `RelayModelProfile` in `model-thinking.ts`). First-class and typed —
    * relay models are unknown to metadata and a catalog refresh rewrites
    * `models[]` rows, so declarations live next to the user-edited fields.
-   * Invariants enforced at store boundaries: only `openai-compatible`
+   * Invariants enforced at store boundaries: only custom OpenAI relay
    * connections carry profiles, and only for ids in `enabledModelIds`
    * (disabling a model deletes its profile).
    */
@@ -127,13 +191,13 @@ export interface RuntimeExecutionConnection {
 }
 
 export interface LlmConnection extends RuntimeExecutionConnection {
+  /** Immutable Runtime Host entity identity. Legacy non-Host projections may omit it. */
+  connectionId?: string;
   name: string;
   enabled: boolean;
   /** Model ids shown in model pickers. Legacy connections omit this and enable only their default model. */
   enabledModelIds?: string[];
   modelSource?: ModelDiscoverySource;
-  /** Unix ms timestamp for the last successful model discovery result. */
-  modelsFetchedAt?: number;
   lastTestStatus?: ConnectionLastTestStatus;
   /** ISO timestamp of the last explicit connection test. */
   lastTestAt?: string;
@@ -142,6 +206,24 @@ export interface LlmConnection extends RuntimeExecutionConnection {
   createdAt: number;
   updatedAt: number;
 }
+
+/** A persisted Connection entity projected with its immutable catalog identity. */
+export interface IdentifiedLlmConnection extends LlmConnection {
+  connectionId: string;
+}
+
+/**
+ * What a client adds to a stored connection: the catalog the Host resolved for
+ * it. Clients render from this rather than calling `buildModelCatalogEntries`
+ * against their own bundled metadata, so a Desktop and a TUI attached to one
+ * Host describe the same model the same way even at different versions.
+ */
+export interface HostResolvedConnectionCatalog {
+  readonly catalogEntries: readonly ModelCatalogEntry[];
+}
+
+/** A connection as a client holds it: stored fields plus the Host's catalog. */
+export type ProjectedLlmConnection = IdentifiedLlmConnection & HostResolvedConnectionCatalog;
 
 /**
  * Read-time normalizer: the model ids a stored connection exposes.
@@ -168,6 +250,122 @@ export function connectionEnabledModelIds(connection: {
     if (id) seen.add(id);
   }
   return [...seen];
+}
+
+/**
+ * The models this connection offers a user to pick, as the Host decided them.
+ *
+ * The one answer to "may this model be offered". Every picker — chat, daily
+ * review, the TUI, subagent presets — asks here, so a Desktop and a TUI
+ * attached to one Host cannot disagree about what is selectable. Three facts
+ * decide it and all three are the Host's:
+ *
+ *   1. the connection is enabled and its provider is one this build registers;
+ *   2. the user enabled this model on it;
+ *   3. the Host's entry says the connection can hold a chat on it.
+ *
+ * (3) already subsumes what clients used to re-derive locally: a retired
+ * provider, a quarantined `brokenModelIds` id, and a model whose metadata says
+ * it cannot chat are all non-offerable before a client sees them. A client
+ * re-testing any of those against its OWN registry answers for a build that is
+ * not the one running the send.
+ *
+ * A saved selection that is no longer offered is deliberately absent rather
+ * than filtered late: callers that must keep the current value visible append
+ * it themselves with an "unavailable" label, which says the true thing.
+ *
+ * The Codex subscription's servable set needs no filter here either: the Host
+ * resolved these entries through `normalizeOpenAiCodexConnection`, so an id
+ * that subscription cannot serve never became an entry to intersect with.
+ */
+export function offerableCatalogEntries(
+  connection: {
+    readonly providerType: string;
+    readonly enabled: boolean;
+    readonly enabledModelIds?: readonly string[];
+    readonly defaultModel?: string;
+  } & HostResolvedConnectionCatalog,
+): readonly ModelCatalogEntry[] {
+  if (!connection.enabled || !providerDefaultsOf(connection.providerType)) return [];
+  const enabled = new Set(connectionEnabledModelIds(connection));
+  return connection.catalogEntries.filter(
+    (entry) => entry.canUseAsChatDefault && enabled.has(entry.id),
+  );
+}
+
+/** The `LlmConnection` fields that decide what a connection may run. */
+export interface ConnectionModelAuthorityInput {
+  readonly providerType: ProviderType;
+  readonly enabledModelIds?: readonly string[];
+  readonly defaultModel?: string;
+  readonly models?: readonly ModelInfo[];
+  readonly modelSource?: ModelDiscoverySource;
+}
+
+/**
+ * Whether `connection.models` is this account's own list, as a provider
+ * enumerated it — the one question anything asks about that array's provenance.
+ *
+ * It is a conjunction, not a reading of `modelSource` alone. `'fetched'` means
+ * a discovery run wrote this row, and for a provider whose
+ * `modelDiscovery.kind` is `'fallback'` that run replays the array this build
+ * shipped: accurate, and still a snapshot of the provider at release rather
+ * than of the account. Absence from a snapshot means nothing at all (#1584),
+ * and a connection can be created and used before any run at all (#2896) — so
+ * only a discovering provider that has actually run answers true here.
+ *
+ * This describes a catalog; it never decides what a connection may run — see
+ * `authorizeConnectionModel`.
+ */
+export function connectionModelsEnumerateAccount(
+  connection: ConnectionModelAuthorityInput,
+): boolean {
+  return (
+    connection.modelSource === 'fetched' &&
+    connection.models !== undefined &&
+    providerSupportsModelDiscovery(connection.providerType)
+  );
+}
+
+/**
+ * The model this connection runs for this id, or `undefined` if the user never
+ * enabled it.
+ *
+ * `enabledModelIds` is the whole authorization. Only the user writes it, and
+ * only through connection settings, so it is the one input that speaks for the
+ * account. Everything else Maka holds is an observation: a `/models` response
+ * ages, arrives filtered, or — for a provider with no model-list endpoint —
+ * never arrives at all. An observation that cannot see a model is not evidence
+ * the account cannot run it.
+ *
+ * So no catalog vetoes the user here. A model the user enabled and no source
+ * describes resolves to a bare `ModelInfo`, the request goes out, and the
+ * provider answers for its own account. That answer is always more accurate
+ * than a refusal Maka synthesizes from a list it may not even have (#1584),
+ * and it is what lets a connection work before its first discovery run
+ * (#2896). Guessing wrong costs one failed request with the provider's own
+ * error on it.
+ *
+ * `connectionModelsEnumerateAccount` still says whether a catalog could have
+ * seen the model, which is a fact worth acting on elsewhere. Acting on it is
+ * not vetoing.
+ */
+export function authorizeConnectionModel(
+  connection: ConnectionModelAuthorityInput,
+  modelId: string,
+): ModelInfo | undefined {
+  const model = modelId.trim();
+  if (!model || !connectionEnabledModelIds(connection).includes(model)) return undefined;
+  // The one veto: quarantined ids fail in a shape the send cannot surface
+  // (e.g. a billed 200 with an empty completion), so the request settling it
+  // is not available as the arbiter. See ProviderDefaults.brokenModelIds.
+  if (providerDefaultsOf(connection.providerType)?.brokenModelIds?.includes(model)) {
+    return undefined;
+  }
+  // The observed row wins wherever it exists: it carries wire metadata such as
+  // `apiProtocol`, and capabilities, which a synthesized entry cannot. Absent
+  // capabilities already mean "unknown", not "unsupported".
+  return connection.models?.find((entry) => entry.id.trim() === model) ?? { id: model };
 }
 
 /**
@@ -292,43 +490,29 @@ export function reconcileConnectionAfterModelFetch(
       ),
     ),
   ];
-
-  if (liveIds.length === 0) {
-    const defaultModel = previousDefault;
-    return {
-      defaultModel,
-      enabledModelIds: connectionEnabledModelIds({
-        defaultModel,
-        enabledModelIds: previousEnabled,
-      }),
-    };
-  }
-
-  if (!previousDefault) {
-    // Nothing to repair. Seed one only for a connection that has never had a
-    // list to pick from; otherwise the absence is the user's answer.
-    if (connection.hasModelInventory || previousEnabled.length > 0) {
-      return {
-        defaultModel: '',
-        enabledModelIds: previousEnabled.filter((id) => live.has(id)),
-      };
-    }
+  // Seed a first choice only for a connection that has never had a list to
+  // pick from: four providers ship no `fallbackModels`, so for them discovery
+  // is the only place a first default can come from.
+  if (
+    !previousDefault &&
+    previousEnabled.length === 0 &&
+    !connection.hasModelInventory &&
+    liveIds.length > 0
+  ) {
     return { defaultModel: liveIds[0]!, enabledModelIds: [liveIds[0]!] };
   }
 
-  const defaultModel =
-    (live.has(previousDefault) ? previousDefault : undefined) ??
-    previousEnabled.find((id) => live.has(id)) ??
-    liveIds[0]!;
-
-  // Keep previously enabled ids that still exist live, plus the (possibly
-  // repaired) default. Do not auto-enable the entire discovered catalog.
-  const keptEnabled = previousEnabled.filter((id) => live.has(id) || id === defaultModel);
+  // Everything the user chose survives the fetch. A response that omits a
+  // model is one observation of an account that can change between requests,
+  // arrive filtered, or answer for a provider with no model-list endpoint at
+  // all — none of which is grounds for deleting a choice the user made. The
+  // picker marks an id the provider no longer mentions; unchecking it stays
+  // the user's decision (#1584).
   return {
-    defaultModel,
+    defaultModel: previousDefault,
     enabledModelIds: connectionEnabledModelIds({
-      defaultModel,
-      enabledModelIds: keptEnabled,
+      defaultModel: previousDefault,
+      enabledModelIds: previousEnabled,
     }),
   };
 }
@@ -349,61 +533,38 @@ export interface ConnectionTestResult {
   errorClass?: ConnectionTestErrorClass;
 }
 
-export const PROVIDER_DEFAULTS = PROVIDER_REGISTRY;
-
+/**
+ * The models a connection created without an explicit selection starts with,
+ * or undefined when the provider seeds nothing. Derived from the provider's
+ * shipped baseline rather than listed a second time: the two can then never
+ * disagree about what "all of them" means.
+ */
 export function defaultEnabledModelIdsWhenOmitted(
   providerType: ProviderType,
 ): readonly string[] | undefined {
-  return PROVIDER_DEFAULTS[providerType].defaultEnabledModelIds;
+  const defaults = providerDefaultsOf(providerType);
+  if (!defaults?.enableShippedModelsByDefault) return undefined;
+  return providerFallbackModelIds(defaults);
 }
 
 export function providerAuthRequiresSecret(providerType: ProviderType): boolean {
-  const authKind = PROVIDER_DEFAULTS[providerType]?.authKind;
+  const authKind = providerDefaultsOf(providerType)?.authKind;
   return authKind === 'api_key' || authKind === 'oauth_token';
 }
 
 export function providerAuthSupportsApiKey(providerType: ProviderType): boolean {
-  const authKind = PROVIDER_DEFAULTS[providerType]?.authKind;
+  const authKind = providerDefaultsOf(providerType)?.authKind;
   return authKind === 'api_key' || authKind === 'optional_api_key';
 }
 
 export function providerSupportsModelDiscovery(providerType: ProviderType): boolean {
-  const discovery = PROVIDER_DEFAULTS[providerType]?.modelDiscovery;
+  const discovery = providerDefaultsOf(providerType)?.modelDiscovery;
   return discovery !== undefined && discovery.kind !== 'fallback';
-}
-
-export function backendKindOf(c: Pick<LlmConnection, 'providerType'>): BackendKind {
-  // Unknown providerType (legacy seed, or a connection persisted on a branch
-  // that registers a provider this build doesn't know) → treat as non-real,
-  // matching `isFakeBackend` in connection-readiness.ts.
-  return PROVIDER_DEFAULTS[c.providerType]?.backendKind ?? 'fake';
 }
 
 export function effectiveBaseUrl(c: Pick<LlmConnection, 'providerType' | 'baseUrl'>): string {
   if (c.baseUrl && c.baseUrl.trim()) return c.baseUrl.trim();
-  return PROVIDER_DEFAULTS[c.providerType]?.baseUrl ?? '';
-}
-
-/**
- * Reduce a submitted connection `baseUrl` to the value that should be persisted,
- * or `undefined` if nothing should be stored.
- *
- * The add-form and edit-form pre-fill `defaults.baseUrl` and submit it verbatim
- * when the user does not customize the field. Storing that default as an
- * explicit override would pin the connection to the current default —
- * `effectiveBaseUrl` honors the explicit value first, so future default changes
- * would not reach it. Only a real override (non-empty and differing from the
- * current default) is persisted; the empty/whitespace and equals-default cases
- * collapse to `undefined` so the connection reads back through the live default.
- */
-export function persistedBaseUrl(
-  providerType: ProviderType,
-  baseUrl: string | undefined | null,
-): string | undefined {
-  const trimmed = baseUrl?.trim();
-  if (!trimmed) return undefined;
-  if (trimmed === PROVIDER_DEFAULTS[providerType]?.baseUrl) return undefined;
-  return trimmed;
+  return providerDefaultsOf(c.providerType)?.baseUrl ?? '';
 }
 
 export function validateSlug(slug: string): string | null {
@@ -423,6 +584,38 @@ export function deriveConnectionSlug(
   const base = providerType.toLowerCase().replace(/[^a-z0-9-]/g, '-');
   if (!existingSlugs.includes(base)) return base;
 
+  for (let suffix = 2; ; suffix += 1) {
+    const candidate = `${base}-${suffix}`;
+    if (!existingSlugs.includes(candidate)) return candidate;
+  }
+}
+
+export type InteractiveOAuthProviderType = Extract<
+  ProviderType,
+  'openai-codex' | 'xai-oauth' | 'github-copilot'
+>;
+
+/** Stable human-facing slug base for one interactive OAuth Connection. */
+function interactiveOAuthConnectionSlugBase(providerType: InteractiveOAuthProviderType): string {
+  switch (providerType) {
+    case 'openai-codex':
+      return 'codex-subscription';
+    case 'xai-oauth':
+      return 'xai-oauth';
+    // Shared with the local `gh` credential import so both routes to a Copilot
+    // account land on one Connection instead of two.
+    case 'github-copilot':
+      return 'github-copilot';
+  }
+}
+
+/** Derive an unused OAuth Connection slug without moving allocation into a surface. */
+export function deriveInteractiveOAuthConnectionSlug(
+  providerType: InteractiveOAuthProviderType,
+  existingSlugs: readonly string[] = [],
+): string {
+  const base = interactiveOAuthConnectionSlugBase(providerType);
+  if (!existingSlugs.includes(base)) return base;
   for (let suffix = 2; ; suffix += 1) {
     const candidate = `${base}-${suffix}`;
     if (!existingSlugs.includes(candidate)) return candidate;
@@ -593,14 +786,13 @@ export interface UpdateConnectionInput {
   apiKey?: string;
   models?: ModelInfo[];
   modelSource?: ModelDiscoverySource;
-  modelsFetchedAt?: number;
   lastTestStatus?: ConnectionLastTestStatus;
   lastTestAt?: string;
   lastTestMessage?: string;
   /**
    * Replace the whole relay profiles table: absent leaves it untouched,
    * `null` clears it outright, a table replaces it (with the usual rules —
-   * only `openai-compatible`, only for `enabledModelIds`).
+   * only custom OpenAI relays, only for `enabledModelIds`).
    */
   relayModelProfiles?: RelayModelProfiles | null;
   requestBodyOverlay?: JsonObject | null;
@@ -608,54 +800,3 @@ export interface UpdateConnectionInput {
 }
 
 export type { RequestHeaderUpdate, SavedRequestHeaders } from './request-customization.js';
-
-export function migrateConnectionV1ToV2(old: unknown): LlmConnection {
-  const value = old as Partial<LlmConnection> & {
-    backend?: string;
-    authType?: string;
-    slug?: string;
-    name?: string;
-    defaultModel?: string;
-    baseUrl?: string;
-    createdAt?: number;
-  };
-  if (value.providerType) {
-    return {
-      ...value,
-      providerType: normalizeProviderType(value.providerType),
-      enabledModelIds: connectionEnabledModelIds(value),
-    } as LlmConnection;
-  }
-  if (!value.slug) throw new Error('Cannot migrate connection without slug');
-
-  const now = Date.now();
-  if (value.backend === 'claude' && value.authType === 'oauth_token') {
-    return {
-      slug: value.slug,
-      name: value.name ?? value.slug,
-      providerType: 'claude-subscription',
-      ...(value.baseUrl ? { baseUrl: value.baseUrl } : {}),
-      defaultModel: value.defaultModel || 'claude-sonnet-4-5-20250929',
-      enabled: false,
-      enabledModelIds: [value.defaultModel || 'claude-sonnet-4-5-20250929'],
-      createdAt: value.createdAt ?? now,
-      updatedAt: now,
-    };
-  }
-
-  if (value.backend === 'claude' || value.backend === undefined) {
-    return {
-      slug: value.slug,
-      name: value.name ?? value.slug,
-      providerType: 'anthropic',
-      ...(value.baseUrl ? { baseUrl: value.baseUrl } : {}),
-      defaultModel: value.defaultModel || 'claude-sonnet-4-5-20250929',
-      enabled: true,
-      enabledModelIds: [value.defaultModel || 'claude-sonnet-4-5-20250929'],
-      createdAt: value.createdAt ?? now,
-      updatedAt: now,
-    };
-  }
-
-  throw new Error(`Cannot migrate connection ${value.slug} with backend=${value.backend}`);
-}

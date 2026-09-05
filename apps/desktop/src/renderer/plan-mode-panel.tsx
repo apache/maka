@@ -1,14 +1,30 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { useCallback, useEffect, useId, useRef, useState, type JSX } from 'react';
-import type {
-  PlanExecutionStep,
-  PlanProposal,
-  PlanSessionState,
-  SessionEvent,
-  SessionSummary,
-} from '@maka/core';
+import type { PlanExecutionStep, PlanProposal, PlanSessionState } from '@maka/core/plan';
+import type { SessionEvent } from '@maka/core/events';
+import type { SessionSummary } from '@maka/core/session';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Collapsible } from '@astryxdesign/core/Collapsible';
-import { Badge, type BadgeVariant, Button as UiButton, useToast } from '@maka/ui';
+import { Badge, type BadgeVariant, Button as UiButton, useToast, useUiLocale } from '@maka/ui';
+import { getPlanModeCopy, type PlanModeCopy } from './locales/plan-mode-copy.js';
 
 export interface PlanModeState {
   state: PlanSessionState | undefined;
@@ -22,6 +38,7 @@ export interface PlanModeState {
 
 export function usePlanModeState(session: SessionSummary | undefined): PlanModeState {
   const toastApi = useToast();
+  const copy = getPlanModeCopy(useUiLocale());
   const [state, setState] = useState<PlanSessionState>();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
@@ -54,7 +71,6 @@ export function usePlanModeState(session: SessionSummary | undefined): PlanModeS
         event.type === 'plan_submitted'
         || event.type === 'complete'
         || event.type === 'abort'
-        || isPlanToolResult(event)
       ) {
         refreshOrReport();
       }
@@ -134,17 +150,17 @@ export function usePlanModeState(session: SessionSummary | undefined): PlanModeS
   const abandon = useCallback(async (executionId: string, title: string): Promise<void> => {
     if (!session) return;
     const confirmed = await toastApi.confirm({
-      title: '放弃这个计划？',
-      description: `“${title}”的执行记录会保留，但之后不能继续恢复。`,
-      confirmLabel: '放弃计划',
-      cancelLabel: '取消',
+      title: copy.abandonConfirmation.title,
+      description: copy.abandonConfirmation.description(title),
+      confirmLabel: copy.abandonConfirmation.confirm,
+      cancelLabel: copy.abandonConfirmation.cancel,
       destructive: true,
     });
     if (!confirmed) return;
     await run(async () => {
       await window.maka.sessions.abandonPlanExecution(session.id, executionId);
     });
-  }, [run, session?.id, toastApi]);
+  }, [copy, run, session?.id, toastApi]);
 
   return { state, pending, error, requestRevision, approve, resume, abandon };
 }
@@ -154,16 +170,17 @@ export function PlanProposalCard(props: {
   planMode: PlanModeState;
 }): JSX.Element {
   const { proposal, planMode } = props;
+  const copy = getPlanModeCopy(useUiLocale()).proposal;
   const reviewable =
     proposal.status === 'pending_approval'
     && planMode.state?.latestProposalId === proposal.proposalId;
 
   return (
-    <section className="plan-mode-panel" aria-label="计划方案">
+    <section className="plan-mode-panel" aria-label={copy.aria}>
       <div className="plan-proposal-card" data-status={proposal.status}>
         <div className="plan-proposal-heading">
           <div className="plan-proposal-title">
-            <span className="plan-proposal-kicker">计划方案</span>
+            <span className="plan-proposal-kicker">{copy.kicker}</span>
             <strong>{proposal.title}</strong>
           </div>
           <div className="plan-proposal-meta">
@@ -171,19 +188,19 @@ export function PlanProposalCard(props: {
               className="plan-proposal-revision"
               label={
                 <>
-                  Revision <code>{proposal.revision}</code>
+                  {copy.revision} <code>{proposal.revision}</code>
                 </>
               }
             />
             <Badge
               variant={proposalStatusVariant(proposal.status)}
-              label={proposalStatusLabel(proposal.status)}
+              label={proposalStatusLabel(proposal.status, copy)}
             />
           </div>
         </div>
         {proposal.overview && <p className="plan-proposal-overview">{proposal.overview}</p>}
         <div className="plan-proposal-section">
-          <h3>执行步骤</h3>
+          <h3>{copy.steps}</h3>
           <ol className="plan-proposal-steps">
             {proposal.steps.map((step, index) => (
               <li key={step.id}>
@@ -198,7 +215,7 @@ export function PlanProposalCard(props: {
         </div>
         {proposal.risks && proposal.risks.length > 0 && (
           <div className="plan-proposal-section plan-proposal-risks">
-            <h3>风险</h3>
+            <h3>{copy.risks}</h3>
             <ul>
               {proposal.risks.map((risk, index) => <li key={`${index}:${risk}`}>{risk}</li>)}
             </ul>
@@ -211,14 +228,14 @@ export function PlanProposalCard(props: {
               size="sm"
               isDisabled={planMode.pending}
               onClick={() => void planMode.requestRevision(proposal.proposalId)}
-              label="继续修改"
+              label={copy.revise}
             />
             <UiButton
               variant="primary"
               size="sm"
               isDisabled={planMode.pending}
               onClick={() => void planMode.approve(proposal)}
-              label="执行计划"
+              label={copy.execute}
             />
           </div>
         )}
@@ -234,6 +251,7 @@ export function PlanExecutionPanel(props: {
   planMode: PlanModeState;
 }): JSX.Element | null {
   const { planMode } = props;
+  const copy = getPlanModeCopy(useUiLocale()).execution;
   const [expanded, setExpanded] = useState(false);
   const detailsId = useId();
   const active = planMode.state?.executions.find(
@@ -256,7 +274,7 @@ export function PlanExecutionPanel(props: {
   ).length;
 
   return (
-    <section className="plan-execution-panel" aria-label="计划执行状态">
+    <section className="plan-execution-panel" aria-label={copy.aria}>
       <Collapsible
         className="plan-execution-toggle"
         isOpen={expanded}
@@ -264,11 +282,11 @@ export function PlanExecutionPanel(props: {
         trigger={(
           <div className="plan-execution-trigger-body">
             <div>
-              <span>{execution.status === 'interrupted' ? '计划已中断' : '正在执行计划'}</span>
-              <strong>{proposal?.title ?? '已批准计划'}</strong>
+              <span>{execution.status === 'interrupted' ? copy.interrupted : copy.running}</span>
+              <strong>{proposal?.title ?? copy.approvedPlan}</strong>
             </div>
             <span className="plan-execution-summary">
-              <span className="plan-execution-count">{completedCount}/{execution.steps.length} 步</span>
+              <span className="plan-execution-count">{copy.stepCount(completedCount, execution.steps.length)}</span>
             </span>
           </div>
         )}
@@ -281,8 +299,8 @@ export function PlanExecutionPanel(props: {
                   className="plan-execution-step-marker"
                   data-status={step.status}
                   role="img"
-                  aria-label={executionStepStatusLabel(step.status)}
-                  title={executionStepStatusLabel(step.status)}
+                  aria-label={executionStepStatusLabel(step.status, copy)}
+                  title={executionStepStatusLabel(step.status, copy)}
                 >
                   {executionStepMark(step.status)}
                 </span>
@@ -297,7 +315,7 @@ export function PlanExecutionPanel(props: {
                 size="sm"
                 isDisabled={planMode.pending}
                 onClick={() => void planMode.resume(execution.executionId)}
-                label="恢复执行"
+                label={copy.resume}
               />
               <UiButton
                 variant="destructive"
@@ -305,9 +323,9 @@ export function PlanExecutionPanel(props: {
                 isDisabled={planMode.pending}
                 onClick={() => void planMode.abandon(
                   execution.executionId,
-                  proposal?.title ?? '已批准计划',
+                  proposal?.title ?? copy.approvedPlan,
                 )}
-                label="放弃计划"
+                label={copy.abandon}
               />
             </div>
           )}
@@ -318,20 +336,11 @@ export function PlanExecutionPanel(props: {
   );
 }
 
-function isPlanToolResult(event: SessionEvent): boolean {
-  if (event.type !== 'tool_result' || event.content.kind !== 'json') return false;
-  const value = event.content.value;
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  const kind = (value as { kind?: unknown }).kind;
-  return kind === 'plan_progress_updated'
-    || kind === 'plan_execution_completed'
-    || kind === 'plan_execution_cancelled';
-}
-
-function proposalStatusLabel(status: PlanProposal['status']): string {
-  if (status === 'approved') return '已批准';
-  if (status === 'stale') return '已过期';
-  return '等待确认';
+function proposalStatusLabel(
+  status: PlanProposal['status'],
+  copy: PlanModeCopy['proposal'],
+): string {
+  return copy.statuses[status];
 }
 
 /* #1879: the status pill is an Astryx `Badge`. Only `approved` is a semantic
@@ -344,11 +353,11 @@ function proposalStatusVariant(status: PlanProposal['status']): BadgeVariant {
   return status === 'approved' ? 'green' : 'neutral';
 }
 
-function executionStepStatusLabel(status: PlanExecutionStep['status']): string {
-  if (status === 'completed') return '已完成';
-  if (status === 'in_progress') return '正在执行';
-  if (status === 'skipped') return '已跳过';
-  return '未开始';
+function executionStepStatusLabel(
+  status: PlanExecutionStep['status'],
+  copy: PlanModeCopy['execution'],
+): string {
+  return copy.stepStatuses[status];
 }
 
 function executionStepMark(status: PlanExecutionStep['status']): string {

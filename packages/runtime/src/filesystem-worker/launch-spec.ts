@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { constants } from 'node:fs';
 import { access, realpath } from 'node:fs/promises';
 import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
@@ -54,11 +73,22 @@ export function buildFilesystemWorkerEnv(
   runtime: 'node' | 'electron',
   hostEnv: NodeJS.ProcessEnv = process.env,
   controlledTmpdir = '/tmp',
+  platform: NodeJS.Platform = process.platform,
 ): Readonly<Record<string, string>> {
   const env: Record<string, string> = { TMPDIR: controlledTmpdir, OPENSSL_CONF: '/dev/null' };
   for (const key of ['LANG', 'LC_ALL', 'LC_CTYPE'] as const) {
     const value = hostEnv[key];
     if (value) env[key] = value;
+  }
+  if (platform === 'win32') {
+    // A Windows process launched with an explicit environment block needs
+    // SystemRoot for the loader, and AppContainer creation fails with
+    // ERROR_ENVVAR_NOT_FOUND unless LOCALAPPDATA is present — the LowBox
+    // infrastructure rewrites it to the container's redirected location.
+    for (const key of ['SystemRoot', 'SystemDrive', 'LOCALAPPDATA'] as const) {
+      const value = hostEnv[key];
+      if (value) env[key] = value;
+    }
   }
   if (runtime === 'electron') env.ELECTRON_RUN_AS_NODE = '1';
   return env;
@@ -83,7 +113,16 @@ async function resolveLaunchSpec(
       message: 'Filesystem worker runtime is unavailable.',
     };
   }
-  const runtimeRoot = await resolveReadableRoot(resolve(dirname(program), '..'));
+  const platform = input.platform ?? process.platform;
+  // A packaged Windows executable lives directly inside the product-owned app
+  // directory. Granting its parent would widen a normal install from
+  // `...\Programs\Maka` to every application under `...\Programs` (or from
+  // `C:\Program Files\Maka` to all of `C:\Program Files`). The executable's
+  // own directory contains the DLL/resource substrate it needs and is the
+  // narrowest recursive root that works for both installed and ZIP layouts.
+  const runtimeRootCandidate =
+    platform === 'win32' ? dirname(program) : resolve(dirname(program), '..');
+  const runtimeRoot = await resolveReadableRoot(runtimeRootCandidate);
   if (!runtimeRoot) {
     return {
       ok: false,
@@ -92,9 +131,8 @@ async function resolveLaunchSpec(
     };
   }
   const dependencyRoots = await resolveRuntimeDependencyRoots(program);
-  const platform = input.platform ?? process.platform;
   const grep = await resolveRipgrepExecutable(
-    input.rgCandidates ?? defaultRipgrepCandidates(input.hostEnv ?? process.env),
+    input.rgCandidates ?? defaultRipgrepCandidates(input.hostEnv ?? process.env, platform),
     platform,
     input.inspectMacosExecutableDependencies ?? resolveMacosExecutableDependencies,
   );
@@ -113,8 +151,25 @@ async function resolveLaunchSpec(
     ok: true,
     spec: {
       program,
-      args: [bundle.path, ...(grep ? ['--grep-executable', grep.executable] : [])],
-      env: buildFilesystemWorkerEnv(input.runtime, input.hostEnv, input.tmpdir),
+      // --preserve-symlinks-main skips the module loader's realpath of the
+      // bundle path. Inside the Windows AppContainer that realpath would
+      // lstat every ancestor directory (up to the volume root), which the
+      // sandbox grants deliberately do not allow.
+      //
+      // --no-stdio-init: Electron's run-as-node entry opens the NUL device to
+      // backfill missing standard handles before Node starts, and the
+      // AppContainer denies that device open, which aborts startup (FATAL
+      // node_main.cc "Unable to open nul device"). The broker always relays
+      // three valid standard handles into the child, so the backfill is
+      // unnecessary; the switch skips it and is consumed before Node's own
+      // option parsing.
+      args: [
+        ...(input.runtime === 'electron' && platform === 'win32' ? ['--no-stdio-init'] : []),
+        ...(platform === 'win32' ? ['--preserve-symlinks-main'] : []),
+        bundle.path,
+        ...(grep ? ['--grep-executable', grep.executable] : []),
+      ],
+      env: buildFilesystemWorkerEnv(input.runtime, input.hostEnv, input.tmpdir, platform),
       runtimeReadableRoots: unique([
         bundle.path,
         runtimeRoot,
@@ -183,15 +238,17 @@ async function resolveReadableRoot(candidate: string): Promise<string | undefine
   }
 }
 
-function defaultRipgrepCandidates(env: NodeJS.ProcessEnv): readonly string[] {
+function defaultRipgrepCandidates(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+): readonly string[] {
+  const executableName = platform === 'win32' ? 'rg.exe' : 'rg';
   return [
     ...(env.PATH ?? '')
       .split(delimiter)
       .filter(Boolean)
-      .map((directory) => join(directory, 'rg')),
-    '/opt/homebrew/bin/rg',
-    '/usr/local/bin/rg',
-    '/usr/bin/rg',
+      .map((directory) => join(directory, executableName)),
+    ...(platform === 'win32' ? [] : ['/opt/homebrew/bin/rg', '/usr/local/bin/rg', '/usr/bin/rg']),
   ];
 }
 

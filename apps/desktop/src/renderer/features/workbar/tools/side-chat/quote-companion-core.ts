@@ -1,0 +1,481 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import {
+  clearInteractions,
+  dequeueInteractionByRequestId,
+  dequeueInteractionByToolUseId,
+  enqueueInteraction,
+  type InteractionQueues,
+  type LiveTurnProjection,
+} from '@maka/ui';
+import type { PermissionMode } from '@maka/core/permission';
+import type { ChatModelChoice } from '@maka/core/chat-model-choice';
+import type { QuoteRef, SessionEvent } from '@maka/core/events';
+import type {
+  SessionSummary,
+  TurnRecord,
+} from '@maka/core/session';
+import type { UiLocale } from '@maka/core/ui-locale';
+import type {
+  SideChatSessionPort,
+  SideChatSendResult,
+  WorkbarIngestInput,
+} from '../../ports.js';
+import {
+  acquireSessionCopyAttempt,
+  abandonSessionCopyAttempt,
+  completeSessionCopyAttempt,
+  listSessionCopyAttempts,
+  readSessionCopyAttempt,
+  startSessionCopyAttempt,
+  type SessionCopyAttemptKey,
+} from '../../../../session-copy-attempt.js';
+import { sessionEventErrorMessage } from '../../../../model-connection-errors.js';
+
+/** Structured failure reasons the renderer localizes (no user-facing strings in
+ *  core). `fork_setup_failed`: reading the source boundary or creating the fork
+ *  failed; `send_failed`: `sessions.send` threw; `send_rejected`: it resolved
+ *  `{ok:false}`. */
+export type CompanionErrorCode =
+  | 'fork_setup_failed'
+  | 'fork_source_busy'
+  | 'fork_unsupported'
+  | 'send_failed'
+  | 'send_rejected';
+
+export function sessionHasExactModelChoice(
+  session: SessionSummary | undefined,
+  choices: readonly ChatModelChoice[],
+): boolean {
+  return Boolean(
+    session?.llmConnectionId &&
+    choices.some(
+      (choice) =>
+        choice.connectionId === session.llmConnectionId &&
+        choice.connectionSlug === session.llmConnectionSlug &&
+        choice.model === session.model,
+    ),
+  );
+}
+
+export type EnsureCompanionForkResult =
+  | { status: 'ready'; session: SessionSummary }
+  | { status: 'disposed' }
+  | { status: 'error'; code: CompanionErrorCode };
+
+export interface CompanionDismissalGuard {
+  beginMount(): () => boolean;
+}
+
+export function createCompanionDismissalGuard(): CompanionDismissalGuard {
+  let generation = 0;
+  return {
+    beginMount: () => {
+      const mountedGeneration = ++generation;
+      return () => generation === mountedGeneration;
+    },
+  };
+}
+
+export interface EnsureCompanionForkDeps {
+  api: SideChatSessionPort;
+  sourceSession: SessionSummary;
+  panelId: string;
+  name: string;
+  /** True once the panel has unmounted — checked after every await so a fork
+   *  born after disposal is torn down instead of leaking a hidden run. */
+  isDisposed: () => boolean;
+  /** Fired as soon as creation returns so the host can hide this ephemeral child. */
+  onForkCreated?: (session: SessionSummary) => void;
+  /** Fired only after the main-process cleanup authority confirms deletion. */
+  onForkCleanupSucceeded?: (sessionId: string) => void;
+}
+
+/** The latest successfully completed turn of the source session.
+ *  Failed and aborted turns are not reference context: branching through one
+ *  makes a fresh side prompt look like a continuation of unfinished parent
+ *  work. Callers decide whether a missing completed turn is temporary (the
+ *  first turn is still running) or a hard setup failure. */
+export function latestSettledTurnId(turns: readonly TurnRecord[]): string | undefined {
+  return [...turns].reverse().find((turn) => turn.status === 'completed')?.turnId;
+}
+
+/**
+ * Sentinel boundary stored in the retry lease for an empty copy. Turn ids match
+ * /^[A-Za-z0-9_-]{1,128}$/, so the NUL-prefixed token can never be one. It lets
+ * the shared `SessionCopyAttempt.sourceTurnId` stay a required string (revision
+ * copies still need it) while still representing the absent (empty) source turn
+ * for a side conversation.
+ */
+const EMPTY_SOURCE_TURN_SENTINEL = '\0empty';
+
+/** Decode a persisted retry-lease boundary into an optional source turn id. */
+function sourceTurnIdFromBoundary(boundary: string): string | undefined {
+  return boundary === EMPTY_SOURCE_TURN_SENTINEL ? undefined : boundary;
+}
+
+function companionCopyAttemptKey(
+  sourceSessionId: string,
+  panelId: string,
+): SessionCopyAttemptKey {
+  return { scope: `quote-companion:${panelId}`, kind: 'branch', sourceSessionId };
+}
+
+export async function abandonPendingCompanionCopy(
+  api: SideChatSessionPort,
+  sourceSessionId: string,
+  panelId: string,
+): Promise<boolean> {
+  const key = companionCopyAttemptKey(sourceSessionId, panelId);
+  const attempt = readSessionCopyAttempt(key);
+  if (!attempt) return true;
+  abandonSessionCopyAttempt(key, attempt.copyId);
+  try {
+    await api.abandonSessionCopy(sourceSessionId, attempt.copyId);
+    completeSessionCopyAttempt(key, attempt.copyId);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function recoverOrphanedCompanionCopies(
+  api: SideChatSessionPort,
+): Promise<void> {
+  const attempts = listSessionCopyAttempts('quote-companion:');
+  await Promise.all(
+    attempts.map(async ({ key, attempt }) => {
+      abandonSessionCopyAttempt(key, attempt.copyId);
+      try {
+        await api.abandonSessionCopy(key.sourceSessionId, attempt.copyId);
+        completeSessionCopyAttempt(key, attempt.copyId);
+      } catch {
+        // Keep the abandoning lease so the next renderer reload retries cleanup.
+      }
+    }),
+  );
+}
+
+export async function cleanupCompanionCopy(
+  api: SideChatSessionPort,
+  sourceSessionId: string,
+  panelId: string,
+  companionSessionId: string,
+): Promise<boolean> {
+  const key = companionCopyAttemptKey(sourceSessionId, panelId);
+  const attempt = readSessionCopyAttempt(key);
+  if (attempt) abandonSessionCopyAttempt(key, attempt.copyId);
+  try {
+    await api.cleanupSessionCopy(companionSessionId);
+    if (attempt) completeSessionCopyAttempt(key, attempt.copyId);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function dismissCompanionCopy(
+  api: SideChatSessionPort,
+  sourceSessionId: string,
+  panelId: string,
+  companionSessionId: string,
+): Promise<boolean> {
+  await api.stop(companionSessionId).catch(() => undefined);
+  return cleanupCompanionCopy(api, sourceSessionId, panelId, companionSessionId);
+}
+
+/**
+ * The shared Composer's `streaming` input means Host work is interruptible, not
+ * merely that a text delta has arrived. A pending admission remains stoppable
+ * before it owns a Turn; an admitted Turn remains stoppable through live output.
+ */
+export function deriveCompanionComposerState(
+  hasPendingAdmission: boolean,
+  activeTurnId: string | null,
+  liveTurn: LiveTurnProjection | undefined,
+): { streaming: boolean; processing: boolean } {
+  const activeTurnStreaming = activeTurnId !== null && liveTurn?.terminal !== true;
+  const streaming = hasPendingAdmission || activeTurnStreaming;
+  return {
+    streaming,
+    processing:
+      streaming &&
+      (!activeTurnStreaming || !liveTurn || liveTurn.phase === 'waiting'),
+  };
+}
+
+/**
+ * The main-process cleanup authority durably records the fork before attempting
+ * the complete session-removal path. A rejection here means the intent remains
+ * queued for the next `sessions.list` call or Desktop restart, so renderer
+ * lifecycle paths can remain fire-and-forget without losing recovery.
+ */
+function scheduleCompanionCleanup(deps: EnsureCompanionForkDeps, sessionId: string): void {
+  void cleanupCompanionCopy(
+    deps.api,
+    deps.sourceSession.id,
+    deps.panelId,
+    sessionId,
+  ).then((cleaned) => {
+    if (cleaned) deps.onForkCleanupSucceeded?.(sessionId);
+  });
+}
+
+/**
+ * Fork the main session for a companion while preserving the source session's
+ * model, collaboration mode, and permission profile. Parent history is still
+ * reference-only through the side-conversation system prompt; inherited
+ * permission only governs actions explicitly requested inside the side chat.
+ * Source-boundary and creation failures are returned as structured errors
+ * instead of escaping as unhandled promise rejections. If the panel is disposed
+ * mid-flight, any created fork is removed and `disposed` is returned.
+ */
+export async function ensureCompanionFork(
+  deps: EnsureCompanionForkDeps,
+): Promise<EnsureCompanionForkResult> {
+  const { api, sourceSession, name, isDisposed } = deps;
+
+  // Prefer the latest SETTLED turn (durable) as the branch boundary — a fork
+  // never starts from a mid-flight turn. When the source has no completed turn
+  // yet (most visibly the main session's very first turn is still running), the
+  // side conversation forks with an EMPTY context instead of failing: it
+  // inherits the source model / cwd / permission but copies no messages.
+  let turns: TurnRecord[];
+  try {
+    turns = await api.listTurns(sourceSession.id);
+  } catch {
+    return { status: 'error', code: 'fork_setup_failed' };
+  }
+  if (isDisposed()) return { status: 'disposed' };
+  // The boundary is derived once, persisted in the retry lease, and REPLAYED on
+  // every retry of the same copyId — never recomputed from the live turns.
+  // Otherwise an ambiguous first send of an empty copy could retry through a
+  // settled turn once the source's first turn settled, and the Host fingerprint
+  // (which includes the source turn) would reject the same copyId.
+  const boundaryTurnId = latestSettledTurnId(turns);
+  const attemptBoundary = boundaryTurnId ?? EMPTY_SOURCE_TURN_SENTINEL;
+
+  let created: SessionSummary;
+  try {
+    let copyAttempt = acquireSessionCopyAttempt(
+      companionCopyAttemptKey(sourceSession.id, deps.panelId),
+      attemptBoundary,
+    );
+    if (copyAttempt.phase === 'abandoning') {
+      if (!(await abandonPendingCompanionCopy(api, sourceSession.id, deps.panelId))) {
+        return { status: 'error', code: 'fork_setup_failed' };
+      }
+      copyAttempt = acquireSessionCopyAttempt(
+        companionCopyAttemptKey(sourceSession.id, deps.panelId),
+        attemptBoundary,
+      );
+    }
+    if (
+      !startSessionCopyAttempt(
+        companionCopyAttemptKey(sourceSession.id, deps.panelId),
+        copyAttempt.copyId,
+      )
+    ) {
+      return { status: 'error', code: 'fork_setup_failed' };
+    }
+    const result = await api.branchFromTurn(sourceSession.id, {
+      sourceTurnId: sourceTurnIdFromBoundary(copyAttempt.sourceTurnId),
+      name,
+      copyId: copyAttempt.copyId,
+      sideConversation: true,
+    });
+    if (!result.ok) {
+      copyAttempt.complete();
+      return {
+        status: 'error',
+        code: result.reason === 'session_busy' ? 'fork_source_busy' : 'fork_unsupported',
+      };
+    }
+    created = result.session;
+  } catch {
+    return { status: 'error', code: 'fork_setup_failed' };
+  }
+  if (isDisposed()) {
+    scheduleCompanionCleanup(deps, created.id);
+    return { status: 'disposed' };
+  }
+  // `sessions:branchFromTurn` broadcasts `sessions:changed(created)` before the
+  // promise resolves. Report the id at the first renderer-visible opportunity.
+  deps.onForkCreated?.(created);
+
+  if (isDisposed()) {
+    scheduleCompanionCleanup(deps, created.id);
+    return { status: 'disposed' };
+  }
+
+  return { status: 'ready', session: created };
+}
+
+export type CompanionTurnResult =
+  | { status: 'sent'; forkId: string; turnId: string; steered?: false }
+  | { status: 'sent'; forkId: string; turnId: string; steered: true; messageId: string }
+  | { status: 'pending'; forkId: string; messageId: string }
+  | { status: 'disposed' }
+  | { status: 'error'; code: CompanionErrorCode };
+
+export interface PerformCompanionTurnDeps extends EnsureCompanionForkDeps {
+  /** The fork's id if one already exists (subsequent turns skip creation). */
+  existingForkId: string | null;
+  turnId: string;
+  text: string;
+  quotes: QuoteRef[] | undefined;
+  attachmentItems?: WorkbarIngestInput[];
+  /** Fired once a fork is ready, so the caller can commit it. */
+  onForkCommitted: (session: SessionSummary) => void;
+  /** Fired right before the send — the caller arms the optimistic live turn here. */
+  onBeforeSend: (forkId: string) => void;
+}
+
+/**
+ * Ensure a fork exists (fail-closed, dispose-aware) then send the turn. The
+ * result tells the caller whether the send was accepted so admission-owned
+ * resources can follow the exact Host outcome.
+ */
+export async function performCompanionTurn(
+  deps: PerformCompanionTurnDeps,
+): Promise<CompanionTurnResult> {
+  let forkId = deps.existingForkId;
+  let createdForkId: string | null = null;
+  if (forkId === null) {
+    const fork = await ensureCompanionFork(deps);
+    if (fork.status !== 'ready') return fork;
+    forkId = fork.session.id;
+    createdForkId = forkId;
+    if (deps.isDisposed()) {
+      scheduleCompanionCleanup(deps, forkId);
+      return { status: 'disposed' };
+    }
+    deps.onForkCommitted(fork.session);
+  }
+
+  if (deps.isDisposed()) {
+    if (createdForkId) scheduleCompanionCleanup(deps, createdForkId);
+    return { status: 'disposed' };
+  }
+  deps.onBeforeSend(forkId);
+  if (deps.isDisposed()) {
+    if (createdForkId) scheduleCompanionCleanup(deps, createdForkId);
+    return { status: 'disposed' };
+  }
+  let result: SideChatSendResult;
+  try {
+    result = await deps.api.send(forkId, {
+      type: 'send',
+      turnId: deps.turnId,
+      text: deps.text,
+      ...(deps.quotes ? { quotes: deps.quotes } : {}),
+      ...(deps.attachmentItems ? { attachmentItems: deps.attachmentItems } : {}),
+    });
+  } catch {
+    if (deps.isDisposed()) return { status: 'disposed' };
+    return { status: 'error', code: 'send_failed' };
+  }
+  if (deps.isDisposed()) return { status: 'disposed' };
+  // `send` can RESOLVE with `{ ok: false }` (e.g. an unresolved /skill:...) — no
+  // run was started, so surface the error and keep the quotes for retry rather
+  // than reporting success and hanging in the processing state.
+  if (!result.ok) {
+    if (result.reason === 'outcome_unknown' && result.messageId) {
+      return { status: 'pending', forkId, messageId: result.messageId };
+    }
+    return { status: 'error', code: 'send_rejected' };
+  }
+  return result.steered
+    ? { status: 'sent', forkId, turnId: result.turnId, steered: true, messageId: result.messageId }
+    : { status: 'sent', forkId, turnId: result.turnId };
+}
+
+export function isCompanionTurnTerminal(event: SessionEvent): boolean {
+  return event.type === 'error' || event.type === 'abort' || event.type === 'complete';
+}
+
+export type CompanionRunEventEffect =
+  | { kind: 'ignore' }
+  | {
+      kind: 'active';
+      terminal: boolean;
+      /** Undefined keeps the existing error, null clears it. */
+      error?: string | null;
+    };
+
+/**
+ * Side-chat subscriptions can outlive a turn long enough to receive its final
+ * event after the next turn starts. Only the currently armed turn may mutate
+ * the live projection, error banner, or settlement state.
+ */
+export function companionRunEventEffect(
+  event: SessionEvent,
+  activeTurnId: string | null,
+  stopRequested: boolean,
+  locale: UiLocale,
+): CompanionRunEventEffect {
+  if (!event.turnId || event.turnId !== activeTurnId) return { kind: 'ignore' };
+
+  if (event.type === 'error') {
+    return {
+      kind: 'active',
+      terminal: true,
+      error: stopRequested ? null : sessionEventErrorMessage(event, locale),
+    };
+  }
+  if (
+    event.type === 'abort' ||
+    (event.type === 'complete' && event.stopReason === 'user_stop')
+  ) {
+    return { kind: 'active', terminal: true, error: null };
+  }
+  return {
+    kind: 'active',
+    terminal: isCompanionTurnTerminal(event),
+  };
+}
+
+/**
+ * Route a companion event into its interaction queue, mirroring the main shell:
+ * boundary / question / form requests enqueue, their acks / tool results dequeue, and
+ * a terminal event clears the queue.
+ */
+export function applyCompanionInteractionEvent(
+  queues: InteractionQueues,
+  sessionId: string,
+  event: SessionEvent,
+): InteractionQueues {
+  switch (event.type) {
+    case 'sandbox_boundary_request':
+    case 'client_capability_request':
+    case 'user_question_request':
+    case 'form_request':
+      return enqueueInteraction(queues, sessionId, event);
+    case 'sandbox_boundary_decision_ack':
+    case 'client_capability_decision_ack':
+    case 'user_question_answer_ack':
+    case 'form_answer_ack':
+      return dequeueInteractionByRequestId(queues, sessionId, event.requestId);
+    case 'tool_result':
+      return dequeueInteractionByToolUseId(queues, sessionId, event.toolUseId);
+    default:
+      return isCompanionTurnTerminal(event) ? clearInteractions(queues, sessionId) : queues;
+  }
+}

@@ -1,15 +1,31 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { getEventListeners } from 'node:events';
 import { test } from 'node:test';
-import type { BotIncomingMessage, BotRegistry } from '@maka/runtime';
+import type { BotIncomingMessage, BotRegistry } from '@maka/runtime/bots';
 import { createBotIncomingMainService } from '../bot-incoming-main.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 async function waitFor(predicate: () => boolean, message: string): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    if (predicate()) return;
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
-  assert.fail(message);
+  await pollFor(predicate, { attempts: 100, message });
 }
 
 test('the bot typing loop owns only its active abort listener', async (t) => {
@@ -92,4 +108,67 @@ test('the bot typing loop owns only its active abort listener', async (t) => {
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.equal(typingAttempts, 4, 'abort must not allow a later typing attempt');
   assert.deepEqual(replies, ['Bot reply']);
+});
+
+test('streams reply snapshots and persists the final reply through one channel stream', async () => {
+  const updates: string[] = [];
+  const finals: string[] = [];
+  let fallbackSends = 0;
+  const service = createBotIncomingMainService({
+    botRegistry: {
+      startReplyStream(
+        _platform: string,
+        _chatId: string,
+        options: { isGroup: boolean; streamId: string },
+      ) {
+        assert.equal(options.isGroup, false);
+        assert.match(options.streamId, /^[0-9a-f-]{36}$/);
+        return {
+          update(text: string) {
+            updates.push(text);
+          },
+          async finish(text: string) {
+            finals.push(text);
+            return 'bot-message';
+          },
+          async abort() {},
+        };
+      },
+      async sendMessage() {
+        fallbackSends += 1;
+        return 'fallback-message';
+      },
+      async sendTypingIndicator() {
+        return true;
+      },
+    } as unknown as BotRegistry,
+    sessions: {
+      async createSession() {
+        return 'bot-session';
+      },
+      async prepareSession() {
+        return 'ready';
+      },
+      async runTurn(input) {
+        input.onReplySnapshot?.('Hello');
+        input.onReplySnapshot?.('Hello world');
+        return { kind: 'completed', text: 'Hello world' };
+      },
+    },
+  });
+
+  await service.handleBotIncomingMessage({
+    platform: 'telegram',
+    userId: 'user',
+    userName: 'User',
+    chatId: 'chat',
+    isGroup: false,
+    text: 'hello',
+    sourceMessageId: 'source',
+    receivedAt: Date.now(),
+  } as BotIncomingMessage);
+
+  assert.deepEqual(updates, ['Hello', 'Hello world']);
+  assert.deepEqual(finals, ['Hello world']);
+  assert.equal(fallbackSends, 0);
 });

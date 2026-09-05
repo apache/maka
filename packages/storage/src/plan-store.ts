@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { createHash, randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
@@ -37,7 +56,6 @@ import {
   acquireOperationalStateDatabase,
   type OperationalStateDatabaseLease,
 } from './operational-state-store.js';
-import { normalizeLegacyPlanEvent } from './plan-legacy-projection.js';
 
 export interface CreatePlanStoreOptions {
   newId?: () => string;
@@ -246,11 +264,6 @@ class SqlitePlanStoreImpl implements SqlitePlanStore {
         ) {
           throw new PlanConflictError('Only the latest pending plan proposal can be approved');
         }
-        if (proposal.legacyProjection?.truncated) {
-          throw new PlanConflictError(
-            'A projected legacy plan must be revised or abandoned before approval',
-          );
-        }
         if (state.activeExecutionId) {
           throw new PlanConflictError('This session already has an active plan execution');
         }
@@ -374,11 +387,6 @@ class SqlitePlanStoreImpl implements SqlitePlanStore {
       if (execution.status !== 'interrupted') {
         throw new PlanConflictError('Only an interrupted plan execution can be resumed');
       }
-      if (execution.legacyProjection?.truncated) {
-        throw new PlanConflictError(
-          'A projected legacy execution must be cancelled or replanned instead of resumed',
-        );
-      }
       return {
         type: 'plan_execution_resumed',
         id: operationId ?? this.newId(),
@@ -428,7 +436,7 @@ class SqlitePlanStoreImpl implements SqlitePlanStore {
       if (fingerprint) event.operationFingerprint = fingerprint;
       const state = applyPlanEvent(ledger.state, event);
       assertPlanProjectionWithinLimit(state);
-      await this.appendCanonicalEvent(sessionId, event, state);
+      await this.appendCanonicalEvent(event);
       result = { event, state };
     });
     return result;
@@ -441,9 +449,6 @@ class SqlitePlanStoreImpl implements SqlitePlanStore {
         this.#lease.database
           .prepare('DELETE FROM workflow_plan_events WHERE session_id = ?')
           .run(sessionId);
-        this.#lease.database
-          .prepare('DELETE FROM workflow_plan_projections WHERE session_id = ?')
-          .run(sessionId);
       });
     });
   }
@@ -455,14 +460,9 @@ class SqlitePlanStoreImpl implements SqlitePlanStore {
     return readSqlitePlanLedger(this.#lease.database, sessionId);
   }
 
-  private async appendCanonicalEvent(
-    sessionId: string,
-    event: PlanEvent,
-    state: PlanSessionState,
-  ): Promise<void> {
+  private async appendCanonicalEvent(event: PlanEvent): Promise<void> {
     this.#lease.transaction('write', () => {
       insertPlanEvent(this.#lease.database, event);
-      writePlanProjection(this.#lease.database, sessionId, state);
     });
   }
 }
@@ -534,14 +534,12 @@ function readSqlitePlanLedger(
     }
     return decodePlanEvent(JSON.parse(row.record_json), sessionId);
   });
-  const events: PlanEvent[] = [];
   let state = emptyPlanSessionState(sessionId);
   for (const persistedEvent of persistedEvents) {
-    const event = normalizeLegacyPlanEvent(persistedEvent, state);
-    events.push(event);
-    state = applyPlanEvent(state, event);
+    state = applyPlanEvent(state, persistedEvent);
+    assertPlanProjectionWithinLimit(state);
   }
-  return { events, state };
+  return { events: persistedEvents, state };
 }
 
 function insertPlanEvent(database: DatabaseSync, event: PlanEvent): void {
@@ -562,22 +560,6 @@ function insertPlanEvent(database: DatabaseSync, event: PlanEvent): void {
       ) VALUES (?, ?, ?, ?, ?)
     `)
     .run(event.sessionId, row.sequence, event.id, event.storeVersion, JSON.stringify(event));
-}
-
-function writePlanProjection(
-  database: DatabaseSync,
-  sessionId: string,
-  state: PlanSessionState,
-): void {
-  database
-    .prepare(`
-      INSERT INTO workflow_plan_projections(session_id, store_version, record_json)
-      VALUES (?, ?, ?)
-      ON CONFLICT(session_id) DO UPDATE SET
-        store_version = excluded.store_version,
-        record_json = excluded.record_json
-    `)
-    .run(sessionId, state.storeVersion, JSON.stringify(state));
 }
 
 export function applyPlanEvent(state: PlanSessionState, event: PlanEvent): PlanSessionState {
@@ -621,9 +603,6 @@ export function applyPlanEvent(state: PlanSessionState, event: PlanEvent): PlanS
       const execution = executionById(next, event.executionId);
       execution.steps = structuredClone(event.steps);
       execution.updatedAt = event.ts;
-      if (event.legacyProjection) {
-        execution.legacyProjection = structuredClone(event.legacyProjection);
-      }
       break;
     }
     case 'plan_execution_completed': {
@@ -632,9 +611,6 @@ export function applyPlanEvent(state: PlanSessionState, event: PlanEvent): PlanS
       execution.status = 'completed';
       execution.updatedAt = event.ts;
       execution.completedAt = event.ts;
-      if (event.legacyProjection) {
-        execution.legacyProjection = structuredClone(event.legacyProjection);
-      }
       if (next.activeExecutionId === execution.executionId) delete next.activeExecutionId;
       break;
     }
@@ -644,9 +620,6 @@ export function applyPlanEvent(state: PlanSessionState, event: PlanEvent): PlanS
       execution.updatedAt = event.ts;
       execution.cancelledAt = event.ts;
       execution.cancelReason = event.reason;
-      if (event.legacyProjection) {
-        execution.legacyProjection = structuredClone(event.legacyProjection);
-      }
       if (next.activeExecutionId === execution.executionId) delete next.activeExecutionId;
       break;
     }
@@ -656,9 +629,6 @@ export function applyPlanEvent(state: PlanSessionState, event: PlanEvent): PlanS
       execution.updatedAt = event.ts;
       execution.interruptedAt = event.ts;
       execution.interruptionReason = event.reason;
-      if (event.legacyProjection) {
-        execution.legacyProjection = structuredClone(event.legacyProjection);
-      }
       if (next.activeExecutionId === execution.executionId) delete next.activeExecutionId;
       break;
     }
@@ -754,11 +724,6 @@ function requireActiveExecution(state: PlanSessionState, executionId: string): P
   if (execution.status !== 'active') {
     throw new PlanConflictError('Plan execution is not active');
   }
-  if (execution.legacyProjection?.truncated) {
-    throw new PlanConflictError(
-      'A projected legacy execution must be cancelled or replanned instead of updated',
-    );
-  }
   return execution;
 }
 
@@ -828,9 +793,6 @@ function assertPlanProjectionWithinLimit(state: PlanSessionState): void {
       throw new PlanConflictError('Plan execution exceeds the projection item limit');
     }
     const worst = worstCasePlanExecution(execution, execution.executionId, Number.MAX_SAFE_INTEGER);
-    if (execution.legacyProjection) {
-      worst.legacyProjection = structuredClone(execution.legacyProjection);
-    }
     if (
       (execution.status === 'active' || execution.status === 'interrupted') &&
       planEncodedByteLength({ kind: 'execution', execution: worst }) >

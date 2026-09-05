@@ -1,12 +1,31 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import type { IncomingMessage } from 'node:http';
 import { after, describe, test } from 'node:test';
-import { PROVIDER_DEFAULTS, type LlmConnection } from '@maka/core';
-import { openai } from '@ai-sdk/openai';
+import { PROVIDER_REGISTRY, type LlmConnection } from '@maka/core/llm-connections';
 import { anthropic } from '@ai-sdk/anthropic';
 import { generateText, isStepCount, streamText, tool, type ModelMessage } from 'ai';
 import { z } from 'zod';
 import { fetchProviderModels } from '../model-fetcher.js';
+import { resetStreamUsageFallbackMemory } from '../stream-usage-fallback-fetch.js';
 import { buildProviderOptions, getAIModel } from '../model-factory.js';
 import { resolveOAuthSubscriptionAccessToken } from '../subscription-credentials.js';
 import { testConnection } from '../test-connection.js';
@@ -66,6 +85,121 @@ describe('models.dev provider conformance', () => {
     });
 
     assert.deepEqual(requestBody?.cache_control, { type: 'ephemeral' });
+    assert.deepEqual(requestBody?.thinking, { type: 'adaptive', display: 'summarized' });
+  });
+
+  test('custom Anthropic relays request summarized thinking for known Claude models', async () => {
+    let requestBody: Record<string, unknown> | undefined;
+    const server = await startJsonServer(async (request, response) => {
+      assert.equal(request.method, 'POST');
+      assert.equal(request.url, '/v1/messages');
+      requestBody = JSON.parse(await readBody(request)) as Record<string, unknown>;
+      respondJson(response, 200, {
+        id: 'msg_anthropic_relay',
+        type: 'message',
+        role: 'assistant',
+        model: 'claude-opus-4-8',
+        content: [{ type: 'text', text: 'Relayed.' }],
+        stop_reason: 'end_turn',
+        stop_sequence: null,
+        usage: { input_tokens: 4, output_tokens: 1 },
+      });
+    });
+    const connection: LlmConnection = {
+      slug: 'anthropic-relay',
+      name: 'Anthropic Relay',
+      providerType: 'anthropic-compatible',
+      baseUrl: server.url,
+      defaultModel: 'claude-opus-4-8',
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+
+    await generateText({
+      model: getAIModel({
+        connection,
+        apiKey: 'relay-key',
+        modelId: connection.defaultModel,
+      }),
+      prompt: 'Hello.',
+      providerOptions: buildProviderOptions(connection, connection.defaultModel),
+    });
+
+    assert.deepEqual(requestBody?.thinking, { type: 'adaptive', display: 'summarized' });
+    assert.equal(requestBody?.cache_control, undefined);
+  });
+
+  test('Anthropic request bodies follow the SDK adaptive-thinking capability', async () => {
+    const cases = [
+      {
+        modelId: 'claude-sonnet-4-5',
+        providerType: 'anthropic' as const,
+        expectedThinking: { type: 'enabled', budget_tokens: 1_024 },
+      },
+      {
+        modelId: 'claude-opus-4-5',
+        providerType: 'anthropic' as const,
+        thinkingLevel: 'high' as const,
+        expectedThinking: { type: 'enabled', budget_tokens: 1_024 },
+        expectedOutputConfig: { effort: 'high' },
+      },
+      {
+        modelId: 'claude-opus-4-8',
+        providerType: 'anthropic' as const,
+        expectedThinking: { type: 'adaptive', display: 'summarized' },
+      },
+      {
+        modelId: 'claude-sonnet-4',
+        providerType: 'opencode' as const,
+        expectedThinking: { type: 'enabled', budget_tokens: 1_024 },
+      },
+      {
+        modelId: 'anthropic/claude-opus-4.5',
+        providerType: 'anthropic-compatible' as const,
+        expectedThinking: { type: 'enabled', budget_tokens: 1_024 },
+      },
+    ];
+
+    for (const testCase of cases) {
+      let requestBody: Record<string, unknown> | undefined;
+      const server = await startJsonServer(async (request, response) => {
+        requestBody = JSON.parse(await readBody(request)) as Record<string, unknown>;
+        respondJson(response, 200, {
+          id: 'msg_anthropic_thinking_mode',
+          type: 'message',
+          role: 'assistant',
+          model: testCase.modelId,
+          content: [{ type: 'text', text: 'Done.' }],
+          stop_reason: 'end_turn',
+          stop_sequence: null,
+          usage: { input_tokens: 4, output_tokens: 1 },
+        });
+      });
+      const connection: LlmConnection = {
+        slug: `${testCase.providerType}-${testCase.modelId}`,
+        name: testCase.modelId,
+        providerType: testCase.providerType,
+        baseUrl: server.url,
+        defaultModel: testCase.modelId,
+        enabled: true,
+        createdAt: 1,
+        updatedAt: 1,
+      };
+
+      await generateText({
+        model: getAIModel({
+          connection,
+          apiKey: 'test-key',
+          modelId: testCase.modelId,
+        }),
+        prompt: 'Hello.',
+        providerOptions: buildProviderOptions(connection, testCase.modelId, testCase.thinkingLevel),
+      });
+
+      assert.deepEqual(requestBody?.thinking, testCase.expectedThinking, testCase.modelId);
+      assert.deepEqual(requestBody?.output_config, testCase.expectedOutputConfig, testCase.modelId);
+    }
   });
 
   test('Anthropic Messages accepts the Claude Code web_search_20250305 tool', async () => {
@@ -430,13 +564,23 @@ describe('models.dev provider conformance', () => {
     assert.equal(result.ok, false);
   });
 
-  test('connection probe does not revive fallback ids from an authoritative empty inventory', async () => {
+  test('connection probe tests the selected model even when the last inventory came back empty', async () => {
+    const requestedModels: string[] = [];
+    const server = await startJsonServer(async (request, response) => {
+      const body = JSON.parse(await readBody(request)) as { model: string };
+      requestedModels.push(body.model);
+      respondJson(response, 200, {});
+    });
+    // An empty response is the single most likely shape for a provider whose
+    // list endpoint is misconfigured, scoped, or simply unhelpful. Refusing to
+    // probe on that basis withholds the one check that would tell the user
+    // whether their model actually works (#1584).
     const result = await testConnection(
       {
         slug: 'openai-empty',
         name: 'OpenAI Empty',
         providerType: 'openai',
-        baseUrl: 'http://127.0.0.1:1/v1',
+        baseUrl: `${server.url}/v1`,
         defaultModel: 'gpt-5.5',
         enabled: false,
         models: [],
@@ -446,7 +590,8 @@ describe('models.dev provider conformance', () => {
       },
       'unused',
     );
-    assert.deepEqual(result, { ok: false, errorMessage: 'No model to test' });
+    assert.equal(result.ok, true);
+    assert.deepEqual(requestedModels, ['gpt-5.5']);
   });
 
   test('connection probe skips a stale default when a live inventory is available', async () => {
@@ -466,6 +611,10 @@ describe('models.dev provider conformance', () => {
       defaultModel: 'moonshot-v1-8k',
       enabledModelIds: ['moonshot-v1-8k', 'kimi-k2.6'],
       models: [{ id: 'kimi-k2.5' }, { id: 'kimi-k2.6' }],
+      // A non-empty catalog always carries its source — the canonical decoder
+      // rejects a row without one — and only `'fetched'` on a provider with a
+      // model-list endpoint makes this list an allowlist.
+      modelSource: 'fetched',
       enabled: true,
       createdAt: 1,
       updatedAt: 1,
@@ -510,12 +659,12 @@ describe('models.dev provider conformance', () => {
     assert.equal(result.ok, true);
     assert.equal(requestedModels.length, 1);
     assert.ok(
-      PROVIDER_DEFAULTS.moonshot.fallbackModels.includes(requestedModels[0]!),
+      PROVIDER_REGISTRY.moonshot.fallbackModels.includes(requestedModels[0]!),
       `expected a provider fallback model, got ${requestedModels[0]}`,
     );
   });
 
-  test('connection probe bounds a fallback snapshot to its non-empty inventory', async () => {
+  test('connection probe tests the model the user chose, not the snapshot beside it', async () => {
     const requestedModels: string[] = [];
     const server = await startJsonServer(async (request, response) => {
       assert.equal(request.method, 'POST');
@@ -541,8 +690,13 @@ describe('models.dev provider conformance', () => {
       'moonshot-key',
     );
 
-    assert.equal(result.modelTested, 'kimi-k2.6');
-    assert.deepEqual(requestedModels, ['kimi-k2.6']);
+    // The catalog here is the array this build shipped, not something the
+    // provider said about this account, so it cannot redirect the test onto one
+    // of its own ids. Doing so returned a verdict about a model the user never
+    // asked about — and on a provider with no model-list endpoint at all, that
+    // was the only verdict they could ever get (#1584).
+    assert.equal(result.modelTested, 'custom-moonshot-preview');
+    assert.deepEqual(requestedModels, ['custom-moonshot-preview']);
   });
 
   test('OpenAI routes gpt-5* through the Responses wire and other models through Chat Completions by declaration', async () => {
@@ -615,42 +769,19 @@ describe('models.dev provider conformance', () => {
     assert.equal(gpt4o.text, 'Chat wire.');
   });
 
-  test('DeepSeek V4 Flash uses Responses and accepts provider-native web search', async () => {
+  test('DeepSeek V4 Flash uses standard Responses function tools', async () => {
     let requestBody: Record<string, unknown> | undefined;
     let requestUrl: string | undefined;
-    let authorization: string | undefined;
     const server = await startJsonServer(async (request, response) => {
       requestUrl = request.url;
-      authorization = request.headers.authorization;
       requestBody = JSON.parse(await readBody(request)) as Record<string, unknown>;
       respondJson(response, 200, {
-        id: 'resp_deepseek_search',
+        id: 'resp_deepseek_tool',
         object: 'response',
         created_at: 1,
         status: 'completed',
         model: 'deepseek-v4-flash',
-        output: [
-          {
-            type: 'web_search_call',
-            id: 'search_deepseek',
-            status: 'completed',
-            action: { type: 'search', queries: ['latest Maka'] },
-          },
-          {
-            type: 'message',
-            id: 'msg_deepseek',
-            status: 'completed',
-            role: 'assistant',
-            content: [
-              {
-                type: 'output_text',
-                text: 'Search complete.',
-                annotations: [],
-                logprobs: [],
-              },
-            ],
-          },
-        ],
+        output: [],
         usage: { input_tokens: 8, output_tokens: 3, total_tokens: 11 },
       });
     });
@@ -671,103 +802,28 @@ describe('models.dev provider conformance', () => {
         apiKey: 'deepseek-test-key',
         modelId: connection.defaultModel,
       }),
-      prompt: 'Search.',
-      tools: { WebSearch: openai.tools.webSearch() },
+      prompt: 'Read a file.',
+      tools: {
+        Read: tool({ description: 'Read', inputSchema: z.object({ path: z.string() }) }),
+      },
       maxRetries: 0,
     });
 
     assert.equal(requestUrl, '/responses');
-    assert.equal(authorization, 'Bearer deepseek-test-key');
-    assert.deepEqual(requestBody?.tools, [{ type: 'web_search' }]);
-  });
-
-  test('DeepSeek Responses replays hosted web search as an item reference, not an orphan output', async () => {
-    let requestBody: Record<string, unknown> | undefined;
-    const server = await startJsonServer(async (request, response) => {
-      requestBody = JSON.parse(await readBody(request)) as Record<string, unknown>;
-      respondJson(response, 200, {
-        id: 'resp_deepseek_search_replay',
-        object: 'response',
-        created_at: 2,
-        status: 'completed',
-        model: 'deepseek-v4-flash',
-        output: [
-          {
-            type: 'message',
-            id: 'msg_deepseek_replay',
-            status: 'completed',
-            role: 'assistant',
-            content: [
-              {
-                type: 'output_text',
-                text: 'Replay complete.',
-                annotations: [],
-                logprobs: [],
-              },
-            ],
-          },
-        ],
-        usage: { input_tokens: 8, output_tokens: 3, total_tokens: 11 },
-      });
-    });
-    const connection: LlmConnection = {
-      slug: 'deepseek-search-replay',
-      name: 'DeepSeek Search Replay',
-      providerType: 'deepseek',
-      baseUrl: server.url,
-      defaultModel: 'deepseek-v4-flash',
-      enabled: true,
-      createdAt: 1,
-      updatedAt: 1,
-    };
-    const messages: ModelMessage[] = [
-      { role: 'user', content: 'Search.' },
+    assert.deepEqual(requestBody?.tools, [
       {
-        role: 'assistant',
-        content: [
-          {
-            type: 'tool-call',
-            toolCallId: 'search_deepseek',
-            toolName: 'WebSearch',
-            input: {},
-            providerExecuted: true,
-          },
-          {
-            type: 'tool-result',
-            toolCallId: 'search_deepseek',
-            toolName: 'WebSearch',
-            output: {
-              type: 'json',
-              value: { action: { type: 'search', queries: ['latest Maka'] } },
-            },
-          },
-        ],
+        type: 'function',
+        name: 'Read',
+        description: 'Read',
+        parameters: {
+          $schema: 'http://json-schema.org/draft-07/schema#',
+          type: 'object',
+          properties: { path: { type: 'string' } },
+          required: ['path'],
+          additionalProperties: false,
+        },
       },
-      { role: 'user', content: 'Continue without searching.' },
-    ];
-
-    await generateText({
-      model: getAIModel({
-        connection,
-        apiKey: 'deepseek-test-key',
-        modelId: connection.defaultModel,
-      }),
-      messages,
-      tools: { WebSearch: openai.tools.webSearch() },
-      maxRetries: 0,
-    });
-
-    const input = requestBody?.input as Array<Record<string, unknown>> | undefined;
-    assert.equal(
-      input?.some((item) => item.type === 'function_call_output'),
-      false,
-      JSON.stringify(input),
-    );
-    assert.equal(
-      input?.some((item) => item.type === 'item_reference' && item.id === 'search_deepseek'),
-      true,
-      JSON.stringify(input),
-    );
+    ]);
   });
 
   test('OpenCode Zen routes GPT through Responses and preserves tool results across both stages', async () => {
@@ -906,6 +962,45 @@ describe('models.dev provider conformance', () => {
     assert.deepEqual(requests[2]?.body.contents, [{ role: 'user', parts: [{ text: 'Hi' }] }]);
   });
 
+  test('OpenCode Go connection probes identify every supported wire request', async () => {
+    const requests: Array<{
+      url: string;
+      headers: IncomingMessage['headers'];
+    }> = [];
+    const server = await startJsonServer(async (request, response) => {
+      requests.push({
+        url: request.url ?? '',
+        headers: request.headers,
+      });
+      respondJson(response, 200, {});
+    });
+    const connection: LlmConnection = {
+      slug: 'opencode-go',
+      name: 'OpenCode Go',
+      providerType: 'opencode-go',
+      baseUrl: `${server.url}/zen/go/v1`,
+      defaultModel: 'kimi-k2.7-code',
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+
+    for (const modelId of ['kimi-k2.7-code', 'minimax-m3', 'muse-spark-1.2-contributor']) {
+      assert.equal((await testConnection(connection, 'opencode-go-test-key', modelId)).ok, true);
+    }
+
+    assert.deepEqual(
+      requests.map(({ url }) => url),
+      ['/zen/go/v1/chat/completions', '/zen/go/v1/messages', '/zen/go/v1/responses'],
+    );
+    for (const request of requests) {
+      assert.match(
+        String(request.headers['x-opencode-session']),
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+      );
+    }
+  });
+
   test('Volcengine Agent Plan connection probes do not retain the synthetic response', async () => {
     let body: Record<string, unknown> | undefined;
     const server = await startJsonServer(async (request, response) => {
@@ -930,7 +1025,47 @@ describe('models.dev provider conformance', () => {
     assert.equal(body?.store, false);
   });
 
-  test('DeepSeek connection probes use the same account-declared Responses wire as execution', async () => {
+  test('an Ark plan probe tests the model the plan serves, not the shipped snapshot', async () => {
+    // The end-to-end shape of #1584. `volcengine-agent-plan` cannot enumerate
+    // an account — its discovery is a control-plane API the plan key does not
+    // reach — so its run replays `fallbackModels` and honestly records
+    // `modelSource: 'fetched'`. Reading that flag alone made every gate treat
+    // a release snapshot as provider evidence, and a user whose plan serves
+    // `deepseek-v4-pro-beta` could only ever get a verdict about a doubao
+    // model they never chose.
+    let probedModel: string | undefined;
+    const server = await startJsonServer(async (request, response) => {
+      assert.equal(request.url, '/api/plan/v3/responses');
+      probedModel = (JSON.parse(await readBody(request)) as { model: string }).model;
+      respondJson(response, 200, {});
+    });
+    const result = await testConnection(
+      {
+        slug: 'volcengine-agent-plan',
+        name: 'Volcengine Ark Agent Plan (China)',
+        providerType: 'volcengine-agent-plan',
+        baseUrl: `${server.url}/api/plan/v3`,
+        defaultModel: 'deepseek-v4-pro-beta',
+        enabledModelIds: ['deepseek-v4-pro-beta'],
+        models: PROVIDER_REGISTRY['volcengine-agent-plan'].fallbackModels.map((id) => ({ id })),
+        modelSource: 'fetched',
+        enabled: true,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      'ark-plan-token',
+    );
+
+    assert.equal(result.ok, true);
+    assert.equal(result.modelTested, 'deepseek-v4-pro-beta');
+    assert.equal(probedModel, 'deepseek-v4-pro-beta');
+    assert.ok(
+      !PROVIDER_REGISTRY['volcengine-agent-plan'].fallbackModels.includes('deepseek-v4-pro-beta'),
+      'the fixture stops proving anything once the snapshot ships this id',
+    );
+  });
+
+  test('DeepSeek V4 Pro connection probes use its default Responses wire', async () => {
     let body: Record<string, unknown> | undefined;
     const server = await startJsonServer(async (request, response) => {
       assert.equal(request.method, 'POST');
@@ -944,7 +1079,6 @@ describe('models.dev provider conformance', () => {
       providerType: 'deepseek',
       baseUrl: `${server.url}/v1`,
       defaultModel: 'deepseek-v4-pro',
-      models: [{ id: 'deepseek-v4-pro', apiProtocol: 'openai-responses' }],
       enabled: true,
       createdAt: 1,
       updatedAt: 1,
@@ -954,6 +1088,78 @@ describe('models.dev provider conformance', () => {
     assert.equal(body?.model, 'deepseek-v4-pro');
     assert.equal(body?.store, false);
   });
+
+  test('an Open Responses probe normalizes a base URL that already names the endpoint', async () => {
+    let probedPath: string | undefined;
+    const server = await startJsonServer(async (request, response) => {
+      assert.equal(request.method, 'POST');
+      probedPath = request.url;
+      respondJson(response, 200, {});
+    });
+    const connection: LlmConnection = {
+      slug: 'deepseek',
+      name: 'DeepSeek',
+      providerType: 'deepseek',
+      baseUrl: `${server.url}/v1/responses`,
+      defaultModel: 'deepseek-v4-pro',
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+
+    assert.equal((await testConnection(connection, 'deepseek-token')).ok, true);
+    assert.equal(probedPath, '/v1/responses');
+  });
+
+  for (const [label, providerType] of [
+    ['a plain OpenAI-compatible relay', 'openai-compatible'],
+    ['local Ollama', 'ollama'],
+  ] as const) {
+    test(`${label} requests usage in streamed chat completions by default`, async () => {
+      // Usage is the only signal the runtime's context handling reads (#4559).
+      // A Chat Completions server returns none unless asked, so every
+      // OpenAI-compatible adapter asks unless the registry opts it out.
+      let requestBody: Record<string, unknown> | undefined;
+      const server = await startJsonServer(async (request, response) => {
+        assert.equal(request.method, 'POST');
+        assert.equal(request.url, '/v1/chat/completions');
+        requestBody = JSON.parse(await readBody(request)) as Record<string, unknown>;
+        respondOpenAIStream(response, [
+          {
+            id: 'chatcmpl-compatible-stream',
+            object: 'chat.completion.chunk',
+            created: 1,
+            model: 'relay-model',
+            choices: [
+              { index: 0, delta: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' },
+            ],
+            usage: { prompt_tokens: 21, completion_tokens: 1, total_tokens: 22 },
+          },
+        ]);
+      });
+      const connection: LlmConnection = {
+        slug: providerType,
+        name: label,
+        providerType,
+        baseUrl: `${server.url}/v1`,
+        defaultModel: 'relay-model',
+        enabled: true,
+        createdAt: 1,
+        updatedAt: 1,
+      };
+
+      const result = streamText({
+        model: getAIModel({ connection, apiKey: 'test-key', modelId: 'relay-model' }),
+        prompt: 'Reply ok.',
+      });
+
+      assert.equal(await result.text, 'ok');
+      assert.deepEqual(requestBody?.stream_options, { include_usage: true });
+      const usage = await result.usage;
+      assert.equal(usage.inputTokens, 21);
+      assert.equal(usage.outputTokens, 1);
+    });
+  }
 
   test('Ollama Cloud requests usage in streamed chat completions', async () => {
     let requestBody: Record<string, unknown> | undefined;
@@ -996,6 +1202,72 @@ describe('models.dev provider conformance', () => {
     assert.equal(usage.inputTokens, 8);
     assert.equal(usage.outputTokens, 1);
     assert.equal(usage.totalTokens, 9);
+  });
+
+  test('a relay that rejects stream_options is answered once without the field', async () => {
+    // Asking for usage is the default, but a strict relay that rejects unknown
+    // fields would otherwise 400 every streaming request with no user-facing
+    // way to switch the ask off. One retreat, remembered for the endpoint: the
+    // request goes out again without `stream_options`, and the connection then
+    // simply reports no usage (#4559).
+    resetStreamUsageFallbackMemory();
+    const bodies: Record<string, unknown>[] = [];
+    const server = await startJsonServer(async (request, response) => {
+      const body = JSON.parse(await readBody(request)) as Record<string, unknown>;
+      bodies.push(body);
+      if ('stream_options' in body) {
+        respondJson(response, 400, {
+          error: {
+            message: 'Unrecognized request argument supplied: stream_options',
+            type: 'invalid_request_error',
+            param: 'stream_options',
+            code: null,
+          },
+        });
+        return;
+      }
+      respondOpenAIStream(response, [
+        {
+          id: 'chatcmpl-strict-relay',
+          object: 'chat.completion.chunk',
+          created: 1,
+          model: 'relay-model',
+          choices: [
+            { index: 0, delta: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' },
+          ],
+        },
+      ]);
+    });
+    const connection: LlmConnection = {
+      slug: 'strict-relay',
+      name: 'Strict relay',
+      providerType: 'openai-compatible',
+      baseUrl: `${server.url}/v1`,
+      defaultModel: 'relay-model',
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+
+    const result = streamText({
+      model: getAIModel({ connection, apiKey: 'test-key', modelId: 'relay-model' }),
+      prompt: 'Reply ok.',
+    });
+
+    assert.equal(await result.text, 'ok');
+    assert.equal(bodies.length, 2);
+    assert.deepEqual(bodies[0]?.stream_options, { include_usage: true });
+    assert.equal('stream_options' in (bodies[1] ?? {}), false);
+
+    // The endpoint is remembered: the next request never asks again.
+    const second = streamText({
+      model: getAIModel({ connection, apiKey: 'test-key', modelId: 'relay-model' }),
+      prompt: 'Reply ok again.',
+    });
+    assert.equal(await second.text, 'ok');
+    assert.equal(bodies.length, 3);
+    assert.equal('stream_options' in (bodies[2] ?? {}), false);
+    resetStreamUsageFallbackMemory();
   });
 
   test('Hugging Face discovers tool-capable routed models and preserves its two-stage OpenAI wire', async () => {

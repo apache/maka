@@ -1,3 +1,22 @@
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+
 # Computer Use Provider Evidence
 
 This layer defines the evidence contract for real-model Computer Use runs. It
@@ -62,9 +81,11 @@ Qualification also keeps three fail-closed invariants:
   so a launcher cannot exit successfully for a matrix-invalid report.
 
 The old direct real-machine qualification runner was removed. The five-round
-restart runner remains available as `e2e:computer-use-process-restart-soak`,
-but is regression-only and cannot satisfy a provider matrix cell. There is one
-qualification path rather than parallel evidence standards.
+restart runner remains available as `npm run computer-use -- restart-soak`,
+using the `MAKA_CU_AX_MODEL_LAB_ROOT` fixture checkout described in
+[Lab fixture setup](./computer-use-evidence-classes.md#lab-fixture-setup). The
+runner is regression-only and cannot satisfy a provider matrix cell. There is
+one qualification path rather than parallel evidence standards.
 
 ## Next Layer
 
@@ -90,7 +111,7 @@ The first qualifying run completed with:
 - terminal status: `complete / end_turn`;
 - fixture oracle: verification code matched and interaction count remained zero.
 
-The direct E2E tool exposure is deliberate. The default deferred `load_tools`
+The direct E2E tool exposure is deliberate. The default deferred `tool_search`
 path remains a separate product contract; the launcher narrows provider
 variables while still exercising the production tool implementation, permission
 engine, Runtime, Desktop host, and executor backend.

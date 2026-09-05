@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * Canonical Runtime v2 event contract.
  *
@@ -20,9 +39,30 @@ import {
   type MessageContent,
   type PermissionClosureReason,
 } from './events.js';
-import { INTERACTION_ID_MAX_BYTES, INTERACTION_TOOL_NAME_MAX_BYTES } from './interaction.js';
-import type { PermissionRequestPayload, PermissionResponse } from './permission.js';
-import type { TurnOrigin } from './runtime-inputs.js';
+import {
+  INTERACTION_ID_MAX_BYTES,
+  INTERACTION_TOOL_NAME_MAX_BYTES,
+  decodeInteractionRequest,
+  type InteractionFormInput,
+} from './interaction.js';
+import {
+  isPermissionMode,
+  type PermissionMode,
+  type PermissionRequestPayload,
+  type PermissionResponse,
+} from './permission.js';
+import { isCollaborationMode, type CollaborationMode } from './collaboration.js';
+import {
+  isAgentSwarmAuthorizationSource,
+  isEffectiveOrchestrationSource,
+  isOrchestrationMode,
+  type AgentSwarmAuthorizationSource,
+  type EffectiveOrchestrationSource,
+  type OrchestrationMode,
+} from './orchestration.js';
+import { isToolMode, type ToolMode } from './tool-mode.js';
+import type { PersistedBackendKind } from './session.js';
+import { decodeTurnOrigin, type TurnOrigin } from './turn-origin.js';
 import type { UserQuestionRequest } from './user-question.js';
 import {
   defineObjectShape,
@@ -44,6 +84,10 @@ import {
   isRuntimeEventWorkspaceFactEnvelope,
   type RuntimeEventWorkspaceFactEnvelope,
 } from './workspace-version-authority.js';
+import {
+  decodeDurableToolResultProjection,
+  type DurableToolResultProjection,
+} from './durable-tool-result-projection.js';
 
 // ============================================================================
 // Role / Author / Status
@@ -169,6 +213,8 @@ export interface RuntimeEventFunctionResponseContent {
   providerExecuted?: boolean;
   /** Raw provider result retained for provider-native replay; never rendered directly. */
   providerOutput?: unknown;
+  /** Frozen provider-neutral content consumed by every model-history projection. */
+  modelProjection?: DurableToolResultProjection;
 }
 
 export interface RuntimeEventErrorContent {
@@ -182,16 +228,116 @@ export interface RuntimeEventErrorContent {
 }
 
 /**
+ * Where an invocation's provider route came from. `unknown` is the fail-closed
+ * marker for data that predates the opening fact: the transcript and tool
+ * evidence stay readable, but nothing may treat the route as authenticated.
+ */
+export type RuntimeInvocationRoute =
+  | {
+      provenance: 'runtime';
+      backendKind: PersistedBackendKind;
+      llmConnectionId: string;
+      llmConnectionSlug: string;
+      modelId: string;
+      /** Frozen provider endpoint and credential ownership; absent on non-provider runs. */
+      providerStateIdentity?: `sha256:${string}`;
+    }
+  | {
+      provenance: 'unknown';
+      backendKind: PersistedBackendKind;
+      llmConnectionSlug: string;
+      modelId: string;
+    };
+
+/** Execution configuration frozen before an invocation's first dispatch. */
+export interface RuntimeInvocationConfiguration {
+  cwd: string;
+  permissionMode: PermissionMode;
+  collaborationMode: CollaborationMode;
+  orchestrationMode: OrchestrationMode;
+  orchestrationSource: EffectiveOrchestrationSource;
+  toolMode: ToolMode;
+  agentSwarmAuthorization?: AgentSwarmAuthorizationSource;
+  /** Authoritative host identity for the workspace observed at open. */
+  workspaceIdentity?: string;
+}
+
+/**
+ * The authority that caused this invocation to exist. Closed and discriminated,
+ * so a reader names the root it wants instead of asserting that every other
+ * optional root field is absent.
+ */
+export type RuntimeInvocationRootAuthority =
+  | { kind: 'user' }
+  | { kind: 'context_compact' }
+  | { kind: 'scheduled_task'; scheduledTaskId: string }
+  | { kind: 'goal'; goalId: string }
+  | { kind: 'agent_graph_supervisor_wake'; wakeId: string; attemptId: string }
+  | { kind: 'legacy_automation'; legacyAutomationId: string };
+
+/** Turn/session lineage that is immutable once the invocation opens. */
+export interface RuntimeInvocationLineage {
+  parentRunId?: string;
+  /** The run this one continues, and the run it re-attempts. Never both. */
+  resumedFromRunId?: string;
+  retriedFromRunId?: string;
+  parentTurnId?: string;
+  parentSessionId?: string;
+  retriedFromTurnId?: string;
+  regeneratedFromTurnId?: string;
+  branchOfTurnId?: string;
+  agentId?: string;
+  agentName?: string;
+}
+
+/**
+ * How this invocation was opened. `continuation` carries the same source
+ * identity the continuation-start action authenticates, so a migrated opening
+ * fact keeps the lineage edge even where no start event exists.
+ */
+export type RuntimeInvocationOpenSource =
+  | { kind: 'fresh' }
+  | {
+      kind: 'continuation';
+      sourceInvocationId: string;
+      sourceRunId: string;
+      sourceTurnId: string;
+      sourceRuntimeEventHighWater: number;
+      claimId?: string;
+      boundaryDigest?: `sha256:${string}`;
+    };
+
+/**
+ * The one immutable opening fact of a run-kind invocation, committed before any
+ * provider or tool dispatch. Route provenance lives here once per invocation
+ * and is joined by `invocationId`; it is never copied onto other events.
+ *
+ * Reserved control-plane streams (history compaction checkpoints, workspace
+ * version authority) have no run and therefore no opening fact.
+ */
+export interface RuntimeEventInvocationOpenedContent {
+  kind: 'invocation_opened';
+  protocol: 'invocation_opened_v1';
+  route: RuntimeInvocationRoute;
+  configuration: RuntimeInvocationConfiguration;
+  root: RuntimeInvocationRootAuthority;
+  source: RuntimeInvocationOpenSource;
+  /** Omitted entirely when the invocation has no lineage edges. */
+  lineage?: RuntimeInvocationLineage;
+}
+
+/**
  * Content union for user/model text, model thinking, function call,
- * function response, and error payloads. Discriminated by `kind` to
- * match the existing ToolResultContent convention.
+ * function response, error payloads, and the invocation opening fact.
+ * Discriminated by `kind` to match the existing ToolResultContent convention.
  */
 export type RuntimeEventContent =
   | RuntimeEventTextContent
   | RuntimeEventThinkingContent
   | RuntimeEventFunctionCallContent
   | RuntimeEventFunctionResponseContent
-  | RuntimeEventErrorContent;
+  | RuntimeEventErrorContent
+  | RuntimeEventInvocationOpenedContent;
 
 export const RUNTIME_EVENT_CONTENT_KINDS = [
   'text',
@@ -199,6 +345,7 @@ export const RUNTIME_EVENT_CONTENT_KINDS = [
   'function_call',
   'function_response',
   'error',
+  'invocation_opened',
 ] as const;
 export type RuntimeEventContentKind = (typeof RUNTIME_EVENT_CONTENT_KINDS)[number];
 
@@ -230,11 +377,66 @@ export type ToolBoundaryProtocol = typeof TOOL_BOUNDARY_PROTOCOL_V1;
  */
 export interface RuntimeEventToolDispatch {
   protocol: ToolBoundaryProtocol;
+  /** New writes require this exact durable Tool Result projection protocol. */
+  resultProjectionVersion?: 1;
   operationId: string;
   providerToolCallId: string;
   toolName: string;
   canonicalArgsHash: string;
   recoveryMode: ToolRecoveryMode;
+  /** T1-frozen managed workspace mutation identity. */
+  managedMutation?: RuntimeEventManagedWorkspaceMutationV2;
+}
+
+/**
+ * Canonical semantics bound by the managed mutation execution-profile digest.
+ * Runtime consumes these limits directly, so changing the execution contract
+ * requires changing this representation and its digest together.
+ */
+export const MANAGED_MUTATION_EXECUTION_PROFILE_V1_SPEC = Object.freeze({
+  protocol: 'managed_mutation_execution_profile_v1',
+  toolNames: Object.freeze(['Write', 'Edit'] as const),
+  transform: 'pure_frozen_args_only_v1',
+  objectFormat: 'sha1',
+  pathPolicyVersion: 3,
+  resultSnapshot: Object.freeze({
+    maxBytes: 1_048_576,
+    maxDepth: 64,
+    maxNodes: 65_536,
+    maxProperties: 65_536,
+    maxArrayLength: 65_536,
+    format: 'strict_json_v1',
+  }),
+  terminalAuthority: 'owner_committed_exact_outcome_v1',
+  genericFallback: 'forbidden',
+} as const);
+
+export const MANAGED_MUTATION_EXECUTION_PROFILE_V1_DIGEST =
+  'sha256:ffdfdda9cf38f382e0c4db81dac7319cd33586a6c65051a97a15e6c41b88f825' as const;
+
+export interface RuntimeEventManagedWorkspaceMutationV2 {
+  protocol: 'managed_mutation_v2';
+  repositoryId: string;
+  workspaceId: string;
+  workspaceEpochId: string;
+  workspaceInstanceId: string;
+  objectFormat: 'sha1';
+  baseWorkspaceVersionId: string;
+  baseAcceptedEventId: string;
+  baseHeadRevision: number;
+  baseCommitOid: string;
+  baseTreeOid: string;
+  expectedPath: string;
+  pathPolicyVersion: 3;
+  executionProfileDigest: typeof MANAGED_MUTATION_EXECUTION_PROFILE_V1_DIGEST;
+}
+
+export interface RuntimeEventManagedMutationTerminalV1 {
+  protocol: 'managed_mutation_terminal_v1';
+  operationId: string;
+  dispatchEventId: string;
+  workspaceInstanceId: string;
+  terminalKind: 'no_workspace_change' | 'operation_failed_no_effect';
 }
 
 export interface RuntimeEventProtocolMarker {
@@ -256,7 +458,7 @@ export interface RuntimeEventContinuationStartV2 {
     prefixDigest: `sha256:${string}`;
   };
   replayManifestDigest: `sha256:${string}`;
-  providerProjectionVersion: 1;
+  providerProjectionVersion: 1 | 2;
   providerReplayDigest: `sha256:${string}`;
 }
 
@@ -266,6 +468,13 @@ interface RuntimeEventAnswerAcceptedIdentity {
 
 export interface RuntimeEventUserQuestionAnswerAccepted
   extends RuntimeEventAnswerAcceptedIdentity {}
+
+export interface RuntimeEventFormRequest extends InteractionFormInput {
+  requestId: string;
+  toolUseId: string;
+}
+
+export interface RuntimeEventFormAnswerAccepted extends RuntimeEventAnswerAcceptedIdentity {}
 
 export interface RuntimeEventPermissionAnswerAccepted extends RuntimeEventAnswerAcceptedIdentity {}
 
@@ -296,6 +505,10 @@ export interface RuntimeEventActions {
   userQuestionRequest?: UserQuestionRequest;
   /** Audit fact only; the canonical answer remains in InteractionStore. */
   userQuestionAnswerAccepted?: RuntimeEventUserQuestionAnswerAccepted;
+  /** A provider-neutral structured form raised by a tool call. */
+  formRequest?: RuntimeEventFormRequest;
+  /** Audit fact only; the canonical form result remains in InteractionStore. */
+  formAnswerAccepted?: RuntimeEventFormAnswerAccepted;
   /** Hand off the invocation to another agent (multi-agent transfer). */
   transferToAgent?: string;
   /** Marks the event that closes the invocation. */
@@ -312,6 +525,8 @@ export interface RuntimeEventActions {
   continuationStart?: RuntimeEventContinuationStartV2;
   /** Reserved workspace authority fact; only its atomic SQLite writer may persist it. */
   workspaceFact?: RuntimeEventWorkspaceFactEnvelope;
+  /** Reserved no-effect terminal; only the managed mutation terminal writer may persist it. */
+  managedMutationTerminal?: RuntimeEventManagedMutationTerminalV1;
 }
 
 // ============================================================================
@@ -387,7 +602,7 @@ export interface RuntimeEvent {
   id: string;
   /** Durable invocation spine id; groups every run/turn of one request. */
   invocationId: string;
-  /** Durable operational run identity (maps to AgentRunHeader.runId). */
+  /** Durable operational run identity; names one execution of the invocation. */
   runId: string;
   sessionId: string;
   /** Groups all events from one agent turn (maps to StoredMessage.turnId). */
@@ -419,13 +634,10 @@ export interface RuntimeEvent {
  * cover the interface, so it moves whenever the interface does — which makes it
  * the thing anything re-implementing the envelope check must be pinned to.
  *
- * The Harbor trajectory exporter re-implements it in Python and drifted: it
- * never learned `origin` or `modelVisibility`, so once the runtime started
- * emitting them every event failed the check and all 89 cells of a benchmark
- * run exported a one-line summary instead of a trajectory. The shared
- * validation corpus was supposed to catch that and could not — it exercised
- * the keys someone thought to write cases for, and those two were never among
- * them. `runtime-event.test.ts` now holds the corpus to this list.
+ * A former external consumer reimplemented it and drifted: it never learned
+ * `origin` or `modelVisibility`, so once Runtime emitted them every event
+ * failed its envelope check. `runtime-event.test.ts` therefore holds the
+ * validation corpus to this list instead of a second hand-maintained shape.
  */
 export function runtimeEventEnvelopeKeys(): readonly string[] {
   return [...RUNTIME_EVENT_SHAPE.allowed];
@@ -461,6 +673,7 @@ const TEXT_CONTENT_SHAPE = defineObjectShape<RuntimeEventTextContent>()(
     'displayText',
     'origin',
     'attachments',
+    'directoryReferences',
     'quotes',
     'inlineReferences',
     'steering',
@@ -477,12 +690,82 @@ const FUNCTION_CALL_CONTENT_SHAPE = defineObjectShape<RuntimeEventFunctionCallCo
 );
 const FUNCTION_RESPONSE_CONTENT_SHAPE = defineObjectShape<RuntimeEventFunctionResponseContent>()(
   ['kind', 'id', 'name', 'result'],
-  ['isError', 'providerExecuted', 'providerOutput'],
+  ['isError', 'providerExecuted', 'providerOutput', 'modelProjection'],
 );
 const ERROR_CONTENT_SHAPE = defineObjectShape<RuntimeEventErrorContent>()(
   ['kind', 'message'],
   ['code', 'reason', 'details'],
 );
+const INVOCATION_OPENED_CONTENT_SHAPE = defineObjectShape<RuntimeEventInvocationOpenedContent>()(
+  ['kind', 'protocol', 'route', 'configuration', 'root', 'source'],
+  ['lineage'],
+);
+const INVOCATION_ROUTE_RUNTIME_SHAPE = defineObjectShape<
+  Extract<RuntimeInvocationRoute, { provenance: 'runtime' }>
+>()(
+  ['provenance', 'backendKind', 'llmConnectionId', 'llmConnectionSlug', 'modelId'],
+  ['providerStateIdentity'],
+);
+const INVOCATION_ROUTE_UNKNOWN_SHAPE = defineObjectShape<
+  Extract<RuntimeInvocationRoute, { provenance: 'unknown' }>
+>()(['provenance', 'backendKind', 'llmConnectionSlug', 'modelId'], []);
+const INVOCATION_CONFIGURATION_SHAPE = defineObjectShape<RuntimeInvocationConfiguration>()(
+  [
+    'cwd',
+    'permissionMode',
+    'collaborationMode',
+    'orchestrationMode',
+    'orchestrationSource',
+    'toolMode',
+  ],
+  ['agentSwarmAuthorization', 'workspaceIdentity'],
+);
+const INVOCATION_LINEAGE_SHAPE = defineObjectShape<RuntimeInvocationLineage>()(
+  [],
+  [
+    'parentRunId',
+    'resumedFromRunId',
+    'retriedFromRunId',
+    'parentTurnId',
+    'parentSessionId',
+    'retriedFromTurnId',
+    'regeneratedFromTurnId',
+    'branchOfTurnId',
+    'agentId',
+    'agentName',
+  ],
+);
+const INVOCATION_CONTINUATION_SOURCE_SHAPE = defineObjectShape<
+  Extract<RuntimeInvocationOpenSource, { kind: 'continuation' }>
+>()(
+  ['kind', 'sourceInvocationId', 'sourceRunId', 'sourceTurnId', 'sourceRuntimeEventHighWater'],
+  ['claimId', 'boundaryDigest'],
+);
+const INVOCATION_FRESH_SOURCE_SHAPE = defineObjectShape<
+  Extract<RuntimeInvocationOpenSource, { kind: 'fresh' }>
+>()(['kind'], []);
+const INVOCATION_ROOT_SHAPES = {
+  user: defineObjectShape<Extract<RuntimeInvocationRootAuthority, { kind: 'user' }>>()(
+    ['kind'],
+    [],
+  ),
+  context_compact: defineObjectShape<
+    Extract<RuntimeInvocationRootAuthority, { kind: 'context_compact' }>
+  >()(['kind'], []),
+  scheduled_task: defineObjectShape<
+    Extract<RuntimeInvocationRootAuthority, { kind: 'scheduled_task' }>
+  >()(['kind', 'scheduledTaskId'], []),
+  goal: defineObjectShape<Extract<RuntimeInvocationRootAuthority, { kind: 'goal' }>>()(
+    ['kind', 'goalId'],
+    [],
+  ),
+  agent_graph_supervisor_wake: defineObjectShape<
+    Extract<RuntimeInvocationRootAuthority, { kind: 'agent_graph_supervisor_wake' }>
+  >()(['kind', 'wakeId', 'attemptId'], []),
+  legacy_automation: defineObjectShape<
+    Extract<RuntimeInvocationRootAuthority, { kind: 'legacy_automation' }>
+  >()(['kind', 'legacyAutomationId'], []),
+} as const;
 const RUNTIME_ACTIONS_SHAPE = defineObjectShape<RuntimeEventActions>()(
   [],
   [
@@ -494,6 +777,8 @@ const RUNTIME_ACTIONS_SHAPE = defineObjectShape<RuntimeEventActions>()(
     'permissionClosureAccepted',
     'userQuestionRequest',
     'userQuestionAnswerAccepted',
+    'formRequest',
+    'formAnswerAccepted',
     'transferToAgent',
     'endInvocation',
     'tokenUsage',
@@ -502,8 +787,14 @@ const RUNTIME_ACTIONS_SHAPE = defineObjectShape<RuntimeEventActions>()(
     'runtimeProtocol',
     'continuationStart',
     'workspaceFact',
+    'managedMutationTerminal',
   ],
 );
+const RUNTIME_MANAGED_MUTATION_TERMINAL_SHAPE =
+  defineObjectShape<RuntimeEventManagedMutationTerminalV1>()(
+    ['protocol', 'operationId', 'dispatchEventId', 'workspaceInstanceId', 'terminalKind'],
+    [],
+  );
 const ANSWER_ACCEPTED_IDENTITY_SHAPE = defineObjectShape<RuntimeEventAnswerAcceptedIdentity>()(
   ['requestId'],
   [],
@@ -524,8 +815,28 @@ const RUNTIME_TOOL_DISPATCH_SHAPE = defineObjectShape<RuntimeEventToolDispatch>(
     'canonicalArgsHash',
     'recoveryMode',
   ],
-  [],
+  ['managedMutation', 'resultProjectionVersion'],
 );
+const RUNTIME_MANAGED_WORKSPACE_MUTATION_SHAPE =
+  defineObjectShape<RuntimeEventManagedWorkspaceMutationV2>()(
+    [
+      'protocol',
+      'repositoryId',
+      'workspaceId',
+      'workspaceEpochId',
+      'workspaceInstanceId',
+      'objectFormat',
+      'baseWorkspaceVersionId',
+      'baseAcceptedEventId',
+      'baseHeadRevision',
+      'baseCommitOid',
+      'baseTreeOid',
+      'expectedPath',
+      'pathPolicyVersion',
+      'executionProfileDigest',
+    ],
+    [],
+  );
 const RUNTIME_PROTOCOL_MARKER_SHAPE = defineObjectShape<RuntimeEventProtocolMarker>()(
   ['toolBoundary'],
   [],
@@ -569,6 +880,7 @@ const RUNTIME_TOKEN_USAGE_SHAPE = defineObjectShape<RuntimeEventTokenUsage>()(
     'promptSegments',
     'contextBudget',
     'providerRequestTraceId',
+    'lastRequestAnchor',
   ],
 );
 const RUNTIME_REFS_SHAPE = defineObjectShape<RuntimeEventRefs>()(
@@ -615,6 +927,7 @@ export function decodeRuntimeEvent(value: unknown): RuntimeEvent {
     !isOptionalMember(value.modelVisibility, RUNTIME_EVENT_MODEL_VISIBILITIES) ||
     (value.status !== undefined && !isRuntimeEventStatus(value.status)) ||
     (value.content !== undefined && !isRuntimeEventContent(value.content)) ||
+    !hasOwnedModelProjection(value.content, value.sessionId) ||
     (value.actions !== undefined && !isRuntimeEventActions(value.actions)) ||
     (value.refs !== undefined && !isRuntimeEventRefs(value.refs))
   ) {
@@ -627,7 +940,7 @@ export function decodeRuntimeEvent(value: unknown): RuntimeEvent {
         kind: 'text',
         ...normalizeMessageContent(value.content as unknown as MessageContent),
         ...(value.content.origin !== undefined
-          ? { origin: value.content.origin as TurnOrigin }
+          ? { origin: decodeTurnOrigin(value.content.origin) }
           : {}),
         ...(value.content.steering === true ? { steering: true as const } : {}),
       },
@@ -636,33 +949,18 @@ export function decodeRuntimeEvent(value: unknown): RuntimeEvent {
   return value as unknown as RuntimeEvent;
 }
 
-export function decodePersistedRuntimeEvent(value: unknown): RuntimeEvent {
-  return decodeRuntimeEvent(normalizeLegacyPermissionRequest(value));
-}
-
-function normalizeLegacyPermissionRequest(value: unknown): unknown {
-  if (!isRecord(value) || !isRecord(value.actions)) return value;
-  const request = value.actions.permissionRequest;
-  if (
-    !isRecord(request) ||
-    Object.hasOwn(request, 'kind') ||
-    Object.hasOwn(request, 'rememberForTurnAllowed')
-  ) {
-    return value;
+function hasOwnedModelProjection(content: unknown, sessionId: string): boolean {
+  if (!isRecord(content) || content.kind !== 'function_response') return true;
+  const projection = content.modelProjection;
+  if (!isRecord(projection) || projection.kind !== 'content' || !Array.isArray(projection.parts)) {
+    return true;
   }
-  const normalized = {
-    ...request,
-    kind: 'tool_permission',
-    rememberForTurnAllowed: false,
-  };
-  if (!isPermissionRequestPayload(normalized)) return value;
-  return {
-    ...value,
-    actions: {
-      ...value.actions,
-      permissionRequest: normalized,
-    },
-  };
+  return projection.parts.every(
+    (part) =>
+      !isRecord(part) ||
+      part.kind !== 'artifact' ||
+      (isRecord(part.ref) && part.ref.sessionId === sessionId),
+  );
 }
 
 function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
@@ -681,6 +979,9 @@ function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
         text: value.text,
         ...(value.displayText !== undefined ? { displayText: value.displayText } : {}),
         ...(value.attachments !== undefined ? { attachments: value.attachments } : {}),
+        ...(value.directoryReferences !== undefined
+          ? { directoryReferences: value.directoryReferences }
+          : {}),
         ...(value.quotes !== undefined ? { quotes: value.quotes } : {}),
         ...(value.inlineReferences !== undefined
           ? { inlineReferences: value.inlineReferences }
@@ -709,7 +1010,9 @@ function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
         typeof value.name === 'string' &&
         Object.hasOwn(value, 'result') &&
         (value.isError === undefined || typeof value.isError === 'boolean') &&
-        (value.providerExecuted === undefined || typeof value.providerExecuted === 'boolean')
+        (value.providerExecuted === undefined || typeof value.providerExecuted === 'boolean') &&
+        (value.modelProjection === undefined ||
+          decodesDurableToolResultProjection(value.modelProjection))
       );
     case 'error':
       return (
@@ -719,26 +1022,161 @@ function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
         typeof value.message === 'string' &&
         (value.details === undefined || isStringArray(value.details) || isRecord(value.details))
       );
+    case 'invocation_opened':
+      return isRuntimeInvocationOpened(value);
     default:
       return false;
   }
 }
 
-function isTurnOrigin(value: unknown): value is TurnOrigin {
-  if (!isRecord(value)) return false;
-  if (value.kind === 'automation') {
-    return Object.keys(value).length === 2 && typeof value.automationId === 'string';
+/**
+ * True when the event is the immutable opening fact of its invocation.
+ * Narrowing here keeps every reader off a hand-rolled `content.kind` test.
+ */
+export function runtimeEventInvocationOpening(
+  event: RuntimeEvent,
+): RuntimeEventInvocationOpenedContent | undefined {
+  return event.content?.kind === 'invocation_opened' ? event.content : undefined;
+}
+
+/** Strict decode for one persisted opening fact; throws on any drift. */
+export function decodeRuntimeInvocationOpened(value: unknown): RuntimeEventInvocationOpenedContent {
+  if (!isRuntimeInvocationOpened(value)) {
+    throw new Error('Invalid RuntimeEvent invocation_opened schema');
   }
-  if (value.kind === 'goal') {
-    return Object.keys(value).length === 2 && typeof value.goalId === 'string';
-  }
+  return value;
+}
+
+function isRuntimeInvocationOpened(value: unknown): value is RuntimeEventInvocationOpenedContent {
   return (
-    value.kind === 'agent_graph' &&
-    Object.keys(value).length === 4 &&
-    typeof value.graphId === 'string' &&
-    typeof value.wakeId === 'string' &&
-    typeof value.attemptId === 'string'
+    isRecord(value) &&
+    value.kind === 'invocation_opened' &&
+    hasExactShape(value, INVOCATION_OPENED_CONTENT_SHAPE) &&
+    value.protocol === 'invocation_opened_v1' &&
+    isRuntimeInvocationRoute(value.route) &&
+    isRuntimeInvocationConfiguration(value.configuration) &&
+    isRuntimeInvocationRootAuthority(value.root) &&
+    isRuntimeInvocationOpenSource(value.source) &&
+    (value.lineage === undefined || isRuntimeInvocationLineage(value.lineage))
   );
+}
+
+function isRuntimeInvocationRoute(value: unknown): value is RuntimeInvocationRoute {
+  if (!isRecord(value)) return false;
+  if (
+    !isPersistedBackendKind(value.backendKind) ||
+    !isNonEmptyString(value.llmConnectionSlug) ||
+    !isNonEmptyString(value.modelId)
+  ) {
+    return false;
+  }
+  if (value.provenance === 'runtime') {
+    return (
+      hasExactShape(value, INVOCATION_ROUTE_RUNTIME_SHAPE) &&
+      isNonEmptyString(value.llmConnectionId) &&
+      (value.providerStateIdentity === undefined || isSha256Digest(value.providerStateIdentity))
+    );
+  }
+  return value.provenance === 'unknown' && hasExactShape(value, INVOCATION_ROUTE_UNKNOWN_SHAPE);
+}
+
+function isPersistedBackendKind(value: unknown): value is PersistedBackendKind {
+  return value === 'ai-sdk' || value === 'fake';
+}
+
+function isRuntimeInvocationConfiguration(value: unknown): value is RuntimeInvocationConfiguration {
+  return (
+    isRecord(value) &&
+    hasExactShape(value, INVOCATION_CONFIGURATION_SHAPE) &&
+    typeof value.cwd === 'string' &&
+    isPermissionMode(value.permissionMode) &&
+    isCollaborationMode(value.collaborationMode) &&
+    isOrchestrationMode(value.orchestrationMode) &&
+    isEffectiveOrchestrationSource(value.orchestrationSource) &&
+    isToolMode(value.toolMode) &&
+    (value.agentSwarmAuthorization === undefined ||
+      isAgentSwarmAuthorizationSource(value.agentSwarmAuthorization)) &&
+    (value.workspaceIdentity === undefined || isNonEmptyString(value.workspaceIdentity))
+  );
+}
+
+function isRuntimeInvocationRootAuthority(value: unknown): value is RuntimeInvocationRootAuthority {
+  if (!isRecord(value)) return false;
+  switch (value.kind) {
+    case 'user':
+      return hasExactShape(value, INVOCATION_ROOT_SHAPES.user);
+    case 'context_compact':
+      return hasExactShape(value, INVOCATION_ROOT_SHAPES.context_compact);
+    case 'scheduled_task':
+      return (
+        hasExactShape(value, INVOCATION_ROOT_SHAPES.scheduled_task) &&
+        isNonEmptyString(value.scheduledTaskId)
+      );
+    case 'goal':
+      return hasExactShape(value, INVOCATION_ROOT_SHAPES.goal) && isNonEmptyString(value.goalId);
+    case 'agent_graph_supervisor_wake':
+      return (
+        hasExactShape(value, INVOCATION_ROOT_SHAPES.agent_graph_supervisor_wake) &&
+        isNonEmptyString(value.wakeId) &&
+        isNonEmptyString(value.attemptId)
+      );
+    case 'legacy_automation':
+      return (
+        hasExactShape(value, INVOCATION_ROOT_SHAPES.legacy_automation) &&
+        isNonEmptyString(value.legacyAutomationId)
+      );
+    default:
+      return false;
+  }
+}
+
+function isRuntimeInvocationOpenSource(value: unknown): value is RuntimeInvocationOpenSource {
+  if (!isRecord(value)) return false;
+  if (value.kind === 'fresh') return hasExactShape(value, INVOCATION_FRESH_SOURCE_SHAPE);
+  return (
+    value.kind === 'continuation' &&
+    hasExactShape(value, INVOCATION_CONTINUATION_SOURCE_SHAPE) &&
+    isNonEmptyString(value.sourceInvocationId) &&
+    isNonEmptyString(value.sourceRunId) &&
+    isNonEmptyString(value.sourceTurnId) &&
+    Number.isSafeInteger(value.sourceRuntimeEventHighWater) &&
+    (value.sourceRuntimeEventHighWater as number) >= 0 &&
+    (value.claimId === undefined || isNonEmptyString(value.claimId)) &&
+    (value.boundaryDigest === undefined || isSha256Digest(value.boundaryDigest))
+  );
+}
+
+function isRuntimeInvocationLineage(value: unknown): value is RuntimeInvocationLineage {
+  return (
+    isRecord(value) &&
+    hasExactShape(value, INVOCATION_LINEAGE_SHAPE) &&
+    Object.keys(value).length > 0 &&
+    [
+      value.parentRunId,
+      value.resumedFromRunId,
+      value.retriedFromRunId,
+      value.parentTurnId,
+      value.parentSessionId,
+      value.retriedFromTurnId,
+      value.regeneratedFromTurnId,
+      value.branchOfTurnId,
+      value.agentId,
+      value.agentName,
+    ].every(isOptionalString)
+  );
+}
+
+function decodesDurableToolResultProjection(value: unknown): boolean {
+  try {
+    decodeDurableToolResultProjection(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isTurnOrigin(value: unknown): value is TurnOrigin {
+  return decodeTurnOrigin(value) !== undefined;
 }
 
 function isRuntimeEventActions(value: unknown): value is RuntimeEventActions {
@@ -767,6 +1205,9 @@ function isRuntimeEventActions(value: unknown): value is RuntimeEventActions {
     (value.userQuestionRequest === undefined || isUserQuestionRequest(value.userQuestionRequest)) &&
     (value.userQuestionAnswerAccepted === undefined ||
       isRuntimeEventAnswerAcceptedIdentity(value.userQuestionAnswerAccepted)) &&
+    (value.formRequest === undefined || isRuntimeEventFormRequest(value.formRequest)) &&
+    (value.formAnswerAccepted === undefined ||
+      isRuntimeEventAnswerAcceptedIdentity(value.formAnswerAccepted)) &&
     isOptionalString(value.transferToAgent) &&
     (value.endInvocation === undefined || typeof value.endInvocation === 'boolean') &&
     (value.tokenUsage === undefined || isRuntimeTokenUsage(value.tokenUsage)) &&
@@ -775,7 +1216,44 @@ function isRuntimeEventActions(value: unknown): value is RuntimeEventActions {
     (value.runtimeProtocol === undefined || isRuntimeProtocolMarker(value.runtimeProtocol)) &&
     (value.continuationStart === undefined ||
       isRuntimeContinuationStart(value.continuationStart)) &&
-    (value.workspaceFact === undefined || isRuntimeEventWorkspaceFactEnvelope(value.workspaceFact))
+    (value.workspaceFact === undefined ||
+      isRuntimeEventWorkspaceFactEnvelope(value.workspaceFact)) &&
+    (value.managedMutationTerminal === undefined ||
+      isRuntimeManagedMutationTerminal(value.managedMutationTerminal))
+  );
+}
+
+function isRuntimeEventFormRequest(value: unknown): value is RuntimeEventFormRequest {
+  if (!isRecord(value)) return false;
+  const { requestId, ...request } = value;
+  if (
+    typeof requestId !== 'string' ||
+    requestId.length === 0 ||
+    UTF8.encode(requestId).byteLength > INTERACTION_ID_MAX_BYTES
+  ) {
+    return false;
+  }
+  try {
+    decodeInteractionRequest({ kind: 'form', ...request });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isRuntimeManagedMutationTerminal(
+  value: unknown,
+): value is RuntimeEventManagedMutationTerminalV1 {
+  return (
+    isRecord(value) &&
+    hasExactShape(value, RUNTIME_MANAGED_MUTATION_TERMINAL_SHAPE) &&
+    value.protocol === 'managed_mutation_terminal_v1' &&
+    typeof value.operationId === 'string' &&
+    typeof value.dispatchEventId === 'string' &&
+    typeof value.workspaceInstanceId === 'string' &&
+    /^instance_[0-9a-f]{32}$/u.test(value.workspaceInstanceId) &&
+    (value.terminalKind === 'no_workspace_change' ||
+      value.terminalKind === 'operation_failed_no_effect')
   );
 }
 
@@ -822,6 +1300,7 @@ function isRuntimeToolDispatch(value: unknown): value is RuntimeEventToolDispatc
     isRecord(value) &&
     hasExactShape(value, RUNTIME_TOOL_DISPATCH_SHAPE) &&
     value.protocol === TOOL_BOUNDARY_PROTOCOL_V1 &&
+    (value.resultProjectionVersion === undefined || value.resultProjectionVersion === 1) &&
     typeof value.operationId === 'string' &&
     typeof value.providerToolCallId === 'string' &&
     typeof value.toolName === 'string' &&
@@ -831,8 +1310,68 @@ function isRuntimeToolDispatch(value: unknown): value is RuntimeEventToolDispatc
       value.recoveryMode === 'reconcile' ||
       value.recoveryMode === 'reattach' ||
       value.recoveryMode === 'outcome_unknown' ||
-      value.recoveryMode === 'never_auto_retry')
+      value.recoveryMode === 'never_auto_retry') &&
+    (value.managedMutation === undefined ||
+      isRuntimeManagedWorkspaceMutation(value.managedMutation))
   );
+}
+
+function isRuntimeManagedWorkspaceMutation(
+  value: unknown,
+): value is RuntimeEventManagedWorkspaceMutationV2 {
+  if (
+    !isRecord(value) ||
+    !hasExactShape(value, RUNTIME_MANAGED_WORKSPACE_MUTATION_SHAPE) ||
+    value.protocol !== 'managed_mutation_v2' ||
+    typeof value.repositoryId !== 'string' ||
+    !/^repository_[0-9a-f]{32}$/u.test(value.repositoryId) ||
+    typeof value.workspaceId !== 'string' ||
+    !/^workspace_[0-9a-f]{32}$/u.test(value.workspaceId) ||
+    typeof value.workspaceEpochId !== 'string' ||
+    !/^epoch_[0-9a-f]{32}$/u.test(value.workspaceEpochId) ||
+    typeof value.workspaceInstanceId !== 'string' ||
+    !/^instance_[0-9a-f]{32}$/u.test(value.workspaceInstanceId) ||
+    value.objectFormat !== 'sha1' ||
+    typeof value.baseWorkspaceVersionId !== 'string' ||
+    !/^version_[0-9a-f]{32}$/u.test(value.baseWorkspaceVersionId) ||
+    typeof value.baseAcceptedEventId !== 'string' ||
+    !/^[A-Za-z0-9_-]{1,128}$/u.test(value.baseAcceptedEventId) ||
+    typeof value.baseHeadRevision !== 'number' ||
+    !Number.isSafeInteger(value.baseHeadRevision) ||
+    value.baseHeadRevision < 1 ||
+    typeof value.baseCommitOid !== 'string' ||
+    typeof value.baseTreeOid !== 'string' ||
+    value.pathPolicyVersion !== 3 ||
+    value.executionProfileDigest !== MANAGED_MUTATION_EXECUTION_PROFILE_V1_DIGEST ||
+    !isCanonicalManagedMutationPathV1(value.expectedPath)
+  ) {
+    return false;
+  }
+  const oidPattern = /^[0-9a-f]{40}$/u;
+  if (!oidPattern.test(value.baseCommitOid) || !oidPattern.test(value.baseTreeOid)) return false;
+  return true;
+}
+
+/** Platform-independent canonical Git path syntax used by durable mutation facts. */
+export function isCanonicalManagedMutationPathV1(path: unknown): path is string {
+  if (
+    typeof path !== 'string' ||
+    path.length === 0 ||
+    path.length > 4096 ||
+    path.includes('\\') ||
+    path.includes('\0') ||
+    path.includes(':') ||
+    path.startsWith('/') ||
+    path.endsWith('/')
+  ) {
+    return false;
+  }
+  const segments = path.split('/');
+  if (segments.some((segment) => segment === '' || segment === '.' || segment === '..')) {
+    return false;
+  }
+  const firstSegment = segments[0]!.toLowerCase();
+  return firstSegment !== '.git' && firstSegment !== 'node_modules';
 }
 
 function isRuntimeProtocolMarker(value: unknown): value is RuntimeEventProtocolMarker {
@@ -861,7 +1400,7 @@ function isRuntimeContinuationStart(value: unknown): value is RuntimeEventContin
     (value.immediateSource.highWater as number) > 0 &&
     isSha256Digest(value.immediateSource.prefixDigest) &&
     isSha256Digest(value.replayManifestDigest) &&
-    value.providerProjectionVersion === 1 &&
+    (value.providerProjectionVersion === 1 || value.providerProjectionVersion === 2) &&
     isSha256Digest(value.providerReplayDigest)
   );
 }
@@ -946,6 +1485,7 @@ export function runtimeEventHasModelVisibleContent(event: RuntimeEvent): boolean
     case 'function_response':
       return true;
     case 'error':
+    case 'invocation_opened':
       return false;
   }
 }

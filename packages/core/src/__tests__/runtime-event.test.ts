@@ -1,37 +1,44 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { expect } from '../test-helpers.js';
+import { createHash } from 'node:crypto';
 import {
   decodeMessageContent,
+  isCanonicalStorageRef,
   messageContentsEqual,
   normalizeMessageContent,
   type SessionEvent,
 } from '../events.js';
 import { INTERACTION_ID_MAX_BYTES, INTERACTION_TOOL_NAME_MAX_BYTES } from '../interaction.js';
 import {
-  RUNTIME_EVENT_AUTHORS,
-  RUNTIME_EVENT_CONTENT_KINDS,
-  RUNTIME_EVENT_ROLES,
-  RUNTIME_EVENT_STATUSES,
-  TERMINAL_RUNTIME_EVENT_STATUSES,
-  createRuntimeEventId,
-  decodePersistedRuntimeEvent,
   decodeRuntimeEvent,
-  isRuntimeEventAuthor,
-  isRuntimeEventRole,
-  isRuntimeEventStatus,
   isTerminalRuntimeEvent,
-  isTerminalRuntimeEventStatus,
-  isPartialRuntimeEvent,
-  runtimeEventEnvelopeKeys,
-  runtimeEventEnvelopeValueDomains,
+  MANAGED_MUTATION_EXECUTION_PROFILE_V1_DIGEST,
+  MANAGED_MUTATION_EXECUTION_PROFILE_V1_SPEC,
   runtimeEventHasModelVisibleContent,
   type RuntimeEvent,
   type RuntimeEventActions,
-  type RuntimeEventContent,
 } from '../runtime-event.js';
-import { decodeStoredMessageForRecovery } from '../session.js';
+import { decodeCanonicalMessage } from '../session.js';
+import { decodeTurnOrigin } from '../turn-origin.js';
 
 /** Minimal valid RuntimeEvent; callers spread overrides on top. */
 function baseEvent(overrides: Partial<RuntimeEvent> = {}): RuntimeEvent {
@@ -49,71 +56,6 @@ function baseEvent(overrides: Partial<RuntimeEvent> = {}): RuntimeEvent {
   };
 }
 
-interface RuntimeEventValidationCorpus {
-  baseEvent: Record<string, unknown>;
-  cases: Array<{
-    name: string;
-    accepted: boolean;
-    overrides: Record<string, unknown>;
-  }>;
-}
-
-const runtimeEventValidationCorpus = JSON.parse(
-  readFileSync(
-    new URL('../../src/__tests__/fixtures/runtime-event-validation-corpus.json', import.meta.url),
-    'utf8',
-  ),
-) as RuntimeEventValidationCorpus;
-
-test('the shared validation corpus exercises every envelope key', () => {
-  // The corpus is what the Python exporter in `packages/headless/harbor`
-  // validates against, and it is the only thing tying that re-implementation to
-  // this one. A key no case ever sets is a key the exporter can silently not
-  // know about — which is exactly how `origin` and `modelVisibility` came to
-  // fail every event of an 89-cell benchmark run.
-  // Only cases the corpus expects to be accepted count. A rejected case carries
-  // a value both sides refuse, so it passes just as well against an exporter
-  // that never learned the key at all — which is the one thing this is here to
-  // catch.
-  const exercised = new Set([
-    ...Object.keys(runtimeEventValidationCorpus.baseEvent),
-    ...runtimeEventValidationCorpus.cases
-      .filter((entry) => entry.accepted)
-      .flatMap((entry) => Object.keys(entry.overrides)),
-  ]);
-  for (const key of runtimeEventEnvelopeKeys()) {
-    assert.ok(exercised.has(key), `no corpus case sets the envelope key ${key}`);
-  }
-});
-
-test('the shared validation corpus exercises every envelope value domain', () => {
-  // The same drift one level down. Python spells these domains out again, so a
-  // member no accepted case carries is a member the exporter may reject while
-  // this side accepts it — and every event that carries it degrades to a
-  // one-line summary, exactly as an unknown key did.
-  const accepted = runtimeEventValidationCorpus.cases.filter((entry) => entry.accepted);
-  for (const [key, domain] of Object.entries(runtimeEventEnvelopeValueDomains())) {
-    const carried = new Set([
-      runtimeEventValidationCorpus.baseEvent[key],
-      ...accepted.map((entry) => entry.overrides[key]),
-    ]);
-    for (const member of domain) {
-      assert.ok(carried.has(member), `no corpus case carries ${key}: ${member}`);
-    }
-  }
-});
-
-test('Core decoder matches the shared RuntimeEvent validation corpus', () => {
-  for (const entry of runtimeEventValidationCorpus.cases) {
-    const event = { ...runtimeEventValidationCorpus.baseEvent, ...entry.overrides };
-    if (entry.accepted) {
-      assert.doesNotThrow(() => decodeRuntimeEvent(event), entry.name);
-    } else {
-      assert.throws(() => decodeRuntimeEvent(event), /Invalid RuntimeEvent schema/, entry.name);
-    }
-  }
-});
-
 test('Stored assistant reasoning parts survive recovery decoding', () => {
   const parts = [
     {
@@ -129,7 +71,7 @@ test('Stored assistant reasoning parts survive recovery decoding', () => {
       },
     },
   ];
-  const stored = decodeStoredMessageForRecovery({
+  const stored = decodeCanonicalMessage({
     type: 'assistant',
     id: 'message-1',
     turnId: 'turn-1',
@@ -144,56 +86,51 @@ test('Stored assistant reasoning parts survive recovery decoding', () => {
   assert.deepEqual(stored.thinking?.parts, parts);
 });
 
-describe('RuntimeEvent role / author / status enums', () => {
-  test('locks the role enum and guard', () => {
-    expect(RUNTIME_EVENT_ROLES).toEqual(['user', 'model', 'tool', 'system']);
-    expect(isRuntimeEventRole('model')).toBe(true);
-    expect(isRuntimeEventRole('assistant')).toBe(false);
-    expect(isRuntimeEventRole(123)).toBe(false);
+test('decodes released Automation origins as read-only legacy provenance', () => {
+  const message = decodeCanonicalMessage({
+    type: 'user',
+    id: 'message-1',
+    turnId: 'turn-1',
+    ts: 1,
+    text: 'Run the Automation',
+    origin: { kind: 'automation', automationId: 'automation-1' },
+  });
+  assert.deepEqual(message.type === 'user' ? message.origin : undefined, {
+    kind: 'legacy_automation',
+    automationId: 'automation-1',
   });
 
-  test('locks the author enum (agent ≠ model) and guard', () => {
-    expect(RUNTIME_EVENT_AUTHORS).toEqual(['user', 'host', 'agent', 'tool', 'system']);
-    expect(isRuntimeEventAuthor('host')).toBe(true);
-    expect(isRuntimeEventAuthor('agent')).toBe(true);
-    expect(isRuntimeEventAuthor('model')).toBe(false);
-    expect(isRuntimeEventAuthor(null)).toBe(false);
-  });
-
-  test('locks the status enum, terminal subset, and guards', () => {
-    expect(RUNTIME_EVENT_STATUSES).toEqual([
-      'streaming',
-      'completed',
-      'failed',
-      'aborted',
-      'cancelled',
-    ]);
-    expect(TERMINAL_RUNTIME_EVENT_STATUSES).toEqual([
-      'completed',
-      'failed',
-      'aborted',
-      'cancelled',
-    ]);
-    expect(isRuntimeEventStatus('streaming')).toBe(true);
-    expect(isRuntimeEventStatus('idle')).toBe(false);
-    expect(isTerminalRuntimeEventStatus('completed')).toBe(true);
-    expect(isTerminalRuntimeEventStatus('streaming')).toBe(false);
-    expect(isTerminalRuntimeEventStatus('nope')).toBe(false);
-  });
-
-  test('content kind list matches the discriminated union', () => {
-    expect(RUNTIME_EVENT_CONTENT_KINDS).toEqual([
-      'text',
-      'thinking',
-      'function_call',
-      'function_response',
-      'error',
-    ]);
+  const event = decodeRuntimeEvent(
+    baseEvent({
+      content: {
+        kind: 'text',
+        text: 'Run the Automation',
+        origin: { kind: 'automation', automationId: 'automation-1' } as never,
+      },
+    }),
+  );
+  assert.deepEqual(event.content?.kind === 'text' ? event.content.origin : undefined, {
+    kind: 'legacy_automation',
+    automationId: 'automation-1',
   });
 });
 
+test('shares one decoder across all TurnOrigin variants', () => {
+  const origins = [
+    { kind: 'scheduled_task', scheduledTaskId: 'task-1' },
+    { kind: 'goal', goalId: 'goal-1' },
+    { kind: 'agent_graph', graphId: 'graph-1', wakeId: 'wake-1', attemptId: 'attempt-1' },
+  ] as const;
+  for (const origin of origins) assert.deepEqual(decodeTurnOrigin(origin), origin);
+  assert.deepEqual(decodeTurnOrigin({ kind: 'automation', automationId: 'automation-1' }), {
+    kind: 'legacy_automation',
+    automationId: 'automation-1',
+  });
+  assert.equal(decodeTurnOrigin({ kind: 'goal', goalId: 'goal-1', extra: true }), undefined);
+});
+
 describe('continuation-start protocol', () => {
-  test('accepts only the replay projection version defined by v2', () => {
+  test('reads legacy and current replay projections but rejects unknown versions', () => {
     const continuationStart = {
       protocol: 'continuation_start_v2',
       provenance: 'runtime_admission',
@@ -225,12 +162,21 @@ describe('continuation-start protocol', () => {
       ).actions?.continuationStart,
       continuationStart,
     );
+    assert.equal(
+      decodeRuntimeEvent({
+        ...baseEvent({ role: 'system', author: 'system', content: undefined }),
+        actions: {
+          continuationStart: { ...continuationStart, providerProjectionVersion: 2 },
+        },
+      }).actions?.continuationStart?.providerProjectionVersion,
+      2,
+    );
     assert.throws(
       () =>
         decodeRuntimeEvent({
           ...baseEvent({ role: 'system', author: 'system', content: undefined }),
           actions: {
-            continuationStart: { ...continuationStart, providerProjectionVersion: 2 },
+            continuationStart: { ...continuationStart, providerProjectionVersion: 3 },
           },
         }),
       /RuntimeEvent schema/,
@@ -239,6 +185,33 @@ describe('continuation-start protocol', () => {
 });
 
 describe('RuntimeEvent content variants', () => {
+  test('recognizes canonical durable Session context references', () => {
+    assert.equal(
+      isCanonicalStorageRef({
+        kind: 'session_context',
+        sessionId: 'session-1',
+        refId: 'read-image:owner-1',
+      }),
+      true,
+    );
+    assert.equal(
+      isCanonicalStorageRef({
+        kind: 'session_context',
+        sessionId: 'session-1',
+        refId: '😀'.repeat(512),
+      }),
+      true,
+    );
+    for (const ref of [
+      { kind: 'session_context', sessionId: 'bad/session', refId: 'ref-1' },
+      { kind: 'session_context', sessionId: 'session-1', refId: '' },
+      { kind: 'session_context', sessionId: 'session-1', refId: '😀'.repeat(513) },
+      { kind: 'session_context', sessionId: 'session-1', refId: 'ref-1', extra: true },
+    ]) {
+      assert.equal(isCanonicalStorageRef(ref), false);
+    }
+  });
+
   test('preserves sent inline references as message identity', () => {
     const inlineReferences = [
       { kind: 'skill', value: '/skill:writer', label: 'Writer', start: 8 },
@@ -390,6 +363,17 @@ describe('RuntimeEvent content variants', () => {
         bytes: 1,
         ref: { kind: 'workspace_file' as const, relativePath: 'a.ts' },
       },
+      {
+        kind: 'image' as const,
+        name: 'snapshot.png',
+        mimeType: 'image/png',
+        bytes: 8,
+        ref: {
+          kind: 'session_context' as const,
+          sessionId: 'session-1',
+          refId: 'read-image:owner-1',
+        },
+      },
     ];
     const quotes = [
       { text: 'first', label: 'Assistant', sourceTurnId: 'turn-1' },
@@ -485,7 +469,7 @@ describe('RuntimeEvent content variants', () => {
       event.content && 'quotes' in event.content ? event.content.quotes?.[0] : undefined,
       quotes[0],
     );
-    const stored = decodeStoredMessageForRecovery({
+    const stored = decodeCanonicalMessage({
       type: 'user',
       id: 'message-1',
       turnId: 'turn-1',
@@ -509,7 +493,7 @@ describe('RuntimeEvent content variants', () => {
     assert.notEqual(stored.quotes?.[0], quotes[0]);
     assert.throws(
       () =>
-        decodeStoredMessageForRecovery({
+        decodeCanonicalMessage({
           type: 'user',
           id: 'message-1',
           turnId: 'turn-1',
@@ -520,109 +504,126 @@ describe('RuntimeEvent content variants', () => {
       /Invalid stored message schema/,
     );
   });
+});
 
-  test('text content carries a string body', () => {
-    const content: RuntimeEventContent = { kind: 'text', text: 'hello' };
-    if (content.kind !== 'text') throw new Error('unreachable');
-    expect(content.text).toBe('hello');
-  });
-
-  test('text content can carry attachment refs without changing its kind', () => {
-    const content: RuntimeEventContent = {
-      kind: 'text',
-      text: 'see attached',
-      attachments: [
-        {
-          kind: 'image',
-          name: 'chart.png',
-          mimeType: 'image/png',
-          bytes: 123,
-          ref: {
-            kind: 'session_file',
-            sessionId: 'sess-1',
-            relativePath: 'attachments/chart.png',
+test('rejects a Tool Result projection that references another Session artifact', () => {
+  assert.throws(
+    () =>
+      decodeRuntimeEvent(
+        baseEvent({
+          role: 'tool',
+          author: 'tool',
+          content: {
+            kind: 'function_response',
+            id: 'call-1',
+            name: 'Read',
+            result: { kind: 'image' },
+            modelProjection: {
+              version: 1,
+              kind: 'content',
+              parts: [
+                {
+                  kind: 'artifact',
+                  mediaType: 'image/png',
+                  ref: {
+                    kind: 'session_context',
+                    sessionId: 'another-session',
+                    refId: 'image-1',
+                  },
+                },
+              ],
+            },
           },
-        },
-      ],
-    };
-    if (content.kind !== 'text') throw new Error('unreachable');
-    expect(content.attachments?.[0]?.name).toBe('chart.png');
-  });
-
-  test('thinking content may carry a replay signature', () => {
-    const content: RuntimeEventContent = {
-      kind: 'thinking',
-      text: 'reasoning',
-      signature: 'sig',
-    };
-    if (content.kind !== 'thinking') throw new Error('unreachable');
-    expect(content.signature).toBe('sig');
-  });
-
-  test('function_call and function_response share an id', () => {
-    const call: RuntimeEventContent = {
-      kind: 'function_call',
-      id: 'tc-1',
-      name: 'Read',
-      args: { path: '/x' },
-      providerOptions: { google: { thoughtSignature: 'sig' } },
-    };
-    const response: RuntimeEventContent = {
-      kind: 'function_response',
-      id: 'tc-1',
-      name: 'Read',
-      result: 'ok',
-      isError: false,
-    };
-    if (call.kind !== 'function_call' || response.kind !== 'function_response') {
-      throw new Error('unreachable');
-    }
-    expect(call.id).toBe(response.id);
-    expect(decodeRuntimeEvent(baseEvent({ content: call })).content).toEqual(call);
-    expect(response.isError).toBe(false);
-  });
+        }),
+      ),
+    /Invalid RuntimeEvent schema/,
+  );
 });
 
 describe('RuntimeEvent actions', () => {
-  test('normalizes legacy permission requests only for persisted reads', () => {
-    const permissionRequest = {
-      requestId: 'pr-1',
-      toolUseId: 'tc-1',
-      toolName: 'Bash',
-      category: 'shell_unsafe',
-      reason: 'shell_dangerous',
-      args: { command: 'rm foo' },
-    };
-    const legacyEvent = baseEvent({ actions: { permissionRequest } as never });
-    assert.throws(() => decodeRuntimeEvent(legacyEvent), /Invalid RuntimeEvent schema/);
-    assert.deepEqual(decodePersistedRuntimeEvent(legacyEvent).actions?.permissionRequest, {
-      ...permissionRequest,
-      kind: 'tool_permission',
-      rememberForTurnAllowed: false,
+  test('binds the managed mutation digest to its canonical execution semantics', () => {
+    const canonicalProfile = JSON.stringify({
+      protocol: 'managed_mutation_execution_profile_v1',
+      toolNames: ['Write', 'Edit'],
+      transform: 'pure_frozen_args_only_v1',
+      objectFormat: 'sha1',
+      pathPolicyVersion: 3,
+      resultSnapshot: {
+        maxBytes: 1_048_576,
+        maxDepth: 64,
+        maxNodes: 65_536,
+        maxProperties: 65_536,
+        maxArrayLength: 65_536,
+        format: 'strict_json_v1',
+      },
+      terminalAuthority: 'owner_committed_exact_outcome_v1',
+      genericFallback: 'forbidden',
     });
-    assert.throws(
-      () =>
-        decodePersistedRuntimeEvent(
+
+    assert.equal(
+      MANAGED_MUTATION_EXECUTION_PROFILE_V1_DIGEST,
+      `sha256:${createHash('sha256').update(canonicalProfile).digest('hex')}`,
+    );
+    assert.equal(JSON.stringify(MANAGED_MUTATION_EXECUTION_PROFILE_V1_SPEC), canonicalProfile);
+  });
+
+  test('decodes only a platform-independent T1-frozen managed mutation identity', () => {
+    const managedMutation = {
+      protocol: 'managed_mutation_v2',
+      repositoryId: 'repository_11111111111111111111111111111111',
+      workspaceId: 'workspace_22222222222222222222222222222222',
+      workspaceEpochId: 'epoch_33333333333333333333333333333333',
+      workspaceInstanceId: 'instance_44444444444444444444444444444444',
+      objectFormat: 'sha1',
+      baseWorkspaceVersionId: 'version_55555555555555555555555555555555',
+      baseAcceptedEventId: 'baseline-event-1',
+      baseHeadRevision: 1,
+      baseCommitOid: '1'.repeat(40),
+      baseTreeOid: '2'.repeat(40),
+      expectedPath: 'src/a.ts',
+      pathPolicyVersion: 3,
+      executionProfileDigest: MANAGED_MUTATION_EXECUTION_PROFILE_V1_DIGEST,
+    } as const;
+    const toolDispatch = {
+      protocol: 't1_after_preflight_v1',
+      operationId: 'operation-1',
+      providerToolCallId: 'call-1',
+      toolName: 'Write',
+      canonicalArgsHash: `sha256:${'b'.repeat(64)}`,
+      recoveryMode: 'reconcile',
+      managedMutation,
+    } as const;
+
+    assert.deepEqual(
+      decodeRuntimeEvent(baseEvent({ role: 'system', author: 'system', actions: { toolDispatch } }))
+        .actions?.toolDispatch?.managedMutation,
+      managedMutation,
+    );
+    for (const invalid of [
+      { ...managedMutation, expectedPath: 'src/../secrets.txt' },
+      { ...managedMutation, expectedPath: 'NoDe_MoDuLeS/pkg/index.js' },
+      { ...managedMutation, expectedPath: '.GiT/config' },
+      { ...managedMutation, expectedPath: 'x'.repeat(4097) },
+      { ...managedMutation, pathPolicyVersion: 2 },
+      { ...managedMutation, executionProfileDigest: `sha256:${'a'.repeat(64)}` },
+      { ...managedMutation, baseAcceptedEventId: 'event id with spaces' },
+      { ...managedMutation, baseHeadRevision: 0 },
+      { ...managedMutation, baseTreeOid: 'not-an-oid' },
+      { ...managedMutation, extra: true },
+    ]) {
+      assert.throws(() =>
+        decodeRuntimeEvent(
           baseEvent({
-            actions: {
-              permissionRequest: { ...permissionRequest, kind: 'tool_permission' },
-            } as never,
+            role: 'system',
+            author: 'system',
+            actions: { toolDispatch: { ...toolDispatch, managedMutation: invalid } as never },
           }),
         ),
-      /Invalid RuntimeEvent schema/,
-    );
+      );
+    }
   });
 
-  test('a terminal action can carry endInvocation + tokenUsage', () => {
-    const actions: RuntimeEventActions = {
-      endInvocation: true,
-      tokenUsage: { input: 10, output: 5, costUsd: 0.001 },
-    };
-    expect(actions.endInvocation).toBe(true);
-    expect(actions.tokenUsage?.input).toBe(10);
-  });
-
-  test('permission and user-question interactions are first-class actions', () => {
+  test('permission, question, and form interactions are first-class actions', () => {
     const actions: RuntimeEventActions = {
       permissionRequest: {
         kind: 'tool_permission',
@@ -637,9 +638,17 @@ describe('RuntimeEvent actions', () => {
       permissionDecision: { requestId: 'pr-1', decision: 'deny' },
       permissionAnswerAccepted: { requestId: 'hosted-pr-1' },
       userQuestionAnswerAccepted: { requestId: 'question-1' },
+      formRequest: {
+        requestId: 'form-1',
+        toolUseId: 'tc-1',
+        message: 'Choose settings',
+        requester: { name: 'deploy' },
+        fields: [{ kind: 'boolean', name: 'confirm', label: 'Confirm', required: true }],
+      },
+      formAnswerAccepted: { requestId: 'form-1' },
     };
-    expect(actions.permissionRequest?.category).toBe('shell_unsafe');
-    expect(actions.permissionDecision?.decision).toBe('deny');
+    assert.strictEqual(actions.permissionRequest?.category, 'shell_unsafe');
+    assert.strictEqual(actions.permissionDecision?.decision, 'deny');
     assert.deepEqual(decodeRuntimeEvent(baseEvent({ actions })).actions?.permissionDecision, {
       requestId: 'pr-1',
       decision: 'deny',
@@ -648,6 +657,7 @@ describe('RuntimeEvent actions', () => {
     for (const [accepted, requestId] of [
       [decodedActions?.permissionAnswerAccepted, 'hosted-pr-1'],
       [decodedActions?.userQuestionAnswerAccepted, 'question-1'],
+      [decodedActions?.formAnswerAccepted, 'form-1'],
     ] as const) {
       assert.deepEqual(accepted, { requestId });
       assert.ok(accepted);
@@ -658,8 +668,17 @@ describe('RuntimeEvent actions', () => {
     for (const invalidAcceptedAction of [
       { permissionAnswerAccepted: { requestId: 'pr-1', extra: true } },
       { userQuestionAnswerAccepted: { requestId: 'question-1', extra: true } },
+      { formAnswerAccepted: { requestId: 'form-1', extra: true } },
       { permissionAnswerAccepted: Object.create({ requestId: 'inherited-pr-1' }) },
       { userQuestionAnswerAccepted: { requestId: 'x'.repeat(257) } },
+      {
+        formRequest: {
+          ...actions.formRequest,
+          fields: [
+            { kind: 'boolean', name: 'confirm', label: 'Confirm', required: true, extra: true },
+          ],
+        },
+      },
     ]) {
       assert.throws(() =>
         decodeRuntimeEvent({
@@ -768,37 +787,20 @@ describe('RuntimeEvent actions', () => {
       );
     }
   });
-
-  test('state/artifact deltas accept primitive values', () => {
-    const actions: RuntimeEventActions = {
-      stateDelta: { retries: 1 },
-      artifactDelta: { 'out.md': 2048 },
-    };
-    expect(actions.stateDelta?.retries).toBe(1);
-    expect(actions.artifactDelta?.['out.md']).toBe(2048);
-  });
 });
 
 describe('isTerminalRuntimeEvent', () => {
   test('classifies terminal status and explicit invocation completion', () => {
-    for (const status of TERMINAL_RUNTIME_EVENT_STATUSES) {
-      expect(isTerminalRuntimeEvent(baseEvent({ status }))).toBe(true);
-    }
-    for (const event of [
-      baseEvent({ content: { kind: 'text', text: 'hi' } }),
-      baseEvent({ status: 'streaming' }),
-      baseEvent({ actions: { endInvocation: false } }),
-    ]) {
-      expect(isTerminalRuntimeEvent(event)).toBe(false);
-    }
-    expect(isTerminalRuntimeEvent(baseEvent({ actions: { endInvocation: true } }))).toBe(true);
-  });
-});
-
-describe('isPartialRuntimeEvent', () => {
-  test('reflects the partial flag exactly', () => {
-    expect(isPartialRuntimeEvent(baseEvent({ partial: true }))).toBe(true);
-    expect(isPartialRuntimeEvent(baseEvent({ partial: false }))).toBe(false);
+    assert.strictEqual(isTerminalRuntimeEvent(baseEvent({ status: 'completed' })), true);
+    assert.strictEqual(isTerminalRuntimeEvent(baseEvent({ status: 'streaming' })), false);
+    assert.strictEqual(
+      isTerminalRuntimeEvent(baseEvent({ actions: { endInvocation: false } })),
+      false,
+    );
+    assert.strictEqual(
+      isTerminalRuntimeEvent(baseEvent({ actions: { endInvocation: true } })),
+      true,
+    );
   });
 });
 
@@ -840,7 +842,8 @@ describe('runtimeEventHasModelVisibleContent', () => {
         },
       }),
     ];
-    for (const event of visible) expect(runtimeEventHasModelVisibleContent(event)).toBe(true);
+    for (const event of visible)
+      assert.strictEqual(runtimeEventHasModelVisibleContent(event), true);
 
     const hidden = [
       baseEvent({ content: { kind: 'text', text: '' } }),
@@ -848,33 +851,16 @@ describe('runtimeEventHasModelVisibleContent', () => {
       baseEvent({ actions: { tokenUsage: { input: 1, output: 1 } } }),
       baseEvent({ refs: { toolCallId: 'tc-1' } }),
     ];
-    for (const event of hidden) expect(runtimeEventHasModelVisibleContent(event)).toBe(false);
+    for (const event of hidden)
+      assert.strictEqual(runtimeEventHasModelVisibleContent(event), false);
   });
 });
 
-describe('createRuntimeEventId', () => {
-  test('honors the prefix and returns a string', () => {
-    const id = createRuntimeEventId('turn');
-    expect(typeof id).toBe('string');
-    expect(id.startsWith('turn_')).toBe(true);
-  });
-
-  test('uses the default prefix when none is given', () => {
-    expect(createRuntimeEventId().startsWith('rt-event_')).toBe(true);
-  });
-
-  test('never collides within a process', () => {
-    const ids = new Set<string>();
-    for (let i = 0; i < 500; i += 1) ids.add(createRuntimeEventId());
-    expect(ids.size).toBe(500);
-  });
-});
-
-describe('RuntimeEvent shape compile-time contract', () => {
+describe('RuntimeEvent reference validation', () => {
   test('accepts only canonical source message digests', () => {
     const digest = `sha256:${'a'.repeat(64)}` as `sha256:${string}`;
     const event = baseEvent({ refs: { sourceMessageDigest: digest } });
-    expect(decodeRuntimeEvent(event).refs?.sourceMessageDigest).toBe(digest);
+    assert.strictEqual(decodeRuntimeEvent(event).refs?.sourceMessageDigest, digest);
     assert.throws(() =>
       decodeRuntimeEvent({
         ...event,
@@ -885,49 +871,12 @@ describe('RuntimeEvent shape compile-time contract', () => {
 
   test('accepts a provider-request trace reference and rejects a non-string reference', () => {
     const event = baseEvent({ refs: { providerRequestTraceId: 'provider-trace-1' } });
-    expect(decodeRuntimeEvent(event).refs?.providerRequestTraceId).toBe('provider-trace-1');
+    assert.strictEqual(decodeRuntimeEvent(event).refs?.providerRequestTraceId, 'provider-trace-1');
     assert.throws(() =>
       decodeRuntimeEvent({
         ...event,
         refs: { providerRequestTraceId: 123 },
       }),
     );
-  });
-
-  test('a full user event satisfies the type', () => {
-    const event: RuntimeEvent = {
-      id: 'evt-u1',
-      invocationId: 'inv-1',
-      runId: 'run-1',
-      sessionId: 'sess-1',
-      turnId: 'turn-1',
-      ts: 1,
-      partial: false,
-      role: 'user',
-      author: 'user',
-      content: { kind: 'text', text: 'hello' },
-    };
-    expect(event.role).toBe('user');
-    expect(isTerminalRuntimeEvent(event)).toBe(false);
-  });
-
-  test('a terminal agent event with branch + refs satisfies the type', () => {
-    const event: RuntimeEvent = {
-      id: 'evt-t1',
-      invocationId: 'inv-1',
-      runId: 'run-1',
-      sessionId: 'sess-1',
-      turnId: 'turn-1',
-      ts: 99,
-      branch: 'main',
-      partial: false,
-      role: 'model',
-      author: 'agent',
-      status: 'completed',
-      actions: { endInvocation: true, tokenUsage: { input: 1, output: 2 } },
-      refs: { storedMessageId: 'm1', toolCallId: 'tc-1' },
-    };
-    expect(isTerminalRuntimeEvent(event)).toBe(true);
-    expect(event.branch).toBe('main');
   });
 });

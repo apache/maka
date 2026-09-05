@@ -1,0 +1,27 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+[review_agent]
+comments_location_policy = "both"
+inline_comments_severity_threshold = 3
+issues_user_guidelines = """
+Review all changed code and report concrete, reproducible correctness, security, contract, or maintenance risks. Separate the issue from its remedy. Give each finding one disposition: fix-now when this PR violates stated behavior or an existing invariant; follow-up when the risk is real but pre-existing or outside the PR goal; optional when it is an improvement rather than a correctness or coherence requirement.
+
+Choose remedies in this order: delete an unnecessary path; consolidate duplicated authority; reuse the closest existing seam; make the smallest local correction; add new behavior only when the earlier options cannot satisfy the invariant. For any additive recommendation, explain why deletion, consolidation, or reuse is insufficient and identify the new state, branch, configuration, public surface, authority, or test-maintenance burden introduced.
+
+Carry resolved and dismissed decisions into later review runs. Reopen them only when new code or concrete evidence changes the risk. Present follow-up and optional findings as non-blocking, not as implementation requests for the current PR.
+"""

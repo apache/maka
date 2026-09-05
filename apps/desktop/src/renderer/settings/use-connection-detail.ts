@@ -1,73 +1,146 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  connectionNameDraftChanged,
+  connectionNameDraftReseed,
+  connectionNameToSave,
+  shouldRefreshModelsAfterSave,
+} from './connection-name-draft.js';
+import {
   type ConnectionTestResult,
-  type LlmConnection,
+  type IdentifiedLlmConnection,
   type ModelInfo,
+  type ProjectedLlmConnection,
   type ProviderType,
-} from '@maka/core';
-import { PROVIDER_DEFAULTS, connectionEnabledModelIds } from '@maka/core/llm-connections';
-import { buildConnectionModelCatalogEntries } from '@maka/core/model-catalog';
+} from '@maka/core/llm-connections';
+import { PROVIDER_REGISTRY, connectionEnabledModelIds } from '@maka/core/llm-connections';
+import { modelRowsEqual, resolveDraftConnectionModelCatalog } from '@maka/core/model-catalog';
+import { isRetiredProvider } from '@maka/core/provider-registry';
 import {
   normalizeRelayModelProfiles,
   pruneRelayModelProfiles,
   type RelayModelProfile,
   type ThinkingLevel,
 } from '@maka/core/model-thinking';
-import { isWiredOAuthProvider } from '@maka/core/provider-registry';
 import {
   providerAuthRequiresSecret,
   providerAuthSupportsApiKey,
   providerSupportsModelDiscovery,
 } from '@maka/core/llm-connections';
 import { useMountedRef, useToast, useUiLocale } from '@maka/ui';
-import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
 import { connectionChipStatus } from './provider-connection-status';
 import { relayProfileDraftReseedPlan, relayProfileDraftSeed } from './relay-profile-draft';
+import { applyBulkThinkingLevel, relayProfileWithThinkingLevels } from './relay-thinking-bulk';
 import { useKeyedActionGuard } from './use-action-guard';
-import type { OAuthLoginFlowBridge } from './use-oauth-login-flow';
+import type {
+  OAuthAccountFlowBridge,
+  OAuthAuthorizationFlowBridge,
+} from './use-oauth-login-flow';
 import {
   connectionLastTestMessageDisplay,
   connectionTestFailureMessage,
+  getProviderSettingsCopy,
   providerPanelActionErrorMessage,
+  type ConnectionOAuthBridge,
+  type ConnectionOAuthProviderBridge,
   type ConnectionsBridge,
   type CredentialPresenceStatus,
-} from './provider-panel-shared';
+} from '../features/connection-settings';
+import { useRuntimeHostSettingsErrorReporter } from './runtime-host-settings-target.js';
 
 // Maps an OAuth model-connection provider type to the browser-assisted login
 // service that can re-run its authorization from inside the connection dialog. Only
-// the loopback / polling services (Codex, Antigravity) are one-button-drivable
-// here; Claude's paste-code flow and plain API-key providers return null so the
-// notice falls back to prose instead of rendering a dead button.
+// the browser-assisted services (Codex and xAI) are one-button-drivable
+// here; plain API-key providers return null so the notice falls back to
+// prose instead of rendering a dead button.
 export interface OAuthLoginService {
-  bridge: OAuthLoginFlowBridge;
+  authorizationBridge: OAuthAuthorizationFlowBridge;
+  accountBridge: OAuthAccountFlowBridge;
   display: { name: string; shortName: string };
+  // OAuth device pages that require manual code entry expose it as stateHint.
+  showsDeviceCode: boolean;
 }
 
-export function oauthLoginServiceFor(providerType: ProviderType): OAuthLoginService | null {
+export function oauthLoginServiceFor(
+  providerType: ProviderType,
+  oauth: ConnectionOAuthBridge,
+  connectionId: string,
+  connectionLabel?: string,
+): OAuthLoginService | null {
   switch (providerType) {
     case 'openai-codex':
-      return {
-        bridge: window.maka.openAiCodex as unknown as OAuthLoginFlowBridge,
-        display: { name: 'OpenAI Codex', shortName: 'Codex' },
-      };
+      return oauthLoginService(
+        oauth.openAiCodex,
+        connectionId,
+        { name: connectionLabel ?? 'OpenAI Codex', shortName: 'Codex' },
+        true,
+      );
     case 'xai-oauth':
-      return {
-        bridge: window.maka.xaiOAuth as unknown as OAuthLoginFlowBridge,
-        display: { name: 'xAI Grok', shortName: 'SuperGrok / X Premium' },
-      };
-    case 'gemini-cli':
-      return {
-        bridge: window.maka.antigravitySubscription as unknown as OAuthLoginFlowBridge,
-        display: { name: 'Google Antigravity', shortName: 'Antigravity' },
-      };
+      return oauthLoginService(
+        oauth.xaiOAuth,
+        connectionId,
+        { name: connectionLabel ?? 'xAI Grok', shortName: 'SuperGrok / X Premium' },
+        false,
+      );
+    // Copilot re-login is the same Host-owned device grant the catalog drives;
+    // importing a local `gh` credential stays a catalog action, so an expired
+    // connection is re-authorized here exactly like every other OAuth account.
+    case 'github-copilot':
+      return oauthLoginService(
+        oauth.githubCopilotSubscription,
+        connectionId,
+        { name: connectionLabel ?? 'GitHub Copilot', shortName: 'GitHub Copilot' },
+        true,
+      );
     default:
       return null;
   }
 }
 
+function oauthLoginService(
+  provider: ConnectionOAuthProviderBridge,
+  connectionId: string,
+  display: OAuthLoginService['display'],
+  showsDeviceCode: boolean,
+): OAuthLoginService {
+  return {
+    authorizationBridge: {
+      getAuthUrl: () => provider.getAuthUrl({ kind: 'existing', connectionId }),
+      openAuthUrl: (authRequestId) => provider.openAuthUrl(authRequestId),
+      completeAuthorization: (authRequestId) => provider.completeAuthorization(authRequestId),
+      cancelAuthorization: (authRequestId) => provider.cancelAuthorization(authRequestId),
+      getEnrollmentState: () => provider.getEnrollmentState(),
+    },
+    accountBridge: {
+      getAccountState: () => provider.getAccountState(connectionId),
+      logout: () => provider.logout(connectionId),
+    },
+    display,
+    showsDeviceCode,
+  };
+}
+
 export interface ConnectionDetailProps {
   bridge: ConnectionsBridge;
-  connection: LlmConnection;
+  connection: ProjectedLlmConnection;
   isDefault: boolean;
   onChanged(): Promise<void>;
   onDeleted(): Promise<void>;
@@ -85,11 +158,16 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
   const locale = useUiLocale();
   const copy = getProviderSettingsCopy(locale).detail;
   const { connection } = props;
-  const defaults = PROVIDER_DEFAULTS[connection.providerType];
+  const connectionIdentity = {
+    connectionId: connection.connectionId,
+    slug: connection.slug,
+  } as const;
+  const defaults = PROVIDER_REGISTRY[connection.providerType];
   const [apiKey, setApiKey] = useState('');
   const [hasSecret, setHasSecret] = useState<CredentialPresenceStatus>(
     defaults.authKind === 'none' ? true : 'loading',
   );
+  const [name, setName] = useState(connection.name);
   const [baseUrl, setBaseUrl] = useState(connection.baseUrl ?? defaults.baseUrl ?? '');
   const [models, setModels] = useState<ModelInfo[]>(connection.models ?? []);
   const [enabledModelIds, setEnabledModelIds] = useState(() => connectionEnabledModelIds(connection));
@@ -112,10 +190,22 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
   const connectionDetailMountedRef = useMountedRef();
   const connectionDetailLifecycleRef = useRef(0);
   const toast = useToast();
+  const reportHostError = useRuntimeHostSettingsErrorReporter();
   const supportsApiKey = providerAuthSupportsApiKey(connection.providerType);
   const needsOAuth = defaults.authKind === 'oauth_token';
-  const oauthLoginService = needsOAuth ? oauthLoginServiceFor(connection.providerType) : null;
-  const usesGitHubCopilotLogin = connection.providerType === 'github-copilot';
+  // A retired provider still has its credential on disk, so `hasSecret` is true
+  // and the generic notice told these users to "reauthorize under account
+  // connections" — an instruction whose only destination is the retirement
+  // notice itself.
+  const retired = isRetiredProvider(connection.providerType);
+  const oauthLoginService = needsOAuth && !retired && connection.connectionId
+    ? oauthLoginServiceFor(
+        connection.providerType,
+        props.bridge.oauth,
+        connection.connectionId,
+        `${connection.name} · ${connection.slug}`,
+      )
+    : null;
   const supportsRemoteDiscovery = providerSupportsModelDiscovery(connection.providerType);
   const requiresCredential = providerAuthRequiresSecret(connection.providerType);
   const probesCredential = supportsApiKey || needsOAuth;
@@ -133,6 +223,9 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
   const draftBaseUrl = baseUrl;
   const hasApiKeyChange = apiKey.length > 0;
   const hasBaseUrlChange = draftBaseUrl !== savedBaseUrl;
+  const savedName = connection.name;
+  const draftName = connectionNameToSave(name);
+  const hasNameChange = connectionNameDraftChanged(name, savedName);
   // Persistent single-line credential hint. Rendered in every hasSecret state
   // (including `false`) so the description row never adds or drops a line as the
   // async secret probe resolves — the dialog height stays constant.
@@ -174,16 +267,19 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     }
     setHasSecret('loading');
     void props.bridge
-      .hasSecret(connection.slug)
+      .hasSecret(connectionIdentity)
       .then((next) => {
         if (isConnectionDetailCurrent(lifecycle)) setHasSecret(next);
       })
       .catch((error) => {
         if (!isConnectionDetailCurrent(lifecycle)) return;
         setHasSecret('error');
-        toast.error(copy.credentialReadFailed, providerPanelActionErrorMessage(error, locale));
+        reportHostError(
+          copy.credentialReadFailed,
+          providerPanelActionErrorMessage(error, locale),
+        );
       });
-  }, [props.bridge, connection.slug, probesCredential, toast]);
+  }, [props.bridge, connection.connectionId, connection.slug, probesCredential, reportHostError]);
 
   useEffect(() => {
     const nextSnapshot = connectionDetailSnapshot(connection, defaults.baseUrl);
@@ -229,17 +325,14 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     setEnabledModelIds(connectionEnabledModelIds(connection));
   }, [connection.defaultModel, connection.enabledModelIds, connection.slug]);
 
-  // Picker entries come from the same catalog merge path as Chat and Daily
-  // Review, but use the local unsaved editor draft for model/default changes.
-  const modelChoices = buildConnectionModelCatalogEntries({
-    connection: {
-      slug: connection.slug,
-      providerType: connection.providerType,
-      defaultModel: connection.defaultModel,
-      models: modelSource === 'fetched' || models.length > 0 ? models : undefined,
-      modelSource,
-      modelsFetchedAt: connection.modelsFetchedAt,
-    },
+  // Reads `connection.catalogEntries` while the editor still shows what was
+  // committed, and resolves locally only once the draft diverges — the one
+  // client-side resolution left on a saved connection. The rule itself lives
+  // beside the resolver it guards, in `@maka/core/model-catalog`.
+  const modelChoices = resolveDraftConnectionModelCatalog(connection, {
+    models,
+    modelSource,
+    enabledModelIds,
   });
 
   /**
@@ -252,7 +345,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
    * Returns whether the write landed, so a failed save keeps the row open with
    * the draft intact instead of collapsing as if it had succeeded.
    */
-  async function save(field: 'key' | 'endpoint'): Promise<boolean> {
+  async function save(field: 'key' | 'endpoint' | 'name'): Promise<boolean> {
     const releaseSave = connectionDetailActionGuard.beginExclusive('save');
     if (!releaseSave) return false;
     const lifecycle = connectionDetailLifecycleRef.current;
@@ -260,14 +353,14 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     let saved = false;
     try {
       await props.bridge.update(
-        connection.slug,
-        field === 'key' ? { apiKey } : { baseUrl },
+        connectionIdentity,
+        field === 'key' ? { apiKey } : field === 'name' ? { name: draftName } : { baseUrl },
       );
       saved = true;
       if (!isConnectionDetailCurrent(lifecycle)) return true;
       const wroteNewKey = field === 'key' && apiKey.length > 0;
       if (wroteNewKey) setApiKey('');
-      const nextHasSecret = probesCredential ? await props.bridge.hasSecret(connection.slug) : true;
+      const nextHasSecret = probesCredential ? await props.bridge.hasSecret(connectionIdentity) : true;
       if (!isConnectionDetailCurrent(lifecycle)) return true;
       setHasSecret(nextHasSecret);
       await props.onChanged();
@@ -280,7 +373,11 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       if (
         supportsRemoteDiscovery &&
         (!requiresCredential || nextHasSecret) &&
-        (wroteNewKey || field === 'endpoint' || models.length === 0)
+        shouldRefreshModelsAfterSave({
+          field,
+          wroteNewKey,
+          hasCachedModels: models.length > 0,
+        })
       ) {
         void refreshModels({ silent: true });
       }
@@ -290,7 +387,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       if (saved && probesCredential) {
         setHasSecret('error');
       }
-      toast.error(
+      reportHostError(
         saved ? copy.refreshFailed : copy.saveFailed,
         providerPanelActionErrorMessage(error, locale),
       );
@@ -317,14 +414,14 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     setEnabledModelIds(next);
     let saved = false;
     try {
-      await props.bridge.update(connection.slug, { enabledModelIds: next });
+      await props.bridge.update(connectionIdentity, { enabledModelIds: next });
       saved = true;
       if (!isConnectionDetailCurrent(lifecycle)) return;
       await props.onChanged();
     } catch (error) {
       if (!isConnectionDetailCurrent(lifecycle)) return;
       if (!saved) setEnabledModelIds(previous);
-      toast.error(
+      reportHostError(
         saved ? copy.refreshFailed : copy.saveModelsFailed,
         providerPanelActionErrorMessage(error, locale),
       );
@@ -334,7 +431,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     }
   }
 
-  // Per-model profile declarations for openai-compatible relays, edited as a
+  // Per-model profile declarations for custom OpenAI relays, edited as a
   // LOCAL DRAFT and committed by an explicit 保存 button — never keystroke by
   // keystroke. A draft is `Record<modelId, RelayModelProfile>` seeded from the
   // saved table; entries a user empties fully drop out of the map, and the
@@ -369,16 +466,33 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
 
   // One shape for all three fields: the field setter pins or removes its key,
   // and an entry with no keys left IS the undeclared state — storing it would
-  // keep the row looking edited after the user emptied every field.
+  // keep the row looking edited after the user emptied every field. The rule
+  // lives in relay-thinking-bulk so the row setter and the bulk control
+  // cannot drift on what an emptied declaration collapses to.
   function setDraftThinkingLevels(modelId: string, levels: ThinkingLevel[] | undefined): void {
-    updateRelayProfileDraft(modelId, (current) => {
-      if (levels === undefined || levels.length === 0) {
-        if (!current) return current;
-        const { thinkingLevels: _dropped, ...rest } = current;
-        return Object.keys(rest).length > 0 ? rest : undefined;
-      }
-      return { ...(current ?? {}), thinkingLevels: levels };
-    });
+    updateRelayProfileDraft(modelId, (current) => relayProfileWithThinkingLevels(current, levels));
+  }
+
+  // The same edit across every enabled model, applied and saved as ONE gesture:
+  // the bulk menu has no Save of its own, so a tick there is a commit. The
+  // table is computed once and handed straight to the save so the write cannot
+  // race a re-render of the draft state.
+  async function saveThinkingLevelForAll(
+    modelIds: readonly string[],
+    level: ThinkingLevel,
+    checked: boolean,
+  ): Promise<boolean> {
+    const next = applyBulkThinkingLevel(modelIds, relayProfileDrafts, level, checked);
+    setRelayProfilesDirty(true);
+    setRelayProfileDrafts(next);
+    return saveRelayProfiles(next);
+  }
+
+  // Put one model's draft back to what is saved — a per-row Cancel. The other
+  // rows keep their drafts; only the row the user abandoned is discarded.
+  function resetDraftProfile(modelId: string): void {
+    const saved = relayProfileDraftSeed(connection.relayModelProfiles)[modelId];
+    updateRelayProfileDraft(modelId, () => saved);
   }
 
   // Tri-state vision: undefined = Auto (relay/metadata decides), true/false
@@ -402,6 +516,17 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
         return Object.keys(rest).length > 0 ? rest : undefined;
       }
       return { ...(current ?? {}), contextWindow };
+    });
+  }
+
+  function setDraftServiceTier(modelId: string, serviceTier: 'fast' | undefined): void {
+    updateRelayProfileDraft(modelId, (current) => {
+      if (serviceTier === undefined) {
+        if (!current) return current;
+        const { serviceTier: _dropped, ...rest } = current;
+        return Object.keys(rest).length > 0 ? rest : undefined;
+      }
+      return { ...(current ?? {}), serviceTier };
     });
   }
 
@@ -435,7 +560,30 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connection.slug, connection.relayModelProfiles, relayProfilesDirty]);
 
-  async function saveRelayProfiles(): Promise<boolean> {
+  // The name draft is reseeded on its own rather than through
+  // `connectionDetailSnapshot`: that snapshot's dependency identity is
+  // load-bearing (see the update-depth note above), and a name needs none of
+  // its machinery.
+  //
+  // A slug switch always reseeds — carrying A's typed name onto B would let
+  // one save rename the wrong connection. A same-slug change reseeds only
+  // while the draft still matches what was saved, so a rename landing from
+  // this page (or another client) does not overwrite work in progress.
+  const nameDraftOwnerRef = useRef<{ slug: string; savedName: string }>({
+    slug: connection.slug,
+    savedName: connection.name,
+  });
+  useEffect(() => {
+    const previous = nameDraftOwnerRef.current;
+    const reseed = connectionNameDraftReseed(previous, connection, name);
+    nameDraftOwnerRef.current = { slug: connection.slug, savedName: connection.name };
+    if (reseed) setName(connection.name);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connection.slug, connection.name]);
+
+  async function saveRelayProfiles(
+    drafts: Readonly<Record<string, RelayModelProfile>> = relayProfileDrafts,
+  ): Promise<boolean> {
     // Refuse while the draft still belongs to the previous connection: in the
     // window between the slug switch rendering and the reseed effect
     // flushing, 保存 must not hand B this draft.
@@ -448,8 +596,9 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       // Send the whole table — the update contract is whole-table replace —
       // after the write-path sanitizer so a hand-assembled draft degrades the
       // same way a saved document would.
-      await props.bridge.update(connection.slug, {
-        relayModelProfiles: draftedRelayProfiles ?? null,
+      await props.bridge.update(connectionIdentity, {
+        relayModelProfiles:
+          normalizeRelayModelProfiles(pruneRelayModelProfiles(drafts, enabledModelIds) ?? {}) ?? null,
       });
       if (!isConnectionDetailCurrent(lifecycle)) return true;
       setRelayProfilesDirty(false);
@@ -457,12 +606,79 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       return true;
     } catch (error) {
       if (!isConnectionDetailCurrent(lifecycle)) return false;
-      toast.error(copy.saveFailed, providerPanelActionErrorMessage(error, locale));
+      reportHostError(
+        copy.saveFailed,
+        providerPanelActionErrorMessage(error, locale),
+      );
       return false;
     } finally {
       releaseSave();
       if (isConnectionDetailCurrent(lifecycle)) setBusy(false);
     }
+  }
+
+  /**
+   * Introduce a model the provider's catalog does not list.
+   *
+   * Only offered where refresh cannot help: a provider with no model-list
+   * endpoint replays the array this build shipped, so a model the user's plan
+   * serves but Maka has never heard of has no other way in (#1584).
+   *
+   * The id enters `enabledModelIds` — the same user-selection authority a
+   * catalogued model uses, so nothing here pretends the provider advertised
+   * it — and the context window enters `relayModelProfiles`, which is where a
+   * user states a fact no other source knows. Both go in ONE write: the store
+   * requires every declaration to key an enabled model, so a table written
+   * ahead of its id would be rejected.
+   *
+   * The saved table is the base, not the unsaved draft: adding a model must
+   * not silently commit edits the user has open in the capability section.
+   * The draft is then caught up by hand, because a dirty draft deliberately
+   * does not reseed from props — see `relayProfileDraftReseedPlan`.
+   */
+  async function addDeclaredModel(id: string, contextWindow: number): Promise<boolean> {
+    const modelId = id.trim();
+    if (!modelId || enabledModelIds.includes(modelId)) return false;
+    if (connectionDetailActionGuard.has('save-enabled-models') || detailActionBusy) return false;
+    const next = [...enabledModelIds, modelId];
+    const previous = enabledModelIds;
+    const lifecycle = connectionDetailLifecycleRef.current;
+    const releaseSaveModels = connectionDetailActionGuard.begin('save-enabled-models');
+    if (!releaseSaveModels) return false;
+    setSavingEnabledModels(true);
+    setEnabledModelIds(next);
+    let saved = false;
+    try {
+      await props.bridge.update(connectionIdentity, {
+        enabledModelIds: next,
+        relayModelProfiles: { ...(savedRelayProfiles ?? {}), [modelId]: { contextWindow } },
+      });
+      saved = true;
+      if (!isConnectionDetailCurrent(lifecycle)) return saved;
+      // The editor's draft is a second copy of this table, and while it is
+      // dirty it does not reseed from props — that is what keeps an unrelated
+      // reload from discarding typed work. So the declaration just written has
+      // to be merged in here. Without it the draft is a table that no longer
+      // contains this model, the capability-save button lights up on that
+      // difference, and its whole-table replace drops the context window the
+      // user just declared — silently, back to the unknown-model default.
+      setRelayProfileDrafts((current) => ({ ...current, [modelId]: { contextWindow } }));
+      await props.onChanged();
+    } catch (error) {
+      if (!isConnectionDetailCurrent(lifecycle)) return saved;
+      if (!saved) setEnabledModelIds(previous);
+      reportHostError(
+        saved ? copy.refreshFailed : copy.saveModelsFailed,
+        providerPanelActionErrorMessage(error, locale),
+      );
+    } finally {
+      releaseSaveModels();
+      if (isConnectionDetailCurrent(lifecycle)) setSavingEnabledModels(false);
+    }
+    // Whether the write landed. The dialog holds the typed id and context
+    // window until it did: a rejected write leaves nothing to retype from, and
+    // an exact model id is not something a user can reproduce from memory.
+    return saved;
   }
 
   async function runTest() {
@@ -478,15 +694,40 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       // to a field this page no longer owns, which is '' once the user enables
       // no models. Left unset, a zero-model connection still verifies its
       // credential against a fallback instead of failing with 'No model to test'.
-      const result: ConnectionTestResult = await props.bridge.test(connection.slug);
+      const result: ConnectionTestResult = await props.bridge.test(connectionIdentity);
       if (!isConnectionDetailCurrent(lifecycle)) return;
       if (result.ok) {
-        toast.success(
-          copy.connectionSuccess(connection.name),
-          `${result.modelTested} · ${result.latencyMs} ms`,
-        );
+        // The backend probes the enabled models first, then the provider
+        // fallbacks (opencode-free tries each in turn until one answers). When
+        // the model that actually answered isn't one the user enabled, a plain
+        // "connection succeeded · <model>" reads as if their selection never
+        // took — and hides that their chosen model is currently down. Name both
+        // facts instead.
+        const testedId = result.modelTested;
+        // The resolved entries, not the draft rows: a provider with no
+        // model-list endpoint stores bare ids, so naming the tested model from
+        // `models` printed a raw id next to the picker's resolved name.
+        const modelLabel = (id: string): string =>
+          modelChoices.find((entry) => entry.id === id)?.displayName?.trim() || id;
+        // Inline the `testedId !== undefined` check so it narrows `testedId` to
+        // string for `modelLabel(testedId)` below.
+        if (
+          testedId !== undefined &&
+          enabledModelIds.length > 0 &&
+          !enabledModelIds.includes(testedId)
+        ) {
+          toast.warning(
+            copy.connectionFallbackTitle(connection.name),
+            copy.connectionFallbackDetail(enabledModelIds.map(modelLabel), modelLabel(testedId)),
+          );
+        } else {
+          toast.success(
+            copy.connectionSuccess(connection.name),
+            `${result.modelTested} · ${result.latencyMs} ms`,
+          );
+        }
       } else {
-        toast.error(
+        reportHostError(
           copy.connectionFailed(connection.name),
           connectionTestFailureMessage(result, {
             auth: copy.authTroubleshooting(credentialTroubleshootingCopy),
@@ -497,7 +738,10 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     } catch (error) {
       if (!isConnectionDetailCurrent(lifecycle)) return;
       const message = providerPanelActionErrorMessage(error, locale);
-      toast.error(copy.connectionTestError(connection.name), message);
+      reportHostError(
+        copy.connectionTestError(connection.name),
+        message,
+      );
     } finally {
       releaseTest();
       if (isConnectionDetailCurrent(lifecycle)) setTesting(false);
@@ -518,7 +762,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       // Backend returns a `ModelDiscoveryResult` envelope and rejects empty or
       // malformed catalogs before persistence. Trust its explicit source
       // instead of reconstructing cache provenance in the renderer.
-      const result = await props.bridge.fetchModels(connection.slug);
+      const result = await props.bridge.fetchModels(connectionIdentity);
       fetched = true;
       if (!isConnectionDetailCurrent(lifecycle)) return;
       setModels(result.models);
@@ -537,9 +781,12 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       // means whatever's on screen is not from the latest probe.
       if (!fetched && models.length === 0) setModelSource('fallback');
       if (fetched) {
-        toast.error(copy.refreshFailed, message);
+        reportHostError(
+          copy.refreshFailed,
+          message,
+        );
       } else {
-        toast.error(
+        reportHostError(
           copy.modelsFetchFailed(connection.name),
           copy.modelsFetchFailedDetail(message, credentialTroubleshootingCopy),
         );
@@ -555,15 +802,11 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     if (!releaseDelete) return;
     const lifecycle = connectionDetailLifecycleRef.current;
     setDeleting(true);
+    const usesOAuth = PROVIDER_REGISTRY[connection.providerType].authKind === 'oauth_token';
     const ok = await toast.confirm({
       title: copy.deleteConnectionTitle(connection.name),
-      description: copy.deleteDescription(
-        props.isDefault,
-        isWiredOAuthProvider(connection.providerType),
-      ),
-      confirmLabel: isWiredOAuthProvider(connection.providerType)
-        ? copy.disconnectAndDelete
-        : copy.delete,
+      description: copy.deleteDescription(props.isDefault, usesOAuth),
+      confirmLabel: usesOAuth ? copy.disconnectAndDelete : copy.delete,
       cancelLabel: copy.cancel,
       destructive: true,
     });
@@ -575,13 +818,13 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     }
     let deleted = false;
     try {
-      await props.bridge.delete(connection.slug);
+      await props.bridge.delete(connectionIdentity);
       deleted = true;
       if (!isConnectionDetailCurrent(lifecycle)) return;
       await props.onDeleted();
     } catch (error) {
       if (!isConnectionDetailCurrent(lifecycle)) return;
-      toast.error(
+      reportHostError(
         deleted ? copy.refreshFailed : copy.deleteFailed,
         providerPanelActionErrorMessage(error, locale),
       );
@@ -597,13 +840,16 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
   async function refreshAfterRelogin() {
     const lifecycle = connectionDetailLifecycleRef.current;
     try {
-      const nextHasSecret = await props.bridge.hasSecret(connection.slug);
+      const nextHasSecret = await props.bridge.hasSecret(connectionIdentity);
       if (!isConnectionDetailCurrent(lifecycle)) return;
       setHasSecret(nextHasSecret);
     } catch (error) {
       if (!isConnectionDetailCurrent(lifecycle)) return;
       setHasSecret('error');
-      toast.error(copy.credentialReadFailed, providerPanelActionErrorMessage(error, locale));
+      reportHostError(
+        copy.credentialReadFailed,
+        providerPanelActionErrorMessage(error, locale),
+      );
     }
     await props.onChanged();
   }
@@ -612,6 +858,8 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     apiKey,
     setApiKey,
     hasSecret,
+    name,
+    setName,
     baseUrl,
     setBaseUrl,
     enabledModelIds,
@@ -623,7 +871,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     detailActionBusy,
     supportsApiKey,
     needsOAuth,
-    usesGitHubCopilotLogin,
+    retired,
     oauthLoginService,
     supportsRemoteDiscovery,
     credentialProbePending,
@@ -632,17 +880,23 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     hasApiKeyChange,
     hasBaseUrlChange,
     savedBaseUrl,
+    hasNameChange,
+    savedName,
     issue,
     lastTestMessage,
     lastTestAtMs,
     save,
     updateEnabledModels,
+    addDeclaredModel,
     relayProfileDraft: relayProfileDrafts,
     relayProfilesDirty,
     hasRelayProfileChanges,
     setDraftThinkingLevels,
+    saveThinkingLevelForAll,
     setDraftVision,
     setDraftContextWindow,
+    setDraftServiceTier,
+    resetDraftProfile,
     saveRelayProfiles,
     runTest,
     refreshModels,
@@ -659,7 +913,7 @@ type ConnectionDetailSnapshot = {
 };
 
 function connectionDetailSnapshot(
-  connection: LlmConnection,
+  connection: IdentifiedLlmConnection,
   defaultBaseUrl: string | undefined,
 ): ConnectionDetailSnapshot {
   return {
@@ -678,26 +932,12 @@ function connectionDetailDraftMatchesSnapshot(
   },
   snapshot: ConnectionDetailSnapshot,
 ): boolean {
+  // Core's comparison, not a second one: the two answers drive the same
+  // editor, and the local copy compared a different field set — a refetch that
+  // changed only a display name read as "in sync" here and "diverged" there.
   return draft.baseUrl === snapshot.baseUrl &&
     draft.modelSource === snapshot.modelSource &&
-    modelListsEqual(draft.models, snapshot.models);
-}
-
-function modelListsEqual(left: ModelInfo[], right: ModelInfo[]): boolean {
-  if (left.length !== right.length) return false;
-  for (let index = 0; index < left.length; index += 1) {
-    const leftModel = left[index];
-    const rightModel = right[index];
-    if (leftModel.id !== rightModel.id) return false;
-    if (leftModel.contextWindow !== rightModel.contextWindow) return false;
-    if (leftModel.maxOutputTokens !== rightModel.maxOutputTokens) return false;
-    if (leftModel.capabilities?.chat !== rightModel.capabilities?.chat) return false;
-    if (leftModel.capabilities?.vision !== rightModel.capabilities?.vision) return false;
-    if (leftModel.capabilities?.reasoning !== rightModel.capabilities?.reasoning) return false;
-    if (leftModel.capabilities?.functionCalling !== rightModel.capabilities?.functionCalling) return false;
-    if (leftModel.capabilities?.imageGeneration !== rightModel.capabilities?.imageGeneration) return false;
-  }
-  return true;
+    modelRowsEqual(draft.models, snapshot.models);
 }
 
 function modelIdListsEqual(left: string[], right: string[]): boolean {

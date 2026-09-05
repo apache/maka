@@ -1,25 +1,48 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * AgentBackend contract types.
  *
  * The `AgentBackend` port interface and the request/response shapes that
  * cross the runtime boundary live here in @maka/core so that every backend
- * implementation (AiSdkBackend / PiAgentBackend / FakeBackend) and their
+ * implementation (AiSdkBackend / FakeBackend) and their
  * consumers depend on a small pure-type module, not on a concrete backend
  * implementation file.
  */
 
 import type {
   AttachmentRef,
+  ContextCompactionOutcome,
+  DirectoryReference,
   MessageContent,
   QuoteRef,
   SessionEvent,
   SandboxBoundaryRequestEvent,
+  FormRequestEvent,
   UserQuestionRequestEvent,
 } from './events.js';
-import type { InteractionClosureReason } from './interaction.js';
+import type { InteractionClosureReason, InteractionFormResult } from './interaction.js';
 import type { RuntimeEvent } from './runtime-event.js';
 import type { SandboxBoundaryResponse, SandboxBoundarySettlement } from './sandbox-boundary.js';
-import type { StoredMessage, BackendKind } from './session.js';
+import type { StoredMessage, PersistedBackendKind } from './session.js';
+import type { RuntimeInvocationRecord } from './runtime-invocation.js';
 import type { UserQuestionResponse } from './user-question.js';
 import type { ContextBudgetDiagnostic } from './usage-stats/types.js';
 import type { EffectiveOrchestration } from './orchestration.js';
@@ -53,21 +76,26 @@ export interface BackendSendInput {
   headAnchorRuntimeEvent?: RuntimeEvent;
   text: string;
   attachments?: AttachmentRef[];
+  /** Live Host-bound directories folded into model text without eager filesystem reads. */
+  directoryReferences?: DirectoryReference[];
   /** Inline quoted excerpts folded into the model-facing user content. */
   quotes?: QuoteRef[];
   /**
-   * Prior conversation projected from the RuntimeEvent ledger into the
-   * existing StoredMessage public shape. Adapters materialize this into the
-   * SDK's expected conversation shape when native RuntimeEvent replay is not
-   * available.
+   * Legacy caller projection retained for source compatibility. Runtime
+   * backends must not use it as provider history; RuntimeEvents are the only
+   * model-history authority.
    */
-  context: StoredMessage[];
+  context?: StoredMessage[];
   /**
-   * Optional prior RuntimeEvent ledger for model-history projection. Backends
-   * prefer this when supplied and usable; `context` is the RuntimeEvent-derived
-   * compatibility projection.
+   * Optional prior RuntimeEvent ledger for model-history projection.
    */
   runtimeContext?: RuntimeEvent[];
+  /**
+   * The invocations `runtimeContext` came from, used only to verify
+   * provider-owned replay against the current model route. RuntimeEvents stay
+   * the transcript authority; route provenance is read off each opening fact.
+   */
+  runtimeContextInvocations?: readonly RuntimeInvocationRecord[];
   /** Continue from an already committed RuntimeEvent boundary without adding another user turn. */
   continuation?: RuntimeContinuationMetadata;
   /**
@@ -80,8 +108,8 @@ export interface BackendSendInput {
    * provably never persisted (never pushed, or the consumer detached first);
    * the dying request never carries a nacked message. Each acked message is
    * injected into the model context wrapped in a steering envelope,
-   * continuing the same turn. Absent for callers that do not steer (child
-   * agents, benchmarks).
+   * continuing the same turn. Absent for callers that do not steer, including
+   * child agents and non-interactive clients.
    */
   pullSteering?: () => readonly SteeringLease[];
   /** Confirm delivery of leased steering messages (see pullSteering). */
@@ -99,6 +127,11 @@ export interface HostedUserQuestionAnswer {
 
 export interface HostedUserQuestionSettlement {
   applyAnswer(answer: HostedUserQuestionAnswer): Promise<void>;
+  applyClosure(reason: Exclude<InteractionClosureReason, 'timed_out'>): Promise<void>;
+}
+
+export interface HostedFormSettlement {
+  applyAnswer(answer: InteractionFormResult): Promise<void>;
   applyClosure(reason: Exclude<InteractionClosureReason, 'timed_out'>): Promise<void>;
 }
 
@@ -120,6 +153,12 @@ export interface HostedInteractionBridge {
     request: UserQuestionRequestEvent;
     settlement: HostedUserQuestionSettlement;
   }): Promise<void>;
+  admitFormRequest(input: {
+    request: FormRequestEvent;
+    settlement: HostedFormSettlement;
+  }): Promise<void>;
+  /** Withdraw one exact producer-owned form without closing the surrounding Run. */
+  withdrawFormRequest(requestId: string): Promise<void>;
   admitSandboxBoundaryRequest(input: {
     request: SandboxBoundaryRequestEvent;
     settlement: HostedSandboxBoundarySettlement;
@@ -147,11 +186,12 @@ export interface BackendCompactHistoryInput {
    */
   runId: string;
   runtimeContext: readonly RuntimeEvent[];
-  /** Override the configured recent-turn tail for an explicit recovery compaction. */
-  minRecentTurns?: number;
+  /** Source-invocation route authority for provider-owned history projected into the compaction call. */
+  runtimeContextInvocations?: readonly RuntimeInvocationRecord[];
 }
 
 export interface BackendCompactHistoryResult {
+  outcome: ContextCompactionOutcome;
   contextBudget?: ContextBudgetDiagnostic;
 }
 
@@ -159,11 +199,12 @@ export type BackendStopMode = 'immediate' | 'after_step';
 
 /**
  * The live session-event vocabulary accepted from a backend. `queue_update`
- * belongs to the runtime kernel, while legacy permission requests and
+ * belongs to the runtime kernel, Client Capability approval events belong to
+ * the Host-owned Interaction projection, and legacy permission requests and
  * acknowledgements were replaced by sandbox-boundary events. `send` stays
  * typed as `SessionEvent` for implementation ergonomics; the flow drops these
- * retired variants at ingress so they are never mapped, observed, or persisted
- * by a new run.
+ * non-backend variants at ingress so they are never mapped or persisted by a
+ * new run.
  */
 export type BackendSessionEvent = Exclude<
   SessionEvent,
@@ -172,6 +213,9 @@ export type BackendSessionEvent = Exclude<
     {
       type:
         | 'queue_update'
+        | 'message_admission'
+        | 'client_capability_request'
+        | 'client_capability_decision_ack'
         | 'permission_request'
         | 'permission_answer_ack'
         | 'permission_closure_ack'
@@ -181,7 +225,7 @@ export type BackendSessionEvent = Exclude<
 >;
 
 export interface AgentBackend {
-  readonly kind: BackendKind;
+  readonly kind: PersistedBackendKind;
   readonly sessionId: string;
   send(input: BackendSendInput): AsyncIterable<SessionEvent>;
   compactHistory?(input: BackendCompactHistoryInput): Promise<BackendCompactHistoryResult>;

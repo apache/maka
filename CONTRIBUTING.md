@@ -1,179 +1,87 @@
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+
 # Contributing to Maka
 
 [![docs](https://img.shields.io/badge/docs-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-blue?logo=googletranslate&logoColor=white)](./CONTRIBUTING.zh-CN.md)
 
-- [Where to start](#where-to-start)
-- [Quick start](#quick-start)
-- [Developing Maka](#developing-maka)
-- [Branch naming](#branch-naming)
-- [Pull requests](#pull-requests)
-- [License](#license)
-
 ## Where to start
 
-These changes merge most readily:
+Bug fixes, model provider support, tests, performance work, and documentation merge most readily. Pick something up from [`help wanted`](https://github.com/apache/maka/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22) · [`good first issue`](https://github.com/apache/maka/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) · [`bug`](https://github.com/apache/maka/issues?q=is%3Aissue+is%3Aopen+label%3Abug) · [`enhancement`](https://github.com/apache/maka/issues?q=is%3Aissue+is%3Aopen+label%3Aenhancement) and claim it in a comment. Use the **Bug report** or **Feature request** template for new issues; report security problems through [SECURITY.md](./SECURITY.md), never as a public issue. Questions, ideas, and not-yet-actionable proposals belong in [Discussions](https://github.com/apache/maka/discussions), which reaches the whole team by email.
 
-- Bug fixes
-- Model provider support — a new provider, or a fix to an existing one
-- Tests and stability work
-- Performance improvements
-- Documentation
-- Fixes for environment-specific problems
+To self-assign an unclaimed issue, post a comment whose entire body is exactly `take`; post `untake` to remove your assignment. Other claim text does not trigger the workflow.
 
-Product and UI changes are different: open an issue and agree the direction
-before implementing. Maintainers land features directly because they set that
-direction; an outside contributor is better off confirming it first.
+Project direction, governance, and material product decisions are discussed publicly on [`dev@maka.apache.org`](https://lists.apache.org/list.html?dev@maka.apache.org) before implementation; implementation-level decisions may live in the pull request.
 
-Looking for something to pick up:
+## Human ownership and AI attribution
 
-- [`help wanted`](https://github.com/maka-agent/maka-agent/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22)
-- [`good first issue`](https://github.com/maka-agent/maka-agent/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
-- [`bug`](https://github.com/maka-agent/maka-agent/issues?q=is%3Aissue+is%3Aopen+label%3Abug)
-- [`enhancement`](https://github.com/maka-agent/maka-agent/issues?q=is%3Aissue+is%3Aopen+label%3Aenhancement)
+Every contribution has a human contributor of record who reviews the work, decides to submit it, and owns its accuracy, provenance, and licensing. Agents may commit and push freely; the final review and merge decision always belongs to a human.
 
-To claim one, say so in a comment and a maintainer may assign it to you.
+Each pull request states whether generative tooling contributed substantively, naming the tool if so; translation, wording edits, autocomplete, and spelling correction don't count. Automated messages must identify themselves. When AI authors a material part of a contribution, add a `Generated-by: <tool>` trailer to each affected commit, and keep it in the final commit through squash or amend.
 
-Prefer the **Bug report** or **Feature request** template when opening an issue —
-they ask for the context that makes one actionable. Report security problems through
-the private flow in [SECURITY.md](./SECURITY.md), never as a public issue.
+## Review
+
+Every pull request to `main` needs an approving review from a committer other than the author and a passing `test` check; branch protection in [`.asf.yaml`](./.asf.yaml) enforces both. An approval stays valid across later pushes — push follow-up commits in the open, and ask for another look when the change grows past what was reviewed. The review must be an independent human judgment — AI review does not count. A maintainer decides whether a change is material and whether the review it received is enough.
+
+## Provenance and licensing
+
+Submit only work you have the right to contribute, and record third-party sources, licenses, and attribution. Contributions are licensed under the [Apache License 2.0](./LICENSE); for material AI-generated content, follow the [ASF Generative Tooling Guidance](https://www.apache.org/legal/generative-tooling.html).
 
 ## Quick start
 
-| Requirement | Value |
-| --- | --- |
-| Node | `>=22.19.0` (`engines`, root `package.json`) |
-| npm | `11.12.1` (`packageManager`) |
-| Platform | macOS Apple Silicon for desktop work. Releases also ship an unsigned Windows x64 build and CI runs a non-blocking `windows_baseline` job, but Windows and Linux are not supported targets yet |
+Requires Node `>=22.19.0` and npm `11.19.0` (root `package.json`). Direct Peer or Peer Mesh Desktop development additionally needs Rust stable 1.98 or newer and Xcode Command Line Tools on macOS, or MSVC Build Tools on Windows.
 
 ```sh
-git clone https://github.com/maka-agent/maka-agent.git
-cd maka-agent
+git clone https://github.com/apache/maka.git
+cd maka
 npm install                 # root only — never inside a workspace
 npm run build               # builds every workspace in dependency order
-npm --workspace @maka/core test
+npm --workspace @maka/core run test:dist
 ```
-
-Architecture is documented in [ARCHITECTURE.md](./ARCHITECTURE.md).
 
 ## Developing Maka
 
-### Running
-
 ```sh
 npm run dev          # desktop app with HMR
-npm run dev:full     # full build, then launch the desktop app
-
-npm --workspace maka-agent exec -- maka          # TUI
-npm --workspace maka-agent exec -- maka run "…"  # one non-interactive turn
+npm run cli:dev      # TUI; `npm run cli:dev -- run "…"` runs one non-interactive turn
+npm test             # all workspaces, or: npm --workspace @maka/core run test:dist
 ```
 
-Headless commands live in [`packages/headless/README.md`](./packages/headless/README.md).
+Building a single workspace only succeeds when its dependencies are already built — when unsure, build from the root. Tests run against compiled output in `dist/`, so `test:dist` covers whatever the last build produced; rebuild before running it. `npm test` from the root does both.
 
-### Building
-
-`npm run build` builds workspaces in dependency order:
-
-```
-code-mode → core → storage → mcp → runtime → runtime-host
-          → computer-use → headless → maka-agent → ui → desktop
-```
-
-Building one workspace only succeeds when its dependencies are already built —
-`@maka/runtime` compiled against a stale `@maka/core` produces type errors that
-look like problems in the code you just wrote. When unsure, build from the root.
-
-The desktop app has four outputs; `build:test` covers the first three:
+Before pushing, match CI locally:
 
 ```sh
-npm --workspace @maka/desktop run build:main      # main process
-npm --workspace @maka/desktop run build:preload   # preload bridge
-npm --workspace @maka/desktop run build:overlay   # overlay windows
-npm --workspace @maka/desktop run build:renderer  # renderer
-```
-
-### Testing
-
-Tests run against compiled output in `dist/`. Every workspace's `test` script
-cleans, builds, then runs `node --test`. **Always go through it** — calling
-`node --test` after a bare `build:*` executes orphaned artifacts from older
-trees, which fail on imports that no longer resolve.
-
-```sh
-npm test                                 # all workspaces
-npm --workspace @maka/core test          # one workspace
-npm run test:scripts                     # repository scripts
-npm --workspace @maka/desktop run e2e    # Playwright
-```
-
-### Before pushing
-
-CI runs these; matching them locally avoids a slow round trip.
-
-```sh
-npm run lint            # biome lint
-npm run format:check    # biome format — separate from lint; passing one proves nothing about the other
+npm run lint
+npm run format:check
 npm run build
-npm run typecheck       # 4 tsconfig projects for desktop, including renderer and storybook
+npm run typecheck
 npx knip --workspace apps/desktop
 npx knip --workspace packages/ui
 ```
 
-The CI job named `typecheck` runs all of them under `bash -e`, so the first
-failure aborts the rest — read which step failed, not the job name.
-
-## Branch naming
-
-```
-<type>/<description>
-```
-
-`<description>` is lowercase and hyphen-separated. `<type>` must be one of:
-
-| Prefix | Meaning |
-| --- | --- |
-| `feat` | New feature |
-| `fix` | Bug fix |
-| `refactor` | Behavior-preserving restructuring |
-| `test` | Test-only change |
-| `chore` | Build, dependency, and housekeeping work |
-| `perf` | Performance improvement |
-| `docs` | Documentation-only change |
-| `ci` | CI configuration and pipelines |
-| `build` | Build system and artifacts |
+Architecture is documented in [ARCHITECTURE.md](./ARCHITECTURE.md); evaluation commands and contracts live in [`packages/eval`](./packages/eval).
 
 ## Pull requests
 
-Opening a pull request pre-fills
-[`pull_request_template.md`](./.github/pull_request_template.md), which carries
-the required sections and the checklist. Fill it in rather than replacing it.
+Opening a pull request pre-fills [`pull_request_template.md`](./.github/pull_request_template.md); fill it in rather than replacing it.
 
-**Title.** The repository squash-merges, so the title becomes the commit on
-`main`. Follow [Conventional Commits](https://www.conventionalcommits.org/):
+Branches and titles follow [Conventional Commits](https://www.conventionalcommits.org/): branches are `<type>/<description>`, titles are `<type>(<scope>): <summary>`. The repository squash-merges, so the title becomes the commit on `main`; `git log` shows the types and scopes in use.
 
-```
-<type>(<scope>): <summary>
-```
-
-`<type>` is the set in [branch naming](#branch-naming). `<scope>` is the
-workspace or area — `desktop`, `ui`, `runtime`, `headless`, `settings`,
-`runtime-host`, `storage`, `core`, `cli`, `deps`, `computer-use`, `scripts`,
-`release`, `windows`, `e2e`, `security`, and so on — `git log` shows the set
-in use.
-
-```
-fix(desktop): classify provider action errors from the unwrapped IPC message
-feat(runtime): decouple Swarm with asynchronous wakeups
-test(core): pin the shared validation corpus to every envelope value domain
-```
-
-**UI changes.** Include before/after screenshots or a recording. A visual change
-cannot be judged from a diff.
-
-**Keep the description short and your own.** Long generated write-ups slow
-review down. Say what changed and why in your own words; if that needs many
-paragraphs, the pull request is probably too large.
-
-## License
-
-By contributing you agree that your contributions are licensed under the
-[Apache License 2.0](./LICENSE).
+For UI changes, include before/after screenshots or a recording. Keep the description short and your own — if it needs many paragraphs, the pull request is probably too large.

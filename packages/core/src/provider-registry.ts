@@ -1,4 +1,22 @@
-import type { BackendKind } from './session.js';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import {
   GENERATED_MODELS_DEV_METADATA,
   GENERATED_MODELS_DEV_MODEL_PROVIDER_OVERRIDES,
@@ -6,35 +24,65 @@ import {
 } from './model-metadata.generated.js';
 
 export const OPENCODE_FREE_DEFAULT_MODEL = 'nemotron-3-ultra-free';
-export const OPENCODE_FREE_DEFAULT_ENABLED_MODELS = [
-  OPENCODE_FREE_DEFAULT_MODEL,
-  'mimo-v2.5-free',
-  'deepseek-v4-flash-free',
-] as const;
 
 export type ProviderCategory = 'oauth' | 'domestic' | 'overseas' | 'local' | 'custom';
 export type ProviderCatalogGroup = 'recommended' | 'plans' | 'api' | 'aggregators' | 'local';
 
 export type ApplyPatchProtocol = 'openai-structured' | 'codex-v4a-freeform';
 
+/**
+ * Stable reference to provider execution policy implemented by `@maka/runtime`.
+ * Core owns only this protocol-level delegation; SDK selection, replay
+ * carriers, and request mutation remain Runtime implementation details.
+ */
+export type ProviderRuntimeProfileId = 'alibaba-token-plan';
+
+export type ProviderResponsesContract =
+  | {
+      readonly adapter: 'openai';
+      readonly reasoningReplay: 'encrypted-content';
+    }
+  | {
+      readonly adapter: 'open-responses';
+      readonly reasoningReplay: 'plaintext-content';
+    };
+
+type OpenAiCompatibleRuntimeAdapterBase = {
+  kind: 'openai-compatible';
+  name: 'provider' | 'connection';
+  includeUsage?: boolean;
+  requireBaseUrl?: boolean;
+  replayAssistantReasoningAs?: 'reasoning';
+  replayAssistantReasoningDetails?: true;
+};
+
+type OpenAiCompatibleRuntimeAdapter = OpenAiCompatibleRuntimeAdapterBase &
+  (
+    | {
+        /** Presence enables a complete Core-owned Responses contract. */
+        responses?: ProviderResponsesContract;
+        runtimeProfile?: never;
+      }
+    | {
+        responses?: never;
+        /** Explicitly delegates concrete execution policy to `@maka/runtime`. */
+        runtimeProfile: ProviderRuntimeProfileId;
+      }
+  );
+
 type ProviderRuntimeAdapterDefinition =
   | { kind: 'anthropic'; auth: 'api-key' | 'bearer'; normalizeBaseUrl: boolean }
-  | { kind: 'claude-subscription' }
+  /**
+   * No Runtime adapter claims this provider, so nothing can be sent through it.
+   * Distinct from a provider that was never wired: see `retired`.
+   */
+  | { kind: 'unavailable' }
   | { kind: 'openai'; apiProtocol?: 'openai-chat' | 'openai-responses' }
   | { kind: 'openai-codex' }
   | { kind: 'google'; normalizeBaseUrl?: boolean }
   | { kind: 'github-copilot' }
   | { kind: 'cohere' }
-  | {
-      kind: 'openai-compatible';
-      name: 'provider' | 'connection';
-      includeUsage?: boolean;
-      requireBaseUrl?: boolean;
-      supportsOpenAiResponses?: true;
-      replayAssistantReasoningAs?: 'reasoning';
-      replayAssistantReasoningDetails?: true;
-    }
-  | { kind: 'unavailable' };
+  | OpenAiCompatibleRuntimeAdapter;
 
 export type ProviderRuntimeAdapter = ProviderRuntimeAdapterDefinition & {
   /** Provider wire contract for ApplyPatch. Model support is resolved separately. */
@@ -44,11 +92,11 @@ export type ProviderRuntimeAdapter = ProviderRuntimeAdapterDefinition & {
 export type ProviderModelDiscovery =
   | {
       kind: 'protocol';
-      auth?: 'claude-subscription' | 'github-copilot' | 'oauth-bearer' | 'openai-codex' | 'none';
+      auth?: 'github-copilot' | 'oauth-bearer' | 'openai-codex' | 'none';
       path?: string;
       query?: Readonly<Record<string, string>>;
       responseShape?: 'array-or-data';
-      filter?: 'fallback-models' | 'language-models' | 'tool-capable';
+      filter?: 'language-models' | 'tool-capable';
     }
   | {
       kind: 'fireworks';
@@ -63,24 +111,55 @@ export type ProviderModelDiscovery =
 
 export interface ProviderDefaults {
   label: string;
-  description: string;
+  /**
+   * A shorter name for a dense model row, where the label's qualifier is
+   * already implied by the row it sits in ("Z.AI Coding Plan" → "Z.AI"). Set
+   * only where it actually differs; `providerMenuLabel` falls back to `label`.
+   */
+  menuLabel?: string;
   baseUrl: string;
   baseUrlTemplate?: string;
   authKind: 'api_key' | 'optional_api_key' | 'oauth_token' | 'none';
-  backendKind: BackendKind;
+  /**
+   * The baseline this provider ships: what it offers with no live list to go
+   * on. Read it through `providerFallbackModelIds`, never directly — the
+   * accessor subtracts `brokenModelIds`.
+   */
   fallbackModels: string[];
-  defaultEnabledModelIds?: readonly string[];
+  /**
+   * A new connection to this provider starts with its whole shipped baseline
+   * enabled instead of nothing. Set where a provider costs the user nothing to
+   * call, so the models are on the moment the connection exists.
+   */
+  enableShippedModelsByDefault?: true;
   status: 'ready' | 'phase3-experimental';
-  protocol: 'anthropic' | 'openai' | 'google' | 'cohere';
   runtimeAdapter: ProviderRuntimeAdapter;
+  /**
+   * Maka used to offer this provider and no longer does. The entry stays
+   * registered so stored connections still decode; it just cannot be used.
+   */
+  retired?: true;
+  /** User-declared per-model capabilities are authoritative for this provider. */
+  relayModelProfiles?: boolean;
+  /**
+   * Models with dated evidence of persistent breakage whose failure shape the
+   * send itself cannot surface (e.g. empty completions that still bill).
+   * Vetoed in `authorizeConnectionModel` and omitted from catalog offers —
+   * the one exception to "the user's selection is the authorization".
+   */
+  brokenModelIds?: readonly string[];
   modelDiscovery: ProviderModelDiscovery;
   category: ProviderCategory;
   catalogGroup?: ProviderCatalogGroup;
-  catalogBadge?: string;
   signupUrl?: string;
-  modelsDevId?: string;
-  readyOrder?: number;
   catalogOrder?: number;
+  /**
+   * Position in the catalog's 推荐 shortlist. Only for the providers a new
+   * user can finish setting up without leaving Maka: no key to buy, no
+   * endpoint to know — a free tier, a plan, or an account sign-in. The
+   * account sign-ins reach the shortlist through their OAuth cards, so the
+   * keyed providers here are the free-tier ones.
+   */
   recommendedOrder?: number;
 }
 
@@ -106,7 +185,7 @@ if (xiaomi.id !== 'xiaomi' || !xiaomi.api) {
 }
 const xiaomiModelIds = toolCallingModelIds('Xiaomi', GENERATED_MODELS_DEV_METADATA.xiaomi, [
   'mimo-v2.5',
-]);
+]).filter((id) => GENERATED_MODELS_DEV_METADATA.xiaomi[id]?.lifecycle !== 'deprecated');
 // Keep the bootstrap snapshot limited to the two documented MiMo chat models. The remote
 // /models response becomes authoritative as soon as the user saves a working plan credential.
 const xiaomiTokenPlanModelIds = ['mimo-v2.5-pro', 'mimo-v2.5'] as const;
@@ -158,14 +237,14 @@ if (nvidia.id !== 'nvidia')
 if (!nvidia.api) throw new Error('models.dev NVIDIA provider facts are missing api');
 const nvidiaModelIds = toolCallingModelIds('NVIDIA', GENERATED_MODELS_DEV_METADATA.nvidia, [
   'nvidia/nemotron-3-super-120b-a12b',
-]);
+]).filter((id) => GENERATED_MODELS_DEV_METADATA.nvidia[id]?.lifecycle !== 'deprecated');
 
 const mistral = GENERATED_MODELS_DEV_PROVIDER_FACTS.mistral;
 if (mistral.id !== 'mistral')
   throw new Error('models.dev Mistral provider facts are missing stable id mistral');
 const mistralModelIds = toolCallingModelIds('Mistral', GENERATED_MODELS_DEV_METADATA.mistral, [
   'mistral-large-latest',
-]);
+]).filter((id) => GENERATED_MODELS_DEV_METADATA.mistral[id]?.lifecycle !== 'deprecated');
 const cohere = GENERATED_MODELS_DEV_PROVIDER_FACTS.cohere;
 if (cohere.id !== 'cohere')
   throw new Error('models.dev Cohere provider facts are missing stable id cohere');
@@ -226,7 +305,7 @@ const zenmuxOpenAICompatibleMetadata = Object.fromEntries(
 );
 const zenmuxModelIds = toolCallingModelIds('ZenMux', zenmuxOpenAICompatibleMetadata, [
   'moonshotai/kimi-k2.5',
-]);
+]).filter((id) => GENERATED_MODELS_DEV_METADATA.zenmux[id]?.lifecycle !== 'deprecated');
 const fireworks = GENERATED_MODELS_DEV_PROVIDER_FACTS['fireworks-ai'];
 if (fireworks.id !== 'fireworks-ai') {
   throw new Error('models.dev Fireworks AI provider facts are missing stable id fireworks-ai');
@@ -280,6 +359,8 @@ const volcengineCodingPlanModelIds = [
 ] as const;
 const volcengineAgentPlanModelIds = [
   'ark-code-latest',
+  'glm-5.3',
+  'glm-5.3-flash',
   'doubao-seed-2.0-mini',
   'doubao-seed-2.0-lite',
   'deepseek-v4-flash',
@@ -398,7 +479,7 @@ const togetherModelIds = toolCallingModelIds(
   'Together AI',
   GENERATED_MODELS_DEV_METADATA.togetherai,
   ['MiniMaxAI/MiniMax-M3'],
-);
+).filter((id) => GENERATED_MODELS_DEV_METADATA.togetherai[id]?.lifecycle !== 'deprecated');
 const deepinfra = GENERATED_MODELS_DEV_PROVIDER_FACTS.deepinfra;
 if (deepinfra.id !== 'deepinfra') {
   throw new Error('models.dev DeepInfra provider facts are missing stable id deepinfra');
@@ -407,7 +488,7 @@ const deepinfraModelIds = toolCallingModelIds(
   'DeepInfra',
   GENERATED_MODELS_DEV_METADATA.deepinfra,
   ['moonshotai/Kimi-K2.7-Code', 'moonshotai/Kimi-K2.6'],
-);
+).filter((id) => GENERATED_MODELS_DEV_METADATA.deepinfra[id]?.lifecycle !== 'deprecated');
 const groq = GENERATED_MODELS_DEV_PROVIDER_FACTS.groq;
 if (groq.id !== 'groq') {
   throw new Error('models.dev Groq provider facts are missing stable id groq');
@@ -434,6 +515,18 @@ if (
 const alibabaModelIds = toolCallingModelIds('Alibaba', GENERATED_MODELS_DEV_METADATA.alibaba, [
   'qwen3.7-plus',
 ]);
+const alibabaCn = GENERATED_MODELS_DEV_PROVIDER_FACTS['alibaba-cn'];
+if (
+  alibabaCn.id !== 'alibaba-cn' ||
+  alibabaCn.api !== 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+) {
+  throw new Error('models.dev Alibaba (China) provider facts are missing the stable id or API');
+}
+const alibabaCnModelIds = toolCallingModelIds(
+  'Alibaba (China)',
+  GENERATED_MODELS_DEV_METADATA['alibaba-cn'],
+  ['qwen3.8-max'],
+);
 const alibabaCodingPlanCn = GENERATED_MODELS_DEV_PROVIDER_FACTS['alibaba-coding-plan-cn'];
 if (
   alibabaCodingPlanCn.id !== 'alibaba-coding-plan-cn' ||
@@ -500,6 +593,9 @@ if (!alibabaTokenPlanGlobal.api) {
 // the plan's image models (qwen-image / wan) are not tool-callable, so only the
 // tool-calling text models are pinned here. China and global share one model list.
 const alibabaTokenPlanModelIds = [
+  // qwen3.8-max-preview is a retired compatibility alias which the service
+  // routes to this formal id. New selections must use the billed model id.
+  'qwen3.8-max',
   'qwen3.7-max',
   'qwen3.7-plus',
   'qwen3.6-plus',
@@ -580,26 +676,46 @@ const opencodeGoModelIds = toolCallingModelIds(
   ['minimax-m3'],
 ).filter((id) => GENERATED_MODELS_DEV_METADATA['opencode-go'][id]?.lifecycle !== 'deprecated');
 // opencode-free is Maka's first-class free anonymous default. It shares the
-// OpenCode Zen endpoint and model ids, but exposes only the active free
-// (cost.input === 0) models from the models.dev opencode snapshot. The
-// snapshot carries no cost field, so the free set is pinned here; each id is
-// validated against the opencode snapshot for active + tool-capable, mirroring
-// the bootstrap validation every other opencode plan entry performs.
-const opencodeFreeModelIds = [
-  OPENCODE_FREE_DEFAULT_MODEL,
-  'mimo-v2.5-free',
-  'big-pickle',
-  'deepseek-v4-flash-free',
-  'north-mini-code-free',
-  'laguna-s-2.1-free',
-] as const;
-for (const id of opencodeFreeModelIds) {
-  const model = GENERATED_MODELS_DEV_METADATA.opencode[id];
-  if (!model?.capabilities?.functionCalling || model.lifecycle === 'deprecated') {
-    throw new Error(
-      `models.dev opencode snapshot is missing an active tool-capable free model ${id} for opencode-free`,
-    );
-  }
+// OpenCode Zen endpoint and model ids, exposing the active tool-capable
+// models the models.dev snapshot marks `isFree` (zero input cost). Deriving
+// the set from the snapshot lets routine metadata refreshes rotate free
+// models in and out instead of letting a hardcoded pin rot (#3409).
+//
+// Persistently broken free models, excluded with dated evidence. Deny-only:
+// a stale entry hides at most one healthy model, the opposite failure mode of
+// the allow-list pin this replaced. Entries should be re-probed on snapshot
+// refreshes and removed once the model produces content again.
+// 2026-08-21 muse-spark-1.2-contributor-free: anonymous completions return
+// 200 with an empty message and bill the full token budget (4 consecutive
+// probes, max_tokens 8–200) — a failure shape that even "the send settles it"
+// cannot surface, which is why these ids are also vetoed in
+// `authorizeConnectionModel` rather than merely dropped from this derivation.
+// 2026-08-30 x-preview-f-free (Ox Alpha Free): retired upstream — dropped from
+// the anonymous /models listing and every completion returns HTTP 401
+// {"type":"ModelError","message":"Model x-preview-f-free is not supported"}.
+// models.dev still snapshots it as free+active, so the derivation kept offering
+// it as a default-enabled, picker-visible row until this quarantine. Remove
+// once the snapshot marks it deprecated (or upstream serves it again).
+const OPENCODE_FREE_BROKEN_MODEL_IDS = new Set([
+  'muse-spark-1.2-contributor-free',
+  'x-preview-f-free',
+]);
+const opencodeFreeModelIds = toolCallingModelIds(
+  'OpenCode Free',
+  Object.fromEntries(
+    Object.entries(GENERATED_MODELS_DEV_METADATA.opencode).filter(
+      ([id, model]) =>
+        model.isFree === true &&
+        model.lifecycle !== 'deprecated' &&
+        !OPENCODE_FREE_BROKEN_MODEL_IDS.has(id),
+    ),
+  ),
+  [OPENCODE_FREE_DEFAULT_MODEL],
+);
+if (opencodeFreeModelIds[0] !== OPENCODE_FREE_DEFAULT_MODEL) {
+  throw new Error(
+    `models.dev opencode snapshot no longer serves ${OPENCODE_FREE_DEFAULT_MODEL} as an active tool-capable free model; pick a new OPENCODE_FREE_DEFAULT_MODEL`,
+  );
 }
 const githubCopilot = GENERATED_MODELS_DEV_PROVIDER_FACTS['github-copilot'];
 if (githubCopilot.id !== 'github-copilot') {
@@ -639,666 +755,483 @@ function toolCallingModelIds(
 const providerRegistry = {
   anthropic: {
     label: 'Anthropic',
-    description: 'Claude API key access for production agents.',
     baseUrl: 'https://api.anthropic.com',
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: [
+      'claude-sonnet-4-6',
+      'claude-opus-4-8',
+      'claude-haiku-4-5',
+      'claude-sonnet-4-5',
       'claude-sonnet-4-5-20250929',
       'claude-opus-4-1-20250805',
-      'claude-haiku-4-5-20251001',
-      'claude-3-5-haiku-20241022',
     ],
     status: 'ready',
-    protocol: 'anthropic',
     runtimeAdapter: { kind: 'anthropic', auth: 'api-key', normalizeBaseUrl: true },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'api',
-    catalogBadge: 'API',
     signupUrl: 'https://console.anthropic.com/settings/keys',
-    modelsDevId: GENERATED_MODELS_DEV_PROVIDER_FACTS.anthropic.id,
-    readyOrder: 1,
     catalogOrder: 9,
-    recommendedOrder: 3,
   },
   'kimi-coding-plan': {
     label: 'Kimi Coding Plan',
-    description: 'Kimi for Coding over selectable Anthropic- or OpenAI-compatible protocol.',
+    menuLabel: 'Kimi',
     baseUrl: 'https://api.kimi.com/coding/v1',
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     // kimi-for-coding / -highspeed intentionally have no thinking knob:
     // models.dev declares no reasoning_options for them, so the effort
     // control only appears for k3 / k3-256k. Not a sync gap.
     fallbackModels: [...kimiCodingPlanModelIds],
     status: 'ready',
-    protocol: 'anthropic',
     runtimeAdapter: { kind: 'anthropic', auth: 'api-key', normalizeBaseUrl: true },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'plans',
-    catalogBadge: 'Coding',
     signupUrl: 'https://www.kimi.com/code/console',
-    modelsDevId: GENERATED_MODELS_DEV_PROVIDER_FACTS['kimi-coding-plan'].id,
-    readyOrder: 15,
     catalogOrder: 1,
-    recommendedOrder: 5,
   },
   'minimax-coding-plan': {
     label: 'MiniMax Coding Plan',
-    description: 'MiniMax Token Plan over Anthropic-compatible protocol.',
     baseUrl: 'https://api.minimax.io/anthropic',
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: minimaxPlanModelIds,
     status: 'ready',
-    protocol: 'anthropic',
     runtimeAdapter: { kind: 'anthropic', auth: 'api-key', normalizeBaseUrl: true },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'plans',
-    catalogBadge: 'Coding',
     signupUrl: 'https://platform.minimax.io/subscribe/coding-plan',
-    modelsDevId: GENERATED_MODELS_DEV_PROVIDER_FACTS['minimax-coding-plan'].id,
-    readyOrder: 17,
     catalogOrder: 2,
   },
   'tencent-coding-plan': {
     label: tencentCodingPlan.name,
-    description: 'Tencent Cloud Coding Plan for interactive coding agents.',
     baseUrl: tencentCodingPlan.api,
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: [...tencentCodingPlanModelIds],
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'plans',
-    catalogBadge: 'Coding',
     signupUrl: 'https://console.cloud.tencent.com/lkeap/coding-plan',
-    modelsDevId: tencentCodingPlan.id,
-    readyOrder: 23,
     catalogOrder: 23,
   },
   'volcengine-coding-plan': {
     label: 'Volcengine Ark Coding Plan (China)',
-    description: 'Volcengine Ark subscription for interactive AI coding tools.',
     baseUrl: 'https://ark.cn-beijing.volces.com/api/coding/v3',
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: [...volcengineCodingPlanModelIds],
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'plans',
-    catalogBadge: 'Coding',
     signupUrl: 'https://www.volcengine.com/activity/codingplan',
-    readyOrder: 26,
     catalogOrder: 26,
   },
   'volcengine-agent-plan': {
     label: 'Volcengine Ark Agent Plan (China)',
-    description: 'Volcengine Ark subscription for interactive personal agents and coding tools.',
     baseUrl: 'https://ark.cn-beijing.volces.com/api/plan/v3',
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: [...volcengineAgentPlanModelIds],
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: { kind: 'openai', apiProtocol: 'openai-responses' },
     modelDiscovery: {
       kind: 'fallback',
       reason:
-        'Agent Plan inference data plane does not expose a model-list endpoint for its dedicated API key',
+        'Agent Plan model discovery is a control-plane API that requires AK/SK signing; the plan API key reaches only the inference data plane',
     },
     category: 'domestic',
     catalogGroup: 'plans',
-    catalogBadge: 'Agent',
     signupUrl: 'https://console.volcengine.com/ark/agent-plan',
-    readyOrder: 26.5,
     catalogOrder: 26.5,
   },
   'tencent-token-plan': {
     label: tencentTokenPlan.name,
-    description: 'Tencent Cloud Token Plan for interactive personal agents and coding tools.',
     baseUrl: tencentTokenPlan.api,
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: [...tencentTokenPlanModelIds],
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'plans',
-    catalogBadge: 'Token',
     signupUrl: 'https://console.cloud.tencent.com/tokenhub/tokenplan/common',
-    modelsDevId: tencentTokenPlan.id,
-    readyOrder: 27,
     catalogOrder: 27,
   },
   openai: {
     label: 'OpenAI',
-    description: 'GPT API key access, including Responses API models.',
     baseUrl: 'https://api.openai.com/v1',
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
-    fallbackModels: ['gpt-4o-mini', 'gpt-4o', 'gpt-4-turbo', 'gpt-5'],
+    fallbackModels: ['gpt-5.5', 'gpt-5.5-pro', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5'],
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: { kind: 'openai', applyPatchProtocol: 'openai-structured' },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'api',
-    catalogBadge: 'API',
     signupUrl: 'https://platform.openai.com/api-keys',
-    modelsDevId: GENERATED_MODELS_DEV_PROVIDER_FACTS.openai.id,
-    readyOrder: 2,
     catalogOrder: 10,
-    recommendedOrder: 2,
   },
   google: {
     label: 'Google Gemini',
-    description: 'Gemini API key access from Google AI Studio.',
+    menuLabel: 'Google',
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
-    fallbackModels: ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro'],
+    fallbackModels: [
+      'gemini-3.5-flash',
+      'gemini-3.1-pro-preview',
+      'gemini-2.5-pro',
+      'gemini-2.5-flash',
+    ],
     status: 'ready',
-    protocol: 'google',
     runtimeAdapter: { kind: 'google' },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'api',
-    catalogBadge: 'API',
     signupUrl: 'https://aistudio.google.com/app/apikey',
-    modelsDevId: GENERATED_MODELS_DEV_PROVIDER_FACTS.google.id,
-    readyOrder: 3,
     catalogOrder: 11,
-    recommendedOrder: 4,
   },
   deepseek: {
     label: 'DeepSeek',
-    description: 'DeepSeek chat and reasoning models.',
     baseUrl: 'https://api.deepseek.com',
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
-    fallbackModels: ['deepseek-chat', 'deepseek-reasoner'],
+    fallbackModels: [
+      'deepseek-v4-flash',
+      'deepseek-v4-flash-vision-exp',
+      'deepseek-v4-pro',
+      'deepseek-reasoner',
+      'deepseek-chat',
+    ],
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: {
       kind: 'openai-compatible',
       name: 'provider',
-      supportsOpenAiResponses: true,
       applyPatchProtocol: 'codex-v4a-freeform',
+      responses: { adapter: 'open-responses', reasoningReplay: 'plaintext-content' },
     },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'api',
-    catalogBadge: 'API',
     signupUrl: 'https://platform.deepseek.com/api_keys',
-    modelsDevId: GENERATED_MODELS_DEV_PROVIDER_FACTS.deepseek.id,
-    readyOrder: 4,
     catalogOrder: 3,
-    recommendedOrder: 6,
   },
   moonshot: {
     label: 'Moonshot',
-    description: 'Moonshot Kimi API key access.',
     baseUrl: moonshot.api,
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: moonshotModelIds,
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'api',
-    catalogBadge: 'API',
     signupUrl: 'https://platform.kimi.com/console/api-keys',
-    modelsDevId: moonshot.id,
-    readyOrder: 5,
     catalogOrder: 4,
   },
   'zai-coding-plan': {
     label: 'Z.AI Coding Plan',
-    description: 'GLM coding plan over OpenAI-compatible protocol.',
+    menuLabel: 'Z.AI',
     baseUrl: 'https://api.z.ai/api/coding/paas/v4',
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
-    fallbackModels: ['glm-4.7', 'glm-4.6', 'glm-4.5-air'],
+    fallbackModels: ['glm-5.2', 'glm-5.1', 'glm-5-turbo', 'glm-4.7', 'glm-4.5-air'],
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'plans',
-    catalogBadge: 'Coding',
     signupUrl: 'https://bigmodel.cn/usercenter/proj-mgmt/apikeys',
-    modelsDevId: GENERATED_MODELS_DEV_PROVIDER_FACTS['zai-coding-plan'].id,
-    readyOrder: 6,
     catalogOrder: 5,
   },
   MiniMax: {
     label: 'MiniMax',
-    description: 'MiniMax M-series over Anthropic-compatible protocol.',
     baseUrl: 'https://api.minimax.io/anthropic/v1',
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: ['MiniMax-M3'],
     status: 'ready',
-    protocol: 'anthropic',
     runtimeAdapter: { kind: 'anthropic', auth: 'bearer', normalizeBaseUrl: false },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'api',
-    catalogBadge: 'API',
     signupUrl: 'https://platform.minimax.io/user-center/basic-information/interface-key',
-    modelsDevId: GENERATED_MODELS_DEV_PROVIDER_FACTS.MiniMax.id,
-    readyOrder: 7,
     catalogOrder: 6,
   },
   'MiniMax-cn': {
     label: 'MiniMax 中国站',
-    description: 'MiniMax M-series (China) over Anthropic-compatible protocol.',
     baseUrl: 'https://api.minimaxi.com/anthropic/v1',
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: ['MiniMax-M3'],
     status: 'ready',
-    protocol: 'anthropic',
     runtimeAdapter: { kind: 'anthropic', auth: 'bearer', normalizeBaseUrl: false },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'api',
-    catalogBadge: 'API',
     signupUrl: 'https://platform.minimaxi.com/user-center/basic-information/interface-key',
-    modelsDevId: GENERATED_MODELS_DEV_PROVIDER_FACTS['MiniMax-cn'].id,
-    readyOrder: 8,
     catalogOrder: 7,
   },
   siliconflow: {
     label: siliconflow.name,
-    description: 'Hosted multi-model API with exact upstream model ids.',
     baseUrl: siliconflow.api,
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: siliconflowModelIds,
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
     modelDiscovery: { kind: 'protocol', query: { sub_type: 'chat' } },
     category: 'domestic',
     catalogGroup: 'aggregators',
-    catalogBadge: 'Aggregator',
     signupUrl: siliconflow.doc,
-    modelsDevId: siliconflow.id,
-    readyOrder: 9,
     catalogOrder: 8,
   },
   vercel: {
     label: vercel.name,
-    description: 'One API key for hosted models with exact creator/model ids.',
     baseUrl: 'https://ai-gateway.vercel.sh/v1',
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: vercelModelIds,
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
     modelDiscovery: { kind: 'protocol', auth: 'none', filter: 'language-models' },
     category: 'overseas',
     catalogGroup: 'aggregators',
-    catalogBadge: 'Gateway',
     signupUrl: 'https://vercel.com/ai-gateway',
-    modelsDevId: vercel.id,
-    readyOrder: 31,
     catalogOrder: 31,
   },
   xai: {
     label: xai.name,
-    description: 'Grok models for chat, reasoning, vision, and tool use.',
     baseUrl: 'https://api.x.ai/v1',
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: xaiModelIds,
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: {
       kind: 'openai-compatible',
       name: 'provider',
-      supportsOpenAiResponses: true,
+      responses: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
     },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'api',
-    catalogBadge: 'API',
     signupUrl: 'https://console.x.ai/',
-    modelsDevId: xai.id,
-    readyOrder: 10,
     catalogOrder: 12,
   },
   'xai-oauth': {
     label: 'xAI OAuth (SuperGrok / X Premium)',
-    description: 'Use an eligible Grok account through xAI device authorization.',
     baseUrl: 'https://api.x.ai/v1',
     authKind: 'oauth_token',
-    backendKind: 'ai-sdk',
     fallbackModels: xaiModelIds,
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: {
       kind: 'openai-compatible',
       name: 'provider',
-      supportsOpenAiResponses: true,
+      responses: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
     },
     modelDiscovery: {
       kind: 'protocol',
       auth: 'oauth-bearer',
-      filter: 'fallback-models',
     },
     category: 'oauth',
-    catalogBadge: 'Account',
     signupUrl: 'https://x.ai/grok',
-    modelsDevId: xai.id,
   },
   zai: {
     label: zai.name,
-    description: 'GLM models for reasoning, vision, coding, and tool use.',
     baseUrl: zai.api,
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: zaiModelIds,
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'api',
-    catalogBadge: 'API',
     signupUrl: 'https://z.ai/manage-apikey/apikey-list',
-    modelsDevId: zai.id,
-    readyOrder: 10.1,
     catalogOrder: 12.1,
   },
   xiaomi: {
     label: xiaomi.name,
-    description: 'MiMo models for multimodal reasoning, coding, and tool use.',
     baseUrl: xiaomi.api,
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: xiaomiModelIds,
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'api',
-    catalogBadge: 'API',
     signupUrl: 'https://platform.xiaomimimo.com/',
-    modelsDevId: xiaomi.id,
-    readyOrder: 10.2,
     catalogOrder: 12.2,
   },
   'xiaomi-token-plan-cn': {
     label: xiaomiTokenPlanCn.name,
-    description:
-      'Xiaomi MiMo Token Plan (China) subscription for interactive coding agents and tools.',
     baseUrl: xiaomiTokenPlanCn.api,
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: [...xiaomiTokenPlanModelIds],
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'plans',
-    catalogBadge: 'Token',
     signupUrl: 'https://platform.xiaomimimo.com/token-plan',
-    modelsDevId: xiaomiTokenPlanCn.id,
-    readyOrder: 10.3,
     catalogOrder: 12.3,
   },
   'xiaomi-token-plan-sgp': {
     label: xiaomiTokenPlanSgp.name,
-    description:
-      'Xiaomi MiMo Token Plan (Singapore) subscription for interactive coding agents and tools.',
     baseUrl: xiaomiTokenPlanSgp.api,
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: [...xiaomiTokenPlanModelIds],
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'plans',
-    catalogBadge: 'Token',
     signupUrl: 'https://platform.xiaomimimo.com/token-plan',
-    modelsDevId: xiaomiTokenPlanSgp.id,
-    readyOrder: 10.4,
     catalogOrder: 12.4,
   },
   'xiaomi-token-plan-ams': {
     label: xiaomiTokenPlanAms.name,
-    description:
-      'Xiaomi MiMo Token Plan (Europe) subscription for interactive coding agents and tools.',
     baseUrl: xiaomiTokenPlanAms.api,
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: [...xiaomiTokenPlanModelIds],
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'plans',
-    catalogBadge: 'Token',
     signupUrl: 'https://platform.xiaomimimo.com/token-plan',
-    modelsDevId: xiaomiTokenPlanAms.id,
-    readyOrder: 10.5,
     catalogOrder: 12.5,
   },
   cerebras: {
     label: cerebras.name,
-    description: 'Fast hosted open-model inference with reasoning and tool use.',
     baseUrl: 'https://api.cerebras.ai/v1',
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: cerebrasModelIds,
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'api',
-    catalogBadge: 'API',
     signupUrl: 'https://cloud.cerebras.ai/',
-    modelsDevId: cerebras.id,
-    readyOrder: 11,
     catalogOrder: 13,
   },
   mistral: {
     label: mistral.name,
-    description: 'Mistral chat, coding, vision, reasoning, and tool-use models.',
     baseUrl: 'https://api.mistral.ai/v1',
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: mistralModelIds,
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
     modelDiscovery: { kind: 'protocol', responseShape: 'array-or-data' },
     category: 'overseas',
     catalogGroup: 'api',
-    catalogBadge: 'API',
     signupUrl: 'https://console.mistral.ai/api-keys/',
-    modelsDevId: mistral.id,
-    readyOrder: 12,
     catalogOrder: 14,
   },
   cohere: {
     label: cohere.name,
-    description: 'Cohere native Chat API for reasoning, vision, and tool-use models.',
     baseUrl: 'https://api.cohere.com/v2',
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: cohereModelIds,
     status: 'ready',
-    protocol: 'cohere',
     runtimeAdapter: { kind: 'cohere' },
     modelDiscovery: { kind: 'cohere' },
     category: 'overseas',
     catalogGroup: 'api',
-    catalogBadge: 'API',
     signupUrl: 'https://dashboard.cohere.com/api-keys',
-    modelsDevId: cohere.id,
-    readyOrder: 30,
     catalogOrder: 30,
   },
   huggingface: {
     label: huggingface.name,
-    description:
-      'Inference Providers router for chat, reasoning, and tool use across hosted models.',
     baseUrl: huggingface.api,
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: huggingfaceModelIds,
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
     modelDiscovery: { kind: 'protocol', filter: 'tool-capable' },
     category: 'overseas',
     catalogGroup: 'aggregators',
-    catalogBadge: 'Router',
     signupUrl: 'https://huggingface.co/settings/tokens',
-    modelsDevId: huggingface.id,
-    readyOrder: 34,
     catalogOrder: 34,
   },
   zenmux: {
     label: zenmux.name,
-    description: 'One API key for routed models with exact creator/model ids.',
     baseUrl: zenmux.api,
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: zenmuxModelIds,
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: {
       kind: 'openai-compatible',
       name: 'provider',
       replayAssistantReasoningAs: 'reasoning',
       replayAssistantReasoningDetails: true,
     },
-    modelDiscovery: { kind: 'protocol', auth: 'none', filter: 'fallback-models' },
+    modelDiscovery: { kind: 'protocol', auth: 'none' },
     category: 'overseas',
     catalogGroup: 'aggregators',
-    catalogBadge: 'Gateway',
     signupUrl: 'https://zenmux.ai/settings/keys',
-    modelsDevId: zenmux.id,
-    readyOrder: 36,
     catalogOrder: 36,
   },
   opencode: {
     label: opencode.name,
-    description: 'Curated pay-as-you-go models for coding agents, with model-specific protocols.',
     baseUrl: opencode.api,
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: opencodeModelIds,
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'plans',
-    catalogBadge: 'Plan',
     signupUrl: 'https://opencode.ai/zen',
-    modelsDevId: opencode.id,
-    readyOrder: 37,
     catalogOrder: 37,
   },
   'opencode-go': {
     label: opencodeGo.name,
-    description: 'Low-cost subscription access to curated open coding models.',
     baseUrl: opencodeGo.api,
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: opencodeGoModelIds,
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'plans',
-    catalogBadge: 'Plan',
     signupUrl: 'https://opencode.ai/go',
-    modelsDevId: opencodeGo.id,
-    readyOrder: 38,
     catalogOrder: 38,
     recommendedOrder: 1,
   },
   'opencode-free': {
     label: 'OpenCode Free',
-    description: 'Free anonymous OpenCode Zen models — no API key required, usage limited by IP.',
     baseUrl: opencode.api,
     authKind: 'none',
-    backendKind: 'ai-sdk',
     fallbackModels: [...opencodeFreeModelIds],
-    defaultEnabledModelIds: OPENCODE_FREE_DEFAULT_ENABLED_MODELS,
+    // Free and keyless: nothing is spent by having every shipped model on, and
+    // a user who just added the connection can send immediately.
+    enableShippedModelsByDefault: true,
+    brokenModelIds: [...OPENCODE_FREE_BROKEN_MODEL_IDS],
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
     modelDiscovery: {
       kind: 'fallback',
       reason:
-        'OpenCode Free anonymous access serves a fixed set of free models; the inference endpoint has no anonymous model-list contract.',
+        'The anonymous /models listing describes the full Zen catalog with no cost facts; which models are FREE is a models.dev fact, so the derived candidates are the inventory and the send settles availability.',
     },
     category: 'overseas',
     catalogGroup: 'plans',
-    catalogBadge: 'Free',
     signupUrl: 'https://opencode.ai/zen',
-    modelsDevId: opencode.id,
-    readyOrder: 0,
     catalogOrder: 0,
     recommendedOrder: 0,
   },
   togetherai: {
     label: together.name,
-    description: 'Hosted open models for chat, reasoning, vision, and tool use.',
     baseUrl: 'https://api.together.ai/v1',
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: togetherModelIds,
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'api',
-    catalogBadge: 'API',
     signupUrl: 'https://api.together.ai/settings/projects/~current/api-keys',
-    modelsDevId: together.id,
-    readyOrder: 18,
     catalogOrder: 15,
   },
   'fireworks-ai': {
     label: fireworks.name,
-    description: 'Serverless open models with exact Fireworks model paths.',
     baseUrl: fireworks.api,
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: fireworksModelIds,
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
     modelDiscovery: {
       kind: 'fireworks',
@@ -1308,135 +1241,93 @@ const providerRegistry = {
     },
     category: 'overseas',
     catalogGroup: 'api',
-    catalogBadge: 'API',
     signupUrl: 'https://app.fireworks.ai/settings/users/api-keys',
-    modelsDevId: fireworks.id,
-    readyOrder: 19,
     catalogOrder: 19,
   },
   nvidia: {
     label: 'NVIDIA',
-    description: 'NVIDIA-hosted models for reasoning, vision, and tool use.',
     baseUrl: nvidia.api,
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: nvidiaModelIds,
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
-    modelDiscovery: { kind: 'protocol', filter: 'fallback-models' },
+    modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'api',
-    catalogBadge: 'API',
     signupUrl: 'https://build.nvidia.com/',
-    modelsDevId: nvidia.id,
-    readyOrder: 20,
     catalogOrder: 20,
   },
   'tencent-tokenhub': {
     label: tencentTokenHub.name,
-    description: 'Tencent TokenHub models for reasoning and tool-use agents.',
     baseUrl: tencentTokenHub.api,
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: tencentTokenHubModelIds,
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'api',
-    catalogBadge: 'API',
     signupUrl: 'https://cloud.tencent.com/document/product/1823/130090',
-    modelsDevId: tencentTokenHub.id,
-    readyOrder: 21,
     catalogOrder: 21,
   },
   stepfun: {
     label: stepfun.name,
-    description: 'StepFun China models for multimodal reasoning and tool-use agents.',
     baseUrl: stepfun.api,
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: stepfunModelIds,
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'api',
-    catalogBadge: 'API',
     signupUrl: 'https://platform.stepfun.com/interface-key',
-    modelsDevId: stepfun.id,
-    readyOrder: 22,
     catalogOrder: 22,
   },
   'stepfun-step-plan': {
     label: 'StepFun Step Plan (China)',
-    description: 'StepFun subscription access for interactive coding and agent tools in China.',
     baseUrl: 'https://api.stepfun.com/step_plan/v1',
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: [...stepfunStepPlanModelIds],
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'plans',
-    catalogBadge: 'Plan',
     signupUrl: 'https://platform.stepfun.com/interface-key',
-    modelsDevId: stepfunStepPlan.id,
-    readyOrder: 28,
     catalogOrder: 28,
   },
   'stepfun-ai-step-plan': {
     label: stepfunGlobalStepPlan.name,
-    description: 'StepFun Global subscription access for interactive coding and agent tools.',
     baseUrl: stepfunGlobalStepPlan.api,
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: [...stepfunGlobalStepPlanModelIds],
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'plans',
-    catalogBadge: 'Plan',
     signupUrl: 'https://platform.stepfun.ai/interface-key',
-    modelsDevId: stepfunGlobalStepPlan.id,
-    readyOrder: 32,
     catalogOrder: 32,
   },
   'stepfun-ai': {
     label: stepfunGlobal.name,
-    description: 'StepFun Global models for multimodal reasoning and tool-use agents.',
     baseUrl: stepfunGlobal.api,
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: stepfunGlobalModelIds,
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'api',
-    catalogBadge: 'API',
     signupUrl: 'https://platform.stepfun.ai/interface-key',
-    modelsDevId: stepfunGlobal.id,
-    readyOrder: 24,
     catalogOrder: 24,
   },
   'volcengine-ark': {
     label: 'Volcengine Ark (China)',
-    description: 'Volcengine Ark direct API for reasoning and tool-use agents in China.',
     baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: ['doubao-seed-2-0-pro-260215'],
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
     modelDiscovery: {
       kind: 'fallback',
@@ -1445,192 +1336,154 @@ const providerRegistry = {
     },
     category: 'domestic',
     catalogGroup: 'api',
-    catalogBadge: 'API',
     signupUrl: 'https://console.volcengine.com/ark/region:ark+cn-beijing/model',
-    readyOrder: 25,
     catalogOrder: 25,
   },
   deepinfra: {
     label: deepinfra.name,
-    description: 'Hosted open models for multimodal reasoning and tool-use agents.',
     baseUrl: 'https://api.deepinfra.com/v1/openai',
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: deepinfraModelIds,
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
-    modelDiscovery: { kind: 'protocol', path: '/v1/models', filter: 'fallback-models' },
+    modelDiscovery: { kind: 'protocol', path: '/v1/models' },
     category: 'overseas',
     catalogGroup: 'api',
-    catalogBadge: 'API',
     signupUrl: 'https://deepinfra.com/dash/api_keys',
-    modelsDevId: deepinfra.id,
-    readyOrder: 29,
     catalogOrder: 29,
   },
   atlascloud: {
     label: 'Atlas Cloud',
-    description: 'Hosted open-model inference with OpenAI-compatible chat and tool use.',
     baseUrl: 'https://api.atlascloud.ai/v1',
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: ['qwen/qwen3.8-max'],
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
-    modelDiscovery: { kind: 'protocol', filter: 'fallback-models' },
+    modelDiscovery: { kind: 'protocol', path: '/v1/models' },
     category: 'overseas',
     catalogGroup: 'api',
-    catalogBadge: 'API',
-    readyOrder: 29.5,
+    signupUrl: 'https://atlascloud.ai',
     catalogOrder: 29.5,
   },
   groq: {
     label: groq.name,
-    description: 'Ultra-fast LPU-hosted open models with reasoning and tool use.',
     baseUrl: 'https://api.groq.com/openai/v1',
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: groqModelIds,
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
-    modelDiscovery: { kind: 'protocol', filter: 'fallback-models' },
+    modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'api',
-    catalogBadge: 'API',
     signupUrl: 'https://console.groq.com/keys',
-    modelsDevId: groq.id,
-    readyOrder: 39,
     catalogOrder: 39,
   },
   openrouter: {
     label: openrouter.name,
-    description: 'One API key across all major model labs — an OpenAI-compatible aggregator.',
     baseUrl: openrouter.api,
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: openrouterModelIds,
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
-    modelDiscovery: { kind: 'protocol', filter: 'fallback-models' },
+    modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'aggregators',
-    catalogBadge: '聚合',
     signupUrl: 'https://openrouter.ai/settings/keys',
-    modelsDevId: openrouter.id,
-    readyOrder: 40,
     catalogOrder: 40,
   },
   alibaba: {
     label: alibaba.name,
-    description: 'Alibaba Cloud Qwen models for multimodal reasoning, coding, and tool use.',
     baseUrl: alibaba.api,
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: alibabaModelIds,
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
-    modelDiscovery: { kind: 'protocol', filter: 'fallback-models' },
+    modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'api',
-    catalogBadge: 'API',
     signupUrl: 'https://modelstudio.console.alibabacloud.com/',
-    modelsDevId: alibaba.id,
-    readyOrder: 41,
     catalogOrder: 41,
+  },
+  'alibaba-cn': {
+    label: alibabaCn.name,
+    baseUrl: alibabaCn.api,
+    authKind: 'api_key',
+    fallbackModels: alibabaCnModelIds,
+    status: 'ready',
+    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    modelDiscovery: { kind: 'protocol' },
+    category: 'domestic',
+    catalogGroup: 'api',
+    signupUrl: 'https://bailian.console.aliyun.com/',
+    catalogOrder: 41.05,
   },
   'alibaba-coding-plan-cn': {
     label: alibabaCodingPlanCn.name,
-    description: 'Alibaba Cloud Model Studio Coding Plan (China) for interactive AI coding tools.',
     baseUrl: alibabaCodingPlanCn.api,
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: [...alibabaCodingPlanModelIds],
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'plans',
-    catalogBadge: 'Plan',
     signupUrl: 'https://www.aliyun.com/benefit/scene/codingplan',
-    modelsDevId: alibabaCodingPlanCn.id,
-    readyOrder: 41.1,
     catalogOrder: 41.1,
   },
   'alibaba-coding-plan': {
     label: alibabaCodingPlanGlobal.name,
-    description: 'Alibaba Cloud Model Studio Coding Plan for interactive AI coding tools.',
     baseUrl: alibabaCodingPlanGlobal.api,
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: [...alibabaCodingPlanModelIds],
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'plans',
-    catalogBadge: 'Plan',
     signupUrl: 'https://www.alibabacloud.com/help/en/model-studio/coding-plan',
-    modelsDevId: alibabaCodingPlanGlobal.id,
-    readyOrder: 41.2,
     catalogOrder: 41.2,
   },
   'alibaba-token-plan-cn': {
     label: alibabaTokenPlanCn.name,
-    description:
-      'Alibaba Cloud Model Studio Token Plan (Team Edition) for interactive agents and coding tools, Beijing region.',
     baseUrl: alibabaTokenPlanCn.api,
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: [...alibabaTokenPlanModelIds],
     status: 'ready',
-    protocol: 'openai',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: {
+      kind: 'openai-compatible',
+      name: 'provider',
+      runtimeProfile: 'alibaba-token-plan',
+    },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'plans',
-    catalogBadge: 'Token',
     signupUrl: 'https://bailian.console.aliyun.com/',
-    modelsDevId: alibabaTokenPlanCn.id,
-    readyOrder: 41.3,
     catalogOrder: 41.3,
   },
   'alibaba-token-plan': {
     label: alibabaTokenPlanGlobal.name,
-    description:
-      'Alibaba Cloud Model Studio Token Plan (Team Edition) for interactive agents and coding tools, Singapore region.',
     baseUrl: alibabaTokenPlanGlobal.api,
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: [...alibabaTokenPlanModelIds],
     status: 'ready',
-    protocol: 'openai',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: {
+      kind: 'openai-compatible',
+      name: 'provider',
+      runtimeProfile: 'alibaba-token-plan',
+    },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'plans',
-    catalogBadge: 'Token',
     signupUrl: 'https://modelstudio.console.alibabacloud.com/',
-    modelsDevId: alibabaTokenPlanGlobal.id,
-    readyOrder: 41.4,
     catalogOrder: 41.4,
   },
   'cloudflare-workers-ai': {
     label: cloudflareWorkersAi.name,
-    description: 'Cloudflare-hosted models over the account-scoped Workers AI API.',
     baseUrl: '',
     baseUrlTemplate: cloudflareWorkersAi.api,
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: cloudflareWorkersAiModelIds,
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: {
       kind: 'openai-compatible',
       name: 'provider',
@@ -1640,21 +1493,15 @@ const providerRegistry = {
     modelDiscovery: { kind: 'cloudflare' },
     category: 'overseas',
     catalogGroup: 'api',
-    catalogBadge: 'API',
     signupUrl: 'https://dash.cloudflare.com/profile/api-tokens',
-    modelsDevId: cloudflareWorkersAi.id,
-    readyOrder: 33,
     catalogOrder: 33,
   },
   'ollama-cloud': {
     label: ollamaCloud.name,
-    description: 'Ollama-hosted cloud models over the official remote API.',
     baseUrl: ollamaCloud.api,
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: ollamaCloudModelIds,
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: {
       kind: 'openai-compatible',
       name: 'provider',
@@ -1664,140 +1511,98 @@ const providerRegistry = {
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'api',
-    catalogBadge: 'API',
     signupUrl: 'https://ollama.com/settings/keys',
-    modelsDevId: ollamaCloud.id,
-    readyOrder: 35,
     catalogOrder: 35,
   },
   ollama: {
     label: 'Ollama',
-    description: 'Local models from Ollama on this machine.',
     baseUrl: 'http://127.0.0.1:11434/v1',
     authKind: 'none',
-    backendKind: 'ai-sdk',
     fallbackModels: ['llama3.2', 'qwen2.5-coder', 'gemma3'],
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
     modelDiscovery: { kind: 'ollama' },
     category: 'local',
     catalogGroup: 'local',
-    catalogBadge: 'Local',
-    readyOrder: 13,
     catalogOrder: 16,
-    recommendedOrder: 7,
   },
   'lm-studio': {
     label: 'LM Studio',
-    description: 'Local models served by LM Studio on this machine.',
     baseUrl: 'http://127.0.0.1:1234/v1',
     authKind: 'none',
-    backendKind: 'ai-sdk',
     fallbackModels: [],
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
     modelDiscovery: { kind: 'protocol' },
     category: 'local',
     catalogGroup: 'local',
-    catalogBadge: 'Local',
-    readyOrder: 14,
     catalogOrder: 17,
   },
   localai: {
     label: 'LocalAI',
-    description: 'Local models served by LocalAI with optional API-key protection.',
     baseUrl: 'http://127.0.0.1:8080/v1',
     authKind: 'optional_api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: ['qwen3-8b'],
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
     modelDiscovery: { kind: 'protocol' },
     category: 'local',
     catalogGroup: 'local',
-    catalogBadge: 'Local',
-    readyOrder: 14.5,
     catalogOrder: 17.5,
   },
   'openai-compatible': {
     label: 'Custom relay (OpenAI Chat-compatible)',
-    description: 'Custom OpenAI Chat Completions-compatible relay, proxy, or self-hosted gateway.',
     baseUrl: '',
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: [],
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'connection', requireBaseUrl: true },
+    relayModelProfiles: true,
     modelDiscovery: { kind: 'protocol' },
     category: 'custom',
     catalogGroup: 'aggregators',
-    catalogBadge: 'Relay',
-    readyOrder: 16,
     catalogOrder: 18,
-    recommendedOrder: 7.5,
   },
   'openai-responses-compatible': {
     label: 'Custom relay (OpenAI Responses)',
-    description: 'Custom OpenAI Responses-compatible relay, proxy, or self-hosted gateway.',
     baseUrl: '',
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: [],
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: { kind: 'openai', apiProtocol: 'openai-responses' },
+    relayModelProfiles: true,
     modelDiscovery: { kind: 'protocol' },
     category: 'custom',
     catalogGroup: 'aggregators',
-    catalogBadge: 'Responses',
-    readyOrder: 16.1,
     catalogOrder: 18.1,
-    recommendedOrder: 7.6,
   },
   'anthropic-compatible': {
     label: 'Custom relay (Anthropic)',
-    description: 'Custom Anthropic Messages-compatible relay, proxy, or self-hosted gateway.',
     baseUrl: '',
     authKind: 'api_key',
-    backendKind: 'ai-sdk',
     fallbackModels: [],
     status: 'ready',
-    protocol: 'anthropic',
     runtimeAdapter: { kind: 'anthropic', auth: 'api-key', normalizeBaseUrl: true },
     modelDiscovery: { kind: 'protocol' },
     category: 'custom',
     catalogGroup: 'aggregators',
-    catalogBadge: 'Anthropic',
-    readyOrder: 16.2,
     catalogOrder: 18.2,
-    recommendedOrder: 7.7,
   },
   'github-copilot': {
     label: githubCopilot.name,
-    description: 'GitHub Copilot subscription access using an existing supported GitHub login.',
     baseUrl: githubCopilot.api,
     authKind: 'oauth_token',
-    backendKind: 'ai-sdk',
     fallbackModels: githubCopilotModelIds,
     status: 'ready',
-    protocol: 'openai',
     runtimeAdapter: { kind: 'github-copilot' },
     modelDiscovery: { kind: 'protocol', auth: 'github-copilot' },
     category: 'oauth',
-    catalogBadge: 'Account',
     signupUrl: 'https://github.com/features/copilot/plans',
-    modelsDevId: githubCopilot.id,
   },
   'claude-subscription': {
     label: 'Claude Subscription (Pro / Max OAuth)',
-    description: 'Claude app subscription auth path, hidden behind the internal experimental gate.',
     baseUrl: 'https://api.anthropic.com',
     authKind: 'oauth_token',
-    backendKind: 'ai-sdk',
     fallbackModels: [
       'claude-opus-5',
       'claude-sonnet-5',
@@ -1807,89 +1612,92 @@ const providerRegistry = {
       'claude-sonnet-4-5-20250929',
     ],
     status: 'phase3-experimental',
-    protocol: 'anthropic',
-    runtimeAdapter: { kind: 'claude-subscription' },
+    runtimeAdapter: { kind: 'unavailable' },
+    retired: true,
     modelDiscovery: {
       kind: 'fallback',
       reason:
         'Subscription OAuth tokens are session-scoped (user:sessions:claude_code, no user:inference), so GET /v1/models rejects them with 401',
     },
     category: 'oauth',
-    catalogBadge: 'Experimental',
-    modelsDevId: GENERATED_MODELS_DEV_PROVIDER_FACTS.anthropic.id,
   },
   'openai-codex': {
     label: 'OpenAI OAuth (ChatGPT / Codex)',
-    description: 'ChatGPT/Codex account OAuth path for OpenAI Responses models.',
+    menuLabel: 'OpenAI OAuth',
     baseUrl: 'https://chatgpt.com/backend-api/codex',
     authKind: 'oauth_token',
-    backendKind: 'ai-sdk',
     fallbackModels: ['gpt-5.6-sol', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex-spark'],
     status: 'phase3-experimental',
-    protocol: 'openai',
     runtimeAdapter: { kind: 'openai-codex' },
     modelDiscovery: { kind: 'protocol', auth: 'openai-codex' },
     category: 'oauth',
-    catalogBadge: 'Account',
-    modelsDevId: GENERATED_MODELS_DEV_PROVIDER_FACTS.openai.id,
-  },
-  'gemini-cli': {
-    label: 'Gemini CLI OAuth',
-    description: 'Google account path is tracked separately from ready API-key providers.',
-    baseUrl: '',
-    authKind: 'oauth_token',
-    backendKind: 'ai-sdk',
-    fallbackModels: ['gemini-2.5-pro', 'gemini-2.5-flash'],
-    status: 'phase3-experimental',
-    protocol: 'google',
-    runtimeAdapter: { kind: 'unavailable' },
-    modelDiscovery: { kind: 'protocol' },
-    category: 'oauth',
-    catalogBadge: 'Account',
-    modelsDevId: GENERATED_MODELS_DEV_PROVIDER_FACTS['gemini-cli'].id,
   },
 } satisfies Record<string, ProviderDefaults>;
 
 export type ProviderType = keyof typeof providerRegistry;
 export const PROVIDER_REGISTRY: Readonly<Record<ProviderType, ProviderDefaults>> = providerRegistry;
 
-function providerTypesByOrder(
-  field: 'readyOrder' | 'catalogOrder' | 'recommendedOrder',
-): ProviderType[] {
+function providerTypesByOrder(field: 'catalogOrder' | 'recommendedOrder'): ProviderType[] {
   return (Object.entries(PROVIDER_REGISTRY) as Array<[ProviderType, ProviderDefaults]>)
     .filter(([, provider]) => provider[field] !== undefined)
     .sort(([, left], [, right]) => left[field]! - right[field]!)
     .map(([providerType]) => providerType);
 }
 
-export const READY_PROVIDER_TYPES = providerTypesByOrder('readyOrder');
+/**
+ * The registry entry for a provider, or `undefined` when this build does not
+ * register one.
+ *
+ * Sole owner of the question "is this `providerType` one we know". Plain
+ * indexing cannot answer it: `providerRegistry` is an object literal, so
+ * `PROVIDER_REGISTRY['__proto__']` and `['toString']` resolve to inherited
+ * members and read as registered providers. Every recognition site goes
+ * through here rather than repeating the own-property check.
+ */
+export function providerDefaultsOf(providerType: string): ProviderDefaults | undefined {
+  return Object.hasOwn(PROVIDER_REGISTRY, providerType)
+    ? PROVIDER_REGISTRY[providerType as ProviderType]
+    : undefined;
+}
+
+/**
+ * The models a provider offers with no live list to go on: the baseline it
+ * ships, minus anything quarantined. This is the only reader of
+ * `fallbackModels` — a provider's offline offer has exactly one authority.
+ *
+ * `brokenModelIds` subtracts here rather than being pruned from the baseline at
+ * the source because the ids it names are ones a stored connection may still
+ * carry from an older shipped list.
+ */
+export function providerFallbackModelIds(
+  defaults: Pick<ProviderDefaults, 'fallbackModels' | 'brokenModelIds'>,
+): string[] {
+  const broken = new Set(defaults.brokenModelIds ?? []);
+  return defaults.fallbackModels.filter((id) => !broken.has(id));
+}
+
+/**
+ * The provider's name as a model row shows it, or `undefined` when this build
+ * does not register the provider.
+ *
+ * The one answer for a picker. Clients used to keep their own tables — the
+ * model menu carried ten overrides of which six restated `label` verbatim, and
+ * the TUI read `label` directly — so the same provider was named three ways
+ * depending on which surface the user was looking at.
+ */
+export function providerMenuLabel(providerType: string): string | undefined {
+  const defaults = providerDefaultsOf(providerType);
+  return defaults && (defaults.menuLabel ?? defaults.label);
+}
+
+/**
+ * A provider Maka used to offer and no longer does. Read this rather than
+ * inferring retirement from an unavailable adapter: a provider that was never
+ * wired looks identical from there and is not the same thing.
+ */
+export function isRetiredProvider(providerType: string): boolean {
+  return providerDefaultsOf(providerType)?.retired === true;
+}
+
 export const CATALOG_PROVIDER_TYPES = providerTypesByOrder('catalogOrder');
 export const RECOMMENDED_PROVIDER_TYPES = providerTypesByOrder('recommendedOrder');
-
-/**
- * An OAuth provider is product-wired when its registry entry has both the
- * OAuth credential contract and a runnable model adapter. OAuth entries whose
- * adapter is unavailable remain preview-only.
- */
-export function isWiredOAuthProvider(providerType: ProviderType): boolean {
-  const provider = PROVIDER_REGISTRY[providerType];
-  return provider.authKind === 'oauth_token' && provider.runtimeAdapter.kind !== 'unavailable';
-}
-
-/**
- * Persisted providerType aliases renamed away in the current registry. Each
- * entry maps a legacy persisted id to its current id so connections stored
- * before a rename keep working without a destructive on-disk migration.
- *
- * The alias normalizes the `providerType` field only. Persisted connection
- * slugs and credential-store keys (e.g. the `codex-subscription` slug used by
- * the OpenAI Codex OAuth service) are intentionally left untouched so existing
- * OAuth tokens remain reachable.
- */
-const PROVIDER_TYPE_ALIASES: Readonly<Record<string, ProviderType>> = {
-  'codex-subscription': 'openai-codex',
-};
-
-export function normalizeProviderType(type: string): ProviderType {
-  return PROVIDER_TYPE_ALIASES[type] ?? (type as ProviderType);
-}

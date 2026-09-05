@@ -1,15 +1,42 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { createHash } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import type { AutomationClientCapabilityRequirement } from '@maka/core/automation';
 import {
   buildMcpTools,
   mcpProxyToolName,
-  type MakaTool,
+  type McpPreparedToolCall,
   type McpToolProvider,
-  type ToolGroup,
-} from '@maka/runtime';
+} from '@maka/runtime/mcp-tools';
+import { type MakaTool } from '@maka/runtime/tool-runtime';
+import type { RootExecutionDescriptor } from '@maka/core/runtime-invocation';
+import {
+  clientCapabilityScopeIdentity,
+  type ClientCapabilityGrantTarget,
+} from '@maka/core/client-capability-grant';
+import { type ToolGroup } from '@maka/runtime/tool-availability';
+import type { InteractiveInteractionStoreWriterFacade } from '@maka/storage/interaction-store';
 import {
   type ClientCapabilityOffer,
+  type ClientCapabilityAdmissionEvidence,
+  type ClientCapabilityOwnerIdentity,
   type ClientCapabilityReplaceInput,
   type ClientCapabilityServiceOffer,
   type ClientCapabilityToolDescriptor,
@@ -26,18 +53,29 @@ import type {
 } from './operation-dispatcher.js';
 import type { RuntimePolicyActivationGate } from './runtime-policy-activation-gate.js';
 import type {
-  AutomationClientCapabilityAuthority,
-  AutomationClientCapabilityAvailability,
-  AutomationClientCapabilityRequirements,
   ClientCapabilityConnectionIdentity,
   ClientCapabilityConnection,
   ClientCapabilityConnectionSender,
   ClientCapabilityService,
 } from './client-capability-service.js';
+import type { HostInteractionCoordinator } from './interaction-coordinator.js';
+import { clientCapabilityProviderId } from './client-capability-provider-id.js';
 
 // Leave the Host deadline outside the provider's bounded action deadline so an
 // accepted call can return its real terminal result instead of outcome_unknown.
 const DEFAULT_CALL_TIMEOUT_MS = 150_000;
+const DESKTOP_BROWSER_SERVER_ID = 'desktop_browser';
+const DESKTOP_SETTINGS_SERVER_ID = 'desktop_settings';
+const DESKTOP_MCP_OFFER_PREFIX = 'desktop_mcp';
+const DESKTOP_BROWSER_TOOLS = new Set([
+  'browser_navigate',
+  'browser_snapshot',
+  'browser_click',
+  'browser_type',
+  'browser_wait',
+  'browser_extract',
+]);
+const DESKTOP_SETTINGS_TOOLS = new Set(['MakaClientSettingsGet', 'MakaClientSettingsUpdate']);
 
 export { ClientCapabilityInvocationError };
 export type { ClientCapabilityInvocationFailure };
@@ -53,7 +91,10 @@ interface ClientProviderState {
   readonly providerId: string;
   readonly principalId: string;
   readonly clientInstanceId: string;
+  readonly credentialBoundClientInstanceId?: string;
+  readonly principalKind: ClientCapabilityConnectionIdentity['principalKind'];
   readonly trustedProvider: boolean;
+  readonly capabilityOwner?: ClientCapabilityOwnerIdentity;
   activeConnectionId?: string;
   current?: CapabilityRegistration;
   readonly registrations: Map<string, CapabilityRegistration>;
@@ -125,10 +166,6 @@ interface SelectedOfferBinding {
   readonly offer: FrozenOfferBinding;
 }
 
-interface RequiredOfferBinding extends SelectedOfferBinding {
-  readonly requirement: AutomationClientCapabilityRequirement;
-}
-
 interface SnapshotOfferBinding {
   readonly offer: FrozenOfferBinding;
   readonly registration?: CapabilityRegistration;
@@ -140,6 +177,11 @@ type ClientCapabilityToolBinding = ClientCapabilityBoundTool['binding'];
 export interface HostClientCapabilityCoordinatorOptions {
   readonly activation: RuntimePolicyActivationGate;
   readonly onModelToolsChanged: () => void;
+  readonly interactions: Pick<HostInteractionCoordinator, 'requestClientCapabilityApproval'>;
+  readonly grants: Pick<
+    InteractiveInteractionStoreWriterFacade,
+    'readClientCapabilitySessionGrant'
+  >;
 }
 
 export interface ClientCapabilityServiceInvocationInput {
@@ -161,9 +203,7 @@ export interface SessionClientCapabilityServiceInvocationInput
  * Host-owned registry, selection authority, and reverse-call lifecycle for
  * open-world Client Capability providers.
  */
-export class HostClientCapabilityCoordinator
-  implements ClientCapabilityService, AutomationClientCapabilityAuthority
-{
+export class HostClientCapabilityCoordinator implements ClientCapabilityService {
   readonly handlers: ClientCapabilityOperationHandlerMap = {
     'client.capability.replace': (input, context) => this.#replace(input, context),
     'client.capability.unregister': (input, context) => this.#unregister(input, context),
@@ -171,9 +211,12 @@ export class HostClientCapabilityCoordinator
 
   readonly #activation: RuntimePolicyActivationGate;
   readonly #onModelToolsChanged: () => void;
+  readonly #interactions: HostClientCapabilityCoordinatorOptions['interactions'];
+  readonly #grants: HostClientCapabilityCoordinatorOptions['grants'];
   readonly #providers = new Map<string, ClientProviderState>();
   readonly #connections = new Map<string, ClientProviderConnection>();
   readonly #sessions = new Map<string, SessionCapabilityState>();
+  readonly #pendingApprovals = new Map<string, Promise<'allow' | 'deny'>>();
   readonly #previewSessions = new AsyncLocalStorage<ReadonlyMap<string, SessionCapabilityState>>();
   readonly #pendingConnectionReleases = new Set<Promise<void>>();
   readonly #invocations: ClientCapabilityInvocationBroker<CapabilityRegistration>;
@@ -183,6 +226,8 @@ export class HostClientCapabilityCoordinator
   constructor(options: HostClientCapabilityCoordinatorOptions) {
     this.#activation = options.activation;
     this.#onModelToolsChanged = options.onModelToolsChanged;
+    this.#interactions = options.interactions;
+    this.#grants = options.grants;
     this.#invocations = new ClientCapabilityInvocationBroker({
       senderFor: (connectionId) => {
         const connection = this.#connections.get(connectionId);
@@ -229,94 +274,29 @@ export class HostClientCapabilityCoordinator
     return this.#bindSession(sessionId, initiatingConnectionId, 'strict');
   }
 
-  async bindConfirmedFollowup(sessionId: string, initiatingConnectionId: string): Promise<void> {
-    const result = await this.#bindSession(sessionId, initiatingConnectionId, 'degrade');
+  async bindSessionSuccessor(sessionId: string): Promise<void> {
+    const result = await this.#bindSession(sessionId, '', 'degrade');
     if (!result.ok) {
-      throw new Error(`Confirmed follow-up capability binding failed: ${result.message}`);
+      throw new Error(`Session successor capability binding failed: ${result.message}`);
     }
   }
 
-  requirementsForAutomation(
-    sessionId: string,
-    contractIds: readonly string[],
-  ): Promise<AutomationClientCapabilityRequirements> {
-    return this.#activation.runReadActivation(async () => {
-      if (contractIds.length === 0) return { ok: true, requirements: [] };
-      const state =
-        this.#previewSessions.getStore()?.get(sessionId) ?? this.#sessions.get(sessionId);
-      if (!state) {
-        return { ok: false, message: 'Required Client Capability groups are not loaded' };
-      }
-      const requirements: AutomationClientCapabilityRequirement[] = [];
-      for (const contractId of contractIds) {
-        const binding = state.sessionBindings.get(contractId);
-        if (!binding) {
-          return {
-            ok: false,
-            message: `Client Capability group ${contractId} is unavailable in this Session`,
-          };
-        }
-        const provider = this.#providers.get(binding.providerId);
-        if (!provider) {
-          throw new Error('Client Capability Session binding lost its provider identity');
-        }
-        requirements.push(
-          Object.freeze({
-            principalId: provider.principalId,
-            clientInstanceId: provider.clientInstanceId,
-            contractId,
-          }),
-        );
-      }
-      return { ok: true, requirements };
-    });
-  }
-
-  checkAutomationRequirements(
-    requirements: readonly AutomationClientCapabilityRequirement[],
-  ): Promise<AutomationClientCapabilityAvailability> {
-    return this.#activation.runReadActivation(async () => {
-      const resolved = this.#resolveAutomationRequirements(requirements);
-      return resolved.ok ? { ok: true } : resolved;
-    });
-  }
-
-  bindAutomationSession(
-    sessionId: string,
-    requirements: readonly AutomationClientCapabilityRequirement[],
-  ): Promise<AutomationClientCapabilityAvailability> {
-    return this.#activation.runMutation(async () => {
-      const resolved = this.#resolveAutomationRequirements(requirements);
-      if (!resolved.ok) return resolved;
-      const previous = this.#sessions.get(sessionId);
-      const previousBindings = previous?.sessionBindings ?? new Map();
-      const sessionBindings = new Map(previousBindings);
-      for (const binding of resolved.bindings) {
-        const current = sessionBindings.get(binding.requirement.contractId);
-        if (current && current.providerId !== binding.registration.providerId) {
-          return {
-            ok: false,
-            message:
-              'Automation Client Capability requirement conflicts with the target Session binding',
-          };
-        }
-        sessionBindings.set(binding.requirement.contractId, {
-          kind: 'bound',
-          providerId: binding.registration.providerId,
-        });
-      }
-      const next: SessionCapabilityState = {
-        ...(previous?.initiatingProviderId
-          ? { initiatingProviderId: previous.initiatingProviderId }
-          : {}),
-        ...(previous?.serviceProviderId ? { serviceProviderId: previous.serviceProviderId } : {}),
-        sessionBindings,
-        turnBindings: new Map(previous?.turnBindings ?? []),
-      };
-      const changed = !bindingMapsEqual(previousBindings, sessionBindings);
-      this.#storeSessionState(sessionId, next);
-      if (changed) this.#onModelToolsChanged();
-      return { ok: true };
+  /** Rebuild Session-scoped capability bindings from a durable root contract. */
+  async bindDurableRoot(input: {
+    sessionId: string;
+    execution: RootExecutionDescriptor;
+  }): Promise<void> {
+    if (input.execution.kind !== 'external_message') return;
+    // A live root already selected its Client capabilities at admission. Only
+    // cold recovery needs to rebuild a missing in-memory binding from the
+    // durable root contract; reselecting here would discard the active
+    // connection/turn-affine binding and can make providers ambiguous.
+    if (this.#sessions.has(input.sessionId)) return;
+    await this.#activation.runMutation(async () => {
+      const selection = this.#selectSessionState(input.sessionId, '', 'degrade');
+      if (!selection.ok) throw new Error(selection.message);
+      this.#storeSessionState(input.sessionId, selection.state);
+      if (selection.modelToolsChanged) this.#onModelToolsChanged();
     });
   }
 
@@ -392,14 +372,43 @@ export class HostClientCapabilityCoordinator
     initiatingConnectionId: string,
     mode: SessionBindingMode,
   ): SessionBindingSelection {
-    const initiatingProviderId = this.#connections.get(initiatingConnectionId)?.provider.providerId;
-    const initiatingProvider = initiatingProviderId
-      ? this.#providers.get(initiatingProviderId)
-      : undefined;
+    const initiatingProvider = this.#connections.get(initiatingConnectionId)?.provider;
+    const directProvider =
+      initiatingProvider?.current && this.#activeConnection(initiatingProvider)
+        ? initiatingProvider
+        : undefined;
+    const associatedProviders =
+      initiatingProvider &&
+      initiatingProvider.credentialBoundClientInstanceId === initiatingProvider.clientInstanceId
+        ? [...this.#providers.values()].filter(
+            (provider) =>
+              provider.trustedProvider &&
+              provider.current !== undefined &&
+              this.#activeConnection(provider) !== undefined &&
+              provider.capabilityOwner?.principalId === initiatingProvider.principalId &&
+              provider.capabilityOwner.clientInstanceId === initiatingProvider.clientInstanceId,
+          )
+        : [];
+    if (!directProvider && associatedProviders.length > 1) {
+      return {
+        ok: false,
+        message: 'Multiple Client Capability providers are bound to the initiating Client',
+      };
+    }
+    const selectedInitiatingProvider = directProvider ?? associatedProviders[0];
+    // A remote Client must never inherit an unrelated provider merely because
+    // it is the only candidate. Local-owner and recovery flows retain their
+    // existing provider-independent fallback when no provider was selected.
+    const initiatingProviderId =
+      selectedInitiatingProvider?.providerId ??
+      (initiatingProvider?.principalKind === 'remote_owner'
+        ? initiatingProvider.providerId
+        : undefined);
     const previousState = this.#sessions.get(sessionId);
     const serviceProviderId =
       previousState?.serviceProviderId ??
-      (initiatingProvider?.current && initiatingProvider.current.servicesByContract.size > 0
+      (selectedInitiatingProvider?.current &&
+      selectedInitiatingProvider.current.servicesByContract.size > 0
         ? initiatingProviderId
         : undefined);
     const previous = previousState?.sessionBindings ?? new Map();
@@ -447,10 +456,8 @@ export class HostClientCapabilityCoordinator
           };
         }
       } else {
-        candidate =
-          candidates.find((entry) => entry.registration.providerId === initiatingProviderId) ??
-          (candidates.length === 1 ? candidates[0] : undefined);
-        if (!candidate && candidates.length > 1) {
+        candidate = selectProviderCandidate(candidates, initiatingProviderId);
+        if (!candidate && initiatingProviderId === undefined && candidates.length > 1) {
           if (mode === 'degrade') continue;
           return {
             ok: false,
@@ -495,9 +502,7 @@ export class HostClientCapabilityCoordinator
       left.localeCompare(right),
     )) {
       if (candidates[0]?.offer.offer.affinity !== 'turn') continue;
-      const candidate =
-        candidates.find((entry) => entry.registration.providerId === initiatingProviderId) ??
-        (candidates.length === 1 ? candidates[0] : undefined);
+      const candidate = selectProviderCandidate(candidates, initiatingProviderId);
       if (!candidate || offerConflictsWithProxyNames(candidate.offer, proxyNames)) continue;
       nextTurn.set(contractId, {
         kind: 'bound',
@@ -569,7 +574,13 @@ export class HostClientCapabilityCoordinator
     for (const [contractId, candidates] of [...eligible].sort(([left], [right]) =>
       left.localeCompare(right),
     )) {
-      const offer = candidates[0]?.offer;
+      // A provider-independent snapshot keeps one representative descriptor so
+      // a dynamic call can report ambiguity. A remote Client's explicit
+      // selector must instead hide every unrelated provider.
+      const offer =
+        state?.initiatingProviderId === undefined
+          ? candidates[0]?.offer
+          : selectProviderCandidate(candidates, state.initiatingProviderId)?.offer;
       if (
         !offer ||
         offer.offer.affinity !== 'call' ||
@@ -590,13 +601,17 @@ export class HostClientCapabilityCoordinator
       ...buildMcpTools(this.#snapshotProvider(state?.initiatingProviderId, interactive), {
         callTimeoutMs: DEFAULT_CALL_TIMEOUT_MS,
         categoryHint: 'client_capability',
+        hostAdmission: 'client_capability',
         recoveryMode: 'outcome_unknown',
+        executionLocation: 'remote',
       }),
       ...buildMcpTools(this.#snapshotProvider(state?.initiatingProviderId, trusted), {
         callTimeoutMs: DEFAULT_CALL_TIMEOUT_MS,
         categoryHint: 'custom_tool',
+        hostAdmission: 'client_capability',
         recoveryMode: 'outcome_unknown',
         executionLocation: 'remote',
+        activityKindForDescriptor: (descriptor) => trustedClientToolActivityKind(descriptor),
       }),
     ];
     const groups = selected.map(({ offer: binding }) => ({
@@ -712,6 +727,48 @@ export class HostClientCapabilityCoordinator
     });
   }
 
+  async callWorkspaceService(
+    input: Omit<ClientCapabilityServiceInvocationInput, 'connectionId'>,
+  ): Promise<Record<string, unknown>> {
+    const candidates = [...this.#providers.values()]
+      .filter((provider) => {
+        const connection = this.#activeConnection(provider);
+        return Boolean(
+          connection &&
+            provider.current?.servicesByContract.has(
+              serviceContract(input.serviceId, input.version),
+            ),
+        );
+      })
+      .sort((left, right) => left.providerId.localeCompare(right.providerId));
+    const provider = candidates[0];
+    const connection = provider ? this.#activeConnection(provider) : undefined;
+    if (!connection) {
+      throw new ClientCapabilityInvocationError(
+        'capability_lost',
+        'No Client Capability provider offers this workspace service',
+      );
+    }
+    return this.callService({
+      connectionId: connection.connectionId,
+      serviceId: input.serviceId,
+      version: input.version,
+      method: input.method,
+      input: input.input,
+      ...(input.signal ? { signal: input.signal } : {}),
+      ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
+    });
+  }
+
+  hasWorkspaceService(serviceId: string, version: string): boolean {
+    return [...this.#providers.values()].some((provider) => {
+      const connection = this.#activeConnection(provider);
+      return Boolean(
+        connection && provider.current?.servicesByContract.has(serviceContract(serviceId, version)),
+      );
+    });
+  }
+
   hasService(connectionId: string, serviceId: string, version: string): boolean {
     const connection = this.#connections.get(connectionId);
     const provider = connection?.provider;
@@ -729,12 +786,15 @@ export class HostClientCapabilityCoordinator
   }
 
   releaseConnection(connectionId: string): Promise<void> {
-    this.#invocations.releaseConnection(connectionId);
+    const invocationCleanup = this.#invocations.releaseConnection(connectionId);
     const connection = this.#connections.get(connectionId);
-    if (!connection) return Promise.resolve();
+    if (!connection) return invocationCleanup;
     let task!: Promise<void>;
-    task = this.#activation
-      .runMutation(() => this.#releaseConnectionState(connection))
+    task = Promise.all([
+      invocationCleanup,
+      this.#activation.runMutation(() => this.#releaseConnectionState(connection)),
+    ])
+      .then(() => undefined)
       .finally(() => this.#pendingConnectionReleases.delete(task));
     this.#pendingConnectionReleases.add(task);
     void task.catch(() => undefined);
@@ -771,9 +831,10 @@ export class HostClientCapabilityCoordinator
 
   async close(): Promise<void> {
     this.beginDrain();
-    for (const connectionId of [...this.#connections.keys()]) {
-      this.releaseConnection(connectionId);
-    }
+    const releases = [...this.#connections.keys()].map((connectionId) =>
+      this.releaseConnection(connectionId),
+    );
+    await Promise.allSettled(releases);
     await Promise.allSettled([...this.#pendingConnectionReleases]);
     this.#invocations.close();
     this.#sessions.clear();
@@ -825,7 +886,7 @@ export class HostClientCapabilityCoordinator
       let registration: CapabilityRegistration;
       try {
         if (
-          provider.trustedProvider &&
+          provider.principalKind === 'capability_provider' &&
           (input.services?.length ||
             input.offers.some(
               (offer) => offer.affinity !== 'session' || offer.hostPathAccess !== 'none',
@@ -964,30 +1025,32 @@ export class HostClientCapabilityCoordinator
       revision: this.#revision,
       tools: Object.freeze(boundTools),
     });
+    const resolveBinding = (binding: ClientCapabilityToolBinding) => {
+      const selectedBinding = bindings.get(binding);
+      if (!selectedBinding) {
+        throw new ClientCapabilityInvocationError(
+          'capability_lost',
+          'Client Capability tool is not part of the frozen offer',
+        );
+      }
+      const { serverId, name: toolName } = selectedBinding.tool.descriptor;
+      const dynamicBinding = selectedBinding.registration
+        ? {
+            registration: selectedBinding.registration,
+            tool: selectedBinding.tool,
+          }
+        : this.#selectCallBinding(
+            selectedBinding.contractId,
+            initiatingProviderId,
+            toolIdentity(serverId, toolName),
+          );
+      return { selectedBinding, dynamicBinding };
+    };
     return {
       toolSnapshot: () => snapshot,
-      callTool: (binding, args, options) => {
-        const selectedBinding = bindings.get(binding);
-        if (!selectedBinding) {
-          return Promise.reject(
-            new ClientCapabilityInvocationError(
-              'capability_lost',
-              'Client Capability tool is not part of the frozen offer',
-            ),
-          );
-        }
-        const { serverId, name: toolName } = selectedBinding.tool.descriptor;
-        const dynamicBinding = selectedBinding.registration
-          ? {
-              registration: selectedBinding.registration,
-              tool: selectedBinding.tool,
-            }
-          : this.#selectCallBinding(
-              selectedBinding.contractId,
-              initiatingProviderId,
-              toolIdentity(serverId, toolName),
-            );
-        return this.#invocations.invoke(
+      prepareTool: async (binding, args, options): Promise<McpPreparedToolCall> => {
+        const { selectedBinding, dynamicBinding } = resolveBinding(binding);
+        const prepared = this.#invocations.prepare(
           dynamicBinding.registration,
           dynamicBinding.tool,
           args,
@@ -995,25 +1058,151 @@ export class HostClientCapabilityCoordinator
           options.signal,
           options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS,
         );
+        try {
+          const evidence = await prepared.waitUntilAccepted();
+          const boundary = options.context.executionBoundary;
+          if (!boundary) throw new Error('Client Capability execution boundary is unavailable');
+          if (boundary.kind !== 'bypass') {
+            if (options.context.permissionMode !== 'ask' || !options.context.runId) {
+              throw new Error('Client Capability is unavailable in the current permission mode');
+            }
+            const target = managedClientCapabilityGrantTarget(
+              selectedBinding.contractId,
+              dynamicBinding.registration,
+              dynamicBinding.tool,
+              evidence,
+            );
+            if (!target) {
+              return {
+                execute: ({ emitProgress, requestInteraction } = {}) =>
+                  prepared.admit(emitProgress, requestInteraction),
+                cancel: () => prepared.cancel(),
+              };
+            }
+            const key = { sessionId: options.context.sessionId, ...target };
+            if (!(await this.#grants.readClientCapabilitySessionGrant(key))) {
+              const decision = await this.#requestApprovalOnce({
+                ...key,
+                turnId: options.context.turnId,
+                runId: options.context.runId,
+                toolCallId: options.context.toolCallId,
+                providerSignal: prepared.providerSignal,
+                callerSignal: options.signal,
+              });
+              if (decision !== 'allow') throw new Error('Client Capability request was denied');
+              if (!(await this.#grants.readClientCapabilitySessionGrant(key))) {
+                throw new Error('Client Capability approval did not publish its Session Grant');
+              }
+            }
+          }
+          return {
+            execute: ({ emitProgress, requestInteraction } = {}) =>
+              prepared.admit(emitProgress, requestInteraction),
+            cancel: () => prepared.cancel(),
+          };
+        } catch (error) {
+          prepared.cancel();
+          throw error;
+        }
+      },
+      callTool: (binding, args, options) => {
+        const { dynamicBinding } = resolveBinding(binding);
+        return this.#invocations.invoke(
+          dynamicBinding.registration,
+          dynamicBinding.tool,
+          args,
+          options.context,
+          options.signal,
+          options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS,
+          options.emitProgress,
+          options.requestInteraction,
+        );
       },
     };
   }
 
+  #requestApprovalOnce(input: {
+    readonly sessionId: string;
+    readonly turnId: string;
+    readonly runId: string;
+    readonly toolCallId: string;
+    readonly providerId: string;
+    readonly contractId: string;
+    readonly serverId: string;
+    readonly toolName: string;
+    readonly capability: ClientCapabilityGrantTarget['capability'];
+    readonly scope: ClientCapabilityGrantTarget['scope'];
+    readonly providerSignal: AbortSignal;
+    readonly callerSignal?: AbortSignal;
+  }): Promise<'allow' | 'deny'> {
+    const target: ClientCapabilityGrantTarget = {
+      providerId: input.providerId,
+      contractId: input.contractId,
+      serverId: input.serverId,
+      toolName: input.toolName,
+      capability: input.capability,
+      scope: input.scope,
+    };
+    const key = [
+      input.sessionId,
+      target.providerId,
+      target.contractId,
+      target.capability,
+      clientCapabilityScopeIdentity(target.scope),
+    ].join('\0');
+    const existing = this.#pendingApprovals.get(key);
+    if (existing) return waitForClientCapabilityApproval(existing, input.callerSignal);
+    const pending = this.#interactions
+      .requestClientCapabilityApproval({
+        sessionId: input.sessionId,
+        turnId: input.turnId,
+        runId: input.runId,
+        toolCallId: input.toolCallId,
+        target,
+        providerSignal: input.providerSignal,
+        ...(input.callerSignal ? { callerSignal: input.callerSignal } : {}),
+      })
+      .finally(() => {
+        if (this.#pendingApprovals.get(key) === pending) this.#pendingApprovals.delete(key);
+      });
+    this.#pendingApprovals.set(key, pending);
+    return pending;
+  }
+
   #provider(identity: ClientCapabilityConnectionIdentity): ClientProviderState {
-    const providerId = clientProviderId(identity.principalId, identity.clientInstanceId);
-    const trustedProvider = identity.principalKind === 'capability_provider';
+    const providerId = clientCapabilityProviderId(identity);
+    const trustedProvider =
+      identity.principalKind === 'local_owner' || identity.principalKind === 'capability_provider';
+    if (identity.capabilityOwner && identity.principalKind !== 'capability_provider') {
+      throw new Error('Only a capability provider may declare a Client Capability owner');
+    }
     let provider = this.#providers.get(providerId);
     if (!provider) {
       provider = {
         providerId,
         principalId: identity.principalId,
         clientInstanceId: identity.clientInstanceId,
+        ...(identity.credentialBoundClientInstanceId
+          ? { credentialBoundClientInstanceId: identity.credentialBoundClientInstanceId }
+          : {}),
+        principalKind: identity.principalKind,
         trustedProvider,
+        ...(identity.capabilityOwner
+          ? { capabilityOwner: Object.freeze({ ...identity.capabilityOwner }) }
+          : {}),
         registrations: new Map(),
       };
       this.#providers.set(providerId, provider);
-    } else if (provider.trustedProvider !== trustedProvider) {
+    } else if (
+      provider.principalKind !== identity.principalKind ||
+      provider.trustedProvider !== trustedProvider ||
+      provider.credentialBoundClientInstanceId !== identity.credentialBoundClientInstanceId
+    ) {
       throw new Error('Client Capability provider authority changed across connections');
+    } else if (
+      !clientCapabilityOwnerIdentitiesEqual(provider.capabilityOwner, identity.capabilityOwner)
+    ) {
+      throw new Error('Client Capability provider owner changed across connections');
     }
     return provider;
   }
@@ -1039,35 +1228,6 @@ export class HostClientCapabilityCoordinator
     return eligible;
   }
 
-  #resolveAutomationRequirements(
-    requirements: readonly AutomationClientCapabilityRequirement[],
-  ):
-    | { readonly ok: true; readonly bindings: readonly RequiredOfferBinding[] }
-    | { readonly ok: false; readonly message: string } {
-    const bindings: RequiredOfferBinding[] = [];
-    for (const requirement of requirements) {
-      const provider = this.#providers.get(
-        clientProviderId(requirement.principalId, requirement.clientInstanceId),
-      );
-      const registration = provider?.current;
-      const offer = registration?.offersByContract.get(requirement.contractId);
-      if (
-        !provider ||
-        !this.#activeConnection(provider) ||
-        !registration ||
-        !offer ||
-        offer.offer.affinity !== 'session'
-      ) {
-        return {
-          ok: false,
-          message: 'A required Client Capability provider is unavailable for this Automation',
-        };
-      }
-      bindings.push({ requirement, registration, offer });
-    }
-    return { ok: true, bindings };
-  }
-
   #selectCallBinding(
     contractId: string,
     initiatingProviderId: string | undefined,
@@ -1077,13 +1237,13 @@ export class HostClientCapabilityCoordinator
     readonly tool: FrozenToolBinding;
   } {
     const candidates = this.#eligibleOffersByContract().get(contractId) ?? [];
-    const candidate =
-      candidates.find((entry) => entry.registration.providerId === initiatingProviderId) ??
-      (candidates.length === 1 ? candidates[0] : undefined);
+    const candidate = selectProviderCandidate(candidates, initiatingProviderId);
     if (!candidate) {
       throw new ClientCapabilityInvocationError(
-        candidates.length > 1 ? 'capability_ambiguous' : 'capability_lost',
-        candidates.length > 1
+        initiatingProviderId === undefined && candidates.length > 1
+          ? 'capability_ambiguous'
+          : 'capability_lost',
+        initiatingProviderId === undefined && candidates.length > 1
           ? 'Multiple Client Capability providers offer this call-affine contract'
           : 'Client Capability provider is unavailable',
       );
@@ -1252,6 +1412,12 @@ export class HostClientCapabilityCoordinator
   }
 }
 
+function trustedClientToolActivityKind(
+  descriptor: ClientCapabilityToolDescriptor,
+): MakaTool['activityKind'] {
+  return descriptor.activityKind;
+}
+
 function freezeRegistration(
   providerId: string,
   connectionId: string,
@@ -1318,8 +1484,72 @@ function freezeRegistration(
   };
 }
 
-function clientProviderId(principalId: string, clientInstanceId: string): string {
-  return `${principalId}\0${clientInstanceId}`;
+function managedClientCapabilityGrantTarget(
+  contractId: string,
+  registration: CapabilityRegistration,
+  tool: FrozenToolBinding,
+  evidence: ClientCapabilityAdmissionEvidence,
+): ClientCapabilityGrantTarget | undefined {
+  const { serverId, name: toolName } = tool.descriptor;
+  if (!registration.trustedProvider) {
+    throw new Error('Managed Client Capability requires a trusted Desktop provider');
+  }
+  if (
+    tool.offerId === DESKTOP_SETTINGS_SERVER_ID &&
+    serverId === DESKTOP_SETTINGS_SERVER_ID &&
+    DESKTOP_SETTINGS_TOOLS.has(toolName)
+  ) {
+    if (evidence.kind !== 'none') {
+      throw new Error('Desktop Settings admission does not accept scope evidence');
+    }
+    return undefined;
+  }
+  if (
+    tool.offerId === DESKTOP_BROWSER_SERVER_ID &&
+    serverId === DESKTOP_BROWSER_SERVER_ID &&
+    DESKTOP_BROWSER_TOOLS.has(toolName)
+  ) {
+    if (evidence.kind !== 'browser_url') {
+      throw new Error('Desktop Browser admission requires URL evidence');
+    }
+    let url: URL;
+    try {
+      url = new URL(evidence.url);
+    } catch {
+      throw new Error('Desktop Browser admission URL is invalid');
+    }
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      throw new Error('Desktop Browser admission requires an HTTP origin');
+    }
+    return Object.freeze({
+      providerId: registration.providerId,
+      contractId,
+      serverId,
+      toolName,
+      capability: 'browser',
+      scope: Object.freeze({ kind: 'browser_origin', origin: url.origin }),
+    });
+  }
+  // Desktop MCP tools publish one offer per MCP server (chunked past the
+  // single-offer tool limit), every offerId carrying the desktop_mcp prefix.
+  // The Session Grant scope takes the descriptor's real MCP server identity.
+  if (
+    tool.offerId === DESKTOP_MCP_OFFER_PREFIX ||
+    tool.offerId.startsWith(`${DESKTOP_MCP_OFFER_PREFIX}_`)
+  ) {
+    if (evidence.kind !== 'none') {
+      throw new Error('Desktop MCP admission does not accept scope evidence');
+    }
+    return Object.freeze({
+      providerId: registration.providerId,
+      contractId,
+      serverId,
+      toolName,
+      capability: 'desktop_mcp',
+      scope: Object.freeze({ kind: 'mcp_tool', serverId, toolName }),
+    });
+  }
+  throw new Error(`Client Capability has no managed admission policy: ${serverId}/${toolName}`);
 }
 
 function serviceContract(serviceId: string, version: string): string {
@@ -1406,6 +1636,66 @@ function rememberOfferProxyNames(offer: FrozenOfferBinding, proxyNames: Map<stri
   for (const descriptor of offer.offer.tools) {
     proxyNames.set(mcpProxyToolName(descriptor.serverId, descriptor.name), offer.contractId);
   }
+}
+
+function selectProviderCandidate(
+  candidates: readonly SelectedOfferBinding[],
+  initiatingProviderId: string | undefined,
+): SelectedOfferBinding | undefined {
+  return initiatingProviderId === undefined
+    ? candidates.length === 1
+      ? candidates[0]
+      : undefined
+    : candidates.find((candidate) => candidate.registration.providerId === initiatingProviderId);
+}
+
+function clientCapabilityOwnerIdentitiesEqual(
+  left: ClientProviderState['capabilityOwner'],
+  right: ClientCapabilityConnectionIdentity['capabilityOwner'],
+): boolean {
+  return (
+    left === right ||
+    (left !== undefined &&
+      right !== undefined &&
+      left.principalId === right.principalId &&
+      left.clientInstanceId === right.clientInstanceId)
+  );
+}
+
+function waitForClientCapabilityApproval(
+  approval: Promise<'allow' | 'deny'>,
+  callerSignal: AbortSignal | undefined,
+): Promise<'allow' | 'deny'> {
+  if (!callerSignal) return approval;
+  if (callerSignal.aborted) {
+    return Promise.reject(clientCapabilityCallerAbortError(callerSignal));
+  }
+  return new Promise((resolve, reject) => {
+    const cleanup = (): void => callerSignal.removeEventListener('abort', onAbort);
+    const onAbort = (): void => {
+      cleanup();
+      reject(clientCapabilityCallerAbortError(callerSignal));
+    };
+    callerSignal.addEventListener('abort', onAbort, { once: true });
+    void approval.then(
+      (decision) => {
+        cleanup();
+        resolve(decision);
+      },
+      (error) => {
+        cleanup();
+        reject(error);
+      },
+    );
+  });
+}
+
+function clientCapabilityCallerAbortError(signal: AbortSignal): Error {
+  const reason = signal.reason;
+  if (reason instanceof Error) return reason;
+  return new Error(typeof reason === 'string' ? reason : 'Client Capability caller cancelled', {
+    ...(reason === undefined ? {} : { cause: reason }),
+  });
 }
 
 function canonicalJson(value: unknown): string {

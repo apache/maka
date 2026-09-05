@@ -1,9 +1,35 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { Buffer } from 'node:buffer';
-import { open, realpath as fsRealpath } from 'node:fs/promises';
-import { basename, relative, sep } from 'node:path';
-import { attachmentKindFromMimeType, guessMimeFromName, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core';
-import type { ArtifactKind, ArtifactSource, AttachmentRef } from '@maka/core';
-import type { ArtifactStore } from '@maka/storage';
+import { open } from 'node:fs/promises';
+import { basename } from 'node:path';
+import {
+  attachmentKindFromMimeType,
+  MAX_ATTACHMENT_BYTES,
+  MAX_ATTACHMENT_COUNT,
+  ATTACHMENT_MIME_SNIFF_BYTES,
+  resolveAttachmentMimeType,
+  sniffAttachmentMimeType,
+} from '@maka/core/attachments';
+import type { ArtifactKind } from '@maka/core/artifacts';
+import type { AttachmentRef } from '@maka/core/events';
 import type { AttachmentApprovalRegistry } from './attachment-approval.js';
 
 export type AttachmentIngestFile =
@@ -19,105 +45,27 @@ export interface AttachmentSnapshotInput {
 }
 
 /**
- * Resolve a selected/dropped file into an {@link AttachmentRef} the runtime
- * can consume:
- *  - image (anywhere): resize → ArtifactStore snapshot → session_file ref.
- *    Images must become provider image parts, so they are always snapshotted
- *    (an external image path could vanish or be swapped before the turn runs).
- *  - non-image inside the workspace: workspace_file ref, no copy. The model
- *    reads it on demand via the Read tool, which is already cwd-bound.
- *  - non-image outside the workspace: ArtifactStore snapshot → session_file
- *    ref. Snapshots the bytes at attach time so a symlink swap (TOCTOU) or a
- *    deleted temp file cannot change what the model later reads.
- *
- * `resizeImage` is injected because it depends on Electron's nativeImage;
- * tests pass a fake. `turnId` is not known at attach time, so the snapshot is
- * filed under the sessionId.
- */
-export async function ingestAttachments(input: {
-  files: AttachmentIngestFile[];
-  cwd: string;
-  sessionId: string;
-  artifactStore: ArtifactStore;
-  resizeImage?: (bytes: Uint8Array) => Promise<Uint8Array>;
-  realpath?: (path: string) => Promise<string>;
-  now?: () => number;
-  maxBytes?: number;
-}): Promise<AttachmentRef[]> {
-  return resolveAttachmentRefs({
-    ...input,
-    workspaceFiles: 'reference',
-    snapshot: async ({ name, mimeType, artifactKind, attachmentKind, content }) => {
-      const source: ArtifactSource = 'user_upload';
-      const record = await input.artifactStore.create({
-        sessionId: input.sessionId,
-        turnId: input.sessionId,
-        name,
-        kind: artifactKind,
-        content,
-        mimeType,
-        source,
-        ...(input.now ? { now: input.now() } : {}),
-      });
-      return {
-        kind: attachmentKind,
-        name,
-        mimeType,
-        bytes: content.byteLength,
-        ref: {
-          kind: 'session_file',
-          sessionId: input.sessionId,
-          relativePath: record.id,
-        },
-      };
-    },
-  });
-}
-
-/**
- * Resolve attachment references while making workspace-file ownership
- * explicit. Embedded execution can preserve cwd-contained files as workspace
- * references; the Runtime Host adapter snapshots every selected path because
- * hosted Turn attachments accept only canonical Session Artifacts.
+ * Snapshot selected files through Runtime Host. Hosted Turn attachments accept
+ * only canonical Session Artifacts, so every path is read once under the byte
+ * cap and handed to the Host-owned ingest boundary.
  */
 export async function resolveAttachmentRefs(input: {
   files: AttachmentIngestFile[];
-  cwd: string;
-  sessionId: string;
-  workspaceFiles: 'reference' | 'snapshot';
   snapshot: (input: AttachmentSnapshotInput) => Promise<AttachmentRef>;
   resizeImage?: (bytes: Uint8Array) => Promise<Uint8Array>;
-  realpath?: (path: string) => Promise<string>;
   maxBytes?: number;
 }): Promise<AttachmentRef[]> {
   const maxBytes = input.maxBytes ?? MAX_ATTACHMENT_BYTES;
   const refs: AttachmentRef[] = [];
   for (const file of input.files) {
     const name = attachmentFileName(file);
-    const mimeType = file.mimeType && file.mimeType.length > 0 ? file.mimeType : guessMimeFromName(name);
+    let bytes: Uint8Array = isPathAttachment(file) ? await readFileCapped(file.path, maxBytes) : file.content;
+    let mimeType = resolveAttachmentMimeType(bytes, file.mimeType, name);
     const kind = attachmentKindFromMimeType(mimeType, name);
 
-    if (
-      input.workspaceFiles === 'reference' &&
-      kind !== 'image' &&
-      isPathAttachment(file) &&
-      (await isInsideCwdReal(input.cwd, file.path, input.realpath))
-    ) {
-      const realCwd = await resolveReal(input.cwd, input.realpath);
-      const realTarget = await resolveReal(file.path, input.realpath);
-      refs.push({
-        kind,
-        name,
-        mimeType,
-        bytes: file.size,
-        ref: { kind: 'workspace_file', relativePath: relative(realCwd, realTarget) },
-      });
-      continue;
-    }
-
-    let bytes: Uint8Array = isPathAttachment(file) ? await readFileCapped(file.path, maxBytes) : file.content;
     if (kind === 'image' && input.resizeImage) {
       bytes = await input.resizeImage(bytes);
+      mimeType = sniffAttachmentMimeType(bytes) ?? mimeType;
     }
     const artifactKind: ArtifactKind =
       kind === 'image' ? 'image' : kind === 'pdf' ? 'pdf' : 'file';
@@ -132,6 +80,66 @@ export async function resolveAttachmentRefs(input: {
     );
   }
   return refs;
+}
+
+/**
+ * Content type for a user-picked path, read cheaply from a short prefix so the
+ * composer can stage — and later preview — an attachment by its bytes rather
+ * than its extension. Mirrors the send-path precedence in
+ * {@link resolveAttachmentMimeType}: a real image named `report.pdf` resolves
+ * to its image MIME (so the composer shows a thumbnail and the vision notice),
+ * a disguised file loses its spoofed image/PDF claim. A read failure resolves
+ * an empty prefix through the same policy, so staging stays unblocked without
+ * reinstating the name's unverified image/PDF claim (the send path re-reads).
+ */
+export async function sniffPickedAttachmentMimeType(path: string, name: string): Promise<string> {
+  let prefix: Uint8Array = new Uint8Array();
+  try {
+    prefix = await readFilePrefix(path, ATTACHMENT_MIME_SNIFF_BYTES);
+  } catch {
+    // Fall through with the empty prefix: routing it through
+    // resolveAttachmentMimeType downgrades a claimed image/PDF name rather than
+    // trusting it, keeping one owner for the content-first policy.
+  }
+  return resolveAttachmentMimeType(prefix, undefined, name);
+}
+
+/**
+ * Resolve the paths returned by the pick dialog into approval-plan entries,
+ * each staged under its content-sniffed MIME rather than its extension — the
+ * headline behavior of this feature, extracted from the `attachments:pickFiles`
+ * IPC handler so the content decision is testable without a native dialog.
+ * `stat` is injected (the handler passes `node:fs/promises`); sizes come from
+ * main, never the renderer.
+ */
+export async function resolvePickedAttachments(
+  paths: readonly string[],
+  stat: (path: string) => Promise<{ size: number }>,
+): Promise<Array<{ path: string; name: string; mimeType: string; size: number }>> {
+  return Promise.all(
+    paths.map(async (path) => {
+      const name = basename(path);
+      return {
+        path,
+        name,
+        size: (await stat(path)).size,
+        mimeType: await sniffPickedAttachmentMimeType(path, name),
+      };
+    }),
+  );
+}
+
+/** Read up to `byteCount` leading bytes without loading the whole file, for
+ * content sniffing at pick time (a full read waits until send). */
+async function readFilePrefix(path: string, byteCount: number): Promise<Uint8Array> {
+  const fh = await open(path, 'r');
+  try {
+    const buf = Buffer.alloc(byteCount);
+    const { bytesRead } = await fh.read(buf, 0, byteCount, 0);
+    return buf.subarray(0, bytesRead);
+  } finally {
+    await fh.close();
+  }
 }
 
 function isPathAttachment(file: AttachmentIngestFile): file is Extract<AttachmentIngestFile, { path: string }> {
@@ -158,27 +166,6 @@ function attachmentFileName(file: AttachmentIngestFile): string {
   const normalized = file.name.replace(/\\/g, '/');
   const name = basename(normalized).trim();
   return name || 'attachment';
-}
-
-async function resolveReal(path: string, realpath?: (path: string) => Promise<string>): Promise<string> {
-  const resolveFn = realpath ?? fsRealpath;
-  try {
-    return await resolveFn(path);
-  } catch {
-    return path;
-  }
-}
-
-async function isInsideCwdReal(cwd: string, target: string, realpath?: (path: string) => Promise<string>): Promise<boolean> {
-  const realCwd = await resolveReal(cwd, realpath);
-  const realTarget = await resolveReal(target, realpath);
-  return isInsideCwd(realCwd, realTarget);
-}
-
-function isInsideCwd(cwd: string, target: string): boolean {
-  if (target === cwd) return true;
-  const rel = relative(cwd, target);
-  return rel !== '' && !rel.startsWith('..') && rel !== '..' && !rel.includes(`..${sep}`) && !rel.startsWith(sep);
 }
 
 /** A renderer-supplied ingest item: either a main-issued approval token (for

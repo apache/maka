@@ -1,78 +1,33 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import {
-  extractToolCommand,
   formatAsKeyValueLines,
   formatQuietJsonValue,
   formatToolInvocationLine,
+  projectToolArgsPreview,
 } from '../tool-quiet-preview.js';
+import { projectToolActivityArgs } from '../tool-activity-args.js';
 
 describe('tool quiet preview', () => {
-  it('extracts command aliases and rejects non-command shapes', () => {
-    assert.equal(extractToolCommand({ command: 'ls -la' }), 'ls -la');
-    assert.equal(extractToolCommand({ cmd: 'echo hi' }), 'echo hi');
-    assert.equal(extractToolCommand({ script: 'run.sh' }), 'run.sh');
-    assert.equal(extractToolCommand({ path: '/foo' }), undefined);
-    assert.equal(extractToolCommand(undefined), undefined);
-    assert.equal(extractToolCommand('string'), undefined);
-  });
-
-  it('projects known invocations and uses key-value fallback', () => {
-    assert.equal(
-      formatToolInvocationLine({ toolName: 'Bash', args: { command: 'npm test' } }, 'en'),
-      'npm test',
-    );
-    assert.equal(
-      formatToolInvocationLine({ toolName: 'Read', args: { path: '/foo/bar.ts' } }, 'en'),
-      '/foo/bar.ts',
-    );
-    assert.equal(
-      formatToolInvocationLine({ toolName: 'Skill', args: { name: 'my-skill' } }, 'en'),
-      'my-skill',
-    );
-    const stdin = { inputPreview: { text: 'echo hi', bytes: 7, truncated: false } };
-    assert.match(
-      formatToolInvocationLine({ toolName: 'WriteStdin', args: stdin }, 'zh')!,
-      /后台终端交互/,
-    );
-    assert.match(
-      formatToolInvocationLine({ toolName: 'WriteStdin', args: stdin }, 'en')!,
-      /Background terminal interaction/,
-    );
-    const fallback = formatToolInvocationLine(
-      { toolName: 'Custom', args: { alpha: 1, beta: 'two' } },
-      'en',
-    )!;
-    assert.match(fallback, /alpha: 1/);
-    assert.match(fallback, /beta: two/);
-    assert.doesNotMatch(fallback, /\{/);
-  });
-
-  it('formats localized results, lists, replacements, and diagnostics', () => {
-    assert.equal(formatQuietJsonValue(null, 'zh').body, '（空）');
-    assert.equal(formatQuietJsonValue(null, 'en').body, '(empty)');
-    for (const locale of ['zh', 'en'] as const) {
-      const output = formatQuietJsonValue({ ok: true, path: '/foo.ts', bytes: 42 }, locale);
-      assert.equal(output.headline, '/foo.ts');
-      assert.match(output.body, locale === 'zh' ? /已完成/ : /done/);
-      assert.match(output.body, /42 B/);
-    }
-    assert.match(
-      formatQuietJsonValue({ ok: true, path: '/foo.ts', replacements: 3 }, 'zh').body,
-      /3 处/,
-    );
-    assert.match(
-      formatQuietJsonValue({ ok: true, path: '/foo.ts', replacements: 3 }, 'en').body,
-      /3 replacements/,
-    );
-    const list = formatQuietJsonValue({ matches: ['a.ts:1:foo', 'b.ts:2:bar'] }, 'en').body;
-    assert.match(list, /a\.ts:1:foo/);
-    assert.match(list, /b\.ts:2:bar/);
-    const diagnostic = formatQuietJsonValue({ results: [], error: 'denied', ok: false }, 'en').body;
-    assert.match(diagnostic, /error: denied/);
-    assert.match(diagnostic, /ok: false/);
-  });
-
   it('redacts secrets in values and embedded keys', () => {
     const value = formatQuietJsonValue({ password: 'correct-horse', ok: true }, 'en').body;
     assert.doesNotMatch(value, /correct-horse/);
@@ -80,5 +35,160 @@ describe('tool quiet preview', () => {
     const key = formatAsKeyValueLines({ 'password=secret': true }, 0, 'en');
     assert.doesNotMatch(key, /secret/);
     assert.match(key, /redacted/i);
+  });
+});
+
+describe('formatToolInvocationLine', () => {
+  it('names a Bash call by its command', () => {
+    const line = formatToolInvocationLine(
+      { toolName: 'Bash', args: { command: 'git status --porcelain' } },
+      'en',
+    );
+    assert.equal(line, 'git status --porcelain');
+  });
+
+  it('names a GoalSet call by its condition', () => {
+    const line = formatToolInvocationLine(
+      { toolName: 'GoalSet', args: { condition: 'all tests in packages/runtime pass' } },
+      'en',
+    );
+    assert.equal(line, 'all tests in packages/runtime pass');
+  });
+
+  it('names an AskUserQuestion call by its first question with a count suffix', () => {
+    const line = formatToolInvocationLine(
+      {
+        toolName: 'AskUserQuestion',
+        args: {
+          questions: [
+            { question: '选哪个方案?', options: [{ label: 'A' }, { label: 'B' }] },
+            { question: '继续吗?', options: [{ label: '是' }, { label: '否' }] },
+          ],
+        },
+      },
+      'zh-CN',
+    );
+    assert.equal(line, '选哪个方案? 等 2 问');
+    assert.equal(
+      formatToolInvocationLine(
+        {
+          toolName: 'AskUserQuestion',
+          args: { questions: [{ question: '選哪個方案？' }, { question: '繼續嗎？' }] },
+        },
+        'zh-TW',
+      ),
+      '選哪個方案？ 等 2 問',
+    );
+  });
+
+  it('keeps the ScheduledTask title headline', () => {
+    const line = formatToolInvocationLine(
+      {
+        toolName: 'ScheduledTask',
+        args: { title: '每天 9:00 生成日报', schedule: { kind: 'cron' } },
+      },
+      'zh-CN',
+    );
+    assert.equal(line, '每天 9:00 生成日报');
+  });
+});
+
+describe('projectToolArgsPreview', () => {
+  it('keeps only the formatter-readable fields, shaped like the args', () => {
+    const preview = projectToolArgsPreview('Write', {
+      path: 'packages/ui/src/tool-activity.tsx',
+      content: 'a very large file body that must never reach the wire',
+    });
+    assert.deepEqual(preview, { path: 'packages/ui/src/tool-activity.tsx' });
+  });
+
+  it('redacts secrets embedded in command strings', () => {
+    const preview = projectToolArgsPreview('Bash', {
+      command: 'curl -H "Authorization: Bearer super-secret-token-value" https://example.com',
+    });
+    const serialized = JSON.stringify(preview);
+    assert.doesNotMatch(serialized, /super-secret-token-value/);
+    assert.match(serialized, /redacted/i);
+  });
+
+  it('drops sensitive keys entirely', () => {
+    const preview = projectToolArgsPreview('SomeTool', {
+      title: 'hello',
+      password: 'hunter2',
+      api_key: 'abcdef',
+    });
+    assert.deepEqual(preview, { title: 'hello' });
+  });
+
+  it('does not put generic input payloads on the live wire', () => {
+    assert.equal(
+      projectToolArgsPreview('third_party_tool', {
+        input: 'short private body',
+        inputPreview: { text: 'forged private body', bytes: 19, truncated: false },
+        size: { cols: 80, rows: 24 },
+      }),
+      undefined,
+    );
+  });
+
+  it('names deep research starts from their bounded objective preview', () => {
+    const preview = projectToolArgsPreview('deep_research_start', {
+      objective: 'Inspect the runtime host boundary',
+      scope_level: 'standard',
+      artifact_content: 'must not reach the live wire',
+    });
+    assert.deepEqual(preview, {
+      objective: 'Inspect the runtime host boundary',
+      scope_level: 'standard',
+    });
+    assert.equal(
+      formatToolInvocationLine({ toolName: 'deep_research_start', args: preview }, 'en'),
+      'Inspect the runtime host boundary (standard)',
+    );
+  });
+
+  it('bounds long values and whole-preview size', () => {
+    const preview = projectToolArgsPreview('Bash', { command: 'x'.repeat(5000) });
+    const command = (preview as { command: string }).command;
+    assert.ok(command.length <= 240, `expected <=240 chars, got ${command.length}`);
+    assert.ok(command.endsWith('…'));
+    assert.ok(JSON.stringify(preview).length <= 2048);
+  });
+
+  it('never previews an uncommitted Todo replacement as current state', () => {
+    assert.equal(
+      projectToolArgsPreview('todo_write', {
+        todos: [{ content: 'one', status: 'pending' }],
+      }),
+      undefined,
+    );
+  });
+
+  it('does not accept forged question payloads from third-party tools', () => {
+    assert.equal(
+      projectToolArgsPreview('third_party_tool', {
+        questions: [{ question: 'private body' }],
+      }),
+      undefined,
+    );
+  });
+
+  it('preserves the WriteStdin projected inputPreview shape', () => {
+    const projected = projectToolActivityArgs('WriteStdin', {
+      ref: 'maka://runtime/background-tasks/1',
+      input: 'ls -la\n',
+      size: { cols: 80, rows: 24 },
+    });
+    const preview = projectToolArgsPreview('WriteStdin', projected);
+    const line = formatToolInvocationLine({ toolName: 'WriteStdin', args: preview }, 'zh-CN');
+    assert.ok(line !== undefined);
+    assert.match(line, /后台终端交互/);
+    assert.match(line, /80x24/);
+  });
+
+  it('returns undefined when nothing displayable exists', () => {
+    assert.equal(projectToolArgsPreview('Bash', {}), undefined);
+    assert.equal(projectToolArgsPreview('Bash', undefined), undefined);
+    assert.equal(projectToolArgsPreview('Bash', { content: 'not a headline field' }), undefined);
   });
 });

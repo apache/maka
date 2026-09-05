@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -5,7 +24,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import type { SessionHeader } from '@maka/core/session';
-import type { RuntimeReadModelSessionView } from '@maka/runtime';
+import type { RuntimeReadModelSessionView } from '@maka/runtime/runtime-read-model';
 import { openInteractiveArtifactStoreForWrite } from '@maka/storage/artifact-stores';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import { connectRuntimeHost, type RuntimeHostConnection } from '../client/index.js';
@@ -58,6 +77,8 @@ test('two Clients share one durable Session recap effect', async () => {
         readSessionHeader: async () =>
           ({ isArchived: false, status: 'active' }) as unknown as SessionHeader,
         sessionAdmission: new SessionAdmissionGate(),
+        nameSessionIfUnnamed: async () => assert.fail('this Host only serves recap effects'),
+        onSessionNamed: () => assert.fail('this Host only serves recap effects'),
         acquireResidency: () => context.acquireResidency('session-effect'),
         requestDrain: context.requestDrain,
       });
@@ -78,12 +99,12 @@ test('two Clients share one durable Session recap effect', async () => {
   let desktop: RuntimeHostConnection | undefined;
   let tui: RuntimeHostConnection | undefined;
   try {
-    desktop = await connect(root, 'desktop');
-    tui = await connect(root, 'tui');
+    desktop = await connect(root);
+    tui = await connect(root);
     const input = { sessionId: 'session-1', effectId: 'effect-1', reason: 'manual' as const };
-    const desktopResult = desktop.generateSessionRecap(input);
+    const desktopResult = desktop.request('session.recap.generate', input);
     await modelStarted.promise;
-    const tuiResult = tui.generateSessionRecap(input);
+    const tuiResult = tui.request('session.recap.generate', input);
     modelRelease.release();
     const [first, second] = await Promise.all([desktopResult, tuiResult]);
     assert.deepEqual(first, {
@@ -110,11 +131,8 @@ function gate(): { promise: Promise<void>; release(): void } {
   return { promise, release };
 }
 
-async function connect(
-  rootPath: string,
-  surface: 'desktop' | 'tui',
-): Promise<RuntimeHostConnection> {
-  const result = await connectRuntimeHost({ rootPath, surface, protocol: PROTOCOL });
+async function connect(rootPath: string): Promise<RuntimeHostConnection> {
+  const result = await connectRuntimeHost({ rootPath, protocol: PROTOCOL });
   assert.equal(result.kind, 'connected');
   if (result.kind !== 'connected') throw new Error('Unable to connect to Runtime Host');
   return result.connection;

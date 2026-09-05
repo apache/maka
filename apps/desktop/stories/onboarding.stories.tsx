@@ -1,6 +1,27 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { type ComponentProps, type ReactNode } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import type { LlmConnection, OnboardingState, ProviderType, SettingsSection } from '@maka/core';
+import type { LlmConnection, ProviderType } from '@maka/core/llm-connections';
+import type { OnboardingState } from '@maka/core/onboarding';
+import type { SettingsSection } from '@maka/core/settings';
 import { ChatSurfaceLayout, ChatView } from '@maka/ui';
 import { OnboardingHero } from '../src/renderer/onboarding-hero';
 
@@ -31,7 +52,6 @@ function makeConnection(input: {
     providerType: input.providerType,
     defaultModel: 'glm-4.7',
     enabled: true,
-    modelsFetchedAt: Date.now() - 60_000,
     lastTestAt: new Date(Date.now() - 60_000).toISOString(),
     createdAt: Date.now() - 6 * 24 * 60 * 60 * 1000,
     updatedAt: Date.now() - 60_000,
@@ -64,8 +84,12 @@ function DetailPane(props: { children?: ReactNode }) {
       >
         <div className="maka-detail-with-artifacts">
           <div className="mainColumn" data-home-surface="true">
-            <ChatSurfaceLayout composer={null}>
-              <ChatView messages={[]} onNew={() => undefined} emptyOverride={emptyOverride} />
+            <ChatSurfaceLayout
+              scrollOwner="host"
+              composer={null}
+              data-maka-onboarding={props.children === undefined ? undefined : 'true'}
+            >
+              <ChatView messages={[]} scrollBehavior="smooth" onNew={() => undefined} emptyOverride={emptyOverride} />
             </ChatSurfaceLayout>
           </div>
         </div>

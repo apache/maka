@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { randomUUID } from 'node:crypto';
 import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 import type {
@@ -57,7 +76,7 @@ export function createRuntimeHostBotSessionAdapter(
           name: input.name,
           labels: [...input.labels],
           modelTarget: { kind: 'default' },
-          permissionMode: 'explore',
+          mode: 'bot',
         });
       } catch (error) {
         if (
@@ -82,7 +101,7 @@ export function createRuntimeHostBotSessionAdapter(
         throwUnavailable(error, sessionId);
         throw error;
       }
-      if (!session || session.isArchived || session.status === 'archived') {
+      if (!session || session.isArchived) {
         throw unavailableSession(sessionId);
       }
       if (session.permissionMode === 'explore') return 'ready';
@@ -96,7 +115,7 @@ export function createRuntimeHostBotSessionAdapter(
         if (isPermissionUpdateRefusal(error)) return 'permission_refused';
         throw error;
       }
-      if (session.isArchived || session.status === 'archived') {
+      if (session.isArchived) {
         throw unavailableSession(sessionId);
       }
       if (session.permissionMode !== 'explore') return 'permission_refused';
@@ -104,7 +123,7 @@ export function createRuntimeHostBotSessionAdapter(
       return 'ready';
     },
 
-    async runTurn({ sessionId, turnId, text }) {
+    async runTurn({ sessionId, turnId, text, onReplySnapshot }) {
       let session;
       try {
         session = await deps.client.openSession(sessionId);
@@ -113,7 +132,11 @@ export function createRuntimeHostBotSessionAdapter(
         throw error;
       }
 
-      const completion = collectRuntimeHostBotTurn(session.events, turnId);
+      const completion = collectRuntimeHostBotTurn(
+        session.events,
+        turnId,
+        onReplySnapshot,
+      );
       void completion.catch(() => undefined);
       try {
         try {
@@ -152,9 +175,11 @@ export function createRuntimeHostBotSessionAdapter(
 async function collectRuntimeHostBotTurn(
   events: AsyncIterable<SubscriptionFrame>,
   turnId: string,
+  onReplySnapshot?: (text: string) => void,
 ): Promise<BotSessionTurnResult> {
   const assistantText = new Map<string, string>();
   let latestMessageId: string | undefined;
+  let publishedSnapshot: string | undefined;
 
   for await (const frame of events) {
     if (frame.kind === 'subscription.closed') {
@@ -164,10 +189,20 @@ async function collectRuntimeHostBotTurn(
       if (frame.delta.turnId !== turnId || frame.delta.kind !== 'text') continue;
       latestMessageId = frame.delta.messageId;
       const folded = foldRuntimeHostAssistantDelta(
-        assistantText.get(latestMessageId) ?? '',
+        frame.delta.reset ? '' : (assistantText.get(latestMessageId) ?? ''),
         frame.delta,
       );
       assistantText.set(latestMessageId, folded.text);
+      if (folded.text !== publishedSnapshot) {
+        publishedSnapshot = folded.text;
+        try {
+          onReplySnapshot?.(folded.text);
+        } catch {
+          // Reply streaming is a best-effort projection. A channel-specific
+          // delivery failure must not stop subscription draining or change the
+          // authoritative Runtime Host Turn outcome.
+        }
+      }
       continue;
     }
     if (frame.kind !== 'subscription.session_projection') continue;

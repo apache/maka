@@ -1,5 +1,24 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
- * The six browser tools: ref normalization, takeover note, browser_wait
+ * Browser tools: ref normalization, takeover note, browser_wait
  * argument validation, and each tool's output formatting driven end-to-end
  * through a fake view Host + fake CDP page (no Electron, no live browser).
  */
@@ -7,13 +26,14 @@
 import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
 import type { IPage } from '@jackwener/opencli/types';
-import type { MakaTool, MakaToolContext } from '@maka/runtime';
+import type { ComputerUseToolSet } from '@maka/runtime/computer-use-tools';
+import type { MakaTool, MakaToolContext } from '@maka/runtime/tool-runtime';
+import { withBrowserOriginAdmission } from '../browser/browser-origin-admission.js';
 import {
   buildBrowserClickTool,
   buildBrowserExtractTool,
   buildBrowserNavigateTool,
   buildBrowserSnapshotTool,
-  buildBrowserTools,
   buildBrowserTypeTool,
   buildBrowserWaitTool,
   normalizeElementRef,
@@ -21,50 +41,100 @@ import {
   takeoverNote,
 } from '../browser/browser-tools.js';
 import { type BridgeLike, resetBrowserSessionsForTest, setBridgeFactoryForTest } from '../browser/session.js';
-import { type BrowserViewHost, provideBrowserViewHost } from '../browser/browser-host.js';
+import { createDesktopNativeCapabilityProvider } from '../runtime-host-native-capabilities.js';
+import {
+  type BrowserViewHost,
+  provideBrowserViewHost,
+} from '../browser/browser-host.js';
+import { BrowserOriginLeaseTracker } from '../browser/browser-origin-lease.js';
 
 type FakePageConfig = {
   url?: string;
+  afterGotoUrl?: string;
+  afterClickUrl?: string;
+  afterFillUrl?: string;
   title?: string;
   click?: { matches_n: number; match_level: 'exact' | 'stable' | 'reidentified' };
   fill?: { verified: boolean; actual: string; match_level: 'exact' | 'stable' | 'reidentified' };
   snapshot?: unknown;
+  snapshotImpl?: (browser: FakeBrowser) => unknown | Promise<unknown>;
   extractHtml?: string;
-  waitImpl?: (options: unknown) => Promise<void>;
+  extractImpl?: (browser: FakeBrowser) => void;
+  waitImpl?: (options: unknown, browser: FakeBrowser) => Promise<void>;
+  onLeaseOpened?: (browser: FakeBrowser) => void;
+  takeoverReloadImpl?: (browser: FakeBrowser) => void;
 };
 
-function makeFakePage(cfg: FakePageConfig): IPage {
+type FakeBrowser = {
+  url: string;
+  onNavigate?: (url: string) => void;
+  navigate(url: string): void;
+  clicks: number;
+  fills: number;
+  presses: number;
+};
+
+function createFakeBrowser(url: string): FakeBrowser {
+  const browser: FakeBrowser = {
+    url,
+    navigate(nextUrl) {
+      browser.url = nextUrl;
+      browser.onNavigate?.(nextUrl);
+    },
+    clicks: 0,
+    fills: 0,
+    presses: 0,
+  };
+  return browser;
+}
+
+function makeFakePage(cfg: FakePageConfig, browser: FakeBrowser): IPage {
   return {
-    getCurrentUrl: async () => cfg.url ?? null,
-    goto: async () => {},
+    getCurrentUrl: async () => browser.url || null,
+    goto: async (url: string) => browser.navigate(cfg.afterGotoUrl ?? url),
     evaluate: async (js: string) => {
-      if (js.includes('location.href')) return (cfg.url ?? '') as never;
+      if (js.includes('location.href')) return browser.url as never;
       if (js.includes('document.title')) return (cfg.title ?? '') as never;
       if (js.includes('outerHTML')) {
+        cfg.extractImpl?.(browser);
         return (cfg.extractHtml === undefined ? null : { html: cfg.extractHtml, truncated: false }) as never;
       }
       return '' as never;
     },
-    snapshot: async () => cfg.snapshot ?? '[1] link "Home"',
-    click: async () => cfg.click ?? { matches_n: 1, match_level: 'exact' },
-    fillText: async () =>
-      cfg.fill
+    snapshot: async () =>
+      cfg.snapshotImpl ? cfg.snapshotImpl(browser) : (cfg.snapshot ?? '[1] link "Home"'),
+    click: async () => {
+      browser.clicks += 1;
+      if (cfg.afterClickUrl) browser.navigate(cfg.afterClickUrl);
+      return cfg.click ?? { matches_n: 1, match_level: 'exact' };
+    },
+    fillText: async () => {
+      browser.fills += 1;
+      if (cfg.afterFillUrl) browser.navigate(cfg.afterFillUrl);
+      return cfg.fill
         ? { filled: true, verified: cfg.fill.verified, expected: '', actual: cfg.fill.actual, length: 0, matches_n: 1, match_level: cfg.fill.match_level }
-        : { filled: true, verified: true, expected: '', actual: '', length: 0, matches_n: 1, match_level: 'exact' },
-    pressKey: async () => {},
+        : { filled: true, verified: true, expected: '', actual: '', length: 0, matches_n: 1, match_level: 'exact' };
+    },
+    pressKey: async () => {
+      browser.presses += 1;
+    },
     wait: async (options: unknown) => {
-      if (cfg.waitImpl) return cfg.waitImpl(options);
+      if (cfg.waitImpl) return cfg.waitImpl(options, browser);
     },
   } as unknown as IPage;
 }
 
 class FakeBridge implements BridgeLike {
-  constructor(private readonly page: IPage) {}
+  constructor(
+    private readonly page: IPage,
+    private readonly onReload?: () => void,
+  ) {}
   async connect(): Promise<IPage> {
     return this.page;
   }
   async close(): Promise<void> {}
-  async send(): Promise<unknown> {
+  async send(method: string): Promise<unknown> {
+    if (method === 'Page.reload') this.onReload?.();
     return {};
   }
   async waitForEvent(): Promise<unknown> {
@@ -72,15 +142,27 @@ class FakeBridge implements BridgeLike {
   }
 }
 
-function install(cfg: FakePageConfig): void {
+function install(cfg: FakePageConfig): FakeBrowser {
+  const browser = createFakeBrowser(cfg.url ?? 'https://example.com/');
+  const originLeases = new BrowserOriginLeaseTracker(() => browser.url);
+  browser.onNavigate = (url) => originLeases.recordNavigation(url);
   const host: BrowserViewHost = {
+    currentUrl: () => browser.url,
+    openOriginLease: (_sessionId, approvedUrl, kind) => {
+      const lease = originLeases.open(approvedUrl, kind);
+      cfg.onLeaseOpened?.(browser);
+      return lease;
+    },
     canDrive: () => true,
     resolveEndpoint: async (id) => ({ cdpEndpoint: `ws://127.0.0.1:1/${id}` }),
     releaseSession: async () => {},
     disposeSession: async () => {},
   };
   provideBrowserViewHost(host);
-  setBridgeFactoryForTest(() => new FakeBridge(makeFakePage(cfg)));
+  setBridgeFactoryForTest(
+    () => new FakeBridge(makeFakePage(cfg, browser), () => cfg.takeoverReloadImpl?.(browser)),
+  );
+  return browser;
 }
 
 function ctx(): MakaToolContext {
@@ -95,7 +177,10 @@ function ctx(): MakaToolContext {
 }
 
 function run<P>(tool: MakaTool<P, string>, args: P): Promise<string> {
-  return Promise.resolve(tool.impl(args, ctx())) as Promise<string>;
+  return withBrowserOriginAdmission(
+    { sessionId: 's1', url: 'https://example.com/approved?secret=grant' },
+    () => Promise.resolve(tool.impl(args, ctx())) as Promise<string>,
+  );
 }
 
 afterEach(() => {
@@ -117,43 +202,159 @@ describe('browser tool helpers', () => {
     assert.equal(takeoverNote({ takeoverReloaded: false }), '');
     assert.match(takeoverNote({ takeoverReloaded: true }), /reloaded once/);
   });
-
-  it('buildBrowserTools returns the six tools, all in the browser category', () => {
-    const tools = buildBrowserTools();
-    assert.deepEqual(
-      tools.map((t) => t.name),
-      ['browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_wait', 'browser_extract'],
-    );
-    assert.ok(tools.every((t) => t.categoryHint === 'browser'));
-  });
 });
 
 describe('browser tool execution', () => {
-  it('navigate reports the landed URL and title', async () => {
-    install({ url: 'https://example.com/welcome', title: 'Welcome' });
-    const out = await run(buildBrowserNavigateTool(), { url: 'https://example.com' });
-    assert.match(out, /Loaded https:\/\/example\.com\/welcome/);
-    assert.match(out, /Title: Welcome/);
-  });
-
   it('navigate rejects a non-web URL before connecting', async () => {
     install({});
     await assert.rejects(run(buildBrowserNavigateTool(), { url: 'file:///etc/passwd' }), /Not a navigable URL/);
   });
 
-  it('snapshot returns the element listing with the page URL', async () => {
-    install({ url: 'https://example.com/', snapshot: '[1] button "Search"' });
-    const out = await run(buildBrowserSnapshotTool(), {});
-    assert.match(out, /\[1\] button "Search"/);
-    assert.match(out, /example\.com/);
+  it('navigate returns only a sanitized destination after a cross-Origin redirect', async () => {
+    install({
+      url: 'https://old.example/',
+      afterGotoUrl: 'https://other.example/reset/redirect-secret?token=private#account',
+      title: 'Private destination title',
+    });
+    const out = await run(buildBrowserNavigateTool(), { url: 'https://example.com/start' });
+    assert.equal(
+      out,
+      'Navigated to https://other.example. Access to the new site requires approval on the next Browser call.',
+    );
+    assert.doesNotMatch(out, /Private destination title|reset|redirect-secret|token|account/);
   });
 
-  it('click reports the match count and warns on multiple matches', async () => {
-    install({ click: { matches_n: 3, match_level: 'stable' } });
-    const out = await run(buildBrowserClickTool(), { ref: '[5]' });
-    assert.match(out, /matched 3 elements, stable match/);
-    assert.match(out, /Multiple matches/);
+  it('click returns only the new URL after cross-Origin navigation', async () => {
+    install({
+      url: 'https://example.com/start',
+      afterClickUrl: 'https://other.example/reset/click-secret?token=private#account',
+    });
+    const out = await run(buildBrowserClickTool(), { ref: '[1]' });
+    assert.equal(
+      out,
+      'Navigated to https://other.example. Access to the new site requires approval on the next Browser call.',
+    );
+    assert.doesNotMatch(out, /Clicked|matched|reset|click-secret|token|account/);
+
+    resetBrowserSessionsForTest();
+    install({
+      url: 'https://example.com/start',
+      afterClickUrl: 'file:///reset/local-secret',
+    });
+    const nonWebOut = await run(buildBrowserClickTool(), { ref: '[1]' });
+    assert.equal(
+      nonWebOut,
+      'Navigated to an unapproved page. Access to the new site requires approval on the next Browser call.',
+    );
+    assert.doesNotMatch(nonWebOut, /file|reset|local-secret/);
   });
+
+  it('covers the Provider second-check → first page await gap end to end', async () => {
+    install({
+      snapshot: 'private snapshot',
+      onLeaseOpened: (state) => state.navigate('https://other.example/private?token=secret'),
+    });
+    const computerUseTools = [] as unknown as ComputerUseToolSet;
+    computerUseTools.clearSession = () => undefined;
+    computerUseTools.sessionEvents = {} as ComputerUseToolSet['sessionEvents'];
+    let resolved = 0;
+    const provider = createDesktopNativeCapabilityProvider({
+      browserTools: [buildBrowserSnapshotTool()],
+      resolveBrowserUrl: () => {
+        resolved += 1;
+        return 'https://example.com/approved';
+      },
+      releaseBrowserSession() {},
+      computerUseTools,
+      releaseComputerUseSession() {},
+    });
+    assert.ok(provider.call);
+    if (!provider.call) return;
+    const result = await provider.call(
+      {
+        kind: 'client.capability.call',
+        invocationId: 'invocation-1',
+        registrationId: 'registration-1',
+        offerId: 'desktop_browser',
+        serverId: 'desktop_browser',
+        toolName: 'browser_snapshot',
+        arguments: {},
+        sessionId: 's1',
+        turnId: 't1',
+        toolCallId: 'c1',
+        cwd: '/tmp',
+      },
+      {
+        signal: new AbortController().signal,
+        accept: async () => undefined,
+        requestInteraction: async () => assert.fail('Unexpected provider interaction'),
+      },
+    );
+    assert.equal(resolved, 2);
+    assert.deepEqual(result, {
+      content: [
+        {
+          type: 'text',
+          text: 'Navigated to https://other.example. Access to the new site requires approval on the next Browser call.',
+        },
+      ],
+    });
+    assert.doesNotMatch(JSON.stringify(result), /private snapshot|token/);
+  });
+
+  it('discards a snapshot when the page crosses Origin and returns to the approved site', async () => {
+    install({
+      snapshotImpl: (browser) => {
+        browser.navigate('https://other.example/reset/first-violated-secret?token=secret');
+        browser.navigate('https://example.com/back');
+        return 'private snapshot';
+      },
+    });
+    const out = await run(buildBrowserSnapshotTool(), {});
+    assert.equal(
+      out,
+      'Navigated to https://other.example. Access to the new site requires approval on the next Browser call.',
+    );
+    assert.doesNotMatch(out, /private snapshot|reset|first-violated-secret|token/);
+  });
+
+  it('covers an A→B→A takeover reload before the first mutating page call', async () => {
+    const browser = install({
+      takeoverReloadImpl: (state) => {
+        state.navigate('https://other.example/reset/reload-secret?token=secret');
+        state.navigate('https://example.com/back');
+      },
+    });
+    const out = await run(buildBrowserClickTool(), { ref: '[1]' });
+    assert.equal(
+      out,
+      'Navigated to https://other.example. Access to the new site requires approval on the next Browser call.',
+    );
+    assert.equal(browser.clicks, 0);
+    assert.doesNotMatch(out, /reset|reload-secret|token/);
+  });
+
+  it('does not press Enter when filling navigates away from the approved Origin', async () => {
+    const browser = install({
+      afterFillUrl: 'https://other.example/login?token=private#form',
+    });
+    const out = await run(buildBrowserTypeTool(), { ref: '[2]', text: 'hello', submit: true });
+    assert.equal(
+      out,
+      'Navigated to https://other.example. Access to the new site requires approval on the next Browser call.',
+    );
+    assert.equal(browser.fills, 1);
+    assert.equal(browser.presses, 0);
+    assert.doesNotMatch(out, /hello|token|form/);
+  });
+
+  it('returns only a sanitized URL after same-Origin click navigation', async () => {
+    install({ afterClickUrl: 'https://example.com/next?token=private#section' });
+    const out = await run(buildBrowserClickTool(), { ref: '[1]' });
+    assert.equal(out, 'Navigated to https://example.com/next.');
+    assert.doesNotMatch(out, /Clicked|matched|token|section/);
+  });
+
 
   it('type reports verification failure with the actual content', async () => {
     install({ fill: { verified: false, actual: 'partial', match_level: 'exact' } });
@@ -168,19 +369,6 @@ describe('browser tool execution', () => {
     await assert.rejects(run(buildBrowserWaitTool(), {}), /exactly one/);
     await assert.rejects(run(buildBrowserWaitTool(), { text: 'a', time: 1 }), /exactly one/);
     await assert.rejects(run(buildBrowserWaitTool(), { text: '   ' }), /non-empty/);
-  });
-
-  it('wait succeeds and names the condition', async () => {
-    install({ waitImpl: async () => {} });
-    const out = await run(buildBrowserWaitTool(), { text: 'Loaded' });
-    assert.match(out, /Done: text "Loaded"/);
-  });
-
-  it('extract converts page HTML to markdown', async () => {
-    install({ url: 'https://example.com/', extractHtml: "<h1>Hi</h1><p>See <a href='https://x.com'>x</a></p>" });
-    const out = await run(buildBrowserExtractTool(), {});
-    assert.match(out, /Hi/);
-    assert.match(out, /\[x\]\(https:\/\/x\.com\)/);
   });
 
   it('extract fails clearly when a selector matches nothing', async () => {

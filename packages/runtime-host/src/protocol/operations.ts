@@ -1,7 +1,25 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { ARTIFACT_OPERATION_SPECS } from './artifact.js';
 import { ACCESS_AUTHORITY_OPERATION_SPECS } from './access-authority.js';
 import { AGENT_GRAPH_OPERATION_SPECS } from './agent-graph.js';
-import { AUTOMATION_OPERATION_SPECS } from './automation.js';
 import { requireExactRecord, requireId, requireRecord, requireString } from './codec.js';
 import { CONNECTION_EFFECT_OPERATION_SPECS } from './connection-effects.js';
 import { CONFIGURATION_OPERATION_SPECS } from './configuration.js';
@@ -13,6 +31,8 @@ import { EXTERNAL_SESSION_OPERATION_SPECS } from './external-session.js';
 import { CLIENT_CAPABILITY_OPERATION_SPECS } from './client-capability.js';
 import { invalidProtocolFrame } from './errors.js';
 import { HOST_BOOTSTRAP_OPERATION_SPECS } from './host-status.js';
+import { HOST_RESOURCE_OPERATION_SPECS } from './host-resources.js';
+import { HOSTED_EXECUTION_OPERATION_SPECS } from './hosted-execution.js';
 import { GOAL_OPERATION_SPECS } from './goal.js';
 import { INTERACTION_OPERATION_SPECS } from './interaction.js';
 import { MESSAGE_OPERATION_SPECS } from './message.js';
@@ -20,6 +40,8 @@ import { MEMORY_OPERATION_SPECS } from './memory.js';
 import { NETWORK_PROXY_OPERATION_SPECS } from './network-proxy.js';
 import { OAUTH_OPERATION_SPECS } from './oauth.js';
 import { PLAN_OPERATION_SPECS } from './plan.js';
+import { PEER_MESH_OPERATION_SPECS } from './peer-mesh.js';
+import { PLUGIN_PLATFORM_OPERATION_SPECS } from './plugin-platform.js';
 import { PROJECT_CATALOG_OPERATION_SPECS } from './project-catalog.js';
 import {
   composeOperationSpecMaps,
@@ -29,25 +51,34 @@ import {
 } from './operation-spec.js';
 import { RUNTIME_POLICY_OPERATION_SPECS } from './runtime-policy.js';
 import { RUNTIME_RESOURCE_OPERATION_SPECS } from './runtime-resource.js';
+import { SCHEDULED_TASK_OPERATION_SPECS } from './scheduled-task.js';
 import { SESSION_CATALOG_OPERATION_SPECS } from './session-catalog.js';
 import { SESSION_CONTINUITY_OPERATION_SPECS } from './session-continuity.js';
 import { SESSION_TRANSCRIPT_OPERATION_SPECS } from './session-transcript.js';
+import { SESSION_TURNS_OPERATION_SPECS } from './session-turns.js';
+import { SESSION_TODO_OPERATION_SPECS } from './session-todo.js';
+import { SESSION_COLLABORATION_OPERATION_SPECS } from './session-collaboration.js';
 import { SESSION_REVISION_OPERATION_SPECS } from './session-revision.js';
 import { SESSION_RETIREMENT_OPERATION_SPECS } from './session-retirement.js';
 import { SESSION_EFFECT_OPERATION_SPECS } from './session-effects.js';
 import { SKILL_CATALOG_OPERATION_SPECS } from './skill-catalog.js';
-import { TASK_LEDGER_OPERATION_SPECS } from './task-ledger.js';
 import { TURN_OPERATION_SPECS } from './turn.js';
 import { USAGE_PRICING_OPERATION_SPECS } from './usage-pricing.js';
 import { WEB_SEARCH_OPERATION_SPECS } from './web-search.js';
+import { WORKHUB_COORDINATION_OPERATION_SPECS } from './workhub-coordination.js';
 
 export type {
   HostDiagnosticsInput,
   HostDiagnosticsResult,
+  HostActivitySnapshot,
   HostLifecycleState,
+  HostPeerEndpoint,
   HostStatusInput,
   HostStatusResult,
+  HostUpgradePrepareInput,
+  HostUpgradePrepareResult,
 } from './host-status.js';
+export { isHostActivityIdle } from './host-status.js';
 export type {
   HostOperationError,
   HostOperationErrorCode,
@@ -85,6 +116,7 @@ export type {
   ArtifactTextPreview,
 } from './artifact.js';
 export {
+  TURN_FAILURE_MESSAGE_MAX_BYTES,
   TURN_MESSAGE_CONTENT_MAX_BYTES,
   TURN_MESSAGE_TEXT_MAX_BYTES,
   TURN_RESUME_PARK_REASONS,
@@ -105,6 +137,8 @@ export type {
   TurnMessageSubmitResult,
 } from './message.js';
 export type {
+  LiveTurnSnapshot,
+  TurnProviderRetry,
   TurnQueryInput,
   TurnRegenerateInput,
   TurnResumeParkReason,
@@ -128,17 +162,23 @@ export * from './agent-graph.js';
 export * from './execution-inspect.js';
 export * from './client-capability.js';
 export * from './goal.js';
+export * from './host-resources.js';
 export * from './memory.js';
 export * from './network-proxy.js';
 export * from './oauth.js';
 export * from './plan.js';
+export * from './plugin-platform.js';
 export * from './project-catalog.js';
 export * from './runtime-policy.js';
 export * from './runtime-resource.js';
+export * from './scheduled-task.js';
 export * from './session-catalog.js';
+export * from './session-collaboration.js';
 export * from './session-revision.js';
 export * from './session-retirement.js';
 export * from './session-transcript.js';
+export * from './session-turns.js';
+export * from './session-todo.js';
 export * from './session-effects.js';
 export * from './skill-catalog.js';
 export * from './usage-pricing.js';
@@ -147,7 +187,11 @@ export * from './workspace.js';
 
 export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   HOST_BOOTSTRAP_OPERATION_SPECS,
+  HOST_RESOURCE_OPERATION_SPECS,
+  PEER_MESH_OPERATION_SPECS,
+  HOSTED_EXECUTION_OPERATION_SPECS,
   ACCESS_AUTHORITY_OPERATION_SPECS,
+  SESSION_COLLABORATION_OPERATION_SPECS,
   AGENT_GRAPH_OPERATION_SPECS,
   GOAL_OPERATION_SPECS,
   TURN_OPERATION_SPECS,
@@ -159,14 +203,15 @@ export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   EXTERNAL_SESSION_OPERATION_SPECS,
   RUNTIME_POLICY_OPERATION_SPECS,
   RUNTIME_RESOURCE_OPERATION_SPECS,
-  AUTOMATION_OPERATION_SPECS,
+  SCHEDULED_TASK_OPERATION_SPECS,
   PLAN_OPERATION_SPECS,
   PROJECT_CATALOG_OPERATION_SPECS,
   MESSAGE_OPERATION_SPECS,
-  TASK_LEDGER_OPERATION_SPECS,
+  SESSION_TODO_OPERATION_SPECS,
   INTERACTION_OPERATION_SPECS,
   SESSION_CONTINUITY_OPERATION_SPECS,
   SESSION_TRANSCRIPT_OPERATION_SPECS,
+  SESSION_TURNS_OPERATION_SPECS,
   SESSION_CATALOG_OPERATION_SPECS,
   SESSION_EFFECT_OPERATION_SPECS,
   SESSION_REVISION_OPERATION_SPECS,
@@ -180,10 +225,144 @@ export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   WEB_SEARCH_OPERATION_SPECS,
   NETWORK_PROXY_OPERATION_SPECS,
   CONFIGURATION_OPERATION_SPECS,
+  WORKHUB_COORDINATION_OPERATION_SPECS,
+  PLUGIN_PLATFORM_OPERATION_SPECS,
 );
 
 export type OperationSpecMap = typeof HOST_OPERATION_SPECS;
 export type OperationKey = keyof OperationSpecMap;
+
+// Remote credentials are fail-closed: adding a protocol operation does not
+// grant it to remote owners until this policy is deliberately updated.
+export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
+  'access.credential.finalize',
+  'agent.graph.epochs.query',
+  'agent.graph.operator.query',
+  'agent.graph.query',
+  'agent.graph.stop',
+  'artifact.delete',
+  'artifact.ingest',
+  'artifact.query',
+  'client.capability.replace',
+  'client.capability.unregister',
+  'configuration.credentials.export',
+  'collaboration.access.query',
+  'collaboration.grant.revoke',
+  'collaboration.invitation.prepare',
+  'collaboration.principal.revoke',
+  'collaboration.turn-request.decide',
+  'collaboration.turn-request.query',
+  'connection.catalog.create',
+  'connection.catalog.query',
+  'connection.catalog.remove',
+  'connection.catalog.set-default-target',
+  'connection.catalog.update',
+  'connection.models.fetch',
+  'connection.onboarding.save',
+  'connection.onboarding.verify',
+  'connection.request-headers.query',
+  'connection.request-headers.replace',
+  'connection.test.run',
+  'context.compact',
+  'context.diagnostics.query',
+  'credential.vault.delete',
+  'credential.vault.query',
+  'credential.vault.set',
+  'daily-review.mutate',
+  'daily-review.query',
+  'deep-research.query',
+  'execution.inspect.query',
+  'external-session.catalog.query',
+  'external-session.import',
+  'external-session.source.query',
+  'goal.arm',
+  'goal.control',
+  'goal.query',
+  'host.diagnostics.query',
+  'host.resources.query',
+  'host.status',
+  'interaction.answer',
+  'interaction.query',
+  'memory.mutate',
+  'memory.query',
+  'network-proxy.test',
+  'oauth.enrollment.query',
+  'oauth.login.cancel',
+  'oauth.login.query',
+  'oauth.login.start',
+  'plan.control',
+  'plan.query',
+  'plan.turn.start',
+  'pricing.mutate',
+  'pricing.query',
+  'project.catalog.mutate',
+  'project.catalog.query',
+  'queue.entries.reorder',
+  'queue.entry.promote',
+  'queue.entry.retract',
+  'queue.entry.update',
+  'queue.retract',
+  'runtime.policy.mutate',
+  'runtime.policy.network-proxy.update',
+  'runtime.policy.query',
+  'runtime.resource.controller.acquire',
+  'runtime.resource.controller.control',
+  'runtime.resource.controller.release',
+  'runtime.resource.query',
+  'runtime.resource.start',
+  'runtime.resource.stop',
+  'scheduled-task.mutate',
+  'scheduled-task.query',
+  'session.branch.create',
+  'session.catalog.query',
+  'session.configuration.update',
+  'session.create',
+  'session.execution_boundary.query',
+  'session.lifecycle.set',
+  'session.shared.query',
+  'session.metadata.update',
+  'session.read_marker.set',
+  'session.recap.generate',
+  'session.remove',
+  'session.remove.preview',
+  'session.revision.abandon',
+  'session.revision.create',
+  'session.transcript.page',
+  'session.transcript.overlay.release',
+  'session.turn_landmarks.query',
+  'session.turns.query',
+  'session.workspace.relocate',
+  'skill.catalog.invocable.query',
+  'skill.catalog.mutate',
+  'skill.catalog.preview-update',
+  'skill.catalog.query',
+  'subscription.close',
+  'subscription.open',
+  'session.todo.query',
+  'turn.interrupt',
+  'turn.message.execution.query',
+  'turn.message.query',
+  'turn.message.submit',
+  'turn.query',
+  'turn.regenerate',
+  'turn.resume.query',
+  'turn.resume.start',
+  'turn.start',
+  'turn.stop',
+  'usage.query',
+  'web-search.execute',
+  'workhub.coordination.answer',
+  'workhub.coordination.act',
+  'workhub.coordination.candidates',
+  'workhub.coordination.record',
+  'workhub.coordination.resolve',
+] as const satisfies readonly OperationKey[]);
+
+const REMOTE_OWNER_OPERATION_GRANT_SET = new Set<OperationKey>(REMOTE_OWNER_OPERATION_GRANTS);
+
+export function operationAllowsRemoteOwner(operation: OperationKey): boolean {
+  return REMOTE_OWNER_OPERATION_GRANT_SET.has(operation);
+}
 
 type InferInput<Spec> =
   Spec extends OperationSpec<infer Input, unknown, HostOperationErrorCode> ? Input : never;

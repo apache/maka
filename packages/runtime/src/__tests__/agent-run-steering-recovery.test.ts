@@ -1,18 +1,38 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { deferred } from '@maka/core/test-only/async-primitives';
 import { access, chmod, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { AgentRunHeader, RuntimeEvent } from '@maka/core';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { SessionEvent } from '@maka/core/events';
-import {
-  createSessionStore,
-  createSqliteAgentRunStore,
-  createWorkspaceRuntimeStore,
-} from '@maka/storage';
+import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
+import { createWorkspaceRuntimeStore } from '@maka/storage/runtime-event-persistence';
+import { createSessionStore } from '@maka/storage/session-store';
 import { AgentRun } from '../agent-run.js';
 import { RuntimeLedgerRepair } from '../runtime-ledger-repair.js';
 import { buildStatusPatch } from '../session-projection-helpers.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
+import { seedInvocation } from './invocation-fixture.js';
 
 test('rejects an invalid tool mode before a durable AgentRun can be created', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-agent-run-tool-mode-'));
@@ -20,7 +40,6 @@ test('rejects an invalid tool mode before a durable AgentRun can be created', as
     const store = createSessionStore(root);
     const session = await store.create({
       cwd: '/tmp/cwd',
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -39,7 +58,6 @@ test('rejects an invalid tool mode before a durable AgentRun can be created', as
           store,
           newId: () => 'unused',
           now: () => 1,
-          recordSessionMessages: false,
           hooks: {
             reserveRun: async () => {
               throw new Error('reserveRun should not be called');
@@ -52,7 +70,7 @@ test('rejects an invalid tool mode before a durable AgentRun can be created', as
         }),
       /invalid tool mode/i,
     );
-    assert.deepEqual(await runStore.listSessionRuns(session.id), []);
+    assert.deepEqual(await runtimeEventStore.listSessionInvocations(session.id), []);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -64,7 +82,6 @@ test('does not re-append atomically committed tool facts through the generic eve
     const store = createSessionStore(root);
     const session = await store.create({
       cwd: '/tmp/cwd',
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -82,7 +99,6 @@ test('does not re-append atomically committed tool facts through the generic eve
       toolBoundaryProtocol: 't1_after_preflight_v1',
       newId: () => 'unused-id',
       now: () => 10,
-      recordSessionMessages: false,
       hooks: {
         reserveRun: async () => {
           throw new Error('reserveRun should not be called');
@@ -139,7 +155,6 @@ test('acks a steering event whose canonical append preceded proof publication fa
     const store = createSessionStore(root);
     const session = await store.create({
       cwd: '/tmp/cwd',
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -148,7 +163,6 @@ test('acks a steering event whose canonical append preceded proof publication fa
     const runtimeEventStore = createWorkspaceRuntimeStore(root);
     const runId = 'run-1';
     const turnId = 'turn-1';
-    await runStore.createRun(makeRunHeader(session.id, runId, turnId));
     const run = new AgentRun({
       sessionId: session.id,
       header: session,
@@ -159,7 +173,6 @@ test('acks a steering event whose canonical append preceded proof publication fa
       runtimeEventStore,
       newId: () => 'unused-id',
       now: () => 10,
-      recordSessionMessages: false,
       hooks: {
         reserveRun: async () => {
           throw new Error('reserveRun should not be called');
@@ -217,7 +230,6 @@ test('materializes a durable steering event into the transcript exactly once', a
     const store = createSessionStore(root);
     const session = await store.create({
       cwd: '/tmp/cwd',
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -297,7 +309,6 @@ test('recovers a steering transcript message from the committed RuntimeEvent led
     const store = createSessionStore(root);
     const session = await store.create({
       cwd: '/tmp/cwd',
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -306,7 +317,6 @@ test('recovers a steering transcript message from the committed RuntimeEvent led
     const turnId = 'turn-steering-crash-cut';
     const runStore = createSqliteAgentRunStore(root);
     const runtimeEventStore = createWorkspaceRuntimeStore(root);
-    await runStore.createRun(makeRunHeader(session.id, runId, turnId));
     const steeringContent = {
       kind: 'text' as const,
       text: 'canonical steering envelope',
@@ -330,6 +340,13 @@ test('recovers a steering transcript message from the committed RuntimeEvent led
       ],
       steering: true as const,
     };
+    await seedInvocation(runtimeEventStore, {
+      sessionId: session.id,
+      invocationId: 'invocation-steering-crash-cut',
+      runId,
+      turnId,
+      openedAt: 1,
+    });
     const runtimeEvent: RuntimeEvent = {
       id: 'runtime-steering-crash-cut',
       invocationId: 'invocation-steering-crash-cut',
@@ -350,11 +367,9 @@ test('recovers a steering transcript message from the committed RuntimeEvent led
     const recoveredRunStore = createSqliteAgentRunStore(root);
     const recoveredRuntimeEventStore = createWorkspaceRuntimeStore(root);
     const repair = new RuntimeLedgerRepair({
-      runStore: recoveredRunStore,
       runtimeEventStore: recoveredRuntimeEventStore,
       readMessages: (sessionId) => recoveredStore.readMessages(sessionId),
       appendMessage: (sessionId, message) => recoveredStore.appendMessage(sessionId, message),
-      appendTurnState: async () => {},
       newId: () => 'unused-id',
       now: () => 10,
     });
@@ -380,13 +395,12 @@ test('recovers a steering transcript message from the committed RuntimeEvent led
   }
 });
 
-test('awaits canonical Run status persistence before accepting an interaction resume', async () => {
+test('awaits the durable settlement fact before accepting an interaction resume', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-agent-run-status-barrier-'));
   try {
     const store = createSessionStore(root);
     const session = await store.create({
       cwd: '/tmp/cwd',
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -396,28 +410,26 @@ test('awaits canonical Run status persistence before accepting an interaction re
     const runId = 'run-status-barrier';
     const turnId = 'turn-status-barrier';
     await store.updateHeader(session.id, buildStatusPatch('waiting_for_user', 1));
-    await runStore.createRun({
-      ...makeRunHeader(session.id, runId, turnId),
-      status: 'waiting_for_user',
+    const { invocationId } = await seedInvocation(runtimeEventStore, {
+      sessionId: session.id,
+      runId,
+      turnId,
+      openedAt: 1,
     });
-    const updateStarted = deferred<void>();
-    const allowUpdate = deferred<void>();
-    const auditStarted = deferred<void>();
-    const allowAudit = deferred<void>();
-    const delayedRunStore = {
-      updateRun: async (...args: Parameters<typeof runStore.updateRun>) => {
-        updateStarted.resolve();
-        await allowUpdate.promise;
-        return await runStore.updateRun(...args);
-      },
-      appendEvent: async (...args: Parameters<typeof runStore.appendEvent>) => {
-        if (args[2].type === 'run_status_changed') {
-          auditStarted.resolve();
-          await allowAudit.promise;
+    const appendStarted = deferred<void>();
+    const allowAppend = deferred<void>();
+    const delayedRuntimeEventStore = {
+      ...runtimeEventStore,
+      appendRuntimeEvent: async (
+        ...args: Parameters<typeof runtimeEventStore.appendRuntimeEvent>
+      ) => {
+        if (args[2].id === 'status-event') {
+          appendStarted.resolve();
+          await allowAppend.promise;
         }
-        return await runStore.appendEvent(...args);
+        return await runtimeEventStore.appendRuntimeEvent(...args);
       },
-    } as typeof runStore;
+    } as typeof runtimeEventStore;
     let sessionUpdateStarted = false;
     const run = new AgentRun({
       sessionId: session.id,
@@ -426,11 +438,10 @@ test('awaits canonical Run status persistence before accepting an interaction re
       runId,
       durability: 'required',
       store,
-      runStore: delayedRunStore,
-      runtimeEventStore,
+      runStore,
+      runtimeEventStore: delayedRuntimeEventStore,
       newId: () => 'status-event',
       now: () => 10,
-      recordSessionMessages: false,
       hooks: {
         reserveRun: async () => {
           throw new Error('reserveRun should not be called');
@@ -446,36 +457,45 @@ test('awaits canonical Run status persistence before accepting an interaction re
     });
     let accepted = false;
     const accepting = run
-      .recordSessionEvent({
-        type: 'user_question_answer_ack',
-        id: 'answer-ack',
-        turnId,
-        ts: 2,
-        requestId: 'question-1',
-        toolUseId: 'tool-1',
-      })
+      .acceptMappedEvent(
+        {
+          type: 'user_question_answer_ack',
+          id: 'answer-ack',
+          turnId,
+          ts: 2,
+          requestId: 'question-1',
+          toolUseId: 'tool-1',
+        },
+        {
+          id: 'status-event',
+          invocationId,
+          runId,
+          sessionId: session.id,
+          turnId,
+          ts: 2,
+          partial: false,
+          role: 'system',
+          author: 'user',
+          actions: { userQuestionAnswerAccepted: { requestId: 'question-1' } },
+          refs: { toolCallId: 'tool-1' },
+        } satisfies RuntimeEvent,
+      )
       .then(() => {
         accepted = true;
       });
 
     try {
-      await updateStarted.promise;
-      assert.equal(accepted, false);
-      assert.equal((await store.readHeader(session.id)).status, 'waiting_for_user');
-      allowUpdate.resolve();
-      await auditStarted.promise;
+      await appendStarted.promise;
       await Promise.resolve();
       assert.equal(accepted, false);
       assert.equal(sessionUpdateStarted, false);
       assert.equal((await store.readHeader(session.id)).status, 'waiting_for_user');
-      allowAudit.resolve();
+      allowAppend.resolve();
       await accepting;
       assert.equal(sessionUpdateStarted, true);
-      assert.equal((await runStore.readRun(session.id, runId))?.status, 'running');
       assert.equal((await store.readHeader(session.id)).status, 'running');
     } finally {
-      allowUpdate.resolve();
-      allowAudit.resolve();
+      allowAppend.resolve();
       await accepting.catch(() => undefined);
     }
   } finally {
@@ -483,278 +503,10 @@ test('awaits canonical Run status persistence before accepting an interaction re
   }
 });
 
-test('required interaction resume recovers a failed best-effort Run Store latch through terminal commit', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'maka-agent-run-status-latch-'));
-  try {
-    const store = createSessionStore(root);
-    const session = await store.create({
-      cwd: '/tmp/cwd',
-      backend: 'fake',
-      llmConnectionSlug: 'fake',
-      model: 'fake-model',
-      permissionMode: 'ask',
-    });
-    const runStore = createSqliteAgentRunStore(root);
-    const runtimeEventStore = createWorkspaceRuntimeStore(root);
-    const runId = 'run-status-latch';
-    const turnId = 'turn-status-latch';
-    await store.updateHeader(session.id, buildStatusPatch('waiting_for_user', 1));
-    await runStore.createRun({
-      ...makeRunHeader(session.id, runId, turnId),
-      status: 'waiting_for_user',
-    });
-    let failNextAppend = true;
-    const failingRunStore = {
-      updateRun: runStore.updateRun.bind(runStore),
-      appendEvent: async (...args: Parameters<typeof runStore.appendEvent>) => {
-        if (failNextAppend) {
-          failNextAppend = false;
-          throw new Error('injected trace failure');
-        }
-        return await runStore.appendEvent(...args);
-      },
-    } as typeof runStore;
-    const run = new AgentRun({
-      sessionId: session.id,
-      header: session,
-      userInput: { turnId, text: 'fail closed after trace failure' },
-      runId,
-      durability: 'required',
-      store,
-      runStore: failingRunStore,
-      runtimeEventStore,
-      newId: () => 'status-latch-event',
-      now: () => 10,
-      recordSessionMessages: false,
-      hooks: {
-        reserveRun: async () => {
-          throw new Error('reserveRun should not be called');
-        },
-        unregisterRun: () => {},
-        updateHeader: (sessionId, patch) => store.updateHeader(sessionId, patch),
-        updateStatus: async (sessionId, status, blockedReason, ts = 0) => {
-          await store.updateHeader(sessionId, buildStatusPatch(status, ts, blockedReason));
-        },
-        appendTurnState: async () => {},
-      },
-    });
-    run.recordRunTrace({
-      id: 'trace-that-fails',
-      sessionId: session.id,
-      turnId,
-      ts: 1,
-      phase: 'turn',
-      type: 'turn_started',
-      message: 'trip the best-effort trace latch',
-    });
-    await waitFor(async () =>
-      Boolean((await runStore.readRun(session.id, runId))?.traceWriteError),
-    );
-
-    await run.recordSessionEvent({
-      type: 'user_question_answer_ack',
-      id: 'answer-after-latch',
-      turnId,
-      ts: 2,
-      requestId: 'question-1',
-      toolUseId: 'tool-1',
-    });
-    assert.equal((await runStore.readRun(session.id, runId))?.status, 'running');
-    assert.equal((await store.readHeader(session.id)).status, 'running');
-
-    await run.recordRuntimeEvents([
-      {
-        id: 'terminal-after-latch',
-        invocationId: run.invocationId,
-        runId,
-        sessionId: session.id,
-        turnId,
-        ts: 3,
-        partial: false,
-        role: 'system',
-        author: 'system',
-        status: 'completed',
-        actions: { endInvocation: true },
-      },
-    ]);
-    await run.recordSessionEvent({
-      type: 'complete',
-      id: 'complete-after-latch',
-      turnId,
-      ts: 3,
-      stopReason: 'end_turn',
-    });
-    await run.finalize();
-
-    const completedRun = await runStore.readRun(session.id, runId);
-    assert.equal(completedRun?.status, 'completed');
-    assert.equal(completedRun?.completedAt, 3);
-    assert.equal(
-      (await runtimeEventStore.readImmutableRuntimeEvents(session.id, runId)).at(-1)?.status,
-      'completed',
-    );
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test('required interaction resume stays fail-closed until a later required write succeeds', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'maka-agent-run-status-latch-failure-'));
-  try {
-    const store = createSessionStore(root);
-    const session = await store.create({
-      cwd: '/tmp/cwd',
-      backend: 'fake',
-      llmConnectionSlug: 'fake',
-      model: 'fake-model',
-      permissionMode: 'ask',
-    });
-    const runStore = createSqliteAgentRunStore(root);
-    const runtimeEventStore = createWorkspaceRuntimeStore(root);
-    const runId = 'run-status-latch-failure';
-    const turnId = 'turn-status-latch-failure';
-    await store.updateHeader(session.id, buildStatusPatch('waiting_for_user', 1));
-    await runStore.createRun({
-      ...makeRunHeader(session.id, runId, turnId),
-      status: 'waiting_for_user',
-    });
-    let failNextAppend = true;
-    let failRequiredUpdate = false;
-    const failingRunStore = {
-      updateRun: async (...args: Parameters<typeof runStore.updateRun>) => {
-        if (failRequiredUpdate) throw new Error('injected required status failure');
-        return await runStore.updateRun(...args);
-      },
-      appendEvent: async (...args: Parameters<typeof runStore.appendEvent>) => {
-        if (failNextAppend) {
-          failNextAppend = false;
-          throw new Error('injected trace failure');
-        }
-        return await runStore.appendEvent(...args);
-      },
-    } as typeof runStore;
-    const run = new AgentRun({
-      sessionId: session.id,
-      header: session,
-      userInput: { turnId, text: 'remain waiting after repeated store failure' },
-      runId,
-      durability: 'required',
-      store,
-      runStore: failingRunStore,
-      runtimeEventStore,
-      newId: () => 'status-latch-failure-event',
-      now: () => 10,
-      recordSessionMessages: false,
-      hooks: {
-        reserveRun: async () => {
-          throw new Error('reserveRun should not be called');
-        },
-        unregisterRun: () => {},
-        updateHeader: (sessionId, patch) => store.updateHeader(sessionId, patch),
-        updateStatus: async (sessionId, status, blockedReason, ts = 0) => {
-          await store.updateHeader(sessionId, buildStatusPatch(status, ts, blockedReason));
-        },
-        appendTurnState: async () => {},
-      },
-    });
-    run.recordRunTrace({
-      id: 'trace-that-fails-before-required-write',
-      sessionId: session.id,
-      turnId,
-      ts: 1,
-      phase: 'turn',
-      type: 'turn_started',
-      message: 'trip the best-effort trace latch',
-    });
-    await waitFor(async () =>
-      Boolean((await runStore.readRun(session.id, runId))?.traceWriteError),
-    );
-    failRequiredUpdate = true;
-
-    await assert.rejects(
-      run.recordSessionEvent({
-        type: 'user_question_answer_ack',
-        id: 'answer-after-repeated-failure',
-        turnId,
-        ts: 2,
-        requestId: 'question-1',
-        toolUseId: 'tool-1',
-      }),
-      /injected required status failure/,
-    );
-    assert.equal((await runStore.readRun(session.id, runId))?.status, 'waiting_for_user');
-    assert.equal((await store.readHeader(session.id)).status, 'waiting_for_user');
-
-    failRequiredUpdate = false;
-    await run.recordSessionEvent({
-      type: 'user_question_answer_ack',
-      id: 'answer-after-required-store-recovers',
-      turnId,
-      ts: 3,
-      requestId: 'question-1',
-      toolUseId: 'tool-1',
-    });
-    await run.recordRuntimeEvents([
-      {
-        id: 'terminal-after-required-store-recovers',
-        invocationId: run.invocationId,
-        runId,
-        sessionId: session.id,
-        turnId,
-        ts: 4,
-        partial: false,
-        role: 'system',
-        author: 'system',
-        status: 'completed',
-        actions: { endInvocation: true },
-      },
-    ]);
-    await run.recordSessionEvent({
-      type: 'complete',
-      id: 'complete-after-required-store-recovers',
-      turnId,
-      ts: 4,
-      stopReason: 'end_turn',
-    });
-    await run.finalize();
-
-    assert.equal((await runStore.readRun(session.id, runId))?.status, 'completed');
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-function makeRunHeader(sessionId: string, runId: string, turnId: string): AgentRunHeader {
-  return {
-    runId,
-    sessionId,
-    turnId,
-    status: 'running',
-    backendKind: 'fake',
-    llmConnectionSlug: 'fake',
-    modelId: 'fake-model',
-    cwd: '/tmp/cwd',
-    permissionMode: 'ask',
-    createdAt: 1,
-    updatedAt: 1,
-  };
-}
-
-function deferred<T>(): {
-  readonly promise: Promise<T>;
-  resolve(value?: T | PromiseLike<T>): void;
-} {
-  let resolve!: (value?: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((innerResolve) => {
-    resolve = innerResolve as (value?: T | PromiseLike<T>) => void;
-  });
-  return { promise, resolve };
-}
-
 async function waitFor(predicate: () => Promise<boolean>): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    if (await predicate()) return;
-    await new Promise<void>((resolve) => setTimeout(resolve, 5));
-  }
-  throw new Error('Timed out waiting for asynchronous test condition');
+  await pollFor(predicate, {
+    attempts: 100,
+    pollMs: 5,
+    message: 'Timed out waiting for asynchronous test condition',
+  });
 }

@@ -1,6 +1,26 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { ipcMain, Notification } from 'electron';
-import type { AppSettings } from '@maka/core';
+import type { AppSettings } from '@maka/core/settings';
 import type { createMainWindowController } from './main-window.js';
+import type { DesktopLocaleAuthority } from './desktop-locale-authority.js';
 import {
   isRunNotificationKind,
   resolveNotificationContent,
@@ -12,6 +32,7 @@ type MainWindowController = ReturnType<typeof createMainWindowController>;
 interface NotificationsIpcDeps {
   ipcMain?: Pick<typeof ipcMain, 'handle'>;
   settingsStore: { get(): Promise<AppSettings> };
+  locale: Pick<DesktopLocaleAuthority, 'observe'>;
   mainWindowController: MainWindowController;
   e2e: boolean;
 }
@@ -48,7 +69,10 @@ export function registerNotificationsIpc(deps: NotificationsIpcDeps): void {
 
     // Prefer the renderer's session name + reply preview; policy applies
     // per-field fallbacks + sanitization for blank/oversize/non-strings.
-    const copy = resolveNotificationContent({ kind: raw.kind, title: raw.title, body: raw.body });
+    const copy = resolveNotificationContent(
+      { kind: raw.kind, title: raw.title, body: raw.body },
+      deps.locale.observe(settings),
+    );
     const notification = new Notification({ title: copy.title, body: copy.body });
     // Clicking the banner should pull the (unfocused/minimized) window
     // back to the foreground — `focus()` already restores + shows.

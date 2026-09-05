@@ -6,6 +6,7 @@
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "types": ["node", "electron"],
+    "jsx": "react-jsx",
     "incremental": true
   },
   "include": ["src/main", "src/global.d.ts"]

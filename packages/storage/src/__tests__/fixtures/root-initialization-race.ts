@@ -1,6 +1,24 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import fs from 'node:fs';
-import { syncBuiltinESMExports } from 'node:module';
-import { join } from 'node:path';
+import { basename } from 'node:path';
 
 const [rootArgument, markerFile] = process.argv.slice(2);
 if (!rootArgument || !markerFile || !process.send) {
@@ -8,16 +26,18 @@ if (!rootArgument || !markerFile || !process.send) {
 }
 
 const root = fs.realpathSync(rootArgument);
-const markerTempPrefix = join(root, `${markerFile}.`);
+const markerTempPrefix = `${markerFile}.`;
 const originalOpen = fs.promises.open;
 let intercepted = false;
 
 fs.promises.open = (async (path, flags, mode) => {
+  // This child initializes one root. Match its unique marker basename so the
+  // cut does not depend on Windows long/short, namespaced, or case spelling.
   if (
     !intercepted &&
     typeof path === 'string' &&
-    path.startsWith(markerTempPrefix) &&
-    path.endsWith('.tmp')
+    basename(path).startsWith(markerTempPrefix) &&
+    basename(path).endsWith('.tmp')
   ) {
     intercepted = true;
     await send({ type: 'marker_open_pending' });
@@ -25,8 +45,9 @@ fs.promises.open = (async (path, flags, mode) => {
   }
   return originalOpen(path, flags, mode);
 }) as typeof fs.promises.open;
-syncBuiltinESMExports();
 
+// Import after the interposition: marker-file captures the intrinsic at module
+// evaluation, while production code must ignore later global mutations.
 const { resolveStorageRoot, StorageRootAuthorityError } = await import('../../root-authority.js');
 
 const parentDisconnected = new Promise<void>((resolvePromise) =>

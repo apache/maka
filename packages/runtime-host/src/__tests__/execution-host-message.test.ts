@@ -1,3 +1,23 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { withTimeout } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { fork, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -16,25 +36,23 @@ import { connect, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
-import { TOOL_BOUNDARY_PROTOCOL_V1 } from '@maka/core';
+import { TOOL_BOUNDARY_PROTOCOL_V1 } from '@maka/core/runtime-event';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
-import type { AgentRunHeader } from '@maka/core/agent-run';
 import type { MessageContent } from '@maka/core/events';
 import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
 import type { StoredMessage } from '@maka/core/session';
-import type { Task } from '@maka/core/task-ledger';
 import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import {
-  buildTaskLedgerTools,
   buildRecoveredTerminalRuntimeEvent,
   classifyTerminalRuntimeLedger,
   commitTerminalRunWithRuntimeFact,
+} from '@maka/runtime/terminal-run-commit';
+import {
   FAKE_ASK_USER_QUESTION_PROMPT,
   FAKE_WAIT_FOR_STEERING_PROMPT,
-  type MakaTool,
-  type MakaToolContext,
-} from '@maka/runtime';
+} from '@maka/runtime/test-only/fake-backend';
+import { type MakaTool, type MakaToolContext } from '@maka/runtime/tool-runtime';
 import {
   openInteractiveExecutionStoresForRead,
   openInteractiveExecutionStoresForWrite,
@@ -47,7 +65,6 @@ import {
   tryAcquireInteractiveRootReader,
   type StorageRootCapability,
 } from '@maka/storage/root-authority';
-import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-authority';
 import {
   connectRuntimeHost,
   RuntimeHostOperationError,
@@ -58,17 +75,13 @@ import {
 import {
   decodeHostFrame,
   RUNTIME_HOST_PROTOCOL_VERSION,
-  TASK_LEDGER_PAGE_MAX_ITEMS,
   type ConnectionCatalogQueryResult,
   type InteractionPendingSnapshot,
   type SubscriptionFrame,
-  type TaskLedgerQueryResult,
-  type TaskLedgerRevision,
   type TurnMessageSubmitInput,
   type TurnSnapshot,
 } from '../protocol/index.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
-import { HostTaskLedgerCoordinator } from '../server/task-ledger-coordinator.js';
 import { FramedTransport } from '../transport/framed-transport.js';
 
 import {
@@ -91,16 +104,75 @@ import {
   waitForTerminalTurn,
   waitForTurn,
   withExecutionRoot,
-  withTimeout,
 } from './fixtures/execution-host-suite.js';
+
+test('subscribed Clients receive the durable steering echo as a session event', async () => {
+  await withExecutionRoot(async (fixture) => {
+    const host = await fixture.startHost();
+    const client = await connectClient(fixture.root);
+    const subscription = await client.openSessionSubscription({
+      sessionId: fixture.sessionId,
+      transcript: { kind: 'none' },
+    });
+    const probe = new SubscriptionProbe(subscription);
+
+    const turnId = randomUUID();
+    requireStartedTurn(
+      await client.request('turn.start', {
+        sessionId: fixture.sessionId,
+        turnId,
+        content: { text: FAKE_WAIT_FOR_STEERING_PROMPT },
+      }),
+    );
+    const steeringId = randomUUID();
+    const steeringContent = {
+      text: '<steer>steer mid-turn</steer>',
+      displayText: 'steer mid-turn',
+    };
+    const submitted = await client.request('turn.message.submit', {
+      originHostEpoch: host.hostEpoch,
+      sessionId: fixture.sessionId,
+      messageId: steeringId,
+      content: steeringContent,
+      placement: 'current_turn',
+    });
+    assert.equal(submitted.disposition, 'steering');
+
+    // apache/maka#3304: the steering render must not depend on observing the
+    // transient in-flight queue state; the durable echo is forwarded verbatim.
+    const echoed = await probe.waitFor(
+      (frame) =>
+        frame.kind === 'subscription.session_event' && frame.event.type === 'steering_message',
+      'continuity did not forward the durable steering echo',
+    );
+    assert.equal(echoed.kind, 'subscription.session_event');
+    if (echoed.kind === 'subscription.session_event') {
+      assert.equal(echoed.event.type, 'steering_message');
+      if (echoed.event.type === 'steering_message') {
+        assert.equal(echoed.event.turnId, turnId);
+        assert.equal(echoed.event.messageId, steeringId);
+        assert.deepEqual(echoed.event.content, steeringContent);
+      }
+    }
+
+    assert.equal(
+      (await waitForTerminalTurn(client, fixture.sessionId, turnId)).status,
+      'completed',
+    );
+    await subscription.close();
+    await probe.done;
+    await client.close();
+    await fixture.stopHost(host);
+  });
+});
 
 test('steering becomes durable and ordered followups automatically start the next root', async () => {
   await withExecutionRoot(async (fixture) => {
     const host = await fixture.startHost();
-    const first = await connectClient(fixture.root, 'desktop');
-    const second = await connectClient(fixture.root, 'tui');
+    const first = await connectClient(fixture.root);
+    const second = await connectClient(fixture.root);
     const firstTurnId = randomUUID();
-    await first.startTurn({
+    await first.request('turn.start', {
       sessionId: fixture.sessionId,
       turnId: firstTurnId,
       content: { text: FAKE_WAIT_FOR_STEERING_PROMPT },
@@ -148,6 +220,23 @@ test('steering becomes durable and ordered followups automatically start the nex
         'followup',
       );
     }
+    const queueSubscription = await second.openSessionSubscription({
+      sessionId: fixture.sessionId,
+      transcript: { kind: 'none' },
+    });
+    const queuedFollowups = queueSubscription.snapshot.queue.followup;
+    assert.deepEqual(
+      queuedFollowups.map((entry) => entry.messageId),
+      followupSources.map((source) => source.messageId),
+    );
+    await second.request('queue.entries.reorder', {
+      originHostEpoch: host.hostEpoch,
+      sessionId: fixture.sessionId,
+      reorderId: randomUUID(),
+      entryIds: queuedFollowups.map((entry) => entry.entryId).reverse(),
+    });
+    await queueSubscription.close();
+    const orderedFollowupSources = [...followupSources].reverse();
     assert.equal(
       (
         await second.request('turn.message.submit', {
@@ -175,7 +264,6 @@ test('steering becomes durable and ordered followups automatically start the nex
     await first.close();
     await second.close();
     await fixture.stopHost(host);
-
     const firstLedger = await fixture.readTurn(firstTurnId);
     const steeringEvents = firstLedger.runtimeEvents.filter(
       (event) =>
@@ -191,45 +279,71 @@ test('steering becomes durable and ordered followups automatically start the nex
     }
 
     const chain = await fixture.readAdmissionChain();
-    assert.equal(chain.length, 2);
+    assert.equal(chain.length, 3);
     assert.equal(chain[1]?.previousRootTurnId, firstTurnId);
-    assert.deepEqual(
-      chain[1]?.sourceMessages.map(({ messageId, content, placement, disposition }) => ({
-        messageId,
-        content,
-        placement,
-        disposition,
-      })),
-      followupSources.map((source) => ({
-        ...source,
-        placement: 'next_turn',
-        disposition: 'followup',
-      })),
+    assert.equal(chain[2]?.previousRootTurnId, chain[1]?.turnId);
+    for (const [index, source] of orderedFollowupSources.entries()) {
+      const admission = chain[index + 1];
+      assert.equal(admission?.userMessageId, source.messageId);
+      assert.deepEqual(
+        admission?.sourceMessages.map(({ messageId, content, placement, disposition }) => ({
+          messageId,
+          content,
+          placement,
+          disposition,
+        })),
+        [{ ...source, placement: 'next_turn', disposition: 'followup' }],
+      );
+    }
+    const followupTurnIds = chain.slice(1).map((admission) => admission.turnId);
+    const followupLedgers = await Promise.all(
+      followupTurnIds.map((turnId) => fixture.readTurn(turnId)),
     );
-    assert.deepEqual(chain[1]?.normalizedInput, {
-      text: `${followupSources[0].content.text}\n\n${followupSources[1].content.text}`,
-      displayText: `${followupSources[0].content.displayText}\n\n${followupSources[1].content.text}`,
-      attachments: followupSources[0].content.attachments,
-      quotes: followupSources.flatMap((source) => source.content.quotes ?? []),
-    });
-    const followupTurnId = chain[1]?.turnId;
-    assert.ok(followupTurnId);
-    const followupLedger = await fixture.readTurn(followupTurnId);
-    const expectedQuotes = followupSources.flatMap((source) => source.content.quotes ?? []);
-    assert.equal(followupLedger.userMessages.length, 1);
-    assert.deepEqual(followupLedger.userMessages[0]?.quotes, expectedQuotes);
-    assert.deepEqual(userRuntimeContent(followupLedger.runtimeEvents)?.quotes, expectedQuotes);
+    const expectedQuotes = orderedFollowupSources.flatMap((source) => source.content.quotes ?? []);
+    assert.deepEqual(
+      followupLedgers.map((ledger) => ledger.userMessages.length),
+      [1, 1],
+    );
+    assert.deepEqual(
+      followupLedgers.flatMap((ledger) =>
+        ledger.userMessages.flatMap((message) => message.quotes ?? []),
+      ),
+      expectedQuotes,
+    );
+    assert.deepEqual(
+      followupLedgers.flatMap((ledger) => userRuntimeContent(ledger.runtimeEvents)?.quotes ?? []),
+      expectedQuotes,
+    );
+    const sessionUserMessages = await fixture.readSessionUserMessages();
+    for (const source of orderedFollowupSources) {
+      assert.equal(
+        sessionUserMessages.filter((message) => message.id === source.messageId).length,
+        1,
+      );
+    }
+    assert.equal(
+      sessionUserMessages.filter((message) => followupTurnIds.includes(message.turnId)).length,
+      orderedFollowupSources.length,
+    );
+    assert.deepEqual(
+      followupTurnIds.flatMap((turnId) =>
+        sessionUserMessages
+          .filter((message) => message.turnId === turnId)
+          .map((message) => message.id),
+      ),
+      orderedFollowupSources.map((source) => source.messageId),
+    );
   });
 });
 
 test('explicit retract is durable across connections and prevents successor admission', async () => {
   await withExecutionRoot(async (fixture) => {
     const host = await fixture.startHost();
-    const first = await connectClient(fixture.root, 'desktop');
-    const second = await connectClient(fixture.root, 'tui');
+    const first = await connectClient(fixture.root);
+    const second = await connectClient(fixture.root);
     const turnId = randomUUID();
     const started = requireStartedTurn(
-      await first.startTurn({
+      await first.request('turn.start', {
         sessionId: fixture.sessionId,
         turnId,
         content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
@@ -257,10 +371,10 @@ test('explicit retract is durable across connections and prevents successor admi
     );
 
     await second.close();
-    const retrying = await connectClient(fixture.root, 'run');
+    const retrying = await connectClient(fixture.root);
     assert.deepEqual(await retrying.request('queue.retract', retractInput), retracted);
 
-    const terminal = await first.stopTurn({
+    const terminal = await first.request('turn.stop', {
       sessionId: fixture.sessionId,
       turnId,
       runId: started.runId,
@@ -270,6 +384,11 @@ test('explicit retract is durable across connections and prevents successor admi
     await retrying.close();
     await fixture.stopHost(host);
 
+    assert.equal(
+      (await fixture.readSessionUserMessages()).some((message) => message.id === messageId),
+      false,
+      'a retracted draft must not remain in the durable transcript',
+    );
     const chain = await fixture.readAdmissionChain();
     assert.deepEqual(
       chain.map((admission) => admission.turnId),
@@ -281,11 +400,11 @@ test('explicit retract is durable across connections and prevents successor admi
 test('interrupt atomically retracts queued followup, stops the exact run, and is idempotent', async () => {
   await withExecutionRoot(async (fixture) => {
     const host = await fixture.startHost();
-    const first = await connectClient(fixture.root, 'desktop');
-    const second = await connectClient(fixture.root, 'tui');
+    const first = await connectClient(fixture.root);
+    const second = await connectClient(fixture.root);
     const turnId = randomUUID();
     const started = requireStartedTurn(
-      await first.startTurn({
+      await first.request('turn.start', {
         sessionId: fixture.sessionId,
         turnId,
         content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
@@ -339,6 +458,12 @@ test('interrupt atomically retracts queued followup, stops the exact run, and is
     await second.close();
     await fixture.stopHost(host);
 
+    assert.equal(
+      (await fixture.readSessionUserMessages()).some((message) => message.id === followupId),
+      false,
+      'an interrupted draft must not remain in the durable transcript',
+    );
+
     const chain = await fixture.readAdmissionChain();
     assert.equal(chain.length, 1);
     assert.equal(chain[0]?.turnId, turnId);
@@ -348,7 +473,7 @@ test('interrupt atomically retracts queued followup, stops the exact run, and is
 test('old-Epoch Message submit returns only exact durable outcomes', async () => {
   await withExecutionRoot(async (fixture) => {
     const firstHost = await fixture.startHost();
-    const first = await connectClient(fixture.root, 'desktop');
+    const first = await connectClient(fixture.root);
     const rootMessageId = randomUUID();
     const rootContent = { text: `durable root ${'x'.repeat(360)}` };
     const rootResult = await first.request('turn.message.submit', {
@@ -375,7 +500,7 @@ test('old-Epoch Message submit returns only exact durable outcomes', async () =>
     await fixture.stopHost(firstHost);
 
     const successorHost = await fixture.startHost();
-    const successor = await connectClient(fixture.root, 'run');
+    const successor = await connectClient(fixture.root);
     assert.deepEqual(
       await successor.request('turn.message.submit', {
         originHostEpoch: firstHost.hostEpoch,

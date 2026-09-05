@@ -1,14 +1,34 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { randomUUID } from 'node:crypto';
 import type { SessionHeader } from '@maka/core/session';
+import { RuntimeContextCompactError } from '@maka/runtime/runtime-kernel';
 import {
-  RuntimeContextCompactError,
   RuntimeHostedRootConflictError,
   RuntimeHostedRootUnavailableError,
-  type SessionManager,
-} from '@maka/runtime';
+} from '@maka/runtime/message-authority';
+import { type SessionManager } from '@maka/runtime/session-manager';
 import { isSessionNotFoundError } from '@maka/storage/execution-stores';
 import type {
   ContextCompactInput,
+  ContextCompactResult,
   ContextDiagnosticsQueryInput,
   OperationOutcome,
 } from '../protocol/index.js';
@@ -89,7 +109,7 @@ export class HostContextCoordinator {
         const admitted = await this.#executions.admit(this.#admission(input, existing));
         return {
           ok: true,
-          result: admitted.snapshot,
+          result: this.#compactResult(admitted.snapshot),
         };
       }
 
@@ -122,7 +142,7 @@ export class HostContextCoordinator {
       const admitted = await prepared.admit(this.#admission(input, identity));
       return {
         ok: true,
-        result: admitted.snapshot,
+        result: this.#compactResult(admitted.snapshot),
       };
     } catch (error) {
       if (error instanceof RuntimeHostedRootConflictError) {
@@ -138,6 +158,34 @@ export class HostContextCoordinator {
     }
   }
 
+  #compactResult(turn: import('../protocol/index.js').TurnSnapshot): ContextCompactResult {
+    if (turn.status === 'completed') {
+      if (!turn.contextCompactionOutcome) {
+        return {
+          kind: 'finished',
+          turn,
+          outcome: { kind: 'failed', reason: 'missing_durable_outcome' },
+        };
+      }
+      return {
+        kind: 'finished',
+        turn,
+        outcome: turn.contextCompactionOutcome,
+      };
+    }
+    if (turn.status === 'failed' || turn.status === 'cancelled') {
+      return {
+        kind: 'finished',
+        turn,
+        outcome: {
+          kind: 'failed',
+          reason: turn.status === 'failed' ? turn.failureClass : turn.abortSource,
+        },
+      };
+    }
+    return { kind: 'started', turn };
+  }
+
   async #preflight(
     input: ContextCompactInput,
   ): Promise<OperationOutcome<'context.compact'> | undefined> {
@@ -148,7 +196,7 @@ export class HostContextCoordinator {
       if (isSessionNotFoundError(error)) return notFound('Session does not exist');
       throw error;
     }
-    if (header.status === 'archived' || header.isArchived) {
+    if (header.isArchived) {
       return sessionArchived('Cannot compact an archived Session');
     }
     const unavailableReason = runtimeHostExternalTurnUnavailableReason(header);

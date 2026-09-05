@@ -1,7 +1,27 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { projectDeepResearchEvents, type DeepResearchRun } from '@maka/core/deep-research-run';
 import { projectDeepResearchClientProgress } from '@maka/core/deep-research-client-progress';
-import { isDeepResearchSession } from '@maka/core/explore-agent';
-import { buildDeepResearchTools, type MakaTool } from '@maka/runtime';
+import { isDeepResearchSession } from '@maka/core/deep-research';
+import { buildDeepResearchTools } from '@maka/runtime/deep-research-tools';
+import { type MakaTool } from '@maka/runtime/tool-runtime';
 import {
   authenticateInteractiveArtifactStoreWriter,
   type InteractiveArtifactStoreWriter,
@@ -69,7 +89,7 @@ export class HostDeepResearchCoordinator {
         readText: (artifactId, options) =>
           this.#artifacts.readTextInSession(sessionId, artifactId, options),
         delete: (artifactId) =>
-          this.#artifacts.deleteOwnedDeepResearchArtifactInSession(sessionId, artifactId),
+          this.#artifacts.deleteOwnedArtifactInSession(sessionId, artifactId, 'deep_research'),
       },
     });
   }
@@ -106,7 +126,7 @@ export class HostDeepResearchCoordinator {
   > {
     try {
       const header = await this.#sessions.readHeaderSnapshot(sessionId);
-      if (header.isArchived || header.status === 'archived') {
+      if (header.isArchived) {
         return { code: 'session_archived', message: 'Session is archived' };
       }
       if (!isDeepResearchSession(header.labels)) {

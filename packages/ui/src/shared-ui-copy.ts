@@ -1,12 +1,31 @@
-import type { TaskStatus, UiCatalog, UiLocale } from '@maka/core';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 export interface SharedUiCopy {
   capabilityAudit: {
     ariaLabel: string;
     needsAuthorization: (count: number) => string;
     sourceErrors: (count: number) => string;
-    failedAutomations: (count: number) => string;
-    skippedAutomations: (count: number) => string;
+    failedScheduledTasks: (count: number) => string;
+    skippedScheduledTasks: (count: number) => string;
   };
   markdown: {
     invalidInternalLink: string;
@@ -76,18 +95,6 @@ export interface SharedUiCopy {
     close: string;
     resizeHandle: string;
   };
-  taskLedger: {
-    status: Record<TaskStatus, string>;
-    ariaLabel: string;
-    retry: string;
-    loading: string;
-    activeAriaLabel: string;
-    empty: string;
-    recent: string;
-    recentAriaLabel: string;
-    childAgent: (agentId?: string) => string;
-    mainAgent: string;
-  };
   toast: {
     notifications: string;
     closeNotification: string;
@@ -106,13 +113,13 @@ export interface SharedUiCopy {
 }
 
 const SHARED_UI_COPY = {
-  zh: {
+  'zh-CN': {
     capabilityAudit: {
       ariaLabel: '能力风险提示',
       needsAuthorization: (count) => `${count} 个来源等待授权`,
       sourceErrors: (count) => `${count} 个来源异常`,
-      failedAutomations: (count) => `${count} 个自动化上次失败`,
-      skippedAutomations: (count) => `${count} 个自动化上次跳过`,
+      failedScheduledTasks: (count) => `${count} 个定时任务上次失败`,
+      skippedScheduledTasks: (count) => `${count} 个定时任务上次跳过`,
     },
     markdown: {
       invalidInternalLink: '内部链接无效',
@@ -160,7 +167,7 @@ const SHARED_UI_COPY = {
       },
       automations: {
         title: '定时任务',
-        description: '安排定时任务，并回顾本机对话中的工作进展。',
+        description: '安排定时运行，并回顾本机任务的工作进展。',
         selectorLabel: (module) => `定时任务内容：${module}`,
         scheduledTasks: '定时任务',
         dailyReview: '每日回顾',
@@ -173,35 +180,100 @@ const SHARED_UI_COPY = {
       loadingAutomations: '正在加载定时任务…',
       dailyReview: '每日回顾',
       loadingDailyReview: '正在加载每日回顾…',
-      dailyReviewDescription: '自动汇总本机对话，生成摘要、遗漏提醒与深度分析；可在设置中开启定时执行。',
+      dailyReviewDescription: '自动汇总本机任务，生成摘要、遗漏提醒与深度分析；可在设置中开启定时执行。',
       dailyReviewDisconnectedTitle: '等待连接每日回顾数据',
       dailyReviewDisconnectedBody: '桌面端数据桥当前未连接。',
     },
     primitives: { loading: '加载中', close: '关闭', resizeHandle: '调整宽度' },
-    taskLedger: {
-      status: { pending: '待处理', in_progress: '进行中', blocked: '已阻塞', completed: '已完成', failed: '失败', cancelled: '已取消' },
-      ariaLabel: '会话任务',
-      retry: '重新载入任务',
-      loading: '正在载入任务…',
-      activeAriaLabel: '活跃会话任务',
-      empty: '当前会话没有待推进任务',
-      recent: '最近结束',
-      recentAriaLabel: '最近结束的会话任务',
-      childAgent: (agentId) => `子代理${agentId ? ` ${agentId}` : ''}`,
-      mainAgent: '主代理',
-    },
     toast: { notifications: '通知', closeNotification: '关闭通知', confirm: '确定', cancel: '取消' },
     stream: { assistantChunkTruncated: '\n[…单条 delta 已截断]\n', assistantTailTruncated: '\n\n[…后续已截断]', thinkingHeadTruncated: '[…已截断早期 reasoning]\n', thinkingChunkTruncated: '\n[…单条 delta 已截断]\n', toolChunkTruncated: '\n[…已截断]\n' },
     artifact: { unknownSize: '未知大小' },
     providers: { minimaxChina: 'MiniMax 中国站', custom: '自定义', claudeSubscription: 'Claude 订阅' },
+  },
+  'zh-TW': {
+    capabilityAudit: {
+      ariaLabel: '能力風險提示',
+      needsAuthorization: (count) => `${count} 個來源等待授權`,
+      sourceErrors: (count) => `${count} 個來源異常`,
+      failedScheduledTasks: (count) => `${count} 個定時任務上次失敗`,
+      skippedScheduledTasks: (count) => `${count} 個定時任務上次跳過`,
+    },
+    markdown: {
+      invalidInternalLink: '內部連結無效',
+      unsafeLink: '連結不安全',
+      taskList: '任務列表',
+      table: '表格',
+      checkbox: '核取方塊',
+      code: '程式碼',
+      opensInNewTab: '（在新標籤頁中開啟）',
+      copyCode: '複製程式碼',
+      copiedCode: '已複製程式碼',
+      mermaidDiagram: 'Mermaid 圖表',
+      mermaidRendering: '正在渲染 Mermaid 圖表…',
+      mermaidRenderFailed: '無法渲染 Mermaid 圖表，已顯示原始碼。',
+      mermaidTooLarge: 'Mermaid 圖表原始碼過大，已顯示原始碼。',
+      mermaidDeferred: '為避免佔用過多資源，此圖表不會自動渲染。',
+      mermaidRender: '渲染圖表',
+      mermaidViewSource: '檢視 Mermaid 原始碼',
+      mermaidToolbar: 'Mermaid 圖表工具欄',
+      mermaidViewport: 'Mermaid 圖表視窗，可拖動平移，按加號或減號縮放',
+      mermaidZoomIn: '放大圖表',
+      mermaidZoomOut: '縮小圖表',
+      mermaidResetView: '適應視窗',
+      mermaidExpandView: '全屏檢視圖表',
+      mermaidCollapseView: '退出全屏圖表',
+      mermaidZoomLevel: (percent) => `縮放比例 ${percent}%`,
+    },
+    formControls: {
+      selectPlaceholder: '選擇…',
+      clear: '清除{label}',
+      required: '必填',
+      optional: '可選',
+    },
+    modelPicker: {
+      searchPlaceholder: '搜尋模型…',
+      knowledgeCutoff: (date) => `知識截止：${date}`,
+    },
+    moduleHubs: {
+      extensions: {
+        title: '擴充套件',
+        description: '管理 Maka 可呼叫的技能與外部工具。',
+        selectorLabel: (module) => `擴充套件內容：${module}`,
+        skills: '技能',
+        mcp: 'MCP',
+      },
+      automations: {
+        title: '定時任務',
+        description: '安排定時執行，並回顧本機任務的工作進展。',
+        selectorLabel: (module) => `定時任務內容：${module}`,
+        scheduledTasks: '定時任務',
+        dailyReview: '每日回顧',
+      },
+    },
+    modules: {
+      skills: '技能',
+      loadingSkills: '正在載入技能…',
+      automations: '定時任務',
+      loadingAutomations: '正在載入定時任務…',
+      dailyReview: '每日回顧',
+      loadingDailyReview: '正在載入每日回顧…',
+      dailyReviewDescription: '自動彙總本機任務，生成摘要、遺漏提醒與深度分析；可在設定中開啟定時執行。',
+      dailyReviewDisconnectedTitle: '等待連線每日回顧資料',
+      dailyReviewDisconnectedBody: '桌面端資料橋目前未連線。',
+    },
+    primitives: { loading: '載入中', close: '關閉', resizeHandle: '調整寬度' },
+    toast: { notifications: '通知', closeNotification: '關閉通知', confirm: '確定', cancel: '取消' },
+    stream: { assistantChunkTruncated: '\n[…單條 delta 已截斷]\n', assistantTailTruncated: '\n\n[…後續已截斷]', thinkingHeadTruncated: '[…已截斷早期 reasoning]\n', thinkingChunkTruncated: '\n[…單條 delta 已截斷]\n', toolChunkTruncated: '\n[…已截斷]\n' },
+    artifact: { unknownSize: '未知大小' },
+    providers: { minimaxChina: 'MiniMax 中國站', custom: '自訂', claudeSubscription: 'Claude 訂閱' },
   },
   en: {
     capabilityAudit: {
       ariaLabel: 'Capability risks',
       needsAuthorization: (count) => `${count} ${count === 1 ? 'source' : 'sources'} awaiting authorization`,
       sourceErrors: (count) => `${count} ${count === 1 ? 'source has' : 'sources have'} errors`,
-      failedAutomations: (count) => `${count} ${count === 1 ? 'automation failed' : 'automations failed'} last run`,
-      skippedAutomations: (count) => `${count} ${count === 1 ? 'automation was' : 'automations were'} skipped last run`,
+      failedScheduledTasks: (count) => `${count} scheduled ${count === 1 ? 'task failed' : 'tasks failed'} last run`,
+      skippedScheduledTasks: (count) => `${count} scheduled ${count === 1 ? 'task was' : 'tasks were'} skipped last run`,
     },
     markdown: {
       invalidInternalLink: 'Invalid internal link',
@@ -249,7 +321,7 @@ const SHARED_UI_COPY = {
       },
       automations: {
         title: 'Scheduled tasks',
-        description: 'Schedule tasks and review progress from local conversations.',
+        description: 'Schedule recurring runs and review progress across local tasks.',
         selectorLabel: (module) => `Scheduled task content: ${module}`,
         scheduledTasks: 'Scheduled tasks',
         dailyReview: 'Daily review',
@@ -262,23 +334,11 @@ const SHARED_UI_COPY = {
       loadingAutomations: 'Loading scheduled tasks…',
       dailyReview: 'Daily review',
       loadingDailyReview: 'Loading daily review…',
-      dailyReviewDescription: 'Summarize local conversations into highlights, missed items, and deeper analysis. Scheduled runs can be enabled in Settings.',
+      dailyReviewDescription: 'Summarize local tasks into highlights, missed items, and deeper analysis. Scheduled runs can be enabled in Settings.',
       dailyReviewDisconnectedTitle: 'Waiting for daily review data',
       dailyReviewDisconnectedBody: 'The desktop data bridge is not connected.',
     },
     primitives: { loading: 'Loading', close: 'Close', resizeHandle: 'Resize handle' },
-    taskLedger: {
-      status: { pending: 'Pending', in_progress: 'In progress', blocked: 'Blocked', completed: 'Completed', failed: 'Failed', cancelled: 'Cancelled' },
-      ariaLabel: 'Conversation tasks',
-      retry: 'Reload tasks',
-      loading: 'Loading tasks…',
-      activeAriaLabel: 'Active conversation tasks',
-      empty: 'This conversation has no active tasks',
-      recent: 'Recently finished',
-      recentAriaLabel: 'Recently finished conversation tasks',
-      childAgent: (agentId) => `Child agent${agentId ? ` ${agentId}` : ''}`,
-      mainAgent: 'Main agent',
-    },
     toast: { notifications: 'Notifications', closeNotification: 'Close notification', confirm: 'Confirm', cancel: 'Cancel' },
     stream: { assistantChunkTruncated: '\n[…single delta truncated]\n', assistantTailTruncated: '\n\n[…remaining output truncated]', thinkingHeadTruncated: '[…earlier reasoning truncated]\n', thinkingChunkTruncated: '\n[…single delta truncated]\n', toolChunkTruncated: '\n[…truncated]\n' },
     artifact: { unknownSize: 'Unknown size' },

@@ -1,6 +1,25 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { computeEditedSource, COMPUTE_EDITED_SOURCE_FN_SOURCE } from '../edit-replace.js';
+import { computeEditedSource } from '../edit-replace.js';
 
 describe('computeEditedSource — exact match', () => {
   test('replaces the single occurrence and reports an exact match + line range', () => {
@@ -163,23 +182,5 @@ describe('computeEditedSource — oversized / binary fuzzy guards', () => {
       () => computeEditedSource(content, '  unique anchor line  ', 'x', 'big.txt'),
       /too large to fuzzy-match/,
     );
-  });
-});
-
-describe('computeEditedSource — serialized embedding', () => {
-  test('serialized source is standalone and reproduces the full cascade', () => {
-    assert.equal(typeof COMPUTE_EDITED_SOURCE_FN_SOURCE, 'string');
-    const embedded = new Function(
-      `return (${COMPUTE_EDITED_SOURCE_FN_SOURCE})`,
-    )() as typeof computeEditedSource;
-    // exercise a fuzzy path to prove nested helpers survive serialization
-    const result = embedded(
-      'function f() {\n    return 1;\n}\n',
-      'function f() {\n  return 1;\n}',
-      'function f() {\n    return 2;\n}',
-      'x.ts',
-    );
-    assert.equal(result.matchedVia, 'line-trimmed');
-    assert.equal(result.content, 'function f() {\n    return 2;\n}\n');
   });
 });

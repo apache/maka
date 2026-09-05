@@ -1,3 +1,23 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { withTimeout } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { fork, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -15,31 +35,38 @@ import { createServer, type Server } from 'node:http';
 import { connect, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
-import { TOOL_BOUNDARY_PROTOCOL_V1 } from '@maka/core';
+import { TOOL_BOUNDARY_PROTOCOL_V1 } from '@maka/core/runtime-event';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
-import type { AgentRunHeader } from '@maka/core/agent-run';
 import type { MessageContent } from '@maka/core/events';
 import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
-import { decodeStoredMessageForRead, type StoredMessage } from '@maka/core/session';
-import type { Task } from '@maka/core/task-ledger';
+import {
+  decodeStoredMessage as decodePersistedStoredMessage,
+  type StoredMessage,
+} from '@maka/core/session';
+import { markPersisted } from '@maka/core/persisted-value';
+import type { SessionTodoItem } from '@maka/core/session-todo';
+import type { ScheduledTask } from '@maka/core/scheduled-task';
 import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import { buildSessionTodoTools } from '@maka/runtime/session-todo-tools';
 import {
-  buildTaskLedgerTools,
   buildRecoveredTerminalRuntimeEvent,
   classifyTerminalRuntimeLedger,
   commitTerminalRunWithRuntimeFact,
+} from '@maka/runtime/terminal-run-commit';
+import {
   FAKE_ASK_SANDBOX_BOUNDARY_PROMPT,
   FAKE_ASK_USER_QUESTION_PROMPT,
   FAKE_WAIT_FOR_STEERING_PROMPT,
-  type MakaTool,
-  type MakaToolContext,
-} from '@maka/runtime';
+} from '@maka/runtime/test-only/fake-backend';
+import { type MakaTool, type MakaToolContext } from '@maka/runtime/tool-runtime';
 import {
   openInteractiveExecutionStoresForRead,
   openInteractiveExecutionStoresForWrite,
 } from '@maka/storage/execution-stores';
+import { OPERATIONAL_STATE_DATABASE_NAME } from '@maka/storage/operational-state-store';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
 import {
   resolveRootControlNamespace,
@@ -48,7 +75,7 @@ import {
   tryAcquireInteractiveRootReader,
   type StorageRootCapability,
 } from '@maka/storage/root-authority';
-import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-authority';
+import { openInteractiveSessionTodoStoreForWrite } from '@maka/storage/session-todo-authority';
 import {
   connectRuntimeHost,
   RuntimeHostOperationError,
@@ -59,18 +86,14 @@ import {
 import {
   decodeHostFrame,
   RUNTIME_HOST_PROTOCOL_VERSION,
-  TASK_LEDGER_PAGE_MAX_ITEMS,
-  type AutomationProjection,
   type ConnectionCatalogQueryResult,
   type InteractionPendingSnapshot,
   type SubscriptionFrame,
-  type TaskLedgerQueryResult,
-  type TaskLedgerRevision,
   type TurnMessageSubmitInput,
   type TurnSnapshot,
 } from '../protocol/index.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
-import { HostTaskLedgerCoordinator } from '../server/task-ledger-coordinator.js';
+import { HostSessionTodoCoordinator } from '../server/session-todo-coordinator.js';
 import { FramedTransport } from '../transport/framed-transport.js';
 
 import {
@@ -93,47 +116,213 @@ import {
   waitForTerminalTurn,
   waitForTurn,
   withExecutionRoot,
-  withTimeout,
 } from './fixtures/execution-host-suite.js';
 
-test('production Host executes an admitted heartbeat through the durable root authority', {
+const decodeStoredMessage = (value: unknown): StoredMessage =>
+  decodePersistedStoredMessage(markPersisted<StoredMessage>(value));
+
+test('production Host resumes a Session through the ScheduledTask authority', {
   timeout: 30_000,
 }, async () => {
   await withExecutionRoot(async (fixture) => {
     const host = await fixture.startHost();
-    const desktop = await connectClient(fixture.root, 'desktop');
-    const tui = await connectClient(fixture.root, 'tui');
+    const desktop = await connectClient(fixture.root);
+    const tui = await connectClient(fixture.root);
     try {
-      const heartbeat = await desktop.request('automation.mutate', {
+      const heartbeat = await desktop.request('scheduled-task.mutate', {
         kind: 'create',
-        sessionId: fixture.sessionId,
-        name: 'heartbeat execution proof',
-        prompt: 'Complete the heartbeat execution proof.',
-        schedule: { type: 'once', delaySeconds: 5 },
+        input: {
+          title: 'session resume execution proof',
+          intentBody: 'Complete the scheduled execution proof.',
+          schedule: { kind: 'once', runAt: Date.now() + 5_000 },
+          effect: { kind: 'session_resume', sessionId: fixture.sessionId },
+        },
       });
-      assert.equal(heartbeat.kind, 'committed');
-      if (heartbeat.kind !== 'committed' || !heartbeat.automation) {
+      assert.equal(heartbeat.kind, 'task');
+      if (heartbeat.kind !== 'task') {
         return;
       }
 
-      const observedHeartbeat = await waitForAutomationCompletion(
-        tui,
-        fixture.sessionId,
-        heartbeat.automation.id,
-      );
-      assert.ok(observedHeartbeat.lastRunId);
+      const observedHeartbeat = await waitForScheduledTaskCompletion(tui, heartbeat.task.id);
+      assert.ok(observedHeartbeat.runs[0]?.runId);
       assert.equal(observedHeartbeat.lastError, null);
-      assert.equal(observedHeartbeat.firePending, false);
 
-      const deletedHeartbeat = await tui.request('automation.mutate', {
+      const deletedHeartbeat = await tui.request('scheduled-task.mutate', {
         kind: 'delete',
-        sessionId: fixture.sessionId,
-        automationId: heartbeat.automation.id,
+        taskId: heartbeat.task.id,
       });
-      assert.equal(deletedHeartbeat.kind, 'committed');
-      assert.equal(deletedHeartbeat.kind === 'committed' && deletedHeartbeat.automation, null);
+      assert.equal(deletedHeartbeat.kind, 'deleted');
     } finally {
       await Promise.allSettled([desktop.close(), tui.close()]);
+      await fixture.stopHost(host);
+    }
+  });
+});
+
+test('production Host fails slug-only ScheduledTask Agent runs before binding execution identity', {
+  timeout: 30_000,
+}, async () => {
+  await withExecutionRoot(async (fixture) => {
+    const seededConnection = await fixture.seedConnectionEffect(
+      'http://127.0.0.1:1',
+      'test-secret',
+    );
+    const host = await fixture.startHost();
+    const desktop = await connectClient(fixture.root);
+    try {
+      const created = await desktop.request('scheduled-task.mutate', {
+        kind: 'create',
+        input: {
+          title: 'legacy agent-run identity proof',
+          intentBody: 'Do not execute with a replacement account.',
+          schedule: { kind: 'once', runAt: Date.now() + 60_000 },
+          effect: {
+            kind: 'agent_run',
+            execution: {
+              cwd: fixture.root,
+              llmConnectionId: seededConnection.connectionId,
+              llmConnectionSlug: seededConnection.slug,
+              model: seededConnection.enabledModelIds[0]!,
+              permissionMode: 'ask',
+              collaborationMode: 'agent',
+              orchestrationMode: 'default',
+            },
+          },
+        },
+      });
+      assert.equal(created.kind, 'task');
+      if (created.kind !== 'task') return;
+
+      // Simulate a record written by a pre-#3927 build. Legacy rows remain
+      // readable, but must fail closed before a Session or AgentRun is bound.
+      const database = new DatabaseSync(join(fixture.root, OPERATIONAL_STATE_DATABASE_NAME));
+      try {
+        database
+          .prepare(
+            `UPDATE workflow_scheduled_tasks
+             SET record_json = json_remove(record_json, '$.effect.execution.llmConnectionId')
+             WHERE task_id = ?`,
+          )
+          .run(created.task.id);
+      } finally {
+        database.close();
+      }
+
+      const fired = await desktop.request('scheduled-task.mutate', {
+        kind: 'trigger_now',
+        taskId: created.task.id,
+      });
+      assert.equal(fired.kind, 'task');
+      if (fired.kind !== 'task') return;
+      assert.equal(
+        fired.task.lastError,
+        'ScheduledTask Agent runs require an immutable model connection identity',
+      );
+      assert.equal(fired.task.runs.length, 1);
+      assert.equal(fired.task.runs[0]?.outcome, 'failed');
+      assert.equal(fired.task.runs[0]?.sessionId, undefined);
+      assert.equal(fired.task.runs[0]?.runId, undefined);
+    } finally {
+      await desktop.close();
+      await fixture.stopHost(host);
+    }
+  });
+});
+
+test('two UDS Clients never rebind an Agent ScheduledTask after Connection slug reuse', {
+  timeout: 30_000,
+}, async () => {
+  await withExecutionRoot(async (fixture) => {
+    const original = await fixture.seedConnectionEffect('http://127.0.0.1:1', 'test-secret');
+    const model = original.enabledModelIds[0]!;
+    const host = await fixture.startHost();
+    const creator = await connectClient(fixture.root);
+    const trigger = await connectClient(fixture.root);
+    try {
+      const created = await creator.request('scheduled-task.mutate', {
+        kind: 'create',
+        input: {
+          title: 'Connection slug reuse proof',
+          intentBody: 'The deleted account must never be replaced silently.',
+          schedule: { kind: 'once', runAt: Date.now() + 60_000 },
+          effect: {
+            kind: 'agent_run',
+            execution: {
+              cwd: fixture.root,
+              llmConnectionId: original.connectionId,
+              llmConnectionSlug: original.slug,
+              model,
+              permissionMode: 'ask',
+              collaborationMode: 'agent',
+              orchestrationMode: 'default',
+            },
+          },
+        },
+      });
+      assert.equal(created.kind, 'task');
+      if (created.kind !== 'task') return;
+
+      const catalog = await trigger.request('connection.catalog.query', { kind: 'start' });
+      assert.equal(catalog.kind, 'page');
+      if (catalog.kind !== 'page') return;
+      const header = catalog.items.find(
+        (item) => item.kind === 'connection' && item.connectionId === original.connectionId,
+      );
+      assert.equal(header?.kind, 'connection');
+      if (header?.kind !== 'connection') return;
+
+      const removed = await trigger.request('connection.catalog.remove', {
+        expected: { connectionId: original.connectionId, revision: header.revision },
+      });
+      assert.equal(removed.kind, 'committed');
+      if (removed.kind !== 'committed') return;
+      const replacement = await trigger.request('connection.catalog.create', {
+        expectedCatalogRevision: removed.catalogRevision,
+        connection: {
+          slug: original.slug,
+          name: 'Replacement account',
+          providerType: original.providerType,
+          ...(original.baseUrl === undefined ? {} : { baseUrl: original.baseUrl }),
+          enabled: true,
+          enabledModelIds: [model],
+        },
+      });
+      assert.equal(replacement.kind, 'committed');
+      if (replacement.kind !== 'committed') return;
+      assert.notEqual(replacement.connection.connectionId, original.connectionId);
+
+      const fired = await trigger.request('scheduled-task.mutate', {
+        kind: 'trigger_now',
+        taskId: created.task.id,
+      });
+      assert.equal(fired.kind, 'task');
+      if (fired.kind !== 'task') return;
+      assert.equal(fired.task.runs[0]?.outcome, 'failed');
+      assert.equal(fired.task.lastError, 'ScheduledTask model connection identity changed');
+      const failedRun = fired.task.runs[0];
+      assert.ok(failedRun?.sessionId);
+      assert.ok(failedRun?.runId);
+      const databaseAfterFire = new DatabaseSync(
+        join(fixture.root, OPERATIONAL_STATE_DATABASE_NAME),
+      );
+      try {
+        assert.equal(
+          databaseAfterFire
+            .prepare('SELECT 1 AS present FROM session_metadata WHERE session_id = ?')
+            .get(failedRun.sessionId),
+          undefined,
+        );
+        assert.equal(
+          databaseAfterFire
+            .prepare('SELECT 1 AS present FROM core_agent_runs WHERE run_id = ?')
+            .get(failedRun.runId),
+          undefined,
+        );
+      } finally {
+        databaseAfterFire.close();
+      }
+    } finally {
+      await Promise.allSettled([creator.close(), trigger.close()]);
       await fixture.stopHost(host);
     }
   });
@@ -168,137 +357,50 @@ test('production Host settles dispatched Client Capabilities before publishing R
   });
 });
 
-test('dual UDS Clients query persisted Task Ledger tool-port mutations across Host restart', async () => {
+test('dual UDS Clients query the same persisted SessionTodo snapshot across Host restart', async () => {
   await withExecutionRoot(async (fixture) => {
-    const initialRunId = randomUUID();
-    const initialTurnId = randomUUID();
-    // Exercise the Runtime-facing port before Host startup; Hosted tool composition is separate.
-    const toolPortProjection = await withOwnedTaskLedgerToolPort(
-      fixture,
-      async (coordinator, tools) => {
-        const context = taskLedgerToolContext(fixture, {
-          runId: initialRunId,
-          turnId: initialTurnId,
-          toolCallId: randomUUID(),
-        });
-        const create = requireTaskLedgerTool<TaskCreateInput>(tools, 'task_create');
-        const createInput = create.parameters.parse({
-          tasks: Array.from({ length: TASK_LEDGER_PAGE_MAX_ITEMS + 1 }, (_, index) => ({
-            subject: `Authority acceptance task ${index + 1}`,
-          })),
-        });
-        await create.impl(createInput, context);
-
-        const update = requireTaskLedgerTool<TaskUpdateInput>(tools, 'task_update');
-        const updateInput = update.parameters.parse({ id: 'T1', status: 'in_progress' });
-        await update.impl(updateInput, {
-          ...context,
-          toolCallId: randomUUID(),
-        });
-        return coordinator.list(fixture.sessionId, {
-          includeTerminal: true,
-          includeArchived: false,
-          classifyResumeTrust: true,
-        });
-      },
-    );
-    assert.equal(toolPortProjection.length, TASK_LEDGER_PAGE_MAX_ITEMS + 1);
-    assert.deepEqual(toolPortProjection[0]?.owner, {
-      actor: 'main_agent',
-      runId: initialRunId,
-      turnId: initialTurnId,
+    const initial: SessionTodoItem[] = Array.from({ length: 129 }, (_, index) => ({
+      content: `Authority acceptance todo ${index + 1}`,
+      status: index === 0 ? 'in_progress' : 'pending',
+    }));
+    await withOwnedSessionTodoToolPort(fixture, async (_coordinator, tools) => {
+      const write = requireSessionTodoWriteTool(tools);
+      await write.impl(write.parameters.parse({ todos: initial }), sessionTodoToolContext(fixture));
     });
 
     const host = await fixture.startHost();
-    const desktop = await connectClient(fixture.root, 'desktop');
-    const tui = await connectClient(fixture.root, 'tui');
-    let staleContinuation:
-      | {
-          revision: TaskLedgerRevision;
-          cursor: string;
-          task: Task;
-        }
-      | undefined;
+    const desktop = await connectClient(fixture.root);
+    const tui = await connectClient(fixture.root);
     try {
-      const desktopProjection = await collectTaskLedgerProjection(desktop, fixture.sessionId);
-      const tuiProjection = await collectTaskLedgerProjection(tui, fixture.sessionId);
-      assert.deepEqual(
-        desktopProjection.pages.map((page) => page.tasks.length),
-        [TASK_LEDGER_PAGE_MAX_ITEMS, 1],
-      );
+      const [desktopProjection, tuiProjection] = await Promise.all([
+        desktop.request('session.todo.query', { sessionId: fixture.sessionId }),
+        tui.request('session.todo.query', { sessionId: fixture.sessionId }),
+      ]);
+      assert.deepEqual(desktopProjection, { sessionId: fixture.sessionId, items: initial });
       assert.deepEqual(tuiProjection, desktopProjection);
-      assert.deepEqual(desktopProjection.tasks, toolPortProjection);
-
-      const byKey = await tui.request('task.ledger.query', {
-        kind: 'get',
-        sessionId: fixture.sessionId,
-        taskRef: 'T1',
-      });
-      assert.equal(byKey.kind, 'task');
-      if (byKey.kind !== 'task') throw new Error('Expected Task Ledger get result');
-      assert.equal(byKey.sessionId, fixture.sessionId);
-      assert.deepEqual(byKey.task, desktopProjection.tasks[0]);
-      assert.equal(byKey.task?.owner?.runId, initialRunId);
-      assert.equal(byKey.task?.owner?.turnId, initialTurnId);
-
-      const firstPage = desktopProjection.pages[0];
-      assert.ok(firstPage?.nextCursor);
-      staleContinuation = {
-        revision: firstPage.revision,
-        cursor: firstPage.nextCursor,
-        task: desktopProjection.tasks[1]!,
-      };
     } finally {
       await Promise.allSettled([desktop.close(), tui.close()]);
       await fixture.stopHost(host);
     }
 
-    assert.ok(staleContinuation);
-    const { revision: staleRevision, cursor: staleCursor, task: taskToChange } = staleContinuation;
-    const successorTurnId = randomUUID();
-    const changedSubject = `${taskToChange.subject} after authority reacquisition`;
-    await withOwnedTaskLedgerToolPort(fixture, async (_coordinator, tools) => {
-      const update = requireTaskLedgerTool<TaskUpdateInput>(tools, 'task_update');
-      const input = update.parameters.parse({
-        id: taskToChange.key,
-        subject: changedSubject,
-      });
-      await update.impl(
-        input,
-        taskLedgerToolContext(fixture, {
-          runId: randomUUID(),
-          turnId: successorTurnId,
-          toolCallId: randomUUID(),
-        }),
-      );
+    const changed = [
+      { content: 'Changed after authority reacquisition', status: 'completed' },
+    ] as const;
+    await withOwnedSessionTodoToolPort(fixture, async (_coordinator, tools) => {
+      const write = requireSessionTodoWriteTool(tools);
+      await write.impl(write.parameters.parse({ todos: changed }), sessionTodoToolContext(fixture));
     });
 
     const successorHost = await fixture.startHost();
-    const successor = await connectClient(fixture.root, 'desktop');
+    const successor = await connectClient(fixture.root);
     try {
-      const continued = await successor.request('task.ledger.query', {
-        kind: 'list_continue',
-        sessionId: fixture.sessionId,
-        revision: staleRevision,
-        cursor: staleCursor,
-      });
-      assert.equal(continued.kind, 'revision_changed');
-      if (continued.kind !== 'revision_changed') {
-        throw new Error('Expected stale Task Ledger continuation to report revision_changed');
-      }
-      assert.equal(continued.expected, staleRevision);
-      assert.notEqual(continued.actual, staleRevision);
-
-      const changed = await successor.request('task.ledger.query', {
-        kind: 'get',
-        sessionId: fixture.sessionId,
-        taskRef: taskToChange.key,
-      });
-      assert.equal(changed.kind, 'task');
-      if (changed.kind !== 'task') throw new Error('Expected changed Task Ledger task result');
-      assert.equal(changed.sessionId, fixture.sessionId);
-      assert.equal(changed.task?.subject, changedSubject);
-      assert.equal(changed.revision, continued.actual);
+      assert.deepEqual(
+        await successor.request('session.todo.query', { sessionId: fixture.sessionId }),
+        {
+          sessionId: fixture.sessionId,
+          items: changed,
+        },
+      );
     } finally {
       await successor.close();
       await fixture.stopHost(successorHost);
@@ -384,8 +486,8 @@ async function seedDispatchedClientCapability(
 test('two UDS Clients share one Runtime Policy authority and CAS winner', async () => {
   await withExecutionRoot(async (fixture) => {
     const host = await fixture.startHost();
-    const first = await connectClient(fixture.root, 'desktop');
-    const second = await connectClient(fixture.root, 'tui');
+    const first = await connectClient(fixture.root);
+    const second = await connectClient(fixture.root);
     try {
       const initial = await first.request('runtime.policy.query', {});
       assert.deepEqual(await second.request('runtime.policy.query', {}), initial);
@@ -420,6 +522,82 @@ test('two UDS Clients share one Runtime Policy authority and CAS winner', async 
   });
 });
 
+test('two UDS Clients serialize same-provider account creation through one Host lane', async () => {
+  const provider = await startConnectionEffectProvider({ responseDelayMs: 50 });
+  try {
+    await withExecutionRoot(async (fixture) => {
+      const host = await fixture.startHost();
+      const desktop = await connectClient(fixture.root);
+      const tui = await connectClient(fixture.root);
+      const secrets = ['desktop-account-secret', 'tui-account-secret'] as const;
+      let identities: Array<{ connectionId: string; slug: string }> = [];
+      try {
+        const results = await Promise.all(
+          [desktop, tui].map((client, index) =>
+            client.request('connection.onboarding.save', {
+              target: { kind: 'create', providerType: 'openai-compatible' },
+              apiKey: secrets[index]!,
+              baseUrl: provider.baseUrl,
+              enabledModelIds: [CONNECTION_EFFECT_MODEL_IDS[0]!],
+            }),
+          ),
+        );
+        assert.ok(results.every((result) => result.kind === 'saved'));
+        identities = results.map((result) => {
+          if (result.kind !== 'saved') throw new Error('Onboarding did not save');
+          return {
+            connectionId: result.connection.connectionId,
+            slug: result.connection.slug,
+          };
+        });
+        assert.notEqual(identities[0]?.connectionId, identities[1]?.connectionId);
+        assert.deepEqual(identities.map(({ slug }) => slug).sort(), [
+          'openai-compatible',
+          'openai-compatible-2',
+        ]);
+      } finally {
+        await Promise.allSettled([desktop.close(), tui.close()]);
+        await fixture.stopHost(host);
+      }
+
+      const owner = await tryAcquireInteractiveRootOwner(fixture.capability);
+      assert.ok(owner);
+      if (!owner) return;
+      try {
+        const stores = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+        const catalog = await stores.connectionCatalog.getSnapshot();
+        assert.deepEqual(
+          catalog.connections
+            .filter(({ providerType }) => providerType === 'openai-compatible')
+            .map(({ connectionId, slug }) => ({ connectionId, slug }))
+            .sort((left, right) => left.slug.localeCompare(right.slug)),
+          [...identities].sort((left, right) => left.slug.localeCompare(right.slug)),
+        );
+        for (const [index, identity] of identities.entries()) {
+          assert.equal(
+            (
+              await stores.operations.exportCredentialMaterial({
+                scope: 'connection',
+                connectionId: identity.connectionId,
+                kind: 'api_key',
+              })
+            )?.secret,
+            secrets[index],
+          );
+        }
+      } finally {
+        await owner.close();
+      }
+      assert.deepEqual(
+        provider.requests.map(({ authorization }) => authorization).sort(),
+        secrets.map((secret) => `Bearer ${secret}`).sort(),
+      );
+    });
+  } finally {
+    await provider.close();
+  }
+});
+
 test('two UDS Clients await slow connection effects against one canonical catalog', async () => {
   const provider = await startConnectionEffectProvider({ responseDelayMs: 2_100 });
   try {
@@ -427,8 +605,8 @@ test('two UDS Clients await slow connection effects against one canonical catalo
       const secret = 'connection-effect-secret';
       const connection = await fixture.seedConnectionEffect(provider.baseUrl, secret);
       const host = await fixture.startHost();
-      const desktop = await connectClient(fixture.root, 'desktop');
-      const tui = await connectClient(fixture.root, 'tui');
+      const desktop = await connectClient(fixture.root);
+      const tui = await connectClient(fixture.root);
       try {
         assert.equal(desktop.hostEpoch, tui.hostEpoch);
         assert.notEqual(desktop.connectionId, tui.connectionId);
@@ -533,12 +711,13 @@ test('two UDS Clients await slow connection effects against one canonical catalo
 test('two Clients share one execution after the starting Client disconnects', async () => {
   await withExecutionRoot(async (fixture) => {
     const host = await fixture.startHost();
-    const first = await connectClient(fixture.root, 'desktop');
-    const second = await connectClient(fixture.root, 'tui');
+    const first = await connectClient(fixture.root);
+    const second = await connectClient(fixture.root);
     const turnId = randomUUID();
 
     const started = requireStartedTurn(
-      await first.startTurn(
+      await first.request(
+        'turn.start',
         {
           sessionId: fixture.sessionId,
           turnId,
@@ -550,8 +729,9 @@ test('two Clients share one execution after the starting Client disconnects', as
     assert.equal(started.turnId, turnId);
     const secondSubscription = await second.openSessionSubscription({
       sessionId: fixture.sessionId,
+      transcript: { kind: 'tail', maxBytes: 16 * 1024 },
     });
-    const transcript = await secondSubscription.loadTranscript(decodeStoredMessageForRead);
+    const transcript = await secondSubscription.loadTranscript(decodeStoredMessage);
     assert.ok(
       transcript.some(
         (message) =>
@@ -563,7 +743,8 @@ test('two Clients share one execution after the starting Client disconnects', as
     const secondProbe = new SubscriptionProbe(secondSubscription);
     await assert.rejects(
       () =>
-        second.startTurn(
+        second.request(
+          'turn.start',
           {
             sessionId: fixture.sessionId,
             turnId: randomUUID(),
@@ -588,13 +769,14 @@ test('two Clients share one execution after the starting Client disconnects', as
       }),
       pending,
     );
-    const observed = await second.queryTurn({
+    const observed = await second.request('turn.query', {
       sessionId: fixture.sessionId,
       turnId,
     });
     assert.equal(observed.runId, started.runId);
     assert.ok(observed.status === 'running' || observed.status === 'waiting_for_user');
-    const stopped = await second.stopTurn(
+    const stopped = await second.request(
+      'turn.stop',
       {
         sessionId: fixture.sessionId,
         turnId,
@@ -628,7 +810,8 @@ test('two Clients share one execution after the starting Client disconnects', as
 
     const nextTurnId = randomUUID();
     const next = requireStartedTurn(
-      await second.startTurn(
+      await second.request(
+        'turn.start',
         {
           sessionId: fixture.sessionId,
           turnId: nextTurnId,
@@ -639,7 +822,8 @@ test('two Clients share one execution after the starting Client disconnects', as
     );
     assert.deepEqual(
       requireStartedTurn(
-        await second.startTurn(
+        await second.request(
+          'turn.start',
           {
             sessionId: fixture.sessionId,
             turnId,
@@ -651,20 +835,21 @@ test('two Clients share one execution after the starting Client disconnects', as
       stopped,
     );
     assert.deepEqual(
-      await second.stopTurn({
+      await second.request('turn.stop', {
         sessionId: fixture.sessionId,
         turnId,
         runId: started.runId,
       }),
       stopped,
     );
-    const nextObserved = await second.queryTurn({
+    const nextObserved = await second.request('turn.query', {
       sessionId: fixture.sessionId,
       turnId: nextTurnId,
     });
     assert.equal(nextObserved.runId, next.runId);
     assert.ok(nextObserved.status === 'running' || nextObserved.status === 'waiting_for_user');
-    await second.stopTurn(
+    await second.request(
+      'turn.stop',
       {
         sessionId: fixture.sessionId,
         turnId: nextTurnId,
@@ -692,11 +877,12 @@ test('two Clients share one execution after the starting Client disconnects', as
 test('regenerate replays the durable source content with one recoverable root identity', async () => {
   await withExecutionRoot(async (fixture) => {
     const host = await fixture.startHost();
-    const client = await connectClient(fixture.root, 'tui');
+    const client = await connectClient(fixture.root);
     const sourceTurnId = randomUUID();
     const regeneratedTurnId = randomUUID();
     try {
-      await client.startTurn(
+      await client.request(
+        'turn.start',
         {
           sessionId: fixture.sessionId,
           turnId: sourceTurnId,
@@ -706,7 +892,8 @@ test('regenerate replays the durable source content with one recoverable root id
       );
       await waitForTerminalTurn(client, fixture.sessionId, sourceTurnId);
 
-      const started = await client.regenerateTurn(
+      const started = await client.request(
+        'turn.regenerate',
         {
           sessionId: fixture.sessionId,
           sourceTurnId,
@@ -717,7 +904,7 @@ test('regenerate replays the durable source content with one recoverable root id
       const terminal = await waitForTerminalTurn(client, fixture.sessionId, regeneratedTurnId);
       assert.equal(terminal.runId, started.runId);
       assert.deepEqual(
-        await client.regenerateTurn({
+        await client.request('turn.regenerate', {
           sessionId: fixture.sessionId,
           sourceTurnId,
           turnId: regeneratedTurnId,
@@ -732,8 +919,8 @@ test('regenerate replays the durable source content with one recoverable root id
     const ledger = await fixture.readTurn(regeneratedTurnId);
     assert.equal(ledger.runs.length, 1);
     assert.equal(ledger.userMessages.length, 1);
-    assert.equal(ledger.runs[0]?.parentTurnId, sourceTurnId);
-    assert.equal(ledger.runs[0]?.regeneratedFromTurnId, sourceTurnId);
+    assert.equal(ledger.runs[0]?.opening.lineage?.parentTurnId, sourceTurnId);
+    assert.equal(ledger.runs[0]?.opening.lineage?.regeneratedFromTurnId, sourceTurnId);
     assert.deepEqual(
       {
         text: ledger.userMessages[0]?.text,
@@ -747,16 +934,16 @@ test('regenerate replays the durable source content with one recoverable root id
 test('regenerate rejects self-source and legacy target collisions without draining Host', async () => {
   await withExecutionRoot(async (fixture) => {
     const firstHost = await fixture.startHost();
-    const first = await connectClient(fixture.root, 'tui');
+    const first = await connectClient(fixture.root);
     const sourceTurnId = randomUUID();
-    await first.startTurn({
+    await first.request('turn.start', {
       sessionId: fixture.sessionId,
       turnId: sourceTurnId,
       content: { text: 'source request' },
     });
     await waitForTerminalTurn(first, fixture.sessionId, sourceTurnId);
     await assert.rejects(
-      first.regenerateTurn({
+      first.request('turn.regenerate', {
         sessionId: fixture.sessionId,
         sourceTurnId,
         turnId: sourceTurnId,
@@ -768,10 +955,10 @@ test('regenerate rejects self-source and legacy target collisions without draini
 
     const legacy = await fixture.seedSafeBoundaryContinuationSource();
     const secondHost = await fixture.startHost();
-    const second = await connectClient(fixture.root, 'desktop');
+    const second = await connectClient(fixture.root);
     try {
       await assert.rejects(
-        second.regenerateTurn({
+        second.request('turn.regenerate', {
           sessionId: fixture.sessionId,
           sourceTurnId,
           turnId: legacy.sourceTurnId,
@@ -779,7 +966,7 @@ test('regenerate rejects self-source and legacy target collisions without draini
         operationError('operation_conflict'),
       );
       const followingTurnId = randomUUID();
-      await second.startTurn({
+      await second.request('turn.start', {
         sessionId: fixture.sessionId,
         turnId: followingTurnId,
         content: { text: 'Host remains available' },
@@ -803,17 +990,22 @@ test('regenerate rejects self-source and legacy target collisions without draini
 test('context actions share root admission and expose backend capability honestly', async () => {
   await withExecutionRoot(async (fixture) => {
     const host = await fixture.startHost();
-    const first = await connectClient(fixture.root, 'desktop');
-    const second = await connectClient(fixture.root, 'tui');
+    const first = await connectClient(fixture.root);
+    const second = await connectClient(fixture.root);
     const turnId = randomUUID();
     const unavailableTurnId = randomUUID();
     try {
-      assert.deepEqual(await first.queryContextDiagnostics({ sessionId: fixture.sessionId }), {
-        status: 'unavailable',
-        reason: 'no_completed_request',
-      });
+      assert.deepEqual(
+        await first.request('context.diagnostics.query', {
+          sessionId: fixture.sessionId,
+        }),
+        {
+          status: 'unavailable',
+          reason: 'no_completed_request',
+        },
+      );
       const started = requireStartedTurn(
-        await first.startTurn({
+        await first.request('turn.start', {
           sessionId: fixture.sessionId,
           turnId,
           content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
@@ -821,26 +1013,26 @@ test('context actions share root admission and expose backend capability honestl
       );
       await waitForRunningTurn(second, fixture.sessionId, turnId);
       await assert.rejects(
-        second.compactContext({
+        second.request('context.compact', {
           sessionId: fixture.sessionId,
           turnId: randomUUID(),
         }),
         operationError('session_busy'),
       );
-      await second.stopTurn({
+      await second.request('turn.stop', {
         sessionId: fixture.sessionId,
         turnId,
         runId: started.runId,
       });
       await assert.rejects(
-        second.compactContext({
+        second.request('context.compact', {
           sessionId: fixture.sessionId,
           turnId: unavailableTurnId,
         }),
         operationError('operation_unavailable'),
       );
       await assert.rejects(
-        second.queryContextDiagnostics({ sessionId: 'missing-session' }),
+        second.request('context.diagnostics.query', { sessionId: 'missing-session' }),
         operationError('not_found'),
       );
     } finally {
@@ -858,10 +1050,10 @@ test('context actions share root admission and expose backend capability honestl
 test('a disconnected Client leaves a durable Interaction that another Client can answer', async () => {
   await withExecutionRoot(async (fixture) => {
     const firstHost = await fixture.startHost();
-    const first = await connectClient(fixture.root, 'desktop');
+    const first = await connectClient(fixture.root);
     const turnId = randomUUID();
     const started = requireStartedTurn(
-      await first.startTurn({
+      await first.request('turn.start', {
         sessionId: fixture.sessionId,
         turnId,
         content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
@@ -869,8 +1061,11 @@ test('a disconnected Client leaves a durable Interaction that another Client can
     );
     await first.close();
 
-    const second = await connectClient(fixture.root, 'tui');
-    const subscription = await second.openSessionSubscription({ sessionId: fixture.sessionId });
+    const second = await connectClient(fixture.root);
+    const subscription = await second.openSessionSubscription({
+      sessionId: fixture.sessionId,
+      transcript: { kind: 'none' },
+    });
     const probe = new SubscriptionProbe(subscription);
     const pending = await waitForPendingInteraction(subscription, probe, started.runId);
     assert.equal(pending.sessionId, fixture.sessionId);
@@ -936,7 +1131,7 @@ test('a disconnected Client leaves a durable Interaction that another Client can
     await fixture.stopHost(firstHost);
 
     const secondHost = await fixture.startHost();
-    const observer = await connectClient(fixture.root, 'run');
+    const observer = await connectClient(fixture.root);
     assert.deepEqual(
       await observer.request('interaction.query', {
         sessionId: fixture.sessionId,
@@ -952,7 +1147,10 @@ test('a disconnected Client leaves a durable Interaction that another Client can
       }),
       winner,
     );
-    assert.deepEqual(await observer.queryTurn({ sessionId: fixture.sessionId, turnId }), completed);
+    assert.deepEqual(
+      await observer.request('turn.query', { sessionId: fixture.sessionId, turnId }),
+      completed,
+    );
     await observer.close();
     await fixture.stopHost(secondHost);
   });
@@ -961,14 +1159,17 @@ test('a disconnected Client leaves a durable Interaction that another Client can
 test('two UDS Clients settle one hosted sandbox boundary and resume its exact Run', async () => {
   await withExecutionRoot(async (fixture) => {
     const firstHost = await fixture.startHost();
-    const starter = await connectClient(fixture.root, 'desktop');
-    const first = await connectClient(fixture.root, 'tui');
-    const second = await connectClient(fixture.root, 'run');
-    const subscription = await first.openSessionSubscription({ sessionId: fixture.sessionId });
+    const starter = await connectClient(fixture.root);
+    const first = await connectClient(fixture.root);
+    const second = await connectClient(fixture.root);
+    const subscription = await first.openSessionSubscription({
+      sessionId: fixture.sessionId,
+      transcript: { kind: 'none' },
+    });
     const probe = new SubscriptionProbe(subscription);
     const turnId = randomUUID();
     const started = requireStartedTurn(
-      await starter.startTurn({
+      await starter.request('turn.start', {
         sessionId: fixture.sessionId,
         turnId,
         content: { text: FAKE_ASK_SANDBOX_BOUNDARY_PROMPT },
@@ -1025,7 +1226,7 @@ test('two UDS Clients settle one hosted sandbox boundary and resume its exact Ru
     await fixture.stopHost(firstHost);
 
     const secondHost = await fixture.startHost();
-    const observer = await connectClient(fixture.root, 'desktop');
+    const observer = await connectClient(fixture.root);
     assert.deepEqual(
       await observer.request('interaction.query', {
         sessionId: fixture.sessionId,
@@ -1033,146 +1234,80 @@ test('two UDS Clients settle one hosted sandbox boundary and resume its exact Ru
       }),
       firstWinner,
     );
-    assert.deepEqual(await observer.queryTurn({ sessionId: fixture.sessionId, turnId }), completed);
+    assert.deepEqual(
+      await observer.request('turn.query', { sessionId: fixture.sessionId, turnId }),
+      completed,
+    );
     await observer.close();
     await fixture.stopHost(secondHost);
   });
 });
 
-interface TaskCreateInput {
-  tasks: Array<{ subject: string; parent_id?: string }>;
-}
-
-interface TaskUpdateInput {
-  id: string;
-  status?: 'pending' | 'in_progress' | 'blocked' | 'completed' | 'failed' | 'cancelled';
-  subject?: string;
-  blockedReason?: string;
-  failureReason?: string;
-  completionEvidence?: string;
-  explicitReopen?: boolean;
-}
-
-type TaskLedgerPage = Extract<TaskLedgerQueryResult, { kind: 'page' }>;
-type TaskLedgerTool<Input> = MakaTool<Input, string> & {
-  parameters: { parse(value: unknown): Input };
+type SessionTodoWriteTool = MakaTool<{ todos: SessionTodoItem[] }, string> & {
+  parameters: { parse(value: unknown): { todos: SessionTodoItem[] } };
 };
 
-async function withOwnedTaskLedgerToolPort<T>(
+async function withOwnedSessionTodoToolPort<T>(
   fixture: ExecutionFixture,
-  run: (coordinator: HostTaskLedgerCoordinator, tools: MakaTool[]) => Promise<T>,
+  run: (coordinator: HostSessionTodoCoordinator, tools: MakaTool[]) => Promise<T>,
 ): Promise<T> {
   const owner = await tryAcquireInteractiveRootOwner(fixture.capability);
   assert.ok(owner);
-  if (!owner) throw new Error('Unable to acquire the interactive Task Ledger tool port');
-  let writer: Awaited<ReturnType<typeof openInteractiveTaskLedgerStoreForWrite>> | undefined;
+  if (!owner) throw new Error('Unable to acquire the interactive SessionTodo tool port');
+  let writer: Awaited<ReturnType<typeof openInteractiveSessionTodoStoreForWrite>> | undefined;
   try {
-    writer = await openInteractiveTaskLedgerStoreForWrite(owner.lease);
-    const coordinator = new HostTaskLedgerCoordinator(writer, new SessionAdmissionGate(), {
-      probeSessionRemoval: async () => ({ kind: 'present' }),
-    });
-    return await run(coordinator, buildTaskLedgerTools({ store: coordinator }));
+    writer = await openInteractiveSessionTodoStoreForWrite(owner.lease);
+    const coordinator = new HostSessionTodoCoordinator(
+      writer,
+      new SessionAdmissionGate(),
+      { probeSessionRemoval: async () => ({ kind: 'present' }) },
+      () => {},
+      () => {},
+    );
+    return await run(coordinator, buildSessionTodoTools(coordinator));
   } finally {
     writer?.close();
     await owner.close();
   }
 }
 
-function requireTaskLedgerTool<Input>(
-  tools: readonly MakaTool[],
-  name: 'task_create' | 'task_update',
-): TaskLedgerTool<Input> {
-  const tool = tools.find((candidate) => candidate.name === name);
-  assert.ok(tool, `Expected ${name} Runtime tool`);
-  return tool as TaskLedgerTool<Input>;
+function requireSessionTodoWriteTool(tools: readonly MakaTool[]): SessionTodoWriteTool {
+  const tool = tools.find((candidate) => candidate.name === 'todo_write');
+  assert.ok(tool, 'Expected todo_write Runtime tool');
+  return tool as SessionTodoWriteTool;
 }
 
-function taskLedgerToolContext(
-  fixture: ExecutionFixture,
-  identity: Pick<MakaToolContext, 'runId' | 'turnId' | 'toolCallId'>,
-): MakaToolContext {
+function sessionTodoToolContext(fixture: ExecutionFixture): MakaToolContext {
   return {
     sessionId: fixture.sessionId,
     cwd: fixture.root,
-    ...identity,
+    runId: randomUUID(),
+    turnId: randomUUID(),
+    toolCallId: randomUUID(),
     abortSignal: new AbortController().signal,
     emitOutput: () => {},
   };
 }
 
-async function collectTaskLedgerProjection(
+async function waitForScheduledTaskCompletion(
   client: RuntimeHostConnection,
-  sessionId: string,
-): Promise<{
-  revision: TaskLedgerRevision;
-  pages: TaskLedgerPage[];
-  tasks: Task[];
-}> {
-  const pages: TaskLedgerPage[] = [];
-  let result = await client.request('task.ledger.query', {
-    kind: 'list_start',
-    sessionId,
-  });
-  assert.equal(result.kind, 'page');
-  if (result.kind !== 'page') throw new Error('Expected initial Task Ledger page');
-  const revision = result.revision;
-
-  while (true) {
-    assert.equal(result.sessionId, sessionId);
-    assert.equal(result.revision, revision);
-    pages.push(result);
-    if (result.nextCursor === null) break;
-    result = await client.request('task.ledger.query', {
-      kind: 'list_continue',
-      sessionId,
-      revision,
-      cursor: result.nextCursor,
-    });
-    assert.equal(result.kind, 'page');
-    if (result.kind !== 'page') {
-      throw new Error('Task Ledger changed while collecting a stable projection');
-    }
-  }
-
-  return {
-    revision,
-    pages,
-    tasks: pages.flatMap((page) => page.tasks),
-  };
-}
-
-async function waitForAutomationCompletion(
-  client: RuntimeHostConnection,
-  sessionId: string,
-  automationId: string,
-): Promise<AutomationProjection> {
+  taskId: string,
+): Promise<ScheduledTask> {
   const deadline = Date.now() + 20_000;
-  let last: AutomationProjection | null = null;
+  let last: ScheduledTask | null = null;
   while (Date.now() < deadline) {
-    const result = await client.request('automation.query', {
+    const result = await client.request('scheduled-task.query', {
       kind: 'get',
-      sessionId,
-      automationId,
+      taskId,
     });
-    if (
-      result.kind === 'automation' &&
-      result.automation?.status === 'completed' &&
-      !result.automation.firePending
-    ) {
-      return result.automation;
-    }
-    if (result.kind === 'automation') last = result.automation;
-    if (
-      result.kind === 'automation' &&
-      result.automation &&
-      !result.automation.firePending &&
-      result.automation.lastError
-    ) {
-      throw new Error(`Automation execution failed: ${result.automation.lastError}`);
+    if (result.kind === 'task' && result.task?.status === 'completed') return result.task;
+    if (result.kind === 'task') last = result.task;
+    if (result.kind === 'task' && result.task?.lastError) {
+      throw new Error(`ScheduledTask execution failed: ${result.task.lastError}`);
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   throw new Error(
-    `Automation ${automationId} did not settle before the deadline: ${JSON.stringify(last)}`,
+    `ScheduledTask ${taskId} did not settle before the deadline: ${JSON.stringify(last)}`,
   );
 }

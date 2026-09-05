@@ -1,4 +1,25 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import { createHash } from 'node:crypto';
+import { authorizeConnectionModel } from '@maka/core/llm-connections';
 import { isModelExplicitlyUnsupportedForChat } from '@maka/core/model-catalog';
 import { thinkingVariantsForConnection } from '@maka/core/model-thinking';
 import {
@@ -11,8 +32,13 @@ import { DEFAULT_SESSION_NAME, normalizeUserSessionName } from '@maka/core/sessi
 import {
   isSessionStartModeLabel as isExecutionSemanticLabel,
   sessionStartModeSpec,
-} from '@maka/core/explore-agent';
-import type { SessionHeader } from '@maka/core/session';
+} from '@maka/core/session-start-mode';
+import {
+  isWorkHubCoordinationSessionId,
+  isWorkHubCoordinationSessionTarget,
+  type SessionHeader,
+  type SessionHeaderPatch,
+} from '@maka/core/session';
 import {
   isSessionNotFoundError,
   SessionMetadataConflictError,
@@ -20,27 +46,32 @@ import {
   SessionReadMarkerMessageNotFoundError,
   type SessionCatalogPageCursor,
   type SessionCatalogRecord,
+  type SessionHeaderSnapshot,
   type ExecutionStoresWriter,
 } from '@maka/storage/execution-stores';
+import type { CreateStableSessionRequest } from '@maka/storage/session-store';
 import type { RuntimePolicyStoresWriter } from '@maka/storage/runtime-policy-stores';
 import {
   SessionConfigurationRevisionConflictError,
   SessionConfigurationTransitionError,
   type SessionManager,
-} from '@maka/runtime';
+} from '@maka/runtime/session-manager';
 import {
   decodeSessionCatalogProjection,
+  decodeSharedSessionCatalogProjection,
+  SESSION_CATALOG_LIVE_RUN_STATE_SCHEMA_VERSION,
   SESSION_CATALOG_LABEL_MAX_BYTES,
   SESSION_CATALOG_LABEL_MAX_ITEMS,
   SESSION_CATALOG_MODEL_MAX_BYTES,
   SESSION_CATALOG_PAGE_MAX_ITEMS,
   SESSION_CATALOG_RESULT_MAX_BYTES,
+  SESSION_CATALOG_RUNNING_TURN_MAX_ITEMS,
   type OperationError,
   type OperationOutcome,
-  RuntimeHostProtocolError,
-  type SessionCatalogFilter,
   type SessionCatalogItem,
+  type SessionCatalogLiveRunState,
   type SessionCatalogProjection,
+  type SharedSessionCatalogProjection,
   type SessionCatalogQueryInput,
   type SessionCatalogQueryResult,
   type SessionCatalogRevision,
@@ -52,8 +83,14 @@ import {
   type SessionModelTarget,
   type SessionReadMarkerSetInput,
   type SessionUpdateResult,
+  type SessionTurnsQueryInput,
+  type SessionTurnLandmarksQueryInput,
+  projectSessionTurnLandmarkForWire,
+  SESSION_TURN_QUERY_RESULT_MAX_BYTES,
+  projectSessionTurnContributionForWire,
 } from '../protocol/index.js';
 import type { SessionCatalogOperationHandlerMap } from './operation-dispatcher.js';
+import type { RuntimeHostAccessAuthority } from './access-authority.js';
 import { type SessionAdmissionLease, SessionAdmissionGate } from './session-admission-gate.js';
 import type { SessionContinuityCoordinator } from './session-continuity-coordinator.js';
 import { type HostWorkspaceResolver, WorkspaceResolutionError } from './workspace-resolver.js';
@@ -67,6 +104,8 @@ type SessionCatalogStores = Pick<
   | 'readCatalogRecord'
   | 'readExecutionBoundary'
   | 'readHeaderRecordSnapshot'
+  | 'readTurnContributionsSnapshot'
+  | 'readTurnLandmarksSnapshot'
   | 'updateHeaderVersioned'
 >;
 
@@ -78,9 +117,21 @@ type SessionRuntimePolicyStores = {
 
 type SessionConfigurationAuthority = Pick<
   SessionManager,
-  'transitionSessionConfiguration' | 'relocateSessionWorkspace'
+  'transitionSessionConfiguration' | 'relocateSessionWorkspace' | 'runningTurnIds'
 >;
 type SessionContinuity = Pick<SessionContinuityCoordinator, 'refreshCanonical'>;
+
+interface ResolvedSessionConfiguration {
+  readonly backend: 'ai-sdk';
+  readonly llmConnectionId?: string;
+  readonly llmConnectionSlug: string;
+  readonly model: string;
+  readonly thinkingLevel: SessionHeader['thinkingLevel'];
+  readonly connectionLocked: boolean;
+  readonly permissionMode: SessionHeader['permissionMode'];
+  readonly collaborationMode: NonNullable<SessionHeader['collaborationMode']>;
+  readonly orchestrationMode: NonNullable<SessionHeader['orchestrationMode']>;
+}
 
 export type SessionOperationFailureCode =
   | 'operation_unavailable'
@@ -106,9 +157,14 @@ export interface HostSessionCatalogCoordinatorOptions {
   readonly continuity: SessionContinuity;
   readonly workspaceResolver: HostWorkspaceResolver;
   readonly requestDrain: () => void;
+  readonly sessionAccessAuthority?: Pick<
+    RuntimeHostAccessAuthority,
+    'activeSessionGrantForPrincipal'
+  >;
 }
 
 interface ResolvedSessionModel {
+  readonly connectionId: string;
   readonly connectionSlug: string;
   readonly model: string;
 }
@@ -116,6 +172,7 @@ interface ResolvedSessionModel {
 /** Host-owned Session catalog, creation, and configuration authority. */
 export class HostSessionCatalogCoordinator {
   readonly handlers: SessionCatalogOperationHandlerMap = {
+    'session.shared.query': (_input, context) => this.#querySharedSession(context.principal),
     'session.catalog.query': (input) => this.#query(input),
     'session.create': (input) => this.#create(input),
     'session.metadata.update': (input) => this.#updateMetadata(input),
@@ -123,6 +180,8 @@ export class HostSessionCatalogCoordinator {
     'session.workspace.relocate': (input) => this.#relocateWorkspace(input),
     'session.read_marker.set': (input) => this.#setReadMarker(input),
     'session.execution_boundary.query': (input) => this.#queryExecutionBoundary(input),
+    'session.turn_landmarks.query': (input) => this.#queryTurnLandmarks(input),
+    'session.turns.query': (input) => this.#queryTurns(input),
   };
 
   readonly #stores: SessionCatalogStores;
@@ -132,6 +191,9 @@ export class HostSessionCatalogCoordinator {
   readonly #continuity: SessionContinuity;
   readonly #workspaceResolver: HostWorkspaceResolver;
   readonly #requestDrain: () => void;
+  readonly #sessionAccessAuthority:
+    | Pick<RuntimeHostAccessAuthority, 'activeSessionGrantForPrincipal'>
+    | undefined;
 
   constructor(options: HostSessionCatalogCoordinatorOptions) {
     this.#stores = options.stores;
@@ -141,6 +203,7 @@ export class HostSessionCatalogCoordinator {
     this.#continuity = options.continuity;
     this.#workspaceResolver = options.workspaceResolver;
     this.#requestDrain = options.requestDrain;
+    this.#sessionAccessAuthority = options.sessionAccessAuthority;
   }
 
   async resolveExternalSessionImportTarget(): Promise<Omit<CreateSessionInput, 'cwd' | 'name'>> {
@@ -149,13 +212,52 @@ export class HostSessionCatalogCoordinator {
       this.#readRuntimePolicy(),
     ]);
     return {
-      backend: 'ai-sdk',
+      llmConnectionId: model.connectionId,
       llmConnectionSlug: model.connectionSlug,
       model: model.model,
       permissionMode: policy.policy.chatDefaults.permissionMode,
       collaborationMode: 'agent',
       orchestrationMode: 'default',
     };
+  }
+
+  async createForHost(input: SessionCreateInput): Promise<void> {
+    const outcome = await this.#create(input);
+    if (!outcome.ok) throw new Error(outcome.error.message);
+  }
+
+  /** WorkHub Action Gate path; callers cannot bypass the typed operation outcome. */
+  createForWorkHub(input: SessionCreateInput): Promise<OperationOutcome<'session.create'>> {
+    return this.#create(input);
+  }
+
+  /** Prepare external facts before WorkHub commits create + assignment atomically. */
+  async prepareWorkHubCreate(input: SessionCreateInput): Promise<CreateStableSessionRequest> {
+    const prepared = await prepareCreate(input);
+    return this.#workspaceResolver.runWithUsageRecorded(input.workspace, async (workspace) => {
+      const [model, policy] = await Promise.all([
+        this.#resolveModel(input.modelTarget, input.thinkingLevel),
+        this.#readRuntimePolicy(),
+      ]);
+      return {
+        sessionId: input.sessionId,
+        requestFingerprint: createRequestFingerprint(input, prepared),
+        input: {
+          cwd: workspace.cwd,
+          ...(workspace.projectId === null ? {} : { projectId: workspace.projectId }),
+          name: prepared.name,
+          labels: [...prepared.labels],
+          llmConnectionId: model.connectionId,
+          llmConnectionSlug: model.connectionSlug,
+          model: model.model,
+          ...(input.thinkingLevel === undefined ? {} : { thinkingLevel: input.thinkingLevel }),
+          ...(input.toolProfile === undefined ? {} : { toolProfile: input.toolProfile }),
+          permissionMode: prepared.permissionMode ?? policy.policy.chatDefaults.permissionMode,
+          collaborationMode: input.collaborationMode ?? 'agent',
+          orchestrationMode: input.orchestrationMode ?? 'default',
+        },
+      };
+    });
   }
 
   async #query(
@@ -166,7 +268,7 @@ export class HostSessionCatalogCoordinator {
         const record = await this.#readCatalogRecordIfPresent(input.sessionId);
         return successQuery({
           kind: 'session',
-          session: record ? projectSessionCatalogRecord(record) : null,
+          session: record ? this.#projectCatalogQueryRecord(record) : null,
         });
       }
 
@@ -174,15 +276,8 @@ export class HostSessionCatalogCoordinator {
       if (input.kind === 'list_continue' && cursor === undefined) {
         return queryFailure('invalid_request', 'Session cursor is invalid');
       }
-      const filter =
-        input.kind === 'list_start'
-          ? canonicalFilter(input.filter)
-          : resolveContinuationFilter(input.filter, cursor);
-      if (filter === undefined) {
-        return queryFailure('invalid_request', 'Session cursor filter does not match');
-      }
       const pageResult = await this.#stores.listCatalogPage(
-        filter,
+        undefined,
         cursor,
         SESSION_CATALOG_PAGE_MAX_ITEMS,
         input.kind === 'list_continue' ? input.revision : undefined,
@@ -195,11 +290,62 @@ export class HostSessionCatalogCoordinator {
         });
       }
       return successQuery(
-        page(pageResult.records, pageResult.revision, pageResult.hasMore, filter),
+        page(pageResult.records, pageResult.revision, pageResult.hasMore, (record) =>
+          this.#projectCatalogQueryRecord(record),
+        ),
       );
     } catch {
       return queryFailure('persistence_failed', 'Session catalog is unavailable');
     }
+  }
+
+  async #querySharedSession(
+    principalId: string,
+  ): Promise<OperationOutcome<'session.shared.query'>> {
+    if (!this.#sessionAccessAuthority) {
+      return {
+        ok: false,
+        error: { code: 'operation_unavailable', message: 'Session sharing is unavailable' },
+      };
+    }
+    const grant = this.#sessionAccessAuthority.activeSessionGrantForPrincipal(
+      principalId,
+      'session_observation',
+    );
+    if (!grant) return { ok: true, result: { session: null } };
+    try {
+      const record = await this.#readCatalogRecordIfPresent(grant.sessionId);
+      const currentGrant = this.#sessionAccessAuthority.activeSessionGrantForPrincipal(
+        principalId,
+        'session_observation',
+      );
+      if (currentGrant?.grantId !== grant.grantId) {
+        return { ok: true, result: { session: null } };
+      }
+      return {
+        ok: true,
+        result: {
+          session: record
+            ? projectSharedSessionCatalogRecord(
+                record,
+                projectCatalogLiveRunState(this.#manager.runningTurnIds(record.header.id)),
+              )
+            : null,
+        },
+      };
+    } catch {
+      return {
+        ok: false,
+        error: { code: 'persistence_failed', message: 'Shared Session catalog is unavailable' },
+      };
+    }
+  }
+
+  #projectCatalogQueryRecord(record: SessionCatalogRecord): SessionCatalogItem {
+    return projectSessionCatalogRecord(
+      record,
+      projectCatalogLiveRunState(this.#manager.runningTurnIds(record.header.id)),
+    );
   }
 
   async #queryExecutionBoundary(
@@ -221,7 +367,80 @@ export class HostSessionCatalogCoordinator {
     }
   }
 
+  async #queryTurns(
+    input: SessionTurnsQueryInput,
+  ): Promise<OperationOutcome<'session.turns.query'>> {
+    try {
+      let maxContributions = input.maxContributions;
+      let throughSequence = input.throughSequence;
+      while (true) {
+        const page = await this.#stores.readTurnContributionsSnapshot(
+          input.sessionId,
+          throughSequence,
+          input.position,
+          maxContributions,
+        );
+        throughSequence = page.throughSequence;
+        const result = {
+          sessionId: input.sessionId,
+          throughSequence: page.throughSequence,
+          contributions: page.contributions.map(projectSessionTurnContributionForWire),
+          nextPosition: page.nextPosition,
+        };
+        const resultBytes = Buffer.byteLength(JSON.stringify(result), 'utf8');
+        if (resultBytes <= SESSION_TURN_QUERY_RESULT_MAX_BYTES) {
+          return { ok: true, result };
+        }
+        if (maxContributions === 1) {
+          throw new Error('Session turn contribution exceeds the wire limit');
+        }
+        maxContributions = Math.max(
+          1,
+          Math.min(
+            maxContributions - 1,
+            Math.floor(
+              (page.contributions.length * SESSION_TURN_QUERY_RESULT_MAX_BYTES) / resultBytes,
+            ),
+          ),
+        );
+      }
+    } catch (error) {
+      if (isNotFound(error)) return turnsFailure('not_found', 'Session does not exist');
+      return turnsFailure('persistence_failed', 'Session turns are unavailable');
+    }
+  }
+
+  async #queryTurnLandmarks(
+    input: SessionTurnLandmarksQueryInput,
+  ): Promise<OperationOutcome<'session.turn_landmarks.query'>> {
+    try {
+      const snapshot = await this.#stores.readTurnLandmarksSnapshot(
+        input.sessionId,
+        input.maxLandmarks,
+      );
+      return {
+        ok: true,
+        result: {
+          sessionId: input.sessionId,
+          throughSequence: snapshot.throughSequence,
+          landmarks: snapshot.landmarks.map(projectSessionTurnLandmarkForWire),
+        },
+      };
+    } catch (error) {
+      if (isNotFound(error)) {
+        return turnLandmarksFailure('not_found', 'Session does not exist');
+      }
+      return turnLandmarksFailure('persistence_failed', 'Session turn landmarks are unavailable');
+    }
+  }
+
   async #create(input: SessionCreateInput): Promise<OperationOutcome<'session.create'>> {
+    if (isWorkHubCoordinationSessionId(input.sessionId)) {
+      return createFailure(
+        'operation_conflict',
+        'Session identity is reserved for WorkHub coordination',
+      );
+    }
     let prepared: PreparedSessionCreate;
     try {
       prepared = await prepareCreate(input);
@@ -260,10 +479,11 @@ export class HostSessionCatalogCoordinator {
               ...(workspace.projectId === null ? {} : { projectId: workspace.projectId }),
               name: prepared.name,
               labels: [...prepared.labels],
-              backend: 'ai-sdk',
+              llmConnectionId: model.connectionId,
               llmConnectionSlug: model.connectionSlug,
               model: model.model,
               ...(input.thinkingLevel === undefined ? {} : { thinkingLevel: input.thinkingLevel }),
+              ...(input.toolProfile === undefined ? {} : { toolProfile: input.toolProfile }),
               permissionMode: prepared.permissionMode ?? policy.policy.chatDefaults.permissionMode,
               collaborationMode: input.collaborationMode ?? 'agent',
               orchestrationMode: input.orchestrationMode ?? 'default',
@@ -305,17 +525,28 @@ export class HostSessionCatalogCoordinator {
   #updateMetadata(
     input: SessionMetadataUpdateInput,
   ): Promise<OperationOutcome<'session.metadata.update'>> {
+    if (isWorkHubCoordinationSessionId(input.sessionId)) {
+      return Promise.resolve(
+        metadataFailure(
+          'operation_unavailable',
+          'WorkHub Coordination Session metadata requires WorkHub authority',
+        ),
+      );
+    }
     return this.#admission.run(input.sessionId, async (lease) => {
       try {
+        const current = await this.#stores.readHeaderRecordSnapshot(input.sessionId);
+        if (isWorkHubCoordinationSessionTarget(current.header)) {
+          throw new SessionOperationFailure(
+            'operation_unavailable',
+            'WorkHub Coordination Session metadata requires WorkHub authority',
+          );
+        }
         const labels =
           input.patch.labels === undefined
             ? undefined
-            : await this.#replaceUserLabels(
-                input.sessionId,
-                input.expectedRevision,
-                input.patch.labels,
-              );
-        const patch: Partial<SessionHeader> = {
+            : replaceUserLabels(current, input.expectedRevision, input.patch.labels);
+        const patch: SessionHeaderPatch = {
           ...(input.patch.name === undefined ? {} : normalizeSessionNamePatch(input.patch.name)),
           ...(labels === undefined ? {} : { labels }),
           ...(input.patch.isFlagged === undefined ? {} : { isFlagged: input.patch.isFlagged }),
@@ -332,44 +563,40 @@ export class HostSessionCatalogCoordinator {
     });
   }
 
-  async #replaceUserLabels(
-    sessionId: string,
-    expectedRevision: number,
-    requestedLabels: readonly string[],
-  ): Promise<string[]> {
-    const current = await this.#stores.readHeaderRecordSnapshot(sessionId);
-    if (current.revision !== expectedRevision) {
-      throw new SessionMetadataVersionConflictError(sessionId, expectedRevision, current.revision);
-    }
-    return replaceUserOwnedLabels(current.header.labels, requestedLabels);
-  }
-
   async #updateConfiguration(
     input: SessionConfigurationUpdateInput,
   ): Promise<OperationOutcome<'session.configuration.update'>> {
+    if (isWorkHubCoordinationSessionId(input.sessionId)) {
+      return configurationFailure(
+        'operation_conflict',
+        'WorkHub Coordination Session configuration requires WorkHub authority',
+      );
+    }
     return this.#admission.run(input.sessionId, async (lease) => {
       let commitAttempted = false;
       try {
         const current = await this.#stores.readHeaderRecordSnapshot(input.sessionId);
+        if (isWorkHubCoordinationSessionTarget(current.header)) {
+          return configurationFailure(
+            'operation_conflict',
+            'WorkHub Coordination Session configuration requires WorkHub authority',
+          );
+        }
         if (current.revision !== input.expectedRevision) {
           return configurationSuccess(revisionConflict(input.expectedRevision, current.revision));
         }
-        if (current.header.isArchived || current.header.status === 'archived') {
+        if (current.header.isArchived) {
           return configurationFailure(
             'operation_conflict',
             'Archived Session configuration cannot be changed',
           );
         }
 
-        const model = await this.#resolveModel(
-          input.configuration.modelTarget,
-          input.configuration.thinkingLevel ?? undefined,
-        );
-        const clearsConnectionBlock = current.header.blockedReason === 'NO_REAL_CONNECTION';
-        if (
-          !clearsConnectionBlock &&
-          sessionConfigurationMatches(current.header, model, input.configuration)
-        ) {
+        const configuration = await this.#mergeConfigurationPatch(current.header, input.patch);
+        const clearsConnectionBlock =
+          input.patch.modelTarget !== undefined &&
+          current.header.blockedReason === 'NO_REAL_CONNECTION';
+        if (!clearsConnectionBlock && sessionConfigurationMatches(current.header, configuration)) {
           return configurationSuccess({
             kind: 'committed',
             session: projectSessionCatalogRecord(
@@ -380,16 +607,8 @@ export class HostSessionCatalogCoordinator {
         commitAttempted = true;
         await this.#manager.transitionSessionConfiguration(input.sessionId, {
           expectedRevision: input.expectedRevision,
-          configuration: {
-            backend: 'ai-sdk',
-            llmConnectionSlug: model.connectionSlug,
-            model: model.model,
-            thinkingLevel: input.configuration.thinkingLevel ?? undefined,
-            connectionLocked: true,
-            permissionMode: input.configuration.permissionMode,
-            collaborationMode: input.configuration.collaborationMode,
-            orchestrationMode: input.configuration.orchestrationMode,
-          },
+          clearConnectionBlock: input.patch.modelTarget !== undefined,
+          configuration,
         });
         return configurationSuccess(await this.#committedUpdate(input.sessionId, lease));
       } catch (error) {
@@ -420,10 +639,22 @@ export class HostSessionCatalogCoordinator {
   async #relocateWorkspace(
     input: SessionWorkspaceRelocateInput,
   ): Promise<OperationOutcome<'session.workspace.relocate'>> {
+    if (isWorkHubCoordinationSessionId(input.sessionId)) {
+      return workspaceFailure(
+        'operation_conflict',
+        'WorkHub Coordination Session workspace requires WorkHub authority',
+      );
+    }
     return this.#admission.run(input.sessionId, async (lease) => {
       let commitAttempted = false;
       try {
         const current = await this.#stores.readHeaderRecordSnapshot(input.sessionId);
+        if (isWorkHubCoordinationSessionTarget(current.header)) {
+          return workspaceFailure(
+            'operation_conflict',
+            'WorkHub Coordination Session workspace requires WorkHub authority',
+          );
+        }
         if (current.revision !== input.expectedRevision) {
           return workspaceSuccess(revisionConflict(input.expectedRevision, current.revision));
         }
@@ -468,6 +699,13 @@ export class HostSessionCatalogCoordinator {
   ): Promise<OperationOutcome<'session.read_marker.set'>> {
     return this.#admission.run(input.sessionId, async (lease) => {
       try {
+        const current = await this.#stores.readHeaderRecordSnapshot(input.sessionId);
+        if (isWorkHubCoordinationSessionTarget(current.header)) {
+          return readMarkerFailure(
+            'operation_conflict',
+            'WorkHub Coordination Session read state requires WorkHub authority',
+          );
+        }
         await this.#stores.markSessionReadThroughMessage(
           input.sessionId,
           input.readThroughMessageId,
@@ -520,7 +758,10 @@ export class HostSessionCatalogCoordinator {
       return updateSuccess(revisionConflict(input.expectedRevision, error.actualVersion));
     }
     if (error instanceof SessionOperationFailure) {
-      return metadataFailure('invalid_request', error.message);
+      return metadataFailure(
+        error.code === 'operation_unavailable' ? 'operation_unavailable' : 'invalid_request',
+        error.message,
+      );
     }
     if (error instanceof SessionMetadataConflictError) {
       return metadataFailure('invalid_request', error.message);
@@ -568,10 +809,25 @@ export class HostSessionCatalogCoordinator {
     thinkingLevel: SessionCreateInput['thinkingLevel'],
   ): Promise<ResolvedSessionModel> {
     const selected = await this.#selectModelTarget(target);
-    const readiness = await this.#runtimePolicy.operations.resolveExecutionConnection(
-      selected.connectionSlug,
-    );
-    if (readiness.kind === 'not_found' || readiness.kind === 'disabled') {
+    const readiness = await this.#runtimePolicy.operations.resolveExecutionConnection({
+      kind: 'bound',
+      connectionId: selected.connectionId,
+      connectionSlug: selected.connectionSlug,
+    });
+    if (
+      selected.connectionId !== undefined &&
+      (readiness.kind === 'not_found' || readiness.kind === 'identity_mismatch')
+    ) {
+      throw new SessionOperationFailure(
+        'operation_conflict',
+        'Session model identity changed during selection',
+      );
+    }
+    if (
+      readiness.kind === 'not_found' ||
+      readiness.kind === 'identity_mismatch' ||
+      readiness.kind === 'disabled'
+    ) {
       throw new SessionOperationFailure(
         'invalid_request',
         'Session model connection is unavailable',
@@ -581,6 +837,16 @@ export class HostSessionCatalogCoordinator {
       throw new SessionOperationFailure(
         'operation_unavailable',
         'Session model connection is not ready',
+      );
+    }
+    // Refused before the Session is committed, not when a backend is later
+    // built for it: an upgraded installation keeps the credential, so nothing
+    // downstream of here would notice on its own. Covers the default target and
+    // an explicit one alike, which is what reaches Bot, CLI and scheduled runs.
+    if (readiness.kind === 'provider_retired') {
+      throw new SessionOperationFailure(
+        'invalid_request',
+        'Session model connection uses a sign-in that was removed from Maka',
       );
     }
     if (
@@ -593,8 +859,8 @@ export class HostSessionCatalogCoordinator {
       );
     }
     const connection = readiness.connection;
-    const model = connection.models.find((candidate) => candidate.id === selected.modelId);
-    if (!connection.enabledModelIds.includes(selected.modelId) || !model) {
+    const model = authorizeConnectionModel(connection, selected.modelId);
+    if (!model) {
       throw new SessionOperationFailure('invalid_request', 'Session model is not enabled');
     }
     if (isModelExplicitlyUnsupportedForChat(model)) {
@@ -627,16 +893,21 @@ export class HostSessionCatalogCoordinator {
         `Session model does not support thinking level ${thinkingLevel}`,
       );
     }
-    return { connectionSlug: connection.slug, model: selected.modelId };
+    return {
+      connectionId: connection.connectionId,
+      connectionSlug: connection.slug,
+      model: selected.modelId,
+    };
   }
 
   async #selectModelTarget(target: SessionModelTarget): Promise<{
     readonly connectionSlug: string;
-    readonly connectionId?: string;
+    readonly connectionId: string;
     readonly modelId: string;
   }> {
     if (target.kind === 'explicit') {
       return {
+        connectionId: target.connectionId,
         connectionSlug: target.connectionSlug,
         modelId: target.model,
       };
@@ -669,6 +940,56 @@ export class HostSessionCatalogCoordinator {
     };
   }
 
+  async #mergeConfigurationPatch(
+    current: SessionHeader,
+    patch: SessionConfigurationUpdateInput['patch'],
+  ): Promise<ResolvedSessionConfiguration> {
+    if (current.llmConnectionId === undefined && patch.modelTarget === undefined) {
+      throw new SessionOperationFailure(
+        'operation_conflict',
+        'Legacy Session configuration requires an explicit account selection',
+      );
+    }
+    const thinkingLevel =
+      patch.thinkingLevel === undefined
+        ? current.thinkingLevel
+        : (patch.thinkingLevel ?? undefined);
+    let model: {
+      readonly connectionId?: string;
+      readonly connectionSlug: string;
+      readonly model: string;
+    } = {
+      ...(current.llmConnectionId === undefined ? {} : { connectionId: current.llmConnectionId }),
+      connectionSlug: current.llmConnectionSlug,
+      model: current.model,
+    };
+    if (patch.modelTarget !== undefined) {
+      model = await this.#resolveModel(patch.modelTarget, thinkingLevel);
+    } else if (patch.thinkingLevel !== undefined && current.llmConnectionId !== undefined) {
+      const connectionId = current.llmConnectionId;
+      model = await this.#resolveModel(
+        {
+          kind: 'explicit',
+          connectionId,
+          connectionSlug: current.llmConnectionSlug,
+          model: current.model,
+        },
+        thinkingLevel,
+      );
+    }
+    return {
+      backend: 'ai-sdk',
+      ...(model.connectionId === undefined ? {} : { llmConnectionId: model.connectionId }),
+      llmConnectionSlug: model.connectionSlug,
+      model: model.model,
+      thinkingLevel,
+      connectionLocked: patch.modelTarget === undefined ? current.connectionLocked : true,
+      permissionMode: patch.permissionMode ?? current.permissionMode,
+      collaborationMode: patch.collaborationMode ?? current.collaborationMode ?? 'agent',
+      orchestrationMode: patch.orchestrationMode ?? current.orchestrationMode ?? 'default',
+    };
+  }
+
   async #readRuntimePolicy(): Promise<
     Awaited<ReturnType<SessionRuntimePolicyStores['runtimePolicy']['getSnapshot']>>
   > {
@@ -682,15 +1003,15 @@ export class HostSessionCatalogCoordinator {
 
 function sessionConfigurationMatches(
   header: SessionHeader,
-  model: ResolvedSessionModel,
-  configuration: SessionConfigurationUpdateInput['configuration'],
+  configuration: ResolvedSessionConfiguration,
 ): boolean {
   return (
     header.backend === 'ai-sdk' &&
-    header.llmConnectionSlug === model.connectionSlug &&
-    header.model === model.model &&
-    header.thinkingLevel === (configuration.thinkingLevel ?? undefined) &&
-    header.connectionLocked &&
+    header.llmConnectionId === configuration.llmConnectionId &&
+    header.llmConnectionSlug === configuration.llmConnectionSlug &&
+    header.model === configuration.model &&
+    header.thinkingLevel === configuration.thinkingLevel &&
+    header.connectionLocked === configuration.connectionLocked &&
     header.permissionMode === configuration.permissionMode &&
     (header.collaborationMode ?? 'agent') === configuration.collaborationMode &&
     (header.orchestrationMode ?? 'default') === configuration.orchestrationMode
@@ -732,7 +1053,7 @@ function createRequestFingerprint(
   prepared: PreparedSessionCreate,
 ): string {
   const identity = [
-    'session.create.v3',
+    'session.create.v4',
     input.sessionId,
     input.workspace.kind === 'project'
       ? ['project', input.workspace.projectId]
@@ -741,8 +1062,14 @@ function createRequestFingerprint(
     prepared.labels,
     input.modelTarget.kind === 'default'
       ? ['default']
-      : ['explicit', input.modelTarget.connectionSlug, input.modelTarget.model],
+      : [
+          'explicit',
+          input.modelTarget.connectionId,
+          input.modelTarget.connectionSlug,
+          input.modelTarget.model,
+        ],
     input.thinkingLevel ?? null,
+    input.toolProfile ?? null,
     prepared.permissionMode ?? ['runtime_default'],
     input.collaborationMode ?? 'agent',
     input.orchestrationMode ?? 'default',
@@ -750,7 +1077,10 @@ function createRequestFingerprint(
   return `sha256:${createHash('sha256').update(JSON.stringify(identity)).digest('hex')}`;
 }
 
-export function projectSessionCatalogRecord(record: SessionCatalogRecord): SessionCatalogItem {
+export function projectSessionCatalogRecord(
+  record: SessionCatalogRecord,
+  liveRunState?: SessionCatalogLiveRunState,
+): SessionCatalogItem {
   const { header, summary } = record;
   const projectedLabels = projectCatalogLabels(header.labels);
   const projection: SessionCatalogProjection = {
@@ -764,7 +1094,7 @@ export function projectSessionCatalogRecord(record: SessionCatalogRecord): Sessi
       hostCwd: header.cwd,
     },
     createdAt: header.createdAt,
-    lastUsedAt: header.lastUsedAt,
+    activityAt: record.activityAt,
     name: header.name,
     isFlagged: header.isFlagged,
     isArchived: header.isArchived,
@@ -779,6 +1109,7 @@ export function projectSessionCatalogRecord(record: SessionCatalogRecord): Sessi
       ? {}
       : { lastMessagePreview: summary.lastMessagePreview }),
     status: header.status,
+    ...(liveRunState === undefined ? {} : { liveRunState }),
     ...(header.blockedReason === undefined ? {} : { blockedReason: header.blockedReason }),
     ...(header.statusUpdatedAt === undefined ? {} : { statusUpdatedAt: header.statusUpdatedAt }),
     ...(header.parentSessionId === undefined ? {} : { parentSessionId: header.parentSessionId }),
@@ -809,6 +1140,7 @@ export function projectSessionCatalogRecord(record: SessionCatalogRecord): Sessi
     ...(header.revisionIndex === undefined ? {} : { revisionIndex: header.revisionIndex }),
     ...(header.revisionState === undefined ? {} : { revisionState: header.revisionState }),
     backend: header.backend,
+    llmConnectionId: header.llmConnectionId ?? null,
     llmConnectionSlug: header.llmConnectionSlug,
     connectionLocked: header.connectionLocked,
     model: header.model,
@@ -828,6 +1160,41 @@ export function projectSessionCatalogRecord(record: SessionCatalogRecord): Sessi
       reason: 'not_wire_representable',
     };
   }
+}
+
+function projectSharedSessionCatalogRecord(
+  record: SessionCatalogRecord,
+  liveRunState?: SessionCatalogLiveRunState,
+): SharedSessionCatalogProjection {
+  const { header, summary } = record;
+  const shared: SharedSessionCatalogProjection = {
+    kind: 'shared_session',
+    id: header.id,
+    revision: record.revision,
+    createdAt: header.createdAt,
+    activityAt: record.activityAt,
+    name: header.name,
+    ...(summary.lastMessageAt === undefined ? {} : { lastMessageAt: summary.lastMessageAt }),
+    ...(summary.lastMessagePreview === undefined
+      ? {}
+      : { lastMessagePreview: summary.lastMessagePreview }),
+    status: header.status,
+    ...(liveRunState === undefined ? {} : { liveRunState }),
+    ...(header.blockedReason === undefined ? {} : { blockedReason: header.blockedReason }),
+    ...(header.statusUpdatedAt === undefined ? {} : { statusUpdatedAt: header.statusUpdatedAt }),
+  };
+  return decodeSharedSessionCatalogProjection(shared);
+}
+
+function projectCatalogLiveRunState(
+  runningTurnIds: readonly string[],
+): SessionCatalogLiveRunState | undefined {
+  const uniqueRunningTurnIds = [...new Set(runningTurnIds)];
+  if (uniqueRunningTurnIds.length > SESSION_CATALOG_RUNNING_TURN_MAX_ITEMS) return undefined;
+  return {
+    schemaVersion: SESSION_CATALOG_LIVE_RUN_STATE_SCHEMA_VERSION,
+    runningTurnIds: uniqueRunningTurnIds,
+  };
 }
 
 function projectCatalogLabels(labels: readonly string[]): {
@@ -859,19 +1226,19 @@ function page(
   records: readonly SessionCatalogRecord[],
   revision: SessionCatalogRevision,
   hasMore: boolean,
-  filter: SessionCatalogFilter,
+  project: (record: SessionCatalogRecord) => SessionCatalogItem = projectSessionCatalogRecord,
 ): SessionCatalogQueryResult {
   const items: SessionCatalogItem[] = [];
   for (let index = 0; index < records.length; index += 1) {
     const record = records[index];
     if (!record) throw new Error('Session catalog record index is invalid');
-    const item = projectSessionCatalogRecord(record);
+    const item = project(record);
     const moreItems = index + 1 < records.length || hasMore;
     const candidate = {
       kind: 'page' as const,
       revision,
       sessions: [...items, item],
-      nextCursor: moreItems ? encodeCursor(record, filter) : null,
+      nextCursor: moreItems ? encodeCursor(record) : null,
     };
     if (Buffer.byteLength(JSON.stringify(candidate), 'utf8') > SESSION_CATALOG_RESULT_MAX_BYTES) {
       break;
@@ -887,25 +1254,22 @@ function page(
     kind: 'page',
     revision,
     sessions: items,
-    nextCursor: moreItems && lastRecord ? encodeCursor(lastRecord, filter) : null,
+    nextCursor: moreItems && lastRecord ? encodeCursor(lastRecord) : null,
   };
 }
 
-function encodeCursor(record: SessionCatalogRecord, filter: SessionCatalogFilter): string {
+function encodeCursor(record: SessionCatalogRecord): string {
   return Buffer.from(
     JSON.stringify({
       version: 1,
-      activityAt: catalogActivityAt(record.header),
+      activityAt: record.activityAt,
       sessionId: record.header.id,
-      filter,
     }),
     'utf8',
   ).toString('base64url');
 }
 
-interface DecodedSessionCatalogCursor extends SessionCatalogPageCursor {
-  readonly filter: SessionCatalogFilter;
-}
+type DecodedSessionCatalogCursor = SessionCatalogPageCursor;
 
 function decodeCursor(cursor: string): DecodedSessionCatalogCursor | undefined {
   if (!/^[A-Za-z0-9_-]+$/.test(cursor)) return undefined;
@@ -917,7 +1281,7 @@ function decodeCursor(cursor: string): DecodedSessionCatalogCursor | undefined {
       typeof value !== 'object' ||
       value === null ||
       Array.isArray(value) ||
-      Object.keys(value).sort().join(',') !== 'activityAt,filter,sessionId,version'
+      Object.keys(value).sort().join(',') !== 'activityAt,sessionId,version'
     ) {
       return undefined;
     }
@@ -927,71 +1291,17 @@ function decodeCursor(cursor: string): DecodedSessionCatalogCursor | undefined {
       !Number.isSafeInteger(record.activityAt) ||
       (record.activityAt as number) < 0 ||
       typeof record.sessionId !== 'string' ||
-      !/^[A-Za-z0-9_-]{1,128}$/.test(record.sessionId) ||
-      !isCursorFilter(record.filter)
+      !/^[A-Za-z0-9_-]{1,128}$/.test(record.sessionId)
     ) {
       return undefined;
     }
     return {
       activityAt: record.activityAt as number,
       sessionId: record.sessionId,
-      filter: record.filter,
     };
   } catch {
     return undefined;
   }
-}
-
-function canonicalFilter(filter: SessionCatalogFilter | undefined): SessionCatalogFilter {
-  return {
-    ...(filter?.isArchived === undefined ? {} : { isArchived: filter.isArchived }),
-    ...(filter?.isFlagged === undefined ? {} : { isFlagged: filter.isFlagged }),
-    ...(filter?.labelSlug === undefined ? {} : { labelSlug: filter.labelSlug }),
-  };
-}
-
-function resolveContinuationFilter(
-  requested: SessionCatalogFilter | undefined,
-  cursor: DecodedSessionCatalogCursor | undefined,
-): SessionCatalogFilter | undefined {
-  if (!cursor) return undefined;
-  if (requested === undefined) return cursor.filter;
-  const filter = canonicalFilter(requested);
-  return filtersEqual(filter, cursor.filter) ? filter : undefined;
-}
-
-function filtersEqual(left: SessionCatalogFilter, right: SessionCatalogFilter): boolean {
-  return (
-    left.isArchived === right.isArchived &&
-    left.isFlagged === right.isFlagged &&
-    left.labelSlug === right.labelSlug
-  );
-}
-
-function isCursorFilter(value: unknown): value is SessionCatalogFilter {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
-  const record = value as Record<string, unknown>;
-  if (
-    Object.keys(record).some(
-      (key) => key !== 'isArchived' && key !== 'isFlagged' && key !== 'labelSlug',
-    ) ||
-    (Object.hasOwn(record, 'isArchived') && typeof record.isArchived !== 'boolean') ||
-    (Object.hasOwn(record, 'isFlagged') && typeof record.isFlagged !== 'boolean')
-  ) {
-    return false;
-  }
-  if (!Object.hasOwn(record, 'labelSlug')) return true;
-  return (
-    typeof record.labelSlug === 'string' &&
-    record.labelSlug.length > 0 &&
-    Buffer.byteLength(record.labelSlug, 'utf8') <= SESSION_CATALOG_LABEL_MAX_BYTES &&
-    record.labelSlug.trim() === record.labelSlug &&
-    !/[\u0000-\u001f\u007f]/.test(record.labelSlug)
-  );
-}
-
-function catalogActivityAt(header: SessionHeader): number {
-  return header.lastMessageAt ?? header.lastUsedAt ?? header.createdAt;
 }
 
 function normalizedSessionName(name: string): string {
@@ -1002,6 +1312,25 @@ function normalizedSessionName(name: string): string {
 
 function normalizeSessionNamePatch(name: string): Pick<SessionHeader, 'name' | 'titleIsManual'> {
   return { name: normalizedSessionName(name), titleIsManual: true };
+}
+
+/**
+ * The caller already holds the admitted snapshot: re-reading it here would cost
+ * a second identical read inside one lease.
+ */
+function replaceUserLabels(
+  current: SessionHeaderSnapshot,
+  expectedRevision: number,
+  requestedLabels: readonly string[],
+): string[] {
+  if (current.revision !== expectedRevision) {
+    throw new SessionMetadataVersionConflictError(
+      current.header.id,
+      expectedRevision,
+      current.revision,
+    );
+  }
+  return replaceUserOwnedLabels(current.header.labels, requestedLabels);
 }
 
 function replaceUserOwnedLabels(
@@ -1074,6 +1403,20 @@ function executionBoundaryFailure(
   code: OperationError<'session.execution_boundary.query'>['code'],
   message: string,
 ): Extract<OperationOutcome<'session.execution_boundary.query'>, { readonly ok: false }> {
+  return { ok: false, error: { code, message } };
+}
+
+function turnsFailure(
+  code: OperationError<'session.turns.query'>['code'],
+  message: string,
+): Extract<OperationOutcome<'session.turns.query'>, { readonly ok: false }> {
+  return { ok: false, error: { code, message } };
+}
+
+function turnLandmarksFailure(
+  code: OperationError<'session.turn_landmarks.query'>['code'],
+  message: string,
+): Extract<OperationOutcome<'session.turn_landmarks.query'>, { readonly ok: false }> {
   return { ok: false, error: { code, message } };
 }
 

@@ -1,4 +1,22 @@
 #!/usr/bin/env node
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
 
 import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -20,8 +38,8 @@ const LEGACY_CONTENT_SHA256_BY_ID = {
   'computer-use': [
     'sha256:419088b2f8a0b12061b4811323abc381869ebe8fccbfc8f2bdfc96ff37a1e45b',
     'sha256:8e4404349be4e5493fcf13981624ed55198c0670a794fbf88e2bad81ddb79f6c',
+    'sha256:64aa2ef2d608e15792cc04eff7204731671b6b18818964ba95c65f53c694db62',
   ],
-  'drafter-diagram': ['sha256:4b93ebada2f061f1dfc3d99a21bc93a9d3d640f326af6230d15813bac6a5efcf'],
 };
 
 export function readBundledSkillSources(dir = sourcesDir) {
@@ -29,6 +47,16 @@ export function readBundledSkillSources(dir = sourcesDir) {
     .filter((entry) => entry.isDirectory() && ID_RE.test(entry.name))
     .map((entry) => entry.name)
     .sort((a, b) => a.localeCompare(b));
+
+  const sourceIds = new Set(ids);
+  const orphanedLegacyIds = Object.keys(LEGACY_CONTENT_SHA256_BY_ID).filter(
+    (id) => !sourceIds.has(id),
+  );
+  if (orphanedLegacyIds.length > 0) {
+    throw new Error(
+      `legacy content hashes reference missing bundled skills: ${orphanedLegacyIds.join(', ')}`,
+    );
+  }
 
   return ids.map((id) => {
     const body = readFileSync(join(dir, id, 'SKILL.md'), 'utf8');

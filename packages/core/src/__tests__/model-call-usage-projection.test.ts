@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -6,7 +25,6 @@ import {
   projectModelCallUsageBuckets,
   projectModelCallUsageLogs,
   projectModelCallUsageSummary,
-  resolveUsageRange,
   selectModelCallAttempts,
   usageStatusForAttempt,
 } from '../model-call-usage-projection.js';
@@ -88,6 +106,19 @@ describe('model-call usage projection', () => {
     assert.equal(summary.coverage.unpricedAttempts, 1);
   });
 
+  test('the summary sums recorded call time over the rows it counts', () => {
+    const summary = projectModelCallUsageSummary(
+      [
+        attempt({ attemptId: 'a', logicalCallId: 'a', latencyMs: 1_200 }),
+        attempt({ attemptId: 'b', logicalCallId: 'b', latencyMs: 300 }),
+      ],
+      { range: 'all' },
+      NOW,
+    );
+    assert.equal(summary.totalDurationMs, 1_500);
+    assert.equal(summary.totalRequests, 2);
+  });
+
   test('a genuinely free call is still counted as priced', () => {
     const summary = projectModelCallUsageSummary(
       [attempt({ attemptId: 'free', costUsd: 0 })],
@@ -120,6 +151,52 @@ describe('model-call usage projection', () => {
     assert.equal(summary.totalTokens.total, 0);
   });
 
+  test('does not let one malformed cache reading inflate the Session cache total', () => {
+    const summary = projectModelCallUsageSummary(
+      [
+        attempt({
+          attemptId: 'malformed-cache',
+          inputTokens: 100,
+          cacheReadInputTokens: 200,
+        }),
+        attempt({
+          attemptId: 'cache-miss',
+          inputTokens: 100,
+          cacheReadInputTokens: 0,
+        }),
+      ],
+      { range: 'all' },
+      NOW,
+    );
+
+    assert.equal(summary.totalTokens.input, 200);
+    assert.equal(summary.totalTokens.cacheRead, 100);
+  });
+
+  test('preserves provider cache-only evidence without inventing an input total', () => {
+    const cacheOnly = attempt({
+      attemptId: 'cache-only',
+      usageBasis: 'partial',
+      inputTokens: undefined,
+      outputTokens: undefined,
+      cacheReadInputTokens: 10,
+    });
+    const summary = projectModelCallUsageSummary([cacheOnly], { range: 'all' }, NOW);
+
+    assert.equal(summary.totalTokens.input, 0);
+    assert.equal(summary.totalTokens.cacheRead, 10);
+    assert.equal(summary.cacheHitRequests, 1);
+    assert.equal(summary.coverage.usagePartialAttempts, 1);
+
+    const bucket = projectModelCallUsageBuckets([cacheOnly], { range: 'all' }, 'provider', NOW)[0];
+    assert.equal(bucket?.inputTokens, 0);
+    assert.equal(bucket?.cacheReadTokens, 10);
+
+    const log = projectModelCallUsageLogs([cacheOnly], { range: 'all' }, NOW).rows[0];
+    assert.equal(log?.inputTokens, 0);
+    assert.equal(log?.cacheReadTokens, 10);
+  });
+
   test('a replayed attemptId is counted once', () => {
     const row = attempt({ attemptId: 'dup' });
     const summary = projectModelCallUsageSummary([row, row], { range: 'all' }, NOW);
@@ -127,21 +204,26 @@ describe('model-call usage projection', () => {
     assert.equal(Math.round(summary.totalCostUsd * 1000) / 1000, 0.004);
   });
 
-  test('filters by range, provider, model, and status', () => {
+  test('filters by Session, range, provider, model, and status', () => {
     const rows = [
       attempt({ attemptId: 'recent' }),
       attempt({ attemptId: 'old', completedAt: NOW - 40 * 86_400_000 }),
       attempt({ attemptId: 'other-provider', providerId: 'openai', modelId: 'gpt-x' }),
       attempt({ attemptId: 'failed', status: 'failed' }),
+      attempt({ attemptId: 'other-session', sessionId: 'session-2' }),
     ];
-    assert.equal(selectModelCallAttempts(rows, { range: '24h' }, NOW).rows.length, 3);
+    assert.equal(selectModelCallAttempts(rows, { range: '24h' }, NOW).rows.length, 4);
+    assert.equal(
+      selectModelCallAttempts(rows, { range: 'all', sessionId: 'session-1' }, NOW).rows.length,
+      4,
+    );
     assert.equal(
       selectModelCallAttempts(rows, { range: 'all', providerId: 'openai' }, NOW).rows.length,
       1,
     );
     assert.equal(
       selectModelCallAttempts(rows, { range: 'all', modelId: 'claude-opus-5' }, NOW).rows.length,
-      3,
+      4,
     );
     assert.equal(
       selectModelCallAttempts(rows, { range: 'all', status: 'error' }, NOW).rows.length,
@@ -149,7 +231,7 @@ describe('model-call usage projection', () => {
     );
     assert.equal(
       selectModelCallAttempts(rows, { range: 'all', status: 'all' }, NOW).rows.length,
-      4,
+      5,
     );
   });
 
@@ -217,20 +299,5 @@ describe('model-call usage projection', () => {
     // Coverage describes every matching record, not just the returned page.
     assert.equal(page.coverage.attempts, 3);
     assert.equal(page.coverage.unpricedAttempts, 1);
-  });
-
-  test('log rows carry the logical call id and session attribution', () => {
-    const page = projectModelCallUsageLogs([attempt()], { range: 'all' }, NOW);
-    const row = page.rows[0];
-    assert.equal(row?.callId, 'call-1');
-    assert.equal(row?.callKind, 'main');
-    assert.equal(row?.sessionId, 'session-1');
-    assert.equal(row?.turnId, 'turn-1');
-  });
-
-  test('resolves the standard ranges and explicit windows', () => {
-    assert.deepEqual(resolveUsageRange('all', NOW), { from: 0, to: NOW });
-    assert.deepEqual(resolveUsageRange('24h', NOW), { from: NOW - 86_400_000, to: NOW });
-    assert.deepEqual(resolveUsageRange({ from: 5, to: 9 }, NOW), { from: 5, to: 9 });
   });
 });

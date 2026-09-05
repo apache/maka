@@ -1,21 +1,28 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-import {
-  isOrchestrationMode,
-  isTurnOrchestrationSource,
-  resolveEffectiveOrchestration,
-} from '../orchestration.js';
+import { resolveEffectiveOrchestration } from '../orchestration.js';
 
 describe('orchestration contract', () => {
-  test('legacy sessions resolve to the compatible default mode', () => {
-    assert.deepEqual(resolveEffectiveOrchestration(undefined, undefined), {
-      mode: 'default',
-      source: 'session',
-      agentSwarmAuthorization: 'none',
-    });
-  });
-
   test('a persisted swarm mode grants only the session-scoped swarm authorization', () => {
     assert.deepEqual(resolveEffectiveOrchestration('swarm', undefined), {
       mode: 'swarm',
@@ -49,13 +56,5 @@ describe('orchestration contract', () => {
         agentSwarmAuthorization: 'none',
       },
     );
-  });
-
-  test('validators accept only the public contract values', () => {
-    assert.equal(isOrchestrationMode('swarm'), true);
-    assert.equal(isOrchestrationMode('graph'), true);
-    assert.equal(isOrchestrationMode('parallel'), false);
-    assert.equal(isTurnOrchestrationSource('slash_command'), true);
-    assert.equal(isTurnOrchestrationSource('model_text'), false);
   });
 });

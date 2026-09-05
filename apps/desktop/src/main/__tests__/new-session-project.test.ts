@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { resolveDesktopSessionWorkspace } from '../new-session-project.js';
@@ -25,14 +44,23 @@ test('preserves an explicit no-Project directory as a Host-path target', async (
 });
 
 test('uses an explicit Project identity without trusting the Client directory', async () => {
+  const selected: unknown[] = [];
+  const projectSelection = {
+    ...selection(),
+    select: async (projectId: unknown) => {
+      selected.push(projectId);
+      return { project: { id: String(projectId) }, path: '/unexpected' };
+    },
+  };
   assert.deepEqual(
     await resolveDesktopSessionWorkspace(
       { cwd: '/stale/client/path', projectId: 'project-1' },
-      selection(),
+      projectSelection,
       { register: unexpected },
     ),
     { kind: 'project', projectId: 'project-1' },
   );
+  assert.deepEqual(selected, [], 'an explicit draft Project does not change Host selection');
 });
 
 test('uses the configured default before the current Project preference', async () => {
@@ -72,6 +100,28 @@ test('falls back to the current Host path when no Project preference exists', as
       { register: unexpected },
     ),
     { kind: 'host_path', path: '/standalone' },
+  );
+});
+
+test('requires a Host Project for remote session creation', async () => {
+  await assert.rejects(
+    () =>
+      resolveDesktopSessionWorkspace(
+        { cwd: '/client/path' },
+        selection(),
+        { register: unexpected },
+        { allowHostPath: false },
+      ),
+    /Select a project from the remote Runtime Host/,
+  );
+  assert.deepEqual(
+    await resolveDesktopSessionWorkspace(
+      { cwd: '/client/path', projectId: 'host-project' },
+      selection(),
+      { register: unexpected },
+      { allowHostPath: false },
+    ),
+    { kind: 'project', projectId: 'host-project' },
   );
 });
 

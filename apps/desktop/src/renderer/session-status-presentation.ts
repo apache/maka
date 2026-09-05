@@ -1,38 +1,43 @@
-/**
- * Pure presentation helpers for SessionStatus + SessionBlockedReason
- * used by the sidebar and chat header.
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
  *
- * Separated from the React component layer so the copy + tone mapping
- * can be unit-tested without a DOM, mirroring `session-health-notice.ts`
- * pattern.
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
- * Two contracts enforced here:
- *
- *  1. **Generalized blocked-reason copy** (@kenji review): UI labels
- *     never expose the raw `SessionBlockedReason` enum string. The
- *     mapping below is the canonical translation. New blocked reasons
- *     must extend the core enum AND this matrix together, or the
- *     `unknown` fallback applies.
- *
- *  2. **Status tone matrix**: each SessionStatus has a single visual
- *     tone (`accent / warning / destructive / info / success / muted`)
- *     consumed by both the SessionStatusIcon and the chat-header
- *     status badge. Aligns with the existing session-health-notice tone
- *     vocabulary.
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
  */
 
-import { SANDBOX_BOUNDARY_RESTART_CLOSURE_CLASS } from '@maka/core';
-import type { SessionBlockedReason, SessionStatus, SessionSummary, UiLocale } from '@maka/core';
-import {
-  describeBlockedReason,
-  presentSessionStatus,
-  type SessionStatusPresentation,
-  type SessionStatusTone,
-} from '@maka/ui';
+/**
+ * Renderer-side presentation rules that only Desktop has: which blocked reasons
+ * are worth acting on, and what to offer after a turn fails.
+ *
+ * Separated from the React component layer so the rules can be unit-tested
+ * without a DOM, mirroring the `session-health-notice.ts` pattern.
+ *
+ * Turning a `SessionStatus` into a label and a dot, and a `SessionBlockedReason`
+ * into copy, is NOT here — both live in `@maka/ui`'s file of the same name,
+ * which is also where the contract that a UI label never shows a raw enum
+ * identifier is stated and enforced. This file used to re-export those and
+ * document a tone matrix "consumed by both the SessionStatusIcon and the
+ * chat-header status badge", naming two consumers that do not exist; the tone
+ * layer and the re-exports are gone (#2984).
+ */
+
+import { SANDBOX_BOUNDARY_RESTART_CLOSURE_CLASS } from '@maka/core/sandbox-boundary';
+import type { SessionBlockedReason, SessionSummary } from '@maka/core/session';
+import type { UiLocale } from '@maka/core/ui-locale';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 import { describeSessionErrorReason } from './session-error-presentation.js';
-export { presentSessionStatus } from '@maka/ui';
-export { describeBlockedReason } from '@maka/ui';
 
 /**
  * Session-level "blocked" is only worth interrupting the user when
@@ -55,50 +60,32 @@ export function isActionableBlocked(reason: SessionBlockedReason | undefined): b
 }
 
 /**
- * Normalize a SessionSummary as it enters renderer state: non-actionable
- * blocked sessions read as ordinary resumable sessions (`active`), so the
- * sidebar grouping, row icon, and chat-header badge all agree without
- * each consumer re-implementing the rule. Everything else passes through
- * unchanged.
+ * Normalize a SessionSummary as it enters renderer state. Authoritative
+ * known-empty live state clears a persisted `running` value that may have
+ * survived a crash, while an omitted live state keeps the legacy fallback.
+ * Non-actionable blocked sessions read as ordinary resumable sessions
+ * (`active`), so every display consumer agrees on the same projection.
  */
-export function normalizeSessionSummaryForDisplay(session: SessionSummary): SessionSummary {
-  if (session.status !== 'blocked' || isActionableBlocked(session.blockedReason)) return session;
-  const { blockedReason: _blockedReason, ...rest } = session;
+export function normalizeSessionSummaryForDisplay<T extends SessionSummary>(session: T): T {
+  const liveNormalized: T =
+    session.status === 'running' && session.runningTurnIds?.length === 0
+      ? ({ ...session, status: 'active' as const } as T)
+      : session;
+  if (
+    liveNormalized.status !== 'blocked' ||
+    isActionableBlocked(liveNormalized.blockedReason)
+  ) {
+    return liveNormalized;
+  }
+  const { blockedReason: _blockedReason, ...rest } = liveNormalized;
   void _blockedReason;
-  return { ...rest, status: 'active' };
-}
-
-/**
- * Status tone vocabulary — extends the session-health-notice tone set
- * (`info | warning | destructive`) with `accent` for active in-flight
- * work, `success` for completed work, and `muted` for terminal /
- * dormant buckets. Tones map to semantic color tokens in CSS
- * (`[data-status-tone="..."]`).
- */
-/**
- * Generalized phrasing for a blocked session. Surfaces a user-readable
- * cause without exposing the underlying enum identifier (per @kenji
- * review: UI must not leak `NO_REAL_CONNECTION` etc. directly).
- *
- * Returned text is suitable for `aria-label`, `title`, and inline
- * tooltip slots — short phrase, sentence-cased Chinese, no period.
- */
-/**
- * Compose a single-line aria-label / tooltip for a blocked session,
- * combining the status label and the cause. Example:
- *   "需要处理 · 等待配置可用模型连接"
- *
- * Non-blocked sessions return just the status label.
- */
-export function sessionStatusAriaLabel(status: SessionStatus, blockedReason?: SessionBlockedReason, locale: UiLocale = 'zh'): string {
-  const presentation = presentSessionStatus(status, locale);
-  if (status !== 'blocked') return presentation.label;
-  return `${presentation.label} · ${describeBlockedReason(blockedReason, locale)}`;
+  return { ...rest, status: 'active' } as T;
 }
 
 /**
  * Generalized Chinese phrasing for a failed turn's `errorClass`
- * Mirrors `describeBlockedReason()`; UI must never display the raw enum identifier.
+ * Mirrors `describeBlockedReason()` in `@maka/ui`, under the same rule: a UI
+ * label must never display the raw enum identifier.
  *
  * Recognized classes are written by the runtime via `classifyError()`,
  * `classifyHttpStatus()`, and `event.reason` / `event.code`. The set is
@@ -110,7 +97,7 @@ export function sessionStatusAriaLabel(status: SessionStatus, blockedReason?: Se
  * the UI; they just fall through to the catch-all until the mapping
  * is extended.
  */
-export function describeTurnErrorClass(errorClass: string | undefined, locale: UiLocale = 'zh'): string {
+export function describeTurnErrorClass(errorClass: string | undefined, locale: UiLocale): string {
   const copy = getDesktopConversationCopy(locale).turnError;
   if (!errorClass) return copy.unknown;
   const reasonDescription = describeSessionErrorReason(errorClass, locale);
@@ -126,7 +113,12 @@ export function describeTurnErrorClass(errorClass: string | undefined, locale: U
   if (lower === 'network' || lower.includes('network') || lower.includes('fetch') || lower.includes('econn')) {
     return copy.network;
   }
-  if (lower === 'provider_unavailable' || /\b5\d\d\b/.test(lower)) return copy.provider;
+  if (
+    lower === 'provider_unavailable' ||
+    lower === 'server_error' ||
+    /\b5\d\d\b/.test(lower)
+  )
+    return copy.provider;
   if (lower === 'tool_step_cap_reached') return copy.stepCap;
   if (lower === 'tool_failed' || lower.includes('tool')) return copy.tool;
   if (lower === 'permission_required' || lower.includes('permission')) return copy.permission;
@@ -134,53 +126,54 @@ export function describeTurnErrorClass(errorClass: string | undefined, locale: U
   return copy.unknown;
 }
 
-export type FailedTurnRecoveryAction = 'retry' | 'continue' | 'inspect_tool' | 'check_connection';
+/**
+ * How loud a failed turn should look. `warning` is for the outcomes where the
+ * work itself survived and the session just needs another nudge — the app
+ * restarted mid-turn, the step cap stopped it, a permission prompt outlived
+ * its turn. Everything else is an `error`: the user has to fix, pay, wait, or
+ * inspect something before the next attempt can differ from this one.
+ *
+ * The two tiers exist because a single `error` red made "restarted, press
+ * continue" look as severe as "billing is blocked". Matches how the rest of
+ * the app grades its Banners (`tone === 'destructive' ? 'error' : 'warning'`).
+ */
+export type FailedTurnSeverity = 'error' | 'warning';
 
-export interface FailedTurnRecoveryPresentation {
-  action: FailedTurnRecoveryAction;
-  label: string;
+export function deriveFailedTurnSeverity(errorClass: string | undefined): FailedTurnSeverity {
+  const lower = errorClass?.toLowerCase() ?? '';
+  if (lower === SANDBOX_BOUNDARY_RESTART_CLOSURE_CLASS) return 'warning';
+  if (lower === 'app_restarted') return 'warning';
+  if (lower === 'tool_step_cap_reached') return 'warning';
+  if (lower === 'permission_required' || lower.includes('permission')) return 'warning';
+  return 'error';
 }
 
-export interface FailedTurnRecoveryInput {
-  errorClass?: string;
+export interface FailedTurnExecutionState {
   partialOutputRetained: boolean;
   toolActivityCount: number;
   erroredToolCount: number;
 }
 
 /**
- * User-facing recovery guidance for a failed turn. This intentionally
- * separates "what failed" (`describeTurnErrorClass`) from "what should I do
- * next", following the same incident-summary discipline as the runtime logs:
- * do not ask the user to blindly retry if a tool already ran or partial output
- * was retained.
+ * What this turn already did before it failed, when that changes what sending
+ * the next message costs. A tool that ran may have had side effects the retry
+ * would repeat, so the user should read its result before deciding.
+ *
+ * This is a SECOND sentence, not a replacement for `describeTurnErrorClass()`.
+ * The retired `deriveFailedTurnRecovery()` ranked the two against each other
+ * and let the tool branch win, so `auth` plus one errored tool advised
+ * "inspect the tool result" and dropped "sign in again" — the only step that
+ * could actually change the outcome. Both facts are true at once and the
+ * banner has a slot for each (`title` / `description`), so neither has to
+ * lose. Returns undefined when the turn produced nothing worth re-reading.
  */
-export function deriveFailedTurnRecovery(input: FailedTurnRecoveryInput, locale: UiLocale = 'zh'): FailedTurnRecoveryPresentation {
-  const copy = getDesktopConversationCopy(locale).turnError.recovery;
-  const lower = input.errorClass?.toLowerCase() ?? '';
-  if (lower === SANDBOX_BOUNDARY_RESTART_CLOSURE_CLASS) {
-    // Not `continue`: the request was denied and its backend generation is
-    // gone, so there is nothing to resume into — retrying the turn is the
-    // only path that lets the agent ask again.
-    return { action: 'retry', label: copy.sandboxBoundaryClosed };
-  }
-  if (lower === 'app_restarted') {
-    return { action: 'continue', label: copy.safeResume };
-  }
-  if (lower === 'tool_step_cap_reached') {
-    return { action: 'continue', label: copy.stepCap };
-  }
-  if (input.erroredToolCount > 0 || lower === 'tool_failed' || lower.includes('tool')) {
-    return { action: 'inspect_tool', label: copy.toolError };
-  }
-  if (lower === 'provider_billing' || lower === 'auth' || lower.includes('auth') || lower === '401' || lower === '403') {
-    return { action: 'check_connection', label: copy.connection };
-  }
-  if (input.partialOutputRetained) {
-    return { action: 'continue', label: copy.partial };
-  }
-  if (input.toolActivityCount > 0) {
-    return { action: 'inspect_tool', label: copy.toolRecord };
-  }
-  return { action: 'retry', label: copy.retry };
+export function describeFailedTurnExecutionState(
+  state: FailedTurnExecutionState,
+  locale: UiLocale,
+): string | undefined {
+  const copy = getDesktopConversationCopy(locale).turnError.executionState;
+  if (state.erroredToolCount > 0) return copy.erroredTool;
+  if (state.toolActivityCount > 0) return copy.toolRan;
+  if (state.partialOutputRetained) return copy.partialOutput;
+  return undefined;
 }

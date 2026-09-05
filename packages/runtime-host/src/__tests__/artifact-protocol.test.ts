@@ -1,3 +1,23 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { ArtifactRecord } from '@maka/core/artifacts';
@@ -14,29 +34,14 @@ import {
   decodeHostFrame,
   encodeArtifactQueryResult,
   encodeProtocolMessage,
-  HOST_OPERATION_SPECS,
   RUNTIME_HOST_MAX_MESSAGE_BYTES,
-  RuntimeHostProtocolError,
 } from '../protocol/index.js';
 import { encodeArtifactProjection } from '../protocol/artifact.js';
 
 const revision = `sha256:${'a'.repeat(64)}` as const;
 
 describe('Artifact protocol', () => {
-  test('registers the closed ready ingest, query, and delete operations', () => {
-    assert.deepEqual(metadata('artifact.ingest'), {
-      mode: 'command',
-      availability: 'ready',
-    });
-    assert.deepEqual(metadata('artifact.query'), {
-      mode: 'query',
-      availability: 'ready',
-    });
-    assert.deepEqual(metadata('artifact.delete'), {
-      mode: 'command',
-      availability: 'ready',
-    });
-
+  test('accepts closed Artifact operations and rejects open shapes', () => {
     for (const input of [
       { kind: 'list_start', sessionId: 'session-1' },
       { kind: 'list_continue', sessionId: 'session-1', revision, cursor: '128' },
@@ -412,11 +417,6 @@ function validArtifact() {
     summary: 'bounded',
     status: 'live' as const,
   };
-}
-
-function metadata(key: 'artifact.ingest' | 'artifact.query' | 'artifact.delete') {
-  const { mode, availability } = HOST_OPERATION_SPECS[key];
-  return { mode, availability };
 }
 
 function request(

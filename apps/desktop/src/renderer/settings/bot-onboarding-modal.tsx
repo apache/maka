@@ -1,9 +1,28 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   BotOnboardingBrand,
   BotOnboardingProvider,
   BotOnboardingSnapshot,
-} from '@maka/core';
+} from '@maka/core/bot-onboarding';
 import { Spinner } from '@astryxdesign/core';
 import {
   Button,
@@ -232,7 +251,7 @@ function statusCopy(
   starting: boolean,
   error: string | null,
   copy: BotSettingsCopy['onboarding']['providers'][BotOnboardingProvider],
-  locale: 'zh' | 'en' = 'zh',
+  locale: 'zh-CN' | 'zh-TW' | 'en' = 'zh-CN',
 ): string {
   const shared = getBotSettingsCopy(locale).onboarding;
   if (starting) return shared.generating;
@@ -244,12 +263,12 @@ function statusCopy(
     // PR1197 review (P0-3): honour the honest "saved but not connected" notice
     // instead of claiming a healthy connection.
     case 'connected': return snapshot.warning
-      ? (locale === 'zh' ? snapshot.warning : shared.connectedWarning)
+      ? (locale === 'zh-CN' ? snapshot.warning : shared.connectedWarning)
       : shared.connected(getBotSettingsCopy(locale).providers[snapshot.provider].label);
     case 'expired': return shared.expired;
     case 'denied': return shared.denied;
     case 'cancelled': return shared.cancelled;
-    case 'error': return locale === 'zh' ? (snapshot.error ?? shared.failed) : shared.failed;
+    case 'error': return locale === 'zh-CN' ? (snapshot.error ?? shared.failed) : shared.failed;
     default: return shared.preparing;
   }
 }

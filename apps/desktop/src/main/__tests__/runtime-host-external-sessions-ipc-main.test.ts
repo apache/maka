@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { IpcMain } from 'electron';
@@ -19,7 +38,18 @@ test('forwards bounded external Session requests and publishes imported Sessions
         listExternalSessions: async (input) => {
           requests.push(input);
           return {
-            sessions: [{ id: 'source-1', name: 'Source', hostCwd: '/external' }],
+            sessions: [
+              {
+                id: 'source-1',
+                name: 'Source',
+                hostCwd: '/external',
+                importState: {
+                  importedCount: 0,
+                  importedSessionIds: [],
+                  isImporting: false,
+                },
+              },
+            ],
             nextCursor: '16',
           };
         },
@@ -41,7 +71,18 @@ test('forwards bounded external Session requests and publishes imported Sessions
       cursor: '16',
     }),
     {
-      sessions: [{ id: 'source-1', name: 'Source', cwd: '/external' }],
+      sessions: [
+        {
+          id: 'source-1',
+          name: 'Source',
+          cwd: '/external',
+          importState: {
+            importedCount: 0,
+            importedSessionIds: [],
+            isImporting: false,
+          },
+        },
+      ],
       nextCursor: '16',
     },
   );
@@ -59,7 +100,7 @@ test('forwards bounded external Session requests and publishes imported Sessions
   assert.deepEqual(events, [{ reason: 'created', sessionId: 'imported-1' }]);
 });
 
-test('preserves commit uncertainty as a structured non-retryable IPC result', async () => {
+test('an uncertain commit still asks the shell to re-read the catalog', async () => {
   const events: unknown[] = [];
   const ipc = ipcHarness();
   registerRuntimeHostExternalSessionsIpc(
@@ -85,7 +126,12 @@ test('preserves commit uncertainty as a structured non-retryable IPC result', as
     }),
     { ok: false, reason: 'commit_outcome_unknown' },
   );
-  assert.deepEqual(events, []);
+  // The task may be in the catalog, so the shell has to look. The import page's
+  // own banner cannot be the only trace: 导入任务 is a Settings page, and the
+  // moment the user leaves it the banner is unmounted -- which is exactly when
+  // they come back and import the same conversation again. No id, because not
+  // knowing which task landed is what `commit_outcome_unknown` means.
+  assert.deepEqual(events, [{ reason: 'created', sessionId: undefined }]);
 });
 
 test('rejects malformed renderer requests before they reach the Host client', async () => {
@@ -159,7 +205,7 @@ function session(id: string): SessionCatalogProjection {
       hostCwd: '/workspace',
     },
     createdAt: 1,
-    lastUsedAt: 1,
+    activityAt: 1,
     name: 'Imported',
     isFlagged: false,
     isArchived: false,
@@ -168,6 +214,7 @@ function session(id: string): SessionCatalogProjection {
     hasUnread: false,
     status: 'active',
     backend: 'ai-sdk',
+    llmConnectionId: 'connection-1',
     llmConnectionSlug: 'default',
     connectionLocked: true,
     model: 'gpt-5',

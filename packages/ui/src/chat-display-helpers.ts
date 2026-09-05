@@ -1,6 +1,25 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * Small pure helpers backing the chat surface (TurnView,
- * RelativeTime, StreamingAssistantBubble, etc.) —
+ * RelativeTime, AssistantAnswerBubble, etc.) —
  * time formatters, turn duration + abort marker copy.
  *
  * PR-UI-LIB-EXTRACT-4 (round 5/10) introduced this module with a
@@ -12,7 +31,7 @@
  * Why this seam: duration formatting has ms→s→m bucket rules, and
  * the abort-marker label is i18n-able copy. Each rule was
  * previously buried between TurnView's 200-line JSX block and
- * StreamingAssistantBubble's rendering lifecycle; the bundle now
+ * the answer bubble's rendering lifecycle; the bundle now
  * sits as short pure functions easy to unit-test in isolation.
  *
  * PR-CHAT-CHROME-FOLLOWUP-0: `messageRoleLabel` / `avatarInitial`
@@ -21,22 +40,14 @@
  * sites.
  */
 
-import { uiLocaleToIntlLocale, type UiLocale } from '@maka/core';
+import type { UiLocale } from '@maka/core/ui-locale';
 import { getConversationCopy } from './conversation-copy.js';
 
-function createAbsoluteTimeFormat(locale: UiLocale): Intl.DateTimeFormat {
-  if (typeof Intl === 'undefined' || typeof Intl.DateTimeFormat !== 'function') {
-    return { format: (d: Date) => d.toISOString() } as unknown as Intl.DateTimeFormat;
-  }
-  return new Intl.DateTimeFormat(
-    uiLocaleToIntlLocale(locale),
-    { dateStyle: 'medium', timeStyle: 'short' },
-  );
-}
-
-export function formatAbsoluteTimestamp(ts: number, locale: UiLocale): string {
-  return createAbsoluteTimeFormat(locale).format(new Date(ts));
-}
+/* `formatAbsoluteTimestamp` used to live here as a second copy of the same
+   `Intl` options `@maka/core/relative-time` already owned, and it built a
+   formatter per call — the sidebar renders one per row for the row tooltip and
+   one for the row's accessible name. Its callers now read the core module
+   directly, so there is no second reading of a timestamp to keep in step. */
 
 /* `formatClockTime` (a 24-hour `HH:mm` for the user-message time) lived here
    until the meta row moved to Astryx's `Timestamp`. Locking the hour cycle was
@@ -65,7 +76,7 @@ export function formatTurnDuration(ms: number): string {
   return `${Math.floor(totalSeconds / 60)}m ${totalSeconds % 60}s`;
 }
 
-export function turnAbortMarkerLabel(abortSource: string | undefined, locale: UiLocale): string {
+export function turnAbortStatusLabel(abortSource: string | undefined, locale: UiLocale): string {
   const copy = getConversationCopy(locale).messages;
   switch (abortSource) {
     case 'renderer.stop_button': return copy.abortedByStop;

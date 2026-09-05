@@ -1,40 +1,51 @@
-import type { AppSettings, UpdateAppSettingsInput } from '@maka/core';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import type { UpdateAppSettingsInput } from '@maka/core/settings';
+import { normalizeUiLocalePreference } from '@maka/core/ui-locale';
 import {
   reconcileConnectionAfterEnabledModelsChange,
   type LlmConnection,
 } from '@maka/core/llm-connections';
+import { canonicalConnectionEffectiveBaseUrl } from '@maka/core/runtime-policy';
 import {
   type ConfigBundle,
-  type ConfigCategory,
-  type ConfigData,
   type ConnectionConflictStrategy,
-  type CredentialKind,
-  buildConfigBundle,
   planConnectionMerge,
-} from '@maka/storage';
-import { stripSettingsSecretsForExport } from './settings-ipc-helpers.js';
+} from '@maka/storage/config-transfer';
+import { type CredentialKind } from '@maka/storage/credential-store';
 
 /**
- * Desktop-side orchestration for config import/export. Kept store-injected and
- * Electron-free so it is unit-testable; the IPC handlers in main.ts are thin
- * wrappers that supply the real stores + file dialogs.
- *
- * The credential category (opt-in, plaintext) is gathered by walking the
- * connection list and reading each slug's connection credentials — the
- * credential store exposes no bulk-list, so enumeration is the only path.
+ * Electron-free config import orchestration. Runtime Host owns export because
+ * it is the authority for connection, credential, and memory state.
  */
 
 export interface ExportedCredential {
   slug: string;
   kind: CredentialKind;
   value: string;
+  connection?: {
+    providerType: LlmConnection['providerType'];
+    effectiveBaseUrl: string;
+  };
 }
 
-const CONNECTION_CREDENTIAL_KINDS: readonly CredentialKind[] = [
-  'api_key',
-  'oauth_token',
-  'request_headers',
-];
 const VALID_CREDENTIAL_KINDS: ReadonlySet<string> = new Set<CredentialKind>([
   'api_key',
   'oauth_token',
@@ -47,55 +58,13 @@ const VALID_CREDENTIAL_KINDS: ReadonlySet<string> = new Set<CredentialKind>([
 
 export interface ConfigTransferDeps {
   connectionStore: { list(): Promise<LlmConnection[]>; save(c: LlmConnection): Promise<LlmConnection> };
-  settingsStore: { get(): Promise<AppSettings>; update(patch: UpdateAppSettingsInput): Promise<AppSettings> };
-  credentialStore: {
-    getSecret(slug: string, kind: CredentialKind): Promise<string | null>;
-    setSecret(slug: string, kind: CredentialKind, value: string): Promise<void>;
+  settingsStore: {
+    update(patch: UpdateAppSettingsInput): Promise<{ skippedCredentials: number }>;
   };
-  readMemory(): Promise<string | null>;
+  credentialStore: {
+    setSecret(entry: ExportedCredential): Promise<boolean>;
+  };
   writeMemory(content: string): Promise<void>;
-  appVersion: string;
-}
-
-export async function gatherConfigExport(
-  categories: readonly ConfigCategory[],
-  deps: ConfigTransferDeps,
-): Promise<ConfigBundle> {
-  const selected = new Set(categories);
-  const data: ConfigData = {};
-
-  const connections = selected.has('connections') || selected.has('credentials')
-    ? await deps.connectionStore.list()
-    : [];
-
-  if (selected.has('connections')) {
-    data.connections = connections;
-  }
-
-  if (selected.has('settings')) {
-    const settings = await deps.settingsStore.get();
-    // When credentials are included, settings keeps its embedded secrets
-    // (proxy password, bot tokens, Tavily key); otherwise strip.
-    data.settings = selected.has('credentials') ? settings : stripSettingsSecretsForExport(settings);
-  }
-
-  if (selected.has('credentials')) {
-    const creds: ExportedCredential[] = [];
-    for (const connection of connections) {
-      for (const kind of CONNECTION_CREDENTIAL_KINDS) {
-        const value = await deps.credentialStore.getSecret(connection.slug, kind);
-        if (value) creds.push({ slug: connection.slug, kind, value });
-      }
-    }
-    data.credentials = creds;
-  }
-
-  if (selected.has('memory')) {
-    const memory = await deps.readMemory();
-    if (memory !== null) data.memory = memory;
-  }
-
-  return buildConfigBundle({ appVersion: deps.appVersion, data });
 }
 
 export interface ConfigImportResult {
@@ -111,12 +80,13 @@ export async function applyConfigImport(
   deps: ConfigTransferDeps,
 ): Promise<ConfigImportResult> {
   const result: ConfigImportResult = {};
-  // Credentials are only applied for connections actually written this import
-  // (created or overwritten). A slug the user chose to skip must not have its
-  // stored secret silently overwritten.
-  const appliedConnectionSlugs = new Set<string>();
+  // A connection snapshot limits credential writes to connections created or
+  // overwritten by this import. Credentials-only bundles instead require an
+  // existing slug whose provider and effective endpoint match the export.
+  const credentialTargets = new Map<string, LlmConnection>();
+  const hasConnectionSnapshot = Array.isArray(bundle.data.connections);
 
-  if (Array.isArray(bundle.data.connections)) {
+  if (hasConnectionSnapshot) {
     const incoming = bundle.data.connections as LlmConnection[];
     const existing = await deps.connectionStore.list();
     const plan = planConnectionMerge(existing, incoming, strategy);
@@ -130,23 +100,52 @@ export async function applyConfigImport(
         ? reconcileConnectionAfterEnabledModelsChange(connection, connection.enabledModelIds)
         : null;
       await deps.connectionStore.save(selection ? { ...connection, ...selection } : connection);
-      appliedConnectionSlugs.add(connection.slug);
+      credentialTargets.set(connection.slug, connection);
     }
     result.connections = {
       created: plan.create.length,
       overwritten: plan.overwrite.length,
       skipped: plan.skipped.length,
     };
+  } else if (
+    !bundle.includedData.includes('connections') &&
+    Array.isArray(bundle.data.credentials)
+  ) {
+    // Without a connection snapshot, the credential slug names an existing
+    // connection, while its binding proves that the slug still names the same
+    // credential destination. A bundle that does include connections still
+    // uses the create/overwrite set above so an explicit skip cannot overwrite
+    // the target's credential.
+    const existing = await deps.connectionStore.list();
+    for (const connection of existing) {
+      credentialTargets.set(connection.slug, connection);
+    }
   }
 
+  let settingsCredentialSkips = 0;
   if (bundle.data.settings && typeof bundle.data.settings === 'object') {
-    await deps.settingsStore.update(bundle.data.settings as unknown as UpdateAppSettingsInput);
+    const patch = bundle.data.settings as unknown as UpdateAppSettingsInput;
+    const importedPersonalization = patch.personalization as
+      | (NonNullable<UpdateAppSettingsInput['personalization']> & { uiLocale?: unknown })
+      | undefined;
+    const applied = await deps.settingsStore.update(
+      importedPersonalization && Object.hasOwn(importedPersonalization, 'uiLocale')
+        ? {
+            ...patch,
+            personalization: {
+              ...importedPersonalization,
+              uiLocale: normalizeUiLocalePreference(importedPersonalization.uiLocale),
+            },
+          }
+        : patch,
+    );
+    settingsCredentialSkips = applied.skippedCredentials;
     result.settings = { applied: true };
   }
 
   if (Array.isArray(bundle.data.credentials)) {
     let applied = 0;
-    let skipped = 0;
+    let skipped = settingsCredentialSkips;
     for (const entry of bundle.data.credentials as ExportedCredential[]) {
       const valid =
         entry &&
@@ -155,17 +154,29 @@ export async function applyConfigImport(
         entry.value.length > 0 &&
         VALID_CREDENTIAL_KINDS.has(entry.kind);
       if (!valid) continue;
-      // Only write a secret for a connection that was created or overwritten
-      // in this import. Skipped (or not-imported) slugs keep their existing
-      // stored secret untouched.
-      if (!appliedConnectionSlugs.has(entry.slug)) {
+      // Unknown targets and connections explicitly skipped by a connection
+      // snapshot keep their existing stored secret untouched.
+      const target = credentialTargets.get(entry.slug);
+      if (!target) {
         skipped += 1;
         continue;
       }
-      await deps.credentialStore.setSecret(entry.slug, entry.kind, entry.value);
-      applied += 1;
+      const binding =
+        entry.connection ??
+        (hasConnectionSnapshot ? credentialConnectionBinding(target) : undefined);
+      if (!matchesCredentialConnection(binding, target)) {
+        skipped += 1;
+        continue;
+      }
+      if (await deps.credentialStore.setSecret({ ...entry, connection: binding })) {
+        applied += 1;
+      } else {
+        skipped += 1;
+      }
     }
     result.credentials = { applied, skipped };
+  } else if (settingsCredentialSkips > 0) {
+    result.credentials = { applied: 0, skipped: settingsCredentialSkips };
   }
 
   if (typeof bundle.data.memory === 'string') {
@@ -174,4 +185,32 @@ export async function applyConfigImport(
   }
 
   return result;
+}
+
+export function matchesCredentialConnection(
+  binding: ExportedCredential['connection'] | undefined,
+  target: Pick<LlmConnection, 'providerType' | 'baseUrl'>,
+): boolean {
+  return (
+    binding !== undefined &&
+    binding.providerType === target.providerType &&
+    canonicalEndpoint(binding.effectiveBaseUrl) === canonicalConnectionEffectiveBaseUrl(target)
+  );
+}
+
+function credentialConnectionBinding(
+  connection: LlmConnection,
+): NonNullable<ExportedCredential['connection']> {
+  return {
+    providerType: connection.providerType,
+    effectiveBaseUrl: canonicalConnectionEffectiveBaseUrl(connection),
+  };
+}
+
+function canonicalEndpoint(value: string): string | null {
+  try {
+    return new URL(value).toString();
+  } catch {
+    return null;
+  }
 }

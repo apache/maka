@@ -1,5 +1,26 @@
-import type { SessionStartMode, UiLocale } from '@maka/core';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import type { UiLocale } from '@maka/core/ui-locale';
 import type { NavSelection } from '@maka/ui';
+import type { DesktopNewTaskTarget } from '../preload/bridge-contract.js';
+import type { SessionStartMode } from './application/contracts/session-start-mode.js';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.js';
 import {
   isNoRealConnectionError,
@@ -14,6 +35,7 @@ import {
 type ComposerImportOwner = {
   sessionId: string | undefined;
   navSection: NavSelection['section'];
+  newTaskDraftKey?: string;
 };
 
 type RefBox<T> = { current: T };
@@ -23,7 +45,12 @@ type ComposerFocusHandle = {
 };
 
 type ToastApi = {
-  error(title: string, description?: string): void;
+  error(
+    title: string,
+    description?: string,
+    diagnosticDetails?: string,
+    diagnosticTarget?: { profileId: string },
+  ): void;
 };
 
 export interface AppShellSessionStartActions {
@@ -43,7 +70,7 @@ export function createAppShellSessionStartActions(deps: {
   composerRef: RefBox<ComposerFocusHandle | null>;
   isShellSurfaceOwnerActive: (owner: ComposerImportOwner) => boolean;
   openSessionInChat: (sessionId: string, turnId?: string) => void;
-  newChatProjectId: string | null | undefined;
+  newTaskTarget: DesktopNewTaskTarget | undefined;
   sessionStartPendingRef: RefBox<boolean>;
   refreshOnboarding: () => void;
   refreshSessions: () => Promise<unknown>;
@@ -52,7 +79,11 @@ export function createAppShellSessionStartActions(deps: {
    * shared with the send path and the session-event stream. It carries the
    * 打开模型设置 action, which is the only thing that resolves this state.
    */
-  showModelSetupToast: (description: string, reason?: string) => void;
+  showModelSetupToast: (
+    description: string,
+    reason?: string,
+    diagnosticTarget?: { profileId: string },
+  ) => void;
   toastApi: ToastApi;
 }): AppShellSessionStartActions {
   const {
@@ -62,7 +93,7 @@ export function createAppShellSessionStartActions(deps: {
     composerRef,
     isShellSurfaceOwnerActive,
     openSessionInChat,
-    newChatProjectId,
+    newTaskTarget,
     sessionStartPendingRef,
     refreshOnboarding,
     refreshSessions,
@@ -73,14 +104,14 @@ export function createAppShellSessionStartActions(deps: {
 
   async function startModeSession(mode: SessionStartMode): Promise<boolean> {
     if (sessionStartPendingRef.current) return false;
+    if (!newTaskTarget) return false;
     const owner = captureComposerImportOwner();
     sessionStartPendingRef.current = true;
     try {
       // #1433: the one session-creation channel. Main derives the
       // permission boundary, name and labels from `mode`.
-      const session = await window.maka.sessions.create({
+      const session = await window.maka.newTasks.create(newTaskTarget, {
         mode,
-        ...(newChatProjectId !== undefined ? { projectId: newChatProjectId } : {}),
       });
       if (isShellSurfaceOwnerActive(owner)) {
         openSessionInChat(session.id);
@@ -100,13 +131,15 @@ export function createAppShellSessionStartActions(deps: {
       // is not the other one":
       //
       //   workspace_unavailable → `SESSION_WORKSPACE_UNAVAILABLE:` (project-context-root.ts)
-      //   setup_required        → `NO_REAL_CONNECTION:<reason>:`   (chat-readiness.ts)
+      //   setup_required        → `NO_REAL_CONNECTION:<reason>:`   (Runtime Host execution composition)
       //
       // Anything else is a genuine failure (storage, disk, a bug) and must
       // not be silently relabelled as "your setup is incomplete".
       if (isSessionWorkspaceUnavailableError(error)) {
         if (isShellSurfaceOwnerActive(owner)) {
-          showSessionWorkspaceUnavailableToast(toastApi, uiLocale);
+          showSessionWorkspaceUnavailableToast(toastApi, uiLocale, {
+            profileId: newTaskTarget.profileId,
+          });
         }
         return false;
       }
@@ -128,7 +161,11 @@ export function createAppShellSessionStartActions(deps: {
         refreshOnboarding();
         if (isShellSurfaceOwnerActive(owner)) {
           const reason = noRealConnectionReasonFromError(error);
-          showModelSetupToast(noRealConnectionSetupDescription(reason, uiLocale), reason);
+          showModelSetupToast(
+            noRealConnectionSetupDescription(reason, uiLocale),
+            reason,
+            { profileId: newTaskTarget.profileId },
+          );
         }
         return false;
       }
@@ -136,6 +173,8 @@ export function createAppShellSessionStartActions(deps: {
         toastApi.error(
           copy.sessionStartFailedTitle,
           localizedShellErrorMessage(error, copy.sessionStartFailedFallback, uiLocale),
+          undefined,
+          { profileId: newTaskTarget.profileId },
         );
       }
       return false;

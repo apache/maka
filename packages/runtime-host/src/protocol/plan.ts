@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import {
   PLAN_EXECUTION_STATUSES,
   PLAN_LIFECYCLE_REASON_MAX_BYTES,
@@ -11,7 +30,6 @@ import {
   type PlanEvent,
   type PlanExecution,
   type PlanExecutionStatus,
-  type LegacyPlanProjection,
   type PlanProposal,
   type PlanProposalStatus,
   type PlanStepDefinition,
@@ -391,7 +409,7 @@ function decodeProposal(value: unknown): PlanProposal {
       'status',
       'submittedAt',
     ],
-    ['supersedesProposalId', 'sourceExecutionId', 'overview', 'risks', 'legacyProjection'],
+    ['supersedesProposalId', 'sourceExecutionId', 'overview', 'risks'],
   );
   return {
     planId: requireEntityId(record.planId, 'planId'),
@@ -424,9 +442,6 @@ function decodeProposal(value: unknown): PlanProposal {
         }),
     status: requireProposalStatus(record.status),
     submittedAt: requireCount(record.submittedAt, 'Plan submittedAt'),
-    ...(record.legacyProjection === undefined
-      ? {}
-      : { legacyProjection: decodeLegacyProjection(record.legacyProjection) }),
   };
 }
 
@@ -444,14 +459,7 @@ function decodeExecution(value: unknown): PlanExecution {
       'startedAt',
       'updatedAt',
     ],
-    [
-      'completedAt',
-      'cancelledAt',
-      'interruptedAt',
-      'cancelReason',
-      'interruptionReason',
-      'legacyProjection',
-    ],
+    ['completedAt', 'cancelledAt', 'interruptedAt', 'cancelReason', 'interruptionReason'],
   );
   return {
     executionId: requireEntityId(record.executionId, 'executionId'),
@@ -489,18 +497,7 @@ function decodeExecution(value: unknown): PlanExecution {
       : {
           interruptionReason: lifecycleReason(record.interruptionReason, 'Plan interruptionReason'),
         }),
-    ...(record.legacyProjection === undefined
-      ? {}
-      : { legacyProjection: decodeLegacyProjection(record.legacyProjection) }),
   };
-}
-
-function decodeLegacyProjection(value: unknown): LegacyPlanProjection {
-  const record = requireExactRecord(value, 'Legacy Plan projection', ['truncated']);
-  if (record.truncated !== true) {
-    throw invalidProtocolFrame('Invalid legacy Plan projection');
-  }
-  return { truncated: true };
 }
 
 function decodeStepDefinition(value: unknown): PlanStepDefinition {

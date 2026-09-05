@@ -1,14 +1,35 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   ExternalSessionAdapterRegistry,
   type ExternalSessionAdapter,
-  type SessionHeader,
-  type StoredMessage,
-} from '@maka/core';
-import { headerToSummary } from '@maka/runtime';
+} from '@maka/core/external-session';
+import { type SessionHeader } from '@maka/core/session';
+import { headerToSummary } from '@maka/runtime/session-manager';
 import type { SessionCatalogRecord } from '@maka/storage/execution-stores';
-import { EXTERNAL_SESSION_RESULT_MAX_BYTES } from '../protocol/index.js';
+import {
+  EXTERNAL_SESSION_IMPORTED_SESSION_IDS_MAX_ITEMS,
+  EXTERNAL_SESSION_RESULT_MAX_BYTES,
+} from '../protocol/index.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import { HostExternalSessionCoordinator } from '../server/external-session-coordinator.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
@@ -16,7 +37,6 @@ import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 const context: ConnectionContext = {
   hostEpoch: 'external-session-test-epoch',
   connectionId: 'external-session-test-client',
-  surface: 'desktop',
   principal: 'local_os_user',
   acquireResidency: () => ({ release: () => undefined }),
 };
@@ -73,6 +93,114 @@ test('resolves a Project filter before calling the Host adapter', async () => {
   assert.deepEqual(filters, [{ cwd: '/resolved-project', includeArchived: true }]);
 });
 
+test('projects zero import state for never-imported source Sessions with one batch lookup', async () => {
+  const fixture = coordinatorFixture([adapterFixture({ count: 2 })]);
+
+  const outcome = await fixture.coordinator.handlers['external-session.catalog.query'](
+    { adapterId: 'codex' },
+    context,
+  );
+
+  assert.equal(outcome.ok, true);
+  if (!outcome.ok) assert.fail('Expected the external Session catalog');
+  assert.deepEqual(
+    outcome.result.sessions.map(({ importState }) => importState),
+    [
+      { importedCount: 0, importedSessionIds: [], isImporting: false },
+      { importedCount: 0, importedSessionIds: [], isImporting: false },
+    ],
+  );
+  assert.deepEqual(fixture.lookupCalls, [
+    {
+      adapterId: 'codex',
+      sourceSessionIds: ['source-0', 'source-1'],
+      recentSessionIdLimit: EXTERNAL_SESSION_IMPORTED_SESSION_IDS_MAX_ITEMS,
+    },
+  ]);
+});
+
+test('projects the complete durable import count and newest eight imported Session ids', async () => {
+  const importedSessionIds = Array.from({ length: 8 }, (_, index) => `imported-${12 - index}`);
+  const fixture = coordinatorFixture([adapterFixture()], {
+    lookupExternalSessionImports: async () => [
+      {
+        sourceSessionId: 'source-0',
+        livePublishedImportCount: 12,
+        recentSessionIds: importedSessionIds,
+      },
+    ],
+  });
+
+  const outcome = await fixture.coordinator.handlers['external-session.catalog.query'](
+    { adapterId: 'codex' },
+    context,
+  );
+
+  assert.equal(outcome.ok, true);
+  if (!outcome.ok) assert.fail('Expected the external Session catalog');
+  assert.deepEqual(outcome.result.sessions[0]?.importState, {
+    importedCount: 12,
+    importedSessionIds,
+    isImporting: false,
+  });
+});
+
+test('reports an unresolved import independently from durable import history', async () => {
+  let markReadStarted!: () => void;
+  const readStarted = new Promise<void>((resolve) => {
+    markReadStarted = resolve;
+  });
+  let releaseRead!: () => void;
+  const readRelease = new Promise<void>((resolve) => {
+    releaseRead = resolve;
+  });
+  const fixture = coordinatorFixture(
+    [
+      adapterFixture({
+        readSession: async (sourceSessionId) => {
+          markReadStarted();
+          await readRelease;
+          return {
+            sourceSessionId,
+            metadata: { name: 'Source 0', cwd: '/external' },
+            messages: [],
+          };
+        },
+      }),
+    ],
+    {
+      lookupExternalSessionImports: async () => [
+        {
+          sourceSessionId: 'source-0',
+          livePublishedImportCount: 2,
+          recentSessionIds: ['imported-2', 'imported-1'],
+        },
+      ],
+    },
+  );
+
+  const importing = fixture.coordinator.handlers['external-session.import'](
+    { adapterId: 'codex', sourceSessionId: 'source-0' },
+    context,
+  );
+  await readStarted;
+  const catalog = await fixture.coordinator.handlers['external-session.catalog.query'](
+    { adapterId: 'codex' },
+    context,
+  );
+
+  assert.equal(catalog.ok, true);
+  if (!catalog.ok) assert.fail('Expected the external Session catalog');
+  assert.deepEqual(catalog.result.sessions[0]?.importState, {
+    importedCount: 2,
+    importedSessionIds: ['imported-2', 'imported-1'],
+    isImporting: true,
+  });
+
+  releaseRead();
+  assert.equal((await importing).ok, true);
+});
+
 test('stops catalog pages before the encoded result limit', async () => {
   const adapter = adapterFixture({ count: 20 });
   adapter.listSessions = async () =>
@@ -81,7 +209,17 @@ test('stops catalog pages before the encoded result limit', async () => {
       name: `Source ${index}`,
       cwd: `/${'\u0000'.repeat(4_000)}`,
     }));
-  const fixture = coordinatorFixture([adapter]);
+  const fixture = coordinatorFixture([adapter], {
+    lookupExternalSessionImports: async (_adapterId, sourceSessionIds) =>
+      sourceSessionIds.map((sourceSessionId) => ({
+        sourceSessionId,
+        livePublishedImportCount: 8,
+        recentSessionIds: Array.from(
+          { length: 8 },
+          (_, index) => `${sourceSessionId}-${index}-${'x'.repeat(100)}`,
+        ),
+      })),
+  });
 
   const outcome = await fixture.coordinator.handlers['external-session.catalog.query'](
     { adapterId: 'codex' },
@@ -92,10 +230,12 @@ test('stops catalog pages before the encoded result limit', async () => {
   if (!outcome.ok) assert.fail('Expected a bounded catalog page');
   assert.ok(outcome.result.sessions.length > 0);
   assert.ok(outcome.result.sessions.length < 16);
-  assert.ok(outcome.result.nextCursor);
+  assert.equal(outcome.result.nextCursor, String(outcome.result.sessions.length));
   assert.ok(
     Buffer.byteLength(JSON.stringify(outcome.result), 'utf8') <= EXTERNAL_SESSION_RESULT_MAX_BYTES,
   );
+  assert.equal(fixture.lookupCalls.length, 1);
+  assert.equal(fixture.lookupCalls[0]?.sourceSessionIds.length, 16);
 });
 
 test('imports through the generic importer and treats repeats as independent copies', async () => {
@@ -115,18 +255,70 @@ test('imports through the generic importer and treats repeats as independent cop
   if (!first.ok || !second.ok) assert.fail('Expected both imports to commit');
   assert.notEqual(first.result.session.id, second.result.session.id);
   assert.deepEqual(
-    fixture.creates.map(({ input, messages }) => ({
+    fixture.creates.map(({ input, messages, externalOrigin }) => ({
       cwd: input.cwd,
       name: input.name,
-      backend: input.backend,
       messageTypes: messages.map(({ type }) => type),
+      externalOrigin,
     })),
     [
-      { cwd: '/external', name: 'Source 0', backend: 'ai-sdk', messageTypes: ['user'] },
-      { cwd: '/external', name: 'Source 0', backend: 'ai-sdk', messageTypes: ['user'] },
+      {
+        cwd: '/external',
+        name: 'Source 0',
+        messageTypes: ['user'],
+        externalOrigin: { adapterId: 'codex', sourceSessionId: 'source-0' },
+      },
+      {
+        cwd: '/external',
+        name: 'Source 0',
+        messageTypes: ['user'],
+        externalOrigin: { adapterId: 'codex', sourceSessionId: 'source-0' },
+      },
     ],
   );
   assert.equal(fixture.drainRequests(), 0);
+});
+
+test('coalesces a repeat import issued while the first is still running', async () => {
+  // The surface that asks cannot enforce this. 导入任务 is a Settings page the
+  // user is free to leave mid-import — the import deliberately continues here —
+  // and the page's in-flight state dies with it, so coming back and pressing
+  // 导入 again used to land a second task for one intent. A second window or
+  // the CLI would have done the same. Nothing is awaited between the two calls
+  // below, which is exactly that: two requests for one source, both live.
+  const fixture = coordinatorFixture([adapterFixture()]);
+
+  const [first, second] = await Promise.all([
+    fixture.coordinator.handlers['external-session.import'](
+      { adapterId: 'codex', sourceSessionId: 'source-0' },
+      context,
+    ),
+    fixture.coordinator.handlers['external-session.import'](
+      { adapterId: 'codex', sourceSessionId: 'source-0' },
+      context,
+    ),
+  ]);
+
+  assert.equal(first.ok, true);
+  assert.equal(second.ok, true);
+  if (!first.ok || !second.ok) assert.fail('Expected the coalesced import to commit');
+  // Same task, and only one of them was ever created. Both callers are told
+  // about it, so the one that clicked twice still gets taken to the result.
+  assert.equal(first.result.session.id, second.result.session.id);
+  assert.equal(fixture.creates.length, 1);
+  assert.equal(fixture.drainRequests(), 0);
+
+  // Only concurrent repeats collapse. Once the first has settled the source is
+  // importable again, which is the deliberate second-copy behaviour pinned by
+  // the test above.
+  const later = await fixture.coordinator.handlers['external-session.import'](
+    { adapterId: 'codex', sourceSessionId: 'source-0' },
+    context,
+  );
+  assert.equal(later.ok, true);
+  if (!later.ok) assert.fail('Expected a later repeat to commit its own copy');
+  assert.notEqual(later.result.session.id, first.result.session.id);
+  assert.equal(fixture.creates.length, 2);
 });
 
 test('reports conversion errors before persistence and store uncertainty after entry', async () => {
@@ -272,14 +464,12 @@ test('recovers or discards staged imported Sessions after restart', async () => 
 
 function coordinatorFixture(
   adapters: readonly ExternalSessionAdapter[],
-  storeOverrides: Partial<{
-    createImportedSession(
-      input: Parameters<HostStore['createImportedSession']>[0],
-      messages: readonly StoredMessage[],
-    ): Promise<SessionHeader>;
-    prepareImportedSessionHistory(sessionId: string): Promise<void>;
-    discardImportedSession(sessionId: string): Promise<void>;
-  }> = {},
+  storeOverrides: Partial<
+    Pick<HostStore, 'createImportedSession' | 'lookupExternalSessionImports'> & {
+      prepareImportedSessionHistory(sessionId: string): Promise<void>;
+      discardImportedSession(sessionId: string): Promise<void>;
+    }
+  > = {},
 ) {
   let sequence = 0;
   let drains = 0;
@@ -287,25 +477,46 @@ function coordinatorFixture(
   const records = new Map<string, SessionCatalogRecord>();
   const creates: Array<{
     input: Parameters<HostStore['createImportedSession']>[0];
-    messages: readonly StoredMessage[];
+    messages: Parameters<HostStore['createImportedSession']>[1];
+    externalOrigin: Parameters<HostStore['createImportedSession']>[2];
   }> = [];
-  const defaultCreate: HostStore['createImportedSession'] = async (input, messages) => {
+  const lookupCalls: Array<{
+    adapterId: string;
+    sourceSessionIds: readonly string[];
+    recentSessionIdLimit: number;
+  }> = [];
+  const defaultCreate: HostStore['createImportedSession'] = async (
+    input,
+    messages,
+    externalOrigin,
+  ) => {
     sequence += 1;
     const header = {
       ...sessionHeader(`imported-${sequence}`, input.cwd, input.name ?? 'Imported'),
       transcriptLedgerVersion: 0 as const,
     };
-    creates.push({ input, messages });
+    creates.push({ input, messages, externalOrigin });
     records.set(header.id, {
       header,
       revision: 1,
       committedAt: 1,
+      activityAt: header.lastMessageAt ?? header.createdAt,
       summary: headerToSummary(header),
     });
     return header;
   };
   const store: HostStore = {
     createImportedSession: storeOverrides.createImportedSession ?? defaultCreate,
+    lookupExternalSessionImports: async (adapterId, sourceSessionIds, recentSessionIdLimit) => {
+      lookupCalls.push({ adapterId, sourceSessionIds, recentSessionIdLimit });
+      return (
+        storeOverrides.lookupExternalSessionImports?.(
+          adapterId,
+          sourceSessionIds,
+          recentSessionIdLimit,
+        ) ?? []
+      );
+    },
     listHeaders: async () => [...records.values()].map((record) => record.header),
     readCatalogRecord: async (sessionId) => {
       const record = records.get(sessionId);
@@ -366,17 +577,18 @@ function coordinatorFixture(
       },
     }),
     creates,
+    lookupCalls,
     admission,
     seedStagingSession: () =>
       defaultCreate(
         {
           cwd: '/external',
-          backend: 'ai-sdk',
           llmConnectionSlug: 'default',
           model: 'gpt-5',
           permissionMode: 'ask',
         },
         [],
+        { adapterId: 'codex', sourceSessionId: 'source-0' },
       ),
     readHeader: (sessionId: string) => records.get(sessionId)?.header,
     hasRecord: (sessionId: string) => records.has(sessionId),
@@ -429,7 +641,6 @@ function sessionHeader(id: string, cwd: string, name: string): SessionHeader {
     workspaceRoot: '/workspace',
     cwd,
     createdAt: 1,
-    lastUsedAt: 1,
     name,
     titleIsManual: false,
     isFlagged: false,

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 // Unit test for MakaCuService, the supervisor between the maka-cu backend and
 // the executor child. Drives it against a MOCK executor (a small CommonJS node
 // script written to a temp dir) that speaks `maka.cu/2` — the real `maka-cu`
@@ -9,7 +28,7 @@
 // that was written but never flushed. Every one of those was a live defect.
 //
 // Run (from repo root):
-//   npm --workspace @maka/computer-use run test
+//   npm run build && npm --workspace @maka/computer-use run test:dist
 import assert from 'node:assert/strict';
 import { chmodSync, existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -113,6 +132,7 @@ process.stdin.on('data', function (chunk) {
 let workDir = '';
 let mockPath = '';
 const services: MakaCuService[] = [];
+const imageDirs: string[] = [];
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -153,6 +173,16 @@ async function waitForRecord(
   }
 }
 
+async function waitForPathRemoval(path: string, deadlineMs = 2000): Promise<void> {
+  const startedAt = Date.now();
+  while (existsSync(path)) {
+    if (Date.now() - startedAt >= deadlineMs) {
+      assert.fail(`${path} still exists after ${deadlineMs}ms`);
+    }
+    await delay(10);
+  }
+}
+
 function makeService(
   opts: {
     limits?: Partial<MakaCuLimits>;
@@ -187,6 +217,7 @@ function makeService(
   };
   const service = new MakaCuService(options);
   services.push(service);
+  imageDirs.push(imageDir);
   return { service, logPath, imageDir };
 }
 
@@ -205,7 +236,24 @@ after(async () => {
       // A disposed service disposing again is not a test failure.
     }
   }
-  if (workDir) await rm(workDir, { recursive: true, force: true });
+  // `dispose()` is deliberately fire-and-forget: it SIGTERMs the child and
+  // schedules an asynchronous image-directory purge on child exit (or on the
+  // shutdown-grace SIGKILL, at most `shutdownGraceMs` = 3s later). Deleting
+  // `workDir` while those purges — and a child still flushing its ndjson log —
+  // are in flight races `rm` against concurrent writers and fails with
+  // ENOTEMPTY (issue #3290). Every `makeService` image directory is purged by
+  // its `dispose()`, so waiting for them to vanish is a "children exited and
+  // purges finished" barrier. The wait is tolerant rather than asserting —
+  // purge failures are permitted by contract ("the next spawn purges it
+  // again") and are not what this teardown tests — and the retrying `rm`
+  // backstop then only absorbs stragglers, not an unbounded race.
+  const purgeDeadline = Date.now() + 10_000;
+  while (imageDirs.some((imageDir) => existsSync(imageDir)) && Date.now() < purgeDeadline) {
+    await delay(25);
+  }
+  if (workDir) {
+    await rm(workDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
 });
 
 describe('maka-cu supervisor: what the child may put on stdout', () => {
@@ -494,7 +542,6 @@ describe('maka-cu supervisor: shutdown', () => {
     void starting.catch(() => {});
     service.dispose();
     await starting.catch(() => {});
-    await delay(150);
-    assert.equal(existsSync(imageDir), false, `${imageDir} must not survive dispose()`);
+    await waitForPathRemoval(imageDir);
   });
 });

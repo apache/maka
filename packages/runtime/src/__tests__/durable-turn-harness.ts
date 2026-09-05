@@ -1,7 +1,30 @@
-import type { BackendSendInput, SessionEvent } from '@maka/core';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import type { BackendSendInput } from '@maka/core/backend-types';
+import type { SessionEvent } from '@maka/core/events';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
-import { createSessionEventMapMemory, mapSessionEventToRuntimeEvent } from '../ai-sdk-flow.js';
-import type { InvocationContext } from '../invocation-context.js';
+import {
+  createSessionEventMapMemory,
+  mapSessionEventToRuntimeEvent,
+} from '../session-event-runtime-mapper.js';
+import type { RuntimeEventMapContext } from '../session-event-runtime-mapper.js';
 
 export function createDurableTurnHarness(input: {
   turnId: string;
@@ -29,21 +52,11 @@ export function createDurableTurnHarness(input: {
   };
   const ledger: RuntimeEvent[] = [anchor];
   const memory = createSessionEventMapMemory();
-  const context: InvocationContext = {
+  const context: RuntimeEventMapContext = {
     sessionId,
     invocationId,
     runId,
     turnId: input.turnId,
-    source: 'desktop',
-    startedAt: anchor.ts,
-    request: {
-      sessionId,
-      turnId: input.turnId,
-      text: input.text,
-      source: 'desktop',
-      initialRuntimeEvent: anchor,
-    },
-    newId: () => `runtime-harness-${++id}`,
     now: () => now++,
   };
 
@@ -53,6 +66,8 @@ export function createDurableTurnHarness(input: {
     loadTurnRuntimeEvents: async (turnId: string) =>
       ledger.filter((event) => event.turnId === turnId),
     sendInput: (overrides: Partial<BackendSendInput> = {}): BackendSendInput => ({
+      invocationId,
+      runId,
       turnId: input.turnId,
       text: input.text,
       context: [],

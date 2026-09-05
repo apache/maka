@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import type {
   DailyReviewArchive,
@@ -6,8 +25,9 @@ import type {
   DailyReviewRange,
   DailyReviewSectionKey,
   DailyReviewSummary,
-} from '@maka/core';
-import { DAILY_REVIEW_RANGES, DAILY_REVIEW_SECTION_KEYS, uiLocaleToIntlLocale } from '@maka/core';
+} from '@maka/core/daily-review';
+import { DAILY_REVIEW_RANGES, DAILY_REVIEW_SECTION_KEYS } from '@maka/core/daily-review';
+import { uiLocaleToIntlLocale } from '@maka/core/ui-locale';
 import {
   Banner,
   Button,
@@ -352,10 +372,10 @@ export function DailyReviewPanel(props: {
               /* Section-local absence (DESIGN.md §10 tier 1): the range
                  stepper above is a scope control, not a filter, so this stays
                  compact and actionless. */
-              <EmptyState
+              (<EmptyState
                 isCompact
                 title={resolvedView?.scope.offsetDays === 0 && resolvedView.scope.range === 1 ? copy.emptyOverview.todayTitle : copy.emptyOverview.rangeTitle(displayedRangeLabel)}
-              />
+              />)
             )}
           </VStack>
         </div>
@@ -451,11 +471,11 @@ function DailyReviewReport(props: {
       ) : (
         /* Panel empty (DESIGN.md §10 tier 2): the whole report body is empty,
            so it carries icon and description. */
-        <EmptyState
+        (<EmptyState
           icon={<CalendarDays size={ICON_SIZE.empty} />}
           title={copy.archive.noContent}
           description={copy.archive.noContentHelp}
-        />
+        />)
       )}
     </VStack>
   );

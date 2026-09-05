@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { ModelInfo, ProviderType } from './llm-connections.js';
 import type { ThinkingOptions } from './model-thinking.js';
 import {
@@ -9,13 +28,18 @@ export interface ModelMetadata {
   displayName?: string;
   description?: string;
   lifecycle?: 'active' | 'beta' | 'alpha' | 'deprecated' | 'retired';
-  docsUrl?: string;
   contextWindow?: number;
   inputLimit?: number;
   maxOutputTokens?: number;
   knowledgeCutoff?: string;
   structuredOutput?: boolean;
   lastUpdated?: string;
+  /**
+   * models.dev prices the model at zero input cost. Marks free-tier
+   * candidates (e.g. opencode-free); display names are not a contract for
+   * this, several free models carry no "Free" suffix.
+   */
+  isFree?: boolean;
   capabilities?: ModelInfo['capabilities'];
   modalities?: ModelInfo['modalities'];
   /**
@@ -25,8 +49,32 @@ export interface ModelMetadata {
   thinkingOptions?: ThinkingOptions;
 }
 
-const generatedMetadata: Partial<Record<ProviderType, Record<string, ModelMetadata>>> =
-  GENERATED_MODELS_DEV_METADATA;
+type ModelsDevMetadata = Partial<Record<ProviderType, Record<string, ModelMetadata>>>;
+
+/**
+ * What this build shipped, before any refresh. Read it to compare a refresh
+ * against the snapshot; `lookupModelMetadata` already answers "what is true
+ * now" and is what every renderer should use.
+ */
+export const bundledModelMetadata: ModelsDevMetadata = GENERATED_MODELS_DEV_METADATA;
+let refreshedMetadata: ModelsDevMetadata | undefined;
+
+/**
+ * Replace the models.dev layer for this process, or pass `undefined` to return
+ * to the snapshot this build shipped.
+ *
+ * Whole table, never per model: once a refresh lands, the catalog says what
+ * upstream says, so a model upstream delisted stops being described here. The
+ * Runtime Host installs once at startup. Other processes keep the snapshot,
+ * and read Host-resolved catalog entries rather than their own merge.
+ */
+export function installRefreshedModelMetadata(metadata: ModelsDevMetadata | undefined): void {
+  refreshedMetadata = metadata;
+}
+
+function activeMetadata(): ModelsDevMetadata {
+  return refreshedMetadata ?? bundledModelMetadata;
+}
 const generatedModelProviderOverrides: Partial<
   Record<ProviderType, Record<string, { npm: string; api?: string }>>
 > = GENERATED_MODELS_DEV_MODEL_PROVIDER_OVERRIDES;
@@ -42,16 +90,26 @@ function generatedMetadataProviderType(providerType: ProviderType): ProviderType
   return GENERATED_METADATA_PROVIDER_ALIASES[providerType] ?? providerType;
 }
 
+/**
+ * Whether the active metadata describes this model at all. `lookupModelMetadata`
+ * answers "no" with an empty object, and callers were reading that sentinel by
+ * hand; the question they mean to ask is this one.
+ */
+export function hasModelMetadata(providerType: ProviderType, modelId: string): boolean {
+  return Object.keys(lookupModelMetadata(providerType, modelId)).length > 0;
+}
+
 export function lookupModelMetadata(providerType: ProviderType, modelId: string): ModelMetadata {
   const id = modelId.trim();
   const metadataProviderType = generatedMetadataProviderType(providerType);
-  const generated = generatedMetadata[metadataProviderType]?.[id];
+  const generated = activeMetadata()[metadataProviderType]?.[id];
+  const statics = staticModelMetadata();
   const override =
-    STATIC_MODEL_METADATA[providerType]?.[id] ??
+    statics[providerType]?.[id] ??
     (providerType === 'xai-oauth'
-      ? STATIC_MODEL_METADATA.xai?.[id]
+      ? statics.xai?.[id]
       : providerType === 'opencode-free'
-        ? STATIC_MODEL_METADATA.opencode?.[id]
+        ? statics.opencode?.[id]
         : undefined);
   if (!generated) return override ?? {};
   if (!override) return generated;
@@ -70,12 +128,13 @@ export function lookupModelMetadata(providerType: ProviderType, modelId: string)
  */
 export function modelMetadataIdsForProvider(providerType: ProviderType): string[] {
   const metadataProviderType = generatedMetadataProviderType(providerType);
+  const statics = staticModelMetadata();
   return Array.from(
     new Set([
-      ...Object.keys(generatedMetadata[metadataProviderType] ?? {}),
-      ...Object.keys(STATIC_MODEL_METADATA[providerType] ?? {}),
+      ...Object.keys(activeMetadata()[metadataProviderType] ?? {}),
+      ...Object.keys(statics[providerType] ?? {}),
       ...(metadataProviderType !== providerType
-        ? Object.keys(STATIC_MODEL_METADATA[metadataProviderType] ?? {})
+        ? Object.keys(statics[metadataProviderType] ?? {})
         : []),
     ]),
   );
@@ -91,95 +150,42 @@ export function lookupModelProviderOverride(
 /**
  * The request wire a model served over the OpenAI adapter must use.
  *
- * OpenAI's `gpt-5*` families and xAI's `grok-4.5` are served only over the
- * Responses API; every other model on the native OpenAI adapter uses Chat
- * Completions. This is the single declared source of that protocol split,
- * expressed through the {@link ModelInfo.apiProtocol} seam. It is consumed by
- * the runtime model factory and the conformance matrix.
+ * Provider/model routing facts live here even when the concrete Responses SDK
+ * and replay policy are delegated to a Runtime profile. This is the single
+ * declared source of the default protocol split, expressed through the
+ * {@link ModelInfo.apiProtocol} seam.
  */
 export function openAiAdapterApiProtocol(
   modelId: string,
   providerType?: ProviderType,
 ): 'openai-responses' | 'openai-chat' {
   const id = modelId.trim();
-  return (providerType === 'deepseek' && id === 'deepseek-v4-flash') ||
+  return (providerType === 'deepseek' && deepSeekModelSupportsResponses(id)) ||
+    (providerType === 'opencode-go' && id === 'muse-spark-1.2-contributor') ||
+    ((providerType === 'alibaba-token-plan-cn' || providerType === 'alibaba-token-plan') &&
+      id === 'qwen3.8-max') ||
     /^gpt-5/i.test(id) ||
     ((providerType === 'xai' || providerType === 'xai-oauth') && id === 'grok-4.5')
     ? 'openai-responses'
     : 'openai-chat';
 }
 
-/**
- * Anthropic model families whose every member reads images.
- *
- * The generated table is a snapshot of models.dev, so a Claude released after
- * that snapshot is simply absent from it — `lookupModelMetadata('anthropic',
- * 'claude-opus-5')` returns `{}` today. Absent used to resolve to "no vision",
- * which is the wrong default for this provider: every Claude in these families
- * accepts image input, and the fail-closed rule was written for text-only
- * models, not for models nobody has listed yet.
- *
- * The two mistakes are not symmetrical. Sending an image to a Claude that
- * turned out not to read it costs one turn and produces a message. Withholding
- * it silently drops the user's attachment and downgrades an image tool result
- * to a sentence, with nothing on screen to explain why, until someone
- * regenerates the table.
- *
- * Anthropic has used two id shapes, and both have to match. From Claude 4 on
- * the family comes first (`claude-opus-5`); before that the version came first
- * and the family sat behind it (`claude-3-5-sonnet-20241022`,
- * `claude-3-opus-20240229`). The pre-4 ids are the ones most likely to be
- * pinned by hand, none of them is in the generated table, and all of them read
- * images — so `(?:[\d.]+-)*` skips any leading version segments before the
- * family name.
- *
- * What must keep missing is the generation that genuinely cannot read images:
- * `claude-2.1`, `claude-2.0` and `claude-instant-*` have no family segment at
- * all, so they never reach the alternation.
- *
- * A connection that reports `vision` still wins over this, in both directions.
- */
+/** DeepSeek models whose first-party API contract includes the Responses wire. */
+export function deepSeekModelSupportsResponses(modelId: string): boolean {
+  const id = modelId.trim().toLowerCase();
+  return id === 'deepseek-v4-flash' || id === 'deepseek-v4-pro';
+}
+
+/** Vision-capable Claude families, including models newer than the generated snapshot. */
 const VISION_BY_DEFAULT = /^claude-(?:[\d.]+-)*(?:opus|sonnet|haiku|fable)\b/;
 
-/**
- * The providers whose bare `claude-*` ids are Anthropic's own models.
- *
- * Both fetch over the Anthropic protocol and both store the bare `{ id }`
- * entries that leave `vision` unknown, and `claude-subscription` is usually
- * where a new Claude becomes usable first — it is the same table of models
- * reached through a subscription instead of an API key.
- *
- * Deliberately narrower than "speaks the Anthropic protocol". `anthropic`
- * and `claude-subscription` are the only two whose base URL is Anthropic's own;
- * `anthropic-compatible`, `kimi-coding-plan` and `minimax-coding-plan` share
- * the wire format while serving somebody else's models, and a `claude-`
- * prefixed id there says nothing about what is behind it. The same goes for
- * aggregators like OpenRouter, which do serve Claude but under ids the
- * generated table already carries.
- */
+/** First-party paths where a bare `claude-*` id identifies an Anthropic model. */
 const VISION_BY_DEFAULT_PROVIDERS: ReadonlySet<ProviderType> = new Set<ProviderType>([
   'anthropic',
   'claude-subscription',
 ]);
 
-/**
- * Resolve whether a model accepts image input for the send path.
- *
- * A user declaration (`declaredVision`, from the relay connection's
- * `relayModelProfiles[modelId].vision`) wins over everything below:
- * for custom relays the user is the only one who actually knows the backing
- * model. Absent a declaration, stored `connection.models` win when they
- * declare `vision` explicitly (provider-fetched facts). But `model-fetcher`
- * stores bare `{ id }` entries for many providers, and older connections
- * predate any enrichment — so when `vision` is unknown we fall back to the
- * generated models.dev snapshot and access-path-specific in-repo overrides.
- *
- * Unknown then resolves to false — the send path stays fail-closed for
- * text-only models — with one exception: an unlisted Claude on one of
- * Anthropic's own providers resolves to true, because there absent means
- * "newer than the snapshot" rather than "text-only". See
- * {@link VISION_BY_DEFAULT}.
- */
+/** Resolve vision support by user declaration, inventory, metadata, then first-party Claude fallback. */
 export function resolveModelVisionSupport(
   providerType: ProviderType,
   models: readonly ModelInfo[] | undefined,
@@ -196,36 +202,6 @@ export function resolveModelVisionSupport(
     return metadata.capabilities.vision === true;
   }
   return VISION_BY_DEFAULT_PROVIDERS.has(providerType) && VISION_BY_DEFAULT.test(modelId.trim());
-}
-
-/**
- * Resolve the input modalities for one model, preferring an explicit provider
- * inventory and falling back to the generated models.dev facts. An empty
- * result is intentional: unknown models must not be treated as attachment
- * capable by default.
- */
-export function resolveModelInputModalities(
-  providerType: ProviderType,
-  models: readonly ModelInfo[] | undefined,
-  modelId: string,
-): NonNullable<ModelInfo['modalities']>['input'] {
-  const stored = models?.find((entry) => entry.id === modelId)?.modalities?.input;
-  if (stored !== undefined) return stored;
-  return lookupModelMetadata(providerType, modelId).modalities?.input ?? [];
-}
-
-export function resolveModelPdfSupport(
-  providerType: ProviderType,
-  models: readonly ModelInfo[] | undefined,
-  modelId: string,
-): boolean {
-  return resolveModelInputModalities(providerType, models, modelId).includes('pdf');
-}
-
-export function curatedCatalogFallbackModelsForProvider(
-  providerType: ProviderType,
-): readonly string[] | undefined {
-  return CURATED_CATALOG_FALLBACK_MODELS[providerType];
 }
 
 const REASONING_FUNCTION_CALLING = {
@@ -254,10 +230,9 @@ const ANTHROPIC_MODEL_OVERRIDES: Record<string, ModelMetadata> = {
   },
 };
 
-const CLAUDE_SUBSCRIPTION_MODEL_METADATA = displayMetadataOnly(
-  GENERATED_MODELS_DEV_METADATA.anthropic,
-  ANTHROPIC_MODEL_OVERRIDES,
-);
+function claudeSubscriptionModelMetadata(active: ModelsDevMetadata): Record<string, ModelMetadata> {
+  return displayMetadataOnly(active.anthropic ?? {}, ANTHROPIC_MODEL_OVERRIDES);
+}
 
 const GOOGLE_MODEL_OVERRIDES: Record<string, ModelMetadata> = {
   // Gemini 2.5 Flash disables thinking via the budget-zero wire; newer Gemini
@@ -267,32 +242,35 @@ const GOOGLE_MODEL_OVERRIDES: Record<string, ModelMetadata> = {
   },
 };
 
-const OPENAI_OAUTH_MODEL_METADATA: Record<string, ModelMetadata> = {
-  'gpt-5.6-sol': {
-    ...GENERATED_MODELS_DEV_METADATA.openai['gpt-5.6-sol']!,
-    contextWindow: 372_000,
-    thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh'] },
-  },
-  'gpt-5.5': {
-    ...GENERATED_MODELS_DEV_METADATA.openai['gpt-5.5']!,
-    contextWindow: 272_000,
-  },
-  'gpt-5.4': { ...GENERATED_MODELS_DEV_METADATA.openai['gpt-5.4']!, contextWindow: 272_000 },
-  'gpt-5.4-mini': {
-    ...GENERATED_MODELS_DEV_METADATA.openai['gpt-5.4-mini']!,
-    contextWindow: 272_000,
-  },
-  'gpt-5.3-codex-spark': GENERATED_MODELS_DEV_METADATA.openai['gpt-5.3-codex-spark']!,
-};
+// The OAuth path pins its own context windows over whatever the public
+// catalog says. Base facts come from the active table, falling back to the
+// shipped snapshot so a model upstream stops listing keeps a display name.
+function openAiOAuthBase(active: ModelsDevMetadata, modelId: string): ModelMetadata {
+  return active.openai?.[modelId] ?? GENERATED_MODELS_DEV_METADATA.openai[modelId] ?? {};
+}
 
-const SILICONFLOW_MODEL_OVERRIDES: Record<string, ModelMetadata> = Object.fromEntries(
-  Object.entries(GENERATED_MODELS_DEV_METADATA.siliconflow)
-    .filter(([, metadata]) => metadata.capabilities?.functionCalling)
-    .map(([id]) => [id, { capabilities: { chat: true } }]),
-);
+function openAiOAuthModelMetadata(active: ModelsDevMetadata): Record<string, ModelMetadata> {
+  return {
+    'gpt-5.6-sol': {
+      ...openAiOAuthBase(active, 'gpt-5.6-sol'),
+      contextWindow: 372_000,
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh'] },
+    },
+    'gpt-5.5': { ...openAiOAuthBase(active, 'gpt-5.5'), contextWindow: 272_000 },
+    'gpt-5.4': { ...openAiOAuthBase(active, 'gpt-5.4'), contextWindow: 272_000 },
+    'gpt-5.4-mini': { ...openAiOAuthBase(active, 'gpt-5.4-mini'), contextWindow: 272_000 },
+    'gpt-5.3-codex-spark': openAiOAuthBase(active, 'gpt-5.3-codex-spark'),
+  };
+}
 
-const VOLCENGINE_CODING_PLAN_DOCS = 'https://www.volcengine.com/docs/82379/1925114';
-const VOLCENGINE_AGENT_PLAN_DOCS = 'https://www.volcengine.com/docs/82379/2366394';
+function siliconflowModelOverrides(active: ModelsDevMetadata): Record<string, ModelMetadata> {
+  return Object.fromEntries(
+    Object.entries(active.siliconflow ?? {})
+      .filter(([, metadata]) => metadata.capabilities?.functionCalling)
+      .map(([id]) => [id, { capabilities: { chat: true } }]),
+  );
+}
+
 const VOLCENGINE_CODING_PLAN_MODEL_METADATA: Record<string, ModelMetadata> = {
   'ark-code-latest': planModel('Ark Code Latest', false),
   'doubao-seed-2.0-code': planModel('Doubao Seed 2.0 Code', true),
@@ -307,8 +285,18 @@ const VOLCENGINE_CODING_PLAN_MODEL_METADATA: Record<string, ModelMetadata> = {
   'kimi-k2.6': planModel('Kimi-K2.6', true, 256_000, 32_000),
   'kimi-k2.7-code': planModel('Kimi-K2.7-Code', true, 256_000, 32_000),
 };
+// Hand-maintained mirror of the official Agent Plan personal plan page
+// (docs.volcengine.com/docs/82379/2366394) and its model release/retirement
+// announcements (82379/2578669, 82379/2578673): the gateway has no
+// model-list endpoint its plan key can reach and models.dev has no snapshot.
+// The page's table lists windows as "1024k"/"128k"; transcribe those
+// literals as 1_024_000/128_000 (its prose "1M" is the same figure rounded).
+// Re-check the page before editing an entry here.
 const VOLCENGINE_AGENT_PLAN_MODEL_METADATA: Record<string, ModelMetadata> = {
   'ark-code-latest': agentPlanModel('Ark Code Latest', 256_000, 32_000, { vision: true }),
+  // The plan page lists "glm-5.3 (glm-latest)": thinking is on by default and
+  // cannot be turned off.
+  'glm-5.3': agentPlanModel('GLM-5.3', 1_024_000, 128_000),
   'doubao-seed-2.0-mini': agentPlanModel('Doubao Seed 2.0 Mini', 256_000, 128_000, {
     vision: true,
   }),
@@ -328,136 +316,194 @@ const VOLCENGINE_AGENT_PLAN_MODEL_METADATA: Record<string, ModelMetadata> = {
   'doubao-seed-2.0-pro': agentPlanModel('Doubao Seed 2.0 Pro', 256_000, 128_000, {
     lifecycle: 'deprecated',
   }),
-  'minimax-m2.7': agentPlanModel('MiniMax-M2.7', 200_000, 128_000),
-  'minimax-m3': agentPlanModel('MiniMax-M3', 512_000, 128_000, { vision: true }),
-  'glm-5.2': agentPlanModel('GLM-5.2', 1_024_000, 128_000),
+  'minimax-m2.7': agentPlanModel('MiniMax-M2.7', 200_000, 128_000, {
+    // Upstream retirement notice of 2026-08-04; the gateway routes to minimax-m3.
+    lifecycle: 'deprecated',
+  }),
+  'minimax-m3': agentPlanModel('MiniMax-M3', 1_024_000, 128_000, { vision: true }),
+  'glm-5.2': agentPlanModel('GLM-5.2', 1_024_000, 128_000, {
+    // Upstream service ended 2026-08-31; the gateway routes to glm-5.3.
+    lifecycle: 'deprecated',
+  }),
+  // Official alias of glm-5.3 (the plan page lists "glm-5.3 (glm-latest)").
   'glm-latest': agentPlanModel('GLM Latest', 1_024_000, 128_000),
-  'kimi-k2.6': agentPlanModel('Kimi-K2.6', 256_000, 32_000, { vision: true }),
+  'glm-5.3-flash': agentPlanModel('GLM-5.3-Flash', 1_024_000, 128_000, { vision: true }),
+  'kimi-k2.6': agentPlanModel('Kimi-K2.6', 256_000, 32_000, {
+    // Upstream service ended 2026-08-18; migrate to kimi-k2.7-code or kimi-k3.
+    lifecycle: 'deprecated',
+    vision: true,
+  }),
   'kimi-k2.7-code': agentPlanModel('Kimi-K2.7-Code', 256_000, 32_000, { vision: true }),
   'deepseek-v4-pro': agentPlanModel('DeepSeek-V4-Pro', 1_024_000, 384_000),
   'kimi-k3': agentPlanModel('Kimi-K3', 1_024_000, 128_000, { vision: true }),
 };
 
 // Ollama Cloud accepts reasoning_effort for every active reasoning model in its
-// generated catalog. GPT-OSS is the narrower exception and cannot be disabled.
+// generated catalog, whatever knob the model declares on its own.
 const OLLAMA_CLOUD_STANDARD_THINKING_OPTIONS: ThinkingOptions = {
   efforts: ['none', 'low', 'medium', 'high', 'max'],
   toggle: true,
 };
 
-const OLLAMA_CLOUD_GPT_OSS_THINKING_OPTIONS: ThinkingOptions = {
-  efforts: ['low', 'medium', 'high'],
-};
-
-const ollamaCloudThinkingModels: Record<string, ModelMetadata> = Object.fromEntries(
-  Object.entries(GENERATED_MODELS_DEV_METADATA['ollama-cloud'])
-    .filter(
-      ([, metadata]) => metadata.capabilities?.reasoning && metadata.lifecycle !== 'deprecated',
-    )
-    .map(([id]) => [
-      id,
-      {
-        thinkingOptions: id.startsWith('gpt-oss')
-          ? OLLAMA_CLOUD_GPT_OSS_THINKING_OPTIONS
-          : OLLAMA_CLOUD_STANDARD_THINKING_OPTIONS,
-      },
-    ]),
-);
+function ollamaCloudThinkingModels(active: ModelsDevMetadata): Record<string, ModelMetadata> {
+  return Object.fromEntries(
+    Object.entries(active['ollama-cloud'] ?? {})
+      .filter(
+        ([id, metadata]) =>
+          metadata.capabilities?.reasoning &&
+          metadata.lifecycle !== 'deprecated' &&
+          // GPT-OSS is the narrower exception and cannot be disabled. models.dev
+          // declares that set itself, so pinning it here would only restate it.
+          !id.startsWith('gpt-oss'),
+      )
+      .map(([id]) => [id, { thinkingOptions: OLLAMA_CLOUD_STANDARD_THINKING_OPTIONS }]),
+  );
+}
 
 // Facts that models.dev cannot express: provider wire controls and
 // access-path-specific aliases/limits. Standard model facts stay generated.
-const STATIC_MODEL_METADATA: Partial<Record<ProviderType, Record<string, ModelMetadata>>> = {
-  anthropic: ANTHROPIC_MODEL_OVERRIDES,
-  'claude-subscription': CLAUDE_SUBSCRIPTION_MODEL_METADATA,
-  google: GOOGLE_MODEL_OVERRIDES,
-  cohere: {
-    'command-a-plus-05-2026': {
-      thinkingOptions: { toggle: true, offBehavior: 'cohere-thinking-disabled' },
-    },
-    'command-a-reasoning-08-2025': {
-      thinkingOptions: { toggle: true, offBehavior: 'cohere-thinking-disabled' },
-    },
-  },
-  'gemini-cli': GOOGLE_MODEL_OVERRIDES,
-  'openai-codex': OPENAI_OAUTH_MODEL_METADATA,
-  siliconflow: SILICONFLOW_MODEL_OVERRIDES,
-  'tencent-coding-plan': {
-    'kimi-k2.5': { capabilities: { vision: false } },
-  },
-  'volcengine-ark': {
-    'doubao-seed-2-0-pro-260215': {
-      displayName: 'Doubao Seed 2.0 Pro',
-      lifecycle: 'active',
-      docsUrl: 'https://www.volcengine.com/docs/82379',
-      capabilities: { reasoning: true, functionCalling: true },
-      thinkingOptions: {
-        efforts: ['minimal', 'low', 'medium', 'high'],
-        toggle: true,
-        offBehavior: 'volcengine-thinking-disabled',
+//
+// Built over the active table rather than the shipped one, so the entries
+// derived from a provider's catalog cover models a refresh introduced.
+function buildStaticModelMetadata(active: ModelsDevMetadata): ModelsDevMetadata {
+  return {
+    anthropic: ANTHROPIC_MODEL_OVERRIDES,
+    'claude-subscription': claudeSubscriptionModelMetadata(active),
+    'alibaba-token-plan-cn': {
+      'qwen3.8-max': {
+        thinkingOptions: { efforts: ['none', 'low', 'medium', 'xhigh'], toggle: true },
       },
     },
-  },
-  'volcengine-coding-plan': VOLCENGINE_CODING_PLAN_MODEL_METADATA,
-  'volcengine-agent-plan': VOLCENGINE_AGENT_PLAN_MODEL_METADATA,
-  'tencent-token-plan': {
-    // hy3-preview is absent from the current snapshot; hy3's effort set now
-    // comes from the models.dev snapshot.
-    'hy3-preview': { thinkingOptions: { efforts: ['low', 'medium', 'high'] } },
-  },
-  deepinfra: {
-    'moonshotai/Kimi-K2.7-Code': {
-      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high'], toggle: true },
-    },
-  },
-  atlascloud: {
-    'qwen/qwen3.8-max': {
-      displayName: 'Qwen3.8 Max',
-      lifecycle: 'active',
-      capabilities: { chat: true, reasoning: true, functionCalling: true },
-    },
-  },
-  groq: {
-    // Groq documents reasoning_effort only for the gpt-oss family
-    // (low/medium/high) and qwen3.6-27b (none/default); see
-    // console.groq.com/docs/reasoning. models.dev currently declares
-    // ['none','default'] for qwen/qwen3-32b, which is qwen3.6's value set
-    // misapplied — qwen3-32b reasons with no knob, so it is pinned to no
-    // options until a live check proves otherwise. The gpt-oss family's
-    // effort sets now come from the models.dev snapshot.
-    'qwen/qwen3-32b': { thinkingOptions: { efforts: [] } },
-  },
-  openrouter: {
-    // gpt-5.6-sol and deepseek-v4-pro pin Maka-verified effort sets; the rest
-    // of openrouter's effort declarations come from the models.dev snapshot.
-    'openai/gpt-5.6-sol': {
-      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], toggle: true },
-    },
-    'deepseek/deepseek-v4-pro': { thinkingOptions: { efforts: ['high', 'xhigh'], toggle: true } },
-  },
-  'cloudflare-workers-ai': {
-    '@cf/moonshotai/kimi-k2.6': {
-      thinkingOptions: {
-        efforts: ['low', 'medium', 'high'],
-        toggle: true,
-        offBehavior: 'cloudflare-chat-template-thinking-false',
+    'alibaba-token-plan': {
+      'qwen3.8-max': {
+        thinkingOptions: { efforts: ['none', 'low', 'medium', 'xhigh'], toggle: true },
       },
     },
-  },
-  'ollama-cloud': ollamaCloudThinkingModels,
-  deepseek: {
-    'deepseek-v4-flash': {
-      capabilities: { ...REASONING_FUNCTION_CALLING, webSearch: true },
-      thinkingOptions: { efforts: ['high', 'max'], toggle: true },
+    google: GOOGLE_MODEL_OVERRIDES,
+    cohere: {
+      'command-a-plus-05-2026': {
+        thinkingOptions: { toggle: true, offBehavior: 'cohere-thinking-disabled' },
+      },
+      'command-a-reasoning-08-2025': {
+        thinkingOptions: { toggle: true, offBehavior: 'cohere-thinking-disabled' },
+      },
     },
-  },
-  'zai-coding-plan': {
-    // glm-5.1 / glm-5v-turbo / glm-4.5-air are absent from the current
-    // snapshot; their toggle facts are preserved here until they return.
-    'glm-5.1': { thinkingOptions: { toggle: true } },
-    'glm-5v-turbo': { thinkingOptions: { toggle: true } },
-    'glm-4.5-air': { thinkingOptions: { toggle: true } },
-  },
-};
+    'openai-codex': openAiOAuthModelMetadata(active),
+    siliconflow: siliconflowModelOverrides(active),
+    'tencent-coding-plan': {
+      'kimi-k2.5': { capabilities: { vision: false } },
+    },
+    'volcengine-ark': {
+      'doubao-seed-2-0-pro-260215': {
+        displayName: 'Doubao Seed 2.0 Pro',
+        lifecycle: 'active',
+        capabilities: { reasoning: true, functionCalling: true },
+        thinkingOptions: {
+          efforts: ['minimal', 'low', 'medium', 'high'],
+          toggle: true,
+          offBehavior: 'volcengine-thinking-disabled',
+        },
+      },
+    },
+    'volcengine-coding-plan': VOLCENGINE_CODING_PLAN_MODEL_METADATA,
+    'volcengine-agent-plan': VOLCENGINE_AGENT_PLAN_MODEL_METADATA,
+    'tencent-token-plan': {
+      // hy3-preview is absent from the current snapshot; hy3's effort set now
+      // comes from the models.dev snapshot.
+      'hy3-preview': { thinkingOptions: { efforts: ['low', 'medium', 'high'] } },
+    },
+    deepinfra: {
+      'moonshotai/Kimi-K2.7-Code': {
+        thinkingOptions: { efforts: ['none', 'low', 'medium', 'high'], toggle: true },
+      },
+    },
+    atlascloud: {
+      // vision is pinned false rather than left undeclared: Atlas Cloud's
+      // OpenAI-compatible /v1/chat/completions rejects an image_url content
+      // part with HTTP 400 even for its vision-branded models (verified
+      // 2026-09-05 against qwen/qwen3.8-max and qwen/qwen3-vl-235b-a22b-
+      // thinking; a text-only parts array on the same models returns 200).
+      // Declaring vision here would make the runtime send attachments the
+      // endpoint cannot accept.
+      'qwen/qwen3.8-max': {
+        displayName: 'Qwen3.8 Max',
+        lifecycle: 'active',
+        capabilities: { chat: true, reasoning: true, functionCalling: true, vision: false },
+      },
+    },
+    groq: {
+      // Groq documents reasoning_effort only for the gpt-oss family
+      // (low/medium/high) and qwen3.6-27b (none/default); see
+      // console.groq.com/docs/reasoning. qwen3-32b reasons with no knob, and
+      // models.dev no longer lists it at all, so this is the only thing that
+      // keeps a connection carrying the id from offering an effort menu.
+      'qwen/qwen3-32b': { thinkingOptions: { efforts: [] } },
+    },
+    openrouter: {
+      // gpt-5.6-sol pins the toggle models.dev omits; every other openrouter
+      // effort declaration comes from models.dev.
+      'openai/gpt-5.6-sol': {
+        thinkingOptions: {
+          efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
+          toggle: true,
+        },
+      },
+    },
+    'cloudflare-workers-ai': {
+      '@cf/moonshotai/kimi-k2.6': {
+        thinkingOptions: {
+          efforts: ['low', 'medium', 'high'],
+          toggle: true,
+          offBehavior: 'cloudflare-chat-template-thinking-false',
+        },
+      },
+    },
+    'ollama-cloud': ollamaCloudThinkingModels(active),
+    deepseek: {
+      'deepseek-v4-flash': {
+        capabilities: { ...REASONING_FUNCTION_CALLING, webSearch: true },
+        lastUpdated: '2026-08-24',
+        thinkingOptions: { efforts: ['low', 'high', 'max'], toggle: true },
+      },
+      'deepseek-v4-flash-vision-exp': {
+        capabilities: { vision: true, ...REASONING_FUNCTION_CALLING, webSearch: true },
+        thinkingOptions: { efforts: ['low', 'high', 'max'], toggle: true },
+        modalities: { input: ['text', 'image'], output: ['text'] },
+        displayName: 'DeepSeek-V4-Flash-Vision-Exp',
+        description:
+          'Experimental DeepSeek V4 Flash model for image understanding and multimodal agent tasks',
+        contextWindow: 1_000_000,
+        maxOutputTokens: 384_000,
+        structuredOutput: true,
+        lastUpdated: '2026-08-21',
+      },
+      'deepseek-v4-pro': {
+        capabilities: { ...REASONING_FUNCTION_CALLING, webSearch: true },
+        lastUpdated: '2026-08-13',
+        thinkingOptions: { efforts: ['low', 'high', 'max'], toggle: true },
+      },
+    },
+    'zai-coding-plan': {
+      // glm-5.1 / glm-5v-turbo / glm-4.5-air are absent from the current
+      // snapshot; their toggle facts are preserved here until they return.
+      'glm-5.1': { thinkingOptions: { toggle: true } },
+      'glm-5v-turbo': { thinkingOptions: { toggle: true } },
+      'glm-4.5-air': { thinkingOptions: { toggle: true } },
+    },
+  };
+}
+
+// Rebuilt when the active table is replaced, which happens at most once per
+// process; identity is the only signal that a refresh landed.
+let staticMetadataCache: { active: ModelsDevMetadata; value: ModelsDevMetadata } | undefined;
+
+function staticModelMetadata(): ModelsDevMetadata {
+  const active = activeMetadata();
+  if (staticMetadataCache?.active !== active) {
+    staticMetadataCache = { active, value: buildStaticModelMetadata(active) };
+  }
+  return staticMetadataCache.value;
+}
 
 function planModel(
   displayName: string,
@@ -468,7 +514,6 @@ function planModel(
   return {
     displayName,
     lifecycle: 'active',
-    docsUrl: VOLCENGINE_CODING_PLAN_DOCS,
     ...(contextWindow === undefined ? {} : { contextWindow }),
     ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
     capabilities: { ...REASONING_FUNCTION_CALLING, vision },
@@ -487,7 +532,6 @@ function agentPlanModel(
   return {
     displayName,
     lifecycle: options.lifecycle ?? 'active',
-    docsUrl: VOLCENGINE_AGENT_PLAN_DOCS,
     contextWindow,
     maxOutputTokens,
     capabilities: {
@@ -508,7 +552,6 @@ function displayMetadataOnly(
         displayName: metadata.displayName,
         ...(metadata.description !== undefined ? { description: metadata.description } : {}),
         lifecycle: metadata.lifecycle,
-        docsUrl: metadata.docsUrl,
         ...(metadata.knowledgeCutoff !== undefined
           ? { knowledgeCutoff: metadata.knowledgeCutoff }
           : {}),
@@ -538,12 +581,17 @@ function displayMetadataOnly(
  * that was genuinely withdrawn does NOT belong here — repairing that one onto a
  * different model is correct, because the original is gone.
  *
- * Lives beside CURATED_CATALOG_FALLBACK_MODELS because every target has to be an
- * id that list offers; a rename pointing at nothing sends reconciliation back to
- * the fallback this table exists to prevent.
+ * Every target has to be an id the provider's shipped baseline
+ * (`ProviderDefaults.fallbackModels`) offers; a rename pointing at nothing sends
+ * reconciliation back to the fallback this table exists to prevent.
  */
 export const CLAUDE_SUBSCRIPTION_MODEL_ID_ALIASES: Readonly<Record<string, string>> = {
   'claude-haiku-4-5-20251001': 'claude-haiku-4-5',
+};
+
+/** Token Plan's retired preview id remains a server-side alias of the formal model. */
+export const ALIBABA_TOKEN_PLAN_MODEL_ID_ALIASES: Readonly<Record<string, string>> = {
+  'qwen3.8-max-preview': 'qwen3.8-max',
 };
 
 /**
@@ -559,36 +607,9 @@ export const CLAUDE_SUBSCRIPTION_MODEL_ID_ALIASES: Readonly<Record<string, strin
 export function modelIdAliasesForProvider(
   providerType: ProviderType,
 ): Readonly<Record<string, string>> | undefined {
-  return providerType === 'claude-subscription' ? CLAUDE_SUBSCRIPTION_MODEL_ID_ALIASES : undefined;
+  if (providerType === 'claude-subscription') return CLAUDE_SUBSCRIPTION_MODEL_ID_ALIASES;
+  if (providerType === 'alibaba-token-plan-cn' || providerType === 'alibaba-token-plan') {
+    return ALIBABA_TOKEN_PLAN_MODEL_ID_ALIASES;
+  }
+  return undefined;
 }
-
-const CURATED_CATALOG_FALLBACK_MODELS: Partial<Record<ProviderType, readonly string[]>> = {
-  anthropic: [
-    'claude-sonnet-4-6',
-    'claude-opus-4-8',
-    'claude-haiku-4-5',
-    'claude-sonnet-4-5',
-    'claude-sonnet-4-5-20250929',
-    'claude-opus-4-1-20250805',
-  ],
-  'claude-subscription': [
-    'claude-opus-5',
-    'claude-sonnet-5',
-    'claude-sonnet-4-6',
-    'claude-opus-4-8',
-    'claude-haiku-4-5',
-    'claude-sonnet-4-5-20250929',
-  ],
-  openai: ['gpt-5.5', 'gpt-5.5-pro', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5'],
-  deepseek: ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-reasoner', 'deepseek-chat'],
-  google: ['gemini-3.5-flash', 'gemini-3.1-pro-preview', 'gemini-2.5-pro', 'gemini-2.5-flash'],
-  'gemini-cli': [
-    'gemini-3.5-flash',
-    'gemini-3.1-pro-preview',
-    'gemini-2.5-pro',
-    'gemini-2.5-flash',
-  ],
-  'zai-coding-plan': ['glm-5.2', 'glm-5.1', 'glm-5-turbo', 'glm-4.7', 'glm-4.5-air'],
-  MiniMax: ['MiniMax-M3'],
-  'MiniMax-cn': ['MiniMax-M3'],
-};

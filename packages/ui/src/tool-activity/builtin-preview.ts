@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * Re-export the shared quiet-panel formatting from `@maka/core` (#1065).
  *
@@ -13,19 +32,19 @@
 import {
   formatQuietJsonValue as coreFormatQuietJsonValue,
   formatToolInvocationLine as coreFormatToolInvocationLine,
-  type UiLocale,
-} from '@maka/core';
+} from '@maka/core/tool-quiet-preview';
+import { type UiLocale } from '@maka/core/ui-locale';
 import type { ToolActivityItem } from '../materialize.js';
-
-export type { QuietPreview } from '@maka/core';
 
 /** Desktop-adapted wrapper with an explicit resolved locale. */
 export function formatToolInvocationLine(
-  item: Pick<ToolActivityItem, 'toolName' | 'args' | 'activityKind'>,
+  item: Pick<ToolActivityItem, 'toolName' | 'args' | 'argsPreview' | 'activityKind'>,
   locale: UiLocale,
 ): string | undefined {
+  // Live Runtime Host frames carry only the bounded args preview; the durable
+  // transcript supplies full args at turn end. Format from whichever exists.
   return coreFormatToolInvocationLine(
-    { toolName: item.toolName, args: item.args },
+    { toolName: item.toolName, args: item.args ?? item.argsPreview },
     locale,
   );
 }
@@ -34,6 +53,6 @@ export function formatToolInvocationLine(
 export function formatQuietJsonValue(
   value: unknown,
   locale: UiLocale,
-): import('@maka/core').QuietPreview {
+): import('@maka/core/tool-quiet-preview').QuietPreview {
   return coreFormatQuietJsonValue(value, locale);
 }

@@ -1,34 +1,51 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, test } from 'node:test';
+import { after, describe, test } from 'node:test';
+import { DatabaseSync } from 'node:sqlite';
 import { createSqliteDeepResearchStore } from '../deep-research-store.js';
-import { acquireOperationalStateDatabase } from '../operational-state-store.js';
-import { createSqliteScheduledTaskStore } from '../scheduled-task-store.js';
+import {
+  createOperationalStateBackup,
+  restoreOperationalStateBackup,
+} from '../operational-state-backup.js';
+import { openInteractiveScheduledTaskStoreForWrite } from '../scheduled-task-store.js';
 import { createSqlitePlanStore } from '../plan-store.js';
-import { createSqliteTaskLedgerStore } from '../task-ledger-store.js';
+import { createSqliteSessionTodoStore } from '../session-todo-store.js';
+import { SQLITE_WORKFLOW_SCHEMA_VERSION } from '../sqlite-workflow-schema.js';
+import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '../root-authority.js';
+import {
+  removeTrackedControlDirectories,
+  trackControlDirectory,
+} from './fixtures/control-directory-hygiene.js';
+
+// The control directory of each resolved root lives outside that root, so a
+// temporary root's removal leaves it behind; reclaim the recorded rootIds here.
+after(removeTrackedControlDirectories);
 
 const SESSION_ID = 'session-workflow';
 
 describe('SQLite workflow stores', () => {
-  test('persists Task Ledger events and projections', async () => {
-    await withRoot(async (root) => {
-      const store = createSqliteTaskLedgerStore(root);
-      const { created } = await store.create(SESSION_ID, [{ subject: 'Implement SQLite' }]);
-      assert.equal(created[0]?.status, 'pending');
-      store.close();
-
-      const reopened = createSqliteTaskLedgerStore(root);
-      try {
-        assert.equal((await reopened.list(SESSION_ID))[0]?.subject, 'Implement SQLite');
-      } finally {
-        reopened.close();
-      }
-    });
-  });
-
-  test('persists Plan events and their projection', async () => {
+  test('persists Plan exclusively through events', async () => {
     await withRoot(async (root) => {
       const store = createSqlitePlanStore(root, {
         newId: (() => {
@@ -54,7 +71,413 @@ describe('SQLite workflow stores', () => {
       } finally {
         reopened.close();
       }
+
+      const database = new DatabaseSync(join(root, 'runtime.sqlite'), { readOnly: true });
+      try {
+        assert.equal(rowCount(database, 'workflow_plan_events'), 1);
+        assert.equal(tableExists(database, 'workflow_plan_projections'), false);
+      } finally {
+        database.close();
+      }
     });
+  });
+
+  test('migrates released workflow schema 9 projections to the current workflow schema', async () => {
+    await withRoot(async (root) => {
+      const planStore = createSqlitePlanStore(root, { newId: () => 'proposal-1', now: () => 100 });
+      const submitted = await planStore.submitProposal({
+        sessionId: SESSION_ID,
+        turnId: 'turn-1',
+        title: 'Preserve Plan events',
+        steps: [{ id: 'one', title: 'Replay', description: 'Ignore stale projection bytes' }],
+      });
+      planStore.close();
+
+      const released = new DatabaseSync(join(root, 'runtime.sqlite'));
+      try {
+        installReleasedProjectionTables(released);
+        released
+          .prepare(
+            'INSERT INTO workflow_task_ledger_projections(session_id, record_json) VALUES (?, ?)',
+          )
+          .run(SESSION_ID, '{not-json');
+        released
+          .prepare(
+            'INSERT INTO workflow_plan_projections(session_id, store_version, record_json) VALUES (?, ?, ?)',
+          )
+          .run(SESSION_ID, 999, '{not-json');
+        setWorkflowSchemaVersion(released, 9);
+      } finally {
+        released.close();
+      }
+
+      const migratedPlan = createSqlitePlanStore(root);
+      try {
+        assert.equal(
+          (await migratedPlan.readState(SESSION_ID)).latestProposalId,
+          submitted.state.latestProposalId,
+        );
+      } finally {
+        migratedPlan.close();
+      }
+
+      const verified = new DatabaseSync(join(root, 'runtime.sqlite'), { readOnly: true });
+      try {
+        assert.equal(workflowSchemaVersion(verified), SQLITE_WORKFLOW_SCHEMA_VERSION);
+        assert.equal(tableExists(verified, 'workflow_task_ledger_projections'), false);
+        assert.equal(tableExists(verified, 'workflow_plan_projections'), false);
+        assert.equal(rowCount(verified, 'workflow_plan_events'), 1);
+      } finally {
+        verified.close();
+      }
+    });
+  });
+
+  test('restores SessionTodo storage and drops Task Ledger events from workflow schema 10', async () => {
+    await withRoot(async (root) => {
+      createSqliteSessionTodoStore(root).close();
+
+      // Recreate the schema-10 shape: SessionTodo storage did not exist yet and
+      // Task Ledger events did, so the migration has to add one and drop the other.
+      const released = new DatabaseSync(join(root, 'runtime.sqlite'));
+      try {
+        released.exec(`
+          CREATE TABLE workflow_task_ledger_events (
+            session_id TEXT NOT NULL,
+            sequence INTEGER NOT NULL CHECK (sequence >= 0),
+            event_id TEXT NOT NULL,
+            record_json TEXT NOT NULL,
+            PRIMARY KEY (session_id, sequence),
+            UNIQUE (session_id, event_id)
+          );
+        `);
+        released
+          .prepare(`
+            INSERT INTO workflow_task_ledger_events(session_id, sequence, event_id, record_json)
+            VALUES (?, 0, 'retired-event', '{}')
+          `)
+          .run(SESSION_ID);
+        released.exec('DROP TABLE workflow_session_todo_documents');
+        setWorkflowSchemaVersion(released, 10);
+      } finally {
+        released.close();
+      }
+
+      const migrated = createSqliteSessionTodoStore(root);
+      try {
+        assert.deepEqual(await migrated.readOrBootstrap(SESSION_ID), { items: [] });
+      } finally {
+        migrated.close();
+      }
+
+      const verified = new DatabaseSync(join(root, 'runtime.sqlite'), { readOnly: true });
+      try {
+        assert.equal(workflowSchemaVersion(verified), SQLITE_WORKFLOW_SCHEMA_VERSION);
+        assert.equal(tableExists(verified, 'workflow_task_ledger_events'), false);
+        assert.equal(rowCount(verified, 'workflow_session_todo_documents'), 1);
+      } finally {
+        verified.close();
+      }
+    });
+  });
+
+  test('preserves every released projection when one table has unfamiliar DDL', async () => {
+    await withRoot(async (root) => {
+      createSqlitePlanStore(root).close();
+      const released = new DatabaseSync(join(root, 'runtime.sqlite'));
+      try {
+        installReleasedProjectionTables(released, { planVersionFloor: -1 });
+        released
+          .prepare(
+            'INSERT INTO workflow_task_ledger_projections(session_id, record_json) VALUES (?, ?)',
+          )
+          .run(SESSION_ID, 'task-sentinel');
+        released
+          .prepare(
+            'INSERT INTO workflow_plan_projections(session_id, store_version, record_json) VALUES (?, ?, ?)',
+          )
+          .run(SESSION_ID, 0, 'plan-sentinel');
+        setWorkflowSchemaVersion(released, 9);
+      } finally {
+        released.close();
+      }
+
+      assert.throws(
+        () => createSqlitePlanStore(root),
+        (error: unknown) =>
+          error instanceof Error &&
+          (error as { code?: unknown }).code === 'operational_state_migration_blocked' &&
+          /unfamiliar released shape/u.test(error.message),
+      );
+
+      assertReleasedProjectionStatePreserved(root);
+    });
+  });
+
+  test('preserves every released projection when one table carries an extra trigger', async () => {
+    await withRoot(async (root) => {
+      createSqlitePlanStore(root).close();
+      const released = new DatabaseSync(join(root, 'runtime.sqlite'));
+      try {
+        installReleasedProjectionTables(released);
+        released.exec(`
+          CREATE TRIGGER workflow_task_ledger_projection_guard
+          AFTER INSERT ON workflow_task_ledger_projections
+          BEGIN
+            SELECT 1;
+          END;
+        `);
+        released
+          .prepare(
+            'INSERT INTO workflow_task_ledger_projections(session_id, record_json) VALUES (?, ?)',
+          )
+          .run(SESSION_ID, 'task-sentinel');
+        released
+          .prepare(
+            'INSERT INTO workflow_plan_projections(session_id, store_version, record_json) VALUES (?, ?, ?)',
+          )
+          .run(SESSION_ID, 0, 'plan-sentinel');
+        setWorkflowSchemaVersion(released, 9);
+      } finally {
+        released.close();
+      }
+
+      assert.throws(
+        () => createSqlitePlanStore(root),
+        (error: unknown) =>
+          error instanceof Error &&
+          (error as { code?: unknown }).code === 'operational_state_migration_blocked' &&
+          /unexpected object/u.test(error.message),
+      );
+
+      assertReleasedProjectionStatePreserved(root);
+    });
+  });
+
+  test('preserves an unfamiliar projection whose table name differs only by case', async () => {
+    await withRoot(async (root) => {
+      createSqlitePlanStore(root).close();
+      const released = new DatabaseSync(join(root, 'runtime.sqlite'));
+      try {
+        installReleasedProjectionTables(released, {
+          taskTableName: 'WORKFLOW_TASK_LEDGER_PROJECTIONS',
+        });
+        released
+          .prepare(
+            'INSERT INTO WORKFLOW_TASK_LEDGER_PROJECTIONS(session_id, record_json) VALUES (?, ?)',
+          )
+          .run(SESSION_ID, 'task-sentinel');
+        released
+          .prepare(
+            'INSERT INTO workflow_plan_projections(session_id, store_version, record_json) VALUES (?, ?, ?)',
+          )
+          .run(SESSION_ID, 0, 'plan-sentinel');
+        setWorkflowSchemaVersion(released, 9);
+      } finally {
+        released.close();
+      }
+
+      assert.throws(
+        () => createSqlitePlanStore(root),
+        (error: unknown) =>
+          error instanceof Error &&
+          (error as { code?: unknown }).code === 'operational_state_migration_blocked' &&
+          /unfamiliar released shape/u.test(error.message),
+      );
+
+      assertReleasedProjectionStatePreserved(root);
+    });
+  });
+
+  test('preserves released projections with a sqliteX-prefixed trigger', async () => {
+    await withRoot(async (root) => {
+      createSqlitePlanStore(root).close();
+      const released = new DatabaseSync(join(root, 'runtime.sqlite'));
+      try {
+        installReleasedProjectionTables(released);
+        released.exec(`
+          CREATE TRIGGER sqliteX_projection_guard
+          AFTER INSERT ON workflow_task_ledger_projections
+          BEGIN
+            SELECT 1;
+          END;
+        `);
+        released
+          .prepare(
+            'INSERT INTO workflow_task_ledger_projections(session_id, record_json) VALUES (?, ?)',
+          )
+          .run(SESSION_ID, 'task-sentinel');
+        released
+          .prepare(
+            'INSERT INTO workflow_plan_projections(session_id, store_version, record_json) VALUES (?, ?, ?)',
+          )
+          .run(SESSION_ID, 0, 'plan-sentinel');
+        setWorkflowSchemaVersion(released, 9);
+      } finally {
+        released.close();
+      }
+
+      assert.throws(
+        () => createSqlitePlanStore(root),
+        (error: unknown) =>
+          error instanceof Error &&
+          (error as { code?: unknown }).code === 'operational_state_migration_blocked' &&
+          /unexpected object/u.test(error.message),
+      );
+
+      assertReleasedProjectionStatePreserved(root);
+    });
+  });
+
+  test('preserves released projections with a sqliteX-prefixed dependent view', async () => {
+    await withRoot(async (root) => {
+      createSqlitePlanStore(root).close();
+      const released = new DatabaseSync(join(root, 'runtime.sqlite'));
+      try {
+        installReleasedProjectionTables(released);
+        released.exec(`
+          CREATE VIEW sqliteX_projection_guard AS
+          SELECT session_id, record_json
+          FROM workflow_task_ledger_projections;
+        `);
+        released
+          .prepare(
+            'INSERT INTO workflow_task_ledger_projections(session_id, record_json) VALUES (?, ?)',
+          )
+          .run(SESSION_ID, 'task-sentinel');
+        released
+          .prepare(
+            'INSERT INTO workflow_plan_projections(session_id, store_version, record_json) VALUES (?, ?, ?)',
+          )
+          .run(SESSION_ID, 0, 'plan-sentinel');
+        setWorkflowSchemaVersion(released, 9);
+      } finally {
+        released.close();
+      }
+
+      assert.throws(
+        () => createSqlitePlanStore(root),
+        (error: unknown) =>
+          error instanceof Error &&
+          (error as { code?: unknown }).code === 'operational_state_migration_blocked' &&
+          /unexpected schema object view:sqliteX_projection_guard/u.test(error.message),
+      );
+
+      assertReleasedProjectionStatePreserved(root);
+      const preserved = new DatabaseSync(join(root, 'runtime.sqlite'), { readOnly: true });
+      try {
+        assert.equal(tableExists(preserved, 'sqliteX_projection_guard', 'view'), true);
+      } finally {
+        preserved.close();
+      }
+    });
+  });
+
+  test('an older workflow reader rejects the newer schema without changing it', async () => {
+    await withRoot(async (root) => {
+      const store = createSqlitePlanStore(root, { newId: () => 'proposal-1', now: () => 100 });
+      await store.submitProposal({
+        sessionId: SESSION_ID,
+        turnId: 'turn-1',
+        title: 'Preserve newer workflow state',
+        steps: [{ id: 'one', title: 'Persist', description: 'Write one event' }],
+      });
+      store.close();
+
+      const newer = new DatabaseSync(join(root, 'runtime.sqlite'));
+      try {
+        setWorkflowSchemaVersion(newer, SQLITE_WORKFLOW_SCHEMA_VERSION + 1);
+        newer.exec(`
+          CREATE TABLE workflow_future_sentinel (value TEXT NOT NULL);
+          INSERT INTO workflow_future_sentinel(value) VALUES ('preserved');
+        `);
+      } finally {
+        newer.close();
+      }
+
+      assert.throws(
+        () => createSqlitePlanStore(root),
+        /Operational schema workflow is newer than supported/u,
+      );
+
+      const preserved = new DatabaseSync(join(root, 'runtime.sqlite'), { readOnly: true });
+      try {
+        assert.equal(workflowSchemaVersion(preserved), SQLITE_WORKFLOW_SCHEMA_VERSION + 1);
+        assert.equal(rowCount(preserved, 'workflow_plan_events'), 1);
+        assert.equal(
+          (
+            preserved.prepare('SELECT value FROM workflow_future_sentinel').get() as {
+              value?: unknown;
+            }
+          ).value,
+          'preserved',
+        );
+      } finally {
+        preserved.close();
+      }
+    });
+  });
+
+  test('backs up and restores Plan and initialized SessionTodo state', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'maka-workflow-backup-'));
+    const stateRoot = join(base, 'state');
+    const backupRoot = join(base, 'backup');
+    const restoreRoot = join(base, 'restore');
+    await mkdir(stateRoot);
+    try {
+      const planStore = createSqlitePlanStore(stateRoot, {
+        newId: () => 'backup-proposal',
+        now: () => 100,
+      });
+      const submitted = await planStore.submitProposal({
+        sessionId: SESSION_ID,
+        turnId: 'turn-backup',
+        title: 'Restore Plan event',
+        steps: [{ id: 'restore', title: 'Restore', description: 'Replay the event ledger' }],
+      });
+      planStore.close();
+
+      const todoStore = createSqliteSessionTodoStore(stateRoot);
+      await todoStore.replaceAll('todo-non-empty', [
+        { content: 'Restore current Todo', status: 'in_progress' },
+      ]);
+      await todoStore.replaceAll('todo-empty', []);
+      todoStore.close();
+
+      await createOperationalStateBackup({ stateRoot, destinationRoot: backupRoot, now: () => 10 });
+      await restoreOperationalStateBackup({ backupRoot, destinationRoot: restoreRoot });
+
+      const restoredPlan = createSqlitePlanStore(restoreRoot);
+      try {
+        assert.equal(
+          (await restoredPlan.readState(SESSION_ID)).latestProposalId,
+          submitted.state.latestProposalId,
+        );
+      } finally {
+        restoredPlan.close();
+      }
+      const restoredTodos = createSqliteSessionTodoStore(restoreRoot);
+      try {
+        assert.deepEqual(await restoredTodos.readOrBootstrap('todo-non-empty'), {
+          items: [{ content: 'Restore current Todo', status: 'in_progress' }],
+        });
+        assert.deepEqual(await restoredTodos.readOrBootstrap('todo-empty'), { items: [] });
+      } finally {
+        restoredTodos.close();
+      }
+
+      const restored = new DatabaseSync(join(restoreRoot, 'runtime.sqlite'), { readOnly: true });
+      try {
+        assert.equal(tableExists(restored, 'workflow_task_ledger_projections'), false);
+        assert.equal(tableExists(restored, 'workflow_plan_projections'), false);
+        assert.equal(rowCount(restored, 'workflow_plan_events'), 1);
+        assert.equal(rowCount(restored, 'workflow_session_todo_documents'), 2);
+      } finally {
+        restored.close();
+      }
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
   });
 
   test('reconciles exact Plan retries through durable operation identity', async () => {
@@ -228,92 +651,7 @@ describe('SQLite workflow stores', () => {
     });
   });
 
-  test('projects a pre-bound legacy Plan ledger into the bounded Host contract', async () => {
-    await withRoot(async (root) => {
-      seedLegacyPlanLedger(root);
-      const store = createSqlitePlanStore(root);
-      try {
-        const state = await store.readState(SESSION_ID);
-        const proposal = state.proposals[0];
-        const execution = state.executions[0];
-        assert.ok(proposal);
-        assert.ok(execution);
-        assert.match(proposal.steps[0]!.id, /^[A-Za-z0-9_-]+$/);
-        assert.equal(proposal.steps[0]!.files?.length, 50);
-        assert.equal(proposal.risks?.length, 20);
-        assert.ok(Buffer.byteLength(proposal.steps[0]!.description, 'utf8') < 4_000);
-        assert.equal(proposal.legacyProjection?.truncated, true);
-        assert.equal(execution.legacyProjection?.truncated, true);
-        assert.ok(Buffer.byteLength(proposal.title, 'utf8') < 16 * 1024);
-        assert.ok(proposal.steps[0]!.title.length <= 30);
-
-        await assert.rejects(
-          store.updateExecution({
-            operationId: 'update-legacy',
-            sessionId: SESSION_ID,
-            executionId: execution.executionId,
-            steps: execution.steps.map((step) => ({ id: step.id, status: step.status })),
-          }),
-          /projected legacy execution/,
-        );
-        const interrupted = await store.interruptActiveExecution(
-          SESSION_ID,
-          'Upgrade requires a fresh Plan',
-          'interrupt-legacy',
-        );
-        assert.equal(interrupted?.state.executions[0]?.status, 'interrupted');
-        await assert.rejects(
-          store.resumeExecution(SESSION_ID, execution.executionId, 'resume-legacy'),
-          /projected legacy execution/,
-        );
-
-        const cancelled = await store.cancelExecution({
-          operationId: 'cancel-legacy',
-          sessionId: SESSION_ID,
-          executionId: execution.executionId,
-          reason: 'Legacy execution closed after upgrade',
-        });
-        assert.equal(cancelled.state.storeVersion, 5);
-        assert.equal(cancelled.state.executions[0]?.status, 'cancelled');
-      } finally {
-        store.close();
-      }
-    });
-  });
-
-  test('requires a projected legacy proposal to be revised or abandoned', async () => {
-    await withRoot(async (root) => {
-      seedLegacyPlanLedger(root, 1);
-      const store = createSqlitePlanStore(root);
-      try {
-        const state = await store.readState(SESSION_ID);
-        const proposal = state.proposals[0];
-        assert.ok(proposal);
-        assert.equal(proposal.legacyProjection?.truncated, true);
-        await assert.rejects(
-          store.approveProposal({
-            operationId: 'approve-legacy',
-            sessionId: SESSION_ID,
-            proposalId: proposal.proposalId,
-            expectedRevision: proposal.revision,
-            expectedStoreVersion: state.storeVersion,
-          }),
-          /projected legacy plan/,
-        );
-
-        const revised = await store.requestRevision({
-          operationId: 'revise-legacy',
-          sessionId: SESSION_ID,
-          proposalId: proposal.proposalId,
-        });
-        assert.equal(revised.state.proposals[0]?.status, 'stale');
-      } finally {
-        store.close();
-      }
-    });
-  });
-
-  test('purges Plan events and projections for retired Sessions', async () => {
+  test('purges Plan events for retired Sessions', async () => {
     await withRoot(async (root) => {
       const store = createSqlitePlanStore(root);
       try {
@@ -372,7 +710,8 @@ describe('SQLite workflow stores', () => {
   test('persists Scheduled Tasks and admits each fire once', async () => {
     await withRoot(async (root) => {
       const now = Date.now();
-      const store = createSqliteScheduledTaskStore(root);
+      const { owner, open } = await scheduledTaskStoreRoot(root);
+      const store = await open();
       const task = await store.create(
         {
           title: 'Review SQLite',
@@ -387,10 +726,10 @@ describe('SQLite workflow stores', () => {
         store.claimNextDue(now + 1_000),
         store.claimNextDue(now + 1_000),
       ]);
-      const claim = claims.find((entry) => entry !== null);
+      const claim = claims.map((entry) => entry.claim).find((entry) => entry !== null);
       assert.ok(claim);
-      assert.equal(claims.filter((entry) => entry !== null).length, 1);
-      assert.equal(await store.claimNextDue(now + 1_000), null);
+      assert.equal(claims.filter((entry) => entry.claim !== null).length, 1);
+      assert.equal((await store.claimNextDue(now + 1_000)).claim, null);
       await store.settleFire(claim.id, {
         at: now + 1_000,
         outcome: 'ok',
@@ -398,7 +737,7 @@ describe('SQLite workflow stores', () => {
       });
       store.close();
 
-      const reopened = createSqliteScheduledTaskStore(root);
+      const reopened = await open();
       try {
         const persisted = (await reopened.list())[0];
         assert.equal(persisted?.id, task.id);
@@ -406,33 +745,151 @@ describe('SQLite workflow stores', () => {
         assert.equal(persisted?.fireCount, 1);
       } finally {
         reopened.close();
+        await owner.close();
       }
     });
   });
 
-  test('recovers an admitted Scheduled Task fire without replaying its side effect', async () => {
+  test('persists the exact ScheduledTask Agent execution identity before admission', async () => {
     await withRoot(async (root) => {
       const now = Date.now();
-      const store = createSqliteScheduledTaskStore(root);
-      try {
-        const task = await store.create(
-          {
-            title: 'Recover exactly once',
-            intentBody: '',
-            schedule: { kind: 'interval', everySeconds: 60, startAt: now + 1_000 },
-            effect: { kind: 'notify', channel: 'local' },
-            createdBy: { kind: 'user' },
+      const { owner, open } = await scheduledTaskStoreRoot(root);
+      const store = await open();
+      const task = await store.create(
+        {
+          title: 'Durable Agent fire',
+          intentBody: 'Continue the release',
+          schedule: { kind: 'once', runAt: now + 1_000 },
+          effect: {
+            kind: 'agent_run',
+            execution: {
+              cwd: '/workspace',
+              backend: 'ai-sdk',
+              llmConnectionId: 'connection-default',
+              llmConnectionSlug: 'default',
+              model: 'test-model',
+              permissionMode: 'ask',
+              collaborationMode: 'agent',
+              orchestrationMode: 'default',
+            },
           },
-          now,
-        );
-        assert.ok(await store.claimNextDue(now + 1_000));
-        const [recovered] = await store.recoverPendingFires(now + 2_000);
-        assert.equal(recovered?.id, task.id);
-        assert.equal(recovered?.fireCount, 1);
-        assert.equal(recovered?.runs[0]?.outcome, 'failed');
-        assert.ok((recovered?.nextFireAt ?? 0) > now + 2_000);
+          createdBy: { kind: 'user' },
+        },
+        now,
+      );
+      assert.equal(
+        task.effect.kind === 'agent_run' ? task.effect.execution.llmConnectionId : undefined,
+        'connection-default',
+      );
+      const claim = await store.claimNow(task.id, now);
+      await store.bindFireExecution(claim.id, {
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        runId: 'run-1',
+        userMessageId: 'message-1',
+      });
+      store.close();
+
+      const reopened = await open();
+      try {
+        assert.deepEqual((await reopened.listPendingFires())[0]?.execution, {
+          sessionId: 'session-1',
+          turnId: 'turn-1',
+          runId: 'run-1',
+          userMessageId: 'message-1',
+        });
       } finally {
-        store.close();
+        reopened.close();
+        await owner.close();
+      }
+    });
+  });
+
+  test('folds retired permission modes in tasks and pending fire claims', async () => {
+    await withRoot(async (root) => {
+      const now = Date.now();
+      const { owner, open } = await scheduledTaskStoreRoot(root);
+      const store = await open();
+      await assert.rejects(
+        () =>
+          store.create(
+            {
+              title: 'Reject retired input',
+              intentBody: 'run',
+              schedule: { kind: 'once', runAt: now + 1_000 },
+              effect: {
+                kind: 'agent_run',
+                execution: {
+                  cwd: '/workspace',
+                  llmConnectionId: 'connection-default',
+                  llmConnectionSlug: 'default',
+                  model: 'test-model',
+                  permissionMode: 'execute',
+                  collaborationMode: 'agent',
+                  orchestrationMode: 'default',
+                },
+              },
+              createdBy: { kind: 'user' },
+            },
+            now,
+          ),
+        /execution.permissionMode is required/,
+      );
+      const task = await store.create(
+        {
+          title: 'Decode retired rows',
+          intentBody: 'run',
+          schedule: { kind: 'once', runAt: now + 1_000 },
+          effect: {
+            kind: 'agent_run',
+            execution: {
+              cwd: '/workspace',
+              llmConnectionId: 'connection-default',
+              llmConnectionSlug: 'default',
+              model: 'test-model',
+              permissionMode: 'ask',
+              collaborationMode: 'agent',
+              orchestrationMode: 'default',
+            },
+          },
+          createdBy: { kind: 'user' },
+        },
+        now,
+      );
+      await store.claimNow(task.id, now);
+      store.close();
+
+      const database = new DatabaseSync(join(root, 'runtime.sqlite'));
+      try {
+        database.exec(`
+          UPDATE workflow_scheduled_tasks
+          SET record_json = json_set(record_json, '$.effect.execution.permissionMode', 'execute');
+          UPDATE workflow_scheduled_task_fires
+          SET record_json = json_set(record_json, '$.task.effect.execution.permissionMode', 'execute');
+        `);
+      } finally {
+        database.close();
+      }
+
+      const reopened = await open();
+      try {
+        const decodedTask = (await reopened.list())[0];
+        const decodedClaim = (await reopened.listPendingFires())[0];
+        assert.equal(
+          decodedTask?.effect.kind === 'agent_run'
+            ? decodedTask.effect.execution.permissionMode
+            : undefined,
+          'ask',
+        );
+        assert.equal(
+          decodedClaim?.task.effect.kind === 'agent_run'
+            ? decodedClaim.task.effect.execution.permissionMode
+            : undefined,
+          'ask',
+        );
+      } finally {
+        reopened.close();
+        await owner.close();
       }
     });
   });
@@ -440,7 +897,8 @@ describe('SQLite workflow stores', () => {
   test('does not lower maxFires below the task fire count', async () => {
     await withRoot(async (root) => {
       const now = Date.now();
-      const store = createSqliteScheduledTaskStore(root);
+      const { owner, open } = await scheduledTaskStoreRoot(root);
+      const store = await open();
       try {
         const task = await store.create(
           {
@@ -460,121 +918,23 @@ describe('SQLite workflow stores', () => {
         );
       } finally {
         store.close();
-      }
-    });
-  });
-
-  test('does not admit later due Scheduled Tasks before their side effects can start', async () => {
-    await withRoot(async (root) => {
-      const now = Date.now();
-      const store = createSqliteScheduledTaskStore(root);
-      try {
-        for (const title of ['First', 'Second']) {
-          await store.create(
-            {
-              title,
-              intentBody: '',
-              schedule: { kind: 'once', runAt: now + 1_000 },
-              effect: { kind: 'notify', channel: 'local' },
-              createdBy: { kind: 'user' },
-            },
-            now,
-          );
-        }
-        assert.ok(await store.claimNextDue(now + 1_000));
-        const [recovered] = await store.recoverPendingFires(now + 2_000);
-        assert.equal(recovered?.fireCount, 1);
-        const unstarted = await store.claimNextDue(now + 2_000);
-        assert.ok(unstarted);
-        assert.notEqual(unstarted.taskId, recovered?.id);
-      } finally {
-        store.close();
+        await owner.close();
       }
     });
   });
 });
 
-function seedLegacyPlanLedger(root: string, eventCount = 3): void {
-  const lease = acquireOperationalStateDatabase(root);
-  try {
-    // Each dimension exceeds its projection bound by just enough to force
-    // truncation: 51 files > PLAN_MAX_FILES_PER_STEP, 21 risks >
-    // PLAN_MAX_RISKS, 31 title chars > PLAN_STEP_TITLE_MAX_CHARS, and four
-    // 4_000-byte descriptions oversubscribe PLAN_PROJECTION_ITEM_MAX_BYTES so
-    // the shared text budget must settle below 4_000 bytes.
-    const steps = Array.from({ length: 4 }, (_, index) => ({
-      id: `legacy step ${index}`,
-      title: '"'.repeat(31),
-      description: '"'.repeat(4_000),
-      files: Array.from({ length: 51 }, () => '"'.repeat(100)),
-    }));
-    const proposal = {
-      planId: 'legacy-plan',
-      proposalId: 'legacy-proposal',
-      sessionId: SESSION_ID,
-      turnId: 'legacy-turn',
-      revision: 1,
-      title: '"'.repeat(16 * 1024),
-      steps,
-      risks: Array.from({ length: 21 }, (_, index) => `Legacy risk ${index}`),
-      status: 'pending_approval',
-      submittedAt: 1,
-    };
-    const execution = {
-      executionId: 'legacy-execution',
-      planId: proposal.planId,
-      proposalId: proposal.proposalId,
-      sessionId: SESSION_ID,
-      status: 'active',
-      steps: steps.map((step) => ({ ...step, status: 'pending', updatedAt: 2 })),
-      startedAt: 2,
-      updatedAt: 2,
-    };
-    const events = [
-      {
-        type: 'plan_submitted',
-        id: 'legacy-submit',
-        sessionId: SESSION_ID,
-        ts: 1,
-        storeVersion: 1,
-        proposal,
-      },
-      {
-        type: 'plan_approved',
-        id: 'legacy-approve',
-        sessionId: SESSION_ID,
-        ts: 2,
-        storeVersion: 2,
-        proposalId: proposal.proposalId,
-        execution,
-      },
-      {
-        type: 'plan_progress_updated',
-        id: 'legacy-progress',
-        sessionId: SESSION_ID,
-        ts: 3,
-        storeVersion: 3,
-        executionId: execution.executionId,
-        steps: execution.steps.map((step, index) => ({
-          ...step,
-          status: index === 0 ? 'in_progress' : 'pending',
-          note: '"'.repeat(4_000),
-          updatedAt: 3,
-        })),
-        explanation: '"'.repeat(16 * 1024),
-      },
-    ];
-    const insert = lease.database.prepare(`
-      INSERT INTO workflow_plan_events(
-        session_id, sequence, event_id, store_version, record_json
-      ) VALUES (?, ?, ?, ?, ?)
-    `);
-    events.slice(0, eventCount).forEach((event, sequence) => {
-      insert.run(SESSION_ID, sequence, event.id, event.storeVersion, JSON.stringify(event));
-    });
-  } finally {
-    lease.close();
-  }
+async function scheduledTaskStoreRoot(root: string) {
+  const capability = trackControlDirectory(
+    await resolveStorageRoot({ path: root, kind: 'interactive' }),
+  );
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) throw new Error('Unable to acquire the ScheduledTask test root');
+  return {
+    owner,
+    open: () => openInteractiveScheduledTaskStoreForWrite(owner.lease),
+  };
 }
 
 async function withRoot(run: (root: string) => Promise<void>): Promise<void> {
@@ -583,5 +943,65 @@ async function withRoot(run: (root: string) => Promise<void>): Promise<void> {
     await run(root);
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+}
+
+function tableExists(database: DatabaseSync, name: string, type = 'table'): boolean {
+  return (
+    database
+      .prepare('SELECT 1 AS present FROM sqlite_schema WHERE type = ? AND name = ?')
+      .get(type, name) !== undefined
+  );
+}
+
+function rowCount(database: DatabaseSync, table: string): number {
+  const row = database.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as {
+    count?: unknown;
+  };
+  assert.equal(typeof row.count, 'number');
+  return row.count as number;
+}
+
+function installReleasedProjectionTables(
+  database: DatabaseSync,
+  options: { planVersionFloor?: number; taskTableName?: string } = {},
+): void {
+  const taskTableName = options.taskTableName ?? 'workflow_task_ledger_projections';
+  database.exec(`
+    CREATE TABLE ${taskTableName} (
+      session_id TEXT PRIMARY KEY,
+      record_json TEXT NOT NULL
+    );
+    CREATE TABLE workflow_plan_projections (
+      session_id TEXT PRIMARY KEY,
+      store_version INTEGER NOT NULL CHECK (store_version >= ${options.planVersionFloor ?? 0}),
+      record_json TEXT NOT NULL
+    );
+  `);
+}
+
+function setWorkflowSchemaVersion(database: DatabaseSync, version: number): void {
+  database
+    .prepare("UPDATE operational_schema_migrations SET version = ? WHERE scope = 'workflow'")
+    .run(version);
+}
+
+function workflowSchemaVersion(database: DatabaseSync): number {
+  const row = database
+    .prepare("SELECT version FROM operational_schema_migrations WHERE scope = 'workflow'")
+    .get() as { version?: unknown } | undefined;
+  const version = row?.version;
+  assert.equal(typeof version, 'number');
+  return version as number;
+}
+
+function assertReleasedProjectionStatePreserved(root: string): void {
+  const preserved = new DatabaseSync(join(root, 'runtime.sqlite'), { readOnly: true });
+  try {
+    assert.equal(workflowSchemaVersion(preserved), 9);
+    assert.equal(rowCount(preserved, 'workflow_task_ledger_projections'), 1);
+    assert.equal(rowCount(preserved, 'workflow_plan_projections'), 1);
+  } finally {
+    preserved.close();
   }
 }

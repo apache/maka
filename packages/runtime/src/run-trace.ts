@@ -1,14 +1,29 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { createHash } from 'node:crypto';
 import { generalizedErrorMessage, redactSecrets } from '@maka/core/redaction';
 import type {
   CacheMissInputSource,
   ContextBudgetDiagnostic,
-  PrefixChangeReason,
-  PromptSegmentEstimate,
-  ToolSchemaChangeReason,
   ToolAvailabilityDiagnostic,
 } from '@maka/core/usage-stats/types';
-import type { SandboxRunTraceProjection } from './sandbox/diagnostics.js';
 
 export type RunTracePhase =
   | 'turn'
@@ -24,7 +39,6 @@ export type RunTracePhase =
 
 export type RunTraceEventType =
   | 'turn_started'
-  | 'sandbox_context_resolved'
   | 'plan_context_resolved'
   | 'plan_submitted'
   | 'plan_execution_started'
@@ -42,6 +56,7 @@ export type RunTraceEventType =
   | 'model_stream_failed'
   | 'send_diagnostics_recorded'
   | 'tool_started'
+  | 'tool_searched'
   | 'tool_completed'
   | 'tool_failed'
   | 'skill_catalog_built'
@@ -125,10 +140,6 @@ export class RunTrace {
     });
   }
 
-  sandboxContextResolved(snapshot: SandboxRunTraceProjection): void {
-    this.emit('sandbox', 'sandbox_context_resolved', 'Sandbox context resolved', { snapshot });
-  }
-
   modelResolved(): void {
     this.emit('model', 'model_resolved', 'Model resolved', {
       connectionSlug: this.input.connectionSlug,
@@ -145,21 +156,14 @@ export class RunTrace {
 
   modelStreamStarted(
     activeTools: readonly string[],
-    prefix?: {
-      systemPromptHash?: string;
-      prefixHash: string;
-      prefixChangeReason: PrefixChangeReason;
-      requestShapeHash?: string;
-      requestShapeChangeReason?: PrefixChangeReason;
-      toolSchemaChangeReason?: ToolSchemaChangeReason;
+    diagnostics?: {
       toolAvailability?: ToolAvailabilityDiagnostic;
-      promptSegments?: PromptSegmentEstimate[];
       contextBudget?: ContextBudgetDiagnostic;
     },
   ): void {
     this.emit('model', 'model_stream_started', 'Model stream started', {
       activeTools: [...activeTools],
-      ...(prefix !== undefined ? prefix : {}),
+      ...(diagnostics !== undefined ? diagnostics : {}),
     });
   }
 
@@ -204,13 +208,6 @@ export class RunTrace {
     outputTokens?: number;
     totalTokens?: number;
     contextBudget?: unknown;
-    promptSegments?: readonly unknown[];
-    systemPromptHash?: string;
-    prefixHash?: string;
-    prefixChangeReason?: PrefixChangeReason;
-    requestShapeHash?: string;
-    requestShapeChangeReason?: PrefixChangeReason;
-    toolSchemaChangeReason?: ToolSchemaChangeReason;
     toolAvailability?: ToolAvailabilityDiagnostic;
   }): void {
     this.emit('model', 'send_diagnostics_recorded', 'Send diagnostics recorded', {
@@ -221,28 +218,6 @@ export class RunTrace {
       ...(diagnostics.totalTokens !== undefined ? { totalTokens: diagnostics.totalTokens } : {}),
       ...(diagnostics.contextBudget !== undefined
         ? { contextBudget: diagnostics.contextBudget }
-        : {}),
-      ...(diagnostics.promptSegments !== undefined && diagnostics.promptSegments.length > 0
-        ? { promptSegments: diagnostics.promptSegments }
-        : {}),
-      // The FINAL request shape, not step 0's: a same-turn tool load changes it
-      // mid-send, and `model_stream_started` reports only what the first
-      // request carried.
-      ...(diagnostics.systemPromptHash !== undefined
-        ? { systemPromptHash: diagnostics.systemPromptHash }
-        : {}),
-      ...(diagnostics.prefixHash !== undefined ? { prefixHash: diagnostics.prefixHash } : {}),
-      ...(diagnostics.prefixChangeReason !== undefined
-        ? { prefixChangeReason: diagnostics.prefixChangeReason }
-        : {}),
-      ...(diagnostics.requestShapeHash !== undefined
-        ? { requestShapeHash: diagnostics.requestShapeHash }
-        : {}),
-      ...(diagnostics.requestShapeChangeReason !== undefined
-        ? { requestShapeChangeReason: diagnostics.requestShapeChangeReason }
-        : {}),
-      ...(diagnostics.toolSchemaChangeReason !== undefined
-        ? { toolSchemaChangeReason: diagnostics.toolSchemaChangeReason }
         : {}),
       ...(diagnostics.toolAvailability !== undefined
         ? { toolAvailability: diagnostics.toolAvailability }

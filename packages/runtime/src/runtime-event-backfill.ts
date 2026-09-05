@@ -1,15 +1,34 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import type { RuntimeInvocationOutcome } from '@maka/core/runtime-invocation';
+import type { RunIdentity } from './terminal-run-commit.js';
 import type {
-  AgentRunHeader,
   PermissionDecisionMessage,
-  RuntimeEvent,
-  RuntimeEventStatus,
   StoredMessage,
   TokenUsageMessage,
   ToolCallMessage,
   ToolResultMessage,
   TurnStateMessage,
-} from '@maka/core';
-import { createRuntimeEventId } from '@maka/core';
+} from '@maka/core/session';
+import type { RuntimeEvent, RuntimeEventStatus } from '@maka/core/runtime-event';
+import { createRuntimeEventId } from '@maka/core/runtime-event';
 
 export const RUNTIME_EVENT_BACKFILL_STATE_KEY = 'makaRuntimeRecovery';
 
@@ -26,8 +45,22 @@ export interface RuntimeEventBackfillDiagnostic {
   detail?: unknown;
 }
 
+/**
+ * How the imported turn ended, as the importer read it off the transcript.
+ *
+ * Without one there is no terminal RuntimeEvent to write: nothing else in a
+ * StoredMessage transcript states an outcome the ledger can be held to.
+ */
+export interface RuntimeEventBackfillOutcome {
+  status: RuntimeInvocationOutcome;
+  ts: number;
+  failureClass?: string;
+  abortSource?: string;
+}
+
 export interface RuntimeEventBackfillInput {
-  run: AgentRunHeader;
+  run: RunIdentity & { invocationId?: string };
+  outcome?: RuntimeEventBackfillOutcome;
   messages: readonly StoredMessage[];
   invocationId?: string;
   modelHistory?: 'full' | 'conversation_text';
@@ -110,6 +143,9 @@ export function backfillRuntimeEventsFromStoredMessages(
               : {}),
             ...(message.quotes !== undefined && message.quotes.length > 0
               ? { quotes: message.quotes }
+              : {}),
+            ...(message.directoryReferences
+              ? { directoryReferences: message.directoryReferences }
               : {}),
             ...(message.inlineReferences !== undefined
               ? { inlineReferences: message.inlineReferences }
@@ -337,7 +373,14 @@ export function backfillRuntimeEventsFromStoredMessages(
     }
   }
 
-  const terminal = terminalRuntimeEvent({ run: input.run, turnMessages, invocationId, newId, now });
+  const terminal = terminalRuntimeEvent({
+    run: input.run,
+    outcome: input.outcome,
+    turnMessages,
+    invocationId,
+    newId,
+    now,
+  });
   if (terminal.event) {
     events.push(terminal.event);
   } else if (terminal.diagnostic) {
@@ -397,14 +440,15 @@ function terminalRecoveryState(
 }
 
 function terminalRuntimeEvent(input: {
-  run: AgentRunHeader;
+  run: RunIdentity;
+  outcome: RuntimeEventBackfillOutcome | undefined;
   turnMessages: readonly StoredMessage[];
   invocationId: string;
   newId: () => string;
   now: () => number;
 }): { event?: RuntimeEvent; diagnostic?: RuntimeEventBackfillDiagnostic } {
   const turnState = latestTurnState(input.turnMessages);
-  const status = terminalStatus(input.run, turnState);
+  const status = terminalStatus(input.outcome, turnState);
   if (!status) {
     return {
       diagnostic: {
@@ -414,19 +458,19 @@ function terminalRuntimeEvent(input: {
         detail: {
           runId: input.run.runId,
           turnId: input.run.turnId,
-          runStatus: input.run.status,
+          declaredStatus: input.outcome?.status,
           turnStatus: turnState?.status,
         },
       },
     };
   }
-  const ts = turnState?.ts ?? input.run.completedAt ?? input.run.updatedAt;
+  const ts = turnState?.ts ?? input.outcome?.ts ?? input.now();
   const failureClass =
-    status === 'failed' ? (turnState?.errorClass ?? input.run.failureClass) : undefined;
+    status === 'failed' ? (turnState?.errorClass ?? input.outcome?.failureClass) : undefined;
   const abortSource =
     status === 'aborted'
       ? (turnState?.abortSource ??
-        input.run.abortSource ??
+        input.outcome?.abortSource ??
         (turnState?.status === 'aborted' ? 'unknown' : undefined))
       : undefined;
   return {
@@ -455,19 +499,20 @@ function terminalRuntimeEvent(input: {
 }
 
 function terminalStatus(
-  run: AgentRunHeader,
+  outcome: RuntimeEventBackfillOutcome | undefined,
   turnState: TurnStateMessage | undefined,
 ): RuntimeEventStatus | undefined {
   const legacyStatus = turnState?.status;
-  if (legacyStatus === 'completed' || run.status === 'completed') return 'completed';
-  if (legacyStatus === 'failed' && run.status === 'failed') return 'failed';
+  const declared = outcome?.status;
+  if (legacyStatus === 'completed' || declared === 'completed') return 'completed';
+  if (legacyStatus === 'failed' && declared === 'failed') return 'failed';
   if (
-    (legacyStatus === 'failed' || run.status === 'failed') &&
-    (run.failureClass || turnState?.errorClass)
+    (legacyStatus === 'failed' || declared === 'failed') &&
+    (outcome?.failureClass || turnState?.errorClass)
   )
     return 'failed';
-  if (legacyStatus === 'aborted' && run.status === 'cancelled') return 'aborted';
-  if ((legacyStatus === 'aborted' || run.status === 'cancelled') && turnState?.abortSource)
+  if (legacyStatus === 'aborted' && declared === 'cancelled') return 'aborted';
+  if ((legacyStatus === 'aborted' || declared === 'cancelled') && turnState?.abortSource)
     return 'aborted';
   return undefined;
 }
@@ -524,6 +569,9 @@ function tokenUsageFromMessage(
       : {}),
     ...(message.promptSegments !== undefined ? { promptSegments: message.promptSegments } : {}),
     ...(message.contextBudget !== undefined ? { contextBudget: message.contextBudget } : {}),
+    ...(message.lastRequestAnchor !== undefined
+      ? { lastRequestAnchor: message.lastRequestAnchor }
+      : {}),
   };
 }
 

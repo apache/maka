@@ -7,5 +7,5 @@
   },
   "include": ["src/**/*.ts"],
   "exclude": [],
-  "references": [{ "path": "../code-mode" }, { "path": "../core" }, { "path": "../storage" }]
+  "references": [{ "path": "../core" }, { "path": "../storage" }]
 }

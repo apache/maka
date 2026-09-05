@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * ScheduledTask create/edit form dialog (issue #1044).
  *
@@ -18,12 +37,10 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useMountedRef } from './use-mounted-ref.js';
 import { BotBrandLogo } from './bot-brand-logo.js';
-import type {
-  BotProvider,
-  ScheduledTask,
-  ScheduledTaskSchedule,
-} from '@maka/core';
-import { BOT_DELIVERY_PROVIDERS, botDisplayLabel } from '@maka/core';
+import type { BotProvider } from '@maka/core/bot-chat-settings';
+import type { ScheduledTask, ScheduledTaskSchedule } from '@maka/core/scheduled-task';
+import { BOT_DELIVERY_PROVIDERS } from '@maka/core/bot-chat-settings';
+import { botDisplayLabel } from '@maka/core/bot-events';
 import {
   type ScheduledTaskFormSeed,
   formatScheduledTaskDeliveryProviderList,
@@ -174,17 +191,25 @@ export function ScheduledTaskFormDialog(props: {
       schedule = { kind: 'calendar', recurrence, anchorAt: parsedRunAt };
     }
     submitPendingRef.current = true;
-    const input = {
+    const baseInput = {
       title: title.trim(),
       intentBody: note.trim(),
       schedule,
-      effect,
     };
+    // Preserve a pre-#3927 slug-only target without resubmitting it as a new
+    // effect; title, intent, and schedule remain editable.
+    const preservesLegacyEffect =
+      editingId !== null &&
+      props.seed.lockedEffect?.kind === 'agent_run' &&
+      !props.seed.lockedEffect.execution.llmConnectionId;
     setSubmitPending(true);
     try {
       const result = editingId
-        ? await props.onUpdate?.(editingId, input)
-        : await props.onCreate?.(input);
+        ? await props.onUpdate?.(
+            editingId,
+            preservesLegacyEffect ? baseInput : { ...baseInput, effect },
+          )
+        : await props.onCreate?.({ ...baseInput, effect });
       if (result !== false && scheduledTaskMountedRef.current) {
         resetForm();
         props.onOpenChange(false);
@@ -217,7 +242,6 @@ export function ScheduledTaskFormDialog(props: {
       width={480}
     >
       <Layout
-        height="auto"
         header={(
           <DialogHeader
             title={isEditing ? copy.editTitle : copy.createTitle}

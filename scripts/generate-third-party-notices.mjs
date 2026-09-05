@@ -1,11 +1,63 @@
-import { execFileSync } from 'node:child_process';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { npmSpawnOptions } from './npm-spawn.mjs';
+import {
+  ASSET_LICENSED_RENDERER_PACKAGES,
+  bareCssImportSpecifiers,
+  collectWorkspaceClosure,
+  WORKSPACE_PREFIX,
+} from './third-party-closure.mjs';
 
 const repoRoot = resolve(import.meta.dirname, '..');
-const outputPath = join(repoRoot, 'apps/desktop/resources/licenses/npm/THIRD_PARTY_NOTICES.txt');
 const checkOnly = process.argv.includes('--check');
+const targetName = (() => {
+  const index = process.argv.indexOf('--target');
+  if (index < 0) return 'desktop';
+  const value = process.argv[index + 1];
+  if (!value) throw new Error('--target requires desktop or cli');
+  return value;
+})();
+const TARGETS = {
+  desktop: {
+    workspaceName: '@maka/desktop',
+    title: 'Maka Desktop — Production npm Third-Party Notices',
+    underline: '====================================================',
+    outputPath: join(repoRoot, 'apps/desktop/resources/licenses/npm/THIRD_PARTY_NOTICES.txt'),
+    validateAssets: true,
+    // Only this target bundles a renderer, so only this one unions the vite
+    // module graph into its notices. The CLI ships its production closure and
+    // nothing else, and must not be asked for renderer roots it has none of.
+    manifestPath: join(repoRoot, 'apps/desktop/package.json'),
+  },
+  cli: {
+    workspaceName: 'maka-agent',
+    title: 'Maka CLI — Production npm Third-Party Notices',
+    underline: '=============================================',
+    outputPath: join(repoRoot, 'packages/cli/THIRD_PARTY_NOTICES.txt'),
+    validateAssets: false,
+  },
+};
+const target = TARGETS[targetName];
+if (!target) throw new Error(`Unsupported notice target: ${targetName}`);
+const { outputPath } = target;
 const assetNoticePath = join(repoRoot, 'apps/desktop/src/renderer/public/THIRD_PARTY_LICENSES.txt');
 const REQUIRED_ASSET_NOTICE_MARKERS = [
   '## Simple Icons brand marks',
@@ -29,7 +81,6 @@ const REQUIRED_ASSET_LICENSE_FILES = [
   'apps/desktop/resources/licenses/renderer/SEMI_ICONS_LICENSE.txt',
 ];
 
-const WORKSPACE_PREFIX = '@maka/';
 const ALLOWED_LICENSES = new Set([
   '0BSD',
   'Apache-2.0',
@@ -53,12 +104,15 @@ const LICENSE_METADATA_OVERRIDES = new Map([
 ]);
 // The published tarball omits the repository LICENSE; package.json declares Apache-2.0.
 // Keyed by exact version so a bump re-checks the license rather than inheriting this.
-const APACHE_TEXT_OVERRIDE_KEYS = new Set(['@ai-sdk/provider-utils@5.0.25']);
+const APACHE_TEXT_OVERRIDE_KEYS = new Set([
+  '@ai-sdk/provider-utils@5.0.34',
+  '@sigstore/verify@4.1.2',
+]);
 const EMBEDDED_COMPONENT_LICENSES = new Map([
   [
     '@ai-sdk/code-mode',
     {
-      version: '1.0.15',
+      version: '1.0.42',
       components: [
         {
           name: 'quickjs-emscripten (embedded runtime)',
@@ -78,11 +132,17 @@ const EMBEDDED_COMPONENT_LICENSES = new Map([
   ],
 ]);
 const MIT_COPYRIGHT_OVERRIDES = new Map([
+  // The published tarball omits the monorepo-root LICENSE.
+  ['@earendil-works/pi-tui@0.84.4', 'Copyright (c) 2025 Mario Zechner'],
   // The published tarball omits the repository LICENSE; sibling @astryxdesign
   // packages ship it verbatim with this notice.
   ['@astryxdesign/core@0.1.9', 'Copyright (c) 2026 Meta Platforms, Inc.'],
   ['@astryxdesign/core@0.2.0', 'Copyright (c) 2026 Meta Platforms, Inc.'],
   ['@astryxdesign/core@0.3.0', 'Copyright (c) 2026 Meta Platforms, Inc.'],
+  ['@astryxdesign/core@0.4.0', 'Copyright (c) 2026 Meta Platforms, Inc.'],
+  ['@astryxdesign/core@0.4.5', 'Copyright (c) 2026 Meta Platforms, Inc.'],
+  ['@astryxdesign/core@0.5.0', 'Copyright (c) 2026 Meta Platforms, Inc.'],
+  ['@astryxdesign/core@0.5.2', 'Copyright (c) 2026 Meta Platforms, Inc.'],
   ['@stylexjs/stylex@0.19.0', 'Copyright (c) Meta Platforms, Inc. and affiliates.'],
   ['@wecom/aibot-node-sdk@1.0.7', 'Copyright (c) WeComTeam contributors'],
   [
@@ -93,6 +153,9 @@ const MIT_COPYRIGHT_OVERRIDES = new Map([
       'Copyright (c) 2012-2013, Christopher Jeffrey (https://github.com/chjj/)',
     ].join('\n'),
   ],
+  // The published tarball ships no license file; the repository LICENSE is
+  // vendored at apps/desktop/resources/licenses/renderer/ANT_DESIGN_ICONS_LICENSE.txt.
+  ['@ant-design/icons-svg@4.6.0', 'Copyright (c) 2018-present Ant UED, https://xtech.antfin.com/'],
   ['agent-base@6.0.2', 'Copyright (c) 2013 Nathan Rajlich <nathan@tootallnate.net>'],
   ['https-proxy-agent@5.0.1', 'Copyright (c) 2013 Nathan Rajlich <nathan@tootallnate.net>'],
   // Published from TooTallNate/proxy-agents, which keeps its LICENSE at the
@@ -123,6 +186,24 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.`;
 
+// These exact tarballs omit a LICENSE file but include the same complete MIT
+// block in README.md. Keep the upstream wording and version-specific notice;
+// neither the package author nor its contributor list is a license authority.
+const README_MIT_TEXT = (copyrightNotice) => `(The MIT License)
+
+${copyrightNotice}
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the 'Software'), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.`;
+
+const MIT_TEXT_OVERRIDES = new Map([
+  ['fastdom@1.0.12', README_MIT_TEXT('Copyright (c) 2016 Wilson Page <wilsonpage@me.com>')],
+  ['strictdom@1.0.1', README_MIT_TEXT('Copyright (c) 2013 Wilson Page <wilsonpage@me.com>')],
+]);
+
 function readJson(path) {
   return JSON.parse(readFileSync(path, 'utf8'));
 }
@@ -134,41 +215,6 @@ function normalizeText(text) {
     .map((line) => line.trimEnd())
     .join('\n')
     .trim();
-}
-
-function collectDesktopClosure() {
-  const tree = JSON.parse(
-    execFileSync(
-      'npm',
-      ['ls', '--workspace', '@maka/desktop', '--omit=dev', '--all', '--json'],
-      npmSpawnOptions({
-        cwd: repoRoot,
-        encoding: 'utf8',
-        maxBuffer: 16 * 1024 * 1024,
-      }),
-    ),
-  );
-  const desktop = tree.dependencies?.['@maka/desktop'];
-  if (!desktop) throw new Error('npm ls did not return the @maka/desktop workspace');
-
-  const packages = new Map();
-  const visit = (dependencies) => {
-    for (const [name, dependency] of Object.entries(dependencies ?? {})) {
-      if (!dependency || typeof dependency !== 'object') continue;
-      if (!name.startsWith(WORKSPACE_PREFIX) && typeof dependency.version === 'string') {
-        packages.set(`${name}@${dependency.version}`, {
-          name,
-          version: dependency.version,
-        });
-      }
-      visit(dependency.dependencies);
-    }
-  };
-  visit(desktop.dependencies);
-  return [...packages.values()].sort(
-    (left, right) =>
-      left.name.localeCompare(right.name) || left.version.localeCompare(right.version),
-  );
 }
 
 function packageNameFromLockPath(lockPath) {
@@ -225,17 +271,119 @@ function readLicenseFiles(directory) {
 
 function overrideLicenseText(packageKey, selectedLicense) {
   if (selectedLicense === 'Apache-2.0' && APACHE_TEXT_OVERRIDE_KEYS.has(packageKey)) {
-    return normalizeText(readFileSync(join(repoRoot, 'LICENSE'), 'utf8'));
+    const rootLicense = readFileSync(join(repoRoot, 'LICENSE'), 'utf8');
+    // `split` returns the whole string when the delimiter is absent, which
+    // would put Maka's own third-party section back inside one npm package's
+    // notice and leave `--check` demanding that output be committed. Rename or
+    // drop the header and this fails instead.
+    const [apacheText, thirdParty] = rootLicense.split('\nTHIRD-PARTY COMPONENTS\n');
+    if (thirdParty === undefined) {
+      throw new Error('LICENSE has no THIRD-PARTY COMPONENTS section header to truncate at');
+    }
+    return normalizeText(apacheText);
   }
+  const exactMitText = MIT_TEXT_OVERRIDES.get(packageKey);
+  if (selectedLicense === 'MIT' && exactMitText) return exactMitText;
   const copyrightNotice = MIT_COPYRIGHT_OVERRIDES.get(packageKey);
   if (selectedLicense === 'MIT' && copyrightNotice) return MIT_TEXT(copyrightNotice);
   return undefined;
 }
 
+/**
+ * The declared closure is only trustworthy if it contains what the renderer
+ * build actually bundled. The vite build records that set — every module plus
+ * every emitted asset's source package — into `bundled-npm-packages.json`, so
+ * a package that enters the bundle through any path (a direct import, a deep
+ * import, a CSS `@import`, a font url()) fails here until it is declared.
+ */
+/**
+ * First-party stylesheets that ship inside the renderer bundle.
+ *
+ * Vite inlines a CSS `@import` at transform time — the imported file never
+ * becomes a module — so the bundle recorder cannot see a package reached only
+ * that way unless its CSS also emits an asset. A pure-rules stylesheet
+ * (`normalize.css`, an icon font using `data:` URIs) would therefore ship its
+ * rules inside `dist-renderer/assets/*.css` with no notice and nothing failing.
+ * Reading the sources closes that: whatever a first-party stylesheet imports by
+ * package name has to be in the shipped closure, which is what puts it in the
+ * notices. A third-party stylesheet importing another package needs no scan —
+ * that package is its dependency, so the closure already reaches it.
+ */
+const FIRST_PARTY_STYLE_ROOTS = ['apps/desktop/src/renderer', 'packages/ui/src'];
+
+function firstPartyStylesheets(directory) {
+  if (!existsSync(directory)) return [];
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) return firstPartyStylesheets(path);
+    return entry.isFile() && entry.name.endsWith('.css') ? [path] : [];
+  });
+}
+
+function validateFirstPartyCssImports(closureNames) {
+  const undeclared = new Map();
+  for (const root of FIRST_PARTY_STYLE_ROOTS) {
+    for (const path of firstPartyStylesheets(join(repoRoot, root))) {
+      for (const name of bareCssImportSpecifiers(readFileSync(path, 'utf8'))) {
+        if (name.startsWith(WORKSPACE_PREFIX) || closureNames.has(name)) continue;
+        undeclared.set(name, path);
+      }
+    }
+  }
+  if (undeclared.size > 0) {
+    const detail = [...undeclared]
+      .map(([name, path]) => `${name} (${path.slice(repoRoot.length + 1)})`)
+      .join(', ');
+    throw new Error(
+      `stylesheets import packages outside the shipped closure: ${detail} — ` +
+        'add the package to maka.rendererBundledDependencies so its notice ships with its rules',
+    );
+  }
+}
+
+function validateBundledPackageRecord(closureNames) {
+  const rendererDist = join(repoRoot, 'apps/desktop/dist-renderer');
+  if (!existsSync(rendererDist)) return;
+  const recordPath = join(rendererDist, 'bundled-npm-packages.json');
+  if (!existsSync(recordPath)) {
+    throw new Error(
+      'dist-renderer exists but bundled-npm-packages.json is missing — rebuild the renderer',
+    );
+  }
+  const bundled = readJson(recordPath);
+  const undeclared = bundled.filter((name) => !closureNames.has(name));
+  if (undeclared.length > 0) {
+    throw new Error(
+      `renderer bundles packages outside the declared closure: ${undeclared.join(', ')} — ` +
+        'add the entry root to maka.rendererBundledDependencies',
+    );
+  }
+}
+
 function renderNotice() {
   const lockIndex = buildLockIndex();
   const sections = [];
-  const dependencies = collectDesktopClosure();
+  const closure = collectWorkspaceClosure({
+    workspaceName: target.workspaceName,
+    manifestPath: target.manifestPath,
+  });
+  if (target.manifestPath) {
+    const closureNames = new Set(closure.map(({ name }) => name));
+    validateBundledPackageRecord(closureNames);
+    validateFirstPartyCssImports(closureNames);
+  }
+  // Asset-licensed renderer packages (the OFL Geist fonts) ship their license
+  // as a vendored file in the artifact rather than an npm-notice entry, so
+  // they are audited as part of the closure but not rendered here. The source
+  // file electron-builder copies from must exist for that channel to work.
+  const dependencies = closure.filter(({ name }) => {
+    if (!ASSET_LICENSED_RENDERER_PACKAGES.has(name)) return true;
+    const licenseSource = join(repoRoot, 'node_modules', name, 'LICENSE');
+    if (!existsSync(licenseSource)) {
+      throw new Error(`${name}: asset-licensed package has no LICENSE file to package`);
+    }
+    return false;
+  });
   for (const dependency of dependencies) {
     const packageKey = `${dependency.name}@${dependency.version}`;
     const candidates = lockIndex.get(packageKey);
@@ -302,11 +450,15 @@ function renderNotice() {
     }
   }
 
-  return `Maka Desktop — Production npm Third-Party Notices
-====================================================
+  return `${target.title}
+${target.underline}
 
 Generated by scripts/generate-third-party-notices.mjs from the exact
-@maka/desktop production dependency closure and package-lock.json.
+${target.workspaceName} ${
+    target.manifestPath
+      ? 'shipped dependency closure (Node production plus the\nbundled renderer)'
+      : 'production dependency closure'
+  } and package-lock.json.
 Do not edit this file by hand.
 
 Policy: every package must resolve to an ASF-compatible SPDX license. Compound
@@ -332,12 +484,81 @@ function validateAssetNotices() {
   }
 }
 
-validateAssetNotices();
+/**
+ * Say what drifted, not just that something did.
+ *
+ * The comparison is byte-exact over a 15k-line generated file, so "stale" on
+ * its own leaves whoever hit it — often on a CI runner whose OS they are not
+ * holding — with nothing to act on. The two shapes worth separating are a
+ * changed dependency closure, which the suggested command fixes, and identical
+ * packages whose license bytes moved, which usually means something upstream
+ * or environmental rather than a missed regeneration.
+ */
+function describeNoticeDrift(committed, generated) {
+  // Split on either ending. A CRLF checkout would otherwise leave `\r` on every
+  // extracted name, reporting the same packages as both added and removed and
+  // hiding the text-drift branch below — the diagnostic would misdescribe
+  // exactly the environment-specific failure it exists to explain.
+  const linesOf = (text) => text.split(/\r?\n/);
+  const packagesIn = (text) =>
+    new Set(
+      linesOf(text)
+        .filter((line) => line.startsWith('Package: '))
+        .map((line) => line.slice('Package: '.length).trim()),
+    );
+  const committedPackages = packagesIn(committed);
+  const generatedPackages = packagesIn(generated);
+  const onlyGenerated = [...generatedPackages].filter((name) => !committedPackages.has(name));
+  const onlyCommitted = [...committedPackages].filter((name) => !generatedPackages.has(name));
+
+  const lines = [];
+  const list = (label, names) => {
+    if (names.length === 0) return;
+    const shown = names.slice(0, 10);
+    lines.push(`  ${label} (${names.length}):`);
+    for (const name of shown) lines.push(`    ${name}`);
+    if (names.length > shown.length) lines.push(`    …and ${names.length - shown.length} more`);
+  };
+  list('present in the closure but missing from the committed file', onlyGenerated);
+  list('committed but no longer in the closure', onlyCommitted);
+
+  if (onlyGenerated.length === 0 && onlyCommitted.length === 0) {
+    const committedLines = linesOf(committed);
+    const generatedLines = linesOf(generated);
+    const limit = Math.max(committedLines.length, generatedLines.length);
+    let index = 0;
+    while (index < limit && committedLines[index] === generatedLines[index]) index += 1;
+    lines.push('  the same packages are listed, so the difference is in the notice text itself');
+    if (index === limit) {
+      // Every line matches once endings are normalized, so the bytes differ only
+      // in how the lines end. Naming that is the whole answer — regenerating
+      // will not help, and the repository already forces LF through
+      // .gitattributes, so a CRLF checkout means that rule did not take effect.
+      lines.push('  every line matches once line endings are normalized:');
+      lines.push(`    committed uses CRLF: ${committed.includes('\r\n')}`);
+      lines.push(`    generated uses CRLF: ${generated.includes('\r\n')}`);
+      lines.push('  check .gitattributes and the checkout, not the dependency closure');
+    } else {
+      lines.push(`  first difference at line ${index + 1}:`);
+      lines.push(`    committed:  ${JSON.stringify(committedLines[index] ?? '<end of file>')}`);
+      lines.push(`    generated:  ${JSON.stringify(generatedLines[index] ?? '<end of file>')}`);
+    }
+  }
+  return lines.join('\n');
+}
+
+if (target.validateAssets) validateAssetNotices();
 const generated = renderNotice();
 if (checkOnly) {
-  if (!existsSync(outputPath) || readFileSync(outputPath, 'utf8') !== generated) {
+  if (!existsSync(outputPath)) {
     throw new Error(
-      'Production dependency notices are stale. Run npm run generate:third-party-notices.',
+      `Production dependency notices are missing at ${outputPath}. Run npm run generate:third-party-notices.`,
+    );
+  }
+  const committed = readFileSync(outputPath, 'utf8');
+  if (committed !== generated) {
+    throw new Error(
+      `Production dependency notices are stale. Run npm run generate:third-party-notices.\n${describeNoticeDrift(committed, generated)}`,
     );
   }
   console.log('[third-party-notices] OK — production dependency inventory is current.');

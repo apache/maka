@@ -1,7 +1,28 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { markPersisted } from '../persisted-value.js';
 import {
   computeNextFireAt,
+  decodePersistedScheduledTask,
   isScheduledTaskDue,
   nextScheduledTaskStateAfterFire,
   normalizeCreateScheduledTaskInput,
@@ -11,35 +32,6 @@ import {
 } from '../scheduled-task.js';
 
 describe('scheduled-task catalog', () => {
-  it('normalizes a cron agent_run create payload', () => {
-    const now = Date.UTC(2026, 0, 5, 8, 0, 0);
-    const result = normalizeCreateScheduledTaskInput(
-      {
-        title: 'Morning brief',
-        intentBody: 'Summarize overnight PRs',
-        schedule: { kind: 'cron', expression: '0 9 * * 1-5', startAt: now },
-        effect: {
-          kind: 'agent_run',
-          execution: {
-            cwd: '/tmp/ws',
-            backend: 'ai-sdk',
-            llmConnectionSlug: 'default',
-            model: 'test-model',
-            permissionMode: 'ask',
-            collaborationMode: 'agent',
-            orchestrationMode: 'default',
-          },
-        },
-        createdBy: { kind: 'agent', sessionId: 's1' },
-      },
-      now,
-    );
-    assert.equal(result.ok, true);
-    if (!result.ok) return;
-    assert.equal(result.value.title, 'Morning brief');
-    assert.ok(result.value.nextFireAt > now);
-  });
-
   it('advances once schedules to completed after fire', () => {
     const task: ScheduledTask = {
       id: 't1',
@@ -153,32 +145,9 @@ describe('scheduled-task catalog', () => {
     }
   });
 
-  it('accepts an empty note for notification tasks', () => {
-    const now = Date.UTC(2026, 0, 5, 8, 0, 0);
-    const result = normalizeCreateScheduledTaskInput(
-      {
-        title: 'Stand up',
-        intentBody: '',
-        schedule: { kind: 'once', runAt: now + 60_000 },
-        effect: { kind: 'notify', channel: 'local' },
-        createdBy: { kind: 'user' },
-      },
-      now,
-    );
-    assert.equal(result.ok, true);
-    if (result.ok) assert.equal(result.value.intentBody, '');
-  });
-
-  it('keeps weekly and monthly recurrences as calendar schedules', () => {
+  it('clamps monthly recurrence to the last calendar day', () => {
     const runAt = new Date(2026, 0, 31, 9, 30).getTime();
-    const weekly = { kind: 'calendar' as const, recurrence: 'weekly' as const, anchorAt: runAt };
     const monthly = { kind: 'calendar' as const, recurrence: 'monthly' as const, anchorAt: runAt };
-    assert.deepEqual(weekly, { kind: 'calendar', recurrence: 'weekly', anchorAt: runAt });
-    assert.deepEqual(monthly, {
-      kind: 'calendar',
-      recurrence: 'monthly',
-      anchorAt: runAt,
-    });
     const february = computeNextFireAt(monthly, runAt);
     assert.equal(new Date(february!).getDate(), 28);
   });
@@ -197,6 +166,73 @@ describe('scheduled-task catalog', () => {
       now,
     );
     assert.deepEqual(result, { ok: false, message: 'Schedule must fire before expiresAt' });
+  });
+
+  it('drops a backend key from Automation create input', () => {
+    // #3306: `backend` left the template. A caller still sending one — any
+    // value, including the retired `'fake'` (#3211) — must not get it frozen
+    // into a new record.
+    const now = Date.UTC(2026, 0, 5, 8, 0, 0);
+    const execution = {
+      cwd: '/tmp/project',
+      llmConnectionId: 'connection-anthropic',
+      llmConnectionSlug: 'anthropic',
+      model: 'claude-sonnet-4-5-20250929',
+      permissionMode: 'ask',
+      collaborationMode: 'agent',
+      orchestrationMode: 'default',
+    };
+    const create = (backend?: string) =>
+      normalizeCreateScheduledTaskInput(
+        {
+          title: 'Nightly run',
+          intentBody: 'do the thing',
+          schedule: { kind: 'once', runAt: now + 60_000 },
+          effect: {
+            kind: 'agent_run',
+            execution: backend === undefined ? execution : { ...execution, backend },
+          },
+          createdBy: { kind: 'user' },
+        },
+        now,
+      );
+
+    for (const backend of [undefined, 'ai-sdk', 'fake']) {
+      const result = create(backend);
+      assert.equal(result.ok, true);
+      if (!result.ok) return;
+      assert.equal(result.value.effect.kind, 'agent_run');
+      if (result.value.effect.kind !== 'agent_run') return;
+      assert.equal('backend' in result.value.effect.execution, false);
+    }
+  });
+
+  it('requires an immutable Connection identity for new Agent tasks', () => {
+    const now = Date.UTC(2026, 0, 5, 8, 0, 0);
+    const result = normalizeCreateScheduledTaskInput(
+      {
+        title: 'Missing identity',
+        intentBody: 'run',
+        schedule: { kind: 'once', runAt: now + 60_000 },
+        effect: {
+          kind: 'agent_run',
+          execution: {
+            cwd: '/tmp/project',
+            llmConnectionSlug: 'anthropic',
+            model: 'claude',
+            permissionMode: 'ask',
+            collaborationMode: 'agent',
+            orchestrationMode: 'default',
+          },
+        },
+        createdBy: { kind: 'user' },
+      },
+      now,
+    );
+    assert.deepEqual(result, {
+      ok: false,
+      message: 'execution.llmConnectionId is required',
+    });
   });
 
   it('rejects future recurrence anchors outside the scheduling horizon', () => {
@@ -220,5 +256,99 @@ describe('scheduled-task catalog', () => {
         message: 'Schedule has no fire within one year from now',
       });
     }
+  });
+});
+
+describe('decodePersistedScheduledTask', () => {
+  const base: ScheduledTask = {
+    id: 't1',
+    title: 'Nightly',
+    intent: { kind: 'text', body: 'run it' },
+    schedule: { kind: 'once', runAt: 1000 },
+    effect: {
+      kind: 'agent_run',
+      execution: {
+        cwd: '/repo',
+        llmConnectionId: 'connection-anthropic',
+        llmConnectionSlug: 'anthropic',
+        model: 'claude',
+        permissionMode: 'ask',
+        collaborationMode: 'agent',
+        orchestrationMode: 'default',
+      },
+    },
+    status: 'active',
+    nextFireAt: 1000,
+    lastFireAt: null,
+    fireCount: 0,
+    maxFires: null,
+    expiresAt: null,
+    createdBy: { kind: 'user' },
+    createdAt: 0,
+    updatedAt: 0,
+    runs: [],
+    lastError: null,
+  };
+
+  it('folds a retired permission mode to its live equivalent', () => {
+    const stored = JSON.parse(
+      JSON.stringify(base).replace('"permissionMode":"ask"', '"permissionMode":"execute"'),
+    ) as ScheduledTask;
+    const decoded = decodePersistedScheduledTask(markPersisted<ScheduledTask>(stored));
+    assert.equal(
+      decoded.effect.kind === 'agent_run' ? decoded.effect.execution.permissionMode : undefined,
+      'ask',
+    );
+  });
+
+  it('returns the same task when nothing needs folding', () => {
+    assert.equal(decodePersistedScheduledTask(markPersisted<ScheduledTask>(base)), base);
+  });
+
+  it('keeps legacy slug-only Agent tasks readable', () => {
+    const { llmConnectionId: _legacyId, ...legacyExecution } =
+      base.effect.kind === 'agent_run' ? base.effect.execution : {};
+    const legacy = {
+      ...base,
+      effect: { kind: 'agent_run' as const, execution: legacyExecution },
+    } as ScheduledTask;
+    const decoded = decodePersistedScheduledTask(markPersisted<ScheduledTask>(legacy));
+    assert.equal(decoded.effect.kind, 'agent_run');
+    if (decoded.effect.kind !== 'agent_run') return;
+    assert.equal(decoded.effect.execution.llmConnectionId, undefined);
+  });
+
+  it('leaves effects without an execution template alone', () => {
+    const notify: ScheduledTask = { ...base, effect: { kind: 'notify', channel: 'local' } };
+    assert.equal(decodePersistedScheduledTask(markPersisted<ScheduledTask>(notify)), notify);
+  });
+
+  it('rejects unknown permission modes in persisted execution templates', () => {
+    assert.throws(
+      () =>
+        decodePersistedScheduledTask(
+          markPersisted<ScheduledTask>({
+            ...base,
+            effect: {
+              ...base.effect,
+              execution: {
+                ...(base.effect.kind === 'agent_run' ? base.effect.execution : {}),
+                permissionMode: 'future-mode',
+              },
+            },
+          }),
+        ),
+      /Invalid persisted ScheduledTask permission mode/,
+    );
+  });
+
+  it('rejects unknown effect kinds in persisted records', () => {
+    assert.throws(
+      () =>
+        decodePersistedScheduledTask(
+          markPersisted<ScheduledTask>({ ...base, effect: { kind: 'future-effect' } }),
+        ),
+      /Invalid persisted ScheduledTask effect/,
+    );
   });
 });

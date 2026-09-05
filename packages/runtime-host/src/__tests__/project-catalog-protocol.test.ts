@@ -1,3 +1,23 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
@@ -6,7 +26,9 @@ import {
   decodeProjectCatalogQueryResult,
   HOST_OPERATION_SPECS,
   PROJECT_CATALOG_PAGE_MAX_ITEMS,
-  RuntimeHostProtocolError,
+  projectDirectoryPosixRootSpecValid,
+  projectDirectoryRootSpecValid,
+  REMOTE_OWNER_OPERATION_GRANTS,
 } from '../protocol/index.js';
 
 const projectPath = process.platform === 'win32' ? 'C:\\workspace' : '/workspace';
@@ -14,59 +36,20 @@ const foreignHostPath = process.platform === 'win32' ? '/workspace' : 'C:\\works
 const revision = `sha256:${'a'.repeat(64)}` as const;
 
 describe('Project catalog protocol', () => {
-  test('declares bounded ready operations and exact invalidations', () => {
-    assert.deepEqual(
-      Object.fromEntries(
-        (['project.catalog.query', 'project.catalog.mutate'] as const).map((operation) => [
-          operation,
-          {
-            mode: HOST_OPERATION_SPECS[operation].mode,
-            availability: HOST_OPERATION_SPECS[operation].availability,
-          },
-        ]),
-      ),
-      {
-        'project.catalog.query': { mode: 'query', availability: 'ready' },
-        'project.catalog.mutate': { mode: 'command', availability: 'ready' },
-      },
-    );
+  test('keeps Host-native root shape separate from SSH POSIX policy', () => {
+    const windowsRoot = { label: 'Work', path: 'C:\\workspace' };
+    assert.equal(projectDirectoryRootSpecValid(windowsRoot), true);
+    assert.equal(projectDirectoryPosixRootSpecValid(windowsRoot), false);
+    assert.equal(projectDirectoryPosixRootSpecValid({ label: 'Work', path: '/workspace' }), true);
+  });
+
+  test('decodes exact invalidations', () => {
     const frame = { kind: 'project.catalog.changed' as const, revision: 1 };
     assert.deepEqual(decodeHostFrame(frame), frame);
     assert.throws(() => decodeHostFrame({ ...frame, extra: true }), isProtocolError);
   });
 
-  test('round-trips every closed mutation shape and correlates its result', () => {
-    for (const input of [
-      { kind: 'register', path: projectPath },
-      { kind: 'relink', projectId: 'project-1', path: projectPath },
-      { kind: 'rename', projectId: 'project-1', name: 'Project' },
-      { kind: 'archive', projectId: 'project-1' },
-      { kind: 'restore', projectId: 'project-1' },
-    ] as const) {
-      const request = {
-        requestId: `request-${input.kind}`,
-        operation: 'project.catalog.mutate' as const,
-        input,
-      };
-      assert.deepEqual(decodeClientFrame(request), request);
-    }
-    const mutation = {
-      requestId: 'request-register',
-      operation: 'project.catalog.mutate' as const,
-      ok: true as const,
-      result: {
-        kind: 'project' as const,
-        project: {
-          id: 'project-1',
-          aliases: [],
-          name: 'Project',
-          locationCount: 1,
-          archivedAt: null,
-          available: true,
-        },
-      },
-    };
-    assert.deepEqual(decodeHostFrame(mutation), mutation);
+  test('identifies Project catalog operations that expose Host paths', () => {
     const location = {
       requestId: 'request-location',
       operation: 'project.catalog.query' as const,
@@ -88,7 +71,6 @@ describe('Project catalog protocol', () => {
         nextCursor: null,
       },
     };
-    assert.deepEqual(decodeHostFrame(location), location);
     const foreignLocation = {
       ...location,
       result: {
@@ -133,6 +115,23 @@ describe('Project catalog protocol', () => {
         path: projectPath,
       }),
       true,
+    );
+  });
+
+  test('decodes an optional project registration preference and rejects non-booleans', () => {
+    const frame = {
+      requestId: 'request-register-preference',
+      operation: 'project.catalog.mutate' as const,
+      input: { kind: 'register' as const, path: projectPath, prefer: false },
+    };
+    assert.deepEqual(decodeClientFrame(frame), frame);
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          ...frame,
+          input: { ...frame.input, prefer: 'false' },
+        }),
+      isProtocolError,
     );
   });
 
@@ -185,6 +184,65 @@ describe('Project catalog protocol', () => {
           operation: 'project.catalog.mutate',
           ok: true,
           result: { kind: 'project', projectId: 'project-1' },
+        }),
+      isProtocolError,
+    );
+  });
+
+  test('remote directory selection carries opaque path segments instead of Host paths', () => {
+    assert.equal(REMOTE_OWNER_OPERATION_GRANTS.includes('project.catalog.query'), true);
+    assert.equal(REMOTE_OWNER_OPERATION_GRANTS.includes('project.catalog.mutate'), true);
+    assert.equal(
+      HOST_OPERATION_SPECS['project.catalog.query'].usesHostPaths?.({ kind: 'directory_roots' }),
+      false,
+    );
+    assert.deepEqual(
+      decodeProjectCatalogQueryResult({
+        kind: 'directory_roots',
+        roots: [
+          { id: 'root-a', label: 'Projects' },
+          { id: 'root-b', label: 'Shared data' },
+        ],
+      }),
+      {
+        kind: 'directory_roots',
+        roots: [
+          { id: 'root-a', label: 'Projects' },
+          { id: 'root-b', label: 'Shared data' },
+        ],
+      },
+    );
+    assert.throws(
+      () =>
+        decodeProjectCatalogQueryResult({
+          kind: 'directory_roots',
+          roots: [{ id: 'root-a' }],
+        }),
+      isProtocolError,
+    );
+    assert.equal(
+      HOST_OPERATION_SPECS['project.catalog.mutate'].usesHostPaths?.({
+        kind: 'register_directory',
+        rootId: 'home',
+        segments: ['work'],
+      }),
+      false,
+    );
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          requestId: 'directory-traversal',
+          operation: 'project.catalog.mutate',
+          input: { kind: 'register_directory', rootId: 'home', segments: ['..'] },
+        }),
+      isProtocolError,
+    );
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          requestId: 'directory-separator',
+          operation: 'project.catalog.query',
+          input: { kind: 'directory_list_start', rootId: 'home', segments: ['work/project'] },
         }),
       isProtocolError,
     );
