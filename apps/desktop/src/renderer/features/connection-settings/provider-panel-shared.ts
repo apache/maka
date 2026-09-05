@@ -32,7 +32,7 @@ export function providerPanelActionErrorMessage(error: unknown, locale: UiLocale
   // wrapper — channel names like 'connections:fetchModels' contain "fetch",
   // which the keyword classifier reads as a network error.
   const cleaned = redactSecrets(cleanErrorMessage(error)).trim();
-  if (/connection_stale|Unable to delete Connection: connection_stale/i.test(cleaned)) {
+  if (/connection_stale/i.test(cleaned)) {
     return shared.connectionStale;
   }
   const classified = generalizedErrorMessageForLocale(new Error(cleaned), '', locale);

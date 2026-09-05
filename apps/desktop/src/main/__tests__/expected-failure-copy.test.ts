@@ -86,3 +86,17 @@ test('provider action errors never echo a raw Chinese message', () => {
     getProviderSettingsCopy('en').shared.actionFallback,
   );
 });
+
+test('stale connection errors render the same copy with or without IPC wrapping', () => {
+  for (const locale of ['zh-CN', 'zh-TW', 'en'] as const) {
+    for (const message of [
+      'connection_stale',
+      "Error invoking remote method 'connections:delete': Error: Unable to delete Connection: connection_stale",
+    ]) {
+      assert.equal(
+        providerPanelActionErrorMessage(new Error(message), locale),
+        getProviderSettingsCopy(locale).shared.connectionStale,
+      );
+    }
+  }
+});
