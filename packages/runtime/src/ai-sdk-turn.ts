@@ -1017,10 +1017,15 @@ export class AiSdkTurn {
         shouldAppendContextCompactionFailedOpenNote(contextBudget)
       ) {
         contextCompactionFailedOpenNoteWritten = true;
-        const failOpenReason = contextBudget?.compactionDecisions?.find(
-          (decision) =>
-            decision.boundaryKind === 'historyCompact' && decision.decision === 'failedOpen',
-        )?.failOpenReason;
+        // The most recent stage that refused the fold: a send can carry both a
+        // priorReplay and an activeStep refusal after a diagnostic merge, and
+        // array order would pin the stale one.
+        const failOpenReason = contextBudget?.compactionDecisions
+          ?.filter(
+            (decision) =>
+              decision.boundaryKind === 'historyCompact' && decision.decision === 'failedOpen',
+          )
+          .at(-1)?.failOpenReason;
         const note: SystemNoteMessage = {
           type: 'system_note',
           id: this.deps.newId(),
