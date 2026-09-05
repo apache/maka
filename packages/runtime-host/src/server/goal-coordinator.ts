@@ -23,6 +23,7 @@ import {
   type GoalAuthorityRecord,
   type GoalControlLease as DurableGoalControlLease,
   type GoalCurrentExecution,
+  type GoalPendingContinuation,
   type GoalState as DurableGoalState,
 } from '@maka/core/goal';
 import { userFacingText, type StoredMessage } from '@maka/core/session';
@@ -164,6 +165,7 @@ export class HostGoalCoordinator {
       admitTurn: options.admitTurn,
       durability: {
         flush: (sessionId) => this.#flushGoalState(sessionId),
+        recordPendingContinuation: (pending) => this.#recordPendingContinuation(pending),
         recordCurrentExecution: (current) => this.#recordCurrentExecution(current),
         settleCurrentExecution: (sessionId, turnId) =>
           this.#settleCurrentExecution(sessionId, turnId),
@@ -224,6 +226,8 @@ export class HostGoalCoordinator {
     for (const snapshot of this.#authorityBySession.values()) {
       if (snapshot.record.currentExecution) {
         await this.#recoverCurrentExecution(snapshot.record.currentExecution);
+      } else if (snapshot.record.pendingContinuation) {
+        this.continuation.recoverPendingContinuation(snapshot.record.pendingContinuation);
       } else {
         this.continuation.recoverActiveGoal(snapshot.record.goal.sessionId);
       }
@@ -447,7 +451,30 @@ export class HostGoalCoordinator {
         current?.record.goal.id === goal.id && goal.revision >= current.record.goal.revision
           ? current.record.currentExecution
           : null,
+      pendingContinuation:
+        current?.record.goal.id === goal.id && goal.revision === current.record.goal.revision
+          ? current.record.pendingContinuation
+          : null,
     });
+  }
+
+  async #recordPendingContinuation(pending: GoalPendingContinuation): Promise<void> {
+    const sessionId = this.manager.getSessionIdByGoalId(pending.checkpoint.goalId);
+    const authority = sessionId ? this.#authorityBySession.get(sessionId) : undefined;
+    if (
+      !authority ||
+      authority.record.goal.id !== pending.checkpoint.goalId ||
+      !sameGoalControlLease(authority.record.controlLease, pending.controlLease) ||
+      authority.record.goal.revision !== pending.checkpoint.revision
+    ) {
+      throw new Error('Goal pending continuation no longer matches its durable authority');
+    }
+    this.#enqueueAuthorityCommit(sessionId!, {
+      ...authority.record,
+      currentExecution: null,
+      pendingContinuation: pending,
+    });
+    await this.#flushGoalState(sessionId!);
   }
 
   async #recordCurrentExecution(current: GoalCurrentExecution): Promise<void> {
@@ -462,6 +489,7 @@ export class HostGoalCoordinator {
     this.#enqueueAuthorityCommit(current.execution.sessionId, {
       ...authority.record,
       currentExecution: current,
+      pendingContinuation: null,
     });
     await this.#flushGoalState(current.execution.sessionId);
   }

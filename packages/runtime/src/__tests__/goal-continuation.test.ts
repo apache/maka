@@ -39,6 +39,7 @@ import {
 import type { GoalEvaluation } from '../goal-evaluator.js';
 import type { MakaToolContext } from '../tool-runtime.js';
 import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
+import type { GoalPendingContinuation } from '@maka/core/goal';
 
 const SESSION = 'sess-1';
 function controlledCall<T>() {
@@ -124,6 +125,7 @@ function setup(opts?: {
   tokenCount?: number;
   onChange?: GoalManagerDeps['onChange'];
   taskGate?: GoalContinuationDeps['taskGate'];
+  durability?: GoalContinuationDeps['durability'];
 }) {
   let id = 0;
   const manager = new GoalManager({
@@ -161,7 +163,7 @@ function setup(opts?: {
       close: async () => {},
     },
     getRecentContext: async () => 'recent context',
-    durability: volatileGoalDurability,
+    durability: opts?.durability ?? volatileGoalDurability,
     getTokenCount: opts?.tokenCount !== undefined ? () => opts.tokenCount! : undefined,
     admitTurn: (sessionId, prompt) => {
       attemptedPrompts.push(prompt);
@@ -229,6 +231,47 @@ function goalToolsFor(manager: GoalManager, coordinator: GoalContinuationCoordin
 }
 
 describe('GoalContinuationCoordinator settlement', () => {
+  test('recovery admits the durable pending continuation without regenerating its prompt', async () => {
+    const { manager, coordinator, admitted } = setup();
+    const created = manager.create(SESSION, 'ship');
+    assert.equal(created.kind, 'created');
+    const controlLease = manager.getControlLease(SESSION);
+    assert.ok(controlLease);
+
+    coordinator.recoverPendingContinuation({
+      checkpoint: { goalId: created.goal.id, revision: created.goal.revision },
+      controlLease,
+      prompt: 'Resume the durable Goal successor.',
+      triggeringTurnId: 'turn-1',
+    });
+
+    await waitFor(() => admitted.length === 1, 'recovered continuation was not admitted');
+
+    assert.equal(admitted[0]!.prompt, 'Resume the durable Goal successor.');
+    assert.equal(admitted.length, 1);
+  });
+
+  test('settlement records a durable continuation outbox entry before admission', async () => {
+    const pending: GoalPendingContinuation[] = [];
+    const { manager, coordinator, admitted } = setup({
+      durability: {
+        ...volatileGoalDurability,
+        recordPendingContinuation: async (entry) => {
+          pending.push(entry);
+        },
+      },
+    });
+    manager.create(SESSION, 'ship');
+
+    await settleExternal(coordinator, SESSION, { kind: 'completed', turnId: 'turn-1' });
+    await waitFor(() => admitted.length === 1, 'continuation was not admitted');
+
+    assert.equal(pending.length, 1);
+    assert.equal(pending[0]!.checkpoint.goalId, manager.get(SESSION)!.id);
+    assert.equal(pending[0]!.checkpoint.revision, 1);
+    assert.equal(pending[0]!.triggeringTurnId, 'turn-1');
+    assert.match(pending[0]!.prompt, /Goal: "ship"/);
+  });
   test('binds a Goal created by the same external turn before it settles', async () => {
     const { manager, coordinator } = setup({
       evaluations: [{ met: true, reason: 'same-turn Goal verified' }],
