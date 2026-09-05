@@ -26,8 +26,6 @@ import type { SessionSummary } from '@maka/core/session';
 import { ChatModelSwitcher, ModelChipStatic, NewChatModelPicker, ThinkingLevelSelector } from '../src/chat-model-switcher.js';
 import {
   exactModelChoiceValue,
-  modelChoiceValue,
-  modelMenuGroups,
   type ChatModelChoice,
 } from '../src/chat-model-helpers.js';
 import { ModelPicker } from '../src/model-picker.js';
@@ -342,30 +340,6 @@ export const ThinkingLevelSeparate: Story = {
     const medium = await within(document.body).findByRole('menuitemradio', { name: '中' });
     await expect(medium).toHaveAttribute('aria-checked', 'true');
   },
-};
-
-// Real path: Settings → 通用 → default model, while the just-picked model is
-// being saved. Production drives `ModelPicker.loading` from the save in flight
-// (general-settings-page.tsx `loading={saving}`), with the catalog present and
-// the row disabled — not an empty catalog. (When the catalog itself is
-// unavailable the settings row renders a skeleton, which is a different
-// component, so that is not modelled here.)
-export const SavingDefaultModel: Story = {
-  render: () => (
-    <div style={{ width: 260 }}>
-      <ModelPicker
-        groups={modelMenuGroups(CHOICES, useUiLocale())}
-        value={modelChoiceValue(CHOICES[4]!.connectionSlug, CHOICES[4]!.model)}
-        leadingOption={{ value: '', label: '未设置' }}
-        renderProviderMark={providerMark}
-        ariaLabel="默认模型"
-        disabled
-        loading
-        triggerClassName="settingsModelPickerTrigger"
-        onValueChange={async () => {}}
-      />
-    </div>
-  ),
 };
 
 // Real path: composer left footer when no connection yields a usable model —
