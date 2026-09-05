@@ -35,6 +35,24 @@ const config: StorybookConfig = {
     '../../../packages/ui/stories/**/*.stories.@(ts|tsx)',
     '../stories/**/*.stories.@(ts|tsx)',
   ],
+  addons: [
+    {
+      name: '@storybook/addon-mcp',
+      options: {
+        // Issue #3527: agents get a queryable component-docs interface.
+        // Docs is the default toolset selection, not an allowlist: the addon
+        // lets callers override it per request via the X-MCP-Toolsets
+        // header, so the security boundary is the dev server's loopback
+        // binding (see the storybook script in package.json). dev/test stay
+        // off by default; test additionally needs @storybook/addon-vitest.
+        toolsets: {
+          dev: false,
+          test: false,
+          docs: true,
+        },
+      },
+    },
+  ],
   framework: {
     name: '@storybook/react-vite',
     options: {},
