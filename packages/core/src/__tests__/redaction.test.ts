@@ -306,6 +306,25 @@ describe('generalizedErrorMessageForLocale', () => {
       '操作失败',
     );
   });
+
+  test('classifies Chromium network stack error codes as network errors', () => {
+    for (const raw of [
+      'net::ERR_CONNECTION_RESET',
+      'net::ERR_NAME_NOT_RESOLVED',
+      'net::ERR_CONNECTION_REFUSED',
+      'net::ERR_INTERNET_DISCONNECTED',
+    ]) {
+      assert.equal(generalizedErrorMessage(new Error(raw)), 'Network error');
+      assert.equal(
+        generalizedErrorMessageForLocale(new Error(raw), 'fallback', 'zh-CN'),
+        '网络错误',
+      );
+      assert.equal(
+        generalizedErrorMessageForLocale(new Error(raw), 'fallback', 'zh-TW'),
+        '網路錯誤',
+      );
+    }
+  });
 });
 
 describe('generalizedErrorMessage', () => {

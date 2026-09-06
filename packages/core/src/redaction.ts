@@ -230,6 +230,10 @@ export function classifyGeneralizedError(error: unknown): GeneralizedErrorClass 
   if (
     lower.includes('network') ||
     lower.includes('fetch') ||
+    // Chromium network stack error codes (`net::ERR_CONNECTION_RESET`,
+    // `net::ERR_NAME_NOT_RESOLVED`, ...) never match the Node errno
+    // spellings below.
+    lower.includes('net::err') ||
     lower.includes('econn') ||
     lower.includes('enotfound')
   )
