@@ -744,12 +744,11 @@ export function ChatView(props: {
           actionLabel={props.returnToLatest.label}
           isPending={props.returnToLatest.isPending}
           onReturnToLatest={async () => {
-            // Loading the latest range is the shell's job; putting the viewport
-            // on it is this view's, and setting the pin is the whole of it —
-            // the range that arrives afterwards is growth, and growth is
-            // already followed.
-            await props.returnToLatest?.onClick();
+            // Pin first: an unpinned scroller reports the Turn it is leaving
+            // as the reading anchor, and restoring that anchor would pull the
+            // arriving range straight back.
             scrollAuthority.pinToTail();
+            await props.returnToLatest?.onClick();
           }}
         />
       ) : null}

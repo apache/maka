@@ -99,6 +99,52 @@ export function refreshTranscriptTurnLandmarks<T>(options: {
   };
 }
 
+export interface TranscriptHistoryRequest {
+  readonly target: 'earlier' | 'latest';
+  readonly anchorTurnId?: string;
+}
+
+export interface TranscriptHistoryGate {
+  pending: boolean;
+  queued?: TranscriptHistoryRequest;
+}
+
+export async function loadTranscriptHistory(options: {
+  readonly gate: TranscriptHistoryGate;
+  readonly request: TranscriptHistoryRequest;
+  readonly controller: {
+    loadBefore(maxBytes: number, anchorTurnId?: string): Promise<void>;
+    loadLatest(): Promise<void>;
+  };
+  readonly maxBytes: number;
+  readonly isCurrent: () => boolean;
+  readonly setPending: (pending: boolean) => void;
+  readonly onError: (error: unknown) => void;
+}): Promise<void> {
+  const { gate, request } = options;
+  if (gate.pending) {
+    // The scroller asks on every reader movement; dropping the request behind
+    // an in-flight load strands the reader until they move again.
+    if (request.target === 'latest' || gate.queued?.target !== 'latest') gate.queued = request;
+    return;
+  }
+  gate.pending = true;
+  options.setPending(true);
+  try {
+    if (request.target === 'earlier') {
+      await options.controller.loadBefore(options.maxBytes, request.anchorTurnId);
+    } else await options.controller.loadLatest();
+  } catch (error) {
+    if (options.isCurrent()) options.onError(error);
+  } finally {
+    gate.pending = false;
+    options.setPending(false);
+    const queued = gate.queued;
+    gate.queued = undefined;
+    if (queued && options.isCurrent()) void loadTranscriptHistory({ ...options, request: queued });
+  }
+}
+
 export function restoreSessionTranscriptRange<Message>(options: {
   readonly sessionId?: string;
   readonly searchTarget?: SearchTarget | null;
