@@ -15,11 +15,11 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 
 | Classification | Count |
 |---|---:|
-| windows-backend-gap | 27 |
+| windows-backend-gap | 28 |
 | portable-candidate | 18 |
 | platform-contract | 31 |
 
-Total Windows-excluded declarations: **76**
+Total Windows-excluded declarations: **77**
 
 ## Inventory
 
@@ -61,6 +61,7 @@ Total Windows-excluded declarations: **76**
 | windows-backend-gap | `packages/runtime-host/src/__tests__/session-revision-two-client-uds.test.ts` two Clients share exact retryable Session branch and revision authority | `process.platform === 'win32' ? 'Windows SQLite shutdown lifecycle' : false` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/usage-pricing-client-correlation.test.ts` fails the connection for a canonical response with mismatched ${mismatch.name} | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/usage-pricing-client-correlation.test.ts` rejects local invalid input without poisoning transport and correlates a private canonical copy | `process.platform === 'win32'` |
+| windows-backend-gap | `packages/runtime-host/src/__tests__/usage-pricing-two-client-uds.test.ts` reclaims Usage snapshot capacity after a lease-owning client disconnects | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/usage-pricing-two-client-uds.test.ts` two clients share usage projection and one revision-CAS pricing authority | `process.platform === 'win32'` |
 | portable-candidate | `packages/runtime/src/__tests__/filesystem-apply-patch.test.ts` deletes a self-referential symlink entry without following it | `process.platform === 'win32'` |
 | platform-contract | `packages/runtime/src/__tests__/filesystem-worker-process-runner.test.ts` filesystem worker rejects boundedly when a detached descendant retains stdout | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |

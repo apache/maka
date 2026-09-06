@@ -358,6 +358,44 @@ describe('InteractiveUsageStores', () => {
     });
   });
 
+  test('captures one repaired Usage authority snapshot behind the writer lease', async () => {
+    await withInteractiveRoot(async ({ root, capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert(owner);
+      const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+      try {
+        await stores.telemetry.recordLlmCall(
+          llmRecord({ id: 'legacy-snapshot', sessionId: 'session-legacy' }),
+        );
+        await stores.telemetry.recordToolInvocation(toolRecord());
+        appendModelCallAuthorityEvent(root, modelCallAttempt('session-canonical'));
+        const pricing = {
+          modelKey: 'openai:gpt-5',
+          inputUsdPer1M: 1,
+          outputUsdPer1M: 2,
+        };
+        await stores.pricing.upsert(0, pricing);
+
+        const snapshot = await stores.captureUsageSnapshot({
+          query: { range: 'all' },
+          activityLimit: 10,
+        });
+
+        assert.equal(snapshot.legacySummary.totalRequests, 1);
+        assert.equal(snapshot.legacyLlmLogs.total, 1);
+        assert.equal(snapshot.legacyLlmLogs.rows[0]?.id, 'legacy-snapshot');
+        assert.equal(snapshot.toolLogs.total, 1);
+        assert.equal(snapshot.toolLogs.rows[0]?.id, 'tool_1');
+        assert.equal(snapshot.canonical.attempts[0]?.sessionId, 'session-canonical');
+        assert.equal(snapshot.repair.pendingRuns, 0);
+        assert.deepEqual(snapshot.pricing, { revision: 1, overrides: [pricing] });
+      } finally {
+        await stores.close();
+        await owner.close();
+      }
+    });
+  });
+
   test('legacy summary clamps each cache reading to its own input', async () => {
     await withInteractiveRoot(async ({ capability }) => {
       const owner = await tryAcquireInteractiveRootOwner(capability);

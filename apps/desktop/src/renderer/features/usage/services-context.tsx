@@ -37,6 +37,10 @@ interface UsageSnapshot {
   readonly value: UsageStats | null;
 }
 
+interface UsageReloadLane {
+  tail: Promise<void>;
+}
+
 /**
  * Imperative handle the legacy surface uses to fence Usage synchronously the
  * instant the selected Host changes — before React re-renders the new
@@ -68,7 +72,7 @@ const UsageScopeContext = createContext<UsageScopeValue | null>(null);
  * in-flight load *without remounting*, so the rest of the settings surface is
  * untouched (using a React `key` here would remount every settings page).
  * Mounting is wired by the legacy settings surface; the snapshot, the reload
- * ticket, unmount isolation, target invalidation, and load-failure reporting are
+ * lane, unmount isolation, target invalidation, and load-failure reporting are
  * owned here, so the disposable view only reads them through `useUsageStats`.
  *
  * It keeps a single tagged `{ range, value }` snapshot (not a per-range cache):
@@ -93,6 +97,7 @@ export const UsageFeatureScope = forwardRef<
   const [snapshot, setSnapshot] = useState<UsageSnapshot | null>(null);
   const [renderedTargetKey, setRenderedTargetKey] = useState(props.targetKey);
   const reloadTicketRef = useRef(0);
+  const reloadLanesRef = useRef(new Map<string, UsageReloadLane>());
   const { targetKey, services, loadErrorTitle, describeError } = props;
 
   // Reset on a target (Host generation) change without remounting the subtree:
@@ -105,25 +110,46 @@ export const UsageFeatureScope = forwardRef<
     reloadTicketRef.current += 1;
   }
 
-  // Last-write-wins across concurrent reloads: a superseded (newer reload or a
-  // target change) or post-unmount load neither publishes its snapshot nor
-  // toasts. Because the scope outlives the view, a reload started before the
-  // view unmounts still lands here (its result is visible on return).
+  // Serialize reloads for one Host generation so rapid range changes cannot
+  // consume multiple snapshot reservations on the same connection. Waiting
+  // reloads remain last-write-wins: a superseded ticket is skipped before it
+  // reaches the service, while an already-started load finishes and releases
+  // its reservation before the latest queued range begins. Lanes are keyed by
+  // Host generation, so different connections can load independently while an
+  // A → B → A switch still queues behind A's unfinished request. Settled lanes
+  // are removed when no newer task has joined them. Because the scope outlives
+  // the view, a reload started before the view unmounts still lands here (its
+  // result is visible on return).
   const reload = useCallback(
-    async (range: UsageRange): Promise<void> => {
+    (range: UsageRange): Promise<void> => {
       const ticket = ++reloadTicketRef.current;
-      try {
-        const value = await services.loadUsageStats(range);
-        if (mountedRef.current && ticket === reloadTicketRef.current) {
-          setSnapshot({ range, value });
-        }
-      } catch (error) {
-        if (mountedRef.current && ticket === reloadTicketRef.current) {
-          toast.error(loadErrorTitle, describeError(error));
-        }
+      const lanes = reloadLanesRef.current;
+      let lane = lanes.get(targetKey);
+      if (!lane) {
+        lane = { tail: Promise.resolve() };
+        lanes.set(targetKey, lane);
       }
+      const task = lane.tail.then(async () => {
+        if (ticket !== reloadTicketRef.current) return;
+        try {
+          const value = await services.loadUsageStats(range);
+          if (mountedRef.current && ticket === reloadTicketRef.current) {
+            setSnapshot({ range, value });
+          }
+        } catch (error) {
+          if (mountedRef.current && ticket === reloadTicketRef.current) {
+            toast.error(loadErrorTitle, describeError(error));
+          }
+        }
+      });
+      lane.tail = task;
+      const deleteSettledLane = () => {
+        if (lanes.get(targetKey) === lane && lane.tail === task) lanes.delete(targetKey);
+      };
+      void task.then(deleteSettledLane, deleteSettledLane);
+      return task;
     },
-    [services, loadErrorTitle, describeError, toast, mountedRef],
+    [targetKey, services, loadErrorTitle, describeError, toast, mountedRef],
   );
 
   // Fence synchronously when the host signals a target change, before React

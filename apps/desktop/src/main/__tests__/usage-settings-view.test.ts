@@ -270,6 +270,128 @@ describe('Usage feature scope', () => {
     await act(async () => root.unmount());
   });
 
+  it('runs at most one load at a time and skips superseded queued ranges', async () => {
+    const { container, root } = setupDom();
+    const base: AppSettings = mergeSettings(createDefaultSettings(), {
+      usage: { range: '24h', activeTab: 'providers' },
+    });
+    const loads = new Map<UsageRange, Deferred<UsageStats | null>>();
+    const calls: UsageRange[] = [];
+    let activeLoads = 0;
+    let maxActiveLoads = 0;
+    const services: UsageServices = {
+      loadUsageStats: (range) => {
+        calls.push(range);
+        activeLoads += 1;
+        maxActiveLoads = Math.max(maxActiveLoads, activeLoads);
+        const d = deferred<UsageStats | null>();
+        loads.set(range, d);
+        return d.promise.finally(() => {
+          activeLoads -= 1;
+        });
+      },
+      updateUsageSettings: async (patch) => mergeSettings(base, { usage: patch }).usage,
+    };
+
+    await act(async () => {
+      root.render(tree({ active: true, settings: base, targetKey: 'hostA:1', services }));
+      await Promise.resolve();
+    });
+    for (const range of ['7d', '30d', 'all'] as const) {
+      const settings = mergeSettings(base, { usage: { range } });
+      await act(async () => {
+        root.render(tree({ active: true, settings, targetKey: 'hostA:1', services }));
+        await Promise.resolve();
+      });
+    }
+
+    assert.deepEqual(
+      calls,
+      ['24h'],
+      'range changes must queue behind the current load instead of consuming more snapshot slots',
+    );
+
+    await act(async () => {
+      loads.get('24h')!.resolve(statsWithRequests(111));
+      await flush();
+    });
+    assert.deepEqual(calls, ['24h', 'all'], 'only the latest queued range should load next');
+    assert.equal(maxActiveLoads, 1, 'a Usage scope must never overlap loads for one Host generation');
+
+    await act(async () => {
+      loads.get('all')!.resolve(statsWithRequests(444));
+      await flush();
+    });
+    assert.match(container.textContent ?? '', /444/, 'the latest range load should land');
+
+    await act(async () => root.unmount());
+  });
+
+  it('reuses a Host lane when switching A to B to A while the first A load is active', async () => {
+    const { container, root } = setupDom();
+    const base: AppSettings = mergeSettings(createDefaultSettings(), {
+      usage: { range: '24h', activeTab: 'providers' },
+    });
+    const loads = new Map<string, Deferred<UsageStats | null>[]>();
+    const calls: string[] = [];
+    const activeLoads = new Map<string, number>();
+    const maxActiveLoads = new Map<string, number>();
+    const servicesFor = (host: string): UsageServices => ({
+      loadUsageStats: (range) => {
+        calls.push(`${host}:${range}`);
+        const active = (activeLoads.get(host) ?? 0) + 1;
+        activeLoads.set(host, active);
+        maxActiveLoads.set(host, Math.max(maxActiveLoads.get(host) ?? 0, active));
+        const d = deferred<UsageStats | null>();
+        loads.set(host, [...(loads.get(host) ?? []), d]);
+        return d.promise.finally(() => {
+          activeLoads.set(host, (activeLoads.get(host) ?? 1) - 1);
+        });
+      },
+      updateUsageSettings: async (patch) => mergeSettings(base, { usage: patch }).usage,
+    });
+    const servicesA = servicesFor('A');
+    const servicesB = servicesFor('B');
+
+    await act(async () => {
+      root.render(tree({ active: true, settings: base, targetKey: 'hostA:1', services: servicesA }));
+      await Promise.resolve();
+    });
+    await act(async () => {
+      root.render(tree({ active: true, settings: base, targetKey: 'hostB:1', services: servicesB }));
+      await flush();
+    });
+    await act(async () => {
+      root.render(tree({ active: true, settings: base, targetKey: 'hostA:1', services: servicesA }));
+      await flush();
+    });
+
+    assert.deepEqual(
+      calls,
+      ['A:24h', 'B:24h'],
+      'returning to A must queue behind A while B remains independent',
+    );
+    assert.equal(maxActiveLoads.get('A'), 1, 'one connection must not overlap its own loads');
+    assert.equal(maxActiveLoads.get('B'), 1, 'a different connection may load independently');
+
+    await act(async () => {
+      loads.get('A')![0].resolve(statsWithRequests(111));
+      await flush();
+    });
+    assert.deepEqual(calls, ['A:24h', 'B:24h', 'A:24h']);
+
+    await act(async () => {
+      loads.get('A')![1].resolve(statsWithRequests(333));
+      loads.get('B')![0].resolve(statsWithRequests(222));
+      await flush();
+    });
+    assert.equal(maxActiveLoads.get('A'), 1, 'the revisited A load starts only after release');
+    assert.match(container.textContent ?? '', /333/, 'the current A load should land');
+    assert.doesNotMatch(container.textContent ?? '', /222/, 'the superseded B load must not land');
+
+    await act(async () => root.unmount());
+  });
+
   it('discards the previous Host generation snapshot when targetKey changes', async () => {
     const { container, root } = setupDom();
     const base: AppSettings = mergeSettings(createDefaultSettings(), {

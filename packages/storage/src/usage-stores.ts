@@ -27,6 +27,7 @@ import type {
 } from '@maka/core/usage-stats/types';
 import { throwDeduplicatedFailures } from './failure-utils.js';
 import {
+  catchUpModelCallProjectionInTransaction,
   createSqliteModelCallLedger,
   type CatchUpModelCallProjectionInput,
   type CatchUpModelCallProjectionResult,
@@ -47,6 +48,7 @@ import {
   type PricingSnapshot,
   type PricingStore,
 } from './pricing-store.js';
+import { acquireOperationalStateDatabase } from './operational-state-store.js';
 import {
   runWithStorageRootLease,
   StorageRootAuthorityError,
@@ -62,6 +64,7 @@ import {
   type PersistedToolInvocationRecord,
   type TelemetryRepo,
   type ToolUsageQuery,
+  resolveRange,
 } from './telemetry-repo.js';
 import { createSqlitePricingStore, createSqliteTelemetryRepo } from './sqlite-usage-store.js';
 
@@ -124,6 +127,23 @@ export interface PricingAuthorityWriter extends PricingAuthorityReader {
   delete(expectedRevision: number, modelKey: string): Promise<PricingMutationResult>;
 }
 
+export interface CaptureUsageSnapshotInput {
+  readonly query: UsageQuery;
+  readonly activityLimit: number;
+}
+
+export interface CapturedUsageSnapshot {
+  readonly legacySummary: UsageSummaryV2;
+  readonly legacyLlmLogs: { readonly rows: readonly UsageLogRow[]; readonly total: number };
+  readonly toolLogs: {
+    readonly rows: readonly PersistedToolInvocationRecord[];
+    readonly total: number;
+  };
+  readonly canonical: ModelCallLedgerPage;
+  readonly repair: CatchUpModelCallProjectionResult;
+  readonly pricing: PricingSnapshot;
+}
+
 export interface InteractiveUsageStoresReader {
   readonly kind: 'interactive';
   readonly access: 'read';
@@ -141,6 +161,7 @@ export interface InteractiveUsageStoresWriter {
   readonly telemetry: Readonly<TelemetryIndexWriter>;
   readonly modelCalls: Readonly<ModelCallIndexWriter>;
   readonly pricing: Readonly<PricingAuthorityWriter>;
+  captureUsageSnapshot(input: CaptureUsageSnapshotInput): Promise<CapturedUsageSnapshot>;
   subscribeSessionUsageChanges(listener: (sessionId: string) => void): () => void;
   beginDrain(): Promise<void>;
   flush(): Promise<void>;
@@ -292,7 +313,13 @@ export async function openInteractiveUsageStoresForWrite(
   if (opening) return opening;
   const pending = runWithStorageRootLease(lease, 'interactive', 'write', async (root) => {
     const repos = await openRepos(root, true);
-    const stores = createWriterFacade(lease, repos.telemetry, repos.modelCalls, repos.pricing);
+    const stores = createWriterFacade(
+      root,
+      lease,
+      repos.telemetry,
+      repos.modelCalls,
+      repos.pricing,
+    );
     writers.add(stores);
     writerByLease.set(lease, stores);
     return stores;
@@ -329,6 +356,7 @@ async function openRepos(
 }
 
 function createWriterFacade(
+  root: string,
   lease: StorageRootLease<'interactive', 'write'>,
   telemetry: TelemetryRepo,
   modelCalls: ModelCallLedger,
@@ -479,6 +507,42 @@ function createWriterFacade(
           () => run(() => pricing.delete(expectedRevision, modelKey)),
           isExpectedPricingFailure,
         ),
+    },
+    captureUsageSnapshot(input) {
+      if (!Number.isSafeInteger(input.activityLimit) || input.activityLimit <= 0) {
+        return Promise.reject(new TypeError('Usage snapshot activity limit must be positive'));
+      }
+      return admit(() =>
+        run(() => {
+          const snapshotLease = acquireOperationalStateDatabase(root);
+          try {
+            const snapshot = snapshotLease.transaction('write', () => {
+              const repair = catchUpModelCallProjectionInTransaction(snapshotLease.database);
+              return {
+                legacySummary: telemetry.summary(input.query),
+                legacyLlmLogs: telemetry.logs(input.query, 0, input.activityLimit),
+                toolLogs: telemetry.toolLogs(
+                  {
+                    range: input.query.range,
+                    ...(input.query.status === undefined ? {} : { status: input.query.status }),
+                  },
+                  0,
+                  input.activityLimit,
+                ),
+                canonical: modelCalls.read(resolveRange(input.query.range), input.query.sessionId),
+                repair,
+                pricing: pricing.snapshot(),
+              };
+            });
+            for (const sessionId of snapshot.repair.changedSessionIds) {
+              publishSessionUsageChange(sessionId);
+            }
+            return snapshot;
+          } finally {
+            snapshotLease.close();
+          }
+        }),
+      );
     },
     subscribeSessionUsageChanges(listener) {
       assertOpen();

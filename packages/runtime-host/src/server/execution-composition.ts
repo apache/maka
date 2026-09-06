@@ -1782,7 +1782,10 @@ export async function createExecutionRuntimeHostComposition(
             unsubscribeUsageChanges?.();
           },
         ],
-        releaseConnection: [(connectionId) => artifacts.releaseConnection(connectionId)],
+        releaseConnection: [
+          (connectionId) => artifacts.releaseConnection(connectionId),
+          (connectionId) => usagePricing.releaseConnection(connectionId),
+        ],
       }),
       createRuntimeHostDomainModule({
         id: 'client-capability',

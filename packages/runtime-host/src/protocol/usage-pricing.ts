@@ -34,12 +34,13 @@ import type {
 } from '@maka/core/usage-stats/types';
 import { MODEL_CALL_KINDS } from '@maka/core/usage-stats/types';
 import type { UsageProvenance } from '@maka/core/usage-ledger-merge';
-import { requireCount, requireExactRecord, requireRecord } from './codec.js';
+import { requireCount, requireExactRecord, requireId, requireRecord } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
 import { defineOperation } from './operation-spec.js';
 
 export const USAGE_PAGE_MAX_ITEMS = 100;
 export const USAGE_PAGE_MAX_BYTES = 48 * 1024;
+export const USAGE_SNAPSHOT_ACTIVITY_MAX_ITEMS = 50_000;
 export const USAGE_PROJECTION_TEXT_MAX_BYTES = 1024;
 export const PRICING_PAGE_MAX_ITEMS = 128;
 export const PRICING_PAGE_MAX_BYTES = 48 * 1024;
@@ -51,7 +52,7 @@ const QUERY_ERRORS = [
   'persistence_failed',
   'internal_failure',
 ] as const;
-const USAGE_QUERY_ERRORS = [...QUERY_ERRORS, 'invalid_request'] as const;
+const USAGE_QUERY_ERRORS = [...QUERY_ERRORS, 'invalid_request', 'operation_conflict'] as const;
 const PRICING_QUERY_ERRORS = [...QUERY_ERRORS, 'invalid_request'] as const;
 const MUTATION_ERRORS = [...QUERY_ERRORS, 'invalid_request', 'commit_outcome_unknown'] as const;
 const LLM_USAGE_QUERY_FIELDS = new Set([
@@ -199,6 +200,20 @@ export interface ToolUsageLogProjection {
 export type UsageLogProjection = LlmUsageLogProjection | ToolUsageLogProjection;
 
 export type UsageQueryInput =
+  | { readonly kind: 'snapshot_start'; readonly range: UsageQuery['range'] }
+  | {
+      readonly kind: 'snapshot_logs';
+      readonly revision: string;
+      readonly source: 'llm' | 'tool';
+      readonly offset?: number;
+      readonly limit?: number;
+    }
+  | {
+      readonly kind: 'snapshot_pricing';
+      readonly revision: string;
+      readonly offset?: number;
+      readonly limit?: number;
+    }
   | { readonly kind: 'summary'; readonly query: LlmUsageQuery }
   | {
       readonly kind: 'buckets';
@@ -230,6 +245,41 @@ export type UsageQueryInput =
     };
 
 export type UsageQueryResult =
+  | {
+      readonly kind: 'snapshot_started';
+      readonly revision: string;
+      readonly summary: UsageSummaryV2;
+      readonly provenance: UsageProvenance;
+    }
+  | {
+      readonly kind: 'snapshot_logs';
+      readonly revision: string;
+      readonly source: 'llm';
+      readonly rows: readonly LlmUsageLogProjection[];
+      readonly offset: number;
+      readonly total: number;
+      readonly nextOffset: number | null;
+      readonly truncated: boolean;
+    }
+  | {
+      readonly kind: 'snapshot_logs';
+      readonly revision: string;
+      readonly source: 'tool';
+      readonly rows: readonly ToolUsageLogProjection[];
+      readonly offset: number;
+      readonly total: number;
+      readonly nextOffset: number | null;
+      readonly truncated: boolean;
+    }
+  | {
+      readonly kind: 'snapshot_pricing';
+      readonly revision: string;
+      readonly entries: readonly EffectivePricingEntry[];
+      readonly offset: number;
+      readonly total: number;
+      readonly nextOffset: number | null;
+    }
+  | { readonly kind: 'revision_changed'; readonly expectedRevision: string }
   | {
       readonly kind: 'summary';
       readonly summary: UsageSummaryV2;
@@ -311,6 +361,14 @@ export type PricingMutateResult =
       readonly actualRevision: number;
     };
 
+export interface UsageSnapshotReleaseInput {
+  readonly revision: string;
+}
+
+export interface UsageSnapshotReleaseResult {
+  readonly released: true;
+}
+
 export const USAGE_PRICING_OPERATION_SPECS = {
   'usage.query': defineOperation<
     UsageQueryInput,
@@ -323,6 +381,17 @@ export const USAGE_PRICING_OPERATION_SPECS = {
     decodeInput: decodeUsageQueryInput,
     decodeOutput: decodeUsageQueryResult,
     assertOutputForInput: assertUsageQueryOutputForInput,
+  }),
+  'usage.snapshot.release': defineOperation<
+    UsageSnapshotReleaseInput,
+    UsageSnapshotReleaseResult,
+    (typeof QUERY_ERRORS)[number]
+  >({
+    mode: 'control',
+    availability: 'ready',
+    errors: QUERY_ERRORS,
+    decodeInput: decodeUsageSnapshotReleaseInput,
+    decodeOutput: decodeUsageSnapshotReleaseResult,
   }),
   'pricing.query': defineOperation<
     PricingQueryInput,
@@ -350,8 +419,55 @@ export const USAGE_PRICING_OPERATION_SPECS = {
   }),
 } as const;
 
+export function decodeUsageSnapshotReleaseInput(value: unknown): UsageSnapshotReleaseInput {
+  const input = requireExactRecord(value, 'usage snapshot release input', ['revision']);
+  return { revision: requireId(input.revision, 'usage snapshot revision') };
+}
+
+export function decodeUsageSnapshotReleaseResult(value: unknown): UsageSnapshotReleaseResult {
+  const result = requireExactRecord(value, 'usage snapshot release result', ['released']);
+  if (result.released !== true) throw invalidProtocolFrame('Usage snapshot was not released');
+  return { released: true };
+}
+
 export function decodeUsageQueryInput(value: unknown): UsageQueryInput {
   const input = requireRecord(value, 'usage query input');
+  if (input.kind === 'snapshot_start') {
+    const exact = requireExactRecord(input, 'usage snapshot start input', ['kind', 'range']);
+    return { kind: 'snapshot_start', range: decodeUsageRange(exact.range) };
+  }
+  if (input.kind === 'snapshot_logs') {
+    assertOptionalExactKeys(
+      input,
+      'usage snapshot logs input',
+      ['kind', 'revision', 'source'],
+      ['offset', 'limit'],
+    );
+    if (input.source !== 'llm' && input.source !== 'tool') {
+      throw invalidProtocolFrame('Invalid usage snapshot log source');
+    }
+    return {
+      kind: 'snapshot_logs',
+      revision: requireId(input.revision, 'usage snapshot revision'),
+      source: input.source,
+      offset: decodeOffset(input.offset),
+      limit: decodeLimit(input.limit),
+    };
+  }
+  if (input.kind === 'snapshot_pricing') {
+    assertOptionalExactKeys(
+      input,
+      'usage snapshot pricing input',
+      ['kind', 'revision'],
+      ['offset', 'limit'],
+    );
+    return {
+      kind: 'snapshot_pricing',
+      revision: requireId(input.revision, 'usage snapshot revision'),
+      offset: decodeOffset(input.offset),
+      limit: decodePricingLimit(input.limit),
+    };
+  }
   if (input.kind === 'summary') {
     const exact = requireExactRecord(input, 'usage summary input', ['kind', 'query']);
     return { kind: 'summary', query: decodeLlmUsageQuery(exact.query) };
@@ -400,6 +516,60 @@ export function decodeUsageQueryInput(value: unknown): UsageQueryInput {
 
 export function decodeUsageQueryResult(value: unknown): UsageQueryResult {
   const result = requireRecord(value, 'usage query result');
+  if (result.kind === 'snapshot_started') {
+    const exact = requireExactRecord(result, 'usage snapshot started result', [
+      'kind',
+      'revision',
+      'summary',
+      'provenance',
+    ]);
+    return {
+      kind: 'snapshot_started',
+      revision: requireId(exact.revision, 'usage snapshot revision'),
+      summary: decodeUsageSummary(exact.summary),
+      provenance: decodeUsageProvenance(exact.provenance),
+    };
+  }
+  if (result.kind === 'snapshot_logs') {
+    const exact = requireExactRecord(result, 'usage snapshot logs result', [
+      'kind',
+      'revision',
+      'source',
+      'rows',
+      'offset',
+      'total',
+      'nextOffset',
+      'truncated',
+    ]);
+    if (exact.source === 'llm') {
+      return decodeUsageSnapshotLogPage('llm', exact, decodeLlmUsageLog);
+    }
+    if (exact.source === 'tool') {
+      return decodeUsageSnapshotLogPage('tool', exact, decodeToolUsageLog);
+    }
+    throw invalidProtocolFrame('Invalid usage snapshot log source');
+  }
+  if (result.kind === 'snapshot_pricing') {
+    const exact = requireExactRecord(result, 'usage snapshot pricing result', [
+      'kind',
+      'revision',
+      'entries',
+      'offset',
+      'total',
+      'nextOffset',
+    ]);
+    return decodeUsageSnapshotPricingPage(exact);
+  }
+  if (result.kind === 'revision_changed') {
+    const exact = requireExactRecord(result, 'usage snapshot revision changed result', [
+      'kind',
+      'expectedRevision',
+    ]);
+    return {
+      kind: 'revision_changed',
+      expectedRevision: requireId(exact.expectedRevision, 'expected usage snapshot revision'),
+    };
+  }
   if (result.kind === 'summary') {
     const exact = requireExactRecord(result, 'usage summary result', [
       'kind',
@@ -612,6 +782,34 @@ export function decodePricingMutateResult(value: unknown): PricingMutateResult {
 }
 
 function assertUsageQueryOutputForInput(input: UsageQueryInput, output: UsageQueryResult): void {
+  if (input.kind === 'snapshot_start') {
+    if (output.kind !== 'snapshot_started') {
+      throw invalidProtocolFrame('Usage snapshot start response does not match its request');
+    }
+    return;
+  }
+  if (input.kind === 'snapshot_logs' || input.kind === 'snapshot_pricing') {
+    if (output.kind === 'revision_changed') {
+      if (output.expectedRevision !== input.revision) {
+        throw invalidProtocolFrame('Usage snapshot revision change does not match its request');
+      }
+      return;
+    }
+    if (output.kind !== input.kind) {
+      throw invalidProtocolFrame('Usage snapshot response kind does not match its request');
+    }
+    if (output.revision !== input.revision || output.offset !== (input.offset ?? 0)) {
+      throw invalidProtocolFrame('Usage snapshot page does not match its request');
+    }
+    if (
+      input.kind === 'snapshot_logs' &&
+      output.kind === 'snapshot_logs' &&
+      output.source !== input.source
+    ) {
+      throw invalidProtocolFrame('Usage snapshot log source does not match its request');
+    }
+    return;
+  }
   if (output.kind !== input.kind) {
     throw invalidProtocolFrame('Usage response kind does not match its request');
   }
@@ -735,6 +933,15 @@ function decodeLimit(value: unknown): number {
   return limit;
 }
 
+function decodePricingLimit(value: unknown): number {
+  if (value === undefined) return PRICING_PAGE_MAX_ITEMS;
+  const limit = requireCount(value, 'usage snapshot pricing limit');
+  if (limit === 0 || limit > PRICING_PAGE_MAX_ITEMS) {
+    throw invalidProtocolFrame('Invalid usage snapshot pricing limit');
+  }
+  return limit;
+}
+
 function decodeUsagePage(
   kind: 'buckets',
   result: Record<string, unknown>,
@@ -790,6 +997,72 @@ function decodeUsageLogPage(
     ...(source === 'llm' ? { provenance: decodeUsageProvenance(result.provenance) } : {}),
   } as Extract<UsageQueryResult, { kind: 'logs' }>;
   assertJsonBytes(decoded, USAGE_PAGE_MAX_BYTES, 'Usage page');
+  return decoded;
+}
+
+function decodeUsageSnapshotLogPage(
+  source: 'llm',
+  result: Record<string, unknown>,
+  decodeItem: (value: unknown) => LlmUsageLogProjection,
+): Extract<UsageQueryResult, { kind: 'snapshot_logs'; source: 'llm' }>;
+function decodeUsageSnapshotLogPage(
+  source: 'tool',
+  result: Record<string, unknown>,
+  decodeItem: (value: unknown) => ToolUsageLogProjection,
+): Extract<UsageQueryResult, { kind: 'snapshot_logs'; source: 'tool' }>;
+function decodeUsageSnapshotLogPage(
+  source: 'llm' | 'tool',
+  result: Record<string, unknown>,
+  decodeItem: (value: unknown) => UsageLogProjection,
+): Extract<UsageQueryResult, { kind: 'snapshot_logs' }> {
+  const rawItems = result.rows;
+  if (!Array.isArray(rawItems) || rawItems.length > USAGE_PAGE_MAX_ITEMS) {
+    throw invalidProtocolFrame('Usage snapshot page exceeds item limit');
+  }
+  if (typeof result.truncated !== 'boolean') {
+    throw invalidProtocolFrame('Invalid usage snapshot truncation flag');
+  }
+  const rows = rawItems.map(decodeItem);
+  const page = decodeUsagePagePosition(result, rows.length);
+  if (page.total > USAGE_SNAPSHOT_ACTIVITY_MAX_ITEMS) {
+    throw invalidProtocolFrame('Usage snapshot exceeds activity limit');
+  }
+  const decoded = {
+    kind: 'snapshot_logs',
+    revision: requireId(result.revision, 'usage snapshot revision'),
+    source,
+    rows,
+    ...page,
+    truncated: result.truncated,
+  } as Extract<UsageQueryResult, { kind: 'snapshot_logs' }>;
+  assertJsonBytes(decoded, USAGE_PAGE_MAX_BYTES, 'Usage snapshot page');
+  return decoded;
+}
+
+function decodeUsageSnapshotPricingPage(
+  result: Record<string, unknown>,
+): Extract<UsageQueryResult, { kind: 'snapshot_pricing' }> {
+  const rawItems = result.entries;
+  if (!Array.isArray(rawItems) || rawItems.length > PRICING_PAGE_MAX_ITEMS) {
+    throw invalidProtocolFrame('Usage snapshot pricing page exceeds item limit');
+  }
+  const entries = rawItems.map(decodeEffectivePricingEntry);
+  if (
+    entries.some(
+      (item, index) =>
+        index > 0 &&
+        comparePricingModelKeys(entries[index - 1]!.pricing.modelKey, item.pricing.modelKey) >= 0,
+    )
+  ) {
+    throw invalidProtocolFrame('Usage snapshot pricing entries are not canonically ordered');
+  }
+  const decoded = {
+    kind: 'snapshot_pricing',
+    revision: requireId(result.revision, 'usage snapshot revision'),
+    entries,
+    ...decodeUsagePagePosition(result, entries.length),
+  } as const;
+  assertJsonBytes(decoded, PRICING_PAGE_MAX_BYTES, 'Usage snapshot pricing page');
   return decoded;
 }
 

@@ -101,7 +101,10 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 117 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 118 as const;
+// 118: `usage.query` adds connection-owned, revision-pinned snapshot start,
+// activity, and pricing pages plus explicit `usage.snapshot.release`. Epoch-117
+// peers reject these closed variants, so mixed peers must fail the handshake.
 // 117: WorkHub exposes only one correction linkage per bounded candidate and
 // no longer returns the Host's complete active-link set.
 // 116: User deletion rejects workflow-owned Artifacts with operation_conflict.

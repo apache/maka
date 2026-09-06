@@ -40,9 +40,9 @@ to a thin wrapper).
   `updateUsageSettings(patch)`. Both narrow — the feature consumes only
   `UsageSettings`/`UsageStats`, never the whole `AppSettings`.
 - `services-context.tsx` — `UsageFeatureScope`, the persistent state owner
-  (single tagged `{ range, value }` snapshot, reload ticket, unmount isolation,
-  Host/generation invalidation, load-failure toast), plus `useUsageServices()`
-  and `useUsageStats(range)`.
+  (single tagged `{ range, value }` snapshot, serialized latest-wins reload lane,
+  unmount isolation, Host/generation invalidation, load-failure toast), plus
+  `useUsageServices()` and `useUsageStats(range)`.
 - `ui/usage-settings-view.tsx` — the surface (overview + tabs + per-tab panels).
   A disposable view: it unmounts on a section change and reads the snapshot from
   the scope via `useUsageStats`, so leaving/returning re-displays the last

@@ -26,7 +26,6 @@ import {
 } from "@maka/core/usage-stats/pricing";
 import type {
   PricingConfig,
-  TimeRange,
   UsageGroupBy,
   UsageQuery,
 } from "@maka/core/usage-stats/types";
@@ -47,8 +46,6 @@ interface RuntimeHostUsageIpcDeps {
   readonly client: DesktopRuntimeHostClient;
   readonly sendToRenderer: (channel: string, ...args: unknown[]) => void;
 }
-
-const MAX_ACTIVITY_RECORDS = 50_000;
 
 export function registerRuntimeHostUsageIpc(
   deps: RuntimeHostUsageIpcDeps,
@@ -160,39 +157,24 @@ async function loadUsageStats(
   client: DesktopRuntimeHostClient,
   range: UsageRange,
 ): Promise<UsageStats> {
-  const query = { range: resolveUsageRange(range, Date.now()) } satisfies UsageQuery;
-  const [summaryResult, llmResult, toolResult, pricing] = await Promise.all([
-    client.queryUsage({ kind: "summary", query }),
-    loadAllLogs(client, "llm", query),
-    loadAllLogs(client, "tool", query),
-    client.loadPricingSnapshot(),
-  ]);
-  if (summaryResult.kind !== "summary") throw invalidUsageProjection();
-  const llmLogs = llmResult.rows;
-  const toolLogs = toolResult.rows;
-  const logsTruncated = llmResult.truncated || toolResult.truncated;
-  // The canonical summary is the authoritative headline count. We no longer
-  // throw when it disagrees with the number of activity rows we managed to
-  // load: a Host restart with pending repairs can make the summary read land
-  // before a catch-up commits and the logs read land after, and truncation
-  // (above) deliberately shortens the list. Either way the summary total stays
-  // correct; `provenance`/`logsTruncated` tell the page the activity list may
-  // be incomplete instead of erroring the whole page.
+  const snapshot = await client.loadUsageSnapshot(resolveUsageRange(range, Date.now()));
+  const llmLogs = snapshot.llmLogs;
+  const toolLogs = snapshot.toolLogs;
+  const logsTruncated = snapshot.llmLogsTruncated || snapshot.toolLogsTruncated;
 
   return {
     summary: {
-      totalRequests: summaryResult.summary.totalRequests,
-      totalCostUsd: summaryResult.summary.totalCostUsd,
-      totalTokens: summaryResult.summary.totalTokens.total,
-      inputTokens: summaryResult.summary.totalTokens.input,
-      outputTokens: summaryResult.summary.totalTokens.output,
+      totalRequests: snapshot.summary.totalRequests,
+      totalCostUsd: snapshot.summary.totalCostUsd,
+      totalTokens: snapshot.summary.totalTokens.total,
+      inputTokens: snapshot.summary.totalTokens.input,
+      outputTokens: snapshot.summary.totalTokens.output,
       cacheTokens:
-        summaryResult.summary.totalTokens.cacheRead +
-        summaryResult.summary.totalTokens.cacheWrite,
-      cacheMiss: summaryResult.summary.totalTokens.cacheMiss,
-      cacheRead: summaryResult.summary.totalTokens.cacheRead,
-      cacheCreation: summaryResult.summary.totalTokens.cacheWrite,
-      reasoning: summaryResult.summary.totalTokens.reasoning,
+        snapshot.summary.totalTokens.cacheRead + snapshot.summary.totalTokens.cacheWrite,
+      cacheMiss: snapshot.summary.totalTokens.cacheMiss,
+      cacheRead: snapshot.summary.totalTokens.cacheRead,
+      cacheCreation: snapshot.summary.totalTokens.cacheWrite,
+      reasoning: snapshot.summary.totalTokens.reasoning,
     },
     logs: [...llmLogs.map(projectLlmLog), ...toolLogs.map(projectToolLog)].sort(
       (left, right) => right.ts - left.ts,
@@ -200,79 +182,16 @@ async function loadUsageStats(
     byProvider: aggregateModelLogs(llmLogs, "provider"),
     byModel: aggregateModelLogs(llmLogs, "model"),
     byTool: aggregateToolLogs(toolLogs),
-    pricing: pricing.entries
+    pricing: snapshot.pricingEntries
       .filter((entry) => entry.source === "custom")
       .map(({ pricing: entry }) => projectPricing(entry))
       .sort(
         (left, right) =>
           left.provider.localeCompare(right.provider) || left.model.localeCompare(right.model),
       ),
-    provenance: summaryResult.provenance,
+    provenance: snapshot.provenance,
     ...(logsTruncated ? { logsTruncated: true } : {}),
   };
-}
-
-async function loadAllLogs(
-  client: DesktopRuntimeHostClient,
-  source: "llm",
-  query: UsageQuery & { range: TimeRange },
-): Promise<{ rows: LlmUsageLogProjection[]; truncated: boolean }>;
-async function loadAllLogs(
-  client: DesktopRuntimeHostClient,
-  source: "tool",
-  query: UsageQuery & { range: TimeRange },
-): Promise<{ rows: ToolUsageLogProjection[]; truncated: boolean }>;
-async function loadAllLogs(
-  client: DesktopRuntimeHostClient,
-  source: "llm" | "tool",
-  query: UsageQuery & { range: TimeRange },
-): Promise<{
-  rows: Array<LlmUsageLogProjection | ToolUsageLogProjection>;
-  truncated: boolean;
-}> {
-  const rows: Array<LlmUsageLogProjection | ToolUsageLogProjection> = [];
-  let offset = 0;
-  let total: number | undefined;
-  while (true) {
-    const result = await client.queryUsage(
-      source === "llm"
-        ? {
-            kind: "logs",
-            source,
-            query: toLlmQuery(query),
-            offset,
-            limit: USAGE_PAGE_MAX_ITEMS,
-          }
-        : {
-            kind: "logs",
-            source,
-            query: toToolQuery(query),
-            offset,
-            limit: USAGE_PAGE_MAX_ITEMS,
-          },
-    );
-    if (result.kind !== "logs" || result.source !== source || result.offset !== offset) {
-      throw invalidUsageProjection();
-    }
-    total ??= result.total;
-    if (result.total !== total) throw invalidUsageProjection();
-    rows.push(...result.rows);
-    // Structural integrity: the Host must never return more rows than it claims.
-    if (rows.length > total) throw invalidUsageProjection();
-    // Client-side cap: when a range holds more activity than we render, keep the
-    // newest MAX_ACTIVITY_RECORDS and stop paging. This is truncation, not a
-    // protocol error, and the exhaustiveness check below is skipped for it — the
-    // caller surfaces `logsTruncated` so the page can say the list is partial.
-    if (total > MAX_ACTIVITY_RECORDS && rows.length >= MAX_ACTIVITY_RECORDS) {
-      return { rows: rows.slice(0, MAX_ACTIVITY_RECORDS), truncated: true };
-    }
-    if (result.nextOffset === null) {
-      if (rows.length !== total) throw invalidUsageProjection();
-      return { rows, truncated: false };
-    }
-    if (result.nextOffset <= offset) throw invalidUsageProjection();
-    offset = result.nextOffset;
-  }
 }
 
 // The Task column names the session each usage row belongs to. The Host resolves

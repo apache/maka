@@ -18,6 +18,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { resolveUsageRange } from '@maka/core/model-call-usage-projection';
 import type {
   PricingConfig,
   ToolInvocationRecord,
@@ -60,14 +61,25 @@ import {
   type UsageQueryInput,
   type UsageQueryResult,
 } from '../protocol/index.js';
-import type { UsagePricingOperationHandlerMap } from './operation-dispatcher.js';
+import type { ConnectionContext, UsagePricingOperationHandlerMap } from './operation-dispatcher.js';
 import { RuntimePolicyActivationGate } from './runtime-policy-activation-gate.js';
 import { readCanonicalUsage } from './canonical-usage-reader.js';
+import {
+  UsageSnapshotCache,
+  UsageSnapshotCapacityError,
+  type UsageSnapshotCacheOptions,
+} from './usage-snapshot-cache.js';
+
+const USAGE_SESSION_TITLE_READ_CONCURRENCY = 16;
 
 /** Root-scoped projection over the authentic lease-bound usage stores. */
 export class HostUsagePricingCoordinator {
   readonly handlers: UsagePricingOperationHandlerMap = {
-    'usage.query': (input) => this.#queryUsage(input),
+    'usage.query': (input, context) => this.#queryUsage(input, context),
+    'usage.snapshot.release': async (input, context) => {
+      this.#usageSnapshots.release(context.connectionId, input.revision);
+      return { ok: true, result: { released: true } };
+    },
     'pricing.query': (input) => this.#queryPricing(input),
     'pricing.mutate': (input) => this.#mutatePricing(input),
   };
@@ -76,6 +88,7 @@ export class HostUsagePricingCoordinator {
   readonly #requestDrain: () => void;
   readonly #activation: RuntimePolicyActivationGate;
   readonly #onCommittedPricingMutation: () => void;
+  readonly #usageSnapshots: UsageSnapshotCache;
   // Resolves a session's human-readable title for the Task column. Reads the
   // durable session header directly (unfiltered, in-process), so it covers
   // reserved-role, coordination, and legacy sessions the catalog omits.
@@ -88,12 +101,18 @@ export class HostUsagePricingCoordinator {
     activation: RuntimePolicyActivationGate,
     onCommittedPricingMutation: () => void = () => {},
     readSessionTitle?: (sessionId: string) => Promise<string | undefined>,
+    usageSnapshotOptions: UsageSnapshotCacheOptions = {},
   ) {
     this.#stores = authenticateInteractiveUsageStoresWriter(stores);
     this.#requestDrain = requestDrain;
     this.#activation = activation;
     this.#onCommittedPricingMutation = onCommittedPricingMutation;
+    this.#usageSnapshots = new UsageSnapshotCache(usageSnapshotOptions);
     this.#readSessionTitle = readSessionTitle;
+  }
+
+  releaseConnection(connectionId: string): void {
+    this.#usageSnapshots.releaseConnection(connectionId);
   }
 
   // Resolve titles for exactly the sessions on this page. A session that no
@@ -110,8 +129,12 @@ export class HostUsagePricingCoordinator {
     const ids = [
       ...new Set(rows.map((row) => row.sessionId).filter((id): id is string => id !== undefined)),
     ];
-    await Promise.all(
-      ids.map(async (id) => {
+    let nextIndex = 0;
+    const worker = async (): Promise<void> => {
+      while (nextIndex < ids.length) {
+        const id = ids[nextIndex];
+        nextIndex += 1;
+        if (id === undefined) return;
         try {
           const title = (await read(id))?.trim();
           if (title) titles.set(id, title);
@@ -120,7 +143,10 @@ export class HostUsagePricingCoordinator {
           // any other failure is a store problem and must reach #queryUsage.
           if (!isSessionNotFoundError(error)) throw error;
         }
-      }),
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(ids.length, USAGE_SESSION_TITLE_READ_CONCURRENCY) }, worker),
     );
     return titles;
   }
@@ -137,9 +163,49 @@ export class HostUsagePricingCoordinator {
     return readCanonicalUsage(this.#stores, query, now, repair);
   }
 
-  async #queryUsage(input: UsageQueryInput): Promise<OperationOutcome<'usage.query'>> {
+  async #queryUsage(
+    input: UsageQueryInput,
+    context: ConnectionContext,
+  ): Promise<OperationOutcome<'usage.query'>> {
     try {
       const now = Date.now();
+      if (input.kind === 'snapshot_start') {
+        return {
+          ok: true,
+          result: await this.#startUsageSnapshot(context.connectionId, input.range, now),
+        };
+      }
+      if (input.kind === 'snapshot_logs') {
+        const snapshot = this.#usageSnapshots.get(context.connectionId, input.revision);
+        if (!snapshot) return usageRevisionChanged(input.revision);
+        const rows = input.source === 'llm' ? snapshot.llmRows : snapshot.toolRows;
+        if ((input.offset ?? 0) > rows.length) return invalidUsageOffset();
+        return {
+          ok: true,
+          result: usageSnapshotLogPage(
+            input.revision,
+            input.source,
+            rows,
+            input.offset ?? 0,
+            input.limit ?? USAGE_PAGE_MAX_ITEMS,
+            input.source === 'llm' ? snapshot.llmTruncated : snapshot.toolTruncated,
+          ),
+        };
+      }
+      if (input.kind === 'snapshot_pricing') {
+        const snapshot = this.#usageSnapshots.get(context.connectionId, input.revision);
+        if (!snapshot) return usageRevisionChanged(input.revision);
+        if ((input.offset ?? 0) > snapshot.pricingEntries.length) return invalidUsageOffset();
+        return {
+          ok: true,
+          result: usageSnapshotPricingPage(
+            input.revision,
+            snapshot.pricingEntries,
+            input.offset ?? 0,
+            input.limit ?? PRICING_PAGE_MAX_ITEMS,
+          ),
+        };
+      }
       if (input.kind === 'summary') {
         const merged = mergeUsageSummary(
           await this.#stores.telemetry.summary(input.query),
@@ -247,7 +313,69 @@ export class HostUsagePricingCoordinator {
         ),
       };
     } catch (error) {
+      if (error instanceof UsageSnapshotCapacityError) {
+        return {
+          ok: false,
+          error: {
+            code: 'operation_conflict',
+            message: 'Usage snapshot capacity is occupied',
+          },
+        };
+      }
       return this.#mapReadFailure<'usage.query'>(error, 'Usage authority');
+    }
+  }
+
+  async #startUsageSnapshot(
+    connectionId: string,
+    range: UsageQuery['range'],
+    now: number,
+  ): Promise<Extract<UsageQueryResult, { kind: 'snapshot_started' }>> {
+    const reservation = this.#usageSnapshots.reserve(connectionId);
+    try {
+      const query: UsageQuery = { range: resolveUsageRange(range, now) };
+      const captureLimit = this.#usageSnapshots.activityLimit + 1;
+      const captured = await this.#stores.captureUsageSnapshot({
+        query,
+        activityLimit: captureLimit,
+      });
+      const canonical: CanonicalUsageSource = {
+        attempts: captured.canonical.attempts,
+        unreadableRecords: captured.canonical.unreadableRecords + captured.repair.unreadableEvents,
+        pendingRepairs: captured.repair.pendingRuns,
+      };
+      const mergedSummary = mergeUsageSummary(captured.legacySummary, canonical, query, now);
+      const { provenance, ...summary } = mergedSummary;
+      const mergedLogs = mergeUsageLogs(
+        captured.legacyLlmLogs,
+        canonical,
+        query,
+        now,
+        0,
+        captureLimit,
+      );
+      const llmRows = mergedLogs.rows.slice(0, this.#usageSnapshots.activityLimit);
+      const toolRows = captured.toolLogs.rows.slice(0, this.#usageSnapshots.activityLimit);
+      const titles = await this.#resolveSessionTitles([...llmRows, ...toolRows]);
+      const retained = this.#usageSnapshots.finalize(connectionId, reservation.revision, {
+        summary,
+        provenance,
+        llmRows: llmRows.map((row) => projectUsageLog(row, titles)),
+        llmTruncated: mergedLogs.total > this.#usageSnapshots.activityLimit,
+        toolRows: toolRows.map((row) => projectToolUsageLog(row, titles)),
+        toolTruncated: captured.toolLogs.total > this.#usageSnapshots.activityLimit,
+        pricingEntries: projectEffectivePricingEntries(captured.pricing.overrides),
+      });
+      if (!retained) throw new Error('Usage snapshot reservation is no longer active');
+      return encodeUsageQueryResult({
+        kind: 'snapshot_started',
+        revision: retained.revision,
+        summary: retained.summary,
+        provenance: retained.provenance,
+      }) as Extract<UsageQueryResult, { kind: 'snapshot_started' }>;
+    } catch (error) {
+      this.#usageSnapshots.abort(connectionId, reservation.revision);
+      throw error;
     }
   }
 
@@ -420,33 +548,111 @@ function invalidUsageOffset(): OperationOutcome<'usage.query'> {
   };
 }
 
+function usageRevisionChanged(revision: string): OperationOutcome<'usage.query'> {
+  return {
+    ok: true,
+    result: encodeUsageQueryResult({ kind: 'revision_changed', expectedRevision: revision }),
+  };
+}
+
+function usageSnapshotLogPage(
+  revision: string,
+  source: 'llm' | 'tool',
+  allRows: readonly UsageLogProjection[],
+  offset: number,
+  limit: number,
+  truncated: boolean,
+): Extract<UsageQueryResult, { kind: 'snapshot_logs' }> {
+  const rows = fitBoundedPageItems(
+    allRows.slice(offset, offset + limit),
+    offset < allRows.length,
+    USAGE_PAGE_MAX_BYTES,
+    (candidate) => {
+      const nextOffset = offset + candidate.length;
+      return {
+        kind: 'snapshot_logs',
+        revision,
+        source,
+        rows: candidate,
+        offset,
+        total: allRows.length,
+        nextOffset: nextOffset < allRows.length ? nextOffset : null,
+        truncated,
+      } as const;
+    },
+    'Canonical Usage snapshot item',
+  );
+  const nextOffset = offset + rows.length;
+  return encodeUsageQueryResult({
+    kind: 'snapshot_logs',
+    revision,
+    source,
+    rows,
+    offset,
+    total: allRows.length,
+    nextOffset: nextOffset < allRows.length ? nextOffset : null,
+    truncated,
+  } as Extract<UsageQueryResult, { kind: 'snapshot_logs' }>) as Extract<
+    UsageQueryResult,
+    { kind: 'snapshot_logs' }
+  >;
+}
+
+function usageSnapshotPricingPage(
+  revision: string,
+  allEntries: readonly EffectivePricingEntry[],
+  offset: number,
+  limit: number,
+): Extract<UsageQueryResult, { kind: 'snapshot_pricing' }> {
+  const entries = fitBoundedPageItems(
+    allEntries.slice(offset, offset + limit),
+    offset < allEntries.length,
+    PRICING_PAGE_MAX_BYTES,
+    (candidate) => {
+      const nextOffset = offset + candidate.length;
+      return {
+        kind: 'snapshot_pricing',
+        revision,
+        entries: candidate,
+        offset,
+        total: allEntries.length,
+        nextOffset: nextOffset < allEntries.length ? nextOffset : null,
+      } as const;
+    },
+    'Canonical Usage snapshot pricing entry',
+  );
+  const nextOffset = offset + entries.length;
+  return encodeUsageQueryResult({
+    kind: 'snapshot_pricing',
+    revision,
+    entries,
+    offset,
+    total: allEntries.length,
+    nextOffset: nextOffset < allEntries.length ? nextOffset : null,
+  }) as Extract<UsageQueryResult, { kind: 'snapshot_pricing' }>;
+}
+
 function createPricingPage(
   revision: number,
   entries: readonly EffectivePricingEntry[],
   offset: number,
 ): PricingQueryResult {
-  const items: EffectivePricingEntry[] = [];
-  for (let index = offset; index < entries.length; index += 1) {
-    if (items.length >= PRICING_PAGE_MAX_ITEMS) break;
-    const item = entries[index];
-    if (!item) break;
-    const candidate = [...items, item];
-    const nextOffset = offset + candidate.length;
-    const page: PricingQueryResult = {
-      kind: 'page',
-      revision,
-      offset,
-      entries: candidate,
-      nextOffset: nextOffset < entries.length ? nextOffset : null,
-    };
-    if (jsonBytes(page) > PRICING_PAGE_MAX_BYTES) {
-      if (items.length === 0) {
-        throw new Error('Canonical pricing entry exceeds the wire page limit');
-      }
-      break;
-    }
-    items.push(item);
-  }
+  const items = fitBoundedPageItems(
+    entries.slice(offset, offset + PRICING_PAGE_MAX_ITEMS),
+    offset < entries.length,
+    PRICING_PAGE_MAX_BYTES,
+    (candidate) => {
+      const nextOffset = offset + candidate.length;
+      return {
+        kind: 'page',
+        revision,
+        offset,
+        entries: candidate,
+        nextOffset: nextOffset < entries.length ? nextOffset : null,
+      } satisfies PricingQueryResult;
+    },
+    'Canonical pricing entry',
+  );
   const nextOffset = offset + items.length;
   return encodePricingQueryResult({
     kind: 'page',
@@ -486,28 +692,22 @@ function usagePage(
   provenance: UsageProvenance,
 ): Extract<UsageQueryResult, { kind: 'buckets' }> {
   const source = allItems.slice(offset, offset + limit);
-  const items: UsageBucket[] = [];
-  for (const item of source) {
-    const candidate = [...items, item];
-    const nextOffset = offset + candidate.length;
-    if (
-      jsonBytes(
-        bucketPageResult(
-          candidate,
-          total,
-          offset,
-          nextOffset < total ? nextOffset : null,
-          provenance,
-        ),
-      ) > USAGE_PAGE_MAX_BYTES
-    ) {
-      break;
-    }
-    items.push(item);
-  }
-  if (items.length === 0 && offset < total) {
-    throw new Error('Canonical usage item exceeds the wire page limit');
-  }
+  const items = fitBoundedPageItems(
+    source,
+    offset < total,
+    USAGE_PAGE_MAX_BYTES,
+    (candidate) => {
+      const nextOffset = offset + candidate.length;
+      return bucketPageResult(
+        candidate,
+        total,
+        offset,
+        nextOffset < total ? nextOffset : null,
+        provenance,
+      );
+    },
+    'Canonical usage item',
+  );
   const nextOffset = offset + items.length;
   return bucketPageResult(items, total, offset, nextOffset < total ? nextOffset : null, provenance);
 }
@@ -545,29 +745,23 @@ function usageLogPage(
   limit: number,
   provenance?: UsageProvenance,
 ): Extract<UsageQueryResult, { kind: 'logs' }> {
-  const items: UsageLogProjection[] = [];
-  for (const item of allItems.slice(0, limit)) {
-    const candidate = [...items, item];
-    const nextOffset = offset + candidate.length;
-    if (
-      jsonBytes(
-        logPageResult(
-          source,
-          candidate,
-          total,
-          offset,
-          nextOffset < total ? nextOffset : null,
-          provenance,
-        ),
-      ) > USAGE_PAGE_MAX_BYTES
-    ) {
-      break;
-    }
-    items.push(item);
-  }
-  if (items.length === 0 && offset < total) {
-    throw new Error('Canonical usage item exceeds the wire page limit');
-  }
+  const items = fitBoundedPageItems(
+    allItems.slice(0, limit),
+    offset < total,
+    USAGE_PAGE_MAX_BYTES,
+    (candidate) => {
+      const nextOffset = offset + candidate.length;
+      return logPageResult(
+        source,
+        candidate,
+        total,
+        offset,
+        nextOffset < total ? nextOffset : null,
+        provenance,
+      );
+    },
+    'Canonical usage item',
+  );
   const nextOffset = offset + items.length;
   return logPageResult(
     source,
@@ -577,6 +771,25 @@ function usageLogPage(
     nextOffset < total ? nextOffset : null,
     provenance,
   );
+}
+
+function fitBoundedPageItems<T>(
+  candidates: readonly T[],
+  itemRequired: boolean,
+  maxBytes: number,
+  createPage: (items: readonly T[]) => unknown,
+  itemLabel: string,
+): T[] {
+  const items: T[] = [];
+  for (const item of candidates) {
+    const next = [...items, item];
+    if (jsonBytes(createPage(next)) > maxBytes) break;
+    items.push(item);
+  }
+  if (items.length === 0 && itemRequired) {
+    throw new Error(`${itemLabel} exceeds the wire page limit`);
+  }
+  return items;
 }
 
 function logPageResult(
