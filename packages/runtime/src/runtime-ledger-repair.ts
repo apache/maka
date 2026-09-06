@@ -79,6 +79,9 @@ export class RuntimeLedgerRepair {
           .map((invocation) => invocation.turnId),
       );
       const messagesByTurn = groupMessagesByTurn(ledgerMessages);
+      // A turn whose only user row was steering is not a turn of its own: the
+      // steering was said into a Turn some durable Root already owns, so
+      // converting it would stand a second, synthetic run beside that one.
       const turns = deriveTurnRecords(ledgerMessages).filter((turn) =>
         (messagesByTurn.get(turn.turnId) ?? []).some((message) => message.type === 'user'),
       );

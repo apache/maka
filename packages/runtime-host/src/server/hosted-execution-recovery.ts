@@ -31,7 +31,10 @@ import {
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { StoredMessage } from '@maka/core/session';
 import { projectRuntimeEventUserMessage } from '@maka/runtime/runtime-event-read-model';
-import { RuntimeMessageAuthorityInvariantError } from '@maka/runtime/message-authority';
+import {
+  admittedPromptEventId,
+  RuntimeMessageAuthorityInvariantError,
+} from '@maka/runtime/message-authority';
 import { type SessionManager } from '@maka/runtime/session-manager';
 import type { ExecutionStoresWriter, RootTurnAdmission } from '@maka/storage/execution-stores';
 import type { RootAdmissionOwner } from './root-admission-owner.js';
@@ -82,10 +85,12 @@ export async function prepareHostedExecutionRecovery(
     const pendingRecoveryClosures: PendingRecoveryClosure[] = [];
     for (const admission of admissions) {
       const run = runsById.get(admission.runId);
-      const admittedMessageId = admittedUserMessageId(admission);
-      const rootUserMessages = (
-        messageIndex.userMessagesByTurnId.get(admission.turnId) ?? []
-      ).filter((message) => message.id === admittedMessageId);
+      const admittedMessageId = admittedPromptEventId(admission.runId, admission.userMessageId);
+      // Whether the prompt is on the ledger is a question about the Turn, not
+      // about the id it landed under: a Run written by an older build derived
+      // that id differently, and matching on the id would read its prompt as
+      // missing and record a second one.
+      const rootUserMessages = messageIndex.userMessagesByTurnId.get(admission.turnId) ?? [];
       const messageIdOwners = messageIndex.messagesById.get(admittedMessageId) ?? [];
       if (messageIdOwners.length > 1) {
         throw new Error(`Admitted Turn ${admission.turnId} has a duplicated UserMessage identity`);
@@ -248,7 +253,7 @@ async function recordAdmittedUserMessage(
   const content = requireHostedExecutionMessageContent(admission);
   const origin = hostedExecutionMessageOrigin(admission.execution);
   const event: RuntimeEvent = {
-    id: admittedUserMessageId(admission),
+    id: admittedPromptEventId(admission.runId, admission.userMessageId),
     sessionId: admission.sessionId,
     invocationId: run.invocationId,
     runId: run.runId,
@@ -327,16 +332,6 @@ interface RecoveryExecutionContract {
 }
 
 /**
- * The id the admitted prompt is durable under. A Root folded from several
- * queued Messages carries no single admitted Message identity, so recovery
- * derives one from the Run — the same crash recovered twice writes the same
- * event, and the store dedupes it.
- */
-function admittedUserMessageId(admission: RootTurnAdmission): string {
-  return admission.userMessageId ?? `${admission.runId}-admitted-prompt`;
-}
-
-/**
  * Whether the ledger already carries this admission's message, throwing when
  * what it carries contradicts the admission.
  */
@@ -351,8 +346,7 @@ function verifyUserMessage(
   const userMessage = rootUserMessages[0];
   if (userMessage) {
     if (
-      messageIdOwner !== userMessage ||
-      userMessage.id !== admittedUserMessageId(admission) ||
+      (messageIdOwner !== undefined && messageIdOwner !== userMessage) ||
       !recoveryUserMessageOriginMatches(userMessage, admission.execution) ||
       !messageContentsEqual(
         normalizeMessageContent(userMessage),
@@ -370,10 +364,12 @@ function verifyUserMessage(
 }
 
 /**
- * The user messages a Session's ledger holds, as the transcript presents them.
+ * The prompts a Session's ledger holds, as the transcript presents them.
  *
  * Recovery reads the raw events rather than the read model: a Session it is
  * about to repair may be exactly the one whose projection is still incomplete.
+ * Steering is excluded — it is typed as a user message but is something said
+ * into a Turn that was already admitted, so it is never the Turn's own prompt.
  */
 function recoveryUserMessagesFromLedger(
   events: readonly RuntimeEvent[],
@@ -385,7 +381,7 @@ function recoveryUserMessagesFromLedger(
       event,
       event.id,
     );
-    if (projected) messages.push(projected);
+    if (projected && projected.steeringEventId === undefined) messages.push(projected);
   }
   return messages;
 }

@@ -751,8 +751,15 @@ export class ExecutionFixture {
     }
   }
 
+  /**
+   * @param recordedPromptEventId The id the Run already recorded its prompt
+   * under, for the crash that happened after `begin()` wrote it. An older build
+   * derived that id differently, so it is a parameter rather than the id
+   * recovery would derive today.
+   */
   async seedLegacyRootWithoutSourceTranscripts(
     runState: 'missing' | 'created' | 'terminal' = 'terminal',
+    recordedPromptEventId?: string,
   ): Promise<{
     turnId: string;
     runId: string;
@@ -835,6 +842,17 @@ export class ExecutionFixture {
               toolMode: 'direct',
             },
           },
+        });
+      }
+      if (runState !== 'missing' && recordedPromptEventId) {
+        await stores.runtimeEventStore.appendRuntimeEvent(this.sessionId, runId, {
+          ...run,
+          id: recordedPromptEventId,
+          ts: admittedAt,
+          partial: false,
+          role: 'user',
+          author: 'user',
+          content: { kind: 'text', ...normalizedInput },
         });
       }
       if (runState === 'terminal') {

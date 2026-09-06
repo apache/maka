@@ -84,6 +84,7 @@ import {
   statusFromEvent,
   turnStatusFromEvent,
 } from './session-projection-helpers.js';
+import { admittedPromptEventId } from './message-authority.js';
 import { commitOrCreateTerminalRunFact } from './terminal-run-commit.js';
 import type { RuntimeContinuation } from './runtime-resume.js';
 import {
@@ -253,6 +254,8 @@ export class AgentRun {
   private providerStateIdentity: `sha256:${string}` | undefined;
   private invocationOpening: RuntimeEventInvocationOpenedContent | undefined;
   private invocationOpeningCommitted = false;
+  /** Set once `begin()` owes this run's prompt, cleared once the ledger has it. */
+  private initialRuntimeEventPending = false;
   private terminalClaim:
     | {
         owner: 'event' | 'stop';
@@ -691,23 +694,9 @@ export class AgentRun {
   async begin(): Promise<AgentRunBeginResult> {
     await this.openInvocation();
 
-    let initialRuntimeEventId: string;
-
-    const userMessageTs = this.input.now();
-    // The caller's durable message id becomes the initial event's id, so a
-    // same-id append with different content is refused by the store.
-    initialRuntimeEventId = this.input.userMessageId ?? this.input.newId();
-    this.lastTs = userMessageTs;
-
-    const initialRuntimeEvent = cloneAndFreezeRuntimeSnapshot(
-      this.buildInitialRuntimeEvent(initialRuntimeEventId, this.lastTs),
-    );
-    await this.recordRuntimeEvents([initialRuntimeEvent], {
-      requireDurableWrite: this.requiresDurablePersistence(),
-    });
-    await this.commitMessageProjection(
-      projectRuntimeEventUserMessage(initialRuntimeEvent, initialRuntimeEvent.id),
-    );
+    this.lastTs = this.input.now();
+    this.initialRuntimeEventPending = true;
+    const initialRuntimeEvent = await this.recordInitialRuntimeEvent(this.lastTs);
 
     this.active = await this.input.hooks.reserveRun(this.sessionId, this.header, this);
 
@@ -741,6 +730,22 @@ export class AgentRun {
       }),
       initialRuntimeEvent,
     };
+  }
+
+  /** Say what this run was asked to do. */
+  private async recordInitialRuntimeEvent(ts: number): Promise<RuntimeEvent> {
+    const event = cloneAndFreezeRuntimeSnapshot(
+      this.buildInitialRuntimeEvent(
+        admittedPromptEventId(this.runId, this.input.userMessageId),
+        ts,
+      ),
+    );
+    await this.recordRuntimeEvents([event], {
+      requireDurableWrite: this.requiresDurablePersistence(),
+    });
+    this.initialRuntimeEventPending = false;
+    await this.commitMessageProjection(projectRuntimeEventUserMessage(event, event.id));
+    return event;
   }
 
   async beginOperation(): Promise<AgentRunOperationBeginResult> {
@@ -1045,6 +1050,13 @@ export class AgentRun {
     // exception at both ends: its opening rides the continuation-start event,
     // and a continuation that never committed one has no invocation to end.
     if (!this.input.commitContinuationStart) await this.openInvocation().catch(() => {});
+    // A run also cannot end without saying what it was asked to do. `begin()`
+    // can fail between opening the invocation and recording its prompt, and
+    // the terminal event below seals the run against every later append —
+    // including the one crash recovery would use to repair the same shape.
+    if (this.initialRuntimeEventPending) {
+      await this.recordInitialRuntimeEvent(this.lastTs || this.input.now()).catch(() => {});
+    }
     await this.flushRuntimePartialBuffer(true);
     const lastTs = this.lastTs || this.input.now();
     if (this.stopped) this.finalStatus = { status: 'aborted' };

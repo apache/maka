@@ -1251,6 +1251,36 @@ describe('SessionManager terminal ledger invariants', () => {
     await new RuntimeReadModel({ runtimeEventStore: runStore }).getSessionView(session.id);
   });
 
+  test('a run that failed while recording its prompt records it before sealing', async () => {
+    const store = new TinySessionStore();
+    const runStore = new TinyAgentRunStore({ durability: 'canonical' });
+    // The invocation is already open when this append is refused, so the run
+    // exists with nothing saying what it was asked to do. Its terminal event
+    // seals it against every later append, crash recovery's included.
+    runStore.rejectRuntimeEventIdsOnce.add('run-1-admitted-prompt');
+    const session = await store.create(makeInput());
+    const run = new AgentRun({
+      sessionId: session.id,
+      header: session,
+      runId: 'run-1',
+      userInput: { turnId: 'turn-1', text: 'hello' },
+      runStore,
+      runtimeEventStore: runStore,
+      newId: nextId(),
+      now: nextNow(41_750),
+      hooks: inertAgentRunHooks(store),
+    });
+
+    await assert.rejects(run.begin());
+    await run.finalize();
+
+    const events = await runStore.readRuntimeEvents(session.id, 'run-1');
+    const prompt = events.find((event) => event.role === 'user');
+    assert.strictEqual(prompt?.id, 'run-1-admitted-prompt');
+    assert.deepEqual(prompt.content, { kind: 'text', text: 'hello' });
+    assert.strictEqual(events.filter(isTerminalRuntimeEvent).length, 1);
+  });
+
   test('a stop settlement racing finalize commits exactly one terminal run event', async () => {
     const store = new TinySessionStore();
     const settleReachedAppend = deferred<void>();
@@ -2235,6 +2265,8 @@ class TinyAgentRunStore implements AgentRunStore, RuntimeEventStore {
   private runtimeEventEntries: RuntimeEvent[] = [];
   /** One-shot append rejections, for latching the store availability. */
   failNextRuntimeEventAppends = 0;
+  /** Event ids the ledger refuses once, the way a transient transition check would. */
+  readonly rejectRuntimeEventIdsOnce = new Set<string>();
   /** While true every runtime-event read rejects, a store that is down. */
   failRuntimeEventReads = false;
   /** One-shot run-event append rejections, for latching the Run store. */
@@ -2293,6 +2325,9 @@ class TinyAgentRunStore implements AgentRunStore, RuntimeEventStore {
       throw new ToolLedgerCorruptionError('duplicate_call', 'some-older-event');
     }
     if (this.options.rejectRuntimeEventIds?.includes(event.id)) {
+      throw new ToolLedgerRejectionError('orphan_response', event.id);
+    }
+    if (this.rejectRuntimeEventIdsOnce.delete(event.id)) {
       throw new ToolLedgerRejectionError('orphan_response', event.id);
     }
     if (isTerminalRuntimeEvent(event)) await this.options.beforeTerminalRuntimeEventAppend?.();

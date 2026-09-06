@@ -287,6 +287,37 @@ test('startup recovery closes a legacy non-terminal Run before recording its pro
   });
 });
 
+test('startup recovery leaves a folded Root prompt the Run already recorded alone', async () => {
+  await withExecutionRoot(async (fixture) => {
+    // A folded Root has no single Message identity, so the prompt sits under an
+    // id recovery cannot rederive. Reading that as "no prompt yet" would record
+    // the one prompt the model already ran a second time.
+    const recordedPromptEventId = randomUUID();
+    const legacy = await fixture.seedLegacyRootWithoutSourceTranscripts(
+      'created',
+      recordedPromptEventId,
+    );
+
+    const host = await fixture.startHost();
+    await fixture.stopHost(host);
+
+    assert.deepEqual(
+      (await fixture.readSessionUserMessages()).map(({ id, turnId, text }) => ({
+        id,
+        turnId,
+        text,
+      })),
+      [
+        {
+          id: recordedPromptEventId,
+          turnId: legacy.turnId,
+          text: legacyRootPrompt(legacy).text,
+        },
+      ],
+    );
+  });
+});
+
 test('startup recovery rejects an unproven legacy Root without creating its missing Run', async () => {
   await withExecutionRoot(async (fixture) => {
     const legacy = await fixture.seedLegacyRootWithoutSourceTranscripts('missing');

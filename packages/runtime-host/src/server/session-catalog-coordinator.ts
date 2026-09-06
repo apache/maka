@@ -39,6 +39,7 @@ import {
   isWorkHubCoordinationSessionTarget,
   type SessionHeader,
   type SessionHeaderPatch,
+  type StoredMessage,
 } from '@maka/core/session';
 import {
   isSessionNotFoundError,
@@ -114,11 +115,7 @@ type SessionTurnIndexReader = Pick<
   'readDurableRecords' | 'readDurableTurnContributions' | 'readDurableTurnLandmarks'
 >;
 
-/**
- * How far back a read marker looks for the newest visible message. A Turn ends
- * on its assistant text, so the tail of one run is enough; the bound only keeps
- * a run of pure tool traffic from walking the whole ledger.
- */
+/** One page of the backwards scan a read marker walks to find the newest visible message. */
 const SESSION_READ_MARKER_TAIL_MAX_MESSAGES = 64;
 const SESSION_READ_MARKER_TAIL_MAX_BYTES = 256 * 1024;
 
@@ -868,13 +865,8 @@ export class HostSessionCatalogCoordinator {
     record: SessionHeaderSnapshot,
     readThroughMessageId: string,
   ): Promise<void> {
-    const tail = await this.#turnIndex.readDurableRecords(record.header.id, {
-      direction: 'older',
-      maxMessages: SESSION_READ_MARKER_TAIL_MAX_MESSAGES,
-      maxStoredBytes: SESSION_READ_MARKER_TAIL_MAX_BYTES,
-    });
-    const latest = tail.records.find(({ message }) => isVisibleSessionMessage(message));
-    if (latest?.message.id !== readThroughMessageId) return;
+    const latest = await this.#newestVisibleMessage(record.header.id);
+    if (latest?.id !== readThroughMessageId) return;
     if (record.header.lastReadMessageId === readThroughMessageId && !record.header.hasUnread) {
       return;
     }
@@ -883,6 +875,31 @@ export class HostSessionCatalogCoordinator {
       { lastReadMessageId: readThroughMessageId, hasUnread: false },
       record.revision,
     );
+  }
+
+  /**
+   * The ledger's newest message a client can actually see. A Turn that ends on
+   * tool traffic can put more hidden records at the tail than one page holds,
+   * so the scan pages past them instead of reading the Session as never caught
+   * up and leaving it unread for good.
+   */
+  async #newestVisibleMessage(sessionId: string): Promise<StoredMessage | undefined> {
+    let throughSequence: number | null | undefined;
+    let position: number | undefined;
+    while (true) {
+      const page = await this.#turnIndex.readDurableRecords(sessionId, {
+        direction: 'older',
+        maxMessages: SESSION_READ_MARKER_TAIL_MAX_MESSAGES,
+        maxStoredBytes: SESSION_READ_MARKER_TAIL_MAX_BYTES,
+        ...(throughSequence === undefined ? {} : { throughSequence }),
+        ...(position === undefined ? {} : { position }),
+      });
+      const visible = page.records.find(({ message }) => isVisibleSessionMessage(message));
+      if (visible) return visible.message;
+      if (page.nextPosition === null) return undefined;
+      throughSequence = page.throughSequence;
+      position = page.nextPosition;
+    }
   }
 
   async #committedUpdate(

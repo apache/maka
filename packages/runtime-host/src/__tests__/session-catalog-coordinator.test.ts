@@ -195,6 +195,62 @@ test('read marker clears unread only at the ledger transcript tail', async () =>
   assert.equal(caughtUp.lastReadMessageId, 'message-2');
 });
 
+test('read marker pages past a hidden tail to reach the newest visible message', async () => {
+  // A Turn that ends on tool traffic can put more hidden records at the tail
+  // than one page holds. Stopping at the page boundary would read the Session
+  // as never caught up and leave it unread for good.
+  const hiddenTail = {
+    throughSequence: 2,
+    records: [
+      {
+        sequence: 2,
+        message: {
+          type: 'turn_state' as const,
+          id: 'turn-state-1',
+          turnId: 'turn-1',
+          ts: 30,
+          status: 'completed' as const,
+          partialOutputRetained: false,
+        },
+      },
+    ],
+    nextPosition: 1,
+  };
+  const visiblePage = {
+    throughSequence: 2,
+    records: [
+      {
+        sequence: 1,
+        message: {
+          type: 'assistant' as const,
+          id: 'message-2',
+          turnId: 'turn-1',
+          ts: 20,
+          text: 'answer',
+          modelId: 'fake-model',
+        },
+      },
+    ],
+    nextPosition: null,
+  };
+  const fixture = createFixture({
+    header: { hasUnread: true },
+    turnIndex: {
+      readDurableRecords: async (_sessionId, request) =>
+        request.position === undefined ? hiddenTail : visiblePage,
+    },
+  });
+
+  const outcome = await fixture.coordinator.handlers['session.read_marker.set'](
+    { sessionId: fixture.sessionId, readThroughMessageId: 'message-2' },
+    context,
+  );
+  assert.equal(outcome.ok, true);
+  if (!outcome.ok || !('hasUnread' in outcome.result)) assert.fail('Read marker failed');
+  assert.equal(outcome.result.hasUnread, false);
+  assert.equal(outcome.result.lastReadMessageId, 'message-2');
+});
+
 test('metadata replacement preserves execution-semantic labels and ignores injected ones', async () => {
   const fixture = createFixture({
     labels: ['old-user-label', DEEP_RESEARCH_SESSION_LABEL],
