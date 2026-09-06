@@ -450,8 +450,9 @@ export const ContextSwitchStartsWithALoadingCatalog: Story = {
       page.getByRole('menu', { name: '添加上下文' }),
     ).getByRole('menuitem', { name: /选择技能/ });
     await userEvent.click(settledRow);
-    await expect(await page.findByRole('listbox', { name: /技能/ }, {
-      timeout: 5_000,
-    })).toBeVisible();
+    await waitFor(
+      () => expect(page.getByRole('listbox', { name: /技能/ })).toBeVisible(),
+      { timeout: 5_000 },
+    );
   },
 };

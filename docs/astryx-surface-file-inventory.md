@@ -6,7 +6,7 @@ Generated against `@astryxdesign/core@0.5.2` (194 component exports).
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 247 files — blocker 0, reimplementation 0, polish 1, aligned 246.
+**Totals:** 248 files — blocker 0, reimplementation 0, polish 1, aligned 247.
 
 ## Exclusions (explicit)
 
@@ -72,6 +72,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/features/session-settings/services-context.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/task-entry/services-context.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/task-entry/ui/task-entry-host.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `apps/desktop/src/renderer/features/task-entry/ui/task-entry-provider.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/usage/services-context.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/usage/ui/metric-card.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/usage/ui/usage-settings-view.tsx` | other | Banner, Button, SegmentedControl, SegmentedControlItem, Selector, Switch, Tab, TabList, TextInput, Tooltip | aligned — uses Astryx (Banner, Button, SegmentedControl, SegmentedControlItem, Selector, Switch, Tab, TabList) | aligned |
