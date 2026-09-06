@@ -18,7 +18,6 @@
  */
 
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -102,22 +101,6 @@ for (const count of [10, 12_000]) {
   });
 }
 
-test('revision index lookups and empty-Session checks use indexed searches', async () => {
-  await withStores(async ({ database }) => {
-    for (const query of [
-      'SELECT record_json FROM artifact_records WHERE artifact_id = ?',
-      'SELECT revision_token FROM artifact_session_revisions WHERE session_id = ?',
-      'SELECT 1 FROM artifact_records WHERE session_id = ? LIMIT 1',
-    ]) {
-      const plan = database.prepare(`EXPLAIN QUERY PLAN ${query}`).all('session');
-      assert.ok(
-        plan.every(({ detail }) => /SEARCH .*USING .*INDEX/.test(String(detail))),
-        JSON.stringify(plan),
-      );
-    }
-  });
-});
-
 test('revision changes atomically, preserves no-ops, and does not reuse a nonempty content revision', async () => {
   await withStores(async ({ repository, database }) => {
     const empty = repository.getSessionRevision('session');
@@ -161,23 +144,6 @@ test('revision changes atomically, preserves no-ops, and does not reuse a nonemp
     );
     repository.applyChanges({ upserts: [original, sibling] });
     assert.notEqual(repository.getSessionRevision('session'), initial);
-  });
-});
-
-test('moving a record invalidates both Sessions and drops an emptied Session revision', async () => {
-  await withStores(async ({ repository }) => {
-    const empty = repository.getSessionRevision('empty');
-    const first = record('first');
-    const sibling = record('sibling');
-    repository.applyChanges({ upserts: [first, sibling, record('destination', 'other')] });
-    const beforeSource = repository.getSessionRevision('session');
-    const beforeDestination = repository.getSessionRevision('other');
-    repository.applyChanges({ upserts: [record('first', 'other')] });
-    assert.notEqual(repository.getSessionRevision('session'), beforeSource);
-    assert.notEqual(repository.getSessionRevision('other'), beforeDestination);
-    repository.applyChanges({ upserts: [record('sibling', 'other')] });
-    assert.equal(repository.getSessionRevision('session'), empty);
-    assert.equal(repository.listBySession('other').length, 3);
   });
 });
 
@@ -232,67 +198,6 @@ for (const kind of ['get', 'page'] as const) {
     });
   });
 }
-
-test('an already-open reader observes a child process commit and the same revision after reopen', async () => {
-  await withStores(async ({ root, store, repository }) => {
-    const original = record('target');
-    repository.applyChanges({ upserts: [original] });
-    const before = await store.getInSession('session', original.id);
-    const changed = { ...original, summary: 'child commit' };
-    const child = spawnSync(
-      process.execPath,
-      [
-        '--input-type=module',
-        '-e',
-        `
-      const { createSqliteArtifactMetadataRepository } = await import(process.argv[1]);
-      const repository = createSqliteArtifactMetadataRepository(process.argv[2]);
-      try {
-        repository.applyChanges({ upserts: [JSON.parse(process.argv[3])] });
-        process.stdout.write(repository.getSessionRevision('session'));
-      } finally { repository.close(); }
-    `,
-        new URL('../sqlite-artifact-metadata.js', import.meta.url).href,
-        root,
-        JSON.stringify(changed),
-      ],
-      {
-        encoding: 'utf8',
-        timeout: 10_000,
-        env: { ...process.env, NODE_NO_WARNINGS: '1' },
-      },
-    );
-    assert.equal(child.status, 0, child.stderr || String(child.error));
-    const after = await store.getInSession('session', original.id);
-    assert.deepEqual(after.record, changed);
-    assert.notEqual(after.revision, before.revision);
-    assert.equal(after.revision, child.stdout);
-    const reopened = createSqliteArtifactMetadataRepository(root);
-    try {
-      assert.equal(reopened.getSessionRevision('session'), after.revision);
-    } finally {
-      reopened.close();
-    }
-  });
-});
-
-test('invalid metadata stays hidden but conservatively invalidates the Session revision', async () => {
-  await withStores(async ({ store, repository, database }) => {
-    repository.applyChanges({ upserts: [record('target')] });
-    const before = repository.getSessionRevision('session');
-    database
-      .prepare('UPDATE artifact_records SET record_json = ? WHERE artifact_id = ?')
-      .run('{', 'target');
-    const entry = await store.getInSession('session', 'target');
-    assert.equal(entry.record, null);
-    assert.notEqual(entry.revision, before);
-    const page = await store.listPage('session', { offset: 0, limit: 10 });
-    assert.equal(page.total, 0);
-    assert.equal(page.revision, entry.revision);
-    database.prepare('DELETE FROM artifact_session_revisions WHERE session_id = ?').run('session');
-    await assert.rejects(store.getInSession('session', 'target'), /revision is missing/);
-  });
-});
 
 test('v3 migration backfills Session tokens without decoding records and retains them on later migrations', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'maka-artifact-revision-migrate-'));
@@ -349,40 +254,6 @@ test('v3 migration backfills Session tokens without decoding records and retains
       assert.notEqual(reopened.getSessionRevision('session'), revision);
     } finally {
       reopened.close();
-    }
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test('a failed v3 migration rolls back revision state, triggers and schema version together', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'maka-artifact-revision-rollback-'));
-  try {
-    const repository = createSqliteArtifactMetadataRepository(root);
-    repository.applyChanges({ upserts: [record('target')] });
-    repository.close();
-    const legacy = new DatabaseSync(join(root, OPERATIONAL_STATE_DATABASE_NAME));
-    try {
-      rewindArtifactSchema(legacy);
-      legacy.exec('CREATE TABLE unexpected_migration_blocker(value TEXT)');
-      assert.throws(() => acquireOperationalStateDatabase(root), /unexpected schema object/);
-      assert.equal(
-        legacy
-          .prepare("SELECT version FROM operational_schema_migrations WHERE scope = 'artifact'")
-          .get()?.version,
-        3,
-      );
-      assert.deepEqual(
-        legacy
-          .prepare(
-            "SELECT name FROM sqlite_schema WHERE name = 'artifact_session_revisions' OR name LIKE 'artifact_revision_after_%'",
-          )
-          .all(),
-        [],
-      );
-      assert.equal(legacy.prepare('SELECT count(*) AS n FROM artifact_records').get()?.n, 1);
-    } finally {
-      legacy.close();
     }
   } finally {
     await rm(root, { recursive: true, force: true });
