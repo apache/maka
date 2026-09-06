@@ -73,13 +73,13 @@ describe("steering timeline", () => {
         text: "after",
         modelId: "fixture",
       },
-    ], "en");
+    ]);
 
     assert.deepEqual(timelineText(turn), [
       "text:before",
       "user:steer",
       "text:after",
-    ]);
+    ], "en");
   });
 
   test("renders one live steering message while its persisted row catches up", () => {
@@ -497,7 +497,7 @@ describe("unfinished tools take their status from the turn", () => {
         failureMessage: "provider says retry after 30 seconds",
         partialOutputRetained: false,
       },
-    ]);
+    ], "en");
     assert.equal(turn?.errorClass, "rate_limit");
     assert.equal(turn?.failureMessage, "provider says retry after 30 seconds");
   });
