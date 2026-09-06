@@ -20,7 +20,7 @@
 import { IntlMessageFormat } from 'intl-messageformat';
 
 /** Resolved locales supported by human-facing Maka clients. */
-export const UI_LOCALES = ['zh-CN', 'zh-TW', 'en'] as const;
+export const UI_LOCALES = ['zh-CN', 'zh-TW', 'ko', 'en'] as const;
 
 export type UiLocale = (typeof UI_LOCALES)[number];
 
@@ -120,7 +120,7 @@ function isMessageRecord(value: unknown): value is Readonly<Record<string, unkno
 }
 
 export function isUiLocale(value: unknown): value is UiLocale {
-  return value === 'zh-CN' || value === 'zh-TW' || value === 'en';
+  return value === 'zh-CN' || value === 'zh-TW' || value === 'ko' || value === 'en';
 }
 
 export function isUiLocalePreference(value: unknown): value is UiLocalePreference {
@@ -142,6 +142,7 @@ export function resolveSystemUiLocale(languages: readonly string[] | null | unde
       if (/^zh-hant(?:[-.]|$)/iu.test(normalized)) return 'zh-TW';
       return 'zh-CN';
     }
+    if (/^ko(?:[-.]|$)/iu.test(normalized)) return 'ko';
     if (/^en(?:[-.]|$)/iu.test(normalized)) return 'en';
   }
   return 'en';
@@ -163,9 +164,17 @@ export function resolveUiLocale(
   return preference === 'auto' ? systemLocale : preference;
 }
 
-/** Locale identifier used by every locale-sensitive Intl formatter. */
-export function uiLocaleToIntlLocale(locale: UiLocale): UiLocale {
-  return locale;
+/**
+ * Locale identifier used by every locale-sensitive Intl formatter.
+ *
+ * Most supported locales are already the tag `Intl` wants, so this is identity
+ * for them. `ko` is not: the bare tag leaves the region open, and the region is
+ * what picks Korean date, number, and plural formatting, so it is widened to
+ * `ko-KR` before it reaches a formatter. The return type stays a literal union
+ * of the tags actually emitted, so the set is visible in the signature.
+ */
+export function uiLocaleToIntlLocale(locale: UiLocale): 'zh-CN' | 'zh-TW' | 'en' | 'ko-KR' {
+  return locale === 'ko' ? 'ko-KR' : locale;
 }
 
 /** Copy for a wire code, or undefined when a newer producer sent one this catalog does not know. */
