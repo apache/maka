@@ -73,7 +73,7 @@ describe("steering timeline", () => {
         text: "after",
         modelId: "fixture",
       },
-    ]);
+    ], "en");
 
     assert.deepEqual(timelineText(turn), [
       "text:before",
