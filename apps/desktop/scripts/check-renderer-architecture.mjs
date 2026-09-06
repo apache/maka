@@ -2713,6 +2713,8 @@ function validateMainWindowEntryContract(desktopRoot, violations) {
 
   const allowedNavigationFiles = new Set([
     'src/main/browser-message-box.ts',
+    // Self-contained, sandboxed startup status document without the app preload.
+    'src/main/startup-progress-window.ts',
     'src/main/browser/controller.ts',
     'src/main/computer-use/cursor-overlay-window.ts',
     'src/main/computer-use/pip-electron.ts',
