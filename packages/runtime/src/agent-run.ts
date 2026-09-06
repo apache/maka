@@ -692,10 +692,12 @@ export class AgentRun {
   }
 
   async begin(): Promise<AgentRunBeginResult> {
+    // Owed from here, not from after the opening: `openInvocation` can leave the
+    // invocation open and still throw, and `finalize` reopens what it can.
+    this.initialRuntimeEventPending = true;
     await this.openInvocation();
 
     this.lastTs = this.input.now();
-    this.initialRuntimeEventPending = true;
     const initialRuntimeEvent = await this.recordInitialRuntimeEvent(this.lastTs);
 
     this.active = await this.input.hooks.reserveRun(this.sessionId, this.header, this);

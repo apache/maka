@@ -1281,6 +1281,34 @@ describe('SessionManager terminal ledger invariants', () => {
     assert.strictEqual(events.filter(isTerminalRuntimeEvent).length, 1);
   });
 
+  test('a run that failed while opening still records its prompt once finalize reopens it', async () => {
+    const store = new TinySessionStore();
+    const runStore = new TinyAgentRunStore({ durability: 'canonical' });
+    // The opening append is what `begin()` fails on here, so the prompt is owed
+    // from before it — `finalize` reopens the invocation, and a run it can open
+    // is a run that has to say what it was asked to do.
+    runStore.rejectRuntimeEventIdsOnce.add('id-1');
+    const session = await store.create(makeInput());
+    const run = new AgentRun({
+      sessionId: session.id,
+      header: session,
+      runId: 'run-1',
+      userInput: { turnId: 'turn-1', text: 'hello' },
+      runStore,
+      runtimeEventStore: runStore,
+      newId: nextId(),
+      now: nextNow(41_900),
+      hooks: inertAgentRunHooks(store),
+    });
+
+    await assert.rejects(run.begin());
+    await run.finalize();
+
+    const events = await runStore.readRuntimeEvents(session.id, 'run-1');
+    assert.strictEqual(events.find((event) => event.role === 'user')?.id, 'run-1-admitted-prompt');
+    assert.strictEqual(events.filter(isTerminalRuntimeEvent).length, 1);
+  });
+
   test('a stop settlement racing finalize commits exactly one terminal run event', async () => {
     const store = new TinySessionStore();
     const settleReachedAppend = deferred<void>();
