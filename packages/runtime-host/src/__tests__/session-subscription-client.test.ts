@@ -1363,9 +1363,13 @@ test('tolerates a short Host stall without abandoning the connection', {
 
 test('closes an unresponsive request path even while Host notifications continue', {
   timeout: 12_000,
-}, async () => {
+}, async (t) => {
   let received = 0;
   let probes = 0;
+  const probeReceived = deferred<void>();
+  const notificationsReceived = deferred<void>();
+  const finalNotificationReceived = deferred<void>();
+  let sendFinalNotification!: () => Promise<void>;
   await withProtocolPeer(
     async (transport, hostEpoch, rootId) => {
       await transport.read(1_000);
@@ -1381,6 +1385,12 @@ test('closes an unresponsive request path even while Host notifications continue
         state: 'ready',
       });
       let revision = 0;
+      sendFinalNotification = () =>
+        writeProtocolFrame(transport, {
+          kind: 'session.catalog.changed',
+          revision: ++revision,
+          sessionId: 'final-notification',
+        });
       const notifications = setInterval(() => {
         void writeProtocolFrame(transport, {
           kind: 'session.catalog.changed',
@@ -1392,15 +1402,30 @@ test('closes an unresponsive request path even while Host notifications continue
         const probe = decodeClientFrame(await transport.read(1_000));
         assert.ok(!('kind' in probe));
         assert.equal(probe.operation, 'host.status');
+        probeReceived.resolve();
         await transport.closed;
       } finally {
         clearInterval(notifications);
       }
     },
     async (connection) => {
-      connection.subscribeSessionCatalogChanges(() => {
-        received += 1;
+      let closed = false;
+      void connection.closed.then(() => {
+        closed = true;
       });
+      connection.subscribeSessionCatalogChanges((event) => {
+        received += 1;
+        if (received > 10) notificationsReceived.resolve();
+        if (event.sessionId === 'final-notification') finalNotificationReceived.resolve();
+      });
+      t.mock.timers.tick(20);
+      await probeReceived.promise;
+      await notificationsReceived.promise;
+      t.mock.timers.tick(7_999);
+      await sendFinalNotification().catch(() => undefined);
+      await Promise.race([finalNotificationReceived.promise, connection.closed]);
+      assert.equal(closed, false, 'inbound events must not end the pending probe early');
+      t.mock.timers.tick(1);
       await connection.closed;
       assert.ok(received > 10, 'inbound events must remain active during the failed probe');
       assert.equal(probes, 0, 'one-way events cannot acknowledge a probe');
@@ -1411,6 +1436,7 @@ test('closes an unresponsive request path even while Host notifications continue
         probes += 1;
       },
     },
+    () => t.mock.timers.enable({ apis: ['setTimeout'] }),
   );
 });
 
@@ -1422,6 +1448,7 @@ async function withProtocolPeer(
     readonly onLivenessProbe?: () => void;
     readonly onHostStatus?: (status: HostStatusResult) => void;
   } = {},
+  beforeConnect?: () => void,
 ): Promise<void> {
   const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-subscription-'));
   const capability = await resolveStorageRoot({
@@ -1459,6 +1486,7 @@ async function withProtocolPeer(
       pid: process.pid,
       createdAt: new Date().toISOString(),
     });
+    beforeConnect?.();
     const connected = await connectRuntimeHost({
       rootPath: join(base, 'root'),
       protocol: PROTOCOL,
