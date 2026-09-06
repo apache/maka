@@ -95,7 +95,6 @@ for (const [fault, reason] of [
         mainWindowController: {
           showSaveDialog: async () => ({ canceled: false, filePath: target }),
         } as never,
-        sendToRenderer() {},
         showItemInFolder() {},
       });
       const save = handlers.get("app:saveArtifactAs");
