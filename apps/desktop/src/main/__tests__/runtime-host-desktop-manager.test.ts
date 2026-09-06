@@ -324,8 +324,8 @@ test('probes owned Host activity for the quit consent dialog without retiring it
   await owner.close();
 });
 
-test('probe treats a missing activity field as clear and never retires', async () => {
-  const current = candidateHarness();
+test('probe treats an idle activity report as clear and never retires', async () => {
+  const current = candidateHarness({ upgradeBlockingActivity: false });
   const owner = await startRuntimeHostDesktopManager(
     {} as DesktopRuntimeHostCandidateStartInput,
     { startCandidate: async () => ready(current.candidate) },
@@ -1892,12 +1892,9 @@ function candidateHarness(
       },
       async queryHostDiagnostics() {
         if (options.diagnosticsError) throw options.diagnosticsError;
-        return {
-          pid: 42,
-          ...(options.upgradeBlockingActivity === undefined
-            ? {}
-            : { upgradeBlockingActivity: options.upgradeBlockingActivity }),
-        };
+        // Mirrors the production decoder contract: the field is required on
+        // the wire, so the harness always returns a valid payload.
+        return { pid: 42, upgradeBlockingActivity: options.upgradeBlockingActivity ?? false };
       },
       async prepareHostRetirement(mode: string) {
         prepareRetirementCalls += 1;
