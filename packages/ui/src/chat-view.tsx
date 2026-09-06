@@ -299,6 +299,8 @@ export function ChatView(props: {
   scrollBehavior: ScrollBehavior;
   hasOlderHistory?: boolean;
   onLoadEarlierHistory?(anchorTurnId?: string): Promise<void> | void;
+  hasNewerHistory?: boolean;
+  onLoadLaterHistory?(anchorTurnId?: string): Promise<void> | void;
   returnToLatest?: {
     title: string;
     label: string;
@@ -588,6 +590,8 @@ export function ChatView(props: {
     behavior: props.scrollBehavior,
     hasOlderHistory: props.hasOlderHistory,
     onLoadEarlierHistory: props.onLoadEarlierHistory,
+    hasNewerHistory: props.hasNewerHistory,
+    onLoadLaterHistory: props.onLoadLaterHistory,
   });
   const { quote: selectionQuote, clear: clearSelectionQuote } = useMessageSelectionQuote(
     scrollRef,

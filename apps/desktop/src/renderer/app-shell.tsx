@@ -2537,7 +2537,7 @@ function AppShellContent({
       setAnchor: sessionUiController.setTranscriptReadingAnchor,
     });
   }
-  async function loadTranscriptHistory(target: 'earlier' | 'latest', anchorTurnId?: string) {
+  async function loadTranscriptHistory(target: 'earlier' | 'later' | 'latest', anchorTurnId?: string) {
     const controller = transcriptRangeRef.current;
     const sessionId = activeId;
     if (!controller || !sessionId || historyLoadPendingRef.current) return;
@@ -2546,6 +2546,8 @@ function AppShellContent({
     try {
       if (target === 'earlier') {
         await controller.loadBefore(DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES, anchorTurnId);
+      } else if (target === 'later') {
+        await controller.loadAfter(DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES, anchorTurnId);
       } else await controller.loadLatest();
     } catch (error) {
       if (
@@ -3060,6 +3062,8 @@ function AppShellContent({
                 onLoadEarlierHistory={(anchorTurnId) =>
                   loadTranscriptHistory('earlier', anchorTurnId)}
                 onReturnToLatestHistory={() => loadTranscriptHistory('latest')}
+                onLoadLaterHistory={(anchorTurnId) =>
+                  loadTranscriptHistory('later', anchorTurnId)}
                 liveContentSeedRevision={liveContent.liveContentSeedRevision(activeEventSeed, activeId)}
                 messages={messages}
                 transientMessages={transientMessages}

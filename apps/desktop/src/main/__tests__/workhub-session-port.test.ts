@@ -98,6 +98,7 @@ function transcriptsWith(messages: readonly StoredMessage[]) {
         hostEpoch: 'epoch-reconcile',
         readThroughMessageId: null,
         loadBefore: async () => {},
+        loadAfter: async () => {},
         loadAround: async () => {},
         close: async () => {},
       };
@@ -408,6 +409,7 @@ test('Coordination transcript adapter never replays history and completes only t
           hostEpoch: 'epoch-1',
           readThroughMessageId: null,
           loadBefore: async () => assert.fail('conversation open must not replay older history'),
+          loadAfter: async () => assert.fail('conversation open must not replay newer history'),
           loadAround: async (sequence, maxBytes) => {
             latestLoads.push({ sequence, maxBytes });
             const message: StoredMessage = {
@@ -525,6 +527,7 @@ test('Coordination transcript adapter retries latest-record completion in the sa
             latestLoads += 1;
             if (latestLoads === 1) throw new Error('transient latest-record read failure');
           },
+          loadAfter: async () => {},
           close: async () => {},
         };
       },
@@ -613,6 +616,7 @@ test('Coordination transcript adapter ignores a stale latest-record failure afte
           hostEpoch: 'epoch-1',
           readThroughMessageId: null,
           loadBefore: async () => assert.fail('conversation open must not replay older history'),
+          loadAfter: async () => assert.fail('conversation open must not replay newer history'),
           loadAround: async () => {
             latestLoads += 1;
             if (latestLoads === 1) {
@@ -786,6 +790,7 @@ test('desktop adapter rebuilds recent turns from the Session transcript and clos
           hostEpoch: 'epoch-1',
           readThroughMessageId: null,
           loadBefore: async () => {},
+          loadAfter: async () => {},
           loadAround: async () => {},
           close: async () => {
             closes += 1;
@@ -849,7 +854,7 @@ test('desktop adapter cancels an unavailable transcript without hiding ready Ses
         });
         return {
           sessionId: readyId, generation: 'generation-ready', hostEpoch: 'epoch-ready',
-          readThroughMessageId: null, loadBefore: async () => {}, loadAround: async () => {},
+          readThroughMessageId: null, loadBefore: async () => {}, loadAfter: async () => {}, loadAround: async () => {},
           close: async () => {},
         };
       },

@@ -93,6 +93,7 @@ interface ChatMessageSurfaceProps extends Omit<
   hasNewerHistory: boolean;
   historyLoadPending: boolean;
   onLoadEarlierHistory: (anchorTurnId?: string) => Promise<void> | void;
+  onLoadLaterHistory: (anchorTurnId?: string) => Promise<void> | void;
   onReturnToLatestHistory: () => Promise<void> | void;
 }
 
@@ -130,6 +131,7 @@ export function ChatMessageSurface({
   hasNewerHistory,
   historyLoadPending,
   onLoadEarlierHistory,
+  onLoadLaterHistory,
   onReturnToLatestHistory,
   ...chatViewRest
 }: ChatMessageSurfaceProps) {
@@ -249,6 +251,8 @@ export function ChatMessageSurface({
             goalIndicator={goalProjection.goalIndicator}
             hasOlderHistory={hasOlderHistory}
             onLoadEarlierHistory={onLoadEarlierHistory}
+            hasNewerHistory={hasNewerHistory}
+            onLoadLaterHistory={onLoadLaterHistory}
             returnToLatest={hasNewerHistory ? {
               title: transcriptCopy.partialHistoryTitle,
               label: transcriptCopy.returnLatest,

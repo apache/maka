@@ -2507,7 +2507,7 @@ const makaBridge = {
       if (closed) throw new Error('Desktop transcript open was cancelled');
       identity ??= { generation: opened.generation, hostEpoch: opened.hostEpoch };
       const range = (
-        operation: 'sessions:transcript:load-before' | 'sessions:transcript:load-around',
+        operation: 'sessions:transcript:load-before' | 'sessions:transcript:load-after' | 'sessions:transcript:load-around',
         anchorSequence: number | null,
         maxBytes = DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
       ): Promise<void> => {
@@ -2528,6 +2528,8 @@ const makaBridge = {
         sessionId,
         loadBefore: (anchorSequence, maxBytes) =>
           range('sessions:transcript:load-before', anchorSequence, maxBytes),
+        loadAfter: (anchorSequence, maxBytes) =>
+          range('sessions:transcript:load-after', anchorSequence, maxBytes),
         loadAround: (sequence, maxBytes) =>
           range('sessions:transcript:load-around', sequence, maxBytes),
         async close() {

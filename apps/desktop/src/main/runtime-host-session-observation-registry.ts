@@ -37,6 +37,7 @@ type SessionObservationSource = Pick<RuntimeHostSessionObserver, 'observe' | 'un
       | 'closeTranscript'
       | 'loadTranscriptAround'
       | 'loadTranscriptBefore'
+      | 'loadTranscriptAfter'
       | 'openTranscript'
     >
   >;
@@ -47,6 +48,7 @@ type TranscriptSource = Required<
     | 'closeTranscript'
     | 'loadTranscriptAround'
     | 'loadTranscriptBefore'
+    | 'loadTranscriptAfter'
     | 'openTranscript'
   >
 >;
@@ -67,6 +69,7 @@ function requireTranscriptSource(
   if (
     !source?.openTranscript ||
     !source.loadTranscriptBefore ||
+    !source.loadTranscriptAfter ||
     !source.loadTranscriptAround ||
     !source.closeTranscript
   ) {
@@ -390,6 +393,15 @@ export class RuntimeHostSessionObservationRegistry {
   ): Promise<void> {
     await this.#runTranscriptOperation(request.consumerId, (source) =>
       source.loadTranscriptAround(request, targetId),
+    );
+  }
+
+  async loadTranscriptAfter(
+    request: DesktopTranscriptRangeRequest,
+    targetId?: number,
+  ): Promise<void> {
+    await this.#runTranscriptOperation(request.consumerId, (source) =>
+      source.loadTranscriptAfter(request, targetId),
     );
   }
 

@@ -230,17 +230,27 @@ export class DesktopTranscriptReplica {
     anchorSequence: number | null,
     maxBytes: number,
   ): Promise<void> {
-    return this.#enqueue(() => this.#loadBefore(anchorSequence, maxBytes));
+    return this.#enqueue(() => this.#loadAdjacent('older', anchorSequence, maxBytes));
   }
 
-  async #loadBefore(anchorSequence: number | null, maxBytes: number): Promise<void> {
+  async loadAfter(anchorSequence: number | null, maxBytes: number): Promise<void> {
+    return this.#enqueue(() => this.#loadAdjacent('newer', anchorSequence, maxBytes));
+  }
+
+  async #loadAdjacent(
+    direction: 'older' | 'newer',
+    anchorSequence: number | null,
+    maxBytes: number,
+  ): Promise<void> {
     this.#assertOpen();
     const throughSequence = this.#durableThrough;
     if (throughSequence === null) return;
-    const anchor = anchorSequence ?? this.#oldestSequence();
+    const anchor = anchorSequence ?? (direction === 'older'
+      ? this.#oldestSequence()
+      : this.#orderedDurable(false).at(-1)?.sequence ?? null);
     const page = await this.#handle.loadTranscriptPage({
       source: 'durable',
-      direction: 'older',
+      direction,
       throughSequence,
       cursor: null,
       anchorSequence: anchor,
@@ -250,22 +260,25 @@ export class DesktopTranscriptReplica {
       this.#assertOpen();
       // Same post-await `#resident` invariant as `#replaceWithRange` and the
       // paged catch-up: a concurrent `discard()` may have reclaimed this
-      // replica while the older page was in flight. Installing the page here
+      // replica while the adjacent page was in flight. Installing the page here
       // would repopulate durable state and undo the eviction.
       if (!this.#resident) return;
       this.#acceptRange(decoded.messages);
       if (
         anchor !== null &&
         decoded.messages.length > 0 &&
-        !this.#matchesCoverageStep(anchor, decoded.messages.at(-1)!.identity + 1)
+        !(direction === 'older'
+          ? this.#matchesCoverageStep(anchor, decoded.messages.at(-1)!.identity + 1)
+          : this.#matchesCoverageStep(decoded.messages[0]!.identity, anchor + 1))
       ) {
-        throw correlationError('Desktop transcript older page did not meet its anchor');
+        throw correlationError(`Desktop transcript ${direction} page did not meet its anchor`);
       }
       const completedOverlayMessageIds = this.#installDurable(decoded.messages);
-      this.#hasOlder = decoded.nextCursor !== null;
+      if (direction === 'older') this.#hasOlder = decoded.nextCursor !== null;
+      else this.#hasNewer = decoded.nextCursor !== null;
       const evictedDurableSequences = this.#evictToBudget(
         undefined,
-        'newest',
+        direction === 'older' ? 'newest' : 'oldest',
         anchor ?? undefined,
       );
       this.#publish(decoded.messages, completedOverlayMessageIds, evictedDurableSequences);
