@@ -91,6 +91,12 @@ jobs:
       - name: Check Windows test inventory
         run: npm run windows:inventory
 
+      # Deliberately here and not in the e2e job: that job is conditional, and a
+      # tier this guard only checks when the tier already ran is a guard that
+      # grows back (#4761). Pure Node, no build -- it reads the spec sources.
+      - name: Check Electron e2e budget
+        run: npm run check:e2e-budget
+
       # Runs on the PR merge result: after a sibling protocol change lands on
       # main with the same epoch text, the silently merged tree still carries
       # the current base parent's epoch and this fails instead of shipping two

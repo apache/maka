@@ -32,6 +32,8 @@
     "lint": "biome lint .",
     "format": "biome format --write .",
     "format:check": "biome format .",
+    "check:e2e-budget": "npm --workspace @maka/desktop run check:e2e-budget",
+    "check:e2e-budget:write": "npm --workspace @maka/desktop run check:e2e-budget:write",
     "check:renderer-architecture": "npm --workspace @maka/desktop run check:architecture --",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm run build:test && node scripts/run-workspace-tests-parallel.mjs --concurrency=3",
