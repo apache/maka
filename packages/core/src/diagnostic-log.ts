@@ -31,7 +31,8 @@ export function providerFailureSummaryFromDetails(details: unknown): string | un
 }
 
 function truncateProviderFailureSummary(summary: string): string {
-  if (new TextEncoder().encode(summary).byteLength <= TURN_FAILURE_MESSAGE_MAX_BYTES) return summary;
+  if (new TextEncoder().encode(summary).byteLength <= TURN_FAILURE_MESSAGE_MAX_BYTES)
+    return summary;
   const suffixStart = summary.lastIndexOf(' (code=');
   if (suffixStart < 0) return truncateUtf8(summary, TURN_FAILURE_MESSAGE_MAX_BYTES, '…');
   const suffix = summary.slice(suffixStart);
