@@ -35,7 +35,6 @@ import { defineConfig } from '@playwright/test';
  */
 export default defineConfig({
   testDir: '.',
-  fullyParallel: true,
   workers: 1,
   // CI publishes no Playwright report that consumes Git metadata. Disable its
   // best-effort shallow-history fetch, which otherwise waits on a fixed timeout.

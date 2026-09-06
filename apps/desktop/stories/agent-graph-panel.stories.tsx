@@ -142,8 +142,8 @@ function graphBridge(snap: AgentGraphClientSnapshot, fail = false) {
 // `.maka-detail-with-artifacts`). Reuse those wrapper classes so the panel
 // inherits the composer column's seam rather than an arbitrary fixed box. The
 // full AppShell grid and Composer chrome around it are not rebuilt here — that
-// seam lives in Product/Shell Official AppShell, and its geometry is pinned by
-// e2e/session-workbar.spec.ts — so this isolates the panel itself at a
+// seam lives in Product/Shell Official AppShell, where its geometry is pinned
+// by that group's own play functions — so this isolates the panel itself at a
 // composer-column width.
 function panel() {
   return (

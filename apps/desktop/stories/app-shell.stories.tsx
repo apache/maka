@@ -2891,7 +2891,10 @@ function WorkbarInShell() {
   );
 }
 
-// Real path: 展开任务工作栏 → 文件 → 收起 → 从标题栏再展开.
+// Real path: 收起一个开着面的工作栏 → 从标题栏再展开. The face is opened by
+// dispatching the app's own `open` action rather than by clicking through the
+// launcher, so the story starts where the app does without re-testing the
+// launcher's own path.
 //
 // The collapse toggle is one control that moves between two bands — the
 // workbar's own bar and the titlebar's right cluster — and `workbar/shell.css`
@@ -2907,6 +2910,12 @@ export const WorkbarCollapseKeepsOneToggleInPlace: Story = {
       '[data-maka-contract="session-workbar-right"]',
     );
     if (!frame) throw new Error('the right workbar is missing');
+    // The face's content is a sibling overlay panel with its own `hidden`
+    // (workbar-surface.tsx), so a visible frame does not mean a visible face.
+    const facePanel = canvasElement.querySelector<HTMLElement>(
+      '.maka-session-workbar-panel[data-overlay][data-placement="right"]',
+    );
+    if (!facePanel) throw new Error('the open face has no panel');
     const bar = within(frame.querySelector<HTMLElement>('.maka-session-workbar-toolbar')!);
     const collapse = bar.getByRole('button', { name: '收起任务工作栏' });
     // The launcher stays mounted behind the face, so "not the picker" is a
@@ -2952,12 +2961,14 @@ export const WorkbarCollapseKeepsOneToggleInPlace: Story = {
     await userEvent.click(collapse);
     const restore = await canvas.findByRole('button', { name: '展开任务工作栏' });
     await waitFor(() => expect(frame).not.toBeVisible());
+    expect(facePanel).not.toBeVisible();
     const restoreBox = restore.getBoundingClientRect();
     expect(Math.abs(restoreBox.x - parked.x)).toBeLessThanOrEqual(1);
     expect(Math.abs(restoreBox.y - parked.y)).toBeLessThanOrEqual(1);
 
     await userEvent.click(restore);
     await waitFor(() => expect(frame).toBeVisible());
+    expect(facePanel).toBeVisible();
     expect(pickerIsShowing()).toBe(false);
     const restoredToggleBox = bar
       .getByRole('button', { name: '收起任务工作栏' })

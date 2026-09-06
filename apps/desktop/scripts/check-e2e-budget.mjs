@@ -18,7 +18,7 @@
  */
 
 import { readdirSync, readFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
@@ -26,19 +26,32 @@ const DESKTOP_ROOT = resolve(dirname(SCRIPT_PATH), '..');
 const LEDGER_PATH = join(DESKTOP_ROOT, 'e2e-budget.json');
 const E2E_ROOT = join(DESKTOP_ROOT, 'e2e');
 
-// Every spec writes its tests as a bare `test(` at column 0. Any other
-// top-level `test.` form would need a rule of its own -- `test.describe` nests
-// its tests where this scanner cannot see them -- so it is refused rather than
-// silently undercounted.
+// Playwright's own default `testMatch`, because `playwright.config.ts` sets
+// `testDir: '.'` and overrides neither: anything this pattern misses would run
+// in the tier while the budget stayed silent about it.
+const SPEC_PATTERN = /\.(?:spec|test)\.[cm]?[jt]sx?$/u;
+
+// Every spec writes its tests as a bare `test(` at column 0. A dotted top-level
+// form would need a counting rule of its own (`test.describe` nests its tests
+// where a line scanner cannot see them), and an indented `test(` is a test this
+// scanner cannot attribute -- a loop or a helper generating them counts as
+// zero. Both are refused rather than silently undercounted.
 export function countSpecTests(source, file) {
   let tests = 0;
   for (const [index, line] of source.split(/\r?\n/u).entries()) {
-    const match = /^test(\.[A-Za-z]+)?\s*\(/u.exec(line);
-    if (!match) continue;
-    if (match[1] === undefined) tests += 1;
-    else {
+    const top = /^test(\.[A-Za-z]+)?\s*\(/u.exec(line);
+    if (top) {
+      if (top[1] === undefined) tests += 1;
+      else {
+        throw new Error(
+          `${file}:${index + 1}: unrecognised top-level \`test${top[1]}(\` -- teach check-e2e-budget.mjs how many tests it creates`,
+        );
+      }
+      continue;
+    }
+    if (/\btest\s*\(/u.test(line)) {
       throw new Error(
-        `${file}:${index + 1}: unrecognised top-level \`test${match[1]}(\` -- teach check-e2e-budget.mjs how many tests it creates`,
+        `${file}:${index + 1}: \`test(\` away from column 0 -- check-e2e-budget.mjs cannot count it`,
       );
     }
   }
@@ -47,10 +60,22 @@ export function countSpecTests(source, file) {
 
 export function collectSpecs(root = E2E_ROOT) {
   const specs = {};
-  for (const file of readdirSync(root).sort()) {
-    if (!file.endsWith('.spec.ts')) continue;
-    specs[file] = countSpecTests(readFileSync(join(root, file), 'utf8'), file);
-  }
+  const walk = (directory) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true }).sort((left, right) =>
+      left.name.localeCompare(right.name),
+    )) {
+      if (entry.name === 'node_modules') continue;
+      const absolute = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        walk(absolute);
+        continue;
+      }
+      if (!SPEC_PATTERN.test(entry.name)) continue;
+      const file = relative(root, absolute).replaceAll('\\', '/');
+      specs[file] = countSpecTests(readFileSync(absolute, 'utf8'), file);
+    }
+  };
+  walk(root);
   return specs;
 }
 

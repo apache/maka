@@ -19,14 +19,16 @@
 
 import { deepEqual, equal, throws } from 'node:assert/strict';
 import { test } from 'node:test';
-import { compare, countSpecTests } from './check-e2e-budget.mjs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { collectSpecs, compare, countSpecTests } from './check-e2e-budget.mjs';
 
-test('counts the top-level tests and nothing nested inside them', () => {
+test('counts the top-level tests and nothing configuring them', () => {
   const source = [
     "import { test } from './fixtures';",
     "test('one', async () => {});",
     '  test.setTimeout(120_000);',
-    '  await expect.poll(() => test(1));',
     "test('two', async () => {});",
   ].join('\n');
   equal(countSpecTests(source, 'sample.spec.ts'), 2);
@@ -37,6 +39,36 @@ test('refuses a top-level form whose test count it cannot read', () => {
     () => countSpecTests("test.describe('group', () => {});", 'sample.spec.ts'),
     /unrecognised top-level `test\.describe\(`/u,
   );
+});
+
+// A loop or a helper creates tests Playwright runs and this scanner cannot
+// attribute. Counting them as zero is how the tier grows back in silence.
+test('refuses a `test(` it cannot attribute to a line of its own', () => {
+  throws(
+    () => countSpecTests('for (const n of [1, 2]) {\n  test(`generated ${n}`, fn);\n}', 'a.spec.ts'),
+    /`test\(` away from column 0/u,
+  );
+});
+
+// playwright.config.ts sets `testDir: '.'` and no `testMatch`, so the tier is
+// everything Playwright's default pattern reaches -- subdirectories and the
+// `.test.ts` suffix included.
+test('finds every file Playwright would run, not just top-level .spec.ts', () => {
+  const root = mkdtempSync(join(tmpdir(), 'maka-e2e-budget-'));
+  try {
+    mkdirSync(join(root, 'nested'));
+    writeFileSync(join(root, 'plain.spec.ts'), "test('a', fn);\n");
+    writeFileSync(join(root, 'suffix.test.ts'), "test('b', fn);\n");
+    writeFileSync(join(root, 'nested', 'deep.spec.ts'), "test('c', fn);\ntest('d', fn);\n");
+    writeFileSync(join(root, 'fixtures.ts'), "test('not a spec file', fn);\n");
+    deepEqual(collectSpecs(root), {
+      'nested/deep.spec.ts': 2,
+      'plain.spec.ts': 1,
+      'suffix.test.ts': 1,
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('reports every way the tier and the budget can disagree', () => {

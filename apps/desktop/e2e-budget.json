@@ -31,7 +31,7 @@
     },
     "session-workbar.spec.ts": {
       "tests": 5,
-      "electron": "Git changes re-read on window focus, terminal PTY ownership across Sessions, and Side Chat's fork lifecycle -- all main-process resources"
+      "electron": "Git changes re-read on window focus, terminal PTY ownership across Sessions, Side Chat's fork lifecycle, and a first send that has to reach the Host; the composer-usage test is renderer-only and rides along on those windows until app-shell.tsx's composer-to-workbar wiring has a story host"
     },
     "settings.spec.ts": {
       "tests": 4,

@@ -1042,8 +1042,8 @@ export const ToolPickerAtColumnFloor: Story = {
     expect(shortcuts.length).toBeGreaterThan(0);
     for (const shortcut of shortcuts) {
       const box = shortcut.getBoundingClientRect();
-      expect.soft(box.left).toBeGreaterThanOrEqual(panelBox.left);
-      expect.soft(box.right).toBeLessThanOrEqual(panelBox.right);
+      expect(box.left).toBeGreaterThanOrEqual(panelBox.left);
+      expect(box.right).toBeLessThanOrEqual(panelBox.right);
     }
   },
 };
@@ -1365,10 +1365,14 @@ export const SideChatAtColumnFloor: Story = {
   decorators: [bridge()],
   render: () => <Workbar tab="side-chat" width={320} />,
   play: async ({ canvasElement }) => {
-    const companion = canvasElement.querySelector<HTMLElement>('.maka-quote-companion');
-    if (!companion) throw new Error('side chat companion is missing');
-    const card = companion.querySelector<HTMLElement>('.maka-composer-astryx');
-    if (!card) throw new Error('side chat composer card is missing');
+    const companion = await waitFor(() => {
+      const found = canvasElement.querySelector<HTMLElement>('.maka-quote-companion');
+      if (!found?.querySelector('.maka-composer-astryx')) {
+        throw new Error('side chat companion is missing');
+      }
+      return found;
+    });
+    const card = companion.querySelector<HTMLElement>('.maka-composer-astryx')!;
 
     expect(getComputedStyle(card).overflow).toBe('visible');
 
