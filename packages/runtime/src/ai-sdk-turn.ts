@@ -166,6 +166,7 @@ import {
 import { isHistoryCompactContentEvent } from './history-compaction.js';
 import {
   canContinueHistoryCompactCheckpointForModel,
+  historyCompactSourceDigest,
   isProviderHistoryCompactCheckpoint,
   matchHistoryCompactCheckpointPrefix,
   projectHistoryCompactCheckpointReplay,
@@ -1303,6 +1304,7 @@ export class AiSdkTurn {
               ]
             : turnEvents;
           let replayEvents = rawProjectionEvents;
+          let effectiveProjectionCheckpoint = projectionCheckpoint;
           if (projectionCheckpoint) {
             const checkpointMatch = matchHistoryCompactCheckpointPrefix(
               projectionCheckpoint,
@@ -1311,11 +1313,27 @@ export class AiSdkTurn {
             if (checkpointMatch.reason) {
               throw new Error(`durable checkpoint projection mismatch: ${checkpointMatch.reason}`);
             }
-            replayEvents = projectHistoryCompactCheckpointReplay(
-              projectionCheckpoint,
+            // Content-currency guard: the raw identity still matches, but a
+            // transition committed after this fold (e.g. an active-turn prune
+            // in this very send) changed the effective view the block was
+            // built from. Replay without the stale block — the provider
+            // decides fit and overflow recovery re-folds (#4845 review).
+            const pinnedEffectiveDigest = projectionCheckpoint.coverage.effectiveSourceDigest;
+            const coveredEffective = await this.deps.compaction.foldEffectiveModelHistory(
               checkpointMatch.coveredRuntimeEvents,
-              checkpointMatch.successorRuntimeEvents,
             );
+            if (
+              pinnedEffectiveDigest === undefined ||
+              historyCompactSourceDigest(coveredEffective) !== pinnedEffectiveDigest
+            ) {
+              effectiveProjectionCheckpoint = undefined;
+            } else {
+              replayEvents = projectHistoryCompactCheckpointReplay(
+                projectionCheckpoint,
+                checkpointMatch.coveredRuntimeEvents,
+                checkpointMatch.successorRuntimeEvents,
+              );
+            }
             // The checkpoint was capacity-validated before it was persisted.
             // Do not re-run that gate against a later, larger successor tail:
             // the active-step shaper must see that growth so it can roll the
@@ -1344,7 +1362,7 @@ export class AiSdkTurn {
             await this.deps.messageProjection.materializeRuntimeReplayPlan(
               replayPlan,
               this.imageBudget,
-              projectionCheckpoint,
+              effectiveProjectionCheckpoint,
               compatibleProviderReasoningReplayEventIds(
                 replayEvents,
                 input.runtimeContextInvocations,
@@ -1353,7 +1371,7 @@ export class AiSdkTurn {
                 this.runId,
               ),
             );
-          return projectionCheckpoint
+          return effectiveProjectionCheckpoint
             ? currentTurnMessages
             : [...priorReplay.messages, ...currentTurnMessages];
         };

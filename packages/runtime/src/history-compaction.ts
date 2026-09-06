@@ -194,6 +194,15 @@ export interface PlanHistoryCompactionInput {
   acceptedRoute?: { modelId: string; connectionId?: string };
   /** Present only when this automatic Compaction should create a Memory task. */
   memoryExtractionBoundary?: HistoryCompactMemoryExtractionBoundary;
+  /**
+   * Projects the covered span to its effective (transition-folded) view. When
+   * present, the summary is written from that view and its digest is pinned as
+   * `coverage.effectiveSourceDigest`, so a later projection transition
+   * invalidates the checkpoint instead of being restored by it (#4845 review).
+   */
+  projectEffectiveCoverage?: (
+    coveredRuntimeEvents: readonly RuntimeEvent[],
+  ) => Promise<readonly RuntimeEvent[]>;
   summarize: HistoryCompactionSummarizer;
 }
 
@@ -314,12 +323,25 @@ export async function planHistoryCompaction(
       ? checkpointMatch!.successorRuntimeEvents
       : coveredRuntimeEvents;
 
+    // The model-visible summary reads the effective (transition-folded) view
+    // of the covered span; the raw events keep the coverage identity.
+    const effectiveCoveredRuntimeEvents = input.projectEffectiveCoverage
+      ? [...(await input.projectEffectiveCoverage(coveredRuntimeEvents))]
+      : undefined;
+    const effectiveNewlyFoldedRuntimeEvents = effectiveCoveredRuntimeEvents
+      ? newlyFoldedRuntimeEvents.length === coveredRuntimeEvents.length
+        ? effectiveCoveredRuntimeEvents
+        : effectiveCoveredRuntimeEvents.slice(
+            effectiveCoveredRuntimeEvents.length - newlyFoldedRuntimeEvents.length,
+          )
+      : undefined;
+
     let compacted: string | HistoryCompactProviderState | undefined;
     try {
       compacted = await Promise.resolve(
         input.summarize({
-          coveredRuntimeEvents,
-          newlyFoldedRuntimeEvents,
+          coveredRuntimeEvents: effectiveCoveredRuntimeEvents ?? coveredRuntimeEvents,
+          newlyFoldedRuntimeEvents: effectiveNewlyFoldedRuntimeEvents ?? newlyFoldedRuntimeEvents,
           ...(previousCheckpoint ? { previousCheckpoint } : {}),
         }),
       );
@@ -378,6 +400,7 @@ export async function planHistoryCompaction(
     const checkpoint = buildHistoryCompactCheckpoint({
       sessionId: input.sessionId,
       coveredRuntimeEvents,
+      ...(effectiveCoveredRuntimeEvents ? { effectiveCoveredRuntimeEvents } : {}),
       ...(typeof compacted === 'string' ? { summary: compacted } : { providerState: compacted }),
       ...(phase === 'mid_turn'
         ? { phase: 'mid_turn' as const, headAnchor: input.headAnchor! }

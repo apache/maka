@@ -48,12 +48,14 @@ import {
   buildContextBudgetDiagnosticShell,
   estimateRuntimeEventsTokens,
   mergeContextBudgetDiagnostic,
+  mergeContextBudgetDiagnosticPatches,
   type ContextBudgetPolicy,
 } from './context-budget.js';
 import { isHistoryCompactContentEvent } from './history-compaction.js';
 import {
   canContinueHistoryCompactCheckpointForModel,
   canReplayHistoryCompactCheckpointForModel,
+  historyCompactSourceDigest,
   matchHistoryCompactCheckpointPrefix,
   projectHistoryCompactCheckpointReplay,
   type HistoryCompactCheckpoint,
@@ -383,32 +385,27 @@ export class AiSdkCompaction {
           : {}),
         ...(automaticMemoryBoundary ? { memoryExtractionBoundary: automaticMemoryBoundary } : {}),
         ...(previousCheckpoint ? { previousCheckpoint } : {}),
+        // The planner projects the covered span to its effective view before
+        // summarizing and pins its digest as coverage.effectiveSourceDigest:
+        // the summary can never quote a body a durable transition removed, and
+        // a later transition invalidates the checkpoint at replay (#4845).
+        projectEffectiveCoverage: (covered) => this.foldEffectiveModelHistory(covered),
         summarize: async ({
           coveredRuntimeEvents,
           newlyFoldedRuntimeEvents,
           previousCheckpoint,
         }) => {
-          // Coverage identity stays pinned on the raw events (that is the view
-          // replay matches), but the model-visible summary reads the EFFECTIVE
-          // prefix: a summary produced from raw events could quote a body a
-          // durable projection transition removed, and the checkpoint block
-          // would then restore it on every later replay (#4845 review).
-          const effectiveCovered = await this.foldEffectiveModelHistory(coveredRuntimeEvents);
-          const effectiveNewlyFolded =
-            newlyFoldedRuntimeEvents.length === coveredRuntimeEvents.length
-              ? effectiveCovered
-              : effectiveCovered.slice(effectiveCovered.length - newlyFoldedRuntimeEvents.length);
           return await this.summarizeWithFailureCircuit(summarizer, {
             sessionId: this.sessionId,
             turnId: input.turnId,
             runId: input.runId,
             source: {
-              foldedRuntimeEvents: effectiveCovered,
+              foldedRuntimeEvents: [...coveredRuntimeEvents],
               ...(input.runtimeContextInvocations
                 ? { invocations: input.runtimeContextInvocations }
                 : {}),
             },
-            newlyFoldedRuntimeEvents: effectiveNewlyFolded,
+            newlyFoldedRuntimeEvents: [...newlyFoldedRuntimeEvents],
             ...(previousCheckpoint ? { previousCheckpoint } : {}),
             abortSignal: historyCompactAbortController.signal,
             ...(tracker ? { providerRequestTracker: tracker } : {}),
@@ -569,6 +566,28 @@ export class AiSdkCompaction {
   }
 
   /**
+   * Whether the checkpoint's pinned effective view still is the covered
+   * prefix's effective view. The raw identity match happens later in the
+   * replay authority; this gate is about content currency: a projection
+   * transition committed after the fold changes what the model may see of the
+   * covered span without touching the raw ledger, and the checkpoint's summary
+   * or provider state must not survive that drift (#4845 review).
+   */
+  private checkpointEffectiveCoverageMatches(
+    checkpoint: HistoryCompactCheckpoint,
+    effectiveEvents: readonly RuntimeEvent[],
+  ): boolean {
+    const pinned = checkpoint.coverage.effectiveSourceDigest;
+    if (pinned === undefined) return false;
+    const covered = effectiveEvents
+      .filter(isHistoryCompactContentEvent)
+      .slice(0, checkpoint.coverage.eventCount);
+    if (covered.length !== checkpoint.coverage.eventCount) return false;
+    if (covered.at(-1)?.id !== checkpoint.coverage.through.runtimeEventId) return false;
+    return historyCompactSourceDigest(covered) === pinned;
+  }
+
+  /**
    * Fold the durable transition ledger onto this session's prior history, and
    * commit any new stale-result transition the prune policy calls for.
    *
@@ -683,10 +702,32 @@ export class AiSdkCompaction {
         this.input.modelId,
       )
     ) {
-      nextPolicy = {
-        ...nextPolicy,
-        historyCompact: { ...nextPolicy.historyCompact!, checkpoint: loadedCheckpoint },
-      };
+      if (this.checkpointEffectiveCoverageMatches(loadedCheckpoint, effective.events)) {
+        nextPolicy = {
+          ...nextPolicy,
+          historyCompact: { ...nextPolicy.historyCompact!, checkpoint: loadedCheckpoint },
+        };
+      } else {
+        // The raw identity still matches, but a projection transition
+        // committed after the fold changed the effective view the summary (or
+        // provider state) was built from. Rejecting keeps the stale block from
+        // restoring what the transition removed; the next fold re-summarizes
+        // (#4845 review).
+        diagnosticPatch = mergeContextBudgetDiagnosticPatches(
+          diagnosticPatch,
+          compactionDecisionDiagnosticPatch({
+            stage: 'priorReplay',
+            sourceKind: 'runtimeEvents',
+            decision: 'failedOpen',
+            phase: 'pre_turn',
+            boundaryKind: 'historyCompact',
+            ...(loadedCheckpoint.coverage.effectiveSourceDigest !== undefined
+              ? { boundaryIds: [loadedCheckpoint.checkpointId] }
+              : {}),
+            failOpenReason: 'effective_history_changed',
+          }),
+        );
+      }
     }
     return {
       policy: nextPolicy,
@@ -1125,25 +1166,22 @@ export class AiSdkCompaction {
             },
           }
         : {}),
+      projectEffectiveCoverage: (covered) => this.foldEffectiveModelHistory(covered),
       summarize: async ({ coveredRuntimeEvents, newlyFoldedRuntimeEvents, previousCheckpoint }) => {
-        // Same contract as the standalone path: coverage identity is raw, the
-        // summary input is the effective (transition-folded) prefix, so a
-        // summary can never quote a body a durable transition removed (#4845).
-        const effectiveCovered = await this.foldEffectiveModelHistory(coveredRuntimeEvents);
-        const effectiveNewlyFolded =
-          newlyFoldedRuntimeEvents.length === coveredRuntimeEvents.length
-            ? effectiveCovered
-            : effectiveCovered.slice(effectiveCovered.length - newlyFoldedRuntimeEvents.length);
+        // Same contract as the standalone path: the planner hands the
+        // effective (transition-folded) view to the summarizer and pins its
+        // digest, so a summary can never quote a body a durable transition
+        // removed (#4845).
         return await this.summarizeWithFailureCircuit(summarizer, {
           sessionId: this.sessionId,
           turnId,
           ...(input.origin.runId ? { runId: input.origin.runId } : {}),
           source: {
-            foldedRuntimeEvents: effectiveCovered,
+            foldedRuntimeEvents: [...coveredRuntimeEvents],
             invocations: state.priorInvocations,
           },
           ...(previousCheckpoint ? { previousCheckpoint } : {}),
-          newlyFoldedRuntimeEvents: effectiveNewlyFolded,
+          newlyFoldedRuntimeEvents: [...newlyFoldedRuntimeEvents],
           ...(abortSignal ? { abortSignal } : {}),
           ...(midTurnTracker ? { providerRequestTracker: midTurnTracker } : {}),
         });

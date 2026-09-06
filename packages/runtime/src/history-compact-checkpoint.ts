@@ -56,6 +56,15 @@ export interface HistoryCompactCheckpointCoverage {
     runtimeEventId: string;
   };
   sourceDigest: string;
+  /**
+   * Digest of the EFFECTIVE (transition-folded) view of the covered prefix at
+   * creation time — the exact content the summary or provider state describes.
+   * Replay must reject the checkpoint when the current effective view no
+   * longer matches: a projection transition committed after creation changes
+   * what the model may see without touching the raw ledger, and a stale block
+   * would restore what the transition removed (#4845 review).
+   */
+  effectiveSourceDigest?: string;
 }
 
 /**
@@ -137,6 +146,13 @@ export type HistoryCompactCheckpoint =
 interface BuildHistoryCompactCheckpointBaseInput {
   sessionId: string;
   coveredRuntimeEvents: readonly RuntimeEvent[];
+  /**
+   * The effective (transition-folded) view of `coveredRuntimeEvents`, when the
+   * caller folded it. Its digest is pinned as `coverage.effectiveSourceDigest`;
+   * without it the raw coverage doubles as the effective view, which is only
+   * true when no projection transition touches the span.
+   */
+  effectiveCoveredRuntimeEvents?: readonly RuntimeEvent[];
   highWaterName?: string;
   highWaterSeq?: number;
   previousCheckpointId?: string;
@@ -274,6 +290,9 @@ export function buildHistoryCompactCheckpoint(
       runtimeEventId: lastEvent.id,
     },
     sourceDigest: historyCompactSourceDigest(input.coveredRuntimeEvents),
+    effectiveSourceDigest: historyCompactSourceDigest(
+      input.effectiveCoveredRuntimeEvents ?? input.coveredRuntimeEvents,
+    ),
   };
   const highWaterName = input.highWaterName ?? 'history-compact-high-water';
   const highWaterSeq = input.highWaterSeq ?? createdAt;
@@ -458,6 +477,11 @@ export function validateHistoryCompactCheckpointShape(
     nonEmpty(through?.turnId) &&
     nonEmpty(through?.runtimeEventId) &&
     nonEmpty(coverage?.sourceDigest) &&
+    // A checkpoint minted under the current source policy pins the effective
+    // (transition-folded) view its summary or provider state describes;
+    // without the digest there is no content-currency binding at replay, so
+    // the record must not validate (#4845 review).
+    (checkpoint.source === undefined || nonEmpty(coverage?.effectiveSourceDigest)) &&
     (checkpoint.source === undefined ||
       validHistoryCompactCheckpointSource(checkpoint.source, checkpoint.sessionId, coverage)) &&
     (checkpoint.phase === undefined ||
@@ -740,7 +764,7 @@ function sameHistoryCompactSourceCoverage(
  * response's effective projection does change the digest, so a checkpoint can
  * never be replayed over content it never covered.
  */
-function historyCompactSourceDigest(events: readonly RuntimeEvent[]): string {
+export function historyCompactSourceDigest(events: readonly RuntimeEvent[]): string {
   const hash = createHash('sha256');
   for (const event of events) {
     const serialized = stableStringify(effectiveDigestEvent(event));
