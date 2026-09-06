@@ -42,6 +42,7 @@ import { WorkbarSurface } from '../src/renderer/features/workbar/stories';
 import {
   createFakeWorkbarServices,
   createSessionWorkbarPanelsState,
+  isSessionWorkbarCollapsed,
   reduceWorkbarLayout,
   SESSION_BOTTOM_PANEL_DEFAULT_HEIGHT,
   SESSION_WORKBAR_DEFAULT_WIDTH,
@@ -2971,7 +2972,8 @@ export const RailStaysOnTheVisiblePrompt: Story = {
 const workbarLayoutWithOneFace: WorkbarLayoutState = reduceWorkbarLayout(
   {
     panels: createSessionWorkbarPanelsState(),
-    rightCollapsed: true,
+    activeSessionId: 'session-active',
+    collapsedBySession: {},
     bottomOpen: false,
     rightWidth: SESSION_WORKBAR_DEFAULT_WIDTH,
     bottomHeight: SESSION_BOTTOM_PANEL_DEFAULT_HEIGHT,
@@ -2983,12 +2985,13 @@ function WorkbarInShell() {
   const [layout, dispatch] = useReducer(reduceWorkbarLayout, workbarLayoutWithOneFace);
   const collapseRight = (collapsed: boolean) =>
     dispatch({ type: 'collapse', placement: 'right', collapsed });
+  const rightCollapsed = isSessionWorkbarCollapsed(layout);
   return (
     <ToastProvider>
       <WorkbarServicesProvider services={createFakeWorkbarServices()}>
         <ComposedShell
-          workbarCollapsed={layout.rightCollapsed}
-          onToggleWorkbar={() => collapseRight(!layout.rightCollapsed)}
+          workbarCollapsed={rightCollapsed}
+          onToggleWorkbar={() => collapseRight(!rightCollapsed)}
           detailChildren={
             <div
               className="maka-detail-with-artifacts"
@@ -3002,7 +3005,7 @@ function WorkbarInShell() {
                 hidden={false}
                 onDismissPanel={() => collapseRight(true)}
                 panelsState={layout.panels}
-                rightCollapsed={layout.rightCollapsed}
+                rightCollapsed={rightCollapsed}
                 bottomOpen={layout.bottomOpen}
                 onActivateTab={(placement, tabId) =>
                   dispatch({ type: 'activate', placement, tabId })
