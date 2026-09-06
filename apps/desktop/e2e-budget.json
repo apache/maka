@@ -5,6 +5,10 @@
     "Every spec below records the Electron-owned mechanism it needs. If you cannot name one, the test does not belong here."
   ],
   "specs": {
+    "bot-onboarding-retry-health.spec.ts": {
+      "tests": 1,
+      "electron": "the deterministic bot adapter, IPC, persistence, and renderer polling must run through the real Electron main process without contacting an external provider"
+    },
     "composer-directory-reference.spec.ts": {
       "tests": 1,
       "electron": "the folder reference has to survive a renderer reload and still agree with the Host's session record"
