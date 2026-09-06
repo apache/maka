@@ -445,7 +445,9 @@ jobs:
       - name: Report CLI Rust build cache
         if: steps.plan.outputs.cli_package == 'true'
         shell: bash
-        run: kache report --format github >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          set -o pipefail
+          kache report --format github | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Save CLI Rust build cache
         if: steps.plan.outputs.cli_package == 'true' && github.ref_name == github.event.repository.default_branch
