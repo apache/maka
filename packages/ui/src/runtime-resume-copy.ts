@@ -28,39 +28,52 @@ export interface ResumeParkToastCopy {
  * Park reasons are locale-independent wire tokens; this record only supplies
  * their presentation copy. `resume_candidate_missing` is not a parked-reason
  * entry — it takes its own title/description pair below.
+ *
+ * `ResumeParkReasonKey` mirrors `ResumeRejectionReason` from
+ * `@maka/runtime`'s `runtime-resume.ts` (minus `resume_candidate_missing`).
+ * It is declared locally rather than imported so this package does not take
+ * a runtime dependency on `@maka/runtime`; keep the two lists in sync by
+ * hand. Because `ResumeParkReasonCopy` is a mapped type over that key union,
+ * adding a reason here without supplying copy in every locale below is a
+ * compile error instead of a silent fallback to generic text.
  */
-interface ResumeParkReasonCopy {
-  dangling_tool_state: string;
-  tool_not_dispatched: string;
-  pending_permission: string;
-  background_operation_pending: string;
-  workspace_identity_mismatch: string;
-  workspace_identity_missing: string;
-  workspace_cwd_mismatch: string;
-  workspace_ref_missing: string;
-  tool_catalog_mismatch: string;
-  checkpoint_restore_failed: string;
-  source_run_unreadable: string;
-  runtime_ledger_unreadable: string;
-  runtime_ledger_empty: string;
-  terminal_repair_failed: string;
-  provider_resume_head_unsupported: string;
-  provider_resume_boundary_unsupported: string;
-  provider_replay_non_suffix_gap: string;
-  provider_replay_unsupported: string;
-  runtime_lineage_cycle: string;
-  runtime_lineage_depth_exceeded: string;
-  runtime_lineage_missing: string;
-  runtime_lineage_start_mismatch: string;
-  runtime_lineage_replay_mismatch: string;
-  runtime_lineage_claim_mismatch: string;
-  source_prefix_digest_mismatch: string;
-  continuation_already_exists: string;
-  continuation_claim_repair_required: string;
-  continuation_started_indeterminate: string;
-  continuation_authority_unavailable: string;
-  resume_feature_disabled: string;
-}
+type ResumeParkReasonKey =
+  | 'dangling_tool_state'
+  | 'tool_not_dispatched'
+  | 'runtime_offset_mismatch'
+  | 'pending_permission'
+  | 'workspace_identity_mismatch'
+  | 'background_operation_pending'
+  | 'tool_catalog_mismatch'
+  | 'runtime_ledger_unreadable'
+  | 'terminal_repair_failed'
+  | 'workspace_cwd_mismatch'
+  | 'runtime_ledger_empty'
+  | 'runtime_identity_mismatch'
+  | 'continuation_identity_reused'
+  | 'provider_resume_head_unsupported'
+  | 'provider_resume_boundary_unsupported'
+  | 'provider_replay_non_suffix_gap'
+  | 'provider_replay_unsupported'
+  | 'runtime_lineage_cycle'
+  | 'runtime_lineage_depth_exceeded'
+  | 'runtime_lineage_missing'
+  | 'runtime_lineage_start_mismatch'
+  | 'runtime_lineage_replay_mismatch'
+  | 'runtime_lineage_claim_mismatch'
+  | 'source_prefix_digest_mismatch'
+  | 'workspace_ref_missing'
+  | 'checkpoint_restore_failed'
+  | 'source_run_unreadable'
+  | 'continuation_already_exists'
+  | 'continuation_authority_unavailable'
+  | 'continuation_claim_repair_required'
+  | 'continuation_started_indeterminate'
+  | 'workspace_identity_missing'
+  | 'safety_observation_unavailable'
+  | 'resume_feature_disabled';
+
+type ResumeParkReasonCopy = Record<ResumeParkReasonKey, string>;
 
 interface ResumeParkCopy {
   title: string;
@@ -79,6 +92,7 @@ const RESUME_PARK_COPY = {
     reasons: {
       dangling_tool_state: '上次工具执行中断，记录已保留，暂时不能自动继续。',
       tool_not_dispatched: '上次工具调用还没有开始执行，这一轮尚未结束，暂时不能自动继续。',
+      runtime_offset_mismatch: '上次运行记录的位置与当前检查点不一致。',
       pending_permission: '上次执行仍在等待权限确认。',
       background_operation_pending: '仍有后台操作没有结束，暂时不能继续。',
       workspace_identity_mismatch: '当前工作区与中断时不一致。',
@@ -90,6 +104,8 @@ const RESUME_PARK_COPY = {
       source_run_unreadable: '上次运行记录无法完整读取。',
       runtime_ledger_unreadable: '上次运行账本无法完整读取。',
       runtime_ledger_empty: '上次运行没有可回放的记录。',
+      runtime_identity_mismatch: '上次运行的记录中混入了多个执行身份。',
+      continuation_identity_reused: '续跑必须使用全新的执行身份，不能复用中断时的身份。',
       terminal_repair_failed: '上次运行记录修复失败。',
       provider_resume_head_unsupported: '当前模型不支持这个恢复起点。',
       provider_resume_boundary_unsupported: '当前模型不支持这个恢复边界。',
@@ -106,6 +122,7 @@ const RESUME_PARK_COPY = {
       continuation_claim_repair_required: '恢复所有权已保留，但续跑记录需要先修复。',
       continuation_started_indeterminate: '续跑已经开始，但尚未形成可证明的终态。',
       continuation_authority_unavailable: '当前存储不支持安全的续跑所有权。',
+      safety_observation_unavailable: '无法获取继续执行所需的安全检查结果。',
       resume_feature_disabled: '继续中断任务的功能尚未启用。',
     },
   },
@@ -117,6 +134,7 @@ const RESUME_PARK_COPY = {
     reasons: {
       dangling_tool_state: '上次工具執行中斷，記錄已保留，暫時不能自動繼續。',
       tool_not_dispatched: '上次工具呼叫還沒有開始執行，這一輪尚未結束，暫時不能自動繼續。',
+      runtime_offset_mismatch: '上次執行記錄的位置與目前檢查點不一致。',
       pending_permission: '上次執行仍在等待權限確認。',
       background_operation_pending: '仍有後台操作沒有結束，暫時不能繼續。',
       workspace_identity_mismatch: '目前工作區與中斷時不一致。',
@@ -128,6 +146,8 @@ const RESUME_PARK_COPY = {
       source_run_unreadable: '上次執行的記錄無法完整讀取。',
       runtime_ledger_unreadable: '上次執行的帳本無法完整讀取。',
       runtime_ledger_empty: '上次執行沒有可回放的記錄。',
+      runtime_identity_mismatch: '上次執行的記錄中混入了多個執行身分。',
+      continuation_identity_reused: '續跑必須使用全新的執行身分，不能重複使用中斷時的身分。',
       terminal_repair_failed: '上次執行記錄修復失敗。',
       provider_resume_head_unsupported: '目前模型不支援這個恢復起點。',
       provider_resume_boundary_unsupported: '目前模型不支援這個恢復邊界。',
@@ -144,6 +164,7 @@ const RESUME_PARK_COPY = {
       continuation_claim_repair_required: '恢復所有權已保留，但續跑記錄需要先修復。',
       continuation_started_indeterminate: '續跑已經開始，但尚未形成可證明的終態。',
       continuation_authority_unavailable: '目前儲存不支援安全的續跑所有權。',
+      safety_observation_unavailable: '無法取得繼續執行所需的安全檢查結果。',
       resume_feature_disabled: '繼續中斷任務的功能尚未啟用。',
     },
   },
@@ -157,6 +178,7 @@ const RESUME_PARK_COPY = {
         'The previous tool run was interrupted; its records are preserved, so it cannot continue automatically yet.',
       tool_not_dispatched:
         'The previous tool call never started executing; this round is incomplete, so it cannot continue automatically yet.',
+      runtime_offset_mismatch: "The previous run's recorded position does not match the current checkpoint.",
       pending_permission: 'The previous run is still waiting for a permission approval.',
       background_operation_pending: 'Background operations are still running, so this round cannot continue yet.',
       workspace_identity_mismatch: 'The current workspace does not match the one from the interrupted run.',
@@ -168,6 +190,9 @@ const RESUME_PARK_COPY = {
       source_run_unreadable: "The previous run's record could not be read in full.",
       runtime_ledger_unreadable: "The previous run's ledger could not be read in full.",
       runtime_ledger_empty: 'The previous run has no records to replay.',
+      runtime_identity_mismatch: "The previous run's records mix more than one execution identity.",
+      continuation_identity_reused:
+        'A continuation must use fresh execution identities, not the ones from the interrupted run.',
       terminal_repair_failed: "Repairing the previous run's record failed.",
       provider_resume_head_unsupported: 'The current model does not support this resume point.',
       provider_resume_boundary_unsupported: 'The current model does not support this resume boundary.',
@@ -189,6 +214,7 @@ const RESUME_PARK_COPY = {
       continuation_started_indeterminate:
         'The continuation already started, but has not reached a provable terminal state.',
       continuation_authority_unavailable: 'The current storage does not support safe resume ownership.',
+      safety_observation_unavailable: 'The safety check needed to continue could not be obtained.',
       resume_feature_disabled: 'Resuming interrupted tasks is not enabled.',
     },
   },

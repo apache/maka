@@ -27,12 +27,17 @@ const CJK = /[\u3400-\u9fff]/u;
 test('resolves English park copy for every known reason with no Chinese (#4489)', () => {
   const reasons = [
     'dangling_tool_state',
+    'tool_not_dispatched',
+    'runtime_offset_mismatch',
     'pending_permission',
     'workspace_identity_mismatch',
     'tool_catalog_mismatch',
+    'runtime_identity_mismatch',
+    'continuation_identity_reused',
     'provider_replay_unsupported',
     'runtime_lineage_claim_mismatch',
     'continuation_started_indeterminate',
+    'safety_observation_unavailable',
     'resume_feature_disabled',
   ];
   const copy = resumeParkToastCopy(reasons, 'en');
