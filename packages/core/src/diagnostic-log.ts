@@ -36,10 +36,13 @@ function truncateProviderFailureSummary(summary: string): string {
   const suffixStart = summary.lastIndexOf(' (code=');
   if (suffixStart < 0) return truncateUtf8(summary, TURN_FAILURE_MESSAGE_MAX_BYTES, '…');
   const suffix = summary.slice(suffixStart);
-  const budget = TURN_FAILURE_MESSAGE_MAX_BYTES - new TextEncoder().encode(suffix).byteLength;
-  return budget <= 1
+  const suffixBytes = new TextEncoder().encode(suffix).byteLength;
+  const marker = '…';
+  const markerBytes = new TextEncoder().encode(marker).byteLength;
+  const prefixBudget = TURN_FAILURE_MESSAGE_MAX_BYTES - suffixBytes - markerBytes;
+  return prefixBudget < 0
     ? truncateUtf8(suffix, TURN_FAILURE_MESSAGE_MAX_BYTES)
-    : `${truncateUtf8(summary.slice(0, suffixStart), budget - 1)}…${suffix}`;
+    : `${truncateUtf8(summary.slice(0, suffixStart), prefixBudget)}${marker}${suffix}`;
 }
 
 export type DiagnosticLogLevel = 'debug' | 'info' | 'log' | 'warn' | 'error';
