@@ -2544,11 +2544,10 @@ function AppShellContent({
     historyLoadPendingRef.current = true;
     setHistoryLoadPendingSessionId(sessionId);
     try {
-      if (target === 'earlier') {
-        await controller.loadBefore(DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES, anchorTurnId);
-      } else if (target === 'later') {
-        await controller.loadAfter(DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES, anchorTurnId);
-      } else await controller.loadLatest();
+      if (target === 'latest') await controller.loadLatest();
+      else await controller[target === 'earlier' ? 'loadBefore' : 'loadAfter'](
+        DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES, anchorTurnId,
+      );
     } catch (error) {
       if (
         activeIdRef.current !== sessionId ||
@@ -3059,11 +3058,7 @@ function AppShellContent({
                 hasOlderHistory={activeTranscriptRange?.hasOlder === true}
                 hasNewerHistory={activeTranscriptRange?.hasNewer === true}
                 historyLoadPending={historyLoadPendingSessionId === activeId}
-                onLoadEarlierHistory={(anchorTurnId) =>
-                  loadTranscriptHistory('earlier', anchorTurnId)}
-                onReturnToLatestHistory={() => loadTranscriptHistory('latest')}
-                onLoadLaterHistory={(anchorTurnId) =>
-                  loadTranscriptHistory('later', anchorTurnId)}
+                onLoadHistory={loadTranscriptHistory}
                 liveContentSeedRevision={liveContent.liveContentSeedRevision(activeEventSeed, activeId)}
                 messages={messages}
                 transientMessages={transientMessages}
