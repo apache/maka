@@ -247,11 +247,13 @@ describe('RiveWorkflow tool and CLI bridge', { concurrency: false }, () => {
 
   it('uses the core redaction coverage for token forms and sensitive keys', () => {
     const text = redactRiveText(
-      'ghp_12345678901234567890 AIza12345678901234567890 xoxb-1234567890',
+      'ghp_12345678901234567890 AIza12345678901234567890 xoxb-1234567890 Bearer opaque-session-token',
     );
     assert.equal(text.includes('ghp_12345678901234567890'), false);
     assert.equal(text.includes('AIza12345678901234567890'), false);
     assert.equal(text.includes('xoxb-1234567890'), false);
+    assert.equal(text.includes('opaque-session-token'), false);
+    assert.match(text, /Bearer \[redacted\]/);
 
     const value = redactRiveValue({
       apiKey: 'plain-value',

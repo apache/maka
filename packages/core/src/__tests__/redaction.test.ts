@@ -55,6 +55,13 @@ describe('redactSecrets', () => {
     assert.match(inspected, /proxyAuthorization: 'Token \[redacted\]'/);
   });
 
+  test('masks standalone bearer values', () => {
+    const text = redactSecrets('prefix Bearer opaque-session-token suffix');
+
+    assert.equal(text, 'prefix Bearer [redacted] suffix');
+    assert.equal(text.includes('opaque-session-token'), false);
+  });
+
   test('applies bounded text patterns to top-level JSON number primitives', () => {
     assert.equal(redactSecrets('1234567890123456789012345678901234567890'), '[redacted]');
   });
