@@ -68,8 +68,9 @@ export class RuntimeLedgerRepair {
       // the same turn would make the Session read as two. The one exception is
       // this converter's own run: an interrupted import re-derives it, and the
       // deterministic ids let the store dedupe what already landed.
+      const inlineInvocations = await this.listInlineInvocations(sessionId);
       const ownedTurnIds = new Set(
-        (await this.listInlineInvocations(sessionId))
+        inlineInvocations
           .filter(
             (invocation) =>
               invocation.terminalEvent ||
@@ -77,6 +78,7 @@ export class RuntimeLedgerRepair {
           )
           .map((invocation) => invocation.turnId),
       );
+      const startedRunIds = new Set(inlineInvocations.map((invocation) => invocation.runId));
       const messagesByTurn = groupMessagesByTurn(ledgerMessages);
       // A turn whose only user row was steering is not a turn of its own: the
       // steering was said into a Turn some durable Root already owns, so
@@ -94,8 +96,33 @@ export class RuntimeLedgerRepair {
         const runId = transcriptRunId(sessionId, turn.turnId);
         const openedAt = firstOpenedAt + index;
         const run = { sessionId, runId, turnId: turn.turnId, invocationId: runId };
+        // A build before the ids were derived converted under random ones, so
+        // an interrupted run of its can hold events this build cannot rederive.
+        const started = startedRunIds.has(runId)
+          ? await this.deps.runtimeEventStore.readRuntimeEvents(sessionId, runId)
+          : [];
+        const undeducible = started.filter((event) => !isDerivedTranscriptEventId(runId, event.id));
+        // Its opening is the one such event that can be adopted: the run needs
+        // exactly one, `runtime_events_one_opening_per_invocation` refuses a
+        // second, and which id it landed under changes nothing a reader sees.
+        const adoptedOpening =
+          undeducible.length === 1 && undeducible[0]?.content?.kind === 'invocation_opened';
+        if (undeducible.length > 0 && !adoptedOpening) {
+          // Its converted messages cannot be adopted the same way: rederiving
+          // them would stand a second, deterministic copy of each beside the
+          // one already there, and a Session that disagrees with itself is the
+          // failure this ledger exists to remove. The conversion can neither be
+          // finished nor withdrawn, so it is sealed as the unfinished thing it
+          // is — the legacy rows stay, and no one reads this turn as converted.
+          await this.deps.runtimeEventStore.appendRuntimeEvent(
+            sessionId,
+            runId,
+            abandonedTranscriptTerminalEvent({ run, openedAt }),
+          );
+          continue;
+        }
         const events = [
-          transcriptOpeningEvent({ header, run, openedAt }),
+          ...(adoptedOpening ? [] : [transcriptOpeningEvent({ header, run, openedAt })]),
           ...backfillRuntimeEventsFromStoredMessages({
             run,
             outcome: transcriptOutcome(turn, turnMessages, openedAt),
@@ -159,6 +186,34 @@ function transcriptRunId(sessionId: string, turnId: string): string {
  * emits them. The run id is already derived from the Session and turn, so the
  * same transcript always produces the same ids and a re-run appends nothing.
  */
+/** Whether this build's converter is the one that could have written that id. */
+function isDerivedTranscriptEventId(runId: string, eventId: string): boolean {
+  return eventId === `${runId}-opened` || new RegExp(`^${runId}-e\\d+$`).test(eventId);
+}
+
+/**
+ * The terminal fact of a conversion that a released build left part-written.
+ * Its id sits outside the derived sequence so it cannot collide with an event
+ * that prefix already holds.
+ */
+function abandonedTranscriptTerminalEvent(input: {
+  run: { sessionId: string; runId: string; turnId: string; invocationId: string };
+  openedAt: number;
+}): RuntimeEvent {
+  return backfillRuntimeEventsFromStoredMessages({
+    run: input.run,
+    outcome: {
+      status: 'failed',
+      ts: input.openedAt,
+      failureClass: 'missing_terminal_event',
+    },
+    messages: [],
+    modelHistory: 'conversation_text',
+    newId: () => `${input.run.runId}-abandoned`,
+    now: () => input.openedAt,
+  }).events[0] as RuntimeEvent;
+}
+
 function transcriptEventIds(runId: string): () => string {
   let seq = 0;
   return () => {

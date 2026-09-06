@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -791,6 +792,130 @@ test('a resolved Claude transcript replays as the conversation the user kept', a
   } finally {
     runtimeEvents.close();
     runs.close?.();
+    await sessions.close?.();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+/** One legacy turn, as a released build would have left it for the converter. */
+async function seedLegacyTurn(sessions: ReturnType<typeof createSessionStore>) {
+  const ts = Date.now();
+  const session = await sessions.create({
+    cwd: '/repo',
+    llmConnectionSlug: 'anthropic',
+    model: 'claude-opus-5',
+    permissionMode: 'ask',
+  });
+  await sessions.appendMessages(session.id, [
+    { type: 'user', id: 'r-user', turnId: 'turn-1', ts, text: 'run the tests' },
+    {
+      type: 'assistant',
+      id: 'r-assistant',
+      turnId: 'turn-1',
+      ts: ts + 1,
+      text: 'All green.',
+      modelId: 'claude-opus-5',
+    },
+    {
+      type: 'turn_state',
+      id: 'r-state',
+      turnId: 'turn-1',
+      ts: ts + 2,
+      status: 'completed',
+      partialOutputRetained: true,
+    },
+  ]);
+  return session;
+}
+
+test('resumes a conversion a released build opened under a random event id', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-released-prefix-'));
+  const sessions = createSessionStore(root);
+  const runtimeEvents = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
+
+  try {
+    const session = await seedLegacyTurn(sessions);
+    const deps = {
+      runtimeEventStore: runtimeEvents,
+      readMessages: (sessionId: string) => sessions.readMessages(sessionId),
+    };
+
+    // A released build derived the run id the same way but every event id with
+    // `newId()`, so its interrupted conversion left an opening this build
+    // cannot name. `runtime_events_one_opening_per_invocation` refuses a second
+    // one, so the retry has to read what the run already holds.
+    const append = runtimeEvents.appendRuntimeEvent.bind(runtimeEvents);
+    runtimeEvents.appendRuntimeEvent = async (sessionId, runId, event) => {
+      await append(sessionId, runId, { ...event, id: randomUUID() });
+      throw new Error('interrupted conversion');
+    };
+    await assert.rejects(
+      new RuntimeLedgerRepair(deps).materializeTranscriptLedger(
+        await sessions.readHeader(session.id),
+      ),
+      /interrupted conversion/,
+    );
+    runtimeEvents.appendRuntimeEvent = append;
+
+    await new RuntimeLedgerRepair(deps).materializeTranscriptLedger(
+      await sessions.readHeader(session.id),
+    );
+
+    const [run] = await runtimeEvents.listSessionInvocations(session.id);
+    assert.ok(run);
+    assert.equal(runtimeInvocationOutcome(run), 'completed');
+    const events = await runtimeEvents.readRuntimeEvents(session.id, run.runId);
+    assert.deepEqual(
+      events.flatMap((event) => (event.content ? [event.content.kind] : [])),
+      ['invocation_opened', 'text', 'text'],
+    );
+  } finally {
+    runtimeEvents.close();
+    await sessions.close?.();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('seals a released conversion that had already converted messages', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-released-partial-'));
+  const sessions = createSessionStore(root);
+  const runtimeEvents = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
+
+  try {
+    const session = await seedLegacyTurn(sessions);
+    const deps = {
+      runtimeEventStore: runtimeEvents,
+      readMessages: (sessionId: string) => sessions.readMessages(sessionId),
+    };
+
+    const append = runtimeEvents.appendRuntimeEvent.bind(runtimeEvents);
+    let written = 0;
+    runtimeEvents.appendRuntimeEvent = async (sessionId, runId, event) => {
+      await append(sessionId, runId, { ...event, id: randomUUID() });
+      written += 1;
+      if (written === 2) throw new Error('interrupted conversion');
+    };
+    await assert.rejects(
+      new RuntimeLedgerRepair(deps).materializeTranscriptLedger(
+        await sessions.readHeader(session.id),
+      ),
+      /interrupted conversion/,
+    );
+    runtimeEvents.appendRuntimeEvent = append;
+
+    await new RuntimeLedgerRepair(deps).materializeTranscriptLedger(
+      await sessions.readHeader(session.id),
+    );
+
+    const [run] = await runtimeEvents.listSessionInvocations(session.id);
+    assert.ok(run);
+    // The prefix cannot be finished and must not be doubled: one user text, not two.
+    assert.equal(runtimeInvocationOutcome(run), 'failed');
+    assert.equal(runtimeInvocationFailureClass(run), 'missing_terminal_event');
+    const events = await runtimeEvents.readRuntimeEvents(session.id, run.runId);
+    assert.equal(events.filter((event) => event.content?.kind === 'text').length, 1);
+  } finally {
+    runtimeEvents.close();
     await sessions.close?.();
     await rm(root, { recursive: true, force: true });
   }
