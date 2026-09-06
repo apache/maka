@@ -54,7 +54,8 @@ export type MessageListUpdater = (
 
 export interface SessionWorkspaceActions {
   setActiveId(next: string | undefined): void;
-  startNewSession(): void;
+  startNewSession(): number;
+  readSelectionRevision(): number;
   clearOwnedSessionState(sessionId: string): void;
   setMessages: MessageListUpdater;
   addTransientMessage(sessionId: string, message: TransientUserMessage): void;
@@ -209,12 +210,17 @@ export function createSessionWorkspaceActions(deps: {
     setActiveIdState(next);
   }
 
-  function startNewSession(): void {
+  function startNewSession(): number {
     markNewTaskReloadIntent();
     setActiveId(undefined);
     messagesRef.current = [];
     setMessagesState([]);
     setTransientMessagesState([]);
+    return selectionRevisionRef.current;
+  }
+
+  function readSelectionRevision(): number {
+    return selectionRevisionRef.current;
   }
 
   function clearOwnedSessionState(sessionId: string): void {
@@ -226,6 +232,7 @@ export function createSessionWorkspaceActions(deps: {
   return {
     setActiveId,
     startNewSession,
+    readSelectionRevision,
     clearOwnedSessionState,
     setMessages,
     addTransientMessage,

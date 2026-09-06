@@ -6,7 +6,7 @@ Generated against `@astryxdesign/core@0.5.2` (194 component exports).
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 247 files — blocker 0, reimplementation 0, polish 1, aligned 246.
+**Totals:** 247 files — blocker 0, reimplementation 0, polish 3, aligned 244.
 
 ## Exclusions (explicit)
 
@@ -201,7 +201,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/styles/shell-layout.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/sidebar.css` | shell-chrome-or-panel | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/theme-glass.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
-| `apps/desktop/src/renderer/styles/work-board.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
+| `apps/desktop/src/renderer/styles/work-board.css` | styles | n/a (css) | off-rhythm control height 40px (Design size) | polish |
 | `apps/desktop/src/renderer/styles/workbar/artifacts.css` | shell-chrome-or-panel | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/workbar/browser.css` | shell-chrome-or-panel | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/workbar/inspector.css` | shell-chrome-or-panel | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
@@ -210,7 +210,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/styles/workbar/side-chat.css` | shell-chrome-or-panel | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/workbar/terminal.css` | shell-chrome-or-panel | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/workhub.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
-| `apps/desktop/src/renderer/work-board-panel.tsx` | shell-chrome-or-panel | Banner, Button, EmptyState, Spinner, TextInput | aligned — uses Astryx (Banner, Button, EmptyState, Spinner, TextInput) | aligned |
+| `apps/desktop/src/renderer/work-board-panel.tsx` | shell-chrome-or-panel | Banner, Button, EmptyState, Spinner, TextInput | raw `<textarea` (API Use-the-System) | polish |
 | `apps/desktop/src/renderer/workhub-surface.tsx` | other | Button, ChatMessage, ChatMessageBubble, ChatMessageList, Skeleton | aligned — uses Astryx (Button, ChatMessage, ChatMessageBubble, ChatMessageList, Skeleton) | aligned |
 | `packages/ui/src/astryx-chat-reasoning.tsx` | shell-chrome-or-panel | Icon | aligned — uses Astryx (Icon) | aligned |
 | `packages/ui/src/astryx-i18n.tsx` | ui-composition | InternationalizationProvider | aligned — uses Astryx (InternationalizationProvider) | aligned |

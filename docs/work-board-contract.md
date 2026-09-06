@@ -55,10 +55,12 @@ interface WorkBoardItem {
 }
 ```
 
-`linkedSessions` is deferred to Phase 3: Phase 0 has no consumer and no mutation
-path that writes it, so the Phase 0 contract rejects the field in create input
-and in stored records. It will be added together with the canonical continuity
-adapter when "start as task" lands.
+`linkedSessions` is added by the Phase 3 start-task spike as an additive record
+field. Existing records without the field decode as an empty list. Each entry
+is Host-scoped (`profileId`, `hostId`, `sessionId`, `linkedAt`) and is written
+only by the semantic `WorkBoardStore.linkSession` mutation after the normal
+Composer first-send has produced a durable Session/Turn outcome. Session state
+is never copied into the item.
 
 `Inbox` is a scope, not a status. State transitions are user-confirmed only:
 
@@ -148,12 +150,45 @@ produce one page of active items.
 
 ## Linked-session projection
 
-Deferred. Phase 0 does not ship a projection function: there is no production
-consumer yet, and the minimal DTO would have been a parallel contract instead
-of the canonical `SessionContinuitySnapshot` / `TurnSnapshot` used by the
-Runtime Host. It will be implemented beside the real continuity adapter when
-"start as task" lands in Phase 3, using only facts those authorities directly
-expose.
+Deferred. The Phase 3 spike stores links only; it does not ship an execution
+projection. A future projection must be implemented beside the real continuity
+adapter using only canonical `SessionContinuitySnapshot` / `TurnSnapshot`
+facts.
+
+## Phase 3 start-task link contract (spike)
+
+The default-off `Start task` spike ([#4598](https://github.com/apache/maka/pull/4598))
+establishes a deliberately small link contract while it stays experimental:
+
+- **Single-link bound** (`WORK_BOARD_MAX_LINKED_SESSIONS = 1`): a project-scoped
+  item owns at most one started Session at a time. Linking a freshly started
+  Session replaces any previous link, so `linkedSessions` stays bounded instead
+  of growing on repeated starts. The stored-item decoder tolerates legacy arrays
+  by preserving valid distinct entries while dropping malformed or duplicate
+  ones; the strict mutation normalizer rejects arrays with more than one entry.
+- **Project ownership**: `workBoard:linkSession` is the single main-process
+  mutation boundary. It resolves the item, requires a project scope, passes the
+  canonical board `projectId` into the Host validator, and requires the Session's
+  workspace target to be a project matching that id. The mutation then commits
+  with `expectedRevision` CAS on the revision read before the (asynchronous)
+  Host validation, so a concurrent scope/revision change cannot write a Session
+  validated for one project into an item that has moved to another.
+- **Surface ownership**: a pending start claim is jointly owned by one specific
+  New Task surface instance (its Session selection revision) and its
+  target-scoped draft key. A first send from a newer surface, or from the same
+  surface after its Host/project changes, clears rather than consumes the claim;
+  a late callback from an older surface is ignored so it cannot clear a newer
+  claim.
+- **Retry durability (spike limitation)**: the pending-link claim lives in the
+  renderer for the lifetime of the current controller. If the Session is
+  created and `linkSession` fails, the claim (with its Session id) is retained
+  in memory so retrying `Start task` on the same item and unchanged target
+  reuses that Session. If the item moved to a different target, retry discards
+  the old claim and starts a new Session against the current target.
+  A renderer reload or app restart before the retry drops the claim; restarting
+  the item then creates a second Session and leaves the first unlinked. This is
+  an accepted, documented limitation of the spike (persisting a pending-link
+  intent in the main process/storage is tracked for a later phase).
 
 ## Tests
 

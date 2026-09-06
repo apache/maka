@@ -23,6 +23,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import type { IpcMain } from 'electron';
+import { normalizeWorkBoardLinkedSession } from '@maka/core/work-board';
 import {
   registerWorkBoardIpc,
   type WorkBoardChangedEvent,
@@ -96,6 +97,7 @@ describe('Work Board IPC', () => {
         ipcMain: ipc as unknown as Pick<IpcMain, 'handle'>,
         workspaceRoot: root,
         mainWindowController: window,
+        validateLinkedSession: async () => true,
       });
       try {
         const created = await ipc.invoke<WorkBoardIpcResult<{ id: string; revision: number }>>(
@@ -128,6 +130,7 @@ describe('Work Board IPC', () => {
           'workBoard:archive',
           'workBoard:unarchive',
           'workBoard:remove',
+          'workBoard:linkSession',
         ]);
       } finally {
         registration.close();
@@ -143,11 +146,17 @@ describe('Work Board IPC', () => {
         ipcMain: ipc as unknown as Pick<IpcMain, 'handle'>,
         workspaceRoot: root,
         mainWindowController: window,
+        validateLinkedSession: async () => true,
       });
       try {
         const created = await ipc.invoke<WorkBoardIpcResult<{ id: string; revision: number }>>(
           'workBoard:create',
-          itemInput(),
+          {
+            scope: { kind: 'project', projectId: 'p1' },
+            title: 'Review auth',
+            creator: { kind: 'user' },
+            provenance: { kind: 'manual' },
+          },
         );
         assert.ok(created.ok);
         const id = created.ok ? created.value.id : '';
@@ -156,7 +165,15 @@ describe('Work Board IPC', () => {
           WorkBoardIpcResult<{ title: string; revision: number; state: string }>
         >('workBoard:update', id, { title: 'Review auth v2' });
         assert.ok(renamed.ok);
-        assert.equal(renamed.ok && renamed.value.revision, 2);
+      assert.equal(renamed.ok && renamed.value.revision, 2);
+
+      const linked = await ipc.invoke<WorkBoardIpcResult<{ linkedSessions: unknown[] }>>(
+        'workBoard:linkSession',
+        id,
+        { profileId: 'profile-1', hostId: 'host-1', sessionId: 'session-1', linkedAt: 103 },
+      );
+      assert.equal(linked.ok, true);
+      assert.equal(linked.ok && linked.value.linkedSessions.length, 1);
 
         const staleRename = await ipc.invoke<WorkBoardIpcResult<unknown>>(
           'workBoard:update',
@@ -214,11 +231,215 @@ describe('Work Board IPC', () => {
       assert.ok(page.ok);
       assert.equal(page.ok && page.value.items.length, 0);
 
-        // create, update, archive, unarchive, archive, remove = 6 mutations
+        // create, update, link, archive, unarchive, archive, remove = 7 mutations
         const changed = window.events.filter(
           (event) => event.channel === 'workBoard:changed',
         );
-        assert.equal(changed.length, 6);
+        assert.equal(changed.length, 7);
+      } finally {
+        registration.close();
+      }
+    });
+  });
+
+  test('rejects a linked Session that the Host validator cannot prove', async () => {
+    await withTempRoot(async (root) => {
+      const ipc = createFakeIpcMain();
+      const window = createFakeWindowController();
+      const registration = registerWorkBoardIpc({
+        ipcMain: ipc as unknown as Pick<IpcMain, 'handle'>,
+        workspaceRoot: root,
+        mainWindowController: window,
+        validateLinkedSession: async () => false,
+      });
+      try {
+        const created = await ipc.invoke<WorkBoardIpcResult<{ id: string }>>(
+          'workBoard:create',
+          itemInput(),
+        );
+        assert.ok(created.ok);
+        const linked = await ipc.invoke<WorkBoardIpcResult<unknown>>(
+          'workBoard:linkSession',
+          created.ok ? created.value.id : '',
+          { profileId: 'profile-1', hostId: 'host-1', sessionId: 'missing', linkedAt: 1 },
+        );
+        assert.equal(linked.ok, false);
+        if (!linked.ok) assert.equal(linked.code, 'invalid_input');
+      } finally {
+        registration.close();
+      }
+    });
+  });
+
+  test('rejects linking a Session to an Inbox item even when the Host validates', async () => {
+    await withTempRoot(async (root) => {
+      const ipc = createFakeIpcMain();
+      const window = createFakeWindowController();
+      const registration = registerWorkBoardIpc({
+        ipcMain: ipc as unknown as Pick<IpcMain, 'handle'>,
+        workspaceRoot: root,
+        mainWindowController: window,
+        validateLinkedSession: async () => true,
+      });
+      try {
+        const created = await ipc.invoke<WorkBoardIpcResult<{ id: string }>>(
+          'workBoard:create',
+          itemInput(),
+        );
+        assert.ok(created.ok);
+        const linked = await ipc.invoke<WorkBoardIpcResult<unknown>>(
+          'workBoard:linkSession',
+          created.ok ? created.value.id : '',
+          { profileId: 'profile-1', hostId: 'host-1', sessionId: 'session-1', linkedAt: 1 },
+        );
+        assert.equal(linked.ok, false);
+        if (!linked.ok) assert.equal(linked.code, 'invalid_input');
+      } finally {
+        registration.close();
+      }
+    });
+  });
+
+  test('passes the canonical board project to the Host validator for a project-scoped item', async () => {
+    await withTempRoot(async (root) => {
+      const ipc = createFakeIpcMain();
+      const window = createFakeWindowController();
+      const validated: Array<{ link: unknown; project: string | undefined }> = [];
+      const registration = registerWorkBoardIpc({
+        ipcMain: ipc as unknown as Pick<IpcMain, 'handle'>,
+        workspaceRoot: root,
+        mainWindowController: window,
+        validateLinkedSession: async (link, expectedProjectId) => {
+          validated.push({ link, project: expectedProjectId });
+          return true;
+        },
+      });
+      try {
+        const created = await ipc.invoke<WorkBoardIpcResult<{ id: string }>>(
+          'workBoard:create',
+          {
+            scope: { kind: 'project', projectId: 'p1' },
+            title: 'Review auth',
+            creator: { kind: 'user' },
+            provenance: { kind: 'manual' },
+          },
+        );
+        assert.ok(created.ok);
+        const link = {
+          profileId: 'profile-1',
+          hostId: 'host-1',
+          sessionId: 'session-1',
+          linkedAt: 1,
+        };
+        const linked = await ipc.invoke<WorkBoardIpcResult<unknown>>(
+          'workBoard:linkSession',
+          created.ok ? created.value.id : '',
+          link,
+        );
+        assert.equal(linked.ok, true);
+        assert.deepEqual(validated, [{ link, project: 'p1' }]);
+      } finally {
+        registration.close();
+      }
+    });
+  });
+
+  test('rejects a project-scoped link whose Session belongs to another project on the same Host', async () => {
+    await withTempRoot(async (root) => {
+      const ipc = createFakeIpcMain();
+      const window = createFakeWindowController();
+      // Production-shaped Host validation: a Session's workspace target must be
+      // a project matching the canonical board project, mirroring
+      // runtime-host-boot.ts.
+      const sessions = [
+        { id: 's-p1', workspace: { target: { kind: 'project', projectId: 'p1' } } },
+        { id: 's-p2', workspace: { target: { kind: 'project', projectId: 'p2' } } },
+      ];
+      const registration = registerWorkBoardIpc({
+        ipcMain: ipc as unknown as Pick<IpcMain, 'handle'>,
+        workspaceRoot: root,
+        mainWindowController: window,
+        validateLinkedSession: async (link, expectedProjectId) => {
+          const normalized = normalizeWorkBoardLinkedSession(link);
+          if (!normalized.ok) return false;
+          const session = sessions.find((entry) => entry.id === normalized.value.sessionId);
+          if (!session) return false;
+          return (
+            session.workspace.target.kind === 'project' &&
+            session.workspace.target.projectId === expectedProjectId
+          );
+        },
+      });
+      try {
+        const created = await ipc.invoke<WorkBoardIpcResult<{ id: string }>>(
+          'workBoard:create',
+          {
+            scope: { kind: 'project', projectId: 'p1' },
+            title: 'Review auth',
+            creator: { kind: 'user' },
+            provenance: { kind: 'manual' },
+          },
+        );
+        assert.ok(created.ok);
+        // The same-Host Session from project p2 must not be linked to the p1
+        // board item.
+        const linked = await ipc.invoke<WorkBoardIpcResult<unknown>>(
+          'workBoard:linkSession',
+          created.ok ? created.value.id : '',
+          { profileId: 'profile-1', hostId: 'host-1', sessionId: 's-p2', linkedAt: 1 },
+        );
+        assert.equal(linked.ok, false);
+        if (!linked.ok) assert.equal(linked.code, 'invalid_input');
+
+        // The p1 Session links cleanly.
+        const linkedOk = await ipc.invoke<WorkBoardIpcResult<unknown>>(
+          'workBoard:linkSession',
+          created.ok ? created.value.id : '',
+          { profileId: 'profile-1', hostId: 'host-1', sessionId: 's-p1', linkedAt: 1 },
+        );
+        assert.equal(linkedOk.ok, true);
+      } finally {
+        registration.close();
+      }
+    });
+  });
+
+  test('fails closed when the item changes during Host validation (revision CAS)', async () => {
+    await withTempRoot(async (root) => {
+      const ipc = createFakeIpcMain();
+      const window = createFakeWindowController();
+      let itemId: string | undefined;
+      const registration = registerWorkBoardIpc({
+        ipcMain: ipc as unknown as Pick<IpcMain, 'handle'>,
+        workspaceRoot: root,
+        mainWindowController: window,
+        // Simulate a concurrent mutation (e.g. the item being moved to another
+        // project) racing the async Host validation: the revision read before
+        // validation must no longer match when linkSession commits.
+        validateLinkedSession: async () => {
+          await ipc.invoke('workBoard:update', itemId, { title: 'raced move' });
+          return true;
+        },
+      });
+      try {
+        const created = await ipc.invoke<WorkBoardIpcResult<{ id: string; revision: number }>>(
+          'workBoard:create',
+          {
+            scope: { kind: 'project', projectId: 'p1' },
+            title: 'Review auth',
+            creator: { kind: 'user' },
+            provenance: { kind: 'manual' },
+          },
+        );
+        assert.ok(created.ok);
+        itemId = created.ok ? created.value.id : undefined;
+        const linked = await ipc.invoke<WorkBoardIpcResult<unknown>>(
+          'workBoard:linkSession',
+          itemId,
+          { profileId: 'profile-1', hostId: 'host-1', sessionId: 's-p1', linkedAt: 1 },
+        );
+        assert.equal(linked.ok, false);
+        if (!linked.ok) assert.equal(linked.code, 'operation_conflict');
       } finally {
         registration.close();
       }

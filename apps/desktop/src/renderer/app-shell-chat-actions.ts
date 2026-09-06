@@ -116,7 +116,7 @@ type MessageContextOptions = {
 type SendOptions = MessageContextOptions & {
   turnOrchestration?: TurnOrchestration;
   displayText?: string;
-  onSessionResolved?: (sessionId: string) => void;
+  onSessionResolved?: (sessionId: string, newTaskDraftKey?: string) => void;
 };
 
 function copiedArray<K extends string, T>(
@@ -427,12 +427,11 @@ export function createAppShellChatActions(deps: {
     const initialSessionId = activeIdRef.current;
     const initialNewTaskTarget = initialSessionId ? undefined : newTaskTarget;
     const sendOwner = captureComposerImportOwner();
-    const newChatOwner = initialSessionId ? null : sendOwner;
     if (!initialSessionId && !initialNewTaskTarget) return false;
     if (!(await checkTaskSubmissionReadiness())) return false;
     if (
       (initialSessionId && !isShellSurfaceOwnerActive(sendOwner)) ||
-      (newChatOwner && !isNewChatSendSurfaceActive(newChatOwner))
+      (!initialSessionId && !isNewChatSendSurfaceActive(sendOwner))
     ) {
       return false;
     }
@@ -552,7 +551,8 @@ export function createAppShellChatActions(deps: {
         unsentSessionId = undefined;
         // The callback fires only when this send's first message projected;
         // an unreconciled first message stays unreported.
-        if (submitted.kind === 'projected') options.onSessionResolved?.(session.id);
+        if (submitted.kind === 'projected')
+          options.onSessionResolved?.(session.id, sendOwner.newTaskDraftKey);
         await refreshSessions();
         return true;
       }
@@ -607,7 +607,7 @@ export function createAppShellChatActions(deps: {
             ...sendOwner,
             sessionId: feedbackSessionId,
           })) ||
-        (newChatOwner !== null && isNewChatSendSurfaceActive(newChatOwner));
+        (!initialSessionId && isNewChatSendSurfaceActive(sendOwner));
       await discardUnsentSession();
       if (optimisticSessionId && optimisticMessageId) {
         removeOptimisticUserMessage(optimisticSessionId, optimisticMessageId);

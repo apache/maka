@@ -278,6 +278,7 @@ describe('composer first-send cleanup', () => {
 
   it('keeps the session once the first send lands', async () => {
     const removed: string[] = [];
+    let currentDraftKey = 'draft:project-A';
     const restoreWindow = installWindow({
       newTasks: { create: async () => ({ id: 'session-1' }) },
       sessions: {
@@ -295,12 +296,61 @@ describe('composer first-send cleanup', () => {
     });
 
     try {
-      assert.equal(await createAppShellChatActions(createActionsDeps()).send('hello'), true);
+      const actions = createAppShellChatActions({
+        ...createActionsDeps(),
+        captureComposerImportOwner: () => ({
+          sessionId: undefined,
+          navSection: 'sessions',
+          newTaskDraftKey: currentDraftKey,
+        }),
+        checkTaskSubmissionReadiness: async () => {
+          currentDraftKey = 'draft:project-B';
+          return true;
+        },
+      });
+      let resolved: [string, string?] | undefined;
+      assert.equal(
+        await actions.send('hello', undefined, {
+          onSessionResolved: (...args) => {
+            resolved = args;
+          },
+        }),
+        true,
+      );
+      assert.deepEqual(resolved, ['session-1', 'draft:project-A']);
     } finally {
       restoreWindow();
     }
 
     assert.deepEqual(removed, []);
+  });
+
+  it('does not report a resolved session when the first send outcome is unknown', async () => {
+    let resolved = 0;
+    const restoreWindow = installWindow({
+      newTasks: { create: async () => ({ id: 'session-1' }) },
+      sessions: {
+        // `outcome_unknown`: the Host may have admitted the Message, so the
+        // Session is kept and the send counts as landed — but nothing proves
+        // the outcome, so it must not look like a resolved Session. The Work
+        // Board only links a task to a Session whose first send projected.
+        submitMessage: async () => ({ ok: false as const, reason: 'outcome_unknown' as const }),
+      },
+    });
+
+    try {
+      const actions = createAppShellChatActions(createActionsDeps());
+      const result = await actions.send('hello', undefined, {
+        onSessionResolved: () => {
+          resolved += 1;
+        },
+      });
+      assert.equal(result, true);
+    } finally {
+      restoreWindow();
+    }
+
+    assert.equal(resolved, 0);
   });
 
   it('projects the first message before activation while waiting to submit until observation', async () => {
