@@ -964,9 +964,16 @@ export const WideAssistantProse: Story = {
     const paragraph = await within(answer).findByRole('paragraph');
     const turn = paragraph.closest<HTMLElement>('.maka-turn');
     if (!turn) throw new Error('Wide assistant paragraph did not render inside a turn');
+    const boundary = paragraph.closest<HTMLElement>('[data-maka-transcript-boundary]');
+    if (!boundary) throw new Error('Wide assistant paragraph has no paint-containment boundary');
     const turnRect = turn.getBoundingClientRect();
     expect(turnRect.width).toBeGreaterThan(680);
     expect(turnRect.right - paragraph.getBoundingClientRect().right).toBeLessThanOrEqual(1);
+    // `content-visibility: auto` implies paint containment. CJK glyph ink can
+    // extend a fraction past its line box, so a flush-left answer needs a
+    // small clip margin or Chromium shaves the first glyph on every line.
+    expect(getComputedStyle(boundary).contentVisibility).toBe('auto');
+    expect(Number.parseFloat(getComputedStyle(boundary).overflowClipMargin)).toBeGreaterThanOrEqual(2);
   },
 };
 
