@@ -509,15 +509,20 @@ describe('HostInteractionCoordinator', () => {
         assert.equal(answerResult?.ok, true);
         if (answerResult?.ok) assert.equal(answerResult.result.status, 'answered');
         assert.equal(resolvedRootSessionId, session.id);
+        await binding.close('turn_terminal');
+        binding.release();
+        let closeSettled = false;
+        const closing = coordinator.close().then(() => { closeSettled = true; });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.equal(closeSettled, false, 'close must wait for detached graph wake notification');
+        releaseWake.resolve();
+        await closing;
       } finally {
         releaseResolver.resolve();
         releaseWake.resolve();
         if (wakeNotificationStarted) await wakeFinished.promise;
         await answer.catch(() => undefined);
       }
-      await binding.close('turn_terminal');
-      binding.release();
-      await coordinator.close();
     });
   });
 

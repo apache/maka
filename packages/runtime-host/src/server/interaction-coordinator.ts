@@ -214,6 +214,7 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
   readonly #onSandboxBoundaryGraphWake: HostInteractionCoordinatorOptions['onSandboxBoundaryGraphWake'];
   readonly #runs = new Map<string, BoundRun>();
   readonly #live = new Map<string, LiveEntry>();
+  readonly #detachedNotifications = new Set<Promise<void>>();
   #accepting = true;
   #poisoned: RuntimeInteractionFailStopError | undefined;
 
@@ -436,6 +437,7 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
 
   async close(): Promise<void> {
     this.beginDrain();
+    await Promise.all([...this.#detachedNotifications]);
     this.#throwIfPoisoned();
     const pending = await this.#readPending();
     const pendingSandboxBoundaries = await this.#readAllPendingSandboxBoundaries();
@@ -898,7 +900,7 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
     // acquire the activity lease held by the wake turn parked on this answer.
     // Awaiting that notification here deadlocks the Session (#3328, #3866).
     const resolvedRootSessionId = await this.#resolveSandboxBoundaryRootSession(request.sessionId);
-    void Promise.resolve()
+    const detachedNotification = Promise.resolve()
       .then(() => {
         if (!resolvedRootSessionId) return;
         return this.#onSandboxBoundaryGraphWake(resolvedRootSessionId);
@@ -906,6 +908,11 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
       .catch((error: unknown) => {
         this.#poison(error);
       });
+    this.#detachedNotifications.add(detachedNotification);
+    void detachedNotification.then(
+      () => this.#detachedNotifications.delete(detachedNotification),
+      () => this.#detachedNotifications.delete(detachedNotification),
+    );
     const result = projectSandboxBoundaryInteraction(settlement.request);
     if (result.status !== 'answered') {
       throw this.#poison(
