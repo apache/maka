@@ -1361,6 +1361,59 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
       assert.deepEqual(manager.toolSnapshot().tools, []);
     });
 
+    test('a repeated disconnect joins the original stdio teardown before reconnecting', async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'maka-mcp-repeat-disconnect-'));
+      const eventLog = join(root, 'events.jsonl');
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const manager = createManager();
+      const config = fixtureConfig(['--ignore-sigterm', '--hold-stdin-open']);
+      config.mcpServers.fixture = {
+        ...config.mcpServers.fixture,
+        env: { MAKA_MCP_STDIO_EVENT_LOG: eventLog },
+        protocol: 'legacy',
+      };
+      await manager.sync(config);
+      const events = await readFile(eventLog, 'utf8');
+      const start = events
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as { event: string; pid: number })
+        .find((event) => event.event === 'start');
+      assert.ok(start);
+
+      const abort = new AbortController();
+      const firstDisconnect = manager.disconnect('fixture', false, { signal: abort.signal });
+      await pollFor(() => manager.status('fixture')?.state === 'disconnected', {
+        timeoutMs: 1_000,
+        pollMs: 5,
+      });
+      assert.equal(processExists(start.pid), true);
+      abort.abort(new Error('cancel first disconnect wait'));
+      await assert.rejects(firstDisconnect, /cancel first disconnect wait/u);
+      const secondDisconnect = manager.disconnect('fixture');
+
+      assert.equal(await settlesWithin(secondDisconnect, 50), false);
+      process.kill(start.pid, 'SIGKILL');
+      await secondDisconnect;
+      assert.equal(processExists(start.pid), false);
+
+      await manager.reconnect('fixture');
+      const starts = (await readFile(eventLog, 'utf8'))
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as { event: string; pid: number })
+        .filter((event) => event.event === 'start');
+      assert.equal(starts.length, 2);
+      assert.notEqual(starts[1]?.pid, start.pid);
+      const replacement = starts[1];
+      assert.ok(replacement);
+      process.kill(replacement.pid, 'SIGKILL');
+      await pollFor(() => !processExists(replacement.pid), {
+        timeoutMs: 1_000,
+        pollMs: 5,
+      });
+    });
+
     test('a joining caller aborts only its wait for a shared in-flight connect', async (t) => {
       const root = await mkdtemp(join(tmpdir(), 'maka-mcp-joined-connect-abort-'));
       const eventLog = join(root, 'events.jsonl');

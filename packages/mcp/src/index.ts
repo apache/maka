@@ -232,6 +232,8 @@ interface Connection {
   subscription?: McpSubscription;
   subscriptionDiagnostic?: string;
   closing: boolean;
+  teardown?: Promise<void>;
+  removeAfterTeardown?: boolean;
 }
 
 interface ToolBindingTarget {
@@ -623,7 +625,13 @@ export class McpClientManager {
   ): Promise<void> {
     const entry = this.connections.get(serverId);
     if (!entry) return;
+    if (entry.teardown) {
+      if (remove) entry.removeAfterTeardown = true;
+      await waitForAbort(entry.teardown, options.signal);
+      return;
+    }
     entry.closing = true;
+    entry.removeAfterTeardown = remove;
     entry.connectController?.abort(new Error(`MCP connection closed: ${serverId}`));
     const connectPromise = entry.connectPromise;
     const client = entry.client;
@@ -639,9 +647,7 @@ export class McpClientManager {
     entry.enforceMcpHeaders = false;
     entry.refreshDiagnostic = undefined;
     entry.subscriptionDiagnostic = undefined;
-    if (remove) {
-      if (this.connections.get(serverId) === entry) this.connections.delete(serverId);
-    } else {
+    if (!remove) {
       this.update(entry, {
         ...this.makeStatus(serverId, entry.config.enabled === false ? 'disabled' : 'disconnected'),
         stderrTail: entry.status.stderrTail,
@@ -651,16 +657,18 @@ export class McpClientManager {
       safeClose(client, transport, subscription),
       connectPromise?.catch(() => {}),
     ]).then(() => undefined);
-    const finish = () => {
-      if (!remove && this.connections.get(serverId) === entry) entry.closing = false;
-    };
-    try {
-      await waitForAbort(cleanup, options.signal);
-      finish();
-    } catch (error) {
-      void cleanup.finally(finish).catch(() => {});
-      throw error;
-    }
+    const teardown = cleanup.then(() => {
+      if (entry.teardown !== teardown) return;
+      entry.teardown = undefined;
+      if (entry.removeAfterTeardown) {
+        if (this.connections.get(serverId) === entry) this.connections.delete(serverId);
+      } else if (this.connections.get(serverId) === entry) {
+        entry.closing = false;
+      }
+      entry.removeAfterTeardown = undefined;
+    });
+    entry.teardown = teardown;
+    await waitForAbort(teardown, options.signal);
   }
 
   async close(): Promise<void> {

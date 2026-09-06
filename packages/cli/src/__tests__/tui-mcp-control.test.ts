@@ -17,19 +17,21 @@
  * under the License.
  */
 
-import { deferred } from '@maka/core/test-only/async-primitives';
+import { deferred, waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import type { McpConfigFile, McpServerStatus, McpToolSnapshot } from '@maka/core/mcp';
-import type { McpClientManager } from '@maka/mcp';
+import { createCredentialMcpOAuthStorage, McpClientManager } from '@maka/mcp';
 import type {
   ClientCapabilityProvider,
   RuntimeHostConnectionAvailability,
 } from '@maka/runtime-host/client';
 import { createMcpConfigStore } from '@maka/storage/mcp-config-store';
+import { createFileCredentialStore } from '@maka/storage/credential-store';
 import { createTuiMcpController, type TuiMcpPublicationAvailability } from '../tui-mcp-control.js';
 import { waitFor } from './tui-terminal-mock.js';
 
@@ -1100,7 +1102,7 @@ test('TUI MCP commits an endpoint edit once credential retirement has started', 
 
   assert.equal(await settlesWithin(editing, 10), false);
   retirement.resolve();
-  assert.deepEqual(await editing, { status: 'applied', effect: 'published' });
+  assert.deepEqual(await editing, { status: 'applied', effect: 'sync_failed' });
   const current = await store.store.get();
   const docs = current.mcpServers.docs;
   assert.ok(docs && 'url' in docs);
@@ -1159,7 +1161,7 @@ test('TUI MCP never late-rolls back an endpoint after credential retirement star
   assert.equal(oldDocs.url, 'https://old.example/mcp');
 
   retirement.resolve();
-  assert.deepEqual(await editing, { status: 'applied', effect: 'published' });
+  assert.deepEqual(await editing, { status: 'applied', effect: 'sync_failed' });
   const current = await store.store.get();
   const docs = current.mcpServers.docs;
   assert.ok(docs && 'url' in docs);
@@ -1221,6 +1223,151 @@ test('TUI MCP keeps the new endpoint when synchronization fails after credential
   assert.equal(docs.url, 'https://new.example/mcp');
   assert.equal(controller.snapshot().configuration, 'out_of_sync');
   await controller.close();
+});
+
+test('TUI MCP cancels post-retirement synchronization without rolling back the committed endpoint', async () => {
+  const initial = {
+    version: 3,
+    mcpServers: {
+      docs: { url: 'https://old.example/mcp', oauth: { clientId: 'client' } },
+    },
+  } satisfies McpConfigFile;
+  const store = mutableConfigStore(initial, []);
+  const syncStarted = deferred<void>();
+  let syncSignal: AbortSignal | undefined;
+  const manager = managementManager([], {
+    forgetServerCredentials: async (_serverId, _config, options) => {
+      options?.onCommitStarted?.();
+    },
+    sync: async (config, options) => {
+      const docs = config.mcpServers.docs;
+      if (!docs || !('url' in docs) || docs.url !== 'https://new.example/mcp') return;
+      syncSignal = options?.signal;
+      syncStarted.resolve();
+      await new Promise<never>((_resolve, reject) => {
+        options?.signal?.addEventListener(
+          'abort',
+          () => reject(options.signal?.reason ?? new Error('cancelled')),
+          { once: true },
+        );
+      });
+    },
+  }).manager;
+  const controller = createTuiMcpController(
+    { workspaceRoot: '/unused', connection: connectionHarness().connection },
+    {
+      configStore: store.store,
+      manager,
+      createProvider: () => undefined,
+      actionTimeoutMs: 1_000,
+    },
+  );
+  await waitFor(
+    () => controller.snapshot().initialization === 'ready',
+    'TUI MCP initialization before post-retirement synchronization cancellation',
+  );
+  const edit = controller.configForEdit('docs');
+  assert.ok(edit);
+  const abort = new AbortController();
+  const editing = controller.execute(
+    {
+      kind: 'edit',
+      serverId: 'docs',
+      expectedRevision: edit.revision,
+      config: { url: 'https://new.example/mcp', oauth: { clientId: 'client' } },
+    },
+    { signal: abort.signal },
+  );
+
+  await syncStarted.promise;
+  abort.abort(new Error('cancel post-retirement synchronization'));
+
+  assert.equal(await settlesWithin(editing, 100), true);
+  assert.deepEqual(await editing, { status: 'applied', effect: 'sync_failed' });
+  assert.equal(syncSignal?.aborted, true);
+  assert.equal(controller.snapshot().configuration, 'out_of_sync');
+  assert.equal(controller.snapshot().servers[0]?.synchronized, false);
+  const current = await store.store.get();
+  const docs = current.mcpServers.docs;
+  assert.ok(docs && 'url' in docs);
+  assert.equal(docs.url, 'https://new.example/mcp');
+  await controller.close();
+});
+
+test('TUI MCP bounds a real post-retirement stdio connection and keeps the committed endpoint', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-tui-mcp-post-retirement-cancel-'));
+  const eventLog = join(root, 'events.jsonl');
+  const store = createMcpConfigStore(root);
+  await store.upsert('docs', {
+    url: 'https://old.example/mcp',
+    enabled: false,
+    oauth: { clientId: 'client' },
+  });
+  const fixturePath = fileURLToPath(
+    new URL(import.meta.resolve('@maka/mcp/test-only/stdio-server')),
+  );
+  const controller = createTuiMcpController(
+    { workspaceRoot: root, connection: connectionHarness().connection },
+    {
+      manager: new McpClientManager({
+        oauthStorage: createCredentialMcpOAuthStorage(createFileCredentialStore(root)),
+        timeouts: { stdioConnectMs: 5_000, listToolsMs: 5_000, callToolMs: 5_000 },
+      }),
+      createProvider: () => undefined,
+      actionTimeoutMs: 1_000,
+    },
+  );
+  let childPid: number | undefined;
+  t.after(async () => {
+    if (childPid && processExists(childPid)) process.kill(childPid, 'SIGKILL');
+    await controller.close().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  });
+  await waitFor(
+    () => controller.snapshot().initialization === 'ready',
+    'TUI MCP initialization before real post-retirement cancellation',
+  );
+  const edit = controller.configForEdit('docs');
+  assert.ok(edit);
+  const abort = new AbortController();
+  const editing = controller.execute(
+    {
+      kind: 'edit',
+      serverId: 'docs',
+      expectedRevision: edit.revision,
+      config: {
+        command: process.execPath,
+        args: [fixturePath, '--slow-tool-list'],
+        env: { MAKA_MCP_STDIO_EVENT_LOG: eventLog },
+        protocol: 'legacy',
+      },
+    },
+    { signal: abort.signal },
+  );
+  await pollFor(
+    async () => {
+      const events = await readFixtureEvents(eventLog);
+      const start = events.find((event) => event.event === 'start');
+      if (start) childPid = start.pid;
+      return events.some((event) => event.event === 'tools-list');
+    },
+    { timeoutMs: 1_000, pollMs: 5 },
+  );
+
+  abort.abort(new Error('cancel real post-retirement connection'));
+
+  assert.equal(await settlesWithin(editing, 500), true);
+  assert.deepEqual(await editing, { status: 'applied', effect: 'sync_failed' });
+  const current = await store.get();
+  const docs = current.mcpServers.docs;
+  assert.ok(docs && 'command' in docs);
+  assert.equal(docs.command, process.execPath);
+  assert.equal(controller.snapshot().configuration, 'out_of_sync');
+  assert.equal(controller.snapshot().servers[0]?.synchronized, false);
+  assert.ok(childPid);
+  const cancelledPid = childPid;
+  assert.equal(processExists(cancelledPid), true);
+  await pollFor(() => !processExists(cancelledPid), { timeoutMs: 3_000, pollMs: 5 });
 });
 
 test('TUI MCP marks configuration out of sync when persistence fails after credential retirement', async () => {
@@ -2221,6 +2368,30 @@ function connectedStatus(serverId: string, toolCount: number): McpServerStatus {
 
 function emptyConfig(): McpConfigFile {
   return { version: 3, mcpServers: {} };
+}
+
+async function readFixtureEvents(
+  path: string,
+): Promise<Array<{ readonly event: string; readonly pid: number }>> {
+  try {
+    return (await readFile(path, 'utf8'))
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as { event: string; pid: number });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw error;
+  }
+}
+
+function processExists(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
 }
 
 function configStoreHarness(get: () => Promise<McpConfigFile>) {

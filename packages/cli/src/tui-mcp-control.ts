@@ -704,15 +704,15 @@ class TuiMcpControllerImpl implements TuiMcpController {
     this.#refreshManagerSnapshot();
     this.#publicationSuppressed = true;
     try {
-      const commitSignal = credentialRetirementStarted ? undefined : signal;
-      await this.#deps.manager.sync(committed, { signal: commitSignal });
-      throwIfAborted(commitSignal);
+      throwIfAborted(signal);
+      await waitForAbort(this.#deps.manager.sync(committed, { signal }), signal);
+      throwIfAborted(signal);
       this.#publicationSuppressed = false;
       if (this.#closed) throw new Error('MCP controller closed');
       this.#updateSnapshot({ configuration: 'ready' });
       this.#refreshManagerSnapshot();
-      const effect = await this.#settlePublication(commitSignal);
-      throwIfAborted(commitSignal);
+      const effect = await this.#settlePublication(signal);
+      throwIfAborted(signal);
       return { status: 'applied', effect };
     } catch {
       if (!credentialRetirementStarted && (this.#closed || signal?.aborted)) {
@@ -731,7 +731,14 @@ class TuiMcpControllerImpl implements TuiMcpController {
       this.#publicationSuppressed = false;
       this.#updateSnapshot({ configuration: 'out_of_sync' });
       this.#refreshManagerSnapshot();
-      await this.#settlePublication();
+      if (credentialRetirementStarted && (this.#closed || signal?.aborted)) {
+        const cleanup = cleanupSignal(cleanupTimeoutMs);
+        await this.#settleCancelledConnections(changedIds, cleanup);
+        this.#refreshManagerSnapshot();
+        await this.#settleCancelledPublication(cleanup);
+      } else {
+        await this.#settlePublication(signal);
+      }
       return { status: 'applied', effect: 'sync_failed' };
     }
   }
@@ -917,6 +924,24 @@ class TuiMcpControllerImpl implements TuiMcpController {
     if (!this.#deps.manager.disconnect) return true;
     try {
       await waitForAbort(this.#deps.manager.disconnect(serverId, false, { signal }), signal);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async #settleCancelledConnections(
+    serverIds: readonly string[],
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    const disconnect = this.#deps.manager.disconnect;
+    if (!disconnect) return true;
+    try {
+      await Promise.all(
+        serverIds.map((serverId) =>
+          waitForAbort(disconnect.call(this.#deps.manager, serverId, false, { signal }), signal),
+        ),
+      );
       return true;
     } catch {
       return false;

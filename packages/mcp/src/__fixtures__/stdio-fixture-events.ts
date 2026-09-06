@@ -43,6 +43,7 @@ export function installStdioFixtureEvents(
     fixtureEnv: process.env.MAKA_MCP_STDIO_FIXTURE_VALUE ?? null,
   });
   process.stderr.write(`stdio fixture ${fixture} pid=${process.pid}\n`);
+  if (process.argv.includes('--hold-stdin-open')) setInterval(() => undefined, 30_000);
   process.once('SIGTERM', () => {
     record('signal', { signal: 'SIGTERM' });
     if (!process.argv.includes('--ignore-sigterm')) process.exit(0);
