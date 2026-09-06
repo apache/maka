@@ -31,6 +31,7 @@ import { findCheckpointSummaryDefect } from './history-compact-summary-validatio
 import {
   buildHistoryCompactCheckpoint,
   historyCompactCheckpointToRuntimeEvent,
+  historyCompactSourceDigest,
   matchHistoryCompactCheckpointPrefix,
   midTurnHeadAnchorEvent,
   projectHistoryCompactCheckpointReplay,
@@ -317,8 +318,24 @@ export async function planHistoryCompaction(
     const checkpointMatch = input.previousCheckpoint
       ? matchHistoryCompactCheckpointPrefix(input.previousCheckpoint, coveredRuntimeEvents)
       : undefined;
-    const previousCheckpoint =
+    let previousCheckpoint =
       checkpointMatch && !checkpointMatch.reason ? input.previousCheckpoint : undefined;
+    // Content-currency gate for roll-forward: the inherited summary or
+    // provider state describes the EFFECTIVE view of the previous coverage at
+    // its own creation. A projection transition committed since rewrites that
+    // view without touching the raw prefix, and reusing the stale content here
+    // would launder it into the new checkpoint under the current effective
+    // digest — later replay guards would then pass it (#4845 review). On
+    // drift, discard the checkpoint and re-summarize the whole effective span.
+    if (previousCheckpoint && checkpointMatch && input.projectEffectiveCoverage) {
+      const pinned = previousCheckpoint.coverage.effectiveSourceDigest;
+      const previousEffectiveCovered = await input.projectEffectiveCoverage(
+        checkpointMatch.coveredRuntimeEvents,
+      );
+      if (pinned === undefined || historyCompactSourceDigest(previousEffectiveCovered) !== pinned) {
+        previousCheckpoint = undefined;
+      }
+    }
     const newlyFoldedRuntimeEvents = previousCheckpoint
       ? checkpointMatch!.successorRuntimeEvents
       : coveredRuntimeEvents;
