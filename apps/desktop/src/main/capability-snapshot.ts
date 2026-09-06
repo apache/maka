@@ -251,7 +251,10 @@ function accessibilitySnapshot(now: number, platform: NodeJS.Platform): OsPermis
       canOpenSettings: true,
       canRequest: false,
     };
-  } catch {
+  } catch (error) {
+    // `permission_probe_failed` stays a closed code for the page; the raw
+    // cause is diagnostic-only, so the probe error is not silently swallowed.
+    console.warn('[capability] accessibility probe failed:', error instanceof Error ? error.message : error);
     return unknownPermission('accessibility', now, true);
   }
 }
@@ -275,7 +278,8 @@ function mediaPermissionSnapshot(
       checkedAt: now,
       ...actions,
     };
-  } catch {
+  } catch (error) {
+    console.warn('[capability] media probe failed:', error instanceof Error ? error.message : error);
     return unknownPermission(id, now, platform === 'darwin');
   }
 }

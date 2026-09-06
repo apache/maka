@@ -190,7 +190,6 @@ const zhCopy = {
     connectionStale: '连接状态已更新，请刷新列表后再删除。',
     actionFallback: '模型连接服务暂时不可用，请稍后重试。', rateLimit: '当前账号或模型服务触发速率限制，请稍后重试。',
     timeout: '请求超时，请检查网络或代理后重试。', unavailable: '模型服务暂时不可用，请稍后重试。',
-    rateLimited: '当前账号或模型服务触发速率限制，请稍后重试，或先切换到其它可用模型。',
     network: '网络错误，请检查服务地址或代理设置后重试。', statusUnavailable: '连接测试状态暂时无法显示，请重新测试。',
     // Every list that a search box narrows says how many rows are left, so the
     // change is spoken rather than only shown.
@@ -372,7 +371,6 @@ const zhTwCopy = {
     connectionStale: '連線狀態已更新，請重新整理清單後再刪除。',
     actionFallback: '模型連線服務暫時不可用，請稍後重試。', rateLimit: '目前帳號或模型服務觸發速率限制，請稍後重試。',
     timeout: '請求超時，請檢查網路或代理後重試。', unavailable: '模型服務暫時不可用，請稍後重試。',
-    rateLimited: '目前帳號或模型服務觸發速率限制，請稍後重試，或先切換到其他可用模型。',
     network: '網路錯誤，請檢查服務地址或代理設定後重試。', statusUnavailable: '連線測試狀態暫時無法顯示，請重新測試。',
     filterMatches: (count: number) => (count === 0 ? '沒有符合的結果' : `${count} 個符合結果`),
     connectionStatuses: { retired: '已停用 · 請刪除', reauth: '需要重新登入', disabledFailed: '暫不可用 · 上次連線失敗', disabled: '暫不可用', failed: '上次連線失敗' },
@@ -553,7 +551,6 @@ const enCopy: ProviderSettingsCopy = {
     connectionStale: 'The connection changed while deleting. Refresh the list and try again.',
     actionFallback: 'The model connection service is temporarily unavailable. Try again later.', rateLimit: 'This account or model service is rate-limited. Try again later.',
     timeout: 'The request timed out. Check the network or proxy and try again.', unavailable: 'The model service is temporarily unavailable. Try again later.',
-    rateLimited: 'The account or model service is rate limited. Try again later or switch to another available model.',
     network: 'Network error. Check the service URL or proxy settings and try again.', statusUnavailable: 'The connection test status is temporarily unavailable. Test again.',
     filterMatches: (count: number) => (count === 0 ? 'No matches' : count === 1 ? '1 match' : `${count} matches`),
     connectionStatuses: { retired: 'Retired · delete it', reauth: 'Sign-in required', disabledFailed: 'Unavailable · last connection failed', disabled: 'Unavailable', failed: 'Last connection failed' },

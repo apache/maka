@@ -709,7 +709,7 @@ function capabilityReasonText(
       .map((permission) => copy.osPermissions[permission.id]?.label ?? permission.id);
     return copy.cuBackendStatus(missing, capability.runtimeProbe.state);
   }
-  if (isCapabilityReasonCode(reason) && reason !== 'cu_backend_status') {
+  if (isCapabilityReasonCode(reason)) {
     return getCapabilityReasonCopy(locale)[reason];
   }
   if (capability.id.startsWith('bot:')) {
@@ -724,7 +724,7 @@ function osPermissionReasonText(
   locale: UiLocale,
 ): string | undefined {
   return snapshot.reason
-    ? isCapabilityReasonCode(snapshot.reason) && snapshot.reason !== 'cu_backend_status'
+    ? isCapabilityReasonCode(snapshot.reason)
       ? getCapabilityReasonCopy(locale)[snapshot.reason]
       : copy.reasonFallback
     : undefined;

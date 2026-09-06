@@ -132,7 +132,7 @@ export function buildAppShellCommandList(
   const copy = getShellCopy(locale).commandActions;
 
   return buildCommandList({
-    locale: locale,
+    locale,
     activeSessionId: options.activeId,
     themePref: options.themePref,
     connections: options.connections,

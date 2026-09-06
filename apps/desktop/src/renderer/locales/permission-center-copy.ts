@@ -83,8 +83,6 @@ export type PermissionCenterCopy = {
   };
   requiredPermissions: string;
   requiredPermissionsAria(label: string): string;
-  guidance: string;
-  guidanceAria(label: string): string;
   auditSection: string;
   noAudit: string;
   auditAria(label: string): string;
@@ -146,7 +144,7 @@ const PERMISSION_CENTER_COPY = {
       memoryStates: { not_applicable: '不涉及记忆写入', disabled: '记忆写入已关闭', draft_required: '需要先草拟 memory 协议', accepted: '记忆写入已接受' },
       runtimeStates: { not_available: '尚无运行态探测', not_run: '探测未运行', healthy: '探测通过', degraded: '探测降级' },
     },
-    requiredPermissions: '所需系统权限', requiredPermissionsAria: (label) => `${label}所需系统权限列表`, guidance: '处理建议', guidanceAria: (label) => `${label}处理建议列表`,
+    requiredPermissions: '所需系统权限', requiredPermissionsAria: (label) => `${label}所需系统权限列表`,
     auditSection: '审计记录', noAudit: '暂无审计记录', auditAria: (label) => `${label}审计记录列表`,
     impact: '影响功能', opening: '打开中…', openSettings: '前往系统设置', requesting: '请求中…', request: '请求授权', dragGrant: '引导授权', dragGranting: '引导中…',
     cuBackendStatus: (missing, health) =>
@@ -203,7 +201,7 @@ const PERMISSION_CENTER_COPY = {
       memoryStates: { not_applicable: '不涉及記憶寫入', disabled: '記憶寫入已關閉', draft_required: '需要先草擬 memory 協議', accepted: '記憶寫入已接受' },
       runtimeStates: { not_available: '尚無執行態探測', not_run: '探測未執行', healthy: '探測透過', degraded: '探測降級' },
     },
-    requiredPermissions: '所需系統權限', requiredPermissionsAria: (label) => `${label}所需系統權限列表`, guidance: '處理建議', guidanceAria: (label) => `${label}處理建議列表`,
+    requiredPermissions: '所需系統權限', requiredPermissionsAria: (label) => `${label}所需系統權限列表`,
     auditSection: '審計記錄', noAudit: '暫無審計記錄', auditAria: (label) => `${label}審計記錄列表`,
     impact: '影響功能', opening: '開啟中…', openSettings: '前往系統設定', requesting: '請求中…', request: '請求授權', dragGrant: '引導授權', dragGranting: '引導中…',
     cuBackendStatus: (missing, health) =>
@@ -260,7 +258,7 @@ const PERMISSION_CENTER_COPY = {
       memoryStates: { not_applicable: 'No memory writes', disabled: 'Memory writes disabled', draft_required: 'Draft a memory protocol first', accepted: 'Memory writes accepted' },
       runtimeStates: { not_available: 'No runtime probe available', not_run: 'Probe not run', healthy: 'Probe passed', degraded: 'Probe degraded' },
     },
-    requiredPermissions: 'Required system permissions', requiredPermissionsAria: (label) => `${label} required system permissions`, guidance: 'Suggested actions', guidanceAria: (label) => `${label} suggested actions`,
+    requiredPermissions: 'Required system permissions', requiredPermissionsAria: (label) => `${label} required system permissions`,
     auditSection: 'Audit records', noAudit: 'No audit records', auditAria: (label) => `${label} audit records`,
     impact: 'Affects', opening: 'Opening…', openSettings: 'Open System Settings', requesting: 'Requesting…', request: 'Request permission', dragGrant: 'Guide me', dragGranting: 'Opening…',
     cuBackendStatus: (missing, health) =>

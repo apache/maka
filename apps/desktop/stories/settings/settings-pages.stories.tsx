@@ -582,7 +582,7 @@ const capabilitySnapshot: CapabilitySnapshotCollection = {
         { id: 'screen_recording', required: true, status: 'not_determined' },
       ],
       actionApproval: { state: 'required_per_action', source: 'capability_policy' },
-      guidance: ['前往系统设置授予屏幕录制权限后重新探测。'],
+      guidance: [],
     }),
     makeCapability({
       id: 'memory_write',
@@ -2778,8 +2778,8 @@ export const ModelsCatalogIntentDuringWarmRevalidation: Story = {
 };
 /**
  * The expanded state, not the collapsed one the page opens in: the capability layers grid
- * and the guidance block are hidden until diagnostics are expanded, so the collapsed story
- * gives those layouts no baseline at all — which is exactly where the remaining overflow
+ * is hidden until diagnostics are expanded, so the collapsed story
+ * gives that layout no baseline at all — which is exactly where the remaining overflow
  * was hiding. Everything the collapsed story shows is still on screen here.
  *
  * The disclosure is per-row now (a CollapsibleGroup, one open at a time) rather than one

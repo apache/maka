@@ -56,7 +56,6 @@ export function connectionTestFailureFallback(
 ): string {
   const shared = getProviderSettingsCopy(locale).shared;
   if (result.statusCode === 429) return shared.rateLimit;
-  if (result.statusCode === 429) return shared.rateLimited;
   if (result.errorClass === 'timeout') return shared.timeout;
   if (result.errorClass === 'auth' || result.statusCode === 401 || result.statusCode === 403) {
     return copy.auth;
