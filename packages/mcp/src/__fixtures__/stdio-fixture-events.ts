@@ -45,7 +45,7 @@ export function installStdioFixtureEvents(
   process.stderr.write(`stdio fixture ${fixture} pid=${process.pid}\n`);
   process.once('SIGTERM', () => {
     record('signal', { signal: 'SIGTERM' });
-    process.exit(0);
+    if (!process.argv.includes('--ignore-sigterm')) process.exit(0);
   });
   process.once('exit', (code) => record('exit', { code }));
   return record;

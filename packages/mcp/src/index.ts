@@ -308,11 +308,21 @@ export class McpClientManager {
   private harvestingStorage(storage: McpOAuthStorage): McpOAuthStorage {
     const harvest = (
       serverId: string,
-      record: { tokens?: unknown; clientInformation?: unknown; codeVerifier?: unknown } | undefined,
+      record:
+        | {
+            tokens?: unknown;
+            clientInformation?: unknown;
+            codeVerifier?: unknown;
+          }
+        | undefined,
     ) => {
       if (!record) return;
       const tokens = record.tokens as
-        | { access_token?: unknown; refresh_token?: unknown; id_token?: unknown }
+        | {
+            access_token?: unknown;
+            refresh_token?: unknown;
+            id_token?: unknown;
+          }
         | undefined;
       const client = record.clientInformation as { client_secret?: unknown } | undefined;
       const verifier = record.codeVerifier;
@@ -938,7 +948,10 @@ export class McpClientManager {
     if (current.config.enabled === false) {
       return {
         ok: false,
-        status: { ...cloneStatus(current.status), error: 'MCP server is disabled' },
+        status: {
+          ...cloneStatus(current.status),
+          error: 'MCP server is disabled',
+        },
         latencyMs: this.now() - started,
       };
     }
@@ -1608,7 +1621,10 @@ export class McpClientManager {
     ) {
       return undefined;
     }
-    return { redirectUrl: record.pendingRedirectUrl, state: record.pendingState };
+    return {
+      redirectUrl: record.pendingRedirectUrl,
+      state: record.pendingState,
+    };
   }
 
   /** Abandons a persisted-but-dead interactive round: clears the verifier
@@ -1657,7 +1673,10 @@ export class McpClientManager {
   async forgetServerCredentials(
     serverId: string,
     previousConfig = this.connections.get(serverId)?.config,
-    options: { signal?: AbortSignal } = {},
+    options: {
+      signal?: AbortSignal;
+      onCommitStarted?: () => void;
+    } = {},
   ): Promise<void> {
     await this.forgetAuthorization(serverId, previousConfig, options);
   }
@@ -1675,7 +1694,10 @@ export class McpClientManager {
   private async forgetAuthorization(
     serverId: string,
     config?: McpServerConfig,
-    options: { signal?: AbortSignal } = {},
+    options: {
+      signal?: AbortSignal;
+      onCommitStarted?: () => void;
+    } = {},
   ): Promise<void> {
     if (!this.coordinator) return;
     throwIfAborted(options.signal);
@@ -1701,7 +1723,12 @@ export class McpClientManager {
     const { config } = this.requireRemoteEntry(serverId);
     this.interactiveRounds.delete(serverId);
     await this.forgetAuthorization(serverId, config, options);
-    await this.reconnect(serverId).catch(() => {});
+    try {
+      await this.reconnect(serverId, options);
+    } catch (error) {
+      if (options.signal?.aborted) throw abortReason(options.signal);
+    }
+    throwIfAborted(options.signal);
     const status = this.status(serverId);
     if (!status) throw new Error(`Unknown MCP server: ${serverId}`);
     return status;
@@ -1849,7 +1876,10 @@ export class McpClientManager {
     state: ToolRefreshState,
   ): Promise<ToolRefreshResult> {
     let latestSnapshot:
-      | { entries: Map<string, ToolSnapshotEntry>; descriptors: McpToolDescriptor[] }
+      | {
+          entries: Map<string, ToolSnapshotEntry>;
+          descriptors: McpToolDescriptor[];
+        }
       | undefined;
     const finish = (
       snapshot: NonNullable<typeof latestSnapshot>,
@@ -2141,7 +2171,10 @@ export class McpClientManager {
     }
     const tools = entries.map(
       ({ descriptor, binding }) =>
-        deepFreeze({ descriptor: cloneTool(descriptor), binding }) as McpBoundTool,
+        deepFreeze({
+          descriptor: cloneTool(descriptor),
+          binding,
+        }) as McpBoundTool,
     );
     return Object.freeze({
       revision: this.callableSnapshot.revision + 1,
@@ -2602,7 +2635,9 @@ function enrichStdioError(
   secrets: SecretInventory = EMPTY_INVENTORY,
 ): Error {
   const suffix = stderrTail?.length ? `\nstderr:\n${stderrTail.join('\n')}` : '';
-  return new Error(`${errorMessage(error, secrets)}${suffix}`, { cause: error });
+  return new Error(`${errorMessage(error, secrets)}${suffix}`, {
+    cause: error,
+  });
 }
 
 async function safeClose(
@@ -2654,11 +2689,12 @@ async function connectCandidate(
   timeout: number,
   signal: AbortSignal,
 ): Promise<void> {
+  let abortClose: Promise<void> | undefined;
   const closeOnAbort = () => {
     // SDK v2's server/discover probes currently use their timeout but not the
     // Client.connect signal. Closing the candidate transport aborts either an
     // HTTP probe or the disposable stdio sibling before a late session starts.
-    void transport.close().catch(() => {});
+    abortClose ??= closeAbortedTransport(transport);
   };
   if (signal.aborted) {
     await transport.close().catch(() => {});
@@ -2671,7 +2707,23 @@ async function connectCandidate(
     await client.connect(transport, { timeout, signal });
   } finally {
     signal.removeEventListener('abort', closeOnAbort);
+    await abortClose;
   }
+}
+
+function closeAbortedTransport(transport: Transport): Promise<void> {
+  if (transport instanceof StdioClientTransport) {
+    // @modelcontextprotocol/client is pinned to 2.0.0. In that release the
+    // public close() clears its child handle before the shutdown finishes, so
+    // a second close cannot join the in-flight reap. The SDK's own disposable
+    // stdio-probe path uses _dispose(), which waits for the child `exit` event;
+    // use that same reaper here so cancellation cannot settle while the old
+    // server process is still alive. The real-child regression test must stay
+    // green before changing the SDK version or this private compatibility shim.
+    const disposable = transport as unknown as { _dispose?(): Promise<void> };
+    if (disposable._dispose) return disposable._dispose().catch(() => {});
+  }
+  return transport.close().catch(() => {});
 }
 
 function stableConfigFingerprint(config: McpServerConfig): string {
@@ -2771,7 +2823,10 @@ async function probeAuthChallenge(
   fetchImpl: typeof fetch,
 ): Promise<{ scope?: string; resourceMetadataUrl?: URL } | undefined> {
   const attempts: RequestInit[] = [
-    { method: 'GET', headers: { accept: 'text/event-stream, application/json' } },
+    {
+      method: 'GET',
+      headers: { accept: 'text/event-stream, application/json' },
+    },
     {
       method: 'POST',
       headers: {
@@ -2891,7 +2946,11 @@ function scopedFetch(
       redirect: 'manual',
       // The round's deadline aborts in-flight requests too, not only the
       // caller's await: a hung endpoint must not keep the flow alive.
-      ...(signal ? { signal: init?.signal ? AbortSignal.any([init.signal, signal]) : signal } : {}),
+      ...(signal
+        ? {
+            signal: init?.signal ? AbortSignal.any([init.signal, signal]) : signal,
+          }
+        : {}),
     };
   };
   return (async (input: RequestInfo | URL, init?: RequestInit) => {

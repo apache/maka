@@ -286,13 +286,29 @@ export interface RuntimeHostCapabilityProviderCredentialStore {
     credential: string,
   ): Promise<void>;
   delete(target: RuntimeHostRemoteProfileIncarnation, ownerClientInstanceId: string): Promise<void>;
+  read?(
+    target: RuntimeHostRemoteProfileIncarnation,
+    ownerClientInstanceId: string,
+  ): Promise<RuntimeHostCapabilityProviderCredentialSnapshot>;
   compareAndSet?(
     target: RuntimeHostRemoteProfileIncarnation,
     ownerClientInstanceId: string,
-    expected: string | null,
+    expectedRevision: string | null,
     credential: string | null,
-  ): Promise<boolean>;
+  ): Promise<RuntimeHostCapabilityProviderCredentialMutationResult>;
 }
+
+export interface RuntimeHostCapabilityProviderCredentialSnapshot {
+  readonly credential: string | null;
+  readonly revision: string | null;
+}
+
+export type RuntimeHostCapabilityProviderCredentialMutationResult =
+  | { readonly committed: true; readonly revision: string }
+  | {
+      readonly committed: false;
+      readonly current: RuntimeHostCapabilityProviderCredentialSnapshot;
+    };
 
 export type RuntimeHostProfileConnectionFailureReason =
   | 'credential_required'
@@ -372,10 +388,16 @@ export function createRuntimeHostProfileCredentialStore(
 export function createRuntimeHostCapabilityProviderCredentialStore(
   credentials: Pick<
     CredentialStore,
-    'getSecret' | 'setSecret' | 'deleteSecret' | 'compareAndSetSecret'
+    | 'getSecret'
+    | 'getSecretSnapshot'
+    | 'setSecret'
+    | 'deleteSecret'
+    | 'compareAndSetSecret'
+    | 'compareAndSetSecretRevision'
   >,
 ): RuntimeHostCapabilityProviderCredentialStore {
-  const compareAndSetSecret = credentials.compareAndSetSecret?.bind(credentials);
+  const getSecretSnapshot = credentials.getSecretSnapshot?.bind(credentials);
+  const compareAndSetSecretRevision = credentials.compareAndSetSecretRevision?.bind(credentials);
   const locator = (
     target: RuntimeHostRemoteProfileIncarnation,
     ownerClientInstanceId: string,
@@ -384,47 +406,85 @@ export function createRuntimeHostCapabilityProviderCredentialStore(
     slot: profileCredentialSlot(target.profile),
     encoded: encodeCapabilityProviderCredential(target, ownerClientInstanceId, credential),
   });
-  return {
-    get: async (target, ownerClientInstanceId) => {
-      const stored = await credentials.getSecret(
-        profileCredentialSlot(target.profile),
-        'runtime_host_capability_provider',
-      );
-      if (stored === null) return null;
-      const decoded = decodeCapabilityProviderCredential(stored);
-      return decoded.ownerClientInstanceId === requireClientInstanceId(ownerClientInstanceId) &&
+  const read = async (
+    target: RuntimeHostRemoteProfileIncarnation,
+    ownerClientInstanceId: string,
+  ): Promise<RuntimeHostCapabilityProviderCredentialSnapshot> => {
+    const stored = getSecretSnapshot
+      ? await getSecretSnapshot(
+          profileCredentialSlot(target.profile),
+          'runtime_host_capability_provider',
+        )
+      : {
+          value: await credentials.getSecret(
+            profileCredentialSlot(target.profile),
+            'runtime_host_capability_provider',
+          ),
+          revision: null,
+        };
+    if (stored.value === null) return { credential: null, revision: stored.revision };
+    const decoded = decodeCapabilityProviderCredential(stored.value);
+    return {
+      credential:
+        decoded.ownerClientInstanceId === requireClientInstanceId(ownerClientInstanceId) &&
         decoded.profileIncarnationId === requireProfileIncarnationId(target.profileIncarnationId)
-        ? decoded.credential
-        : null;
-    },
+          ? decoded.credential
+          : null,
+      revision: stored.revision,
+    };
+  };
+  return {
+    get: async (target, ownerClientInstanceId) =>
+      (await read(target, ownerClientInstanceId)).credential,
     set: async (target, ownerClientInstanceId, credential) => {
       const value = locator(target, ownerClientInstanceId, credential);
       await credentials.setSecret(value.slot, 'runtime_host_capability_provider', value.encoded);
     },
     delete: (target, ownerClientInstanceId) =>
       deleteCapabilityProviderCredential(credentials, target, ownerClientInstanceId),
-    ...(compareAndSetSecret
+    ...(getSecretSnapshot && compareAndSetSecretRevision
       ? {
+          read,
           compareAndSet: async (
             target: RuntimeHostRemoteProfileIncarnation,
             ownerClientInstanceId: string,
-            expected: string | null,
+            expectedRevision: string | null,
             credential: string | null,
           ) => {
             const slot = profileCredentialSlot(target.profile);
-            const encodedExpected =
-              expected === null
-                ? null
-                : encodeCapabilityProviderCredential(target, ownerClientInstanceId, expected);
-            const result = await compareAndSetSecret(
+            const result = await compareAndSetSecretRevision(
               slot,
               'runtime_host_capability_provider',
-              encodedExpected,
+              expectedRevision,
               credential === null
                 ? null
                 : encodeCapabilityProviderCredential(target, ownerClientInstanceId, credential),
             );
-            return result.committed;
+            if (result.committed) return result;
+            const current = result.current.value;
+            if (current === null) {
+              return {
+                committed: false as const,
+                current: {
+                  credential: null,
+                  revision: result.current.revision,
+                },
+              };
+            }
+            const decoded = decodeCapabilityProviderCredential(current);
+            return {
+              committed: false as const,
+              current: {
+                credential:
+                  decoded.ownerClientInstanceId ===
+                    requireClientInstanceId(ownerClientInstanceId) &&
+                  decoded.profileIncarnationId ===
+                    requireProfileIncarnationId(target.profileIncarnationId)
+                    ? decoded.credential
+                    : null,
+                revision: result.current.revision,
+              },
+            };
           },
         }
       : {}),
@@ -1024,7 +1084,9 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
       const value: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
       return decodeRuntimeHostProfileDocument(value);
     } catch (error) {
-      throw new Error('Runtime Host profile document is invalid', { cause: error });
+      throw new Error('Runtime Host profile document is invalid', {
+        cause: error,
+      });
     }
   }
 
@@ -1173,7 +1235,10 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
       ) {
         return { removed: false, document: current };
       }
-      return { removed: true, document: await this.#removeProfile(current, profile) };
+      return {
+        removed: true,
+        document: await this.#removeProfile(current, profile),
+      };
     });
   }
 
@@ -1446,7 +1511,9 @@ export function decodeRuntimeHostRemoteTransport(value: unknown): RuntimeHostRem
     if (new URL(rawUrl).protocol !== 'ws:') {
       throw new Error('Runtime Host plaintext URL must use ws');
     }
-    const url = normalizeRemoteRuntimeHostUrl(rawUrl, { allowInsecureRemote: true });
+    const url = normalizeRemoteRuntimeHostUrl(rawUrl, {
+      allowInsecureRemote: true,
+    });
     return Object.freeze({
       kind: 'plaintext',
       url: url.toString(),
@@ -1532,11 +1599,39 @@ function profileCredentialSlot(profile: RemoteRuntimeHostProfile): string {
 }
 
 async function deleteCapabilityProviderCredential(
-  credentials: Pick<CredentialStore, 'getSecret' | 'deleteSecret' | 'compareAndSetSecret'>,
+  credentials: Pick<
+    CredentialStore,
+    | 'getSecret'
+    | 'getSecretSnapshot'
+    | 'deleteSecret'
+    | 'compareAndSetSecret'
+    | 'compareAndSetSecretRevision'
+  >,
   target: RuntimeHostRemoteProfileIncarnation,
   ownerClientInstanceId: string,
 ): Promise<void> {
   const slot = profileCredentialSlot(target.profile);
+  if (credentials.getSecretSnapshot && credentials.compareAndSetSecretRevision) {
+    const stored = await credentials.getSecretSnapshot(slot, 'runtime_host_capability_provider');
+    if (stored.value === null) return;
+    const decoded = decodeCapabilityProviderCredential(stored.value);
+    if (
+      decoded.ownerClientInstanceId !== requireClientInstanceId(ownerClientInstanceId) ||
+      decoded.profileIncarnationId !== requireProfileIncarnationId(target.profileIncarnationId)
+    ) {
+      return;
+    }
+    const result = await credentials.compareAndSetSecretRevision(
+      slot,
+      'runtime_host_capability_provider',
+      stored.revision,
+      null,
+    );
+    if (!result.committed) {
+      throw new Error('Runtime Host capability-provider credential changed during deletion');
+    }
+    return;
+  }
   const stored = await credentials.getSecret(slot, 'runtime_host_capability_provider');
   if (stored === null) return;
   const decoded = decodeCapabilityProviderCredential(stored);
@@ -1547,7 +1642,15 @@ async function deleteCapabilityProviderCredential(
     return;
   }
   if (credentials.compareAndSetSecret) {
-    await credentials.compareAndSetSecret(slot, 'runtime_host_capability_provider', stored, null);
+    const result = await credentials.compareAndSetSecret(
+      slot,
+      'runtime_host_capability_provider',
+      stored,
+      null,
+    );
+    if (!result.committed) {
+      throw new Error('Runtime Host capability-provider credential changed during deletion');
+    }
     return;
   }
   await credentials.deleteSecret(slot, 'runtime_host_capability_provider');
@@ -1575,7 +1678,9 @@ function decodeCapabilityProviderCredential(value: string): {
       profileIncarnationId: requireProfileIncarnationId(record.profileIncarnationId),
     };
   } catch (error) {
-    throw new Error('Runtime Host capability-provider credential is invalid', { cause: error });
+    throw new Error('Runtime Host capability-provider credential is invalid', {
+      cause: error,
+    });
   }
 }
 
@@ -1626,7 +1731,9 @@ function decodeProfileCredential(
       profileIncarnationId: requireProfileIncarnationId(record.profileIncarnationId),
     };
   } catch (error) {
-    throw new Error('Runtime Host profile credential is invalid', { cause: error });
+    throw new Error('Runtime Host profile credential is invalid', {
+      cause: error,
+    });
   }
 }
 
@@ -1829,7 +1936,10 @@ function requireExactRecord(
 }
 
 function emptyProfileDocument(): RuntimeHostProfileDocument {
-  return Object.freeze({ schemaVersion: PROFILE_SCHEMA_VERSION, profiles: Object.freeze([]) });
+  return Object.freeze({
+    schemaVersion: PROFILE_SCHEMA_VERSION,
+    profiles: Object.freeze([]),
+  });
 }
 
 async function writeProfileDocument(

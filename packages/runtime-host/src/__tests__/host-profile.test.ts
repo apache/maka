@@ -172,7 +172,10 @@ describe('Runtime Host profiles', () => {
           id: 'backup',
           name: 'Backup',
           kind: 'remote',
-          transport: { kind: 'tls', url: 'wss://backup.example.com/runtime-host' },
+          transport: {
+            kind: 'tls',
+            url: 'wss://backup.example.com/runtime-host',
+          },
           rootId: ROOT_B,
         },
         'loopback-token',
@@ -203,7 +206,10 @@ describe('Runtime Host profiles', () => {
           id: 'backup',
           name: 'Backup',
           kind: 'remote',
-          transport: { kind: 'tls', url: 'wss://backup.example.com/runtime-host' },
+          transport: {
+            kind: 'tls',
+            url: 'wss://backup.example.com/runtime-host',
+          },
           rootId: ROOT_B,
         },
       ],
@@ -219,7 +225,10 @@ describe('Runtime Host profiles', () => {
           id: 'backup',
           name: 'Backup',
           kind: 'remote',
-          transport: { kind: 'tls', url: 'wss://backup.example.com/runtime-host' },
+          transport: {
+            kind: 'tls',
+            url: 'wss://backup.example.com/runtime-host',
+          },
           rootId: ROOT_B,
         },
       ],
@@ -408,7 +417,10 @@ describe('Runtime Host profiles', () => {
           id: 'office',
           name: 'Office',
           kind: 'remote',
-          transport: { kind: 'tls', url: 'wss://runtime.example.com/runtime-host' },
+          transport: {
+            kind: 'tls',
+            url: 'wss://runtime.example.com/runtime-host',
+          },
           rootId: ROOT_A,
         },
       ],
@@ -428,7 +440,10 @@ describe('Runtime Host profiles', () => {
           profiles: [
             {
               ...valid.profiles[0],
-              transport: { kind: 'tls', url: 'ws://runtime.example.com/runtime-host' },
+              transport: {
+                kind: 'tls',
+                url: 'ws://runtime.example.com/runtime-host',
+              },
             },
           ],
         }),
@@ -535,12 +550,18 @@ describe('Runtime Host profiles', () => {
     );
     const targetA = remoteProfile('office', 'wss://a.example.com', ROOT_A);
     const targetB = remoteProfile('office', 'wss://b.example.com', ROOT_B);
-    const incarnationA = { profile: targetA, profileIncarnationId: 'incarnation-a' };
+    const incarnationA = {
+      profile: targetA,
+      profileIncarnationId: 'incarnation-a',
+    };
     const recreatedIncarnationA = {
       profile: targetA,
       profileIncarnationId: 'incarnation-a-recreated',
     };
-    const incarnationB = { profile: targetB, profileIncarnationId: 'incarnation-b' };
+    const incarnationB = {
+      profile: targetB,
+      profileIncarnationId: 'incarnation-b',
+    };
 
     await assert.rejects(
       () => credentials.set(incarnationA, 'owner-a', 'not a token'),
@@ -565,21 +586,108 @@ describe('Runtime Host profiles', () => {
     const credentials = createRuntimeHostCapabilityProviderCredentialStore(
       createFileCredentialStore(join(dirname(path), 'credentials')),
     );
+    assert.ok(credentials.read);
     assert.ok(credentials.compareAndSet);
     const profile = remoteProfile('office', 'wss://a.example.com', ROOT_A);
     const target = { profile, profileIncarnationId: 'incarnation-a' };
 
     await credentials.set(target, 'owner-a', 'cancelled-value');
-    assert.equal(await credentials.compareAndSet(target, 'owner-a', 'cancelled-value', null), true);
+    const written = await credentials.read(target, 'owner-a');
+    assert.equal(written.credential, 'cancelled-value');
+    assert.equal(
+      (await credentials.compareAndSet(target, 'owner-a', written.revision, null)).committed,
+      true,
+    );
     assert.equal(await credentials.get(target, 'owner-a'), null);
 
     await credentials.set(target, 'owner-a', 'cancelled-value');
+    const stale = await credentials.read(target, 'owner-a');
     await credentials.set(target, 'owner-a', 'newer-value');
     assert.equal(
-      await credentials.compareAndSet(target, 'owner-a', 'cancelled-value', 'old-value'),
+      (await credentials.compareAndSet(target, 'owner-a', stale.revision, 'old-value')).committed,
       false,
     );
     assert.equal(await credentials.get(target, 'owner-a'), 'newer-value');
+  });
+
+  test('capability-provider revision CAS rejects an ABA cycle at the adapter boundary', async () => {
+    const path = await profilePath();
+    const credentials = createRuntimeHostCapabilityProviderCredentialStore(
+      createFileCredentialStore(join(dirname(path), 'credentials')),
+    );
+    assert.ok(credentials.read);
+    assert.ok(credentials.compareAndSet);
+    const profile = remoteProfile('office', 'wss://a.example.com', ROOT_A);
+    const target = { profile, profileIncarnationId: 'incarnation-a' };
+
+    await credentials.set(target, 'owner-a', 'cancelled-value');
+    const stale = await credentials.read(target, 'owner-a');
+    await credentials.set(target, 'owner-a', 'newer-value');
+    await credentials.set(target, 'owner-a', 'cancelled-value');
+
+    const result = await credentials.compareAndSet(target, 'owner-a', stale.revision, 'old-value');
+    assert.equal(result.committed, false);
+    if (result.committed) return;
+    assert.equal(result.current.credential, 'cancelled-value');
+    assert.notEqual(result.current.revision, stale.revision);
+    assert.equal(await credentials.get(target, 'owner-a'), 'cancelled-value');
+  });
+
+  test('capability-provider reads retain the raw revision for an owner handoff', async () => {
+    const path = await profilePath();
+    const credentials = createRuntimeHostCapabilityProviderCredentialStore(
+      createFileCredentialStore(join(dirname(path), 'credentials')),
+    );
+    assert.ok(credentials.read);
+    assert.ok(credentials.compareAndSet);
+    const profile = remoteProfile('office', 'wss://a.example.com', ROOT_A);
+    const target = { profile, profileIncarnationId: 'incarnation-a' };
+
+    await credentials.set(target, 'owner-a', 'provider-a');
+    const handoffBasis = await credentials.read(target, 'owner-b');
+    assert.equal(handoffBasis.credential, null);
+    assert.ok(handoffBasis.revision);
+
+    const result = await credentials.compareAndSet(
+      target,
+      'owner-b',
+      handoffBasis.revision,
+      'provider-b',
+    );
+    assert.equal(result.committed, true);
+    assert.equal(await credentials.get(target, 'owner-a'), null);
+    assert.equal(await credentials.get(target, 'owner-b'), 'provider-b');
+  });
+
+  test('capability-provider deletion rejects when its credential changed after the read', async () => {
+    const path = await profilePath();
+    const raw = createFileCredentialStore(join(dirname(path), 'credentials'));
+    const concurrent = createRuntimeHostCapabilityProviderCredentialStore(raw);
+    const profile = remoteProfile('office', 'wss://a.example.com', ROOT_A);
+    const target = { profile, profileIncarnationId: 'incarnation-a' };
+    await concurrent.set(target, 'owner-a', 'old-value');
+    let raced = false;
+    const credentials = createRuntimeHostCapabilityProviderCredentialStore({
+      getSecret: raw.getSecret.bind(raw),
+      getSecretSnapshot: raw.getSecretSnapshot?.bind(raw),
+      setSecret: raw.setSecret.bind(raw),
+      deleteSecret: raw.deleteSecret.bind(raw),
+      compareAndSetSecret: raw.compareAndSetSecret?.bind(raw),
+      compareAndSetSecretRevision: async (...args) => {
+        if (!raced) {
+          raced = true;
+          await concurrent.set(target, 'owner-a', 'newer-value');
+        }
+        assert.ok(raw.compareAndSetSecretRevision);
+        return raw.compareAndSetSecretRevision(...args);
+      },
+    });
+
+    await assert.rejects(
+      credentials.delete(target, 'owner-a'),
+      /credential changed during deletion/u,
+    );
+    assert.equal(await concurrent.get(target, 'owner-a'), 'newer-value');
   });
 
   test('removing a profile retires its terminal and provider credentials together', async () => {
@@ -594,7 +702,10 @@ describe('Runtime Host profiles', () => {
     await catalog.save(profile, 'terminal-token');
     const target = await catalog.resolve(profile.id);
     assert.ok(target.profileIncarnationId);
-    const incarnation = { profile, profileIncarnationId: target.profileIncarnationId };
+    const incarnation = {
+      profile,
+      profileIncarnationId: target.profileIncarnationId,
+    };
     await providers.set(incarnation, 'owner-a', 'provider-token');
 
     await catalog.remove(profile.id);
@@ -623,7 +734,10 @@ describe('Runtime Host profiles', () => {
     await removingCatalog.save(profile, 'terminal-token');
     const resolved = await removingCatalog.resolve(profile.id);
     assert.ok(resolved.profileIncarnationId);
-    const incarnation = { profile, profileIncarnationId: resolved.profileIncarnationId };
+    const incarnation = {
+      profile,
+      profileIncarnationId: resolved.profileIncarnationId,
+    };
 
     const removal = removingCatalog.remove(profile.id);
     await removalStarted.promise;
@@ -631,7 +745,10 @@ describe('Runtime Host profiles', () => {
     const mutation = mutatingCatalog.mutateRemoteProfileIfCurrent(incarnation, async (current) => {
       mutationRan = true;
       await providers.set(
-        { profile: current, profileIncarnationId: incarnation.profileIncarnationId },
+        {
+          profile: current,
+          profileIncarnationId: incarnation.profileIncarnationId,
+        },
         'owner-a',
         'provider-token',
       );
@@ -664,7 +781,10 @@ describe('Runtime Host profiles', () => {
     await removingCatalog.save(profile, 'terminal-token');
     const resolved = await removingCatalog.resolve(profile.id);
     assert.ok(resolved.profileIncarnationId);
-    const incarnation = { profile, profileIncarnationId: resolved.profileIncarnationId };
+    const incarnation = {
+      profile,
+      profileIncarnationId: resolved.profileIncarnationId,
+    };
 
     const removal = removingCatalog.remove(profile.id);
     await removalStarted.promise;
@@ -980,7 +1100,10 @@ describe('Runtime Host profiles', () => {
           events.push('tunnel');
           assert.equal(input.remotePort, 43_210);
           assert.equal(input.websocketPath, '/runtime-host/activated');
-          return { url: 'ws://127.0.0.1:43211/runtime-host/activated', resource };
+          return {
+            url: 'ws://127.0.0.1:43211/runtime-host/activated',
+            resource,
+          };
         },
         connect: async () => {
           events.push('connect');
@@ -1008,7 +1131,10 @@ describe('Runtime Host profiles', () => {
             clientInstanceId: 'client-1',
           },
           {
-            connect: async () => ({ kind: 'unavailable', reason: 'root_mismatch' }),
+            connect: async () => ({
+              kind: 'unavailable',
+              reason: 'root_mismatch',
+            }),
           },
         ),
       (error: unknown) => {
@@ -1195,7 +1321,12 @@ describe('Runtime Host profiles', () => {
             credential: 'revoked-token',
             clientInstanceId: 'client-1',
           },
-          { connect: async () => ({ kind: 'unavailable', reason: 'authentication_failed' }) },
+          {
+            connect: async () => ({
+              kind: 'unavailable',
+              reason: 'authentication_failed',
+            }),
+          },
         ),
       (error: unknown) => {
         assert.ok(error instanceof RuntimeHostPermanentReconnectError);
@@ -1305,7 +1436,13 @@ async function profilePath(): Promise<string> {
 }
 
 function remoteProfile(id: string, url: string, rootId: string): RemoteRuntimeHostProfile {
-  return { id, name: id, kind: 'remote', transport: { kind: 'tls', url }, rootId };
+  return {
+    id,
+    name: id,
+    kind: 'remote',
+    transport: { kind: 'tls', url },
+    rootId,
+  };
 }
 
 function directPeerProfile(
@@ -1319,7 +1456,10 @@ function directPeerProfile(
     name: 'Peer',
     kind: 'remote',
     rootId: ROOT_A,
-    transport: { kind: 'libp2p-direct', reachability: reachability(peerId, routeHints) },
+    transport: {
+      kind: 'libp2p-direct',
+      reachability: reachability(peerId, routeHints),
+    },
   };
 }
 

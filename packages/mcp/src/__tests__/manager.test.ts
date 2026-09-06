@@ -103,7 +103,10 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
         {
           version: MCP_CONFIG_VERSION,
           mcpServers: {
-            remote: { url: 'https://oauth-read.example/mcp', transport: 'streamable-http' },
+            remote: {
+              url: 'https://oauth-read.example/mcp',
+              transport: 'streamable-http',
+            },
           },
         },
         { signal: abort.signal },
@@ -141,7 +144,10 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
         {
           version: MCP_CONFIG_VERSION,
           mcpServers: {
-            remote: { url: 'https://oauth-owner.example/mcp', transport: 'streamable-http' },
+            remote: {
+              url: 'https://oauth-owner.example/mcp',
+              transport: 'streamable-http',
+            },
           },
         },
         { signal: abort.signal },
@@ -191,7 +197,10 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
     test('strips configured headers when a redirect leaves the endpoint origin', async () => {
       // Undici forwards custom headers (X-API-Key) across cross-origin
       // redirects; the manager's scoped fetch must not.
-      const crossOriginSeen: Array<{ authorization?: string; apiKey?: string }> = [];
+      const crossOriginSeen: Array<{
+        authorization?: string;
+        apiKey?: string;
+      }> = [];
       const target = createServer((req, res) => {
         crossOriginSeen.push({
           ...(typeof req.headers.authorization === 'string'
@@ -211,7 +220,9 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
       if (!targetAddress || typeof targetAddress === 'string') throw new Error('no target port');
       const redirector = createServer((req, res) => {
         res
-          .writeHead(307, { location: `http://127.0.0.1:${targetAddress.port}${req.url ?? '/'}` })
+          .writeHead(307, {
+            location: `http://127.0.0.1:${targetAddress.port}${req.url ?? '/'}`,
+          })
           .end();
       });
       await new Promise<void>((resolve, reject) => {
@@ -230,7 +241,10 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
             remote: {
               url: `http://127.0.0.1:${redirectorAddress.port}/mcp`,
               transport: 'streamable-http',
-              headers: { Authorization: 'Bearer remote-test', 'X-API-Key': 'key-123456' },
+              headers: {
+                Authorization: 'Bearer remote-test',
+                'X-API-Key': 'key-123456',
+              },
             },
           },
         });
@@ -405,7 +419,9 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
       await waitFor(() => manager.status('remote')?.error?.includes('duplicate tool') === true);
       assert.equal(manager.toolSnapshot(), replacement);
       assert.deepEqual(
-        await manager.callTool(replacement.tools[0]!.binding, { value: 'retained' }),
+        await manager.callTool(replacement.tools[0]!.binding, {
+          value: 'retained',
+        }),
         {
           content: [{ type: 'text', text: 'retained' }],
           structuredContent: undefined,
@@ -414,7 +430,9 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
     });
 
     test('refreshes for legacy list-changed notifications without an advertised flag', async () => {
-      const fixture = await createRemoteFixture('sse', { advertiseToolListChanges: false });
+      const fixture = await createRemoteFixture('sse', {
+        advertiseToolListChanges: false,
+      });
       const manager = createManager();
       await manager.sync(remoteConfig(`${fixture.url}/sse`, 'auto', 'legacy'));
 
@@ -877,7 +895,10 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
       await fixture.notifyToolListChanged();
       await gate.started;
 
-      const removal = manager.sync({ version: MCP_CONFIG_VERSION, mcpServers: {} });
+      const removal = manager.sync({
+        version: MCP_CONFIG_VERSION,
+        mcpServers: {},
+      });
       let removedBeforeRelease: boolean;
       try {
         removedBeforeRelease = await settlesWithin(removal, 1_000);
@@ -1304,7 +1325,7 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
           mcpServers: {
             fixture: {
               command: process.execPath,
-              args: [fixturePath, '--slow-start'],
+              args: [fixturePath, '--slow-start', '--ignore-sigterm'],
               env: { MAKA_MCP_STDIO_EVENT_LOG: eventLog },
             },
           },
@@ -1322,12 +1343,6 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
         },
         { timeoutMs: 1_000, pollMs: 5 },
       );
-      abort.abort(new Error('cancelled by caller'));
-      await assert.rejects(sync, /cancelled by caller/u);
-      await pollFor(() => manager.status('fixture')?.state === 'disconnected', {
-        timeoutMs: 2_000,
-        pollMs: 5,
-      });
       const events = await readFile(eventLog, 'utf8');
       const start = events
         .split('\n')
@@ -1335,7 +1350,13 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
         .map((line) => JSON.parse(line) as { event: string; pid: number })
         .find((event) => event.event === 'start');
       assert.ok(start);
-      await pollFor(() => !processExists(start.pid), { timeoutMs: 5_000, pollMs: 5 });
+      abort.abort(new Error('cancelled by caller'));
+      await assert.rejects(sync, /cancelled by caller/u);
+      assert.equal(processExists(start.pid), false);
+      await pollFor(() => manager.status('fixture')?.state === 'disconnected', {
+        timeoutMs: 2_000,
+        pollMs: 5,
+      });
       assert.equal(manager.status('fixture')?.state, 'disconnected');
       assert.deepEqual(manager.toolSnapshot().tools, []);
     });
@@ -1387,7 +1408,10 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
         timeoutMs: 2_000,
         pollMs: 5,
       });
-      await pollFor(() => !processExists(start.pid), { timeoutMs: 5_000, pollMs: 5 });
+      await pollFor(() => !processExists(start.pid), {
+        timeoutMs: 5_000,
+        pollMs: 5,
+      });
       assert.deepEqual(manager.toolSnapshot().tools, []);
     });
 
@@ -1676,7 +1700,11 @@ function remoteConfig(
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
-  await pollFor(predicate, { timeoutMs, pollMs: 5, message: 'condition was not reached' });
+  await pollFor(predicate, {
+    timeoutMs,
+    pollMs: 5,
+    message: 'condition was not reached',
+  });
 }
 
 async function settlesWithin(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
@@ -1947,7 +1975,9 @@ function createProtocolServer(options: {
     { name: 'maka-remote-fixture', version: '1.0.0' },
     {
       capabilities: options.advertiseTools
-        ? { tools: options.advertiseToolListChanges === false ? {} : { listChanged: true } }
+        ? {
+            tools: options.advertiseToolListChanges === false ? {} : { listChanged: true },
+          }
         : {},
     },
   );
@@ -1983,7 +2013,10 @@ function createProtocolServer(options: {
                         {
                           name: 'invalid-schema',
                           inputSchema: { type: 'object' as const },
-                          outputSchema: { type: 'string' as const, pattern: '[' },
+                          outputSchema: {
+                            type: 'string' as const,
+                            pattern: '[',
+                          },
                         },
                       ]
                     : [remoteToolDefinition('echo'), remoteToolDefinition('invalid-output')],
@@ -2003,7 +2036,9 @@ function createProtocolServer(options: {
     const args = params.arguments ?? {};
     if (params.name === 'invalid-output') {
       if (args.mode === 'missing') {
-        return { content: [{ type: 'text', text: 'missing structured output' }] };
+        return {
+          content: [{ type: 'text', text: 'missing structured output' }],
+        };
       }
       if (args.mode === 'is-error') {
         return {
@@ -2020,7 +2055,10 @@ function createProtocolServer(options: {
       if (args.mode === 'too-many-error-blocks') {
         return {
           isError: true,
-          content: Array.from({ length: 101 }, () => ({ type: 'text' as const, text: 'x' })),
+          content: Array.from({ length: 101 }, () => ({
+            type: 'text' as const,
+            text: 'x',
+          })),
         };
       }
       return {

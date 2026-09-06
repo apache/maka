@@ -71,7 +71,19 @@ export const CREDENTIAL_SCHEMA_VERSION = 1;
 interface CredentialFile {
   version: number;
   values: Record<string, string>;
+  /** Opaque per-entry generations. Entries remain after deletion so absence
+   * has an identity too and a stale writer cannot pass an ABA cycle. */
+  revisions: Record<string, string>;
 }
+
+export interface CredentialSecretSnapshot {
+  readonly value: string | null;
+  readonly revision: string | null;
+}
+
+export type CredentialRevisionCasResult =
+  | { readonly committed: true; readonly revision: string }
+  | { readonly committed: false; readonly current: CredentialSecretSnapshot };
 
 /**
  * Outcome of a compare-and-set write.
@@ -93,6 +105,8 @@ export type CredentialCasResult =
 
 export interface CredentialStore {
   getSecret(slug: string, kind: CredentialKind): Promise<string | null>;
+  /** Read the value together with an opaque generation suitable for ABA-safe CAS. */
+  getSecretSnapshot?(slug: string, kind: CredentialKind): Promise<CredentialSecretSnapshot>;
   setSecret(slug: string, kind: CredentialKind, value: string): Promise<void>;
   /** Delete one kind, or — with no kind — every kind for the slug (e.g. a
    *  connection being removed). */
@@ -119,6 +133,13 @@ export interface CredentialStore {
     expected: string | null,
     value: string | null,
   ): Promise<CredentialCasResult>;
+  /** Compare by opaque generation rather than secret contents. */
+  compareAndSetSecretRevision?(
+    slug: string,
+    kind: CredentialKind,
+    expectedRevision: string | null,
+    value: string | null,
+  ): Promise<CredentialRevisionCasResult>;
 }
 
 export function createFileCredentialStore(workspaceRoot: string): CredentialStore {
@@ -132,19 +153,25 @@ class FileCredentialStore implements CredentialStore {
     return this.get(slug, toStoredKind(kind));
   }
 
+  async getSecretSnapshot(slug: string, kind: CredentialKind): Promise<CredentialSecretSnapshot> {
+    const key = this.key(slug, toStoredKind(kind));
+    const file = await this.readUnlocked();
+    return snapshot(file, key);
+  }
+
   setSecret(slug: string, kind: CredentialKind, value: string): Promise<void> {
     return this.set(slug, toStoredKind(kind), value);
   }
 
   async deleteSecret(slug: string, kind?: CredentialKind): Promise<void> {
-    await this.mutate((values) => {
+    await this.mutate((file) => {
       if (kind) {
-        delete values[this.key(slug, toStoredKind(kind))];
+        mutateEntry(file, this.key(slug, toStoredKind(kind)), null);
         return;
       }
       // No kind: clear every kind for the slug in one read-modify-write.
       for (const storedKind of STORED_CREDENTIAL_KINDS) {
-        delete values[this.key(slug, storedKind)];
+        mutateEntry(file, this.key(slug, storedKind), null);
       }
     });
   }
@@ -155,9 +182,7 @@ class FileCredentialStore implements CredentialStore {
   }
 
   private set(slug: string, kind: StoredCredentialKind, value: string): Promise<void> {
-    return this.mutate((values) => {
-      values[this.key(slug, kind)] = value;
-    });
+    return this.mutate((file) => mutateEntry(file, this.key(slug, kind), value));
   }
 
   /**
@@ -181,10 +206,26 @@ class FileCredentialStore implements CredentialStore {
       if (current !== expected) {
         return { committed: false, current };
       }
-      if (value === null) delete file.values[key];
-      else file.values[key] = value;
+      mutateEntry(file, key, value);
       await this.write(file);
       return { committed: true };
+    });
+  }
+
+  compareAndSetSecretRevision(
+    slug: string,
+    kind: CredentialKind,
+    expectedRevision: string | null,
+    value: string | null,
+  ): Promise<CredentialRevisionCasResult> {
+    const key = this.key(slug, toStoredKind(kind));
+    return withCredentialFileLock(this.path, async () => {
+      const file = await this.readUnlocked();
+      const current = snapshot(file, key);
+      if (current.revision !== expectedRevision) return { committed: false, current };
+      const revision = mutateEntry(file, key, value);
+      await this.write(file);
+      return { committed: true, revision };
     });
   }
 
@@ -193,10 +234,10 @@ class FileCredentialStore implements CredentialStore {
    * serializes concurrent calls on this instance and a second store instance /
    * process alike, so one mechanism covers both — no separate in-instance queue.
    */
-  private mutate(apply: (values: Record<string, string>) => void): Promise<void> {
+  private mutate(apply: (file: CredentialFile) => void): Promise<void> {
     return withCredentialFileLock(this.path, async () => {
       const file = await this.readUnlocked();
-      apply(file.values);
+      apply(file);
       await this.write(file);
     });
   }
@@ -211,7 +252,11 @@ class FileCredentialStore implements CredentialStore {
       raw = await readFile(this.path, 'utf8');
     } catch (error) {
       if ((error as { code?: string }).code === 'ENOENT') {
-        return { version: CREDENTIAL_SCHEMA_VERSION, values: {} };
+        return {
+          version: CREDENTIAL_SCHEMA_VERSION,
+          values: {},
+          revisions: {},
+        };
       }
       throw error;
     }
@@ -235,12 +280,40 @@ class FileCredentialStore implements CredentialStore {
         throw new Error(`Corrupt credentials.json: value for "${k}" is not a string.`);
       }
     }
-    return { version: CREDENTIAL_SCHEMA_VERSION, values: values as Record<string, string> };
+    const revisions = parsed.revisions ?? {};
+    if (revisions === null || typeof revisions !== 'object' || Array.isArray(revisions)) {
+      throw new Error('Corrupt credentials.json: `revisions` is not an object.');
+    }
+    for (const [k, v] of Object.entries(revisions)) {
+      if (typeof v !== 'string' || v.length === 0) {
+        throw new Error(`Corrupt credentials.json: revision for "${k}" is invalid.`);
+      }
+    }
+    return {
+      version: CREDENTIAL_SCHEMA_VERSION,
+      values: values as Record<string, string>,
+      revisions: revisions as Record<string, string>,
+    };
   }
 
   private write(file: CredentialFile): Promise<void> {
     return writeSecretFileAtomic(this.path, JSON.stringify(file, null, 2) + '\n');
   }
+}
+
+function snapshot(file: CredentialFile, key: string): CredentialSecretSnapshot {
+  return {
+    value: file.values[key] ?? null,
+    revision: file.revisions[key] ?? null,
+  };
+}
+
+function mutateEntry(file: CredentialFile, key: string, value: string | null): string {
+  const revision = randomUUID();
+  if (value === null) delete file.values[key];
+  else file.values[key] = value;
+  file.revisions[key] = revision;
+  return revision;
 }
 
 /**
