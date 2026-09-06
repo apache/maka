@@ -17,11 +17,9 @@
  * under the License.
  */
 
-import { execFile } from 'node:child_process';
 import { copyFile, mkdir, mkdtemp, readdir, realpath, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, normalize, resolve } from 'node:path';
-import { promisify } from 'node:util';
 import {
   SUBAGENT_WORKSPACE_BINDING_SCHEMA_VERSION,
   isSubagentWorkspaceBinding,
@@ -29,12 +27,11 @@ import {
   type SubagentWorkspaceBinding,
   type SubagentWorktreeExecutor,
 } from '@maka/core/subagent-workspace';
+import { execGitBytes, execGitText, type GitExecOptions } from './git-exec.js';
 import { resolveProjectLocation } from './project-catalog.js';
 
-const execFileAsync = promisify(execFile);
 const LEASE_PATTERN = /^subagent_worktree_([a-f0-9]{32})$/;
 const WORKTREE_DIRECTORY_PATTERN = /^[a-f0-9]{32}$/;
-const GIT_TIMEOUT_MS = 2 * 60 * 1_000;
 
 export interface CreateGitWorktreeChildExecutorInput {
   storageRoot: string;
@@ -118,8 +115,8 @@ class GitWorktreeChildExecutor implements SubagentWorktreeExecutor {
           isAbsolute(currentIndex) ? currentIndex : resolve(binding.worktreePath, currentIndex),
           indexPath,
         );
-        const env = { GIT_INDEX_FILE: indexPath };
-        await runGit(binding.worktreePath, ['add', '--all', '--'], env);
+        const gitOptions = { gitIndexFile: indexPath };
+        await runGit(binding.worktreePath, ['add', '--all', '--'], gitOptions);
         return await runGitBytes(
           binding.worktreePath,
           [
@@ -133,7 +130,7 @@ class GitWorktreeChildExecutor implements SubagentWorktreeExecutor {
             binding.baseCommit,
             '--',
           ],
-          env,
+          gitOptions,
         );
       } finally {
         await rm(temporary, { recursive: true, force: true });
@@ -482,41 +479,17 @@ async function gitCurrentBranch(cwd: string): Promise<string | undefined> {
 async function runGit(
   cwd: string,
   args: readonly string[],
-  overrides: Readonly<Record<string, string>> = {},
+  options: GitExecOptions = {},
 ): Promise<string> {
-  const env = gitEnvironment(overrides);
-  const { stdout } = await execFileAsync('git', ['-C', cwd, ...args], {
-    env,
-    encoding: 'utf8',
-    maxBuffer: 1024 * 1024,
-    timeout: GIT_TIMEOUT_MS,
-    windowsHide: true,
-  });
-  return stdout;
+  return execGitText(cwd, args, options);
 }
 
 async function runGitBytes(
   cwd: string,
   args: readonly string[],
-  overrides: Readonly<Record<string, string>> = {},
+  options: GitExecOptions = {},
 ): Promise<Uint8Array> {
-  const { stdout } = await execFileAsync('git', ['-C', cwd, ...args], {
-    env: gitEnvironment(overrides),
-    encoding: 'buffer',
-    maxBuffer: Number.MAX_SAFE_INTEGER,
-    timeout: GIT_TIMEOUT_MS,
-    windowsHide: true,
-  });
-  return new Uint8Array(stdout);
-}
-
-function gitEnvironment(overrides: Readonly<Record<string, string>>): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env, GIT_OPTIONAL_LOCKS: '0', ...overrides };
-  delete env.GIT_DIR;
-  delete env.GIT_WORK_TREE;
-  delete env.GIT_COMMON_DIR;
-  if (overrides.GIT_INDEX_FILE === undefined) delete env.GIT_INDEX_FILE;
-  return env;
+  return execGitBytes(cwd, args, options);
 }
 
 function gitExitCode(error: unknown): number | undefined {
