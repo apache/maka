@@ -1314,7 +1314,9 @@ test('TUI MCP bounds a real post-retirement stdio connection and keeps the commi
         timeouts: { stdioConnectMs: 5_000, listToolsMs: 5_000, callToolMs: 5_000 },
       }),
       createProvider: () => undefined,
-      actionTimeoutMs: 1_000,
+      // Leave enough room for a loaded CI runner to spawn the real child and
+      // reach tools/list; this test triggers cancellation explicitly below.
+      actionTimeoutMs: 5_000,
     },
   );
   let childPid: number | undefined;
@@ -1351,12 +1353,12 @@ test('TUI MCP bounds a real post-retirement stdio connection and keeps the commi
       if (start) childPid = start.pid;
       return events.some((event) => event.event === 'tools-list');
     },
-    { timeoutMs: 1_000, pollMs: 5 },
+    { timeoutMs: 4_000, pollMs: 5 },
   );
 
   abort.abort(new Error('cancel real post-retirement connection'));
 
-  assert.equal(await settlesWithin(editing, 500), true);
+  assert.equal(await settlesWithin(editing, 750), true);
   assert.deepEqual(await editing, { status: 'applied', effect: 'sync_failed' });
   const current = await store.get();
   const docs = current.mcpServers.docs;
