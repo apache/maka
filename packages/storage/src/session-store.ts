@@ -225,6 +225,33 @@ export interface SessionTranscriptMessageLookupRequest {
   readonly maxMessages: number;
 }
 
+/**
+ * One forward page of a Session's legacy rows, for the converter that lifts
+ * them onto the ledger. Nothing else reads `session_messages` any more, so this
+ * is a migration scan rather than a transcript read.
+ */
+export interface SessionMessageScanRequest {
+  /** Exclusive lower bound; omit to start at the first row. */
+  readonly afterSequence?: number;
+  readonly maxStoredBytes: number;
+  readonly maxMessages: number;
+}
+
+export interface SessionMessageScanRecord {
+  readonly sequence: number;
+  readonly message: StoredMessage;
+}
+
+export interface SessionMessageScanPage {
+  readonly records: readonly SessionMessageScanRecord[];
+  /**
+   * The Session's last legacy sequence. It rides along with every page so the
+   * converter can place a turn relative to the whole transcript without a read
+   * that is proportional to it.
+   */
+  readonly highWaterSequence: number | null;
+}
+
 export interface SessionTranscriptPageRequest {
   readonly direction: 'older' | 'newer';
   /** Inclusive durable high-water mark. Omit only for the first read. */
@@ -307,6 +334,10 @@ export interface SessionStore {
   listTurnsSnapshot(sessionId: string): Promise<TurnRecord[]>;
   readHeader(sessionId: string): Promise<SessionHeader>;
   readMessages(sessionId: string): Promise<StoredMessage[]>;
+  readMessagesAfter(
+    sessionId: string,
+    request: SessionMessageScanRequest,
+  ): Promise<SessionMessageScanPage>;
   listTurns(sessionId: string): Promise<TurnRecord[]>;
   appendMessage(sessionId: string, message: StoredMessage): Promise<void>;
   appendMessages(sessionId: string, messages: StoredMessage[]): Promise<void>;
@@ -954,6 +985,14 @@ class SqliteSessionStore implements SessionAuthorityStore {
 
   async readMessages(sessionId: string): Promise<StoredMessage[]> {
     return this.readMessagesSnapshot(sessionId);
+  }
+
+  async readMessagesAfter(
+    sessionId: string,
+    request: SessionMessageScanRequest,
+  ): Promise<SessionMessageScanPage> {
+    await this.ensureReady();
+    return this.metadata.readMessagesAfter(sessionId, request);
   }
 
   async listTurns(sessionId: string): Promise<TurnRecord[]> {

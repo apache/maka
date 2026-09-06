@@ -2424,6 +2424,23 @@ class ReadOnlyStore implements SessionStore {
     return [...this.messages];
   }
 
+  async readMessagesAfter(
+    _sessionId: string,
+    request: { afterSequence?: number; maxMessages: number },
+  ): Promise<{
+    records: readonly { sequence: number; message: StoredMessage }[];
+    highWaterSequence: number | null;
+  }> {
+    this.readMessagesCalls += 1;
+    return {
+      records: this.messages
+        .map((message, sequence) => ({ sequence, message }))
+        .filter(({ sequence }) => sequence > (request.afterSequence ?? -1))
+        .slice(0, request.maxMessages),
+      highWaterSequence: this.messages.length > 0 ? this.messages.length - 1 : null,
+    };
+  }
+
   async listTurns(_sessionId: string): Promise<TurnRecord[]> {
     return deriveTurnRecords(this.messages);
   }

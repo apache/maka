@@ -2246,6 +2246,23 @@ class TinySessionStore implements SessionStore {
     return clone(this.messages.get(sessionId) ?? []);
   }
 
+  async readMessagesAfter(
+    sessionId: string,
+    request: { afterSequence?: number; maxMessages: number },
+  ): Promise<{
+    records: readonly { sequence: number; message: StoredMessage }[];
+    highWaterSequence: number | null;
+  }> {
+    const all = clone(this.messages.get(sessionId) ?? []);
+    return {
+      records: all
+        .map((message, sequence) => ({ sequence, message }))
+        .filter(({ sequence }) => sequence > (request.afterSequence ?? -1))
+        .slice(0, request.maxMessages),
+      highWaterSequence: all.length > 0 ? all.length - 1 : null,
+    };
+  }
+
   async listTurns(sessionId: string): Promise<TurnRecord[]> {
     return deriveTurnRecords(await this.readMessages(sessionId));
   }

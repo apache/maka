@@ -615,6 +615,14 @@ export interface SessionStore {
   readHeader(sessionId: string): Promise<SessionHeader>;
   /** The legacy transcript, read only to convert it onto the ledger. */
   readMessages(sessionId: string): Promise<StoredMessage[]>;
+  /** One forward page of the legacy rows the transcript converter lifts. */
+  readMessagesAfter(
+    sessionId: string,
+    request: { afterSequence?: number; maxMessages: number; maxStoredBytes: number },
+  ): Promise<{
+    records: readonly { sequence: number; message: StoredMessage }[];
+    highWaterSequence: number | null;
+  }>;
   /** Commit the Session-list facts a durable message carries. */
   commitMessageCatalogProjection?(
     sessionId: string,
@@ -902,7 +910,7 @@ export class SessionManager {
     if (deps.runStore && deps.runtimeEventStore) {
       this.runtimeLedgerRepair = new RuntimeLedgerRepair({
         runtimeEventStore: deps.runtimeEventStore,
-        readMessages: (sessionId) => deps.store.readMessages(sessionId),
+        readMessagesAfter: (sessionId, request) => deps.store.readMessagesAfter(sessionId, request),
       });
     }
     this.runtimeKernel = deps.runtimeKernel ?? new RuntimeKernel({ ...deps });
@@ -4267,6 +4275,14 @@ export class SessionManager {
     if (header.transcriptLedgerVersion === 0 && source !== 'import') {
       throw new Error('Imported Session history is still being prepared');
     }
+    // Version 1 says a conversion ran, not that every legacy fact reached the
+    // ledger. A released build set it on the first send and went on writing
+    // context notes to the transcript alone, so those notes stay behind on
+    // Sessions it touched. Re-running the converter cannot reach them: they
+    // belong to turns a real run already sealed, and a sealed run refuses the
+    // append. They are hidden from the model and describe context, so they are
+    // the accepted cost of the cutover — do not read this marker as proof that
+    // nothing is left in `session_messages`.
     if (header.transcriptLedgerVersion !== 1) {
       await repair.materializeTranscriptLedger(header);
       await this.updateHeader(sessionId, { transcriptLedgerVersion: 1 });

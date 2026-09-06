@@ -443,6 +443,8 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
       listTurnsSnapshot: (sessionId) => run(() => sessionStore.listTurnsSnapshot(sessionId)),
       readHeader: (sessionId) => run(() => sessionStore.readHeader(sessionId)),
       readMessages: (sessionId) => run(() => sessionStore.readMessages(sessionId)),
+      readMessagesAfter: (sessionId, request) =>
+        run(() => sessionStore.readMessagesAfter(sessionId, request)),
       listTurns: (sessionId) => run(() => sessionStore.listTurns(sessionId)),
       appendMessage: (sessionId, message) =>
         run(() => sessionStore.appendMessage(sessionId, message)),

@@ -142,6 +142,9 @@ import {
   normalizeSessionHeader,
   SessionNotFoundError,
   type ExternalSessionImportLookupResult,
+  type SessionMessageScanPage,
+  type SessionMessageScanRecord,
+  type SessionMessageScanRequest,
   type SessionTranscriptMessageLookupRequest,
 } from './session-store.js';
 import {
@@ -2550,6 +2553,60 @@ export class SqliteSessionMetadataStore {
 
   async readMessages(sessionId: string): Promise<StoredMessage[]> {
     return this.readMessagesWith(sessionId, decodeStoredMessage);
+  }
+
+  async readMessagesAfter(
+    sessionId: string,
+    request: SessionMessageScanRequest,
+  ): Promise<SessionMessageScanPage> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    if (!Number.isSafeInteger(request.maxMessages) || request.maxMessages < 1) {
+      throw new Error('Invalid Session message count limit');
+    }
+    if (!Number.isSafeInteger(request.maxStoredBytes) || request.maxStoredBytes < 1) {
+      throw new Error('Invalid Session message byte limit');
+    }
+    return this.readTransaction(() => {
+      if (!this.readRecordSync(sessionId)) throw new SessionNotFoundError(sessionId);
+      const rows = this.db
+        .prepare(`
+          SELECT sequence, record_json
+          FROM session_messages
+          WHERE session_id = ? AND sequence > ?
+          ORDER BY sequence
+          LIMIT ?
+        `)
+        .all(sessionId, request.afterSequence ?? -1, request.maxMessages) as Array<{
+        sequence?: unknown;
+        record_json?: unknown;
+      }>;
+      const records: SessionMessageScanRecord[] = [];
+      let storedBytes = 0;
+      for (const row of rows) {
+        const sequence = requireStoredMessageSequence(row.sequence, sessionId);
+        const recordJson = String(row.record_json);
+        // The first record of a page is always taken, so a single row larger
+        // than the budget still makes progress instead of stalling the scan.
+        if (records.length > 0 && storedBytes + recordJson.length > request.maxStoredBytes) break;
+        storedBytes += recordJson.length;
+        try {
+          records.push({
+            sequence,
+            message: decodeStoredMessage(JSON.parse(recordJson) as unknown),
+          });
+        } catch (error) {
+          throw new StoredSessionMessageIncompatibleError(sessionId, sequence, { cause: error });
+        }
+      }
+      const highWater = this.db
+        .prepare('SELECT MAX(sequence) AS high_water FROM session_messages WHERE session_id = ?')
+        .get(sessionId) as { high_water?: unknown };
+      return {
+        records,
+        highWaterSequence: nullableStoredMessageSequence(highWater.high_water, sessionId),
+      };
+    });
   }
 
   async readTranscriptMessages(

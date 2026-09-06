@@ -624,6 +624,16 @@ function memoryStore(): SessionStore {
     list: async () => [],
     readHeader: async () => header,
     readMessages: async () => [...messages],
+    readMessagesAfter: async (
+      _sessionId: string,
+      request: { afterSequence?: number; maxMessages: number },
+    ) => ({
+      records: messages
+        .map((message, sequence) => ({ sequence, message }))
+        .filter(({ sequence }) => sequence > (request.afterSequence ?? -1))
+        .slice(0, request.maxMessages),
+      highWaterSequence: messages.length > 0 ? messages.length - 1 : null,
+    }),
     updateHeader: async (_sessionId, patch) => {
       header = { ...header, ...patch };
       return header;

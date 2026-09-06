@@ -37,9 +37,24 @@ import type { RuntimeEventBackfillOutcome } from './runtime-event-backfill.js';
 
 export interface RuntimeLedgerRepairDeps {
   runtimeEventStore: RuntimeEventStore;
-  /** The legacy transcript this converter reads; nothing writes back to it. */
-  readMessages(sessionId: string): Promise<StoredMessage[]>;
+  /**
+   * One forward page of the legacy transcript this converter reads; nothing
+   * writes back to it. It is read a page at a time because a Session cannot
+   * serve its first transcript page until this finishes, and a Session's
+   * history is not a bound.
+   */
+  readMessagesAfter(
+    sessionId: string,
+    request: { afterSequence?: number; maxMessages: number; maxStoredBytes: number },
+  ): Promise<{
+    records: readonly { sequence: number; message: StoredMessage }[];
+    highWaterSequence: number | null;
+  }>;
 }
+
+/** How much of a legacy transcript one conversion page holds. */
+const TRANSCRIPT_CONVERSION_PAGE_MAX_MESSAGES = 256;
+const TRANSCRIPT_CONVERSION_PAGE_MAX_BYTES = 4 * 1024 * 1024;
 
 export class RuntimeLedgerRepair {
   private readonly queues = new Map<string, Promise<void>>();
@@ -58,10 +73,6 @@ export class RuntimeLedgerRepair {
   async materializeTranscriptLedger(header: SessionHeader): Promise<void> {
     const sessionId = header.id;
     return this.withRepairQueue(sessionId, async () => {
-      const messages = await this.deps.readMessages(sessionId);
-      const ledgerMessages = messages.filter(
-        (message) => message.type !== 'user' || message.steeringEventId === undefined,
-      );
       // A turn the ledger already owns is not converted again. Its own run is
       // the authority even when it never ended — a crashed turn is settled by
       // recovery on that run, and a second, transcript-derived invocation for
@@ -79,22 +90,24 @@ export class RuntimeLedgerRepair {
           .map((invocation) => invocation.turnId),
       );
       const startedRunIds = new Set(inlineInvocations.map((invocation) => invocation.runId));
-      const messagesByTurn = groupMessagesByTurn(ledgerMessages);
-      // A turn whose only user row was steering is not a turn of its own: the
-      // steering was said into a Turn some durable Root already owns, so
-      // converting it would stand a second, synthetic run beside that one.
-      const turns = deriveTurnRecords(ledgerMessages).filter((turn) =>
-        (messagesByTurn.get(turn.turnId) ?? []).some((message) => message.type === 'user'),
-      );
-      if (turns.length === 0) return;
 
-      const firstOpenedAt = Math.max(0, header.createdAt - turns.length);
-
-      for (const [index, turn] of turns.entries()) {
+      for await (const scanned of this.readTurnsInPages(sessionId)) {
+        const turnMessages = scanned.messages;
+        // A turn whose only user row was steering is not a turn of its own: the
+        // steering was said into a Turn some durable Root already owns, so
+        // converting it would stand a second, synthetic run beside that one.
+        if (!turnMessages.some((message) => message.type === 'user')) continue;
+        const [turn] = deriveTurnRecords(turnMessages);
+        if (!turn) continue;
         if (ownedTurnIds.has(turn.turnId)) continue;
-        const turnMessages = messagesByTurn.get(turn.turnId) ?? [];
         const runId = transcriptRunId(sessionId, turn.turnId);
-        const openedAt = firstOpenedAt + index;
+        // Ordered by where the turn starts in the transcript rather than by its
+        // index among all turns: a paged conversion never holds that count, and
+        // both keep every imported opening ahead of the Session's own runs.
+        const openedAt = Math.max(
+          0,
+          header.createdAt - 1 - (scanned.highWater - scanned.firstSequence),
+        );
         const run = { sessionId, runId, turnId: turn.turnId, invocationId: runId };
         // A build before the ids were derived converted under random ones, so
         // an interrupted run of its can hold events this build cannot rederive.
@@ -143,6 +156,51 @@ export class RuntimeLedgerRepair {
         }
       }
     });
+  }
+
+  /**
+   * The Session's legacy rows, one turn at a time, read a page at a time.
+   *
+   * A turn is only complete once a row of another turn follows it, so the rows
+   * of the page's last turn are carried into the next page rather than
+   * converted early. Peak memory is therefore one page plus one turn — the same
+   * bound the transcript reader keeps, and not the Session's whole history.
+   */
+  private async *readTurnsInPages(
+    sessionId: string,
+  ): AsyncGenerator<{ messages: StoredMessage[]; firstSequence: number; highWater: number }> {
+    let carried: { messages: StoredMessage[]; firstSequence: number } | undefined;
+    let afterSequence: number | undefined;
+    while (true) {
+      const page = await this.deps.readMessagesAfter(sessionId, {
+        ...(afterSequence === undefined ? {} : { afterSequence }),
+        maxMessages: TRANSCRIPT_CONVERSION_PAGE_MAX_MESSAGES,
+        maxStoredBytes: TRANSCRIPT_CONVERSION_PAGE_MAX_BYTES,
+      });
+      const highWater = page.highWaterSequence;
+      if (highWater === null) return;
+      const scanned = page.records.filter(
+        ({ message }) => message.type !== 'user' || message.steeringEventId === undefined,
+      );
+      const grouped = new Map<string, { messages: StoredMessage[]; firstSequence: number }>();
+      if (carried) grouped.set(turnIdOf(carried.messages[0]) ?? '', carried);
+      for (const { sequence, message } of scanned) {
+        const turnId = turnIdOf(message);
+        if (!turnId) continue;
+        const bucket = grouped.get(turnId);
+        if (bucket) bucket.messages.push(message);
+        else grouped.set(turnId, { messages: [message], firstSequence: sequence });
+      }
+      const turns = [...grouped.values()];
+      const lastSequence = page.records.at(-1)?.sequence;
+      // The last turn of a page may continue into the next one, so it is held
+      // back rather than converted from a prefix of its own rows. A page with
+      // nothing left to read ends the scan, and what was held back is whole.
+      carried = lastSequence === undefined ? undefined : turns.pop();
+      for (const turn of turns) yield { ...turn, highWater };
+      if (lastSequence === undefined) return;
+      afterSequence = lastSequence;
+    }
   }
 
   private async listInlineInvocations(sessionId: string): Promise<RuntimeInvocationRecord[]> {
@@ -295,14 +353,7 @@ function transcriptOutcomeStatus(status: TurnRecord['status']): RuntimeInvocatio
   return 'cancelled';
 }
 
-function groupMessagesByTurn(messages: readonly StoredMessage[]): Map<string, StoredMessage[]> {
-  const grouped = new Map<string, StoredMessage[]>();
-  for (const message of messages) {
-    const turnId = 'turnId' in message ? message.turnId : undefined;
-    if (!turnId) continue;
-    const bucket = grouped.get(turnId) ?? [];
-    bucket.push(message);
-    grouped.set(turnId, bucket);
-  }
-  return grouped;
+function turnIdOf(message: StoredMessage | undefined): string | undefined {
+  if (!message) return undefined;
+  return 'turnId' in message ? message.turnId : undefined;
 }
