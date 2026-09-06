@@ -672,10 +672,8 @@ export const ProjectGroups: Story = {
     await expect(action).toHaveFocus();
     await userEvent.keyboard('{Enter}');
     await userEvent.click(page.getByRole('menuitem', { name: '重命名' }));
-    // Dialog mounts one frame after the menu closes (#4884).
     await expect(await page.findByRole('dialog', { name: '重命名项目' })).toBeVisible();
     await userEvent.click(page.getByRole('button', { name: '关闭' }));
-    // Focus restores on the frame after the dialog unmounts (#4884).
     await waitFor(() => expect(action).toHaveFocus());
 
     await userEvent.hover(taskControl);
