@@ -134,5 +134,26 @@ export const SubmittedWorkKeepsTargetMetadataInside: Story = {
     expect(button.getBoundingClientRect().bottom).toBeGreaterThanOrEqual(
       project.getBoundingClientRect().bottom,
     );
+
+    // #4914: WorkHub's conversation is one surface — the user bubble rounds
+    // like the composer beneath it, both resolving Astryx's `--radius-chat`
+    // (28px). `density="compact"` on WorkHub's chat primitives swapped the
+    // bubble to `--radius-container` (12px) while the composer stayed 28px,
+    // splitting a transcript and a dock on the same surface by more than 2x.
+    // Measure a probe the token paints rather than reading the token back —
+    // ink-ladder-contract.test.ts forbids the latter — so an upstream
+    // `--radius-chat` change moves both or fails here.
+    const bubble = canvasElement.querySelector<HTMLElement>(
+      '.workhub-projected-turn .workhub-user-bubble',
+    );
+    const bubbleRow = bubble?.parentElement;
+    if (!bubble || !bubbleRow) throw new Error('WorkHub user bubble is missing');
+    const probe = document.createElement('div');
+    probe.style.borderRadius = 'var(--radius-chat)';
+    bubbleRow.append(probe);
+    const chatRadius = getComputedStyle(probe).borderTopLeftRadius;
+    probe.remove();
+    expect(chatRadius).not.toBe('0px');
+    expect(getComputedStyle(bubble).borderTopLeftRadius).toBe(chatRadius);
   },
 };

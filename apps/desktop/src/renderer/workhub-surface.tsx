@@ -398,7 +398,6 @@ export function WorkHubSurface(props: {
         <div className="maka-chat-shell">
           <ChatMessageList
             className="maka-chat-message-list maka-chatContent workhub-message-list"
-            density="compact"
             gap={4}
             isStreaming={pending}
           >
@@ -508,7 +507,6 @@ export function WorkHubCoordinationStatus(props: {
         <div className="maka-chat-shell">
           <ChatMessageList
             className="maka-chat-message-list maka-chatContent workhub-message-list"
-            density="compact"
             gap={4}
             isStreaming={resolving}
           >
@@ -769,12 +767,12 @@ function WorkHubMessageFrame(props: {
       data-state={props.state}
       data-link-state={props.linkState}
     >
-      <ChatMessage sender="user" density="compact" className="workhub-message">
+      <ChatMessage sender="user" className="workhub-message">
         <ChatMessageBubble className="maka-chat-message-bubble maka-chat-message-bubble-user workhub-user-bubble">
           <p>{props.text}</p>
         </ChatMessageBubble>
       </ChatMessage>
-      <ChatMessage sender="assistant" density="compact" className="workhub-message">
+      <ChatMessage sender="assistant" className="workhub-message">
         <ChatMessageBubble
           variant="ghost"
           width="100%"
