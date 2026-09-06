@@ -143,6 +143,20 @@
   contain-intrinsic-block-size: auto 96px;
 }
 
+/* The containment clip sits at the marked element's own box, and the ghost
+   assistant bubble carries no horizontal padding — the clip edge landed on
+   the line-box origin itself, so glyph ink reaching a pixel or two past it
+   (italic overhang, CJK ideographs) lost its leftmost column (#4898). Pad
+   the boundary to give that ink room inside the clip and pull the wider box
+   back with a matching negative margin: the text keeps its exact position
+   and the ghost bubble paints nothing of its own, so the wider box is not
+   visible. Card-styled boundary sites (reasoning, tool activity) already pad
+   their content and do not need this. */
+.maka-chat-message-list .maka-chat-message-bubble-assistant[data-maka-transcript-boundary] {
+  padding-inline: var(--space-1);
+  margin-inline: calc(-1 * var(--space-1));
+}
+
 /* Container blocks — a Processing sequence, a linked-agent list — hold many
    entries, so their first-paint estimate stays multi-line. It remains an
    estimate rather than a clamp: the block grows to its measured size after
