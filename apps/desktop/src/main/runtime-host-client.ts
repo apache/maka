@@ -114,6 +114,7 @@ import {
   type CollaborationGrantRevokeResult,
   type CollaborationInvitationPrepareResult,
   type CollaborationPrincipalRevokeResult,
+  type CollaborationPrincipalRenameResult,
   type CollaborationTurnRequestAcknowledgeResult,
   type CollaborationTurnRequestDecideResult,
   type CollaborationTurnRequestQueryResult,
@@ -334,6 +335,10 @@ export class DesktopRuntimeHostClient {
     principalId: string,
   ): Promise<CollaborationPrincipalRevokeResult> {
     return this.request('collaboration.principal.revoke', { principalId });
+  }
+
+  renameCollaborationPrincipal(principalId: string, displayName: string): Promise<CollaborationPrincipalRenameResult> {
+    return this.request('collaboration.principal.rename', { principalId, displayName });
   }
 
   createCollaborationTurnRequest(

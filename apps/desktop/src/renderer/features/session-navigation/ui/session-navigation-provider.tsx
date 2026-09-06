@@ -47,6 +47,7 @@ import type { SessionNavigationPorts, SessionNavigationSession } from '../ports.
 
 /** The chrome the shell owns and the rail only displays. */
 export interface SessionNavigationChromeInput {
+  NavigationExtras?: ComponentType<{ readonly onOpenSession: (sessionId: string) => void }>;
   selection: NavSelection;
   scheduledTasks?: readonly ScheduledTask[];
   moduleMemory?: NavModuleMemory;
@@ -192,6 +193,8 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
   // a few dozen fibers — and every field on it follows the shell, so a
   // comparator here would run more often than it would save.
   const chrome: SessionRailChrome = {
+    auxiliaryNavigation: props.NavigationExtras
+      ? <props.NavigationExtras onOpenSession={props.onSelectSession} /> : undefined,
     collapsed: controller.layout.collapsed,
     onCollapsedChange: sessionRailLayoutStore.setCollapsed,
     collapseHandleRef: sessionRailLayoutStore.collapseHandleRef,

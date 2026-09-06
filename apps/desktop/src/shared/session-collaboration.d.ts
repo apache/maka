@@ -49,6 +49,13 @@ export interface SessionCollaborationMountSummary {
   readonly name: string;
   readonly hostId: string;
   readonly readiness: 'connecting' | 'ready' | 'reconnecting' | 'unavailable';
+  readonly failure?: SessionCollaborationMountFailure;
   readonly peerPath?: RuntimeHostPeerConnectionPath;
   readonly session?: SharedSessionCatalogProjection;
 }
+
+export type SessionCollaborationMountFailure =
+  | 'credential_rejected'
+  | 'session_unavailable'
+  | 'peer_path_unavailable'
+  | 'connection_failed';

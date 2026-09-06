@@ -41,6 +41,7 @@ import type {
   SessionCollaborationImportPhase,
   SessionCollaborationImportResult,
   SessionCollaborationMountSummary,
+  SessionCollaborationMountFailure,
 } from '../shared/session-collaboration.js';
 import {
   decodeDesktopCollaborationInvitation,
@@ -51,7 +52,7 @@ import {
   type RuntimeHostGuestAccessFinalization,
 } from './runtime-host-desktop-manager.js';
 
-const STORE_SCHEMA_VERSION = 1;
+const STORE_SCHEMA_VERSION = 2;
 const STORE_SLOT = 'desktop-guest-session-mounts';
 const MAX_MOUNTS = 128;
 const STARTUP_RETRY_MAX_MS = 30_000;
@@ -64,12 +65,13 @@ export interface GuestSessionMount {
   readonly transport: RuntimeHostRemoteTransport;
   readonly credential: string;
   readonly session?: SharedSessionCatalogProjection;
+  readonly accessFailure?: 'credential_rejected' | 'session_unavailable';
 }
 
 type GuestSessionMountReadiness = SessionCollaborationMountSummary['readiness'];
 
 interface GuestSessionMountDocument {
-  readonly schemaVersion: typeof STORE_SCHEMA_VERSION;
+  readonly schemaVersion: 1 | typeof STORE_SCHEMA_VERSION;
   readonly mounts: readonly GuestSessionMount[];
 }
 
@@ -122,6 +124,8 @@ export interface DesktopGuestSessionMountService {
   ): Promise<SessionCollaborationImportResult>;
   cancelImport(operationId: string): SessionCollaborationCancelResult;
   remove(mountId: string): Promise<void>;
+  retry(mountId: string): Promise<void>;
+  rename(mountId: string, name: string): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -139,7 +143,8 @@ export function createGuestSessionMountStore(
         throw new Error(`At most ${MAX_MOUNTS} shared Sessions can be retained`);
       }
       const document: GuestSessionMountDocument = {
-        schemaVersion: STORE_SCHEMA_VERSION,
+        // Fence downgrade only when there is a terminal access decision to preserve.
+        schemaVersion: mounts.some((mount) => mount.accessFailure !== undefined) ? STORE_SCHEMA_VERSION : 1,
         mounts: mounts
           .map((mount) =>
             mount.session ? { ...mount, session: retainedSession(mount.session) } : mount,
@@ -169,16 +174,19 @@ export function createDesktopGuestSessionMountService(input: {
     mountId: string,
     signal: AbortSignal,
     onAccessActivated?: () => void,
+    onFinalizationStarted?: () => void,
   ) => Promise<RuntimeHostGuestAccessFinalization>;
   readonly getSharedSession: (mountId: string) => Promise<SharedSessionCatalogProjection | null>;
   readonly inspect: (mountId: string) =>
     | {
         readonly readiness: GuestSessionMountReadiness;
         readonly peerPath?: RuntimeHostPeerConnectionPath;
+        readonly error?: Error;
       }
     | undefined;
   readonly onMountsChanged: () => void;
   readonly unmount: (mountId: string) => Promise<void>;
+  readonly wakeConnection?: (mountId: string) => void;
   readonly wait?: (delayMs: number, signal: AbortSignal) => Promise<void>;
   readonly onError?: (error: Error, mount: GuestSessionMount) => void;
 }): DesktopGuestSessionMountService {
@@ -190,7 +198,8 @@ export function createDesktopGuestSessionMountService(input: {
     });
   const activations = new Set<LiveGuestActivation>();
   const removingMounts = new Set<string>();
-  const invalidatedAccessMounts = new Set<string>();
+  // Immediate authority-loss fence while a prior serialized write settles.
+  const invalidatingAccess = new Set<string>();
   const refreshes = new Map<string, LiveGuestRefresh>();
   let mounts: Map<string, GuestSessionMount> | undefined;
   let mutationTail = Promise.resolve();
@@ -199,6 +208,8 @@ export function createDesktopGuestSessionMountService(input: {
   const deferredWriteRetryController = new AbortController();
   const projectionLifetime = new AbortController();
   let closed = false;
+  const accessInvalidated = (mountId: string): boolean =>
+    invalidatingAccess.has(mountId) || mounts?.get(mountId)?.accessFailure !== undefined;
 
   const readSharedSession = (
     mountId: string,
@@ -280,38 +291,30 @@ export function createDesktopGuestSessionMountService(input: {
     deferredWriteFailure = undefined;
   };
 
-  const clearSessionProjection = async (mountId: string): Promise<void> => {
+  const clearSessionProjection = async (
+    mountId: string,
+    accessFailure: NonNullable<GuestSessionMount['accessFailure']> = 'session_unavailable',
+  ): Promise<void> => {
     // This fence is installed before the durable mutation is queued so a
     // concurrent refresh cannot restore a projection after authority loss.
-    invalidatedAccessMounts.add(mountId);
+    invalidatingAccess.add(mountId);
     await mutate(async () => {
       const current = await load();
       const mount = current.get(mountId);
       if (!mount) {
-        invalidatedAccessMounts.delete(mountId);
+        invalidatingAccess.delete(mountId);
         return;
       }
-      let next = current;
-      if (mount.session) {
-        next = new Map(current).set(mountId, {
-          mountId: mount.mountId,
-          name: mount.name,
-          rootId: mount.rootId,
-          transport: mount.transport,
-          credential: mount.credential,
-        });
-        // Authority loss takes effect in memory before a fallible credential
-        // store write. A locked or unavailable store must never keep exposing
-        // a projection whose credential has already been rejected.
-        mounts = next;
-      }
+      const { session: _session, ...retained } = mount;
+      const next = new Map(current).set(mountId, { ...retained, accessFailure });
+      mounts = next;
       notifyMountsChanged();
-      if (!mount.session && !deferredWriteFailure) return;
-      const error = await persistDeferredState(next, mount.session ? mount : undefined);
+      const error = await persistDeferredState(next, mount);
       if (error) {
         scheduleDeferredWriteRetry();
         throw error;
       }
+      invalidatingAccess.delete(mountId);
     });
   };
 
@@ -355,11 +358,11 @@ export function createDesktopGuestSessionMountService(input: {
     mount: GuestSessionMount,
     session: SharedSessionCatalogProjection,
   ): Promise<void> => {
-    if (invalidatedAccessMounts.has(mount.mountId)) {
+    if (accessInvalidated(mount.mountId)) {
       throw new RuntimeHostPermanentReconnectError('Shared Session access is no longer available');
     }
     const superseded = await mutate(async () => {
-      if (invalidatedAccessMounts.has(mount.mountId)) {
+      if (accessInvalidated(mount.mountId)) {
         throw new RuntimeHostPermanentReconnectError(
           'Shared Session access is no longer available',
         );
@@ -395,13 +398,13 @@ export function createDesktopGuestSessionMountService(input: {
     for (const duplicate of superseded) {
       void input.unmount(duplicate.mountId).catch((error) => onError(asError(error), duplicate));
     }
-    if (invalidatedAccessMounts.has(mount.mountId)) {
+    if (accessInvalidated(mount.mountId)) {
       throw new RuntimeHostPermanentReconnectError('Shared Session access is no longer available');
     }
   };
 
   const refreshOnce = async (mountId: string): Promise<void> => {
-    if (removingMounts.has(mountId) || invalidatedAccessMounts.has(mountId)) return;
+    if (removingMounts.has(mountId) || accessInvalidated(mountId)) return;
     // A catalog change may arrive after activation read its projection but
     // before that projection is committed. Wait for the admitted activation
     // and read again so the later authoritative state cannot be lost. Once
@@ -410,14 +413,14 @@ export function createDesktopGuestSessionMountService(input: {
       const activation = [...activations].find((candidate) => candidate.mountId === mountId);
       if (!activation) break;
       await activation.task.catch(() => undefined);
-      if (removingMounts.has(mountId) || invalidatedAccessMounts.has(mountId)) return;
+      if (removingMounts.has(mountId) || accessInvalidated(mountId)) return;
     }
     const mount = (await mutate(load)).get(mountId);
     if (!mount) return;
     const inspected = input.inspect(mountId);
     if (inspected && inspected.readiness !== 'ready') return;
     const session = await readSharedSession(mountId);
-    if (removingMounts.has(mountId) || invalidatedAccessMounts.has(mountId)) return;
+    if (removingMounts.has(mountId) || accessInvalidated(mountId)) return;
     if (!session) {
       await clearSessionProjection(mountId);
       return;
@@ -483,15 +486,16 @@ export function createDesktopGuestSessionMountService(input: {
     if (removingMounts.has(mount.mountId)) {
       throw new Error('Shared Session mount was removed while connecting');
     }
-    activation.stage = 'finalizing';
-    if (activation.kind === 'import') {
-      reportImportProgress(activation.onProgress, 'finalizing_access');
-    }
     const finalization = (async (): Promise<RuntimeHostGuestAccessFinalization> => {
       const result = await input.finalizeAccess(mount.mountId, activation.controller.signal, () => {
         activation.accessActivated = true;
         if (activation.kind === 'import') {
           reportImportProgress(activation.onProgress, 'loading_session');
+        }
+      }, () => {
+        activation.stage = 'finalizing';
+        if (activation.kind === 'import') {
+          reportImportProgress(activation.onProgress, 'finalizing_access');
         }
       });
       activation.accessActivated = true;
@@ -526,6 +530,7 @@ export function createDesktopGuestSessionMountService(input: {
   const beginStartupReconciliation = (mount: GuestSessionMount): void => {
     if (
       closed ||
+      accessInvalidated(mount.mountId) ||
       removingMounts.has(mount.mountId) ||
       [...activations].some((activation) => activation.mountId === mount.mountId)
     )
@@ -542,7 +547,7 @@ export function createDesktopGuestSessionMountService(input: {
     activation.task = (async () => {
       let delayMs = 1_000;
       while (!closed && !activation.controller.signal.aborted) {
-        if (!(await load()).has(mount.mountId)) return;
+        if (!(await load()).has(mount.mountId) || accessInvalidated(mount.mountId)) return;
         try {
           const result = await activate(activation, mount);
           if (result === 'ready') return;
@@ -557,7 +562,7 @@ export function createDesktopGuestSessionMountService(input: {
           const failure = asError(error);
           onError(failure, mount);
           if (isRejectedAccessFailure(failure)) {
-            await clearSessionProjection(mount.mountId);
+            await clearSessionProjection(mount.mountId, 'credential_rejected');
             return;
           }
           if (failure instanceof RuntimeHostPermanentReconnectError) {
@@ -600,7 +605,7 @@ export function createDesktopGuestSessionMountService(input: {
         return mount;
       });
       if (!removed) return;
-      invalidatedAccessMounts.delete(mountId);
+      invalidatingAccess.delete(mountId);
       notifyMountsChanged();
       for (const activation of activations) {
         if (activation.mountId === mountId) {
@@ -681,7 +686,7 @@ export function createDesktopGuestSessionMountService(input: {
         });
         activation.controller.abort(new Error('Shared Session mount activation failed'));
         await input.unmount(mount.mountId).catch(() => undefined);
-        invalidatedAccessMounts.delete(mount.mountId);
+        invalidatingAccess.delete(mount.mountId);
       }
       return reconcile
         ? { kind: 'recovering', mountId: mount.mountId }
@@ -746,7 +751,7 @@ export function createDesktopGuestSessionMountService(input: {
             (candidate) => candidate.mountId === mount.mountId,
           );
           const currentReadiness = deriveMountReadiness({
-            accessInvalidated: invalidatedAccessMounts.has(mount.mountId),
+            accessInvalidated: accessInvalidated(mount.mountId),
             activationKind: activation?.kind,
             activationAccessActivated: activation?.accessActivated === true,
             connectionReadiness: inspected?.readiness,
@@ -757,8 +762,11 @@ export function createDesktopGuestSessionMountService(input: {
             name: mount.name,
             hostId: mount.rootId,
             readiness: currentReadiness,
+            ...(mount.accessFailure
+              ? { failure: mount.accessFailure }
+              : inspected?.error ? { failure: connectionFailure(inspected.error) } : {}),
             ...(inspected?.peerPath ? { peerPath: inspected.peerPath } : {}),
-            ...(!invalidatedAccessMounts.has(mount.mountId) && mount.session
+            ...(!accessInvalidated(mount.mountId) && mount.session
               ? { session: mount.session }
               : {}),
           };
@@ -769,7 +777,7 @@ export function createDesktopGuestSessionMountService(input: {
     async connectionChanged(mountId, error) {
       if (closed) return;
       if (error && isRejectedAccessFailure(error)) {
-        await clearSessionProjection(mountId);
+        await clearSessionProjection(mountId, 'credential_rejected');
         return;
       }
       notifyMountsChanged();
@@ -795,6 +803,29 @@ export function createDesktopGuestSessionMountService(input: {
     },
 
     remove,
+
+    async retry(mountId) {
+      const mount = (await mutate(load)).get(mountId);
+      if (!mount || accessInvalidated(mountId)) return;
+      if (closed || removingMounts.has(mountId)) return;
+      input.wakeConnection?.(mountId);
+      if (input.inspect(mountId)?.readiness === 'ready') return;
+      beginStartupReconciliation(mount);
+      notifyMountsChanged();
+    },
+
+    async rename(mountId, name) {
+      if (typeof name !== 'string' || !name.trim() || Buffer.byteLength(name.trim(), 'utf8') > 256) {
+        throw new Error('Shared task name must contain between 1 and 256 UTF-8 bytes');
+      }
+      await mutate(async () => {
+        const current = await load();
+        const mount = current.get(mountId);
+        if (!mount) throw new Error('Shared task was removed');
+        await persist(new Map(current).set(mountId, { ...mount, name: name.trim() }));
+      });
+      notifyMountsChanged();
+    },
 
     async close() {
       closed = true;
@@ -857,6 +888,8 @@ export function registerDesktopGuestSessionMountIpc(
     'session-collaboration:mount:list',
     'session-collaboration:mount:remove',
     'session-collaboration:invitation:read-clipboard',
+    'session-collaboration:mount:retry',
+    'session-collaboration:mount:rename',
   ] as const;
   ipcMain.handle(
     channels[0],
@@ -874,6 +907,8 @@ export function registerDesktopGuestSessionMountIpc(
   );
   ipcMain.handle(channels[2], () => service.list());
   ipcMain.handle(channels[3], (_event, mountId: string) => service.remove(mountId));
+  ipcMain.handle(channels[5], (_event, mountId: string) => service.retry(mountId));
+  ipcMain.handle(channels[6], (_event, mountId: string, name: string) => service.rename(mountId, name));
   ipcMain.handle(channels[4], () => {
     const value = readClipboardText().trim();
     if (Buffer.byteLength(value, 'utf8') > DESKTOP_COLLABORATION_INVITATION_CODE_MAX_BYTES) {
@@ -906,7 +941,7 @@ function decodeDocument(value: unknown): GuestSessionMountDocument {
   if (!isRecord(value) || !hasExactKeys(value, ['schemaVersion', 'mounts'])) {
     throw new Error('Shared Session mount store is invalid');
   }
-  if (value.schemaVersion !== STORE_SCHEMA_VERSION || !Array.isArray(value.mounts)) {
+  if ((value.schemaVersion !== 1 && value.schemaVersion !== STORE_SCHEMA_VERSION) || !Array.isArray(value.mounts)) {
     throw new Error('Shared Session mount store version is unsupported');
   }
   if (value.mounts.length > MAX_MOUNTS) {
@@ -922,6 +957,7 @@ function decodeDocument(value: unknown): GuestSessionMountDocument {
 function decodeMount(value: unknown): GuestSessionMount {
   const keys = ['mountId', 'name', 'rootId', 'transport', 'credential'];
   if (isRecord(value) && value.session !== undefined) keys.push('session');
+  if (isRecord(value) && value.accessFailure !== undefined) keys.push('accessFailure');
   if (
     !isRecord(value) ||
     !hasExactKeys(value, keys) ||
@@ -946,6 +982,7 @@ function decodeMount(value: unknown): GuestSessionMount {
     rootId: target.rootId,
     transport: target.transport,
     credential: value.credential,
+    ...(value.accessFailure === undefined ? {} : { accessFailure: decodeAccessFailure(value.accessFailure) }),
     ...(value.session === undefined
       ? {}
       : {
@@ -963,6 +1000,16 @@ function isRejectedAccessFailure(error: Error): boolean {
   return (
     error instanceof RuntimeHostProfileConnectionError && error.reason === 'credential_rejected'
   );
+}
+
+function decodeAccessFailure(value: unknown): NonNullable<GuestSessionMount['accessFailure']> {
+  if (value === 'credential_rejected' || value === 'session_unavailable') return value;
+  throw new Error('Invalid shared task access failure');
+}
+
+function connectionFailure(error: Error): SessionCollaborationMountFailure {
+  return isRejectedAccessFailure(error) ? 'credential_rejected'
+    : isPeerPathUnavailable(error) ? 'peer_path_unavailable' : 'connection_failed';
 }
 
 function isPeerPathUnavailable(error: unknown): boolean {

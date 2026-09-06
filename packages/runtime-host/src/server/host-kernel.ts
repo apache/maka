@@ -74,6 +74,7 @@ import {
   revokeAccessCredentialRotation,
   revokeCollaborationGrant,
   revokeCollaborationPrincipal,
+  renameCollaborationPrincipal,
   type RuntimeHostAccessAuthority,
 } from './access-authority.js';
 import type { RuntimeHostConnectionAuthority } from './connection-authority.js';
@@ -786,6 +787,8 @@ export class RuntimeHostKernel {
           this.#settleAccessCredentialMutation(
             revokeCollaborationGrant(this.#options.accessAuthority, input),
           ),
+        'collaboration.principal.rename': async (input) =>
+          renameCollaborationPrincipal(this.#options.accessAuthority, input),
         'collaboration.principal.revoke': async (input) =>
           this.#settleAccessCredentialMutation(
             revokeCollaborationPrincipal(this.#options.accessAuthority, input.principalId),

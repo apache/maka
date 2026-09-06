@@ -849,6 +849,28 @@ test('reports Guest admission capacity instead of retrying the initial mount', a
   }
 });
 
+test('Guest finalization does not claim a commit while the peer path is unavailable', async () => {
+  const local = candidateHarness({ hostId: 'host-a' });
+  const failure = new RuntimeHostPeerError('direct_path_unavailable', 'No direct path');
+  const manager = await startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
+    startCandidate: async (input) => {
+      if (!input.profileTarget) return ready(local.candidate);
+      throw failure;
+    },
+    reconnectBackoff: { minMs: 50, maxMs: 50 },
+    pairingFinalizationTimeoutMs: 10,
+  });
+  try {
+    await manager.mountGuest(peerGuestTarget('shared-offline'), () => undefined);
+    let dispatched = false;
+    await assert.rejects(manager.finalizeGuestAccess('shared-offline', undefined, assert.fail,
+      () => { dispatched = true; }), (error) => error === failure);
+    assert.equal(dispatched, false);
+  } finally {
+    await manager.close();
+  }
+});
+
 test('completes Guest import at credential activation while reconnect continues', async () => {
   const local = candidateHarness({ hostId: 'host-a' });
   const remoteHostId = 'a'.repeat(64);

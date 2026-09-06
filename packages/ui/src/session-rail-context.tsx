@@ -71,6 +71,7 @@ export interface SessionRailData {
  * footer-only projection because download progress is independent of both.
  */
 export interface SessionRailChrome {
+  auxiliaryNavigation?: ReactNode;
   collapsed: boolean;
   onCollapsedChange(collapsed: boolean): void;
   collapseHandleRef?: Ref<SideNavImperativeCollapseHandle>;

@@ -98,6 +98,7 @@ export function SessionSidebarNav() {
         isSelected={automationsActive}
         onClick={() => props.onSelect({ section: 'automations', module: moduleMemory.automations })}
       />
+      {props.auxiliaryNavigation}
     </SideNavSection>
   );
 }

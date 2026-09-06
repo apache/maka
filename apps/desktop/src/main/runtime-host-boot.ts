@@ -631,9 +631,9 @@ const guestSessionMountService = createDesktopGuestSessionMountService({
       },
     );
   },
-  finalizeAccess: async (mountId, signal, onAccessActivated) => {
+  finalizeAccess: async (mountId, signal, onAccessActivated, onFinalizationStarted) => {
     if (!runtimeHostManager) throw new Error('Runtime Host manager is unavailable');
-    return runtimeHostManager.finalizeGuestAccess(mountId, signal, onAccessActivated);
+    return runtimeHostManager.finalizeGuestAccess(mountId, signal, onAccessActivated, onFinalizationStarted);
   },
   getSharedSession: async (mountId) => {
     const current = runtimeHostManager?.current(mountId);
@@ -649,12 +649,14 @@ const guestSessionMountService = createDesktopGuestSessionMountService({
     if (!state) return undefined;
     return {
       readiness: state.readiness,
+      ...(state.readiness !== 'ready' && state.error ? { error: state.error } : {}),
       ...(state.readiness === 'ready' && state.candidate.client.peerPath
         ? { peerPath: state.candidate.client.peerPath }
         : {}),
     };
   },
   onMountsChanged: notifyGuestSessionMountsChanged,
+  wakeConnection: (mountId) => runtimeHostManager?.wakePeerRecovery(mountId),
   unmount: async (mountId) => {
     if (!runtimeHostManager) return;
     await runtimeHostManager.unmountGuest(mountId);

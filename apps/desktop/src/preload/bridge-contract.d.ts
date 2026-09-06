@@ -717,6 +717,7 @@ export interface MakaBridge {
       allowInsecure?: boolean,
     ): Promise<DesktopSessionCollaborationPrepareResult>;
     getAccess(sessionId: string): Promise<CollaborationAccessQueryResult>;
+    renamePrincipal(sessionId: string, principalId: string, displayName: string): Promise<{ readonly renamed: boolean }>;
     revokeGrant(
       sessionId: string,
       grantId: string,
@@ -736,6 +737,8 @@ export interface MakaBridge {
     listMounts(): Promise<readonly DesktopGuestSessionMountSummary[]>;
     subscribeMountChanges(handler: () => void): () => void;
     removeMount(mountId: string): Promise<void>;
+    retryMount(mountId: string): Promise<void>;
+    renameMount(mountId: string, name: string): Promise<void>;
     requestTurn(
       sessionId: string,
       input:

@@ -1399,6 +1399,10 @@ const makaBridge = {
         principalId,
       );
     },
+    async renamePrincipal(sessionId, principalId, displayName) {
+      const session = await runtimeHostSessionRef(sessionId);
+      return ipcRenderer.invoke('session-collaboration:renamePrincipal', session.scope, principalId, displayName);
+    },
     async revokeGrant(sessionId, grantId) {
       const session = await runtimeHostSessionRef(sessionId);
       return ipcRenderer.invoke(
@@ -1441,6 +1445,12 @@ const makaBridge = {
     },
     removeMount(mountId) {
       return ipcRenderer.invoke('session-collaboration:mount:remove', mountId);
+    },
+    retryMount(mountId) {
+      return ipcRenderer.invoke('session-collaboration:mount:retry', mountId);
+    },
+    renameMount(mountId, name) {
+      return ipcRenderer.invoke('session-collaboration:mount:rename', mountId, name);
     },
     async requestTurn(sessionId, input) {
       const session = await runtimeHostSessionRef(sessionId);

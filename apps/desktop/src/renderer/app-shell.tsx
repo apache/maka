@@ -2640,7 +2640,7 @@ function AppShellContent({
                     ? {
                         name: titlebarProjectName,
                         ...(activeProjectCapabilities.viewClientPath
-                          ? { onOpenFolder: () => void openProjectFolder() }
+                          ? { onOpenFolder: openProjectFolder }
                           : {}),
                       }
                     : undefined
@@ -2681,6 +2681,7 @@ function AppShellContent({
                 streamingSessionIds={streamingSessionIds}
                 staleSessionIds={staleSessionIds}
                 SessionBadge={SessionCollaboration.SessionTurnRequestBadge}
+                NavigationExtras={SessionCollaboration.SessionCollaborationNavigation}
                 ports={sessionNavigationPorts}
                 commandsRef={sessionNavigationCommandsRef}
                 onExitWorkHub={exitWorkHub}
@@ -2690,7 +2691,7 @@ function AppShellContent({
                 moduleMemory={navigationState.moduleMemory}
                 onSelect={setNavSelection}
                 onOpenSettings={openSettings}
-                onNew={() => void createSession()}
+                onNew={createSession}
                 workHubEntry={workHubEnabled ? {
                   active: workHubActive,
                   label: 'WorkHub',
