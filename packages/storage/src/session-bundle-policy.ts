@@ -28,6 +28,7 @@ import {
   acquireOperationalStateDatabase,
   OPERATIONAL_STATE_DATABASE_NAME,
 } from './operational-state-store.js';
+import { isSafeStorageId } from './storage-id.js';
 
 export const SESSION_BUNDLE_STATE_ENTRIES = ['artifacts', OPERATIONAL_STATE_DATABASE_NAME] as const;
 export const SESSION_BUNDLE_PROTECTED_ENTRIES = [] as const;
@@ -377,7 +378,7 @@ function assertRootsSeparate(left: string, right: string, allowSame: boolean): v
 }
 
 function assertSafeSessionId(sessionId: string): void {
-  if (!/^[A-Za-z0-9_-]{1,128}$/.test(sessionId)) {
+  if (!isSafeStorageId(sessionId)) {
     throw new SessionBundleExportError('invalid_root', `Invalid session id: ${sessionId}`);
   }
 }

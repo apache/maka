@@ -17,20 +17,17 @@
  * under the License.
  */
 
-import type { RuntimeEvent } from '@maka/core/runtime-event';
-import { isSafeStorageId } from './storage-id.js';
+const SAFE_STORAGE_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 
-export function isRuntimeStorageSafeId(value: string): boolean {
-  return isSafeStorageId(value);
+/** Returns whether a value can safely be used as a persisted storage identity. */
+export function isSafeStorageId(value: unknown): value is string {
+  return typeof value === 'string' && SAFE_STORAGE_ID_PATTERN.test(value);
 }
 
-export function immutableSteeringMessageId(event: RuntimeEvent): string | undefined {
-  const messageId = event.refs?.providerEventId;
-  return event.partial === false &&
-    typeof messageId === 'string' &&
-    isRuntimeStorageSafeId(messageId) &&
-    event.content?.kind === 'text' &&
-    event.content.steering === true
-    ? messageId
-    : undefined;
+/** Throws a TypeError unless the value is a safe persisted storage identity. */
+export function assertSafeStorageId(
+  value: unknown,
+  message = 'Storage identity is invalid',
+): asserts value is string {
+  if (!isSafeStorageId(value)) throw new TypeError(message);
 }
