@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -31,6 +31,7 @@ import {
 
 function immediateSuccessSpawn(started) {
   return (_command, options) => {
+    assert.ok(existsSync(options.cwd), `spawned into a missing directory: ${options.cwd}`);
     started.push(options.cwd);
     const child = new EventEmitter();
     queueMicrotask(() => child.emit('close', 0));
@@ -38,7 +39,7 @@ function immediateSuccessSpawn(started) {
   };
 }
 
-function withWorkspaceTree(files, body) {
+async function withWorkspaceTree(files, body) {
   const root = mkdtempSync(join(tmpdir(), 'maka-workspace-order-'));
   try {
     for (const [path, contents] of Object.entries(files)) {
@@ -46,7 +47,7 @@ function withWorkspaceTree(files, body) {
       mkdirSync(join(absolute, '..'), { recursive: true });
       writeFileSync(absolute, contents);
     }
-    return body(root);
+    return await body(root);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -79,8 +80,8 @@ test('equally weighted workspaces keep their declared order', () => {
   );
 });
 
-test('build output and dependencies do not count toward a workspace weight', () => {
-  withWorkspaceTree(
+test('build output and dependencies do not count toward a workspace weight', async () => {
+  await withWorkspaceTree(
     {
       'ws-one/src/a.test.ts': 'x'.repeat(40),
       'ws-one/dist/a.test.js': 'x'.repeat(9000),
