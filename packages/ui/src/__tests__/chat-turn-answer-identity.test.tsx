@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { afterEach, test } from 'node:test';
-import { act } from 'react';
+import { act, StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
 import { TurnView } from '../chat-turn.js';
@@ -39,11 +39,15 @@ const originalActEnvironment = (globalThis as typeof globalThis & {
   IS_REACT_ACT_ENVIRONMENT?: boolean;
 }).IS_REACT_ACT_ENVIRONMENT;
 
+const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+
 const mountedRoots: ReturnType<typeof createRoot>[] = [];
 
 afterEach(async () => {
   // Unmount before restoring globals: React's cleanup reads `document`.
   for (const root of mountedRoots.splice(0)) await act(() => root.unmount());
+  if (originalClipboard) Object.defineProperty(navigator, 'clipboard', originalClipboard);
+  else Reflect.deleteProperty(navigator, 'clipboard');
   Object.assign(globalThis, {
     ...originalGlobals,
     IS_REACT_ACT_ENVIRONMENT: originalActEnvironment,
@@ -403,4 +407,77 @@ test('announces settlement when a persisted answer is promoted to a completed li
     { onStreamingSettled },
   );
   assert.deepEqual(settled, ['answer-1'], 'staying settled does not re-announce');
+});
+
+async function renderCopyFooter(writeText: (text: string) => Promise<void>) {
+  const { container, root } = domRoot();
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+  // A secret-shaped value distinguishes original-text copy from the hook's default redaction.
+  const text = 'Authorization: Bearer sk-test-1234567890abcdef';
+  await act(async () => root.render(
+    <StrictMode>
+      <LocaleProvider locale="en">
+        <TurnView
+          turn={{ ...turnWith([{ kind: 'text', text, messageId: 'answer-1', live: false }]), status: 'completed' }}
+          footerActions={[{ id: 'copy', label: 'Copy', enabled: true }]}
+        />
+      </LocaleProvider>
+    </StrictMode>,
+  ));
+  const button = container.querySelector<HTMLButtonElement>('[data-action="copy"]');
+  assert.ok(button, 'the completed answer exposes its real footer copy action');
+  return { root, button, text };
+}
+
+test('footer copy preserves raw text, blocks overlapping writes and resets success after 1400ms', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const pending = Promise.withResolvers<void>();
+  const writeText = t.mock.fn((_text: string) => pending.promise);
+  const { button, text } = await renderCopyFooter(writeText);
+
+  await act(async () => {
+    button.click();
+    button.click();
+  });
+  assert.equal(writeText.mock.callCount(), 1);
+  assert.equal(writeText.mock.calls[0]?.arguments[0], text);
+  assert.equal(button.getAttribute('data-copy-feedback'), 'pending');
+  assert.equal(button.getAttribute('data-pending'), 'true');
+
+  await act(async () => pending.resolve());
+  assert.equal(button.getAttribute('data-copy-feedback'), 'copied');
+  assert.equal(button.hasAttribute('data-pending'), false);
+  await act(async () => t.mock.timers.tick(1399));
+  assert.equal(button.getAttribute('data-copy-feedback'), 'copied');
+  await act(async () => t.mock.timers.tick(1));
+  assert.equal(button.hasAttribute('data-copy-feedback'), false);
+});
+
+test('footer copy reports clipboard failure and allows a successful retry', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const writeText = t.mock.fn(async (_text: string): Promise<void> => {
+    throw new Error('Clipboard unavailable');
+  });
+  const { button } = await renderCopyFooter(writeText);
+  await act(async () => button.click());
+  assert.equal(button.getAttribute('data-copy-feedback'), 'failed');
+  await act(async () => t.mock.timers.tick(1400));
+  assert.equal(button.hasAttribute('data-copy-feedback'), false);
+
+  writeText.mock.mockImplementation(async (_text: string) => {});
+  await act(async () => button.click());
+  assert.equal(writeText.mock.callCount(), 2);
+  assert.equal(button.getAttribute('data-copy-feedback'), 'copied');
+});
+
+test('footer copy does not schedule feedback after it unmounts with a write pending', async (t) => {
+  const pending = Promise.withResolvers<void>();
+  const { root, button } = await renderCopyFooter(() => pending.promise);
+  await act(async () => button.click());
+  await act(async () => root.unmount());
+  mountedRoots.splice(mountedRoots.indexOf(root), 1);
+
+  const setTimeout = t.mock.method(window, 'setTimeout');
+  await act(async () => pending.resolve());
+  assert.equal(setTimeout.mock.callCount(), 0, 'a late clipboard completion must not start a reset timer');
 });
