@@ -422,6 +422,30 @@ describe('BotOnboardingService', () => {
     assert.equal(connected.warningCode, undefined);
   });
 
+  it('does not advertise poll retry health for post-confirmation failures', async () => {
+    const adapter: BotOnboardingProviderAdapter = {
+      async start() { return startResult(); },
+      async poll() {
+        return {
+          status: 'confirmed',
+          credential: {
+            provider: 'dingtalk',
+            clientId: 'public-client-id',
+            clientSecret: 'private-client-secret',
+          },
+        };
+      },
+    };
+    const test = harness(adapter, async () => {
+      throw Object.assign(new Error('The operation timed out'), { name: 'TimeoutError' });
+    });
+    const started = await test.service.start({ provider: 'dingtalk' });
+    test.advance(5_000);
+    const result = await test.service.poll(started.sessionId);
+    assert.equal(result.state, 'error');
+    assert.equal(result.retryHealth, undefined);
+  });
+
   it('invalidates an older session when the same provider starts again', async () => {
     const pending = deferred<any>();
     let polls = 0;

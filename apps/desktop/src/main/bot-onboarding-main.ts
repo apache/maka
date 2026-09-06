@@ -251,8 +251,10 @@ export class BotOnboardingService {
   }
 
   private async pollOnce(session: BotOnboardingSession): Promise<BotOnboardingSnapshot> {
+    let providerPollSettled = false;
     try {
       const result = await this.adapters[session.provider].poll(session, session.controller.signal);
+      providerPollSettled = true;
       this.assertCurrent(session);
       // A response of any kind clears the transient-failure streak.
       this.clearRetryHealth(session);
@@ -307,7 +309,7 @@ export class BotOnboardingService {
       // retry with backoff until enough CONSECUTIVE failures accumulate; only
       // then surface a terminal error. A definite provider/protocol error is
       // fatal immediately.
-      const failureCategory = classifyTransientPollError(error);
+      const failureCategory = providerPollSettled ? undefined : classifyTransientPollError(error);
       if (failureCategory) {
         session.pollFailures += 1;
         if (session.pollFailures < MAX_CONSECUTIVE_POLL_FAILURES) {
