@@ -59,21 +59,25 @@ export function formatRetryDelay(seconds: number, locale: UiLocale): string {
   const h = Math.floor((s % 86_400) / 3_600);
   const m = Math.floor((s % 3_600) / 60);
   const sec = s % 60;
-  if (locale !== 'en') {
-    const parts: string[] = [];
-    if (d > 0) parts.push(`${d}天`);
-    if (h > 0) parts.push(`${h}${locale === 'zh-TW' ? '小時' : '小时'}`);
-    if (m > 0) parts.push(`${m}分`);
-    if (sec > 0 || parts.length === 0) parts.push(`${sec}秒`);
-    return parts.join(' ');
-  }
+  const units = RETRY_DELAY_UNITS[locale];
   const parts: string[] = [];
-  if (d > 0) parts.push(`${d}d`);
-  if (h > 0) parts.push(`${h}h`);
-  if (m > 0) parts.push(`${m}m`);
-  if (sec > 0 || parts.length === 0) parts.push(`${sec}s`);
+  if (d > 0) parts.push(`${d}${units.day}`);
+  if (h > 0) parts.push(`${h}${units.hour}`);
+  if (m > 0) parts.push(`${m}${units.minute}`);
+  if (sec > 0 || parts.length === 0) parts.push(`${sec}${units.second}`);
   return parts.join(' ');
 }
+
+const RETRY_DELAY_UNITS = {
+  'zh-CN': { day: '天', hour: '小时', minute: '分', second: '秒' },
+  'zh-TW': { day: '天', hour: '小時', minute: '分', second: '秒' },
+  en: { day: 'd', hour: 'h', minute: 'm', second: 's' },
+} satisfies UiCatalog<{
+  day: string;
+  hour: string;
+  minute: string;
+  second: string;
+}>;
 
 /** One shared elapsed ladder so the zh/en goalElapsed entries cannot drift. */
 function formatGoalElapsedUnits(elapsedMs: number, units: GoalElapsedUnits): string {
