@@ -198,8 +198,8 @@ export type SideChatSendResult =
   | { ok: false; reason?: string; messageId?: never };
 
 export type SideChatFollowUpResult =
-  | { kind: 'queued'; messageId: string }
-  | { kind: 'outcome_unknown'; messageId: string }
+  | { kind: 'queued' }
+  | { kind: 'outcome_unknown' }
   | { kind: 'started'; turnId: string };
 
 export type SideChatStopTarget =
@@ -246,7 +246,7 @@ export interface SideChatSessionPort {
     sessionId: string,
     placement: MessageQueuePlacement,
     text: string,
-    admissionId?: string,
+    admissionId: string,
   ): Promise<SideChatFollowUpResult>;
   queryCancelledMessages(
     sessionId: string,

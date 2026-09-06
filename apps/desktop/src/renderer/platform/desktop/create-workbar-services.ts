@@ -53,20 +53,19 @@ export function createDesktopWorkbarServices(
     text,
     admissionId,
   ) => {
-    const messageId = admissionId ?? crypto.randomUUID();
     const result = await bridge.sessions.submitMessage(sessionId, placement, {
-      messageId,
+      messageId: admissionId,
       text,
     });
     if (!result.ok) {
       if (result.reason === 'outcome_unknown') {
-        return { kind: 'outcome_unknown', messageId };
+        return { kind: 'outcome_unknown' };
       }
       throw new Error('Runtime Host refused the follow-up Message');
     }
     return result.disposition === 'turn_started' && result.turnId
       ? { kind: 'started', turnId: result.turnId }
-      : { kind: 'queued', messageId };
+      : { kind: 'queued' };
   };
 
   return {

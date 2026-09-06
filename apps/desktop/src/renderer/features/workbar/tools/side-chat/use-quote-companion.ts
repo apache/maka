@@ -1314,7 +1314,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
           // event arrived before this command reply (or was missed entirely).
           adoptOwnedTurn(outcome.turnId);
         }
-      } else if (resolveAdmission(id, admission, outcome.messageId, true)?.kind === 'retracted') {
+      } else if (resolveAdmission(id, admission, admissionId, true)?.kind === 'retracted') {
         return false;
       } else if (
         outcome.kind === 'queued' &&

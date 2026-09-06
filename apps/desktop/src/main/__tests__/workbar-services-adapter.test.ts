@@ -190,8 +190,18 @@ describe('createDesktopWorkbarServices', () => {
       text: 'hello',
     });
     await services.sideChat.stop('fork');
-    await services.sideChat.submitFollowUp('fork', 'next_turn', 'later', 'message-next');
-    await services.sideChat.submitFollowUp('fork', 'current_turn', 'more');
+    const nextFollowUp = await services.sideChat.submitFollowUp(
+      'fork',
+      'next_turn',
+      'later',
+      'message-next',
+    );
+    const currentFollowUp = await services.sideChat.submitFollowUp(
+      'fork',
+      'current_turn',
+      'more',
+      'message-current',
+    );
     await services.sideChat.queryCancelledMessages('fork', ['message-next']);
     await services.sideChat.retractQueueEntry('fork', 'entry-1');
     await services.sideChat.promoteQueueEntry('fork', 'entry-2');
@@ -291,13 +301,13 @@ describe('createDesktopWorkbarServices', () => {
       'next_turn',
       { messageId: 'message-next', text: 'later' },
     ]);
-    assert.equal(followUpCalls[1]?.args[0], 'fork');
-    assert.equal(followUpCalls[1]?.args[1], 'current_turn');
-    assert.equal((followUpCalls[1]?.args[2] as { text?: string })?.text, 'more');
-    assert.equal(
-      typeof (followUpCalls[1]?.args[2] as { messageId?: unknown })?.messageId,
-      'string',
-    );
+    assert.deepEqual(followUpCalls[1]?.args, [
+      'fork',
+      'current_turn',
+      { messageId: 'message-current', text: 'more' },
+    ]);
+    assert.deepEqual(nextFollowUp, { kind: 'queued' });
+    assert.deepEqual(currentFollowUp, { kind: 'queued' });
     assert.deepEqual(
       calls.find((call) => call.name === 'sessions.queryCancelledMessages')?.args,
       ['fork', ['message-next']],

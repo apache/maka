@@ -1563,7 +1563,7 @@ test('keeps the same Side Conversation admission across a recoverable subscripti
 });
 
 test('keeps the active Side Conversation streaming when Stop retracts a queued steer', async () => {
-  const pendingSteer = deferred<{ kind: 'queued'; messageId: string }>();
+  const pendingSteer = deferred<{ kind: 'queued' }>();
   let admissionId: string | undefined;
   let steerCalls = 0;
   const { container, emit, send, steer, stop } = await renderOwnershipProbe({
@@ -1609,14 +1609,14 @@ test('keeps the active Side Conversation streaming when Stop retracts a queued s
   assert.equal(container.firstElementChild?.getAttribute('data-streaming'), 'true');
 
   await act(async () => {
-    pendingSteer.resolve({ kind: 'queued', messageId: admissionId as string });
+    pendingSteer.resolve({ kind: 'queued' });
     assert.equal(await steerResult, false);
     await Promise.resolve();
   });
 });
 
 test('stops the active Side Conversation after retracting its queued steer', async () => {
-  const pendingSteer = deferred<{ kind: 'queued'; messageId: string }>();
+  const pendingSteer = deferred<{ kind: 'queued' }>();
   let admissionId: string | undefined;
   const stoppedTargets: SideChatStopTarget[] = [];
   const { send, steer, stop } = await renderOwnershipProbe({
@@ -1657,14 +1657,14 @@ test('stops the active Side Conversation after retracting its queued steer', asy
     { kind: 'turn', turnId: 'old-turn' },
   ]);
   await act(async () => {
-    pendingSteer.resolve({ kind: 'queued', messageId: admissionId as string });
+    pendingSteer.resolve({ kind: 'queued' });
     assert.equal(await steerResult, false);
     await Promise.resolve();
   });
 });
 
 test('does not let an older Stop failure release a newer active Turn Stop', async () => {
-  const pendingSteer = deferred<{ kind: 'queued'; messageId: string }>();
+  const pendingSteer = deferred<{ kind: 'queued' }>();
   const queuedStop = deferred<undefined>();
   const activeStop = deferred<undefined>();
   let admissionId: string | undefined;
@@ -1719,14 +1719,14 @@ test('does not let an older Stop failure release a newer active Turn Stop', asyn
   activeStop.resolve(undefined);
   await Promise.all([activeStopResult, duplicateStopResult]);
   await act(async () => {
-    pendingSteer.resolve({ kind: 'queued', messageId: admissionId as string });
+    pendingSteer.resolve({ kind: 'queued' });
     assert.equal(await steerResult, false);
     await Promise.resolve();
   });
 });
 
 test('continues projecting the active Turn while a steer awaits Host admission', async () => {
-  const pendingSteer = deferred<{ kind: 'queued'; messageId: string }>();
+  const pendingSteer = deferred<{ kind: 'queued' }>();
   let admissionId: string | undefined;
   const { container, emit, send, steer } = await renderOwnershipProbe({
     send: async () => ({ ok: true as const, turnId: 'old-turn' }),
@@ -1761,7 +1761,7 @@ test('continues projecting the active Turn while a steer awaits Host admission',
   assert.equal(container.firstElementChild?.getAttribute('data-streaming'), 'true');
 
   await act(async () => {
-    pendingSteer.resolve({ kind: 'queued', messageId: admissionId as string });
+    pendingSteer.resolve({ kind: 'queued' });
     assert.equal(await steerResult, true);
     await Promise.resolve();
   });
@@ -1775,7 +1775,7 @@ test('keeps an outcome-unknown Side Conversation steer addressable by message id
     submitFollowUp: async (_sessionId, placement, _text, requestedAdmissionId) => {
       assert.equal(placement, 'current_turn');
       admissionId = requestedAdmissionId;
-      return { kind: 'outcome_unknown' as const, messageId: requestedAdmissionId as string };
+      return { kind: 'outcome_unknown' as const };
     },
     stop: async (_sessionId, target) => {
       stoppedTargets.push(target);
@@ -1798,7 +1798,7 @@ test('keeps an outcome-unknown Side Conversation steer addressable by message id
 
 test('recovers a queued Side Conversation steer from the Host queue projection', async () => {
   let admissionId: string | undefined;
-  const pendingSteer = deferred<{ kind: 'queued'; messageId: string }>();
+  const pendingSteer = deferred<{ kind: 'queued' }>();
   const { container, emit, send, steer } = await renderOwnershipProbe({
     send: async () => ({ ok: true as const, turnId: 'old-turn' }),
     submitFollowUp: async (_sessionId, _placement, _text, requestedAdmissionId) => {
@@ -1829,7 +1829,7 @@ test('recovers a queued Side Conversation steer from the Host queue projection',
         },
       ]),
     );
-    pendingSteer.resolve({ kind: 'queued', messageId: admissionId as string });
+    pendingSteer.resolve({ kind: 'queued' });
     assert.equal(await steerResult, true);
     await Promise.resolve();
   });
@@ -1863,7 +1863,7 @@ test('retracts a queued Side Conversation message without stopping the active tu
     send: async () => ({ ok: true as const, turnId: 'old-turn' }),
     submitFollowUp: async (_sessionId, _placement, _text, requestedMessageId) => {
       messageId = requestedMessageId;
-      return { kind: 'queued' as const, messageId: requestedMessageId as string };
+      return { kind: 'queued' as const };
     },
     retractQueueEntry: async (_sessionId, entryId) => {
       retracted.push(entryId);
@@ -1902,12 +1902,12 @@ test('retracts a queued Side Conversation message without stopping the active tu
 });
 
 test('queues multiple Side Conversation follow-ups while the active turn keeps streaming', async () => {
-  const submissions: Array<{ placement: string; text: string; messageId?: string }> = [];
+  const submissions: Array<{ placement: string; text: string; messageId: string }> = [];
   const { container, send, queue } = await renderOwnershipProbe({
     send: async () => ({ ok: true as const, turnId: 'old-turn' }),
     submitFollowUp: async (_sessionId, placement, text, messageId) => {
       submissions.push({ placement, text, messageId });
-      return { kind: 'queued' as const, messageId: messageId as string };
+      return { kind: 'queued' as const };
     },
   });
 
@@ -2083,7 +2083,7 @@ test('retires a cancelled queued Side Conversation message after observation res
     submitFollowUp: async (_sessionId, placement, _text, messageId) => {
       assert.equal(placement, 'next_turn');
       queuedMessageId = messageId;
-      return { kind: 'queued' as const, messageId: messageId as string };
+      return { kind: 'queued' as const };
     },
     queryCancelledMessages: async (_sessionId, messageIds) => {
       queriedMessageIds.push([...messageIds]);
