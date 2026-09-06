@@ -10,6 +10,7 @@
     "./durable-tool-result-projection": "./dist/durable-tool-result-projection.js",
     "./model-projection-transition": "./dist/model-projection-transition.js",
     "./canonical-runtime-event": "./dist/canonical-runtime-event.js",
+    "./canonical-json": "./dist/canonical-json.js",
     "./runtime-boundary": "./dist/runtime-boundary.js",
     "./runtime-event": "./dist/runtime-event.js",
     "./tool-args-identity": "./dist/tool-args-identity.js",
