@@ -28,14 +28,6 @@ export interface ResumeParkToastCopy {
  * Park reasons are locale-independent wire tokens; this record only supplies
  * their presentation copy. `resume_candidate_missing` is not a parked-reason
  * entry — it takes its own title/description pair below.
- *
- * `ResumeParkReasonKey` mirrors `ResumeRejectionReason` from
- * `@maka/runtime`'s `runtime-resume.ts` (minus `resume_candidate_missing`).
- * It is declared locally rather than imported so this package does not take
- * a runtime dependency on `@maka/runtime`; keep the two lists in sync by
- * hand. Because `ResumeParkReasonCopy` is a mapped type over that key union,
- * adding a reason here without supplying copy in every locale below is a
- * compile error instead of a silent fallback to generic text.
  */
 type ResumeParkReasonKey =
   | 'dangling_tool_state'
